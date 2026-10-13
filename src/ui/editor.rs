@@ -14,7 +14,15 @@ use crate::theme::Theme;
 use crate::view::View;
 
 /// Draws the editor and returns the text area (excluding the gutter), for mouse hit-testing.
-pub fn render(f: &mut Frame, area: Rect, buf: &Buffer, view: &mut View, theme: &Theme, s: &Settings) -> Rect {
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    buf: &Buffer,
+    view: &mut View,
+    theme: &Theme,
+    s: &Settings,
+    focused: bool,
+) -> Rect {
     let rope = &buf.rope;
     let tab = s.tab_width;
     let total = pos::line_count(rope);
@@ -131,7 +139,7 @@ pub fn render(f: &mut Frame, area: Rect, buf: &Buffer, view: &mut View, theme: &
     }
 
     // The terminal's own cursor goes on the primary selection.
-    if cursor_line >= view.top_line && cursor_line < view.top_line + view.height {
+    if focused && cursor_line >= view.top_line && cursor_line < view.top_line + view.height {
         let col = pos::display_col(rope, primary, tab).0;
         if col >= view.left_col && col < view.left_col + view.width {
             let x = text.x + (col - view.left_col) as u16;

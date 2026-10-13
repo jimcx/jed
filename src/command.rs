@@ -37,6 +37,35 @@ pub enum Command {
     Redo,
     Save,
     Quit,
+    CloseTab,
+    NextTab,
+    PrevTab,
+    ToggleSidebar,
+    FocusExplorer,
+    FocusEditor,
+    Explorer(ExplorerCommand),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExplorerCommand {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    First,
+    Last,
+    /// Collapse, or go to the parent.
+    Left,
+    /// Expand, or step into.
+    Right,
+    /// Open a file and focus it; toggle a folder.
+    Open,
+    /// Open a file but keep focus in the explorer.
+    Preview,
+    NewFile,
+    NewFolder,
+    Rename,
+    Delete,
 }
 
 impl Command {
@@ -73,6 +102,31 @@ impl Command {
             Command::Redo => "edit.redo".into(),
             Command::Save => "file.save".into(),
             Command::Quit => "app.quit".into(),
+            Command::CloseTab => "tab.close".into(),
+            Command::NextTab => "tab.next".into(),
+            Command::PrevTab => "tab.previous".into(),
+            Command::ToggleSidebar => "view.toggleSidebar".into(),
+            Command::FocusExplorer => "view.focusExplorer".into(),
+            Command::FocusEditor => "view.focusEditor".into(),
+            Command::Explorer(c) => format!(
+                "explorer.{}",
+                match c {
+                    ExplorerCommand::Up => "up",
+                    ExplorerCommand::Down => "down",
+                    ExplorerCommand::PageUp => "pageUp",
+                    ExplorerCommand::PageDown => "pageDown",
+                    ExplorerCommand::First => "first",
+                    ExplorerCommand::Last => "last",
+                    ExplorerCommand::Left => "collapse",
+                    ExplorerCommand::Right => "expand",
+                    ExplorerCommand::Open => "open",
+                    ExplorerCommand::Preview => "preview",
+                    ExplorerCommand::NewFile => "newFile",
+                    ExplorerCommand::NewFolder => "newFolder",
+                    ExplorerCommand::Rename => "rename",
+                    ExplorerCommand::Delete => "delete",
+                }
+            ),
         }
     }
 }

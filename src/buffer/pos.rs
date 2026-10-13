@@ -207,6 +207,34 @@ pub fn first_non_blank(rope: &Rope, line: usize) -> ByteIdx {
     ByteIdx(line_start(rope, line).0 + indent)
 }
 
+/// The run of same-class characters around `pos` (double-click selection).
+/// At a class boundary, the run to the right wins; at the line end, the run to the left.
+pub fn word_range(rope: &Rope, pos: ByteIdx) -> (ByteIdx, ByteIdx) {
+    let line = line_of(rope, pos);
+    let start = line_start(rope, line).0;
+    let text = line_text(rope, line);
+    let off = (pos.0 - start).min(text.len());
+    let gs: Vec<(usize, &str)> = text.grapheme_indices(true).collect();
+    let Some(i) = gs
+        .iter()
+        .position(|&(o, g)| off < o + g.len())
+        .or(gs.len().checked_sub(1))
+    else {
+        return (pos, pos);
+    };
+    let class = class_of(gs[i].1);
+    let mut a = i;
+    while a > 0 && class_of(gs[a - 1].1) == class {
+        a -= 1;
+    }
+    let mut b = i + 1;
+    while b < gs.len() && class_of(gs[b].1) == class {
+        b += 1;
+    }
+    let end = gs.get(b).map_or(text.len(), |&(o, _)| o);
+    (ByteIdx(start + gs[a].0), ByteIdx(start + end))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,6 +270,16 @@ mod tests {
         assert_eq!(display_col(&r, ByteIdx(6), 4), DisplayCol(8));
         assert_eq!(byte_at_col(&r, 0, DisplayCol(7), 4), ByteIdx(3));
         assert_eq!(byte_at_col(&r, 0, DisplayCol(99), 4), ByteIdx(7));
+    }
+
+    #[test]
+    fn word_ranges() {
+        let r = rope("foo.bar  baz\n");
+        assert_eq!(word_range(&r, ByteIdx(1)), (ByteIdx(0), ByteIdx(3)));
+        assert_eq!(word_range(&r, ByteIdx(3)), (ByteIdx(3), ByteIdx(4)));
+        assert_eq!(word_range(&r, ByteIdx(8)), (ByteIdx(7), ByteIdx(9)));
+        assert_eq!(word_range(&r, ByteIdx(12)), (ByteIdx(9), ByteIdx(12)));
+        assert_eq!(word_range(&r, ByteIdx(13)), (ByteIdx(13), ByteIdx(13)));
     }
 
     #[test]

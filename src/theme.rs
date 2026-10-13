@@ -34,6 +34,25 @@ impl Theme {
             ("dialog", fg_bg(0xCCCCCC, 0x252526)),
             ("dialog.border", Style::new().fg(c(0x454545))),
             ("dialog.key", Style::new().fg(c(0x3794FF)).add_modifier(Modifier::BOLD)),
+            ("dialog.input", fg_bg(0xCCCCCC, 0x3C3C3C)),
+            ("dialog.error", Style::new().fg(c(0xF48771))),
+            ("activityBar", fg_bg(0x858585, 0x333333)),
+            ("activityBar.active", Style::new().fg(c(0xFFFFFF))),
+            ("sideBar", fg_bg(0xCCCCCC, 0x252526)),
+            ("sideBar.title", Style::new().fg(c(0xBBBBBB))),
+            (
+                "sideBar.header",
+                Style::new().fg(c(0xCCCCCC)).add_modifier(Modifier::BOLD),
+            ),
+            ("sideBar.border", Style::new().fg(c(0x3C3C3C))),
+            ("sideBar.dim", Style::new().fg(c(0x858585))),
+            ("list.active", fg_bg(0xFFFFFF, 0x04395E)),
+            ("list.inactive", Style::new().bg(c(0x37373D))),
+            ("tabBar", Style::new().bg(c(0x252526))),
+            ("tab.active", fg_bg(0xFFFFFF, 0x1E1E1E)),
+            ("tab.inactive", fg_bg(0x969696, 0x2D2D2D)),
+            ("tab.deleted", Style::new().add_modifier(Modifier::CROSSED_OUT)),
+            ("statusBar.restricted", fg_bg(0x1E1E1E, 0xCCA700)),
         ]);
         Self { styles }
     }

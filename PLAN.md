@@ -88,7 +88,9 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
   - No LSP servers or tasks from `.workspace`; servers and tasks from global config still run
   - Editing, git, search all work
   - Status bar shows "Restricted"
-- Trust is per user, stored in `~/.local/state/red/trust.toml`, keyed by workspace path + hash of the command entries
+- Trust is per user, stored in `~/.local/state/red/trust.toml`, keyed by workspace path + SHA-256 of the command entries
+  - Both answers are stored, so Restricted isn't asked again on every open
+  - Esc = Restricted
 - Re-prompt when the command entries in `.workspace` change
 - Command palette: "Manage Workspace Trust"
 
@@ -110,8 +112,11 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
 ### Explorer (file tree)
 - Lazy-loaded directory tree
 - Keyboard: arrows to move, Enter to open, Left/Right to collapse/expand
-- Mouse: click to select, double-click to open, scroll
+- Mouse: click to select (folders toggle), double-click to open, scroll
 - New, rename and delete for files and folders
+  - Keys: Enter open, Space open keeping focus, F2 rename, Delete / Cmd+Backspace delete, Cmd+Alt+N new file, Cmd+Alt+Shift+N new folder (Ctrl+Alt on Linux)
+  - New file/folder names may contain `/` to create nested folders
+  - Delete moves to the system Trash
 - Respects `.gitignore`
 - Live refresh through `notify`
 - Git status colouring on entries
@@ -361,7 +366,7 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
   - Then print them to stderr
 
 ## Milestones
-1. **Skeleton**: open a file, edit, save, scroll, status bar
+1. ✅ **Skeleton**: open a file, edit, save, scroll, status bar
    - Selection list from the start; undo transactions and grouping
    - Text position types (`buffer::pos`); grapheme-aware movement, display width
    - Files: UTF-8 check (keep BOM), refuse binary, detect and keep LF/CRLF, keep final newline
@@ -369,7 +374,8 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
    - Kitty keyboard protocol on; terminal check at startup
    - Panic hook; logging; atomic save
    - Done when: a 1 MB CRLF file can be opened, edited, undone/redone and saved back byte-identical, with no lag; a panic leaves the terminal usable
-2. **Layout**: workspace root, `.workspace` loading and trust dialog, activity bar, explorer tree, tabs, mouse support
+2. ✅ **Layout**: workspace root, `.workspace` loading and trust dialog, activity bar, explorer tree, tabs, mouse support
+   - Deferred: "Manage Workspace Trust" (needs the palette, M5), git colouring in the explorer (M8), external changes to open files (Files section)
 3. **Splits**: editor groups, resizing, focus switching
 4. **Highlighting**: grammars and the built-in dark theme
 5. **Palette**: command palette, quick open, keybinding config with contexts

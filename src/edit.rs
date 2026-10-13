@@ -55,7 +55,7 @@ pub fn run(cmd: Command, buf: &mut Buffer, view: &mut View, s: &Settings) -> boo
         }
         Command::Undo => restore(view, buf.undo()),
         Command::Redo => restore(view, buf.redo()),
-        Command::Save | Command::Quit => return false,
+        _ => return false,
     }
     true
 }
