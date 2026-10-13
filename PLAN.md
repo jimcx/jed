@@ -73,6 +73,7 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
   - LSP servers per language (command, args, init options)
   - Task templates (`[tasks]`); merged with global `~/.config/red/tasks.toml`, workspace wins on name clash
   - Excluded paths for explorer, quick open and search (on top of `.gitignore`)
+  - File history limits (`[history]`) — see [File history](#file-history)
   - File associations (e.g. `SConstruct`, `*.scons` → Python)
 - Meant to be committed: no per-user state in it
 - Per-user session state (open tabs, splits, layout) lives in `~/.local/state/red/`, keyed by workspace path
@@ -108,6 +109,37 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
   - Deleted: mark tab as deleted; save recreates it
 - Unsaved changes on close tab / quit: prompt save / discard / cancel
 - Crash recovery: dirty buffers backed up periodically to `~/.local/state/red/backup/`; offer restore on next start
+
+### File history
+Go back to any earlier save of a file, independent of git.
+
+**Storage**
+- Per workspace, in `<root>/.red/history/`
+- One folder per file, named by a hash of its workspace-relative path (no deep or long paths)
+  - `entries.toml`: relative path + list of entries (id, time, size, content hash)
+  - One snapshot file per entry, exact saved bytes (BOM and line endings kept)
+- red creates `.red/.gitignore` containing `*`, so history is never committed
+- `.red/` hidden from explorer, quick open and search; watcher events under it ignored
+- Files outside the workspace: no history
+
+**Recording**
+- On every successful save: snapshot the bytes just written
+- Skip if identical to the newest snapshot (content hash)
+- Written off the UI thread, after the save's rename completes; a history failure never fails the save (log + status message)
+- Explorer rename: history moves with the file; delete: history kept
+
+**Limits** (`.workspace` `[history]`)
+- `max_entries` per file (default 50; oldest dropped)
+- `max_file_size` (default 5 MB; larger files not snapshotted)
+- `enabled` (default true)
+
+**UI**
+- Command palette: "File History: Show" for the active file
+- List of entries, newest first, with relative time and size ("3 min ago · 12 KB")
+- Select an entry:
+  - Compare: side-by-side diff, entry vs current buffer (reuses the git diff view)
+  - Restore: replaces the buffer text as one undoable edit; nothing written until you save
+- Also reachable from the explorer (on a file) and the tab bar
 
 ### Explorer (file tree)
 - Lazy-loaded directory tree
@@ -318,6 +350,7 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
 - `lsp` — client manager, a tokio task per server, channels back into the app
 - `git` — status, diff, stage/unstage files and hunks
 - `config` — settings, keybindings
+- `history` — file history: snapshot on save, index, retention, restore
 - `theme` — maps highlight names and UI elements to colours; built-in dark theme only for now
 - Every user action is a named `Command`, so keybindings and the palette go through the same path
 
@@ -382,9 +415,10 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
 6. **LSP**: clangd and Python — diagnostics, completion, hover, go to definition
 7. **Multi-cursor**: Cmd+D, Cmd+Shift+L, add above/below, Alt+Click, box select, paste spread across cursors
 8. **Git**: SCM panel, gutter markers, side-by-side diff view, stage/unstage hunks
-9. **Tasks**: templates, PTY runner, task tabs in the bottom panel
-10. **Sessions**: restore open tabs, splits and layout per workspace
-11. **Polish**: workspace search, settings, performance
+9. **File history**: snapshot on save, history list, compare (diff view), restore
+10. **Tasks**: templates, PTY runner, task tabs in the bottom panel
+11. **Sessions**: restore open tabs, splits and layout per workspace
+12. **Polish**: workspace search, settings, performance
 
 ## Stretch goals
 Very low priority. Don't build these yet, but don't make design choices that would block them.

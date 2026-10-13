@@ -38,7 +38,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     if app.ui.side_panel != SidePanel::Explorer {
         let dim = base.patch(theme.get("sideBar.dim"));
         let when = match app.ui.side_panel {
-            SidePanel::Search => "milestone 11",
+            SidePanel::Search => "milestone 12",
             _ => "milestone 8",
         };
         out.set_stringn(
