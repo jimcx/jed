@@ -6,15 +6,17 @@ use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use super::{App, Focus};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
-use crate::layout::{Hit, MIN_SIDE_WIDTH, SidePanel};
+use crate::layout::{Divider, Hit, MIN_SIDE_WIDTH, SidePanel};
 use crate::selection::{Selection, Selections};
 
 const MULTI_CLICK: Duration = Duration::from_millis(500);
 const WHEEL_LINES: isize = 3;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Drag {
     SideBorder,
+    /// Resizing a split.
+    Divider(Divider),
     /// Extending a selection; the anchor range is kept for word/line drags.
     Text {
         anchor: (ByteIdx, ByteIdx),
@@ -51,9 +53,13 @@ impl App {
                 };
                 match hit {
                     Hit::ExplorerRow(_) | Hit::SidePanel => self.explorer.scroll_by(delta),
-                    Hit::Editor => {
-                        if let Some((buf, view)) = self.active_mut() {
-                            view.scroll_lines(&buf.rope, delta);
+                    // Scrolls the group under the mouse, without focusing it.
+                    Hit::Editor(g) => {
+                        let tab = self.groups.get_mut(g).and_then(|g| g.tabs.get_mut(g.active));
+                        if let Some(tab) = tab
+                            && let Some(buf) = self.buffers.get(tab.buffer)
+                        {
+                            tab.view.scroll_lines(&buf.rope, delta);
                         }
                     }
                     _ => {}
@@ -64,16 +70,17 @@ impl App {
                 self.left_click(hit, m, count);
             }
             MouseEventKind::Down(MouseButton::Middle) => {
-                if let Hit::Tab(i) | Hit::TabClose(i) = hit {
-                    self.close_tab(i);
+                if let Hit::Tab(g, i) | Hit::TabClose(g, i) = hit {
+                    self.close_tab(g, i);
                 }
             }
-            MouseEventKind::Drag(MouseButton::Left) => match self.drag {
+            MouseEventKind::Drag(MouseButton::Left) => match self.drag.clone() {
                 Some(Drag::SideBorder) => {
                     if let Some(side) = self.hits.regions.side {
                         self.ui.side_width = (m.column + 1).saturating_sub(side.x).max(MIN_SIDE_WIDTH);
                     }
                 }
+                Some(Drag::Divider(d)) => self.groups.tree.set_ratio(&d, d.ratio_at(m.column, m.row)),
                 Some(Drag::Text { anchor }) => {
                     let at = self.text_position(m.column, m.row, true);
                     if let (Some(at), Some((_, view))) = (at, self.active_mut()) {
@@ -120,13 +127,18 @@ impl App {
                 }
             }
             Hit::ExplorerRow(_) | Hit::SidePanel => self.ui.focus = Focus::SidePanel,
-            Hit::Tab(i) => {
+            Hit::Divider(i) => self.drag = self.hits.dividers.get(i).cloned().map(Drag::Divider),
+            Hit::Tab(g, i) => {
+                self.focus_group(g);
                 self.activate_tab(i);
-                self.ui.focus = Focus::Editor;
             }
-            Hit::TabClose(i) => self.close_tab(i),
-            Hit::Editor => self.editor_click(m, count),
-            Hit::TabBar | Hit::Status | Hit::Nothing => {}
+            Hit::TabClose(g, i) => self.close_tab(g, i),
+            Hit::TabBar(g) => self.focus_group(g),
+            Hit::Editor(g) => {
+                self.focus_group(g);
+                self.editor_click(m, count);
+            }
+            Hit::Status | Hit::Nothing => {}
         }
     }
 
@@ -160,11 +172,11 @@ impl App {
         self.drag = Some(Drag::Text { anchor: (start, end) });
     }
 
-    /// Screen cell to buffer position. With `clamp`, points outside the text area
-    /// (while dragging) are pulled to its edge.
+    /// Screen cell to buffer position in the active group. With `clamp`, points outside
+    /// the text area (while dragging) are pulled to its edge.
     fn text_position(&self, x: u16, y: u16, clamp: bool) -> Option<ByteIdx> {
-        let a = self.hits.editor_text;
-        let tab = self.group.active_tab()?;
+        let a = self.hits.group(self.groups.active)?.text;
+        let tab = self.group().active_tab()?;
         let buf = self.buffers.get(tab.buffer)?;
         if a.width == 0 || a.height == 0 {
             return None;
@@ -178,7 +190,7 @@ impl App {
             return None;
         }
         let rope = &buf.rope;
-        let line = (tab.view.top_line + (y - a.y) as usize).min(pos::line_count(rope) - 1);
+        let line = (tab.view.top_line() + (y - a.y) as usize).min(pos::line_count(rope) - 1);
         let col = tab.view.left_col + (x - a.x) as usize;
         Some(pos::byte_at_col(rope, line, DisplayCol(col), self.settings.tab_width))
     }

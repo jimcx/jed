@@ -1,4 +1,4 @@
-//! Screen regions and mapping mouse positions to them.
+//! Screen regions, the tree of editor-group splits, and mapping mouse positions to them.
 
 use ratatui::layout::{Position, Rect};
 
@@ -6,6 +6,11 @@ pub const ACTIVITY_WIDTH: u16 = 3;
 pub const MIN_SIDE_WIDTH: u16 = 12;
 /// Room always left for the editor when resizing the side panel.
 pub const MIN_EDITOR_WIDTH: u16 = 20;
+/// Smallest editor group a split or a divider drag may produce (tab bar included).
+pub const MIN_GROUP_WIDTH: u16 = 12;
+pub const MIN_GROUP_HEIGHT: u16 = 4;
+
+pub type GroupId = u64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidePanel {
@@ -31,7 +36,7 @@ pub struct Regions {
     pub activity: Rect,
     /// Includes the border column on its right edge.
     pub side: Option<Rect>,
-    pub tabs: Rect,
+    /// All editor groups, with their tab bars.
     pub editor: Rect,
     pub status: Rect,
 }
@@ -66,25 +71,222 @@ pub fn compute(area: Rect, side_visible: bool, side_width: u16) -> Regions {
         x += w;
         r
     });
-    let rest_w = (area.x + area.width).saturating_sub(x);
-    let tabs = Rect {
-        x,
-        y: area.y,
-        width: rest_w,
-        height: 1.min(body_h),
-    };
     let editor = Rect {
         x,
-        y: area.y + tabs.height,
-        width: rest_w,
-        height: body_h.saturating_sub(tabs.height),
+        y: area.y,
+        width: (area.x + area.width).saturating_sub(x),
+        height: body_h,
     };
     Regions {
         activity,
         side,
-        tabs,
         editor,
         status,
+    }
+}
+
+/// Which way a split lays out its two halves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitDir {
+    /// Side by side, with a vertical divider.
+    Right,
+    /// Stacked, with a horizontal divider.
+    Down,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Node {
+    Leaf(GroupId),
+    Split {
+        dir: SplitDir,
+        /// Share of the space (minus the divider) given to `a`.
+        ratio: f32,
+        a: Box<Node>,
+        b: Box<Node>,
+    },
+}
+
+impl Node {
+    fn first_leaf(&self) -> GroupId {
+        match self {
+            Node::Leaf(g) => *g,
+            Node::Split { a, .. } => a.first_leaf(),
+        }
+    }
+}
+
+/// A divider between the two halves of a split, as drawn in the last layout.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Divider {
+    pub rect: Rect,
+    pub dir: SplitDir,
+    /// The whole split's area, for turning a mouse position into a ratio.
+    pub parent: Rect,
+    /// Path from the root to the split: false = first half, true = second.
+    path: Vec<bool>,
+}
+
+impl Divider {
+    /// The ratio that puts this divider at the mouse position.
+    pub fn ratio_at(&self, x: u16, y: u16) -> f32 {
+        let (pos, start, len) = match self.dir {
+            SplitDir::Right => (x, self.parent.x, self.parent.width),
+            SplitDir::Down => (y, self.parent.y, self.parent.height),
+        };
+        let avail = len.saturating_sub(1).max(1) as f32;
+        (pos.saturating_sub(start) as f32 / avail).clamp(0.0, 1.0)
+    }
+}
+
+/// The layout of editor groups: a binary tree of splits with groups at the leaves.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SplitTree {
+    root: Node,
+}
+
+impl SplitTree {
+    pub fn new(group: GroupId) -> Self {
+        Self {
+            root: Node::Leaf(group),
+        }
+    }
+
+    /// Groups in reading order (left to right, top to bottom); Cmd+1/2/3 count in this order.
+    pub fn groups(&self) -> Vec<GroupId> {
+        fn walk(n: &Node, out: &mut Vec<GroupId>) {
+            match n {
+                Node::Leaf(g) => out.push(*g),
+                Node::Split { a, b, .. } => {
+                    walk(a, out);
+                    walk(b, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.root, &mut out);
+        out
+    }
+
+    /// Splits `target` in two; `new` goes right of or below it. False if `target` isn't in the tree.
+    pub fn split(&mut self, target: GroupId, dir: SplitDir, new: GroupId) -> bool {
+        fn find(n: &mut Node, target: GroupId) -> Option<&mut Node> {
+            match n {
+                Node::Leaf(g) if *g == target => Some(n),
+                Node::Leaf(_) => None,
+                Node::Split { a, b, .. } => find(a, target).or_else(|| find(b, target)),
+            }
+        }
+        let Some(leaf) = find(&mut self.root, target) else {
+            return false;
+        };
+        *leaf = Node::Split {
+            dir,
+            ratio: 0.5,
+            a: Box::new(Node::Leaf(target)),
+            b: Box::new(Node::Leaf(new)),
+        };
+        true
+    }
+
+    /// Removes a group; its sibling takes the space. Returns the group that should get focus,
+    /// or `None` if `group` is the last one (or not in the tree).
+    pub fn remove(&mut self, group: GroupId) -> Option<GroupId> {
+        fn remove(n: &mut Node, group: GroupId) -> Option<GroupId> {
+            let Node::Split { a, b, .. } = n else { return None };
+            let keep = match (&**a, &**b) {
+                (Node::Leaf(g), _) if *g == group => Some(std::mem::replace(&mut **b, Node::Leaf(0))),
+                (_, Node::Leaf(g)) if *g == group => Some(std::mem::replace(&mut **a, Node::Leaf(0))),
+                _ => None,
+            };
+            match keep {
+                Some(sibling) => {
+                    let focus = sibling.first_leaf();
+                    *n = sibling;
+                    Some(focus)
+                }
+                None => remove(a, group).or_else(|| remove(b, group)),
+            }
+        }
+        remove(&mut self.root, group)
+    }
+
+    /// Each group's area and each divider, for `area`.
+    pub fn layout(&self, area: Rect) -> (Vec<(GroupId, Rect)>, Vec<Divider>) {
+        fn walk(n: &Node, area: Rect, path: &mut Vec<bool>, cells: &mut Vec<(GroupId, Rect)>, divs: &mut Vec<Divider>) {
+            match n {
+                Node::Leaf(g) => cells.push((*g, area)),
+                Node::Split { dir, ratio, a, b } => {
+                    let (ra, rd, rb) = split_rect(area, *dir, *ratio);
+                    divs.push(Divider {
+                        rect: rd,
+                        dir: *dir,
+                        parent: area,
+                        path: path.clone(),
+                    });
+                    path.push(false);
+                    walk(a, ra, path, cells, divs);
+                    path.pop();
+                    path.push(true);
+                    walk(b, rb, path, cells, divs);
+                    path.pop();
+                }
+            }
+        }
+        let (mut cells, mut divs) = (Vec::new(), Vec::new());
+        walk(&self.root, area, &mut Vec::new(), &mut cells, &mut divs);
+        (cells, divs)
+    }
+
+    /// Moves a divider (from `layout`). The layout keeps groups at their minimum size.
+    pub fn set_ratio(&mut self, divider: &Divider, ratio: f32) {
+        let mut n = &mut self.root;
+        for &second in &divider.path {
+            let Node::Split { a, b, .. } = n else { return };
+            n = if second { b } else { a };
+        }
+        if let Node::Split { ratio: r, .. } = n {
+            *r = ratio.clamp(0.0, 1.0);
+        }
+    }
+}
+
+/// Splits `area` into (first, divider, second). Each half keeps its minimum size when it fits.
+fn split_rect(area: Rect, dir: SplitDir, ratio: f32) -> (Rect, Rect, Rect) {
+    let (len, min) = match dir {
+        SplitDir::Right => (area.width, MIN_GROUP_WIDTH),
+        SplitDir::Down => (area.height, MIN_GROUP_HEIGHT),
+    };
+    let avail = len.saturating_sub(1);
+    let min = min.min(avail / 2);
+    let first = ((avail as f32 * ratio).round() as u16).clamp(min, avail - min);
+    let second = avail - first;
+    match dir {
+        SplitDir::Right => (
+            Rect { width: first, ..area },
+            Rect {
+                x: area.x + first,
+                width: len.min(1),
+                ..area
+            },
+            Rect {
+                x: area.x + first + 1,
+                width: second,
+                ..area
+            },
+        ),
+        SplitDir::Down => (
+            Rect { height: first, ..area },
+            Rect {
+                y: area.y + first,
+                height: len.min(1),
+                ..area
+            },
+            Rect {
+                y: area.y + first + 1,
+                height: second,
+                ..area
+            },
+        ),
     }
 }
 
@@ -96,12 +298,22 @@ pub struct HitMap {
     pub icons: Vec<(u16, SidePanel)>,
     /// Explorer rows area; row `i` on screen is entry `scroll + i`.
     pub explorer_rows: Rect,
-    /// Tabs: x range and the x of the close/dirty marker.
-    pub tabs: Vec<TabHit>,
-    /// Editor text area (gutter excluded).
-    pub editor_text: Rect,
+    pub groups: Vec<GroupHit>,
+    pub dividers: Vec<Divider>,
 }
 
+/// One editor group as drawn: tab bar, editor, and the text area inside it.
+#[derive(Debug, Clone, Default)]
+pub struct GroupHit {
+    pub id: GroupId,
+    pub tab_bar: Rect,
+    pub editor: Rect,
+    /// Text area (gutter excluded).
+    pub text: Rect,
+    pub tabs: Vec<TabHit>,
+}
+
+/// A tab's x range and the x of its close/dirty marker.
 #[derive(Debug, Clone, Copy)]
 pub struct TabHit {
     pub index: usize,
@@ -117,10 +329,12 @@ pub enum Hit {
     /// Explorer row on screen (add the scroll offset for the entry).
     ExplorerRow(u16),
     SidePanel,
-    Tab(usize),
-    TabClose(usize),
-    TabBar,
-    Editor,
+    /// Index into `HitMap::dividers`.
+    Divider(usize),
+    Tab(GroupId, usize),
+    TabClose(GroupId, usize),
+    TabBar(GroupId),
+    Editor(GroupId),
     Status,
     Nothing,
 }
@@ -147,20 +361,29 @@ impl HitMap {
             }
             return Hit::SidePanel;
         }
-        if r.tabs.contains(p) {
-            return match self.tabs.iter().find(|t| x >= t.x0 && x < t.x1) {
-                Some(t) if x == t.close_x => Hit::TabClose(t.index),
-                Some(t) => Hit::Tab(t.index),
-                None => Hit::TabBar,
-            };
+        if let Some(i) = self.dividers.iter().position(|d| d.rect.contains(p)) {
+            return Hit::Divider(i);
         }
-        if r.editor.contains(p) {
-            return Hit::Editor;
+        for g in &self.groups {
+            if g.tab_bar.contains(p) {
+                return match g.tabs.iter().find(|t| x >= t.x0 && x < t.x1) {
+                    Some(t) if x == t.close_x => Hit::TabClose(g.id, t.index),
+                    Some(t) => Hit::Tab(g.id, t.index),
+                    None => Hit::TabBar(g.id),
+                };
+            }
+            if g.editor.contains(p) {
+                return Hit::Editor(g.id);
+            }
         }
         if r.status.contains(p) {
             return Hit::Status;
         }
         Hit::Nothing
+    }
+
+    pub fn group(&self, id: GroupId) -> Option<&GroupHit> {
+        self.groups.iter().find(|g| g.id == id)
     }
 }
 
@@ -173,8 +396,7 @@ mod tests {
         let r = compute(Rect::new(0, 0, 100, 30), true, 25);
         assert_eq!(r.activity, Rect::new(0, 0, 3, 29));
         assert_eq!(r.side, Some(Rect::new(3, 0, 25, 29)));
-        assert_eq!(r.tabs, Rect::new(28, 0, 72, 1));
-        assert_eq!(r.editor, Rect::new(28, 1, 72, 28));
+        assert_eq!(r.editor, Rect::new(28, 0, 72, 29));
         assert_eq!(r.status, Rect::new(0, 29, 100, 1));
 
         let r = compute(Rect::new(0, 0, 100, 30), false, 25);
@@ -191,28 +413,96 @@ mod tests {
     }
 
     #[test]
+    fn split_and_layout() {
+        let mut t = SplitTree::new(0);
+        assert!(t.split(0, SplitDir::Right, 1));
+        assert!(t.split(1, SplitDir::Down, 2));
+        assert!(!t.split(9, SplitDir::Down, 3));
+        assert_eq!(t.groups(), vec![0, 1, 2]);
+
+        let (cells, divs) = t.layout(Rect::new(0, 0, 81, 21));
+        assert_eq!(
+            cells,
+            vec![
+                (0, Rect::new(0, 0, 40, 21)),
+                (1, Rect::new(41, 0, 40, 10)),
+                (2, Rect::new(41, 11, 40, 10))
+            ]
+        );
+        assert_eq!(divs[0].rect, Rect::new(40, 0, 1, 21));
+        assert_eq!(divs[1].rect, Rect::new(41, 10, 40, 1));
+    }
+
+    #[test]
+    fn remove_gives_space_to_sibling() {
+        let mut t = SplitTree::new(0);
+        t.split(0, SplitDir::Right, 1);
+        t.split(1, SplitDir::Down, 2);
+        assert_eq!(t.remove(1), Some(2));
+        assert_eq!(t.groups(), vec![0, 2]);
+        assert_eq!(t.remove(0), Some(2));
+        assert_eq!(t.groups(), vec![2]);
+        assert_eq!(t.remove(2), None, "the last group stays");
+        assert_eq!(t.layout(Rect::new(0, 0, 10, 10)).0, vec![(2, Rect::new(0, 0, 10, 10))]);
+    }
+
+    #[test]
+    fn resize_respects_minimums() {
+        let mut t = SplitTree::new(0);
+        t.split(0, SplitDir::Right, 1);
+        let area = Rect::new(0, 0, 101, 20);
+        let div = t.layout(area).1[0].clone();
+        t.set_ratio(&div, div.ratio_at(30, 5));
+        assert_eq!(t.layout(area).0[0].1.width, 30);
+        t.set_ratio(&div, div.ratio_at(1, 5));
+        assert_eq!(t.layout(area).0[0].1.width, MIN_GROUP_WIDTH);
+        t.set_ratio(&div, div.ratio_at(100, 5));
+        assert_eq!(t.layout(area).0[1].1.width, MIN_GROUP_WIDTH);
+    }
+
+    #[test]
     fn hits() {
         let regions = compute(Rect::new(0, 0, 100, 30), true, 25);
+        let mut t = SplitTree::new(7);
+        t.split(7, SplitDir::Right, 8);
+        let (cells, dividers) = t.layout(regions.editor);
+        let groups = cells
+            .iter()
+            .map(|(id, r)| GroupHit {
+                id: *id,
+                tab_bar: Rect { height: 1, ..*r },
+                editor: Rect {
+                    y: r.y + 1,
+                    height: r.height - 1,
+                    ..*r
+                },
+                text: Rect::default(),
+                tabs: vec![TabHit {
+                    index: 0,
+                    x0: r.x,
+                    x1: r.x + 10,
+                    close_x: r.x + 8,
+                }],
+            })
+            .collect();
         let map = HitMap {
             regions,
             icons: vec![(1, SidePanel::Explorer)],
             explorer_rows: Rect::new(3, 2, 24, 27),
-            tabs: vec![TabHit {
-                index: 0,
-                x0: 28,
-                x1: 40,
-                close_x: 38,
-            }],
-            editor_text: Rect::new(33, 1, 67, 28),
+            groups,
+            dividers,
         };
         assert_eq!(map.hit(1, 1), Hit::Icon(SidePanel::Explorer));
         assert_eq!(map.hit(27, 5), Hit::SideBorder);
         assert_eq!(map.hit(5, 4), Hit::ExplorerRow(2));
         assert_eq!(map.hit(5, 0), Hit::SidePanel);
-        assert_eq!(map.hit(30, 0), Hit::Tab(0));
-        assert_eq!(map.hit(38, 0), Hit::TabClose(0));
-        assert_eq!(map.hit(60, 0), Hit::TabBar);
-        assert_eq!(map.hit(60, 10), Hit::Editor);
+        assert_eq!(map.hit(30, 0), Hit::Tab(7, 0));
+        assert_eq!(map.hit(36, 0), Hit::TabClose(7, 0));
+        assert_eq!(map.hit(50, 0), Hit::TabBar(7));
+        assert_eq!(map.hit(50, 10), Hit::Editor(7));
+        assert_eq!(map.hit(64, 10), Hit::Divider(0));
+        assert_eq!(map.hit(66, 0), Hit::Tab(8, 0));
+        assert_eq!(map.hit(80, 10), Hit::Editor(8));
         assert_eq!(map.hit(60, 29), Hit::Status);
     }
 }

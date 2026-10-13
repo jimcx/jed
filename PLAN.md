@@ -229,9 +229,19 @@ The VS Code behaviour, especially Cmd+D and Cmd+Shift+L, is a must-have.
 
 ### Splits
 - Split right / split down
+  - Layout is a binary split tree (`layout::SplitTree`); 1-cell divider lines between groups
+  - New group shows the active tab's buffer, same cursor and scroll, and gets focus
 - Focus groups by keyboard and mouse
+  - Cmd+1/2/3 in reading order; one past the last group splits right (as VS Code)
+  - Click in a group's tab bar or text focuses it; mouse wheel scrolls the group under the mouse without focusing
 - Resize splits by dragging dividers
+  - Minimum group size 12 cols × 4 rows
 - Same buffer open in several views
+  - Edits (incl. undo/redo) map every other view's selections and viewport through the changes
+  - Cursors at an insertion point in other views stay before the inserted text
+- Closing a group's last tab closes the group (never the last group)
+- Unsaved-changes prompt only when closing the last tab showing the buffer, across all groups
+- Inactive group's active tab drawn dimmer; terminal cursor only in the focused group
 
 ### Syntax highlighting
 - tree-sitter grammars + `highlights.scm` queries per language
@@ -309,7 +319,7 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
 | Focus explorer | Cmd+Shift+E | Ctrl+Shift+E |
 | Source control | Ctrl+Shift+G | Ctrl+Shift+G |
 | Search in workspace | Cmd+Shift+F | Ctrl+Shift+F |
-| Split editor | Cmd+\ | Ctrl+\ |
+| Split editor right / down | Cmd+\ / Cmd+Alt+\ | Ctrl+\ / Ctrl+Alt+\ |
 | Focus group 1/2/3 | Cmd+1/2/3 | Ctrl+1/2/3 |
 | Find / replace | Cmd+F / Cmd+Alt+F | Ctrl+F / Ctrl+H |
 | Go to line | Ctrl+G | Ctrl+G |
@@ -409,7 +419,9 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
    - Done when: a 1 MB CRLF file can be opened, edited, undone/redone and saved back byte-identical, with no lag; a panic leaves the terminal usable
 2. ✅ **Layout**: workspace root, `.workspace` loading and trust dialog, activity bar, explorer tree, tabs, mouse support
    - Deferred: "Manage Workspace Trust" (needs the palette, M5), git colouring in the explorer (M8), external changes to open files (Files section)
-3. **Splits**: editor groups, resizing, focus switching
+3. ✅ **Splits**: editor groups, resizing, focus switching
+   - Split down is Cmd+Alt+\\ (no chords, so not VS Code's Cmd+K Cmd+\\)
+   - Deferred: moving tabs between groups, drag-and-drop tabs, keyboard resize of splits
 4. **Highlighting**: grammars and the built-in dark theme
 5. **Palette**: command palette, quick open, keybinding config with contexts
 6. **LSP**: clangd and Python — diagnostics, completion, hover, go to definition

@@ -34,7 +34,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) {
     let mut lines = vec![Line::raw("")];
     let mut cursor = None;
     match prompt {
-        Prompt::SaveBeforeClose { buffer } => {
+        Prompt::SaveBeforeClose { buffer, .. } => {
             lines.push(Line::raw(format!(" Save changes to {}?", name_of(*buffer))));
             lines.push(Line::raw(""));
             lines.push(buttons(&[("S", "ave"), ("D", "on't Save"), ("C", "ancel")]));

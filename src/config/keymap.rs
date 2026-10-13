@@ -171,7 +171,12 @@ impl Keymap {
             (KeyCode::Char('w'), cmd, Command::CloseTab),
             (KeyCode::Char('b'), cmd, Command::ToggleSidebar),
             (KeyCode::Char('e'), cmd | shift, Command::FocusExplorer),
-            (KeyCode::Char('1'), cmd, Command::FocusEditor),
+            (KeyCode::Char('1'), cmd, Command::FocusGroup(1)),
+            (KeyCode::Char('2'), cmd, Command::FocusGroup(2)),
+            (KeyCode::Char('3'), cmd, Command::FocusGroup(3)),
+            (KeyCode::Char('\\'), cmd, Command::SplitRight),
+            // No chords, so not VS Code's Cmd+K Cmd+\\.
+            (KeyCode::Char('\\'), cmd | alt, Command::SplitDown),
             (KeyCode::PageDown, ctrl, Command::NextTab),
             (KeyCode::PageUp, ctrl, Command::PrevTab),
         ];

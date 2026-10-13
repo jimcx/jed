@@ -51,6 +51,8 @@ impl Theme {
             ("tabBar", Style::new().bg(c(0x252526))),
             ("tab.active", fg_bg(0xFFFFFF, 0x1E1E1E)),
             ("tab.inactive", fg_bg(0x969696, 0x2D2D2D)),
+            ("tab.unfocusedActive", fg_bg(0x8F8F8F, 0x1E1E1E)),
+            ("editorGroup.border", fg_bg(0x444444, 0x1E1E1E)),
             ("tab.deleted", Style::new().add_modifier(Modifier::CROSSED_OUT)),
             ("statusBar.restricted", fg_bg(0x1E1E1E, 0xCCA700)),
         ]);

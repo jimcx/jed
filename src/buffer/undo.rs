@@ -99,26 +99,29 @@ impl History {
         });
     }
 
-    /// Reverts the last step; returns the selections from before it.
-    pub fn undo(&mut self, rope: &mut Rope) -> Option<Selections> {
+    /// Reverts the last step; returns the selections from before it and the changes applied.
+    pub fn undo(&mut self, rope: &mut Rope) -> Option<(Selections, Vec<ChangeSet>)> {
         let mut step = self.undo.pop()?;
+        let mut applied = Vec::with_capacity(step.edits.len());
         for (_, inverse) in step.edits.iter().rev() {
             inverse.apply(rope);
+            applied.push(inverse.clone());
         }
         step.sealed = true;
         let sel = step.sel_before.clone();
         self.redo.push(step);
-        Some(sel)
+        Some((sel, applied))
     }
 
-    /// Re-applies the last undone step; returns the selections from after it.
-    pub fn redo(&mut self, rope: &mut Rope) -> Option<Selections> {
+    /// Re-applies the last undone step; returns the selections from after it and the changes applied.
+    pub fn redo(&mut self, rope: &mut Rope) -> Option<(Selections, Vec<ChangeSet>)> {
         let step = self.redo.pop()?;
         for (forward, _) in &step.edits {
             forward.apply(rope);
         }
+        let applied = step.edits.iter().map(|(f, _)| f.clone()).collect();
         let sel = step.sel_after.clone();
         self.undo.push(step);
-        Some(sel)
+        Some((sel, applied))
     }
 }

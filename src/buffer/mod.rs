@@ -34,6 +34,8 @@ pub struct Buffer {
     saved_state: u64,
     /// History state currently being written, if a save is in flight.
     saving_state: Option<u64>,
+    /// Changes applied since the last `take_applied`, for other views on this buffer to follow.
+    applied: Vec<ChangeSet>,
 }
 
 /// What a background save needs; the rope clone is cheap.
@@ -62,6 +64,7 @@ impl Buffer {
             history: History::default(),
             saved_state: 0,
             saving_state: None,
+            applied: Vec::new(),
         }
     }
 
@@ -91,6 +94,7 @@ impl Buffer {
             return;
         }
         let inverse = changes.apply(&mut self.rope);
+        self.applied.push(changes.clone());
         self.history
             .record(changes, inverse, before, after, kind, Instant::now());
     }
@@ -101,11 +105,20 @@ impl Buffer {
     }
 
     pub fn undo(&mut self) -> Option<Selections> {
-        self.history.undo(&mut self.rope)
+        let (sel, applied) = self.history.undo(&mut self.rope)?;
+        self.applied.extend(applied);
+        Some(sel)
     }
 
     pub fn redo(&mut self) -> Option<Selections> {
-        self.history.redo(&mut self.rope)
+        let (sel, applied) = self.history.redo(&mut self.rope)?;
+        self.applied.extend(applied);
+        Some(sel)
+    }
+
+    /// Changes applied since the last call, in order.
+    pub fn take_applied(&mut self) -> Vec<ChangeSet> {
+        std::mem::take(&mut self.applied)
     }
 
     pub fn begin_save(&mut self) -> SaveJob {

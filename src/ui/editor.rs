@@ -36,6 +36,8 @@ pub fn render(
 
     view.height = text.height.max(1) as usize;
     view.width = text.width.max(1) as usize;
+    // Re-anchor the viewport (the buffer may have changed since the last frame).
+    view.set_top_line(rope, view.top_line());
     if view.reveal_cursor {
         view.scroll_to_cursor(rope, tab);
         view.reveal_cursor = false;
@@ -66,7 +68,7 @@ pub fn render(
     out.set_style(area, base);
     let right = text.x + text.width;
     for row in 0..area.height {
-        let line = view.top_line + row as usize;
+        let line = view.top_line() + row as usize;
         if line >= total {
             break;
         }
@@ -139,11 +141,11 @@ pub fn render(
     }
 
     // The terminal's own cursor goes on the primary selection.
-    if focused && cursor_line >= view.top_line && cursor_line < view.top_line + view.height {
+    if focused && cursor_line >= view.top_line() && cursor_line < view.top_line() + view.height {
         let col = pos::display_col(rope, primary, tab).0;
         if col >= view.left_col && col < view.left_col + view.width {
             let x = text.x + (col - view.left_col) as u16;
-            let y = text.y + (cursor_line - view.top_line) as u16;
+            let y = text.y + (cursor_line - view.top_line()) as u16;
             f.set_cursor_position(Position { x, y });
         }
     }

@@ -42,7 +42,10 @@ pub enum Command {
     PrevTab,
     ToggleSidebar,
     FocusExplorer,
-    FocusEditor,
+    /// Focus editor group N (1-based, reading order); one past the last splits right.
+    FocusGroup(u8),
+    SplitRight,
+    SplitDown,
     Explorer(ExplorerCommand),
 }
 
@@ -107,7 +110,9 @@ impl Command {
             Command::PrevTab => "tab.previous".into(),
             Command::ToggleSidebar => "view.toggleSidebar".into(),
             Command::FocusExplorer => "view.focusExplorer".into(),
-            Command::FocusEditor => "view.focusEditor".into(),
+            Command::FocusGroup(n) => format!("view.focusGroup{n}"),
+            Command::SplitRight => "view.splitRight".into(),
+            Command::SplitDown => "view.splitDown".into(),
             Command::Explorer(c) => format!(
                 "explorer.{}",
                 match c {

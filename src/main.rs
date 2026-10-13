@@ -10,6 +10,8 @@ mod logging;
 #[cfg(test)]
 mod milestone2_tests;
 #[cfg(test)]
+mod milestone3_tests;
+#[cfg(test)]
 mod milestone_tests;
 mod panic;
 mod paths;

@@ -7,10 +7,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::{App, FileOp, Level};
 use crate::buffer::BufferId;
 use crate::explorer;
+use crate::layout::GroupId;
 use crate::workspace::trust::Trust;
 
 pub enum Prompt {
-    SaveBeforeClose { buffer: BufferId },
+    SaveBeforeClose { group: GroupId, buffer: BufferId },
     SaveAllBeforeQuit { buffers: Vec<BufferId> },
     Trust { commands: Vec<String> },
     Input(Input),
@@ -104,20 +105,20 @@ impl App {
         let enter = key.code == KeyCode::Enter;
         let esc = key.code == KeyCode::Esc;
         match prompt {
-            Prompt::SaveBeforeClose { buffer } => match ch {
+            Prompt::SaveBeforeClose { group, buffer } => match ch {
                 _ if enter || ch == Some('s') => {
                     self.close_prompt();
-                    self.after_save = Some(super::AfterSave::Close(buffer));
+                    self.after_save = Some(super::AfterSave::Close(group, buffer));
                     self.save(buffer);
                 }
                 Some('d') => {
                     self.close_prompt();
-                    if let Some(i) = self.group.find(buffer) {
-                        self.discard_tab(i);
+                    if let Some(i) = self.groups.get(group).and_then(|g| g.find(buffer)) {
+                        self.discard_tab(group, i);
                     }
                 }
                 _ if esc || ch == Some('c') => self.close_prompt(),
-                _ => self.prompt = Some(Prompt::SaveBeforeClose { buffer }),
+                _ => self.prompt = Some(Prompt::SaveBeforeClose { group, buffer }),
             },
             Prompt::SaveAllBeforeQuit { buffers } => match ch {
                 _ if enter || ch == Some('s') => {

@@ -19,10 +19,11 @@ pub struct ChangeSet {
 }
 
 /// Which side of an insertion at the same position a mapped position ends up on.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Assoc {
     Before,
+    /// Not used by the editor yet (other views keep cursors before inserts).
+    #[cfg_attr(not(test), allow(dead_code))]
     After,
 }
 
@@ -70,8 +71,6 @@ impl ChangeSet {
     }
 
     /// Where a pre-edit position ends up after the edit.
-    /// For other views on the same buffer (milestone 3).
-    #[allow(dead_code)]
     pub fn map(&self, pos: ByteIdx, assoc: Assoc) -> ByteIdx {
         let mut delta: isize = 0;
         for c in &self.changes {

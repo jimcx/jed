@@ -21,7 +21,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let mut right_x = area.x + area.width;
-    if let (Some(buf), Some(tab)) = (app.active_buffer(), app.group.active_tab()) {
+    if let (Some(buf), Some(tab)) = (app.active_buffer(), app.group().active_tab()) {
         let dirty = if buf.is_dirty() { " ●" } else { "" };
         let flag = if buf.deleted {
             " [deleted]"

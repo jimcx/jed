@@ -79,7 +79,7 @@ async fn milestone_2_workspace_explorer_tabs() {
     app.press(K::Char('w'), cmd());
     assert!(matches!(app.prompt, Some(Prompt::SaveBeforeClose { .. })));
     app.press(K::Char('s'), M::NONE);
-    assert!(app.settle(|a| a.group.tabs.is_empty()).await);
+    assert!(app.settle(|a| a.group().tabs.is_empty()).await);
     assert_eq!(fs::read_to_string(root.join("src/main.c")).unwrap(), "//int main;\n");
 
     // New file from the explorer: created, listed, opened.

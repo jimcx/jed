@@ -7,6 +7,7 @@ use super::{AfterSave, App, AppEvent, Focus, Level, Prompt, SLOW_TASK};
 use crate::buffer::file::LoadError;
 use crate::buffer::pos::{self, DisplayCol};
 use crate::buffer::{Buffer, BufferId};
+use crate::layout::{GroupId, SplitDir};
 use crate::selection::{Selection, Selections};
 use crate::view::View;
 
@@ -14,10 +15,10 @@ impl App {
     /// Opens `path` in a tab (or switches to its tab). Loading happens off the UI thread.
     pub(super) fn open_file(&mut self, path: PathBuf, focus: bool) {
         if let Some(id) = self.buffers.find_path(&path) {
-            match self.group.find(id) {
+            match self.group().find(id) {
                 Some(i) => self.activate_tab(i),
                 None => {
-                    self.group.open(id, View::new());
+                    self.group_mut().open(id, View::new());
                     self.reveal_active();
                 }
             }
@@ -66,18 +67,18 @@ impl App {
             view.selections = Selections::single(Selection::cursor(at));
         }
         let id = self.buffers.insert(buffer);
-        self.group.open(id, view);
+        self.group_mut().open(id, view);
         if focus {
             self.ui.focus = Focus::Editor;
         }
     }
 
     pub(super) fn activate_tab(&mut self, index: usize) {
-        if index < self.group.tabs.len() {
+        if index < self.group().tabs.len() {
             if let Some((buf, _)) = self.active_mut() {
                 buf.seal_undo();
             }
-            self.group.active = index;
+            self.group_mut().active = index;
             self.reveal_active();
         }
     }
@@ -86,7 +87,7 @@ impl App {
         if let Some((buf, _)) = self.active_mut() {
             buf.seal_undo();
         }
-        self.group.cycle(delta);
+        self.group_mut().cycle(delta);
         self.reveal_active();
     }
 
@@ -100,28 +101,73 @@ impl App {
         }
     }
 
-    pub(super) fn close_tab(&mut self, index: usize) {
-        let Some(tab) = self.group.tabs.get(index) else { return };
-        let id = tab.buffer;
-        let last_tab_for_buffer = self.group.tabs.iter().filter(|t| t.buffer == id).count() == 1;
-        if last_tab_for_buffer && self.buffers.get(id).is_some_and(Buffer::is_dirty) {
-            self.group.active = index;
-            self.prompt = Some(Prompt::SaveBeforeClose { buffer: id });
+    /// Makes `group` the active group and focuses the editor.
+    pub(super) fn focus_group(&mut self, group: GroupId) {
+        if self.groups.get(group).is_none() {
             return;
         }
-        self.discard_tab(index);
+        if group != self.groups.active
+            && let Some((buf, _)) = self.active_mut()
+        {
+            buf.seal_undo();
+        }
+        self.groups.active = group;
+        self.ui.focus = Focus::Editor;
+        self.reveal_active();
     }
 
-    /// Closes a tab without asking; drops its buffer if no other tab shows it.
-    pub(super) fn discard_tab(&mut self, index: usize) {
-        let tab = self.group.close(index);
-        if self.group.find(tab.buffer).is_none() {
+    pub(super) fn split(&mut self, dir: SplitDir) {
+        if let Some((buf, _)) = self.active_mut() {
+            buf.seal_undo();
+        }
+        self.groups.split(dir);
+        self.ui.focus = Focus::Editor;
+    }
+
+    /// Closes a tab; asks first if it's the last tab (in any group) showing an unsaved buffer.
+    pub(super) fn close_tab(&mut self, group: GroupId, index: usize) {
+        let Some(tab) = self.groups.get(group).and_then(|g| g.tabs.get(index)) else {
+            // Closing in an empty group closes the group.
+            if self.groups.get(group).is_some_and(|g| g.tabs.is_empty()) {
+                self.close_group(group);
+            }
+            return;
+        };
+        let id = tab.buffer;
+        if self.groups.tabs_showing(id) == 1 && self.buffers.get(id).is_some_and(Buffer::is_dirty) {
+            self.groups.active = group;
+            self.group_mut().active = index;
+            self.prompt = Some(Prompt::SaveBeforeClose { group, buffer: id });
+            return;
+        }
+        self.discard_tab(group, index);
+    }
+
+    /// Closes a tab without asking; drops its buffer if no tab anywhere shows it,
+    /// and the group if it's now empty (unless it's the last group).
+    pub(super) fn discard_tab(&mut self, group: GroupId, index: usize) {
+        let Some(g) = self.groups.get_mut(group) else { return };
+        if index >= g.tabs.len() {
+            return;
+        }
+        let tab = g.close(index);
+        let now_empty = g.tabs.is_empty();
+        if self.groups.tabs_showing(tab.buffer) == 0 {
             self.buffers.remove(tab.buffer);
         }
-        if self.group.tabs.is_empty() && self.ui.side_visible {
+        if now_empty {
+            self.close_group(group);
+        }
+        if self.groups.len() == 1 && self.group().tabs.is_empty() && self.ui.side_visible {
             self.ui.focus = Focus::SidePanel;
         }
         self.reveal_active();
+    }
+
+    fn close_group(&mut self, group: GroupId) {
+        if self.groups.remove(group) {
+            self.reveal_active();
+        }
     }
 
     pub(super) fn save(&mut self, id: BufferId) {
@@ -170,10 +216,10 @@ impl App {
             }
         }
         match self.after_save {
-            Some(AfterSave::Close(closing)) if closing == id => {
+            Some(AfterSave::Close(group, closing)) if closing == id => {
                 self.after_save = None;
-                if let Some(i) = self.group.find(id) {
-                    self.close_tab(i);
+                if let Some(i) = self.groups.get(group).and_then(|g| g.find(id)) {
+                    self.close_tab(group, i);
                 }
             }
             Some(AfterSave::Quit) if !self.buffers.any_saving() => {

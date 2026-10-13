@@ -20,8 +20,8 @@ use crate::command::Command;
 use crate::config::keymap::{Context, Keymap, Platform};
 use crate::edit::{self, Settings};
 use crate::explorer::{self, Explorer};
-use crate::group::Group;
-use crate::layout::{HitMap, SidePanel};
+use crate::group::{Group, Groups};
+use crate::layout::{GroupId, HitMap, SidePanel, SplitDir};
 use crate::terminal::Term;
 use crate::theme::{self, Theme};
 use crate::view::View;
@@ -68,7 +68,7 @@ pub struct UiState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AfterSave {
     Quit,
-    Close(BufferId),
+    Close(GroupId, BufferId),
 }
 
 /// Explorer file operations, run off the UI thread.
@@ -116,7 +116,7 @@ pub struct App {
     pub trust: Trust,
     trust_store: TrustStore,
     pub buffers: Buffers,
-    pub group: Group,
+    pub groups: Groups,
     pub explorer: Explorer,
     excludes: Override,
     pub ui: UiState,
@@ -156,7 +156,7 @@ impl App {
             explorer: Explorer::new(root),
             workspace,
             buffers: Buffers::default(),
-            group: Group::default(),
+            groups: Groups::default(),
             ui: UiState {
                 side_visible: true,
                 side_width: 30,
@@ -265,14 +265,24 @@ impl App {
     }
 
     /// The active tab's buffer and view.
+    /// The active editor group.
+    pub fn group(&self) -> &Group {
+        self.groups.active_group()
+    }
+
+    pub fn group_mut(&mut self) -> &mut Group {
+        self.groups.active_group_mut()
+    }
+
     pub fn active_mut(&mut self) -> Option<(&mut Buffer, &mut View)> {
-        let tab = self.group.tabs.get_mut(self.group.active)?;
+        let group = self.groups.active_group_mut();
+        let tab = group.tabs.get_mut(group.active)?;
         let buf = self.buffers.get_mut(tab.buffer)?;
         Some((buf, &mut tab.view))
     }
 
     pub fn active_buffer(&self) -> Option<&Buffer> {
-        self.buffers.get(self.group.active_tab()?.buffer)
+        self.buffers.get(self.group().active_tab()?.buffer)
     }
 
     fn context(&self) -> Context {
@@ -316,6 +326,33 @@ impl App {
             Event::Mouse(m) if self.prompt.is_none() => self.handle_mouse(m),
             _ => {}
         }
+        self.sync_views();
+    }
+
+    /// Edits go through the active tab's view; every other view on an edited buffer
+    /// (in any group) follows the changes so its cursors and viewport stay on the same text.
+    fn sync_views(&mut self) {
+        let origin = self.groups.active;
+        let origin_tab = self.group().active;
+        for (id, buf) in self.buffers.iter_mut() {
+            let changes = buf.take_applied();
+            if changes.is_empty() {
+                continue;
+            }
+            for (gid, group) in self.groups.iter_mut() {
+                for (i, tab) in group.tabs.iter_mut().enumerate() {
+                    if tab.buffer != id {
+                        continue;
+                    }
+                    if gid == origin && i == origin_tab {
+                        // The editing view: keep its viewport anchor current.
+                        tab.view.set_top_line(&buf.rope, tab.view.top_line());
+                    } else {
+                        tab.view.map_through(&changes, &buf.rope);
+                    }
+                }
+            }
+        }
     }
 
     fn execute(&mut self, cmd: Command) {
@@ -323,12 +360,12 @@ impl App {
         let t = Instant::now();
         match cmd {
             Command::Save => {
-                if let Some(tab) = self.group.active_tab() {
+                if let Some(tab) = self.group().active_tab() {
                     self.save(tab.buffer);
                 }
             }
             Command::Quit => self.request_quit(),
-            Command::CloseTab => self.close_tab(self.group.active),
+            Command::CloseTab => self.close_tab(self.groups.active, self.group().active),
             Command::NextTab => self.cycle_tab(1),
             Command::PrevTab => self.cycle_tab(-1),
             Command::ToggleSidebar => {
@@ -338,7 +375,16 @@ impl App {
                 }
             }
             Command::FocusExplorer => self.focus_side(SidePanel::Explorer),
-            Command::FocusEditor => self.ui.focus = Focus::Editor,
+            Command::FocusGroup(n) => {
+                let ids = self.groups.ids();
+                match ids.get(n as usize - 1) {
+                    Some(&g) => self.focus_group(g),
+                    None if n as usize == ids.len() + 1 => self.split(SplitDir::Right),
+                    None => {}
+                }
+            }
+            Command::SplitRight => self.split(SplitDir::Right),
+            Command::SplitDown => self.split(SplitDir::Down),
             Command::Explorer(c) => self.explorer_command(c),
             _ => {
                 if edit::is_edit(cmd) && !self.active_writable() {
@@ -424,6 +470,15 @@ impl App {
         for c in text.chars() {
             self.press(KeyCode::Char(c), KeyModifiers::NONE);
         }
+    }
+
+    pub fn mouse(&mut self, kind: crossterm::event::MouseEventKind, x: u16, y: u16) {
+        self.handle_event(Event::Mouse(crossterm::event::MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }));
     }
 
     pub fn quitting(&self) -> bool {

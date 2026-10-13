@@ -4,11 +4,20 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::App;
+use crate::buffer::Buffers;
+use crate::group::Group;
 use crate::layout::TabHit;
+use crate::theme::Theme;
 
-pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Vec<TabHit> {
-    let theme = &app.theme;
+/// `active_group`: the focused group's active tab is bright; other groups' active tabs are dimmer.
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    group: &mut Group,
+    buffers: &Buffers,
+    theme: &Theme,
+    active_group: bool,
+) -> Vec<TabHit> {
     let out = f.buffer_mut();
     out.set_style(area, theme.get("tabBar"));
     if area.width == 0 {
@@ -16,12 +25,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Vec<TabHit> {
     }
 
     // Label and width for every tab: " name ● " / " name × ".
-    let labels: Vec<(String, bool, bool)> = app
-        .group
+    let labels: Vec<(String, bool, bool)> = group
         .tabs
         .iter()
         .map(|t| {
-            let buf = app.buffers.get(t.buffer);
+            let buf = buffers.get(t.buffer);
             let name = buf.map(|b| b.name()).unwrap_or_default();
             (name, buf.is_some_and(|b| b.is_dirty()), buf.is_some_and(|b| b.deleted))
         })
@@ -32,7 +40,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Vec<TabHit> {
     let width = |name: &str| name.width() as u16 + 4;
 
     // Scroll so the active tab is fully visible.
-    let group = &mut app.group;
     group.scroll = group.scroll.min(group.active);
     loop {
         let used: u16 = labels[group.scroll..=group.active.min(labels.len() - 1)]
@@ -53,10 +60,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Vec<TabHit> {
             break;
         }
         let w = width(name).min(right - x);
-        let style = if i == group.active {
-            theme.get("tab.active")
-        } else {
-            theme.get("tab.inactive")
+        let style = match (i == group.active, active_group) {
+            (true, true) => theme.get("tab.active"),
+            (true, false) => theme.get("tab.unfocusedActive"),
+            _ => theme.get("tab.inactive"),
         };
         out.set_style(
             Rect {
