@@ -144,6 +144,7 @@ pub struct App {
 }
 
 impl App {
+    /// Must not start background work: it may run before the runtime is entered. `start` does that.
     pub fn new(workspace: Workspace, trust_store: TrustStore, initial: Option<InitialFile>, kitty: bool) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let root = workspace.root.clone();

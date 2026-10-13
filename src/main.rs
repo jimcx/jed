@@ -140,8 +140,10 @@ fn main() -> ExitCode {
     let result = terminal::enter(kitty)
         .map_err(anyhow::Error::from)
         .and_then(|mut term| {
-            let mut app = app::App::new(workspace, trust_store, initial, kitty);
-            runtime.block_on(app.run(&mut term))
+            runtime.block_on(async {
+                let mut app = app::App::new(workspace, trust_store, initial, kitty);
+                app.run(&mut term).await
+            })
         });
     terminal::restore();
 

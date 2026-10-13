@@ -169,3 +169,43 @@ async fn reopening_trusted_workspace_does_not_ask() {
     assert!(app.prompt.is_none());
     assert_eq!(app.trust, Trust::Restricted);
 }
+
+/// Regression: `red src/main.rs` panicked because `App::new` started a listing outside the runtime.
+#[test]
+fn new_with_file_inside_workspace_needs_no_runtime() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = workspace::normalize(dir.path());
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+    let buffer = crate::buffer::Buffer::open(&root.join("src/main.rs")).unwrap();
+    let ws = Workspace::load(root.clone());
+    let trust = TrustStore::load(root.join("trust.toml"));
+    let app = App::new(
+        ws,
+        trust,
+        Some(crate::app::InitialFile {
+            buffer,
+            goto: Some((1, 4)),
+        }),
+        true,
+    );
+    assert_eq!(active_name(&app).as_deref(), Some("main.rs"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn initial_file_is_revealed_after_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = workspace::normalize(dir.path());
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/main.rs"), "").unwrap();
+    let buffer = crate::buffer::Buffer::open(&root.join("src/main.rs")).unwrap();
+    let ws = Workspace::load(root.clone());
+    let trust = TrustStore::load(root.join("trust.toml"));
+    let mut app = App::new(ws, trust, Some(crate::app::InitialFile { buffer, goto: None }), true);
+    app.test_start();
+    let target = root.join("src/main.rs");
+    assert!(
+        app.settle(|a| a.explorer.selected.as_deref() == Some(target.as_path()))
+            .await
+    );
+}

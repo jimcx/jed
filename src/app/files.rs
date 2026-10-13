@@ -44,6 +44,7 @@ impl App {
                     self.notify(Level::Warning, format!("{}: read-only, {reason}", buffer.name()));
                 }
                 self.add_buffer(buffer, None, focus);
+                self.reveal_active();
             }
             Err(LoadError::Binary) => self.notify(Level::Error, format!("{}: binary file, not opened", path.display())),
             Err(e) => self.notify(Level::Error, format!("{}: {e}", path.display())),
@@ -51,6 +52,7 @@ impl App {
     }
 
     /// Puts a loaded buffer in a new tab and activates it. `goto` is 1-based line and column.
+    /// Starts no background work (it runs from `App::new`); callers reveal the file.
     pub(super) fn add_buffer(&mut self, buffer: Buffer, goto: Option<(usize, usize)>, focus: bool) {
         let mut view = View::new();
         if let Some((line, col)) = goto {
@@ -68,7 +70,6 @@ impl App {
         if focus {
             self.ui.focus = Focus::Editor;
         }
-        self.reveal_active();
     }
 
     pub(super) fn activate_tab(&mut self, index: usize) {
