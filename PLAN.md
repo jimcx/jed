@@ -456,6 +456,11 @@ Broad items not tied to a milestone.
   - Toolchain from `rust-toolchain.toml`; cache `~/.cargo` and `target/`
   - Linux exercises the Ctrl keymap and inotify watcher; macOS paths (Cmd keymap, FSEvents, Trash) stay untested in CI
     - Keep running `cargo test` locally on macOS before pushing
+- **Terminal config snippets** (do soon: terminals grab Cmd keys, Cmd+W can close the terminal tab with unsaved work)
+  - `docs/terminals/<terminal>.md` for Kitty, Ghostty, WezTerm, iTerm2, Alacritty
+  - Each: pass through every Cmd binding in the default keymap; turn on Option-as-Alt
+  - Update the snippets whenever a Cmd binding is added (keymap change → snippet change)
+  - Per-terminal check: press every binding and confirm it arrives (`RED_LOG=input=trace`)
 
 ## Open questions
 - _Add your own_
