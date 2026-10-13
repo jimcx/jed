@@ -61,6 +61,12 @@ pub struct Keymap {
 }
 
 impl Keymap {
+    /// Every binding: combo, context (`None` = everywhere) and command.
+    #[cfg(test)]
+    pub fn bindings(&self) -> impl Iterator<Item = (KeyCombo, Option<Context>, Command)> + '_ {
+        self.bindings.iter().map(|((combo, ctx), c)| (*combo, *ctx, *c))
+    }
+
     /// A binding for the current context wins over a global one.
     pub fn lookup(&self, ev: &KeyEvent, context: Context) -> Option<Command> {
         let combo = KeyCombo::from_event(ev);
@@ -256,5 +262,54 @@ mod tests {
         );
         let save = key(KeyCode::Char('s'), KeyModifiers::SUPER);
         assert_eq!(km.lookup(&save, Context::Explorer), Some(Command::Save));
+    }
+
+    /// Canonical spelling used in docs/terminals/README.md: modifiers in the order
+    /// cmd, ctrl, alt, shift; lowercase key names; `\` is `backslash`.
+    fn canonical(combo: &KeyCombo) -> String {
+        let mut parts = Vec::new();
+        for (m, name) in [
+            (KeyModifiers::SUPER, "cmd"),
+            (KeyModifiers::CONTROL, "ctrl"),
+            (KeyModifiers::ALT, "alt"),
+            (KeyModifiers::SHIFT, "shift"),
+        ] {
+            if combo.mods.contains(m) {
+                parts.push(name.to_string());
+            }
+        }
+        parts.push(match combo.code {
+            KeyCode::Char('\\') => "backslash".into(),
+            KeyCode::Char(' ') => "space".into(),
+            KeyCode::Char(c) => c.to_string(),
+            KeyCode::F(n) => format!("f{n}"),
+            other => format!("{other:?}").to_lowercase(),
+        });
+        parts.join("+")
+    }
+
+    /// The terminal docs must list exactly the macOS Cmd bindings, so the
+    /// per-terminal snippets can't silently fall behind the keymap.
+    #[test]
+    fn terminal_docs_list_every_cmd_binding() {
+        let readme = include_str!("../../docs/terminals/README.md");
+        let documented: std::collections::BTreeSet<String> = readme
+            .lines()
+            .filter_map(|l| l.strip_prefix("| `"))
+            .filter_map(|l| l.split('`').next())
+            .filter(|k| k.starts_with("cmd+"))
+            .map(str::to_string)
+            .collect();
+        let bound: std::collections::BTreeSet<String> = Keymap::default_for(Platform::MacOs)
+            .bindings()
+            .filter(|(combo, ..)| combo.mods.contains(KeyModifiers::SUPER))
+            .map(|(combo, ..)| canonical(&combo))
+            .collect();
+        let missing: Vec<_> = bound.difference(&documented).collect();
+        let stale: Vec<_> = documented.difference(&bound).collect();
+        assert!(
+            missing.is_empty() && stale.is_empty(),
+            "docs/terminals/README.md is out of date (update it and every snippet).\nmissing: {missing:?}\nstale: {stale:?}"
+        );
     }
 }
