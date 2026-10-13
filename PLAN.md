@@ -447,5 +447,15 @@ Very low priority. Don't build these yet, but don't make design choices that wou
   - No colours hard-coded in widgets: everything looks up a named key (`editor.background`, `keyword`, `gutter.added`, …) in the theme
   - The built-in dark theme is just the first theme, defined through the same keys
 
+## TODO
+Broad items not tied to a milestone.
+
+- **CI: Gitea Actions pipeline on Linux** (no macOS runner available)
+  - `.gitea/workflows/ci.yml`, on push and pull request
+  - Steps: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo build --release`
+  - Toolchain from `rust-toolchain.toml`; cache `~/.cargo` and `target/`
+  - Linux exercises the Ctrl keymap and inotify watcher; macOS paths (Cmd keymap, FSEvents, Trash) stay untested in CI
+    - Keep running `cargo test` locally on macOS before pushing
+
 ## Open questions
 - _Add your own_
