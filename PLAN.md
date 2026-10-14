@@ -35,7 +35,7 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
 | File watching | `notify` | |
 | Config | TOML via `serde` | `~/.config/red/` |
 | Fuzzy finding | `nucleo` | Cmd/Ctrl+P, command palette |
-| Search | `regex` + `ignore` + `grep-searcher` + `grep-regex` | find in file, Cmd+D, workspace search share one matcher |
+| Search | `regex` + `ignore` + `grep-searcher` + `grep-matcher` | find in file, Cmd+D, workspace search share one matcher (`search::Matcher` implements `grep_matcher::Matcher`; no `grep-regex`, whose word rules differ) |
 | Task terminals | `portable-pty` + `vt100` + `tui-term` | PTY, VT parser, ratatui widget |
 | Clipboard | `arboard` + OSC 52 | local clipboard; OSC 52 over SSH |
 | Logging | `tracing` + `tracing-subscriber` + `tracing-appender` | file logs, rotation |

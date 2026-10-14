@@ -34,7 +34,7 @@ Work through the milestones in PLAN.md with subagents, one task at a time, in se
    - Mutation-test the important behaviours: break the code, confirm a test fails, then revert.
    - Check coverage against the plan's bullets for the task, and against "Done when" for the milestone's last task.
    - Add or strengthen weak tests and rewrite worthless ones. Fix real bugs minimally and report them.
-   - Run `cargo test` 3 times to catch flakiness. All three checks must be clean.
+   - Run `cargo test` 3 times to catch flakiness. Run tests in the foreground with a timeout (macOS has no `timeout`: `perl -e 'alarm shift; exec @ARGV' 300 cargo test …`), never as unattended background loops. Random or property-style tests cap their iterations and output sizes, so a bug fails them quickly instead of eating CPU and RAM. All three checks must be clean.
    - Update CLAUDE.md if it changes helpers or conventions. Don't commit.
    - Report: verdict, mutations caught or survived, test changes, bugs fixed, and check results.
 6. **Check and commit (you):**

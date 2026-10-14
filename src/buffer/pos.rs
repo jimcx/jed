@@ -4,6 +4,7 @@
 //! between bytes, lines, graphemes and screen columns.
 
 use std::borrow::Cow;
+use std::ops::ControlFlow;
 
 use ropey::{LineType, Rope};
 use unicode_segmentation::UnicodeSegmentation;
@@ -42,6 +43,52 @@ pub fn line_end(rope: &Rope, line: usize) -> ByteIdx {
 /// The line's content without its line break.
 pub fn line_text(rope: &Rope, line: usize) -> String {
     rope.slice(line_start(rope, line).0..line_end(rope, line).0).to_string()
+}
+
+/// Calls `f(start, text)` with each line's content (no line break), from `line` to the end, or
+/// from `line` back to the first line when `backward`. Stops at the first `Break` and returns its
+/// value. `text` borrows the rope when the line sits in one chunk; otherwise it is copied into a
+/// scratch string reused across lines, so the whole buffer is never copied.
+#[cfg_attr(not(test), allow(dead_code))] // until `search` has callers (6b)
+pub fn each_line<T>(
+    rope: &Rope,
+    line: usize,
+    backward: bool,
+    mut f: impl FnMut(ByteIdx, &str) -> ControlFlow<T>,
+) -> Option<T> {
+    let mut scratch = String::new();
+    let mut visit = |start: usize, slice: ropey::RopeSlice| {
+        let content = slice.slice(..slice.trailing_line_break_idx(LINE_TYPE).unwrap_or(slice.len()));
+        let text = match content.as_str() {
+            Some(s) => s,
+            None => {
+                scratch.clear();
+                content.chunks().for_each(|c| scratch.push_str(c));
+                &scratch
+            }
+        };
+        f(ByteIdx(start), text)
+    };
+    let last = line_count(rope) - 1;
+    if backward {
+        // Line by line index: ropey's `Lines::prev()` can repeat a line (and stop) when a line
+        // break ends a chunk, e.g. "<2047 bytes>\r\r".
+        for line in (0..=line.min(last)).rev() {
+            let start = rope.line_to_byte_idx(line, LINE_TYPE);
+            if let ControlFlow::Break(t) = visit(start, rope.line(line, LINE_TYPE)) {
+                return Some(t);
+            }
+        }
+    } else if line <= last {
+        let mut start = rope.line_to_byte_idx(line, LINE_TYPE);
+        for slice in rope.lines_at(line, LINE_TYPE) {
+            if let ControlFlow::Break(t) = visit(start, slice) {
+                return Some(t);
+            }
+            start += slice.len();
+        }
+    }
+    None
 }
 
 /// How a grapheme is drawn: the text to put on screen and its width.
@@ -144,11 +191,16 @@ enum CharClass {
     Punct,
 }
 
+/// Word characters for word movement, double-click and whole-word search: alphanumeric or `_`.
+pub fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
 fn class_of(g: &str) -> CharClass {
     let c = g.chars().next().unwrap_or(' ');
     if c.is_whitespace() {
         CharClass::Space
-    } else if c.is_alphanumeric() || c == '_' {
+    } else if is_word_char(c) {
         CharClass::Word
     } else {
         CharClass::Punct
@@ -292,5 +344,73 @@ mod tests {
         assert_eq!(word_left(&r, ByteIdx(12)), ByteIdx(9));
         assert_eq!(word_left(&r, ByteIdx(9)), ByteIdx(4));
         assert_eq!(word_left(&r, ByteIdx(13)), ByteIdx(12));
+    }
+
+    fn lines_from(r: &Rope, line: usize, backward: bool) -> Vec<(usize, String)> {
+        let mut out = Vec::new();
+        each_line::<()>(r, line, backward, |start, text| {
+            out.push((start.0, text.to_string()));
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    #[test]
+    fn each_line_both_ways() {
+        let r = rope("ab\r\ncd\ref\n");
+        let fwd = vec![
+            (0, "ab".into()),
+            (4, "cd".into()),
+            (7, "ef".into()),
+            (10, String::new()),
+        ];
+        assert_eq!(lines_from(&r, 0, false), fwd);
+        assert_eq!(lines_from(&r, 2, false), fwd[2..]);
+        assert_eq!(lines_from(&r, 9, false), vec![]);
+        let back: Vec<_> = fwd.iter().rev().cloned().collect();
+        assert_eq!(lines_from(&r, 3, true), back);
+        assert_eq!(lines_from(&r, 99, true), back);
+        assert_eq!(lines_from(&r, 1, true), back[2..]);
+        assert_eq!(lines_from(&rope(""), 0, true), vec![(0, String::new())]);
+        // Lines spanning chunks come out whole; `Break` stops early with its value.
+        let long = format!("{}\n{}", "x".repeat(5000), "y".repeat(5000));
+        let r = rope(&long);
+        assert_eq!(
+            lines_from(&r, 0, false)
+                .iter()
+                .map(|(_, t)| t.len())
+                .collect::<Vec<_>>(),
+            [5000, 5000]
+        );
+        let found = each_line(&r, 0, false, |start, text| match text.starts_with('y') {
+            true => ControlFlow::Break(start),
+            false => ControlFlow::Continue(()),
+        });
+        assert_eq!(found, Some(ByteIdx(5001)));
+    }
+
+    #[test]
+    fn each_line_matches_line_helpers_around_chunk_edges() {
+        // Lines ending on or near a chunk boundary, with every kind of line break, checked
+        // against `line_start` / `line_text` from every line in both directions.
+        for n in 2030..2070 {
+            for tail in ["\r\r", "\r\n\r", "\n\n", "\r\n\r\n", "a\rb\n"] {
+                let r = rope(&format!("{}{tail}", "é".repeat(n / 2) + &"x".repeat(n % 2)));
+                let want: Vec<_> = (0..line_count(&r))
+                    .map(|l| (line_start(&r, l).0, line_text(&r, l)))
+                    .collect();
+                for line in 0..want.len() {
+                    assert_eq!(lines_from(&r, line, false), want[line..], "{n} {tail:?} from {line}");
+                    let back: Vec<_> = want[..=line].iter().rev().cloned().collect();
+                    assert_eq!(lines_from(&r, line, true), back, "{n} {tail:?} back from {line}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn word_chars() {
+        assert!(is_word_char('a') && is_word_char('_') && is_word_char('é') && is_word_char('9'));
+        assert!(!is_word_char('.') && !is_word_char(' ') && !is_word_char('-'));
     }
 }

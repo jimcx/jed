@@ -16,11 +16,12 @@ cargo isn't on PATH. Prefix every command:
 export PATH="$HOME/.rustup/toolchains/1.99-aarch64-apple-darwin/bin:$PATH"
 cargo fmt --check                            # rustfmt.toml: max_width = 120
 cargo clippy --all-targets -- -D warnings
-cargo test                                   # ~70 tests, ~1 s
+cargo test                                   # ~115 tests, ~5 s (search's random reference test is most of it)
 cargo test --release milestone -- --nocapture   # M1 timing budgets are asserted in release only
+cargo test --release search -- --nocapture      # so is the 1 MB find-all budget
 ```
 
-All three must pass before a commit. Edition 2024 (let-chains are used freely).
+All three must pass before a commit. Cap long test runs (macOS has no `timeout`): `perl -e 'alarm shift; exec @ARGV' 300 cargo test`. Edition 2024 (let-chains are used freely).
 
 ## Module map (`src/`)
 
@@ -39,6 +40,7 @@ All three must pass before a commit. Edition 2024 (let-chains are used freely).
 - `explorer.rs` — explorer tree model (no drawing), `list_dir` and `walk_files` (quick open) over one shared `ignore` walker (`.gitignore`, excludes, never `.git/` or `.red/`), `excludes`, blocking `ops::{new_file,new_folder,rename,delete}`
 - `palette.rs` — palette model (no drawing): `Palette` (a `TextField` + `Row`s; `Picker::QuickOpen` switches `Mode` by first char: `>` commands, `:` go to line, else files; `Picker::LogLevel`), `command_rows` / `log_level_rows` (sync `nucleo` `Pattern`), `parse_line`, `file_query` (drops a `:line[:col]`, also half-typed), `FileMatcher` (a `nucleo::Nucleo` fed by the walk, matching on its own threads)
 - `field.rs` — `TextField`: one-line input (text + byte cursor) used by `Input` prompts and the palette; `key()` returns `Outcome::{Ignored, Moved, Edited}`
+- `search.rs` — the one matcher for find, Cmd+D and workspace search: `Matcher::new(pattern, Options { regex, case_sensitive, whole_word })` (`SearchError` is a one-line message for an invalid regex; an empty pattern matches nothing), then `find_next(rope, from, wrap)` / `find_prev(rope, before, wrap)` / `find_all` / `find_in(rope, range)` → `Match { start, end }` in `ByteIdx`. Searches line by line over `pos::each_line` (zero-copy per chunk); matches never span lines unless the pattern names a line break (newline, `\n`, `\r`, `\W` — VS Code's rule), which searches a copy of the whole text. Whole word = VS Code's boundary rule with `pos::is_word_char`. Also `impl grep_matcher::Matcher` so M7's `grep-searcher` uses the same matcher on files. `mod search` has `allow(dead_code)` outside tests until 6b/6d call it
 - `clipboard.rs` — `Clipboard`: arboard (lazy) / OSC 52 (SSH or arboard failure, tmux-wrapped) / `memory()` in tests; remembers whole-line copies
 - `workspace/` — `Workspace` (root, `.workspace` config, `settings()`), `config.rs` (`WorkspaceConfig` TOML), `trust.rs` (`TrustStore`, `Trust`)
 - `watcher.rs` — `notify` watcher; the sync callback forwards paths into the app channel
@@ -47,7 +49,7 @@ All three must pass before a commit. Edition 2024 (let-chains are used freely).
 - `logging.rs` / `paths.rs` — file logging under `paths::state_dir()/logs` (`$XDG_STATE_HOME/red` or `~/.local/state/red`); the filter sits in a `reload` layer (`LevelHandle`, `set_filter`, `current_filter`), `newest_log(dir)`. `paths::config_dir()` (`$XDG_CONFIG_HOME/red` or `~/.config/red`, holds `keybindings.toml`), `paths::strip_position` (`file:line:col`, shared by `main` and quick open)
 - `milestone*_tests.rs` — end-to-end tests per milestone (`#[cfg(test)]` modules declared in `main.rs`)
 
-Modules in PLAN.md's Architecture that don't exist yet (`search`, `syntax`, `lsp`, `git`, `history`) arrive with their milestone.
+Modules in PLAN.md's Architecture that don't exist yet (`syntax`, `lsp`, `git`, `history`) arrive with their milestone.
 
 ## Data flow
 

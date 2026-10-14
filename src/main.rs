@@ -22,6 +22,9 @@ mod milestone_tests;
 mod palette;
 mod panic;
 mod paths;
+// Nothing calls the matcher until Cmd+D (6b) and the find widget (6d); drop this then.
+#[cfg_attr(not(test), allow(dead_code))]
+mod search;
 mod selection;
 mod terminal;
 mod theme;
