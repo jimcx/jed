@@ -29,6 +29,8 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+a` | Select all | editor |
 | `cmd+z` | Undo | editor |
 | `cmd+shift+z` | Redo | editor |
+| `cmd+c` | Copy (whole line if nothing selected) | editor |
+| `cmd+x` | Cut (whole line if nothing selected) | editor |
 | `cmd+left` | Line start | editor |
 | `cmd+shift+left` | Select to line start | editor |
 | `cmd+right` | Line end | editor |
@@ -52,6 +54,8 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+alt+backslash` | Split down | everywhere |
 | `cmd+alt+right` | Next tab | everywhere |
 | `cmd+alt+left` | Previous tab | everywhere |
+
+**Leave Cmd+V with the terminal.** red doesn't bind it: the terminal's paste arrives in red as a bracketed paste, which works the same locally and over SSH. Cmd+C and Cmd+X must reach red, since the terminal's own copy takes text off the screen, not red's selection.
 
 ## Checking a terminal
 

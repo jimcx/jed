@@ -24,6 +24,8 @@ What can be done:
 - **Menu items:** System Settings → Keyboard → Keyboard Shortcuts → App Shortcuts → `+`, application iTerm2, enter the exact menu item title (e.g. `Close`, `Quit iTerm2`, `Select All`) and give it a different shortcut (e.g. Cmd+Ctrl+Alt+W). That frees the original Cmd key from the menu.
 - **iTerm2's own key bindings** (Settings → Keys → Key Bindings, and per profile): remove any default entries that use red's Cmd keys (e.g. Cmd+Left/Right or Cmd+Alt+arrows for tab/pane navigation, if present in your version).
 
+Leave `Paste` on Cmd+V: iTerm2's paste is how text gets into red.
+
 Not possible (as far as the docs say): releasing a Cmd key without remapping its menu item.
 
 ## What you lose
@@ -34,6 +36,6 @@ Whatever menu items you remap move to the new shortcuts in every iTerm2 window. 
 
 - [ ] "Apps can change how keys are reported" on; red's start-up warning about the kitty protocol is gone
 - [ ] Left/Right Option set to Esc+; Alt+Left logs `ALT`
-- [ ] Menu items for every red Cmd key you need remapped (start with `Close`, `Quit iTerm2`, `Select All`, `Undo`, `Save`, tab selection 1–3)
+- [ ] Menu items for every red Cmd key you need remapped (start with `Close`, `Quit iTerm2`, `Select All`, `Copy`, `Cut`, `Undo`, `Save`, tab selection 1–3)
 - [ ] **Check by hand:** each key in the [table](README.md#cmd-bindings-red-uses) logs with `SUPER`; note which ones iTerm2 still keeps
 - [ ] Until verified, close red's tabs with the mouse (×) and quit with Ctrl+Q

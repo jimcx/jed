@@ -19,6 +19,8 @@ Config: `~/.config/kitty/kitty.conf`. Kitty keyboard protocol: always available,
 map cmd+a
 map cmd+z
 map cmd+shift+z
+map cmd+c
+map cmd+x
 map cmd+left
 map cmd+shift+left
 map cmd+right
@@ -47,11 +49,13 @@ map cmd+alt+left
 macos_option_as_alt both
 ```
 
-Only some of these are kitty defaults (`cmd+up`/`cmd+down` scroll, `cmd+1..3` switch window, `cmd+w` close tab, `cmd+q` quit); the rest are listed so the snippet stays a copy of red's table.
+Don't add `cmd+v`: kitty's paste is how text gets into red.
+
+Only some of these are kitty defaults (`cmd+c` copy, `cmd+up`/`cmd+down` scroll, `cmd+1..3` switch window, `cmd+w` close tab, `cmd+q` quit); the rest are listed so the snippet stays a copy of red's table.
 
 ## What you lose
 
-Kitty's own Cmd+W (close tab), Cmd+Q (quit), Cmd+1..3 (switch window) and Cmd+Up/Down (scroll) in **every** kitty window. Close tabs with Cmd+Shift+W (close OS window) or the menu.
+Kitty's own Cmd+C (copy screen text; use the mouse selection, which kitty can copy on select), Cmd+W (close tab), Cmd+Q (quit), Cmd+1..3 (switch window) and Cmd+Up/Down (scroll) in **every** kitty window. Close tabs with Cmd+Shift+W (close OS window) or the menu.
 
 Scoping to red only: kitty supports conditional mappings (`map --when-focus-on var:<name> <key>`), but red doesn't set a kitty user variable yet, so there's nothing to match on. Until it does, the unmapping is global.
 

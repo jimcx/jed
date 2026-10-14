@@ -30,6 +30,7 @@ config.send_composed_key_when_right_alt_is_pressed = false
 -- red: send these Cmd keys to the program
 local release = {
   { 'a', 'CMD' }, { 'z', 'CMD' }, { 'z', 'CMD|SHIFT' },
+  { 'c', 'CMD' }, { 'x', 'CMD' },
   { 'LeftArrow', 'CMD' }, { 'LeftArrow', 'CMD|SHIFT' },
   { 'RightArrow', 'CMD' }, { 'RightArrow', 'CMD|SHIFT' },
   { 'UpArrow', 'CMD' }, { 'UpArrow', 'CMD|SHIFT' },
@@ -50,11 +51,13 @@ end
 return config
 ```
 
-WezTerm defaults that clash with red: `cmd+w` close tab (with confirmation), `cmd+1..3` activate tab. The rest of red's Cmd keys have no WezTerm default.
+Don't release `cmd+v`: WezTerm's paste is how text gets into red.
+
+WezTerm defaults that clash with red: `cmd+c` copy, `cmd+w` close tab (with confirmation), `cmd+1..3` activate tab. The rest of red's Cmd keys have no WezTerm default.
 
 ## What you lose
 
-WezTerm's Cmd+W and Cmd+1..3 in every window; use Cmd+Shift+[ / ] to switch tabs. Right Option no longer composes accented characters (drop the `right` line to keep that).
+WezTerm's Cmd+C (copy screen text; Ctrl+Shift+C still copies), Cmd+W and Cmd+1..3 in every window; use Cmd+Shift+[ / ] to switch tabs. Right Option no longer composes accented characters (drop the `right` line to keep that).
 
 ## Checklist
 

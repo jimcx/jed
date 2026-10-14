@@ -83,14 +83,67 @@ pub fn insert_char(buf: &mut Buffer, view: &mut View, c: char) {
     });
 }
 
-/// Pasted text: line endings converted to the buffer's.
-pub fn paste(buf: &mut Buffer, view: &mut View, text: &str) {
+/// Pasted text: line endings converted to the buffer's. `whole_line` (from a copy of
+/// empty selections) puts it above each empty cursor's line, the cursor staying on its text.
+pub fn paste(buf: &mut Buffer, view: &mut View, text: &str, whole_line: bool) {
     let mut text = text.replace("\r\n", "\n").replace('\r', "\n");
     if buf.eol == Eol::Crlf {
         text = text.replace('\n', "\r\n");
     }
-    replace_each(buf, view, EditKind::Other, |_, sel| {
-        (sel.start(), sel.end(), text.clone())
+    replace_each_landing(buf, view, EditKind::Other, |rope, sel| {
+        if whole_line && sel.is_empty() {
+            let start = pos::line_start(rope, pos::line_of(rope, sel.head));
+            (start, start, text.clone(), Land::Keep(sel.head))
+        } else {
+            (sel.start(), sel.end(), text.clone(), Land::AfterText)
+        }
+    });
+}
+
+/// What copy puts on the clipboard, newlines as `\n`, and whether it's whole lines.
+/// Selections are joined with newlines; if they're all empty, each cursor's line
+/// is taken whole with its line break, once per line.
+pub fn copy_text(buf: &Buffer, view: &View) -> (String, bool) {
+    let rope = &buf.rope;
+    if view.selections.iter().all(|s| s.is_empty()) {
+        let mut text = String::new();
+        let mut last = None;
+        for sel in view.selections.iter() {
+            let line = pos::line_of(rope, sel.head);
+            if last != Some(line) {
+                last = Some(line);
+                text.push_str(&pos::line_text(rope, line));
+                text.push('\n');
+            }
+        }
+        (text, true)
+    } else {
+        let parts: Vec<String> = view
+            .selections
+            .iter()
+            .map(|s| rope.slice(s.start().0..s.end().0).to_string())
+            .collect();
+        (parts.join("\n").replace("\r\n", "\n"), false)
+    }
+}
+
+/// Deletes what `copy_text` takes: the selections, or if they're all empty, each cursor's
+/// whole line (the last line takes the line break before it). One undo step.
+pub fn cut(buf: &mut Buffer, view: &mut View) {
+    let whole_lines = view.selections.iter().all(|s| s.is_empty());
+    replace_each(buf, view, EditKind::Other, |rope, sel| {
+        if !whole_lines {
+            return (sel.start(), sel.end(), String::new());
+        }
+        let line = pos::line_of(rope, sel.head);
+        let (start, end) = if line + 1 < pos::line_count(rope) {
+            (pos::line_start(rope, line), pos::line_start(rope, line + 1))
+        } else if line > 0 {
+            (pos::line_end(rope, line - 1), pos::line_end(rope, line))
+        } else {
+            (ByteIdx(0), pos::line_end(rope, line))
+        };
+        (start, end, String::new())
     });
 }
 
@@ -202,6 +255,13 @@ fn insert_tab(buf: &mut Buffer, view: &mut View, s: &Settings) {
     });
 }
 
+/// Where a cursor ends up after its selection's change.
+enum Land {
+    AfterText,
+    /// Stays on the same text: a position at or after the change, before the edit.
+    Keep(ByteIdx),
+}
+
 /// One transaction: replace a range per selection, cursors land after the new text.
 fn replace_each(
     buf: &mut Buffer,
@@ -209,25 +269,44 @@ fn replace_each(
     kind: EditKind,
     mut f: impl FnMut(&Rope, &Selection) -> (ByteIdx, ByteIdx, String),
 ) {
+    replace_each_landing(buf, view, kind, |rope, sel| {
+        let (start, end, text) = f(rope, sel);
+        (start, end, text, Land::AfterText)
+    });
+}
+
+/// `replace_each`, with each cursor's landing chosen per selection.
+fn replace_each_landing(
+    buf: &mut Buffer,
+    view: &mut View,
+    kind: EditKind,
+    mut f: impl FnMut(&Rope, &Selection) -> (ByteIdx, ByteIdx, String, Land),
+) {
     let before = view.selections.clone();
     let mut changes = Vec::with_capacity(before.len());
+    let mut lands = Vec::with_capacity(before.len());
     let mut prev_end = ByteIdx(0);
     for sel in before.iter() {
-        let (start, end, text) = f(&buf.rope, sel);
+        let (start, end, text, land) = f(&buf.rope, sel);
         // Expanded ranges (e.g. backspace next to a selection) can overlap; clip them.
         let start = start.max(prev_end);
         let end = end.max(start);
         prev_end = end;
         changes.push(Change { start, end, text });
+        lands.push(land);
     }
 
     let mut delta: isize = 0;
     let cursors = changes
         .iter()
-        .map(|c| {
-            let at = (c.start.0 as isize + delta) as usize + c.text.len();
+        .zip(lands)
+        .map(|(c, land)| {
             delta += c.text.len() as isize - (c.end.0 - c.start.0) as isize;
-            Selection::cursor(ByteIdx(at))
+            let at = match land {
+                Land::AfterText => c.end.0,
+                Land::Keep(p) => p.0.max(c.end.0),
+            };
+            Selection::cursor(ByteIdx((at as isize + delta) as usize))
         })
         .collect();
     let after = Selections::new(cursors, before.primary_index());
@@ -294,7 +373,7 @@ mod tests {
     fn paste_is_its_own_step_and_converts_eol() {
         let (mut b, mut v, s) = setup("x\r\n", 0);
         insert_char(&mut b, &mut v, 'a');
-        paste(&mut b, &mut v, "1\n2");
+        paste(&mut b, &mut v, "1\n2", false);
         insert_char(&mut b, &mut v, 'b');
         assert_eq!(b.rope.to_string(), "a1\r\n2bx\r\n");
         run(C::Undo, &mut b, &mut v, &s);
@@ -344,6 +423,71 @@ mod tests {
         run(C::Undo, &mut b, &mut v, &s);
         assert_eq!(b.rope.to_string(), "aXb\ncXd\neXf");
         assert_eq!(v.selections.len(), 3);
+    }
+
+    #[test]
+    fn copy_joins_selections_and_takes_whole_lines_when_empty() {
+        let (b, mut v, _) = setup("ab\r\ncd\r\nef", 0);
+        v.selections = Selections::new(
+            vec![
+                Selection::new(ByteIdx(1), ByteIdx(5)),
+                Selection::new(ByteIdx(8), ByteIdx(9)),
+            ],
+            0,
+        );
+        assert_eq!(copy_text(&b, &v), ("b\nc\ne".to_string(), false));
+        // Two cursors on line 0 copy it once; the last line gets a line break added.
+        v.selections = Selections::new([0, 1, 9].map(|p| Selection::cursor(ByteIdx(p))).to_vec(), 0);
+        assert_eq!(copy_text(&b, &v), ("ab\nef\n".to_string(), true));
+    }
+
+    #[test]
+    fn cut_whole_lines_like_vs_code() {
+        // Middle line: the line and its break go, cursor to the start of the next line.
+        let (mut b, mut v, s) = setup("ab\ncd\nef", 4);
+        cut(&mut b, &mut v);
+        assert_eq!(b.rope.to_string(), "ab\nef");
+        assert_eq!(head(&v), 3);
+        // Last line: takes the break before it, cursor to the end of the line above.
+        v.selections = Selections::single(Selection::cursor(ByteIdx(4)));
+        cut(&mut b, &mut v);
+        assert_eq!(b.rope.to_string(), "ab");
+        assert_eq!(head(&v), 2);
+        // Only line: emptied.
+        cut(&mut b, &mut v);
+        assert_eq!(b.rope.to_string(), "");
+        // Each cut is one undo step.
+        run(C::Undo, &mut b, &mut v, &s);
+        assert_eq!(b.rope.to_string(), "ab");
+        run(C::Undo, &mut b, &mut v, &s);
+        run(C::Undo, &mut b, &mut v, &s);
+        assert_eq!(b.rope.to_string(), "ab\ncd\nef");
+        assert_eq!(head(&v), 4);
+    }
+
+    #[test]
+    fn cut_selection_leaves_empty_cursors_alone() {
+        let (mut b, mut v, _) = setup("abc\ndef", 0);
+        v.selections = Selections::new(
+            vec![Selection::new(ByteIdx(0), ByteIdx(2)), Selection::cursor(ByteIdx(5))],
+            0,
+        );
+        cut(&mut b, &mut v);
+        assert_eq!(b.rope.to_string(), "c\ndef");
+    }
+
+    #[test]
+    fn whole_line_paste_goes_above_and_keeps_cursor_on_its_text() {
+        let (mut b, mut v, s) = setup("ab\r\ncd", 6);
+        paste(&mut b, &mut v, "x\n", true);
+        assert_eq!(b.rope.to_string(), "ab\r\nx\r\ncd");
+        assert_eq!(head(&v), 9, "still after 'c'");
+        run(C::Undo, &mut b, &mut v, &s);
+        assert_eq!(b.rope.to_string(), "ab\r\ncd");
+        // With a selection, a whole-line paste just replaces it.
+        v.selections = Selections::single(Selection::new(ByteIdx(0), ByteIdx(2)));
+        paste(&mut b, &mut v, "x\n", true);
+        assert_eq!(b.rope.to_string(), "x\r\n\r\ncd");
     }
 
     #[test]

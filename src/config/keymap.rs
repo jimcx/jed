@@ -141,11 +141,15 @@ impl Keymap {
             (KeyCode::Char('a'), cmd, Command::SelectAll),
             (KeyCode::Char('z'), cmd, Command::Undo),
             (KeyCode::Char('z'), cmd | shift, Command::Redo),
+            (KeyCode::Char('c'), cmd, Command::Copy),
+            (KeyCode::Char('x'), cmd, Command::Cut),
         ]);
         if mac {
             editor.push((KeyCode::Backspace, cmd, Command::DeleteToLineStart));
         } else {
             editor.push((KeyCode::Char('y'), ctrl, Command::Redo));
+            // macOS leaves Cmd+V to the terminal: it arrives as a bracketed paste.
+            editor.push((KeyCode::Char('v'), ctrl, Command::Paste));
         }
 
         let mut explorer = vec![

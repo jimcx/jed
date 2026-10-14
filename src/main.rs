@@ -1,5 +1,6 @@
 mod app;
 mod buffer;
+mod clipboard;
 mod command;
 mod config;
 mod edit;
@@ -11,6 +12,8 @@ mod logging;
 mod milestone2_tests;
 #[cfg(test)]
 mod milestone3_tests;
+#[cfg(test)]
+mod milestone4_tests;
 #[cfg(test)]
 mod milestone_tests;
 mod panic;

@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 
 use crate::buffer::file::LoadError;
 use crate::buffer::{Buffer, BufferId, Buffers};
+use crate::clipboard::{self, Clipboard};
 use crate::command::Command;
 use crate::config::keymap::{Context, Keymap, Platform};
 use crate::edit::{self, Settings};
@@ -125,6 +126,7 @@ pub struct App {
     pub keymap: Keymap,
     pub theme: Theme,
     pub settings: Settings,
+    pub clipboard: Clipboard,
     pub prompt: Option<Prompt>,
     pub message: Option<Message>,
     after_save: Option<AfterSave>,
@@ -166,6 +168,10 @@ impl App {
             hits: HitMap::default(),
             keymap: Keymap::default_for(Platform::current()),
             theme: Theme::dark_plus(theme::terminal_has_truecolor()),
+            #[cfg(not(test))]
+            clipboard: Clipboard::system(),
+            #[cfg(test)]
+            clipboard: Clipboard::memory(),
             prompt: None,
             message: None,
             after_save: None,
@@ -315,12 +321,8 @@ impl App {
                 tracing::trace!(target: "input", len = text.len(), "paste");
                 if let Some(Prompt::Input(input)) = &mut self.prompt {
                     input.insert(&text.replace(['\r', '\n'], ""));
-                } else if self.prompt.is_none()
-                    && self.ui.focus == Focus::Editor
-                    && self.active_writable()
-                    && let Some((buf, view)) = self.active_mut()
-                {
-                    edit::paste(buf, view, &text);
+                } else if self.prompt.is_none() && self.ui.focus == Focus::Editor {
+                    self.paste(&text);
                 }
             }
             Event::Mouse(m) if self.prompt.is_none() => self.handle_mouse(m),
@@ -386,6 +388,9 @@ impl App {
             Command::SplitRight => self.split(SplitDir::Right),
             Command::SplitDown => self.split(SplitDir::Down),
             Command::Explorer(c) => self.explorer_command(c),
+            Command::Copy => self.copy(false),
+            Command::Cut => self.copy(true),
+            Command::Paste => self.paste_clipboard(),
             _ => {
                 if edit::is_edit(cmd) && !self.active_writable() {
                     return;
@@ -397,6 +402,49 @@ impl App {
             }
         }
         tracing::debug!(elapsed_us = t.elapsed().as_micros() as u64);
+    }
+
+    /// Copies (or cuts) the active view's selections to the clipboard.
+    fn copy(&mut self, cut: bool) {
+        if cut && !self.active_writable() {
+            return;
+        }
+        let Some((buf, view)) = self.active_mut() else {
+            return;
+        };
+        let (text, whole_line) = edit::copy_text(buf, view);
+        if cut {
+            edit::cut(buf, view);
+        }
+        self.clipboard.write(text, whole_line);
+    }
+
+    fn paste_clipboard(&mut self) {
+        match self.clipboard.read() {
+            Ok(text) => self.paste(&text),
+            Err(clipboard::ReadError::Unavailable) => {
+                let key = match Platform::current() {
+                    Platform::MacOs => "Cmd+V",
+                    Platform::Linux => "Ctrl+Shift+V",
+                };
+                self.notify(
+                    Level::Info,
+                    format!("No system clipboard here: paste with the terminal ({key})"),
+                );
+            }
+            Err(clipboard::ReadError::Failed(e)) => self.notify(Level::Error, format!("Clipboard read failed: {e}")),
+        }
+    }
+
+    /// Pastes into the active view; a whole-line copy goes above the cursor's line.
+    fn paste(&mut self, text: &str) {
+        if !self.active_writable() {
+            return;
+        }
+        let whole_line = self.clipboard.is_line_copy(text);
+        if let Some((buf, view)) = self.active_mut() {
+            edit::paste(buf, view, text, whole_line);
+        }
     }
 
     /// False (with a message) if the active buffer is read-only; false if there's none.
@@ -464,6 +512,10 @@ impl App {
 
     pub fn press(&mut self, code: KeyCode, mods: KeyModifiers) {
         self.handle_event(Event::Key(crossterm::event::KeyEvent::new(code, mods)));
+    }
+
+    pub fn handle_test_event(&mut self, ev: Event) {
+        self.handle_event(ev);
     }
 
     pub fn type_text(&mut self, text: &str) {

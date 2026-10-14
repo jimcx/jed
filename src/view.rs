@@ -104,7 +104,7 @@ mod tests {
         );
         b.set_top_line(&buf.rope, 1);
 
-        edit::paste(&mut buf, &mut a, "zero\n");
+        edit::paste(&mut buf, &mut a, "zero\n", false);
         b.map_through(&buf.take_applied(), &buf.rope);
         let heads: Vec<usize> = b.selections.iter().map(|s| s.head.0).collect();
         assert_eq!(heads, vec![9, 18], "both cursors after the insert moved");

@@ -64,7 +64,7 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
 ## Features
 
 ### Workspace
-- A workspace is a root directory, optionally with a `.workspace` file (TOML) at its root
+- A workspace is a doot directory, optionally with a `.workspace` file (TOML) at its root
 - Opening:
   - `red <dir>`: workspace root is `<dir>`
   - `red <file>` / `red <file>:<line>[:<col>]`: walk up from the file to the nearest `.workspace`; else use the file's directory
@@ -471,6 +471,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
    - Paste: Cmd+V stays with the terminal on macOS (bracketed paste); Ctrl+V reads `arboard` on Linux
    - Terminal snippets: pass Cmd+C / Cmd+X through
    - Done when: copy in red → paste in another app → copy there → paste back into red, both locally and over SSH; empty-selection copy/cut/paste matches VS Code
+   - Implemented; automated tests cover the editing rules with an in-memory clipboard. Still to check by hand: the round trip with another app locally (`arboard`) and over SSH (OSC 52), incl. inside tmux
 5. **Palette**: command palette, quick open, keybinding config with contexts — see [Command palette and quick open](#command-palette-and-quick-open), [Keybindings](#keybindings-vs-code-defaults)
    - Needs: named `Command`s (M1), workspace excludes and the explorer's `ignore` walk (M2)
    - Needed by: the find widget and Search view (M6, M7 key contexts), F2 meaning rename-file in the explorer and rename-symbol in the editor (M9), palette commands in M9–M11

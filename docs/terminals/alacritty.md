@@ -24,6 +24,8 @@ bindings = [
   { key = "A", mods = "Command", action = "ReceiveChar" },
   { key = "Z", mods = "Command", action = "ReceiveChar" },
   { key = "Z", mods = "Command|Shift", action = "ReceiveChar" },
+  { key = "C", mods = "Command", action = "ReceiveChar" },
+  { key = "X", mods = "Command", action = "ReceiveChar" },
   { key = "Left", mods = "Command", action = "ReceiveChar" },
   { key = "Left", mods = "Command|Shift", action = "ReceiveChar" },
   { key = "Right", mods = "Command", action = "ReceiveChar" },
@@ -52,11 +54,13 @@ bindings = [
 
 If you already have a `[keyboard]` section, merge the entries into its `bindings`.
 
-Alacritty defaults that clash with red: `cmd+w` and `cmd+q` **both quit Alacritty** (Cmd+W isn't "close tab"), `cmd+b` search backward, `cmd+1..3` select tab.
+Don't add `cmd+v`: Alacritty's paste is how text gets into red.
+
+Alacritty defaults that clash with red: `cmd+c` copy, `cmd+w` and `cmd+q` **both quit Alacritty** (Cmd+W isn't "close tab"), `cmd+b` search backward, `cmd+1..3` select tab.
 
 ## What you lose
 
-Alacritty's Cmd+W/Cmd+Q quit, Cmd+B search and Cmd+1..3 tab switching in every window. Alacritty has no per-program config.
+Alacritty's Cmd+C copy, Cmd+W/Cmd+Q quit, Cmd+B search and Cmd+1..3 tab switching in every window. Alacritty has no per-program config.
 
 ## Checklist
 

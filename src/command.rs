@@ -35,6 +35,11 @@ pub enum Command {
     CancelSelection,
     Undo,
     Redo,
+    /// Copy / cut the selections, or the whole line when they're all empty.
+    Copy,
+    Cut,
+    /// Paste from the system clipboard. On macOS Cmd+V stays with the terminal (bracketed paste).
+    Paste,
     Save,
     Quit,
     CloseTab,
@@ -103,6 +108,9 @@ impl Command {
             Command::CancelSelection => "selection.cancel".into(),
             Command::Undo => "edit.undo".into(),
             Command::Redo => "edit.redo".into(),
+            Command::Copy => "edit.copy".into(),
+            Command::Cut => "edit.cut".into(),
+            Command::Paste => "edit.paste".into(),
             Command::Save => "file.save".into(),
             Command::Quit => "app.quit".into(),
             Command::CloseTab => "tab.close".into(),
