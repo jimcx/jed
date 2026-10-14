@@ -604,5 +604,7 @@ Broad items not tied to a milestone.
   - Done: `docs/terminals/` (README + kitty, ghostty, wezterm, iterm2, alacritty); unit test `terminal_docs_list_every_cmd_binding` fails if the README table and the macOS Cmd keymap differ
   - Still to do: hand-check each terminal with its checklist (iTerm2 least certain)
 
+- **Remove the `/milestones` command** (`.claude/commands/milestones.md`) once the last milestone is done; it only drives the agent workflow
+
 ## Open questions
 - _Add your own_
