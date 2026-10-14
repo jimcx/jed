@@ -104,7 +104,7 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
   - Rows already open in a kitty window are marked
 - Picking one:
   - Already open in red in a kitty window (any tab, any OS window): focus that window
-  - Else, inside kitty with remote control: open a new kitty tab running `red <path>`, with that folder as its cwd
+  - Else, inside kitty with remote control: open a new kitty OS window running `red <path>`, with that folder as its cwd
   - Else (another terminal, or remote control off): status-bar message with the path and the `red <path>` command; nothing else happens
   - red never switches its own workspace in place
 - Kitty integration (other terminals are ignored for now):
@@ -112,7 +112,7 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
   - red marks its window by setting a kitty user var `red_workspace` (OSC 1337 `SetUserVar`, base64 path) at startup, and clears it on exit and in the panic hook
   - Finding windows: `kitten @ ls` → JSON → the window whose `user_vars.red_workspace` is the path; focus by id with `kitten @ focus-window --match id:<id>`
     - Match on the user var, not the window title or cwd, so a shell `cd`'d into the folder isn't mistaken for red
-  - New tab: `kitten @ launch --type=tab --cwd <path> red <path>`
+  - New OS window: `kitten @ launch --type=os-window --cwd <path> red <path>`
   - `kitten` runs off the UI thread with a short timeout; failure (remote control off, `kitten` missing) falls back to the message, and is logged
   - Needs `allow_remote_control yes` (or `socket-only` with `listen_on`) in `kitty.conf`: documented in `docs/terminals/kitty.md`
 
@@ -576,7 +576,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
     - Recent workspaces: `recent.toml`; "Open Recent Workspace" (Ctrl+R) in the palette
     - Kitty: `red_workspace` user var on start / exit / panic; `kitten @ ls` to find and focus red's window, `kitten @ launch` for a new tab; message fallback outside kitty
     - Tests drive the kitty side through a fake `kitten` on `PATH` (canned `ls` JSON, records its arguments)
-    - Done when: quit and reopen gives back the same tabs, splits, cursors and scroll; killing the terminal loses at most one backup interval of edits; picking a recent workspace open in another kitty tab or OS window focuses it, and one not open starts red in a new kitty tab
+    - Done when: quit and reopen gives back the same tabs, splits, cursors and scroll; killing the terminal loses at most one backup interval of edits; picking a recent workspace open in another kitty tab or OS window focuses it, and one not open starts red in a new kitty OS window
 14. **Polish**: settings, the rest of the editor list, performance
     - Settings: global `~/.config/red/` plus `.workspace` overrides, live reload
     - Soft wrap toggle (the view must stop assuming one screen row per line: up/down, mouse hits, scroll)
