@@ -1,0 +1,40 @@
+#!/usr/bin/perl
+# Usage: scripts/timeout <seconds> <command> [args...]
+# Runs the command in its own process group and kills the whole group when time
+# runs out, so test binaries started by cargo don't outlive it (macOS has no
+# `timeout`, and `alarm; exec` only kills cargo). Exits 124 on timeout.
+use strict;
+use warnings;
+use POSIX qw(setpgid WNOHANG);
+
+my $secs = shift @ARGV;
+die "usage: $0 <seconds> <command> [args...]\n" unless defined $secs && $secs =~ /^\d+$/ && @ARGV;
+
+my $pid = fork() // die "fork: $!\n";
+if ($pid == 0) {
+    setpgid(0, 0);
+    exec @ARGV or die "exec $ARGV[0]: $!\n";
+}
+setpgid($pid, $pid);
+
+for my $sig (qw(INT TERM HUP)) {
+    $SIG{$sig} = sub { kill 'KILL', -$pid; exit 130 };
+}
+
+my $deadline = time + $secs;
+while (1) {
+    my $done = waitpid($pid, WNOHANG);
+    if ($done == $pid) {
+        kill 'KILL', -$pid;    # anything the command left behind
+        exit($? & 127 ? 128 + ($? & 127) : $? >> 8);
+    }
+    if (time >= $deadline) {
+        print STDERR "timeout: killed '@ARGV' after ${secs}s\n";
+        kill 'TERM', -$pid;
+        sleep 2;
+        kill 'KILL', -$pid;
+        waitpid($pid, 0);
+        exit 124;
+    }
+    select(undef, undef, undef, 0.2);
+}

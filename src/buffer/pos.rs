@@ -49,7 +49,6 @@ pub fn line_text(rope: &Rope, line: usize) -> String {
 /// from `line` back to the first line when `backward`. Stops at the first `Break` and returns its
 /// value. `text` borrows the rope when the line sits in one chunk; otherwise it is copied into a
 /// scratch string reused across lines, so the whole buffer is never copied.
-#[cfg_attr(not(test), allow(dead_code))] // until `search` has callers (6b)
 pub fn each_line<T>(
     rope: &Rope,
     line: usize,
@@ -259,6 +258,35 @@ pub fn first_non_blank(rope: &Rope, line: usize) -> ByteIdx {
     ByteIdx(line_start(rope, line).0 + indent)
 }
 
+/// The word (run of word characters) touching `pos`, as VS Code's `getWordAtPosition`: the one
+/// under it, else the one ending at it. `None` when `pos` has no word on either side (Cmd+D on
+/// whitespace or punctuation does nothing).
+pub fn word_at(rope: &Rope, pos: ByteIdx) -> Option<(ByteIdx, ByteIdx)> {
+    let line = line_of(rope, pos);
+    let start = line_start(rope, line).0;
+    let text = line_text(rope, line);
+    let off = (pos.0 - start).min(text.len());
+    let gs: Vec<(usize, &str)> = text.grapheme_indices(true).collect();
+    let is_word = |g: &str| class_of(g) == CharClass::Word;
+    // The grapheme at `pos` if it's a word char, else the one before it.
+    let i = match gs.iter().position(|&(o, _)| o >= off) {
+        Some(i) if is_word(gs[i].1) && gs[i].0 == off => i,
+        Some(i) if i > 0 && is_word(gs[i - 1].1) => i - 1,
+        None if gs.last().is_some_and(|&(_, g)| is_word(g)) => gs.len() - 1,
+        _ => return None,
+    };
+    let mut a = i;
+    while a > 0 && is_word(gs[a - 1].1) {
+        a -= 1;
+    }
+    let mut b = i + 1;
+    while b < gs.len() && is_word(gs[b].1) {
+        b += 1;
+    }
+    let end = gs.get(b).map_or(text.len(), |&(o, _)| o);
+    Some((ByteIdx(start + gs[a].0), ByteIdx(start + end)))
+}
+
 /// The run of same-class characters around `pos` (double-click selection).
 /// At a class boundary, the run to the right wins; at the line end, the run to the left.
 pub fn word_range(rope: &Rope, pos: ByteIdx) -> (ByteIdx, ByteIdx) {
@@ -412,5 +440,20 @@ mod tests {
     fn word_chars() {
         assert!(is_word_char('a') && is_word_char('_') && is_word_char('é') && is_word_char('9'));
         assert!(!is_word_char('.') && !is_word_char(' ') && !is_word_char('-'));
+    }
+
+    #[test]
+    fn word_at_prefers_the_word_under_then_before() {
+        let r = rope("foo.bar  héllo\nx");
+        let w = |p: usize| word_at(&r, ByteIdx(p)).map(|(a, b)| (a.0, b.0));
+        assert_eq!(w(0), Some((0, 3)));
+        assert_eq!(w(3), Some((0, 3)), "at the end of foo, before the dot");
+        assert_eq!(w(4), Some((4, 7)));
+        assert_eq!(w(7), Some((4, 7)));
+        assert_eq!(w(8), None, "between two spaces");
+        assert_eq!(w(10), Some((9, 15)), "multi-byte word");
+        assert_eq!(w(15), Some((9, 15)), "line end");
+        assert_eq!(w(16), Some((16, 17)));
+        assert_eq!(word_at(&rope(""), ByteIdx(0)), None);
     }
 }

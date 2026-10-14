@@ -79,6 +79,7 @@ impl App {
         let mut view = View::new();
         if let Some(at) = goto {
             place_cursor(&mut view, &buffer.rope, at, self.settings.tab_width);
+            view.cursor_history.reset(&view.selections);
         }
         let id = self.buffers.insert(buffer);
         self.group_mut().open(id, view);

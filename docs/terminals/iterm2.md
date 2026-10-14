@@ -36,6 +36,6 @@ Whatever menu items you remap move to the new shortcuts in every iTerm2 window. 
 
 - [ ] "Apps can change how keys are reported" on; red's start-up warning about the kitty protocol is gone
 - [ ] Left/Right Option set to Esc+; Alt+Left logs `ALT`
-- [ ] Menu items for every red Cmd key you need remapped (start with `Close`, `Quit iTerm2`, `Select All`, `Copy`, `Cut`, `Undo`, `Save`, tab selection 1–3, and whatever holds Cmd+P / Cmd+Shift+P, e.g. `Print`)
+- [ ] Menu items for every red Cmd key you need remapped (start with `Close`, `Quit iTerm2`, `Select All`, `Copy`, `Cut`, `Undo`, `Save`, tab selection 1–3, `Split Vertically with Current Profile` (Cmd+D, red's add next match), `Use Transparency` (Cmd+U, red's cursor undo; check your version's View menu), and whatever holds Cmd+P / Cmd+Shift+P, e.g. `Print`)
 - [ ] **Check by hand:** each key in the [table](README.md#cmd-bindings-red-uses) logs with `SUPER`; note which ones iTerm2 still keeps
 - [ ] Until verified, close red's tabs with the mouse (×) and quit with Ctrl+Q

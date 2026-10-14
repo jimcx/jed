@@ -16,12 +16,12 @@ cargo isn't on PATH. Prefix every command:
 export PATH="$HOME/.rustup/toolchains/1.99-aarch64-apple-darwin/bin:$PATH"
 cargo fmt --check                            # rustfmt.toml: max_width = 120
 cargo clippy --all-targets -- -D warnings
-cargo test                                   # ~115 tests, ~5 s (search's random reference test is most of it)
-cargo test --release milestone -- --nocapture   # M1 timing budgets are asserted in release only
+cargo test                                   # ~150 tests, ~5 s (search's random reference test is most of it)
+cargo test --release milestone -- --nocapture   # M1 and M6 (1 MB Cmd+Shift+L + typing) budgets: release only (M6 has a coarse 800 ms debug bound)
 cargo test --release search -- --nocapture      # so is the 1 MB find-all budget
 ```
 
-All three must pass before a commit. Cap long test runs (macOS has no `timeout`): `perl -e 'alarm shift; exec @ARGV' 300 cargo test`. Edition 2024 (let-chains are used freely).
+All three must pass before a commit. Cap test runs with `scripts/timeout 300 cargo test …` (macOS has no `timeout`; this kills the whole process group, so cargo's test binary can't outlive it). Edition 2024 (let-chains are used freely).
 
 ## Module map (`src/`)
 
@@ -31,8 +31,9 @@ All three must pass before a commit. Cap long test runs (macOS has no `timeout`)
 - `config/keymap.rs` — `Keymap` (data: `(KeyCombo, Option<Context>) -> Command`), `Context` (`Editor`, `Explorer`, `Palette`), `Platform`, `default_for(platform)`, `load(path, platform)` (defaults + `keybindings.toml`), `binding_for(cmd)` (the key the palette shows); `KeyCombo::parse` / `spec` (config spelling) / `label` (`Cmd+Shift+P`)
 - `edit.rs` — movement and editing at every selection (`edit::run`, `insert_char`, `paste`, `copy_text`, `cut`), `Settings` (tab width, spaces)
 - `buffer/` — `Buffer`/`Buffers`, `ChangeSet`, undo `History`, file load/save, and **all** position types/conversions in `buffer::pos` (see `src/buffer/CLAUDE.md`)
-- `selection.rs` — `Selection` (anchor, head, goal column) and `Selections` (sorted, merged, never empty, has a primary)
-- `view.rs` — `View`: selections + scroll for one tab; `map_through` follows edits made via another view
+- `selection.rs` — `Selection` (anchor, head, goal column) and `Selections` (sorted, merged, never empty; a primary and a *newest* — the one added last, which Cmd+D searches after; `new` takes the last list entry as newest, `with_newest` names it). Merging is VS Code's: overlapping, or touching when one is an empty cursor; two non-empty selections that only touch stay apart. `overlapping(from, to)` (binary search, for drawing) and `contains_range`
+- `view.rs` — `View`: selections + scroll for one tab; `map_through` follows edits made via another view (and clears its Cmd+U history); `reveal_range` (centre a range if off screen, set by Cmd+D); `CursorHistory` (Cmd+U: up to 50 earlier selection lists + scroll, cleared by any text change)
+- `multicursor.rs` — Cmd+D / Cmd+Alt+D (`next_match`, `Step::{Add, Skip}`) and Cmd+Shift+L (`select_all`) as VS Code's `MultiCursorSession`: a `Session` is word mode (empty single cursor: whole word, case-sensitive) or the primary's text literally with the find widget's case/whole-word (`App::find_options`, default off); searches after the newest selection, wraps, skips already-selected matches. Several selections with different text: Cmd+D first expands empty cursors to words
 - `group.rs` — `Tab` (buffer id + view), `Group` (tabs, active), `Groups` (map + `SplitTree`, always ≥1 group)
 - `layout.rs` — screen `Regions`, `SplitTree` of editor groups, `HitMap`/`Hit` for mouse hit-testing
 - `ui/` — ratatui drawing, `ui::render(f, &mut App)`; colours only via `Theme` (see `src/ui/CLAUDE.md`)
@@ -40,7 +41,7 @@ All three must pass before a commit. Cap long test runs (macOS has no `timeout`)
 - `explorer.rs` — explorer tree model (no drawing), `list_dir` and `walk_files` (quick open) over one shared `ignore` walker (`.gitignore`, excludes, never `.git/` or `.red/`), `excludes`, blocking `ops::{new_file,new_folder,rename,delete}`
 - `palette.rs` — palette model (no drawing): `Palette` (a `TextField` + `Row`s; `Picker::QuickOpen` switches `Mode` by first char: `>` commands, `:` go to line, else files; `Picker::LogLevel`), `command_rows` / `log_level_rows` (sync `nucleo` `Pattern`), `parse_line`, `file_query` (drops a `:line[:col]`, also half-typed), `FileMatcher` (a `nucleo::Nucleo` fed by the walk, matching on its own threads)
 - `field.rs` — `TextField`: one-line input (text + byte cursor) used by `Input` prompts and the palette; `key()` returns `Outcome::{Ignored, Moved, Edited}`
-- `search.rs` — the one matcher for find, Cmd+D and workspace search: `Matcher::new(pattern, Options { regex, case_sensitive, whole_word })` (`SearchError` is a one-line message for an invalid regex; an empty pattern matches nothing), then `find_next(rope, from, wrap)` / `find_prev(rope, before, wrap)` / `find_all` / `find_in(rope, range)` → `Match { start, end }` in `ByteIdx`. Searches line by line over `pos::each_line` (zero-copy per chunk); matches never span lines unless the pattern names a line break (newline, `\n`, `\r`, `\W` — VS Code's rule), which searches a copy of the whole text. Whole word = VS Code's boundary rule with `pos::is_word_char`. Also `impl grep_matcher::Matcher` so M7's `grep-searcher` uses the same matcher on files. `mod search` has `allow(dead_code)` outside tests until 6b/6d call it
+- `search.rs` — the one matcher for find, Cmd+D and workspace search: `Matcher::new(pattern, Options { regex, case_sensitive, whole_word })` (`SearchError` is a one-line message for an invalid regex; an empty pattern matches nothing), then `find_next(rope, from, wrap)` / `find_prev(rope, before, wrap)` / `find_all` / `find_in(rope, range)` → `Match { start, end }` in `ByteIdx`. Searches line by line over `pos::each_line` (zero-copy per chunk); matches never span lines unless the pattern names a line break (newline, `\n`, `\r`, `\W` — VS Code's rule), which searches a copy of the whole text. Whole word = VS Code's boundary rule with `pos::is_word_char`. Also `impl grep_matcher::Matcher` so M7's `grep-searcher` uses the same matcher on files. `find_prev`/`is_empty` have `allow(dead_code)` outside tests until the find widget (6d) calls them
 - `clipboard.rs` — `Clipboard`: arboard (lazy) / OSC 52 (SSH or arboard failure, tmux-wrapped) / `memory()` in tests; remembers whole-line copies
 - `workspace/` — `Workspace` (root, `.workspace` config, `settings()`), `config.rs` (`WorkspaceConfig` TOML), `trust.rs` (`TrustStore`, `Trust`)
 - `watcher.rs` — `notify` watcher; the sync callback forwards paths into the app channel
@@ -57,7 +58,7 @@ Modules in PLAN.md's Architecture that don't exist yet (`syntax`, `lsp`, `git`, 
 2. `handle_event`: an open `prompt` gets every key; else `keymap.lookup(&key, self.context())` → `Command` (`context()` is `Palette` while the palette is open); else an open palette's `TextField` gets the key; else an unbound plain/Shift char in the editor is typed via `edit::insert_char`. `Event::Paste` (bracketed paste) → the prompt input, the palette, or `App::paste`.
 3. `execute(cmd)`: any command except `Palette(_)` / `ShowCommands` / `QuickOpen` / `GoToLine` first closes an open palette. App-level commands (save, tabs, splits, focus, explorer, copy/cut/paste) are handled in `App`; everything else falls to `edit::run(cmd, buf, view, &settings)` on the active tab, after a read-only check if `edit::is_edit(cmd)`.
 4. `edit` builds a `ChangeSet` over all selections and calls `Buffer::edit(changes, before, after, kind)` — one undo transaction.
-5. `sync_views` (after every event) drains `Buffer::take_applied()` and maps every *other* view on that buffer through the changes.
+5. `sync_views` (after every event) drains `Buffer::take_applied()` and maps every *other* view on that buffer through the changes, then `track_selections` records the active view's selection change for Cmd+U and ends the Cmd+D session if something else changed the selections or the editor lost focus.
 6. Background results come back as `AppEvent` variants (`SaveDone`, `Opened`, `Listed`, `FsChanged`, `ConfigLoaded`, `FileOpDone`, `FilesMatched`, `FilesWalked`, `LogFileFound`) → `handle_app_event`.
 7. `ui::render(f, &mut app)` draws and writes back render-time state: `view.height/width`, scroll for `reveal_cursor`, `explorer.height`, and `app.hits` (used by the *next* mouse event).
 
@@ -72,12 +73,13 @@ Modules in PLAN.md's Architecture that don't exist yet (`syntax`, `lsp`, `git`, 
 - **Colours:** no `Color::`/`Modifier::` outside `theme.rs`; widgets call `theme.get("key")` (a missing key logs `missing theme key`). Add new keys to `Theme::dark_plus`.
 - **Never block the UI thread:** file reads, saves, listings, file ops and config reloads go through `tokio::task::spawn_blocking` and report back with an `AppEvent`. Blocking functions are documented `/// Blocking: call from spawn_blocking`. `App::new` must not spawn anything (it can run before the runtime is entered); `App::start` does.
 - **Logging:** `tracing` only — never print while the UI is up. Targets are module paths (`red::app`, `red::buffer`, …) except explicit `target: "input"` (key/mouse/paste at trace) and `target: "panic"`. Each `execute` runs in a `command` span with the command name. User-visible messages go through `App::notify(Level, text)`, which also logs. `RED_LOG=input=trace` / `--log-level` set the filter.
+- **Many selections:** Cmd+Shift+L can make 60k+ selections. Anything per edit or per frame must stay O(selections · log n): map positions with `ChangeSet::mapper()` (not `map` in a loop), draw only `Selections::overlapping` the viewport, and don't scan the selection list per cell. `ChangeSet::apply` rebuilds the rope in one pass from 256 changes up.
 - Slow-work warnings: frames > 16 ms (`SLOW_FRAME`), saves > 500 ms (`SLOW_TASK`).
 
 ## Tests
 
 - Unit tests sit in `#[cfg(test)] mod tests` at the bottom of each module.
-- End-to-end tests: `src/milestone_tests.rs` (M1), `src/milestone2_tests.rs`, `milestone3_tests.rs`, `milestone4_tests.rs`, `milestone5_tests.rs`, named `milestone_N_*`. A new milestone adds `src/milestoneN_tests.rs` and a `#[cfg(test)] mod` line in `main.rs`. Each file opens with a `//!` doc saying what "done when" it covers.
+- End-to-end tests: `src/milestone_tests.rs` (M1), `src/milestone2_tests.rs` … `milestone6_tests.rs`, named `milestone_N_*`. A new milestone adds `src/milestoneN_tests.rs` and a `#[cfg(test)] mod` line in `main.rs`. Each file opens with a `//!` doc saying what "done when" it covers.
 - Driving the app headlessly (helpers are `#[cfg(test)] impl App` in `app/mod.rs`):
   - Build: `App::new(Workspace::load(root), TrustStore::load(dir.join("trust.toml")), Some(InitialFile { buffer, goto: None }), true)`, then `app.test_start()` (watcher + first listing). See `open_app` in each milestone file and `milestone_tests::test_app`.
   - Use `tempfile::tempdir()` and `workspace::normalize(dir.path())` for the root (macOS temp paths are symlinks). Keep the trust store inside the tempdir.

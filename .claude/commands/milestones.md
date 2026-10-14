@@ -15,7 +15,7 @@ Work through the milestones in PLAN.md with subagents, one task at a time, in se
    - If it looks complete, run the validator (step 4) and commit.
    - If it's partial, have an implementer finish it (tell it what's already there).
    - If it's broken beyond repair, `git stash` it and restart the task. Tell the user.
-3. If the current milestone has no task commits yet, split its PLAN.md entry into 3–5 tasks that build on each other. Each task must leave fmt, clippy and tests green. If it has some, re-derive the split from the plan and the commits so far. Tell the user the split in a few lines.
+3. If the current milestone has no task commits yet, split its PLAN.md entry into 3–5 tasks that build on each other. Each task must leave fmt, clippy and tests green. If it has some, follow the task list already in its PLAN.md entry. Tell the user the split in a few lines. Write the split into the milestone's PLAN.md entry as a `- Tasks (one agent and one commit each):` list (one line per task, saying what it covers); mark each task ✅ in its own commit, with notes on what it changed for later tasks.
 
 ## Each task
 
@@ -34,12 +34,13 @@ Work through the milestones in PLAN.md with subagents, one task at a time, in se
    - Mutation-test the important behaviours: break the code, confirm a test fails, then revert.
    - Check coverage against the plan's bullets for the task, and against "Done when" for the milestone's last task.
    - Add or strengthen weak tests and rewrite worthless ones. Fix real bugs minimally and report them.
-   - Run `cargo test` 3 times to catch flakiness. Run tests in the foreground with a timeout (macOS has no `timeout`: `perl -e 'alarm shift; exec @ARGV' 300 cargo test …`), never as unattended background loops. Random or property-style tests cap their iterations and output sizes, so a bug fails them quickly instead of eating CPU and RAM. All three checks must be clean.
+   - Run `cargo test` 3 times to catch flakiness. Run tests in the foreground with a timeout (`scripts/timeout 300 cargo test …`, which kills the whole process group; `alarm` + `exec` wrappers leave the test binary running), never as unattended background loops. Random or property-style tests cap their iterations and output sizes, so a bug fails them quickly instead of eating CPU and RAM. All three checks must be clean.
    - Update CLAUDE.md if it changes helpers or conventions. Don't commit.
    - Report: verdict, mutations caught or survived, test changes, bugs fixed, and check results.
 6. **Check and commit (you):**
    - Re-run all three checks yourself (cargo needs `export PATH="$HOME/.rustup/toolchains/1.99-aarch64-apple-darwin/bin:$PATH"`).
    - Make sure the diff includes the CLAUDE.md updates.
+   - Check no test binaries are left running (`pgrep -fl deps/red-`); kill any strays.
    - Commit everything with the subject `Milestone N (Na): <summary>`, a blank line, then `- ` bullets of behaviour and notable internals. End with the Co-Authored-By trailer.
 7. **On the milestone's last task**, in the same commit:
    - Mark it ✅ in PLAN.md and note any "Also:", "Deferred:" and "Still to check by hand:" items.

@@ -106,6 +106,7 @@ impl Matcher {
     }
 
     /// True for an empty pattern: nothing matches, and the UI shows no results.
+    #[cfg_attr(not(test), allow(dead_code))] // the find widget (6d)
     pub fn is_empty(&self) -> bool {
         self.regex.is_none()
     }
@@ -129,6 +130,7 @@ impl Matcher {
 
     /// The last match ending at or before `before` (an empty match exactly at `before` is
     /// skipped). With `wrap`, continues backwards from the end of the text.
+    #[cfg_attr(not(test), allow(dead_code))] // the find widget (6d)
     pub fn find_prev(&self, rope: &Rope, before: ByteIdx, wrap: bool) -> Option<Match> {
         let found = self.prev_from(rope, before, Some(before));
         if found.is_some() || !wrap {
@@ -227,6 +229,7 @@ impl Matcher {
     }
 
     /// Last match ending at or before `before`, rejecting an empty match at `skip_empty`.
+    #[cfg_attr(not(test), allow(dead_code))] // the find widget (6d)
     fn prev_from(&self, rope: &Rope, before: ByteIdx, skip_empty: Option<ByteIdx>) -> Option<Match> {
         let re = self.regex.as_ref()?;
         // The last match in `hay` (searched left to right, as `find_in` does) ending by `limit`.

@@ -32,14 +32,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         };
         let left = format!(" {}{dirty}{flag}  ", buf.name());
 
-        let head = tab.view.selections.primary().head;
-        let line = pos::line_of(&buf.rope, head) + 1;
-        let col = pos::display_col(&buf.rope, head, app.settings.tab_width).0 + 1;
+        // As VS Code: the position for one selection, the count for several.
         let count = tab.view.selections.len();
-        let sels = if count > 1 {
-            format!(" ({count} selections)")
+        let position = if count > 1 {
+            format!("{count} selections")
         } else {
-            String::new()
+            let head = tab.view.selections.primary().head;
+            let line = pos::line_of(&buf.rope, head) + 1;
+            let col = pos::display_col(&buf.rope, head, app.settings.tab_width).0 + 1;
+            format!("Ln {line}, Col {col}")
         };
         let indent = if app.settings.insert_spaces {
             format!("Spaces: {}", app.settings.tab_width)
@@ -47,10 +48,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             format!("Tab Size: {}", app.settings.tab_width)
         };
         let encoding = if buf.bom { "UTF-8 with BOM" } else { "UTF-8" };
-        let right = format!(
-            "Ln {line}, Col {col}{sels}   {indent}   {encoding}   {} ",
-            buf.eol.label()
-        );
+        let right = format!("{position}   {indent}   {encoding}   {} ", buf.eol.label());
 
         let right_w = right.width().min(width);
         right_x = area.x + (width - right_w) as u16;

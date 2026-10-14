@@ -7,6 +7,7 @@
 - `prompt.rs` — `Prompt` (modal: `SaveBeforeClose`, `SaveAllBeforeQuit`, `Trust`, `Input`, `ConfirmDelete`), `Input` (a `field::TextField` plus what the name is for), `handle_prompt_key`, trust decisions (the `Trust` dialog also shows the current decision when reopened by "Manage Workspace Trust").
 - `side.rs` — explorer commands, directory listings, file ops (`FileOp` → `AppEvent::FileOpDone`), fs-change batching (`flush_fs_changes`), `.workspace` reload (`config_loaded`).
 - `palette.rs` — `open_palette(picker, text)` / `close_palette`, `palette_command` (`PaletteCommand`), `palette_key` / `palette_paste` (input → `refresh_palette`), `accept_palette` (run a command, open a file at `file:line:col`, go to line, set a log level), `palette_mouse`; quick open's walk (`start_file_walk`, once per opening, into `FileMatcher`) and `files_matched` / `files_walked`; the palette-only commands: `manage_trust`, `open_log_file` (→ `AppEvent::LogFileFound`), `set_log_filter`.
+- `cursors.rs` — `match_command` (Cmd+D / Cmd+Shift+L / Cmd+Alt+D through `multicursor`, keeping the `MatchSession` with the view — group, tab, buffer — it belongs to), `cursor_undo` (Cmd+U: pops `view.cursor_history`, restores selections and scroll), `note_pre_event` (start of `handle_event`: scroll before the event, for the Cmd+U entry) and `track_selections` (end of `sync_views`).
 - `mouse.rs` — clicks via `HitMap` from the last frame, `ClickTracker` (double/triple), `Drag` (side border, split divider, text), wheel scrolls the group under the pointer without focusing it.
 
 Things to know before editing:
@@ -20,7 +21,8 @@ Things to know before editing:
 - A prompt swallows all keys and mouse events; `close_prompt()` re-opens a pending trust prompt (`trust_pending`). Esc/Enter/letter handling per prompt is in `handle_prompt_key`; unrecognised keys put the prompt back.
 - Leaving a tab/group (`activate_tab`, `cycle_tab`, `focus_group`, `split`, editor click) calls `buf.seal_undo()` first.
 - Closing: the save prompt appears only when the tab is the last one (in any group) showing a dirty buffer (`groups.tabs_showing`). `discard_tab` drops the buffer when no tab shows it and closes an empty group (never the last). `AfterSave::{Quit, Close}` continues a close/quit once saves finish.
-- `sync_views` runs after every input event: the editing tab only re-anchors its viewport; every other view on the buffer runs `View::map_through`.
+- `sync_views` runs after every input event: the editing tab only re-anchors its viewport; every other view on the buffer runs `View::map_through`. Then `track_selections`: if the active view's buffer changed its Cmd+U history is reset, else a selection change pushes the previous list; any selection change not made by a match command (`session_changed`), or focus leaving the editor (palette, prompt, side panel), ends the Cmd+D session (VS Code's rule; word mode resets with it). Only input events are tracked, so selections set by background results are recorded at the next key.
+- `find_options` (`search::Options`, case / whole word) is what Cmd+D uses for selected text; the find widget (6d) will own it and must end the session when they change.
 - `update_crash_snapshot` runs every loop turn so the panic hook can back up dirty buffers.
 - Messages: `notify(Level, text)` sets the status-bar message and logs it; any key press clears it.
 - File system events are debounced (`FS_DEBOUNCE`, 100 ms) via `fs_deadline`; explorer renames/deletes update open buffers' `path`/`deleted`.

@@ -212,7 +212,7 @@ The VS Code behaviour, especially Cmd+D and Cmd+Shift+L, is a must-have.
 - Each selection has an `anchor` and a `head` (`ByteIdx` — see [Text positions](#text-positions)), plus a remembered `DisplayCol` for up/down movement
 - One selection is primary: it's the one scrolled into view and the one shown in the status bar
 - Keep the list sorted; after every command merge selections that overlap or sit at the same position
-  - Don't merge selections that only touch (e.g. Cmd+D on `a` in `aaaa` must give separate selections)
+  - Two non-empty selections that only touch stay separate (e.g. Cmd+D on `a` in `aaaa` gives 4); a cursor touching a selection merges into it (VS Code)
 - Apply an edit at every selection in one transaction, working from the last to the first so earlier offsets stay valid
 - One undo step covers the whole multi-cursor edit and restores the selection list from before it; redo restores the selection list from after it
 
@@ -234,7 +234,7 @@ The VS Code behaviour, especially Cmd+D and Cmd+Shift+L, is a must-have.
 
 **Cmd+D in detail (copy VS Code exactly)**
 - With an empty cursor: select the word under it, and match **whole words only** from then on
-- With text selected: search for that exact text
+- With text selected: search for that text literally, with the find widget's case and whole-word options (both off by default, so case-insensitive — VS Code's `findOptions` mode)
 - Search starts after the most recently added selection and wraps around the file
 - Skip matches that are already selected
 - Scroll to show the new selection
@@ -518,6 +518,16 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
    - Rendering: extra cursors as reversed cells, a selection background for each, "N selections" in the status bar
    - Same buffer in several groups (M3): every view's selections still map through multi-cursor edits
    - Done when: Cmd+Shift+L on a 1 MB file with tens of thousands of matches, then typing, stays smooth; one undo restores the selection list from before; replace-all on that file is one undo step
+   - Tasks (one agent and one commit each):
+     - ✅ 6a: `search` module — `search::Matcher` (plain / regex, case, whole word as VS Code), find next / previous with wrap, find all / in range, line by line on the rope; implements `grep_matcher::Matcher` for M7
+     - ✅ 6b: Cmd+D, Cmd+Shift+L, Cmd+Alt+D, Cmd+U (cursor undo), Esc to one cursor; drawing extra cursors and selections, "N selections"; the 1 MB performance target
+       - `multicursor::Session` (VS Code's MultiCursorSession) and `app/cursors.rs`; `Selections` tracks the newest selection; `View::CursorHistory` (50 states, cleared by any text change)
+       - Session ends on any other selection change, Cmd+U, or focus leaving the editor; skips matches already selected (VS Code would merge)
+       - Perf: `ChangeSet::mapper()` (binary search) for other views, one-pass rope rebuild from 256 changes, editor draws only visible selections; 1 MB / 63k matches: Cmd+Shift+L 3 ms, 5.5 ms a key, undo 15 ms
+       - Not done: cursor redo (no VS Code default key); word characters are `is_word_char`, not VS Code's `wordSeparators`
+       - Still to check by hand: Cmd+D / Cmd+Shift+L / Cmd+Alt+D / Cmd+U reach red in each terminal (Ghostty and iTerm2 split on Cmd+D; iTerm2's Cmd+U menu item is unverified)
+     - 6c: add cursor above / below, Shift+Alt+I, Alt+Click, box select (mouse and keyboard), paste spread across cursors, move / duplicate line at every cursor
+     - 6d: find / replace widget (Cmd+F / Cmd+Alt+F) and its key context; owns the find options that Cmd+D on selected text borrows (`App::find_options`); replace all as one undo step; Alt+Enter selects every match; marks M6 ✅
 7. **Workspace search**: plain text, case-sensitive and regex search across the workspace — see [Workspace search](#workspace-search)
    - Needs: the `search` matcher (M6), excludes and the walk (M5), the side panel and its Search activity icon (M2)
    - Needed by: find references can show its results in the same list (M9)

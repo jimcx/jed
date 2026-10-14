@@ -9,7 +9,6 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::buffer::Buffer;
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::edit::Settings;
-use crate::selection::Selection;
 use crate::theme::Theme;
 use crate::view::View;
 
@@ -38,7 +37,10 @@ pub fn render(
     view.width = text.width.max(1) as usize;
     // Re-anchor the viewport (the buffer may have changed since the last frame).
     view.set_top_line(rope, view.top_line());
-    if view.reveal_cursor {
+    if let Some((start, end)) = view.reveal_range.take() {
+        view.reveal_in_center(rope, start, end, tab);
+        view.reveal_cursor = false;
+    } else if view.reveal_cursor {
         view.scroll_to_cursor(rope, tab);
         view.reveal_cursor = false;
     }
@@ -53,7 +55,11 @@ pub fn render(
 
     let primary = view.selections.primary().head;
     let cursor_line = pos::line_of(rope, primary);
-    let sels: Vec<Selection> = view.selections.iter().copied().collect();
+    // Only the selections on screen: there may be tens of thousands.
+    let last_line = (view.top_line() + view.height).min(total - 1);
+    let sels = view
+        .selections
+        .overlapping(pos::line_start(rope, view.top_line()), pos::line_end(rope, last_line));
     let secondary: HashSet<ByteIdx> = sels.iter().map(|s| s.head).filter(|h| *h != primary).collect();
     // Selections are sorted and bytes are visited in order, so one index walks them.
     let mut si = 0;

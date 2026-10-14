@@ -52,6 +52,14 @@ pub enum Command {
     SelectAll,
     /// Esc: drop extra cursors, then clear the selection.
     CancelSelection,
+    /// Cmd+D: select the word under the cursor, then add a selection at the next match.
+    AddNextMatch,
+    /// Cmd+Shift+L: a selection at every match of the selection (or the word under the cursor).
+    SelectAllMatches,
+    /// Cmd+Alt+D: move the newest selection to the next match.
+    SkipToNextMatch,
+    /// Cmd+U: undo the last selection change (separate from text undo).
+    CursorUndo,
     Undo,
     Redo,
     /// Copy / cut the selections, or the whole line when they're all empty.
@@ -168,6 +176,10 @@ impl Command {
             Command::InsertTab,
             Command::SelectAll,
             Command::CancelSelection,
+            Command::AddNextMatch,
+            Command::SelectAllMatches,
+            Command::SkipToNextMatch,
+            Command::CursorUndo,
             Command::Undo,
             Command::Redo,
             Command::Copy,
@@ -235,6 +247,10 @@ impl Command {
             Command::InsertTab => "edit.tab".into(),
             Command::SelectAll => "selection.all".into(),
             Command::CancelSelection => "selection.cancel".into(),
+            Command::AddNextMatch => "selection.addNextMatch".into(),
+            Command::SelectAllMatches => "selection.selectAllMatches".into(),
+            Command::SkipToNextMatch => "selection.moveToNextMatch".into(),
+            Command::CursorUndo => "cursor.undo".into(),
             Command::Undo => "edit.undo".into(),
             Command::Redo => "edit.redo".into(),
             Command::Copy => "edit.copy".into(),
@@ -323,6 +339,10 @@ impl Command {
             Command::InsertTab => "Edit: Insert Tab",
             Command::SelectAll => "Selection: Select All",
             Command::CancelSelection => "Selection: Cancel Selection",
+            Command::AddNextMatch => "Selection: Add Selection to Next Find Match",
+            Command::SelectAllMatches => "Selection: Select All Occurrences of Find Match",
+            Command::SkipToNextMatch => "Selection: Move Last Selection to Next Find Match",
+            Command::CursorUndo => "Cursor: Cursor Undo",
             Command::Undo => "Edit: Undo",
             Command::Redo => "Edit: Redo",
             Command::Copy => "Edit: Copy",
@@ -425,9 +445,13 @@ mod tests {
             Command::OpenLogFile => 30,
             Command::SetLogLevel => 31,
             Command::Palette(_) => 32,
+            Command::AddNextMatch => 33,
+            Command::SelectAllMatches => 34,
+            Command::SkipToNextMatch => 35,
+            Command::CursorUndo => 36,
         }
     }
-    const VARIANTS: u8 = 33;
+    const VARIANTS: u8 = 37;
 
     #[test]
     fn all_lists_every_variant() {

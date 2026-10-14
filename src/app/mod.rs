@@ -1,5 +1,6 @@
 //! Event loop. Owns all state and sends commands where they need to go.
 
+mod cursors;
 mod files;
 mod mouse;
 mod palette;
@@ -34,7 +35,7 @@ use crate::watcher::{self, Watcher};
 use crate::workspace::Workspace;
 use crate::workspace::config::WorkspaceConfig;
 use crate::workspace::trust::{Trust, TrustStore};
-use crate::{logging, panic, ui};
+use crate::{logging, panic, search, ui};
 
 pub use mouse::ClickTracker;
 pub use prompt::{InputKind, Prompt};
@@ -165,6 +166,14 @@ pub struct App {
     opening: HashSet<PathBuf>,
     clicks: ClickTracker,
     drag: Option<mouse::Drag>,
+    /// The find widget's case / whole-word options, which Cmd+D uses for selected text
+    /// (VS Code's `selectedTextMatchMode: findOptions`). The widget (6d) sets them.
+    pub find_options: search::Options,
+    /// The running Cmd+D / Cmd+Shift+L / Cmd+Alt+D session.
+    match_session: Option<cursors::MatchSession>,
+    /// A match command ran during this event (its selection change keeps the session).
+    session_changed: bool,
+    pre_event: Option<cursors::PreEvent>,
     /// The last command `execute` ran, for tests.
     #[cfg(test)]
     pub last_command: Option<Command>,
@@ -217,6 +226,10 @@ impl App {
             opening: HashSet::new(),
             clicks: ClickTracker::default(),
             drag: None,
+            find_options: search::Options::default(),
+            match_session: None,
+            session_changed: false,
+            pre_event: None,
             #[cfg(test)]
             last_command: None,
         };
@@ -347,6 +360,7 @@ impl App {
 
     fn handle_event(&mut self, ev: Event) {
         self.needs_redraw = true;
+        self.note_pre_event();
         match ev {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 tracing::trace!(target: "input", ?key);
@@ -385,14 +399,18 @@ impl App {
 
     /// Edits go through the active tab's view; every other view on an edited buffer
     /// (in any group) follows the changes so its cursors and viewport stay on the same text.
+    /// Then records the active view's selection change for Cmd+U (`track_selections`).
     fn sync_views(&mut self) {
         let origin = self.groups.active;
         let origin_tab = self.group().active;
+        let origin_buf = self.group().active_tab().map(|t| t.buffer);
+        let mut edited = false;
         for (id, buf) in self.buffers.iter_mut() {
             let changes = buf.take_applied();
             if changes.is_empty() {
                 continue;
             }
+            edited |= Some(id) == origin_buf;
             for (gid, group) in self.groups.iter_mut() {
                 for (i, tab) in group.tabs.iter_mut().enumerate() {
                     if tab.buffer != id {
@@ -407,6 +425,7 @@ impl App {
                 }
             }
         }
+        self.track_selections(edited);
     }
 
     fn execute(&mut self, cmd: Command) {
@@ -463,6 +482,8 @@ impl App {
             Command::ManageWorkspaceTrust => self.manage_trust(),
             Command::OpenLogFile => self.open_log_file(),
             Command::Palette(c) => self.palette_command(c),
+            Command::AddNextMatch | Command::SelectAllMatches | Command::SkipToNextMatch => self.match_command(cmd),
+            Command::CursorUndo => self.cursor_undo(),
             _ => {
                 if edit::is_edit(cmd) && !self.active_writable() {
                     return;

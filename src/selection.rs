@@ -43,17 +43,25 @@ impl Selection {
         self.head < self.anchor
     }
 
-    /// Overlapping or at the same position. Selections that only touch are kept apart.
+    /// VS Code's rule: overlapping, or touching when either is an empty cursor. Two selections
+    /// that only touch are kept apart (Cmd+D on `a` in `aaaa` gives four).
     fn should_merge(&self, other: &Selection) -> bool {
-        (self.start() < other.end() && other.start() < self.end())
-            || (self.start() == other.start() && self.end() == other.end())
+        if self.is_empty() || other.is_empty() {
+            self.start() <= other.end() && other.start() <= self.end()
+        } else {
+            self.start() < other.end() && other.start() < self.end()
+        }
     }
 }
 
+/// Sorted by position and merged. Besides the primary it remembers the *newest* selection, the
+/// one added last (VS Code keeps its cursors in the order they were added; Cmd+D searches after
+/// the last one and Cmd+Alt+D replaces it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selections {
     list: Vec<Selection>,
     primary: usize,
+    newest: usize,
 }
 
 impl Selections {
@@ -61,19 +69,57 @@ impl Selections {
         Self {
             list: vec![sel],
             primary: 0,
+            newest: 0,
         }
     }
 
-    /// Sorts and merges. `primary` indexes into `list`.
+    /// Sorts and merges. `primary` indexes into `list`; the last entry of `list` is the newest.
+    #[cfg_attr(not(test), allow(dead_code))] // add cursor above/below (6c)
     pub fn new(list: Vec<Selection>, primary: usize) -> Self {
+        let newest = list.len().saturating_sub(1);
+        Self::with_newest(list, primary, newest)
+    }
+
+    /// `new`, naming the newest selection too (both index into `list`).
+    pub fn with_newest(list: Vec<Selection>, primary: usize, newest: usize) -> Self {
         assert!(primary < list.len(), "selection list must not be empty");
-        let mut s = Self { list, primary };
+        assert!(newest < list.len());
+        let mut s = Self { list, primary, newest };
         s.normalize();
         s
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Selection> {
         self.list.iter()
+    }
+
+    /// The selections, sorted.
+    pub fn as_slice(&self) -> &[Selection] {
+        &self.list
+    }
+
+    /// The selections that end at or after `from` and start at or before `to`, e.g. the visible
+    /// ones (binary search: rendering doesn't walk every selection).
+    pub fn overlapping(&self, from: ByteIdx, to: ByteIdx) -> &[Selection] {
+        // Merged selections don't overlap, so both starts and ends are sorted.
+        let first = self.list.partition_point(|s| s.end() < from);
+        let last = self.list.partition_point(|s| s.start() <= to);
+        &self.list[first..last.max(first)]
+    }
+
+    /// Whether exactly `start..end` is one of the selections (either direction).
+    pub fn contains_range(&self, start: ByteIdx, end: ByteIdx) -> bool {
+        self.list
+            .binary_search_by_key(&(start, end), |s| (s.start(), s.end()))
+            .is_ok()
+    }
+
+    pub fn newest(&self) -> &Selection {
+        &self.list[self.newest]
+    }
+
+    pub fn newest_index(&self) -> usize {
+        self.newest
     }
 
     pub fn len(&self) -> usize {
@@ -100,20 +146,17 @@ impl Selections {
     pub fn keep_primary(&mut self) {
         self.list = vec![self.list[self.primary]];
         self.primary = 0;
+        self.newest = 0;
     }
 
     fn normalize(&mut self) {
-        let mut order: Vec<(Selection, bool)> = self
-            .list
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (*s, i == self.primary))
-            .collect();
+        let mut order: Vec<(Selection, usize)> = self.list.iter().copied().zip(0..).collect();
         order.sort_by_key(|(s, _)| (s.start(), s.end()));
 
         let mut merged: Vec<Selection> = Vec::with_capacity(order.len());
         let mut primary_idx = 0;
-        for (sel, is_primary) in order {
+        let mut newest_idx = 0;
+        for (sel, i) in order {
             match merged.last_mut() {
                 Some(last) if last.should_merge(&sel) => {
                     let (start, end) = (last.start().min(sel.start()), last.end().max(sel.end()));
@@ -122,20 +165,19 @@ impl Selections {
                     } else {
                         Selection::new(start, end)
                     };
-                    if is_primary {
-                        primary_idx = merged.len() - 1;
-                    }
                 }
-                _ => {
-                    merged.push(sel);
-                    if is_primary {
-                        primary_idx = merged.len() - 1;
-                    }
-                }
+                _ => merged.push(sel),
+            }
+            if i == self.primary {
+                primary_idx = merged.len() - 1;
+            }
+            if i == self.newest {
+                newest_idx = merged.len() - 1;
             }
         }
         self.list = merged;
         self.primary = primary_idx;
+        self.newest = newest_idx;
     }
 }
 
@@ -156,6 +198,11 @@ mod tests {
 
         let s = Selections::new(vec![sel(3, 3), sel(3, 3)], 1);
         assert_eq!(s.len(), 1);
+
+        // A cursor touching a selection joins it (as VS Code); two touching cursors can't exist.
+        let s = Selections::new(vec![sel(3, 3), sel(3, 6), sel(9, 6), sel(9, 9)], 0);
+        let got: Vec<_> = s.iter().map(|s| (s.anchor.0, s.head.0)).collect();
+        assert_eq!(got, vec![(3, 6), (9, 6)]);
     }
 
     #[test]
@@ -163,6 +210,33 @@ mod tests {
         // Cmd+D on `a` in `aaaa` must give four selections.
         let s = Selections::new(vec![sel(0, 1), sel(1, 2), sel(2, 3), sel(3, 4)], 0);
         assert_eq!(s.len(), 4);
+    }
+
+    #[test]
+    fn newest_and_primary_follow_sorting_and_merging() {
+        // Given in the order added: primary first, newest last.
+        let s = Selections::new(vec![sel(6, 8), sel(0, 2), sel(3, 4)], 0);
+        assert_eq!((s.primary().start().0, s.newest().start().0), (6, 3));
+        assert_eq!((s.primary_index(), s.newest_index()), (2, 1));
+        // The newest merges into another selection: that one is newest now.
+        let s = Selections::with_newest(vec![sel(0, 4), sel(8, 9), sel(2, 6)], 1, 2);
+        assert_eq!((s.newest().start().0, s.newest().end().0), (0, 6));
+        assert_eq!(s.primary().start().0, 8);
+    }
+
+    #[test]
+    fn overlapping_finds_only_the_range() {
+        let s = Selections::new((0..100).map(|i| sel(i * 10, i * 10 + 3)).collect(), 0);
+        let got: Vec<usize> = s
+            .overlapping(ByteIdx(13), ByteIdx(40))
+            .iter()
+            .map(|s| s.start().0)
+            .collect();
+        assert_eq!(got, vec![10, 20, 30, 40]);
+        assert!(s.overlapping(ByteIdx(4), ByteIdx(9)).is_empty());
+        assert_eq!(s.overlapping(ByteIdx(995), ByteIdx(2000)).len(), 0);
+        assert!(s.contains_range(ByteIdx(20), ByteIdx(23)));
+        assert!(!s.contains_range(ByteIdx(20), ByteIdx(22)));
     }
 
     #[test]

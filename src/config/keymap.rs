@@ -379,6 +379,11 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Char('z'), cmd | shift, Command::Redo),
         (KeyCode::Char('c'), cmd, Command::Copy),
         (KeyCode::Char('x'), cmd, Command::Cut),
+        (KeyCode::Char('d'), cmd, Command::AddNextMatch),
+        (KeyCode::Char('l'), cmd | shift, Command::SelectAllMatches),
+        // No chords, so not VS Code's Cmd+K Cmd+D.
+        (KeyCode::Char('d'), cmd | alt, Command::SkipToNextMatch),
+        (KeyCode::Char('u'), cmd, Command::CursorUndo),
     ]);
     if mac {
         editor.push((KeyCode::Backspace, cmd, Command::DeleteToLineStart));

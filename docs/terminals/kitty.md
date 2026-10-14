@@ -21,6 +21,10 @@ map cmd+z
 map cmd+shift+z
 map cmd+c
 map cmd+x
+map cmd+d
+map cmd+shift+l
+map cmd+alt+d
+map cmd+u
 map cmd+left
 map cmd+shift+left
 map cmd+right

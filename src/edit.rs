@@ -309,7 +309,7 @@ fn replace_each_landing(
             Selection::cursor(ByteIdx((at as isize + delta) as usize))
         })
         .collect();
-    let after = Selections::new(cursors, before.primary_index());
+    let after = Selections::with_newest(cursors, before.primary_index(), before.newest_index());
 
     buf.edit(ChangeSet::new(changes), before, after.clone(), kind);
     view.selections = after;
