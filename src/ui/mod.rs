@@ -3,6 +3,7 @@
 mod activity;
 mod dialog;
 mod editor;
+mod palette;
 mod side;
 mod status;
 mod tabs;
@@ -53,7 +54,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
         {
             Some((tab, buf)) => {
                 // Only the focused group shows the terminal cursor.
-                let focused = is_active && app.ui.focus == Focus::Editor && app.prompt.is_none();
+                let focused =
+                    is_active && app.ui.focus == Focus::Editor && app.prompt.is_none() && app.palette.is_none();
                 text = editor::render(f, editor_area, buf, &mut tab.view, &app.theme, &app.settings, focused);
             }
             None => f.buffer_mut().set_style(editor_area, app.theme.get("editor")),
@@ -84,6 +86,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     hits.dividers = dividers;
 
     status::render(f, regions.status, app);
+    hits.palette = palette::render(f, area, app);
     if let Some(prompt) = &app.prompt {
         dialog::render(f, area, app, prompt);
     }

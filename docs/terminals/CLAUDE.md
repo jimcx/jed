@@ -3,7 +3,7 @@
 Per-terminal config that releases red's macOS Cmd keys and turns Option into Alt. Background: PLAN.md [Terminals](../../PLAN.md#terminals).
 
 - `README.md` has the table **"Cmd bindings red uses"**. The test `terminal_docs_list_every_cmd_binding` (`src/config/keymap.rs`) parses rows starting with `` | `cmd+ `` and compares them, as a set, with every SUPER binding in `Keymap::default_for(Platform::MacOs)` (all contexts). Missing or stale rows fail `cargo test`.
-- Spelling in the first column must match the test's `canonical()`: modifiers in order `cmd`, `ctrl`, `alt`, `shift`; lowercase key names (`left`, `backspace`, `f2`); `backslash` for `\`, `space` for ` `. One row per combo — a combo bound in two contexts is one row with both in "Where" (e.g. `cmd+down`, `cmd+backspace`).
+- Spelling in the first column must match `KeyCombo::spec()` (the `keybindings.toml` spelling too): modifiers in order `cmd`, `ctrl`, `alt`, `shift`; lowercase key names (`left`, `backspace`, `f2`); `backslash` for `\`, `space` for ` `. One row per combo — a combo bound in two contexts is one row with both in "Where" (e.g. `cmd+down`, `cmd+backspace`).
 - The test only checks the README. Each snippet must be updated by hand, in its own syntax, keeping the README's order:
   - `kitty.md` — `map cmd+x` (no action = pass through; never `discard_event`)
   - `ghostty.md` — `keybind = cmd+arrow_left=unbind`

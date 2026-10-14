@@ -5,6 +5,7 @@ mod command;
 mod config;
 mod edit;
 mod explorer;
+mod field;
 mod group;
 mod layout;
 mod logging;
@@ -15,7 +16,10 @@ mod milestone3_tests;
 #[cfg(test)]
 mod milestone4_tests;
 #[cfg(test)]
+mod milestone5_tests;
+#[cfg(test)]
 mod milestone_tests;
+mod palette;
 mod panic;
 mod paths;
 mod selection;
@@ -30,6 +34,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use buffer::Buffer;
+use config::keymap::{self, Keymap, Platform};
 use workspace::Workspace;
 use workspace::trust::TrustStore;
 
@@ -62,21 +67,9 @@ fn split_position(arg: &str) -> (PathBuf, Option<(usize, usize)>) {
     if Path::new(arg).exists() {
         return (arg.into(), None);
     }
-    let parts: Vec<&str> = arg.rsplitn(3, ':').collect();
-    let num = |s: &str| s.parse::<usize>().ok().filter(|n| *n > 0);
-    match parts.as_slice() {
-        [col, line, path] if !path.is_empty() => match (num(line), num(col)) {
-            (Some(l), Some(c)) => (path.into(), Some((l, c))),
-            _ => match num(col) {
-                Some(l) => (format!("{path}:{line}").into(), Some((l, 1))),
-                None => (arg.into(), None),
-            },
-        },
-        [line, path] if !path.is_empty() => match num(line) {
-            Some(l) => (path.into(), Some((l, 1))),
-            None => (arg.into(), None),
-        },
-        _ => (arg.into(), None),
+    match paths::strip_position(arg) {
+        Some((path, at)) => (path.into(), Some(at)),
+        None => (arg.into(), None),
     }
 }
 
@@ -105,9 +98,13 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    if let Err(e) = logging::init(args.log_level.as_deref()) {
-        eprintln!("red: logging disabled: {e}");
-    }
+    let log = match logging::init(args.log_level.as_deref()) {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            eprintln!("red: logging disabled: {e}");
+            None
+        }
+    };
     let (root, file) = match resolve_target(args.target.as_deref()) {
         Ok(r) => r,
         Err(e) => {
@@ -130,6 +127,8 @@ fn main() -> ExitCode {
     };
     let workspace = Workspace::load(root);
     let trust_store = TrustStore::load(TrustStore::default_path());
+    let platform = Platform::current();
+    let (keymap, keymap_errors) = Keymap::load(&paths::config_dir().join(keymap::FILE_NAME), platform);
 
     let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(r) => r,
@@ -147,6 +146,8 @@ fn main() -> ExitCode {
         .and_then(|mut term| {
             runtime.block_on(async {
                 let mut app = app::App::new(workspace, trust_store, initial, kitty);
+                app.set_keymap(keymap, keymap_errors);
+                app.log = log;
                 app.run(&mut term).await
             })
         });

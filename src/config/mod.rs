@@ -1,3 +1,3 @@
-//! Settings and keybindings. Only built-in defaults until milestone 5.
+//! Settings and keybindings. Keybindings: defaults plus `~/.config/red/keybindings.toml`.
 
 pub mod keymap;

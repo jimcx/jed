@@ -42,6 +42,7 @@ local release = {
   { '1', 'CMD' }, { '2', 'CMD' }, { '3', 'CMD' },
   { '\\', 'CMD' }, { '\\', 'CMD|ALT' },
   { 'RightArrow', 'CMD|ALT' }, { 'LeftArrow', 'CMD|ALT' },
+  { 'p', 'CMD|SHIFT' }, { 'p', 'CMD' },
 }
 config.keys = config.keys or {}
 for _, k in ipairs(release) do
@@ -66,4 +67,5 @@ WezTerm's Cmd+C (copy screen text; Ctrl+Shift+C still copies), Cmd+W and Cmd+1..
 - [ ] Every key in the [table](README.md#cmd-bindings-red-uses) logs with `SUPER`
 - [ ] **Check by hand:** Cmd+Q isn't in WezTerm's default key table, so it may come from the macOS app menu; confirm it reaches red (Ctrl+Q always quits red)
 - [ ] `{ 'e', 'CMD|SHIFT' }` matches: if Cmd+Shift+E doesn't arrive, try `key = 'E'`
+- [ ] **Check by hand:** Cmd+Shift+P opens red's palette, not WezTerm's command palette (WezTerm's own is on Ctrl+Shift+P; if it still grabs Cmd+Shift+P, try `key = 'P'`)
 - [ ] Alt+Left logs `ALT`

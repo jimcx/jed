@@ -67,7 +67,7 @@ impl App {
                     self.request_listing(dir);
                 }
             }
-            Some(_) => self.open_file(path.to_path_buf(), focus),
+            Some(_) => self.open_file(path.to_path_buf(), focus, None),
             None => {}
         }
     }
@@ -138,7 +138,7 @@ impl App {
             FileOp::NewFile(path) => {
                 refresh(self, &path);
                 self.reveal_path(&path);
-                self.open_file(path, true);
+                self.open_file(path, true, None);
             }
             FileOp::NewFolder(path) => {
                 refresh(self, &path);

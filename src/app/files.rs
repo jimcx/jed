@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use ropey::Rope;
+
 use super::{AfterSave, App, AppEvent, Focus, Level, Prompt, SLOW_TASK};
 use crate::buffer::file::LoadError;
 use crate::buffer::pos::{self, DisplayCol};
@@ -12,8 +14,9 @@ use crate::selection::{Selection, Selections};
 use crate::view::View;
 
 impl App {
-    /// Opens `path` in a tab (or switches to its tab). Loading happens off the UI thread.
-    pub(super) fn open_file(&mut self, path: PathBuf, focus: bool) {
+    /// Opens `path` in a tab (or switches to its tab), with the cursor at `goto` (1-based line
+    /// and column) if given. Loading happens off the UI thread.
+    pub(super) fn open_file(&mut self, path: PathBuf, focus: bool, goto: Option<(usize, usize)>) {
         if let Some(id) = self.buffers.find_path(&path) {
             match self.group().find(id) {
                 Some(i) => self.activate_tab(i),
@@ -21,6 +24,13 @@ impl App {
                     self.group_mut().open(id, View::new());
                     self.reveal_active();
                 }
+            }
+            let tab_width = self.settings.tab_width;
+            if let Some(at) = goto
+                && let Some((buf, view)) = self.active_mut()
+            {
+                buf.seal_undo();
+                place_cursor(view, &buf.rope, at, tab_width);
             }
             if focus {
                 self.ui.focus = Focus::Editor;
@@ -33,18 +43,29 @@ impl App {
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let result = Buffer::open(&path);
-            let _ = tx.send(AppEvent::Opened { path, result, focus });
+            let _ = tx.send(AppEvent::Opened {
+                path,
+                result,
+                focus,
+                goto,
+            });
         });
     }
 
-    pub(super) fn opened(&mut self, path: PathBuf, result: Result<Buffer, LoadError>, focus: bool) {
+    pub(super) fn opened(
+        &mut self,
+        path: PathBuf,
+        result: Result<Buffer, LoadError>,
+        focus: bool,
+        goto: Option<(usize, usize)>,
+    ) {
         self.opening.remove(&path);
         match result {
             Ok(buffer) => {
                 if let Some(reason) = &buffer.read_only {
                     self.notify(Level::Warning, format!("{}: read-only, {reason}", buffer.name()));
                 }
-                self.add_buffer(buffer, None, focus);
+                self.add_buffer(buffer, goto, focus);
                 self.reveal_active();
             }
             Err(LoadError::Binary) => self.notify(Level::Error, format!("{}: binary file, not opened", path.display())),
@@ -56,15 +77,8 @@ impl App {
     /// Starts no background work (it runs from `App::new`); callers reveal the file.
     pub(super) fn add_buffer(&mut self, buffer: Buffer, goto: Option<(usize, usize)>, focus: bool) {
         let mut view = View::new();
-        if let Some((line, col)) = goto {
-            let line = line.saturating_sub(1).min(pos::line_count(&buffer.rope) - 1);
-            let at = pos::byte_at_col(
-                &buffer.rope,
-                line,
-                DisplayCol(col.saturating_sub(1)),
-                self.settings.tab_width,
-            );
-            view.selections = Selections::single(Selection::cursor(at));
+        if let Some(at) = goto {
+            place_cursor(&mut view, &buffer.rope, at, self.settings.tab_width);
         }
         let id = self.buffers.insert(buffer);
         self.group_mut().open(id, view);
@@ -254,4 +268,12 @@ impl App {
             }
         }
     }
+}
+
+/// Puts a single cursor at a 1-based line and display column (both clamped) and scrolls to it.
+pub(super) fn place_cursor(view: &mut View, rope: &Rope, (line, col): (usize, usize), tab_width: usize) {
+    let line = line.saturating_sub(1).min(pos::line_count(rope) - 1);
+    let at = pos::byte_at_col(rope, line, DisplayCol(col.saturating_sub(1)), tab_width);
+    view.selections = Selections::single(Selection::cursor(at));
+    view.reveal_cursor = true;
 }

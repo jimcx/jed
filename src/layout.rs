@@ -300,6 +300,15 @@ pub struct HitMap {
     pub explorer_rows: Rect,
     pub groups: Vec<GroupHit>,
     pub dividers: Vec<Divider>,
+    /// The palette, when open; it takes every mouse event.
+    pub palette: Option<PaletteHit>,
+}
+
+/// The palette box, and its list area: row `i` on screen is row `scroll + i`.
+#[derive(Debug, Clone, Copy)]
+pub struct PaletteHit {
+    pub area: Rect,
+    pub rows: Rect,
 }
 
 /// One editor group as drawn: tab bar, editor, and the text area inside it.
@@ -491,6 +500,7 @@ mod tests {
             explorer_rows: Rect::new(3, 2, 24, 27),
             groups,
             dividers,
+            palette: None,
         };
         assert_eq!(map.hit(1, 1), Hit::Icon(SidePanel::Explorer));
         assert_eq!(map.hit(27, 5), Hit::SideBorder);

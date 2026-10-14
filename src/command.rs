@@ -1,4 +1,6 @@
-//! Every user action is a named command; keybindings (and later the palette) go through these.
+//! Every user action is a named command; keybindings and the palette go through these.
+
+use ExplorerCommand as X;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Motion {
@@ -15,6 +17,23 @@ pub enum Motion {
     DocEnd,
     PageUp,
     PageDown,
+}
+
+impl Motion {
+    pub const ALL: [Motion; 12] = [
+        Motion::Left,
+        Motion::Right,
+        Motion::Up,
+        Motion::Down,
+        Motion::WordLeft,
+        Motion::WordRight,
+        Motion::LineStart,
+        Motion::LineEnd,
+        Motion::DocStart,
+        Motion::DocEnd,
+        Motion::PageUp,
+        Motion::PageDown,
+    ];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -52,7 +71,20 @@ pub enum Command {
     SplitRight,
     SplitDown,
     Explorer(ExplorerCommand),
+    /// Command palette: every command, with its binding.
+    ShowCommands,
+    /// Quick open a file (fuzzy).
+    QuickOpen,
+    GoToLine,
+    ManageWorkspaceTrust,
+    OpenLogFile,
+    SetLogLevel,
+    /// Keys inside the palette.
+    Palette(PaletteCommand),
 }
+
+/// Focus-group commands listed in the palette and accepted in keybindings (as VS Code: 1 to 8).
+const PALETTE_GROUPS: u8 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExplorerCommand {
@@ -76,7 +108,104 @@ pub enum ExplorerCommand {
     Delete,
 }
 
+impl ExplorerCommand {
+    pub const ALL: [ExplorerCommand; 14] = [
+        X::Up,
+        X::Down,
+        X::PageUp,
+        X::PageDown,
+        X::First,
+        X::Last,
+        X::Left,
+        X::Right,
+        X::Open,
+        X::Preview,
+        X::NewFile,
+        X::NewFolder,
+        X::Rename,
+        X::Delete,
+    ];
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PaletteCommand {
+    Next,
+    Previous,
+    PageDown,
+    PageUp,
+    /// Run, open or pick the selected row.
+    Accept,
+    Close,
+}
+
+impl PaletteCommand {
+    pub const ALL: [PaletteCommand; 6] = [
+        PaletteCommand::Next,
+        PaletteCommand::Previous,
+        PaletteCommand::PageDown,
+        PaletteCommand::PageUp,
+        PaletteCommand::Accept,
+        PaletteCommand::Close,
+    ];
+}
+
 impl Command {
+    /// Every command, in a stable order: what the palette lists and keybindings can name.
+    pub fn all() -> Vec<Command> {
+        let mut all = Vec::new();
+        for motion in Motion::ALL {
+            for select in [false, true] {
+                all.push(Command::Move { motion, select });
+            }
+        }
+        all.extend([
+            Command::DeleteLeft,
+            Command::DeleteRight,
+            Command::DeleteWordLeft,
+            Command::DeleteWordRight,
+            Command::DeleteToLineStart,
+            Command::InsertNewline,
+            Command::InsertTab,
+            Command::SelectAll,
+            Command::CancelSelection,
+            Command::Undo,
+            Command::Redo,
+            Command::Copy,
+            Command::Cut,
+            Command::Paste,
+            Command::Save,
+            Command::Quit,
+            Command::CloseTab,
+            Command::NextTab,
+            Command::PrevTab,
+            Command::ToggleSidebar,
+            Command::FocusExplorer,
+        ]);
+        all.extend((1..=PALETTE_GROUPS).map(Command::FocusGroup));
+        all.extend([Command::SplitRight, Command::SplitDown]);
+        all.extend(ExplorerCommand::ALL.map(Command::Explorer));
+        all.extend([
+            Command::ShowCommands,
+            Command::QuickOpen,
+            Command::GoToLine,
+            Command::ManageWorkspaceTrust,
+            Command::OpenLogFile,
+            Command::SetLogLevel,
+        ]);
+        all.extend(PaletteCommand::ALL.map(Command::Palette));
+        all
+    }
+
+    /// The command with this stable name (as used in `keybindings.toml`).
+    pub fn from_name(name: &str) -> Option<Command> {
+        Command::all().into_iter().find(|c| c.name() == name)
+    }
+
+    /// Whether the palette lists it: everything except the palette's own keys.
+    pub fn in_palette(&self) -> bool {
+        !matches!(self, Command::Palette(_))
+    }
+
     /// Stable name, used in logs, keybinding config and the palette.
     pub fn name(&self) -> String {
         match self {
@@ -124,22 +253,199 @@ impl Command {
             Command::Explorer(c) => format!(
                 "explorer.{}",
                 match c {
-                    ExplorerCommand::Up => "up",
-                    ExplorerCommand::Down => "down",
-                    ExplorerCommand::PageUp => "pageUp",
-                    ExplorerCommand::PageDown => "pageDown",
-                    ExplorerCommand::First => "first",
-                    ExplorerCommand::Last => "last",
-                    ExplorerCommand::Left => "collapse",
-                    ExplorerCommand::Right => "expand",
-                    ExplorerCommand::Open => "open",
-                    ExplorerCommand::Preview => "preview",
-                    ExplorerCommand::NewFile => "newFile",
-                    ExplorerCommand::NewFolder => "newFolder",
-                    ExplorerCommand::Rename => "rename",
-                    ExplorerCommand::Delete => "delete",
+                    X::Up => "up",
+                    X::Down => "down",
+                    X::PageUp => "pageUp",
+                    X::PageDown => "pageDown",
+                    X::First => "first",
+                    X::Last => "last",
+                    X::Left => "collapse",
+                    X::Right => "expand",
+                    X::Open => "open",
+                    X::Preview => "preview",
+                    X::NewFile => "newFile",
+                    X::NewFolder => "newFolder",
+                    X::Rename => "rename",
+                    X::Delete => "delete",
+                }
+            ),
+            Command::ShowCommands => "palette.showCommands".into(),
+            Command::QuickOpen => "palette.quickOpen".into(),
+            Command::GoToLine => "palette.goToLine".into(),
+            Command::ManageWorkspaceTrust => "workspace.manageTrust".into(),
+            Command::OpenLogFile => "log.open".into(),
+            Command::SetLogLevel => "log.setLevel".into(),
+            Command::Palette(c) => format!(
+                "palette.{}",
+                match c {
+                    PaletteCommand::Next => "next",
+                    PaletteCommand::Previous => "previous",
+                    PaletteCommand::PageDown => "pageDown",
+                    PaletteCommand::PageUp => "pageUp",
+                    PaletteCommand::Accept => "accept",
+                    PaletteCommand::Close => "close",
                 }
             ),
         }
+    }
+
+    /// What the palette shows, "Category: Action" as VS Code does.
+    pub fn title(&self) -> String {
+        let s = match self {
+            Command::Move { motion, select } => {
+                let m = match motion {
+                    Motion::Left => "Left",
+                    Motion::Right => "Right",
+                    Motion::Up => "Up",
+                    Motion::Down => "Down",
+                    Motion::WordLeft => "Word Left",
+                    Motion::WordRight => "Word Right",
+                    Motion::LineStart => "Line Start",
+                    Motion::LineEnd => "Line End",
+                    Motion::DocStart => "File Start",
+                    Motion::DocEnd => "File End",
+                    Motion::PageUp => "Page Up",
+                    Motion::PageDown => "Page Down",
+                };
+                let verb = if *select { "Select" } else { "Move" };
+                let to = matches!(
+                    motion,
+                    Motion::LineStart | Motion::LineEnd | Motion::DocStart | Motion::DocEnd
+                );
+                return format!("Cursor: {verb} {}{m}", if to { "to " } else { "" });
+            }
+            Command::DeleteLeft => "Edit: Delete Left",
+            Command::DeleteRight => "Edit: Delete Right",
+            Command::DeleteWordLeft => "Edit: Delete Word Left",
+            Command::DeleteWordRight => "Edit: Delete Word Right",
+            Command::DeleteToLineStart => "Edit: Delete to Line Start",
+            Command::InsertNewline => "Edit: Insert Line Break",
+            Command::InsertTab => "Edit: Insert Tab",
+            Command::SelectAll => "Selection: Select All",
+            Command::CancelSelection => "Selection: Cancel Selection",
+            Command::Undo => "Edit: Undo",
+            Command::Redo => "Edit: Redo",
+            Command::Copy => "Edit: Copy",
+            Command::Cut => "Edit: Cut",
+            Command::Paste => "Edit: Paste",
+            Command::Save => "File: Save",
+            Command::Quit => "File: Quit",
+            Command::CloseTab => "View: Close Editor",
+            Command::NextTab => "View: Open Next Editor",
+            Command::PrevTab => "View: Open Previous Editor",
+            Command::ToggleSidebar => "View: Toggle Side Bar Visibility",
+            Command::FocusExplorer => "View: Show Explorer",
+            Command::FocusGroup(n) => return format!("View: Focus Editor Group {n}"),
+            Command::SplitRight => "View: Split Editor Right",
+            Command::SplitDown => "View: Split Editor Down",
+            Command::Explorer(c) => match c {
+                X::Up => "Explorer: Select Previous",
+                X::Down => "Explorer: Select Next",
+                X::PageUp => "Explorer: Page Up",
+                X::PageDown => "Explorer: Page Down",
+                X::First => "Explorer: Select First",
+                X::Last => "Explorer: Select Last",
+                X::Left => "Explorer: Collapse",
+                X::Right => "Explorer: Expand",
+                X::Open => "Explorer: Open",
+                X::Preview => "Explorer: Open, Keep Focus",
+                X::NewFile => "Explorer: New File",
+                X::NewFolder => "Explorer: New Folder",
+                X::Rename => "Explorer: Rename",
+                X::Delete => "Explorer: Delete",
+            },
+            Command::ShowCommands => "Show All Commands",
+            Command::QuickOpen => "Go to File…",
+            Command::GoToLine => "Go to Line…",
+            Command::ManageWorkspaceTrust => "Workspaces: Manage Workspace Trust",
+            Command::OpenLogFile => "Developer: Open Log File",
+            Command::SetLogLevel => "Developer: Set Log Level…",
+            Command::Palette(c) => match c {
+                PaletteCommand::Next => "Palette: Select Next",
+                PaletteCommand::Previous => "Palette: Select Previous",
+                PaletteCommand::PageDown => "Palette: Page Down",
+                PaletteCommand::PageUp => "Palette: Page Up",
+                PaletteCommand::Accept => "Palette: Accept",
+                PaletteCommand::Close => "Palette: Close",
+            },
+        };
+        s.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_are_unique_and_round_trip() {
+        let all = Command::all();
+        let names: std::collections::HashSet<String> = all.iter().map(Command::name).collect();
+        assert_eq!(names.len(), all.len(), "duplicate command names");
+        for c in &all {
+            assert_eq!(Command::from_name(&c.name()), Some(*c));
+        }
+        assert_eq!(Command::from_name("file.nope"), None);
+    }
+
+    /// Which variant a command is. No wildcard arm: a new variant won't compile until it's
+    /// added here, and then `all_lists_every_variant` fails until it's in `Command::all()`.
+    fn variant(c: Command) -> u8 {
+        match c {
+            Command::Move { .. } => 0,
+            Command::DeleteLeft => 1,
+            Command::DeleteRight => 2,
+            Command::DeleteWordLeft => 3,
+            Command::DeleteWordRight => 4,
+            Command::DeleteToLineStart => 5,
+            Command::InsertNewline => 6,
+            Command::InsertTab => 7,
+            Command::SelectAll => 8,
+            Command::CancelSelection => 9,
+            Command::Undo => 10,
+            Command::Redo => 11,
+            Command::Copy => 12,
+            Command::Cut => 13,
+            Command::Paste => 14,
+            Command::Save => 15,
+            Command::Quit => 16,
+            Command::CloseTab => 17,
+            Command::NextTab => 18,
+            Command::PrevTab => 19,
+            Command::ToggleSidebar => 20,
+            Command::FocusExplorer => 21,
+            Command::FocusGroup(_) => 22,
+            Command::SplitRight => 23,
+            Command::SplitDown => 24,
+            Command::Explorer(_) => 25,
+            Command::ShowCommands => 26,
+            Command::QuickOpen => 27,
+            Command::GoToLine => 28,
+            Command::ManageWorkspaceTrust => 29,
+            Command::OpenLogFile => 30,
+            Command::SetLogLevel => 31,
+            Command::Palette(_) => 32,
+        }
+    }
+    const VARIANTS: u8 = 33;
+
+    #[test]
+    fn all_lists_every_variant() {
+        let all = Command::all();
+        let seen: std::collections::BTreeSet<u8> = all.iter().map(|c| variant(*c)).collect();
+        let missing: Vec<u8> = (0..VARIANTS).filter(|v| !seen.contains(v)).collect();
+        assert!(missing.is_empty(), "Command::all() lacks variants {missing:?}");
+        // And every payload: each motion both ways, each explorer and palette key.
+        let count = |v: u8| all.iter().filter(|c| variant(**c) == v).count();
+        assert_eq!(count(0), Motion::ALL.len() * 2);
+        assert_eq!(count(25), ExplorerCommand::ALL.len());
+        assert_eq!(count(32), PaletteCommand::ALL.len());
+    }
+
+    #[test]
+    fn titles_are_unique() {
+        let all = Command::all();
+        let titles: std::collections::HashSet<String> = all.iter().map(Command::title).collect();
+        assert_eq!(titles.len(), all.len(), "two commands share a palette title");
     }
 }

@@ -49,6 +49,8 @@ bindings = [
   { key = "Backslash", mods = "Command|Alt", action = "ReceiveChar" },
   { key = "Right", mods = "Command|Alt", action = "ReceiveChar" },
   { key = "Left", mods = "Command|Alt", action = "ReceiveChar" },
+  { key = "P", mods = "Command|Shift", action = "ReceiveChar" },
+  { key = "P", mods = "Command", action = "ReceiveChar" },
 ]
 ```
 

@@ -472,7 +472,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
    - Terminal snippets: pass Cmd+C / Cmd+X through
    - Done when: copy in red → paste in another app → copy there → paste back into red, both locally and over SSH; empty-selection copy/cut/paste matches VS Code
    - Implemented; automated tests cover the editing rules with an in-memory clipboard. Still to check by hand: the round trip with another app locally (`arboard`) and over SSH (OSC 52), incl. inside tmux
-5. **Palette**: command palette, quick open, keybinding config with contexts — see [Command palette and quick open](#command-palette-and-quick-open), [Keybindings](#keybindings-vs-code-defaults)
+5. ✅ **Palette**: command palette, quick open, keybinding config with contexts — see [Command palette and quick open](#command-palette-and-quick-open), [Keybindings](#keybindings-vs-code-defaults)
    - Needs: named `Command`s (M1), workspace excludes and the explorer's `ignore` walk (M2)
    - Needed by: the find widget and Search view (M6, M7 key contexts), F2 meaning rename-file in the explorer and rename-symbol in the editor (M9), palette commands in M9–M11
    - Command palette over every `Command`, fuzzy via `nucleo`, showing each one's binding
@@ -482,6 +482,9 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
    - Keymaps stay data, chosen at startup (keeps [Basic terminals](#basic-terminals) open)
    - Commands owed from earlier: "Manage Workspace Trust" (M2), "Open Log File", "Set Log Level" ([Logging](#logging))
    - Done when: every command can be run from the palette; a binding in `keybindings.toml` replaces the default and shows in the palette; Esc closes the palette and does nothing else
+   - Also: F1 opens the palette (VS Code default); the explorer hides `.red/` too (shared walker with quick open)
+   - Deferred: live preview for go to line; unbinding in `keybindings.toml`; live reload of `keybindings.toml` (M14); find-widget and search contexts arrive with M6 / M7
+   - Still to check by hand: Cmd+P / Cmd+Shift+P reach red in each terminal (Ghostty and WezTerm palettes, iTerm2 Print menu); quick open speed on a large repo
 6. **Multi-cursor and find**: Cmd+D, Cmd+Shift+L, add above/below, Alt+Click, box select, paste spread across cursors, find/replace in the file — see [Multi-cursor](#multi-cursor), [Editor](#editor)
    - Needs: selection list (M1), clipboard (M4), key contexts (M5)
    - Needed by: workspace search (M7, the matcher), auto-close and auto-indent at every cursor (M8), completion at every cursor (M9)
@@ -536,7 +539,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
 11. **File history**: snapshot on save, history list, compare (diff view), restore — see [File history](#file-history)
     - Needs: the atomic save path (M1), the palette (M5), the diff view (M10), explorer rename (M2)
     - `history` module: `.red/history/` with its `.gitignore`, snapshot after the save's rename, skip duplicates, `[history]` limits
-    - Hide `.red/` in the explorer and ignore watcher events under it (quick open and search already skip it, M5 / M7)
+    - Ignore watcher events under `.red/` (the explorer and quick open already hide it, M5; search skips it, M7)
     - "File History: Show" in the palette, explorer and tab bar; compare; restore as one undo step
     - Done when: a history write failure never fails a save; restore and then undo gives back the exact buffer
 12. **Tasks**: templates, PTY runner, task tabs in the bottom panel — see [Tasks](#tasks-throwaway-terminals)

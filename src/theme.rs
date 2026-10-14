@@ -55,6 +55,11 @@ impl Theme {
             ("editorGroup.border", fg_bg(0x444444, 0x1E1E1E)),
             ("tab.deleted", Style::new().add_modifier(Modifier::CROSSED_OUT)),
             ("statusBar.restricted", fg_bg(0x1E1E1E, 0xCCA700)),
+            (
+                "palette.highlight",
+                Style::new().fg(c(0x2AAAFF)).add_modifier(Modifier::BOLD),
+            ),
+            ("palette.detail", Style::new().fg(c(0x8C8C8C))),
         ]);
         Self { styles }
     }

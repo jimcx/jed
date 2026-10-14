@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ignore::WalkBuilder;
 use ignore::overrides::{Override, OverrideBuilder};
@@ -293,18 +294,25 @@ pub fn excludes(root: &Path, globs: &[String]) -> Override {
     b.build().unwrap_or_else(|_| Override::empty())
 }
 
+/// Never shown, listed or searched: git's store and red's own state (file history).
+const HIDDEN_DIRS: [&str; 2] = [".git", ".red"];
+
+/// The walk the explorer, quick open and (later) search share: `.gitignore` (inside git repos),
+/// the excludes, and never `.git/` or `.red/`. Dotfiles are shown.
+fn walker(dir: &Path, excludes: &Override) -> WalkBuilder {
+    let mut b = WalkBuilder::new(dir);
+    b.hidden(false)
+        .overrides(excludes.clone())
+        .filter_entry(|e| e.depth() == 0 || !HIDDEN_DIRS.iter().any(|h| e.file_name() == *h));
+    b
+}
+
 /// Blocking: one directory's entries, dirs first, case-insensitive.
-/// Applies `.gitignore` (inside git repos), the excludes, and hides `.git`.
 pub fn list_dir(dir: &Path, excludes: &Override) -> std::io::Result<Vec<Entry>> {
     if !dir.is_dir() {
         return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not a directory"));
     }
-    let walker = WalkBuilder::new(dir)
-        .max_depth(Some(1))
-        .hidden(false)
-        .overrides(excludes.clone())
-        .filter_entry(|e| e.file_name() != ".git")
-        .build();
+    let walker = walker(dir, excludes).max_depth(Some(1)).build();
     let mut entries: Vec<Entry> = walker
         .filter_map(Result::ok)
         .filter(|e| e.depth() == 1)
@@ -325,6 +333,22 @@ pub fn list_dir(dir: &Path, excludes: &Override) -> std::io::Result<Vec<Entry>> 
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     Ok(entries)
+}
+
+/// Blocking: every file under `root` the explorer would show, as paths relative to `root`,
+/// passed to `found` as the walk goes. Stops early once `cancel` is set.
+pub fn walk_files(root: &Path, excludes: &Override, cancel: &AtomicBool, mut found: impl FnMut(PathBuf)) {
+    for entry in walker(root, excludes).build() {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        let Ok(entry) = entry else { continue };
+        if entry.file_type().is_some_and(|t| t.is_file())
+            && let Ok(rel) = entry.path().strip_prefix(root)
+        {
+            found(rel.to_path_buf());
+        }
+    }
 }
 
 /// File operations, all blocking: call from `spawn_blocking`.
@@ -389,6 +413,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = crate::workspace::normalize(dir.path());
         fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(root.join(".red/history")).unwrap();
+        fs::write(root.join(".red/history/entries.toml"), "").unwrap();
         fs::create_dir_all(root.join("src/deep")).unwrap();
         fs::create_dir_all(root.join("target")).unwrap();
         fs::create_dir_all(root.join("build")).unwrap();
@@ -411,6 +437,27 @@ mod tests {
         let ex = excludes(&root, &["build/".into(), "*.o".into()]);
         let got = list_dir(&root, &ex).unwrap();
         assert_eq!(names(&got), vec!["src", ".gitignore", "A.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn file_walk_skips_what_the_explorer_skips() {
+        let (_d, root) = tree();
+        fs::write(root.join("target/out.bin"), "").unwrap();
+        fs::write(root.join("build/gen.c"), "").unwrap();
+        let ex = excludes(&root, &["build/".into(), "*.o".into()]);
+        let mut files = Vec::new();
+        walk_files(&root, &ex, &AtomicBool::new(false), |p| {
+            files.push(p.display().to_string())
+        });
+        files.sort();
+        assert_eq!(
+            files,
+            vec![".gitignore", "A.txt", "b.txt", "src/deep/f.rs", "src/main.rs"]
+        );
+
+        let mut none = Vec::new();
+        walk_files(&root, &ex, &AtomicBool::new(true), |p| none.push(p));
+        assert!(none.is_empty(), "cancelled before the first file");
     }
 
     #[test]

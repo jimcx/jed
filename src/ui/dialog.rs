@@ -8,6 +8,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, InputKind, Prompt};
+use crate::workspace::trust::Trust;
 
 /// Lines of commands shown in the trust dialog before "and N more".
 const MAX_TRUST_LINES: usize = 12;
@@ -67,6 +68,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) {
             lines.push(Line::raw(""));
             lines.push(Line::raw(" Trust them only if you trust the authors of this folder."));
             lines.push(Line::raw(" In Restricted mode they won't run; editing still works."));
+            // Reopened from "Manage Workspace Trust": say what was decided before.
+            match app.trust {
+                Trust::Trusted => lines.push(Line::raw(" Currently: trusted.")),
+                Trust::Restricted => lines.push(Line::raw(" Currently: Restricted mode.")),
+                Trust::NotNeeded | Trust::Undecided => {}
+            }
             lines.push(Line::raw(""));
             lines.push(buttons(&[("T", "rust"), ("R", "estricted mode")]));
         }
@@ -85,10 +92,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) {
             lines.push(Line::raw(title));
             lines.push(Line::raw(""));
             lines.push(Line::styled(
-                format!(" {} ", input.text),
+                format!(" {} ", input.field.text),
                 style.patch(app.theme.get("dialog.input")),
             ));
-            cursor = Some((lines.len() - 1, 1 + input.text[..input.cursor].width()));
+            cursor = Some((lines.len() - 1, 1 + input.field.text[..input.field.cursor].width()));
             lines.push(match input.error {
                 Some(e) => Line::styled(format!(" {e}"), style.patch(app.theme.get("dialog.error"))),
                 None => Line::raw(""),

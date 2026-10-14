@@ -2,11 +2,12 @@
 
 use std::path::PathBuf;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 
 use super::{App, FileOp, Level};
 use crate::buffer::BufferId;
 use crate::explorer;
+use crate::field::{Outcome, TextField};
 use crate::layout::GroupId;
 use crate::workspace::trust::Trust;
 
@@ -25,12 +26,10 @@ pub enum InputKind {
     Rename { from: PathBuf },
 }
 
-/// A one-line text field.
+/// A name prompt: a text field plus what the name is for.
 pub struct Input {
     pub kind: InputKind,
-    pub text: String,
-    /// Byte offset, on a char boundary.
-    pub cursor: usize,
+    pub field: TextField,
     pub error: Option<&'static str>,
 }
 
@@ -38,42 +37,20 @@ impl Input {
     pub fn new(kind: InputKind, text: String) -> Self {
         Self {
             kind,
-            cursor: text.len(),
-            text,
+            field: TextField::new(text),
             error: None,
         }
     }
 
     pub fn insert(&mut self, s: &str) {
-        self.text.insert_str(self.cursor, s);
-        self.cursor += s.len();
+        self.field.insert(s);
         self.error = None;
     }
 
-    /// Returns false for keys it doesn't handle.
-    fn key(&mut self, key: KeyEvent) -> bool {
-        let prev = |s: &str, i: usize| s[..i].char_indices().last().map_or(0, |(j, _)| j);
-        let next = |s: &str, i: usize| s[i..].chars().next().map_or(i, |c| i + c.len_utf8());
-        match key.code {
-            KeyCode::Char(c) if (key.modifiers - KeyModifiers::SHIFT).is_empty() => self.insert(&c.to_string()),
-            KeyCode::Backspace if self.cursor > 0 => {
-                let p = prev(&self.text, self.cursor);
-                self.text.replace_range(p..self.cursor, "");
-                self.cursor = p;
-                self.error = None;
-            }
-            KeyCode::Delete if self.cursor < self.text.len() => {
-                let n = next(&self.text, self.cursor);
-                self.text.replace_range(self.cursor..n, "");
-                self.error = None;
-            }
-            KeyCode::Left => self.cursor = prev(&self.text, self.cursor),
-            KeyCode::Right => self.cursor = next(&self.text, self.cursor),
-            KeyCode::Home => self.cursor = 0,
-            KeyCode::End => self.cursor = self.text.len(),
-            _ => return false,
+    fn key(&mut self, key: KeyEvent) {
+        if self.field.key(key) == Outcome::Edited {
+            self.error = None;
         }
-        true
     }
 }
 
@@ -162,7 +139,7 @@ impl App {
     }
 
     fn submit_input(&mut self, mut input: Input) {
-        let name = input.text.trim().to_string();
+        let name = input.field.text.trim().to_string();
         let nested = !matches!(input.kind, InputKind::Rename { .. });
         if let Err(e) = explorer::validate_name(&name, nested) {
             input.error = Some(e);
@@ -200,28 +177,5 @@ impl App {
             "Restricted mode: workspace commands won't run"
         };
         self.notify(Level::Info, text.into());
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
-    #[test]
-    fn input_editing() {
-        let mut i = Input::new(InputKind::NewFile { dir: PathBuf::new() }, "ab".into());
-        i.key(key(KeyCode::Left));
-        i.key(key(KeyCode::Char('é')));
-        assert_eq!((i.text.as_str(), i.cursor), ("aéb", 3));
-        i.key(key(KeyCode::Backspace));
-        i.key(key(KeyCode::Delete));
-        assert_eq!((i.text.as_str(), i.cursor), ("a", 1));
-        i.key(key(KeyCode::Home));
-        i.key(key(KeyCode::Char('x')));
-        assert_eq!(i.text, "xa");
     }
 }

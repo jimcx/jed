@@ -60,7 +60,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     let max_scroll = explorer.rows().len().saturating_sub(explorer.height);
     explorer.scroll = explorer.scroll.min(max_scroll);
     let rows = explorer.rows();
-    let focused = app.ui.focus == Focus::SidePanel && app.prompt.is_none();
+    let focused = app.ui.focus == Focus::SidePanel && app.prompt.is_none() && app.palette.is_none();
     let selected_style = if focused {
         theme.get("list.active")
     } else {

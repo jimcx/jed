@@ -45,6 +45,8 @@ keybind = cmd+backslash=unbind
 keybind = cmd+alt+backslash=unbind
 keybind = cmd+alt+arrow_right=unbind
 keybind = cmd+alt+arrow_left=unbind
+keybind = cmd+shift+p=unbind
+keybind = cmd+p=unbind
 
 # --- red: Option acts as Alt ---
 macos-option-as-alt = true
@@ -52,7 +54,7 @@ macos-option-as-alt = true
 
 Don't unbind `cmd+v`: Ghostty's paste is how text gets into red.
 
-Ghostty defaults that clash with red (macOS): `cmd+a` select all, `cmd+c` copy, `cmd+z`/`cmd+shift+z` undo/redo, `cmd+left`/`cmd+right`/`cmd+backspace` send line-editing control codes, `cmd+up`/`cmd+down` and `cmd+shift+up`/`cmd+shift+down` jump to prompt, `cmd+q` quit, `cmd+w` close split/tab, `cmd+1..3` go to tab, `cmd+alt+arrows` move between splits.
+Ghostty defaults that clash with red (macOS): `cmd+a` select all, `cmd+c` copy, `cmd+z`/`cmd+shift+z` undo/redo, `cmd+left`/`cmd+right`/`cmd+backspace` send line-editing control codes, `cmd+up`/`cmd+down` and `cmd+shift+up`/`cmd+shift+down` jump to prompt, `cmd+q` quit, `cmd+w` close split/tab, `cmd+1..3` go to tab, `cmd+alt+arrows` move between splits, `cmd+shift+p` Ghostty's own command palette (recent releases).
 
 `macos-option-as-alt` already defaults to `true` on the U.S. and U.S. International layouts; setting it makes other layouts behave the same (`left`/`right` limit it to one Option key).
 
@@ -66,4 +68,5 @@ Ghostty's Cmd+C (copy screen text), Cmd+W, Cmd+Q, Cmd+1..3, Cmd+A, Cmd+Z, prompt
 - [ ] Every key in the [table](README.md#cmd-bindings-red-uses) logs with `SUPER`. **Check by hand:** the docs only promise pass-through for *printable* keys; confirm Cmd+arrows and Cmd+Backspace arrive too
 - [ ] **Check by hand:** "bindings in the main menu will trigger before any remapping"; confirm Cmd+Q and Cmd+W reach red and don't still fire the menu items
 - [ ] `cmd+backslash` is spelled right for your Ghostty (try `cmd+\` if Ghostty reports an invalid key)
+- [ ] **Check by hand:** Cmd+Shift+P opens red's palette, not Ghostty's
 - [ ] Alt+Left logs `ALT`

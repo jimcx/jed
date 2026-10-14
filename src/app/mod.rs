@@ -2,11 +2,14 @@
 
 mod files;
 mod mouse;
+mod palette;
 mod prompt;
 mod side;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
@@ -23,6 +26,7 @@ use crate::edit::{self, Settings};
 use crate::explorer::{self, Explorer};
 use crate::group::{Group, Groups};
 use crate::layout::{GroupId, HitMap, SidePanel, SplitDir};
+use crate::palette::{FileMatcher, Palette, Picker};
 use crate::terminal::Term;
 use crate::theme::{self, Theme};
 use crate::view::View;
@@ -30,7 +34,7 @@ use crate::watcher::{self, Watcher};
 use crate::workspace::Workspace;
 use crate::workspace::config::WorkspaceConfig;
 use crate::workspace::trust::{Trust, TrustStore};
-use crate::{panic, ui};
+use crate::{logging, panic, ui};
 
 pub use mouse::ClickTracker;
 pub use prompt::{InputKind, Prompt};
@@ -93,6 +97,8 @@ enum AppEvent {
         path: PathBuf,
         result: Result<Buffer, LoadError>,
         focus: bool,
+        /// 1-based line and column to put the cursor on.
+        goto: Option<(usize, usize)>,
     },
     Listed {
         dir: PathBuf,
@@ -104,6 +110,13 @@ enum AppEvent {
         op: FileOp,
         result: Result<(), String>,
     },
+    /// Quick open's matcher has new results (sent at most once until handled).
+    FilesMatched,
+    /// Quick open's walk finished.
+    FilesWalked {
+        generation: u64,
+    },
+    LogFileFound(Option<PathBuf>),
 }
 
 /// The file to open at startup, with an optional 1-based line and column.
@@ -128,6 +141,15 @@ pub struct App {
     pub settings: Settings,
     pub clipboard: Clipboard,
     pub prompt: Option<Prompt>,
+    /// Command palette / quick open, while open. Below a prompt: a prompt gets keys first.
+    pub palette: Option<Palette>,
+    /// Quick open's file list; kept between openings so its threads are reused.
+    files: Option<FileMatcher>,
+    /// A `FilesMatched` event is queued.
+    files_pending: Arc<AtomicBool>,
+    /// Changes the log filter; `None` when logging is off (and in tests, unless set).
+    pub log: Option<logging::LevelHandle>,
+    pub log_dir: PathBuf,
     pub message: Option<Message>,
     after_save: Option<AfterSave>,
     /// A trust decision is needed but another prompt is open.
@@ -143,6 +165,9 @@ pub struct App {
     opening: HashSet<PathBuf>,
     clicks: ClickTracker,
     drag: Option<mouse::Drag>,
+    /// The last command `execute` ran, for tests.
+    #[cfg(test)]
+    pub last_command: Option<Command>,
 }
 
 impl App {
@@ -173,6 +198,11 @@ impl App {
             #[cfg(test)]
             clipboard: Clipboard::memory(),
             prompt: None,
+            palette: None,
+            files: None,
+            files_pending: Arc::new(AtomicBool::new(false)),
+            log: None,
+            log_dir: logging::log_dir(),
             message: None,
             after_save: None,
             trust_pending: false,
@@ -187,6 +217,8 @@ impl App {
             opening: HashSet::new(),
             clicks: ClickTracker::default(),
             drag: None,
+            #[cfg(test)]
+            last_command: None,
         };
         match initial {
             Some(f) => app.add_buffer(f.buffer, f.goto, true),
@@ -260,6 +292,18 @@ impl App {
         }
     }
 
+    /// Replaces the keymap (the defaults plus `keybindings.toml`), reporting problems loading it.
+    pub fn set_keymap(&mut self, keymap: Keymap, errors: Vec<String>) {
+        self.keymap = keymap;
+        if let Some(first) = errors.first() {
+            let more = match errors.len() {
+                1 => String::new(),
+                n => format!(" (and {} more)", n - 1),
+            };
+            self.notify(Level::Error, format!("{first}{more}"));
+        }
+    }
+
     fn notify(&mut self, level: Level, text: String) {
         match level {
             Level::Info => tracing::info!("{text}"),
@@ -292,6 +336,9 @@ impl App {
     }
 
     fn context(&self) -> Context {
+        if self.palette.is_some() {
+            return Context::Palette;
+        }
         match self.ui.focus {
             Focus::Editor => Context::Editor,
             Focus::SidePanel => Context::Explorer,
@@ -308,6 +355,8 @@ impl App {
                     self.handle_prompt_key(key);
                 } else if let Some(cmd) = self.keymap.lookup(&key, self.context()) {
                     self.execute(cmd);
+                } else if self.palette.is_some() {
+                    self.palette_key(key);
                 } else if let KeyCode::Char(c) = key.code
                     && (key.modifiers - KeyModifiers::SHIFT).is_empty()
                     && self.ui.focus == Focus::Editor
@@ -321,10 +370,13 @@ impl App {
                 tracing::trace!(target: "input", len = text.len(), "paste");
                 if let Some(Prompt::Input(input)) = &mut self.prompt {
                     input.insert(&text.replace(['\r', '\n'], ""));
+                } else if self.prompt.is_none() && self.palette.is_some() {
+                    self.palette_paste(&text);
                 } else if self.prompt.is_none() && self.ui.focus == Focus::Editor {
                     self.paste(&text);
                 }
             }
+            Event::Mouse(m) if self.prompt.is_none() && self.palette.is_some() => self.palette_mouse(m),
             Event::Mouse(m) if self.prompt.is_none() => self.handle_mouse(m),
             _ => {}
         }
@@ -360,6 +412,19 @@ impl App {
     fn execute(&mut self, cmd: Command) {
         let _span = tracing::debug_span!("command", name = %cmd.name()).entered();
         let t = Instant::now();
+        #[cfg(test)]
+        {
+            self.last_command = Some(cmd);
+        }
+        // Anything but the palette's own keys (and reopening it) closes it first, as losing focus does in VS Code.
+        if self.palette.is_some()
+            && !matches!(
+                cmd,
+                Command::Palette(_) | Command::ShowCommands | Command::QuickOpen | Command::GoToLine
+            )
+        {
+            self.close_palette();
+        }
         match cmd {
             Command::Save => {
                 if let Some(tab) = self.group().active_tab() {
@@ -391,6 +456,13 @@ impl App {
             Command::Copy => self.copy(false),
             Command::Cut => self.copy(true),
             Command::Paste => self.paste_clipboard(),
+            Command::ShowCommands => self.open_palette(Picker::QuickOpen, ">"),
+            Command::QuickOpen => self.open_palette(Picker::QuickOpen, ""),
+            Command::GoToLine => self.open_palette(Picker::QuickOpen, ":"),
+            Command::SetLogLevel => self.open_palette(Picker::LogLevel, ""),
+            Command::ManageWorkspaceTrust => self.manage_trust(),
+            Command::OpenLogFile => self.open_log_file(),
+            Command::Palette(c) => self.palette_command(c),
             _ => {
                 if edit::is_edit(cmd) && !self.active_writable() {
                     return;
@@ -477,7 +549,12 @@ impl App {
                 result,
                 elapsed,
             } => self.save_done(buffer, state, result, elapsed),
-            AppEvent::Opened { path, result, focus } => self.opened(path, result, focus),
+            AppEvent::Opened {
+                path,
+                result,
+                focus,
+                goto,
+            } => self.opened(path, result, focus, goto),
             AppEvent::Listed { dir, result } => self.listed(dir, result),
             AppEvent::FsChanged(paths) => {
                 self.fs_pending.extend(paths);
@@ -486,6 +563,9 @@ impl App {
             }
             AppEvent::ConfigLoaded(result) => self.config_loaded(result),
             AppEvent::FileOpDone { op, result } => self.file_op_done(op, result),
+            AppEvent::FilesMatched => self.files_matched(),
+            AppEvent::FilesWalked { generation } => self.files_walked(generation),
+            AppEvent::LogFileFound(path) => self.log_file_found(path),
         }
     }
 

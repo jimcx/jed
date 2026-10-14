@@ -54,6 +54,10 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+alt+backslash` | Split down | everywhere |
 | `cmd+alt+right` | Next tab | everywhere |
 | `cmd+alt+left` | Previous tab | everywhere |
+| `cmd+shift+p` | Command palette | everywhere |
+| `cmd+p` | Quick open (go to file) | everywhere |
+
+The palette is also on F1, and go to line is Ctrl+G (as VS Code on macOS); neither needs a terminal change.
 
 **Leave Cmd+V with the terminal.** red doesn't bind it: the terminal's paste arrives in red as a bracketed paste, which works the same locally and over SSH. Cmd+C and Cmd+X must reach red, since the terminal's own copy takes text off the screen, not red's selection.
 
