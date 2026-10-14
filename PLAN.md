@@ -64,7 +64,7 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
 ## Features
 
 ### Workspace
-- A workspace is a doot directory, optionally with a `.workspace` file (TOML) at its root
+- A workspace is a root directory, optionally with a `.workspace` file (TOML) at its root
 - Opening:
   - `red <dir>`: workspace root is `<dir>`
   - `red <file>` / `red <file>:<line>[:<col>]`: walk up from the file to the nearest `.workspace`; else use the file's directory
@@ -461,7 +461,7 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
 
 Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the `terminal_docs_list_every_cmd_binding` test fails otherwise) — see [Terminals](#terminals).
 
-4. **Clipboard**: copy, cut, paste — see [Clipboard](#clipboard)
+4. ✅ **Clipboard**: copy, cut, paste — see [Clipboard](#clipboard)
    - Needs: selection list and undo grouping (M1), bracketed paste (M1, `edit::paste`)
    - Needed by: multi-cursor copy/paste (M6), line commands (M6)
    - `clipboard` module: `arboard` locally; OSC 52 when `SSH_TTY` is set or `arboard` fails
