@@ -35,6 +35,7 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
 | File watching | `notify` | |
 | Config | TOML via `serde` | `~/.config/red/` |
 | Fuzzy finding | `nucleo` | Cmd/Ctrl+P, command palette |
+| Search | `regex` + `ignore` + `grep-searcher` + `grep-regex` | find in file, Cmd+D, workspace search share one matcher |
 | Task terminals | `portable-pty` + `vt100` + `tui-term` | PTY, VT parser, ratatui widget |
 | Clipboard | `arboard` + OSC 52 | local clipboard; OSC 52 over SSH |
 | Logging | `tracing` + `tracing-subscriber` + `tracing-appender` | file logs, rotation |
@@ -163,6 +164,11 @@ Go back to any earlier save of a file, independent of git.
 - Select with mouse drag, Shift+arrows, double/triple-click
 - Clipboard — see [Clipboard](#clipboard)
 - Find/replace in the file (regex, case, whole word)
+  - Same matcher and options as [Workspace search](#workspace-search) and Cmd+D
+  - Opens seeded with the selection, or the word under the cursor
+  - Highlights every match in view; shows "3 of 41"; Enter / Shift+Enter next / previous
+  - Replace one, or replace all as one undo step
+  - Alt+Enter turns every match into a selection (as VS Code)
 - Auto-indent, bracket matching, auto-close of pairs
 - Line numbers, current-line highlight, soft wrap toggle
 - Minimap: see [Stretch goals](#stretch-goals)
@@ -171,6 +177,10 @@ Go back to any earlier save of a file, independent of git.
 - Local: system clipboard through `arboard`
 - Over SSH (`SSH_TTY` set) or if `arboard` fails: copy through OSC 52
 - Paste from the terminal (Cmd+V) arrives as a bracketed-paste event; handle it the same as clipboard paste
+  - macOS: red leaves Cmd+V to the terminal, so paste works the same locally and over SSH (most terminals block OSC 52 reads)
+  - Linux: Ctrl+V reads `arboard`; the terminal's own Ctrl+Shift+V still arrives as bracketed paste
+  - Cmd+C / Cmd+X must reach red (the terminal's copy would take screen text, not the selection): add them to `docs/terminals/`
+- Copy or cut of a whole line (empty selection) marks the clipboard entry; pasting it inserts above the cursor's line (VS Code behaviour)
 - Copy/cut with an empty selection takes the whole line (VS Code behaviour)
 - Multi-cursor copy/paste rules: see [Multi-cursor](#multi-cursor)
 
@@ -303,10 +313,32 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
 - Out of scope: a general-purpose interactive shell
 - Later: parse compiler errors into the Problems list (`file:line:col`)
 
-### Command palette and search
-- Cmd/Ctrl+Shift+P: command palette
-- Cmd/Ctrl+P: quick open file (fuzzy)
-- Cmd/Ctrl+Shift+F: search across the workspace (`ignore` + `grep-searcher` crates)
+### Command palette and quick open
+- Cmd/Ctrl+Shift+P: command palette — every named `Command`, with its current binding
+- Cmd/Ctrl+P: quick open file (fuzzy); accepts `file:line[:col]` like the command line
+- Ctrl+G: go to line, in the same input widget
+- Quick open skips what the explorer skips: `.gitignore`, `.workspace` excludes, `.red/`
+
+### Workspace search
+- Cmd/Ctrl+Shift+F: Search view in the side panel (the activity bar's Search icon)
+- Modes, toggled by buttons in the input or by key (see [Keybindings](#keybindings-vs-code-defaults)):
+  - Plain text (default): the query matches literally
+  - Case sensitive: off by default
+  - Regex: Rust `regex` syntax; an invalid pattern shows the error under the input and nothing runs
+  - Toggles combine (e.g. case-sensitive regex)
+- Same matcher (`search` module) as find in file, so each option means the same thing in both
+- Scope: workspace root; skips `.gitignore`d files, `.workspace` excludes, `.red/` and binary files
+- Open buffers with unsaved changes are searched from the buffer, not the disk
+- Off the UI thread (`ignore` walker + `grep-searcher` in `spawn_blocking`)
+  - Results stream in as files finish
+  - Typing restarts the search (short debounce) and cancels the running one
+- Results:
+  - Grouped by file with a match count; each line shows its match highlighted
+  - Click or Enter opens the file in the focused group with the match selected
+  - F4 / Shift+F4: next / previous result
+  - Capped at 20,000 matches, with a "results truncated" note (as VS Code)
+- Matches stay within one line in v1
+- Later: replace across files, include/exclude glob fields, whole-word toggle
 
 ## Keybindings (VS Code defaults)
 | Action | macOS | Linux |
@@ -322,6 +354,8 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
 | Split editor right / down | Cmd+\ / Cmd+Alt+\ | Ctrl+\ / Ctrl+Alt+\ |
 | Focus group 1/2/3 | Cmd+1/2/3 | Ctrl+1/2/3 |
 | Find / replace | Cmd+F / Cmd+Alt+F | Ctrl+F / Ctrl+H |
+| Toggle case / whole word / regex (find, search) | Cmd+Alt+C / W / R | Alt+C / W / R |
+| Next / previous search result | F4 / Shift+F4 | F4 / Shift+F4 |
 | Go to line | Ctrl+G | Ctrl+G |
 | Comment line | Cmd+/ | Ctrl+/ |
 | Move line | Alt+Up/Down | Alt+Up/Down |
@@ -356,6 +390,8 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
 - `selection` — selection list type, merge and transform rules; every command works on the list from day one
 - `layout` — tree of splits and groups, maps mouse hits to regions
 - `ui` — ratatui widgets (tree, tabs, editor, status bar, palette)
+- `clipboard` — `arboard` / OSC 52 behind one interface
+- `search` — the one matcher (plain / regex, case, whole word) over a rope; used by find, Cmd+D and workspace search
 - `syntax` — highlighting, cached per line or range
 - `lsp` — client manager, a tokio task per server, channels back into the app
 - `git` — status, diff, stage/unstage files and hunks
@@ -418,19 +454,107 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
    - Panic hook; logging; atomic save
    - Done when: a 1 MB CRLF file can be opened, edited, undone/redone and saved back byte-identical, with no lag; a panic leaves the terminal usable
 2. ✅ **Layout**: workspace root, `.workspace` loading and trust dialog, activity bar, explorer tree, tabs, mouse support
-   - Deferred: "Manage Workspace Trust" (needs the palette, M5), git colouring in the explorer (M8), external changes to open files (Files section)
+   - Deferred: "Manage Workspace Trust" (needs the palette, M5), git colouring in the explorer (M10), external changes to open files (M10)
 3. ✅ **Splits**: editor groups, resizing, focus switching
    - Split down is Cmd+Alt+\\ (no chords, so not VS Code's Cmd+K Cmd+\\)
-   - Deferred: moving tabs between groups, drag-and-drop tabs, keyboard resize of splits
-4. **Highlighting**: grammars and the built-in dark theme
-5. **Palette**: command palette, quick open, keybinding config with contexts
-6. **LSP**: clangd and Python — diagnostics, completion, hover, go to definition
-7. **Multi-cursor**: Cmd+D, Cmd+Shift+L, add above/below, Alt+Click, box select, paste spread across cursors
-8. **Git**: SCM panel, gutter markers, side-by-side diff view, stage/unstage hunks
-9. **File history**: snapshot on save, history list, compare (diff view), restore
-10. **Tasks**: templates, PTY runner, task tabs in the bottom panel
-11. **Sessions**: restore open tabs, splits and layout per workspace
-12. **Polish**: workspace search, settings, performance
+   - Deferred: moving tabs between groups, drag-and-drop tabs, keyboard resize of splits (M14)
+
+Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the `terminal_docs_list_every_cmd_binding` test fails otherwise) — see [Terminals](#terminals).
+
+4. **Clipboard**: copy, cut, paste — see [Clipboard](#clipboard)
+   - Needs: selection list and undo grouping (M1), bracketed paste (M1, `edit::paste`)
+   - Needed by: multi-cursor copy/paste (M6), line commands (M6)
+   - `clipboard` module: `arboard` locally; OSC 52 when `SSH_TTY` is set or `arboard` fails
+   - Copy / cut commands (Cmd+C / Cmd+X); cut is one undo step, like paste
+   - Empty selection copies / cuts the whole line; pasting that line inserts above the cursor's line
+   - Copy works on the whole selection list from the start (joined with newlines), so M6 only adds the paste spreading
+   - Paste: Cmd+V stays with the terminal on macOS (bracketed paste); Ctrl+V reads `arboard` on Linux
+   - Terminal snippets: pass Cmd+C / Cmd+X through
+   - Done when: copy in red → paste in another app → copy there → paste back into red, both locally and over SSH; empty-selection copy/cut/paste matches VS Code
+5. **Palette**: command palette, quick open, keybinding config with contexts — see [Command palette and quick open](#command-palette-and-quick-open), [Keybindings](#keybindings-vs-code-defaults)
+   - Needs: named `Command`s (M1), workspace excludes and the explorer's `ignore` walk (M2)
+   - Needed by: the find widget and Search view (M6, M7 key contexts), F2 meaning rename-file in the explorer and rename-symbol in the editor (M9), palette commands in M9–M11
+   - Command palette over every `Command`, fuzzy via `nucleo`, showing each one's binding
+   - Quick open: walk off the UI thread, fuzzy, `file:line[:col]`; skips `.red/`
+   - Go to line (Ctrl+G) in the same input widget
+   - `keybindings.toml`: user bindings over the defaults, each limited to a context (editor, find widget, palette, explorer, search, …)
+   - Keymaps stay data, chosen at startup (keeps [Basic terminals](#basic-terminals) open)
+   - Commands owed from earlier: "Manage Workspace Trust" (M2), "Open Log File", "Set Log Level" ([Logging](#logging))
+   - Done when: every command can be run from the palette; a binding in `keybindings.toml` replaces the default and shows in the palette; Esc closes the palette and does nothing else
+6. **Multi-cursor and find**: Cmd+D, Cmd+Shift+L, add above/below, Alt+Click, box select, paste spread across cursors, find/replace in the file — see [Multi-cursor](#multi-cursor), [Editor](#editor)
+   - Needs: selection list (M1), clipboard (M4), key contexts (M5)
+   - Needed by: workspace search (M7, the matcher), auto-close and auto-indent at every cursor (M8), completion at every cursor (M9)
+   - `search` module first: plain / regex, case, whole word, matching on the rope without copying it into a string
+     - Cmd+D, Cmd+Shift+L and the find widget all use it
+   - Every command in the multi-cursor table; Cmd+D matching exactly as VS Code
+   - Find/replace widget (Cmd+F / Cmd+Alt+F): case / whole word / regex toggles; replace all is one undo step; Alt+Enter selects every match
+   - Line commands at every cursor: move line (Alt+Up/Down), duplicate line (Shift+Alt+Up/Down)
+   - Paste spreads one line per cursor when the counts match ([Clipboard](#clipboard))
+   - Rendering: extra cursors as reversed cells, a selection background for each, "N selections" in the status bar
+   - Same buffer in several groups (M3): every view's selections still map through multi-cursor edits
+   - Done when: Cmd+Shift+L on a 1 MB file with tens of thousands of matches, then typing, stays smooth; one undo restores the selection list from before; replace-all on that file is one undo step
+7. **Workspace search**: plain text, case-sensitive and regex search across the workspace — see [Workspace search](#workspace-search)
+   - Needs: the `search` matcher (M6), excludes and the walk (M5), the side panel and its Search activity icon (M2)
+   - Needed by: find references can show its results in the same list (M9)
+   - Search view in the side panel; Cmd+Shift+F focuses it, seeded with the selection
+   - Plain text by default; case-sensitive and regex toggles, with the same keys as the find widget
+   - `ignore` + `grep-searcher` in `spawn_blocking`; results stream in; a new query cancels the old one
+   - Dirty buffers searched from memory
+   - Results grouped by file; Enter or click opens the match in the focused group; F4 / Shift+F4 step through
+   - Cap at 20,000 matches
+   - Done when: searching this repo with all three modes gives the same hits as `rg` (with `-F` / `-s` / regex); typing in the query never stalls the UI; an unsaved edit shows up in the results
+8. **Highlighting**: grammars and the built-in dark theme — see [Syntax highlighting](#syntax-highlighting), [Themes](#themes)
+   - Needs: byte-indexed edits (M1) to feed tree-sitter's incremental parse; `theme` keys (M1); multi-cursor (M6) so the language-aware editing below runs at every cursor
+   - Needed by: LSP (M9, language detection gives the `languageId`)
+   - Language detection: file extension, shebang, `.workspace` file associations (`SConstruct` → Python); language mode in the status bar
+   - C/C++ and Python grammars with `highlights.scm`; initial parse off the UI thread, incremental after
+   - Highlight queries on the visible range plus a margin; off past the size limit
+   - Dark+ theme through named keys only; truecolor with 256-colour fallback
+   - Language-aware editing: comment line (Cmd+/), auto-indent, bracket matching, auto-close pairs
+   - Keep [Minimap](#minimap) open: highlight spans can be read for any line range
+   - Done when: typing in a 1 MB C++ file never takes a frame over 16 ms; a newly opened file shows plain text first, then colours, with no freeze
+9. **LSP**: clangd and pyright — see [LSP](#lsp), [Text positions](#text-positions)
+   - Needs: language detection (M8), `LspPos` in `buffer::pos` (M1), workspace trust (M2: servers named in `.workspace` only run when trusted), key contexts (M5), multi-cursor (M6), the results list (M7)
+   - First: check that pyright analyzes files without a `.py` extension when opened with `languageId: python`
+   - One tokio task per server; `positionEncoding: utf-8` with a UTF-16 fallback; incremental `didChange`
+   - Bottom panel built here: Problems list; Cmd+J toggles it (Tasks, M12, adds its own tabs)
+   - Diagnostics as squiggles, in Problems and as counts in the status bar
+   - Completion (inserted at every cursor), hover, go to definition (F12), find references (Shift+F12), rename symbol (F2), format document
+   - SCons: ship the `__builtins__.pyi`
+   - Logging: `lsp::wire` and `lsp::stderr`
+   - Done when: on a C++ project with `compile_commands.json` and on an SCons project, diagnostics follow edits without full-text syncs; all seven features work in both
+10. **Git**: SCM panel, gutter markers, side-by-side diff view, stage/unstage hunks — see [Git](#git-view-and-stage-only)
+    - Needs: the `notify` watcher (M2), off-thread saves with "save in flight" (M1), editor tabs that split (M3), the side panel (M2)
+    - Needed by: file history (M11 reuses the diff view)
+    - `git2` work on a single git thread or a fresh `Repository` per blocking task ([Async](#async-and-blocking-work))
+    - Source Control panel; gutter markers; diff view as an editor tab with next/previous change
+    - Stage / unstage file or hunk, always from disk after any pending save
+    - Owed from M2: git colouring in the explorer; branch in the status bar
+    - Files changed on disk ([Files](#files)), owed from M2: ignore our own saves, reload clean buffers silently, banner for dirty ones (reload / keep mine / show diff, using the diff view), deleted-file tabs
+    - Done when: staging a single hunk from the gutter gives the same index as `git add -p`; changing a file outside red updates the gutter, the panel and the open buffer
+11. **File history**: snapshot on save, history list, compare (diff view), restore — see [File history](#file-history)
+    - Needs: the atomic save path (M1), the palette (M5), the diff view (M10), explorer rename (M2)
+    - `history` module: `.red/history/` with its `.gitignore`, snapshot after the save's rename, skip duplicates, `[history]` limits
+    - Hide `.red/` in the explorer and ignore watcher events under it (quick open and search already skip it, M5 / M7)
+    - "File History: Show" in the palette, explorer and tab bar; compare; restore as one undo step
+    - Done when: a history write failure never fails a save; restore and then undo gives back the exact buffer
+12. **Tasks**: templates, PTY runner, task tabs in the bottom panel — see [Tasks](#tasks-throwaway-terminals)
+    - Needs: workspace trust (M2), the palette (M5), the bottom panel (M9)
+    - Templates from `.workspace` `[tasks]` and `~/.config/red/tasks.toml`, workspace wins on a clash
+    - "Run Task" from the palette; one tab per run; PTY via `portable-pty` + `vt100` + `tui-term`
+    - Exit code shown, output kept until the tab closes; kill a running task
+    - Done when: a colourful build (e.g. `cargo build`) renders as in a real terminal; restricted mode runs no `.workspace` task
+13. **Sessions**: restore open tabs, splits and layout per workspace — see [Workspace](#workspace), [Files](#files)
+    - Needs: the split tree (M3), state paths (M2)
+    - Session state in `~/.local/state/red/`, keyed by workspace path
+    - Crash recovery: back up dirty buffers periodically to `~/.local/state/red/backup/` (the panic hook already writes there); offer restore on next start
+    - Done when: quit and reopen gives back the same tabs, splits, cursors and scroll; killing the terminal loses at most one backup interval of edits
+14. **Polish**: settings, the rest of the editor list, performance
+    - Settings: global `~/.config/red/` plus `.workspace` overrides, live reload
+    - Soft wrap toggle (the view must stop assuming one screen row per line: up/down, mouse hits, scroll)
+    - Owed from M3: move tabs between groups, drag-and-drop tabs, keyboard resize of splits
+    - Performance against the [Goals](#goals): startup time, memory, 1 MB files; check the slow-frame warnings in the log
+    - Done when: no warnings over 16 ms in a day of normal use
 
 ## Stretch goals
 Very low priority. Don't build these yet, but don't make design choices that would block them.
