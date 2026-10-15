@@ -598,7 +598,8 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - Not done: an unclosed `/*` isn't coloured as a comment (tree-sitter error recovery); C macro calls and goto labels; semantic highlighting
        - Still to check by hand: colours against VS Code Dark+; 256-colour mode with `COLORTERM` unset; a big C++ file opening plain then coloured without a stall
      - 8c: comment line (Cmd+/) and auto-close pairs (brackets and quotes, type-over, delete the pair, wrap a selection) at every cursor, from a per-language config (comment tokens, pairs)
-     - 8d: auto-indent (Enter keeps the indent, indents after an opening bracket or Python `:`, outdents on a closing bracket) and bracket matching (highlight the pair at the cursor) at every cursor; marks M8 ✅
+     - 8d: user settings file: `~/.config/red/settings.toml` (`paths::config_dir()`, the same `[settings]` keys as `.workspace`) loaded at startup like `keybindings.toml`, errors reported via notify; `.workspace` `[settings]` override it per key; `auto_close_pairs` (added in 8c) and the other settings work from either. Live reload stays in M14
+     - 8e: auto-indent (Enter keeps the indent, indents after an opening bracket or Python `:`, outdents on a closing bracket) and bracket matching (highlight the pair at the cursor) at every cursor, each with an on / off setting; marks M8 ✅
 9. **LSP**: clangd and pyright — see [LSP](#lsp), [Text positions](#text-positions)
    - Needs: language detection (M8), `LspPos` in `buffer::pos` (M1), workspace trust (M2: servers named in `.workspace` only run when trusted), key contexts (M5), multi-cursor (M6), the results list (M7)
    - First: check that pyright analyzes files without a `.py` extension when opened with `languageId: python`
@@ -639,7 +640,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
     - Tests drive the kitty side through a fake `kitten` on `PATH` (canned `ls` JSON, records its arguments)
     - Done when: quit and reopen gives back the same tabs, splits, cursors and scroll; killing the terminal loses at most one backup interval of edits; picking a recent workspace open in another kitty tab or OS window focuses it, and one not open starts red in a new kitty OS window
 14. **Polish**: settings, the rest of the editor list, performance
-    - Settings: global `~/.config/red/` plus `.workspace` overrides, live reload
+    - Settings: live reload of `settings.toml` and `.workspace` overrides (the files themselves load at startup since M8, 8d)
     - Soft wrap toggle (the view must stop assuming one screen row per line: up/down, mouse hits, scroll)
     - Owed from M3: move tabs between groups, drag-and-drop tabs, keyboard resize of splits
     - Performance against the [Goals](#goals): startup time, memory, 1 MB files; check the slow-frame warnings in the log
