@@ -131,6 +131,10 @@ pub enum Command {
     OpenReplace,
     /// The find widget's commands.
     Find(FindCommand),
+    /// Cmd+Shift+F: show the Search view and focus its query, seeded with the selection.
+    FindInFiles,
+    /// The Search view's commands.
+    Search(SearchCommand),
 }
 
 /// Focus-group commands listed in the palette and accepted in keybindings (as VS Code: 1 to 8).
@@ -235,6 +239,26 @@ impl FindCommand {
     ];
 }
 
+/// The Search view's query input (M7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SearchCommand {
+    ToggleCase,
+    ToggleRegex,
+    /// Enter: search again now (no debounce), e.g. after editing a file.
+    Refresh,
+    /// Esc: back to the editor; the results stay.
+    FocusEditor,
+}
+
+impl SearchCommand {
+    pub const ALL: [SearchCommand; 4] = [
+        SearchCommand::ToggleCase,
+        SearchCommand::ToggleRegex,
+        SearchCommand::Refresh,
+        SearchCommand::FocusEditor,
+    ];
+}
+
 impl Command {
     /// Every command, in a stable order: what the palette lists and keybindings can name.
     pub fn all() -> Vec<Command> {
@@ -295,6 +319,8 @@ impl Command {
         all.extend(PaletteCommand::ALL.map(Command::Palette));
         all.extend([Command::OpenFind, Command::OpenReplace]);
         all.extend(FindCommand::ALL.map(Command::Find));
+        all.push(Command::FindInFiles);
+        all.extend(SearchCommand::ALL.map(Command::Search));
         all
     }
 
@@ -417,6 +443,16 @@ impl Command {
                     FindCommand::Close => "close",
                 }
             ),
+            Command::FindInFiles => "search.findInFiles".into(),
+            Command::Search(c) => format!(
+                "search.{}",
+                match c {
+                    SearchCommand::ToggleCase => "toggleCase",
+                    SearchCommand::ToggleRegex => "toggleRegex",
+                    SearchCommand::Refresh => "refresh",
+                    SearchCommand::FocusEditor => "focusEditor",
+                }
+            ),
         }
     }
 
@@ -532,6 +568,13 @@ impl Command {
                 FindCommand::SwitchField => "Find: Switch Between Find and Replace",
                 FindCommand::Close => "Find: Close",
             },
+            Command::FindInFiles => "Search: Find in Files",
+            Command::Search(c) => match c {
+                SearchCommand::ToggleCase => "Search: Toggle Match Case",
+                SearchCommand::ToggleRegex => "Search: Toggle Use Regular Expression",
+                SearchCommand::Refresh => "Search: Refresh",
+                SearchCommand::FocusEditor => "Search: Back to Editor",
+            },
         };
         s.into()
     }
@@ -615,9 +658,11 @@ mod tests {
             Command::OpenFind => 45,
             Command::OpenReplace => 46,
             Command::Find(_) => 47,
+            Command::FindInFiles => 48,
+            Command::Search(_) => 49,
         }
     }
-    const VARIANTS: u8 = 48;
+    const VARIANTS: u8 = 50;
 
     #[test]
     fn all_lists_every_variant() {
@@ -632,6 +677,7 @@ mod tests {
         assert_eq!(count(32), PaletteCommand::ALL.len());
         assert_eq!(count(40), ColumnMotion::ALL.len());
         assert_eq!(count(47), FindCommand::ALL.len());
+        assert_eq!(count(49), SearchCommand::ALL.len());
     }
 
     #[test]

@@ -5,6 +5,7 @@ mod dialog;
 mod editor;
 mod find;
 mod palette;
+mod search;
 mod side;
 mod status;
 mod tabs;
@@ -28,7 +29,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     hits.icons = activity::render(f, regions.activity, app);
     if let Some(side) = regions.side {
-        hits.explorer_rows = side::render(f, side, app);
+        (hits.explorer_rows, hits.search) = side::render(f, side, app);
     }
 
     let (cells, dividers) = app.groups.tree.layout(regions.editor);

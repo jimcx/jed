@@ -109,7 +109,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
 
 /// One input, scrolled sideways to keep the cursor in view (a placeholder when empty); returns
 /// where its cursor is.
-fn draw_field(
+pub(super) fn draw_field(
     out: &mut ratatui::buffer::Buffer,
     r: Rect,
     field: &TextField,

@@ -31,6 +31,7 @@ mod palette;
 mod panic;
 mod paths;
 mod search;
+mod search_view;
 mod selection;
 mod terminal;
 mod theme;

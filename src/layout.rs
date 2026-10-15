@@ -304,6 +304,14 @@ pub struct HitMap {
     pub palette: Option<PaletteHit>,
     /// The find widget, when shown; it takes clicks on it.
     pub find: Option<FindHit>,
+    /// The Search view, when shown.
+    pub search: Option<SearchHit>,
+}
+
+/// The Search view's option toggles in its input (case, regex).
+#[derive(Debug, Clone, Copy)]
+pub struct SearchHit {
+    pub toggles: [Rect; 2],
 }
 
 /// The find widget: its box, the replace row (if shown) and the three option toggles
@@ -513,6 +521,7 @@ mod tests {
             dividers,
             palette: None,
             find: None,
+            search: None,
         };
         assert_eq!(map.hit(1, 1), Hit::Icon(SidePanel::Explorer));
         assert_eq!(map.hit(27, 5), Hit::SideBorder);

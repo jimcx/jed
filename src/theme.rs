@@ -65,6 +65,15 @@ impl Theme {
             ("palette.detail", Style::new().fg(c(0x8C8C8C))),
             ("find.option", Style::new().fg(c(0x8C8C8C))),
             ("find.option.active", fg_bg(0xFFFFFF, 0x1F6FB0)),
+            // Search view: Dark+'s find highlight (#EA5C0055) blended over the side bar.
+            ("search.match", Style::new().bg(c(0x663719))),
+            (
+                "search.fileName",
+                Style::new().fg(c(0xE7E7E7)).add_modifier(Modifier::BOLD),
+            ),
+            ("search.count", fg_bg(0xFFFFFF, 0x4D4D4D)),
+            ("search.error", Style::new().fg(c(0xF48771))),
+            ("search.warning", Style::new().fg(c(0xCCA700))),
         ]);
         Self { styles }
     }

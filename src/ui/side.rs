@@ -1,13 +1,14 @@
-//! Side panel: explorer tree, or a placeholder for panels not built yet.
+//! Side panel: explorer tree, the Search view (`ui::search`), or a placeholder for panels not
+//! built yet.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::app::{App, Focus};
-use crate::layout::SidePanel;
+use crate::layout::{SearchHit, SidePanel};
 
-/// Draws the panel and returns the area holding explorer rows.
-pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
+/// Draws the panel; returns the area holding explorer rows, and the Search view's hits.
+pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Rect, Option<SearchHit>) {
     let theme = &app.theme;
     let base = theme.get("sideBar");
     let out = f.buffer_mut();
@@ -35,20 +36,24 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
         width: inner_w,
         height: area.height.saturating_sub(2),
     };
+    if app.ui.side_panel == SidePanel::Search {
+        let view = Rect {
+            y: area.y + 1,
+            height: area.height.saturating_sub(1),
+            ..body
+        };
+        return (Rect::default(), super::search::render(f, view, app));
+    }
     if app.ui.side_panel != SidePanel::Explorer {
         let dim = base.patch(theme.get("sideBar.dim"));
-        let when = match app.ui.side_panel {
-            SidePanel::Search => "milestone 12",
-            _ => "milestone 8",
-        };
         out.set_stringn(
             body.x + 2,
             body.y,
-            format!("Coming in {when}"),
+            "Coming in milestone 10 (Git)",
             inner_w.saturating_sub(2) as usize,
             dim,
         );
-        return Rect::default();
+        return (Rect::default(), None);
     }
 
     let header = base.patch(theme.get("sideBar.header"));
@@ -91,5 +96,5 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
         let text = format!("{}{marker}{}", "  ".repeat(row.depth + 1), e.name);
         out.set_stringn(body.x, y, text, body.width as usize, style);
     }
-    body
+    (body, None)
 }

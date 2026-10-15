@@ -31,6 +31,7 @@ use crate::find::{Field, FindWidget};
 use crate::group::{Group, Groups};
 use crate::layout::{GroupId, HitMap, SidePanel, SplitDir};
 use crate::palette::{FileMatcher, Palette, Picker};
+use crate::search_view::SearchView;
 use crate::terminal::Term;
 use crate::theme::{self, Theme};
 use crate::view::View;
@@ -60,9 +61,17 @@ pub struct Message {
     pub level: Level,
 }
 
+/// Which deadline `App::next_timer` woke for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Timer {
+    FsChanges,
+    SearchDebounce,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Editor,
+    /// The side panel: the explorer tree, or the Search view's query input (`ui.side_panel`).
     SidePanel,
     /// The find widget's input (`app.find.field` says which one).
     Find,
@@ -185,6 +194,8 @@ pub struct App {
     pre_event: Option<cursors::PreEvent>,
     /// The last workspace search's results (`None` before the first, or after an invalid regex).
     pub search: Option<crate::workspace_search::Results>,
+    /// The Search view: its query, options, debounce and scroll.
+    pub search_view: SearchView,
     /// The running workspace search; dropping it cancels it.
     search_task: Option<crate::workspace_search::Handle>,
     /// Numbers searches, so results of a replaced one are dropped.
@@ -247,6 +258,7 @@ impl App {
             session_changed: false,
             pre_event: None,
             search: None,
+            search_view: SearchView::default(),
             search_task: None,
             search_generation: 0,
             #[cfg(test)]
@@ -300,16 +312,14 @@ impl App {
                 }
                 self.needs_redraw = false;
             }
-            let deadline = self.fs_deadline;
+            let timer = self.next_timer();
             tokio::select! {
                 ev = events.next() => match ev {
                     Some(ev) => self.handle_event(ev?),
                     None => return Ok(()),
                 },
                 Some(msg) = self.rx.recv() => self.handle_app_event(msg),
-                _ = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now)), if deadline.is_some() => {
-                    self.flush_fs_changes();
-                }
+                t = timer => self.on_timer(t),
             }
             // Drain whatever else is already queued, so a burst becomes one frame.
             // Polled from this task (not `now_or_never`), so the stream keeps our real waker.
@@ -321,6 +331,38 @@ impl App {
                 }
             }
             self.update_crash_snapshot();
+        }
+    }
+
+    /// Sleeps until the earliest pending deadline (the fs-event batch, the Search view's
+    /// debounce), or forever when none is pending; `run` and `settle` both wait on it. The future
+    /// borrows nothing, so it can sit in a `select!` beside `self.rx`.
+    fn next_timer(&self) -> impl Future<Output = Timer> + 'static {
+        let fs = self.fs_deadline.map(|d| (d, Timer::FsChanges));
+        let search = self
+            .search_view
+            .deadline()
+            .map(|d| (tokio::time::Instant::from_std(d), Timer::SearchDebounce));
+        let next = match (fs, search) {
+            (Some(f), Some(s)) => Some(if s.0 < f.0 { s } else { f }),
+            (f, s) => f.or(s),
+        };
+        async move {
+            match next {
+                Some((at, timer)) => {
+                    tokio::time::sleep_until(at).await;
+                    timer
+                }
+                None => std::future::pending().await,
+            }
+        }
+    }
+
+    /// A deadline from `next_timer` passed.
+    fn on_timer(&mut self, timer: Timer) {
+        match timer {
+            Timer::FsChanges => self.flush_fs_changes(),
+            Timer::SearchDebounce => self.search_tick(Instant::now()),
         }
     }
 
@@ -373,6 +415,7 @@ impl App {
         }
         match self.ui.focus {
             Focus::Editor => Context::Editor,
+            Focus::SidePanel if self.ui.side_panel == SidePanel::Search => Context::Search,
             Focus::SidePanel => Context::Explorer,
             Focus::Find if self.find.field == Field::Replace => Context::Replace,
             Focus::Find => Context::Find,
@@ -394,6 +437,8 @@ impl App {
                     self.palette_key(key);
                 } else if self.ui.focus == Focus::Find {
                     self.find_key(key);
+                } else if self.search_focused() {
+                    self.search_key(key);
                 } else if let KeyCode::Char(c) = key.code
                     && (key.modifiers - KeyModifiers::SHIFT).is_empty()
                     && self.ui.focus == Focus::Editor
@@ -411,6 +456,8 @@ impl App {
                     self.palette_paste(&text);
                 } else if self.prompt.is_none() && self.ui.focus == Focus::Find {
                     self.find_paste(&text);
+                } else if self.prompt.is_none() && self.search_focused() {
+                    self.search_paste(&text);
                 } else if self.prompt.is_none() && self.ui.focus == Focus::Editor {
                     self.paste(&text);
                 }
@@ -513,6 +560,8 @@ impl App {
             Command::OpenFind => self.open_find(false),
             Command::OpenReplace => self.open_find(true),
             Command::Find(c) => self.find_command(c),
+            Command::FindInFiles => self.find_in_files(),
+            Command::Search(c) => self.search_command(c),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
             _ => {
@@ -686,7 +735,15 @@ impl App {
         self.should_quit
     }
 
-    /// Handles background results until `done` holds; false after 5 s.
+    /// Handles every background result already queued, without waiting (as the event loop
+    /// would between frames).
+    pub fn pump(&mut self) {
+        while let Ok(msg) = self.rx.try_recv() {
+            self.handle_app_event(msg);
+        }
+    }
+
+    /// Handles background results (and the Search view's debounce) until `done` holds; false after 5 s.
     /// Rechecks every 20 ms too, for conditions outside the app (files written in the background).
     pub async fn settle(&mut self, done: impl Fn(&App) -> bool) -> bool {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -694,10 +751,10 @@ impl App {
             if tokio::time::Instant::now() >= deadline {
                 return false;
             }
-            let fs = self.fs_deadline;
+            let timer = self.next_timer();
             tokio::select! {
                 Some(msg) = self.rx.recv() => self.handle_app_event(msg),
-                _ = tokio::time::sleep_until(fs.unwrap_or(deadline)), if fs.is_some() => self.flush_fs_changes(),
+                t = timer => self.on_timer(t),
                 _ = tokio::time::sleep(Duration::from_millis(20)) => {}
             }
         }

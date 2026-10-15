@@ -63,6 +63,7 @@ impl App {
                     WHEEL_LINES
                 };
                 match hit {
+                    Hit::SidePanel if self.ui.side_panel == SidePanel::Search => self.search_scroll(delta),
                     Hit::ExplorerRow(_) | Hit::SidePanel => self.explorer.scroll_by(delta),
                     // Scrolls the group under the mouse, without focusing it.
                     Hit::Editor(g) => {
@@ -152,6 +153,7 @@ impl App {
                     self.toggle_or_open(&entry.0, count >= 2);
                 }
             }
+            Hit::SidePanel if self.ui.side_panel == SidePanel::Search => self.search_click(m),
             Hit::ExplorerRow(_) | Hit::SidePanel => self.ui.focus = Focus::SidePanel,
             Hit::Divider(i) => self.drag = self.hits.dividers.get(i).cloned().map(Drag::Divider),
             Hit::Tab(g, i) => {

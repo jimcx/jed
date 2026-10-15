@@ -1,5 +1,5 @@
 //! Key combos to commands. Keymaps are data; commands never look at keys.
-//! A binding applies in one context (editor, explorer, palette, find, replace) or everywhere.
+//! A binding applies in one context (editor, explorer, palette, find, replace, search) or everywhere.
 //! The defaults are VS Code's; `keybindings.toml` replaces bindings command by command.
 
 use std::collections::{HashMap, HashSet};
@@ -8,7 +8,9 @@ use std::path::Path;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
 
-use crate::command::{ColumnMotion, Command, ExplorerCommand as X, FindCommand as F, Motion, PaletteCommand as P};
+use crate::command::{
+    ColumnMotion, Command, ExplorerCommand as X, FindCommand as F, Motion, PaletteCommand as P, SearchCommand as S,
+};
 
 pub const FILE_NAME: &str = "keybindings.toml";
 
@@ -163,15 +165,18 @@ pub enum Context {
     Find,
     /// Its replace input has the focus; bindings not found here come from `Find`.
     Replace,
+    /// The Search view's query input has the focus.
+    Search,
 }
 
 impl Context {
-    const ALL: [(Context, &'static str); 5] = [
+    const ALL: [(Context, &'static str); 6] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
         (Context::Find, "find"),
         (Context::Replace, "replace"),
+        (Context::Search, "search"),
     ];
 
     fn parse(name: &str) -> Option<Context> {
@@ -507,6 +512,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Char('w'), cmd, Command::CloseTab),
         (KeyCode::Char('b'), cmd, Command::ToggleSidebar),
         (KeyCode::Char('e'), cmd | shift, Command::FocusExplorer),
+        (KeyCode::Char('f'), cmd | shift, Command::FindInFiles),
         (KeyCode::Char('1'), cmd, Command::FocusGroup(1)),
         (KeyCode::Char('2'), cmd, Command::FocusGroup(2)),
         (KeyCode::Char('3'), cmd, Command::FocusGroup(3)),
@@ -548,6 +554,14 @@ fn defaults(platform: Platform) -> Vec<Binding> {
     find.extend(find_keys);
     let replace = [(KeyCode::Enter, none, Command::Find(F::ReplaceOne))];
 
+    // The Search view's input: the find widget's toggle keys (no whole word in v1).
+    let search = [
+        (KeyCode::Char('c'), toggle, S::ToggleCase),
+        (KeyCode::Char('r'), toggle, S::ToggleRegex),
+        (KeyCode::Enter, none, S::Refresh),
+        (KeyCode::Esc, none, S::FocusEditor),
+    ];
+
     let bind = |code, mods, context, command| Binding {
         combo: KeyCombo { code, mods },
         context,
@@ -571,6 +585,11 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         replace
             .into_iter()
             .map(|(k, m, c)| bind(k, m, Some(Context::Replace), c)),
+    );
+    out.extend(
+        search
+            .into_iter()
+            .map(|(k, m, c)| bind(k, m, Some(Context::Search), Command::Search(c))),
     );
     out
 }
@@ -668,6 +687,34 @@ mod tests {
             mac.binding_for(Command::Find(F::Next)).map(|k| k.label()).as_deref(),
             Some("F3")
         );
+    }
+
+    #[test]
+    fn search_context() {
+        for platform in [Platform::MacOs, Platform::Linux] {
+            let km = Keymap::default_for(platform);
+            let (cmd, toggle) = if platform == Platform::MacOs {
+                (KeyModifiers::SUPER, KeyModifiers::SUPER | KeyModifiers::ALT)
+            } else {
+                (KeyModifiers::CONTROL, KeyModifiers::ALT)
+            };
+            let s = Context::Search;
+            let f = key(KeyCode::Char('f'), cmd | KeyModifiers::SHIFT);
+            assert_eq!(km.lookup(&f, s), Some(Command::FindInFiles));
+            assert_eq!(km.lookup(&f, Context::Editor), Some(Command::FindInFiles));
+            let c = key(KeyCode::Char('c'), toggle);
+            assert_eq!(km.lookup(&c, s), Some(Command::Search(S::ToggleCase)));
+            assert_eq!(km.lookup(&c, Context::Editor), Some(Command::Find(F::ToggleCase)));
+            let r = key(KeyCode::Char('r'), toggle);
+            assert_eq!(km.lookup(&r, s), Some(Command::Search(S::ToggleRegex)));
+            // No whole-word toggle in v1: the key does nothing in the input.
+            assert_eq!(km.lookup(&key(KeyCode::Char('w'), toggle), s), None);
+            let esc = key(KeyCode::Esc, KeyModifiers::NONE);
+            assert_eq!(km.lookup(&esc, s), Some(Command::Search(S::FocusEditor)));
+            // Explorer keys stay in the explorer; typing goes to the input.
+            assert_eq!(km.lookup(&key(KeyCode::Delete, KeyModifiers::NONE), s), None);
+            assert_eq!(km.lookup(&key(KeyCode::Char('x'), KeyModifiers::NONE), s), None);
+        }
     }
 
     #[test]

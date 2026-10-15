@@ -543,7 +543,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
    - Needs: the `search` matcher (M6), excludes and the walk (M5), the side panel and its Search activity icon (M2)
    - Needed by: find references can show its results in the same list (M9)
    - Search view in the side panel; Cmd+Shift+F focuses it, seeded with the selection
-   - Plain text by default; case-sensitive and regex toggles, with the same keys as the find widget (Cmd+Alt+C/W/R, Alt+C/W/R on Linux; a `search` key context like M6's `find` / `replace`)
+   - Plain text by default; case-sensitive and regex toggles, with the same keys as the find widget (Cmd+Alt+C/R, Alt+C/R on Linux; whole word is "Later"; a `search` key context like M6's `find` / `replace`)
    - `ignore` + `grep-searcher` in `spawn_blocking`; results stream in; a new query cancels the old one
    - Dirty buffers searched from memory
    - Results grouped by file; Enter or click opens the match in the focused group; F4 / Shift+F4 step through
@@ -557,7 +557,13 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - `Matcher::new_single_line` (a pattern naming a line break matches nothing) and `Matcher::each_in_line` (grep_matcher's `find_iter` is quadratic on long lines)
        - Checked by hand against `rg --count-matches` on this repo (8 patterns, three modes): identical
        - M6's debug-only timing bounds raised (5 s; typing 900 ms, under the 1 s undo-grouping pause); release budgets unchanged
-     - 7b: Search view: the side panel's Search activity icon and view, a query `TextField` with case / regex toggle buttons, a `search` key context (Cmd+Alt+C/W/R, Alt+C/W/R on Linux), Cmd+Shift+F focuses it seeded with the selection; typing restarts the search after a short debounce and cancels the old one; results drawn grouped by file with counts and the match highlighted; regex error under the input; "results truncated" note
+     - ✅ 7b: Search view: the side panel's Search activity icon and view, a query `TextField` with case / regex toggle buttons, a `search` key context (Cmd+Alt+C/R, Alt+C/R on Linux), Cmd+Shift+F focuses it seeded with the selection; typing restarts the search after a short debounce and cancels the old one; results drawn grouped by file with counts and the match highlighted; regex error under the input; "results truncated" note
+       - `search_view.rs` (model: query, own case / regex options separate from the find widget's, error, 150 ms debounce, scroll anchored on (file, row), line preview) and `ui/search.rs`; `Focus::SidePanel` maps to `Context::Search` while the panel shows Search
+       - Commands `search.findInFiles` (Cmd+Shift+F; seeds from a one-line selection, else re-runs the last query), `search.toggleCase` / `search.toggleRegex`, `search.refresh` (Enter), `search.focusEditor` (Esc); clickable `Aa` / `.*`; mouse wheel scrolls
+       - Timers: `App::next_timer` / `on_timer` serve both the fs debounce and the search debounce, in `run` and `settle` alike
+       - 10 MB workspace: a query key + frame 0.4 ms avg, 2.3 ms worst (release)
+       - Not done: whole-word toggle, collapsing file rows (later)
+       - Still to check by hand: Cmd+Shift+F reaches red in each terminal (iTerm2 may bind ⇧⌘F to Find Globally; WezTerm may need `key = 'F'`); on Linux Ctrl+Shift+F needs the kitty protocol (else it arrives as Ctrl+F, the find widget)
      - 7c: navigating results: Up/Down in the list, Enter or click opens the match in the focused group with it selected, F4 / Shift+F4 step through results from anywhere; end-to-end "done when" tests (the three modes, an unsaved edit in the results, typing never stalls); marks M7 ✅
 8. **Highlighting**: grammars and the built-in dark theme — see [Syntax highlighting](#syntax-highlighting), [Themes](#themes)
    - Needs: byte-indexed edits (M1) to feed tree-sitter's incremental parse; `theme` keys (M1); multi-cursor (M6) so the language-aware editing below runs at every cursor

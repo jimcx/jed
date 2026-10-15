@@ -1,6 +1,6 @@
 //! Workspace search: every file under the root that the explorer would show (`.gitignore`,
 //! `.workspace` excludes, never `.git/` or `.red/`), searched with the `search::Matcher` find in
-//! file uses, off the UI thread. No drawing here: the Search view (7b) draws `Results`.
+//! file uses, off the UI thread. No drawing here: the Search view (`ui::search`) draws `Results`.
 //!
 //! - The walk is `explorer::walker`, run in parallel; each file is read whole and searched with
 //!   `grep-searcher`. Binary files are skipped by the buffer's own rule (`file::looks_binary`: a
@@ -70,7 +70,6 @@ pub struct LineMatch {
 
 impl LineMatch {
     /// The matches as offsets into `text`, clipped to it (what the Search view highlights).
-    #[allow(dead_code)] // drawn by the Search view (7b)
     pub fn text_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
         let (from, to) = (self.text_start, self.text_start + self.text.len());
         self.ranges
@@ -110,7 +109,6 @@ pub struct Batch {
 pub struct Results {
     /// Which search these belong to; batches of any other are dropped.
     pub generation: u64,
-    #[allow(dead_code)] // shown by the Search view (7b)
     pub query: Query,
     /// Sorted by path.
     pub files: Vec<FileMatches>,
@@ -171,7 +169,7 @@ pub struct Handle {
 }
 
 impl Handle {
-    #[allow(dead_code)] // the Search view (7b) may cancel without starting another search
+    #[allow(dead_code)] // no caller yet: starting another search drops (and so cancels) the handle
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
