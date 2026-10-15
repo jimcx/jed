@@ -1,4 +1,4 @@
-//! The text area: gutter, text, selections, cursors.
+//! The text area: gutter, text (syntax colours), selections, find matches, cursors.
 
 use std::collections::HashSet;
 
@@ -26,15 +26,15 @@ pub struct Overlay<'a> {
 pub fn render(
     f: &mut Frame,
     area: Rect,
-    buf: &Buffer,
+    buf: &mut Buffer,
     view: &mut View,
     theme: &Theme,
     s: &Settings,
     overlay: Overlay,
 ) -> Rect {
     let focused = overlay.focused;
-    let rope = &buf.rope;
     let tab = s.tab_width;
+    let rope = &buf.rope;
     let total = pos::line_count(rope);
     let digits = total.to_string().len().max(3);
     let gutter_w = (digits + 2) as u16;
@@ -69,10 +69,25 @@ pub fn render(
     let gutter = theme.get("gutter");
     let gutter_active = theme.get("gutter.active");
 
+    // Syntax colours: the token's foreground, under selection / find backgrounds. From the
+    // buffer's highlight cache (no query unless the tree changed or the view left the cached lines).
+    let token_styles: Vec<_> = crate::syntax::KEYS.iter().map(|k| theme.get(k)).collect();
+    let last_line = (view.top_line() + view.height).min(total - 1);
+    let spans = buf.syntax.spans(rope, view.top_line()..last_line + 1);
+    let mut ki = 0;
+    let mut token_at = |b: ByteIdx| {
+        while ki < spans.len() && spans[ki].end <= b {
+            ki += 1;
+        }
+        spans
+            .get(ki)
+            .filter(|s| s.start <= b)
+            .map(|s| token_styles[s.highlight.index()])
+    };
+
     let primary = view.selections.primary().head;
     let cursor_line = pos::line_of(rope, primary);
     // Only the selections on screen: there may be tens of thousands.
-    let last_line = (view.top_line() + view.height).min(total - 1);
     let sels = view
         .selections
         .overlapping(pos::line_start(rope, view.top_line()), pos::line_end(rope, last_line));
@@ -140,6 +155,9 @@ pub fn render(
                 break;
             }
             let mut style = row_style;
+            if let Some(token) = token_at(b) {
+                style = style.patch(token);
+            }
             let found = in_match(b);
             if found.is_some() {
                 style = style.patch(find_highlight);

@@ -140,6 +140,7 @@ impl Buffer {
     fn apply(&mut self, changes: &ChangeSet) -> ChangeSet {
         let old = self.syntax.wants_edits().then(|| self.rope.clone());
         let inverse = changes.apply(&mut self.rope);
+        self.syntax.map_highlights(changes);
         if let Some(old) = old {
             self.syntax.edit(changes, &old, &self.rope);
         }

@@ -67,12 +67,12 @@ impl App {
         self.opening.insert(path.clone(), OpenRequest { focus, goto });
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
-            let result = Buffer::open(&path);
+            let result = Buffer::open(&path).map(Box::new);
             let _ = tx.send(AppEvent::Opened { path, result });
         });
     }
 
-    pub(super) fn opened(&mut self, path: PathBuf, result: Result<Buffer, LoadError>) {
+    pub(super) fn opened(&mut self, path: PathBuf, result: Result<Box<Buffer>, LoadError>) {
         let OpenRequest { focus, goto } = self.opening.remove(&path).unwrap_or(OpenRequest {
             focus: false,
             goto: None,
@@ -82,7 +82,7 @@ impl App {
                 if let Some(reason) = &buffer.read_only {
                     self.notify(Level::Warning, format!("{}: read-only, {reason}", buffer.name()));
                 }
-                self.add_buffer(buffer, goto, focus);
+                self.add_buffer(*buffer, goto, focus);
                 self.reveal_active();
             }
             Err(LoadError::Binary) => self.notify(Level::Error, format!("{}: binary file, not opened", path.display())),

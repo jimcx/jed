@@ -38,6 +38,22 @@ pub fn chunk_from(rope: &Rope, at: usize) -> &[u8] {
     &chunk.as_bytes()[at - start..]
 }
 
+/// The bytes from `start` to `end` (clamped to the text), chunk by chunk without copying: how
+/// tree-sitter's query predicates (`#match?`) read a node's text. Byte offsets, no boundary needed.
+pub fn bytes_in(rope: &Rope, start: usize, end: usize) -> impl Iterator<Item = &[u8]> {
+    let end = end.min(rope.len());
+    let mut at = start;
+    std::iter::from_fn(move || {
+        if at >= end {
+            return None;
+        }
+        let chunk = chunk_from(rope, at);
+        let chunk = &chunk[..chunk.len().min(end - at)];
+        at += chunk.len();
+        (!chunk.is_empty()).then_some(chunk)
+    })
+}
+
 /// Screen column: tabs expanded, wide chars count 2, a grapheme cluster is one unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct DisplayCol(pub usize);

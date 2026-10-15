@@ -53,7 +53,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         match group
             .tabs
             .get_mut(active)
-            .and_then(|t| app.buffers.get(t.buffer).map(|b| (t, b)))
+            .and_then(|t| app.buffers.get_mut(t.buffer).map(|b| (t, b)))
         {
             Some((tab, buf)) => {
                 // Only the focused group shows the terminal cursor.

@@ -52,14 +52,18 @@ impl Language {
         }
     }
 
-    /// The grammar's `highlights.scm` queries, in order: C++'s extends C's, so it is C's then its own.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The highlight queries, in order (for the same node a later pattern wins): the grammar's
+    /// `highlights.scm` (C++'s extends C's: C's first), then red's additions (`queries/*.scm`:
+    /// control keywords, built-in types, parameters, … for Dark+'s colours).
     pub fn highlight_queries(self) -> &'static [&'static str] {
+        const C: &str = include_str!("queries/c.scm");
+        const CPP: &str = include_str!("queries/cpp.scm");
+        const PYTHON: &str = include_str!("queries/python.scm");
         match self {
             Language::PlainText => &[],
-            Language::C => &[tree_sitter_c::HIGHLIGHT_QUERY],
-            Language::Cpp => &[tree_sitter_c::HIGHLIGHT_QUERY, tree_sitter_cpp::HIGHLIGHT_QUERY],
-            Language::Python => &[tree_sitter_python::HIGHLIGHTS_QUERY],
+            Language::C => &[tree_sitter_c::HIGHLIGHT_QUERY, C],
+            Language::Cpp => &[tree_sitter_c::HIGHLIGHT_QUERY, tree_sitter_cpp::HIGHLIGHT_QUERY, C, CPP],
+            Language::Python => &[tree_sitter_python::HIGHLIGHTS_QUERY, PYTHON],
         }
     }
 }

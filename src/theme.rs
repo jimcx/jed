@@ -74,6 +74,27 @@ impl Theme {
             ("search.count", fg_bg(0xFFFFFF, 0x4D4D4D)),
             ("search.error", Style::new().fg(c(0xF48771))),
             ("search.warning", Style::new().fg(c(0xCCA700))),
+            // Syntax (the capture keys in `syntax::KEYS`): VS Code Dark+'s token colours.
+            ("comment", Style::new().fg(c(0x6A9955))),
+            ("constant", Style::new().fg(c(0x4FC1FF))),
+            ("constant.builtin", Style::new().fg(c(0x569CD6))),
+            ("constructor", Style::new().fg(c(0x4EC9B0))),
+            ("escape", Style::new().fg(c(0xD7BA7D))),
+            ("function", Style::new().fg(c(0xDCDCAA))),
+            ("keyword", Style::new().fg(c(0x569CD6))),
+            ("keyword.control", Style::new().fg(c(0xC586C0))),
+            ("label", Style::new().fg(c(0xC8C8C8))),
+            ("number", Style::new().fg(c(0xB5CEA8))),
+            ("operator", Style::new().fg(c(0xD4D4D4))),
+            ("property", Style::new().fg(c(0x9CDCFE))),
+            ("punctuation", Style::new().fg(c(0xD4D4D4))),
+            ("punctuation.special", Style::new().fg(c(0x569CD6))),
+            ("string", Style::new().fg(c(0xCE9178))),
+            ("type", Style::new().fg(c(0x4EC9B0))),
+            ("type.builtin", Style::new().fg(c(0x569CD6))),
+            ("variable", Style::new().fg(c(0x9CDCFE))),
+            ("variable.builtin", Style::new().fg(c(0x569CD6))),
+            ("variable.parameter", Style::new().fg(c(0x9CDCFE))),
         ]);
         Self { styles }
     }
@@ -118,6 +139,35 @@ fn to_ansi256(r: u8, g: u8, b: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every highlight key has a colour, distinct in 256-colour mode for the main token kinds.
+    #[test]
+    fn syntax_keys_are_in_the_theme() {
+        for truecolor in [true, false] {
+            let theme = Theme::dark_plus(truecolor);
+            for key in crate::syntax::KEYS {
+                assert!(theme.styles.get(key).and_then(|s| s.fg).is_some(), "{key}");
+            }
+        }
+        let theme = Theme::dark_plus(false);
+        let fg = |k: &str| theme.get(k).fg.unwrap();
+        assert_eq!(fg("keyword"), Color::Indexed(to_ansi256(0x56, 0x9C, 0xD6)));
+        let kinds = [
+            "keyword",
+            "keyword.control",
+            "string",
+            "comment",
+            "number",
+            "type",
+            "function",
+            "variable",
+        ];
+        for (i, a) in kinds.iter().enumerate() {
+            for b in &kinds[i + 1..] {
+                assert_ne!(fg(a), fg(b), "{a} and {b}");
+            }
+        }
+    }
 
     #[test]
     fn ansi256_mapping() {

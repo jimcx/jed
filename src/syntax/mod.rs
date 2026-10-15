@@ -5,7 +5,11 @@
 //! `Syntax::update`, which the event loop calls once per turn. Every change set the buffer applies
 //! reaches `Syntax::edit` (from `Buffer::edit` / `undo` / `redo`), which turns it into tree-sitter
 //! `InputEdit`s. `tree()` is only `Some` when the tree matches the text exactly.
+//!
+//! `spans(rope, lines)` gives the highlight spans for any lines, from a cache that is only
+//! re-queried when the tree changes (see `highlight`).
 
+mod highlight;
 mod language;
 
 use std::sync::Arc;
@@ -15,6 +19,7 @@ use std::time::{Duration, Instant};
 use ropey::Rope;
 use tree_sitter::{InputEdit, ParseOptions, Parser, Point, Tree};
 
+pub use highlight::{KEYS, Span};
 pub use language::{Associations, Language, detect};
 
 use crate::buffer::change::ChangeSet;
@@ -28,9 +33,10 @@ pub const DEFAULT_MAX_BYTES: usize = 8 << 20;
 const INLINE_EDITS: usize = 2048;
 const INLINE_BYTES: usize = 64 << 10;
 /// An incremental re-parse on the UI thread that takes longer than this stops and continues in
-/// the background (1 MB of C++ on a slow x86: 2-4 ms a keystroke, ~11 ms for an unbalanced
-/// bracket; a full re-parse is ~600 ms).
-const INLINE_TIME: Duration = Duration::from_millis(12);
+/// the background (1 MB of C++ on a slow x86: 1-4 ms a keystroke, ~11 ms for an unbalanced
+/// bracket; a full re-parse is ~600 ms). With the highlight query and the frame (~3 ms) on top,
+/// a key's worst frame stays near 10 ms; a re-parse that stops keeps drawing the last colours.
+const INLINE_TIME: Duration = Duration::from_millis(8);
 /// A change set with more changes than this becomes one `InputEdit` spanning them all, or, when
 /// they span more than `INLINE_BYTES`, drops the tree for a fresh background parse (63k cursors
 /// in 1 MB: an edit each costs ~100 ms on the UI thread, one wide edit ~20 ms, dropping it ~0).
@@ -53,6 +59,9 @@ pub struct Syntax {
     /// A tree thrown away by `edit`, freed by the next `ParseJob` (off the UI thread: freeing
     /// 1 MB of C++'s tree takes ~20 ms).
     discard: Option<Tree>,
+    /// Bumped whenever a new current tree is in place: what cached highlights are keyed on.
+    tree_version: u64,
+    highlights: highlight::Highlights,
 }
 
 #[derive(Default)]
@@ -131,6 +140,7 @@ impl Syntax {
         }
         self.language = language;
         self.parser = None;
+        self.highlights.clear();
         self.state = if language.grammar().is_some() {
             State::Wanted
         } else {
@@ -139,12 +149,32 @@ impl Syntax {
     }
 
     /// The parse tree, only while it matches the text exactly.
-    #[cfg_attr(not(test), allow(dead_code))] // until highlighting (8b) draws from it
+    #[cfg_attr(not(test), allow(dead_code))] // drawing reads `spans`; language-aware editing (8c, 8d) reads the tree
     pub fn tree(&self) -> Option<&Tree> {
-        match &self.state {
-            State::Ready { tree, edits: 0, .. } => Some(tree),
-            _ => None,
-        }
+        current(&self.state)
+    }
+
+    /// The highlight spans on lines `lines` of `rope` (the buffer's text): sorted, non-overlapping,
+    /// possibly reaching past the lines. Exact while the tree is current (cached per tree, the
+    /// lines plus `highlight::MARGIN` queried on a miss; very long lines only for their first
+    /// 16 KB); while a re-parse runs, the last spans mapped through the edits since; none before
+    /// the first tree, or without one.
+    pub fn spans(&mut self, rope: &Rope, lines: std::ops::Range<usize>) -> &[Span] {
+        let tree = current(&self.state);
+        self.highlights
+            .spans(self.language, tree, self.tree_version, rope, lines)
+    }
+
+    /// Follows every change set the buffer applies (`Buffer::apply`), so the spans kept for
+    /// drawing while a re-parse runs stay on the same text.
+    pub fn map_highlights(&mut self, changes: &ChangeSet) {
+        self.highlights.edit(changes);
+    }
+
+    /// How many highlight queries have run (the cache's misses).
+    #[cfg(test)]
+    pub fn highlight_queries_run(&self) -> usize {
+        self.highlights.computed
     }
 
     /// The text is over `[settings] syntax_max_bytes`.
@@ -206,6 +236,7 @@ impl Syntax {
                     "over the syntax size limit: no parse tree"
                 );
                 self.state = State::TooLarge;
+                self.highlights.clear();
             }
             return None;
         }
@@ -226,6 +257,7 @@ impl Syntax {
                             edits: 0,
                             bytes: 0,
                         };
+                        self.tree_version += 1;
                         return None;
                     }
                     // Too slow for a frame: finish in the background.
@@ -274,6 +306,9 @@ impl Syntax {
                 for e in &edits {
                     tree.edit(e);
                 }
+                if edits.is_empty() {
+                    self.tree_version += 1;
+                }
                 State::Ready {
                     tree,
                     edits: edits.len(),
@@ -320,6 +355,8 @@ impl ParseJob {
         );
         // Cancelled after it finished: it would be dropped on the UI thread.
         let tree = tree.filter(|_| !self.cancel.load(Ordering::Relaxed));
+        // The first frame with the tree draws colours: compile the query here, not there.
+        highlight::warm(self.language);
         let elapsed = t.elapsed();
         let (ms, bytes) = (elapsed.as_millis() as u64, self.rope.len());
         match &tree {
@@ -331,6 +368,13 @@ impl ParseJob {
             generation: self.generation,
             tree,
         }
+    }
+}
+
+fn current(state: &State) -> Option<&Tree> {
+    match state {
+        State::Ready { tree, edits: 0, .. } => Some(tree),
+        _ => None,
     }
 }
 

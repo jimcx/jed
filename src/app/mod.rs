@@ -111,7 +111,8 @@ enum AppEvent {
     },
     Opened {
         path: PathBuf,
-        result: Result<Buffer, LoadError>,
+        /// Boxed: a `Buffer` is several times bigger than any other event.
+        result: Result<Box<Buffer>, LoadError>,
     },
     Listed {
         dir: PathBuf,
