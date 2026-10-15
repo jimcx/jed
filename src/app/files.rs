@@ -242,7 +242,10 @@ impl App {
         buf.finish_save(state, result.is_ok());
         let path = buf.path.display().to_string();
         match result {
-            Ok(()) => self.notify(Level::Info, format!("Saved {path}")),
+            Ok(()) => {
+                self.lsp.saved(&mut self.buffers, id);
+                self.notify(Level::Info, format!("Saved {path}"));
+            }
             Err(e) => {
                 self.after_save = None;
                 self.notify(Level::Error, format!("Save failed: {path}: {e}"));

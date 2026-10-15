@@ -642,7 +642,13 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - ty 0.0.88 findings: analyzes an extensionless `SConstruct` opened as `python`; honours a root `__builtins__.pyi`; picks UTF-8; pushes `publishDiagnostics` when the client doesn't declare pull support (clangd 21 also picks UTF-8)
        - For 9e on: a server that dies drops its pending requests without responses; callers drop theirs on `Failed` / `Exited`
        - Not done: no "restart language server" command; servers keep running when their files close; unknown ids in `[lsp.*]` aren't reported; quit can hang up to ~2.5 s on a stuck server with no message
-     - 9b: document sync: `didOpen` / `didClose` / `didSave`, incremental `didChange` from each applied `ChangeSet` (ranges in the negotiated encoding via `buffer::pos`), never full text; a fake-server test that applies the changes and compares with the buffer after random edits, undo / redo, multi-cursor
+     - ✅ 9b: document sync: `didOpen` / `didClose` / `didSave`, incremental `didChange` from each applied `ChangeSet` (ranges in the negotiated encoding via `buffer::pos`), never full text; a fake-server test that applies the changes and compares with the buffer after random edits, undo / redo, multi-cursor
+       - `Buffer::apply` records change sets (+ the pre-edit rope) while `track_changes(true)` (a document open on a Running server); `lsp/documents.rs` `Manager::sync_documents` each loop turn: didOpen / didClose (also on rename and language change: close + reopen), one didChange per document per turn, changes last-first within a set, touching changes merged (a lone CR could otherwise become CRLF on the server), >256 changes coalesced into one range; positions by `pos::LspWalker` (one forward pass per set)
+       - Server `textDocumentSync` honoured (none / full / incremental, openClose, save + includeText); didSave sends pending changes first
+       - For 9c on: requests about a document call `lsp.sync_documents` first; `lsp.version(buffer)` is the last version sent
+       - 63k cursors with a server (release): a key 7.6 ms avg / 9.1 ms worst; undo 17 ms
+       - clangd keeps indexing after `exit`: killed after `EXIT_GRACE` (300 ms)
+       - Not done: buffers without a file path (red has none yet); reload-from-disk (M10) must go through `Buffer::edit` so servers see it
      - 9c: diagnostics: `publishDiagnostics` → squiggles in the editor (mapped through edits until the next publish), error / warning counts in the status bar, the diagnostic message on hover of the cursor line (status bar)
      - 9d: bottom panel with the Problems list (Cmd+J toggles, grouped by file, Enter / click opens at the position, next / previous problem)
      - 9e: hover (a popup at the cursor, a command and mouse rest) and go to definition (F12; several locations → the results list)

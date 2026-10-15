@@ -111,6 +111,18 @@ impl ChangeSet {
         self.changes.iter().map(|c| (c.start, c.end, c.text_len()))
     }
 
+    /// Each change as (start, end, new text), in order, in pre-edit coordinates.
+    pub fn changes(&self) -> impl Iterator<Item = (ByteIdx, ByteIdx, &str)> + '_ {
+        self.changes.iter().map(|c| (c.start, c.end, self.text_of(c)))
+    }
+
+    /// The range from the first change's start to the last one's end (pre-edit) and how much
+    /// longer the text gets; `None` when empty.
+    pub fn extent(&self) -> Option<(ByteIdx, ByteIdx, isize)> {
+        let (first, last) = (self.changes.first()?, self.changes.last()?);
+        Some((first.start, last.end, self.changes.iter().map(Span::delta).sum()))
+    }
+
     fn text_of(&self, c: &Span) -> &str {
         &self.text[c.text.clone()]
     }

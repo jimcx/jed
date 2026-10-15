@@ -6,14 +6,22 @@ use crate::syntax::Language;
 
 impl App {
     /// Starts (or stops) servers to match the open files' languages, `.workspace` `[lsp.*]` and
-    /// trust. Runs each event-loop turn, but only does anything after `servers_dirty` is set (a
-    /// buffer added, languages re-detected, `.workspace` reloaded, trust decided) and once
-    /// `start` has run.
+    /// trust, then brings their documents up to date (`didOpen` / `didChange` / `didClose`:
+    /// `lsp::documents`). Runs each event-loop turn once `start` has run; the servers only after
+    /// `servers_dirty` is set (a buffer added, languages re-detected, `.workspace` reloaded,
+    /// trust decided).
     pub(super) fn sync_servers(&mut self) {
-        if !self.servers_dirty || !self.lsp.started() {
+        if !self.lsp.started() {
             return;
         }
-        self.servers_dirty = false;
+        if self.servers_dirty {
+            self.servers_dirty = false;
+            self.start_servers();
+        }
+        self.lsp.sync_documents(&mut self.buffers);
+    }
+
+    fn start_servers(&mut self) {
         let mut languages: Vec<Language> = Vec::new();
         for (_, buf) in self.buffers.iter() {
             let l = buf.syntax.language();

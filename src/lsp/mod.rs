@@ -4,6 +4,7 @@
 //! state, and shutting them all down on quit.
 
 pub mod config;
+pub mod documents;
 #[cfg(test)]
 pub mod fake;
 pub mod rpc;
@@ -21,12 +22,14 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 pub use config::{Builtins, Resolved, ServerConfig};
+use documents::Documents;
 use rpc::RpcError;
 pub use server::{Launcher, ProcessLauncher, SHUTDOWN_TIMEOUT};
 use server::{Task, ToServer};
 
 use crate::app::Level;
 use crate::buffer::pos::PosEncoding;
+use crate::buffer::{BufferId, Buffers};
 use crate::syntax::Language;
 use crate::workspace::config::WorkspaceConfig;
 use crate::workspace::trust::Trust;
@@ -79,7 +82,6 @@ pub enum Event {
 #[derive(Debug)]
 pub enum State {
     Starting,
-    #[allow(dead_code)] // `encoding` read from document sync (9b) on, `capabilities` later
     Running {
         encoding: PosEncoding,
         capabilities: Box<ServerCapabilities>,
@@ -103,7 +105,7 @@ pub struct Server {
 
 impl Server {
     /// The negotiated position encoding, once initialized.
-    #[cfg_attr(not(test), allow(dead_code))] // first used by document sync (9b)
+    #[cfg_attr(not(test), allow(dead_code))] // tests; requests from 9c on
     pub fn encoding(&self) -> Option<PosEncoding> {
         match self.state {
             State::Running { encoding, .. } => Some(encoding),
@@ -126,7 +128,6 @@ impl Server {
     }
 
     /// Sends a notification (queued in the task until the server is initialized).
-    #[cfg_attr(not(test), allow(dead_code))] // first used by document sync (9b)
     pub fn notify(&self, method: &str, params: Value) {
         let _ = self.tx.send(ToServer::Notify {
             method: method.into(),
@@ -156,6 +157,8 @@ pub struct Manager {
     /// Servers being shut down because their config changed; awaited on quit.
     stopping: Vec<JoinHandle<()>>,
     next_server: u64,
+    /// Buffers open on servers (`textDocument/didOpen` …).
+    docs: Documents,
 }
 
 impl Manager {
@@ -167,6 +170,7 @@ impl Manager {
             servers: Vec::new(),
             stopping: Vec::new(),
             next_server: 0,
+            docs: Documents::default(),
         }
     }
 
@@ -190,7 +194,7 @@ impl Manager {
     }
 
     /// The server for `language`, in any state.
-    #[cfg_attr(not(test), allow(dead_code))] // first used by document sync (9b)
+    #[cfg_attr(not(test), allow(dead_code))] // tests; requests from 9c on
     pub fn server_for(&self, language: Language) -> Option<&Server> {
         self.servers.iter().find(|s| s.languages.contains(&language))
     }
@@ -256,6 +260,23 @@ impl Manager {
                 task,
             });
         }
+    }
+
+    /// Opens, closes and updates the servers' documents to match the buffers (once per loop
+    /// turn: `documents::Documents::sync`).
+    pub fn sync_documents(&mut self, buffers: &mut Buffers) {
+        self.docs.sync(&self.servers, buffers);
+    }
+
+    /// `buffer` was saved: `didSave` to its server, if it has it open and wants it.
+    pub fn saved(&mut self, buffers: &mut Buffers, buffer: BufferId) {
+        self.docs.saved(&self.servers, buffers, buffer);
+    }
+
+    /// The document version a server has for `buffer`, if open.
+    #[cfg_attr(not(test), allow(dead_code))] // tests; requests from 9c on
+    pub fn version(&self, buffer: BufferId) -> Option<i32> {
+        self.docs.version(buffer)
     }
 
     /// Takes in a server task's event; returns what the status bar should say, if anything.

@@ -82,7 +82,6 @@ pub enum PosEncoding {
 
 /// An LSP position: 0-based line (LSP's line breaks are LF, CRLF and lone CR, as `LINE_TYPE`)
 /// and the column in the server's `PosEncoding`.
-#[cfg_attr(not(test), allow(dead_code))] // document sync (9b) converts with it
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct LspPos {
     pub line: u32,
@@ -90,21 +89,68 @@ pub struct LspPos {
 }
 
 /// The LSP position of `pos`.
-#[cfg_attr(not(test), allow(dead_code))] // first used by document sync (9b)
+#[cfg_attr(not(test), allow(dead_code))] // document sync converts many with `LspWalker`
 pub fn lsp_pos(rope: &Rope, pos: ByteIdx, encoding: PosEncoding) -> LspPos {
-    let line = line_of(rope, pos);
-    let start = line_start(rope, line).0;
-    let character = match encoding {
-        PosEncoding::Utf8 => pos.0 - start,
-        PosEncoding::Utf16 => rope
-            .slice(start..pos.0)
-            .chunks()
-            .map(|c| c.chars().map(char::len_utf16).sum::<usize>())
-            .sum(),
-    };
-    LspPos {
-        line: line as u32,
-        character: character as u32,
+    LspWalker::new(rope, encoding).pos(pos)
+}
+
+/// `lsp_pos` for many positions, cheapest in increasing order (a change set's): a position on
+/// the last one's line needs no line lookup, and UTF-16 counts only the chars since the last
+/// position, so a long (minified) line with many changes stays linear.
+pub struct LspWalker<'a> {
+    rope: &'a Rope,
+    encoding: PosEncoding,
+    /// The last position's line: index, start, the next line's start, whether it's the last line.
+    line: Option<(usize, usize, usize, bool)>,
+    /// The last position and its column.
+    last: usize,
+    character: usize,
+}
+
+impl<'a> LspWalker<'a> {
+    pub fn new(rope: &'a Rope, encoding: PosEncoding) -> Self {
+        Self {
+            rope,
+            encoding,
+            line: None,
+            last: 0,
+            character: 0,
+        }
+    }
+
+    pub fn pos(&mut self, pos: ByteIdx) -> LspPos {
+        let pos = pos.0.min(self.rope.len());
+        match self.line {
+            Some((_, start, next, last_line))
+                if pos >= start && pos >= self.last && (pos < next || (last_line && pos == next)) =>
+            {
+                self.character += self.units(self.last, pos);
+            }
+            _ => {
+                let line = line_of(self.rope, ByteIdx(pos));
+                let (start, _, next) = line_bounds(self.rope, line);
+                self.line = Some((line, start.0, next.0, line + 1 >= line_count(self.rope)));
+                self.character = self.units(start.0, pos);
+            }
+        }
+        self.last = pos;
+        LspPos {
+            line: self.line.map_or(0, |l| l.0) as u32,
+            character: self.character as u32,
+        }
+    }
+
+    /// The encoding's units in `from..to`.
+    fn units(&self, from: usize, to: usize) -> usize {
+        match self.encoding {
+            PosEncoding::Utf8 => to - from,
+            PosEncoding::Utf16 => self
+                .rope
+                .slice(from..to)
+                .chunks()
+                .map(|c| c.chars().map(char::len_utf16).sum::<usize>())
+                .sum(),
+        }
     }
 }
 
@@ -1135,5 +1181,36 @@ mod tests {
         assert_eq!(from_lsp_pos(&rope, p(9, 0), Utf8), ByteIdx(text.len()));
         assert_eq!(from_lsp_pos(&rope, p(0, 2), Utf8), at("é"));
         assert_eq!(from_lsp_pos(&rope, p(0, 3), Utf16), at("😀"), "inside a surrogate pair");
+    }
+
+    /// `LspWalker` agrees with a fresh `lsp_pos` at every char boundary visited in increasing
+    /// order (also repeating and skipping positions), on text spanning many chunks, ending with
+    /// and without a line break.
+    #[test]
+    fn lsp_walker_matches_lsp_pos() {
+        for tail in ["", "\n", "\r\n", "z"] {
+            let text = format!("{}{tail}", "a界😀\r\nb\ré\n\n".repeat(150));
+            let rope = Rope::from_str(&text);
+            let bounds: Vec<usize> = text.char_indices().map(|(i, _)| i).chain([text.len()]).collect();
+            for enc in [PosEncoding::Utf8, PosEncoding::Utf16] {
+                let fresh = |i: usize| lsp_pos(&rope, ByteIdx(i), enc);
+                let mut walker = LspWalker::new(&rope, enc);
+                for &i in &bounds {
+                    assert_eq!(walker.pos(ByteIdx(i)), fresh(i), "{enc:?} at {i}");
+                    assert_eq!(walker.pos(ByteIdx(i)), fresh(i), "{enc:?} again at {i}");
+                }
+                let mut walker = LspWalker::new(&rope, enc);
+                for &i in bounds.iter().step_by(7) {
+                    assert_eq!(walker.pos(ByteIdx(i)), fresh(i), "{enc:?} skipping to {i}");
+                }
+                // Backwards works too (a fresh lookup each time), also within a line.
+                for &i in bounds.iter().rev().step_by(13) {
+                    assert_eq!(walker.pos(ByteIdx(i)), fresh(i), "{enc:?} back to {i}");
+                }
+                for i in [8, 4, 1, 0] {
+                    assert_eq!(walker.pos(ByteIdx(i)), fresh(i), "{enc:?} back on line 0 to {i}");
+                }
+            }
+        }
     }
 }

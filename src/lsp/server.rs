@@ -24,6 +24,10 @@ use crate::buffer::pos::PosEncoding;
 
 /// After asking a server to shut down, how long it gets to exit before it is killed.
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(1500);
+/// After `exit` went out, how long the server gets to close its output before it is killed:
+/// clangd with a file open keeps running ~2 s after `exit` to finish indexing the standard
+/// library, which would hold up quitting.
+const EXIT_GRACE: Duration = Duration::from_millis(300);
 /// How many of the last stderr lines a crash report quotes in the log.
 const STDERR_TAIL: usize = 20;
 
@@ -162,6 +166,7 @@ impl Task {
             initialized: false,
             queued: Vec::new(),
             shutting_down: false,
+            exit_sent: false,
         };
         conn.send_initialize(&self.config);
 
@@ -172,6 +177,7 @@ impl Task {
         let mut framer = Framer::default();
         let mut buf = vec![0u8; 64 * 1024];
         let mut deadline: Option<tokio::time::Instant> = None;
+        let mut timed_out = false;
         let end = 'run: loop {
             let timeout = async move {
                 match deadline {
@@ -196,6 +202,10 @@ impl Task {
                             }
                             Err(e) => break 'run End::Crashed(format!("protocol error: {e}")),
                         }
+                    }
+                    if conn.exit_sent {
+                        let grace = tokio::time::Instant::now() + EXIT_GRACE;
+                        deadline = Some(deadline.map_or(grace, |d| d.min(grace)));
                     }
                 }
                 line = async { stderr.as_mut().expect("guarded").next_line().await }, if stderr.is_some() => {
@@ -223,7 +233,12 @@ impl Task {
                     }
                 }
                 () = timeout => {
-                    tracing::warn!(server = %name, "language server didn't exit in time: killing it");
+                    if conn.exit_sent {
+                        tracing::info!(server = %name, "language server still running after exit: killing it");
+                    } else {
+                        tracing::warn!(server = %name, "language server didn't exit in time: killing it");
+                    }
+                    timed_out = true;
                     break 'run End::Requested;
                 }
             }
@@ -231,6 +246,11 @@ impl Task {
         drop(conn);
         let _ = write_task.await;
         let status = match &mut child {
+            // Out of time already: no more waiting.
+            Some(child) if timed_out => {
+                let _ = child.kill().await;
+                None
+            }
             Some(child) => match tokio::time::timeout(Duration::from_millis(500), child.wait()).await {
                 Ok(Ok(status)) => Some(status.to_string()),
                 _ => {
@@ -288,6 +308,8 @@ struct Conn {
     /// The app's messages sent before that: the protocol allows none until then.
     queued: Vec<ToServer>,
     shutting_down: bool,
+    /// `exit` went out: the server has `EXIT_GRACE` left.
+    exit_sent: bool,
 }
 
 impl Conn {
@@ -354,6 +376,7 @@ impl Conn {
                             tracing::warn!(server = %self.name, "shutdown failed: {}", e.message);
                         }
                         self.send(&Message::notification("exit", Value::Null));
+                        self.exit_sent = true;
                     }
                     Some((n, Pending::App)) => (self.sink)(Event::Response {
                         server: self.id,

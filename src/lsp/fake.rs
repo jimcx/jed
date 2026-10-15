@@ -8,6 +8,14 @@
 //! stops on `exit`. Test methods: `test/echo` answers with its params, `test/later` is held until
 //! a `test/flush` notification answers the held ones newest first; anything else gets
 //! MethodNotFound.
+//!
+//! Documents: it keeps its own copy of every document opened (`didOpen`), applies each
+//! `didChange` to it (ranges in the negotiated encoding, converted here independently of
+//! `buffer::pos`; checks that versions go up by one, ranges are in the text and a `didSave`'s text is
+//! its copy's) and drops it on
+//! `didClose`; `document(uri)` reads it, `saves()` lists the `didSave`s, and `errors()` anything
+//! wrong in the stream. `FakeOptions::sync` replaces the advertised `textDocumentSync` (default
+//! `2`, incremental).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -33,6 +41,16 @@ pub struct FakeOptions {
     pub ignore_shutdown: bool,
     /// Answer `initialize` with an error.
     pub init_error: bool,
+    /// The `textDocumentSync` capability to advertise (default `2`: incremental).
+    pub sync: Option<Value>,
+}
+
+/// The fake's copy of an open document.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FakeDoc {
+    pub language: String,
+    pub version: i64,
+    pub text: String,
 }
 
 #[derive(Default)]
@@ -43,6 +61,12 @@ struct Shared {
     received: Vec<Value>,
     /// The client's answers to the fake's requests, by request id.
     answers: HashMap<String, Value>,
+    /// Open documents by URI.
+    docs: HashMap<String, FakeDoc>,
+    /// `didSave`s: URI and text, if sent.
+    saves: Vec<(String, Option<String>)>,
+    /// What was wrong in the document notifications.
+    errors: Vec<String>,
 }
 
 pub struct FakeLauncher {
@@ -83,6 +107,20 @@ impl FakeLauncher {
 
     pub fn answers(&self) -> HashMap<String, Value> {
         self.shared.lock().unwrap().answers.clone()
+    }
+
+    /// The fake's copy of the document at `uri`, if open.
+    pub fn document(&self, uri: &str) -> Option<FakeDoc> {
+        self.shared.lock().unwrap().docs.get(uri).cloned()
+    }
+
+    pub fn saves(&self) -> Vec<(String, Option<String>)> {
+        self.shared.lock().unwrap().saves.clone()
+    }
+
+    /// Problems found in the document notifications (none expected).
+    pub fn errors(&self) -> Vec<String> {
+        self.shared.lock().unwrap().errors.clone()
     }
 
     /// How many fake servers have stopped.
@@ -165,7 +203,7 @@ async fn serve(
                             "window/logMessage",
                             json!({ "type": 3, "message": "fake ready" }),
                         ));
-                        let mut caps = json!({ "textDocumentSync": 2 });
+                        let mut caps = json!({ "textDocumentSync": options.sync.clone().unwrap_or(json!(2)) });
                         if options.utf8 {
                             caps["positionEncoding"] = json!("utf-8");
                         }
@@ -191,8 +229,14 @@ async fn serve(
                         }),
                     }),
                 },
-                Message::Notification { method, .. } => match method.as_str() {
+                Message::Notification { method, params } => match method.as_str() {
                     "exit" => return,
+                    m if m.starts_with("textDocument/") => {
+                        let mut shared = shared.lock().unwrap();
+                        if let Err(e) = document(&mut shared, m, &params, options.utf8) {
+                            shared.errors.push(format!("{m}: {e}"));
+                        }
+                    }
                     "initialized" if options.crash_after_init => return,
                     "test/flush" => {
                         for (id, params) in held.drain(..).rev() {
@@ -219,5 +263,111 @@ async fn serve(
                 }
             }
         }
+    }
+}
+
+/// Applies a document notification to the fake's copies.
+fn document(shared: &mut Shared, method: &str, params: &Value, utf8: bool) -> Result<(), String> {
+    let uri = params["textDocument"]["uri"].as_str().ok_or("no uri")?.to_string();
+    match method {
+        "textDocument/didOpen" => {
+            let doc = FakeDoc {
+                language: params["textDocument"]["languageId"]
+                    .as_str()
+                    .ok_or("no languageId")?
+                    .into(),
+                version: params["textDocument"]["version"].as_i64().ok_or("no version")?,
+                text: params["textDocument"]["text"].as_str().ok_or("no text")?.into(),
+            };
+            if shared.docs.insert(uri.clone(), doc).is_some() {
+                return Err(format!("{uri} opened twice"));
+            }
+        }
+        "textDocument/didChange" => {
+            let doc = shared.docs.get_mut(&uri).ok_or_else(|| format!("{uri} isn't open"))?;
+            let version = params["textDocument"]["version"].as_i64().ok_or("no version")?;
+            if version != doc.version + 1 {
+                return Err(format!("version {version} after {}", doc.version));
+            }
+            doc.version = version;
+            for c in params["contentChanges"].as_array().ok_or("no contentChanges")? {
+                let text = c["text"].as_str().ok_or("no text")?;
+                match c.get("range") {
+                    None => doc.text = text.to_string(),
+                    Some(r) => {
+                        let at = |p: &Value| {
+                            offset(
+                                &doc.text,
+                                p["line"].as_u64().ok_or("no line")?,
+                                p["character"].as_u64().ok_or("no character")?,
+                                utf8,
+                            )
+                        };
+                        let (start, end) = (at(&r["start"])?, at(&r["end"])?);
+                        if start > end {
+                            return Err(format!("reversed range {r}"));
+                        }
+                        doc.text.replace_range(start..end, text);
+                    }
+                }
+            }
+        }
+        "textDocument/didClose" => {
+            shared
+                .docs
+                .remove(&uri)
+                .ok_or_else(|| format!("{uri} closed but not open"))?;
+        }
+        "textDocument/didSave" => {
+            if !shared.docs.contains_key(&uri) {
+                return Err(format!("{uri} saved but not open"));
+            }
+            let text = params.get("text").and_then(Value::as_str).map(String::from);
+            if text.as_ref().is_some_and(|t| *t != shared.docs[&uri].text) {
+                return Err(format!("{uri} saved with text that isn't the document's"));
+            }
+            shared.saves.push((uri, text));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The byte offset of an LSP position in `text`, strictly: the line must exist, the column must
+/// be within its content and on a char boundary. Line breaks: LF, CRLF, CR. Written apart from
+/// `buffer::pos`, so the client's conversions are checked against something else.
+fn offset(text: &str, line: u64, character: u64, utf8: bool) -> Result<usize, String> {
+    let bytes = text.as_bytes();
+    let mut start = 0;
+    for _ in 0..line {
+        let rel = bytes[start..]
+            .iter()
+            .position(|&b| b == b'\n' || b == b'\r')
+            .ok_or_else(|| format!("line {line} past the end"))?;
+        let br = start + rel;
+        start = if bytes[br] == b'\r' && bytes.get(br + 1) == Some(&b'\n') {
+            br + 2
+        } else {
+            br + 1
+        };
+    }
+    let content_end = bytes[start..]
+        .iter()
+        .position(|&b| b == b'\n' || b == b'\r')
+        .map_or(text.len(), |r| start + r);
+    let mut units = 0u64;
+    for (i, c) in text[start..content_end].char_indices() {
+        if units == character {
+            return Ok(start + i);
+        }
+        if units > character {
+            return Err(format!("{line}:{character} inside a char"));
+        }
+        units += if utf8 { c.len_utf8() } else { c.len_utf16() } as u64;
+    }
+    if units == character {
+        Ok(content_end)
+    } else {
+        Err(format!("{line}:{character} past the line's end ({units})"))
     }
 }
