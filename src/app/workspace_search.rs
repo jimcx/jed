@@ -1,16 +1,18 @@
 //! Workspace search (M7): the Search view's commands and input (`app.search_view`), starting a
-//! search and taking in its results (`app.search`, drawn by `ui::search`).
+//! search and taking in its results (`app.search`, drawn by `ui::search`), and opening results.
 
 use std::time::Instant;
 
-use crossterm::event::{KeyEvent, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
+use super::files::Goto;
 use super::{App, AppEvent, Focus};
 use crate::buffer::pos;
 use crate::command::SearchCommand as S;
 use crate::field::{Outcome, TextField};
 use crate::layout::SidePanel;
 use crate::search::SearchError;
+use crate::search_view::Target;
 use crate::workspace_search::{self, Batch, Job, Query, Results};
 
 impl App {
@@ -58,18 +60,81 @@ impl App {
                     self.ui.focus = Focus::Editor;
                 }
             }
+            S::FocusResults => {
+                if let Some(results) = &self.search
+                    && !results.files.is_empty()
+                {
+                    let view = &mut self.search_view;
+                    view.list_focused = true;
+                    if view.selected_row(results).is_none() {
+                        view.select(results, 0);
+                    }
+                }
+            }
+            S::Up | S::Down | S::PageUp | S::PageDown => {
+                let page = self.search_view.height.max(2) as isize - 1;
+                let delta = match cmd {
+                    S::Up => -1,
+                    S::Down => 1,
+                    S::PageUp => -page,
+                    _ => page,
+                };
+                let Some(results) = &self.search else { return };
+                if !self.search_view.move_selection(results, delta) {
+                    self.search_view.list_focused = false;
+                }
+            }
+            S::First | S::Last => {
+                let Some(results) = &self.search else { return };
+                let row = if cmd == S::First { 0 } else { usize::MAX };
+                self.search_view.select(results, row);
+            }
+            S::Open => {
+                let target = self.search.as_ref().and_then(|r| self.search_view.target(r));
+                if let Some(t) = target {
+                    self.open_result(t, true);
+                }
+            }
+            S::NextResult | S::PreviousResult => {
+                let forward = cmd == S::NextResult;
+                let target = self.search.as_ref().and_then(|r| self.search_view.step(r, forward));
+                if let Some(t) = target {
+                    self.open_result(t, false);
+                }
+            }
         }
     }
 
+    /// Opens a search result in the active (last focused) editor group with the match selected
+    /// and centred if off screen; `focus` moves the keys to the editor. A file not open yet is
+    /// loaded first and selected when it arrives; the line and offsets are clamped to the text.
+    fn open_result(&mut self, t: Target, focus: bool) {
+        let path = self.workspace.root.join(&t.path);
+        let goto = Goto::Match {
+            line: t.line,
+            range: t.range,
+        };
+        self.open_file(path, focus, Some(goto));
+    }
+
     /// Keys the keymap doesn't bind in the Search view edit its query. An edit restarts the
-    /// search after the debounce; emptying the query clears the results at once.
+    /// search after the debounce; emptying the query clears the results at once. In the results
+    /// list, typing a character goes back to the query and types it; other keys do nothing.
     pub(super) fn search_key(&mut self, key: KeyEvent) {
+        if self.search_view.list_focused {
+            let typed = matches!(key.code, KeyCode::Char(_)) && (key.modifiers - KeyModifiers::SHIFT).is_empty();
+            if !typed {
+                return;
+            }
+            self.search_view.list_focused = false;
+        }
         if self.search_view.query.key(key) == Outcome::Edited {
             self.search_edited();
         }
     }
 
     pub(super) fn search_paste(&mut self, text: &str) {
+        self.search_view.list_focused = false;
         self.search_view.query.insert(&text.replace(['\r', '\n'], ""));
         self.search_edited();
     }
@@ -97,17 +162,33 @@ impl App {
         self.search_view.error = self.start_search(self.search_view.query()).err();
     }
 
-    /// A click in the Search view: an option toggle, else the panel (and its input) takes the
-    /// focus. Result rows are 7c's.
-    pub(super) fn search_click(&mut self, m: MouseEvent) {
+    /// A click in the Search view: an option toggle; a result row (selected, and the list takes
+    /// the keys): a match opens with the focus staying in the list, a double click opens a match
+    /// or a file's first match and focuses the editor; anywhere else the query takes the keys.
+    pub(super) fn search_click(&mut self, m: MouseEvent, count: u8) {
         self.ui.focus = Focus::SidePanel;
-        let Some(hit) = self.hits.search else { return };
+        let Some(hit) = self.hits.search.take() else { return };
         let at = ratatui::layout::Position { x: m.column, y: m.row };
         if hit.toggles[0].contains(at) {
             self.search_command(S::ToggleCase);
         } else if hit.toggles[1].contains(at) {
             self.search_command(S::ToggleRegex);
+        } else if hit.list.contains(at) {
+            let row = hit.rows.get((at.y - hit.list.y) as usize);
+            if let (Some(key), Some(results)) = (row, &self.search) {
+                self.search_view.list_focused = true;
+                self.search_view.select_key(results, key);
+                if key.1 > 0 || count >= 2 {
+                    let target = self.search_view.target(results);
+                    if let Some(t) = target {
+                        self.open_result(t, count >= 2);
+                    }
+                }
+            }
+        } else {
+            self.search_view.list_focused = false;
         }
+        self.hits.search = Some(hit);
     }
 
     /// The mouse wheel over the Search view scrolls its results.

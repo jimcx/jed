@@ -239,7 +239,7 @@ impl FindCommand {
     ];
 }
 
-/// The Search view's query input (M7).
+/// The Search view (M7): its query input, its results list, and stepping through results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SearchCommand {
     ToggleCase,
@@ -248,14 +248,39 @@ pub enum SearchCommand {
     Refresh,
     /// Esc: back to the editor; the results stay.
     FocusEditor,
+    /// Down in the query: the results list takes the keys.
+    FocusResults,
+    /// The list's selection: a row up (from the first row, back to the query) / down, a page,
+    /// the first / last row.
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    First,
+    Last,
+    /// Enter in the list: open the selected match (a file row: its first) and focus the editor.
+    Open,
+    /// F4 / Shift+F4 from anywhere: open the next / previous match, focus where it was.
+    NextResult,
+    PreviousResult,
 }
 
 impl SearchCommand {
-    pub const ALL: [SearchCommand; 4] = [
+    pub const ALL: [SearchCommand; 14] = [
         SearchCommand::ToggleCase,
         SearchCommand::ToggleRegex,
         SearchCommand::Refresh,
         SearchCommand::FocusEditor,
+        SearchCommand::FocusResults,
+        SearchCommand::Up,
+        SearchCommand::Down,
+        SearchCommand::PageUp,
+        SearchCommand::PageDown,
+        SearchCommand::First,
+        SearchCommand::Last,
+        SearchCommand::Open,
+        SearchCommand::NextResult,
+        SearchCommand::PreviousResult,
     ];
 }
 
@@ -451,6 +476,16 @@ impl Command {
                     SearchCommand::ToggleRegex => "toggleRegex",
                     SearchCommand::Refresh => "refresh",
                     SearchCommand::FocusEditor => "focusEditor",
+                    SearchCommand::FocusResults => "focusResults",
+                    SearchCommand::Up => "up",
+                    SearchCommand::Down => "down",
+                    SearchCommand::PageUp => "pageUp",
+                    SearchCommand::PageDown => "pageDown",
+                    SearchCommand::First => "first",
+                    SearchCommand::Last => "last",
+                    SearchCommand::Open => "open",
+                    SearchCommand::NextResult => "next",
+                    SearchCommand::PreviousResult => "previous",
                 }
             ),
         }
@@ -574,6 +609,16 @@ impl Command {
                 SearchCommand::ToggleRegex => "Search: Toggle Use Regular Expression",
                 SearchCommand::Refresh => "Search: Refresh",
                 SearchCommand::FocusEditor => "Search: Back to Editor",
+                SearchCommand::FocusResults => "Search: Focus Results",
+                SearchCommand::Up => "Search: Select Previous Row",
+                SearchCommand::Down => "Search: Select Next Row",
+                SearchCommand::PageUp => "Search: Select Row a Page Up",
+                SearchCommand::PageDown => "Search: Select Row a Page Down",
+                SearchCommand::First => "Search: Select First Row",
+                SearchCommand::Last => "Search: Select Last Row",
+                SearchCommand::Open => "Search: Open Selected Result",
+                SearchCommand::NextResult => "Search: Go to Next Result",
+                SearchCommand::PreviousResult => "Search: Go to Previous Result",
             },
         };
         s.into()

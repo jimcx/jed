@@ -518,12 +518,84 @@ fn line_match(line: usize, text: &str, ranges: Vec<Range<usize>>) -> LineMatch {
     }
 }
 
+/// The independent reference the search is checked against (here and in M7's end-to-end tests).
+#[cfg(test)]
+pub mod reference {
+    use std::fs;
+    use std::path::Path;
+    use std::sync::atomic::AtomicBool;
+
+    use ignore::overrides::Override;
+
+    use super::Results;
+    use crate::{explorer, search};
+
+    /// `path:line:start-end` per match, line 1-based as an editor shows it.
+    pub fn hits(r: &Results) -> Vec<String> {
+        let mut out = Vec::new();
+        for f in &r.files {
+            for l in &f.lines {
+                for m in &l.ranges {
+                    out.push(format!("{}:{}:{}-{}", f.path.display(), l.line + 1, m.start, m.end));
+                }
+            }
+        }
+        out
+    }
+
+    /// What `rg` would report, the slow obvious way: the same file list, each file read and split
+    /// into lines by hand, each line searched with `str` methods or a `regex::Regex` of its own.
+    pub fn reference(root: &Path, pattern: &str, o: search::Options) -> Vec<String> {
+        let mut paths = Vec::new();
+        explorer::walk_files(root, &Override::empty(), &AtomicBool::new(false), |p| paths.push(p));
+        paths.sort();
+        let re = (o.regex || !o.case_sensitive).then(|| {
+            let source = if o.regex {
+                pattern.to_string()
+            } else {
+                regex::escape(pattern)
+            };
+            regex::RegexBuilder::new(&source)
+                .case_insensitive(!o.case_sensitive)
+                .build()
+                .unwrap()
+        });
+        let mut out = Vec::new();
+        for rel in paths {
+            let bytes = fs::read(root.join(&rel)).unwrap();
+            if bytes.iter().take(8000).any(|&b| b == 0) {
+                continue;
+            }
+            let text = String::from_utf8_lossy(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes)).into_owned();
+            let mut lines: Vec<&str> = text.split('\n').collect();
+            if lines.last() == Some(&"") {
+                lines.pop();
+            }
+            let lines = lines.iter().flat_map(|l| {
+                let l = l.strip_suffix('\r').unwrap_or(l);
+                l.split('\r')
+            });
+            for (n, line) in lines.enumerate() {
+                let found: Vec<(usize, usize)> = match &re {
+                    Some(re) => re.find_iter(line).map(|m| (m.start(), m.end())).collect(),
+                    None => line.match_indices(pattern).map(|(i, s)| (i, i + s.len())).collect(),
+                };
+                for (s, e) in found {
+                    out.push(format!("{}:{}:{s}-{e}", rel.display(), n + 1));
+                }
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::single_range_in_vec_init)] // one-match lines
 mod tests {
     use std::fs;
     use std::sync::mpsc;
 
+    use super::reference::{hits, reference};
     use super::*;
     use crate::explorer::excludes;
 
@@ -584,19 +656,6 @@ mod tests {
 
     fn search(root: &Path, pattern: &str, options: search::Options) -> Results {
         search_with(root, pattern, options, &[], Vec::new()).0
-    }
-
-    /// `path:line:start-end` per match, line 1-based as an editor shows it.
-    fn hits(r: &Results) -> Vec<String> {
-        let mut out = Vec::new();
-        for f in &r.files {
-            for l in &f.lines {
-                for m in &l.ranges {
-                    out.push(format!("{}:{}:{}-{}", f.path.display(), l.line + 1, m.start, m.end));
-                }
-            }
-        }
-        out
     }
 
     fn files(r: &Results) -> Vec<String> {
@@ -981,51 +1040,6 @@ mod tests {
         assert!(!r.add(batch(2, "c.txt", false)), "nothing after done");
         assert_eq!(files(&r), vec!["a.txt", "b.txt"]);
         assert_eq!((r.total, r.done), (2, true));
-    }
-
-    /// What `rg` would report, the slow obvious way: the same file list, each file read and split
-    /// into lines by hand, each line searched with `str` methods or a `regex::Regex` of its own.
-    fn reference(root: &Path, pattern: &str, o: search::Options) -> Vec<String> {
-        let mut paths = Vec::new();
-        explorer::walk_files(root, &Override::empty(), &AtomicBool::new(false), |p| paths.push(p));
-        paths.sort();
-        let re = (o.regex || !o.case_sensitive).then(|| {
-            let source = if o.regex {
-                pattern.to_string()
-            } else {
-                regex::escape(pattern)
-            };
-            regex::RegexBuilder::new(&source)
-                .case_insensitive(!o.case_sensitive)
-                .build()
-                .unwrap()
-        });
-        let mut out = Vec::new();
-        for rel in paths {
-            let bytes = fs::read(root.join(&rel)).unwrap();
-            if bytes.iter().take(8000).any(|&b| b == 0) {
-                continue;
-            }
-            let text = String::from_utf8_lossy(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes)).into_owned();
-            let mut lines: Vec<&str> = text.split('\n').collect();
-            if lines.last() == Some(&"") {
-                lines.pop();
-            }
-            let lines = lines.iter().flat_map(|l| {
-                let l = l.strip_suffix('\r').unwrap_or(l);
-                l.split('\r')
-            });
-            for (n, line) in lines.enumerate() {
-                let found: Vec<(usize, usize)> = match &re {
-                    Some(re) => re.find_iter(line).map(|m| (m.start(), m.end())).collect(),
-                    None => line.match_indices(pattern).map(|(i, s)| (i, i + s.len())).collect(),
-                };
-                for (s, e) in found {
-                    out.push(format!("{}:{}:{s}-{e}", rel.display(), n + 1));
-                }
-            }
-        }
-        out
     }
 
     #[test]

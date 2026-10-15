@@ -1,5 +1,6 @@
 //! Key combos to commands. Keymaps are data; commands never look at keys.
-//! A binding applies in one context (editor, explorer, palette, find, replace, search) or everywhere.
+//! A binding applies in one context (editor, explorer, palette, find, replace, search,
+//! searchResults) or everywhere.
 //! The defaults are VS Code's; `keybindings.toml` replaces bindings command by command.
 
 use std::collections::{HashMap, HashSet};
@@ -167,16 +168,19 @@ pub enum Context {
     Replace,
     /// The Search view's query input has the focus.
     Search,
+    /// The Search view's results list has the focus; bindings not found here come from `Search`.
+    SearchResults,
 }
 
 impl Context {
-    const ALL: [(Context, &'static str); 6] = [
+    const ALL: [(Context, &'static str); 7] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
         (Context::Find, "find"),
         (Context::Replace, "replace"),
         (Context::Search, "search"),
+        (Context::SearchResults, "searchResults"),
     ];
 
     fn parse(name: &str) -> Option<Context> {
@@ -187,6 +191,7 @@ impl Context {
     fn parent(self) -> Option<Context> {
         match self {
             Context::Replace => Some(Context::Find),
+            Context::SearchResults => Some(Context::Search),
             _ => None,
         }
     }
@@ -532,6 +537,8 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Char('p'), cmd, Command::QuickOpen),
         // Ctrl on macOS too, as in VS Code.
         (KeyCode::Char('g'), ctrl, Command::GoToLine),
+        (KeyCode::F(4), none, Command::Search(S::NextResult)),
+        (KeyCode::F(4), shift, Command::Search(S::PreviousResult)),
     ]);
 
     let palette = [
@@ -560,6 +567,17 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Char('r'), toggle, S::ToggleRegex),
         (KeyCode::Enter, none, S::Refresh),
         (KeyCode::Esc, none, S::FocusEditor),
+        (KeyCode::Down, none, S::FocusResults),
+    ];
+    // Its results list (falls back to the input's keys: toggles, Esc).
+    let search_results = [
+        (KeyCode::Up, none, S::Up),
+        (KeyCode::Down, none, S::Down),
+        (KeyCode::PageUp, none, S::PageUp),
+        (KeyCode::PageDown, none, S::PageDown),
+        (KeyCode::Home, none, S::First),
+        (KeyCode::End, none, S::Last),
+        (KeyCode::Enter, none, S::Open),
     ];
 
     let bind = |code, mods, context, command| Binding {
@@ -590,6 +608,11 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         search
             .into_iter()
             .map(|(k, m, c)| bind(k, m, Some(Context::Search), Command::Search(c))),
+    );
+    out.extend(
+        search_results
+            .into_iter()
+            .map(|(k, m, c)| bind(k, m, Some(Context::SearchResults), Command::Search(c))),
     );
     out
 }
@@ -714,6 +737,29 @@ mod tests {
             // Explorer keys stay in the explorer; typing goes to the input.
             assert_eq!(km.lookup(&key(KeyCode::Delete, KeyModifiers::NONE), s), None);
             assert_eq!(km.lookup(&key(KeyCode::Char('x'), KeyModifiers::NONE), s), None);
+
+            // The results list: its own arrows and Enter, the input's toggles and Esc.
+            let l = Context::SearchResults;
+            let none = KeyModifiers::NONE;
+            let down = key(KeyCode::Down, none);
+            assert_eq!(km.lookup(&down, s), Some(Command::Search(S::FocusResults)));
+            assert_eq!(km.lookup(&down, l), Some(Command::Search(S::Down)));
+            assert_eq!(km.lookup(&key(KeyCode::Up, none), l), Some(Command::Search(S::Up)));
+            assert_eq!(km.lookup(&key(KeyCode::Up, none), s), None);
+            let enter = key(KeyCode::Enter, none);
+            assert_eq!(km.lookup(&enter, l), Some(Command::Search(S::Open)));
+            assert_eq!(km.lookup(&enter, s), Some(Command::Search(S::Refresh)));
+            assert_eq!(km.lookup(&c, l), Some(Command::Search(S::ToggleCase)));
+            assert_eq!(km.lookup(&esc, l), Some(Command::Search(S::FocusEditor)));
+            assert_eq!(km.lookup(&key(KeyCode::Char('x'), none), l), None);
+
+            // F4 / Shift+F4 from anywhere.
+            let f4 = key(KeyCode::F(4), none);
+            let shift_f4 = key(KeyCode::F(4), KeyModifiers::SHIFT);
+            for ctx in [Context::Editor, Context::Explorer, s, l, Context::Find] {
+                assert_eq!(km.lookup(&f4, ctx), Some(Command::Search(S::NextResult)));
+                assert_eq!(km.lookup(&shift_f4, ctx), Some(Command::Search(S::PreviousResult)));
+            }
         }
     }
 

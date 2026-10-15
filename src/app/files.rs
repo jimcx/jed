@@ -1,5 +1,6 @@
 //! Opening, saving, closing tabs and quitting.
 
+use std::ops::Range;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -7,16 +8,35 @@ use ropey::Rope;
 
 use super::{AfterSave, App, AppEvent, Focus, Level, Prompt, SLOW_TASK};
 use crate::buffer::file::LoadError;
-use crate::buffer::pos::{self, DisplayCol};
+use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::buffer::{Buffer, BufferId};
 use crate::layout::{GroupId, SplitDir};
 use crate::selection::{Selection, Selections};
 use crate::view::View;
 
+/// Where to put the selection in a file being opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Goto {
+    /// A cursor at a 1-based line and display column (`file:line:col`).
+    Cursor(usize, usize),
+    /// A workspace search match: 0-based line and byte offsets into it, selected (anchor at the
+    /// start) and centred if off screen. Clamped to the text, which may have changed since.
+    Match { line: usize, range: Range<usize> },
+}
+
+/// An open in flight: what to do once the buffer arrives. A later request for the same file
+/// replaces its `goto` (the last F4 wins) and can only add focus.
+#[derive(Debug)]
+pub(super) struct OpenRequest {
+    focus: bool,
+    goto: Option<Goto>,
+}
+
 impl App {
-    /// Opens `path` in a tab (or switches to its tab), with the cursor at `goto` (1-based line
-    /// and column) if given. Loading happens off the UI thread.
-    pub(super) fn open_file(&mut self, path: PathBuf, focus: bool, goto: Option<(usize, usize)>) {
+    /// Opens `path` in a tab of the active group (or switches to its tab there), with the
+    /// selection at `goto` if given. Loading happens off the UI thread; an already open buffer
+    /// gets the selection at once.
+    pub(super) fn open_file(&mut self, path: PathBuf, focus: bool, goto: Option<Goto>) {
         if let Some(id) = self.buffers.find_path(&path) {
             match self.group().find(id) {
                 Some(i) => self.activate_tab(i),
@@ -26,40 +46,37 @@ impl App {
                 }
             }
             let tab_width = self.settings.tab_width;
-            if let Some(at) = goto
+            if let Some(goto) = &goto
                 && let Some((buf, view)) = self.active_mut()
             {
                 buf.seal_undo();
-                place_cursor(view, &buf.rope, at, tab_width);
+                apply_goto(view, &buf.rope, goto, tab_width);
             }
             if focus {
                 self.ui.focus = Focus::Editor;
             }
             return;
         }
-        if !self.opening.insert(path.clone()) {
+        if let Some(pending) = self.opening.get_mut(&path) {
+            pending.focus |= focus;
+            if goto.is_some() {
+                pending.goto = goto;
+            }
             return;
         }
+        self.opening.insert(path.clone(), OpenRequest { focus, goto });
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let result = Buffer::open(&path);
-            let _ = tx.send(AppEvent::Opened {
-                path,
-                result,
-                focus,
-                goto,
-            });
+            let _ = tx.send(AppEvent::Opened { path, result });
         });
     }
 
-    pub(super) fn opened(
-        &mut self,
-        path: PathBuf,
-        result: Result<Buffer, LoadError>,
-        focus: bool,
-        goto: Option<(usize, usize)>,
-    ) {
-        self.opening.remove(&path);
+    pub(super) fn opened(&mut self, path: PathBuf, result: Result<Buffer, LoadError>) {
+        let OpenRequest { focus, goto } = self.opening.remove(&path).unwrap_or(OpenRequest {
+            focus: false,
+            goto: None,
+        });
         match result {
             Ok(buffer) => {
                 if let Some(reason) = &buffer.read_only {
@@ -73,12 +90,12 @@ impl App {
         }
     }
 
-    /// Puts a loaded buffer in a new tab and activates it. `goto` is 1-based line and column.
+    /// Puts a loaded buffer in a new tab and activates it, with the selection at `goto`.
     /// Starts no background work (it runs from `App::new`); callers reveal the file.
-    pub(super) fn add_buffer(&mut self, buffer: Buffer, goto: Option<(usize, usize)>, focus: bool) {
+    pub(super) fn add_buffer(&mut self, buffer: Buffer, goto: Option<Goto>, focus: bool) {
         let mut view = View::new();
-        if let Some(at) = goto {
-            place_cursor(&mut view, &buffer.rope, at, self.settings.tab_width);
+        if let Some(goto) = &goto {
+            apply_goto(&mut view, &buffer.rope, goto, self.settings.tab_width);
             view.cursor_history.reset(&view.selections);
         }
         let id = self.buffers.insert(buffer);
@@ -269,6 +286,25 @@ impl App {
             }
         }
     }
+}
+
+pub(super) fn apply_goto(view: &mut View, rope: &Rope, goto: &Goto, tab_width: usize) {
+    match goto {
+        Goto::Cursor(line, col) => place_cursor(view, rope, (*line, *col), tab_width),
+        Goto::Match { line, range } => select_in_line(view, rope, *line, range),
+    }
+}
+
+/// Selects `range` (byte offsets) on 0-based line `line` and centres it if it's off screen. The
+/// line, the offsets (to the line's end) and char boundaries are clamped: the text may have
+/// changed since the search.
+fn select_in_line(view: &mut View, rope: &Rope, line: usize, range: &Range<usize>) {
+    let line = line.min(pos::line_count(rope) - 1);
+    let (start, end, _) = pos::line_bounds(rope, line);
+    let at = |offset: usize| ByteIdx(rope.floor_char_boundary(start.0 + offset.min(end.0 - start.0)));
+    let (anchor, head) = (at(range.start), at(range.end.max(range.start)));
+    view.selections = Selections::single(Selection::new(anchor, head));
+    view.reveal_range = Some((anchor, head));
 }
 
 /// Puts a single cursor at a 1-based line and display column (both clamped) and scrolls to it.

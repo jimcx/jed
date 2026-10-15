@@ -9,7 +9,7 @@ mod prompt;
 mod side;
 mod workspace_search;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -111,9 +111,6 @@ enum AppEvent {
     Opened {
         path: PathBuf,
         result: Result<Buffer, LoadError>,
-        focus: bool,
-        /// 1-based line and column to put the cursor on.
-        goto: Option<(usize, usize)>,
     },
     Listed {
         dir: PathBuf,
@@ -179,7 +176,8 @@ pub struct App {
     fs_pending: HashSet<PathBuf>,
     fs_deadline: Option<tokio::time::Instant>,
     listing: HashSet<PathBuf>,
-    opening: HashSet<PathBuf>,
+    /// Files being opened, and where their selection goes once loaded.
+    opening: HashMap<PathBuf, files::OpenRequest>,
     clicks: ClickTracker,
     drag: Option<mouse::Drag>,
     /// The find widget's options (case, whole word, regex), which Cmd+D also uses for selected
@@ -249,7 +247,7 @@ impl App {
             fs_pending: HashSet::new(),
             fs_deadline: None,
             listing: HashSet::new(),
-            opening: HashSet::new(),
+            opening: HashMap::new(),
             clicks: ClickTracker::default(),
             drag: None,
             find_options: search::Options::default(),
@@ -265,7 +263,7 @@ impl App {
             last_command: None,
         };
         match initial {
-            Some(f) => app.add_buffer(f.buffer, f.goto, true),
+            Some(f) => app.add_buffer(f.buffer, f.goto.map(|(l, c)| files::Goto::Cursor(l, c)), true),
             None => app.ui.focus = Focus::SidePanel,
         }
         if !kitty {
@@ -415,6 +413,9 @@ impl App {
         }
         match self.ui.focus {
             Focus::Editor => Context::Editor,
+            Focus::SidePanel if self.ui.side_panel == SidePanel::Search && self.search_view.list_focused => {
+                Context::SearchResults
+            }
             Focus::SidePanel if self.ui.side_panel == SidePanel::Search => Context::Search,
             Focus::SidePanel => Context::Explorer,
             Focus::Find if self.find.field == Field::Replace => Context::Replace,
@@ -641,6 +642,7 @@ impl App {
         self.ui.side_visible = true;
         self.ui.side_panel = panel;
         self.ui.focus = Focus::SidePanel;
+        self.search_view.list_focused = false;
         if panel == SidePanel::Explorer && self.explorer.selected.is_none() {
             self.explorer.select_index(0);
         }
@@ -655,12 +657,7 @@ impl App {
                 result,
                 elapsed,
             } => self.save_done(buffer, state, result, elapsed),
-            AppEvent::Opened {
-                path,
-                result,
-                focus,
-                goto,
-            } => self.opened(path, result, focus, goto),
+            AppEvent::Opened { path, result } => self.opened(path, result),
             AppEvent::Listed { dir, result } => self.listed(dir, result),
             AppEvent::FsChanged(paths) => {
                 self.fs_pending.extend(paths);
@@ -733,6 +730,11 @@ impl App {
 
     pub fn quitting(&self) -> bool {
         self.should_quit
+    }
+
+    /// Takes in a workspace search batch as if the running search had sent it.
+    pub fn test_search_batch(&mut self, batch: crate::workspace_search::Batch) {
+        self.handle_app_event(AppEvent::SearchResults(batch));
     }
 
     /// Handles every background result already queued, without waiting (as the event loop

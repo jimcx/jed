@@ -8,10 +8,15 @@
 //! - Typing schedules a search `DEBOUNCE` after the last edit (`edited`); the event loop calls
 //!   `take_due` when the deadline passes. Times are passed in, so tests need no clock.
 //! - The list scrolls by rows: each file is a row followed by one row per matching line. The top
-//!   row is kept as (file, row in file), so files streaming in above it don't move what's shown.
+//!   row is kept as a `RowKey` (file, row in file), so files streaming in above it don't move
+//!   what's shown.
+//! - The list has a selected row (also a `RowKey`, so streaming doesn't move it either) and,
+//!   for F4 / Shift+F4, which match on that line: `step` goes to the next / previous match
+//!   (wrapping), `target` is the match Enter opens. Up/Down move it (`move_selection`), keeping it
+//!   on screen; `list_focused` says whether the list or the query input has the keys.
 
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use unicode_segmentation::UnicodeSegmentation;
@@ -35,11 +40,26 @@ pub struct SearchView {
     pub error: Option<SearchError>,
     /// When to restart the search after the last edit.
     deadline: Option<Instant>,
-    /// The list's top row: a file (by path) and the row within it (0 = the file's own row);
-    /// `None` is the top of the list.
-    top: Option<(PathBuf, usize)>,
+    /// The list's top row; `None` is the top of the list.
+    top: Option<RowKey>,
+    /// The selected row and which of its matches F4 is on (0 for a file row).
+    selected: Option<(RowKey, usize)>,
+    /// The results list (not the query input) has the keys (context `searchResults`).
+    pub list_focused: bool,
     /// Rows the list showed in the last frame (set by drawing).
     pub height: usize,
+}
+
+/// A row of the list by what it shows: a file (by path) and the row within it (0 = the file's
+/// own row, `k` = its `k`-th matching line).
+pub type RowKey = (PathBuf, usize);
+
+/// A match to open: its file (relative to the root), 0-based line and byte offsets in the line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    pub path: PathBuf,
+    pub line: usize,
+    pub range: Range<usize>,
 }
 
 /// One row of the results list.
@@ -47,6 +67,26 @@ pub struct SearchView {
 pub enum Row<'a> {
     File(&'a FileMatches),
     Line(&'a LineMatch),
+}
+
+/// A row on screen: its file and the row within it (0 = the file's own row).
+#[derive(Debug, Clone, Copy)]
+pub struct Shown<'a> {
+    pub file: &'a FileMatches,
+    pub offset: usize,
+}
+
+impl<'a> Shown<'a> {
+    pub fn row(&self) -> Row<'a> {
+        match self.offset {
+            0 => Row::File(self.file),
+            k => Row::Line(&self.file.lines[k - 1]),
+        }
+    }
+
+    pub fn key(&self) -> RowKey {
+        (self.file.path.clone(), self.offset)
+    }
 }
 
 impl SearchView {
@@ -79,45 +119,203 @@ impl SearchView {
         }
     }
 
-    /// The search is starting now: nothing pending, the list back at its top.
+    /// The search is starting now: nothing pending, the list back at its top, nothing selected.
     pub fn started(&mut self) {
         self.deadline = None;
         self.top = None;
+        self.selected = None;
     }
 
     /// The row index at the top of the list.
     pub fn scroll(&self, results: &Results) -> usize {
-        let Some((path, offset)) = &self.top else { return 0 };
-        let i = results.files.partition_point(|f| f.path < *path);
-        let before: usize = results.files[..i].iter().map(file_rows).sum();
-        match results.files.get(i) {
-            Some(f) if f.path == *path => before + (*offset).min(f.lines.len()),
-            _ => before,
-        }
+        let Some(key) = &self.top else { return 0 };
+        index_of(results, key).unwrap_or_else(|i| i)
     }
 
     /// Puts row `row` (clamped so the last row can reach the bottom) at the top.
     pub fn set_scroll(&mut self, results: &Results, row: usize) {
         let row = row.min(row_count(results).saturating_sub(self.height.max(1)));
-        self.top = None;
-        if row == 0 {
-            return;
-        }
-        let mut skip = row;
-        for f in &results.files {
-            let n = file_rows(f);
-            if skip < n {
-                self.top = Some((f.path.clone(), skip));
-                return;
-            }
-            skip -= n;
-        }
+        self.top = (row > 0).then(|| key_at(results, row));
     }
 
     pub fn scroll_by(&mut self, results: &Results, delta: isize) {
         let row = self.scroll(results).saturating_add_signed(delta);
         self.set_scroll(results, row);
     }
+
+    /// The selected row's index, if a row is selected and its file is still in the results.
+    pub fn selected_row(&self, results: &Results) -> Option<usize> {
+        index_of(results, &self.selected.as_ref()?.0).ok()
+    }
+
+    /// Selects row `row` (clamped to the list; nothing when it's empty) and scrolls to it.
+    pub fn select(&mut self, results: &Results, row: usize) {
+        let n = row_count(results);
+        self.selected = (n > 0).then(|| (key_at(results, row.min(n - 1)), 0));
+        self.reveal_selected(results);
+    }
+
+    /// Selects the row `key` names, if it's in the results.
+    pub fn select_key(&mut self, results: &Results, key: &RowKey) {
+        if index_of(results, key).is_ok() {
+            self.selected = Some((key.clone(), 0));
+            self.reveal_selected(results);
+        }
+    }
+
+    /// Moves the selection by `delta` rows (clamped), or selects the first row when nothing is
+    /// and `delta` is positive. False when moving up from the first row (or with nothing
+    /// selected): the caller gives the keys back to the query input.
+    pub fn move_selection(&mut self, results: &Results, delta: isize) -> bool {
+        match self.selected_row(results) {
+            Some(0) | None if delta < 0 => false,
+            None => {
+                self.select(results, 0);
+                true
+            }
+            Some(row) => {
+                self.select(results, row.saturating_add_signed(delta));
+                true
+            }
+        }
+    }
+
+    /// Scrolls the least that shows the selected row.
+    fn reveal_selected(&mut self, results: &Results) {
+        let Some(row) = self.selected_row(results) else { return };
+        let (top, height) = (self.scroll(results), self.height.max(1));
+        if row < top {
+            self.set_scroll(results, row);
+        } else if row >= top + height {
+            self.set_scroll(results, row + 1 - height);
+        }
+    }
+
+    /// The match Enter opens: the selected line's (its match F4 is on), or a file row's first
+    /// (which becomes the selection).
+    pub fn target(&mut self, results: &Results) -> Option<Target> {
+        let ((path, offset), m) = self.selected.clone()?;
+        let f = file(results, &path)?;
+        let at = Pos {
+            file: f,
+            line: offset.max(1).min(f.lines.len()) - 1,
+            m,
+        };
+        Some(self.go(results, at))
+    }
+
+    /// F4 (`forward`) / Shift+F4: the match after / before the selected one, wrapping around the
+    /// list, which becomes the selection. From a file row, forward is the file's first match and
+    /// back is the previous file's last; with nothing selected, the first or the last match.
+    pub fn step(&mut self, results: &Results, forward: bool) -> Option<Target> {
+        let files = &results.files;
+        let n = files.len();
+        let first = |i: usize| Pos {
+            file: &files[i % n],
+            line: 0,
+            m: 0,
+        };
+        let last = |i: usize| {
+            let file = &files[(i + n - 1) % n];
+            let line = file.lines.len() - 1;
+            Pos {
+                file,
+                line,
+                m: file.lines[line].ranges.len() - 1,
+            }
+        };
+        if n == 0 {
+            return None;
+        }
+        let current = self.selected.as_ref().and_then(|((path, offset), m)| {
+            let i = files.binary_search_by(|f| f.path.cmp(path)).ok()?;
+            Some((i, *offset, *m))
+        });
+        let at = match current {
+            None if forward => first(0),
+            None => last(0),
+            Some((i, 0, _)) if forward => first(i),
+            Some((i, 0, _)) => last(i),
+            Some((i, offset, m)) => {
+                let file = &files[i];
+                let line = offset.min(file.lines.len()) - 1;
+                let count = file.lines[line].ranges.len();
+                let m = m.min(count - 1);
+                if forward {
+                    if m + 1 < count {
+                        Pos { file, line, m: m + 1 }
+                    } else if line + 1 < file.lines.len() {
+                        Pos {
+                            file,
+                            line: line + 1,
+                            m: 0,
+                        }
+                    } else {
+                        first(i + 1)
+                    }
+                } else if m > 0 {
+                    Pos { file, line, m: m - 1 }
+                } else if line > 0 {
+                    Pos {
+                        file,
+                        line: line - 1,
+                        m: file.lines[line - 1].ranges.len() - 1,
+                    }
+                } else {
+                    last(i)
+                }
+            }
+        };
+        Some(self.go(results, at))
+    }
+
+    /// Selects the match at `at` (scrolled into view) and says where it is.
+    fn go(&mut self, results: &Results, at: Pos) -> Target {
+        let l = &at.file.lines[at.line];
+        let m = at.m.min(l.ranges.len() - 1);
+        self.selected = Some(((at.file.path.clone(), at.line + 1), m));
+        self.reveal_selected(results);
+        Target {
+            path: at.file.path.clone(),
+            line: l.line,
+            range: l.ranges[m].clone(),
+        }
+    }
+}
+
+/// A match in the results: file, index into its lines, index into the line's ranges.
+struct Pos<'a> {
+    file: &'a FileMatches,
+    line: usize,
+    m: usize,
+}
+
+fn file<'a>(results: &'a Results, path: &Path) -> Option<&'a FileMatches> {
+    let i = results.files.binary_search_by(|f| f.path.as_path().cmp(path)).ok()?;
+    Some(&results.files[i])
+}
+
+/// The row index of `key`; `Err` with where its file would be when it's not in the results.
+fn index_of(results: &Results, (path, offset): &RowKey) -> Result<usize, usize> {
+    let i = results.files.partition_point(|f| f.path < *path);
+    let before: usize = results.files[..i].iter().map(file_rows).sum();
+    match results.files.get(i) {
+        Some(f) if f.path == *path => Ok(before + (*offset).min(f.lines.len())),
+        _ => Err(before),
+    }
+}
+
+/// The key of row `row` (which must be in the list).
+fn key_at(results: &Results, row: usize) -> RowKey {
+    let mut skip = row;
+    for f in &results.files {
+        let n = file_rows(f);
+        if skip < n {
+            return (f.path.clone(), skip);
+        }
+        skip -= n;
+    }
+    unreachable!("row {row} past the end of the list")
 }
 
 fn file_rows(f: &FileMatches) -> usize {
@@ -130,7 +328,7 @@ pub fn row_count(results: &Results) -> usize {
 }
 
 /// Up to `n` rows starting at row `from` (only those are looked at past the files skipped).
-pub fn rows(results: &Results, from: usize, n: usize) -> Vec<Row<'_>> {
+pub fn rows(results: &Results, from: usize, n: usize) -> Vec<Shown<'_>> {
     let mut out = Vec::with_capacity(n);
     let mut skip = from;
     for f in &results.files {
@@ -142,12 +340,13 @@ pub fn rows(results: &Results, from: usize, n: usize) -> Vec<Row<'_>> {
             skip -= rows;
             continue;
         }
-        if skip == 0 {
-            out.push(Row::File(f));
-        }
-        let first = skip.saturating_sub(1);
+        let first = skip;
         skip = 0;
-        out.extend(f.lines[first..].iter().take(n - out.len()).map(Row::Line));
+        out.extend(
+            (first..rows)
+                .take(n - out.len())
+                .map(|offset| Shown { file: f, offset }),
+        );
     }
     out
 }
@@ -262,7 +461,7 @@ mod tests {
         assert_eq!(row_count(&r), 7);
         let shown: Vec<String> = rows(&r, 2, 3)
             .iter()
-            .map(|row| match row {
+            .map(|s| match s.row() {
                 Row::File(f) => f.path.display().to_string(),
                 Row::Line(l) => l.line.to_string(),
             })
@@ -280,13 +479,110 @@ mod tests {
         // A file arriving above keeps the same row on top.
         r.files.insert(0, results(&[("a", 4)]).files.remove(0));
         assert_eq!(v.scroll(&r), 9);
-        assert!(matches!(rows(&r, 9, 1)[0], Row::Line(l) if l.line == 0));
+        assert!(matches!(rows(&r, 9, 1)[0].row(), Row::Line(l) if l.line == 0));
         v.scroll_by(&r, -100);
         assert_eq!(v.scroll(&r), 0);
         v.scroll_by(&r, 100);
         assert_eq!(v.scroll(&r), row_count(&r) - 2, "the last row reaches the bottom");
         v.started();
         assert_eq!(v.scroll(&r), 0);
+    }
+
+    /// Up/Down/paging move the selection (clamped, kept on screen); Up from the first row hands
+    /// the keys back; files streaming in don't move it; a new search clears it.
+    #[test]
+    fn the_selection_moves_and_stays_put() {
+        let mut r = results(&[("b", 2), ("d", 3)]);
+        let mut v = SearchView {
+            height: 3,
+            ..SearchView::default()
+        };
+        assert!(!v.move_selection(&r, -1), "nothing selected: up leaves the list");
+        assert!(v.move_selection(&r, 1));
+        assert_eq!(v.selected_row(&r), Some(0));
+        assert!(!v.move_selection(&r, -1), "up from the first row");
+        assert_eq!(v.selected_row(&r), Some(0));
+        v.move_selection(&r, 3);
+        assert_eq!(v.selected_row(&r), Some(3), "d's own row");
+        assert_eq!(v.scroll(&r), 1, "scrolled the least to show it");
+        v.move_selection(&r, 100);
+        assert_eq!(v.selected_row(&r), Some(6));
+        assert_eq!(v.scroll(&r), 4);
+        v.move_selection(&r, -6);
+        assert_eq!((v.selected_row(&r), v.scroll(&r)), (Some(0), 0));
+        v.select(&r, 5);
+        // A file arriving above: the same row stays selected (and on top).
+        r.files.insert(0, results(&[("a", 4)]).files.remove(0));
+        assert_eq!(v.selected_row(&r), Some(10));
+        v.started();
+        assert_eq!(v.selected_row(&r), None);
+        v.select(&r, 1);
+        v.select_key(&r, &(PathBuf::from("nope"), 1));
+        assert_eq!(v.selected_row(&r), Some(1), "an unknown key changes nothing");
+        v.select_key(&r, &(PathBuf::from("d"), 2));
+        assert_eq!(v.selected_row(&r), Some(10));
+        let empty = Results::default();
+        v.select(&empty, 0);
+        assert_eq!(v.selected_row(&empty), None);
+    }
+
+    /// F4 / Shift+F4 visit every match (several on a line too) in order and wrap; from a file row
+    /// forward is its first match; Enter on a file row opens its first match.
+    #[test]
+    fn step_visits_every_match_and_wraps() {
+        let file = |p: &str, lines: Vec<(usize, Vec<Range<usize>>)>| FileMatches {
+            path: PathBuf::from(p),
+            lines: lines
+                .into_iter()
+                .map(|(n, ranges)| LineMatch {
+                    line: n,
+                    ..line("x", ranges)
+                })
+                .collect(),
+        };
+        let r = Results {
+            files: vec![
+                file("a", vec![(3, vec![0..1, 4..6])]),
+                file("b", vec![(0, vec![2..3]), (7, vec![1..2])]),
+            ],
+            ..Results::default()
+        };
+        let t = |path: &str, line: usize, range: Range<usize>| Target {
+            path: PathBuf::from(path),
+            line,
+            range,
+        };
+        let all = [t("a", 3, 0..1), t("a", 3, 4..6), t("b", 0, 2..3), t("b", 7, 1..2)];
+        let mut v = SearchView {
+            height: 10,
+            ..SearchView::default()
+        };
+        assert!(v.target(&r).is_none(), "nothing selected");
+        for want in all.iter().chain(&all[..1]) {
+            assert_eq!(v.step(&r, true).as_ref(), Some(want));
+        }
+        assert_eq!(v.selected_row(&r), Some(1));
+        assert_eq!(v.target(&r), Some(all[0].clone()), "Enter opens the match F4 is on");
+        assert_eq!(v.step(&r, false), Some(all[3].clone()), "back wraps to the last");
+        for want in all.iter().rev().skip(1) {
+            assert_eq!(v.step(&r, false).as_ref(), Some(want));
+        }
+        v.started();
+        assert_eq!(v.step(&r, false), Some(all[3].clone()), "nothing selected: the last");
+
+        // From b's file row: forward is its first match, back the previous file's last.
+        v.select(&r, 2);
+        assert_eq!(v.step(&r, true), Some(all[2].clone()));
+        v.select(&r, 2);
+        assert_eq!(v.step(&r, false), Some(all[1].clone()));
+        v.select(&r, 2);
+        assert_eq!(v.target(&r), Some(all[2].clone()));
+        assert_eq!(v.selected_row(&r), Some(3), "the match row is selected");
+        // Stepping keeps the selection on screen.
+        v.height = 1;
+        v.step(&r, true);
+        assert_eq!(v.scroll(&r), 4);
+        assert!(v.step(&Results::default(), true).is_none());
     }
 
     #[test]

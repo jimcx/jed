@@ -308,10 +308,14 @@ pub struct HitMap {
     pub search: Option<SearchHit>,
 }
 
-/// The Search view's option toggles in its input (case, regex).
-#[derive(Debug, Clone, Copy)]
+/// The Search view: its option toggles (case, regex), and its results list with the row each
+/// line on screen shows (`rows[i]` is at `list.y + i`), by key so a click lands on what was drawn
+/// even when results streamed in since.
+#[derive(Debug, Clone)]
 pub struct SearchHit {
     pub toggles: [Rect; 2],
+    pub list: Rect,
+    pub rows: Vec<crate::search_view::RowKey>,
 }
 
 /// The find widget: its box, the replace row (if shown) and the three option toggles

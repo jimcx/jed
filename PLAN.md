@@ -539,7 +539,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - 1 MB / 63k matches (Linux i7-2600K): find key + frame 10 ms, replace all + frame 11 ms, undo 4 ms
        - Not done: Cmd+G / Cmd+Shift+G (Ctrl+G is go to line on Linux); undo inside the widget's inputs; find/replace history, preserve case, find in selection; a match under the widget isn't scrolled clear; one widget for the app rather than per editor; the count doesn't refresh on background events (e.g. a file opening) until the next key
        - Still to check by hand: Cmd+F vs each terminal's own search (Ghostty, WezTerm, Alacritty, iTerm2's Find… menu); Cmd+Shift+1 arrives as Cmd+`!`; Cmd+Alt+C/W/R/F/Enter need Option-as-Alt; Alt+Enter and Shift+Enter keep their modifiers; on Linux Ctrl+H needs the kitty protocol (else Backspace)
-7. **Workspace search**: plain text, case-sensitive and regex search across the workspace — see [Workspace search](#workspace-search)
+7. ✅ **Workspace search**: plain text, case-sensitive and regex search across the workspace — see [Workspace search](#workspace-search)
    - Needs: the `search` matcher (M6), excludes and the walk (M5), the side panel and its Search activity icon (M2)
    - Needed by: find references can show its results in the same list (M9)
    - Search view in the side panel; Cmd+Shift+F focuses it, seeded with the selection
@@ -564,7 +564,13 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - 10 MB workspace: a query key + frame 0.4 ms avg, 2.3 ms worst (release)
        - Not done: whole-word toggle, collapsing file rows (later)
        - Still to check by hand: Cmd+Shift+F reaches red in each terminal (iTerm2 may bind ⇧⌘F to Find Globally; WezTerm may need `key = 'F'`); on Linux Ctrl+Shift+F needs the kitty protocol (else it arrives as Ctrl+F, the find widget)
-     - 7c: navigating results: Up/Down in the list, Enter or click opens the match in the focused group with it selected, F4 / Shift+F4 step through results from anywhere; end-to-end "done when" tests (the three modes, an unsaved edit in the results, typing never stalls); marks M7 ✅
+     - ✅ 7c: navigating results: Up/Down in the list, Enter or click opens the match in the focused group with it selected, F4 / Shift+F4 step through results from anywhere; end-to-end "done when" tests (the three modes, an unsaved edit in the results, typing never stalls); marks M7 ✅
+       - The list's selection is (file, row in file) plus the match index, stable while results stream in; new `searchResults` key context (falls back to `search`); 10 `search.*` list / open / next / previous commands
+       - Enter and double click open the match in the last focused group and focus the editor; single click and F4 keep focus; Enter on a file row opens its first match; typing or pasting in the list goes back to the query
+       - Opening with a position: `App::opening` (by path) holds a `Goto` (`Cursor` for `file:line:col`, `Match { line, range }` for search) until the file loads; clamped to the current text; centred with `reveal_range`
+       - Done-when tests: three modes vs an independent reference (`workspace_search::reference`) on a copy of `src/` and `docs/`, driven through the view; an unsaved edit found and opened; a 5-key burst during a 10 MB search (0.2 ms + frame, release) ends with only the final query's hits
+       - Not done: collapsing file rows, whole word, replace across files, include / exclude globs (all "Later"); F4 across two files that are still loading can leave the later-finishing one active
+       - Still to check by hand: F4 / Shift+F4 reach red in each terminal (some desktops take F4); Enter, click and double click in a real terminal; results open in the last focused split
 8. **Highlighting**: grammars and the built-in dark theme — see [Syntax highlighting](#syntax-highlighting), [Themes](#themes)
    - Needs: byte-indexed edits (M1) to feed tree-sitter's incremental parse; `theme` keys (M1); multi-cursor (M6) so the language-aware editing below runs at every cursor
    - Needed by: LSP (M9, language detection gives the `languageId`)

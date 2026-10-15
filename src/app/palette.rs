@@ -233,7 +233,7 @@ impl App {
                 self.execute(cmd);
             }
             (_, Some(Action::Open(rel))) => {
-                let goto = paths::strip_position(&query).map(|(_, at)| at);
+                let goto = paths::strip_position(&query).map(|(_, (l, c))| super::files::Goto::Cursor(l, c));
                 self.close_palette();
                 self.open_file(self.workspace.root.join(rel), true, goto);
             }

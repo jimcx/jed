@@ -82,10 +82,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<SearchHit> {
         _ => {}
     }
 
-    if app.ui.focus == Focus::SidePanel && app.prompt.is_none() && app.palette.is_none() {
+    let focused = app.ui.focus == Focus::SidePanel && app.prompt.is_none() && app.palette.is_none();
+    if focused && !view.list_focused {
         f.set_cursor_position(cursor);
     }
-    let hit = SearchHit { toggles };
+    let mut hit = SearchHit {
+        toggles,
+        list: Rect::default(),
+        rows: Vec::new(),
+    };
     let Some(results) = results else { return Some(hit) };
     let list = Rect {
         x: area.x,
@@ -98,6 +103,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<SearchHit> {
     let top = view.scroll(results);
     view.set_scroll(results, top);
     let top = view.scroll(results);
+    let selected_row = view.selected_row(results);
     let out = f.buffer_mut();
     let styles = Styles {
         base,
@@ -106,24 +112,51 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<SearchHit> {
         count: base.patch(theme.get("search.count")),
         matched: base.patch(theme.get("search.match")),
     };
-    for (i, row) in search_view::rows(results, top, list.height as usize)
-        .into_iter()
-        .enumerate()
-    {
+    // The selected row as the explorer draws its own: brighter while the list has the keys.
+    let selection = if focused && view.list_focused {
+        theme.get("list.active")
+    } else {
+        theme.get("list.inactive")
+    };
+    let on_selection = Styles {
+        base: base.patch(selection),
+        dim: dim.patch(bg_of(selection)),
+        name: styles.name.patch(bg_of(selection)),
+        count: styles.count,
+        matched: styles.matched,
+    };
+    let shown = search_view::rows(results, top, list.height as usize);
+    for (i, row) in shown.iter().enumerate() {
         let y = list.y + i as u16;
-        match row {
-            Row::File(file) => draw_file(out, list.x, y, list.width, file, &styles),
+        let s = if selected_row == Some(top + i) {
+            out.set_style(Rect { y, height: 1, ..list }, on_selection.base);
+            &on_selection
+        } else {
+            &styles
+        };
+        match row.row() {
+            Row::File(file) => draw_file(out, list.x, y, list.width, file, s),
             Row::Line(m) => draw_line(
                 out,
                 list.x + LINE_INDENT,
                 y,
                 list.width.saturating_sub(LINE_INDENT + 1),
                 m,
-                &styles,
+                s,
             ),
         }
     }
+    hit.list = list;
+    hit.rows = shown.iter().map(|r| r.key()).collect();
     Some(hit)
+}
+
+/// Just the background of `style` (so text keeps its own colour on a selected row).
+fn bg_of(style: Style) -> Style {
+    Style {
+        bg: style.bg,
+        ..Style::default()
+    }
 }
 
 struct Styles {

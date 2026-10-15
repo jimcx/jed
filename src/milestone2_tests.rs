@@ -180,7 +180,7 @@ fn new_with_file_inside_workspace_needs_no_runtime() {
     let buffer = crate::buffer::Buffer::open(&root.join("src/main.rs")).unwrap();
     let ws = Workspace::load(root.clone());
     let trust = TrustStore::load(root.join("trust.toml"));
-    let app = App::new(
+    let mut app = App::new(
         ws,
         trust,
         Some(crate::app::InitialFile {
@@ -190,6 +190,9 @@ fn new_with_file_inside_workspace_needs_no_runtime() {
         true,
     );
     assert_eq!(active_name(&app).as_deref(), Some("main.rs"));
+    // `main.rs:1:4`: 1-based line and column.
+    let s = *app.active_mut().unwrap().1.selections.primary();
+    assert_eq!((s.anchor.0, s.head.0), (3, 3));
 }
 
 #[tokio::test(flavor = "multi_thread")]
