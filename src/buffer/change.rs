@@ -1,6 +1,7 @@
 //! A set of replacements applied to a buffer as one unit.
 
 use std::cell::Cell;
+use std::ops::Range;
 
 use ropey::{Rope, RopeBuilder};
 
@@ -9,7 +10,8 @@ use super::pos::ByteIdx;
 /// From this many changes, `apply` rebuilds the rope instead of editing it in place.
 const REBUILD_AT: usize = 256;
 
-/// Replace `start..end` (in the text before the edit) with `text`.
+/// Replace `start..end` (in the text before the edit) with `text`: the owned form, for
+/// `ChangeSet::new`. Edits build sets with `ChangeSet::push` instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change {
     pub start: ByteIdx,
@@ -17,36 +19,86 @@ pub struct Change {
     pub text: String,
 }
 
-/// Non-overlapping changes, sorted by position, all in pre-edit coordinates.
+/// One change as stored: its text is `ChangeSet::text[text]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Span {
+    start: ByteIdx,
+    end: ByteIdx,
+    text: Range<usize>,
+}
+
+impl Span {
+    fn text_len(&self) -> usize {
+        self.text.end - self.text.start
+    }
+
+    /// Length change the edit makes.
+    fn delta(&self) -> isize {
+        self.text_len() as isize - (self.end.0 - self.start.0) as isize
+    }
+}
+
+/// Non-overlapping changes, sorted by position, all in pre-edit coordinates. All their new
+/// text sits in one string: an edit at 60k selections makes two allocations, not 60k, and
+/// cloning a set (for other views, for undo) is two copies.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChangeSet {
-    changes: Vec<Change>,
+    changes: Vec<Span>,
+    text: String,
 }
 
 /// Which side of an insertion at the same position a mapped position ends up on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Assoc {
     Before,
-    /// Not used by the editor yet (other views keep cursors before inserts).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Whole-line paste keeps cursors after the pasted lines (other views keep cursors before
+    /// inserts).
     After,
 }
 
 impl ChangeSet {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(changes: Vec<Change>) -> Self {
-        let changes: Vec<Change> = changes
-            .into_iter()
-            .filter(|c| c.start != c.end || !c.text.is_empty())
-            .collect();
+        let mut set = Self::with_capacity(changes.len(), changes.iter().map(|c| c.text.len()).sum());
+        for c in &changes {
+            set.push(c.start, c.end, &c.text);
+        }
+        set
+    }
+
+    /// An empty set with room for `changes` changes totalling `text` bytes of new text.
+    pub fn with_capacity(changes: usize, text: usize) -> Self {
+        Self {
+            changes: Vec::with_capacity(changes),
+            text: String::with_capacity(text),
+        }
+    }
+
+    /// Adds a change after the others (`debug_assert`ed); an empty one is dropped.
+    pub fn push(&mut self, start: ByteIdx, end: ByteIdx, text: &str) {
+        if start == end && text.is_empty() {
+            return;
+        }
+        debug_assert!(start <= end, "change must not be reversed");
         debug_assert!(
-            changes.windows(2).all(|w| w[0].end <= w[1].start),
+            self.changes.last().is_none_or(|c| c.end <= start),
             "changes must be sorted and non-overlapping"
         );
-        Self { changes }
+        let at = self.text.len();
+        self.text.push_str(text);
+        self.changes.push(Span {
+            start,
+            end,
+            text: at..self.text.len(),
+        });
     }
 
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
+    }
+
+    fn text_of(&self, c: &Span) -> &str {
+        &self.text[c.text.clone()]
     }
 
     /// Applies the changes and returns the inverse set.
@@ -54,32 +106,40 @@ impl ChangeSet {
         if self.changes.len() >= REBUILD_AT {
             return self.rebuild(rope);
         }
-        let mut inverse = Vec::with_capacity(self.changes.len());
+        let removed_len = self.changes.iter().map(|c| c.end.0 - c.start.0).sum();
+        let mut inverse = Self::with_capacity(self.changes.len(), removed_len);
         let mut delta: isize = 0;
         for c in &self.changes {
-            let removed = rope.slice(c.start.0..c.end.0).to_string();
-            inverse.push(self.inverse_of(c, delta, removed));
-            delta += c.text.len() as isize - (c.end.0 - c.start.0) as isize;
+            inverse.push_inverse(c, delta, |text| {
+                for chunk in rope.slice(c.start.0..c.end.0).chunks() {
+                    text.push_str(chunk);
+                }
+            });
+            delta += c.delta();
         }
         // Last to first, so earlier offsets stay valid.
         for c in self.changes.iter().rev() {
             if c.end > c.start {
                 rope.remove(c.start.0..c.end.0);
             }
-            if !c.text.is_empty() {
-                rope.insert(c.start.0, &c.text);
+            if c.text_len() > 0 {
+                rope.insert(c.start.0, self.text_of(c));
             }
         }
-        ChangeSet { changes: inverse }
+        inverse
     }
 
-    fn inverse_of(&self, c: &Change, delta: isize, removed: String) -> Change {
+    /// Adds the inverse of `c` (`delta`: the length change of the changes before it), whose
+    /// text, the removed text, `removed` appends.
+    fn push_inverse(&mut self, c: &Span, delta: isize, removed: impl FnOnce(&mut String)) {
         let start = (c.start.0 as isize + delta) as usize;
-        Change {
+        let at = self.text.len();
+        removed(&mut self.text);
+        self.changes.push(Span {
             start: ByteIdx(start),
-            end: ByteIdx(start + c.text.len()),
-            text: removed,
-        }
+            end: ByteIdx(start + c.text_len()),
+            text: at..self.text.len(),
+        });
     }
 
     /// `apply` for thousands of changes (an edit at every Cmd+Shift+L selection): one pass over
@@ -88,19 +148,18 @@ impl ChangeSet {
     fn rebuild(&self, rope: &mut Rope) -> ChangeSet {
         let mut b = RopeBuilder::new();
         let mut text = Walk::new(rope);
-        let mut inverse = Vec::with_capacity(self.changes.len());
+        let removed_len = self.changes.iter().map(|c| c.end.0 - c.start.0).sum();
+        let mut inverse = Self::with_capacity(self.changes.len(), removed_len);
         let mut delta: isize = 0;
         for c in &self.changes {
             text.take(c.start.0, |s| b.append(s));
-            let mut removed = String::new();
-            text.take(c.end.0, |s| removed.push_str(s));
-            b.append(&c.text);
-            inverse.push(self.inverse_of(c, delta, removed));
-            delta += c.text.len() as isize - (c.end.0 - c.start.0) as isize;
+            inverse.push_inverse(c, delta, |removed| text.take(c.end.0, |s| removed.push_str(s)));
+            b.append(self.text_of(c));
+            delta += c.delta();
         }
         text.take(rope.len(), |s| b.append(s));
         *rope = b.finish();
-        ChangeSet { changes: inverse }
+        inverse
     }
 
     /// Where a pre-edit position ends up after the edit. O(changes); to map many positions,
@@ -117,7 +176,7 @@ impl ChangeSet {
         let mut delta: isize = 0;
         deltas.push(0);
         for c in &self.changes {
-            delta += c.text.len() as isize - (c.end.0 - c.start.0) as isize;
+            delta += c.delta();
             deltas.push(delta);
         }
         Mapper {
@@ -165,7 +224,7 @@ impl<'a> Walk<'a> {
 
 /// See `ChangeSet::mapper`.
 pub struct Mapper<'a> {
-    changes: &'a [Change],
+    changes: &'a [Span],
     /// `deltas[i]`: total length change of the changes before `i`.
     deltas: Vec<isize>,
     /// Where the last lookup ended: positions mapped in order (a sorted selection list) are
@@ -177,7 +236,7 @@ impl Mapper<'_> {
     pub fn map(&self, pos: ByteIdx, assoc: Assoc) -> ByteIdx {
         // The first change that isn't wholly before `pos`: one ending after it, or a pure
         // insertion exactly at it. Ends are sorted, so this is a binary search.
-        let before = |c: &Change| !(c.end > pos || (c.start == pos && c.end == pos));
+        let before = |c: &Span| !(c.end > pos || (c.start == pos && c.end == pos));
         let h = self.hint.get();
         let i = if h == 0 || before(&self.changes[h - 1]) {
             let mut i = h;
@@ -198,7 +257,7 @@ impl Mapper<'_> {
             Some(c) if pos >= c.start => match assoc {
                 // Inside a replaced range, or at a pure insertion point.
                 Assoc::Before => shift(c.start.0),
-                Assoc::After => shift(c.start.0 + c.text.len()),
+                Assoc::After => shift(c.start.0 + c.text_len()),
             },
             _ => shift(pos.0),
         }
@@ -354,6 +413,40 @@ mod tests {
         out
     }
 
+    /// What `View::map_through` relies on to skip a rope lookup per position: a char boundary
+    /// of the old text maps to a char boundary of the new one, within its length.
+    #[test]
+    fn mapping_keeps_char_boundaries() {
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        for n in [1, 9, 40, REBUILD_AT + 1] {
+            let (text, changes) = random_case(&mut rng, n);
+            let cs = ChangeSet::new(changes.clone());
+            let new = reference_apply(&text, &changes);
+            let m = cs.mapper();
+            for pos in (0..=text.len()).filter(|&p| text.is_char_boundary(p)) {
+                for assoc in [Assoc::Before, Assoc::After] {
+                    let to = m.map(ByteIdx(pos), assoc).0;
+                    assert!(new.is_char_boundary(to), "{n} changes: {pos} -> {to} {assoc:?}");
+                }
+            }
+        }
+    }
+
+    /// Text pushed into a set is kept per change; empty changes are dropped.
+    #[test]
+    fn push_keeps_each_change_text() {
+        let mut cs = ChangeSet::with_capacity(4, 0);
+        cs.push(ByteIdx(0), ByteIdx(1), "é");
+        cs.push(ByteIdx(2), ByteIdx(2), "");
+        cs.push(ByteIdx(3), ByteIdx(3), "xyz");
+        cs.push(ByteIdx(4), ByteIdx(6), "");
+        assert_eq!(cs, ChangeSet::new(vec![ch(0, 1, "é"), ch(3, 3, "xyz"), ch(4, 6, "")]));
+        let mut r = Rope::from_str("abcdefg");
+        let inv = cs.apply(&mut r);
+        assert_eq!(r.to_string(), "ébcxyzdg");
+        assert_eq!(inv, ChangeSet::new(vec![ch(0, 2, "a"), ch(4, 7, ""), ch(8, 8, "ef")]));
+    }
+
     /// Both `apply` paths (tree edits below `REBUILD_AT`, the one-pass rebuild from it) give
     /// the reference text and an inverse that restores the original, and agree on the inverse;
     /// the mapper agrees with the linear walk for positions in order and out of order.
@@ -374,7 +467,7 @@ mod tests {
             let mut r2 = Rope::from_str(&text);
             let inv2 = cs.rebuild(&mut r2);
             assert_eq!(r2.to_string(), expected, "round {round}: rebuild");
-            assert_eq!(inv.changes, inv2.changes, "round {round}: inverse");
+            assert_eq!(inv, inv2, "round {round}: inverse");
             inv.apply(&mut r);
             assert_eq!(r.to_string(), text, "round {round}: undo");
 

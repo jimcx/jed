@@ -1,5 +1,7 @@
 //! The selection list: every view holds one, a single cursor is a list of length 1.
 
+use std::sync::Arc;
+
 use crate::buffer::pos::{ByteIdx, DisplayCol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,9 +59,13 @@ impl Selection {
 /// Sorted by position and merged. Besides the primary it remembers the *newest* selection, the
 /// one added last (VS Code keeps its cursors in the order they were added; Cmd+D searches after
 /// the last one and Cmd+Alt+D replaces it).
+///
+/// The list is shared on clone (copied on the next change): undo steps, the Cmd+U history and
+/// edits all keep copies of lists that can hold 60k selections, and comparing two copies of one
+/// list is a pointer check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selections {
-    list: Vec<Selection>,
+    list: Arc<Vec<Selection>>,
     primary: usize,
     newest: usize,
 }
@@ -67,7 +73,7 @@ pub struct Selections {
 impl Selections {
     pub fn single(sel: Selection) -> Self {
         Self {
-            list: vec![sel],
+            list: Arc::new(vec![sel]),
             primary: 0,
             newest: 0,
         }
@@ -84,7 +90,11 @@ impl Selections {
     pub fn with_newest(list: Vec<Selection>, primary: usize, newest: usize) -> Self {
         assert!(primary < list.len(), "selection list must not be empty");
         assert!(newest < list.len());
-        let mut s = Self { list, primary, newest };
+        let mut s = Self {
+            list: Arc::new(list),
+            primary,
+            newest,
+        };
         s.normalize();
         s
     }
@@ -136,7 +146,7 @@ impl Selections {
 
     /// Replaces each selection, then sorts and merges.
     pub fn transform(&mut self, mut f: impl FnMut(&Selection) -> Selection) {
-        for sel in &mut self.list {
+        for sel in Arc::make_mut(&mut self.list) {
             *sel = f(sel);
         }
         self.normalize();
@@ -144,20 +154,37 @@ impl Selections {
 
     /// Keeps only the primary selection.
     pub fn keep_primary(&mut self) {
-        self.list = vec![self.list[self.primary]];
+        self.list = Arc::new(vec![self.list[self.primary]]);
         self.primary = 0;
         self.newest = 0;
     }
 
+    /// Sorts (stably; skipped when already sorted, as after mapping or an edit) and merges in
+    /// place, keeping `primary` and `newest` on the selections they named.
     fn normalize(&mut self) {
-        let mut order: Vec<(Selection, usize)> = self.list.iter().copied().zip(0..).collect();
-        order.sort_by_key(|(s, _)| (s.start(), s.end()));
+        let list = Arc::make_mut(&mut self.list);
+        let key = |s: &Selection| (s.start(), s.end());
+        if !list.is_sorted_by_key(key) {
+            let mut order: Vec<(Selection, usize)> = list.iter().copied().zip(0..).collect();
+            order.sort_by_key(|(s, _)| key(s));
+            let (mut primary, mut newest) = (0, 0);
+            for (k, (sel, i)) in order.into_iter().enumerate() {
+                list[k] = sel;
+                if i == self.primary {
+                    primary = k;
+                }
+                if i == self.newest {
+                    newest = k;
+                }
+            }
+            (self.primary, self.newest) = (primary, newest);
+        }
 
-        let mut merged: Vec<Selection> = Vec::with_capacity(order.len());
-        let mut primary_idx = 0;
-        let mut newest_idx = 0;
-        for (sel, i) in order {
-            match merged.last_mut() {
+        let (mut primary, mut newest) = (0, 0);
+        let mut w: usize = 0;
+        for r in 0..list.len() {
+            let sel = list[r];
+            match w.checked_sub(1).map(|l| &mut list[l]) {
                 Some(last) if last.should_merge(&sel) => {
                     let (start, end) = (last.start().min(sel.start()), last.end().max(sel.end()));
                     *last = if sel.is_backward() || (sel.is_empty() && last.is_backward()) {
@@ -166,18 +193,20 @@ impl Selections {
                         Selection::new(start, end)
                     };
                 }
-                _ => merged.push(sel),
+                _ => {
+                    list[w] = sel;
+                    w += 1;
+                }
             }
-            if i == self.primary {
-                primary_idx = merged.len() - 1;
+            if r == self.primary {
+                primary = w - 1;
             }
-            if i == self.newest {
-                newest_idx = merged.len() - 1;
+            if r == self.newest {
+                newest = w - 1;
             }
         }
-        self.list = merged;
-        self.primary = primary_idx;
-        self.newest = newest_idx;
+        list.truncate(w);
+        (self.primary, self.newest) = (primary, newest);
     }
 }
 
@@ -187,6 +216,10 @@ mod tests {
 
     fn sel(a: usize, h: usize) -> Selection {
         Selection::new(ByteIdx(a), ByteIdx(h))
+    }
+
+    fn ranges(s: &Selections) -> Vec<(usize, usize)> {
+        s.iter().map(|s| (s.anchor.0, s.head.0)).collect()
     }
 
     #[test]
@@ -237,6 +270,26 @@ mod tests {
         assert_eq!(s.overlapping(ByteIdx(995), ByteIdx(2000)).len(), 0);
         assert!(s.contains_range(ByteIdx(20), ByteIdx(23)));
         assert!(!s.contains_range(ByteIdx(20), ByteIdx(22)));
+    }
+
+    /// Clones share the list until one changes: the other keeps its selections.
+    #[test]
+    fn clones_are_independent() {
+        let a = Selections::new(vec![sel(0, 2), sel(5, 8)], 1);
+        let mut b = a.clone();
+        b.transform(|s| Selection::new(s.anchor, ByteIdx(s.head.0 + 4)));
+        assert_eq!(ranges(&a), vec![(0, 2), (5, 8)]);
+        assert_eq!(ranges(&b), vec![(0, 12)], "transformed, then merged");
+        assert_eq!(a, a.clone());
+        assert_ne!(a, b);
+    }
+
+    /// Already sorted lists skip the sort but still merge, keeping primary and newest.
+    #[test]
+    fn sorted_lists_still_merge() {
+        let s = Selections::with_newest(vec![sel(0, 0), sel(0, 0), sel(3, 3), sel(3, 5), sel(9, 9)], 3, 1);
+        assert_eq!(ranges(&s), vec![(0, 0), (3, 5), (9, 9)]);
+        assert_eq!((s.primary_index(), s.newest_index()), (1, 0));
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! after a pause, or when switching between inserting and deleting.
 //! Anything else (paste, cut, multi-cursor commands) is a step of its own.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ropey::Rope;
@@ -25,7 +26,7 @@ pub enum EditKind {
 struct Step {
     id: u64,
     /// (forward, inverse) pairs, in the order they were applied.
-    edits: Vec<(ChangeSet, ChangeSet)>,
+    edits: Vec<(Arc<ChangeSet>, Arc<ChangeSet>)>,
     sel_before: Selections,
     sel_after: Selections,
     kind: EditKind,
@@ -65,8 +66,8 @@ impl History {
 
     pub fn record(
         &mut self,
-        forward: ChangeSet,
-        inverse: ChangeSet,
+        forward: Arc<ChangeSet>,
+        inverse: Arc<ChangeSet>,
         sel_before: Selections,
         sel_after: Selections,
         kind: EditKind,
@@ -100,7 +101,7 @@ impl History {
     }
 
     /// Reverts the last step; returns the selections from before it and the changes applied.
-    pub fn undo(&mut self, rope: &mut Rope) -> Option<(Selections, Vec<ChangeSet>)> {
+    pub fn undo(&mut self, rope: &mut Rope) -> Option<(Selections, Vec<Arc<ChangeSet>>)> {
         let mut step = self.undo.pop()?;
         let mut applied = Vec::with_capacity(step.edits.len());
         for (_, inverse) in step.edits.iter().rev() {
@@ -114,7 +115,7 @@ impl History {
     }
 
     /// Re-applies the last undone step; returns the selections from after it and the changes applied.
-    pub fn redo(&mut self, rope: &mut Rope) -> Option<(Selections, Vec<ChangeSet>)> {
+    pub fn redo(&mut self, rope: &mut Rope) -> Option<(Selections, Vec<Arc<ChangeSet>>)> {
         let step = self.redo.pop()?;
         for (forward, _) in &step.edits {
             forward.apply(rope);

@@ -1,5 +1,7 @@
 //! A view onto a buffer: its selections and scroll position.
 
+use std::sync::Arc;
+
 use ropey::Rope;
 
 use crate::buffer::change::{Assoc, ChangeSet};
@@ -59,6 +61,13 @@ impl CursorHistory {
     pub fn reset(&mut self, current: &Selections) {
         self.undo.clear();
         self.seen.clone_from(current);
+    }
+
+    /// The first half of a `reset` around a text change: drops the history's share of the
+    /// selection list, so the change can edit the list in place instead of copying it.
+    fn release(&mut self) {
+        self.undo.clear();
+        self.seen = Selections::single(Selection::cursor(ByteIdx(0)));
     }
 
     /// Records a selection change since the last call, if any; `top_line`/`left_col` are the
@@ -161,17 +170,29 @@ impl View {
 
     /// Follows edits made through another view on the same buffer: selections and the
     /// viewport move with the text. `changes` are in the order applied; `rope` is the result.
-    pub fn map_through(&mut self, changes: &[ChangeSet], rope: &Rope) {
+    pub fn map_through(&mut self, changes: &[Arc<ChangeSet>], rope: &Rope) {
         let len = rope.len();
-        let mappers: Vec<_> = changes.iter().map(ChangeSet::mapper).collect();
+        let mappers: Vec<_> = changes.iter().map(|c| c.mapper()).collect();
+        // Changes start and end on char boundaries and insert whole strings, so a position on
+        // a boundary maps to one: no rope lookup per position (it was most of the cost at 60k
+        // selections).
         let map = |p: ByteIdx| {
-            let p = mappers.iter().fold(p, |p, m| m.map(p, Assoc::Before));
-            ByteIdx(rope.floor_char_boundary(p.0.min(len)))
+            let p = mappers.iter().fold(p, |p, m| m.map(p, Assoc::Before)).0.min(len);
+            debug_assert_eq!(rope.floor_char_boundary(p), p, "mapped off a char boundary");
+            ByteIdx(p)
         };
-        self.selections.transform(|s| Selection {
-            anchor: map(s.anchor),
-            head: map(s.head),
-            goal: s.goal,
+        self.cursor_history.release();
+        // Start before end: positions in order let each mapper step from its last hit instead of
+        // searching. Mapping is a function of the position, so a cursor is looked up once.
+        self.selections.transform(|s| {
+            let start = map(s.start());
+            let end = if s.is_empty() { start } else { map(s.end()) };
+            let (anchor, head) = if s.head < s.anchor { (end, start) } else { (start, end) };
+            Selection {
+                anchor,
+                head,
+                goal: s.goal,
+            }
         });
         let top = map(self.top_byte);
         self.set_top_line(rope, pos::line_of(rope, top));
@@ -231,6 +252,34 @@ mod tests {
         b.map_through(&buf.take_applied(), &buf.rope);
         assert_eq!(b.selections.primary().head, ByteIdx(0));
         assert_eq!(buf.rope.to_string(), "o world");
+    }
+
+    /// Backward selections keep their direction when mapped; the other view's Cmd+U history
+    /// is cleared by the edit.
+    #[test]
+    fn mapping_keeps_direction_and_clears_cursor_history() {
+        let mut buf = Buffer::from_str("abc def ghi");
+        let mut a = View::new();
+        let mut b = View::new();
+        a.selections = cursor(0);
+        b.selections = Selections::new(
+            vec![
+                Selection::new(ByteIdx(7), ByteIdx(4)),
+                Selection::new(ByteIdx(8), ByteIdx(11)),
+            ],
+            0,
+        );
+        b.cursor_history.record(&cursor(1), 0, 0);
+        assert_eq!(b.cursor_history.len(), 1);
+        edit::insert_char(&mut buf, &mut a, 'X');
+        b.map_through(&buf.take_applied(), &buf.rope);
+        let got: Vec<(usize, usize)> = b.selections.iter().map(|s| (s.anchor.0, s.head.0)).collect();
+        assert_eq!(got, vec![(8, 5), (9, 12)]);
+        assert_eq!(b.cursor_history.len(), 0);
+        assert!(
+            !b.cursor_history.record(&b.selections, 0, 0),
+            "the mapped list is the one seen"
+        );
     }
 
     #[test]

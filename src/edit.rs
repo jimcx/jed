@@ -3,7 +3,7 @@
 use ropey::Rope;
 
 use crate::buffer::Buffer;
-use crate::buffer::change::{Change, ChangeSet};
+use crate::buffer::change::{Assoc, ChangeSet};
 use crate::buffer::file::Eol;
 use crate::buffer::pos::{self, ByteIdx};
 use crate::buffer::undo::EditKind;
@@ -77,10 +77,9 @@ pub fn is_edit(cmd: Command) -> bool {
 
 /// Typed text: one char from a key press.
 pub fn insert_char(buf: &mut Buffer, view: &mut View, c: char) {
-    let text = c.to_string();
-    replace_each(buf, view, EditKind::Insert, |_, sel| {
-        (sel.start(), sel.end(), text.clone())
-    });
+    let mut utf8 = [0; 4];
+    let text: &str = c.encode_utf8(&mut utf8);
+    replace_each(buf, view, EditKind::Insert, |_, sel| (sel.start(), sel.end(), text));
 }
 
 /// Pasted text: line endings converted to the buffer's. `whole_line` (from a copy of
@@ -93,9 +92,9 @@ pub fn paste(buf: &mut Buffer, view: &mut View, text: &str, whole_line: bool) {
     replace_each_landing(buf, view, EditKind::Other, |rope, sel| {
         if whole_line && sel.is_empty() {
             let start = pos::line_start(rope, pos::line_of(rope, sel.head));
-            (start, start, text.clone(), Land::Keep(sel.head))
+            (start, start, text.as_str(), Land::Keep(sel.head))
         } else {
-            (sel.start(), sel.end(), text.clone(), Land::AfterText)
+            (sel.start(), sel.end(), text.as_str(), Land::AfterText)
         }
     });
 }
@@ -133,7 +132,7 @@ pub fn cut(buf: &mut Buffer, view: &mut View) {
     let whole_lines = view.selections.iter().all(|s| s.is_empty());
     replace_each(buf, view, EditKind::Other, |rope, sel| {
         if !whole_lines {
-            return (sel.start(), sel.end(), String::new());
+            return (sel.start(), sel.end(), "");
         }
         let line = pos::line_of(rope, sel.head);
         let (start, end) = if line + 1 < pos::line_count(rope) {
@@ -143,7 +142,7 @@ pub fn cut(buf: &mut Buffer, view: &mut View) {
         } else {
             (ByteIdx(0), pos::line_end(rope, line))
         };
-        (start, end, String::new())
+        (start, end, "")
     });
 }
 
@@ -223,9 +222,9 @@ fn delete(buf: &mut Buffer, view: &mut View, to: impl Fn(&Rope, ByteIdx) -> Byte
     replace_each(buf, view, EditKind::Delete, |rope, sel| {
         if sel.is_empty() {
             let other = to(rope, sel.head);
-            (sel.head.min(other), sel.head.max(other), String::new())
+            (sel.head.min(other), sel.head.max(other), "")
         } else {
-            (sel.start(), sel.end(), String::new())
+            (sel.start(), sel.end(), "")
         }
     });
 }
@@ -263,11 +262,11 @@ enum Land {
 }
 
 /// One transaction: replace a range per selection, cursors land after the new text.
-fn replace_each(
+fn replace_each<S: AsRef<str>>(
     buf: &mut Buffer,
     view: &mut View,
     kind: EditKind,
-    mut f: impl FnMut(&Rope, &Selection) -> (ByteIdx, ByteIdx, String),
+    mut f: impl FnMut(&Rope, &Selection) -> (ByteIdx, ByteIdx, S),
 ) {
     replace_each_landing(buf, view, kind, |rope, sel| {
         let (start, end, text) = f(rope, sel);
@@ -275,43 +274,48 @@ fn replace_each(
     });
 }
 
-/// `replace_each`, with each cursor's landing chosen per selection.
-fn replace_each_landing(
+/// `replace_each`, with each cursor's landing chosen per selection. The text is borrowed where
+/// it can be (typing at 60k cursors copies one char into the set 60k times, allocating nothing).
+fn replace_each_landing<S: AsRef<str>>(
     buf: &mut Buffer,
     view: &mut View,
     kind: EditKind,
-    mut f: impl FnMut(&Rope, &Selection) -> (ByteIdx, ByteIdx, String, Land),
+    mut f: impl FnMut(&Rope, &Selection) -> (ByteIdx, ByteIdx, S, Land),
 ) {
     let before = view.selections.clone();
-    let mut changes = Vec::with_capacity(before.len());
-    let mut lands = Vec::with_capacity(before.len());
+    // Room for a typed char per selection; longer text grows the set's string as it goes.
+    let mut changes = ChangeSet::with_capacity(before.len(), before.len());
+    let mut cursors = Vec::with_capacity(before.len());
     let mut prev_end = ByteIdx(0);
+    let mut delta: isize = 0;
+    let mut keeps = Vec::new();
     for sel in before.iter() {
         let (start, end, text, land) = f(&buf.rope, sel);
+        let text = text.as_ref();
         // Expanded ranges (e.g. backspace next to a selection) can overlap; clip them.
         let start = start.max(prev_end);
         let end = end.max(start);
         prev_end = end;
-        changes.push(Change { start, end, text });
-        lands.push(land);
+        changes.push(start, end, text);
+        delta += text.len() as isize - (end.0 - start.0) as isize;
+        cursors.push(Selection::cursor(match land {
+            Land::AfterText => ByteIdx((end.0 as isize + delta) as usize),
+            Land::Keep(p) => {
+                keeps.push((cursors.len(), p.max(end)));
+                ByteIdx(0)
+            }
+        }));
     }
-
-    let mut delta: isize = 0;
-    let cursors = changes
-        .iter()
-        .zip(lands)
-        .map(|(c, land)| {
-            delta += c.text.len() as isize - (c.end.0 - c.start.0) as isize;
-            let at = match land {
-                Land::AfterText => c.end.0,
-                Land::Keep(p) => p.0.max(c.end.0),
-            };
-            Selection::cursor(ByteIdx((at as isize + delta) as usize))
-        })
-        .collect();
+    // A kept position can sit after later selections' changes too (two cursors on one line
+    // both paste a whole line at its start), so it goes through the whole set.
+    if !keeps.is_empty() {
+        let m = changes.mapper();
+        for (i, p) in keeps {
+            cursors[i] = Selection::cursor(m.map(p, Assoc::After));
+        }
+    }
     let after = Selections::with_newest(cursors, before.primary_index(), before.newest_index());
-
-    buf.edit(ChangeSet::new(changes), before, after.clone(), kind);
+    buf.edit(changes, before, after.clone(), kind);
     view.selections = after;
     view.reveal_cursor = true;
 }
@@ -490,6 +494,18 @@ mod tests {
         assert_eq!(b.rope.to_string(), "x\r\n\r\ncd");
     }
 
+    /// Two cursors on one line both paste the line above it: each stays on its own text, past
+    /// both pasted lines (it used to count only its own, landing inside the `界`).
+    #[test]
+    fn whole_line_paste_with_two_cursors_on_a_line_keeps_both() {
+        let (mut b, mut v, _) = setup("a界b界", 0);
+        v.selections = Selections::new(vec![Selection::cursor(ByteIdx(1)), Selection::cursor(ByteIdx(5))], 0);
+        paste(&mut b, &mut v, "z\n", true);
+        assert_eq!(b.rope.to_string(), "z\nz\na界b界");
+        let heads: Vec<usize> = v.selections.iter().map(|s| s.head.0).collect();
+        assert_eq!(heads, vec![5, 9], "still after 'a' and after 'b'");
+    }
+
     #[test]
     fn home_toggles_first_non_blank() {
         let (mut b, mut v, s) = setup("    foo", 6);
@@ -497,5 +513,181 @@ mod tests {
         assert_eq!(head(&v), 4);
         run(mv(Motion::LineStart), &mut b, &mut v, &s);
         assert_eq!(head(&v), 0);
+    }
+
+    /// Seeded xorshift: `next(n)` is in `0..n`.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % n as u64) as usize
+        }
+    }
+
+    /// Random sorted selections on grapheme boundaries of `text`: cursors (often at 0, so some
+    /// deletes are empty changes), forward and backward ranges, some touching.
+    fn random_selections(rng: &mut Rng, text: &str, n: usize) -> Selections {
+        use unicode_segmentation::UnicodeSegmentation;
+        let bounds: Vec<usize> = text
+            .grapheme_indices(true)
+            .map(|(i, _)| i)
+            .chain([text.len()])
+            .collect();
+        let mut list = Vec::new();
+        let mut at = 0;
+        for _ in 0..n {
+            if at >= bounds.len() {
+                break;
+            }
+            let end = (at + rng.next(3)).min(bounds.len() - 1);
+            let (a, h) = (ByteIdx(bounds[at]), ByteIdx(bounds[end]));
+            list.push(if rng.next(2) == 0 {
+                Selection::new(a, h)
+            } else {
+                Selection::new(h, a)
+            });
+            at = end + rng.next(4);
+        }
+        let primary = rng.next(list.len());
+        Selections::new(list, primary)
+    }
+
+    /// The grapheme boundary before / after `pos` in `text` (or `pos` at either end).
+    fn grapheme_step(text: &str, pos: usize, left: bool) -> usize {
+        use unicode_segmentation::UnicodeSegmentation;
+        let mut bounds = text.grapheme_indices(true).map(|(i, _)| i).chain([text.len()]);
+        if left {
+            bounds.take_while(|&b| b < pos).last().unwrap_or(pos)
+        } else {
+            bounds.find(|&b| b > pos).unwrap_or(pos)
+        }
+    }
+
+    /// Multi-cursor typing, pasting, deleting and cutting on multibyte text (CJK, emoji,
+    /// combining marks, CRLF) against a `String` model: the text and the cursors after each
+    /// edit, a second view mapped through every edit staying on char boundaries, then undo all
+    /// the way back to the original and redo all the way forward through the same texts. Small
+    /// rounds use tree edits; the 300-cursor rounds the one-pass rebuild.
+    #[test]
+    fn random_multi_cursor_edits_undo_and_redo_match_a_model() {
+        const PIECES: &[&str] = &["a", "bc", "é", "e\u{301}", "界", "😀", "\n", "\r\n", " "];
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        let s = Settings::default();
+        for round in 0..60 {
+            let (len, cursors) = if round % 10 == 9 { (3000, 300) } else { (120, 6) };
+            let mut text = String::new();
+            while text.len() < len {
+                text.push_str(PIECES[rng.next(PIECES.len())]);
+            }
+            let mut b = Buffer::from_str(&text);
+            let mut v = View::new();
+            let mut other = View::new();
+            other.selections = random_selections(&mut rng, &text, cursors);
+            let mut snapshots = vec![text.clone()];
+            for step in 0..8 {
+                if step == 0 || rng.next(3) > 0 {
+                    v.selections = random_selections(&mut rng, &text, cursors);
+                }
+                // Expected (start, end, new text) per selection, or None: checked by snapshot only.
+                let sels: Vec<Selection> = v.selections.iter().copied().collect();
+                let op = rng.next(6);
+                let expect: Option<Vec<(usize, usize, &str)>> = match op {
+                    0 => {
+                        let c = ['x', 'é', '\u{301}', '界', '😀'][rng.next(5)];
+                        insert_char(&mut b, &mut v, c);
+                        let t: &'static str = ["x", "é", "\u{301}", "界", "😀"]
+                            [['x', 'é', '\u{301}', '界', '😀'].iter().position(|&k| k == c).unwrap()];
+                        Some(sels.iter().map(|x| (x.start().0, x.end().0, t)).collect())
+                    }
+                    1 => {
+                        let t = ["ab", "é界", "😀", "e\u{301}"][rng.next(4)];
+                        paste(&mut b, &mut v, t, false);
+                        Some(sels.iter().map(|x| (x.start().0, x.end().0, t)).collect())
+                    }
+                    2 | 3 => {
+                        let left = op == 2;
+                        run(if left { C::DeleteLeft } else { C::DeleteRight }, &mut b, &mut v, &s);
+                        Some(
+                            sels.iter()
+                                .map(|x| {
+                                    if !x.is_empty() {
+                                        (x.start().0, x.end().0, "")
+                                    } else if left {
+                                        (grapheme_step(&text, x.head.0, true), x.head.0, "")
+                                    } else {
+                                        (x.head.0, grapheme_step(&text, x.head.0, false), "")
+                                    }
+                                })
+                                .collect(),
+                        )
+                    }
+                    4 => {
+                        cut(&mut b, &mut v);
+                        None
+                    }
+                    _ => {
+                        paste(&mut b, &mut v, "z\n", true);
+                        None
+                    }
+                };
+                if let Some(expect) = expect {
+                    let (mut prev_end, mut delta, mut cursors) = (0, 0isize, Vec::new());
+                    let mut new = String::new();
+                    for (start, end, t) in expect {
+                        let start = start.max(prev_end);
+                        let end = end.max(start);
+                        new.push_str(&text[prev_end..start]);
+                        new.push_str(t);
+                        prev_end = end;
+                        delta += t.len() as isize - (end - start) as isize;
+                        let c = (end as isize + delta) as usize;
+                        if cursors.last() != Some(&c) {
+                            cursors.push(c);
+                        }
+                    }
+                    new.push_str(&text[prev_end..]);
+                    assert_eq!(b.rope.to_string(), new, "round {round} step {step} op {op}");
+                    let got: Vec<usize> = v.selections.iter().map(|x| x.head.0).collect();
+                    assert!(v.selections.iter().all(|x| x.is_empty()));
+                    assert_eq!(got, cursors, "round {round} step {step} op {op}: cursors");
+                }
+                text = b.rope.to_string();
+                other.map_through(&b.take_applied(), &b.rope);
+                for x in other.selections.iter() {
+                    for p in [x.anchor.0, x.head.0] {
+                        assert!(text.is_char_boundary(p), "round {round} step {step}: other view at {p}");
+                    }
+                }
+                if snapshots.last() != Some(&text) {
+                    snapshots.push(text.clone());
+                }
+            }
+            // Undo to the start: every text undo passes through was a snapshot, in reverse order.
+            let mut undone = vec![b.rope.to_string()];
+            while b.undo().is_some() {
+                undone.push(b.rope.to_string());
+                other.map_through(&b.take_applied(), &b.rope);
+            }
+            assert_eq!(undone.last(), snapshots.first(), "round {round}: undo to the original");
+            let mut rest = snapshots.iter().rev();
+            for t in &undone {
+                assert!(
+                    rest.any(|snap| snap == t),
+                    "round {round}: undo produced a text never seen"
+                );
+            }
+            // Redo to the end through the same texts, forward.
+            let mut redone = vec![b.rope.to_string()];
+            while b.redo().is_some() {
+                redone.push(b.rope.to_string());
+                other.map_through(&b.take_applied(), &b.rope);
+            }
+            undone.reverse();
+            assert_eq!(redone, undone, "round {round}: redo retraces undo");
+            let len = b.rope.len();
+            assert!(other.selections.iter().all(|x| x.head.0 <= len && x.anchor.0 <= len));
+        }
     }
 }

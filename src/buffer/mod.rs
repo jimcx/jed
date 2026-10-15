@@ -7,6 +7,7 @@ pub mod undo;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use ropey::Rope;
@@ -34,8 +35,9 @@ pub struct Buffer {
     saved_state: u64,
     /// History state currently being written, if a save is in flight.
     saving_state: Option<u64>,
-    /// Changes applied since the last `take_applied`, for other views on this buffer to follow.
-    applied: Vec<ChangeSet>,
+    /// Changes applied since the last `take_applied`, for other views on this buffer to follow
+    /// (shared with the undo history: an edit at 60k selections isn't copied).
+    applied: Vec<Arc<ChangeSet>>,
 }
 
 /// What a background save needs; the rope clone is cheap.
@@ -93,7 +95,8 @@ impl Buffer {
         if changes.is_empty() {
             return;
         }
-        let inverse = changes.apply(&mut self.rope);
+        let inverse = Arc::new(changes.apply(&mut self.rope));
+        let changes = Arc::new(changes);
         self.applied.push(changes.clone());
         self.history
             .record(changes, inverse, before, after, kind, Instant::now());
@@ -117,7 +120,7 @@ impl Buffer {
     }
 
     /// Changes applied since the last call, in order.
-    pub fn take_applied(&mut self) -> Vec<ChangeSet> {
+    pub fn take_applied(&mut self) -> Vec<Arc<ChangeSet>> {
         std::mem::take(&mut self.applied)
     }
 
