@@ -1,5 +1,5 @@
 //! Key combos to commands. Keymaps are data; commands never look at keys.
-//! A binding applies in one context (editor, explorer, palette) or everywhere.
+//! A binding applies in one context (editor, explorer, palette, find, replace) or everywhere.
 //! The defaults are VS Code's; `keybindings.toml` replaces bindings command by command.
 
 use std::collections::{HashMap, HashSet};
@@ -8,7 +8,7 @@ use std::path::Path;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
 
-use crate::command::{ColumnMotion, Command, ExplorerCommand as X, Motion, PaletteCommand as P};
+use crate::command::{ColumnMotion, Command, ExplorerCommand as X, FindCommand as F, Motion, PaletteCommand as P};
 
 pub const FILE_NAME: &str = "keybindings.toml";
 
@@ -45,15 +45,26 @@ const NAMED_KEYS: [(KeyCode, &str, &str); 15] = [
     (KeyCode::Char(' '), "space", "Space"),
 ];
 
+/// Shift+1 … Shift+0 on a US keyboard.
+const SHIFTED_DIGITS: &str = "!@#$%^&*()";
+
 impl KeyCombo {
     /// Uppercase letters become lowercase + Shift, so `Cmd+Shift+Z` matches however the terminal reports it.
+    /// With Cmd, Ctrl or Alt held, a shifted digit (US layout: `!` … `)`) becomes the digit + Shift,
+    /// since kitty-protocol terminals report Cmd+Shift+1 as Cmd+`!`.
     pub fn from_event(ev: &KeyEvent) -> Self {
         let mut mods =
             ev.modifiers & (KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
+        let chord = mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
         let code = match ev.code {
             KeyCode::Char(c) if c.is_uppercase() => {
                 mods |= KeyModifiers::SHIFT;
                 KeyCode::Char(c.to_lowercase().next().unwrap_or(c))
+            }
+            KeyCode::Char(c) if chord && SHIFTED_DIGITS.contains(c) => {
+                mods |= KeyModifiers::SHIFT;
+                let i = SHIFTED_DIGITS.chars().position(|d| d == c).unwrap_or(0);
+                KeyCode::Char(char::from(b'0' + ((i + 1) % 10) as u8))
             }
             KeyCode::BackTab => {
                 mods |= KeyModifiers::SHIFT;
@@ -97,7 +108,8 @@ impl KeyCombo {
                 },
             },
         };
-        Ok(Self { code, mods })
+        // As a key event would arrive: `ctrl+!` is `ctrl+shift+1`, or it could never match.
+        Ok(Self::from_event(&KeyEvent::new(code, mods)))
     }
 
     /// The config spelling `parse` reads (also the spelling in docs/terminals/README.md).
@@ -147,17 +159,31 @@ pub enum Context {
     Explorer,
     /// The command palette and quick open, while open.
     Palette,
+    /// The find widget's find input has the focus.
+    Find,
+    /// Its replace input has the focus; bindings not found here come from `Find`.
+    Replace,
 }
 
 impl Context {
-    const ALL: [(Context, &'static str); 3] = [
+    const ALL: [(Context, &'static str); 5] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
+        (Context::Find, "find"),
+        (Context::Replace, "replace"),
     ];
 
     fn parse(name: &str) -> Option<Context> {
         Self::ALL.iter().find(|(_, n)| *n == name).map(|(c, _)| *c)
+    }
+
+    /// The context looked at next, before the global bindings.
+    fn parent(self) -> Option<Context> {
+        match self {
+            Context::Replace => Some(Context::Find),
+            _ => None,
+        }
     }
 }
 
@@ -216,13 +242,18 @@ impl Keymap {
         self.bindings.iter().map(|((combo, ctx), c)| (*combo, *ctx, *c))
     }
 
-    /// A binding for the current context wins over a global one.
+    /// A binding for the current context wins over its parent's (replace → find), which wins
+    /// over a global one.
     pub fn lookup(&self, ev: &KeyEvent, context: Context) -> Option<Command> {
         let combo = KeyCombo::from_event(ev);
-        self.bindings
-            .get(&(combo, Some(context)))
-            .or_else(|| self.bindings.get(&(combo, None)))
-            .copied()
+        let mut ctx = Some(context);
+        while let Some(c) = ctx {
+            if let Some(cmd) = self.bindings.get(&(combo, Some(c))) {
+                return Some(*cmd);
+            }
+            ctx = c.parent();
+        }
+        self.bindings.get(&(combo, None)).copied()
     }
 
     /// The key shown next to a command in the palette.
@@ -418,6 +449,27 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Up, alt | shift, Command::CopyLinesUp),
         (KeyCode::Down, alt | shift, Command::CopyLinesDown),
     ]);
+    // The find widget: opening it, and what also works from the editor (VS Code: `editorFocus`).
+    // VS Code's toggles are Cmd+Alt+C / W / R on macOS, Alt+C / W / R on Linux.
+    let toggle = if mac { cmd | alt } else { alt };
+    let open_replace = if mac {
+        (KeyCode::Char('f'), cmd | alt)
+    } else {
+        (KeyCode::Char('h'), ctrl)
+    };
+    let find_keys = [
+        (KeyCode::Char('f'), cmd, Command::OpenFind),
+        (open_replace.0, open_replace.1, Command::OpenReplace),
+        (KeyCode::F(3), none, Command::Find(F::Next)),
+        (KeyCode::F(3), shift, Command::Find(F::Previous)),
+        (KeyCode::Char('c'), toggle, Command::Find(F::ToggleCase)),
+        (KeyCode::Char('w'), toggle, Command::Find(F::ToggleWholeWord)),
+        (KeyCode::Char('r'), toggle, Command::Find(F::ToggleRegex)),
+        (KeyCode::Char('1'), cmd | shift, Command::Find(F::ReplaceOne)),
+        (KeyCode::Enter, cmd | alt, Command::Find(F::ReplaceAll)),
+        (KeyCode::Enter, alt, Command::Find(F::SelectAllMatches)),
+    ];
+    editor.extend(find_keys);
     if mac {
         editor.push((KeyCode::Backspace, cmd, Command::DeleteToLineStart));
     } else {
@@ -485,6 +537,17 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::PageUp, none, P::PageUp),
     ];
 
+    // The find input, then the replace input (which falls back to the find input's keys).
+    let mut find = vec![
+        (KeyCode::Enter, none, Command::Find(F::Next)),
+        (KeyCode::Enter, shift, Command::Find(F::Previous)),
+        (KeyCode::Esc, none, Command::Find(F::Close)),
+        (KeyCode::Tab, none, Command::Find(F::SwitchField)),
+        (KeyCode::Tab, shift, Command::Find(F::SwitchField)),
+    ];
+    find.extend(find_keys);
+    let replace = [(KeyCode::Enter, none, Command::Find(F::ReplaceOne))];
+
     let bind = |code, mods, context, command| Binding {
         combo: KeyCombo { code, mods },
         context,
@@ -502,6 +565,12 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         palette
             .into_iter()
             .map(|(k, m, c)| bind(k, m, Some(Context::Palette), Command::Palette(c))),
+    );
+    out.extend(find.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Find), c)));
+    out.extend(
+        replace
+            .into_iter()
+            .map(|(k, m, c)| bind(k, m, Some(Context::Replace), c)),
     );
     out
 }
@@ -563,6 +632,71 @@ mod tests {
     }
 
     #[test]
+    fn find_contexts() {
+        for platform in [Platform::MacOs, Platform::Linux] {
+            let km = Keymap::default_for(platform);
+            let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+            assert_eq!(km.lookup(&enter, Context::Find), Some(Command::Find(F::Next)));
+            assert_eq!(km.lookup(&enter, Context::Replace), Some(Command::Find(F::ReplaceOne)));
+            assert_eq!(km.lookup(&enter, Context::Editor), Some(Command::InsertNewline));
+            // The replace input falls back to the find input's keys, then the global ones.
+            let esc = key(KeyCode::Esc, KeyModifiers::NONE);
+            assert_eq!(km.lookup(&esc, Context::Replace), Some(Command::Find(F::Close)));
+            let cmd = if platform == Platform::MacOs {
+                KeyModifiers::SUPER
+            } else {
+                KeyModifiers::CONTROL
+            };
+            let save = key(KeyCode::Char('s'), cmd);
+            assert_eq!(km.lookup(&save, Context::Replace), Some(Command::Save));
+            // Typing goes to the input: no plain characters are bound there.
+            let x = key(KeyCode::Char('x'), KeyModifiers::NONE);
+            assert_eq!(km.lookup(&x, Context::Find), None);
+            assert_eq!(km.lookup(&x, Context::Replace), None);
+        }
+        let mac = Keymap::default_for(Platform::MacOs);
+        let linux = Keymap::default_for(Platform::Linux);
+        let case = Some(Command::Find(F::ToggleCase));
+        let cmd_alt = KeyModifiers::SUPER | KeyModifiers::ALT;
+        assert_eq!(mac.lookup(&key(KeyCode::Char('c'), cmd_alt), Context::Find), case);
+        assert_eq!(mac.lookup(&key(KeyCode::Char('c'), cmd_alt), Context::Editor), case);
+        let alt_c = key(KeyCode::Char('c'), KeyModifiers::ALT);
+        assert_eq!(linux.lookup(&alt_c, Context::Replace), case);
+        let ctrl_h = key(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert_eq!(linux.lookup(&ctrl_h, Context::Editor), Some(Command::OpenReplace));
+        assert_eq!(
+            mac.binding_for(Command::Find(F::Next)).map(|k| k.label()).as_deref(),
+            Some("F3")
+        );
+    }
+
+    #[test]
+    fn shifted_digits_with_a_modifier_are_the_digit() {
+        // Kitty-protocol terminals with alternate keys report Cmd+Shift+1 as Cmd+`!`.
+        let bang = KeyCombo::from_event(&key(KeyCode::Char('!'), KeyModifiers::SUPER));
+        assert_eq!(bang, KeyCombo::parse("cmd+shift+1").unwrap());
+        let paren = KeyCombo::from_event(&key(KeyCode::Char(')'), KeyModifiers::CONTROL));
+        assert_eq!(paren, KeyCombo::parse("ctrl+shift+0").unwrap());
+        // Typed on its own it stays a character.
+        let typed = KeyCombo::from_event(&key(KeyCode::Char('!'), KeyModifiers::NONE));
+        assert_eq!(typed.code, KeyCode::Char('!'));
+        let typed = KeyCombo::from_event(&key(KeyCode::Char('!'), KeyModifiers::SHIFT));
+        assert_eq!((typed.code, typed.mods), (KeyCode::Char('!'), KeyModifiers::SHIFT));
+        // Written with the shifted character in keybindings.toml, it still matches.
+        assert_eq!(
+            KeyCombo::parse("ctrl+!").unwrap(),
+            KeyCombo::parse("ctrl+shift+1").unwrap()
+        );
+        assert_eq!(KeyCombo::parse("alt+shift+$").unwrap().spec(), "alt+shift+4");
+        assert_eq!(KeyCombo::parse("!").unwrap().code, KeyCode::Char('!'));
+        let mac = Keymap::default_for(Platform::MacOs);
+        assert_eq!(
+            mac.lookup(&key(KeyCode::Char('!'), KeyModifiers::SUPER), Context::Find),
+            Some(Command::Find(F::ReplaceOne))
+        );
+    }
+
+    #[test]
     fn specs_parse_back_and_label() {
         for platform in [Platform::MacOs, Platform::Linux] {
             for (combo, ..) in Keymap::default_for(platform).bindings() {
@@ -600,9 +734,14 @@ mod tests {
             key = "hyper+k"
             command = "file.save"
             context = "terminal"
+
+            [[binding]]
+            key = "ctrl+n"
+            command = "find.next"
+            context = "find"
         "#;
         let (user, errors) = parse_user(toml);
-        assert_eq!(user.len(), 2);
+        assert_eq!(user.len(), 3);
         assert_eq!(errors.len(), 3, "{errors:?}");
         let km = Keymap::with_user(Platform::MacOs, &user);
         let ed = Context::Editor;
@@ -624,6 +763,11 @@ mod tests {
             km.binding_for(Command::ToggleSidebar).map(|c| c.label()).as_deref(),
             Some("Cmd+B")
         );
+        // A find-context binding: Ctrl+N goes to the next match; Enter and F3 no longer do.
+        let ctrl_n = key(KeyCode::Char('n'), KeyModifiers::CONTROL);
+        assert_eq!(km.lookup(&ctrl_n, Context::Find), Some(Command::Find(F::Next)));
+        assert_eq!(km.lookup(&ctrl_n, Context::Editor), None);
+        assert_eq!(km.lookup(&key(KeyCode::Enter, KeyModifiers::NONE), Context::Find), None);
 
         let (_, errors) = parse_user("[[binding]]\nkey = 1\n");
         assert_eq!(errors.len(), 1, "a bad file is one error");

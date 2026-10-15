@@ -7,6 +7,7 @@ mod config;
 mod edit;
 mod explorer;
 mod field;
+mod find;
 mod group;
 mod layout;
 mod lines;

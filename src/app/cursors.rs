@@ -40,6 +40,14 @@ impl App {
         self.session_changed = true;
     }
 
+    /// The find options changed: a running Cmd+D session that searches with them ends
+    /// (word mode doesn't use them).
+    pub(super) fn find_options_changed(&mut self) {
+        if self.match_session.as_ref().is_some_and(|s| !s.session.word_mode) {
+            self.match_session = None;
+        }
+    }
+
     /// Cmd+U: back to the selections (and scroll) before the last selection change.
     pub(super) fn cursor_undo(&mut self) {
         let Some((buf, view)) = self.active_mut() else {

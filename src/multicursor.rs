@@ -24,8 +24,7 @@ use crate::view::View;
 pub struct Session {
     matcher: Matcher,
     /// Searching for the word under an empty cursor (whole word, case-sensitive), not the
-    /// find widget's options. 6d's option toggles end only sessions that use them.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// find widget's options. The widget's option toggles end only sessions that use them.
     pub word_mode: bool,
     /// The word under the empty cursor, which the first Cmd+D / Cmd+Alt+D selects
     /// (VS Code's `currentMatch`).

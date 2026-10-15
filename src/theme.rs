@@ -25,6 +25,9 @@ impl Theme {
             ("editor.lineHighlight", Style::new().bg(c(0x2A2D2E))),
             ("editor.selection", Style::new().bg(c(0x264F78))),
             ("editor.cursor.secondary", Style::new().add_modifier(Modifier::REVERSED)),
+            // Dark Modern's current match; Dark+'s other matches (#EA5C0055) blended over the editor.
+            ("editor.findMatch", Style::new().bg(c(0x9E6A03))),
+            ("editor.findMatchHighlight", Style::new().bg(c(0x613214))),
             ("editor.whitespace.control", Style::new().fg(c(0xF48771))),
             ("gutter", fg_bg(0x858585, 0x1E1E1E)),
             ("gutter.active", Style::new().fg(c(0xC6C6C6))),
@@ -60,6 +63,8 @@ impl Theme {
                 Style::new().fg(c(0x2AAAFF)).add_modifier(Modifier::BOLD),
             ),
             ("palette.detail", Style::new().fg(c(0x8C8C8C))),
+            ("find.option", Style::new().fg(c(0x8C8C8C))),
+            ("find.option.active", fg_bg(0xFFFFFF, 0x1F6FB0)),
         ]);
         Self { styles }
     }

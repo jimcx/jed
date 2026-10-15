@@ -42,6 +42,13 @@ map cmd+shift+up
 map cmd+down
 map cmd+shift+down
 map cmd+backspace
+map cmd+f
+map cmd+alt+f
+map cmd+alt+c
+map cmd+alt+w
+map cmd+alt+r
+map cmd+shift+1
+map cmd+alt+enter
 map cmd+alt+n
 map cmd+alt+shift+n
 map cmd+s

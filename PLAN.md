@@ -506,7 +506,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
    - Also: F1 opens the palette (VS Code default); the explorer hides `.red/` too (shared walker with quick open)
    - Deferred: live preview for go to line; unbinding in `keybindings.toml`; live reload of `keybindings.toml` (M14); find-widget and search contexts arrive with M6 / M7
    - Still to check by hand: Cmd+P / Cmd+Shift+P reach red in each terminal (Ghostty and WezTerm palettes, iTerm2 Print menu); quick open speed on a large repo
-6. **Multi-cursor and find**: Cmd+D, Cmd+Shift+L, add above/below, Alt+Click, box select, paste spread across cursors, find/replace in the file — see [Multi-cursor](#multi-cursor), [Editor](#editor)
+6. ✅ **Multi-cursor and find**: Cmd+D, Cmd+Shift+L, add above/below, Alt+Click, box select, paste spread across cursors, find/replace in the file — see [Multi-cursor](#multi-cursor), [Editor](#editor)
    - Needs: selection list (M1), clipboard (M4), key contexts (M5)
    - Needed by: workspace search (M7, the matcher), auto-close and auto-indent at every cursor (M8), completion at every cursor (M9)
    - `search` module first: plain / regex, case, whole word, matching on the rope without copying it into a string
@@ -532,12 +532,18 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - Also (separate commit before 6c): typing at 63k cursors sped up for slower machines (one-string `ChangeSet`, `Arc` change sets, copy-on-write `Selections`)
        - Not done: move lines doesn't re-indent (M8); middle-button box select; a mix of empty and non-empty selections copies `""` for the empty ones (VS Code copies their lines) and cut leaves those lines
        - Still to check by hand: Shift+Alt+drag and Alt+Click reach red (terminals keep these for their own selection); Cmd+Alt+Up/Down vs Ghostty / iTerm2 pane keys; Cmd+Shift+Alt+arrows / PageUp / PageDown arrive with Super; Shift+Alt+I needs Option-as-Alt; on Linux GNOME takes Ctrl+Alt+Up/Down and Ctrl+Shift+Alt+arrows
-     - 6d: find / replace widget (Cmd+F / Cmd+Alt+F) and its key context; owns the find options that Cmd+D on selected text borrows (`App::find_options`); replace all as one undo step; Alt+Enter selects every match; marks M6 ✅
+     - ✅ 6d: find / replace widget (Cmd+F / Cmd+Alt+F) and its key context; owns the find options that Cmd+D on selected text borrows (`App::find_options`); replace all as one undo step; Alt+Enter selects every match; marks M6 ✅
+       - `find.rs` (model), `app/find.rs`, `ui/find.rs`; `find` and `replace` key contexts (replace → find → global) for `keybindings.toml`; match cache keyed on `Buffer::revision()`, drawn only in view; `search::Replacement` (`$1`, `$&`, `$$`, `\n` …)
+       - Keys: Cmd+F / Cmd+Alt+F (Ctrl+F / Ctrl+H on Linux), Enter / Shift+Enter and F3 / Shift+F3, toggles Cmd+Alt+C/W/R (Alt+C/W/R on Linux) also from the editor, Cmd+Shift+1 replace one, Cmd+Alt+Enter replace all (one undo step), Alt+Enter selects every match; first Esc in the editor closes the widget
+       - `KeyCombo` maps a shifted US-layout digit with Cmd/Ctrl/Alt back to digit + Shift (`cmd+shift+1`); on non-US layouts with `!` on its own key, Ctrl+`!` runs Replace One
+       - 1 MB / 63k matches (Linux i7-2600K): find key + frame 10 ms, replace all + frame 11 ms, undo 4 ms
+       - Not done: Cmd+G / Cmd+Shift+G (Ctrl+G is go to line on Linux); undo inside the widget's inputs; find/replace history, preserve case, find in selection; a match under the widget isn't scrolled clear; one widget for the app rather than per editor; the count doesn't refresh on background events (e.g. a file opening) until the next key
+       - Still to check by hand: Cmd+F vs each terminal's own search (Ghostty, WezTerm, Alacritty, iTerm2's Find… menu); Cmd+Shift+1 arrives as Cmd+`!`; Cmd+Alt+C/W/R/F/Enter need Option-as-Alt; Alt+Enter and Shift+Enter keep their modifiers; on Linux Ctrl+H needs the kitty protocol (else Backspace)
 7. **Workspace search**: plain text, case-sensitive and regex search across the workspace — see [Workspace search](#workspace-search)
    - Needs: the `search` matcher (M6), excludes and the walk (M5), the side panel and its Search activity icon (M2)
    - Needed by: find references can show its results in the same list (M9)
    - Search view in the side panel; Cmd+Shift+F focuses it, seeded with the selection
-   - Plain text by default; case-sensitive and regex toggles, with the same keys as the find widget
+   - Plain text by default; case-sensitive and regex toggles, with the same keys as the find widget (Cmd+Alt+C/W/R, Alt+C/W/R on Linux; a `search` key context like M6's `find` / `replace`)
    - `ignore` + `grep-searcher` in `spawn_blocking`; results stream in; a new query cancels the old one
    - Dirty buffers searched from memory
    - Results grouped by file; Enter or click opens the match in the focused group; F4 / Shift+F4 step through

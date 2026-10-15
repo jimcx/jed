@@ -2,6 +2,7 @@
 
 mod cursors;
 mod files;
+mod find;
 mod mouse;
 mod palette;
 mod prompt;
@@ -25,6 +26,7 @@ use crate::command::Command;
 use crate::config::keymap::{Context, Keymap, Platform};
 use crate::edit::{self, Settings};
 use crate::explorer::{self, Explorer};
+use crate::find::{Field, FindWidget};
 use crate::group::{Group, Groups};
 use crate::layout::{GroupId, HitMap, SidePanel, SplitDir};
 use crate::palette::{FileMatcher, Palette, Picker};
@@ -61,6 +63,8 @@ pub struct Message {
 pub enum Focus {
     Editor,
     SidePanel,
+    /// The find widget's input (`app.find.field` says which one).
+    Find,
 }
 
 pub struct UiState {
@@ -166,9 +170,11 @@ pub struct App {
     opening: HashSet<PathBuf>,
     clicks: ClickTracker,
     drag: Option<mouse::Drag>,
-    /// The find widget's case / whole-word options, which Cmd+D uses for selected text
-    /// (VS Code's `selectedTextMatchMode: findOptions`). The widget (6d) sets them.
+    /// The find widget's options (case, whole word, regex), which Cmd+D also uses for selected
+    /// text (VS Code's `selectedTextMatchMode: findOptions`; it ignores `regex`).
     pub find_options: search::Options,
+    /// The find / replace widget; its query outlives closing it.
+    pub find: FindWidget,
     /// The running Cmd+D / Cmd+Shift+L / Cmd+Alt+D session.
     match_session: Option<cursors::MatchSession>,
     /// A match command ran during this event (its selection change keeps the session).
@@ -227,6 +233,7 @@ impl App {
             clicks: ClickTracker::default(),
             drag: None,
             find_options: search::Options::default(),
+            find: FindWidget::default(),
             match_session: None,
             session_changed: false,
             pre_event: None,
@@ -355,6 +362,8 @@ impl App {
         match self.ui.focus {
             Focus::Editor => Context::Editor,
             Focus::SidePanel => Context::Explorer,
+            Focus::Find if self.find.field == Field::Replace => Context::Replace,
+            Focus::Find => Context::Find,
         }
     }
 
@@ -371,6 +380,8 @@ impl App {
                     self.execute(cmd);
                 } else if self.palette.is_some() {
                     self.palette_key(key);
+                } else if self.ui.focus == Focus::Find {
+                    self.find_key(key);
                 } else if let KeyCode::Char(c) = key.code
                     && (key.modifiers - KeyModifiers::SHIFT).is_empty()
                     && self.ui.focus == Focus::Editor
@@ -386,6 +397,8 @@ impl App {
                     input.insert(&text.replace(['\r', '\n'], ""));
                 } else if self.prompt.is_none() && self.palette.is_some() {
                     self.palette_paste(&text);
+                } else if self.prompt.is_none() && self.ui.focus == Focus::Find {
+                    self.find_paste(&text);
                 } else if self.prompt.is_none() && self.ui.focus == Focus::Editor {
                     self.paste(&text);
                 }
@@ -395,6 +408,7 @@ impl App {
             _ => {}
         }
         self.sync_views();
+        self.refresh_find();
     }
 
     /// Edits go through the active tab's view; every other view on an edited buffer
@@ -484,6 +498,11 @@ impl App {
             Command::Palette(c) => self.palette_command(c),
             Command::AddNextMatch | Command::SelectAllMatches | Command::SkipToNextMatch => self.match_command(cmd),
             Command::CursorUndo => self.cursor_undo(),
+            Command::OpenFind => self.open_find(false),
+            Command::OpenReplace => self.open_find(true),
+            Command::Find(c) => self.find_command(c),
+            // Esc in the editor closes the find widget before it drops cursors (VS Code).
+            Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
             _ => {
                 if edit::is_edit(cmd) && !self.active_writable() {
                     return;
@@ -593,6 +612,7 @@ impl App {
             AppEvent::FilesWalked { generation } => self.files_walked(generation),
             AppEvent::LogFileFound(path) => self.log_file_found(path),
         }
+        self.refresh_find();
     }
 
     fn update_crash_snapshot(&self) {
@@ -614,6 +634,11 @@ impl App {
 impl App {
     pub fn test_start(&mut self) {
         self.start();
+    }
+
+    /// Opens `buffer` in a new active tab, as a finished file open would (no file I/O).
+    pub fn test_open(&mut self, buffer: Buffer) {
+        self.add_buffer(buffer, None, true);
     }
 
     pub fn press(&mut self, code: KeyCode, mods: KeyModifiers) {

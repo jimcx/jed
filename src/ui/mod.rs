@@ -3,6 +3,7 @@
 mod activity;
 mod dialog;
 mod editor;
+mod find;
 mod palette;
 mod side;
 mod status;
@@ -31,6 +32,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
 
     let (cells, dividers) = app.groups.tree.layout(regions.editor);
+    let mut active_editor = None;
     for (id, rect) in cells {
         let tab_bar = Rect {
             height: rect.height.min(1),
@@ -56,9 +58,16 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 // Only the focused group shows the terminal cursor.
                 let focused =
                     is_active && app.ui.focus == Focus::Editor && app.prompt.is_none() && app.palette.is_none();
-                text = editor::render(f, editor_area, buf, &mut tab.view, &app.theme, &app.settings, focused);
+                // Find highlights in the active group, when the widget's matches are for this text.
+                let find = (is_active && app.find.visible && app.find.is_current(tab.buffer, buf.revision()))
+                    .then_some(&app.find);
+                let overlay = editor::Overlay { focused, find };
+                text = editor::render(f, editor_area, buf, &mut tab.view, &app.theme, &app.settings, overlay);
             }
             None => f.buffer_mut().set_style(editor_area, app.theme.get("editor")),
+        }
+        if is_active {
+            active_editor = Some(editor_area);
         }
         hits.groups.push(GroupHit {
             id,
@@ -86,6 +95,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     hits.dividers = dividers;
 
     status::render(f, regions.status, app);
+    hits.find = active_editor.and_then(|area| find::render(f, area, app));
     hits.palette = palette::render(f, area, app);
     if let Some(prompt) = &app.prompt {
         dialog::render(f, area, app, prompt);

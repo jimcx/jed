@@ -38,6 +38,8 @@ pub struct Buffer {
     /// Changes applied since the last `take_applied`, for other views on this buffer to follow
     /// (shared with the undo history: an edit at 60k selections isn't copied).
     applied: Vec<Arc<ChangeSet>>,
+    /// Counts text changes (edits, undos, redos): equal revisions mean the same text.
+    revision: u64,
 }
 
 /// What a background save needs; the rope clone is cheap.
@@ -67,6 +69,7 @@ impl Buffer {
             saved_state: 0,
             saving_state: None,
             applied: Vec::new(),
+            revision: 0,
         }
     }
 
@@ -98,6 +101,7 @@ impl Buffer {
         let inverse = Arc::new(changes.apply(&mut self.rope));
         let changes = Arc::new(changes);
         self.applied.push(changes.clone());
+        self.revision += 1;
         self.history
             .record(changes, inverse, before, after, kind, Instant::now());
     }
@@ -110,13 +114,20 @@ impl Buffer {
     pub fn undo(&mut self) -> Option<Selections> {
         let (sel, applied) = self.history.undo(&mut self.rope)?;
         self.applied.extend(applied);
+        self.revision += 1;
         Some(sel)
     }
 
     pub fn redo(&mut self) -> Option<Selections> {
         let (sel, applied) = self.history.redo(&mut self.rope)?;
         self.applied.extend(applied);
+        self.revision += 1;
         Some(sel)
+    }
+
+    /// Changes with every edit, undo and redo: what cached search results are keyed on.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Changes applied since the last call, in order.

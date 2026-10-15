@@ -1,0 +1,142 @@
+//! The find / replace widget, at the top right of the active editor as in VS Code:
+//! the find input, the option toggles (case, whole word, regex) and "3 of 41"; the replace input
+//! below it when shown; an invalid regex's message on a last row.
+
+use ratatui::Frame;
+use ratatui::layout::{Position, Rect};
+use ratatui::style::Style;
+use ratatui::widgets::Clear;
+use unicode_width::UnicodeWidthChar;
+
+use crate::app::{App, Focus};
+use crate::field::TextField;
+use crate::find::Field;
+use crate::layout::FindHit;
+
+/// Widest the widget gets.
+const MAX_WIDTH: u16 = 64;
+/// Room for the count ("12345 of 12345").
+const COUNT_WIDTH: u16 = 14;
+const TOGGLES: [&str; 3] = ["Aa", "ab", ".*"];
+
+/// Draws the widget over `area` (the active group's editor) if it's open; returns where it is.
+pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
+    let find = &app.find;
+    let sel = *app.group().active_tab()?.view.selections.primary();
+    if !find.visible || area.width < 24 || area.height < 3 {
+        return None;
+    }
+    let theme = &app.theme;
+    let base = theme.get("dialog");
+    let input = base.patch(theme.get("dialog.input"));
+    let dim = base.patch(theme.get("palette.detail"));
+    let selected = input.patch(theme.get("editor.selection"));
+    let error = find.error().map(|e| e.to_string());
+
+    let rows = 1 + u16::from(find.replace_visible) + u16::from(error.is_some());
+    let width = area.width.min(MAX_WIDTH);
+    let rect = Rect {
+        x: area.x + area.width - width,
+        y: area.y,
+        width,
+        height: rows,
+    };
+    f.render_widget(Clear, rect);
+    f.buffer_mut().set_style(rect, base);
+
+    // " [field] Aa ab .* count "
+    let toggles_w = 3 * TOGGLES.len() as u16;
+    let field_w = width.saturating_sub(1 + toggles_w + 1 + COUNT_WIDTH + 1).max(4);
+    let field_x = rect.x + 1;
+    let find_rect = Rect {
+        x: field_x,
+        y: rect.y,
+        width: field_w,
+        height: 1,
+    };
+    let out = f.buffer_mut();
+    let mut cursor = draw_field(out, find_rect, &find.query, "Find", input, selected, dim);
+
+    let options = app.find_options;
+    let on = [options.case_sensitive, options.whole_word, options.regex];
+    let mut toggles = [Rect::default(); 3];
+    for (i, label) in TOGGLES.iter().enumerate() {
+        let x = field_x + field_w + 1 + 3 * i as u16;
+        let style = if on[i] {
+            base.patch(theme.get("find.option.active"))
+        } else {
+            base.patch(theme.get("find.option"))
+        };
+        out.set_stringn(x, rect.y, label, 2, style);
+        toggles[i] = Rect {
+            x,
+            y: rect.y,
+            width: 2,
+            height: 1,
+        };
+    }
+    let count = find.count_label((sel.start(), sel.end()));
+    let count_x = field_x + field_w + toggles_w + 1;
+    out.set_stringn(count_x, rect.y, &count, COUNT_WIDTH as usize, dim);
+
+    let mut replace = None;
+    if find.replace_visible {
+        let r = Rect {
+            y: rect.y + 1,
+            ..find_rect
+        };
+        let replace_cursor = draw_field(out, r, &find.replace, "Replace", input, selected, dim);
+        if find.field == Field::Replace {
+            cursor = replace_cursor;
+        }
+        replace = Some(Rect { y: r.y, ..rect });
+    }
+    if let Some(e) = &error {
+        let y = rect.y + rows - 1;
+        let style = base.patch(theme.get("dialog.error"));
+        out.set_stringn(field_x, y, e, (width - 2) as usize, style);
+    }
+
+    if app.ui.focus == Focus::Find && app.prompt.is_none() && app.palette.is_none() {
+        f.set_cursor_position(cursor);
+    }
+    Some(FindHit {
+        area: rect,
+        replace: replace.map(|r| Rect { height: 1, ..r }),
+        toggles,
+    })
+}
+
+/// One input, scrolled sideways to keep the cursor in view (a placeholder when empty); returns
+/// where its cursor is.
+fn draw_field(
+    out: &mut ratatui::buffer::Buffer,
+    r: Rect,
+    field: &TextField,
+    placeholder: &str,
+    style: Style,
+    selected: Style,
+    dim: Style,
+) -> Position {
+    out.set_style(r, style);
+    if field.text.is_empty() {
+        out.set_stringn(r.x, r.y, placeholder, r.width as usize, style.patch(dim));
+        return Position { x: r.x, y: r.y };
+    }
+    let width = r.width as usize;
+    let cursor_col: usize = field.text[..field.cursor].chars().map(|c| c.width().unwrap_or(0)).sum();
+    let scroll = (cursor_col + 1).saturating_sub(width);
+    let text_style = if field.all_selected { selected } else { style };
+    let mut col = 0;
+    for c in field.text.chars() {
+        let w = c.width().unwrap_or(0);
+        if col >= scroll && col + w - scroll <= width {
+            out.set_stringn(r.x + (col - scroll) as u16, r.y, c.to_string(), w, text_style);
+        }
+        col += w;
+    }
+    Position {
+        x: r.x + (cursor_col - scroll).min(width.saturating_sub(1)) as u16,
+        y: r.y,
+    }
+}

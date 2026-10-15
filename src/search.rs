@@ -106,7 +106,6 @@ impl Matcher {
     }
 
     /// True for an empty pattern: nothing matches, and the UI shows no results.
-    #[cfg_attr(not(test), allow(dead_code))] // the find widget (6d)
     pub fn is_empty(&self) -> bool {
         self.regex.is_none()
     }
@@ -130,7 +129,6 @@ impl Matcher {
 
     /// The last match ending at or before `before` (an empty match exactly at `before` is
     /// skipped). With `wrap`, continues backwards from the end of the text.
-    #[cfg_attr(not(test), allow(dead_code))] // the find widget (6d)
     pub fn find_prev(&self, rope: &Rope, before: ByteIdx, wrap: bool) -> Option<Match> {
         let found = self.prev_from(rope, before, Some(before));
         if found.is_some() || !wrap {
@@ -149,8 +147,37 @@ impl Matcher {
     /// exactly the matches `find_all` reports there.
     pub fn find_in(&self, rope: &Rope, range: Range<ByteIdx>) -> Vec<Match> {
         let mut out = Vec::new();
+        self.each_in(rope, range, |m, _, _, _| out.push(m));
+        out
+    }
+
+    /// Every match overlapping `range` (as `find_in`) with the text that replaces it, in order.
+    /// `with` is a `Replacement` built for this matcher's mode: `$1`, `$&`, … are expanded from
+    /// each match's groups (searched in the same line, so anchors and `\b` see the context).
+    pub fn replace_in(&self, rope: &Rope, range: Range<ByteIdx>, with: &Replacement, mut f: impl FnMut(Match, &str)) {
+        if let Some(text) = with.literal() {
+            self.each_in(rope, range, |m, _, _, _| f(m, text));
+            return;
+        }
+        let mut out = String::new();
+        self.each_in(rope, range, |m, re, hay, offset| {
+            out.clear();
+            let (s, e) = (m.start.0 - offset, m.end.0 - offset);
+            match re.captures_at(hay, s) {
+                Some(caps) if caps.get(0).is_some_and(|c| c.start() == s && c.end() == e) => {
+                    with.expand(&caps, &mut out)
+                }
+                // Can't happen (the same search from the match's start), but stay sane.
+                _ => out.push_str(&String::from_utf8_lossy(&hay[s..e])),
+            }
+            f(m, &out);
+        });
+    }
+
+    /// Calls `f(match, regex, haystack, haystack start)` for every match overlapping `range`.
+    fn each_in(&self, rope: &Rope, range: Range<ByteIdx>, mut f: impl FnMut(Match, &Regex, &[u8], usize)) {
         let Some(re) = &self.regex else {
-            return out;
+            return;
         };
         let wanted = |m: &Match| {
             if m.start == m.end {
@@ -173,11 +200,11 @@ impl Matcher {
                     break;
                 }
                 if wanted(&m) {
-                    out.push(m);
+                    f(m, re, text, 0);
                 }
                 (at, last_end) = step(text, s, e);
             }
-            return out;
+            return;
         }
         let first = pos::line_of(rope, range.start);
         pos::each_line(rope, first, false, |start, line| {
@@ -192,13 +219,12 @@ impl Matcher {
                     end: ByteIdx(start.0 + e),
                 };
                 if wanted(&m) {
-                    out.push(m);
+                    f(m, re, line.as_bytes(), start.0);
                 }
                 (at, last_end) = step(line.as_bytes(), s, e);
             }
             ControlFlow::Continue(())
         });
-        out
     }
 
     /// First match starting at or after `from`, rejecting an empty match at `skip_empty`.
@@ -229,7 +255,6 @@ impl Matcher {
     }
 
     /// Last match ending at or before `before`, rejecting an empty match at `skip_empty`.
-    #[cfg_attr(not(test), allow(dead_code))] // the find widget (6d)
     fn prev_from(&self, rope: &Rope, before: ByteIdx, skip_empty: Option<ByteIdx>) -> Option<Match> {
         let re = self.regex.as_ref()?;
         // The last match in `hay` (searched left to right, as `find_in` does) ending by `limit`.
@@ -318,6 +343,125 @@ impl Matcher {
             start = end + if hay[end..].starts_with(b"\r\n") { 2 } else { 1 };
         }
         None
+    }
+}
+
+/// What replaces each match (VS Code's `ReplacePattern`). For plain text the text as typed. For a
+/// regex: `$1`…`$99` a group (`$12` is group 12 if there is one, else group 1 then `2`; a group
+/// that doesn't exist stays as typed), `$&` and `$0` the whole match, `$$` a `$`, and the escapes
+/// `\n`, `\t`, `\\`. A group that didn't take part in the match is empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Replacement {
+    pieces: Vec<Piece>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Piece {
+    Text(String),
+    Group(usize),
+}
+
+impl Replacement {
+    pub fn new(template: &str, regex: bool) -> Self {
+        if !regex {
+            return Self {
+                pieces: vec![Piece::Text(template.to_string())],
+            };
+        }
+        let mut pieces = Vec::new();
+        let mut text = String::new();
+        let mut chars = template.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => match chars.peek() {
+                    Some('n') => text.push('\n'),
+                    Some('t') => text.push('\t'),
+                    Some('\\') => text.push('\\'),
+                    Some(&other) => {
+                        text.push('\\');
+                        text.push(other);
+                    }
+                    None => {
+                        text.push('\\');
+                        continue;
+                    }
+                },
+                '$' => match chars.peek() {
+                    Some('$') => text.push('$'),
+                    Some('&') => {
+                        pieces.push(Piece::Text(std::mem::take(&mut text)));
+                        pieces.push(Piece::Group(0));
+                    }
+                    Some(&d) if d.is_ascii_digit() => {
+                        chars.next();
+                        let mut n = d as usize - '0' as usize;
+                        if let Some(&d2) = chars.peek()
+                            && d2.is_ascii_digit()
+                        {
+                            n = n * 10 + (d2 as usize - '0' as usize);
+                        } else {
+                            pieces.push(Piece::Text(std::mem::take(&mut text)));
+                            pieces.push(Piece::Group(n));
+                            continue;
+                        }
+                        pieces.push(Piece::Text(std::mem::take(&mut text)));
+                        pieces.push(Piece::Group(n));
+                    }
+                    _ => {
+                        text.push('$');
+                        continue;
+                    }
+                },
+                c => {
+                    text.push(c);
+                    continue;
+                }
+            }
+            chars.next();
+        }
+        pieces.push(Piece::Text(text));
+        pieces.retain(|p| !matches!(p, Piece::Text(t) if t.is_empty()));
+        Self { pieces }
+    }
+
+    /// The replacement when it names no group: the same text for every match.
+    pub fn literal(&self) -> Option<&str> {
+        match self.pieces.as_slice() {
+            [] => Some(""),
+            [Piece::Text(t)] => Some(t),
+            _ => None,
+        }
+    }
+
+    fn expand(&self, caps: &regex::bytes::Captures, out: &mut String) {
+        let group = |i: usize, out: &mut String| {
+            if let Some(g) = caps.get(i) {
+                out.push_str(&String::from_utf8_lossy(g.as_bytes()));
+            }
+        };
+        for piece in &self.pieces {
+            match piece {
+                Piece::Text(t) => out.push_str(t),
+                Piece::Group(0) => group(0, out),
+                // VS Code's `_substitute`: drop trailing digits until the group exists.
+                &Piece::Group(n) => {
+                    let mut rest = String::new();
+                    let mut i = n;
+                    while i > 0 {
+                        if i < caps.len() {
+                            group(i, out);
+                            break;
+                        }
+                        rest.insert(0, char::from(b'0' + (i % 10) as u8));
+                        i /= 10;
+                    }
+                    if i == 0 {
+                        out.push('$');
+                    }
+                    out.push_str(&rest);
+                }
+            }
+        }
     }
 }
 
@@ -956,5 +1100,56 @@ mod tests {
                 "find with no match too slow: {took:?}"
             );
         }
+    }
+
+    /// Every match's replacement, as (start, end, text).
+    fn replaced(text: &str, pattern: &str, o: Options, with: &str) -> Vec<(usize, usize, String)> {
+        let m = Matcher::new(pattern, o).unwrap();
+        let r = rope(text);
+        let mut out = Vec::new();
+        let rep = Replacement::new(with, o.regex);
+        m.replace_in(&r, ByteIdx(0)..ByteIdx(r.len()), &rep, |m, t| {
+            out.push((m.start.0, m.end.0, t.to_string()))
+        });
+        out
+    }
+
+    #[test]
+    fn replacement_groups_as_vs_code() {
+        let re = opts(true, false, false);
+        let one = |pattern: &str, with: &str, text: &str| -> String {
+            replaced(text, pattern, re, with)
+                .into_iter()
+                .map(|(_, _, t)| t)
+                .collect()
+        };
+        assert_eq!(one(r"(\w+)-(\w+)", "$2-$1", "ab-cd"), "cd-ab");
+        assert_eq!(one(r"b+", "[$&]", "abbc"), "[bb]");
+        assert_eq!(one(r"b+", "[$0]", "abbc"), "[bb]");
+        assert_eq!(one(r"(b)", "$$1", "b"), "$1");
+        // `$12` with one group: group 1, then "2"; a missing group stays as typed.
+        assert_eq!(one(r"(b)", "$12", "b"), "b2");
+        assert_eq!(one(r"(b)", "$5", "b"), "$5");
+        assert_eq!(one(r"(b)", "$", "b"), "$");
+        assert_eq!(one(r"(a)|(b)", "<$1>", "b"), "<>", "a group outside the match is empty");
+        assert_eq!(one(r"b", r"x\ny\tz\\w\q", "b"), "x\ny\tz\\w\\q");
+        // Groups see the line around the match (anchors, \b).
+        assert_eq!(
+            replaced("ab ab\nab", r"^(a)b", re, "$1!"),
+            vec![(0, 2, "a!".to_string()), (6, 8, "a!".to_string())]
+        );
+        // Multi-line patterns expand from the whole text.
+        assert_eq!(
+            replaced("a\nb", r"(a)\n(b)", re, "$2$1"),
+            vec![(0, 3, "ba".to_string())]
+        );
+        // Plain text: `$1` is literal, and whole word applies.
+        assert_eq!(
+            replaced("a $1 a", "a", opts(false, false, true), "$1"),
+            vec![(0, 1, "$1".to_string()), (5, 6, "$1".to_string())]
+        );
+        assert_eq!(Replacement::new("$1", false).literal(), Some("$1"));
+        assert_eq!(Replacement::new("x$$", true).literal(), Some("x$"));
+        assert_eq!(Replacement::new("$1", true).literal(), None);
     }
 }

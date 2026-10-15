@@ -51,6 +51,9 @@ impl ClickTracker {
 
 impl App {
     pub(super) fn handle_mouse(&mut self, m: MouseEvent) {
+        if self.find_mouse(m) {
+            return;
+        }
         let hit = self.hits.hit(m.column, m.row);
         match m.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {

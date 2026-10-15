@@ -125,6 +125,12 @@ pub enum Command {
     SetLogLevel,
     /// Keys inside the palette.
     Palette(PaletteCommand),
+    /// Cmd+F: open the find widget (seeded from the selection or the word under the cursor).
+    OpenFind,
+    /// Cmd+Alt+F (Ctrl+H on Linux): open it with the replace input.
+    OpenReplace,
+    /// The find widget's commands.
+    Find(FindCommand),
 }
 
 /// Focus-group commands listed in the palette and accepted in keybindings (as VS Code: 1 to 8).
@@ -193,6 +199,42 @@ impl PaletteCommand {
     ];
 }
 
+/// The find / replace widget. Next / previous and the toggles also work from the editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FindCommand {
+    /// Select the next / previous match, wrapping.
+    Next,
+    Previous,
+    ToggleCase,
+    ToggleWholeWord,
+    ToggleRegex,
+    /// Alt+Enter: a selection at every match.
+    SelectAllMatches,
+    /// Replace the selected match and go to the next one.
+    ReplaceOne,
+    /// Replace every match, as one undo step.
+    ReplaceAll,
+    /// Tab: between the find and replace inputs.
+    SwitchField,
+    /// Esc: close the widget, back to the editor.
+    Close,
+}
+
+impl FindCommand {
+    pub const ALL: [FindCommand; 10] = [
+        FindCommand::Next,
+        FindCommand::Previous,
+        FindCommand::ToggleCase,
+        FindCommand::ToggleWholeWord,
+        FindCommand::ToggleRegex,
+        FindCommand::SelectAllMatches,
+        FindCommand::ReplaceOne,
+        FindCommand::ReplaceAll,
+        FindCommand::SwitchField,
+        FindCommand::Close,
+    ];
+}
+
 impl Command {
     /// Every command, in a stable order: what the palette lists and keybindings can name.
     pub fn all() -> Vec<Command> {
@@ -251,6 +293,8 @@ impl Command {
             Command::SetLogLevel,
         ]);
         all.extend(PaletteCommand::ALL.map(Command::Palette));
+        all.extend([Command::OpenFind, Command::OpenReplace]);
+        all.extend(FindCommand::ALL.map(Command::Find));
         all
     }
 
@@ -356,6 +400,23 @@ impl Command {
                     PaletteCommand::Close => "close",
                 }
             ),
+            Command::OpenFind => "find.open".into(),
+            Command::OpenReplace => "find.openReplace".into(),
+            Command::Find(c) => format!(
+                "find.{}",
+                match c {
+                    FindCommand::Next => "next",
+                    FindCommand::Previous => "previous",
+                    FindCommand::ToggleCase => "toggleCase",
+                    FindCommand::ToggleWholeWord => "toggleWholeWord",
+                    FindCommand::ToggleRegex => "toggleRegex",
+                    FindCommand::SelectAllMatches => "selectAllMatches",
+                    FindCommand::ReplaceOne => "replace",
+                    FindCommand::ReplaceAll => "replaceAll",
+                    FindCommand::SwitchField => "switchField",
+                    FindCommand::Close => "close",
+                }
+            ),
         }
     }
 
@@ -457,6 +518,20 @@ impl Command {
                 PaletteCommand::Accept => "Palette: Accept",
                 PaletteCommand::Close => "Palette: Close",
             },
+            Command::OpenFind => "Find: Find",
+            Command::OpenReplace => "Find: Replace",
+            Command::Find(c) => match c {
+                FindCommand::Next => "Find: Find Next",
+                FindCommand::Previous => "Find: Find Previous",
+                FindCommand::ToggleCase => "Find: Toggle Match Case",
+                FindCommand::ToggleWholeWord => "Find: Toggle Match Whole Word",
+                FindCommand::ToggleRegex => "Find: Toggle Use Regular Expression",
+                FindCommand::SelectAllMatches => "Find: Select Every Match",
+                FindCommand::ReplaceOne => "Find: Replace One",
+                FindCommand::ReplaceAll => "Find: Replace All",
+                FindCommand::SwitchField => "Find: Switch Between Find and Replace",
+                FindCommand::Close => "Find: Close",
+            },
         };
         s.into()
     }
@@ -537,9 +612,12 @@ mod tests {
             Command::MoveLinesDown => 42,
             Command::CopyLinesUp => 43,
             Command::CopyLinesDown => 44,
+            Command::OpenFind => 45,
+            Command::OpenReplace => 46,
+            Command::Find(_) => 47,
         }
     }
-    const VARIANTS: u8 = 45;
+    const VARIANTS: u8 = 48;
 
     #[test]
     fn all_lists_every_variant() {
@@ -553,6 +631,7 @@ mod tests {
         assert_eq!(count(25), ExplorerCommand::ALL.len());
         assert_eq!(count(32), PaletteCommand::ALL.len());
         assert_eq!(count(40), ColumnMotion::ALL.len());
+        assert_eq!(count(47), FindCommand::ALL.len());
     }
 
     #[test]

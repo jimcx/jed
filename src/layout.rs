@@ -302,6 +302,17 @@ pub struct HitMap {
     pub dividers: Vec<Divider>,
     /// The palette, when open; it takes every mouse event.
     pub palette: Option<PaletteHit>,
+    /// The find widget, when shown; it takes clicks on it.
+    pub find: Option<FindHit>,
+}
+
+/// The find widget: its box, the replace row (if shown) and the three option toggles
+/// (case, whole word, regex).
+#[derive(Debug, Clone, Copy)]
+pub struct FindHit {
+    pub area: Rect,
+    pub replace: Option<Rect>,
+    pub toggles: [Rect; 3],
 }
 
 /// The palette box, and its list area: row `i` on screen is row `scroll + i`.
@@ -501,6 +512,7 @@ mod tests {
             groups,
             dividers,
             palette: None,
+            find: None,
         };
         assert_eq!(map.hit(1, 1), Hit::Icon(SidePanel::Explorer));
         assert_eq!(map.hit(27, 5), Hit::SideBorder);

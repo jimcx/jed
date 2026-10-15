@@ -41,6 +41,9 @@ local release = {
   { 'UpArrow', 'CMD' }, { 'UpArrow', 'CMD|SHIFT' },
   { 'DownArrow', 'CMD' }, { 'DownArrow', 'CMD|SHIFT' },
   { 'Backspace', 'CMD' },
+  { 'f', 'CMD' }, { 'f', 'CMD|ALT' },
+  { 'c', 'CMD|ALT' }, { 'w', 'CMD|ALT' }, { 'r', 'CMD|ALT' },
+  { '1', 'CMD|SHIFT' }, { 'Enter', 'CMD|ALT' },
   { 'n', 'CMD|ALT' }, { 'n', 'CMD|ALT|SHIFT' },
   { 's', 'CMD' }, { 'q', 'CMD' }, { 'w', 'CMD' }, { 'b', 'CMD' },
   { 'e', 'CMD|SHIFT' },
@@ -59,11 +62,11 @@ return config
 
 Don't release `cmd+v`: WezTerm's paste is how text gets into red.
 
-WezTerm defaults that clash with red: `cmd+c` copy, `cmd+w` close tab (with confirmation), `cmd+1..3` activate tab. The rest of red's Cmd keys have no WezTerm default.
+WezTerm defaults that clash with red: `cmd+c` copy, `cmd+w` close tab (with confirmation), `cmd+1..3` activate tab, `cmd+f` search. The rest of red's Cmd keys have no WezTerm default.
 
 ## What you lose
 
-WezTerm's Cmd+C (copy screen text; Ctrl+Shift+C still copies), Cmd+W and Cmd+1..3 in every window; use Cmd+Shift+[ / ] to switch tabs. Right Option no longer composes accented characters (drop the `right` line to keep that).
+WezTerm's Cmd+C (copy screen text; Ctrl+Shift+C still copies), Cmd+W, Cmd+1..3 and Cmd+F (search; Ctrl+Shift+F still searches) in every window; use Cmd+Shift+[ / ] to switch tabs. Right Option no longer composes accented characters (drop the `right` line to keep that).
 
 ## Checklist
 
@@ -73,4 +76,5 @@ WezTerm's Cmd+C (copy screen text; Ctrl+Shift+C still copies), Cmd+W and Cmd+1..
 - [ ] **Check by hand:** Cmd+Q isn't in WezTerm's default key table, so it may come from the macOS app menu; confirm it reaches red (Ctrl+Q always quits red)
 - [ ] `{ 'e', 'CMD|SHIFT' }` matches: if Cmd+Shift+E doesn't arrive, try `key = 'E'`
 - [ ] **Check by hand:** Cmd+Shift+P opens red's palette, not WezTerm's command palette (WezTerm's own is on Ctrl+Shift+P; if it still grabs Cmd+Shift+P, try `key = 'P'`)
+- [ ] `{ '1', 'CMD|SHIFT' }` matches: if Cmd+Shift+1 doesn't arrive, try `key = '!'`
 - [ ] Alt+Left logs `ALT`

@@ -9,8 +9,18 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::buffer::Buffer;
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::edit::Settings;
+use crate::find::FindWidget;
+use crate::search::Match;
 use crate::theme::Theme;
 use crate::view::View;
+
+/// What else the editor shows besides the buffer.
+pub struct Overlay<'a> {
+    /// Shows the terminal cursor (the focused group, nothing else open).
+    pub focused: bool,
+    /// The find widget, when it's open on this view and its matches are for this text.
+    pub find: Option<&'a FindWidget>,
+}
 
 /// Draws the editor and returns the text area (excluding the gutter), for mouse hit-testing.
 pub fn render(
@@ -20,8 +30,9 @@ pub fn render(
     view: &mut View,
     theme: &Theme,
     s: &Settings,
-    focused: bool,
+    overlay: Overlay,
 ) -> Rect {
+    let focused = overlay.focused;
     let rope = &buf.rope;
     let tab = s.tab_width;
     let total = pos::line_count(rope);
@@ -52,6 +63,8 @@ pub fn render(
     let current_line_style = base.patch(theme.get("editor.lineHighlight"));
     let selection = theme.get("editor.selection");
     let secondary_cursor = theme.get("editor.cursor.secondary");
+    let find_match = theme.get("editor.findMatch");
+    let find_highlight = theme.get("editor.findMatchHighlight");
     let control = theme.get("editor.whitespace.control");
     let gutter = theme.get("gutter");
     let gutter_active = theme.get("gutter.active");
@@ -71,6 +84,19 @@ pub fn render(
             si += 1;
         }
         si < sels.len() && sels[si].start() <= b
+    };
+    // Find matches on screen (from the widget's cache), walked the same way. The one that is
+    // the primary selection is the current match.
+    let view_range = pos::line_start(rope, view.top_line())..pos::line_end(rope, last_line);
+    let matches: &[Match] = overlay.find.map_or(&[], |f| f.matches_in(view_range));
+    let mut mi = 0;
+    let mut in_match = |b: ByteIdx| {
+        while mi < matches.len() && matches[mi].end <= b {
+            mi += 1;
+        }
+        let m = matches.get(mi).filter(|m| m.start <= b)?;
+        let sel = view.selections.primary();
+        Some(m.start == sel.start() && m.end == sel.end())
     };
 
     let out = f.buffer_mut();
@@ -114,8 +140,15 @@ pub fn render(
                 break;
             }
             let mut style = row_style;
+            let found = in_match(b);
+            if found.is_some() {
+                style = style.patch(find_highlight);
+            }
             if selected {
                 style = style.patch(selection);
+            }
+            if found == Some(true) {
+                style = style.patch(find_match);
             }
             if g.starts_with(|c: char| c.is_control()) && g != "\t" {
                 style = style.patch(control);

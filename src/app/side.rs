@@ -228,7 +228,7 @@ impl App {
         if self.trust == Trust::Undecided {
             self.ask_trust();
         }
-        if self.group().tabs.is_empty() && self.ui.focus == Focus::Editor {
+        if self.group().tabs.is_empty() && self.ui.focus != Focus::SidePanel {
             self.ui.focus = Focus::SidePanel;
         }
     }

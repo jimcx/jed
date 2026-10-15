@@ -52,6 +52,13 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+down` | File end (editor) / open (explorer) | editor, explorer |
 | `cmd+shift+down` | Select to file end | editor |
 | `cmd+backspace` | Delete to line start (editor) / delete (explorer) | editor, explorer |
+| `cmd+f` | Find (opens the find widget) | editor, find |
+| `cmd+alt+f` | Find and replace | editor, find |
+| `cmd+alt+c` | Toggle match case | editor, find |
+| `cmd+alt+w` | Toggle match whole word | editor, find |
+| `cmd+alt+r` | Toggle regular expression | editor, find |
+| `cmd+shift+1` | Replace one (terminals report it as Cmd+`!`; red reads both) | editor, find |
+| `cmd+alt+enter` | Replace all | editor, find |
 | `cmd+alt+n` | New file | explorer |
 | `cmd+alt+shift+n` | New folder | explorer |
 | `cmd+s` | Save | everywhere |
@@ -71,7 +78,7 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 
 **Mouse with modifiers.** Alt+Click adds or removes a cursor and Shift+Alt+drag makes a box selection. Most terminals keep Shift+drag for their own text selection while a program uses the mouse (kitty `terminal_select_modifiers`, WezTerm `bypass_mouse_reporting_modifiers`), and some use Alt or Cmd+Alt with the mouse for rectangle selection, so these may not reach red. The keyboard box select (Cmd+Shift+Alt+arrows) always works.
 
-The palette is also on F1, and go to line is Ctrl+G (as VS Code on macOS); neither needs a terminal change.
+The palette is also on F1, and go to line is Ctrl+G (as VS Code on macOS); neither needs a terminal change. Neither do the find widget's other keys: Enter / Shift+Enter and F3 / Shift+F3 (next / previous match), Alt+Enter (select all matches), Tab (find ↔ replace) and Esc.
 
 **Leave Cmd+V with the terminal.** red doesn't bind it: the terminal's paste arrives in red as a bracketed paste, which works the same locally and over SSH. Cmd+C and Cmd+X must reach red, since the terminal's own copy takes text off the screen, not red's selection.
 
