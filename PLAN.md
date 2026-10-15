@@ -286,10 +286,11 @@ The VS Code behaviour, especially Cmd+D and Cmd+Shift+L, is a must-have.
 - Detect language from file extension and shebang
 
 ### LSP
-- First servers: `clangd`, `pyright`
+- First servers: `clangd`, `ty` (Astral's Rust type checker, `ty server`; chosen over pyright to avoid Node)
 - SCons: treat `SConstruct`, `SConscript` and `*.scons` as Python
-  - SCons injects globals (`Environment`, `Import`, …) that pyright flags as undefined; ship a `__builtins__.pyi` with them (pyright treats its names as built-ins)
-  - _Verify early: pyright analyzes files without a `.py` extension when opened with `languageId: python`_
+  - SCons injects globals (`Environment`, `Import`, …) that the server flags as undefined; ship a `__builtins__.pyi` with them if ty treats its names as built-ins (pyright does)
+  - _Verify early: ty analyzes files without a `.py` extension when opened with `languageId: python`_
+  - Best effort: if ty can't do either, SCons files get what ty gives them and it's noted as deferred
 - Server per language set in config / `.workspace`
 - Incremental text sync (`didChange` with ranges), never full text per keystroke
 - Request `positionEncoding: utf-8`; fall back to UTF-16 — see [Text positions](#text-positions)
@@ -622,16 +623,26 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - Not done (VS Code differences): Markdown inline formatting (emphasis, code spans, links in paragraphs: needs injections) and embedded languages in fenced code; block-comment toggling (Markdown, XML have no Cmd+/); JSON has no `//`; no general per-language settings (only Makefile `insert_spaces`); `fish` shebang; `.xsl` / `.xslt`
        - Known: with the cursor on the root `{` of a 1 MB flat JSON object, tree bracket matching walks all its siblings (~6 ms, a ~14.5 ms frame); cap the partner search like the text scan's `WINDOW` (M14)
        - Still to check by hand: colours against VS Code Dark+ per language (YAML keys, XML tag brackets, Markdown headings and link underline); a real Makefile's Tab and status bar; brackets in a Markdown paragraph
-9. **LSP**: clangd and pyright — see [LSP](#lsp), [Text positions](#text-positions)
+9. **LSP**: clangd and ty — see [LSP](#lsp), [Text positions](#text-positions)
    - Needs: language detection (M8), `LspPos` in `buffer::pos` (M1), workspace trust (M2: servers named in `.workspace` only run when trusted), key contexts (M5), multi-cursor (M6), the results list (M7)
-   - First: check that pyright analyzes files without a `.py` extension when opened with `languageId: python`
+   - First: check that ty analyzes files without a `.py` extension when opened with `languageId: python`, and honours a `__builtins__.pyi` (best effort, see [LSP](#lsp))
    - One tokio task per server; `positionEncoding: utf-8` with a UTF-16 fallback; incremental `didChange`
    - Bottom panel built here: Problems list; Cmd+J toggles it (Tasks, M12, adds its own tabs)
    - Diagnostics as squiggles, in Problems and as counts in the status bar
    - Completion (inserted at every cursor), hover, go to definition (F12), find references (Shift+F12), rename symbol (F2), format document
-   - SCons: ship the `__builtins__.pyi`
+   - SCons: ship the `__builtins__.pyi` (if ty supports it)
    - Logging: `lsp::wire` and `lsp::stderr`
    - Done when: on a C++ project with `compile_commands.json` and on an SCons project, diagnostics follow edits without full-text syncs; all seven features work in both
+   - Servers for development and tests: `clangd` on `PATH`; `ty` on `PATH` or in the repo's `.venv/bin` (gitignored; `python3 -m venv .venv && .venv/bin/pip install ty`). Tests against real servers find them there and skip with a printed note when absent; protocol tests use an in-process fake server
+   - Tasks (one agent and one commit each):
+     - 9a: `lsp` module core: JSON-RPC framing over stdio, one tokio task per server, `initialize` (`positionEncoding` utf-8, UTF-16 fallback) / `shutdown` / exit, server config (built-in `clangd` for C/C++ and `ty server` for Python; `[lsp.*]` in `.workspace` only when trusted), started on first open of a matching file, crash / missing binary reported via notify; `lsp::wire` / `lsp::stderr` logging; the ty checks from "First"
+     - 9b: document sync: `didOpen` / `didClose` / `didSave`, incremental `didChange` from each applied `ChangeSet` (ranges in the negotiated encoding via `buffer::pos`), never full text; a fake-server test that applies the changes and compares with the buffer after random edits, undo / redo, multi-cursor
+     - 9c: diagnostics: `publishDiagnostics` → squiggles in the editor (mapped through edits until the next publish), error / warning counts in the status bar, the diagnostic message on hover of the cursor line (status bar)
+     - 9d: bottom panel with the Problems list (Cmd+J toggles, grouped by file, Enter / click opens at the position, next / previous problem)
+     - 9e: hover (a popup at the cursor, a command and mouse rest) and go to definition (F12; several locations → the results list)
+     - 9f: completion: popup on trigger characters and Ctrl+Space, filtered as you type, accepted text (and `textEdit`s) inserted at every cursor
+     - 9g: find references (Shift+F12, the results list) and rename symbol (F2 in the editor: a prompt, `WorkspaceEdit` across open and unopened files, one undo step per buffer)
+     - 9h: format document (Shift+Alt+F), the SCons `__builtins__.pyi` (if supported), the done-when tests on a C++ project with `compile_commands.json` and an SCons project; marks M9 ✅
 10. **Git**: SCM panel, gutter markers, side-by-side diff view, stage/unstage hunks — see [Git](#git-view-and-stage-only)
     - Needs: the `notify` watcher (M2), off-thread saves with "save in flight" (M1), editor tabs that split (M3), the side panel (M2)
     - Needed by: file history (M11 reuses the diff view)
