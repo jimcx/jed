@@ -10,10 +10,10 @@ Milestones 1–5 are done; work happens one milestone at a time, split into task
 
 ## Toolchain and checks
 
-cargo isn't on PATH. Prefix every command:
+`rust-toolchain.toml` pins 1.99. On Linux plain `cargo` works (the rustup proxy is on PATH); on macOS cargo isn't
+on PATH, so prefix every command with `export PATH="$HOME/.rustup/toolchains/1.99-aarch64-apple-darwin/bin:$PATH"`.
 
 ```sh
-export PATH="$HOME/.rustup/toolchains/1.99-aarch64-apple-darwin/bin:$PATH"
 cargo fmt --check                            # rustfmt.toml: max_width = 120
 cargo clippy --all-targets -- -D warnings
 cargo test                                   # ~150 tests, ~5 s (search's random reference test is most of it)

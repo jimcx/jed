@@ -38,7 +38,7 @@ Work through the milestones in PLAN.md with subagents, one task at a time, in se
    - Update CLAUDE.md if it changes helpers or conventions. Don't commit.
    - Report: verdict, mutations caught or survived, test changes, bugs fixed, and check results.
 6. **Check and commit (you):**
-   - Re-run all three checks yourself (cargo needs `export PATH="$HOME/.rustup/toolchains/1.99-aarch64-apple-darwin/bin:$PATH"`).
+   - Re-run all three checks yourself (see CLAUDE.md's Toolchain section for how to reach cargo on this platform).
    - Make sure the diff includes the CLAUDE.md updates.
    - Check no test binaries are left running (`pgrep -fl deps/red-`); kill any strays.
    - Commit everything with the subject `Milestone N (Na): <summary>`, a blank line, then `- ` bullets of behaviour and notable internals. End with the Co-Authored-By trailer.
