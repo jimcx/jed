@@ -576,7 +576,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
    - Needed by: LSP (M9, language detection gives the `languageId`)
    - Language detection: file extension, shebang, `.workspace` file associations (`SConstruct` → Python); language mode in the status bar
    - C/C++ and Python grammars with `highlights.scm`; initial parse off the UI thread, incremental after
-   - Then Rust, Markdown, YAML, JSON, XML, TOML, shell, CMake and Makefile (8f)
+   - Then Rust, Markdown, YAML, JSON, XML, TOML, shell, CMake, Makefile and Dockerfile (8f)
    - Highlight queries on the visible range plus a margin; off past the size limit
    - Dark+ theme through named keys only; truecolor with 256-colour fallback
    - Language-aware editing: comment line (Cmd+/), auto-indent, bracket matching, auto-close pairs
@@ -606,7 +606,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - Still to check by hand: Cmd+/ reaches red (iTerm2's Find Cursor menu item; layouts where `/` is shifted may send Cmd+Shift+7; on Linux without the kitty protocol Ctrl+/ arrives as Ctrl+7)
      - 8d: user settings file: `~/.config/red/settings.toml` (`paths::config_dir()`, the same `[settings]` keys as `.workspace`) loaded at startup like `keybindings.toml`, errors reported via notify; `.workspace` `[settings]` override it per key; `auto_close_pairs` (added in 8c) and the other settings work from either. Live reload stays in M14
      - 8e: auto-indent (Enter keeps the indent, indents after an opening bracket or Python `:`, outdents on a closing bracket) and bracket matching (highlight the pair at the cursor) at every cursor, each with an on / off setting
-     - 8f: more languages: Rust, Markdown, YAML, JSON (and JSONC), XML, TOML, Bash / shell, CMake, Makefile — each a tree-sitter grammar crate compatible with the pinned tree-sitter version, detection (extensions, file names like `Makefile` / `CMakeLists.txt` / `Cargo.lock`, shebangs like `sh` / `bash`), a `highlights.scm` mapped onto the existing Dark+ keys (adding keys only where needed, e.g. Markdown headings / emphasis / links, XML tags / attributes), and a `LanguageConfig` (comment tokens, pairs) so comment line and auto-close work; a language with no usable grammar crate is dropped and noted; marks M8 ✅
+     - 8f: more languages: Rust, Markdown, YAML, JSON (and JSONC), XML, TOML, Bash / shell, CMake, Makefile, Dockerfile — each a tree-sitter grammar crate compatible with the pinned tree-sitter version, detection (extensions, file names like `Makefile` / `CMakeLists.txt` / `Cargo.lock` / `Dockerfile` / `Containerfile` / `*.dockerfile`, shebangs like `sh` / `bash`), a `highlights.scm` mapped onto the existing Dark+ keys (adding keys only where needed, e.g. Markdown headings / emphasis / links, XML tags / attributes), and a `LanguageConfig` (comment tokens, pairs) so comment line and auto-close work; a language with no usable grammar crate is dropped and noted; marks M8 ✅
 9. **LSP**: clangd and pyright — see [LSP](#lsp), [Text positions](#text-positions)
    - Needs: language detection (M8), `LspPos` in `buffer::pos` (M1), workspace trust (M2: servers named in `.workspace` only run when trusted), key contexts (M5), multi-cursor (M6), the results list (M7)
    - First: check that pyright analyzes files without a `.py` extension when opened with `languageId: python`
