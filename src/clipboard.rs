@@ -1,6 +1,7 @@
 //! The system clipboard behind one interface: `arboard` locally, OSC 52 over SSH
-//! or when `arboard` fails. Remembers whole-line copies so pasting them back
-//! inserts above the cursor's line, as VS Code does.
+//! or when `arboard` fails. Remembers what red copied last, as VS Code's clipboard metadata:
+//! whether it was a whole line (pasting it back inserts above the cursor's line) and the text of
+//! each selection (pasted back at as many cursors, each gets its own).
 
 use std::io::Write;
 
@@ -19,8 +20,18 @@ enum Backend {
 
 pub struct Clipboard {
     backend: Backend,
-    /// Text of the last whole-line copy or cut (newlines as `\n`), if that was the last copy.
-    line_copy: Option<String>,
+    /// What red copied last (newlines as `\n`).
+    last: Option<Copied>,
+}
+
+/// A copy or cut, newlines as `\n`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Copied {
+    pub text: String,
+    /// One empty cursor's whole line (VS Code's `isFromEmptySelection`).
+    pub whole_line: bool,
+    /// Each selection's text when several were copied (VS Code's `multicursorText`), else empty.
+    pub pieces: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -38,23 +49,20 @@ impl Clipboard {
         } else {
             Backend::Local(None)
         };
-        Self {
-            backend,
-            line_copy: None,
-        }
+        Self { backend, last: None }
     }
 
     #[cfg(test)]
     pub fn memory() -> Self {
         Self {
             backend: Backend::Memory(None),
-            line_copy: None,
+            last: None,
         }
     }
 
-    /// `whole_line`: the text is whole lines copied from empty selections.
-    pub fn write(&mut self, text: String, whole_line: bool) {
-        self.line_copy = whole_line.then(|| text.clone());
+    pub fn write(&mut self, copied: Copied) {
+        let text = copied.text.clone();
+        self.last = Some(copied);
         match &mut self.backend {
             Backend::Local(slot) => {
                 let local = slot.get_or_insert_with(|| {
@@ -92,12 +100,12 @@ impl Clipboard {
         }
     }
 
-    /// Whether pasted `text` is the last whole-line copy, so it goes above the cursor's line.
+    /// What red knows about pasted `text`: the last copy, if `text` is still what it copied.
     /// Compared with newlines normalized: terminals may turn them into `\r` in a bracketed paste.
-    pub fn is_line_copy(&self, text: &str) -> bool {
-        self.line_copy
-            .as_deref()
-            .is_some_and(|l| l == text.replace("\r\n", "\n").replace('\r', "\n"))
+    pub fn copied(&self, text: &str) -> Option<&Copied> {
+        self.last
+            .as_ref()
+            .filter(|c| c.text == text.replace("\r\n", "\n").replace('\r', "\n"))
     }
 }
 
@@ -155,14 +163,24 @@ mod tests {
         }
     }
 
+    fn copy(text: &str, whole_line: bool) -> Copied {
+        Copied {
+            text: text.into(),
+            whole_line,
+            pieces: Vec::new(),
+        }
+    }
+
     #[test]
-    fn line_copy_mark_follows_the_last_copy() {
+    fn remembers_the_last_copy_while_the_text_matches() {
         let mut c = Clipboard::memory();
-        c.write("a\nb\n".into(), true);
-        assert!(c.is_line_copy("a\nb\n"));
-        assert!(c.is_line_copy("a\r\nb\r"), "terminal newlines are normalized");
-        assert!(!c.is_line_copy("a\n"));
-        c.write("a\nb\n".into(), false);
-        assert!(!c.is_line_copy("a\nb\n"));
+        c.write(copy("a\n", true));
+        assert!(c.copied("a\n").is_some_and(|c| c.whole_line));
+        assert!(c.copied("a\r").is_some(), "terminal newlines are normalized");
+        assert!(c.copied("a\r\n").is_some());
+        assert!(c.copied("b\n").is_none(), "copied elsewhere since");
+        c.write(copy("a\n", false));
+        assert!(c.copied("a\n").is_some_and(|c| !c.whole_line));
+        assert_eq!(c.read().unwrap(), "a\n");
     }
 }

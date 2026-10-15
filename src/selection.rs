@@ -80,7 +80,6 @@ impl Selections {
     }
 
     /// Sorts and merges. `primary` indexes into `list`; the last entry of `list` is the newest.
-    #[cfg_attr(not(test), allow(dead_code))] // add cursor above/below (6c)
     pub fn new(list: Vec<Selection>, primary: usize) -> Self {
         let newest = list.len().saturating_sub(1);
         Self::with_newest(list, primary, newest)

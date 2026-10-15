@@ -7,9 +7,11 @@ use crate::buffer::change::{Assoc, ChangeSet};
 use crate::buffer::file::Eol;
 use crate::buffer::pos::{self, ByteIdx};
 use crate::buffer::undo::EditKind;
+use crate::clipboard::Copied;
 use crate::command::{Command, Motion};
 use crate::selection::{Selection, Selections};
 use crate::view::View;
+use crate::{column, lines};
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -55,6 +57,22 @@ pub fn run(cmd: Command, buf: &mut Buffer, view: &mut View, s: &Settings) -> boo
         }
         Command::Undo => restore(view, buf.undo()),
         Command::Redo => restore(view, buf.redo()),
+        Command::AddCursorAbove | Command::AddCursorBelow => {
+            column::add_cursor(&buf.rope, view, cmd == Command::AddCursorAbove, s.tab_width);
+            buf.seal_undo();
+        }
+        Command::CursorsAtLineEnds => {
+            column::cursors_at_line_ends(&buf.rope, view);
+            buf.seal_undo();
+        }
+        Command::ColumnSelect(m) => {
+            column::step(&buf.rope, view, m, s.tab_width);
+            buf.seal_undo();
+        }
+        Command::MoveLinesUp => lines::move_lines(buf, view, true),
+        Command::MoveLinesDown => lines::move_lines(buf, view, false),
+        Command::CopyLinesUp => lines::copy_lines(buf, view, false),
+        Command::CopyLinesDown => lines::copy_lines(buf, view, true),
         _ => return false,
     }
     true
@@ -72,6 +90,10 @@ pub fn is_edit(cmd: Command) -> bool {
             | Command::InsertTab
             | Command::Undo
             | Command::Redo
+            | Command::MoveLinesUp
+            | Command::MoveLinesDown
+            | Command::CopyLinesUp
+            | Command::CopyLinesDown
     )
 }
 
@@ -82,13 +104,27 @@ pub fn insert_char(buf: &mut Buffer, view: &mut View, c: char) {
     replace_each(buf, view, EditKind::Insert, |_, sel| (sel.start(), sel.end(), text));
 }
 
-/// Pasted text: line endings converted to the buffer's. `whole_line` (from a copy of
-/// empty selections) puts it above each empty cursor's line, the cursor staying on its text.
-pub fn paste(buf: &mut Buffer, view: &mut View, text: &str, whole_line: bool) {
-    let mut text = text.replace("\r\n", "\n").replace('\r', "\n");
-    if buf.eol == Eol::Crlf {
-        text = text.replace('\n', "\r\n");
+/// Pasted text: line endings converted to the buffer's. `whole_line` (from a copy of one
+/// empty selection) puts it above each empty cursor's line, the cursor staying on its text.
+/// At several cursors the text is spread, one part per cursor in order, when it splits into as
+/// many parts: `pieces` (each selection's text from red's own copy), else its lines (VS Code's
+/// `multiCursorPaste: spread`). Otherwise every cursor gets all of it.
+pub fn paste(buf: &mut Buffer, view: &mut View, text: &str, whole_line: bool, pieces: &[String]) {
+    let crlf = buf.eol == Eol::Crlf;
+    let convert = |t: &str| {
+        let t = t.replace("\r\n", "\n").replace('\r', "\n");
+        if crlf { t.replace('\n', "\r\n") } else { t }
+    };
+    let lf = text.replace("\r\n", "\n").replace('\r', "\n");
+    if let Some(parts) = spread(&lf, view.selections.len(), whole_line, pieces) {
+        let parts: Vec<String> = parts.into_iter().map(convert).collect();
+        let mut part = parts.iter();
+        replace_each(buf, view, EditKind::Other, |_, sel| {
+            (sel.start(), sel.end(), part.next().map_or("", String::as_str))
+        });
+        return;
     }
+    let text = convert(&lf);
     replace_each_landing(buf, view, EditKind::Other, |rope, sel| {
         if whole_line && sel.is_empty() {
             let start = pos::line_start(rope, pos::line_of(rope, sel.head));
@@ -99,10 +135,25 @@ pub fn paste(buf: &mut Buffer, view: &mut View, text: &str, whole_line: bool) {
     });
 }
 
-/// What copy puts on the clipboard, newlines as `\n`, and whether it's whole lines.
-/// Selections are joined with newlines; if they're all empty, each cursor's line
-/// is taken whole with its line break, once per line.
-pub fn copy_text(buf: &Buffer, view: &View) -> (String, bool) {
+/// VS Code's `_distributePasteToCursors`: one part of `text` (newlines as `\n`) per cursor, or
+/// `None`. Never for a whole-line copy or one cursor; red's own pieces if there are `n`; else the
+/// lines, ignoring one final line break, if there are `n`.
+fn spread<'a>(text: &'a str, n: usize, whole_line: bool, pieces: &'a [String]) -> Option<Vec<&'a str>> {
+    if whole_line || n == 1 {
+        return None;
+    }
+    if pieces.len() == n {
+        return Some(pieces.iter().map(String::as_str).collect());
+    }
+    let lines: Vec<&str> = text.strip_suffix('\n').unwrap_or(text).split('\n').collect();
+    (lines.len() == n).then_some(lines)
+}
+
+/// What copy puts on the clipboard, newlines as `\n`. Selections are joined with newlines, each
+/// one's text kept as a piece when there are several; if they're all empty, each cursor's line
+/// is taken whole with its line break, once per line. Only one empty cursor's copy is marked
+/// whole-line (VS Code: several cursors' lines paste like any text).
+pub fn copy_text(buf: &Buffer, view: &View) -> Copied {
     let rope = &buf.rope;
     if view.selections.iter().all(|s| s.is_empty()) {
         let mut text = String::new();
@@ -115,14 +166,22 @@ pub fn copy_text(buf: &Buffer, view: &View) -> (String, bool) {
                 text.push('\n');
             }
         }
-        (text, true)
+        Copied {
+            text,
+            whole_line: view.selections.len() == 1,
+            pieces: Vec::new(),
+        }
     } else {
         let parts: Vec<String> = view
             .selections
             .iter()
-            .map(|s| rope.slice(s.start().0..s.end().0).to_string())
+            .map(|s| rope.slice(s.start().0..s.end().0).to_string().replace("\r\n", "\n"))
             .collect();
-        (parts.join("\n").replace("\r\n", "\n"), false)
+        Copied {
+            text: parts.join("\n"),
+            whole_line: false,
+            pieces: if parts.len() > 1 { parts } else { Vec::new() },
+        }
     }
 }
 
@@ -377,7 +436,7 @@ mod tests {
     fn paste_is_its_own_step_and_converts_eol() {
         let (mut b, mut v, s) = setup("x\r\n", 0);
         insert_char(&mut b, &mut v, 'a');
-        paste(&mut b, &mut v, "1\n2", false);
+        paste(&mut b, &mut v, "1\n2", false, &[]);
         insert_char(&mut b, &mut v, 'b');
         assert_eq!(b.rope.to_string(), "a1\r\n2bx\r\n");
         run(C::Undo, &mut b, &mut v, &s);
@@ -439,10 +498,21 @@ mod tests {
             ],
             0,
         );
-        assert_eq!(copy_text(&b, &v), ("b\nc\ne".to_string(), false));
+        let c = copy_text(&b, &v);
+        assert_eq!((c.text.as_str(), c.whole_line), ("b\nc\ne", false));
+        assert_eq!(c.pieces, vec!["b\nc", "e"], "each selection's text, CRLF as LF");
         // Two cursors on line 0 copy it once; the last line gets a line break added.
         v.selections = Selections::new([0, 1, 9].map(|p| Selection::cursor(ByteIdx(p))).to_vec(), 0);
-        assert_eq!(copy_text(&b, &v), ("ab\nef\n".to_string(), true));
+        let c = copy_text(&b, &v);
+        assert_eq!(
+            (c.text.as_str(), c.whole_line),
+            ("ab\nef\n", false),
+            "whole line only for one cursor"
+        );
+        assert!(c.pieces.is_empty());
+        v.selections = Selections::single(Selection::cursor(ByteIdx(9)));
+        let c = copy_text(&b, &v);
+        assert_eq!((c.text.as_str(), c.whole_line), ("ef\n", true));
     }
 
     #[test]
@@ -483,14 +553,14 @@ mod tests {
     #[test]
     fn whole_line_paste_goes_above_and_keeps_cursor_on_its_text() {
         let (mut b, mut v, s) = setup("ab\r\ncd", 6);
-        paste(&mut b, &mut v, "x\n", true);
+        paste(&mut b, &mut v, "x\n", true, &[]);
         assert_eq!(b.rope.to_string(), "ab\r\nx\r\ncd");
         assert_eq!(head(&v), 9, "still after 'c'");
         run(C::Undo, &mut b, &mut v, &s);
         assert_eq!(b.rope.to_string(), "ab\r\ncd");
         // With a selection, a whole-line paste just replaces it.
         v.selections = Selections::single(Selection::new(ByteIdx(0), ByteIdx(2)));
-        paste(&mut b, &mut v, "x\n", true);
+        paste(&mut b, &mut v, "x\n", true, &[]);
         assert_eq!(b.rope.to_string(), "x\r\n\r\ncd");
     }
 
@@ -500,10 +570,55 @@ mod tests {
     fn whole_line_paste_with_two_cursors_on_a_line_keeps_both() {
         let (mut b, mut v, _) = setup("a界b界", 0);
         v.selections = Selections::new(vec![Selection::cursor(ByteIdx(1)), Selection::cursor(ByteIdx(5))], 0);
-        paste(&mut b, &mut v, "z\n", true);
+        paste(&mut b, &mut v, "z\n", true, &[]);
         assert_eq!(b.rope.to_string(), "z\nz\na界b界");
         let heads: Vec<usize> = v.selections.iter().map(|s| s.head.0).collect();
         assert_eq!(heads, vec![5, 9], "still after 'a' and after 'b'");
+    }
+
+    fn cursors(v: &View) -> Vec<usize> {
+        v.selections.iter().map(|s| s.head.0).collect()
+    }
+
+    #[test]
+    fn paste_spreads_one_line_per_cursor_when_counts_match() {
+        let (mut b, mut v, s) = setup("a\r\nb\r\nc", 0);
+        v.selections = Selections::new([1, 4, 7].map(|p| Selection::cursor(ByteIdx(p))).to_vec(), 0);
+        // A final line break doesn't count as another line; terminal newlines may be CRs.
+        paste(&mut b, &mut v, "1\r2\r\n3\n", false, &[]);
+        assert_eq!(b.rope.to_string(), "a1\r\nb2\r\nc3");
+        assert_eq!(cursors(&v), vec![2, 6, 10]);
+        run(C::Undo, &mut b, &mut v, &s);
+        assert_eq!(b.rope.to_string(), "a\r\nb\r\nc", "one undo step");
+        // Two lines, three cursors: all of it at each.
+        paste(&mut b, &mut v, "x\ny", false, &[]);
+        assert_eq!(b.rope.to_string(), "ax\r\ny\r\nbx\r\ny\r\ncx\r\ny");
+    }
+
+    #[test]
+    fn paste_spreads_copied_pieces_even_with_line_breaks_inside() {
+        let (mut b, mut v, _) = setup("ab", 0);
+        v.selections = Selections::new([0, 2].map(|p| Selection::cursor(ByteIdx(p))).to_vec(), 0);
+        let pieces = ["x\ny".to_string(), "z".to_string()];
+        paste(&mut b, &mut v, "x\ny\nz", false, &pieces);
+        assert_eq!(b.rope.to_string(), "x\nyabz");
+        assert_eq!(cursors(&v), vec![3, 6]);
+        // Pieces for another count are ignored: three lines at two cursors don't spread.
+        let (mut b, mut v, _) = setup("ab", 0);
+        v.selections = Selections::new([0, 2].map(|p| Selection::cursor(ByteIdx(p))).to_vec(), 0);
+        paste(&mut b, &mut v, "1\n2\n3", false, &pieces[..1]);
+        assert_eq!(b.rope.to_string(), "1\n2\n3ab1\n2\n3");
+    }
+
+    #[test]
+    fn whole_line_and_single_cursor_pastes_never_spread() {
+        let (mut b, mut v, _) = setup("a\nb", 0);
+        v.selections = Selections::new([0, 2].map(|p| Selection::cursor(ByteIdx(p))).to_vec(), 0);
+        paste(&mut b, &mut v, "x\n", true, &[]);
+        assert_eq!(b.rope.to_string(), "x\na\nx\nb", "above each line");
+        let (mut b, mut v, _) = setup("a", 1);
+        paste(&mut b, &mut v, "x\n", false, &[]);
+        assert_eq!(b.rope.to_string(), "ax\n");
     }
 
     #[test]
@@ -603,7 +718,7 @@ mod tests {
                     }
                     1 => {
                         let t = ["ab", "é界", "😀", "e\u{301}"][rng.next(4)];
-                        paste(&mut b, &mut v, t, false);
+                        paste(&mut b, &mut v, t, false, &[]);
                         Some(sels.iter().map(|x| (x.start().0, x.end().0, t)).collect())
                     }
                     2 | 3 => {
@@ -628,7 +743,7 @@ mod tests {
                         None
                     }
                     _ => {
-                        paste(&mut b, &mut v, "z\n", true);
+                        paste(&mut b, &mut v, "z\n", true, &[]);
                         None
                     }
                 };

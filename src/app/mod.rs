@@ -505,11 +505,11 @@ impl App {
         let Some((buf, view)) = self.active_mut() else {
             return;
         };
-        let (text, whole_line) = edit::copy_text(buf, view);
+        let copied = edit::copy_text(buf, view);
         if cut {
             edit::cut(buf, view);
         }
-        self.clipboard.write(text, whole_line);
+        self.clipboard.write(copied);
     }
 
     fn paste_clipboard(&mut self) {
@@ -529,14 +529,19 @@ impl App {
         }
     }
 
-    /// Pastes into the active view; a whole-line copy goes above the cursor's line.
+    /// Pastes into the active view: a whole-line copy goes above the cursor's line, and red's
+    /// own copy of several selections spreads one per cursor when the counts match.
     fn paste(&mut self, text: &str) {
         if !self.active_writable() {
             return;
         }
-        let whole_line = self.clipboard.is_line_copy(text);
-        if let Some((buf, view)) = self.active_mut() {
-            edit::paste(buf, view, text, whole_line);
+        let copied = self.clipboard.copied(text);
+        let (whole_line, pieces) = copied.map_or((false, &[][..]), |c| (c.whole_line, c.pieces.as_slice()));
+        let group = self.groups.active_group_mut();
+        if let Some(tab) = group.tabs.get_mut(group.active)
+            && let Some(buf) = self.buffers.get_mut(tab.buffer)
+        {
+            edit::paste(buf, &mut tab.view, text, whole_line, pieces);
         }
     }
 
@@ -626,11 +631,16 @@ impl App {
     }
 
     pub fn mouse(&mut self, kind: crossterm::event::MouseEventKind, x: u16, y: u16) {
+        self.mouse_with(kind, x, y, KeyModifiers::NONE);
+    }
+
+    /// A mouse event with modifiers held (Alt+Click, Shift+Alt+drag).
+    pub fn mouse_with(&mut self, kind: crossterm::event::MouseEventKind, x: u16, y: u16, modifiers: KeyModifiers) {
         self.handle_event(Event::Mouse(crossterm::event::MouseEvent {
             kind,
             column: x,
             row: y,
-            modifiers: KeyModifiers::NONE,
+            modifiers,
         }));
     }
 

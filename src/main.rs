@@ -1,6 +1,7 @@
 mod app;
 mod buffer;
 mod clipboard;
+mod column;
 mod command;
 mod config;
 mod edit;
@@ -8,6 +9,7 @@ mod explorer;
 mod field;
 mod group;
 mod layout;
+mod lines;
 mod logging;
 #[cfg(test)]
 mod milestone2_tests;

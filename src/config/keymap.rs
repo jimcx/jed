@@ -8,7 +8,7 @@ use std::path::Path;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
 
-use crate::command::{Command, ExplorerCommand as X, Motion, PaletteCommand as P};
+use crate::command::{ColumnMotion, Command, ExplorerCommand as X, Motion, PaletteCommand as P};
 
 pub const FILE_NAME: &str = "keybindings.toml";
 
@@ -384,6 +384,39 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         // No chords, so not VS Code's Cmd+K Cmd+D.
         (KeyCode::Char('d'), cmd | alt, Command::SkipToNextMatch),
         (KeyCode::Char('u'), cmd, Command::CursorUndo),
+        (KeyCode::Up, cmd | alt, Command::AddCursorAbove),
+        (KeyCode::Down, cmd | alt, Command::AddCursorBelow),
+        (KeyCode::Char('i'), alt | shift, Command::CursorsAtLineEnds),
+        (
+            KeyCode::Left,
+            cmd | alt | shift,
+            Command::ColumnSelect(ColumnMotion::Left),
+        ),
+        (
+            KeyCode::Right,
+            cmd | alt | shift,
+            Command::ColumnSelect(ColumnMotion::Right),
+        ),
+        (KeyCode::Up, cmd | alt | shift, Command::ColumnSelect(ColumnMotion::Up)),
+        (
+            KeyCode::Down,
+            cmd | alt | shift,
+            Command::ColumnSelect(ColumnMotion::Down),
+        ),
+        (
+            KeyCode::PageUp,
+            cmd | alt | shift,
+            Command::ColumnSelect(ColumnMotion::PageUp),
+        ),
+        (
+            KeyCode::PageDown,
+            cmd | alt | shift,
+            Command::ColumnSelect(ColumnMotion::PageDown),
+        ),
+        (KeyCode::Up, alt, Command::MoveLinesUp),
+        (KeyCode::Down, alt, Command::MoveLinesDown),
+        (KeyCode::Up, alt | shift, Command::CopyLinesUp),
+        (KeyCode::Down, alt | shift, Command::CopyLinesDown),
     ]);
     if mac {
         editor.push((KeyCode::Backspace, cmd, Command::DeleteToLineStart));

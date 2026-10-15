@@ -35,6 +35,14 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+shift+l` | Select all matches | editor |
 | `cmd+alt+d` | Move last selection to next match | editor |
 | `cmd+u` | Undo last cursor change | editor |
+| `cmd+alt+up` | Add cursor above | editor |
+| `cmd+alt+down` | Add cursor below | editor |
+| `cmd+alt+shift+left` | Column (box) select left | editor |
+| `cmd+alt+shift+right` | Column (box) select right | editor |
+| `cmd+alt+shift+up` | Column (box) select up | editor |
+| `cmd+alt+shift+down` | Column (box) select down | editor |
+| `cmd+alt+shift+pageup` | Column (box) select page up | editor |
+| `cmd+alt+shift+pagedown` | Column (box) select page down | editor |
 | `cmd+left` | Line start | editor |
 | `cmd+shift+left` | Select to line start | editor |
 | `cmd+right` | Line end | editor |
@@ -60,6 +68,8 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+alt+left` | Previous tab | everywhere |
 | `cmd+shift+p` | Command palette | everywhere |
 | `cmd+p` | Quick open (go to file) | everywhere |
+
+**Mouse with modifiers.** Alt+Click adds or removes a cursor and Shift+Alt+drag makes a box selection. Most terminals keep Shift+drag for their own text selection while a program uses the mouse (kitty `terminal_select_modifiers`, WezTerm `bypass_mouse_reporting_modifiers`), and some use Alt or Cmd+Alt with the mouse for rectangle selection, so these may not reach red. The keyboard box select (Cmd+Shift+Alt+arrows) always works.
 
 The palette is also on F1, and go to line is Ctrl+G (as VS Code on macOS); neither needs a terminal change.
 

@@ -3,6 +3,10 @@
 //! Cmd+Shift+L on a 1 MB file with tens of thousands of matches, then typing, stays smooth, and
 //! one undo restores the selection list from before the typing.
 //!
+//! 6c: add cursor above / below, Shift+Alt+I, Alt+Click and Alt+drag, box select from the
+//! keyboard and with Shift+Alt+drag, paste spread across cursors, and move / copy lines at every
+//! cursor, each one undo step; the line and cursor commands at the 1 MB file's 63k selections.
+//!
 //! Timings are asserted in release builds only: `cargo test --release milestone -- --nocapture`
 
 use std::time::{Duration, Instant};
@@ -28,6 +32,12 @@ const UNDO_BUDGET: Duration = Duration::from_millis(50);
 /// step at 63k selections takes seconds even in release. Keystrokes must also stay under the
 /// 1 s undo grouping pause for the one-undo check to hold.
 const DEBUG_BOUND: Duration = Duration::from_millis(800);
+/// A line or cursor command at every one of those selections, plus a frame (~25-35 ms measured
+/// on Linux x86).
+const LINE_COMMAND_BUDGET: Duration = Duration::from_millis(80);
+/// The same in debug builds (~0.5 s, more with other tests running): only catches going
+/// quadratic, which at 60k selections takes minutes.
+const LINE_COMMAND_DEBUG_BOUND: Duration = Duration::from_secs(5);
 
 fn cmd() -> M {
     if cfg!(target_os = "macos") {
@@ -548,4 +558,401 @@ fn milestone_6_newest_survives_typing() {
         vec![(3, 5), (6, 8), (9, 11)],
         "after the newest, not the last"
     );
+}
+
+// ---- 6c: add cursor above / below, Shift+Alt+I, Alt+Click, box select, paste spreading,
+// ---- move / copy lines.
+
+fn add_below(app: &mut App) {
+    app.press(K::Down, cmd() | M::ALT);
+}
+
+fn add_above(app: &mut App) {
+    app.press(K::Up, cmd() | M::ALT);
+}
+
+fn box_key(app: &mut App, key: K) {
+    app.press(key, cmd() | M::ALT | M::SHIFT);
+}
+
+fn undo(app: &mut App) {
+    app.press(K::Char('z'), cmd());
+}
+
+fn paste_text(app: &mut App, text: &str) {
+    app.handle_test_event(crossterm::event::Event::Paste(text.into()));
+}
+
+/// Where the text starts on screen: the row showing line `line` and the column of its byte 0.
+/// Lines must start with distinct text.
+fn screen_of(term: &Terminal<TestBackend>, app: &App, line: usize) -> (u16, u16) {
+    let rope = &app.active_buffer().unwrap().rope;
+    let start = crate::buffer::pos::line_text(rope, line);
+    let buf = term.backend().buffer();
+    let (w, h) = (buf.area.width, buf.area.height);
+    for y in 0..h {
+        let row: String = (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect();
+        if let Some(i) = row.find(&format!(" {} {start}", line + 1)) {
+            let x = row[..i].chars().count() + format!(" {} ", line + 1).len();
+            return (x as u16, y);
+        }
+    }
+    panic!("line {line} not on screen");
+}
+
+#[test]
+fn milestone_6_add_cursor_above_and_below() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_with(&dir, "abcdef\nab\nabcdef\nabcdef", 5);
+    add_below(&mut app);
+    add_below(&mut app);
+    assert_eq!(
+        ranges(&app),
+        vec![(5, 5), (9, 9), (15, 15)],
+        "same column, clamped on the short line"
+    );
+    app.type_text("X");
+    assert_eq!(text(&app), "abcdeXf\nabX\nabcdeXf\nabcdef");
+    undo(&mut app);
+    assert_eq!(text(&app), "abcdef\nab\nabcdef\nabcdef");
+    assert_eq!(ranges(&app).len(), 3, "undo restores the three cursors");
+
+    // On the first line there's nothing above: no change.
+    set_cursor(&mut app, 2);
+    add_above(&mut app);
+    assert_eq!(ranges(&app), vec![(2, 2)]);
+    // Esc goes back to one cursor; Cmd+U undoes an added cursor.
+    add_below(&mut app);
+    assert_eq!(ranges(&app), vec![(2, 2), (9, 9)]);
+    cursor_undo(&mut app);
+    assert_eq!(ranges(&app), vec![(2, 2)]);
+    add_below(&mut app);
+    app.press(K::Esc, M::NONE);
+    assert_eq!(ranges(&app), vec![(2, 2)], "the primary stays the original cursor");
+
+    // Adding below past the bottom of the screen scrolls to the new cursor.
+    let lines: String = (0..100).map(|i| format!("line {i}\n")).collect();
+    let mut app = app_with(&dir, &lines, 0);
+    let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
+    draw(&mut term, &mut app);
+    for _ in 0..30 {
+        add_below(&mut app);
+    }
+    draw(&mut term, &mut app);
+    let view = &app.group().active_tab().unwrap().view;
+    assert_eq!(view.selections.len(), 31);
+    assert_eq!(view.top_line() + view.height, 31, "line 30 is the last one shown");
+}
+
+#[test]
+fn milestone_6_cursors_at_line_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_with(&dir, "let a = 1\nlet bb = 2\nlet c = 3\nend", 4);
+    app.press(K::Down, M::SHIFT);
+    app.press(K::Down, M::SHIFT);
+    app.press(K::End, M::SHIFT);
+    // Terminals report Shift+Alt+I as `I` or `i` with Shift.
+    app.press(K::Char('I'), M::ALT | M::SHIFT);
+    assert_eq!(ranges(&app), vec![(9, 9), (20, 20), (30, 30)]);
+    app.type_text(";");
+    assert_eq!(text(&app), "let a = 1;\nlet bb = 2;\nlet c = 3;\nend");
+    // Only cursors: nothing to do.
+    app.press(K::Char('i'), M::ALT | M::SHIFT);
+    assert_eq!(ranges(&app), vec![(10, 10), (22, 22), (33, 33)]);
+}
+
+#[test]
+fn milestone_6_keyboard_box_select() {
+    let dir = tempfile::tempdir().unwrap();
+    // Line starts: 0, 9, 11, 19. The tab covers columns 0..4.
+    let mut app = app_with(&dir, "abcdefgh\na\n\tbcdefg\nabcdefgh", 4);
+    let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
+    draw(&mut term, &mut app);
+    for _ in 0..3 {
+        box_key(&mut app, K::Down);
+    }
+    assert_eq!(
+        ranges(&app),
+        vec![(4, 4), (10, 10), (12, 12), (23, 23)],
+        "a column of cursors at column 4"
+    );
+    box_key(&mut app, K::Right);
+    box_key(&mut app, K::Right);
+    assert_eq!(
+        ranges(&app),
+        vec![(4, 6), (12, 14), (23, 25)],
+        "columns 4..6: the short line drops out"
+    );
+    box_key(&mut app, K::Up);
+    assert_eq!(ranges(&app), vec![(4, 6), (12, 14)], "shrinks from the moving corner");
+    app.type_text("X");
+    assert_eq!(text(&app), "abcdXgh\na\n\tXdefg\nabcdefgh");
+    undo(&mut app);
+    assert_eq!(text(&app), "abcdefgh\na\n\tbcdefg\nabcdefgh");
+
+    // Any other selection change starts a new box from the primary selection, here leftwards.
+    set_cursor(&mut app, 3);
+    box_key(&mut app, K::Left);
+    assert_eq!(ranges(&app), vec![(2, 3)]);
+    box_key(&mut app, K::PageDown);
+    // Columns 2..3 are inside the tab, nearer its end: the tab is selected.
+    assert_eq!(ranges(&app), vec![(2, 3), (11, 12), (21, 22)]);
+    let sel = sels(&app);
+    assert!(sel.iter().all(|s| s.head < s.anchor), "anchored on the right");
+}
+
+#[test]
+fn milestone_6_alt_click_and_box_drag() {
+    use crossterm::event::{MouseButton, MouseEventKind as E};
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_with(&dir, "abcdef\nghijkl\nmnopqr\nstuvwx", 0);
+    let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
+    draw(&mut term, &mut app);
+    let (x0, y0) = screen_of(&term, &app, 0);
+    let (x2, y2) = screen_of(&term, &app, 2);
+    let click = |app: &mut App, x, y, mods| {
+        app.mouse_with(E::Down(MouseButton::Left), x, y, mods);
+        app.mouse_with(E::Up(MouseButton::Left), x, y, mods);
+    };
+
+    // Alt+Click adds a cursor; the first one stays primary.
+    click(&mut app, x0 + 3, y0, M::ALT);
+    click(&mut app, x2 + 1, y2, M::ALT);
+    assert_eq!(ranges(&app), vec![(0, 0), (3, 3), (15, 15)]);
+    assert_eq!(sels(&app).primary().head.0, 0);
+    app.type_text("-");
+    assert_eq!(text(&app), "-abc-def\nghijkl\nm-nopqr\nstuvwx");
+    draw(&mut term, &mut app);
+    // Alt+Click on a cursor removes it.
+    click(&mut app, x0 + 5, y0, M::ALT);
+    assert_eq!(ranges(&app), vec![(1, 1), (18, 18)]);
+    // ... but never the last one.
+    click(&mut app, x2 + 2, y2, M::ALT);
+    click(&mut app, x0 + 1, y0, M::ALT);
+    assert_eq!(ranges(&app), vec![(1, 1)]);
+
+    // Alt+drag turns the added cursor into a selection.
+    app.mouse_with(E::Down(MouseButton::Left), x2 + 1, y2, M::ALT);
+    app.mouse_with(E::Drag(MouseButton::Left), x2 + 4, y2, M::ALT);
+    app.mouse_with(E::Up(MouseButton::Left), x2 + 4, y2, M::ALT);
+    assert_eq!(ranges(&app), vec![(1, 1), (17, 20)]);
+    // Double Alt+Click adds the word under the pointer.
+    click(&mut app, x2 + 2, y2 + 1, M::ALT);
+    click(&mut app, x2 + 2, y2 + 1, M::ALT);
+    assert_eq!(ranges(&app), vec![(1, 1), (17, 20), (24, 30)]);
+
+    // Shift+Alt+drag: a box from the primary's anchor (VS Code) to the pointer.
+    let mut app = app_with(&dir, "abcdef\nghijkl\nmnopqr\nstuvwx", 0);
+    draw(&mut term, &mut app);
+    app.mouse(E::Down(MouseButton::Left), x0 + 1, y0);
+    app.mouse(E::Up(MouseButton::Left), x0 + 1, y0);
+    app.mouse_with(E::Down(MouseButton::Left), x0 + 2, y0 + 1, M::ALT | M::SHIFT);
+    app.mouse_with(E::Drag(MouseButton::Left), x0 + 3, y2, M::ALT | M::SHIFT);
+    assert_eq!(ranges(&app), vec![(1, 3), (8, 10), (15, 17)]);
+    // Dragging past the line ends keeps the column; the keyboard grows the same box.
+    app.mouse_with(E::Drag(MouseButton::Left), x0 + 30, y2, M::ALT | M::SHIFT);
+    app.mouse_with(E::Up(MouseButton::Left), x0 + 30, y2, M::ALT | M::SHIFT);
+    assert_eq!(ranges(&app), vec![(1, 6), (8, 13), (15, 20)]);
+    box_key(&mut app, K::Down);
+    assert_eq!(ranges(&app), vec![(1, 6), (8, 13), (15, 20), (22, 27)]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_6_paste_spreads_across_cursors() {
+    let dir = tempfile::tempdir().unwrap();
+    // Copy three selections, paste them back at three cursors: one each.
+    let mut app = app_with(&dir, "one two three\nx\ny\nz", 0);
+    // Three different words selected (as Alt+drag would), copied.
+    let view = app.active_mut().unwrap().1;
+    view.selections = Selections::new(
+        vec![
+            Selection::new(ByteIdx(0), ByteIdx(3)),
+            Selection::new(ByteIdx(4), ByteIdx(7)),
+            Selection::new(ByteIdx(8), ByteIdx(13)),
+        ],
+        0,
+    );
+    app.press(K::Char('c'), cmd());
+    assert_eq!(app.clipboard.read().unwrap(), "one\ntwo\nthree");
+    let view = app.active_mut().unwrap().1;
+    view.selections = Selections::new([15, 17, 19].map(|p| Selection::cursor(ByteIdx(p))).to_vec(), 0);
+    paste_text(&mut app, "one\ntwo\nthree");
+    assert_eq!(text(&app), "one two three\nxone\nytwo\nzthree");
+    undo(&mut app);
+    assert_eq!(text(&app), "one two three\nx\ny\nz", "one undo step");
+
+    // From elsewhere: as many lines as cursors spread too; the final newline doesn't count.
+    paste_text(&mut app, "1\n2\n3\n");
+    assert_eq!(text(&app), "one two three\nx1\ny2\nz3");
+    undo(&mut app);
+    // Mismatched counts: the whole text at every cursor.
+    paste_text(&mut app, "1\n2");
+    assert_eq!(text(&app), "one two three\nx1\n2\ny1\n2\nz1\n2");
+    undo(&mut app);
+
+    // A whole line copied from one empty cursor goes above each cursor's line, never spread.
+    set_cursor(&mut app, 0);
+    app.press(K::Char('c'), cmd());
+    let view = app.active_mut().unwrap().1;
+    view.selections = Selections::new([15, 17].map(|p| Selection::cursor(ByteIdx(p))).to_vec(), 0);
+    paste_text(&mut app, "one two three\n");
+    assert_eq!(text(&app), "one two three\none two three\nx\none two three\ny\nz");
+    undo(&mut app);
+
+    // Two cursors' lines copied (not whole-line any more, as VS Code) spread back one each.
+    let view = app.active_mut().unwrap().1;
+    view.selections = Selections::new([15, 17].map(|p| Selection::cursor(ByteIdx(p))).to_vec(), 0);
+    app.press(K::Char('c'), cmd());
+    assert_eq!(app.clipboard.read().unwrap(), "x\ny\n");
+    let view = app.active_mut().unwrap().1;
+    view.selections = Selections::new([17, 19].map(|p| Selection::cursor(ByteIdx(p))).to_vec(), 0);
+    paste_text(&mut app, "x\ny\n");
+    assert_eq!(text(&app), "one two three\nx\nyx\nzy");
+    undo(&mut app);
+    // The same copy at three cursors: neither spread nor above the lines, but the whole text
+    // inline at each (VS Code: only one empty cursor's copy is a whole-line copy).
+    let view = app.active_mut().unwrap().1;
+    view.selections = Selections::new([15, 17, 19].map(|p| Selection::cursor(ByteIdx(p))).to_vec(), 0);
+    paste_text(&mut app, "x\ny\n");
+    assert_eq!(text(&app), "one two three\nxx\ny\n\nyx\ny\n\nzx\ny\n");
+    undo(&mut app);
+    // ... and at one cursor, inline too.
+    set_cursor(&mut app, 2);
+    paste_text(&mut app, "x\ny\n");
+    assert_eq!(text(&app), "onx\ny\ne two three\nx\ny\nz");
+    undo(&mut app);
+
+    // Red's own pieces spread even when a piece holds a line break (three lines, two cursors).
+    let view = app.active_mut().unwrap().1;
+    view.selections = Selections::new(
+        vec![
+            Selection::new(ByteIdx(0), ByteIdx(3)),
+            Selection::new(ByteIdx(8), ByteIdx(15)),
+        ],
+        0,
+    );
+    app.press(K::Char('c'), cmd());
+    assert_eq!(app.clipboard.read().unwrap(), "one\nthree\nx");
+    let view = app.active_mut().unwrap().1;
+    view.selections = Selections::new([17, 19].map(|p| Selection::cursor(ByteIdx(p))).to_vec(), 0);
+    paste_text(&mut app, "one\nthree\nx");
+    assert_eq!(text(&app), "one two three\nx\nyone\nzthree\nx");
+}
+
+#[test]
+fn milestone_6_move_and_copy_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_with(&dir, "a\r\nb\r\nc\r\nd", 3);
+    let alt_up = |app: &mut App| app.press(K::Up, M::ALT);
+    let alt_down = |app: &mut App| app.press(K::Down, M::ALT);
+
+    // At the top already: nothing happens and there's nothing to undo.
+    set_cursor(&mut app, 0);
+    alt_up(&mut app);
+    assert_eq!(text(&app), "a\r\nb\r\nc\r\nd");
+    assert!(!app.active_buffer().unwrap().is_dirty());
+    undo(&mut app);
+    assert_eq!(text(&app), "a\r\nb\r\nc\r\nd");
+
+    // Two cursors on neighbouring lines move as one block, down to the last line (no break).
+    set_cursor(&mut app, 3);
+    add_below(&mut app);
+    alt_down(&mut app);
+    assert_eq!(text(&app), "a\r\nd\r\nb\r\nc");
+    assert_eq!(ranges(&app), vec![(6, 6), (9, 9)]);
+    alt_down(&mut app);
+    assert_eq!(text(&app), "a\r\nd\r\nb\r\nc", "at the bottom");
+    alt_up(&mut app);
+    alt_up(&mut app);
+    assert_eq!(text(&app), "b\r\nc\r\na\r\nd");
+    undo(&mut app);
+    undo(&mut app);
+    undo(&mut app);
+    assert_eq!(text(&app), "a\r\nb\r\nc\r\nd", "one undo step per move");
+    assert_eq!(ranges(&app), vec![(3, 3), (6, 6)]);
+
+    // Copy down: the cursors go with the lower copies; copy up: they stay on the upper ones.
+    app.press(K::Down, M::ALT | M::SHIFT);
+    assert_eq!(text(&app), "a\r\nb\r\nb\r\nc\r\nc\r\nd");
+    assert_eq!(ranges(&app), vec![(6, 6), (12, 12)]);
+    undo(&mut app);
+    app.press(K::Up, M::ALT | M::SHIFT);
+    assert_eq!(text(&app), "a\r\nb\r\nb\r\nc\r\nc\r\nd");
+    assert_eq!(ranges(&app), vec![(3, 3), (9, 9)]);
+    undo(&mut app);
+    assert_eq!(text(&app), "a\r\nb\r\nc\r\nd");
+
+    // A selection across lines keeps covering the moved text.
+    // Lines 1 and 2 selected whole (ending at line 3's start, which doesn't count).
+    let mut app = app_with(&dir, "1\n22\n333\n4", 2);
+    app.press(K::Down, M::SHIFT);
+    app.press(K::Down, M::SHIFT);
+    app.press(K::Up, M::ALT);
+    assert_eq!(text(&app), "22\n333\n1\n4");
+    assert_eq!(ranges(&app), vec![(0, 7)]);
+
+    // Read-only buffers: line commands change nothing.
+    app.active_mut().unwrap().0.read_only = Some("test".into());
+    set_cursor(&mut app, 7);
+    for mods in [M::ALT, M::ALT | M::SHIFT] {
+        app.press(K::Up, mods);
+        app.press(K::Down, mods);
+    }
+    assert_eq!(text(&app), "22\n333\n1\n4");
+}
+
+/// Line and cursor commands at the 1 MB file's 63k selections stay fast: copy lines down and
+/// move lines down (31k blocks each), add cursor below, Shift+Alt+I on every line.
+#[test]
+fn milestone_6_cursor_and_line_commands_on_one_mb() {
+    let mut original = String::new();
+    let mut i = 0;
+    while original.len() < 1_000_000 {
+        original.push_str(&format!("let item = value_{i}; // item\n\n"));
+        i += 1;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_with(&dir, &original, 5);
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    draw(&mut term, &mut app);
+    select_all(&mut app);
+    let count = ranges(&app).len();
+    assert_eq!(count, 2 * i);
+    let before = sels(&app);
+
+    let mut timed = |app: &mut App, what: &str, f: &dyn Fn(&mut App)| {
+        let t = Instant::now();
+        f(app);
+        draw(&mut term, app);
+        let took = t.elapsed();
+        println!("{what} at {count} selections: {took:?}");
+        assert!(took < LINE_COMMAND_DEBUG_BOUND, "{what} took {took:?}");
+        if !cfg!(debug_assertions) {
+            assert!(took < LINE_COMMAND_BUDGET, "{what} too slow: {took:?}");
+        }
+    };
+    timed(&mut app, "copy lines down", &|app| {
+        app.press(K::Down, M::ALT | M::SHIFT)
+    });
+    assert_eq!(ranges(&app).len(), count);
+    assert!(text(&app).starts_with("let item = value_0; // item\nlet item = value_0; // item\n\n"));
+    timed(&mut app, "undo", &|app| app.press(K::Char('z'), cmd()));
+    assert_eq!(text(&app), original);
+    assert_eq!(sels(&app), before);
+
+    timed(&mut app, "move lines down", &|app| app.press(K::Down, M::ALT));
+    assert!(text(&app).starts_with("\nlet item = value_0; // item\n\nlet item = value_1;"));
+    assert_eq!(ranges(&app).len(), count);
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), original);
+
+    // Each line's two selections land on the blank line below as one cursor.
+    timed(&mut app, "add cursor below", &|app| app.press(K::Down, cmd() | M::ALT));
+    assert_eq!(ranges(&app).len(), count + i);
+
+    app.press(K::Char('a'), cmd());
+    timed(&mut app, "cursors at line ends", &|app| {
+        app.press(K::Char('I'), M::ALT | M::SHIFT)
+    });
+    assert_eq!(ranges(&app).len(), 2 * i, "every line but the empty last one");
 }

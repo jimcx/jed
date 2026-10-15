@@ -6,8 +6,10 @@ use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use super::{App, Focus};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
+use crate::column::{self, Cell};
 use crate::layout::{Divider, Hit, MIN_SIDE_WIDTH, SidePanel};
 use crate::selection::{Selection, Selections};
+use crate::view::View;
 
 const MULTI_CLICK: Duration = Duration::from_millis(500);
 const WHEEL_LINES: isize = 3;
@@ -21,6 +23,12 @@ pub enum Drag {
     Text {
         anchor: (ByteIdx, ByteIdx),
     },
+    /// Alt+drag: extending the newest selection (the one Alt+Click added) from `anchor`.
+    AddedText {
+        anchor: ByteIdx,
+    },
+    /// Shift+Alt+drag: a box selection (its corners live in `view.column`).
+    Column,
 }
 
 /// Counts clicks on the same cell in quick succession (1, 2, 3).
@@ -94,6 +102,21 @@ impl App {
                         view.reveal_cursor = true;
                     }
                 }
+                Some(Drag::AddedText { anchor }) => {
+                    let at = self.text_position(m.column, m.row, true);
+                    if let (Some(at), Some((_, view))) = (at, self.active_mut()) {
+                        let mut list = view.selections.as_slice().to_vec();
+                        let newest = view.selections.newest_index();
+                        list[newest] = Selection::new(anchor, at);
+                        view.selections = Selections::with_newest(list, view.selections.primary_index(), newest);
+                        view.reveal_pos = Some(at);
+                    }
+                }
+                Some(Drag::Column) => {
+                    if let Some(to) = self.text_cell(m.column, m.row, true) {
+                        self.column_select_to(to);
+                    }
+                }
                 None => {}
             },
             MouseEventKind::Up(MouseButton::Left) => self.drag = None,
@@ -144,10 +167,19 @@ impl App {
 
     fn editor_click(&mut self, m: MouseEvent, count: u8) {
         self.ui.focus = Focus::Editor;
+        let alt = m.modifiers.contains(KeyModifiers::ALT);
+        let shift = m.modifiers.contains(KeyModifiers::SHIFT);
+        if alt && shift {
+            // Shift+Alt+click / drag: a box from the current selection's anchor (VS Code).
+            if let Some(to) = self.text_cell(m.column, m.row, false) {
+                self.column_select_to(to);
+                self.drag = Some(Drag::Column);
+            }
+            return;
+        }
         let Some(at) = self.text_position(m.column, m.row, false) else {
             return;
         };
-        let shift = m.modifiers.contains(KeyModifiers::SHIFT);
         let Some((buf, view)) = self.active_mut() else { return };
         buf.seal_undo();
         let rope = &buf.rope;
@@ -164,6 +196,10 @@ impl App {
             }
             _ => (at, at),
         };
+        if alt {
+            self.drag = alt_click(view, at, (start, end), count);
+            return;
+        }
         view.selections = if shift && count == 1 {
             Selections::single(Selection::new(view.selections.primary().anchor, at))
         } else {
@@ -172,9 +208,20 @@ impl App {
         self.drag = Some(Drag::Text { anchor: (start, end) });
     }
 
-    /// Screen cell to buffer position in the active group. With `clamp`, points outside
-    /// the text area (while dragging) are pulled to its edge.
-    fn text_position(&self, x: u16, y: u16, clamp: bool) -> Option<ByteIdx> {
+    /// Box-selects in the active view from its current box corner (or its primary selection's
+    /// anchor) to `to`.
+    fn column_select_to(&mut self, to: Cell) {
+        let tab_width = self.settings.tab_width;
+        if let Some((buf, view)) = self.active_mut() {
+            buf.seal_undo();
+            let (from, _) = column::current(&buf.rope, view, tab_width);
+            column::select(&buf.rope, view, from, to, tab_width);
+        }
+    }
+
+    /// Screen cell to line and display column in the active group, the column not limited to
+    /// the line's text. With `clamp`, as `text_position`.
+    fn text_cell(&self, x: u16, y: u16, clamp: bool) -> Option<Cell> {
         let a = self.hits.group(self.groups.active)?.text;
         let tab = self.group().active_tab()?;
         let buf = self.buffers.get(tab.buffer)?;
@@ -189,11 +236,49 @@ impl App {
         if y < a.y || y >= a.y + a.height {
             return None;
         }
-        let rope = &buf.rope;
-        let line = (tab.view.top_line() + (y - a.y) as usize).min(pos::line_count(rope) - 1);
-        let col = tab.view.left_col + (x - a.x) as usize;
-        Some(pos::byte_at_col(rope, line, DisplayCol(col), self.settings.tab_width))
+        let line = (tab.view.top_line() + (y - a.y) as usize).min(pos::line_count(&buf.rope) - 1);
+        Some((line, DisplayCol(tab.view.left_col + (x - a.x) as usize)))
     }
+
+    /// Screen cell to buffer position in the active group. With `clamp`, points outside
+    /// the text area (while dragging) are pulled to its edge.
+    fn text_position(&self, x: u16, y: u16, clamp: bool) -> Option<ByteIdx> {
+        let (line, col) = self.text_cell(x, y, clamp)?;
+        let buf = self.buffers.get(self.group().active_tab()?.buffer)?;
+        Some(pos::byte_at_col(&buf.rope, line, col, self.settings.tab_width))
+    }
+}
+
+/// Alt+Click (VS Code): with several selections, clicking on or in one removes it; otherwise a
+/// cursor is added there and becomes the newest. A double / triple Alt+Click makes the newest
+/// selection the word / line instead. Returns the drag that follows (extending the new cursor).
+fn alt_click(view: &mut View, at: ByteIdx, range: (ByteIdx, ByteIdx), count: u8) -> Option<Drag> {
+    let sels = &view.selections;
+    let (primary, newest) = (sels.primary_index(), sels.newest_index());
+    let mut list = sels.as_slice().to_vec();
+    if count >= 2 {
+        list[newest] = Selection::new(range.0, range.1);
+        view.selections = Selections::with_newest(list, primary, newest);
+        return None;
+    }
+    if list.len() > 1
+        && let Some(i) = list.iter().position(|s| s.start() <= at && at <= s.end())
+    {
+        list.remove(i);
+        // Keep the primary and newest on their selections; a removed one passes to the last.
+        let fix = |k: usize| match k.cmp(&i) {
+            std::cmp::Ordering::Less => k,
+            std::cmp::Ordering::Equal => list.len() - 1,
+            std::cmp::Ordering::Greater => k - 1,
+        };
+        let (p, n) = (fix(primary), fix(newest));
+        view.selections = Selections::with_newest(list, p, n);
+        return None;
+    }
+    list.push(Selection::cursor(at));
+    let newest = list.len() - 1;
+    view.selections = Selections::with_newest(list, primary, newest);
+    Some(Drag::AddedText { anchor: at })
 }
 
 #[cfg(test)]
@@ -210,5 +295,36 @@ mod tests {
         assert_eq!(c.click(t + Duration::from_millis(300), 1, 1), 1, "wraps after triple");
         assert_eq!(c.click(t + Duration::from_millis(350), 2, 1), 1, "different cell");
         assert_eq!(c.click(t + Duration::from_secs(2), 2, 1), 1, "too slow");
+    }
+
+    #[test]
+    fn alt_click_removal_keeps_primary_and_newest_on_their_selections() {
+        let heads = |v: &View| v.selections.iter().map(|s| s.head.0).collect::<Vec<_>>();
+        let mut v = View::new();
+        let list = [0, 2, 4, 6].map(|p| Selection::cursor(ByteIdx(p))).to_vec();
+        v.selections = Selections::with_newest(list, 2, 3);
+        let none = (ByteIdx(0), ByteIdx(0));
+        // Removing one before both: they shift down with their selections.
+        assert!(alt_click(&mut v, ByteIdx(0), none, 1).is_none());
+        assert_eq!(heads(&v), vec![2, 4, 6]);
+        assert_eq!((v.selections.primary().head.0, v.selections.newest().head.0), (4, 6));
+        // Removing the primary passes it to the last selection.
+        assert!(alt_click(&mut v, ByteIdx(4), none, 1).is_none());
+        assert_eq!(heads(&v), vec![2, 6]);
+        assert_eq!(v.selections.primary().head.0, 6);
+        // A click inside a selection, at either end, removes it.
+        v.selections = Selections::new(
+            vec![Selection::new(ByteIdx(1), ByteIdx(3)), Selection::cursor(ByteIdx(6))],
+            0,
+        );
+        alt_click(&mut v, ByteIdx(3), none, 1);
+        assert_eq!(heads(&v), vec![6]);
+        // The last one is never removed: a click on it adds a cursor that merges into it.
+        assert!(alt_click(&mut v, ByteIdx(6), none, 1).is_some());
+        assert_eq!(heads(&v), vec![6]);
+        // Elsewhere: a new cursor, the newest, the primary unchanged.
+        alt_click(&mut v, ByteIdx(1), none, 1);
+        assert_eq!(heads(&v), vec![1, 6]);
+        assert_eq!((v.selections.primary().head.0, v.selections.newest().head.0), (6, 1));
     }
 }

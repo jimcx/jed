@@ -65,7 +65,10 @@ async fn milestone_4_copy_cut_paste() {
     assert_eq!(text(&app), "one\ntwoone\nthree\n");
 
     // Text copied in another app pastes as plain text, even if it ends in a newline.
-    app.clipboard.write("from elsewhere\n".into(), false);
+    app.clipboard.write(crate::clipboard::Copied {
+        text: "from elsewhere\n".into(),
+        ..Default::default()
+    });
     select(&mut app, 0, 0);
     terminal_paste(&mut app);
     assert_eq!(text(&app), "from elsewhere\none\ntwoone\nthree\n");
@@ -104,7 +107,10 @@ async fn milestone_4_copy_cut_paste() {
 
     // Linux keymap: Ctrl+V reads the clipboard itself.
     if !cfg!(target_os = "macos") {
-        app.clipboard.write("V".into(), false);
+        app.clipboard.write(crate::clipboard::Copied {
+            text: "V".into(),
+            ..Default::default()
+        });
         select(&mut app, 0, 0);
         app.press(K::Char('v'), M::CONTROL);
         assert!(text(&app).starts_with("Vtwoone"));

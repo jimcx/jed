@@ -40,6 +40,15 @@ pub fn line_end(rope: &Rope, line: usize) -> ByteIdx {
     ByteIdx(start + slice.trailing_line_break_idx(LINE_TYPE).unwrap_or(slice.len()))
 }
 
+/// The line's start, its content end (before the line break) and the next line's start (the
+/// text's end for the last line), in one lookup.
+pub fn line_bounds(rope: &Rope, line: usize) -> (ByteIdx, ByteIdx, ByteIdx) {
+    let start = rope.line_to_byte_idx(line, LINE_TYPE);
+    let slice = rope.line(line, LINE_TYPE);
+    let end = start + slice.trailing_line_break_idx(LINE_TYPE).unwrap_or(slice.len());
+    (ByteIdx(start), ByteIdx(end), ByteIdx(start + slice.len()))
+}
+
 /// The line's content without its line break.
 pub fn line_text(rope: &Rope, line: usize) -> String {
     rope.slice(line_start(rope, line).0..line_end(rope, line).0).to_string()
@@ -115,6 +124,173 @@ pub fn display_col(rope: &Rope, pos: ByteIdx, tab_width: usize) -> DisplayCol {
     let start = line_start(rope, line).0;
     let end = pos.0.min(line_end(rope, line).0);
     let text = rope.slice(start..end).to_string();
+    col_in(&text, text.len(), tab_width)
+}
+
+/// The grapheme boundary on `line` closest to screen column `target`.
+/// Past the end of the line gives the line end; inside a wide char gives its start.
+pub fn byte_at_col(rope: &Rope, line: usize, target: DisplayCol, tab_width: usize) -> ByteIdx {
+    let start = line_start(rope, line).0;
+    ByteIdx(start + offset_at_col(&line_text(rope, line), target, tab_width))
+}
+
+/// One line looked up once, for many conversions on it.
+pub struct Line {
+    pub index: usize,
+    start: ByteIdx,
+    end: ByteIdx,
+    next: ByteIdx,
+    text: String,
+}
+
+impl Line {
+    pub fn new(rope: &Rope, index: usize) -> Self {
+        let (start, end, next) = line_bounds(rope, index);
+        Self {
+            index,
+            start,
+            end,
+            next,
+            text: rope.slice(start.0..end.0).to_string(),
+        }
+    }
+
+    /// Whether `pos` is on this line (its line break included; the last line's end too).
+    pub fn contains(&self, pos: ByteIdx) -> bool {
+        self.start <= pos && (pos < self.next || (pos == self.end && self.end == self.next))
+    }
+
+    pub fn start(&self) -> ByteIdx {
+        self.start
+    }
+
+    /// End of the content, before the line break.
+    pub fn end(&self) -> ByteIdx {
+        self.end
+    }
+
+    /// Start of the next line (the text's end for the last line).
+    pub fn next(&self) -> ByteIdx {
+        self.next
+    }
+
+    /// `display_col` of a position on this line.
+    pub fn col(&self, pos: ByteIdx, tab_width: usize) -> DisplayCol {
+        col_in(
+            &self.text,
+            pos.0.clamp(self.start.0, self.end.0) - self.start.0,
+            tab_width,
+        )
+    }
+
+    /// `byte_at_col` on this line.
+    pub fn byte_at_col(&self, target: DisplayCol, tab_width: usize) -> ByteIdx {
+        ByteIdx(self.start.0 + offset_at_col(&self.text, target, tab_width))
+    }
+
+    /// The grapheme boundary nearest to screen column `target`, the one before on a tie (VS
+    /// Code's `columnFromVisibleColumn`, for column select: a box edge inside a tab or wide char
+    /// takes it if it covers most of it). Past the end of the line gives the line end.
+    pub fn byte_near_col(&self, target: DisplayCol, tab_width: usize) -> ByteIdx {
+        ByteIdx(self.start.0 + offset_near_col(&self.text, target, tab_width))
+    }
+}
+
+/// Walks lines in increasing order for commands at thousands of cursors: steps a line iterator
+/// forward instead of looking each line up (a lookup costs a few hundred ns, which dominated at
+/// 60k cursors). Asking for an earlier line, or one far ahead, looks it up afresh.
+pub struct LineWalker<'a> {
+    rope: &'a Rope,
+    /// Yields line `next`, which starts at `next_start`.
+    lines: Option<ropey::iter::Lines<'a>>,
+    next: usize,
+    next_start: usize,
+    line: Option<Line>,
+}
+
+/// How far ahead stepping beats a fresh lookup.
+const WALK_LINES: usize = 32;
+const WALK_BYTES: usize = 4096;
+
+impl<'a> LineWalker<'a> {
+    pub fn new(rope: &'a Rope) -> Self {
+        Self {
+            rope,
+            lines: None,
+            next: 0,
+            next_start: 0,
+            line: None,
+        }
+    }
+
+    /// Line `index`.
+    pub fn line(&mut self, index: usize) -> &Line {
+        if !self.line.as_ref().is_some_and(|l| l.index == index) {
+            if self.lines.is_none() || index < self.next || index - self.next > WALK_LINES {
+                self.seek(index);
+            }
+            while self.next <= index && self.step() {}
+            if !self.line.as_ref().is_some_and(|l| l.index == index) {
+                self.line = Some(Line::new(self.rope, index));
+            }
+        }
+        self.line.as_ref().expect("line is set")
+    }
+
+    /// The line `pos` is on.
+    pub fn line_at(&mut self, pos: ByteIdx) -> &Line {
+        if !self.line.as_ref().is_some_and(|l| l.contains(pos)) {
+            if self.lines.is_none() || pos.0 < self.next_start || pos.0 - self.next_start > WALK_BYTES {
+                self.seek(line_of(self.rope, pos));
+            }
+            while self.step() && !self.line.as_ref().is_some_and(|l| l.contains(pos)) {}
+            if !self.line.as_ref().is_some_and(|l| l.contains(pos)) {
+                self.line = Some(Line::new(self.rope, line_of(self.rope, pos)));
+            }
+        }
+        self.line.as_ref().expect("line is set")
+    }
+
+    fn seek(&mut self, index: usize) {
+        self.lines = Some(self.rope.lines_at(index, LINE_TYPE));
+        self.next = index;
+        self.next_start = line_start(self.rope, index).0;
+    }
+
+    /// Reads line `next` into `line` (reusing its text buffer); false at the end.
+    fn step(&mut self) -> bool {
+        let Some(slice) = self.lines.as_mut().and_then(|l| l.next()) else {
+            return false;
+        };
+        let start = self.next_start;
+        let content = slice.trailing_line_break_idx(LINE_TYPE).unwrap_or(slice.len());
+        let mut text = self.line.take().map(|l| l.text).unwrap_or_default();
+        text.clear();
+        slice.slice(..content).chunks().for_each(|c| text.push_str(c));
+        self.line = Some(Line {
+            index: self.next,
+            start: ByteIdx(start),
+            end: ByteIdx(start + content),
+            next: ByteIdx(start + slice.len()),
+            text,
+        });
+        self.next += 1;
+        self.next_start += slice.len();
+        true
+    }
+}
+
+/// Printable ASCII only: every char is one grapheme one column wide, so columns are offsets.
+fn is_plain(text: &str) -> bool {
+    text.bytes().all(|b| (0x20..0x7f).contains(&b))
+}
+
+/// Screen column at byte `off` of a line's `text`.
+fn col_in(text: &str, off: usize, tab_width: usize) -> DisplayCol {
+    let text = &text[..off];
+    if is_plain(text) {
+        return DisplayCol(off);
+    }
     let mut col = DisplayCol(0);
     for g in text.graphemes(true) {
         col.0 += display_grapheme(g, col, tab_width).1;
@@ -122,20 +298,37 @@ pub fn display_col(rope: &Rope, pos: ByteIdx, tab_width: usize) -> DisplayCol {
     col
 }
 
-/// The grapheme boundary on `line` closest to screen column `target`.
-/// Past the end of the line gives the line end; inside a wide char gives its start.
-pub fn byte_at_col(rope: &Rope, line: usize, target: DisplayCol, tab_width: usize) -> ByteIdx {
-    let start = line_start(rope, line).0;
-    let text = line_text(rope, line);
+/// The offset in a line's `text` of the grapheme boundary at or before column `target`.
+fn offset_at_col(text: &str, target: DisplayCol, tab_width: usize) -> usize {
+    if is_plain(text) {
+        return target.0.min(text.len());
+    }
     let mut col = DisplayCol(0);
     for (off, g) in text.grapheme_indices(true) {
         let w = display_grapheme(g, col, tab_width).1;
         if col.0 + w > target.0 {
-            return ByteIdx(start + off);
+            return off;
         }
         col.0 += w;
     }
-    ByteIdx(start + text.len())
+    text.len()
+}
+
+/// The offset in a line's `text` of the grapheme boundary nearest column `target`.
+fn offset_near_col(text: &str, target: DisplayCol, tab_width: usize) -> usize {
+    if is_plain(text) {
+        return target.0.min(text.len());
+    }
+    let mut col = DisplayCol(0);
+    for (off, g) in text.grapheme_indices(true) {
+        let after = col.0 + display_grapheme(g, col, tab_width).1;
+        if after >= target.0 {
+            let take = after - target.0 < target.0 - col.0;
+            return off + if take { g.len() } else { 0 };
+        }
+        col.0 = after;
+    }
+    text.len()
 }
 
 /// Next grapheme boundary; a line break counts as one step.
@@ -455,5 +648,197 @@ mod tests {
         assert_eq!(w(15), Some((9, 15)), "line end");
         assert_eq!(w(16), Some((16, 17)));
         assert_eq!(word_at(&rope(""), ByteIdx(0)), None);
+    }
+
+    #[test]
+    fn line_cache_agrees_with_the_rope_functions() {
+        let rope = Rope::from_str("plain text\r\n\tx界\u{301}y\nlast");
+        for index in 0..line_count(&rope) {
+            let line = Line::new(&rope, index);
+            let (start, _, next) = line_bounds(&rope, index);
+            for p in start.0..=next.0.min(rope.len()) {
+                let p = ByteIdx(p);
+                if rope.floor_char_boundary(p.0) != p.0 || line_of(&rope, p) != index {
+                    continue;
+                }
+                assert!(line.contains(p), "line {index} at {p:?}");
+                assert_eq!(line.col(p, 4), display_col(&rope, p, 4), "line {index} at {p:?}");
+            }
+            for c in 0..14 {
+                let c = DisplayCol(c);
+                assert_eq!(line.byte_at_col(c, 4), byte_at_col(&rope, index, c, 4));
+            }
+        }
+        // The walker gives the same lines, stepping or seeking, by index or by position.
+        let text: String = (0..300).map(|i| format!("{i}\t界\r\n")).collect::<String>() + "\r\r\n";
+        let rope = Rope::from_str(&text);
+        let mut walk = LineWalker::new(&rope);
+        for index in [0, 1, 2, 5, 40, 41, 299, 300, 301, 302, 3] {
+            let l = walk.line(index);
+            assert_eq!(
+                (l.index, l.start(), l.end(), l.next()),
+                (
+                    index,
+                    line_start(&rope, index),
+                    line_end(&rope, index),
+                    line_bounds(&rope, index).2
+                )
+            );
+            assert_eq!(l.col(l.end(), 4), display_col(&rope, line_end(&rope, index), 4));
+        }
+        let mut walk = LineWalker::new(&rope);
+        for p in (0..=rope.len()).step_by(7).chain([rope.len(), 3, rope.len()]) {
+            let p = ByteIdx(rope.floor_char_boundary(p));
+            assert_eq!(walk.line_at(p).index, line_of(&rope, p), "at {p:?}");
+        }
+
+        // Plain ASCII takes the shortcut; the answers are the same.
+        let rope = Rope::from_str("abc");
+        assert_eq!(byte_at_col(&rope, 0, DisplayCol(9), 4), ByteIdx(3));
+        assert_eq!(display_col(&rope, ByteIdx(2), 4), DisplayCol(2));
+    }
+
+    #[test]
+    fn line_bounds_and_nearest_column() {
+        let rope = Rope::from_str("a\tb\r\n界x");
+        assert_eq!(line_bounds(&rope, 0), (ByteIdx(0), ByteIdx(3), ByteIdx(5)));
+        assert_eq!(line_bounds(&rope, 1), (ByteIdx(5), ByteIdx(9), ByteIdx(9)));
+        // The tab covers columns 1..4: column 2 is nearer its start, 3 nearer its end.
+        let near = |line, col| Line::new(&rope, line).byte_near_col(DisplayCol(col), 4).0;
+        assert_eq!([0, 1, 2, 3, 4, 5, 9].map(|c| near(0, c)), [0, 1, 1, 2, 2, 3, 3]);
+        // The wide char covers columns 0..2: a tie at 1 takes the start.
+        assert_eq!([0, 1, 2, 3, 4].map(|c| near(1, c)), [5, 5, 8, 9, 9]);
+    }
+
+    /// Seeded xorshift: `next(n)` is in `0..n`.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % n as u64) as usize
+        }
+    }
+
+    /// Reference column maths straight from `display_grapheme`, with no ASCII shortcut.
+    fn ref_cols(text: &str, tab_width: usize) -> Vec<(usize, usize, usize)> {
+        // (offset, column before, column after) per grapheme.
+        let mut col = 0;
+        let mut out = Vec::new();
+        for (off, g) in text.grapheme_indices(true) {
+            let w = display_grapheme(g, DisplayCol(col), tab_width).1;
+            out.push((off, col, col + w));
+            col += w;
+        }
+        out
+    }
+
+    fn ref_col(text: &str, off: usize, tab_width: usize) -> usize {
+        let g = ref_cols(text, tab_width);
+        g.iter()
+            .find(|x| x.0 >= off)
+            .map_or(g.last().map_or(0, |x| x.2), |x| x.1)
+    }
+
+    fn ref_at_col(text: &str, target: usize, tab_width: usize) -> usize {
+        let g = ref_cols(text, tab_width);
+        g.iter().find(|x| x.2 > target).map_or(text.len(), |x| x.0)
+    }
+
+    fn ref_near_col(text: &str, target: usize, tab_width: usize) -> usize {
+        for (off, before, after) in ref_cols(text, tab_width) {
+            if after >= target {
+                let len = text[off..].graphemes(true).next().unwrap().len();
+                return if after - target < target - before {
+                    off + len
+                } else {
+                    off
+                };
+            }
+        }
+        text.len()
+    }
+
+    /// `Line`, `LineWalker` and the printable-ASCII shortcut against a plain grapheme walk and the
+    /// rope's own line lookups, on random text: mostly-ASCII lines (the shortcut), tabs, wide
+    /// chars, combining marks, emoji, controls, and every kind of line break, over several chunks.
+    #[test]
+    fn line_and_walker_match_the_reference_on_random_text() {
+        const PIECES: [&str; 17] = [
+            "a", "b", "z", " ", "~", "\t", "界", "e\u{301}", "\u{301}", "😀", "\u{1}", "\u{7f}", "é", "\n", "\r\n",
+            "\r", "xy",
+        ];
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        for round in 0..24 {
+            let len = if round % 12 == 0 { 2500 } else { 1 + rng.next(60) };
+            let mut text = String::new();
+            while text.len() < len {
+                // Every other round leans to plain ASCII lines, so the shortcut is taken often.
+                let i = if round % 2 == 0 && rng.next(4) > 0 {
+                    [0, 1, 3, 4, 16, 13][rng.next(6)]
+                } else {
+                    rng.next(PIECES.len())
+                };
+                text.push_str(PIECES[i]);
+            }
+            let rope = Rope::from_str(&text);
+            let tab = [1, 2, 4, 8][rng.next(4)];
+            for index in 0..line_count(&rope) {
+                let line = Line::new(&rope, index);
+                assert_eq!(
+                    (line.start(), line.end()),
+                    (line_start(&rope, index), line_end(&rope, index))
+                );
+                let content = line_text(&rope, index);
+                let s = line.start().0;
+                for (off, _) in content.grapheme_indices(true).chain([(content.len(), "")]) {
+                    let want = DisplayCol(ref_col(&content, off, tab));
+                    assert_eq!(line.col(ByteIdx(s + off), tab), want, "{content:?} at {off}");
+                    assert_eq!(display_col(&rope, ByteIdx(s + off), tab), want, "{content:?} at {off}");
+                }
+                let width = ref_col(&content, content.len(), tab);
+                for c in 0..width + 3 {
+                    let at = ByteIdx(s + ref_at_col(&content, c, tab));
+                    assert_eq!(line.byte_at_col(DisplayCol(c), tab), at, "{content:?} col {c}");
+                    assert_eq!(byte_at_col(&rope, index, DisplayCol(c), tab), at, "{content:?} col {c}");
+                    let near = ByteIdx(s + ref_near_col(&content, c, tab));
+                    assert_eq!(line.byte_near_col(DisplayCol(c), tab), near, "{content:?} col {c}");
+                }
+            }
+            // The walker, by index (mostly forward, sometimes back or far ahead) and by position.
+            let count = line_count(&rope);
+            let mut walk = LineWalker::new(&rope);
+            let mut index = 0;
+            for _ in 0..60 {
+                index = match rng.next(10) {
+                    0 => rng.next(count),
+                    1 => (index + 40).min(count - 1),
+                    _ => (index + rng.next(3)).min(count - 1),
+                };
+                let l = walk.line(index);
+                let (start, end, next) = line_bounds(&rope, index);
+                assert_eq!((l.index, l.start(), l.end(), l.next()), (index, start, end, next));
+                assert_eq!(l.text, line_text(&rope, index));
+            }
+            let mut walk = LineWalker::new(&rope);
+            let mut p = 0;
+            for _ in 0..60 {
+                p = match rng.next(10) {
+                    0 => rng.next(rope.len() + 1),
+                    1 => p + 5000,
+                    _ => p + rng.next(20),
+                }
+                .min(rope.len());
+                let at = ByteIdx(rope.floor_char_boundary(p));
+                let l = walk.line_at(at);
+                let index = line_of(&rope, at);
+                assert_eq!(
+                    (l.index, l.start(), l.next()),
+                    (index, line_start(&rope, index), line_bounds(&rope, index).2)
+                );
+                assert!(l.contains(at));
+            }
+        }
     }
 }

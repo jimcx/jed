@@ -6,6 +6,7 @@ use ropey::Rope;
 
 use crate::buffer::change::{Assoc, ChangeSet};
 use crate::buffer::pos::{self, ByteIdx};
+use crate::column::ColumnBox;
 use crate::selection::{Selection, Selections};
 
 #[derive(Debug, Clone)]
@@ -23,6 +24,11 @@ pub struct View {
     /// Set by Cmd+D and friends: the next render shows this range, centred if it's off screen
     /// (VS Code's `revealRangeInCenterIfOutsideViewport`). Wins over `reveal_cursor`.
     pub reveal_range: Option<(ByteIdx, ByteIdx)>,
+    /// Set by add cursor above / below and column select: the next render scrolls just enough
+    /// to show this position (the newest cursor, not the primary). Wins over `reveal_cursor`.
+    pub reveal_pos: Option<ByteIdx>,
+    /// The last column (box) select, so the next one grows the same box.
+    pub column: Option<ColumnBox>,
     /// Cmd+U: earlier selection lists, separate from text undo.
     pub cursor_history: CursorHistory,
 }
@@ -116,6 +122,8 @@ impl View {
             width: 1,
             reveal_cursor: true,
             reveal_range: None,
+            reveal_pos: None,
+            column: None,
         }
     }
 
@@ -134,7 +142,12 @@ impl View {
 
     /// Scrolls just enough to show the primary cursor.
     pub fn scroll_to_cursor(&mut self, rope: &Rope, tab_width: usize) {
-        let head = self.selections.primary().head;
+        self.scroll_to(rope, self.selections.primary().head, tab_width);
+    }
+
+    /// Scrolls just enough to show `head` (clamped to the text: it may be from before an edit).
+    pub fn scroll_to(&mut self, rope: &Rope, head: ByteIdx, tab_width: usize) {
+        let head = ByteIdx(rope.floor_char_boundary(head.0.min(rope.len())));
         let line = pos::line_of(rope, head);
         if line < self.top_line {
             self.set_top_line(rope, line);
@@ -223,7 +236,7 @@ mod tests {
         );
         b.set_top_line(&buf.rope, 1);
 
-        edit::paste(&mut buf, &mut a, "zero\n", false);
+        edit::paste(&mut buf, &mut a, "zero\n", false, &[]);
         b.map_through(&buf.take_applied(), &buf.rope);
         let heads: Vec<usize> = b.selections.iter().map(|s| s.head.0).collect();
         assert_eq!(heads, vec![9, 18], "both cursors after the insert moved");

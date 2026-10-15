@@ -36,6 +36,28 @@ impl Motion {
     ];
 }
 
+/// Which way column (box) select moves the box's moving corner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ColumnMotion {
+    Left,
+    Right,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+}
+
+impl ColumnMotion {
+    pub const ALL: [ColumnMotion; 6] = [
+        ColumnMotion::Left,
+        ColumnMotion::Right,
+        ColumnMotion::Up,
+        ColumnMotion::Down,
+        ColumnMotion::PageUp,
+        ColumnMotion::PageDown,
+    ];
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Command {
     Move {
@@ -60,6 +82,20 @@ pub enum Command {
     SkipToNextMatch,
     /// Cmd+U: undo the last selection change (separate from text undo).
     CursorUndo,
+    /// Cmd+Alt+Up / Down: a copy of every cursor on the line above / below, same column.
+    AddCursorAbove,
+    AddCursorBelow,
+    /// Shift+Alt+I: a cursor at the end of every line each selection covers.
+    CursorsAtLineEnds,
+    /// Cmd+Shift+Alt+arrows / PageUp / PageDown: grow or shrink a box selection.
+    ColumnSelect(ColumnMotion),
+    /// Alt+Up / Down: move the lines of every selection.
+    MoveLinesUp,
+    MoveLinesDown,
+    /// Shift+Alt+Up / Down: duplicate the lines of every selection; the selection goes with
+    /// the lower copy when copying down.
+    CopyLinesUp,
+    CopyLinesDown,
     Undo,
     Redo,
     /// Copy / cut the selections, or the whole line when they're all empty.
@@ -180,6 +216,16 @@ impl Command {
             Command::SelectAllMatches,
             Command::SkipToNextMatch,
             Command::CursorUndo,
+            Command::AddCursorAbove,
+            Command::AddCursorBelow,
+            Command::CursorsAtLineEnds,
+        ]);
+        all.extend(ColumnMotion::ALL.map(Command::ColumnSelect));
+        all.extend([
+            Command::MoveLinesUp,
+            Command::MoveLinesDown,
+            Command::CopyLinesUp,
+            Command::CopyLinesDown,
             Command::Undo,
             Command::Redo,
             Command::Copy,
@@ -251,6 +297,14 @@ impl Command {
             Command::SelectAllMatches => "selection.selectAllMatches".into(),
             Command::SkipToNextMatch => "selection.moveToNextMatch".into(),
             Command::CursorUndo => "cursor.undo".into(),
+            Command::AddCursorAbove => "selection.addCursorAbove".into(),
+            Command::AddCursorBelow => "selection.addCursorBelow".into(),
+            Command::CursorsAtLineEnds => "selection.addCursorsToLineEnds".into(),
+            Command::ColumnSelect(m) => format!("selection.columnSelect{}", column_motion_name(*m)),
+            Command::MoveLinesUp => "edit.moveLinesUp".into(),
+            Command::MoveLinesDown => "edit.moveLinesDown".into(),
+            Command::CopyLinesUp => "edit.copyLinesUp".into(),
+            Command::CopyLinesDown => "edit.copyLinesDown".into(),
             Command::Undo => "edit.undo".into(),
             Command::Redo => "edit.redo".into(),
             Command::Copy => "edit.copy".into(),
@@ -343,6 +397,21 @@ impl Command {
             Command::SelectAllMatches => "Selection: Select All Occurrences of Find Match",
             Command::SkipToNextMatch => "Selection: Move Last Selection to Next Find Match",
             Command::CursorUndo => "Cursor: Cursor Undo",
+            Command::AddCursorAbove => "Selection: Add Cursor Above",
+            Command::AddCursorBelow => "Selection: Add Cursor Below",
+            Command::CursorsAtLineEnds => "Selection: Add Cursors to Line Ends",
+            Command::ColumnSelect(m) => {
+                let m = match m {
+                    ColumnMotion::PageUp => "Page Up",
+                    ColumnMotion::PageDown => "Page Down",
+                    m => column_motion_name(*m),
+                };
+                return format!("Selection: Column Select {m}");
+            }
+            Command::MoveLinesUp => "Edit: Move Line Up",
+            Command::MoveLinesDown => "Edit: Move Line Down",
+            Command::CopyLinesUp => "Edit: Copy Line Up",
+            Command::CopyLinesDown => "Edit: Copy Line Down",
             Command::Undo => "Edit: Undo",
             Command::Redo => "Edit: Redo",
             Command::Copy => "Edit: Copy",
@@ -390,6 +459,17 @@ impl Command {
             },
         };
         s.into()
+    }
+}
+
+fn column_motion_name(m: ColumnMotion) -> &'static str {
+    match m {
+        ColumnMotion::Left => "Left",
+        ColumnMotion::Right => "Right",
+        ColumnMotion::Up => "Up",
+        ColumnMotion::Down => "Down",
+        ColumnMotion::PageUp => "PageUp",
+        ColumnMotion::PageDown => "PageDown",
     }
 }
 
@@ -449,9 +529,17 @@ mod tests {
             Command::SelectAllMatches => 34,
             Command::SkipToNextMatch => 35,
             Command::CursorUndo => 36,
+            Command::AddCursorAbove => 37,
+            Command::AddCursorBelow => 38,
+            Command::CursorsAtLineEnds => 39,
+            Command::ColumnSelect(_) => 40,
+            Command::MoveLinesUp => 41,
+            Command::MoveLinesDown => 42,
+            Command::CopyLinesUp => 43,
+            Command::CopyLinesDown => 44,
         }
     }
-    const VARIANTS: u8 = 37;
+    const VARIANTS: u8 = 45;
 
     #[test]
     fn all_lists_every_variant() {
@@ -464,6 +552,7 @@ mod tests {
         assert_eq!(count(0), Motion::ALL.len() * 2);
         assert_eq!(count(25), ExplorerCommand::ALL.len());
         assert_eq!(count(32), PaletteCommand::ALL.len());
+        assert_eq!(count(40), ColumnMotion::ALL.len());
     }
 
     #[test]

@@ -25,6 +25,14 @@ map cmd+d
 map cmd+shift+l
 map cmd+alt+d
 map cmd+u
+map cmd+alt+up
+map cmd+alt+down
+map cmd+alt+shift+left
+map cmd+alt+shift+right
+map cmd+alt+shift+up
+map cmd+alt+shift+down
+map cmd+alt+shift+page_up
+map cmd+alt+shift+page_down
 map cmd+left
 map cmd+shift+left
 map cmd+right

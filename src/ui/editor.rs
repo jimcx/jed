@@ -40,6 +40,9 @@ pub fn render(
     if let Some((start, end)) = view.reveal_range.take() {
         view.reveal_in_center(rope, start, end, tab);
         view.reveal_cursor = false;
+    } else if let Some(p) = view.reveal_pos.take() {
+        view.scroll_to(rope, p, tab);
+        view.reveal_cursor = false;
     } else if view.reveal_cursor {
         view.scroll_to_cursor(rope, tab);
         view.reveal_cursor = false;
