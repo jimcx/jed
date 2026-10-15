@@ -227,6 +227,7 @@ impl App {
             }
         }
         self.trust = self.trust_store.evaluate(&self.workspace.root, &self.workspace.config);
+        self.servers_dirty = true;
         self.notify(Level::Info, format!("Reloaded {}", workspace::FILE_NAME));
         if associations_changed {
             self.load_associations();

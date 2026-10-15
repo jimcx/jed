@@ -100,6 +100,7 @@ impl App {
             view.cursor_history.reset(&view.selections);
         }
         let id = self.buffers.insert(buffer);
+        self.servers_dirty = true;
         self.group_mut().open(id, view);
         if focus {
             self.ui.focus = Focus::Editor;

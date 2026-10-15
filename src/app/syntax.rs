@@ -26,6 +26,7 @@ impl App {
                 buf.syntax.set_language(lang);
             }
         }
+        self.servers_dirty = true;
     }
 
     /// Compiles `.workspace`'s `[files] associations`, reporting entries it can't use.

@@ -70,6 +70,74 @@ pub fn bytes_in_rev(rope: &Rope, start: usize, end: usize) -> impl Iterator<Item
     })
 }
 
+/// The unit of an LSP position's `character`, negotiated at `initialize` (`positionEncoding`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum PosEncoding {
+    /// Bytes: no conversion beyond the line lookup.
+    Utf8,
+    /// UTF-16 code units: LSP's default when a server names no encoding.
+    #[default]
+    Utf16,
+}
+
+/// An LSP position: 0-based line (LSP's line breaks are LF, CRLF and lone CR, as `LINE_TYPE`)
+/// and the column in the server's `PosEncoding`.
+#[cfg_attr(not(test), allow(dead_code))] // document sync (9b) converts with it
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct LspPos {
+    pub line: u32,
+    pub character: u32,
+}
+
+/// The LSP position of `pos`.
+#[cfg_attr(not(test), allow(dead_code))] // first used by document sync (9b)
+pub fn lsp_pos(rope: &Rope, pos: ByteIdx, encoding: PosEncoding) -> LspPos {
+    let line = line_of(rope, pos);
+    let start = line_start(rope, line).0;
+    let character = match encoding {
+        PosEncoding::Utf8 => pos.0 - start,
+        PosEncoding::Utf16 => rope
+            .slice(start..pos.0)
+            .chunks()
+            .map(|c| c.chars().map(char::len_utf16).sum::<usize>())
+            .sum(),
+    };
+    LspPos {
+        line: line as u32,
+        character: character as u32,
+    }
+}
+
+/// The byte offset of an LSP position, clamped as the protocol says: a line past the end is the
+/// text's end, a column past the line's content is its end (before the line break). A column
+/// inside a char (a UTF-8 byte or the second half of a surrogate pair) rounds down to its start.
+#[cfg_attr(not(test), allow(dead_code))] // first used by diagnostics (9c)
+pub fn from_lsp_pos(rope: &Rope, pos: LspPos, encoding: PosEncoding) -> ByteIdx {
+    let line = pos.line as usize;
+    if line >= line_count(rope) {
+        return ByteIdx(rope.len());
+    }
+    let (start, end, _) = line_bounds(rope, line);
+    let want = pos.character as usize;
+    match encoding {
+        PosEncoding::Utf8 => ByteIdx(rope.floor_char_boundary((start.0 + want).min(end.0))),
+        PosEncoding::Utf16 => {
+            let mut units = 0;
+            let mut at = start.0;
+            for chunk in rope.slice(start.0..end.0).chunks() {
+                for c in chunk.chars() {
+                    units += c.len_utf16();
+                    if units > want {
+                        return ByteIdx(at);
+                    }
+                    at += c.len_utf8();
+                }
+            }
+            ByteIdx(at)
+        }
+    }
+}
+
 /// Screen column: tabs expanded, wide chars count 2, a grapheme cluster is one unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct DisplayCol(pub usize);
@@ -1033,5 +1101,39 @@ mod tests {
         assert_eq!(peek.line_indent(ByteIdx(at("x").0 + 1), 100).as_deref(), Some("  \t  "));
         assert_eq!(peek.line_indent(at("x"), 4), None);
         assert_eq!(peek.line_indent(at("x"), 5).as_deref(), Some("  \t  "));
+    }
+
+    #[test]
+    fn lsp_positions_in_both_encodings() {
+        // "é" is 2 bytes / 1 unit, "😀" 4 bytes / 2 units; CRLF and a lone CR end lines.
+        let text = "aé😀b\r\nx\ry";
+        let rope = Rope::from_str(text);
+        let at = |s: &str| ByteIdx(text.find(s).unwrap());
+        let p = |line, character| LspPos { line, character };
+        use PosEncoding::*;
+        assert_eq!(lsp_pos(&rope, at("b"), Utf8), p(0, 7));
+        assert_eq!(lsp_pos(&rope, at("b"), Utf16), p(0, 4));
+        assert_eq!(lsp_pos(&rope, at("😀"), Utf16), p(0, 2));
+        assert_eq!(lsp_pos(&rope, at("x"), Utf16), p(1, 0));
+        assert_eq!(lsp_pos(&rope, at("y"), Utf8), p(2, 0));
+        assert_eq!(lsp_pos(&rope, ByteIdx(text.len()), Utf16), p(2, 1));
+        for enc in [Utf8, Utf16] {
+            for (i, _) in text.char_indices() {
+                let pos = ByteIdx(i);
+                if text[..i].ends_with('\r') && text[i..].starts_with('\n') {
+                    continue; // inside CRLF: not a cursor position
+                }
+                assert_eq!(
+                    from_lsp_pos(&rope, lsp_pos(&rope, pos, enc), enc),
+                    pos,
+                    "{enc:?} at {i}"
+                );
+            }
+        }
+        // Clamping: past the line's content, past the last line, inside a char.
+        assert_eq!(from_lsp_pos(&rope, p(0, 99), Utf16), at("\r\n"));
+        assert_eq!(from_lsp_pos(&rope, p(9, 0), Utf8), ByteIdx(text.len()));
+        assert_eq!(from_lsp_pos(&rope, p(0, 2), Utf8), at("é"));
+        assert_eq!(from_lsp_pos(&rope, p(0, 3), Utf16), at("😀"), "inside a surrogate pair");
     }
 }

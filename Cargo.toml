@@ -12,14 +12,16 @@ globset = "0.4.20"
 grep-matcher = "0.1.9"
 grep-searcher = "0.1.17"
 ignore = "0.4.33"
+lsp-types = "0.97.0"
 notify = "8.2.0"
 nucleo = "0.5.0"
 ratatui = "0.30.2"
 regex = "1.13.1"
 ropey = { version = "=2.0.0-beta.1", features = ["metric_lines_lf"] }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 sha2 = "0.11.1"
-tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "io-util"] }
 toml = "1.1.8"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"

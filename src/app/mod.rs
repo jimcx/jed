@@ -3,6 +3,7 @@
 mod cursors;
 mod files;
 mod find;
+mod lsp;
 mod mouse;
 mod palette;
 mod prompt;
@@ -140,6 +141,8 @@ enum AppEvent {
         buffer: BufferId,
         parsed: crate::syntax::Parsed,
     },
+    /// From a language server's task.
+    Lsp(crate::lsp::Event),
 }
 
 /// The file to open at startup, with an optional 1-based line and column.
@@ -211,6 +214,10 @@ pub struct App {
     search_generation: u64,
     /// `.workspace` `[files] associations`, compiled.
     associations: crate::syntax::Associations,
+    /// Language servers.
+    pub lsp: crate::lsp::Manager,
+    /// Open files' languages, the config or trust changed: `sync_servers` has work to do.
+    servers_dirty: bool,
     /// The last command `execute` ran, for tests.
     #[cfg(test)]
     pub last_command: Option<Command>,
@@ -274,6 +281,12 @@ impl App {
             search_task: None,
             search_generation: 0,
             associations: crate::syntax::Associations::default(),
+            // Tests run no servers unless they plug in a launcher (`lsp.set_launcher`).
+            #[cfg(not(test))]
+            lsp: crate::lsp::Manager::new(Some(Arc::new(crate::lsp::ProcessLauncher))),
+            #[cfg(test)]
+            lsp: crate::lsp::Manager::new(None),
+            servers_dirty: true,
             #[cfg(test)]
             last_command: None,
         };
@@ -297,8 +310,12 @@ impl App {
         app
     }
 
-    /// Background work that needs the runtime: watching and the first listing.
+    /// Background work that needs the runtime: watching, the first listing, language servers.
     fn start(&mut self) {
+        let tx = self.tx.clone();
+        self.lsp.start(Arc::new(move |ev| {
+            let _ = tx.send(AppEvent::Lsp(ev));
+        }));
         let tx = self.tx.clone();
         match watcher::start(&self.workspace.root, move |paths| {
             let _ = tx.send(AppEvent::FsChanged(paths));
@@ -310,6 +327,7 @@ impl App {
         self.request_listing(root);
         self.reveal_active();
         self.sync_syntax();
+        self.sync_servers();
     }
 
     pub async fn run(&mut self, terminal: &mut Term) -> anyhow::Result<()> {
@@ -317,10 +335,12 @@ impl App {
         let mut events = EventStream::new();
         loop {
             if self.should_quit {
+                self.shutdown_servers().await;
                 return Ok(());
             }
             // Once per turn, so a burst of keys is one incremental re-parse.
             self.sync_syntax();
+            self.sync_servers();
             if self.needs_redraw {
                 let t = Instant::now();
                 terminal.draw(|f| ui::render(f, self))?;
@@ -333,7 +353,10 @@ impl App {
             tokio::select! {
                 ev = events.next() => match ev {
                     Some(ev) => self.handle_event(ev?),
-                    None => return Ok(()),
+                    None => {
+                        self.shutdown_servers().await;
+                        return Ok(());
+                    }
                 },
                 Some(msg) = self.rx.recv() => self.handle_app_event(msg),
                 t = timer => self.on_timer(t),
@@ -702,6 +725,7 @@ impl App {
             },
             AppEvent::SearchResults(batch) => self.search_results(batch),
             AppEvent::Parsed { buffer, parsed } => self.parsed(buffer, parsed),
+            AppEvent::Lsp(ev) => self.lsp_event(ev),
         }
         self.refresh_find();
     }
@@ -776,6 +800,7 @@ impl App {
             self.handle_app_event(msg);
         }
         self.sync_syntax();
+        self.sync_servers();
     }
 
     /// Handles background results (and the Search view's debounce) until `done` holds; false after 5 s.
@@ -785,6 +810,7 @@ impl App {
         loop {
             // As the event loop does each turn.
             self.sync_syntax();
+            self.sync_servers();
             if done(self) {
                 break;
             }

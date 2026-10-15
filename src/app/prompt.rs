@@ -163,6 +163,7 @@ impl App {
 
     fn decide_trust(&mut self, trusted: bool) {
         self.trust = if trusted { Trust::Trusted } else { Trust::Restricted };
+        self.servers_dirty = true;
         self.trust_store
             .record(&self.workspace.root, &self.workspace.config, trusted);
         let store = self.trust_store.clone();

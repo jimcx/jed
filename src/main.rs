@@ -15,6 +15,7 @@ mod indent;
 mod layout;
 mod lines;
 mod logging;
+mod lsp;
 #[cfg(test)]
 mod milestone2_tests;
 #[cfg(test)]
@@ -29,6 +30,8 @@ mod milestone6_tests;
 mod milestone7_tests;
 #[cfg(test)]
 mod milestone8_tests;
+#[cfg(test)]
+mod milestone9_tests;
 #[cfg(test)]
 mod milestone_tests;
 mod multicursor;
