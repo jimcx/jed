@@ -12,6 +12,7 @@
 mod config;
 mod highlight;
 mod language;
+mod tokens;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,6 +24,7 @@ use tree_sitter::{InputEdit, ParseOptions, Parser, Point, Tree};
 pub use config::{AutoPair, LanguageConfig, is_quote};
 pub use highlight::{KEYS, Span};
 pub use language::{Associations, Language, detect};
+pub use tokens::Tokens;
 
 use crate::buffer::change::ChangeSet;
 use crate::buffer::pos::{self, ByteIdx};
@@ -159,9 +161,13 @@ impl Syntax {
     }
 
     /// The parse tree, only while it matches the text exactly.
-    #[cfg_attr(not(test), allow(dead_code))] // drawing reads `spans`, auto-close `scope_before`
     pub fn tree(&self) -> Option<&Tree> {
         current(&self.state)
+    }
+
+    /// A walk over the current tree's tokens (auto-indent, bracket matching); `None` without one.
+    pub fn tokens(&self) -> Option<Tokens<'_>> {
+        current(&self.state).map(Tokens::new)
     }
 
     /// What the char before `pos` is part of: a string, a comment or code (auto-close's `notIn`,

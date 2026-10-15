@@ -16,7 +16,8 @@
 //! - Delete: Backspace between an auto-inserted empty pair deletes both.
 //!
 //! Not done (VS Code has them): a bracket isn't held back by an unmatched closing bracket after
-//! the cursor (`hasUnmatchedClosingBracketAfter`, needs bracket matching); no "neutral char"
+//! the cursor (`hasUnmatchedClosingBracketAfter`; `brackets::match_at` could answer it, but at a
+//! tree descent per cursor, too slow at 60k cursors); no "neutral char"
 //! re-tokenizing probe for quotes; without a current tree (a parse running, a file past the size
 //! limit) `notIn` is skipped, where VS Code would not auto-close a line it can't tokenize cheaply.
 
@@ -485,12 +486,14 @@ pub(crate) mod tests {
             "x = \"\\\"|\";",
             "not after a backslash"
         );
-        // Enter inside makes the pair span lines: VS Code stops tracking it.
+        // Enter inside makes the pair span lines (auto-indent puts the closer on a line of its
+        // own): VS Code stops tracking it, so `}` is typed (and outdented), not typed over.
         let (mut b, mut v) = setup(Language::Cpp, "f|", false);
         typed(&mut b, &mut v, "{");
         run(&mut b, &mut v, Command::InsertNewline);
+        assert_eq!(show(&b, &v), "f{\n    |\n}");
         typed(&mut b, &mut v, "}");
-        assert_eq!(show(&b, &v), "f{\n}|}");
+        assert_eq!(show(&b, &v), "f{\n}|\n}");
         // Typing inside (also a space) keeps it.
         assert_eq!(after(Language::Cpp, "f|", "{ x }"), "f{ x }|");
     }

@@ -34,6 +34,8 @@ pub struct View {
     pub cursor_history: CursorHistory,
     /// Closers this view auto-inserted that typing can still step over (`pairs`).
     pub auto_closed: AutoClosed,
+    /// The brackets drawn highlighted, cached between frames (`brackets::Matches`).
+    pub brackets: crate::brackets::Matches,
 }
 
 /// VS Code's cursor undo stack. Every selection change that isn't part of a text change pushes
@@ -128,6 +130,7 @@ impl View {
             reveal_pos: None,
             column: None,
             auto_closed: AutoClosed::default(),
+            brackets: Default::default(),
         }
     }
 

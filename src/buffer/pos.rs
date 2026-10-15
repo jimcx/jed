@@ -54,6 +54,22 @@ pub fn bytes_in(rope: &Rope, start: usize, end: usize) -> impl Iterator<Item = &
     })
 }
 
+/// `bytes_in` backwards: the chunks of `start..end` (clamped to the text) from the last to the
+/// first (bracket matching scans back from a closing bracket).
+pub fn bytes_in_rev(rope: &Rope, start: usize, end: usize) -> impl Iterator<Item = &[u8]> {
+    let mut at = end.min(rope.len());
+    std::iter::from_fn(move || {
+        if at <= start {
+            return None;
+        }
+        let (chunk, chunk_start) = rope.chunk(at - 1);
+        let from = chunk_start.max(start);
+        let bytes = &chunk.as_bytes()[from - chunk_start..at - chunk_start];
+        at = from;
+        Some(bytes)
+    })
+}
+
 /// Screen column: tabs expanded, wide chars count 2, a grapheme cluster is one unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct DisplayCol(pub usize);
@@ -280,6 +296,45 @@ impl<'a> Peek<'a> {
         }
         let (chunk, off) = self.at(pos.0 - 1);
         chunk[..=off].chars().next_back()
+    }
+
+    pub fn byte(&mut self, at: usize) -> u8 {
+        let (chunk, off) = self.at(at);
+        chunk.as_bytes()[off]
+    }
+
+    /// The start of `pos`'s line if only spaces and tabs come before `pos` on it, else `None`.
+    /// Looks back only over those blanks (no line lookup: a closing bracket typed at 60k cursors).
+    pub fn blank_line_start(&mut self, pos: ByteIdx) -> Option<ByteIdx> {
+        let mut i = pos.0;
+        while i > 0 {
+            match self.byte(i - 1) {
+                b' ' | b'\t' => i -= 1,
+                b'\n' | b'\r' => break,
+                _ => return None,
+            }
+        }
+        Some(ByteIdx(i))
+    }
+
+    /// The leading spaces and tabs of `pos`'s line (up to `pos`), looking back at most `limit`
+    /// bytes for the line's start: `None` if it is further.
+    pub fn line_indent(&mut self, pos: ByteIdx, limit: usize) -> Option<String> {
+        let mut start = pos.0;
+        while start > 0 && !matches!(self.byte(start - 1), b'\n' | b'\r') {
+            if pos.0 - start >= limit {
+                return None;
+            }
+            start -= 1;
+        }
+        let mut indent = String::new();
+        for i in start..pos.0 {
+            match self.byte(i) {
+                b @ (b' ' | b'\t') => indent.push(b as char),
+                _ => break,
+            }
+        }
+        Some(indent)
     }
 }
 
@@ -947,5 +1002,36 @@ mod tests {
         for &i in bounds.iter().rev() {
             check(&mut peek, i);
         }
+    }
+
+    #[test]
+    fn peek_blank_line_start_and_line_indent() {
+        let text = "a\n  \t  x\r\n\t y\rz\n    ";
+        let rope = Rope::from_str(text);
+        let mut peek = Peek::new(&rope);
+        let at = |s: &str| ByteIdx(text.find(s).unwrap());
+        assert_eq!(peek.blank_line_start(at("x")), Some(at("  \t")));
+        assert_eq!(peek.blank_line_start(ByteIdx(at("x").0 - 2)), Some(at("  \t")));
+        assert_eq!(peek.blank_line_start(ByteIdx(at("x").0 + 1)), None, "after x");
+        assert_eq!(
+            peek.blank_line_start(at("y")),
+            Some(ByteIdx(at("y").0 - 2)),
+            "after CRLF"
+        );
+        assert_eq!(peek.blank_line_start(at("z")), Some(at("z")), "after a lone CR");
+        assert_eq!(peek.blank_line_start(ByteIdx(0)), Some(ByteIdx(0)));
+        assert_eq!(peek.blank_line_start(ByteIdx(1)), None);
+        assert_eq!(
+            peek.blank_line_start(ByteIdx(text.len())),
+            Some(ByteIdx(text.len() - 4))
+        );
+        assert_eq!(peek.line_indent(at("x"), 100).as_deref(), Some("  \t  "));
+        assert_eq!(peek.line_indent(at("y"), 100).as_deref(), Some("\t "));
+        assert_eq!(peek.line_indent(at("a"), 100).as_deref(), Some(""));
+        assert_eq!(peek.line_indent(ByteIdx(text.len()), 100).as_deref(), Some("    "));
+        // The indentation stops at the first other char, the line start is looked for `limit` back.
+        assert_eq!(peek.line_indent(ByteIdx(at("x").0 + 1), 100).as_deref(), Some("  \t  "));
+        assert_eq!(peek.line_indent(at("x"), 4), None);
+        assert_eq!(peek.line_indent(at("x"), 5).as_deref(), Some("  \t  "));
     }
 }

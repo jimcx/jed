@@ -128,6 +128,15 @@ impl LanguageConfig {
         self.pairs.iter().any(|p| p.close == c)
     }
 
+    /// The bracket pairs (the pairs that aren't quotes): what auto-indent and bracket matching
+    /// use (VS Code's `brackets`, the same three in every language red knows).
+    pub fn brackets(&self) -> impl Iterator<Item = (char, char)> + '_ {
+        self.pairs
+            .iter()
+            .filter(|p| !is_quote(p.open))
+            .map(|p| (p.open, p.close))
+    }
+
     pub fn surround_for(&self, c: char) -> Option<char> {
         self.surround.iter().find(|s| s.0 == c).map(|s| s.1)
     }

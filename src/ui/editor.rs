@@ -1,4 +1,5 @@
-//! The text area: gutter, text (syntax colours), selections, find matches, cursors.
+//! The text area: gutter, text (syntax colours), matched brackets, selections, find matches,
+//! cursors.
 
 use std::collections::HashSet;
 
@@ -69,10 +70,33 @@ pub fn render(
     let gutter = theme.get("gutter");
     let gutter_active = theme.get("gutter.active");
 
+    let primary = view.selections.primary().head;
+    let cursor_line = pos::line_of(rope, primary);
+    let last_line = (view.top_line() + view.height).min(total - 1);
+    // Only the selections on screen: there may be tens of thousands.
+    let sels = view
+        .selections
+        .overlapping(pos::line_start(rope, view.top_line()), pos::line_end(rope, last_line));
+    // Matched brackets at the cursors on screen (cached in the view: recomputed only when the
+    // text or those cursors change).
+    let bracket_marks: Vec<ByteIdx> = if s.match_brackets {
+        let heads: Vec<ByteIdx> = sels.iter().map(|s| s.head).collect();
+        view.brackets.get(rope, &buf.syntax, buf.revision(), &heads).to_vec()
+    } else {
+        Vec::new()
+    };
+    let bracket_match = theme.get("editor.bracketMatch");
+    let mut bi = 0;
+    let mut is_bracket = |b: ByteIdx| {
+        while bi < bracket_marks.len() && bracket_marks[bi] < b {
+            bi += 1;
+        }
+        bracket_marks.get(bi) == Some(&b)
+    };
+
     // Syntax colours: the token's foreground, under selection / find backgrounds. From the
     // buffer's highlight cache (no query unless the tree changed or the view left the cached lines).
     let token_styles: Vec<_> = crate::syntax::KEYS.iter().map(|k| theme.get(k)).collect();
-    let last_line = (view.top_line() + view.height).min(total - 1);
     let spans = buf.syntax.spans(rope, view.top_line()..last_line + 1);
     let mut ki = 0;
     let mut token_at = |b: ByteIdx| {
@@ -85,12 +109,6 @@ pub fn render(
             .map(|s| token_styles[s.highlight.index()])
     };
 
-    let primary = view.selections.primary().head;
-    let cursor_line = pos::line_of(rope, primary);
-    // Only the selections on screen: there may be tens of thousands.
-    let sels = view
-        .selections
-        .overlapping(pos::line_start(rope, view.top_line()), pos::line_end(rope, last_line));
     let secondary: HashSet<ByteIdx> = sels.iter().map(|s| s.head).filter(|h| *h != primary).collect();
     // Selections are sorted and bytes are visited in order, so one index walks them.
     let mut si = 0;
@@ -157,6 +175,9 @@ pub fn render(
             let mut style = row_style;
             if let Some(token) = token_at(b) {
                 style = style.patch(token);
+            }
+            if is_bracket(b) {
+                style = style.patch(bracket_match);
             }
             let found = in_match(b);
             if found.is_some() {

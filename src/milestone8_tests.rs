@@ -35,6 +35,17 @@
 //! while the other keys apply; "Preferences: Open User Settings" creates the directory and file
 //! from the template, or opens an existing file as it is.
 //!
+//! 8e, auto-indent and bracket matching: typing a C++ function with Enter and `}` (auto-close
+//! off, then on: Enter between `{}` / `()` puts the closer on its own line) gives exactly indented
+//! text, and the Enter groups with the typing in one undo step; Python indents after `if …:` (a
+//! trailing comment skipped), dedents after `return`, and `else:` / an `else:` typed deeper go back
+//! to their `if`; the brackets next to the cursor and their partners are drawn with
+//! `editor.bracketMatch` (not one in a string), at every cursor, and not when the cursor leaves
+//! them or `match_brackets` is off; `auto_indent` / `match_brackets` off in `settings.toml` (a plain
+//! line break, no outdent, no highlight) and back on from a `.workspace` reload. At ~65k cursors
+//! (1 MB) Enter (with the tree) and the outdenting `}` stay within M6's 80 ms line-command budget;
+//! moving and typing in the 1 MB generated C++ file with bracket highlights keeps frames < 16 ms.
+//!
 //! Perf (asserted in release only: `cargo test --release milestone -- --nocapture`): on a
 //! generated 1 MB C++ file the first parse runs in the background, and a keystroke plus its
 //! incremental re-parse plus a frame stays well inside a 16 ms frame, also at 63k cursors. With
@@ -1166,3 +1177,253 @@ async fn milestone_8_open_user_settings() {
     assert!(app.settle(|a| a.active_buffer().is_some_and(|b| b.path == path)).await);
     assert_eq!(text(&app), "[settings]\ntab_width = 3\n");
 }
+
+// ---- 8e: auto-indent and bracket matching ----
+
+/// Enter, or a typed closing bracket, at the 1 MB file's ~80k cursors plus a frame (release;
+/// M6's line commands have 80 ms).
+const INDENT_BUDGET: Duration = Duration::from_millis(80);
+
+/// The background of the cell `offset` columns into the first place `needle` is drawn.
+fn bg_of(term: &Terminal<TestBackend>, needle: &str, offset: u16) -> Option<ratatui::style::Color> {
+    let (x, y) = find_cell(term, needle).unwrap_or_else(|| panic!("{needle:?} not on screen"));
+    Some(term.backend().buffer()[(x + offset, y)].bg)
+}
+
+/// How many cells on screen have the bracket highlight's background.
+fn bracket_cells(term: &Terminal<TestBackend>, app: &App) -> usize {
+    let want = app.theme.get("editor.bracketMatch").bg.unwrap();
+    term.backend()
+        .buffer()
+        .content()
+        .iter()
+        .filter(|c| c.bg == want)
+        .count()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_8_auto_indent_cpp_and_python() {
+    let dir = tempfile::tempdir().unwrap();
+    // Typed with auto-close off, every bracket by hand: Enter indents after `{`, `}` outdents.
+    let (mut app, _) = open_app(&dir, "[settings]\nauto_close_pairs = false\n", "a.cpp", "");
+    for line in [
+        "int f(int x) {",
+        "if (x) {",
+        "return g(1,",
+        "2);",
+        "}",
+        "return 0;",
+        "}",
+    ] {
+        app.type_text(line);
+        app.press(K::Enter, M::NONE);
+        app.pump();
+    }
+    assert_eq!(
+        text(&app),
+        "int f(int x) {\n    if (x) {\n        return g(1,\n            2);\n    }\n    return 0;\n}\n"
+    );
+    // Enter and its indentation group with the typing around it, as typing does.
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), "");
+
+    // With auto-close: `{` closes, Enter between the pair puts `}` on its own line.
+    let (mut app, _) = open_app(&dir, "", "b.cpp", "");
+    app.type_text("void g() {");
+    app.press(K::Enter, M::NONE);
+    app.type_text("h(");
+    app.press(K::Enter, M::NONE);
+    app.type_text("1");
+    assert_eq!(text(&app), "void g() {\n    h(\n        1\n    )\n}");
+    assert_eq!(sels(&app), vec![(27, 27)]);
+
+    // Python: a level after `if …:`, one less after `return`, `else:` back to its `if`.
+    let (mut app, _) = open_app(&dir, "", "a.py", "");
+    assert!(app.settle(parsed).await);
+    for line in ["def f(x):", "if x:  # yes", "return 1", "y = 2", "else"] {
+        app.type_text(line);
+        if line != "else" {
+            app.press(K::Enter, M::NONE);
+        }
+        app.pump();
+    }
+    app.type_text(":");
+    assert_eq!(
+        text(&app),
+        "def f(x):\n    if x:  # yes\n        return 1\n    y = 2\n    else:"
+    );
+    let (mut app, _) = open_app(&dir, "", "b.py", "def f(x):\n    if x:\n        y = 1\n");
+    app.press(K::End, cmd());
+    app.type_text("        else:");
+    assert_eq!(text(&app), "def f(x):\n    if x:\n        y = 1\n    else:");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_8_bracket_matching() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "int f() {\n    return g(\"}\");\n}\n";
+    let (mut app, _) = open_app(&dir, "", "a.cpp", src);
+    assert!(app.settle(parsed).await);
+    let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
+    let hl = app.theme.get("editor.bracketMatch").bg;
+    // Before the `{`: it and the `}` on line 3 (not the one in the string).
+    set_cursors(&mut app, &[8]);
+    draw(&mut term, &mut app);
+    assert_eq!(bg_of(&term, "int f() {", 8), hl);
+    let (x, y) = find_cell(&term, "int f() {").unwrap();
+    let close = &term.backend().buffer()[(x, y + 2)];
+    assert_eq!((close.symbol(), Some(close.bg)), ("}", hl));
+    assert_eq!(bracket_cells(&term, &app), 2);
+    // After the `(` of `g(`: that pair.
+    set_cursors(&mut app, &[src.find("g(").unwrap() + 2]);
+    draw(&mut term, &mut app);
+    assert_eq!(bg_of(&term, "g(\"", 1), hl);
+    assert_eq!(bg_of(&term, "\");", 1), hl);
+    assert_eq!(bracket_cells(&term, &app), 2);
+    // Away from brackets: none.
+    app.press(K::Home, M::NONE);
+    draw(&mut term, &mut app);
+    assert_eq!(bracket_cells(&term, &app), 0);
+    // Every cursor gets its pair.
+    set_cursors(&mut app, &[8, src.find("g(").unwrap() + 2]);
+    draw(&mut term, &mut app);
+    assert_eq!(bracket_cells(&term, &app), 4);
+
+    // Off in `.workspace`.
+    let (mut app, _) = open_app(&dir, "[settings]\nmatch_brackets = false\n", "b.cpp", src);
+    set_cursors(&mut app, &[8]);
+    draw(&mut term, &mut app);
+    assert_eq!(bracket_cells(&term, &app), 0);
+}
+
+/// Both settings off in the user's `settings.toml`, back on from `.workspace` (live reload).
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_8_auto_indent_and_match_brackets_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let user = "[settings]\nauto_indent = false\nmatch_brackets = false\n";
+    let (mut app, root, _) = user_app(&dir, Some(user), "", "a.cpp", "  f() {}\n");
+    assert!(!app.settings.auto_indent && !app.settings.match_brackets);
+    let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
+    set_cursors(&mut app, &[7]);
+    draw(&mut term, &mut app);
+    assert_eq!(bracket_cells(&term, &app), 0);
+    app.press(K::Enter, M::NONE);
+    assert_eq!(text(&app), "  f() {\n}\n", "a plain line break");
+    app.type_text("  }");
+    assert_eq!(text(&app), "  f() {\n  }}\n", "no outdent");
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), "  f() {}\n");
+
+    fs::write(
+        root.join(".workspace"),
+        "[settings]\nauto_indent = true\nmatch_brackets = true\n",
+    )
+    .unwrap();
+    assert!(
+        app.settle(|a| a.settings.auto_indent && a.settings.match_brackets)
+            .await
+    );
+    set_cursors(&mut app, &[7]);
+    draw(&mut term, &mut app);
+    assert_eq!(bracket_cells(&term, &app), 2);
+    app.press(K::Enter, M::NONE);
+    assert_eq!(text(&app), "  f() {\n      \n  }\n");
+}
+
+/// Enter between `{}` at every cursor of a 1 MB C++ file (~80k cursors, with a current tree),
+/// then `}` at all of them (outdent, the tree dropped by the wide edit), within M6's 80 ms line
+/// command budget; and moving / typing in the 1 MB generated C++ file with bracket matching
+/// stays within a 16 ms frame (release).
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_8_auto_indent_and_bracket_matching_on_one_mb() {
+    let release = !cfg!(debug_assertions);
+    let size = if release { 1_000_000 } else { 250_000 };
+    let mut original = String::new();
+    let mut i = 0;
+    while original.len() < size {
+        original.push_str(&format!("void function_{i}() {{}} // {{}}\n"));
+        i += 1;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = open_app(&dir, "", "big.cpp", &original);
+    assert!(app.settle(parsed).await);
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    draw(&mut term, &mut app);
+    // Select the first `{}`, then every `{}`; cursors between each pair.
+    set_cursors(&mut app, &[original.find('{').unwrap()]);
+    app.press(K::Right, M::SHIFT);
+    app.press(K::Right, M::SHIFT);
+    app.press(K::Char('l'), cmd() | M::SHIFT);
+    app.press(K::Left, M::NONE);
+    app.press(K::Right, M::NONE);
+    let count = sels(&app).len();
+    assert_eq!(count, 2 * i);
+    let bound = if release { INDENT_BUDGET } else { LINE_DEBUG_BOUND };
+    let mut timed = |app: &mut App, what: &str, key: K| {
+        let t = Instant::now();
+        app.press(key, M::NONE);
+        app.pump();
+        draw(&mut term, app);
+        let took = t.elapsed();
+        println!("{what} at {count} cursors: {took:?}");
+        assert!(took < bound, "{what} too slow: {took:?}");
+    };
+    timed(&mut app, "Enter (with the tree)", K::Enter);
+    assert!(
+        text(&app).starts_with("void function_0() {\n    \n} // {\n}\nvoid function_1() {\n    \n} // {\n}\n"),
+        "between a pair in code, a plain break in the comment"
+    );
+    assert_eq!(sels(&app).len(), count);
+    timed(&mut app, "typing } (outdent, no tree)", K::Char('}'));
+    assert!(
+        text(&app).starts_with("void function_0() {\n}\n} // {\n}}\n"),
+        "{:?}",
+        &text(&app)[..60]
+    );
+
+    // Bracket matching while moving and typing in the generated 1 MB C++ file.
+    let text = generated_cpp(size);
+    let (mut app, _) = open_app(&dir, "", "gen.cpp", &text);
+    assert!(app.settle(parsed).await);
+    // A `for (…) {` line in the middle: brackets on most lines around it.
+    let line = text
+        .lines()
+        .enumerate()
+        .skip(text.lines().count() / 2)
+        .find(|(_, l)| l.contains("for (auto x"))
+        .unwrap()
+        .0;
+    app.press(K::Char('g'), M::CONTROL);
+    app.type_text(&(line + 1).to_string());
+    app.press(K::Enter, M::NONE);
+    app.press(K::End, M::NONE);
+    draw(&mut term, &mut app);
+    let (mut worst, mut highlighted) = (Duration::ZERO, 0);
+    let keys = [K::Left; 40]
+        .into_iter()
+        .chain([K::Down; 20])
+        .chain("x[]".chars().map(K::Char));
+    for key in keys {
+        let t = Instant::now();
+        app.press(key, M::NONE);
+        app.pump();
+        draw(&mut term, &mut app);
+        worst = worst.max(t.elapsed());
+        if bracket_cells(&term, &app) > 0 {
+            highlighted += 1;
+        }
+        if !parsed(&app) {
+            assert!(app.settle(parsed).await);
+        }
+    }
+    println!("bracket matching: worst frame {worst:?}, {highlighted} frames with a highlight");
+    assert!(highlighted > 5);
+    if release {
+        assert!(worst < FRAME, "a frame took {worst:?}");
+    } else {
+        assert!(worst < FRAME_DEBUG_BOUND, "a frame took {worst:?}");
+    }
+}
+
+/// Debug builds only catch going quadratic.
+const LINE_DEBUG_BOUND: Duration = Duration::from_secs(5);

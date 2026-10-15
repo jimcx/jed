@@ -11,7 +11,7 @@ use crate::clipboard::Copied;
 use crate::command::{Command, Motion};
 use crate::selection::{Selection, Selections};
 use crate::view::View;
-use crate::{column, comment, lines, pairs};
+use crate::{column, comment, indent, lines, pairs};
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -22,6 +22,13 @@ pub struct Settings {
     /// Auto-close pairs, type over their closers, delete them in pairs and wrap selections
     /// (`pairs`): `[settings] auto_close_pairs`.
     pub auto_close_pairs: bool,
+    /// Enter indents (keeps the line's indentation, adds a level after an opening bracket or a
+    /// Python block, …) and a closing bracket typed first on a line outdents it (`indent`):
+    /// `[settings] auto_indent`. Off, Enter is a plain line break.
+    pub auto_indent: bool,
+    /// Highlight the bracket next to each cursor and its partner (`brackets`):
+    /// `[settings] match_brackets`.
+    pub match_brackets: bool,
 }
 
 impl Default for Settings {
@@ -31,6 +38,8 @@ impl Default for Settings {
             insert_spaces: true,
             syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
             auto_close_pairs: true,
+            auto_indent: true,
+            match_brackets: true,
         }
     }
 }
@@ -52,7 +61,7 @@ pub fn run(cmd: Command, buf: &mut Buffer, view: &mut View, s: &Settings) -> boo
             let start = pos::line_start(r, pos::line_of(r, p));
             if p == start { pos::prev_grapheme(r, p) } else { start }
         }),
-        Command::InsertNewline => insert_newline(buf, view),
+        Command::InsertNewline => indent::newline(buf, view, s),
         Command::InsertTab => insert_tab(buf, view, s),
         Command::SelectAll => {
             view.selections = Selections::single(Selection::new(ByteIdx(0), ByteIdx(buf.rope.len())));
@@ -110,9 +119,13 @@ pub fn is_edit(cmd: Command) -> bool {
     )
 }
 
-/// Typed text: one char from a key press, at every selection. With `auto_close_pairs`, a
+/// Typed text: one char from a key press, at every selection. With `auto_indent`, a closing
+/// bracket first on a line re-indents it (`indent::type_char`); with `auto_close_pairs`, a
 /// bracket or quote may close, wrap or type over instead (`pairs::type_char`).
 pub fn insert_char(buf: &mut Buffer, view: &mut View, c: char, s: &Settings) {
+    if s.auto_indent && indent::type_char(buf, view, c, s) {
+        return;
+    }
     if s.auto_close_pairs && pairs::type_char(buf, view, c) {
         return;
     }
@@ -302,19 +315,6 @@ fn delete(buf: &mut Buffer, view: &mut View, to: impl Fn(&Rope, ByteIdx) -> Byte
         } else {
             (sel.start(), sel.end(), "")
         }
-    });
-}
-
-fn insert_newline(buf: &mut Buffer, view: &mut View) {
-    let eol = buf.eol.as_str();
-    replace_each(buf, view, EditKind::Insert, |rope, sel| {
-        // Carry over the current line's indentation, up to the cursor.
-        let line = pos::line_of(rope, sel.start());
-        let line_start = pos::line_start(rope, line);
-        let text = pos::line_text(rope, line);
-        let upto = (sel.start().0 - line_start.0).min(text.len());
-        let indent: String = text[..upto].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
-        (sel.start(), sel.end(), format!("{eol}{indent}"))
     });
 }
 

@@ -1,4 +1,5 @@
 mod app;
+mod brackets;
 mod buffer;
 mod clipboard;
 mod column;
@@ -10,6 +11,7 @@ mod explorer;
 mod field;
 mod find;
 mod group;
+mod indent;
 mod layout;
 mod lines;
 mod logging;

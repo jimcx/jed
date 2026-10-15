@@ -28,6 +28,9 @@ impl Theme {
             // Dark Modern's current match; Dark+'s other matches (#EA5C0055) blended over the editor.
             ("editor.findMatch", Style::new().bg(c(0x9E6A03))),
             ("editor.findMatchHighlight", Style::new().bg(c(0x613214))),
+            // Dark+'s `editorBracketMatch` is a faint green fill with a grey border; a terminal cell
+            // has no border, so a stronger fill.
+            ("editor.bracketMatch", Style::new().bg(c(0x2F4F3A))),
             ("editor.whitespace.control", Style::new().fg(c(0xF48771))),
             ("gutter", fg_bg(0x858585, 0x1E1E1E)),
             ("gutter.active", Style::new().fg(c(0xC6C6C6))),
