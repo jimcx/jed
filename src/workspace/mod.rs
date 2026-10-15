@@ -5,7 +5,7 @@ pub mod trust;
 
 use std::path::{Path, PathBuf};
 
-use config::WorkspaceConfig;
+use config::{SettingsOverrides, WorkspaceConfig};
 
 use crate::edit::Settings;
 
@@ -17,6 +17,9 @@ pub struct Workspace {
     pub config: WorkspaceConfig,
     /// Parse error from the last load; `config` keeps the last good value.
     pub config_error: Option<String>,
+    /// The user's `settings.toml`, which `.workspace` `[settings]` override key by key. Loaded
+    /// once at startup (`with_user_settings`); `.workspace` reloads keep it.
+    pub user_settings: SettingsOverrides,
 }
 
 impl Workspace {
@@ -26,9 +29,16 @@ impl Workspace {
             root,
             config: WorkspaceConfig::default(),
             config_error: None,
+            user_settings: SettingsOverrides::default(),
         };
         ws.reload();
         ws
+    }
+
+    /// Layers `settings.toml`'s values under `.workspace`'s.
+    pub fn with_user_settings(mut self, user: SettingsOverrides) -> Self {
+        self.user_settings = user;
+        self
     }
 
     pub fn config_path(&self) -> PathBuf {
@@ -46,22 +56,9 @@ impl Workspace {
         }
     }
 
+    /// Defaults ← user `settings.toml` ← `.workspace` `[settings]`, per key.
     pub fn settings(&self) -> Settings {
-        let mut s = Settings::default();
-        let o = &self.config.settings;
-        if let Some(w) = o.tab_width.filter(|w| *w > 0) {
-            s.tab_width = w;
-        }
-        if let Some(sp) = o.insert_spaces {
-            s.insert_spaces = sp;
-        }
-        if let Some(max) = o.syntax_max_bytes {
-            s.syntax_max_bytes = max;
-        }
-        if let Some(on) = o.auto_close_pairs {
-            s.auto_close_pairs = on;
-        }
-        s
+        crate::config::settings::layer(&self.user_settings, &self.config.settings)
     }
 
     pub fn name(&self) -> String {
@@ -125,5 +122,27 @@ mod tests {
         ws.reload();
         assert!(ws.config_error.is_some());
         assert_eq!(ws.settings().tab_width, 2);
+    }
+
+    #[test]
+    fn reload_keeps_user_settings_under_the_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = normalize(dir.path());
+        let user = SettingsOverrides {
+            tab_width: Some(2),
+            auto_close_pairs: Some(false),
+            ..Default::default()
+        };
+        let mut ws = Workspace::load(root.clone()).with_user_settings(user);
+        assert_eq!(ws.settings().tab_width, 2);
+        assert!(!ws.settings().auto_close_pairs);
+        std::fs::write(root.join(FILE_NAME), "[settings]\nauto_close_pairs = true").unwrap();
+        ws.reload();
+        assert!(ws.settings().auto_close_pairs, "the workspace wins");
+        assert_eq!(
+            ws.settings().tab_width,
+            2,
+            "the user's value for a key the workspace doesn't set"
+        );
     }
 }

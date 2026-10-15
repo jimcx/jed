@@ -131,6 +131,8 @@ enum AppEvent {
         generation: u64,
     },
     LogFileFound(Option<PathBuf>),
+    /// `settings.toml` exists (created from the template if it didn't), or why it couldn't be.
+    UserSettingsReady(Result<PathBuf, String>),
     /// Workspace search results; any generation (stale ones are dropped).
     SearchResults(crate::workspace_search::Batch),
     /// A background parse finished (`Syntax::parsed` drops a superseded one).
@@ -171,6 +173,8 @@ pub struct App {
     /// Changes the log filter; `None` when logging is off (and in tests, unless set).
     pub log: Option<logging::LevelHandle>,
     pub log_dir: PathBuf,
+    /// Holds `settings.toml` (for "Preferences: Open User Settings"); `paths::config_dir()`.
+    pub config_dir: PathBuf,
     pub message: Option<Message>,
     after_save: Option<AfterSave>,
     /// A trust decision is needed but another prompt is open.
@@ -245,6 +249,7 @@ impl App {
             files_pending: Arc::new(AtomicBool::new(false)),
             log: None,
             log_dir: logging::log_dir(),
+            config_dir: crate::paths::config_dir(),
             message: None,
             after_save: None,
             trust_pending: false,
@@ -381,6 +386,11 @@ impl App {
     /// Replaces the keymap (the defaults plus `keybindings.toml`), reporting problems loading it.
     pub fn set_keymap(&mut self, keymap: Keymap, errors: Vec<String>) {
         self.keymap = keymap;
+        self.report_errors(errors);
+    }
+
+    /// Shows the first of some problems loading a config file (and how many more there are).
+    pub fn report_errors(&mut self, errors: Vec<String>) {
         if let Some(first) = errors.first() {
             let more = match errors.len() {
                 1 => String::new(),
@@ -571,6 +581,7 @@ impl App {
             Command::SetLogLevel => self.open_palette(Picker::LogLevel, ""),
             Command::ManageWorkspaceTrust => self.manage_trust(),
             Command::OpenLogFile => self.open_log_file(),
+            Command::OpenUserSettings => self.open_user_settings(),
             Command::Palette(c) => self.palette_command(c),
             Command::AddNextMatch | Command::SelectAllMatches | Command::SkipToNextMatch => self.match_command(cmd),
             Command::CursorUndo => self.cursor_undo(),
@@ -685,6 +696,10 @@ impl App {
             AppEvent::FilesMatched => self.files_matched(),
             AppEvent::FilesWalked { generation } => self.files_walked(generation),
             AppEvent::LogFileFound(path) => self.log_file_found(path),
+            AppEvent::UserSettingsReady(result) => match result {
+                Ok(path) => self.open_file(path, true, None),
+                Err(e) => self.notify(Level::Error, e),
+            },
             AppEvent::SearchResults(batch) => self.search_results(batch),
             AppEvent::Parsed { buffer, parsed } => self.parsed(buffer, parsed),
         }

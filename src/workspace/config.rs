@@ -5,6 +5,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// `[settings]`: the same keys as the user's `settings.toml` (see `config::settings`).
+pub use crate::config::settings::SettingsOverrides;
+
 #[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WorkspaceConfig {
@@ -12,17 +15,6 @@ pub struct WorkspaceConfig {
     pub files: FilesConfig,
     pub lsp: BTreeMap<String, LspServer>,
     pub tasks: BTreeMap<String, Task>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct SettingsOverrides {
-    pub tab_width: Option<usize>,
-    pub insert_spaces: Option<bool>,
-    /// No parse tree (so no highlighting) for buffers bigger than this; 0 turns parsing off.
-    pub syntax_max_bytes: Option<usize>,
-    /// Brackets and quotes auto-close, type over and delete in pairs, and wrap a selection.
-    pub auto_close_pairs: Option<bool>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]

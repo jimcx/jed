@@ -141,7 +141,8 @@ fn main() -> ExitCode {
         },
         None => None,
     };
-    let workspace = Workspace::load(root);
+    let user_settings = config::settings::load(&paths::config_dir().join(config::settings::FILE_NAME));
+    let workspace = Workspace::load(root).with_user_settings(user_settings.overrides);
     let trust_store = TrustStore::load(TrustStore::default_path());
     let platform = Platform::current();
     let (keymap, keymap_errors) = Keymap::load(&paths::config_dir().join(keymap::FILE_NAME), platform);
@@ -162,7 +163,9 @@ fn main() -> ExitCode {
         .and_then(|mut term| {
             runtime.block_on(async {
                 let mut app = app::App::new(workspace, trust_store, initial, kitty);
-                app.set_keymap(keymap, keymap_errors);
+                let mut errors = user_settings.errors;
+                errors.extend(keymap_errors);
+                app.set_keymap(keymap, errors);
                 app.log = log;
                 app.run(&mut term).await
             })

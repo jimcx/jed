@@ -27,6 +27,14 @@
 //! 63k cursors `(`, type-over and pair delete stay within a key's 16 ms, and Cmd+/ on 84k lines
 //! within 80 ms (release).
 //!
+//! 8d, the user settings file: `settings.toml` in the config dir (passed explicitly, never via
+//! `XDG_CONFIG_HOME`) turning `auto_close_pairs` off types `(` plainly; `.workspace` turning it
+//! back on wins, at startup and on a live reload, which keeps the user's value for keys
+//! `.workspace` doesn't set (and falls back to it when a key is removed); a syntax error shows a
+//! notification and keeps the defaults; unknown keys and bad values are reported and skipped
+//! while the other keys apply; "Preferences: Open User Settings" creates the directory and file
+//! from the template, or opens an existing file as it is.
+//!
 //! Perf (asserted in release only: `cargo test --release milestone -- --nocapture`): on a
 //! generated 1 MB C++ file the first parse runs in the background, and a keystroke plus its
 //! incremental re-parse plus a frame stays well inside a 16 ms frame, also at 63k cursors. With
@@ -1034,4 +1042,127 @@ async fn milestone_8_pairs_and_comment_line_on_one_mb() {
     assert_eq!(sels(&app).len(), n);
     toggle(&mut app, "at a cursor per line");
     assert!(text(&app).starts_with("  // f(0);\n"));
+}
+
+/// An app as `main` builds it with a user config dir (`<dir>/config`, holding `settings.toml`
+/// text `user` unless `None`) beside the workspace (`<dir>/ws`, `.workspace` text `config`), with
+/// `rel` (holding `text`) open. Returns the app, the workspace root and the config dir.
+fn user_app(
+    dir: &tempfile::TempDir,
+    user: Option<&str>,
+    config: &str,
+    rel: &str,
+    text: &str,
+) -> (App, PathBuf, PathBuf) {
+    use crate::config::settings;
+    let base = crate::workspace::normalize(dir.path());
+    let config_dir = base.join("config");
+    fs::create_dir_all(&config_dir).unwrap();
+    if let Some(user) = user {
+        write(&config_dir, settings::FILE_NAME, user);
+    }
+    let root = base.join("ws");
+    write(&root, ".workspace", config);
+    let path = write(&root, rel, text);
+    let loaded = settings::load(&config_dir.join(settings::FILE_NAME));
+    let ws = crate::workspace::Workspace::load(root.clone()).with_user_settings(loaded.overrides);
+    let trust = crate::workspace::trust::TrustStore::load(base.join("trust.toml"));
+    let initial = crate::app::InitialFile {
+        buffer: Buffer::open(&path).unwrap(),
+        goto: None,
+    };
+    let mut app = App::new(ws, trust, Some(initial), true);
+    app.config_dir = config_dir.clone();
+    app.report_errors(loaded.errors);
+    app.test_start();
+    (app, root, config_dir)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_8_user_settings_file() {
+    // The user turns auto-close off: `(` types plainly.
+    let dir = tempfile::tempdir().unwrap();
+    let user = "[settings]\nauto_close_pairs = false\ntab_width = 2\n";
+    let (mut app, root, _) = user_app(&dir, Some(user), "", "a.cpp", "x\n");
+    assert!(!app.settings.auto_close_pairs);
+    assert_eq!(app.settings.tab_width, 2);
+    assert!(app.message.is_none(), "{:?}", app.message.as_ref().map(|m| &m.text));
+    app.press(K::End, M::NONE);
+    app.type_text("(");
+    assert_eq!(text(&app), "x(\n");
+
+    // A live `.workspace` reload turns it back on and keeps the user's value for the other keys.
+    fs::write(root.join(".workspace"), "[settings]\nauto_close_pairs = true\n").unwrap();
+    assert!(app.settle(|a| a.settings.auto_close_pairs).await, ".workspace reloaded");
+    assert_eq!(app.settings.tab_width, 2, "the user's tab_width survives the reload");
+    app.type_text("(");
+    assert_eq!(text(&app), "x(()\n");
+    // Removing the key from `.workspace` falls back to the user's value, not the default.
+    fs::write(root.join(".workspace"), "[settings]\ninsert_spaces = false\n").unwrap();
+    assert!(app.settle(|a| !a.settings.insert_spaces).await);
+    assert!(!app.settings.auto_close_pairs);
+    assert_eq!(app.settings.tab_width, 2);
+
+    // `.workspace` wins from the start too.
+    let dir = tempfile::tempdir().unwrap();
+    let ws = "[settings]\nauto_close_pairs = true\n";
+    let (mut app, _, _) = user_app(&dir, Some(user), ws, "a.cpp", "x\n");
+    assert!(app.settings.auto_close_pairs);
+    assert_eq!(app.settings.tab_width, 2);
+    app.press(K::End, M::NONE);
+    app.type_text("(");
+    assert_eq!(text(&app), "x()\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_8_bad_user_settings_are_reported() {
+    // A syntax error: a notification, and the defaults.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _, _) = user_app(&dir, Some("[settings\nauto_close_pairs = false\n"), "", "a.cpp", "x\n");
+    let msg = app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+    assert!(msg.starts_with("settings.toml: line 1:"), "{msg}");
+    assert!(app.settings.auto_close_pairs, "defaults kept");
+    app.press(K::End, M::NONE);
+    app.type_text("(");
+    assert_eq!(text(&app), "x()\n");
+
+    // A misspelt key and a bad value are reported; the good key still applies.
+    let dir = tempfile::tempdir().unwrap();
+    let user = "[settings]\nauto_close_pair = false\ntab_width = \"2\"\ninsert_spaces = false\n";
+    let (app, _, _) = user_app(&dir, Some(user), "", "a.cpp", "x\n");
+    let msg = app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
+    assert!(
+        msg.contains("auto_close_pair") && msg.ends_with("(and 1 more)"),
+        "{msg}"
+    );
+    assert!(!app.settings.insert_spaces);
+    assert_eq!(app.settings.tab_width, 4);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_8_open_user_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _, config_dir) = user_app(&dir, None, "", "a.cpp", "x\n");
+    fs::remove_dir(&config_dir).unwrap();
+    let path = config_dir.join(crate::config::settings::FILE_NAME);
+    app.press(K::Char('p'), cmd() | M::SHIFT);
+    app.type_text("Open User Settings");
+    app.press(K::Enter, M::NONE);
+    assert!(app.settle(|a| a.active_buffer().is_some_and(|b| b.path == path)).await);
+    assert_eq!(
+        text(&app),
+        crate::config::settings::TEMPLATE,
+        "created from the template"
+    );
+
+    // An existing file is opened as it is.
+    fs::write(&path, "[settings]\ntab_width = 3\n").unwrap();
+    let dir2 = tempfile::tempdir().unwrap();
+    let (mut app, _, _) = user_app(&dir2, None, "", "a.cpp", "x\n");
+    app.config_dir = config_dir;
+    app.press(K::Char('p'), cmd() | M::SHIFT);
+    app.type_text("Open User Settings");
+    app.press(K::Enter, M::NONE);
+    assert!(app.settle(|a| a.active_buffer().is_some_and(|b| b.path == path)).await);
+    assert_eq!(text(&app), "[settings]\ntab_width = 3\n");
 }

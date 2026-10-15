@@ -125,6 +125,8 @@ pub enum Command {
     ManageWorkspaceTrust,
     OpenLogFile,
     SetLogLevel,
+    /// Open `~/.config/red/settings.toml` (created from a template if missing).
+    OpenUserSettings,
     /// Keys inside the palette.
     Palette(PaletteCommand),
     /// Cmd+F: open the find widget (seeded from the selection or the word under the cursor).
@@ -343,6 +345,7 @@ impl Command {
             Command::ManageWorkspaceTrust,
             Command::OpenLogFile,
             Command::SetLogLevel,
+            Command::OpenUserSettings,
         ]);
         all.extend(PaletteCommand::ALL.map(Command::Palette));
         all.extend([Command::OpenFind, Command::OpenReplace]);
@@ -444,6 +447,7 @@ impl Command {
             Command::ManageWorkspaceTrust => "workspace.manageTrust".into(),
             Command::OpenLogFile => "log.open".into(),
             Command::SetLogLevel => "log.setLevel".into(),
+            Command::OpenUserSettings => "preferences.openUserSettings".into(),
             Command::Palette(c) => format!(
                 "palette.{}",
                 match c {
@@ -586,6 +590,7 @@ impl Command {
             Command::ManageWorkspaceTrust => "Workspaces: Manage Workspace Trust",
             Command::OpenLogFile => "Developer: Open Log File",
             Command::SetLogLevel => "Developer: Set Log Level…",
+            Command::OpenUserSettings => "Preferences: Open User Settings",
             Command::Palette(c) => match c {
                 PaletteCommand::Next => "Palette: Select Next",
                 PaletteCommand::Previous => "Palette: Select Previous",
@@ -711,9 +716,10 @@ mod tests {
             Command::FindInFiles => 48,
             Command::Search(_) => 49,
             Command::CommentLine => 50,
+            Command::OpenUserSettings => 51,
         }
     }
-    const VARIANTS: u8 = 51;
+    const VARIANTS: u8 = 52;
 
     #[test]
     fn all_lists_every_variant() {

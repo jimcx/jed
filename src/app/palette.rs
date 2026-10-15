@@ -293,6 +293,18 @@ impl App {
         });
     }
 
+    /// Opens the user's `settings.toml` in a tab, first writing the commented template (and the
+    /// directory) if it doesn't exist.
+    pub(super) fn open_user_settings(&mut self) {
+        let path = self.config_dir.join(crate::config::settings::FILE_NAME);
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(AppEvent::UserSettingsReady(crate::config::settings::create_if_missing(
+                &path,
+            )));
+        });
+    }
+
     pub(super) fn log_file_found(&mut self, path: Option<PathBuf>) {
         match path {
             Some(path) => self.open_file(path, true, None),
