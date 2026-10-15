@@ -258,4 +258,20 @@ mod tests {
         edit::run(Command::Redo, &mut b, &mut v, &s);
         assert_eq!(show(&b, &v), "// ax|\n// bx|");
     }
+
+    /// Each language's line comment token; none for JSON, Markdown and XML (block comments only).
+    #[test]
+    fn tokens_per_language() {
+        use Language::*;
+        for l in [Rust, Jsonc] {
+            assert_eq!(toggled(l, "«a\n  b»"), "«// a\n//   b»", "{l:?}");
+        }
+        for l in [Yaml, Toml, ShellScript, CMake, Makefile, Dockerfile] {
+            assert_eq!(toggled(l, "  a|"), "  # a|", "{l:?}");
+            assert_eq!(toggled(l, "  # a|"), "  a|", "{l:?}");
+        }
+        for l in [Json, Markdown, Xml] {
+            assert_eq!(toggled(l, "a|"), "a|", "{l:?}");
+        }
+    }
 }

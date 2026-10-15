@@ -495,3 +495,72 @@ fn too_many_queued_edits_restart_the_parse() {
     settle(&mut buf);
     assert_matches_fresh(&buf, "restarted");
 }
+
+/// `scope_before` across the grammars' node kinds: `|` marks each position asked about.
+#[test]
+fn scopes_in_every_language() {
+    use Language::*;
+    use Scope::*;
+    let cases: &[(Language, &str, &[Scope])] = &[
+        (
+            Rust,
+            "let s = \"a|\"; // c|\n/* b| */ x|",
+            &[String, Comment, Comment, Code],
+        ),
+        (Rust, "let c = 'a|';", &[String]),
+        (Json, "{\"k|\": 1|}", &[String, Code]),
+        (Jsonc, "{} // c|\n", &[Comment]),
+        (
+            Yaml,
+            "a: \"b|\"\nc: 'd|'\ne: f|  # g|\n",
+            &[String, String, String, Comment],
+        ),
+        (Toml, "a = \"b|\" # c|\n", &[String, Comment]),
+        (
+            ShellScript,
+            "echo \"a|$(b|)\" 'c|' # d|\n",
+            &[String, Code, String, Comment],
+        ),
+        (ShellScript, "echo \"${x|}\"\n", &[Code]),
+        (ShellScript, "cat <<EOF\na|\nEOF\n", &[String]),
+        (Yaml, "a: >\n  b|\n", &[String]),
+        (CMake, "set(a \"b|\" c|) # d|\n", &[String, Code, Comment]),
+        (CMake, "set(a [[b|]] \"${c|}\")\n", &[String, Code]),
+        (Makefile, "a = b|\n# c|\n", &[Code, Comment]),
+        (Dockerfile, "# c|\nENV A=\"b|\" C=d|\n", &[Comment, String, Code]),
+        (Xml, "<a x=\"y|\">t|</a><!-- c| -->", &[String, Code, Comment]),
+        (Markdown, "# a|\n", &[Code]),
+        (Cpp, "f(\"a|\"); // b|\n", &[String, Comment]),
+        (Python, "f'a{b|}c|'  # d|\n", &[Code, String, Comment]),
+    ];
+    for &(language, marked, want) in cases {
+        let text = marked.replace('|', "");
+        let buf = parsed_buffer(language, &text);
+        let positions = marked.match_indices('|').enumerate().map(|(i, (at, _))| at - i);
+        let got: Vec<_> = positions
+            .map(|p| buf.syntax.scope_before(ByteIdx(p)).unwrap())
+            .collect();
+        assert_eq!(got, want, "{language:?} {marked:?}");
+    }
+}
+
+#[test]
+fn scope_kinds() {
+    assert_eq!(scope_of("line_comment"), Some(Scope::Comment));
+    assert_eq!(scope_of("Comment"), Some(Scope::Comment));
+    assert_eq!(scope_of("raw_string_literal"), Some(Scope::String));
+    assert_eq!(scope_of("double_quote_scalar"), Some(Scope::String));
+    assert_eq!(scope_of("unquoted_string"), None);
+    assert_eq!(scope_of("command_substitution"), Some(Scope::Code));
+    assert_eq!(scope_of("identifier"), None);
+}
+
+/// Markdown's block tree is current but not a token tree: brackets come from the text.
+#[test]
+fn markdown_has_no_token_tree() {
+    let buf = parsed_buffer(Language::Markdown, "a (b)\n");
+    assert!(buf.syntax.tree().is_some());
+    assert!(buf.syntax.token_tree().is_none() && buf.syntax.tokens().is_none());
+    let buf = parsed_buffer(Language::Rust, "fn f() {}\n");
+    assert!(buf.syntax.token_tree().is_some());
+}

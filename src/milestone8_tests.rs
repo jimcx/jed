@@ -46,6 +46,18 @@
 //! (1 MB) Enter (with the tree) and the outdenting `}` stay within M6's 80 ms line-command budget;
 //! moving and typing in the 1 MB generated C++ file with bracket highlights keeps frames < 16 ms.
 //!
+//! 8f, more languages: Rust, Markdown, YAML, JSON, JSONC, XML, TOML, shell, CMake, Makefile and
+//! Dockerfile files opened in the app are detected by extension, name (`Cargo.lock`,
+//! `CMakeLists.txt`, `Makefile`, `Dockerfile`, `Containerfile.*`, `tsconfig.json`) or shebang
+//! (`env bash`), show VS Code's language name in the status bar, get a tree equal to a fresh parse
+//! and are drawn in their Dark+ colours (Markdown headings, XML tags and attributes, YAML keys, …);
+//! Cmd+/ uses each language's token (`//`, `#`; nothing in JSON, Markdown, XML) and undoes back;
+//! JSON auto-closes brackets and quotes but not inside a string, Rust leaves `'` alone, Markdown
+//! closes `<`; Enter indents after a YAML key and outdents before a Rust `}`; Makefiles indent with
+//! tabs (status bar "Tab Size"); Markdown's brackets are matched from its text. A 1 MB file in
+//! Rust, JSON, YAML, Markdown, XML, TOML and shell opens with plain frames while it parses in the
+//! background and types within a frame (release).
+//!
 //! Perf (asserted in release only: `cargo test --release milestone -- --nocapture`): on a
 //! generated 1 MB C++ file the first parse runs in the background, and a keystroke plus its
 //! incremental re-parse plus a frame stays well inside a 16 ms frame, also at 63k cursors. With
@@ -1427,3 +1439,389 @@ async fn milestone_8_auto_indent_and_bracket_matching_on_one_mb() {
 
 /// Debug builds only catch going quadratic.
 const LINE_DEBUG_BOUND: Duration = Duration::from_secs(5);
+
+/// 8f: a file per new language, opened through the app: detected by name, extension or shebang,
+/// named in the status bar, parsed in the background, then drawn in its colours.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_8_more_languages_are_detected_and_coloured() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, root) = open_app(&dir, "", "notes.txt", "notes\n");
+    let mut term = Terminal::new(TestBackend::new(120, 16)).unwrap();
+    // (file, text, language, status bar name, (needle, offset, key) drawn in that colour)
+    type Sample = (
+        &'static str,
+        &'static str,
+        Language,
+        &'static str,
+        &'static [(&'static str, u16, &'static str)],
+    );
+    let files: &[Sample] = &[
+        (
+            "src/main.rs",
+            "fn main() {\n    let x: u8 = 42; // c\n}\n",
+            Language::Rust,
+            "Rust",
+            &[
+                ("fn main", 0, "keyword"),
+                ("fn main", 3, "function"),
+                ("= 42", 2, "number"),
+                ("// c", 0, "comment"),
+            ],
+        ),
+        (
+            "README.md",
+            "# Title\n\n- item\n> said\n",
+            Language::Markdown,
+            "Markdown",
+            &[
+                ("# Title", 2, "markup.heading"),
+                ("- item", 0, "markup.list"),
+                ("> said", 0, "markup.quote"),
+            ],
+        ),
+        (
+            ".github/ci.yml",
+            "on:\n  push: true # c\n",
+            Language::Yaml,
+            "YAML",
+            &[
+                ("on:", 0, "tag"),
+                ("push: true", 6, "constant.builtin"),
+                ("# c", 0, "comment"),
+            ],
+        ),
+        (
+            "package.json",
+            "{\"name\": \"red\", \"n\": 1}\n",
+            Language::Json,
+            "JSON",
+            &[
+                ("\"name\"", 1, "property"),
+                ("\"red\"", 1, "string"),
+                (": 1}", 2, "number"),
+            ],
+        ),
+        (
+            "tsconfig.json",
+            "// c\n{}\n",
+            Language::Jsonc,
+            "JSON with Comments",
+            &[("// c", 0, "comment")],
+        ),
+        (
+            "pom.xml",
+            "<project a=\"1\"><!-- c --></project>\n",
+            Language::Xml,
+            "XML",
+            &[
+                ("<project", 0, "punctuation.tag"),
+                ("<project", 1, "tag"),
+                ("a=\"1\"", 0, "tag.attribute"),
+                ("a=\"1\"", 3, "string"),
+                ("<!-- c", 5, "comment"),
+            ],
+        ),
+        (
+            "Cargo.toml",
+            "[package]\nname = \"red\"\n",
+            Language::Toml,
+            "TOML",
+            &[
+                ("[package]", 1, "type"),
+                ("name =", 0, "property"),
+                ("\"red\"", 1, "string"),
+            ],
+        ),
+        (
+            "Cargo.lock",
+            "version = 4\n",
+            Language::Toml,
+            "TOML",
+            &[("version = 4", 10, "number")],
+        ),
+        (
+            "build.sh",
+            "if true; then echo \"$HOME\"; fi\n",
+            Language::ShellScript,
+            "Shell Script",
+            &[
+                ("if true", 0, "keyword.control"),
+                ("echo \"$", 0, "function"),
+                ("\"$HOME", 0, "string"),
+            ],
+        ),
+        (
+            "tool",
+            "#!/usr/bin/env bash\nexport X=1\n",
+            Language::ShellScript,
+            "Shell Script",
+            &[("#!/usr", 0, "comment"), ("export X", 0, "keyword")],
+        ),
+        (
+            "CMakeLists.txt",
+            "project(red VERSION 1.0)\n",
+            Language::CMake,
+            "CMake",
+            &[("project(red", 0, "function"), ("VERSION", 0, "constant")],
+        ),
+        (
+            "Makefile",
+            "CC = cc\nall: x.o\n\t$(CC) x.o\n",
+            Language::Makefile,
+            "Makefile",
+            &[
+                ("CC = cc", 0, "variable"),
+                ("all: x.o", 0, "function"),
+                ("$(CC) x", 2, "variable"),
+            ],
+        ),
+        (
+            "Dockerfile",
+            "FROM ubuntu\nENV A=\"b\"\n",
+            Language::Dockerfile,
+            "Dockerfile",
+            &[
+                ("FROM ubuntu", 0, "keyword"),
+                ("ENV A", 4, "property"),
+                ("\"b\"", 1, "string"),
+            ],
+        ),
+        (
+            "web.dockerfile",
+            "FROM x\n",
+            Language::Dockerfile,
+            "Dockerfile",
+            &[("FROM x", 0, "keyword")],
+        ),
+        (
+            "Containerfile.dev",
+            "FROM y\n",
+            Language::Dockerfile,
+            "Dockerfile",
+            &[("FROM y", 0, "keyword")],
+        ),
+    ];
+    for &(rel, src, language, name, colours) in files {
+        let path = write(&root, rel, src);
+        app.test_open(Buffer::open(&path).unwrap());
+        assert_eq!(app.active_buffer().unwrap().syntax.language(), language, "{rel}");
+        let status = status_line(&mut app);
+        assert!(
+            status.trim_end().ends_with(&format!("LF   {name}")),
+            "{rel}: {status:?}"
+        );
+        assert!(app.settle(parsed).await, "{rel} parsed");
+        assert_tree_current(&app);
+        draw(&mut term, &mut app);
+        for &(needle, offset, key) in colours {
+            assert_eq!(
+                fg_of(&term, needle, offset).fg,
+                fg(&app, key),
+                "{rel}: {needle:?}+{offset} as {key}"
+            );
+        }
+    }
+    // Headings are bold as well; XML tag brackets are dimmer than the text.
+    assert_ne!(fg(&app, "punctuation.tag"), fg(&app, "editor"));
+    assert!(
+        app.theme
+            .get("markup.heading")
+            .add_modifier
+            .contains(ratatui::style::Modifier::BOLD)
+    );
+    // Makefiles indent with tabs (VS Code's `[makefile]` default), shown in the status bar.
+    assert!(status_line(&mut app).contains("Spaces: 4"), "Containerfile.dev");
+    let (mut app, _) = open_app(&dir, "", "Makefile", "all:\n");
+    assert!(status_line(&mut app).contains("Tab Size: 4"));
+}
+
+/// 8f: comment line, auto-close and auto-indent follow each new language's configuration.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_8_more_languages_editing() {
+    let dir = tempfile::tempdir().unwrap();
+    // Cmd+/: `//` in Rust and JSONC, `#` in TOML, YAML and shell; nothing in JSON or Markdown.
+    for (rel, src, commented) in [
+        ("a.rs", "fn f() {}\n", "// fn f() {}\n"),
+        ("b.jsonc", "{}\n", "// {}\n"),
+        ("c.toml", "a = 1\n", "# a = 1\n"),
+        ("d.yaml", "  a: 1\n", "  # a: 1\n"),
+        ("e.sh", "echo hi\n", "# echo hi\n"),
+        ("CMakeLists.txt", "project(x)\n", "# project(x)\n"),
+        ("Dockerfile", "FROM x\n", "# FROM x\n"),
+        ("f.json", "{}\n", "{}\n"),
+        ("g.md", "text\n", "text\n"),
+        ("h.xml", "<a/>\n", "<a/>\n"),
+    ] {
+        let (mut app, _) = open_app(&dir, "", rel, src);
+        app.press(K::Char('/'), cmd());
+        assert_eq!(text(&app), commented, "{rel}");
+        app.press(K::Char('/'), cmd());
+        assert_eq!(text(&app), src, "{rel} back");
+    }
+
+    // JSON: brackets and quotes auto-close, not inside a string (with the tree).
+    let (mut app, _) = open_app(&dir, "", "a.json", "\n");
+    assert!(app.settle(parsed).await);
+    set_cursors(&mut app, &[0]);
+    app.type_text("{\"a");
+    assert_eq!(text(&app), "{\"a\"}\n");
+    app.pump();
+    assert!(app.settle(parsed).await);
+    app.type_text("[");
+    assert_eq!(text(&app), "{\"a[\"}\n", "no pair in a string");
+    app.press(K::Backspace, M::NONE);
+    app.type_text("\": [");
+    assert_eq!(text(&app), "{\"a\": []}\n", "typed over the quote, `[` closed");
+    app.press(K::Enter, M::NONE);
+    assert_eq!(text(&app), "{\"a\": [\n    \n]}\n");
+
+    // Rust: `'` (lifetimes) isn't closed, `"` is; Enter before a closing bracket outdents (C's
+    // `indentationRules`).
+    let (mut app, _) = open_app(&dir, "", "b.rs", "");
+    assert!(app.settle(parsed).await);
+    app.type_text("fn f<'a>(s: &'a str) {");
+    assert_eq!(text(&app), "fn f<'a>(s: &'a str) {}");
+    app.press(K::Enter, M::NONE);
+    app.type_text("g(\"x");
+    assert_eq!(text(&app), "fn f<'a>(s: &'a str) {\n    g(\"x\")\n}");
+    let (mut app, _) = open_app(&dir, "", "c.rs", "fn f() {\n    x;}\n");
+    set_cursors(&mut app, &[15]);
+    app.press(K::Enter, M::NONE);
+    assert_eq!(text(&app), "fn f() {\n    x;\n}\n");
+
+    // YAML: Enter after a key indents.
+    let (mut app, _) = open_app(&dir, "", "c.yml", "");
+    app.type_text("on:");
+    app.press(K::Enter, M::NONE);
+    app.type_text("push:");
+    app.press(K::Enter, M::NONE);
+    app.type_text("- x");
+    assert_eq!(text(&app), "on:\n    push:\n        - x");
+
+    // Makefile: Tab and auto-indent insert tabs whatever `insert_spaces` says.
+    let (mut app, _) = open_app(&dir, "", "Makefile", "");
+    app.type_text("all:");
+    app.press(K::Enter, M::NONE);
+    app.press(K::Tab, M::NONE);
+    app.type_text("cc x.c");
+    app.press(K::Enter, M::NONE);
+    app.type_text("cc y.c");
+    assert_eq!(text(&app), "all:\n\tcc x.c\n\tcc y.c");
+
+    // Markdown: brackets matched from the text (the tree's leaves are whole paragraphs).
+    let src = "Some (text [x]) here\n";
+    let (mut app, _) = open_app(&dir, "", "d.md", src);
+    assert!(app.settle(parsed).await);
+    let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
+    set_cursors(&mut app, &[5]);
+    draw(&mut term, &mut app);
+    let hl = app.theme.get("editor.bracketMatch").bg;
+    assert_eq!(bg_of(&term, "(text", 0), hl);
+    assert_eq!(bg_of(&term, "]) here", 1), hl);
+    assert_eq!(bracket_cells(&term, &app), 2);
+    set_cursors(&mut app, &[20]);
+    app.type_text(" <");
+    assert_eq!(text(&app), "Some (text [x]) here <>\n", "`<` auto-closes in Markdown");
+}
+
+/// 8f, M8's "done when" for the new grammars: a 1 MB file in each language opens with a plain
+/// frame, colours arrive from the background parse, and a key plus its re-parse plus a frame stays
+/// within a frame (release; debug catches going quadratic).
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_8_more_languages_one_mb_frames() {
+    let dir = tempfile::tempdir().unwrap();
+    let release = !cfg!(debug_assertions);
+    let size = if release { 1_000_000 } else { 200_000 };
+    let bound = if release { FRAME } else { FRAME_DEBUG_BOUND };
+    // (file, one repeated unit with `{i}` numbered, the line typed at and what's typed)
+    let samples: &[(&str, &str, &str)] = &[
+        (
+            "big.rs",
+            "fn f{i}(x: &str) -> u32 {\n    let v = vec![1, 2]; // c\n    v.len() as u32\n}\n",
+            " let y = 1;",
+        ),
+        (
+            "big.json",
+            "  \"key{i}\": {\"a\": [1, 2.5, true, null], \"b\": \"text\"},\n",
+            " \"z\": 1,",
+        ),
+        (
+            "big.yaml",
+            "item{i}:\n  name: \"x\" # c\n  list:\n    - 1\n    - two\n",
+            " k: v",
+        ),
+        (
+            "big.md",
+            "## Heading {i}\n\nSome *text* with `code` and [a link](x).\n\n- item\n> quote\n\n",
+            " more text",
+        ),
+        (
+            "big.xml",
+            "<item id=\"{i}\" a='b'><name>x</name><!-- c --></item>\n",
+            " <z/>",
+        ),
+        ("big.toml", "[t{i}]\nname = \"x\" # c\nlist = [1, 2]\n", " y = 2"),
+        (
+            "big.sh",
+            "f{i}() {\n  if [ -n \"$1\" ]; then echo \"$(ls)\"; fi\n}\n",
+            " echo hi",
+        ),
+    ];
+    let mut term = Terminal::new(TestBackend::new(160, 50)).unwrap();
+    for &(rel, unit, keys) in samples {
+        // JSON: a blank first line, so the cursor isn't on the root `{` (matching it walks all its
+        // 1 MB of siblings, ~6 ms: 8e's tree matching, the same for any language's huge block).
+        let mut text = if rel.ends_with(".json") {
+            String::from("\n{\n")
+        } else {
+            String::new()
+        };
+        let mut i = 0;
+        while text.len() < size {
+            text.push_str(&unit.replace("{i}", &i.to_string()));
+            i += 1;
+        }
+        if rel.ends_with(".json") {
+            text.push_str("  \"end\": 0\n}\n");
+        }
+        let (mut app, _) = open_app(&dir, "", rel, &text);
+        let t = Instant::now();
+        draw(&mut term, &mut app);
+        let mut worst = t.elapsed();
+        assert!(!parsed(&app), "{rel}: parsed in the background");
+        let t = Instant::now();
+        while !parsed(&app) {
+            assert!(t.elapsed() < Duration::from_secs(20), "{rel}: no tree");
+            let f = Instant::now();
+            app.pump();
+            draw(&mut term, &mut app);
+            worst = worst.max(f.elapsed());
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let parse = t.elapsed();
+        let f = Instant::now();
+        draw(&mut term, &mut app);
+        worst = worst.max(f.elapsed());
+        let lines = text.lines().count();
+        app.press(K::Char('g'), M::CONTROL);
+        app.type_text(&(lines / 2).to_string());
+        app.press(K::Enter, M::NONE);
+        app.press(K::End, M::NONE);
+        app.pump();
+        draw(&mut term, &mut app);
+        let mut worst_key = Duration::ZERO;
+        for c in keys.chars() {
+            let t = Instant::now();
+            app.press(K::Char(c), M::NONE);
+            app.pump();
+            draw(&mut term, &mut app);
+            worst_key = worst_key.max(t.elapsed());
+            if !parsed(&app) {
+                assert!(app.settle(parsed).await, "{rel}");
+            }
+        }
+        println!("{rel}: parse {parse:?}, worst open frame {worst:?}, worst key {worst_key:?}");
+        assert!(worst < bound, "{rel}: a frame while opening took {worst:?}");
+        assert!(worst_key < bound, "{rel}: a key took {worst_key:?}");
+    }
+}

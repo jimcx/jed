@@ -2,13 +2,13 @@
 //! partner, drawn highlighted; and the unclosed opening bracket before a position (auto-indent's
 //! outdent when a closing bracket is typed).
 //!
-//! The pairs are the language's bracket pairs (`LanguageConfig::brackets`: `{}` `[]` `()`).
+//! The pairs are the language's bracket pairs (`LanguageConfig::brackets`: mostly `{}` `[]` `()`).
 //! Like VS Code, only brackets of the same kind count when matching (`(]` doesn't close).
-//! - With a current parse tree a bracket counts only when it is a token of its own: brackets in
+//! - With a current parse tree whose leaves are tokens (`Syntax::token_tree`) a bracket counts only when it is a token of its own: brackets in
 //!   strings and comments are ignored. Its partner is found among its siblings in the tree (an
 //!   opening and closing bracket of one pair share a parent node), however far away; a pair the
 //!   parser completed with a zero-width "missing" bracket doesn't match.
-//! - Without one (plain text, a file over the size limit, a re-parse running) the text is
+//! - Without one (plain text, Markdown, a file over the size limit, a re-parse running) the text is
 //!   scanned, every bracket counting, at most `WINDOW` bytes each way.
 //!
 //! Drawing asks `Matches::get` every frame; it recomputes only when the text, the tree's
@@ -39,7 +39,7 @@ pub fn bracket(language: Language, c: char) -> Option<(char, char, bool)> {
 /// neither is a bracket with a partner.
 pub fn match_at(rope: &Rope, syntax: &Syntax, pos: ByteIdx) -> Option<(ByteIdx, ByteIdx)> {
     let language = syntax.language();
-    let tree = syntax.tree();
+    let tree = syntax.token_tree();
     let mut peek = Peek::new(rope);
     let candidates = [(peek.after(pos), pos.0), (peek.before(pos), pos.0.wrapping_sub(1))];
     for (c, at) in candidates {
@@ -229,7 +229,7 @@ impl Matches {
     /// buffer's revision, language, tree availability or the heads changed.
     pub fn get(&mut self, rope: &Rope, syntax: &Syntax, revision: u64, heads: &[ByteIdx]) -> &[ByteIdx] {
         let heads = &heads[..heads.len().min(MAX_CURSORS)];
-        let (language, tree) = (syntax.language(), syntax.tree().is_some());
+        let (language, tree) = (syntax.language(), syntax.token_tree().is_some());
         let fresh = self
             .key
             .as_ref()
@@ -302,6 +302,36 @@ mod tests {
         assert_eq!(matched(cpp, "f(\"(\", 1) // |)\n", true), None);
         let py = Language::Python;
         assert_eq!(matched(py, "x = |[1, \"]\", 2]  # ]\n", true), Some((4, 14)));
+    }
+
+    /// The new languages: their own bracket pairs, tokens from the tree, except Markdown's
+    /// (its block grammar keeps a paragraph's text in one leaf), whose brackets come from the text.
+    #[test]
+    fn other_languages() {
+        use Language::*;
+        assert_eq!(matched(Rust, "fn f() |{ \"}\" }", true), Some((7, 13)));
+        assert_eq!(matched(Rust, "fn f() |{ \"}\" }", false), Some((7, 10)));
+        assert_eq!(
+            matched(Rust, "fn f() |{ // }\n}", true),
+            Some((7, 14)),
+            "in a line_comment"
+        );
+        assert_eq!(
+            matched(Rust, "fn f() |{ /* } */ }", true),
+            Some((7, 17)),
+            "in a block_comment"
+        );
+        assert_eq!(matched(Json, "|{\"a\": [1]}", true), Some((0, 9)));
+        assert_eq!(matched(Json, "{\"a\": |(1)}", false), None, "() isn't a JSON bracket");
+        assert_eq!(matched(Xml, "|<a x=\"1\">t</a>", true), Some((0, 8)));
+        assert_eq!(matched(Xml, "<a>t|[x]</a>", false), None, "[] isn't an XML bracket");
+        for parse in [true, false] {
+            assert_eq!(matched(Markdown, "Some |(text [x]) here\n", parse), Some((5, 14)));
+            assert_eq!(matched(Markdown, "- a [b|]\n", parse), Some((6, 4)));
+        }
+        assert_eq!(matched(Yaml, "a: |[1, \"]\", 2]\n", true), Some((3, 13)));
+        assert_eq!(matched(Toml, "x = |{ a = 1 }\n", true), Some((4, 12)));
+        assert_eq!(matched(ShellScript, "f() |{ echo '}'; }\n", true), Some((4, 16)));
     }
 
     #[test]

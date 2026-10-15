@@ -1,5 +1,6 @@
 //! Per-language editing rules (VS Code's `language-configuration.json`): the line comment
-//! token for comment line, and the pairs for auto-close, type-over, pair delete and wrap.
+//! token for comment line, the pairs for auto-close, type-over, pair delete and wrap, and the
+//! bracket pairs for auto-indent and bracket matching.
 
 use super::Language;
 
@@ -19,6 +20,16 @@ pub struct LanguageConfig {
     /// Comment line's token (`//`, `#`); `None`: comment line does nothing.
     pub line_comment: Option<&'static str>,
     pub pairs: &'static [AutoPair],
+    /// The bracket pairs (VS Code's `brackets`, single chars only): auto-indent and bracket
+    /// matching.
+    pub brackets: &'static [(char, char)],
+    /// Whether the parse tree's leaves are the language's tokens, so a bracket counts only as a
+    /// token of its own (not in a string or comment). False for Markdown, whose block grammar
+    /// keeps a paragraph's text in one leaf: its brackets are found in the text.
+    pub tree_tokens: bool,
+    /// VS Code's language-specific `editor.insertSpaces` default, over the user's setting
+    /// (Makefiles indent recipes with tabs).
+    pub insert_spaces: Option<bool>,
     /// What typing an opening char wraps a selection in (VS Code's `surroundingPairs`).
     pub surround: &'static [(char, char)],
     /// A pair auto-closes only before one of these, the end of the line, or a closing char of a
@@ -46,6 +57,11 @@ const BRACKETS: [AutoPair; 3] = [
     pair('(', ')', false, false),
 ];
 
+/// `{}` `[]` `()`: most languages' `brackets`.
+const BRACKET_PAIRS: &[(char, char)] = &[('{', '}'), ('[', ']'), ('(', ')')];
+/// Brackets and both quotes: most languages' `surroundingPairs`.
+const SURROUND: &[(char, char)] = &[('{', '}'), ('[', ']'), ('(', ')'), ('"', '"'), ('\'', '\'')];
+
 /// VS Code's `DEFAULT_AUTOCLOSE_BEFORE_LANGUAGE_DEFINED_QUOTES` / `_BRACKETS`.
 const DEFAULT_BEFORE_QUOTES: &str = ";:.,=}])> \n\t";
 const DEFAULT_BEFORE_BRACKETS: &str = "'\"`;:.,=}])> \n\t";
@@ -55,6 +71,9 @@ const DEFAULT_BEFORE_BRACKETS: &str = "'\"`;:.,=}])> \n\t";
 static PLAIN_TEXT: LanguageConfig = LanguageConfig {
     line_comment: None,
     pairs: &BRACKETS,
+    brackets: BRACKET_PAIRS,
+    tree_tokens: true,
+    insert_spaces: None,
     surround: &[
         ('{', '}'),
         ('[', ']'),
@@ -79,6 +98,9 @@ static C_LIKE: LanguageConfig = LanguageConfig {
         pair('\'', '\'', true, true),
         pair('"', '"', true, false),
     ],
+    brackets: BRACKET_PAIRS,
+    tree_tokens: true,
+    insert_spaces: None,
     surround: &[('{', '}'), ('[', ']'), ('(', ')'), ('"', '"'), ('\'', '\''), ('<', '>')],
     close_before_quotes: DEFAULT_BEFORE_QUOTES,
     close_before_brackets: DEFAULT_BEFORE_BRACKETS,
@@ -97,11 +119,183 @@ static PYTHON: LanguageConfig = LanguageConfig {
         pair('\'', '\'', true, true),
         pair('`', '`', true, false),
     ],
+    brackets: BRACKET_PAIRS,
+    tree_tokens: true,
+    insert_spaces: None,
     surround: &[('{', '}'), ('[', ']'), ('(', ')'), ('"', '"'), ('\'', '\''), ('`', '`')],
     close_before_quotes: DEFAULT_BEFORE_QUOTES,
     close_before_brackets: DEFAULT_BEFORE_BRACKETS,
     string_prefixes: "rRuUfFbB",
 };
+
+/// A configuration with VS Code's default `autoCloseBefore`, no string prefixes, the parse
+/// tree's tokens and the user's indentation.
+const fn config(
+    line_comment: Option<&'static str>,
+    pairs: &'static [AutoPair],
+    brackets: &'static [(char, char)],
+    surround: &'static [(char, char)],
+) -> LanguageConfig {
+    LanguageConfig {
+        line_comment,
+        pairs,
+        brackets,
+        tree_tokens: true,
+        insert_spaces: None,
+        surround,
+        close_before_quotes: DEFAULT_BEFORE_QUOTES,
+        close_before_brackets: DEFAULT_BEFORE_BRACKETS,
+        string_prefixes: "",
+    }
+}
+
+/// VS Code's `rust`: only `"` auto-closes among the quotes (`'` starts lifetimes), not in strings;
+/// wraps in `<>` too.
+static RUST: LanguageConfig = config(
+    Some("//"),
+    &[BRACKETS[0], BRACKETS[1], BRACKETS[2], pair('"', '"', true, false)],
+    BRACKET_PAIRS,
+    &[('{', '}'), ('[', ']'), ('(', ')'), ('"', '"'), ('<', '>')],
+);
+
+/// VS Code's `markdown`: block comments only (none here), `<` auto-closes outside strings, and a
+/// selection wraps in emphasis / code marks as well.
+static MARKDOWN: LanguageConfig = LanguageConfig {
+    tree_tokens: false,
+    ..config(
+        None,
+        &[BRACKETS[0], BRACKETS[1], BRACKETS[2], pair('<', '>', true, false)],
+        BRACKET_PAIRS,
+        &[
+            ('(', ')'),
+            ('[', ']'),
+            ('`', '`'),
+            ('_', '_'),
+            ('*', '*'),
+            ('{', '}'),
+            ('\'', '\''),
+            ('"', '"'),
+            ('<', '>'),
+            ('~', '~'),
+            ('$', '$'),
+        ],
+    )
+};
+
+/// VS Code's `yaml`: `#`, both quotes auto-close anywhere.
+static YAML: LanguageConfig = config(
+    Some("#"),
+    &[
+        BRACKETS[0],
+        BRACKETS[1],
+        BRACKETS[2],
+        pair('"', '"', false, false),
+        pair('\'', '\'', false, false),
+    ],
+    BRACKET_PAIRS,
+    SURROUND,
+);
+
+/// VS Code's `json` / `jsonc` pairs: nothing auto-closes in a string, `"` and `` ` `` not in a
+/// comment either; brackets are `{}` and `[]`.
+const JSON_PAIRS: &[AutoPair] = &[
+    pair('{', '}', true, false),
+    pair('[', ']', true, false),
+    pair('(', ')', true, false),
+    pair('\'', '\'', true, false),
+    pair('"', '"', true, true),
+    pair('`', '`', true, true),
+];
+const JSON_BRACKETS: &[(char, char)] = &[('{', '}'), ('[', ']')];
+const JSON_SURROUND: &[(char, char)] = &[('{', '}'), ('[', ']'), ('(', ')'), ('"', '"'), ('\'', '\''), ('`', '`')];
+
+/// JSON has no comments (VS Code's shared configuration gives it `//`, which then shows as an
+/// error).
+static JSON: LanguageConfig = config(None, JSON_PAIRS, JSON_BRACKETS, JSON_SURROUND);
+static JSONC: LanguageConfig = config(Some("//"), JSON_PAIRS, JSON_BRACKETS, JSON_SURROUND);
+
+/// VS Code's `xml`: block comments only (none here); `'` not in strings or comments, `"` not in
+/// strings; brackets `<>` `{}` `()`; wraps in `<>` too.
+static XML: LanguageConfig = config(
+    None,
+    &[
+        BRACKETS[0],
+        BRACKETS[1],
+        BRACKETS[2],
+        pair('\'', '\'', true, true),
+        pair('"', '"', true, false),
+    ],
+    &[('<', '>'), ('{', '}'), ('(', ')')],
+    &[('\'', '\''), ('"', '"'), ('{', '}'), ('[', ']'), ('(', ')'), ('<', '>')],
+);
+
+/// TOML (no VS Code built-in; Even Better TOML's): `#`, brackets `{}` `[]`, quotes not in strings.
+static TOML: LanguageConfig = config(
+    Some("#"),
+    &[
+        BRACKETS[0],
+        BRACKETS[1],
+        pair('"', '"', true, false),
+        pair('\'', '\'', true, false),
+    ],
+    &[('{', '}'), ('[', ']')],
+    &[('{', '}'), ('[', ']'), ('"', '"'), ('\'', '\'')],
+);
+
+/// VS Code's `shellscript`: `#`; quotes and backticks not in strings.
+static SHELL: LanguageConfig = config(
+    Some("#"),
+    &[
+        BRACKETS[0],
+        BRACKETS[1],
+        BRACKETS[2],
+        pair('"', '"', true, false),
+        pair('\'', '\'', true, false),
+        pair('`', '`', true, false),
+    ],
+    BRACKET_PAIRS,
+    &[('{', '}'), ('[', ']'), ('(', ')'), ('"', '"'), ('\'', '\''), ('`', '`')],
+);
+
+/// CMake (no VS Code built-in; the CMake extension's): `#`, `"` not in strings.
+static CMAKE: LanguageConfig = config(
+    Some("#"),
+    &[BRACKETS[0], BRACKETS[1], BRACKETS[2], pair('"', '"', true, false)],
+    BRACKET_PAIRS,
+    &[('{', '}'), ('[', ']'), ('(', ')'), ('"', '"')],
+);
+
+/// VS Code's `makefile`: `#`, `'` not in strings or comments, `"` not in strings; indented with
+/// tabs (its `[makefile] editor.insertSpaces: false` default: a recipe line must start with one).
+static MAKEFILE: LanguageConfig = LanguageConfig {
+    insert_spaces: Some(false),
+    ..config(
+        Some("#"),
+        &[
+            BRACKETS[0],
+            BRACKETS[1],
+            BRACKETS[2],
+            pair('\'', '\'', true, true),
+            pair('"', '"', true, false),
+        ],
+        BRACKET_PAIRS,
+        &[('{', '}'), ('[', ']'), ('(', ')'), ('"', '"'), ('\'', '\''), ('`', '`')],
+    )
+};
+
+/// VS Code's `dockerfile`: `#`, quotes not in strings.
+static DOCKERFILE: LanguageConfig = config(
+    Some("#"),
+    &[
+        BRACKETS[0],
+        BRACKETS[1],
+        BRACKETS[2],
+        pair('"', '"', true, false),
+        pair('\'', '\'', true, false),
+    ],
+    BRACKET_PAIRS,
+    SURROUND,
+);
 
 impl Language {
     pub fn config(self) -> &'static LanguageConfig {
@@ -109,6 +303,17 @@ impl Language {
             Language::PlainText => &PLAIN_TEXT,
             Language::C | Language::Cpp => &C_LIKE,
             Language::Python => &PYTHON,
+            Language::Rust => &RUST,
+            Language::Markdown => &MARKDOWN,
+            Language::Yaml => &YAML,
+            Language::Json => &JSON,
+            Language::Jsonc => &JSONC,
+            Language::Xml => &XML,
+            Language::Toml => &TOML,
+            Language::ShellScript => &SHELL,
+            Language::CMake => &CMAKE,
+            Language::Makefile => &MAKEFILE,
+            Language::Dockerfile => &DOCKERFILE,
         }
     }
 }
@@ -128,13 +333,9 @@ impl LanguageConfig {
         self.pairs.iter().any(|p| p.close == c)
     }
 
-    /// The bracket pairs (the pairs that aren't quotes): what auto-indent and bracket matching
-    /// use (VS Code's `brackets`, the same three in every language red knows).
+    /// The bracket pairs: what auto-indent and bracket matching use (VS Code's `brackets`).
     pub fn brackets(&self) -> impl Iterator<Item = (char, char)> + '_ {
-        self.pairs
-            .iter()
-            .filter(|p| !is_quote(p.open))
-            .map(|p| (p.open, p.close))
+        self.brackets.iter().copied()
     }
 
     pub fn surround_for(&self, c: char) -> Option<char> {
@@ -160,4 +361,44 @@ impl LanguageConfig {
 
 pub fn is_quote(c: char) -> bool {
     matches!(c, '"' | '\'' | '`')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn languages_configs() {
+        use Language::*;
+        let comment = |l: Language| l.config().line_comment;
+        assert_eq!(comment(Rust), Some("//"));
+        assert_eq!(comment(Jsonc), Some("//"));
+        for l in [Python, Yaml, Toml, ShellScript, CMake, Makefile, Dockerfile] {
+            assert_eq!(comment(l), Some("#"), "{l:?}");
+        }
+        for l in [PlainText, Json, Markdown, Xml] {
+            assert_eq!(comment(l), None, "{l:?}");
+        }
+        let brackets = |l: Language| l.config().brackets().collect::<Vec<_>>();
+        assert_eq!(brackets(Json), [('{', '}'), ('[', ']')]);
+        assert_eq!(brackets(Xml), [('<', '>'), ('{', '}'), ('(', ')')]);
+        assert_eq!(
+            brackets(Markdown),
+            [('{', '}'), ('[', ']'), ('(', ')')],
+            "`<` auto-closes but isn't one"
+        );
+        for l in Language::ALL {
+            let c = l.config();
+            // Every bracket's opener is typed through the pairs path (auto-close or wrap).
+            assert!(c.brackets().all(|(o, _)| c.is_pair_char(o)), "{l:?}");
+            assert_eq!(c.tree_tokens, l != Markdown, "{l:?}");
+            assert_eq!(c.insert_spaces, (l == Makefile).then_some(false), "{l:?}");
+        }
+        assert!(Rust.config().pair_opened_by('\'').is_none());
+        assert!(
+            Json.config()
+                .pair_opened_by('"')
+                .is_some_and(|p| p.not_in_string && p.not_in_comment)
+        );
+    }
 }

@@ -42,7 +42,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             let col = pos::display_col(&buf.rope, head, app.settings.tab_width).0 + 1;
             format!("Ln {line}, Col {col}")
         };
-        let indent = if app.settings.insert_spaces {
+        let settings = app.settings.for_language(buf.syntax.language());
+        let indent = if settings.insert_spaces {
             format!("Spaces: {}", app.settings.tab_width)
         } else {
             format!("Tab Size: {}", app.settings.tab_width)

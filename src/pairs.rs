@@ -680,4 +680,63 @@ pub(crate) mod tests {
         edit::run(Command::DeleteLeft, &mut b, &mut v, &s);
         assert_eq!(show(&b, &v), "f|)");
     }
+
+    /// The new languages' pairs (VS Code's configurations).
+    #[test]
+    fn pairs_in_other_languages() {
+        use Language::*;
+        // Rust: `'` starts lifetimes, so it doesn't auto-close; `"` does, `<>` only wraps.
+        assert_eq!(after(Rust, "fn f<|", "'"), "fn f<'|");
+        assert_eq!(after(Rust, "x = |;", "\""), "x = \"|\";");
+        assert_eq!(after(Rust, "«T»", "<"), "<«T»>");
+        assert_eq!(after(Rust, "x|", "<"), "x<|");
+        // JSON: brackets and quotes auto-close, but not in a string (with the tree).
+        assert_eq!(after(Json, "|", "{\""), "{\"|\"}");
+        assert_eq!(after(Json, "|", "["), "[|]");
+        let (mut b, mut v) = setup(Json, "{\"a |\": 1}", true);
+        typed(&mut b, &mut v, "[");
+        assert_eq!(show(&b, &v), "{\"a [|\": 1}", "not in a string");
+        let (mut b, mut v) = setup(Json, "{\"a | b\": 1}", true);
+        typed(&mut b, &mut v, "\"");
+        assert_eq!(show(&b, &v), "{\"a \"| b\": 1}", "no quote pair in a string");
+        let (mut b, mut v) = setup(Jsonc, "// a |\n{}", true);
+        typed(&mut b, &mut v, "\"(");
+        assert_eq!(
+            show(&b, &v),
+            "// a \"(|)\n{}",
+            "no quote pair in a comment, brackets yes"
+        );
+        // YAML: both quotes, also in comments.
+        assert_eq!(after(Yaml, "a: |", "'"), "a: '|'");
+        let (mut b, mut v) = setup(Yaml, "# it |\n", true);
+        typed(&mut b, &mut v, "\"");
+        assert_eq!(show(&b, &v), "# it \"|\"\n");
+        // Markdown: `<` auto-closes; `*` / `_` / backticks wrap a selection.
+        assert_eq!(after(Markdown, "see |", "<"), "see <|>");
+        assert_eq!(after(Markdown, "a «b» c", "*"), "a *«b»* c");
+        assert_eq!(after(Markdown, "a «b» c", "`"), "a `«b»` c");
+        assert_eq!(after(Markdown, "a |", "*"), "a *|", "a cursor types it");
+        assert_eq!(after(Markdown, "a |", "\""), "a \"|", "quotes don't auto-close");
+        // XML: `"` not in an attribute value; `<` wraps only.
+        assert_eq!(after(Xml, "<a x=|", "\""), "<a x=\"|\"");
+        let (mut b, mut v) = setup(Xml, "<a x=\"y |\"/>", true);
+        typed(&mut b, &mut v, "'");
+        assert_eq!(show(&b, &v), "<a x=\"y '|\"/>", "' not in a string");
+        assert_eq!(after(Xml, "«a»", "<"), "<«a»>");
+        // Shell: backticks too, not in strings.
+        assert_eq!(after(ShellScript, "x=|", "`"), "x=`|`");
+        let (mut b, mut v) = setup(ShellScript, "echo 'a |'\n", true);
+        typed(&mut b, &mut v, "\"");
+        assert_eq!(show(&b, &v), "echo 'a \"|'\n", "in a raw string");
+        let (mut b, mut v) = setup(ShellScript, "echo \"$(f |)\"\n", true);
+        typed(&mut b, &mut v, "'");
+        assert_eq!(show(&b, &v), "echo \"$(f '|')\"\n", "a command substitution is code");
+        // TOML: no `(` pair, quotes not in strings.
+        assert_eq!(after(Toml, "x = |", "("), "x = (|");
+        assert_eq!(after(Toml, "x = |", "'"), "x = '|'");
+        // Makefile, CMake, Dockerfile.
+        assert_eq!(after(Makefile, "x = $|", "("), "x = $(|)");
+        assert_eq!(after(CMake, "set|", "("), "set(|)");
+        assert_eq!(after(Dockerfile, "CMD [|]", "\""), "CMD [\"|\"]");
+    }
 }

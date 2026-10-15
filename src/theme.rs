@@ -87,12 +87,30 @@ impl Theme {
             ("keyword", Style::new().fg(c(0x569CD6))),
             ("keyword.control", Style::new().fg(c(0xC586C0))),
             ("label", Style::new().fg(c(0xC8C8C8))),
+            // Markdown (Dark+'s `markup.heading`, `markup.inline.raw`, `markup.underline`, the
+            // list and quote punctuation).
+            (
+                "markup.heading",
+                Style::new().fg(c(0x569CD6)).add_modifier(Modifier::BOLD),
+            ),
+            (
+                "markup.link",
+                Style::new().fg(c(0xD4D4D4)).add_modifier(Modifier::UNDERLINED),
+            ),
+            ("markup.list", Style::new().fg(c(0x6796E6))),
+            ("markup.quote", Style::new().fg(c(0x6A9955))),
+            ("markup.raw", Style::new().fg(c(0xCE9178))),
             ("number", Style::new().fg(c(0xB5CEA8))),
             ("operator", Style::new().fg(c(0xD4D4D4))),
             ("property", Style::new().fg(c(0x9CDCFE))),
             ("punctuation", Style::new().fg(c(0xD4D4D4))),
             ("punctuation.special", Style::new().fg(c(0x569CD6))),
+            // XML (Dark+'s `punctuation.definition.tag`, `entity.name.tag`, attribute names); YAML
+            // keys are tags too.
+            ("punctuation.tag", Style::new().fg(c(0x808080))),
             ("string", Style::new().fg(c(0xCE9178))),
+            ("tag", Style::new().fg(c(0x569CD6))),
+            ("tag.attribute", Style::new().fg(c(0x9CDCFE))),
             ("type", Style::new().fg(c(0x4EC9B0))),
             ("type.builtin", Style::new().fg(c(0x569CD6))),
             ("variable", Style::new().fg(c(0x9CDCFE))),

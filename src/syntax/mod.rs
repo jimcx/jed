@@ -165,15 +165,22 @@ impl Syntax {
         current(&self.state)
     }
 
-    /// A walk over the current tree's tokens (auto-indent, bracket matching); `None` without one.
+    /// The current tree when its leaves are the language's tokens (`LanguageConfig::tree_tokens`:
+    /// not Markdown's): what bracket matching and auto-indent read brackets from. `None` without
+    /// one, and they scan the text instead.
+    pub fn token_tree(&self) -> Option<&Tree> {
+        self.tree().filter(|_| self.language.config().tree_tokens)
+    }
+
+    /// A walk over the `token_tree`'s tokens (auto-indent, bracket matching); `None` without one.
     pub fn tokens(&self) -> Option<Tokens<'_>> {
-        current(&self.state).map(Tokens::new)
+        self.token_tree().map(Tokens::new)
     }
 
     /// What the char before `pos` is part of: a string, a comment or code (auto-close's `notIn`,
     /// as VS Code reads the token before the cursor). `None` without a current tree. The
-    /// smallest node holding that char and its ancestors are checked, up to an f-string's
-    /// `interpolation` (code again).
+    /// smallest node holding that char and its ancestors are checked (`scope_of`), up to a node
+    /// that is code again inside a string (an f-string's `interpolation`, a shell `$(…)`).
     pub fn scope_before(&self, pos: ByteIdx) -> Option<Scope> {
         let tree = current(&self.state)?;
         if pos.0 == 0 {
@@ -181,17 +188,9 @@ impl Syntax {
         }
         let mut node = tree.root_node().descendant_for_byte_range(pos.0 - 1, pos.0);
         while let Some(n) = node {
-            match n.kind() {
-                "comment" => return Some(Scope::Comment),
-                "string_literal"
-                | "char_literal"
-                | "raw_string_literal"
-                | "system_lib_string"
-                | "string"
-                | "string_content"
-                | "concatenated_string" => return Some(Scope::String),
-                "interpolation" => return Some(Scope::Code),
-                _ => node = n.parent(),
+            match scope_of(n.kind()) {
+                Some(scope) => return Some(scope),
+                None => node = n.parent(),
             }
         }
         Some(Scope::Code)
@@ -412,6 +411,38 @@ impl ParseJob {
             tree,
         }
     }
+}
+
+/// The scope a node of this kind sets for the text in it, across red's grammars; `None`: its
+/// parent's. Comments: any kind naming one (`comment`, Rust's `line_comment`, CMake's
+/// `bracket_comment`, XML's `Comment`). Strings: kinds naming one (`string_literal`, `raw_string`,
+/// YAML's plain `string_scalar`, …, but not the Dockerfile's `unquoted_string`) and the grammars'
+/// other quoted kinds. Code: the parts of a string that are code again.
+pub fn scope_of(kind: &str) -> Option<Scope> {
+    if kind.contains("comment") || kind == "Comment" {
+        return Some(Scope::Comment);
+    }
+    match kind {
+        "interpolation" | "expansion" | "simple_expansion" | "command_substitution" | "variable_ref" => {
+            return Some(Scope::Code);
+        }
+        "char_literal"
+        | "system_lib_string"
+        | "double_quote_scalar"
+        | "single_quote_scalar"
+        | "block_scalar"
+        | "heredoc_body"
+        | "heredoc_block"
+        | "quoted_argument"
+        | "bracket_argument"
+        | "AttValue"
+        | "EntityValue"
+        | "PseudoAttValue"
+        | "SystemLiteral"
+        | "PubidLiteral" => return Some(Scope::String),
+        _ => {}
+    }
+    (kind.contains("string") && !kind.starts_with("unquoted")).then_some(Scope::String)
 }
 
 fn current(state: &State) -> Option<&Tree> {

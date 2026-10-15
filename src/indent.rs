@@ -13,9 +13,12 @@
 //!   with its closing bracket next after the cursor (whitespace between allowed), the closing
 //!   bracket goes on a line of its own at the old indentation and the cursor on the indented
 //!   middle line (VS Code's `IndentAction.IndentOutdent`).
-//! - C/C++ (VS Code's `indentationRules` for them, when nothing above applied): an opening
-//!   bracket left unclosed anywhere before the cursor (`g(a,`, `{ x;`) adds a level; text after
-//!   the cursor starting with a closing bracket removes one (`x;|}` puts the `}` a level left).
+//! - C/C++ and Rust (VS Code's `indentationRules` for them, when nothing above applied): an
+//!   opening bracket left unclosed anywhere before the cursor (`g(a,`, `{ x;`) adds a level;
+//!   text after the cursor starting with a closing bracket removes one (`x;|}` puts the `}` a
+//!   level left). Rust's rules leave `[` out and stop at a quote; red uses C's for both.
+//! - YAML (its `indentationRules`' increase pattern): a line ending with `:` or `-` (a mapping
+//!   key, a sequence dash) adds a level.
 //! - Python (VS Code's `onEnterRules`, which come before brackets): a line starting with a block
 //!   keyword (`def`, `class`, `if`, `for`, …) and ending with `:` adds a level; a line starting
 //!   with `return`, `pass`, `break`, `continue` or `raise` removes one.
@@ -45,7 +48,7 @@ use crate::buffer::Buffer;
 use crate::buffer::pos::{self, ByteIdx, LineWalker};
 use crate::buffer::undo::EditKind;
 use crate::edit::{Land, Settings, replace_each, replace_each_landing};
-use crate::syntax::{Language, Tokens};
+use crate::syntax::{Language, Scope, Tokens, scope_of};
 use crate::view::View;
 
 /// How many lines up a Python `else:` looks for its `if`.
@@ -123,8 +126,8 @@ fn without_comment<'a>(
     };
     let cut = match comments {
         Some(tokens) => tokens
-            .leaf_at(start + last)
-            .filter(|n| n.kind() == "comment" && n.start_byte() >= start)
+            .node_at(start + last)
+            .filter(|n| scope_of(n.kind()) == Some(Scope::Comment) && n.start_byte() >= start)
             .map(|n| n.start_byte() - start),
         None => line_comment
             .and_then(|token| content.find(token))
@@ -233,6 +236,9 @@ fn enter_edits(buf: &Buffer, view: &View, s: &Settings, eol: &str) -> (Vec<Enter
                 action = Action::Outdent;
             }
         }
+        if language == Language::Yaml && code.ends_with([':', '-']) {
+            action = Action::Indent;
+        }
         let mut close = None;
         if action == Action::Keep
             && let Some(last) = code.chars().next_back()
@@ -249,10 +255,10 @@ fn enter_edits(buf: &Buffer, view: &View, s: &Settings, eol: &str) -> (Vec<Enter
                 close = Some(c);
             }
         }
-        // C/C++ (VS Code's `indentationRules`, used when no rule above applied): a level more
-        // after an opening bracket left unclosed anywhere before the cursor, one less when the
-        // text after the cursor starts with a closing bracket.
-        let rules = action == Action::Keep && matches!(language, Language::C | Language::Cpp);
+        // C/C++ and Rust (VS Code's `indentationRules`, used when no rule above applied): a level
+        // more after an opening bracket left unclosed anywhere before the cursor, one less when
+        // the text after the cursor starts with a closing bracket.
+        let rules = action == Action::Keep && matches!(language, Language::C | Language::Cpp | Language::Rust);
         if rules {
             // Not for a second cursor on a line (the walk would go back).
             let walk = scan.as_mut().filter(|_| scan_line != Some(line_start));
@@ -367,8 +373,8 @@ fn reindents(
             let in_text = start.0 > 0
                 && tokens
                     .as_mut()
-                    .and_then(|t| t.leaf_at(start.0 - 1))
-                    .is_some_and(|n| n.kind().contains("string") || n.kind().contains("comment"));
+                    .and_then(|t| t.node_at(start.0 - 1))
+                    .is_some_and(|n| matches!(scope_of(n.kind()), Some(Scope::String | Scope::Comment)));
             let opener = if in_text { None } else { openers.before(start) };
             opener.and_then(|o| {
                 if last_opener.as_ref().is_none_or(|(p, _)| *p != o) {
@@ -663,6 +669,66 @@ mod tests {
                 "{lines} lines"
             );
         }
+    }
+
+    /// The new languages: generic bracket indent everywhere, C's rules for Rust, YAML's `:`,
+    /// Makefiles with tabs, and Markdown's brackets read from the text (its tree's leaves are
+    /// whole paragraphs).
+    #[test]
+    fn enter_in_other_languages() {
+        use Language::*;
+        assert_eq!(enter(Rust, "fn f() {|}"), "fn f() {\n    |\n}");
+        assert_eq!(
+            enter(Rust, "    g(a,|"),
+            "    g(a,\n        |",
+            "Rust's indentationRules"
+        );
+        assert_eq!(enter(Rust, "    x;|}"), "    x;\n|}");
+        assert_eq!(enter(Rust, "let s = \"{|\";"), "let s = \"{\n|\";", "in a string");
+        assert_eq!(enter(Rust, "    x; // {|"), "    x; // {\n    |", "in a line_comment");
+        assert_eq!(enter(Json, "{|}"), "{\n    |\n}");
+        assert_eq!(enter(Json, "  \"a\": [|"), "  \"a\": [\n      |");
+        assert_eq!(enter(Json, "  \"a\": \"[|\""), "  \"a\": \"[\n  |\"", "in a string");
+        assert_eq!(enter(Json, "  f(a,|"), "  f(a,\n  |", "no C rules");
+        assert_eq!(enter(Toml, "x = [|]"), "x = [\n    |\n]");
+        assert_eq!(enter(ShellScript, "f() {|"), "f() {\n    |");
+        assert_eq!(enter(ShellScript, "echo '{|'"), "echo '{\n|'");
+        assert_eq!(enter(CMake, "set(|"), "set(\n    |");
+        assert_eq!(enter(CMake, "set(X|"), "set(X\n|", "only after the bracket");
+        assert_eq!(enter(Xml, "<a>|</a>"), "<a>\n|</a>");
+        // YAML: after a key or a dash, not after a value; a comment is skipped.
+        assert_eq!(enter(Yaml, "on:|"), "on:\n    |");
+        assert_eq!(enter(Yaml, "  push:  # c|"), "  push:  # c\n      |");
+        assert_eq!(enter(Yaml, "  -|"), "  -\n      |");
+        assert_eq!(enter(Yaml, "  a: b|"), "  a: b\n  |");
+        assert_eq!(enter(Yaml, "  a: [|]"), "  a: [\n      |\n  ]");
+        // Makefiles indent with tabs whatever the setting (VS Code's `[makefile]` default).
+        assert_eq!(enter(Makefile, "x = $(|)"), "x = $(\n\t|\n)");
+        assert_eq!(enter(Makefile, "\tcc a.c|"), "\tcc a.c\n\t|");
+        // Markdown: brackets from the text, with a tree too.
+        assert_eq!(enter(Markdown, "- a (|)"), "- a (\n    |\n)");
+        assert_eq!(enter(Markdown, "x [|"), "x [\n    |");
+        // Plain-text rules stay off elsewhere: no Python `:` outside Python.
+        assert_eq!(enter(Rust, "  if x:|"), "  if x:\n  |");
+    }
+
+    #[test]
+    fn closing_bracket_outdents_in_other_languages() {
+        use Language::*;
+        assert_eq!(
+            typed(Rust, "fn f() {\n    x;\n    |", "}", true),
+            "fn f() {\n    x;\n}|"
+        );
+        assert_eq!(typed(Json, "{\n  \"a\": [\n      |", "]", true), "{\n  \"a\": [\n  ]|");
+        assert_eq!(typed(Markdown, "(\n    |", ")", true), "(\n)|");
+        assert_eq!(typed(Xml, "<a\n    |", ">", true), "<a\n>|");
+        // Not in a multi-line attribute value (`AttValue`, a string by `scope_of`).
+        assert_eq!(typed(Xml, "<a x=\"\n    |\"/>", ">", true), "<a x=\"\n    >|\"/>");
+        // Not in a Rust block comment (its text is in no leaf).
+        assert_eq!(
+            typed(Rust, "fn f() {\n    /*\n    |\n    */\n}", "}", true),
+            "fn f() {\n    /*\n    }|\n    */\n}"
+        );
     }
 
     #[test]

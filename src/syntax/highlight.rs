@@ -25,7 +25,8 @@ use crate::buffer::change::{Assoc, ChangeSet};
 use crate::buffer::pos::{self, ByteIdx};
 
 /// Theme keys a capture can map to (`Theme::dark_plus` has each). A capture's dotted name is
-/// looked up, then its prefixes (`function.method.builtin` → `function.method` → `function`).
+/// looked up, then its prefixes (`function.method.builtin` → `function.method` → `function`),
+/// each also in `ALIASES`.
 pub const KEYS: &[&str] = &[
     "comment",
     "constant",
@@ -36,17 +37,44 @@ pub const KEYS: &[&str] = &[
     "keyword",
     "keyword.control",
     "label",
+    "markup.heading",
+    "markup.link",
+    "markup.list",
+    "markup.quote",
+    "markup.raw",
     "number",
     "operator",
     "property",
     "punctuation",
     "punctuation.special",
+    "punctuation.tag",
     "string",
+    "tag",
+    "tag.attribute",
     "type",
     "type.builtin",
     "variable",
     "variable.builtin",
     "variable.parameter",
+];
+
+/// Capture names the grammars' own queries use for what a key in `KEYS` colours (Neovim's older
+/// and newer names): capture (or prefix) → key.
+const ALIASES: &[(&str, &str)] = &[
+    ("boolean", "constant.builtin"),
+    ("string.special.key", "property"),
+    ("string.escape", "escape"),
+    ("keyword.conditional", "keyword.control"),
+    ("keyword.repeat", "keyword.control"),
+    ("keyword.return", "keyword.control"),
+    ("conditional", "keyword.control"),
+    ("repeat", "keyword.control"),
+    ("include", "keyword.control"),
+    ("exception", "keyword.control"),
+    ("text.title", "markup.heading"),
+    ("text.literal", "markup.raw"),
+    ("text.uri", "markup.link"),
+    ("text.reference", "markup.link"),
 ];
 
 /// Lines queried beyond the requested ones, so scrolling a little needs no new query.
@@ -77,13 +105,18 @@ impl Highlight {
     }
 }
 
-/// The theme key for a capture name: the name itself, else its longest dotted prefix in `KEYS`;
-/// `None` if there is none (the text keeps the default colour).
+/// The theme key for a capture name: the name itself, else its longest dotted prefix, in `KEYS`
+/// or `ALIASES`; `None` if there is none (the text keeps the default colour; for the same node an
+/// earlier pattern's colour stays).
 pub fn highlight_for(capture: &str) -> Option<Highlight> {
+    let index = |key: &str| KEYS.iter().position(|k| *k == key).map(|i| Highlight(i as u8));
     let mut name = capture;
     loop {
-        if let Some(i) = KEYS.iter().position(|k| *k == name) {
-            return Some(Highlight(i as u8));
+        if let Some(h) = index(name) {
+            return Some(h);
+        }
+        if let Some((_, key)) = ALIASES.iter().find(|(alias, _)| *alias == name) {
+            return index(key);
         }
         name = &name[..name.rfind('.')?];
     }
@@ -398,9 +431,320 @@ mod tests {
         assert_eq!(key("embedded"), None);
         assert_eq!(key("delimiter"), None);
         assert_eq!(key(""), None);
+        // Aliases, also as prefixes.
+        assert_eq!(key("boolean"), Some("constant.builtin"));
+        assert_eq!(key("string.special.key"), Some("property"));
+        assert_eq!(key("string.special"), Some("string"));
+        assert_eq!(key("string.escape"), Some("escape"));
+        assert_eq!(key("keyword.conditional.ternary"), Some("keyword.control"));
+        assert_eq!(key("text.title"), Some("markup.heading"));
+        assert_eq!(key("text"), None);
         for l in Language::ALL {
             assert_eq!(query(l).is_some(), l.grammar().is_some(), "{l:?}");
         }
+    }
+
+    /// Every language's query compiles, and each capture name colours something unless it is
+    /// one the grammars use for text red leaves plain (or for a predicate: `@_name`).
+    #[test]
+    fn every_query_compiles_and_its_captures_map() {
+        const UNCOLOURED: &[&str] = &[
+            "attribute", // Rust's `#[…]` and YAML directives: plain in Dark+.
+            "delimiter", // C's `;` `,` `.`
+            "none",
+            "embedded",
+            "spell",
+            "nospell",
+            "error",
+            "markup", // XML text.
+            "clean",
+            "text.note",
+            "text.warning",
+            "text.danger",
+        ];
+        for l in Language::ALL {
+            let Some(grammar) = l.grammar() else { continue };
+            let q = Query::new(&grammar, &l.highlight_queries().join("\n")).unwrap_or_else(|e| panic!("{l:?}: {e}"));
+            let unmapped: Vec<_> = q
+                .capture_names()
+                .iter()
+                .filter(|n| highlight_for(n).is_none() && !UNCOLOURED.contains(n) && !n.starts_with('_'))
+                .collect();
+            assert!(unmapped.is_empty(), "{l:?}: no theme key for {unmapped:?}");
+            assert!(query(l).is_some(), "{l:?}");
+        }
+    }
+
+    #[test]
+    fn rust_spans() {
+        let text = "use std::fmt;\n/// Doc\npub struct P<'a> { x: &'a str }\nconst MAX: u32 = 10;\nfn f(a: i32) -> Option<i32> {\n    let s = \"x\\n\"; // c\n    if a > 0 { return Some(a); }\n    println!(\"{}\", MAX);\n    self.go(1.5, true);\n    None\n}\n";
+        assert_has(
+            Language::Rust,
+            text,
+            &[
+                ("use", "keyword"),
+                ("std", "variable"),
+                ("/// Doc\n", "comment"),
+                ("pub", "keyword"),
+                ("struct", "keyword"),
+                ("P", "type"),
+                ("'a", "type"),
+                ("x", "property"),
+                ("str", "type"),
+                ("const", "keyword"),
+                ("MAX", "constant"),
+                ("u32", "type"),
+                ("10", "number"),
+                ("fn", "keyword"),
+                ("f", "function"),
+                ("a", "variable.parameter"),
+                ("Option", "type"),
+                ("let", "keyword"),
+                ("s", "variable"),
+                ("\"x", "string"),
+                ("\\n", "escape"),
+                ("// c", "comment"),
+                ("if", "keyword.control"),
+                ("return", "keyword.control"),
+                ("println!", "function"),
+                ("MAX", "constant"),
+                ("self", "variable.builtin"),
+                ("go", "function"),
+                ("1.5", "number"),
+                ("true", "constant.builtin"),
+                ("None", "constructor"),
+            ],
+        );
+    }
+
+    /// The block grammar only: headings, list and quote markers, code blocks, link definitions;
+    /// inline text stays plain.
+    #[test]
+    fn markdown_spans() {
+        let text = "# Title\n\nSome *text* with `code`.\n\n- item\n1. one\n\n> quote\n> more\n\n```rust\nfn x() {}\n```\n\n[ref]: http://x.y\n\n---\nSetext\n===\n";
+        assert_eq!(
+            all(Language::Markdown, text),
+            [
+                ("# Title\n".into(), "markup.heading"),
+                ("- ".into(), "markup.list"),
+                ("1. ".into(), "markup.list"),
+                ("> ".into(), "markup.quote"),
+                ("> ".into(), "markup.quote"),
+                ("```rust".into(), "punctuation"),
+                ("\nfn x() {}\n".into(), "markup.raw"),
+                ("```".into(), "punctuation"),
+                ("\n".into(), "markup.raw"),
+                ("[ref]".into(), "markup.link"),
+                ("http://x.y".into(), "markup.link"),
+                ("---\n".into(), "punctuation.special"),
+                ("Setext\n===\n".into(), "markup.heading"),
+            ]
+        );
+    }
+
+    #[test]
+    fn yaml_spans() {
+        let text = "# c\nname: CI\non:\n  push:\n    branches: [main, \"dev\"]\nx: 1.5\ny: true\nz: null\nanchors: &a !!str 'v'\nref: *a\n";
+        assert_has(
+            Language::Yaml,
+            text,
+            &[
+                ("# c", "comment"),
+                ("name", "tag"),
+                (":", "punctuation"),
+                ("CI", "string"),
+                ("push", "tag"),
+                ("main", "string"),
+                ("\"dev\"", "string"),
+                ("1.5", "number"),
+                ("true", "constant.builtin"),
+                ("null", "constant.builtin"),
+                ("anchors", "tag"),
+                ("a", "type"),
+                ("!!str", "keyword"),
+                ("'v'", "string"),
+            ],
+        );
+    }
+
+    #[test]
+    fn json_spans() {
+        let text = "{\"a\": 1, \"b\": [true, null, \"s\\n\"]}\n";
+        assert_eq!(
+            all(Language::Json, text),
+            [
+                ("\"a\"".into(), "property"),
+                ("1".into(), "number"),
+                ("\"b\"".into(), "property"),
+                ("true".into(), "constant.builtin"),
+                ("null".into(), "constant.builtin"),
+                ("\"s".into(), "string"),
+                ("\\n".into(), "escape"),
+                ("\"".into(), "string"),
+            ]
+        );
+        assert_eq!(
+            all(Language::Jsonc, "// c\n{\"a\": 1 /* b */}\n"),
+            [
+                ("// c".into(), "comment"),
+                ("\"a\"".into(), "property"),
+                ("1".into(), "number"),
+                ("/* b */".into(), "comment"),
+            ]
+        );
+    }
+
+    #[test]
+    fn xml_spans() {
+        let text = "<?xml version=\"1.0\"?>\n<!-- c -->\n<root a=\"1\">text &amp; <b/></root>\n";
+        assert_has(
+            Language::Xml,
+            text,
+            &[
+                ("<?", "punctuation.tag"),
+                ("xml", "keyword"),
+                ("version", "property"),
+                ("<!-- c -->", "comment"),
+                ("<", "punctuation.tag"),
+                ("root", "tag"),
+                ("a", "tag.attribute"),
+                ("1", "string"),
+                (">", "punctuation.tag"),
+                ("&amp;", "constant.builtin"),
+                ("b", "tag"),
+                ("root", "tag"),
+            ],
+        );
+    }
+
+    #[test]
+    fn toml_spans() {
+        let text =
+            "# c\n[package]\nname = \"red\"\nversion.workspace = true\n[[bin]]\nx = 1\nd = 1979-05-27\n\"q\" = 'v'\n";
+        assert_has(
+            Language::Toml,
+            text,
+            &[
+                ("# c", "comment"),
+                ("package", "type"),
+                ("name", "property"),
+                ("=", "operator"),
+                ("\"red\"", "string"),
+                ("version", "property"),
+                ("workspace", "property"),
+                ("true", "constant.builtin"),
+                ("bin", "type"),
+                ("1", "number"),
+                ("1979-05-27", "string"),
+                ("\"q\"", "property"),
+                ("'v'", "string"),
+            ],
+        );
+    }
+
+    #[test]
+    fn shell_spans() {
+        let text = "#!/bin/bash\n# c\nlocal x=1\nif [ -f \"$x\" ]; then\n  echo \"a ${x} $(pwd)\" 'r' 42\nfi\nf() { return 0; }\nfor i in 1 2; do ls; done\n";
+        assert_has(
+            Language::ShellScript,
+            text,
+            &[
+                ("#!/bin/bash", "comment"),
+                ("local", "keyword"),
+                ("x", "property"),
+                ("1", "number"),
+                ("if", "keyword.control"),
+                ("$", "variable"),
+                ("then", "keyword.control"),
+                ("echo", "function"),
+                ("\"a ", "string"),
+                ("${", "variable"),
+                ("pwd", "function"),
+                ("'r'", "string"),
+                ("42", "number"),
+                ("fi", "keyword.control"),
+                ("f", "function"),
+                ("return", "keyword.control"),
+                ("for", "keyword.control"),
+                ("in", "keyword.control"),
+                ("do", "keyword.control"),
+                ("ls", "function"),
+                ("done", "keyword.control"),
+            ],
+        );
+    }
+
+    #[test]
+    fn cmake_spans() {
+        let text = "# c\ncmake_minimum_required(VERSION 3.20)\nset(x \"a ${Y}\" ON)\nif(NOT x)\n  message(STATUS \"x\")\nendif()\nfunction(f a)\n  return()\nendfunction()\n";
+        assert_eq!(
+            all(Language::CMake, text),
+            [
+                ("# c".into(), "comment"),
+                ("cmake_minimum_required".into(), "function"),
+                ("VERSION".into(), "constant"),
+                ("set".into(), "function"),
+                ("\"a ".into(), "string"),
+                ("${Y}".into(), "variable"),
+                ("\"".into(), "string"),
+                ("ON".into(), "constant.builtin"),
+                ("if".into(), "keyword.control"),
+                ("NOT".into(), "constant"),
+                ("message".into(), "function"),
+                ("STATUS".into(), "constant"),
+                ("\"x\"".into(), "string"),
+                ("endif".into(), "keyword.control"),
+                ("function".into(), "keyword"),
+                ("f".into(), "function"),
+                ("return".into(), "keyword.control"),
+                ("endfunction".into(), "keyword"),
+            ]
+        );
+    }
+
+    #[test]
+    fn makefile_spans() {
+        let text = "# c\nCC = gcc\nall: main.o\n\t$(CC) -o $@ $^\nifeq ($(CC),gcc)\ninclude x.mk\nendif\n%.o: %.c\n\techo $(info hi)\n";
+        assert_has(
+            Language::Makefile,
+            text,
+            &[
+                ("# c", "comment"),
+                ("CC", "variable"),
+                ("=", "operator"),
+                ("gcc", "punctuation"),
+                ("all", "function"),
+                ("CC", "variable"),
+                ("ifeq", "keyword.control"),
+                ("include", "keyword.control"),
+                ("endif", "keyword.control"),
+                ("%.o", "function"),
+                ("info", "function"),
+            ],
+        );
+    }
+
+    #[test]
+    fn dockerfile_spans() {
+        let text = "# c\nFROM ubuntu:22.04 AS build\nENV A=1 B=\"two\"\nRUN echo $A\nEXPOSE 8080\nCMD [\"run\"]\n";
+        assert_has(
+            Language::Dockerfile,
+            text,
+            &[
+                ("# c\n", "comment"),
+                ("FROM", "keyword"),
+                ("AS", "keyword"),
+                ("ENV", "keyword"),
+                ("A", "property"),
+                ("B", "property"),
+                ("\"two\"", "string"),
+                ("RUN", "keyword"),
+                ("EXPOSE", "keyword"),
+                ("8080", "number"),
+                ("CMD", "keyword"),
+                ("\"run\"", "string"),
+            ],
+        );
     }
 
     #[test]

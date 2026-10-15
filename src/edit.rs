@@ -10,6 +10,7 @@ use crate::buffer::undo::EditKind;
 use crate::clipboard::Copied;
 use crate::command::{Command, Motion};
 use crate::selection::{Selection, Selections};
+use crate::syntax::Language;
 use crate::view::View;
 use crate::{column, comment, indent, lines, pairs};
 
@@ -44,9 +45,22 @@ impl Default for Settings {
     }
 }
 
+impl Settings {
+    /// The settings for a buffer in `language`: its `LanguageConfig::insert_spaces` (VS Code's
+    /// language-specific default, which wins over the user's general setting) applied.
+    pub fn for_language(&self, language: Language) -> Settings {
+        let mut s = self.clone();
+        if let Some(spaces) = language.config().insert_spaces {
+            s.insert_spaces = spaces;
+        }
+        s
+    }
+}
+
 /// Runs a movement or editing command. Returns false if `cmd` isn't one.
 /// The caller checks the buffer is writable before calling with an edit.
 pub fn run(cmd: Command, buf: &mut Buffer, view: &mut View, s: &Settings) -> bool {
+    let s = &s.for_language(buf.syntax.language());
     match cmd {
         Command::Move { motion, select } => move_cursors(buf, view, motion, select, s),
         Command::DeleteLeft => {
@@ -123,6 +137,7 @@ pub fn is_edit(cmd: Command) -> bool {
 /// bracket first on a line re-indents it (`indent::type_char`); with `auto_close_pairs`, a
 /// bracket or quote may close, wrap or type over instead (`pairs::type_char`).
 pub fn insert_char(buf: &mut Buffer, view: &mut View, c: char, s: &Settings) {
+    let s = &s.for_language(buf.syntax.language());
     if s.auto_indent && indent::type_char(buf, view, c, s) {
         return;
     }
