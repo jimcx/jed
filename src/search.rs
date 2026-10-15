@@ -83,6 +83,18 @@ impl Matcher {
         } else {
             pattern.contains(['\n', '\r'])
         };
+        Self::build(pattern, opts, multiline)
+    }
+
+    /// Like `new`, but never multi-line: every line is searched on its own whatever the pattern
+    /// says, so a match never contains a line break (workspace search, where matches stay within
+    /// one line in v1). `\W` or `[^a]` then never match the line break, and a pattern that needs
+    /// one (`a\nb`, `\r`, a pasted line break) matches nothing.
+    pub fn new_single_line(pattern: &str, opts: Options) -> Result<Matcher, SearchError> {
+        Self::build(pattern, opts, false)
+    }
+
+    fn build(pattern: &str, opts: Options, multiline: bool) -> Result<Matcher, SearchError> {
         let regex = if pattern.is_empty() {
             None
         } else {
@@ -225,6 +237,21 @@ impl Matcher {
             }
             ControlFlow::Continue(())
         });
+    }
+
+    /// Every match in `line`, one line's text without its line break (workspace search's lines
+    /// from `grep-searcher`), as `start..end` byte offsets in order: the matches `find_all` finds
+    /// on that line. Stops when `f` returns false. Linear in the line, however many matches.
+    pub fn each_in_line(&self, line: &[u8], mut f: impl FnMut(usize, usize) -> bool) {
+        let Some(re) = &self.regex else { return };
+        let mut at = 0;
+        let mut last_end = None;
+        while let Some((s, e)) = self.find_at(re, line, at, last_end) {
+            if !f(s, e) {
+                return;
+            }
+            (at, last_end) = step(line, s, e);
+        }
     }
 
     /// First match starting at or after `from`, rejecting an empty match at `skip_empty`.
@@ -871,6 +898,46 @@ mod tests {
     }
 
     #[test]
+    fn single_line_matcher_never_spans_lines() {
+        let re = opts(true, true, false);
+        for pattern in [r"a\nb", r"\W", r"b\r"] {
+            assert!(!Matcher::new_single_line(pattern, re).unwrap().is_multiline());
+        }
+        let text = "a b\nc\r\nd";
+        let m = Matcher::new_single_line(r"\W", re).unwrap();
+        let got: Vec<_> = m.find_all(&rope(text)).iter().map(|m| (m.start.0, m.end.0)).collect();
+        assert_eq!(got, vec![(1, 2)]);
+        assert_eq!(grep_all(&m, text.as_bytes()), vec![(1, 2)]);
+        assert!(
+            Matcher::new_single_line(r"a\nb", re)
+                .unwrap()
+                .find_all(&rope("a\nb"))
+                .is_empty()
+        );
+        assert!(
+            Matcher::new_single_line("a\nb", PLAIN)
+                .unwrap()
+                .find_all(&rope("a\nb"))
+                .is_empty()
+        );
+        // `each_in_line` stops when asked, and stays linear on a long line of matches.
+        let m = Matcher::new_single_line("ab", PLAIN).unwrap();
+        let line = "ab".repeat(100_000);
+        let mut n = 0;
+        m.each_in_line(line.as_bytes(), |_, _| {
+            n += 1;
+            true
+        });
+        assert_eq!(n, 100_000);
+        n = 0;
+        m.each_in_line(line.as_bytes(), |_, _| {
+            n += 1;
+            n < 3
+        });
+        assert_eq!(n, 3);
+    }
+
+    #[test]
     fn long_lines_split_across_chunks() {
         // A line much longer than a rope chunk is searched whole (copied into scratch).
         let text = format!("{}needle{}\nneedle", "x".repeat(10_000), "é".repeat(5_000));
@@ -1053,6 +1120,18 @@ mod tests {
                 assert_eq!(m.find_in(&r, range.clone()), overlapping, "find_in {range:?} {ctx}");
                 // So does `grep-searcher`'s view of the same bytes.
                 assert_eq!(grep_all(m, text.as_bytes()), want, "grep {ctx}");
+                // And line by line, for a pattern that can't span lines.
+                if !*multiline {
+                    let mut lines = Vec::new();
+                    pos::each_line(&r, 0, false, |start, line| {
+                        m.each_in_line(line.as_bytes(), |s, e| {
+                            lines.push((start.0 + s, start.0 + e));
+                            true
+                        });
+                        ControlFlow::<()>::Continue(())
+                    });
+                    assert_eq!(lines, want, "each_in_line {ctx}");
+                }
             }
         }
     }

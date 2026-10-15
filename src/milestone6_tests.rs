@@ -36,10 +36,14 @@ const SELECT_ALL_BUDGET: Duration = Duration::from_millis(50);
 const KEYSTROKE_BUDGET: Duration = Duration::from_millis(16);
 /// Undoing the five keystrokes (~14 ms measured).
 const UNDO_BUDGET: Duration = Duration::from_millis(50);
-/// Any build, also debug (~60 ms a key, ~120 ms undo): far above that, but an O(selections²)
-/// step at 63k selections takes seconds even in release. Keystrokes must also stay under the
-/// 1 s undo grouping pause for the one-undo check to hold.
-const DEBUG_BOUND: Duration = Duration::from_millis(800);
+/// Cmd+Shift+L and undo in any build, also debug (~0.2 s and ~0.3 s alone on Linux x86, up to
+/// ~0.9 s for undo with the other tests running): only catches going quadratic, which at 63k
+/// selections takes seconds even in release and far longer in debug.
+const DEBUG_BOUND: Duration = Duration::from_secs(5);
+/// One keystroke in any build (~0.15 s in debug alone, ~3x that beside the other tests): the
+/// keys must land within the 1 s undo grouping pause of each other for the one-undo check, so
+/// this can't be raised like `DEBUG_BOUND`.
+const KEY_DEBUG_BOUND: Duration = Duration::from_millis(900);
 /// A line or cursor command at every one of those selections, plus a frame (~25-35 ms measured
 /// on Linux x86).
 const LINE_COMMAND_BUDGET: Duration = Duration::from_millis(80);
@@ -408,8 +412,8 @@ fn milestone_6_select_all_matches_on_one_mb() {
         let key = Instant::now();
         app.press(K::Char(c), M::NONE);
         term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
-        // Debug builds are ~15x slower (~60 ms a key); this only catches going quadratic.
-        assert!(key.elapsed() < DEBUG_BOUND, "typing {c:?} took {:?}", key.elapsed());
+        // Debug builds are ~15x slower; this only catches going quadratic.
+        assert!(key.elapsed() < KEY_DEBUG_BOUND, "typing {c:?} took {:?}", key.elapsed());
     }
     let typing = t.elapsed();
     println!(

@@ -7,6 +7,7 @@ mod mouse;
 mod palette;
 mod prompt;
 mod side;
+mod workspace_search;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -122,6 +123,8 @@ enum AppEvent {
         generation: u64,
     },
     LogFileFound(Option<PathBuf>),
+    /// Workspace search results; any generation (stale ones are dropped).
+    SearchResults(crate::workspace_search::Batch),
 }
 
 /// The file to open at startup, with an optional 1-based line and column.
@@ -180,6 +183,12 @@ pub struct App {
     /// A match command ran during this event (its selection change keeps the session).
     session_changed: bool,
     pre_event: Option<cursors::PreEvent>,
+    /// The last workspace search's results (`None` before the first, or after an invalid regex).
+    pub search: Option<crate::workspace_search::Results>,
+    /// The running workspace search; dropping it cancels it.
+    search_task: Option<crate::workspace_search::Handle>,
+    /// Numbers searches, so results of a replaced one are dropped.
+    search_generation: u64,
     /// The last command `execute` ran, for tests.
     #[cfg(test)]
     pub last_command: Option<Command>,
@@ -237,6 +246,9 @@ impl App {
             match_session: None,
             session_changed: false,
             pre_event: None,
+            search: None,
+            search_task: None,
+            search_generation: 0,
             #[cfg(test)]
             last_command: None,
         };
@@ -611,6 +623,7 @@ impl App {
             AppEvent::FilesMatched => self.files_matched(),
             AppEvent::FilesWalked { generation } => self.files_walked(generation),
             AppEvent::LogFileFound(path) => self.log_file_found(path),
+            AppEvent::SearchResults(batch) => self.search_results(batch),
         }
         self.refresh_find();
     }

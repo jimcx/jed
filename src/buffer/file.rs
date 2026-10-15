@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use ropey::Rope;
 
-const BOM: &[u8] = b"\xEF\xBB\xBF";
+pub const BOM: &[u8] = b"\xEF\xBB\xBF";
 /// Same heuristic as git: a NUL in the first 8000 bytes means binary.
 const BINARY_SNIFF_LEN: usize = 8000;
 
@@ -67,8 +67,13 @@ pub fn load(path: &Path) -> Result<Loaded, LoadError> {
     decode(bytes)
 }
 
+/// Whether a file's contents are binary (not opened, not searched): a NUL in the first 8000 bytes.
+pub fn looks_binary(bytes: &[u8]) -> bool {
+    bytes[..bytes.len().min(BINARY_SNIFF_LEN)].contains(&0)
+}
+
 pub fn decode(mut bytes: Vec<u8>) -> Result<Loaded, LoadError> {
-    if bytes[..bytes.len().min(BINARY_SNIFF_LEN)].contains(&0) {
+    if looks_binary(&bytes) {
         return Err(LoadError::Binary);
     }
     let bom = bytes.starts_with(BOM);

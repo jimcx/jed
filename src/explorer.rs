@@ -295,11 +295,11 @@ pub fn excludes(root: &Path, globs: &[String]) -> Override {
 }
 
 /// Never shown, listed or searched: git's store and red's own state (file history).
-const HIDDEN_DIRS: [&str; 2] = [".git", ".red"];
+pub const HIDDEN_DIRS: [&str; 2] = [".git", ".red"];
 
-/// The walk the explorer, quick open and (later) search share: `.gitignore` (inside git repos),
-/// the excludes, and never `.git/` or `.red/`. Dotfiles are shown.
-fn walker(dir: &Path, excludes: &Override) -> WalkBuilder {
+/// The walk the explorer, quick open and workspace search share: `.gitignore` (inside git
+/// repos), the excludes, and never `.git/` or `.red/`. Dotfiles are shown.
+pub fn walker(dir: &Path, excludes: &Override) -> WalkBuilder {
     let mut b = WalkBuilder::new(dir);
     b.hidden(false)
         .overrides(excludes.clone())

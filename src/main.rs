@@ -23,6 +23,8 @@ mod milestone5_tests;
 #[cfg(test)]
 mod milestone6_tests;
 #[cfg(test)]
+mod milestone7_tests;
+#[cfg(test)]
 mod milestone_tests;
 mod multicursor;
 mod palette;
@@ -36,6 +38,7 @@ mod ui;
 mod view;
 mod watcher;
 mod workspace;
+mod workspace_search;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
