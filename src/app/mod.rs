@@ -7,6 +7,7 @@ mod mouse;
 mod palette;
 mod prompt;
 mod side;
+mod syntax;
 mod workspace_search;
 
 use std::collections::{HashMap, HashSet};
@@ -131,6 +132,11 @@ enum AppEvent {
     LogFileFound(Option<PathBuf>),
     /// Workspace search results; any generation (stale ones are dropped).
     SearchResults(crate::workspace_search::Batch),
+    /// A background parse finished (`Syntax::parsed` drops a superseded one).
+    Parsed {
+        buffer: BufferId,
+        parsed: crate::syntax::Parsed,
+    },
 }
 
 /// The file to open at startup, with an optional 1-based line and column.
@@ -198,6 +204,8 @@ pub struct App {
     search_task: Option<crate::workspace_search::Handle>,
     /// Numbers searches, so results of a replaced one are dropped.
     search_generation: u64,
+    /// `.workspace` `[files] associations`, compiled.
+    associations: crate::syntax::Associations,
     /// The last command `execute` ran, for tests.
     #[cfg(test)]
     pub last_command: Option<Command>,
@@ -259,9 +267,11 @@ impl App {
             search_view: SearchView::default(),
             search_task: None,
             search_generation: 0,
+            associations: crate::syntax::Associations::default(),
             #[cfg(test)]
             last_command: None,
         };
+        app.load_associations();
         match initial {
             Some(f) => app.add_buffer(f.buffer, f.goto.map(|(l, c)| files::Goto::Cursor(l, c)), true),
             None => app.ui.focus = Focus::SidePanel,
@@ -293,6 +303,7 @@ impl App {
         let root = self.workspace.root.clone();
         self.request_listing(root);
         self.reveal_active();
+        self.sync_syntax();
     }
 
     pub async fn run(&mut self, terminal: &mut Term) -> anyhow::Result<()> {
@@ -302,6 +313,8 @@ impl App {
             if self.should_quit {
                 return Ok(());
             }
+            // Once per turn, so a burst of keys is one incremental re-parse.
+            self.sync_syntax();
             if self.needs_redraw {
                 let t = Instant::now();
                 terminal.draw(|f| ui::render(f, self))?;
@@ -670,6 +683,7 @@ impl App {
             AppEvent::FilesWalked { generation } => self.files_walked(generation),
             AppEvent::LogFileFound(path) => self.log_file_found(path),
             AppEvent::SearchResults(batch) => self.search_results(batch),
+            AppEvent::Parsed { buffer, parsed } => self.parsed(buffer, parsed),
         }
         self.refresh_find();
     }
@@ -743,13 +757,19 @@ impl App {
         while let Ok(msg) = self.rx.try_recv() {
             self.handle_app_event(msg);
         }
+        self.sync_syntax();
     }
 
     /// Handles background results (and the Search view's debounce) until `done` holds; false after 5 s.
     /// Rechecks every 20 ms too, for conditions outside the app (files written in the background).
     pub async fn settle(&mut self, done: impl Fn(&App) -> bool) -> bool {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while !done(self) {
+        loop {
+            // As the event loop does each turn.
+            self.sync_syntax();
+            if done(self) {
+                break;
+            }
             if tokio::time::Instant::now() >= deadline {
                 return false;
             }

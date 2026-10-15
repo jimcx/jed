@@ -25,6 +25,8 @@ mod milestone6_tests;
 #[cfg(test)]
 mod milestone7_tests;
 #[cfg(test)]
+mod milestone8_tests;
+#[cfg(test)]
 mod milestone_tests;
 mod multicursor;
 mod palette;
@@ -33,6 +35,7 @@ mod paths;
 mod search;
 mod search_view;
 mod selection;
+mod syntax;
 mod terminal;
 mod theme;
 mod ui;

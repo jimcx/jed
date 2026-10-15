@@ -17,6 +17,27 @@ pub const LINE_TYPE: LineType = LineType::LF_CR;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct ByteIdx(pub usize);
 
+/// tree-sitter's position of `pos`: the row counts LFs only (as tree-sitter does, so a lone CR
+/// doesn't start a row, unlike `LINE_TYPE`), the column is bytes since the last LF.
+pub fn ts_point(rope: &Rope, pos: ByteIdx) -> tree_sitter::Point {
+    let row = rope.byte_to_line_idx(pos.0, LineType::LF);
+    let start = rope.line_to_byte_idx(row, LineType::LF);
+    tree_sitter::Point {
+        row,
+        column: pos.0 - start,
+    }
+}
+
+/// The text from byte `at` to the end of the chunk holding it (empty at the end): how tree-sitter
+/// reads a rope without copying it.
+pub fn chunk_from(rope: &Rope, at: usize) -> &[u8] {
+    if at >= rope.len() {
+        return &[];
+    }
+    let (chunk, start) = rope.chunk(at);
+    &chunk.as_bytes()[at - start..]
+}
+
 /// Screen column: tabs expanded, wide chars count 2, a grapheme cluster is one unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct DisplayCol(pub usize);

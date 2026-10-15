@@ -55,6 +55,9 @@ impl Workspace {
         if let Some(sp) = o.insert_spaces {
             s.insert_spaces = sp;
         }
+        if let Some(max) = o.syntax_max_bytes {
+            s.syntax_max_bytes = max;
+        }
         s
     }
 

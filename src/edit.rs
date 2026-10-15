@@ -17,6 +17,8 @@ use crate::{column, lines};
 pub struct Settings {
     pub tab_width: usize,
     pub insert_spaces: bool,
+    /// Buffers bigger than this get no parse tree (no highlighting): `[settings] syntax_max_bytes`.
+    pub syntax_max_bytes: usize,
 }
 
 impl Default for Settings {
@@ -24,6 +26,7 @@ impl Default for Settings {
         Self {
             tab_width: 4,
             insert_spaces: true,
+            syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
         }
     }
 }

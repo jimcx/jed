@@ -154,6 +154,7 @@ impl App {
                         };
                     }
                 }
+                self.redetect_languages();
                 refresh(self, &from);
                 refresh(self, &to);
                 self.reveal_path(&to);
@@ -215,8 +216,10 @@ impl App {
             return;
         }
         let excludes_changed = config.files.exclude != self.workspace.config.files.exclude;
+        let associations_changed = config.files.associations != self.workspace.config.files.associations;
         self.workspace.config = config;
         self.settings = self.workspace.settings();
+
         if excludes_changed {
             self.excludes = explorer::excludes(&self.workspace.root, &self.workspace.config.files.exclude);
             for d in self.explorer.loaded_dirs() {
@@ -225,6 +228,10 @@ impl App {
         }
         self.trust = self.trust_store.evaluate(&self.workspace.root, &self.workspace.config);
         self.notify(Level::Info, format!("Reloaded {}", workspace::FILE_NAME));
+        if associations_changed {
+            self.load_associations();
+            self.redetect_languages();
+        }
         if self.trust == Trust::Undecided {
             self.ask_trust();
         }

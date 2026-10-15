@@ -92,7 +92,8 @@ impl App {
 
     /// Puts a loaded buffer in a new tab and activates it, with the selection at `goto`.
     /// Starts no background work (it runs from `App::new`); callers reveal the file.
-    pub(super) fn add_buffer(&mut self, buffer: Buffer, goto: Option<Goto>, focus: bool) {
+    pub(super) fn add_buffer(&mut self, mut buffer: Buffer, goto: Option<Goto>, focus: bool) {
+        buffer.syntax.set_language(self.detect_language(&buffer));
         let mut view = View::new();
         if let Some(goto) = &goto {
             apply_goto(&mut view, &buffer.rope, goto, self.settings.tab_width);

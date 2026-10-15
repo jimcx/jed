@@ -7,8 +7,6 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ropey::Rope;
-
 use super::change::ChangeSet;
 use crate::selection::Selections;
 
@@ -100,26 +98,21 @@ impl History {
         });
     }
 
-    /// Reverts the last step; returns the selections from before it and the changes applied.
-    pub fn undo(&mut self, rope: &mut Rope) -> Option<(Selections, Vec<Arc<ChangeSet>>)> {
+    /// Steps back: returns the selections from before the last step and the change sets that
+    /// revert it, for the caller to apply in order.
+    pub fn undo(&mut self) -> Option<(Selections, Vec<Arc<ChangeSet>>)> {
         let mut step = self.undo.pop()?;
-        let mut applied = Vec::with_capacity(step.edits.len());
-        for (_, inverse) in step.edits.iter().rev() {
-            inverse.apply(rope);
-            applied.push(inverse.clone());
-        }
+        let applied = step.edits.iter().rev().map(|(_, inverse)| inverse.clone()).collect();
         step.sealed = true;
         let sel = step.sel_before.clone();
         self.redo.push(step);
         Some((sel, applied))
     }
 
-    /// Re-applies the last undone step; returns the selections from after it and the changes applied.
-    pub fn redo(&mut self, rope: &mut Rope) -> Option<(Selections, Vec<Arc<ChangeSet>>)> {
+    /// Steps forward: returns the selections from after the last undone step and the change sets
+    /// that redo it, for the caller to apply in order.
+    pub fn redo(&mut self) -> Option<(Selections, Vec<Arc<ChangeSet>>)> {
         let step = self.redo.pop()?;
-        for (forward, _) in &step.edits {
-            forward.apply(rope);
-        }
         let applied = step.edits.iter().map(|(f, _)| f.clone()).collect();
         let sel = step.sel_after.clone();
         self.undo.push(step);

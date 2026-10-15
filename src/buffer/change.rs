@@ -97,6 +97,15 @@ impl ChangeSet {
         self.changes.is_empty()
     }
 
+    pub fn len(&self) -> usize {
+        self.changes.len()
+    }
+
+    /// Each change as (start, end, length of its new text), in order, in pre-edit coordinates.
+    pub fn iter(&self) -> impl Iterator<Item = (ByteIdx, ByteIdx, usize)> + '_ {
+        self.changes.iter().map(|c| (c.start, c.end, c.text_len()))
+    }
+
     fn text_of(&self, c: &Span) -> &str {
         &self.text[c.text.clone()]
     }

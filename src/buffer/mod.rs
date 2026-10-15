@@ -17,6 +17,7 @@ use file::{Eol, LoadError};
 use undo::{EditKind, History};
 
 use crate::selection::Selections;
+use crate::syntax::Syntax;
 
 pub type BufferId = u64;
 
@@ -40,6 +41,8 @@ pub struct Buffer {
     applied: Vec<Arc<ChangeSet>>,
     /// Counts text changes (edits, undos, redos): equal revisions mean the same text.
     revision: u64,
+    /// Language and parse tree; every change set applied here reaches `Syntax::edit`.
+    pub syntax: Syntax,
 }
 
 /// What a background save needs; the rope clone is cheap.
@@ -70,6 +73,7 @@ impl Buffer {
             saving_state: None,
             applied: Vec::new(),
             revision: 0,
+            syntax: Syntax::default(),
         }
     }
 
@@ -98,7 +102,7 @@ impl Buffer {
         if changes.is_empty() {
             return;
         }
-        let inverse = Arc::new(changes.apply(&mut self.rope));
+        let inverse = Arc::new(self.apply(&changes));
         let changes = Arc::new(changes);
         self.applied.push(changes.clone());
         self.revision += 1;
@@ -112,17 +116,34 @@ impl Buffer {
     }
 
     pub fn undo(&mut self) -> Option<Selections> {
-        let (sel, applied) = self.history.undo(&mut self.rope)?;
-        self.applied.extend(applied);
-        self.revision += 1;
+        let (sel, sets) = self.history.undo()?;
+        self.apply_all(sets);
         Some(sel)
     }
 
     pub fn redo(&mut self) -> Option<Selections> {
-        let (sel, applied) = self.history.redo(&mut self.rope)?;
-        self.applied.extend(applied);
-        self.revision += 1;
+        let (sel, sets) = self.history.redo()?;
+        self.apply_all(sets);
         Some(sel)
+    }
+
+    /// Applies an undo / redo step's change sets in order.
+    fn apply_all(&mut self, sets: Vec<Arc<ChangeSet>>) {
+        for set in &sets {
+            self.apply(set);
+        }
+        self.applied.extend(sets);
+        self.revision += 1;
+    }
+
+    /// The one place change sets are applied: the syntax tree follows each one.
+    fn apply(&mut self, changes: &ChangeSet) -> ChangeSet {
+        let old = self.syntax.wants_edits().then(|| self.rope.clone());
+        let inverse = changes.apply(&mut self.rope);
+        if let Some(old) = old {
+            self.syntax.edit(changes, &old, &self.rope);
+        }
+        inverse
     }
 
     /// Changes with every edit, undo and redo: what cached search results are keyed on.

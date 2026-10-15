@@ -1,4 +1,4 @@
-//! Status bar: trust mode, file, message, cursor position, file format.
+//! Status bar: trust mode, file, message, cursor position, file format, language mode.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -48,7 +48,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             format!("Tab Size: {}", app.settings.tab_width)
         };
         let encoding = if buf.bom { "UTF-8 with BOM" } else { "UTF-8" };
-        let right = format!("{position}   {indent}   {encoding}   {} ", buf.eol.label());
+        let right = format!(
+            "{position}   {indent}   {encoding}   {}   {} ",
+            buf.eol.label(),
+            buf.syntax.language().name()
+        );
 
         let right_w = right.width().min(width);
         right_x = area.x + (width - right_w) as u16;
