@@ -99,7 +99,7 @@ fn milestone_1_round_trip_one_mb_crlf() {
         for c in "x = 1;".chars() {
             let t = Instant::now();
             let (b, v) = app.active_mut().unwrap();
-            edit::insert_char(b, v, c);
+            edit::insert_char(b, v, c, &s);
             edit_time += t.elapsed();
             n += 1;
             let t = Instant::now();

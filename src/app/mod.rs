@@ -458,9 +458,11 @@ impl App {
                     && (key.modifiers - KeyModifiers::SHIFT).is_empty()
                     && self.ui.focus == Focus::Editor
                     && self.active_writable()
-                    && let Some((buf, view)) = self.active_mut()
                 {
-                    edit::insert_char(buf, view, c);
+                    let settings = self.settings.clone();
+                    if let Some((buf, view)) = self.active_mut() {
+                        edit::insert_char(buf, view, c, &settings);
+                    }
                 }
             }
             Event::Paste(text) => {

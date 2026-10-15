@@ -7,6 +7,7 @@ use ropey::Rope;
 use crate::buffer::change::{Assoc, ChangeSet};
 use crate::buffer::pos::{self, ByteIdx};
 use crate::column::ColumnBox;
+use crate::pairs::AutoClosed;
 use crate::selection::{Selection, Selections};
 
 #[derive(Debug, Clone)]
@@ -31,6 +32,8 @@ pub struct View {
     pub column: Option<ColumnBox>,
     /// Cmd+U: earlier selection lists, separate from text undo.
     pub cursor_history: CursorHistory,
+    /// Closers this view auto-inserted that typing can still step over (`pairs`).
+    pub auto_closed: AutoClosed,
 }
 
 /// VS Code's cursor undo stack. Every selection change that isn't part of a text change pushes
@@ -124,6 +127,7 @@ impl View {
             reveal_range: None,
             reveal_pos: None,
             column: None,
+            auto_closed: AutoClosed::default(),
         }
     }
 
@@ -284,7 +288,7 @@ mod tests {
         );
         b.cursor_history.record(&cursor(1), 0, 0);
         assert_eq!(b.cursor_history.len(), 1);
-        edit::insert_char(&mut buf, &mut a, 'X');
+        edit::insert_char(&mut buf, &mut a, 'X', &Settings::default());
         b.map_through(&buf.take_applied(), &buf.rope);
         let got: Vec<(usize, usize)> = b.selections.iter().map(|s| (s.anchor.0, s.head.0)).collect();
         assert_eq!(got, vec![(8, 5), (9, 12)]);
@@ -302,7 +306,7 @@ mod tests {
         let mut b = View::new();
         a.selections = cursor(1);
         b.selections = cursor(1);
-        edit::insert_char(&mut buf, &mut a, 'X');
+        edit::insert_char(&mut buf, &mut a, 'X', &Settings::default());
         b.map_through(&buf.take_applied(), &buf.rope);
         assert_eq!(b.selections.primary().head, ByteIdx(1));
         assert_eq!(a.selections.primary().head, ByteIdx(2));

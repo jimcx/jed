@@ -231,6 +231,56 @@ impl Line {
     pub fn byte_near_col(&self, target: DisplayCol, tab_width: usize) -> ByteIdx {
         ByteIdx(self.start.0 + offset_near_col(&self.text, target, tab_width))
     }
+
+    /// The line's content (no line break).
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+}
+
+/// The chars next to positions, for checks at thousands of cursors (auto-close): keeps the
+/// chunk of the last lookup, so positions in increasing order mostly need no rope search.
+pub struct Peek<'a> {
+    rope: &'a Rope,
+    chunk: &'a str,
+    start: usize,
+}
+
+impl<'a> Peek<'a> {
+    pub fn new(rope: &'a Rope) -> Self {
+        Self {
+            rope,
+            chunk: "",
+            start: 0,
+        }
+    }
+
+    /// The chunk holding byte `at` (< len) as text from `at` on, and `at`'s offset in it.
+    fn at(&mut self, at: usize) -> (&'a str, usize) {
+        if at < self.start || at >= self.start + self.chunk.len() {
+            (self.chunk, self.start) = self.rope.chunk(at);
+        }
+        (self.chunk, at - self.start)
+    }
+
+    /// The char starting at `pos` (`None` at the end of the text).
+    pub fn after(&mut self, pos: ByteIdx) -> Option<char> {
+        if pos.0 >= self.rope.len() {
+            return None;
+        }
+        let (chunk, off) = self.at(pos.0);
+        chunk[off..].chars().next()
+    }
+
+    /// The char ending at `pos` (`None` at the start). Chunks split on char boundaries, so it
+    /// sits wholly in the chunk holding the byte before `pos`.
+    pub fn before(&mut self, pos: ByteIdx) -> Option<char> {
+        if pos.0 == 0 {
+            return None;
+        }
+        let (chunk, off) = self.at(pos.0 - 1);
+        chunk[..=off].chars().next_back()
+    }
 }
 
 /// Walks lines in increasing order for commands at thousands of cursors: steps a line iterator
@@ -876,6 +926,26 @@ mod tests {
                 );
                 assert!(l.contains(at));
             }
+        }
+    }
+
+    /// `Peek` against the string, at every char boundary of a text spanning many chunks,
+    /// forwards and then backwards (a fresh chunk lookup each time).
+    #[test]
+    fn peek_reads_the_chars_around_positions() {
+        let text = "a界😀\r\n(é)".repeat(2000);
+        let rope = Rope::from_str(&text);
+        let mut peek = Peek::new(&rope);
+        let bounds: Vec<usize> = text.char_indices().map(|(i, _)| i).chain([text.len()]).collect();
+        let check = |peek: &mut Peek, i: usize| {
+            assert_eq!(peek.after(ByteIdx(i)), text[i..].chars().next(), "after {i}");
+            assert_eq!(peek.before(ByteIdx(i)), text[..i].chars().next_back(), "before {i}");
+        };
+        for &i in &bounds {
+            check(&mut peek, i);
+        }
+        for &i in bounds.iter().rev() {
+            check(&mut peek, i);
         }
     }
 }

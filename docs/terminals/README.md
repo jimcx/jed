@@ -31,6 +31,7 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+shift+z` | Redo | editor |
 | `cmd+c` | Copy (whole line if nothing selected) | editor |
 | `cmd+x` | Cut (whole line if nothing selected) | editor |
+| `cmd+/` | Toggle line comment | editor |
 | `cmd+d` | Add selection at next match | editor |
 | `cmd+shift+l` | Select all matches | editor |
 | `cmd+alt+d` | Move last selection to next match | editor |

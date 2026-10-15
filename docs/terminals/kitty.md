@@ -21,6 +21,7 @@ map cmd+z
 map cmd+shift+z
 map cmd+c
 map cmd+x
+map cmd+slash
 map cmd+d
 map cmd+shift+l
 map cmd+alt+d
@@ -87,4 +88,5 @@ Scoping to red only: kitty supports conditional mappings (`map --when-focus-on v
 - [ ] Every key in the [table](README.md#cmd-bindings-red-uses) logs with `SUPER` (see [Checking a terminal](README.md#checking-a-terminal))
 - [ ] Cmd+W closes red's tab, not kitty's
 - [ ] Cmd+Q reaches red. **Check by hand:** kitty builds its macOS menu from mappings; confirm the Quit menu item no longer grabs Cmd+Q after unmapping
+- [ ] **Check by hand:** Cmd+/ (comment line) logs as `SUPER` with `/`; on layouts where `/` is a shifted key (German: Shift+7) the terminal may report Cmd+Shift+7 instead: bind `edit.commentLine` to that in `keybindings.toml`
 - [ ] Alt+Left logs `ALT` (Option-as-Alt works)

@@ -58,6 +58,9 @@ impl Workspace {
         if let Some(max) = o.syntax_max_bytes {
             s.syntax_max_bytes = max;
         }
+        if let Some(on) = o.auto_close_pairs {
+            s.auto_close_pairs = on;
+        }
         s
     }
 
@@ -112,6 +115,12 @@ mod tests {
         std::fs::write(root.join(FILE_NAME), "[settings]\ntab_width = 2").unwrap();
         let mut ws = Workspace::load(root.clone());
         assert_eq!(ws.settings().tab_width, 2);
+        assert!(ws.settings().auto_close_pairs, "on by default");
+        std::fs::write(root.join(FILE_NAME), "[settings]\nauto_close_pairs = false").unwrap();
+        ws.reload();
+        assert!(!ws.settings().auto_close_pairs);
+        std::fs::write(root.join(FILE_NAME), "[settings]\ntab_width = 2").unwrap();
+        ws.reload();
         std::fs::write(root.join(FILE_NAME), "[settings\n").unwrap();
         ws.reload();
         assert!(ws.config_error.is_some());

@@ -22,6 +22,7 @@ keybind = cmd+z=unbind
 keybind = cmd+shift+z=unbind
 keybind = cmd+c=unbind
 keybind = cmd+x=unbind
+keybind = cmd+slash=unbind
 keybind = cmd+d=unbind
 keybind = cmd+shift+l=unbind
 keybind = cmd+alt+d=unbind
@@ -90,4 +91,5 @@ Ghostty's Cmd+C (copy screen text), Cmd+W, Cmd+Q, Cmd+1..3, Cmd+A, Cmd+Z, prompt
 - [ ] `cmd+backslash` is spelled right for your Ghostty (try `cmd+\` if Ghostty reports an invalid key)
 - [ ] **Check by hand:** Cmd+Shift+P opens red's palette, not Ghostty's
 - [ ] **Check by hand:** Cmd+F opens red's find widget, not Ghostty's search
+- [ ] **Check by hand:** Cmd+/ (comment line) logs as `SUPER` with `/`; on layouts where `/` is a shifted key (German: Shift+7) the terminal may report Cmd+Shift+7 instead: bind `edit.commentLine` to that in `keybindings.toml`
 - [ ] Alt+Left logs `ALT`

@@ -9,6 +9,7 @@
 //! `spans(rope, lines)` gives the highlight spans for any lines, from a cache that is only
 //! re-queried when the tree changes (see `highlight`).
 
+mod config;
 mod highlight;
 mod language;
 
@@ -19,6 +20,7 @@ use std::time::{Duration, Instant};
 use ropey::Rope;
 use tree_sitter::{InputEdit, ParseOptions, Parser, Point, Tree};
 
+pub use config::{AutoPair, LanguageConfig, is_quote};
 pub use highlight::{KEYS, Span};
 pub use language::{Associations, Language, detect};
 
@@ -46,6 +48,14 @@ const COALESCE_AT: usize = 256;
 /// each in 1 MB of C++ (`Tree::edit` scans the children of every node it passes).
 const MAX_QUEUED: usize = 4096;
 const SLOW_TASK: Duration = Duration::from_millis(500);
+
+/// See `Syntax::scope_before`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Code,
+    String,
+    Comment,
+}
 
 /// One buffer's language and parse tree.
 #[derive(Default)]
@@ -149,9 +159,36 @@ impl Syntax {
     }
 
     /// The parse tree, only while it matches the text exactly.
-    #[cfg_attr(not(test), allow(dead_code))] // drawing reads `spans`; language-aware editing (8c, 8d) reads the tree
+    #[cfg_attr(not(test), allow(dead_code))] // drawing reads `spans`, auto-close `scope_before`
     pub fn tree(&self) -> Option<&Tree> {
         current(&self.state)
+    }
+
+    /// What the char before `pos` is part of: a string, a comment or code (auto-close's `notIn`,
+    /// as VS Code reads the token before the cursor). `None` without a current tree. The
+    /// smallest node holding that char and its ancestors are checked, up to an f-string's
+    /// `interpolation` (code again).
+    pub fn scope_before(&self, pos: ByteIdx) -> Option<Scope> {
+        let tree = current(&self.state)?;
+        if pos.0 == 0 {
+            return Some(Scope::Code);
+        }
+        let mut node = tree.root_node().descendant_for_byte_range(pos.0 - 1, pos.0);
+        while let Some(n) = node {
+            match n.kind() {
+                "comment" => return Some(Scope::Comment),
+                "string_literal"
+                | "char_literal"
+                | "raw_string_literal"
+                | "system_lib_string"
+                | "string"
+                | "string_content"
+                | "concatenated_string" => return Some(Scope::String),
+                "interpolation" => return Some(Scope::Code),
+                _ => node = n.parent(),
+            }
+        }
+        Some(Scope::Code)
     }
 
     /// The highlight spans on lines `lines` of `rope` (the buffer's text): sorted, non-overlapping,

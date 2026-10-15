@@ -17,6 +17,16 @@
 //! colours replace the old; 256-colour terminals get the fallback colours; past the size limit
 //! text stays plain; a 1 MB single-line file is coloured only at its start, within a frame.
 //!
+//! 8c, comment line and auto-close pairs: Cmd+/ comments and uncomments a C++ and a Python
+//! selection (blank lines skipped, a selection ending at a line start not taking that line) in one
+//! undo step, does nothing in plain text and is refused in a read-only buffer; typing `(` closes the
+//! pair with the cursor between, `)` types over it, Backspace deletes an empty auto-inserted pair,
+//! leaving the pair ends type-over, `"` wraps a selection (one undo step), paste never auto-closes,
+//! a quote inside a string (with a tree) isn't closed but Python's `f'` is; `[settings]
+//! auto_close_pairs = false` in `.workspace` turns it all off (not comment line). At the 1 MB file's
+//! 63k cursors `(`, type-over and pair delete stay within a key's 16 ms, and Cmd+/ on 84k lines
+//! within 80 ms (release).
+//!
 //! Perf (asserted in release only: `cargo test --release milestone -- --nocapture`): on a
 //! generated 1 MB C++ file the first parse runs in the background, and a keystroke plus its
 //! incremental re-parse plus a frame stays well inside a 16 ms frame, also at 63k cursors. With
@@ -799,4 +809,229 @@ async fn milestone_8_one_mb_line() {
     }
     println!("one 1 MB line: first coloured frame {first:?}, worst frame typing {worst:?}");
     assert!(first.max(worst) < if release { FRAME } else { FRAME_DEBUG_BOUND });
+}
+
+// ---- 8c: comment line and auto-close pairs ----
+
+/// Cmd+/ on every line of a 1 MB file, or a key at the 1 MB file's 63k cursors, plus a frame
+/// (release; M6's line commands have 80 ms, a typed key 16 ms).
+const COMMENT_BUDGET: Duration = Duration::from_millis(80);
+const PAIR_KEY_BUDGET: Duration = Duration::from_millis(16);
+/// Debug builds only catch going quadratic.
+const PAIR_DEBUG_BOUND: Duration = Duration::from_millis(2000);
+
+fn text(app: &App) -> String {
+    app.active_buffer().unwrap().rope.to_string()
+}
+
+/// The active view's selections as (anchor, head).
+fn sels(app: &App) -> Vec<(usize, usize)> {
+    let view = &app.group().active_tab().unwrap().view;
+    view.selections.iter().map(|s| (s.anchor.0, s.head.0)).collect()
+}
+
+fn set_cursors(app: &mut App, at: &[usize]) {
+    use crate::selection::{Selection, Selections};
+    let list = at
+        .iter()
+        .map(|&p| Selection::cursor(crate::buffer::pos::ByteIdx(p)))
+        .collect();
+    app.active_mut().unwrap().1.selections = Selections::new(list, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_8_comment_line_toggles_and_undoes_in_one_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let cpp = "int f() {\n    int x = 1;\n\n    return x;\n}\n";
+    let (mut app, _) = open_app(&dir, "", "a.cpp", cpp);
+    // Shift+Down three times from line 2: lines 2-4 (the selection ends at line 5's start).
+    set_cursors(&mut app, &[10]);
+    app.press(K::Down, M::SHIFT);
+    app.press(K::Down, M::SHIFT);
+    app.press(K::Down, M::SHIFT);
+    app.press(K::Char('/'), cmd());
+    assert_eq!(
+        text(&app),
+        "int f() {\n    // int x = 1;\n\n    // return x;\n}\n",
+        "blank line skipped, the line the selection ends at the start of left alone"
+    );
+    assert_eq!(sels(&app), vec![(10, 46)], "the same lines stay selected");
+    app.press(K::Char('/'), cmd());
+    assert_eq!(text(&app), cpp);
+    app.press(K::Char('/'), cmd());
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), cpp, "one undo step");
+    app.press(K::Char('z'), cmd() | M::SHIFT);
+    app.press(K::Char('a'), cmd());
+    app.press(K::Char('/'), cmd());
+    assert_eq!(
+        text(&app),
+        "// int f() {\n//     // int x = 1;\n\n//     // return x;\n// }\n",
+        "a commented line among others gets commented again"
+    );
+    // The tree follows (the file is all comments now).
+    assert!(app.settle(parsed).await);
+    assert_tree_current(&app);
+
+    let py = "def f(x):\n    # twice\n    return x * 2\n";
+    let (mut app, _) = open_app(&dir, "", "a.py", py);
+    app.press(K::Char('a'), cmd());
+    app.press(K::Char('/'), cmd());
+    assert_eq!(text(&app), "# def f(x):\n#     # twice\n#     return x * 2\n");
+    app.press(K::Char('/'), cmd());
+    assert_eq!(text(&app), py);
+    // A cursor on one line.
+    set_cursors(&mut app, &[26]);
+    app.press(K::Char('/'), cmd());
+    assert_eq!(text(&app), "def f(x):\n    # twice\n    # return x * 2\n");
+
+    // Plain text has no comment token; read-only buffers refuse.
+    let (mut app, _) = open_app(&dir, "", "a.txt", "notes\n");
+    app.press(K::Char('/'), cmd());
+    assert_eq!(text(&app), "notes\n");
+    let (mut app, _) = open_app(&dir, "", "b.cpp", "int x;\n");
+    app.active_mut().unwrap().0.read_only = Some("test".into());
+    app.press(K::Char('/'), cmd());
+    assert_eq!(text(&app), "int x;\n");
+    assert!(app.message.as_ref().unwrap().text.contains("Read-only"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_8_auto_close_type_over_wrap_and_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = open_app(&dir, "", "a.cpp", "\n");
+    app.type_text("foo(");
+    assert_eq!(text(&app), "foo()\n");
+    assert_eq!(sels(&app), vec![(4, 4)], "between the pair");
+    app.type_text("x)");
+    assert_eq!(text(&app), "foo(x)\n", "typed over the closer");
+    assert_eq!(sels(&app), vec![(6, 6)]);
+    // Backspace in an auto-inserted pair deletes both.
+    app.type_text(";[");
+    assert_eq!(text(&app), "foo(x);[]\n");
+    app.press(K::Backspace, M::NONE);
+    assert_eq!(text(&app), "foo(x);\n");
+    // Leaving the pair (and coming back) ends type-over; `)` is typed.
+    app.type_text("(");
+    app.press(K::Home, M::NONE);
+    app.press(K::End, M::NONE);
+    app.press(K::Left, M::NONE);
+    app.type_text(")");
+    assert_eq!(text(&app), "foo(x);())\n");
+    // Wrap a selection in quotes, still selected.
+    app.press(K::Char('a'), cmd());
+    app.press(K::Backspace, M::NONE);
+    app.type_text("say hi");
+    let word = if cfg!(target_os = "macos") { M::ALT } else { M::CONTROL };
+    app.press(K::Left, M::SHIFT | word);
+    app.type_text("\"");
+    assert_eq!(text(&app), "say \"hi\"");
+    assert_eq!(sels(&app), vec![(5, 7)]);
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), "say hi", "the wrap is one undo step");
+    // Paste never auto-closes.
+    app.press(K::End, M::NONE);
+    app.handle_test_event(crossterm::event::Event::Paste(" (".into()));
+    assert_eq!(text(&app), "say hi (");
+
+    // A quote in a string (with the tree) isn't closed.
+    let (mut app, _) = open_app(&dir, "", "b.py", "s = \"ab\"\n");
+    assert!(app.settle(parsed).await);
+    set_cursors(&mut app, &[6]);
+    app.type_text("'");
+    assert_eq!(text(&app), "s = \"a'b\"\n");
+    app.press(K::End, M::NONE);
+    app.type_text(" + f'");
+    assert_eq!(text(&app), "s = \"a'b\" + f''\n", "Python string prefix");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_8_auto_close_pairs_setting_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = open_app(&dir, "[settings]\nauto_close_pairs = false\n", "a.cpp", "x\n");
+    assert!(!app.settings.auto_close_pairs);
+    app.press(K::End, M::NONE);
+    app.type_text("(\"");
+    assert_eq!(text(&app), "x(\"\n");
+    app.press(K::Left, M::SHIFT);
+    app.type_text("[");
+    assert_eq!(text(&app), "x([\n", "no wrap: the selection is replaced");
+    app.press(K::Char('/'), cmd());
+    assert_eq!(text(&app), "// x([\n", "comment line isn't affected");
+}
+
+/// Cmd+Shift+L on a word, then `(` (auto-closed at every cursor), `)` (typed over) and a
+/// Backspace in the pair, at the 1 MB file's 63k cursors; and Cmd+/ on all of a 1 MB file's
+/// 90k lines and back.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_8_pairs_and_comment_line_on_one_mb() {
+    let release = !cfg!(debug_assertions);
+    let size = if release { 1_000_000 } else { 250_000 };
+    let mut original = String::new();
+    let mut i = 0;
+    while original.len() < size {
+        original.push_str(&format!("let item = value_{i}; // item\n"));
+        i += 1;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = open_app(&dir, "", "big.cpp", &original);
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    draw(&mut term, &mut app);
+    set_cursors(&mut app, &[5]);
+    app.press(K::Char('l'), cmd() | M::SHIFT);
+    app.press(K::Right, M::NONE);
+    let count = sels(&app).len();
+    assert_eq!(count, 2 * i);
+    let mut timed = |app: &mut App, what: &str, key: K| {
+        let t = Instant::now();
+        app.press(key, M::NONE);
+        app.pump();
+        draw(&mut term, app);
+        let took = t.elapsed();
+        println!("{what} at {count} cursors: {took:?}");
+        assert!(took < PAIR_DEBUG_BOUND, "{what} took {took:?}");
+        if release {
+            assert!(took < PAIR_KEY_BUDGET, "{what} too slow: {took:?}");
+        }
+    };
+    timed(&mut app, "typing ( (auto-closed)", K::Char('('));
+    assert!(text(&app).starts_with("let item() = value_0; // item()\n"));
+    timed(&mut app, "typing x", K::Char('x'));
+    timed(&mut app, "typing ) (typed over)", K::Char(')'));
+    assert!(text(&app).starts_with("let item(x) = value_0; // item(x)\n"));
+    timed(&mut app, "typing [", K::Char('['));
+    timed(&mut app, "Backspace in []", K::Backspace);
+    assert!(text(&app).starts_with("let item(x) = value_0; // item(x)\n"));
+    assert_eq!(sels(&app).len(), count);
+
+    let mut lines = String::new();
+    let mut n = 0;
+    while lines.len() < size {
+        lines.push_str(&format!("  f({n});\n"));
+        n += 1;
+    }
+    let (mut app, _) = open_app(&dir, "", "lines.cpp", &lines);
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    draw(&mut term, &mut app);
+    app.press(K::Char('a'), cmd());
+    let mut toggle = |app: &mut App, what: &str| {
+        let t = Instant::now();
+        app.press(K::Char('/'), cmd());
+        draw(&mut term, app);
+        let took = t.elapsed();
+        println!("Cmd+/ {what} on {n} lines: {took:?}");
+        assert!(took < PAIR_DEBUG_BOUND, "{what} took {took:?}");
+        if release {
+            assert!(took < COMMENT_BUDGET, "{what} too slow: {took:?}");
+        }
+    };
+    toggle(&mut app, "commenting");
+    assert!(text(&app).starts_with("  // f(0);\n  // f(1);\n"));
+    toggle(&mut app, "uncommenting");
+    assert_eq!(text(&app), lines);
+    // Every line its own cursor: each toggles alone.
+    app.press(K::Char('I'), M::ALT | M::SHIFT);
+    assert_eq!(sels(&app).len(), n);
+    toggle(&mut app, "at a cursor per line");
+    assert!(text(&app).starts_with("  // f(0);\n"));
 }

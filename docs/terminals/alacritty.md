@@ -26,6 +26,7 @@ bindings = [
   { key = "Z", mods = "Command|Shift", action = "ReceiveChar" },
   { key = "C", mods = "Command", action = "ReceiveChar" },
   { key = "X", mods = "Command", action = "ReceiveChar" },
+  { key = "Slash", mods = "Command", action = "ReceiveChar" },
   { key = "D", mods = "Command", action = "ReceiveChar" },
   { key = "L", mods = "Command|Shift", action = "ReceiveChar" },
   { key = "D", mods = "Command|Alt", action = "ReceiveChar" },
@@ -91,4 +92,5 @@ Alacritty's Cmd+C copy, Cmd+W/Cmd+Q quit, Cmd+F/Cmd+B search and Cmd+1..3 tab sw
 - [ ] **Check by hand:** the docs don't say whether Alacritty forwards Cmd combos under the kitty protocol once released; confirm every key in the [table](README.md#cmd-bindings-red-uses) logs with `SUPER`
 - [ ] **Check by hand:** key names `Back` and `Backslash` are accepted (Alacritty warns about unknown keys in its log; try `"\\"` for backslash if needed)
 - [ ] Cmd+W closes red's tab and Alacritty stays open
+- [ ] **Check by hand:** Cmd+/ (comment line) logs as `SUPER` with `/`; on layouts where `/` is a shifted key (German: Shift+7) the terminal may report Cmd+Shift+7 instead: bind `edit.commentLine` to that in `keybindings.toml`
 - [ ] Alt+Left logs `ALT`

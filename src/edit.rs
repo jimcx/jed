@@ -11,7 +11,7 @@ use crate::clipboard::Copied;
 use crate::command::{Command, Motion};
 use crate::selection::{Selection, Selections};
 use crate::view::View;
-use crate::{column, lines};
+use crate::{column, comment, lines, pairs};
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -19,6 +19,9 @@ pub struct Settings {
     pub insert_spaces: bool,
     /// Buffers bigger than this get no parse tree (no highlighting): `[settings] syntax_max_bytes`.
     pub syntax_max_bytes: usize,
+    /// Auto-close pairs, type over their closers, delete them in pairs and wrap selections
+    /// (`pairs`): `[settings] auto_close_pairs`.
+    pub auto_close_pairs: bool,
 }
 
 impl Default for Settings {
@@ -27,6 +30,7 @@ impl Default for Settings {
             tab_width: 4,
             insert_spaces: true,
             syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
+            auto_close_pairs: true,
         }
     }
 }
@@ -36,7 +40,11 @@ impl Default for Settings {
 pub fn run(cmd: Command, buf: &mut Buffer, view: &mut View, s: &Settings) -> bool {
     match cmd {
         Command::Move { motion, select } => move_cursors(buf, view, motion, select, s),
-        Command::DeleteLeft => delete(buf, view, pos::prev_grapheme),
+        Command::DeleteLeft => {
+            if !(s.auto_close_pairs && pairs::delete_pair(buf, view)) {
+                delete(buf, view, pos::prev_grapheme);
+            }
+        }
         Command::DeleteRight => delete(buf, view, pos::next_grapheme),
         Command::DeleteWordLeft => delete(buf, view, pos::word_left),
         Command::DeleteWordRight => delete(buf, view, pos::word_right),
@@ -76,6 +84,7 @@ pub fn run(cmd: Command, buf: &mut Buffer, view: &mut View, s: &Settings) -> boo
         Command::MoveLinesDown => lines::move_lines(buf, view, false),
         Command::CopyLinesUp => lines::copy_lines(buf, view, false),
         Command::CopyLinesDown => lines::copy_lines(buf, view, true),
+        Command::CommentLine => comment::toggle(buf, view, s.tab_width),
         _ => return false,
     }
     true
@@ -97,11 +106,16 @@ pub fn is_edit(cmd: Command) -> bool {
             | Command::MoveLinesDown
             | Command::CopyLinesUp
             | Command::CopyLinesDown
+            | Command::CommentLine
     )
 }
 
-/// Typed text: one char from a key press.
-pub fn insert_char(buf: &mut Buffer, view: &mut View, c: char) {
+/// Typed text: one char from a key press, at every selection. With `auto_close_pairs`, a
+/// bracket or quote may close, wrap or type over instead (`pairs::type_char`).
+pub fn insert_char(buf: &mut Buffer, view: &mut View, c: char, s: &Settings) {
+    if s.auto_close_pairs && pairs::type_char(buf, view, c) {
+        return;
+    }
     let mut utf8 = [0; 4];
     let text: &str = c.encode_utf8(&mut utf8);
     replace_each(buf, view, EditKind::Insert, |_, sel| (sel.start(), sel.end(), text));
@@ -317,14 +331,16 @@ fn insert_tab(buf: &mut Buffer, view: &mut View, s: &Settings) {
 }
 
 /// Where a cursor ends up after its selection's change.
-enum Land {
+pub(crate) enum Land {
     AfterText,
+    /// This many bytes into the new text (between an auto-closed pair).
+    Inside(usize),
     /// Stays on the same text: a position at or after the change, before the edit.
     Keep(ByteIdx),
 }
 
 /// One transaction: replace a range per selection, cursors land after the new text.
-fn replace_each<S: AsRef<str>>(
+pub(crate) fn replace_each<S: AsRef<str>>(
     buf: &mut Buffer,
     view: &mut View,
     kind: EditKind,
@@ -338,7 +354,7 @@ fn replace_each<S: AsRef<str>>(
 
 /// `replace_each`, with each cursor's landing chosen per selection. The text is borrowed where
 /// it can be (typing at 60k cursors copies one char into the set 60k times, allocating nothing).
-fn replace_each_landing<S: AsRef<str>>(
+pub(crate) fn replace_each_landing<S: AsRef<str>>(
     buf: &mut Buffer,
     view: &mut View,
     kind: EditKind,
@@ -359,9 +375,11 @@ fn replace_each_landing<S: AsRef<str>>(
         let end = end.max(start);
         prev_end = end;
         changes.push(start, end, text);
+        let new_start = (start.0 as isize + delta) as usize;
         delta += text.len() as isize - (end.0 - start.0) as isize;
         cursors.push(Selection::cursor(match land {
             Land::AfterText => ByteIdx((end.0 as isize + delta) as usize),
+            Land::Inside(n) => ByteIdx(new_start + n),
             Land::Keep(p) => {
                 keeps.push((cursors.len(), p.max(end)));
                 ByteIdx(0)
@@ -377,7 +395,10 @@ fn replace_each_landing<S: AsRef<str>>(
         }
     }
     let after = Selections::with_newest(cursors, before.primary_index(), before.newest_index());
+    // Auto-closed pairs follow the edit (positions only: mapped before it is applied).
+    view.auto_closed.follow(buf.revision(), &changes);
     buf.edit(changes, before, after.clone(), kind);
+    view.auto_closed.edited(buf.revision(), &after);
     view.selections = after;
     view.reveal_cursor = true;
 }
@@ -406,7 +427,7 @@ mod tests {
     fn typing_groups_into_one_undo_step() {
         let (mut b, mut v, s) = setup("", 0);
         for c in "hello".chars() {
-            insert_char(&mut b, &mut v, c);
+            insert_char(&mut b, &mut v, c, &Settings::default());
         }
         assert_eq!(b.rope.to_string(), "hello");
         run(C::Undo, &mut b, &mut v, &s);
@@ -420,11 +441,11 @@ mod tests {
     #[test]
     fn cursor_move_and_kind_switch_start_new_steps() {
         let (mut b, mut v, s) = setup("", 0);
-        insert_char(&mut b, &mut v, 'a');
-        insert_char(&mut b, &mut v, 'b');
+        insert_char(&mut b, &mut v, 'a', &Settings::default());
+        insert_char(&mut b, &mut v, 'b', &Settings::default());
         run(C::DeleteLeft, &mut b, &mut v, &s); // kind switch
         run(mv(Motion::Left), &mut b, &mut v, &s); // cursor move
-        insert_char(&mut b, &mut v, 'c');
+        insert_char(&mut b, &mut v, 'c', &Settings::default());
         assert_eq!(b.rope.to_string(), "ca");
 
         run(C::Undo, &mut b, &mut v, &s);
@@ -438,9 +459,9 @@ mod tests {
     #[test]
     fn paste_is_its_own_step_and_converts_eol() {
         let (mut b, mut v, s) = setup("x\r\n", 0);
-        insert_char(&mut b, &mut v, 'a');
+        insert_char(&mut b, &mut v, 'a', &Settings::default());
         paste(&mut b, &mut v, "1\n2", false, &[]);
-        insert_char(&mut b, &mut v, 'b');
+        insert_char(&mut b, &mut v, 'b', &Settings::default());
         assert_eq!(b.rope.to_string(), "a1\r\n2bx\r\n");
         run(C::Undo, &mut b, &mut v, &s);
         run(C::Undo, &mut b, &mut v, &s);
@@ -481,7 +502,7 @@ mod tests {
     fn edits_apply_at_every_cursor() {
         let (mut b, mut v, s) = setup("ab\ncd\nef", 0);
         v.selections = Selections::new((0..3).map(|l| Selection::cursor(ByteIdx(l * 3 + 1))).collect(), 0);
-        insert_char(&mut b, &mut v, 'X');
+        insert_char(&mut b, &mut v, 'X', &Settings::default());
         assert_eq!(b.rope.to_string(), "aXb\ncXd\neXf");
         run(C::DeleteLeft, &mut b, &mut v, &s);
         run(C::DeleteLeft, &mut b, &mut v, &s);
@@ -714,7 +735,7 @@ mod tests {
                 let expect: Option<Vec<(usize, usize, &str)>> = match op {
                     0 => {
                         let c = ['x', 'é', '\u{301}', '界', '😀'][rng.next(5)];
-                        insert_char(&mut b, &mut v, c);
+                        insert_char(&mut b, &mut v, c, &Settings::default());
                         let t: &'static str = ["x", "é", "\u{301}", "界", "😀"]
                             [['x', 'é', '\u{301}', '界', '😀'].iter().position(|&k| k == c).unwrap()];
                         Some(sels.iter().map(|x| (x.start().0, x.end().0, t)).collect())

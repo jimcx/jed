@@ -30,7 +30,7 @@ config.send_composed_key_when_right_alt_is_pressed = false
 -- red: send these Cmd keys to the program
 local release = {
   { 'a', 'CMD' }, { 'z', 'CMD' }, { 'z', 'CMD|SHIFT' },
-  { 'c', 'CMD' }, { 'x', 'CMD' },
+  { 'c', 'CMD' }, { 'x', 'CMD' }, { '/', 'CMD' },
   { 'd', 'CMD' }, { 'l', 'CMD|SHIFT' }, { 'd', 'CMD|ALT' }, { 'u', 'CMD' },
   { 'UpArrow', 'CMD|ALT' }, { 'DownArrow', 'CMD|ALT' },
   { 'LeftArrow', 'CMD|ALT|SHIFT' }, { 'RightArrow', 'CMD|ALT|SHIFT' },
@@ -78,4 +78,5 @@ WezTerm's Cmd+C (copy screen text; Ctrl+Shift+C still copies), Cmd+W, Cmd+1..3 a
 - [ ] `{ 'e', 'CMD|SHIFT' }` and `{ 'f', 'CMD|SHIFT' }` match: if Cmd+Shift+E or Cmd+Shift+F doesn't arrive, try `key = 'E'` / `key = 'F'`
 - [ ] **Check by hand:** Cmd+Shift+P opens red's palette, not WezTerm's command palette (WezTerm's own is on Ctrl+Shift+P; if it still grabs Cmd+Shift+P, try `key = 'P'`)
 - [ ] `{ '1', 'CMD|SHIFT' }` matches: if Cmd+Shift+1 doesn't arrive, try `key = '!'`
+- [ ] **Check by hand:** Cmd+/ (comment line) logs as `SUPER` with `/`; on layouts where `/` is a shifted key (German: Shift+7) the terminal may report Cmd+Shift+7 instead: bind `edit.commentLine` to that in `keybindings.toml`
 - [ ] Alt+Left logs `ALT`

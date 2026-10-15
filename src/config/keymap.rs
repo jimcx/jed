@@ -458,6 +458,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Down, alt, Command::MoveLinesDown),
         (KeyCode::Up, alt | shift, Command::CopyLinesUp),
         (KeyCode::Down, alt | shift, Command::CopyLinesDown),
+        (KeyCode::Char('/'), cmd, Command::CommentLine),
     ]);
     // The find widget: opening it, and what also works from the editor (VS Code: `editorFocus`).
     // VS Code's toggles are Cmd+Alt+C / W / R on macOS, Alt+C / W / R on Linux.

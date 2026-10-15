@@ -21,6 +21,8 @@ pub struct SettingsOverrides {
     pub insert_spaces: Option<bool>,
     /// No parse tree (so no highlighting) for buffers bigger than this; 0 turns parsing off.
     pub syntax_max_bytes: Option<usize>,
+    /// Brackets and quotes auto-close, type over and delete in pairs, and wrap a selection.
+    pub auto_close_pairs: Option<bool>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
@@ -117,6 +119,7 @@ mod tests {
 [settings]
 tab_width = 2
 syntax_max_bytes = 2_000_000
+auto_close_pairs = false
 
 [files]
 exclude = ["build/", "*.o"]
@@ -136,6 +139,7 @@ env = { CC = "clang" }
         let c = WorkspaceConfig::parse(SAMPLE).unwrap();
         assert_eq!(c.settings.tab_width, Some(2));
         assert_eq!(c.settings.syntax_max_bytes, Some(2_000_000));
+        assert_eq!(c.settings.auto_close_pairs, Some(false));
         assert_eq!(c.files.exclude, vec!["build/", "*.o"]);
         assert_eq!(c.files.associations["SConstruct"], "python");
         assert!(c.has_commands());

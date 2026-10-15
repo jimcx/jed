@@ -3,6 +3,7 @@ mod buffer;
 mod clipboard;
 mod column;
 mod command;
+mod comment;
 mod config;
 mod edit;
 mod explorer;
@@ -29,6 +30,7 @@ mod milestone8_tests;
 #[cfg(test)]
 mod milestone_tests;
 mod multicursor;
+mod pairs;
 mod palette;
 mod panic;
 mod paths;

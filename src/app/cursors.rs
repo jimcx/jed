@@ -90,7 +90,13 @@ impl App {
         let session_changed = self.session_changed;
         let mut end_session = !focused;
         let g = self.groups.active_group_mut();
-        if let Some(view) = g.tabs.get_mut(g.active).map(|t| &mut t.view) {
+        if let Some(tab) = g.tabs.get_mut(g.active) {
+            if let Some(buf) = self.buffers.get(tab.buffer) {
+                // Auto-closed pairs end when the cursors leave them (VS Code checks on every
+                // selection change).
+                tab.view.auto_closed.validate(buf.revision(), &tab.view.selections);
+            }
+            let view = &mut tab.view;
             let changed = if edited {
                 view.cursor_history.reset(&view.selections);
                 true

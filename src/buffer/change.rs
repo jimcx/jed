@@ -101,6 +101,11 @@ impl ChangeSet {
         self.changes.len()
     }
 
+    /// Whether any change's new text holds a line break (LF or CR).
+    pub fn inserts_line_break(&self) -> bool {
+        self.text.bytes().any(|b| b == b'\n' || b == b'\r')
+    }
+
     /// Each change as (start, end, length of its new text), in order, in pre-edit coordinates.
     pub fn iter(&self) -> impl Iterator<Item = (ByteIdx, ByteIdx, usize)> + '_ {
         self.changes.iter().map(|c| (c.start, c.end, c.text_len()))

@@ -96,6 +96,8 @@ pub enum Command {
     /// the lower copy when copying down.
     CopyLinesUp,
     CopyLinesDown,
+    /// Cmd+/: toggle the line comment on the lines of every selection.
+    CommentLine,
     Undo,
     Redo,
     /// Copy / cut the selections, or the whole line when they're all empty.
@@ -317,6 +319,7 @@ impl Command {
             Command::MoveLinesDown,
             Command::CopyLinesUp,
             Command::CopyLinesDown,
+            Command::CommentLine,
             Command::Undo,
             Command::Redo,
             Command::Copy,
@@ -400,6 +403,7 @@ impl Command {
             Command::MoveLinesDown => "edit.moveLinesDown".into(),
             Command::CopyLinesUp => "edit.copyLinesUp".into(),
             Command::CopyLinesDown => "edit.copyLinesDown".into(),
+            Command::CommentLine => "edit.commentLine".into(),
             Command::Undo => "edit.undo".into(),
             Command::Redo => "edit.redo".into(),
             Command::Copy => "edit.copy".into(),
@@ -544,6 +548,7 @@ impl Command {
             Command::MoveLinesDown => "Edit: Move Line Down",
             Command::CopyLinesUp => "Edit: Copy Line Up",
             Command::CopyLinesDown => "Edit: Copy Line Down",
+            Command::CommentLine => "Edit: Toggle Line Comment",
             Command::Undo => "Edit: Undo",
             Command::Redo => "Edit: Redo",
             Command::Copy => "Edit: Copy",
@@ -705,9 +710,10 @@ mod tests {
             Command::Find(_) => 47,
             Command::FindInFiles => 48,
             Command::Search(_) => 49,
+            Command::CommentLine => 50,
         }
     }
-    const VARIANTS: u8 = 50;
+    const VARIANTS: u8 = 51;
 
     #[test]
     fn all_lists_every_variant() {
