@@ -265,19 +265,30 @@ impl App {
         }
         let job = buf.begin_save();
         let state = job.state;
+        let history = self.history_job(&job.path);
         let tx = self.tx.clone();
         tokio::spawn(async move {
             let t = Instant::now();
-            let result = match tokio::task::spawn_blocking(move || job.run()).await {
-                Ok(r) => r,
-                Err(e) => Err(SaveError::Failed(e.to_string())),
+            let (result, bytes) = match tokio::task::spawn_blocking(move || job.write()).await {
+                Ok(Ok((stamp, bytes))) => (Ok(stamp), Some(bytes)),
+                Ok(Err(e)) => (Err(e), None),
+                Err(e) => (Err(SaveError::Failed(e.to_string())), None),
             };
+            // The snapshot is taken after the rename, off the UI thread, and never fails the save.
+            let history = history.zip(bytes);
             let _ = tx.send(AppEvent::SaveDone {
                 buffer: id,
                 state,
                 result,
                 elapsed: t.elapsed(),
+                history: history.is_some(),
             });
+            if let Some((history, bytes)) = history {
+                let result = tokio::task::spawn_blocking(move || history.record(&bytes))
+                    .await
+                    .unwrap_or_else(|e| Err(format!("File history not saved: {e}")));
+                super::history::send_done(&tx, result);
+            }
         });
     }
 

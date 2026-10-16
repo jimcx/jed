@@ -8,6 +8,7 @@ mod files;
 mod find;
 mod format;
 mod git;
+mod history;
 mod hover;
 mod locations;
 mod lsp;
@@ -139,6 +140,8 @@ enum AppEvent {
         /// What was written.
         result: Result<crate::buffer::file::Stamp, crate::buffer::SaveError>,
         elapsed: Duration,
+        /// A file history snapshot of it is being recorded: `HistoryDone` follows.
+        history: bool,
     },
     Opened {
         path: PathBuf,
@@ -150,6 +153,8 @@ enum AppEvent {
         result: std::io::Result<Vec<explorer::Entry>>,
     },
     FsChanged(Vec<PathBuf>),
+    /// A file history task (a save's snapshot, a rename's move) ended; `Err` = the message.
+    HistoryDone(Result<(), String>),
     ConfigLoaded(Result<WorkspaceConfig, String>),
     FileOpDone {
         op: FileOp,
@@ -298,6 +303,8 @@ pub struct App {
     pub git: git::GitState,
     /// Open files' checks against the disk.
     pub disk: disk::DiskChecks,
+    /// File history tasks (snapshots after saves, moves after renames).
+    pub file_history: history::HistoryTasks,
     /// The gutter markers' schedule, the peek, stages waiting for a save.
     pub quick_diff: quick_diff::QuickDiffState,
     /// Diff tabs' ids, their reload delay, stages started from them.
@@ -309,6 +316,9 @@ pub struct App {
     /// The last command `execute` ran, for tests.
     #[cfg(test)]
     pub last_command: Option<Command>,
+    /// Every path `flush_fs_changes` handled, for tests.
+    #[cfg(test)]
+    pub fs_flushed: Vec<PathBuf>,
 }
 
 impl App {
@@ -388,12 +398,15 @@ impl App {
             locations_generation: 0,
             git: Default::default(),
             disk: Default::default(),
+            file_history: Default::default(),
             quick_diff: Default::default(),
             diffs: Default::default(),
             scm: Default::default(),
             stage_all_after_save: None,
             #[cfg(test)]
             last_command: None,
+            #[cfg(test)]
+            fs_flushed: Vec::new(),
         };
         app.load_associations();
         match initial {
@@ -921,14 +934,17 @@ impl App {
                 state,
                 result,
                 elapsed,
-            } => self.save_done(buffer, state, result, elapsed),
+                history,
+            } => {
+                if history {
+                    self.history_started();
+                }
+                self.save_done(buffer, state, result, elapsed)
+            }
             AppEvent::Opened { path, result } => self.opened(path, result),
             AppEvent::Listed { dir, result } => self.listed(dir, result),
-            AppEvent::FsChanged(paths) => {
-                self.fs_pending.extend(paths);
-                self.fs_deadline
-                    .get_or_insert_with(|| tokio::time::Instant::now() + FS_DEBOUNCE);
-            }
+            AppEvent::FsChanged(paths) => self.fs_changed(paths),
+            AppEvent::HistoryDone(result) => self.history_done(result),
             AppEvent::ConfigLoaded(result) => self.config_loaded(result),
             AppEvent::FileOpDone { op, result } => self.file_op_done(op, result),
             AppEvent::FilesMatched => self.files_matched(),

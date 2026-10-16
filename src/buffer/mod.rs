@@ -310,8 +310,9 @@ impl Buffer {
 impl SaveJob {
     /// Blocking: call from `spawn_blocking`. Refuses (`Conflict`, nothing written) when the
     /// file no longer holds what the buffer last knew of it, unless it already holds what we'd
-    /// write; a missing file is (re)created. Returns the stamp of the bytes written.
-    pub fn run(&self) -> Result<Stamp, SaveError> {
+    /// write; a missing file is (re)created. Returns the stamp of the bytes written, and the
+    /// bytes (file history snapshots them).
+    pub fn write(&self) -> Result<(Stamp, Vec<u8>), SaveError> {
         let bytes = file::encode(&self.rope, self.bom);
         let stamp = Stamp::of(&bytes);
         // An unreadable file can't be compared: written as before.
@@ -322,7 +323,7 @@ impl SaveJob {
             }
         }
         file::atomic_write(&self.path, &bytes).map_err(|e| SaveError::Failed(e.to_string()))?;
-        Ok(stamp)
+        Ok((stamp, bytes))
     }
 }
 
@@ -405,7 +406,7 @@ mod tests {
         buf.edit(insert(0, "x"), cursor(0), cursor(1), EditKind::Insert);
         std::fs::write(&path, "two\n").unwrap();
         let job = buf.begin_save();
-        assert_eq!(job.run(), Err(SaveError::Conflict));
+        assert_eq!(job.write(), Err(SaveError::Conflict));
         buf.finish_save(job.state, None);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "two\n", "nothing written");
 
@@ -417,7 +418,7 @@ mod tests {
         assert_eq!(buf.rope.to_string(), "one\n");
         assert!(buf.is_dirty(), "the text isn't the file's");
         let job = buf.begin_save();
-        let written = job.run().unwrap();
+        let (written, _) = job.write().unwrap();
         buf.finish_save(job.state, Some(written));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\n");
         assert!(!buf.is_dirty());
@@ -427,9 +428,9 @@ mod tests {
         std::fs::write(&path, "xone\n").unwrap();
         buf.redo();
         let job = buf.begin_save();
-        assert!(job.run().is_ok());
+        assert!(job.write().is_ok());
         std::fs::remove_file(&path).unwrap();
-        assert!(job.run().is_ok());
+        assert!(job.write().is_ok());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "xone\n");
     }
 

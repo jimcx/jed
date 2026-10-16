@@ -15,6 +15,29 @@ pub struct WorkspaceConfig {
     pub files: FilesConfig,
     pub lsp: BTreeMap<String, LspServer>,
     pub tasks: BTreeMap<String, Task>,
+    pub history: HistoryConfig,
+}
+
+/// `[history]`: file history limits (see `crate::history`).
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HistoryConfig {
+    /// Record a snapshot on every save.
+    pub enabled: bool,
+    /// Entries kept per file; the oldest are dropped.
+    pub max_entries: usize,
+    /// Files larger than this (bytes, as saved) aren't snapshotted.
+    pub max_file_size: u64,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_entries: 50,
+            max_file_size: 5 * 1024 * 1024,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
@@ -142,6 +165,24 @@ env = { CC = "clang" }
                 "Task build: scons -j8  (env CC=clang)"
             ]
         );
+    }
+
+    #[test]
+    fn history_limits() {
+        let c = WorkspaceConfig::parse("").unwrap();
+        assert_eq!(c.history, HistoryConfig::default());
+        assert!(c.history.enabled);
+        assert_eq!((c.history.max_entries, c.history.max_file_size), (50, 5 * 1024 * 1024));
+        let c = WorkspaceConfig::parse("[history]\nenabled = false\nmax_entries = 3").unwrap();
+        assert_eq!(
+            c.history,
+            HistoryConfig {
+                enabled: false,
+                max_entries: 3,
+                max_file_size: 5 * 1024 * 1024
+            }
+        );
+        assert!(WorkspaceConfig::parse("[history]\nmax_entrys = 3").is_err());
     }
 
     #[test]

@@ -126,7 +126,7 @@ fn milestone_1_round_trip_one_mb_crlf() {
     // Save back through the real save path.
     let job = buf!(app).begin_save();
     let t = Instant::now();
-    let written = job.run().unwrap();
+    let (written, _) = job.write().unwrap();
     println!("save: {:?}", t.elapsed());
     buf!(app).finish_save(job.state, Some(written));
     assert_eq!(

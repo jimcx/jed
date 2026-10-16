@@ -18,6 +18,7 @@ mod format;
 mod git;
 mod group;
 mod grouped;
+mod history;
 mod hover;
 mod indent;
 mod layout;
@@ -27,6 +28,8 @@ mod logging;
 mod lsp;
 #[cfg(test)]
 mod milestone10_tests;
+#[cfg(test)]
+mod milestone11_tests;
 #[cfg(test)]
 mod milestone2_tests;
 #[cfg(test)]

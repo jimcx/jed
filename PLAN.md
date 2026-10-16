@@ -739,6 +739,13 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
     - Ignore watcher events under `.red/` (the explorer and quick open already hide it, M5; search skips it, M7)
     - "File History: Show" in the palette, explorer and tab bar; compare; restore as one undo step
     - Done when: a history write failure never fails a save; restore and then undo gives back the exact buffer
+    - Tasks (one agent and one commit each):
+      - ✅ 11a: `history` module and recording: `.red/history/` storage (per-file folder by path hash, `entries.toml`, snapshot files, `.red/.gitignore`), snapshot off-thread after each successful save's rename, skip duplicates, `[history]` limits (`enabled`, `max_entries`, `max_file_size`), failures logged + status message (never fail the save); watcher events under `.red/` ignored; explorer rename moves a file's history (delete keeps it)
+        - `history.rs` (blocking, one process-wide lock): folder = 32 hex of SHA-256 of the `/`-separated relative path; `entries.toml` (path + `[[entry]]` id, time ms, size, hash; oldest first, temp + rename); `relative(root, path)` (`None` outside the root / under `.red/`), `record` → Added / Duplicate / TooLarge / Disabled, `entries(root, rel)` newest first and `read(root, rel, id)` for 11b, `rename` (file or folder; merges by time into an existing history)
+        - `app/history.rs`: `SaveJob::write` returns the written bytes; after `SaveDone` a second blocking task records, `AppEvent::HistoryDone` (warning "File history of <rel> not saved: …" on error); explorer rename moves history in its own blocking task (only when the rename succeeded); `App::fs_changed` drops paths under `.red/`
+        - Not done: two red processes writing one history at once; delete-keeps-history has no test (explorer delete uses the real Trash)
+      - 11b: "File History: Show" for the active file: a palette picker of entries (newest first, "3 min ago · 12 KB"), Compare (a `diff_view::Text` variant for an entry, `Pair` entry ↔ `Text::Buffer`) and Restore (buffer text replaced as one undoable edit, not saved)
+      - 11c: entry points from the explorer (on a file) and the tab bar; the done-when tests (a history write failure never fails a save; restore then undo gives the exact buffer); marks M11 ✅
 12. **Tasks**: templates, PTY runner, task tabs in the bottom panel — see [Tasks](#tasks-throwaway-terminals)
     - Needs: workspace trust (M2), the palette (M5), the bottom panel (M9)
     - Templates from `.workspace` `[tasks]` and `~/.config/red/tasks.toml`, workspace wins on a clash

@@ -102,6 +102,11 @@ impl App {
 
     pub(super) fn run_file_op(&mut self, op: FileOp) {
         let tx = self.tx.clone();
+        // A renamed file's history moves with it (once the rename is done); a delete keeps it.
+        let history = match &op {
+            FileOp::Rename { from, to } => self.history_rename(from, to),
+            _ => None,
+        };
         tokio::task::spawn_blocking(move || {
             let result = match &op {
                 FileOp::NewFile(p) => explorer::ops::new_file(p),
@@ -109,10 +114,14 @@ impl App {
                 FileOp::Rename { from, to } => explorer::ops::rename(from, to),
                 FileOp::Delete(p) => explorer::ops::delete(p),
             };
+            let renamed = result.is_ok();
             let _ = tx.send(AppEvent::FileOpDone {
                 op,
                 result: result.map_err(|e| e.to_string()),
             });
+            if let Some(move_history) = history {
+                super::history::send_done(&tx, if renamed { move_history() } else { Ok(()) });
+            }
         });
     }
 
@@ -185,6 +194,8 @@ impl App {
         let mut dirs: Vec<PathBuf> = Vec::new();
         let mut reload = false;
         let paths: Vec<PathBuf> = std::mem::take(&mut self.fs_pending).into_iter().collect();
+        #[cfg(test)]
+        self.fs_flushed.extend(paths.iter().cloned());
         self.git_paths_changed(&paths);
         self.disk_paths_changed(&paths);
         self.diffs_paths_changed(&paths);
