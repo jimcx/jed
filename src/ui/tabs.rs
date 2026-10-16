@@ -1,4 +1,5 @@
-//! Tab bar: one tab per open editor; `●` marks unsaved changes, `×` closes.
+//! Tab bar: one tab per open editor; `●` marks unsaved changes, `×` closes; a file deleted on
+//! disk is struck through, with "(deleted)" after its name (VS Code).
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -30,8 +31,12 @@ pub fn render(
         .iter()
         .map(|t| {
             let buf = buffers.get(t.buffer);
-            let name = buf.map(|b| b.name()).unwrap_or_default();
-            (name, buf.is_some_and(|b| b.is_dirty()), buf.is_some_and(|b| b.deleted))
+            let deleted = buf.is_some_and(|b| b.deleted);
+            let mut name = buf.map(|b| b.name()).unwrap_or_default();
+            if deleted {
+                name.push_str(" (deleted)");
+            }
+            (name, buf.is_some_and(|b| b.is_dirty()), deleted)
         })
         .collect();
     if labels.is_empty() {

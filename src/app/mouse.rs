@@ -181,6 +181,12 @@ impl App {
             }
             Hit::TabClose(g, i) => self.close_tab(g, i),
             Hit::TabBar(g) => self.focus_group(g),
+            Hit::Banner(g, action) => {
+                self.focus_group(g);
+                if let Some(a) = action {
+                    self.execute(a.command());
+                }
+            }
             Hit::Editor(g) => {
                 self.focus_group(g);
                 self.editor_click(m, count);

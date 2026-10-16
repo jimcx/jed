@@ -406,10 +406,20 @@ pub struct PaletteHit {
 pub struct GroupHit {
     pub id: GroupId,
     pub tab_bar: Rect,
+    /// Below the tab bar (and the banner, if shown).
     pub editor: Rect,
     /// Text area (gutter excluded).
     pub text: Rect,
     pub tabs: Vec<TabHit>,
+    /// The changed-on-disk banner above the editor, when shown.
+    pub banner: Option<BannerHit>,
+}
+
+/// The changed-on-disk banner: its row and each button.
+#[derive(Debug, Clone, Default)]
+pub struct BannerHit {
+    pub row: Rect,
+    pub actions: Vec<(Rect, crate::disk::BannerAction)>,
 }
 
 /// A tab's x range and the x of its close/dirty marker.
@@ -433,6 +443,8 @@ pub enum Hit {
     Tab(GroupId, usize),
     TabClose(GroupId, usize),
     TabBar(GroupId),
+    /// The changed-on-disk banner over a group's editor, on a button or not.
+    Banner(GroupId, Option<crate::disk::BannerAction>),
     Editor(GroupId),
     /// The bottom panel's top border (dragging it resizes the panel).
     PanelBorder,
@@ -498,6 +510,12 @@ impl HitMap {
                     Some(t) => Hit::Tab(g.id, t.index),
                     None => Hit::TabBar(g.id),
                 };
+            }
+            if let Some(b) = &g.banner
+                && b.row.contains(p)
+            {
+                let action = b.actions.iter().find(|(r, _)| r.contains(p)).map(|(_, a)| *a);
+                return Hit::Banner(g.id, action);
             }
             if g.editor.contains(p) {
                 return Hit::Editor(g.id);
@@ -632,6 +650,15 @@ mod tests {
                     x1: r.x + 10,
                     close_x: r.x + 8,
                 }],
+                // A banner over the right group's editor, a button at its start.
+                banner: (*id == 8).then(|| BannerHit {
+                    row: Rect {
+                        y: r.y + 1,
+                        height: 1,
+                        ..*r
+                    },
+                    actions: vec![(Rect::new(r.x + 2, r.y + 1, 6, 1), crate::disk::BannerAction::Reload)],
+                }),
             })
             .collect();
         let map = HitMap {
@@ -671,6 +698,10 @@ mod tests {
         assert_eq!(map.hit(5, 25), Hit::ExplorerRow(23), "the side panel beside it");
         assert_eq!(map.hit(66, 0), Hit::Tab(8, 0));
         assert_eq!(map.hit(80, 10), Hit::Editor(8));
+        let reload = Some(crate::disk::BannerAction::Reload);
+        assert_eq!(map.hit(68, 1), Hit::Banner(8, reload), "the banner over the editor");
+        assert_eq!(map.hit(90, 1), Hit::Banner(8, None));
+        assert_eq!(map.hit(50, 1), Hit::Editor(7), "no banner there");
         assert_eq!(map.hit(60, 29), Hit::Status);
     }
 }

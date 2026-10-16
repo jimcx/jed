@@ -81,6 +81,11 @@ impl Theme {
             ("tab.unfocusedActive", fg_bg(0x8F8F8F, 0x1E1E1E)),
             ("editorGroup.border", fg_bg(0x444444, 0x1E1E1E)),
             ("tab.deleted", Style::new().add_modifier(Modifier::CROSSED_OUT)),
+            // The changed-on-disk banner over an editor (VS Code's `banner.*`; its buttons are
+            // Dark+'s `button.*`, the icon its warning colour).
+            ("banner", fg_bg(0xFFFFFF, 0x04395E)),
+            ("banner.icon", Style::new().fg(c(0xCCA700))),
+            ("banner.action", fg_bg(0xFFFFFF, 0x0E639C)),
             ("statusBar.restricted", fg_bg(0x1E1E1E, 0xCCA700)),
             (
                 "palette.highlight",

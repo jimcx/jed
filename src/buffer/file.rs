@@ -5,6 +5,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use ropey::Rope;
+use sha2::{Digest, Sha256};
 
 pub const BOM: &[u8] = b"\xEF\xBB\xBF";
 /// Same heuristic as git: a NUL in the first 8000 bytes means binary.
@@ -32,6 +33,23 @@ impl Eol {
     }
 }
 
+/// What a file held, to tell whether it changed since red last read or wrote it: its length and
+/// a SHA-256 of its bytes (BOM included). Compared, never ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamp {
+    len: u64,
+    hash: [u8; 32],
+}
+
+impl Stamp {
+    pub fn of(bytes: &[u8]) -> Self {
+        Self {
+            len: bytes.len() as u64,
+            hash: Sha256::digest(bytes).into(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Loaded {
     pub rope: Rope,
@@ -39,6 +57,29 @@ pub struct Loaded {
     /// The file's main line ending; Enter inserts this.
     pub eol: Eol,
     /// Set when the file can't be saved safely, with the reason.
+    pub read_only: Option<String>,
+    /// The bytes decoded; `None` when the file was missing (loaded empty).
+    pub stamp: Option<Stamp>,
+}
+
+impl Loaded {
+    /// What a reload takes from the file besides its text (`None` for a missing file).
+    pub fn meta(&self) -> Option<DiskMeta> {
+        Some(DiskMeta {
+            stamp: self.stamp?,
+            bom: self.bom,
+            eol: self.eol,
+            read_only: self.read_only.clone(),
+        })
+    }
+}
+
+/// A file's state besides its text, as a reload from disk sets it on the buffer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiskMeta {
+    pub stamp: Stamp,
+    pub bom: bool,
+    pub eol: Eol,
     pub read_only: Option<String>,
 }
 
@@ -59,12 +100,23 @@ impl std::fmt::Display for LoadError {
 
 /// Reads a file. A missing file loads as empty and is created on save.
 pub fn load(path: &Path) -> Result<Loaded, LoadError> {
-    let bytes = match fs::read(path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(LoadError::Io(e)),
-    };
-    decode(bytes)
+    match read(path).map_err(LoadError::Io)? {
+        Some(bytes) => decode(bytes),
+        None => {
+            let mut loaded = decode(Vec::new())?;
+            loaded.stamp = None;
+            Ok(loaded)
+        }
+    }
+}
+
+/// A file's bytes, `None` when it doesn't exist. Blocking.
+pub fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    match fs::read(path) {
+        Ok(b) => Ok(Some(b)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 /// Whether a file's contents are binary (not opened, not searched): a NUL in the first 8000 bytes.
@@ -76,6 +128,7 @@ pub fn decode(mut bytes: Vec<u8>) -> Result<Loaded, LoadError> {
     if looks_binary(&bytes) {
         return Err(LoadError::Binary);
     }
+    let stamp = Some(Stamp::of(&bytes));
     let bom = bytes.starts_with(BOM);
     if bom {
         bytes.drain(..BOM.len());
@@ -93,6 +146,7 @@ pub fn decode(mut bytes: Vec<u8>) -> Result<Loaded, LoadError> {
         bom,
         eol,
         read_only,
+        stamp,
     })
 }
 
@@ -171,6 +225,26 @@ mod tests {
 
         let l = decode(b"a\xFFb".to_vec()).unwrap();
         assert!(l.read_only.is_some());
+    }
+
+    #[test]
+    fn stamps_tell_contents_apart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        assert_eq!(load(&path).unwrap().stamp, None, "missing");
+        fs::write(&path, "\u{FEFF}one\n").unwrap();
+        let l = load(&path).unwrap();
+        assert_eq!(
+            l.stamp,
+            Some(Stamp::of("\u{FEFF}one\n".as_bytes())),
+            "the bytes, BOM included"
+        );
+        assert_ne!(l.stamp, Some(Stamp::of(b"one\n")));
+        assert_eq!(
+            l.stamp,
+            Some(Stamp::of(&encode(&l.rope, l.bom))),
+            "what a save writes back"
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ mod comment;
 mod completion;
 mod config;
 mod diagnostics;
+mod disk;
 mod edit;
 mod explorer;
 mod field;

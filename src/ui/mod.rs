@@ -1,6 +1,7 @@
 //! ratatui widgets. Colours come from the theme only.
 
 mod activity;
+mod banner;
 mod completion;
 mod dialog;
 mod editor;
@@ -44,7 +45,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             height: rect.height.min(1),
             ..rect
         };
-        let editor_area = Rect {
+        let mut editor_area = Rect {
             y: rect.y + tab_bar.height,
             height: rect.height - tab_bar.height,
             ..rect
@@ -52,6 +53,20 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let is_active = id == app.groups.active;
         let Some(group) = app.groups.get_mut(id) else { continue };
         let tabs = tabs::render(f, tab_bar, group, &app.buffers, &app.theme, is_active);
+        // The changed-on-disk banner takes the editor's first row (leaving it at least one).
+        let mut banner = None;
+        if let Some(buf) = group.active_tab().and_then(|t| app.buffers.get(t.buffer))
+            && buf.disk_conflict.is_some()
+            && editor_area.height >= 2
+        {
+            let row = Rect {
+                height: 1,
+                ..editor_area
+            };
+            banner = Some(banner::render(f, row, &buf.name(), buf.has_edits(), &app.theme));
+            editor_area.y += 1;
+            editor_area.height -= 1;
+        }
 
         let mut text = Rect::default();
         let active = group.active;
@@ -81,6 +96,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             editor: editor_area,
             text,
             tabs,
+            banner,
         });
     }
     let border = app.theme.get("editorGroup.border");

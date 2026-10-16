@@ -161,6 +161,12 @@ pub enum Command {
     RenameSymbol,
     /// Shift+Alt+F (Linux: Ctrl+Shift+I): format the whole file with the language server.
     FormatDocument,
+    /// The active file as it is on disk replaces the buffer's text (one undo step; unsaved
+    /// edits too): the changed-on-disk banner's "Reload".
+    ReloadFromDisk,
+    /// The banner's "Keep Mine": keep the buffer's edits over the file changed on disk; the next
+    /// save overwrites it.
+    KeepMine,
 }
 
 /// Focus-group commands listed in the palette and accepted in keybindings (as VS Code: 1 to 8).
@@ -470,6 +476,7 @@ impl Command {
         all.push(Command::TriggerSuggest);
         all.extend(SuggestCommand::ALL.map(Command::Suggest));
         all.extend([Command::GoToReferences, Command::RenameSymbol, Command::FormatDocument]);
+        all.extend([Command::ReloadFromDisk, Command::KeepMine]);
         all
     }
 
@@ -661,6 +668,8 @@ impl Command {
             Command::GoToReferences => "editor.goToReferences".into(),
             Command::RenameSymbol => "editor.rename".into(),
             Command::FormatDocument => "editor.formatDocument".into(),
+            Command::ReloadFromDisk => "file.reloadFromDisk".into(),
+            Command::KeepMine => "file.keepMine".into(),
         }
     }
 
@@ -833,6 +842,8 @@ impl Command {
             Command::GoToReferences => "Go to References",
             Command::RenameSymbol => "Rename Symbol",
             Command::FormatDocument => "Format Document",
+            Command::ReloadFromDisk => "File: Reload from Disk",
+            Command::KeepMine => "File: Keep Mine (Overwrite the Changed File)",
         };
         s.into()
     }
@@ -931,9 +942,11 @@ mod tests {
             Command::GoToReferences => 60,
             Command::RenameSymbol => 61,
             Command::FormatDocument => 62,
+            Command::ReloadFromDisk => 63,
+            Command::KeepMine => 64,
         }
     }
-    const VARIANTS: u8 = 63;
+    const VARIANTS: u8 = 65;
 
     #[test]
     fn all_lists_every_variant() {

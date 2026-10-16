@@ -177,7 +177,8 @@ impl App {
         }
     }
 
-    /// Batched file system events: refresh loaded directories, the git status, reload `.workspace`.
+    /// Batched file system events: refresh loaded directories, the git status, open files changed
+    /// on disk, reload `.workspace`.
     pub(super) fn flush_fs_changes(&mut self) {
         self.fs_deadline = None;
         let config = self.workspace.config_path();
@@ -185,6 +186,7 @@ impl App {
         let mut reload = false;
         let paths: Vec<PathBuf> = std::mem::take(&mut self.fs_pending).into_iter().collect();
         self.git_paths_changed(&paths);
+        self.disk_paths_changed(&paths);
         for p in paths {
             reload |= p == config;
             for d in [Some(p.as_path()), p.parent()].into_iter().flatten() {

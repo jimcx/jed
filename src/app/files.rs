@@ -7,9 +7,9 @@ use std::time::{Duration, Instant};
 use ropey::Rope;
 
 use super::{AfterSave, App, AppEvent, Focus, Level, Prompt, SLOW_TASK};
-use crate::buffer::file::LoadError;
+use crate::buffer::file::{LoadError, Stamp};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
-use crate::buffer::{Buffer, BufferId};
+use crate::buffer::{Buffer, BufferId, SaveError};
 use crate::layout::{GroupId, SplitDir};
 use crate::problems::Place;
 use crate::selection::{Selection, Selections};
@@ -262,9 +262,8 @@ impl App {
         tokio::spawn(async move {
             let t = Instant::now();
             let result = match tokio::task::spawn_blocking(move || job.run()).await {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(e)) => Err(e.to_string()),
-                Err(e) => Err(e.to_string()),
+                Ok(r) => r,
+                Err(e) => Err(SaveError::Failed(e.to_string())),
             };
             let _ = tx.send(AppEvent::SaveDone {
                 buffer: id,
@@ -275,20 +274,32 @@ impl App {
         });
     }
 
-    pub(super) fn save_done(&mut self, id: BufferId, state: u64, result: Result<(), String>, elapsed: Duration) {
+    pub(super) fn save_done(&mut self, id: BufferId, state: u64, result: Result<Stamp, SaveError>, elapsed: Duration) {
         if elapsed > SLOW_TASK {
             tracing::warn!(elapsed_ms = elapsed.as_millis() as u64, "slow save");
         }
         let Some(buf) = self.buffers.get_mut(id) else { return };
-        buf.finish_save(state, result.is_ok());
+        buf.finish_save(state, result.as_ref().ok().copied());
         let path = buf.path.display().to_string();
+        let name = buf.name();
         match result {
-            Ok(()) => {
+            Ok(_) => {
+                self.disk_save_done(id);
                 self.lsp.saved(&mut self.buffers, id);
                 self.notify(Level::Info, format!("Saved {path}"));
             }
-            Err(e) => {
+            Err(SaveError::Conflict) => {
                 self.after_save = None;
+                // Shows the banner (or reloads a buffer without edits).
+                self.check_disk(id, false);
+                self.disk_save_done(id);
+                let text = format!("{name} changed on disk: not saved. Reload it, or Keep Mine to overwrite it");
+                self.notify(Level::Error, text);
+                return;
+            }
+            Err(SaveError::Failed(e)) => {
+                self.after_save = None;
+                self.disk_save_done(id);
                 self.notify(Level::Error, format!("Save failed: {path}: {e}"));
                 return;
             }

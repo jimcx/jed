@@ -2,6 +2,7 @@
 
 mod completion;
 mod cursors;
+mod disk;
 mod files;
 mod find;
 mod format;
@@ -128,7 +129,8 @@ enum AppEvent {
     SaveDone {
         buffer: BufferId,
         state: u64,
-        result: Result<(), String>,
+        /// What was written.
+        result: Result<crate::buffer::file::Stamp, crate::buffer::SaveError>,
         elapsed: Duration,
     },
     Opened {
@@ -174,6 +176,8 @@ enum AppEvent {
         result: Result<crate::git::Refreshed, String>,
         elapsed: Duration,
     },
+    /// An open file was read to see whether it changed on disk (`app/disk.rs`).
+    DiskChecked(Box<disk::Checked>),
 }
 
 /// The file to open at startup, with an optional 1-based line and column.
@@ -266,6 +270,8 @@ pub struct App {
     locations_generation: u64,
     /// The git status (branch, changed files) and its refresh.
     pub git: git::GitState,
+    /// Open files' checks against the disk.
+    pub disk: disk::DiskChecks,
     /// The last command `execute` ran, for tests.
     #[cfg(test)]
     pub last_command: Option<Command>,
@@ -347,6 +353,7 @@ impl App {
             locations: None,
             locations_generation: 0,
             git: Default::default(),
+            disk: Default::default(),
             #[cfg(test)]
             last_command: None,
         };
@@ -724,6 +731,8 @@ impl App {
             Command::GoToReferences => self.go_to_references(),
             Command::RenameSymbol => self.rename_symbol(),
             Command::FormatDocument => self.format_document(),
+            Command::ReloadFromDisk => self.reload_from_disk(),
+            Command::KeepMine => self.keep_mine(),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
             _ => {
@@ -839,6 +848,7 @@ impl App {
             AppEvent::Lsp(ev) => self.lsp_event(ev),
             AppEvent::LocationsRead { generation, files } => self.locations_read(generation, files),
             AppEvent::GitRefreshed { result, elapsed } => self.git_refreshed(result, elapsed),
+            AppEvent::DiskChecked(checked) => self.disk_checked(*checked),
         }
         self.refresh_find();
         self.check_completion();
