@@ -13,11 +13,26 @@ use crate::layout::GroupId;
 use crate::workspace::trust::Trust;
 
 pub enum Prompt {
-    SaveBeforeClose { group: GroupId, buffer: BufferId },
-    SaveAllBeforeQuit { buffers: Vec<BufferId> },
-    Trust { commands: Vec<String> },
+    SaveBeforeClose {
+        group: GroupId,
+        buffer: BufferId,
+    },
+    SaveAllBeforeQuit {
+        buffers: Vec<BufferId>,
+    },
+    Trust {
+        commands: Vec<String>,
+    },
     Input(Input),
-    ConfirmDelete { path: PathBuf, is_dir: bool },
+    ConfirmDelete {
+        path: PathBuf,
+        is_dir: bool,
+    },
+    /// Staging a change from a dirty buffer: save it first (staging reads the file on disk).
+    SaveBeforeStage {
+        buffer: BufferId,
+        line: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +147,14 @@ impl App {
                     self.decide_trust(false);
                 }
                 _ => self.prompt = Some(Prompt::Trust { commands }),
+            },
+            Prompt::SaveBeforeStage { buffer, line } => match ch {
+                _ if enter || ch == Some('s') => {
+                    self.close_prompt();
+                    self.save_then_stage(super::quick_diff::StageAt { buffer, line });
+                }
+                _ if esc || ch == Some('c') => self.close_prompt(),
+                _ => self.prompt = Some(Prompt::SaveBeforeStage { buffer, line }),
             },
             Prompt::ConfirmDelete { path, is_dir } => match ch {
                 _ if enter || ch == Some('t') => {

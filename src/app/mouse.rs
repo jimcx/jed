@@ -60,6 +60,9 @@ impl App {
         if self.hover_mouse(&m, hit) {
             return;
         }
+        if self.peek_mouse(&m, hit) {
+            return;
+        }
         if self.find_mouse(m) {
             return;
         }
@@ -187,6 +190,7 @@ impl App {
                     self.execute(a.command());
                 }
             }
+            Hit::Editor(_) if m.modifiers.is_empty() && self.gutter_click(&m) => {}
             Hit::Editor(g) => {
                 self.focus_group(g);
                 self.editor_click(m, count);
@@ -198,7 +202,7 @@ impl App {
                 PanelTab::Locations => self.locations_click(m, count),
             },
             Hit::StatusProblems => self.problem_counts_clicked(),
-            Hit::Status | Hit::Hover | Hit::Completion | Hit::Nothing => {}
+            Hit::Status | Hit::Hover | Hit::Completion | Hit::QuickDiff | Hit::Nothing => {}
         }
     }
 

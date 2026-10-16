@@ -14,6 +14,7 @@ mod mouse;
 mod palette;
 mod problems;
 mod prompt;
+mod quick_diff;
 mod rename;
 mod side;
 mod syntax;
@@ -80,6 +81,8 @@ enum Timer {
     Hover,
     /// A word char was typed `completion::QUICK_DELAY` ago.
     Completion,
+    /// Edited buffers' gutter markers are due (`quick_diff::DELAY`).
+    QuickDiff,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,6 +181,17 @@ enum AppEvent {
     },
     /// An open file was read to see whether it changed on disk (`app/disk.rs`).
     DiskChecked(Box<disk::Checked>),
+    /// A buffer's gutter markers were computed (`app/quick_diff.rs`).
+    QuickDiff {
+        buffer: BufferId,
+        computed: crate::quick_diff::Computed,
+    },
+    /// A change was staged or unstaged (or wasn't).
+    Staged {
+        at: quick_diff::StageAt,
+        unstage: bool,
+        result: Result<Option<crate::git::Hunk>, String>,
+    },
 }
 
 /// The file to open at startup, with an optional 1-based line and column.
@@ -272,6 +286,8 @@ pub struct App {
     pub git: git::GitState,
     /// Open files' checks against the disk.
     pub disk: disk::DiskChecks,
+    /// The gutter markers' schedule, the peek, stages waiting for a save.
+    pub quick_diff: quick_diff::QuickDiffState,
     /// The last command `execute` ran, for tests.
     #[cfg(test)]
     pub last_command: Option<Command>,
@@ -354,6 +370,7 @@ impl App {
             locations_generation: 0,
             git: Default::default(),
             disk: Default::default(),
+            quick_diff: Default::default(),
             #[cfg(test)]
             last_command: None,
         };
@@ -397,6 +414,7 @@ impl App {
         self.reveal_active();
         self.sync_syntax();
         self.sync_servers();
+        self.sync_quick_diff();
     }
 
     pub async fn run(&mut self, terminal: &mut Term) -> anyhow::Result<()> {
@@ -410,6 +428,7 @@ impl App {
             // Once per turn, so a burst of keys is one incremental re-parse.
             self.sync_syntax();
             self.sync_servers();
+            self.sync_quick_diff();
             if self.needs_redraw {
                 let t = Instant::now();
                 terminal.draw(|f| ui::render(f, self))?;
@@ -444,7 +463,7 @@ impl App {
     }
 
     /// Sleeps until the earliest pending deadline (the fs-event batch, the Search view's
-    /// debounce, the mouse's hover rest), or forever when none is pending; `run` and `settle` both
+    /// debounce, the mouse's hover rest, quick suggestions, the gutter markers' delay), or forever when none is pending; `run` and `settle` both
     /// wait on it. The future borrows nothing, so it can sit in a `select!` beside `self.rx`.
     fn next_timer(&self) -> impl Future<Output = Timer> + 'static {
         let fs = self.fs_deadline.map(|d| (d, Timer::FsChanges));
@@ -460,7 +479,11 @@ impl App {
             .completion
             .deadline()
             .map(|d| (tokio::time::Instant::from_std(d), Timer::Completion));
-        let next = [fs, search, hover, completion]
+        let quick_diff = self
+            .quick_diff
+            .deadline()
+            .map(|d| (tokio::time::Instant::from_std(d), Timer::QuickDiff));
+        let next = [fs, search, hover, completion, quick_diff]
             .into_iter()
             .flatten()
             .min_by_key(|(at, _)| *at);
@@ -482,6 +505,7 @@ impl App {
             Timer::SearchDebounce => self.search_tick(Instant::now()),
             Timer::Hover => self.hover_tick(Instant::now()),
             Timer::Completion => self.completion_tick(Instant::now()),
+            Timer::QuickDiff => self.sync_quick_diff(),
         }
     }
 
@@ -567,10 +591,26 @@ impl App {
                     self.close_hover();
                 }
                 let esc = key.code == KeyCode::Esc && key.modifiers.is_empty();
+                let enter = key.code == KeyCode::Enter && key.modifiers.is_empty();
+                // The gutter's peek takes Enter (stage) and Esc in the editor; other keys close it.
+                let peek = self.quick_diff.peek.is_some()
+                    && self.prompt.is_none()
+                    && self.palette.is_none()
+                    && self.ui.focus == Focus::Editor
+                    && (esc || enter);
+                if !peek && !matches!(key.code, KeyCode::Modifier(_)) {
+                    self.close_peek();
+                }
                 if self.prompt.is_some() {
                     self.handle_prompt_key(key);
                 } else if popup && esc && self.palette.is_none() && self.ui.focus == Focus::Editor {
                     // Closed above.
+                } else if peek {
+                    if enter {
+                        self.stage_peek();
+                    } else {
+                        self.close_peek();
+                    }
                 } else if let Some(cmd) = self.keymap.lookup(&key, self.context()) {
                     self.execute(cmd);
                 } else if self.palette.is_some() {
@@ -616,6 +656,7 @@ impl App {
         self.check_completion();
         self.check_requests();
         self.check_hover();
+        self.check_peek();
     }
 
     /// Edits go through the active tab's view; every other view on an edited buffer
@@ -641,6 +682,7 @@ impl App {
             }
             edited |= Some(id) == origin_buf;
             self.completion.follow(id, &changes, buf.sets_applied());
+            self.quick_diff.follow(id, &changes);
             for (gid, group) in self.groups.iter_mut() {
                 for (i, tab) in group.tabs.iter_mut().enumerate() {
                     if tab.buffer != id {
@@ -733,6 +775,10 @@ impl App {
             Command::FormatDocument => self.format_document(),
             Command::ReloadFromDisk => self.reload_from_disk(),
             Command::KeepMine => self.keep_mine(),
+            Command::StageHunk => self.stage_command(false),
+            Command::UnstageHunk => self.stage_command(true),
+            Command::NextChange => self.go_to_change(true),
+            Command::PreviousChange => self.go_to_change(false),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
             _ => {
@@ -849,10 +895,13 @@ impl App {
             AppEvent::LocationsRead { generation, files } => self.locations_read(generation, files),
             AppEvent::GitRefreshed { result, elapsed } => self.git_refreshed(result, elapsed),
             AppEvent::DiskChecked(checked) => self.disk_checked(*checked),
+            AppEvent::QuickDiff { buffer, computed } => self.quick_diff_done(buffer, computed),
+            AppEvent::Staged { at, unstage, result } => self.staged(at, unstage, result),
         }
         self.refresh_find();
         self.check_completion();
         self.check_hover();
+        self.check_peek();
     }
 
     fn update_crash_snapshot(&self) {
@@ -973,6 +1022,7 @@ impl App {
         }
         self.sync_syntax();
         self.sync_servers();
+        self.sync_quick_diff();
     }
 
     /// Handles background results (and the Search view's debounce) until `done` holds; false after 5 s.
@@ -983,6 +1033,7 @@ impl App {
             // As the event loop does each turn.
             self.sync_syntax();
             self.sync_servers();
+            self.sync_quick_diff();
             if done(self) {
                 break;
             }

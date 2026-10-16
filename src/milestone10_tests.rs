@@ -1,4 +1,4 @@
-//! Milestone 10 end to end (so far 10a, 10b). 10a: the git status read off-thread at startup and
+//! Milestone 10 end to end (so far 10a–10c). 10a: the git status read off-thread at startup and
 //! kept current through `notify` (work tree edits, staging and branch switches made outside
 //! red), the branch in the status bar (unborn and detached HEAD too), git colouring in the
 //! explorer (changed files and the folders holding them), no repository (git off), and a
@@ -9,6 +9,13 @@
 //! non-UTF-8 files aren't reloaded until asked, a deleted file's tab (also one in a folder
 //! renamed away) is marked and saving recreates it. Checks racing a save or an edit are
 //! `app::disk`'s unit tests.
+//! 10c, the gutter: markers for added / modified / deleted lines drawn in their colours, moved
+//! with edits at once and recomputed after them, after `git add` outside red and for an
+//! untracked file (none); a click on a marker opens the peek, whose Stage (button or Enter)
+//! gives the same index as `git add -p` for that hunk; a dirty buffer is saved first (asked;
+//! Cancel stages nothing), a save in flight is waited for; unstaging the change at the cursor is
+//! `git reset -p`'s; Alt+F5 / Shift+Alt+F5 step between changes; typing at 60k cursors with
+//! markers keeps M6's keystroke budget (release).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,7 +30,7 @@ use ratatui::style::Modifier;
 use crate::app::{App, InitialFile};
 use crate::buffer::Buffer;
 use crate::disk::BannerAction;
-use crate::git::test_repo::{commit_all, git, init};
+use crate::git::test_repo::{commit_all, git, git_with_input, init};
 use crate::git::{Change, Decoration};
 use crate::workspace::trust::TrustStore;
 use crate::workspace::{self, Workspace};
@@ -577,4 +584,558 @@ async fn milestone_10_reload_keeps_the_scroll_and_refuses_non_utf8() {
     assert!(app.settle(|a| text(a) == "caf\u{FFFD}\n").await, "{:?}", text(&app));
     let buf = app.active_buffer().unwrap();
     assert!(buf.read_only.is_some() && buf.disk_conflict.is_none() && !buf.is_dirty());
+}
+
+// 10c: the gutter.
+
+/// A repository with `files` committed, then `changes` written over them on disk.
+fn repo_with(root: &Path, files: &[(&str, &str)], changes: &[(&str, &str)]) {
+    init(root);
+    for (name, text) in files {
+        fs::write(root.join(name), text).unwrap();
+    }
+    commit_all(root, "one");
+    for (name, text) in changes {
+        fs::write(root.join(name), text).unwrap();
+    }
+}
+
+fn numbered(n: usize) -> String {
+    (0..n).map(|i| format!("line {i}\n")).collect()
+}
+
+/// Waits until the active buffer's markers are current (nothing running or due) and the git
+/// status read.
+async fn settle_markers(app: &mut App) -> bool {
+    app.settle(|a| {
+        let buf = a.active_buffer().unwrap();
+        !a.git.running()
+            && a.git.status.is_some()
+            && !buf.quick_diff.running()
+            && buf.quick_diff.want(buf.revision()) == crate::quick_diff::Want::Nothing
+            && a.quick_diff.deadline().is_none()
+            && a.quick_diff.staging == 0
+    })
+    .await
+}
+
+/// The gutter's markers on screen: (buffer line, glyph, colour) for each marked row.
+fn markers(app: &mut App) -> Vec<(usize, String, Option<Color>)> {
+    let term = draw(app);
+    let text = app.hits.group(app.groups.active).unwrap().text;
+    let top = app.group().active_tab().unwrap().view.top_line();
+    let buf = term.backend().buffer();
+    (0..text.height)
+        .filter_map(|r| {
+            let cell = &buf[(text.x - 1, text.y + r)];
+            (cell.symbol() != " ").then(|| (top + r as usize, cell.symbol().to_string(), cell.fg.into()))
+        })
+        .collect()
+}
+
+fn marker_colour(app: &App, key: &str) -> Option<Color> {
+    app.theme.get(key).fg
+}
+
+/// Runs the palette command titled `title`.
+fn run_command(app: &mut App, title: &str) {
+    app.press(KeyCode::Char('p'), cmd() | M::SHIFT);
+    app.type_text(title);
+    let p = app.palette.as_ref().unwrap();
+    assert_eq!(p.rows[p.selected].label, title);
+    app.press(KeyCode::Enter, M::NONE);
+}
+
+/// What the index holds: `git ls-files -s` and the cached diff.
+fn index_state(root: &Path) -> (String, String) {
+    (
+        git(root, &["ls-files", "-s"]),
+        git(root, &["diff", "--cached", "--no-color"]),
+    )
+}
+
+/// A copy of the repository at `root` (beside it, as `name`), for `git add -p` to stage in.
+fn copy_repo(root: &Path, name: &str) -> PathBuf {
+    let to = root.with_file_name(name);
+    let ok = std::process::Command::new("cp")
+        .arg("-a")
+        .arg(root)
+        .arg(&to)
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    to
+}
+
+fn place_cursor(app: &mut App, line: usize) {
+    app.press(KeyCode::Home, cmd());
+    for _ in 0..line {
+        app.press(KeyCode::Down, M::NONE);
+    }
+}
+
+fn cursor_line(app: &App) -> usize {
+    let buf = app.active_buffer().unwrap();
+    crate::buffer::pos::line_of(&buf.rope, crate::buffer::pos::ByteIdx(head(app)))
+}
+
+async fn settle_staged(app: &mut App, what: &str) -> bool {
+    app.settle(|a| a.quick_diff.staging == 0 && a.message.as_ref().is_some_and(|m| m.text.contains(what)))
+        .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_10_gutter_markers_follow_edits_and_the_index() {
+    let (_d, root, state) = dirs();
+    let text = numbered(10);
+    let changed = text
+        .replace("line 1\n", "one\n")
+        .replace("line 4\n", "")
+        .replace("line 9\n", "line 9\nten\neleven\n");
+    repo_with(&root, &[("a.txt", &text), ("new.txt", "n\n")], &[("a.txt", &changed)]);
+    fs::write(root.join("untracked.txt"), "u\n").unwrap();
+    let mut app = open_file_app(&root, &state, "a.txt");
+    assert!(settle_markers(&mut app).await);
+    let (added, modified, deleted) = (
+        marker_colour(&app, "editorGutter.addedBackground"),
+        marker_colour(&app, "editorGutter.modifiedBackground"),
+        marker_colour(&app, "editorGutter.deletedBackground"),
+    );
+    // Line 1 modified; "line 4" deleted (drawn below line 3); lines 9 and 10 added.
+    let expected = vec![
+        (1, "▎".to_string(), modified),
+        (3, "▁".to_string(), deleted),
+        (9, "▎".to_string(), added),
+        (10, "▎".to_string(), added),
+    ];
+    assert_eq!(markers(&mut app), expected);
+
+    // A line typed at the top: the markers move with the text at once, before any recompute.
+    app.press(KeyCode::Enter, M::NONE);
+    let moved: Vec<_> = expected.iter().map(|(l, g, c)| (l + 1, g.clone(), *c)).collect();
+    let mut now = moved.clone();
+    now.insert(0, (0, "▎".to_string(), added));
+    assert_eq!(markers(&mut app), moved, "mapped through the edit");
+    // Not recomputed at each key: after `quick_diff::DELAY`, not pushed back by more keys.
+    app.pump();
+    let deadline = app.quick_diff.deadline().expect("a recompute is due later");
+    assert!(
+        !app.active_buffer().unwrap().quick_diff.running(),
+        "nothing started at the key"
+    );
+    app.press(KeyCode::Char('q'), M::NONE);
+    app.press(KeyCode::Backspace, M::NONE);
+    app.pump();
+    assert_eq!(app.quick_diff.deadline(), Some(deadline));
+    assert!(!app.active_buffer().unwrap().quick_diff.running());
+    // Then recomputed: the new line is an addition.
+    assert!(settle_markers(&mut app).await);
+    assert_eq!(markers(&mut app), now);
+    // Undone (the Backspace, then the Enter and the q): back as they were.
+    app.press(KeyCode::Char('z'), cmd());
+    app.press(KeyCode::Char('z'), cmd());
+    assert_eq!(app.active_buffer().unwrap().rope.to_string(), changed);
+    assert!(settle_markers(&mut app).await);
+    assert_eq!(markers(&mut app), expected);
+
+    // `git add` outside red: the index now holds the file, nothing is marked.
+    git(&root, &["add", "a.txt"]);
+    assert!(
+        app.settle(|a| a.active_buffer().unwrap().quick_diff.marks().is_empty())
+            .await
+    );
+    assert!(settle_markers(&mut app).await);
+    assert_eq!(markers(&mut app), vec![]);
+    // Typing changes a line against the new index.
+    place_cursor(&mut app, 5);
+    app.type_text("x");
+    assert!(settle_markers(&mut app).await);
+    assert_eq!(markers(&mut app), vec![(5, "▎".to_string(), modified)]);
+    // Taken out of the index (untracked now): no markers.
+    git(&root, &["rm", "-q", "--cached", "a.txt"]);
+    assert!(
+        app.settle(|a| a.active_buffer().unwrap().quick_diff.marks().is_empty())
+            .await
+    );
+    assert!(settle_markers(&mut app).await);
+    assert_eq!(markers(&mut app), vec![]);
+
+    // An untracked file has no markers.
+    app.test_open(Buffer::open(&root.join("untracked.txt")).unwrap());
+    app.type_text("more ");
+    assert!(settle_markers(&mut app).await);
+    assert_eq!(markers(&mut app), vec![]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_10_stage_from_the_gutter_like_add_p() {
+    let (_d, root, state) = dirs();
+    let original = numbered(40);
+    let changed = original
+        .replace("line 2\n", "two\n")
+        .replace("line 20\n", "twenty\nmore\n")
+        .replace("line 35\n", "");
+    repo_with(&root, &[("f.txt", &original)], &[("f.txt", &changed)]);
+    let mut app = open_file_app(&root, &state, "f.txt");
+    assert!(settle_markers(&mut app).await);
+    let reference = copy_repo(&root, "reference");
+
+    // Scroll so line 21 is on screen, then click its marker: the peek opens below the change.
+    place_cursor(&mut app, 25);
+    let _ = markers(&mut app);
+    let text_rect = app.hits.group(app.groups.active).unwrap().text;
+    let top = app.group().active_tab().unwrap().view.top_line();
+    assert!(top <= 20 && 21 < top + text_rect.height as usize, "line 21 on screen");
+    let y = text_rect.y + (21 - top) as u16;
+    app.mouse(MouseEventKind::Down(MouseButton::Left), text_rect.x - 1, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), text_rect.x - 1, y);
+    assert_eq!(app.quick_diff.peek.as_ref().map(|p| p.lines.clone()), Some(20..22));
+    assert_eq!(cursor_line(&app), 25, "the click doesn't move the cursor");
+    let screen = lines(&draw(&mut app));
+    let peek = app.hits.quick_diff.expect("the peek is drawn");
+    let rows: Vec<&String> = screen[peek.rect.y as usize..(peek.rect.y + peek.rect.height) as usize]
+        .iter()
+        .collect();
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("1 line changed to 2") && r.contains("Stage Change")),
+        "{rows:#?}"
+    );
+    assert!(rows.iter().any(|r| r.contains("- line 20")), "{rows:#?}");
+    assert!(rows.iter().any(|r| r.contains("+ twenty")) && rows.iter().any(|r| r.contains("+ more")));
+    // A click on the marker again closes it; another opens it.
+    app.mouse(MouseEventKind::Down(MouseButton::Left), text_rect.x - 1, y);
+    assert!(app.quick_diff.peek.is_none());
+    app.mouse(MouseEventKind::Down(MouseButton::Left), text_rect.x - 1, y);
+    assert!(app.quick_diff.peek.is_some());
+
+    // Stage: the same index as `git add -p` answering yes to that hunk only.
+    let _ = draw(&mut app);
+    let stage = app.hits.quick_diff.unwrap().stage;
+    app.mouse(MouseEventKind::Down(MouseButton::Left), stage.x + 1, stage.y);
+    assert!(app.quick_diff.peek.is_none());
+    assert!(settle_staged(&mut app, "Staged the change at line 21").await);
+    git_with_input(&reference, &["add", "-p", "--", "f.txt"], Some("n\ny\nn\n"));
+    assert_eq!(index_state(&root), index_state(&reference));
+    // The staged change isn't marked any more.
+    assert!(settle_markers(&mut app).await);
+    let modified = marker_colour(&app, "editorGutter.modifiedBackground");
+    let shown = markers(&mut app);
+    assert!(!shown.iter().any(|(l, _, _)| *l == 20 || *l == 21), "{shown:?}");
+    assert_eq!(
+        app.active_buffer().unwrap().quick_diff.marks().len(),
+        2,
+        "lines 2 and 35 left"
+    );
+
+    // Enter in the peek stages too: the deletion, drawn below line 35.
+    place_cursor(&mut app, 39);
+    let _ = draw(&mut app);
+    let top = app.group().active_tab().unwrap().view.top_line();
+    assert!(top <= 35, "line 35 on screen");
+    app.mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        text_rect.x - 1,
+        text_rect.y + (35 - top) as u16,
+    );
+    assert!(app.quick_diff.peek.is_some());
+    // Esc closes it, Enter stages from it.
+    app.press(KeyCode::Esc, M::NONE);
+    assert!(app.quick_diff.peek.is_none());
+    assert_eq!(app.group().active_tab().unwrap().view.selections.len(), 1);
+    app.mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        text_rect.x - 1,
+        text_rect.y + (35 - top) as u16,
+    );
+    app.press(KeyCode::Enter, M::NONE);
+    assert!(settle_staged(&mut app, "Staged the change at line 36").await);
+    assert_eq!(text(&app), changed, "Enter didn't type");
+    git(&reference, &["reset", "-q"]);
+    git_with_input(&reference, &["add", "-p", "--", "f.txt"], Some("n\ny\ny\n"));
+    assert_eq!(index_state(&root), index_state(&reference));
+    assert!(settle_markers(&mut app).await);
+    assert_eq!(
+        markers(&mut app).iter().map(|(l, _, _)| *l).collect::<Vec<_>>(),
+        Vec::<usize>::new()
+    );
+    // Line 2 is above the screen: scroll there to see it's still marked.
+    place_cursor(&mut app, 0);
+    assert_eq!(markers(&mut app), vec![(2, "▎".to_string(), modified)]);
+
+    // With the peek open, a click in the text closes it and places the cursor there.
+    let top = app.group().active_tab().unwrap().view.top_line();
+    let row = |line: usize| text_rect.y + (line - top) as u16;
+    app.mouse(MouseEventKind::Down(MouseButton::Left), text_rect.x - 1, row(2));
+    assert!(app.quick_diff.peek.is_some());
+    let _ = draw(&mut app);
+    let peek = app.hits.quick_diff.unwrap().rect;
+    let below = peek.y + peek.height + 1;
+    app.mouse(MouseEventKind::Down(MouseButton::Left), text_rect.x + 2, below);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), text_rect.x + 2, below);
+    assert!(app.quick_diff.peek.is_none());
+    assert_eq!(cursor_line(&app), top + (below - text_rect.y) as usize);
+    // The file changed outside red (a clean buffer reloads): the peek closes.
+    app.mouse(MouseEventKind::Down(MouseButton::Left), text_rect.x - 1, row(2));
+    assert!(app.quick_diff.peek.is_some());
+    fs::write(root.join("f.txt"), changed.replace("line 10\n", "ten\n")).unwrap();
+    assert!(app.settle(|a| text(a).contains("ten\n")).await);
+    assert!(app.quick_diff.peek.is_none(), "closed by the reload");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_10_staging_a_dirty_buffer_saves_it_first() {
+    let (_d, root, state) = dirs();
+    let text = numbered(30);
+    repo_with(&root, &[("f.txt", &text)], &[]);
+    let mut app = open_file_app(&root, &state, "f.txt");
+    assert!(settle_markers(&mut app).await);
+    place_cursor(&mut app, 5);
+    app.type_text("x");
+    assert!(settle_markers(&mut app).await);
+    // No change on line 10: nothing to ask about.
+    place_cursor(&mut app, 10);
+    run_command(&mut app, "Git: Stage Change at Cursor");
+    assert!(app.prompt.is_none());
+    assert!(
+        app.message
+            .as_ref()
+            .unwrap()
+            .text
+            .contains("No change to stage at line 11")
+    );
+    // On line 5: asked to save first; Cancel stages nothing and leaves the buffer dirty.
+    place_cursor(&mut app, 5);
+    run_command(&mut app, "Git: Stage Change at Cursor");
+    assert!(matches!(
+        app.prompt,
+        Some(crate::app::Prompt::SaveBeforeStage { line: 5, .. })
+    ));
+    let screen = lines(&draw(&mut app));
+    assert!(
+        screen
+            .iter()
+            .any(|r| r.contains("Save f.txt before staging the change?")),
+        "{screen:#?}"
+    );
+    app.press(KeyCode::Esc, M::NONE);
+    assert!(app.prompt.is_none() && app.active_buffer().unwrap().is_dirty());
+    assert_eq!(git(&root, &["diff", "--cached"]), "");
+    // Save: written, then staged from the file on disk.
+    run_command(&mut app, "Git: Stage Change at Cursor");
+    app.press(KeyCode::Char('s'), M::NONE);
+    assert!(settle_staged(&mut app, "Staged the change at line 6").await);
+    assert!(!app.active_buffer().unwrap().is_dirty());
+    assert_eq!(
+        fs::read_to_string(root.join("f.txt")).unwrap(),
+        text.replace("line 5\n", "xline 5\n")
+    );
+    assert_eq!(git(&root, &["diff"]), "", "everything on disk staged");
+    assert!(git(&root, &["diff", "--cached"]).contains("+xline 5"));
+    assert!(settle_markers(&mut app).await);
+    assert_eq!(markers(&mut app), vec![]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_10_staging_waits_for_a_save_in_flight() {
+    let (_d, root, state) = dirs();
+    let text = numbered(30);
+    repo_with(&root, &[("f.txt", &text)], &[]);
+    let mut app = open_file_app(&root, &state, "f.txt");
+    assert!(settle_markers(&mut app).await);
+    place_cursor(&mut app, 3);
+    app.type_text("y");
+    assert!(settle_markers(&mut app).await);
+    // Save, and stage before the save's result is handled: it waits, then stages from disk.
+    app.press(KeyCode::Char('s'), cmd());
+    assert!(app.active_buffer().unwrap().save_in_flight());
+    run_command(&mut app, "Git: Stage Change at Cursor");
+    assert!(app.prompt.is_none(), "a save in flight isn't asked about");
+    assert!(app.message.as_ref().unwrap().text.contains("Waiting for the save"));
+    assert_eq!(app.quick_diff.staging, 0, "nothing staged yet");
+    assert!(settle_staged(&mut app, "Staged the change at line 4").await);
+    assert!(git(&root, &["diff", "--cached"]).contains("+yline 3"));
+
+    // Lines typed above the change while the stage waits: it keeps to the change's line.
+    git(&root, &["reset", "-q"]);
+    assert!(settle_markers(&mut app).await);
+    place_cursor(&mut app, 3);
+    app.press(KeyCode::Char('s'), cmd());
+    run_command(&mut app, "Git: Stage Change at Cursor");
+    assert!(app.message.as_ref().unwrap().text.contains("Waiting for the save"));
+    place_cursor(&mut app, 0);
+    app.press(KeyCode::Enter, M::NONE);
+    app.press(KeyCode::Enter, M::NONE);
+    // The save ends; the buffer is dirty again, so it asks, about the change's new line.
+    assert!(app.settle(|a| a.prompt.is_some()).await);
+    assert!(
+        matches!(app.prompt, Some(crate::app::Prompt::SaveBeforeStage { line: 5, .. })),
+        "{:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    app.press(KeyCode::Char('s'), M::NONE);
+    assert!(settle_staged(&mut app, "Staged the change at line 6").await);
+    let cached = git(&root, &["diff", "--cached"]);
+    assert!(cached.contains("+yline 3") && !cached.contains("+\n"), "{cached}");
+    assert_eq!(
+        git(&root, &["diff", "--numstat"]),
+        "2\t0\tf.txt\n",
+        "the new lines not staged"
+    );
+
+    // A save that's refused (changed on disk) stages nothing.
+    place_cursor(&mut app, 8);
+    app.type_text("z");
+    assert!(settle_markers(&mut app).await);
+    fs::write(
+        root.join("f.txt"),
+        text.replace("line 3\n", "yline 3\n").replace("line 20\n", "outside\n"),
+    )
+    .unwrap();
+    app.press(KeyCode::Char('s'), cmd());
+    assert!(app.active_buffer().unwrap().save_in_flight());
+    run_command(&mut app, "Git: Stage Change at Cursor");
+    assert!(app.message.as_ref().unwrap().text.contains("Waiting for the save"));
+    assert!(app.settle(|a| !a.active_buffer().unwrap().save_in_flight()).await);
+    assert!(
+        app.message
+            .as_ref()
+            .unwrap()
+            .text
+            .contains("changed on disk: not saved")
+    );
+    assert!(app.settle(|a| a.active_buffer().unwrap().disk_conflict.is_some()).await);
+    assert_eq!(app.quick_diff.staging, 0);
+    assert!(app.prompt.is_none(), "not asked to save again");
+    assert!(!git(&root, &["diff", "--cached"]).contains("zline 8"), "not staged");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_10_unstage_the_change_at_the_cursor_like_reset_p() {
+    let (_d, root, state) = dirs();
+    let text = numbered(40);
+    let staged = text.replace("line 2\n", "two\n").replace("line 30\n", "thirty\n");
+    repo_with(&root, &[("f.txt", &text)], &[("f.txt", &staged)]);
+    git(&root, &["add", "f.txt"]);
+    // Two more lines on disk at the top, not staged: line 32 is "thirty".
+    fs::write(root.join("f.txt"), format!("new\nnew\n{staged}")).unwrap();
+    let reference = copy_repo(&root, "reference");
+    let mut app = open_file_app(&root, &state, "f.txt");
+    assert!(settle_markers(&mut app).await);
+    place_cursor(&mut app, 10);
+    run_command(&mut app, "Git: Unstage Change at Cursor");
+    assert!(settle_staged(&mut app, "No staged change at line 11").await);
+    place_cursor(&mut app, 32);
+    run_command(&mut app, "Git: Unstage Change at Cursor");
+    assert!(settle_staged(&mut app, "Unstaged the change at line 33").await);
+    git_with_input(&reference, &["reset", "-q", "-p", "--", "f.txt"], Some("n\ny\n"));
+    assert_eq!(index_state(&root), index_state(&reference));
+    // Now unstaged, it's marked in the gutter.
+    assert!(settle_markers(&mut app).await);
+    let shown = markers(&mut app);
+    assert!(shown.iter().any(|(l, _, _)| *l == 32), "{shown:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_10_next_and_previous_change() {
+    let (_d, root, state) = dirs();
+    let text = numbered(30);
+    let changed = text
+        .replace("line 3\n", "three\n")
+        .replace("line 10\n", "")
+        .replace("line 20\n", "line 20\nadded\n");
+    repo_with(&root, &[("f.txt", &text)], &[("f.txt", &changed)]);
+    let mut app = open_file_app(&root, &state, "f.txt");
+    assert!(settle_markers(&mut app).await);
+    let next = |app: &mut App| {
+        app.press(KeyCode::F(5), M::ALT);
+        cursor_line(app)
+    };
+    // Changes start on lines 3, 9 (the deletion, below line 9) and 20.
+    assert_eq!(next(&mut app), 3);
+    assert_eq!(next(&mut app), 9);
+    assert_eq!(next(&mut app), 20);
+    assert_eq!(next(&mut app), 3, "wraps");
+    app.press(KeyCode::F(5), M::ALT | M::SHIFT);
+    assert_eq!(cursor_line(&app), 20, "wraps back");
+    app.press(KeyCode::F(5), M::ALT | M::SHIFT);
+    assert_eq!(cursor_line(&app), 9);
+    assert_eq!(
+        app.keymap
+            .binding_for(crate::command::Command::NextChange)
+            .map(|k| k.label())
+            .as_deref(),
+        Some("Alt+F5")
+    );
+}
+
+/// Typing at every one of 60k cursors in a 1 MB file with gutter markers: the markers follow
+/// each edit (mapped, not recomputed per key) within M6's keystroke budget, and are recomputed
+/// off the UI thread after.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_10_typing_at_many_cursors_with_markers() {
+    use std::time::{Duration, Instant};
+    let size = if cfg!(debug_assertions) { 250_000 } else { 1_000_000 };
+    let mut original = String::new();
+    let mut i = 0usize;
+    while original.len() < size {
+        original.push_str(&format!("let item = value_{i}; // item\n"));
+        i += 1;
+    }
+    // Every tenth line changed on disk: thousands of markers.
+    let changed: String = original
+        .lines()
+        .enumerate()
+        .map(|(n, l)| {
+            if n % 10 == 0 {
+                format!("{l} changed\n")
+            } else {
+                format!("{l}\n")
+            }
+        })
+        .collect();
+    let (_d, root, state) = dirs();
+    repo_with(&root, &[("big.rs", &original)], &[("big.rs", &changed)]);
+    let mut app = open_file_app(&root, &state, "big.rs");
+    assert!(settle_markers(&mut app).await);
+    let count = app.active_buffer().unwrap().quick_diff.marks().len();
+    assert_eq!(count, i.div_ceil(10));
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    app.press(KeyCode::Right, M::NONE);
+    app.press(KeyCode::Right, M::NONE);
+    app.press(KeyCode::Right, M::NONE);
+    app.press(KeyCode::Right, M::NONE);
+    app.press(KeyCode::Right, M::NONE);
+    app.press(KeyCode::Char('l'), cmd() | M::SHIFT);
+    let cursors = app.group().active_tab().unwrap().view.selections.len();
+    assert!(cfg!(debug_assertions) || cursors > 50_000, "{cursors}");
+    let n = 5u32;
+    let t = Instant::now();
+    for c in "thing".chars() {
+        app.press(KeyCode::Char(c), M::NONE);
+        app.pump();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    }
+    let typing = t.elapsed();
+    println!(
+        "typing at {cursors} cursors with {count} markers: {n} keys in {typing:?}, avg {:?}",
+        typing / n
+    );
+    if !cfg!(debug_assertions) {
+        assert!(
+            typing / n < Duration::from_millis(16),
+            "typing too slow: avg {:?}",
+            typing / n
+        );
+    }
+    // Every line now differs from the index.
+    assert!(settle_markers(&mut app).await);
+    let buf = app.active_buffer().unwrap();
+    assert_eq!(
+        buf.quick_diff.marks().len(),
+        1,
+        "one modified run: {:?}",
+        buf.quick_diff.marks().len()
+    );
 }

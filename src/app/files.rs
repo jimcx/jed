@@ -282,6 +282,8 @@ impl App {
         buf.finish_save(state, result.as_ref().ok().copied());
         let path = buf.path.display().to_string();
         let name = buf.name();
+        // A stage waiting for this save goes ahead (or is dropped if it failed).
+        self.stage_save_done(id, result.is_ok());
         match result {
             Ok(_) => {
                 self.disk_save_done(id);

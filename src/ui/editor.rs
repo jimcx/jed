@@ -1,5 +1,5 @@
-//! The text area: gutter, text (syntax colours), matched brackets, diagnostics' squiggles,
-//! selections, find matches, cursors.
+//! The text area: gutter (line numbers, quick diff's markers), text (syntax colours), matched
+//! brackets, diagnostics' squiggles, selections, find matches, cursors.
 
 use std::collections::HashSet;
 
@@ -161,6 +161,11 @@ pub fn render(
             .map(|r| squiggles[r.severity as usize])
     };
 
+    // Quick diff's markers on screen (by line, increasing), in the gutter's last column.
+    let markers = buf.quick_diff.visible(rope, view.top_line(), last_line);
+    let mut qi = 0;
+    let marker_x = (gutter_w > 1 && area.width > gutter_w).then_some(area.x + gutter_w - 1);
+
     let out = f.buffer_mut();
     out.set_style(area, base);
     let right = text.x + text.width;
@@ -186,6 +191,15 @@ pub fn render(
             gutter_w as usize,
             num_style.bg(row_style.bg.unwrap_or_default()),
         );
+        while qi < markers.len() && markers[qi].0 < line {
+            qi += 1;
+        }
+        if let Some(x) = marker_x
+            && let Some(&(_, marker)) = markers.get(qi).filter(|(l, _)| *l == line)
+        {
+            let style = theme.get(marker.theme_key()).bg(row_style.bg.unwrap_or_default());
+            out.set_stringn(x, y, marker.glyph(), 1, style);
+        }
 
         let start = pos::line_start(rope, line);
         let content = pos::line_text(rope, line);

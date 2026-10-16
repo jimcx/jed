@@ -356,6 +356,16 @@ pub struct HitMap {
     pub hover: Option<Rect>,
     /// The completion list, when shown: on top of everything (the hover too).
     pub completion: Option<CompletionHit>,
+    /// The gutter's peek, when shown.
+    pub quick_diff: Option<QuickDiffHit>,
+}
+
+/// The gutter's peek as drawn: its box and its buttons.
+#[derive(Debug, Clone, Copy)]
+pub struct QuickDiffHit {
+    pub rect: Rect,
+    pub stage: Rect,
+    pub close: Rect,
 }
 
 /// The completion list as drawn: its box, the rows' area and the list row at its top (row
@@ -458,6 +468,8 @@ pub enum Hit {
     Hover,
     /// The completion list (over an editor).
     Completion,
+    /// The gutter's peek (over an editor).
+    QuickDiff,
     Nothing,
 }
 
@@ -470,6 +482,9 @@ impl HitMap {
         }
         if self.hover.is_some_and(|h| h.contains(p)) {
             return Hit::Hover;
+        }
+        if self.quick_diff.is_some_and(|q| q.rect.contains(p)) {
+            return Hit::QuickDiff;
         }
         if r.activity.contains(p) {
             return self
@@ -679,8 +694,14 @@ mod tests {
                 rows: Rect::new(45, 8, 3, 1),
                 top: 0,
             }),
+            quick_diff: Some(QuickDiffHit {
+                rect: Rect::new(40, 12, 20, 4),
+                stage: Rect::new(45, 13, 6, 1),
+                close: Rect::new(55, 13, 3, 1),
+            }),
         };
         assert_eq!(map.hit(41, 6), Hit::Hover, "the popup is on top");
+        assert_eq!(map.hit(41, 13), Hit::QuickDiff, "the gutter's peek over the editor");
         assert_eq!(map.hit(46, 8), Hit::Completion, "the completion list over the hover");
         assert_eq!(map.hit(1, 1), Hit::Icon(SidePanel::Explorer));
         assert_eq!(map.hit(27, 5), Hit::SideBorder);

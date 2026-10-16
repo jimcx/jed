@@ -2,7 +2,7 @@
 //! (`git2::Patch::from_buffers`, with git's defaults: Myers, the indent heuristic, no
 //! inter-hunk merging beyond what the context does).
 
-#![allow(dead_code)] // the gutter, staging and the diff view (10c–10e)
+#![allow(dead_code)] // the diff view (10d)
 
 use std::ops::Range;
 
@@ -82,6 +82,50 @@ fn range(start: u32, count: u32) -> Range<usize> {
     let start = start as usize;
     let begin = if count == 0 { start } else { start - 1 };
     begin..begin + count as usize
+}
+
+/// The (context 0) hunk shown on `line` of the new text, as the gutter draws them: one whose new
+/// lines include it, else a deletion drawn there ([`deletion_line`]).
+pub fn hunk_at_line(hunks: &[Hunk], line: usize) -> Option<usize> {
+    hunks
+        .iter()
+        .position(|h| h.new.contains(&line))
+        .or_else(|| hunks.iter().position(|h| h.new.is_empty() && deletion_line(h) == line))
+}
+
+/// The new text's line a deletion's marker is drawn on: below the line before it (VS Code), or
+/// above line 0 when the deletion is at the top.
+pub fn deletion_line(h: &Hunk) -> usize {
+    h.new.start.saturating_sub(1)
+}
+
+/// Lines `line` of the new text stands for in the old one, through `hunks` (context 0): itself,
+/// shifted by the changes above it, or a changed line's hunk's old lines (empty: an added line,
+/// the point it was added at).
+pub fn old_lines(hunks: &[Hunk], line: usize) -> Range<usize> {
+    let mut delta = 0isize;
+    for h in hunks {
+        if line < h.new.start {
+            break;
+        }
+        if h.new.contains(&line) {
+            return h.old.clone();
+        }
+        delta = h.old.end as isize - h.new.end as isize;
+    }
+    let at = (line as isize + delta).max(0) as usize;
+    at..at + 1
+}
+
+/// Whether a hunk whose new lines are `ours` touches the lines `lines` (both may be points: an
+/// empty range between two lines).
+pub fn touches(ours: &Range<usize>, lines: &Range<usize>) -> bool {
+    match (ours.is_empty(), lines.is_empty()) {
+        (false, false) => ours.start < lines.end && lines.start < ours.end,
+        (true, false) => lines.start <= ours.start && ours.start <= lines.end,
+        (false, true) => ours.start <= lines.start && lines.start <= ours.end,
+        (true, true) => ours.start == lines.start,
+    }
 }
 
 /// `old` with one hunk of the `old` → `new` diff applied: its old lines replaced by its new
@@ -278,6 +322,33 @@ mod tests {
                 assert_eq!(ours, theirs, "case {i}, context {context}: {old:?} -> {new:?}");
             }
         }
+    }
+
+    #[test]
+    fn hunk_at_line_and_old_lines() {
+        // Line 1 modified, 2 lines added after line 4, line 7 deleted (the old text's line 7).
+        let old = b"0\n1\n2\n3\n4\n5\n6\n7\n8\n";
+        let new = b"0\nONE\n2\n3\n4\nx\ny\n5\n6\n8\n";
+        let d = diff(old, new, 0).unwrap();
+        assert_eq!(d.hunks, vec![h(1..2, 1..2), h(5..5, 5..7), h(7..8, 9..9)]);
+        assert_eq!(hunk_at_line(&d.hunks, 1), Some(0));
+        assert_eq!(hunk_at_line(&d.hunks, 0), None);
+        assert_eq!(hunk_at_line(&d.hunks, 6), Some(1));
+        // The deletion before new line 9 is drawn below line 8.
+        assert_eq!(hunk_at_line(&d.hunks, 8), Some(2));
+        assert_eq!(hunk_at_line(&d.hunks, 9), None);
+        // A deletion at the top is drawn on line 0, under a change there if any.
+        let top = diff(b"a\nb\n", b"b\n", 0).unwrap();
+        assert_eq!(hunk_at_line(&top.hunks, 0), Some(0));
+        assert_eq!(old_lines(&d.hunks, 0), 0..1);
+        assert_eq!(old_lines(&d.hunks, 1), 1..2);
+        assert_eq!(old_lines(&d.hunks, 4), 4..5);
+        assert_eq!(old_lines(&d.hunks, 5), 5..5, "an added line: the point");
+        assert_eq!(old_lines(&d.hunks, 7), 5..6);
+        assert_eq!(old_lines(&d.hunks, 9), 8..9, "after the deletion");
+        assert!(touches(&(2..4), &(3..4)) && !touches(&(2..4), &(4..5)));
+        assert!(touches(&(4..4), &(3..4)) && touches(&(4..4), &(4..5)) && !touches(&(6..6), &(4..5)));
+        assert!(touches(&(2..4), &(4..4)) && !touches(&(2..4), &(5..5)));
     }
 
     #[test]

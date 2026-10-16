@@ -491,6 +491,9 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (format_document.0, format_document.1, Command::FormatDocument),
         // Ctrl on macOS too, as in VS Code.
         (KeyCode::Char(' '), ctrl, Command::TriggerSuggest),
+        // VS Code's `workbench.action.editor.nextChange` / `previousChange`.
+        (KeyCode::F(5), alt, Command::NextChange),
+        (KeyCode::F(5), alt | shift, Command::PreviousChange),
     ]);
     // The find widget: opening it, and what also works from the editor (VS Code: `editorFocus`).
     // VS Code's toggles are Cmd+Alt+C / W / R on macOS, Alt+C / W / R on Linux.

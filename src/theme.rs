@@ -41,6 +41,17 @@ impl Theme {
             ("editorHint.foreground", squiggle(c(0xB0B0B0))),
             ("gutter", fg_bg(0x858585, 0x1E1E1E)),
             ("gutter.active", Style::new().fg(c(0xC6C6C6))),
+            // Quick diff's gutter markers (Dark+'s `editorGutter.*Background`; a bar or a line in
+            // the colour, so the foreground here). Deleted is Dark+'s error foreground.
+            ("editorGutter.addedBackground", Style::new().fg(c(0x487E02))),
+            ("editorGutter.modifiedBackground", Style::new().fg(c(0x1B81A8))),
+            ("editorGutter.deletedBackground", Style::new().fg(c(0xF14C4C))),
+            // The gutter's peek: removed / added lines (Dark+'s `diffEditor.*LineBackground`,
+            // #ff000033 and #9bb95533, blended over the peek's background), its buttons.
+            ("diffEditor.removedLineBackground", Style::new().bg(c(0x511E1E))),
+            ("diffEditor.insertedLineBackground", Style::new().bg(c(0x3D432F))),
+            ("quickDiff.title", Style::new().fg(c(0xBBBBBB))),
+            ("quickDiff.action", fg_bg(0xFFFFFF, 0x0E639C)),
             ("statusBar", fg_bg(0xFFFFFF, 0x007ACC)),
             ("statusBar.warning", fg_bg(0x1E1E1E, 0xCCA700)),
             ("statusBar.error", fg_bg(0xFFFFFF, 0xC72E0F)),

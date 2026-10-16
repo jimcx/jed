@@ -17,7 +17,7 @@ use std::path::{Component, Path, PathBuf};
 
 use git2::{ErrorCode, Repository, Status as Flags, StatusOptions};
 
-#[allow(unused_imports)] // for 10c–10e
+#[allow(unused_imports)] // for 10d–10e
 pub use diff::{Diff, Hunk, HunkKind};
 
 /// Where a repository with a work tree is. Plain data: open it per task with [`Repo::open`].

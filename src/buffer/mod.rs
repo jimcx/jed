@@ -17,6 +17,7 @@ use file::{DiskMeta, Eol, LoadError, Stamp};
 use undo::{EditKind, History};
 
 use crate::diagnostics::Marks;
+use crate::quick_diff::QuickDiff;
 use crate::selection::Selections;
 use crate::syntax::Syntax;
 
@@ -65,6 +66,9 @@ pub struct Buffer {
     /// Language servers' diagnostics in this text, mapped through every change set applied
     /// until a server publishes again (`lsp::Manager::publish`).
     pub diagnostics: Marks,
+    /// The gutter's git markers (lines changed against the index), mapped through every change
+    /// set applied until the next computation (`app/quick_diff.rs`).
+    pub quick_diff: QuickDiff,
 }
 
 /// A change set as a language server needs it: positions are in `before`'s coordinates.
@@ -120,6 +124,7 @@ impl Buffer {
             syntax: Syntax::default(),
             tracked: None,
             diagnostics: Marks::default(),
+            quick_diff: QuickDiff::default(),
         }
     }
 
@@ -226,8 +231,8 @@ impl Buffer {
         self.revision += 1;
     }
 
-    /// The one place change sets are applied: the syntax tree and the diagnostics follow each one,
-    /// and a language server's document is told of each (`tracked`).
+    /// The one place change sets are applied: the syntax tree, the diagnostics and the git
+    /// markers follow each one, and a language server's document is told of each (`tracked`).
     fn apply(&mut self, changes: &Arc<ChangeSet>) -> ChangeSet {
         let old = self.syntax.wants_edits().then(|| self.rope.clone());
         if let Some(tracked) = &mut self.tracked {
@@ -240,6 +245,7 @@ impl Buffer {
         self.sets_applied += 1;
         self.syntax.map_highlights(changes);
         self.diagnostics.map(changes);
+        self.quick_diff.map(changes);
         if let Some(old) = old {
             self.syntax.edit(changes, &old, &self.rope);
         }

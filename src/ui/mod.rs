@@ -10,6 +10,7 @@ mod hover;
 mod palette;
 mod panel;
 mod popup;
+mod quick_diff;
 mod search;
 mod side;
 mod status;
@@ -121,6 +122,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     hits.status_problems = status::render(f, regions.status, app);
     hits.find = active_editor.and_then(|area| find::render(f, area, app));
+    hits.quick_diff = quick_diff::render(f, app, &hits.groups);
     hits.hover = hover::render(f, app, &hits.groups);
     hits.completion = completion::render(f, app, &hits.groups);
     hits.palette = palette::render(f, area, app);

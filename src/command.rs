@@ -167,6 +167,14 @@ pub enum Command {
     /// The banner's "Keep Mine": keep the buffer's edits over the file changed on disk; the next
     /// save overwrites it.
     KeepMine,
+    /// Stages the change the gutter shows on the cursor's line (from the file on disk, after
+    /// saving the buffer).
+    StageHunk,
+    /// Unstages the staged change (index against HEAD) at the cursor's line.
+    UnstageHunk,
+    /// Alt+F5 / Shift+Alt+F5: the cursor to the next / previous change in the gutter.
+    NextChange,
+    PreviousChange,
 }
 
 /// Focus-group commands listed in the palette and accepted in keybindings (as VS Code: 1 to 8).
@@ -477,6 +485,12 @@ impl Command {
         all.extend(SuggestCommand::ALL.map(Command::Suggest));
         all.extend([Command::GoToReferences, Command::RenameSymbol, Command::FormatDocument]);
         all.extend([Command::ReloadFromDisk, Command::KeepMine]);
+        all.extend([
+            Command::StageHunk,
+            Command::UnstageHunk,
+            Command::NextChange,
+            Command::PreviousChange,
+        ]);
         all
     }
 
@@ -670,6 +684,10 @@ impl Command {
             Command::FormatDocument => "editor.formatDocument".into(),
             Command::ReloadFromDisk => "file.reloadFromDisk".into(),
             Command::KeepMine => "file.keepMine".into(),
+            Command::StageHunk => "git.stageHunk".into(),
+            Command::UnstageHunk => "git.unstageHunk".into(),
+            Command::NextChange => "editor.nextChange".into(),
+            Command::PreviousChange => "editor.previousChange".into(),
         }
     }
 
@@ -844,6 +862,10 @@ impl Command {
             Command::FormatDocument => "Format Document",
             Command::ReloadFromDisk => "File: Reload from Disk",
             Command::KeepMine => "File: Keep Mine (Overwrite the Changed File)",
+            Command::StageHunk => "Git: Stage Change at Cursor",
+            Command::UnstageHunk => "Git: Unstage Change at Cursor",
+            Command::NextChange => "Go to Next Change",
+            Command::PreviousChange => "Go to Previous Change",
         };
         s.into()
     }
@@ -944,9 +966,13 @@ mod tests {
             Command::FormatDocument => 62,
             Command::ReloadFromDisk => 63,
             Command::KeepMine => 64,
+            Command::StageHunk => 65,
+            Command::UnstageHunk => 66,
+            Command::NextChange => 67,
+            Command::PreviousChange => 68,
         }
     }
-    const VARIANTS: u8 = 65;
+    const VARIANTS: u8 = 69;
 
     #[test]
     fn all_lists_every_variant() {

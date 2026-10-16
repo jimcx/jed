@@ -50,6 +50,7 @@ mod palette;
 mod panic;
 mod paths;
 mod problems;
+mod quick_diff;
 mod rename;
 mod search;
 mod search_view;

@@ -8,7 +8,7 @@
 //! hunks that is what `git add -p` / `git reset -p` write for the same hunk. Texts are compared
 //! as stored (no clean filters such as `core.autocrlf`).
 
-#![allow(dead_code)] // 10c–10e (gutter, diff view, Source Control) call it
+#![allow(dead_code)] // 10d–10e (diff view, Source Control) call the rest
 
 use std::fmt;
 use std::path::Path;
@@ -214,6 +214,90 @@ pub fn unstage_hunk(repo: &Repo, path: &Path, shown: &FileDiff, k: usize) -> Res
     index.write()?;
     tracing::info!(path = %path.display(), ?hunk, "unstaged hunk");
     Ok(())
+}
+
+/// What [`index_blob`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IndexBlob {
+    /// Not in the index (untracked, or only conflict stages).
+    Missing,
+    /// The blob is still the one asked about.
+    Same,
+    Text(Oid, Text),
+}
+
+/// Blocking: the file's index blob, unless it is still `known` (then not read).
+pub fn index_blob(repo: &Repo, path: &Path, known: Option<Oid>) -> Result<IndexBlob, Error> {
+    let r = repo.open()?;
+    let index = r.index()?;
+    let Some(e) = index.get_path(path, 0) else {
+        return Ok(IndexBlob::Missing);
+    };
+    if Some(e.id) == known {
+        return Ok(IndexBlob::Same);
+    }
+    let blob = r.find_blob(e.id)?;
+    Ok(IndexBlob::Text(
+        e.id,
+        Text {
+            bytes: blob.content().to_vec(),
+            mode: e.mode,
+        },
+    ))
+}
+
+/// Blocking: stages the change the gutter shows on `line` (0-based) of the file on disk: the
+/// context-0 hunk of index → disk there (`diff::hunk_at_line`), so exactly that change, as
+/// VS Code's "Stage Selected Ranges"; the same index as `git add -p` answering yes to that hunk
+/// when its `GIT_CONTEXT` hunk holds no other change, or after `s`plitting one that does. The
+/// diff is taken again (once) if the file or index moved on in between. `None`: no change there.
+pub fn stage_line(repo: &Repo, path: &Path, line: usize) -> Result<Option<Hunk>, Error> {
+    stage_line_with(repo, path, line, || {})
+}
+
+/// [`stage_line`], running `between` after each diff, before staging (tests change the file
+/// there).
+fn stage_line_with(repo: &Repo, path: &Path, line: usize, mut between: impl FnMut()) -> Result<Option<Hunk>, Error> {
+    let mut stale = false;
+    loop {
+        let shown = file_diff(repo, path, Side::Unstaged, 0)?;
+        if shown.diff.binary {
+            return Err(Error::Binary);
+        }
+        let Some(k) = diff::hunk_at_line(&shown.diff.hunks, line) else {
+            return Ok(None);
+        };
+        between();
+        match stage_hunk(repo, path, &shown, k) {
+            Err(Error::Stale) if !stale => stale = true,
+            r => return r.map(|()| Some(shown.diff.hunks[k].clone())),
+        }
+    }
+}
+
+/// Blocking: unstages the staged change (a context-0 hunk of HEAD → index) at `line` of
+/// `worktree` (the buffer's text, whose lines the cursor is on): the line goes to the index
+/// text's lines through the index → `worktree` diff (`diff::old_lines`), and the first staged
+/// hunk touching those is unstaged, as `git reset -p` answering yes to it. `None`: no staged
+/// change there.
+pub fn unstage_line(repo: &Repo, path: &Path, worktree: &[u8], line: usize) -> Result<Option<Hunk>, Error> {
+    let mut stale = false;
+    loop {
+        let index = index_text(repo, path)?.map(|t| t.bytes).unwrap_or_default();
+        let unstaged = diff::diff(&index, worktree, 0)?;
+        let lines = diff::old_lines(&unstaged.hunks, line);
+        let shown = file_diff(repo, path, Side::Staged, 0)?;
+        if shown.diff.binary {
+            return Err(Error::Binary);
+        }
+        let Some(k) = shown.diff.hunks.iter().position(|h| diff::touches(&h.new, &lines)) else {
+            return Ok(None);
+        };
+        match unstage_hunk(repo, path, &shown, k) {
+            Err(Error::Stale) if !stale => stale = true,
+            r => return r.map(|()| Some(shown.diff.hunks[k].clone())),
+        }
+    }
 }
 
 /// `shown`'s hunk `k`, if `old` and `new` are still its texts.
@@ -626,6 +710,119 @@ mod tests {
         // Staging the whole file resolves it.
         stage_file(&repo, Path::new("f")).unwrap();
         assert_eq!(git(&root, &["status", "--porcelain"]), "M  f\n");
+    }
+
+    /// Staging by line equals `git add -p` for a change alone in its hunk, and `s`plit + `y` for
+    /// one that `add -p` merges with a neighbour.
+    #[test]
+    fn stage_line_like_add_p() {
+        let text = numbered(40);
+        let (_d, root) = repo(&[("f.txt", text.as_bytes())]);
+        let changed = text
+            .replace("line 2\n", "two\n")
+            .replace("line 4\n", "four\n")
+            .replace("line 20\n", "twenty\nmore\n")
+            .replace("line 35\n", "");
+        std::fs::write(root.join("f.txt"), &changed).unwrap();
+        // Line 21 ("more") is in the second `add -p` hunk.
+        let other = copy(&root);
+        let staged = stage_line(&r(&other), Path::new("f.txt"), 21).unwrap();
+        assert_eq!(
+            staged,
+            Some(Hunk {
+                old: 20..21,
+                new: 20..22
+            })
+        );
+        git_with_input(&root, &["add", "-p", "--", "f.txt"], Some("n\ny\nn\n"));
+        assert_eq!(index_state(&other), index_state(&root));
+        std::fs::remove_dir_all(&other).unwrap();
+        git(&root, &["reset", "-q"]);
+        // Line 4: `add -p` shows lines 2 and 4 as one hunk; split it, skip the first.
+        let other = copy(&root);
+        stage_line(&r(&other), Path::new("f.txt"), 4).unwrap().unwrap();
+        git_with_input(&root, &["add", "-p", "--", "f.txt"], Some("s\nn\ny\nn\nn\n"));
+        assert_eq!(index_state(&other), index_state(&root));
+        std::fs::remove_dir_all(&other).unwrap();
+        git(&root, &["reset", "-q"]);
+        // The deletion (old line 35) is drawn below line 35 of the new text ("line 34").
+        let other = copy(&root);
+        stage_line(&r(&other), Path::new("f.txt"), 35).unwrap().unwrap();
+        git_with_input(&root, &["add", "-p", "--", "f.txt"], Some("n\nn\ny\n"));
+        assert_eq!(index_state(&other), index_state(&root));
+        // No change on line 10.
+        assert_eq!(stage_line(&r(&root), Path::new("f.txt"), 10).unwrap(), None);
+    }
+
+    /// The file changing between the diff and the staging: diffed again once, then `Stale`.
+    #[test]
+    fn stage_line_diffs_again_when_the_file_moved_on() {
+        let text = numbered(10);
+        let (_d, root) = repo(&[("f.txt", text.as_bytes())]);
+        std::fs::write(root.join("f.txt"), text.replace("line 5\n", "five\n")).unwrap();
+        // Another line changed after the first diff: diffed again, only line 5's change staged.
+        let moved = text.replace("line 5\n", "five\n").replace("line 8\n", "eight\n");
+        let mut calls = 0;
+        let got = stage_line_with(&r(&root), Path::new("f.txt"), 5, || {
+            calls += 1;
+            if calls == 1 {
+                std::fs::write(root.join("f.txt"), &moved).unwrap();
+            }
+        });
+        assert_eq!(calls, 2, "diffed again");
+        assert_eq!(got.unwrap(), Some(Hunk { old: 5..6, new: 5..6 }));
+        let cached = git(&root, &["diff", "--cached"]);
+        assert!(cached.contains("+five") && !cached.contains("eight"), "{cached}");
+        // Moving on every time: refused after the second try, nothing staged.
+        git(&root, &["reset", "-q"]);
+        let mut n = 0;
+        let got = stage_line_with(&r(&root), Path::new("f.txt"), 5, || {
+            n += 1;
+            std::fs::write(root.join("f.txt"), moved.replace("eight", &format!("eight {n}"))).unwrap();
+        });
+        assert!(matches!(got, Err(Error::Stale)), "{got:?}");
+        assert_eq!(n, 2);
+        assert_eq!(git(&root, &["diff", "--cached"]), "");
+    }
+
+    #[test]
+    fn unstage_line_like_reset_p() {
+        let text = numbered(40);
+        let (_d, root) = repo(&[("f.txt", text.as_bytes())]);
+        let staged = text.replace("line 2\n", "two\n").replace("line 30\n", "thirty\n");
+        std::fs::write(root.join("f.txt"), &staged).unwrap();
+        git(&root, &["add", "f.txt"]);
+        // The work tree (the buffer) has two more lines at the top: line 32 is "thirty".
+        let worktree = format!("new\nnew\n{staged}");
+        std::fs::write(root.join("f.txt"), &worktree).unwrap();
+        let other = copy(&root);
+        let repo = r(&other);
+        assert_eq!(
+            unstage_line(&repo, Path::new("f.txt"), worktree.as_bytes(), 10).unwrap(),
+            None
+        );
+        let h = unstage_line(&repo, Path::new("f.txt"), worktree.as_bytes(), 32).unwrap();
+        assert_eq!(
+            h,
+            Some(Hunk {
+                old: 30..31,
+                new: 30..31
+            })
+        );
+        git_with_input(&root, &["reset", "-q", "-p", "--", "f.txt"], Some("n\ny\n"));
+        assert_eq!(index_state(&other), index_state(&root));
+    }
+
+    #[test]
+    fn index_blob_skips_a_known_blob() {
+        let (_d, root) = repo(&[("f", b"a\n")]);
+        let repo = r(&root);
+        let IndexBlob::Text(id, t) = index_blob(&repo, Path::new("f"), None).unwrap() else {
+            panic!("in the index")
+        };
+        assert_eq!(t.bytes, b"a\n");
+        assert_eq!(index_blob(&repo, Path::new("f"), Some(id)).unwrap(), IndexBlob::Same);
+        assert_eq!(index_blob(&repo, Path::new("g"), None).unwrap(), IndexBlob::Missing);
     }
 
     #[test]
