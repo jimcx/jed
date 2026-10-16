@@ -1,4 +1,5 @@
-//! Milestone 9 end to end (so far: 9a, the `lsp` core; 9b, document sync; 9c, diagnostics).
+//! Milestone 9 end to end (so far: 9a, the `lsp` core; 9b, document sync; 9c, diagnostics;
+//! 9d, the bottom panel and its Problems list).
 //!
 //! 9a: opening a C++ file starts its server (the in-process fake, `lsp::fake`) once: `initialize`
 //! carries the root and offers UTF-8 then UTF-16 positions, UTF-8 is negotiated when the server
@@ -37,6 +38,23 @@
 //! diagnostics on a 1 MB file are placed in one loop turn and followed through typing at ~63k
 //! cursors within the keystroke budget (release). Real clangd and ty report an error on the
 //! right word and clear it once it's fixed.
+//!
+//! 9d: Cmd+J shows the bottom panel under the editor groups (hidden again by Cmd+J, the editor
+//! getting the keys back): a "PROBLEMS" tab with the total, then every file with problems
+//! (open and not) sorted by path, each with its problems by position (icon in its colour, the
+//! message's first line, `source(code)`, `[Ln, Col]`); the editor's view loses the panel's rows
+//! and still keeps the cursor on screen. The selection stays on its problem when a publish adds
+//! a file above it. Enter opens the selected problem with its range selected (also a file not
+//! open yet, and after typing moved the mark: the row's column follows); a click opens it with
+//! the list keeping the keys, a double click focuses the editor; End / PageUp scroll a 300-row
+//! list. F8 / Shift+F8 step from the cursor through every problem (two at one place one by
+//! one), opening the next file with problems and wrapping, the message in the status bar, the
+//! list's selection following and the focus staying put. Cmd+Shift+M focuses the list (typing
+//! does nothing; Down moves), Esc or an editor click gives the keys back, Cmd+Shift+M from the
+//! list hides it; the status bar's counts show / hide it; its tab focuses it; dragging its top
+//! border resizes it within the editor's and its own minimum heights. With no problems F8 and
+//! the list's keys only say so; a file outside the root is listed with its folder and opens;
+//! tiny terminals give the editor its rows first and never panic.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -273,7 +291,10 @@ async fn milestone_9_quit_shuts_servers_down() {
     assert_eq!(methods.iter().filter(|m| *m == "exit").count(), 2, "{methods:?}");
     assert!(app.lsp.servers().is_empty());
 
-    // A server that never answers `shutdown` is cut off after the timeout.
+    // A server that never answers `shutdown` is cut off by its task after `SHUTDOWN_TIMEOUT`.
+    // Which mechanism stopped it is asked directly (the task ended by itself, not aborted by
+    // the manager's fallback), with a fallback far enough out that a loaded machine can't hit
+    // it first; timing it against the 1 s margin quit uses was flaky under load.
     let dir = tempfile::tempdir().unwrap();
     let root = project(dir.path(), &[("a.cpp", "int a;\n")]);
     let fake = FakeLauncher::new(FakeOptions {
@@ -284,14 +305,14 @@ async fn milestone_9_quit_shuts_servers_down() {
     open(&mut app, &root.join("a.cpp"));
     assert!(app.settle(|a| encoding(a, Language::Cpp).is_some()).await);
     let t = Instant::now();
-    app.shutdown_servers().await;
+    let by_itself = app.lsp.shutdown_within(Duration::from_secs(30)).await;
     let took = t.elapsed();
-    assert!(
-        took >= SHUTDOWN_TIMEOUT && took < SHUTDOWN_TIMEOUT + Duration::from_secs(1),
-        "{took:?}"
-    );
+    assert!(by_itself, "the task's own timeout stopped it, not the abort ({took:?})");
+    assert!(took >= SHUTDOWN_TIMEOUT, "it waited for the answer first: {took:?}");
     assert!(!fake.methods().contains(&"exit".to_string()));
-    assert_eq!(fake.exited(), 1, "its input closed");
+    // The task stopped without waiting for the fake to see its input close (nothing to wait
+    // for once it's out of time): the fake counts its exit a moment later.
+    assert!(app.settle(|_| fake.exited() == 1).await, "its input closed");
 }
 
 /// A real process that floods its stderr (more than a pipe holds) before answering `initialize`,
@@ -319,13 +340,10 @@ async fn milestone_9_noisy_stuck_server_is_killed() {
         assert_eq!(n, 1);
     }
     let t = Instant::now();
-    app.shutdown_servers().await;
+    // As above: the task's own timeout kills it (a 30 s fallback, so load can't decide it).
+    let by_itself = app.lsp.shutdown_within(Duration::from_secs(30)).await;
+    assert!(by_itself, "killed by its task, not aborted: {:?}", t.elapsed());
     assert!(t.elapsed() >= SHUTDOWN_TIMEOUT, "{:?}", t.elapsed());
-    assert!(
-        t.elapsed() < SHUTDOWN_TIMEOUT + Duration::from_secs(1),
-        "{:?}",
-        t.elapsed()
-    );
     if let Some(n) = children_named("sleep") {
         assert_eq!(n, 0, "killed and reaped");
     }
@@ -1505,6 +1523,638 @@ async fn milestone_9_many_diagnostics_stay_cheap() {
     if !cfg!(debug_assertions) {
         assert!(typing / n < KEYSTROKE_BUDGET, "typing too slow: avg {:?}", typing / n);
         assert!(longest < 2 * KEYSTROKE_BUDGET, "placing them took {longest:?}");
+    }
+
+    // The Problems list over all of them: a key and a frame only look at the rows on screen.
+    app.press(K::Char('j'), cmd());
+    draw(&mut term, &mut app);
+    let t = Instant::now();
+    app.press(K::End, M::NONE);
+    draw(&mut term, &mut app);
+    app.press(K::PageUp, M::NONE);
+    draw(&mut term, &mut app);
+    let panel = t.elapsed() / 2;
+    println!("Problems list of {lines} diagnostics: a key + frame {panel:?}");
+    assert!(
+        find_cells(&term, &format!("[Ln {lines}, Col 12]")).is_none(),
+        "paged up"
+    );
+    assert!(find_cells(&term, "[Ln ").is_some());
+    if !cfg!(debug_assertions) {
+        assert!(panel < KEYSTROKE_BUDGET, "the Problems list: {panel:?}");
+    }
+    app.shutdown_servers().await;
+}
+
+// ---- 9d: the bottom panel and its Problems list ----
+
+/// Rows of the fixture in `problems_project`, as the Problems list shows them (files by path):
+///
+/// ```text
+/// a.cpp            2   ⊗ use of undeclared identifier 'foo'  clang(undeclared_var_use) [Ln 1, Col 9]
+///                      ⚠ unused bar [Ln 2, Col 21]
+/// c.cpp            1   ⓘ c info [Ln 1, Col 9]
+/// b.cpp  sub       1   ⊗ b error [Ln 3, Col 9]
+/// ```
+const A_CPP: &str = "int x = foo;\nint main() { return bar; }\n";
+
+/// A project with `a.cpp` open (synced with the fake) and diagnostics published for it and two
+/// files that aren't open (`c.cpp`, `sub/b.cpp`).
+async fn problems_project(dir: &Path) -> (App, Arc<FakeLauncher>, PathBuf) {
+    let root = project(
+        dir,
+        &[
+            ("a.cpp", A_CPP),
+            ("c.cpp", "int c = oops;\n"),
+            ("long.txt", &"line\n".repeat(60)),
+        ],
+    );
+    fs::create_dir_all(root.join("sub")).unwrap();
+    fs::write(root.join("sub/b.cpp"), "\n\nint b = nope;\n").unwrap();
+    let fake = FakeLauncher::new(FakeOptions {
+        utf8: true,
+        ..Default::default()
+    });
+    let mut app = open_app(&root, fake.clone());
+    open_synced(&mut app, &fake, &root.join("a.cpp")).await;
+    let mut foo = diag(0, 8, 11, 1, "use of undeclared identifier 'foo'");
+    foo["source"] = json!("clang");
+    foo["code"] = json!("undeclared_var_use");
+    publish(
+        &app,
+        Language::Cpp,
+        &root.join("a.cpp"),
+        None,
+        json!([diag(1, 20, 23, 2, "unused bar"), foo]),
+    );
+    publish(
+        &app,
+        Language::Cpp,
+        &root.join("c.cpp"),
+        None,
+        json!([diag(0, 8, 12, 3, "c info")]),
+    );
+    publish(
+        &app,
+        Language::Cpp,
+        &root.join("sub/b.cpp"),
+        None,
+        json!([diag(2, 8, 12, 1, "b error")]),
+    );
+    assert!(app.settle(|a| a.lsp.diagnostics.files().count() == 3).await);
+    (app, fake, root)
+}
+
+fn big_terminal() -> ratatui::Terminal<ratatui::backend::TestBackend> {
+    ratatui::Terminal::new(ratatui::backend::TestBackend::new(130, 30)).unwrap()
+}
+
+/// Screen row `y` from column `x` as text.
+fn screen_row(term: &ratatui::Terminal<ratatui::backend::TestBackend>, x: u16, y: u16) -> String {
+    let buf = term.backend().buffer();
+    (x..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+}
+
+/// The bottom panel's list rows as drawn (below its border and tab strip), trimmed.
+fn panel_rows(term: &ratatui::Terminal<ratatui::backend::TestBackend>, app: &App) -> Vec<String> {
+    let Some(panel) = app.hits.regions.panel else {
+        return Vec::new();
+    };
+    (panel.y + 2..panel.y + panel.height)
+        .map(|y| screen_row(term, panel.x, y).trim().to_string())
+        .filter(|r| !r.is_empty())
+        .collect()
+}
+
+fn click(app: &mut App, (x, y): (u16, u16)) {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+}
+
+fn active_path(app: &App) -> Option<PathBuf> {
+    app.active_buffer().map(|b| b.path.clone())
+}
+
+/// The active view's primary selection as (anchor, head) byte offsets.
+fn selection(app: &App) -> (usize, usize) {
+    let s = app.group().active_tab().unwrap().view.selections.primary();
+    (s.anchor.0, s.head.0)
+}
+
+fn view_height(app: &App) -> usize {
+    app.group().active_tab().unwrap().view.height
+}
+
+/// Cmd+J shows the panel under the editor (the list focused, files sorted by path, each with
+/// its problems by position, the count in the tab) and hides it again; the editor's view
+/// shrinks by the panel's height and still keeps the cursor on screen.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_problems_panel_toggles_and_lists() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _fake, root) = problems_project(dir.path()).await;
+    let mut term = big_terminal();
+    draw(&mut term, &mut app);
+    assert!(find_cells(&term, "PROBLEMS").is_none(), "hidden at first");
+    let full = view_height(&app);
+
+    app.press(K::Char('j'), cmd());
+    assert!(app.ui.panel_visible);
+    assert_eq!(app.ui.focus, crate::app::Focus::Panel);
+    draw(&mut term, &mut app);
+    let panel = app.hits.regions.panel.expect("drawn");
+    assert_eq!(panel.height, crate::app::PANEL_HEIGHT);
+    assert_eq!(panel.y + panel.height, 29, "above the status bar");
+    let (x, y) = find_cells(&term, "PROBLEMS").expect("its tab");
+    assert_eq!(y, panel.y + 1);
+    assert!(
+        screen_row(&term, x, y).starts_with("PROBLEMS  4 "),
+        "{}",
+        screen_row(&term, x, y)
+    );
+    let rows = panel_rows(&term, &app);
+    assert_eq!(rows.len(), 7, "{rows:#?}");
+    assert!(rows[0].starts_with("a.cpp") && rows[0].ends_with(" 2"), "{}", rows[0]);
+    assert_eq!(
+        rows[1],
+        "⊗ use of undeclared identifier 'foo'  clang(undeclared_var_use) [Ln 1, Col 9]"
+    );
+    assert_eq!(rows[2], "⚠ unused bar  [Ln 2, Col 21]");
+    assert!(rows[3].starts_with("c.cpp") && rows[3].ends_with(" 1"));
+    assert_eq!(rows[4], "ⓘ c info  [Ln 1, Col 9]");
+    assert!(
+        rows[5].starts_with("b.cpp sub") && rows[5].ends_with(" 1"),
+        "{}",
+        rows[5]
+    );
+    assert_eq!(rows[6], "⊗ b error  [Ln 3, Col 9]");
+    // Severity icons in their colours.
+    let (ix, iy) = find_cells(&term, "⚠ unused").unwrap();
+    let warning_icon = app.theme.get("problemsWarningIcon.foreground").fg;
+    assert_eq!(term.backend().buffer()[(ix, iy)].fg, warning_icon.unwrap());
+    // The editor gave up the panel's rows.
+    assert_eq!(view_height(&app), full - panel.height as usize);
+
+    // A long file: the cursor stays on screen above the panel.
+    open(&mut app, &root.join("long.txt"));
+    for _ in 0..40 {
+        app.press(K::Down, M::NONE);
+    }
+    draw(&mut term, &mut app);
+    let view = &app.group().active_tab().unwrap().view;
+    assert_eq!(view.height, full - panel.height as usize);
+    assert!(
+        view.top_line() <= 40 && 40 < view.top_line() + view.height,
+        "top {}",
+        view.top_line()
+    );
+    let cursor = term.get_cursor_position().unwrap();
+    assert!(cursor.y < panel.y, "the cursor is drawn above the panel: {cursor:?}");
+
+    app.press(K::Char('j'), cmd());
+    assert!(!app.ui.panel_visible);
+    draw(&mut term, &mut app);
+    assert!(find_cells(&term, "PROBLEMS").is_none());
+    assert_eq!(view_height(&app), full);
+    app.press(K::Char('j'), cmd());
+    assert_eq!(app.ui.focus, crate::app::Focus::Panel);
+    app.press(K::Char('j'), cmd());
+    assert_eq!(
+        app.ui.focus,
+        crate::app::Focus::Editor,
+        "hiding it gives the editor the keys"
+    );
+    app.shutdown_servers().await;
+}
+
+/// The selection stays on its problem when a publish adds a file above it; Enter opens the
+/// selected problem with its range selected (a file not open yet too), also after edits moved
+/// it; a click opens a problem keeping the list focused, a double click focuses the editor; a
+/// long list scrolls to its last row.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_problems_open_and_keep_their_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _fake, root) = problems_project(dir.path()).await;
+    let (pa, pc, pb) = (root.join("a.cpp"), root.join("c.cpp"), root.join("sub/b.cpp"));
+    let mut term = big_terminal();
+    app.press(K::Char('m'), cmd() | M::SHIFT);
+    for _ in 0..4 {
+        app.press(K::Down, M::NONE);
+    }
+    let selected = |app: &App| app.problems.list.selected().cloned();
+    assert_eq!(selected(&app), Some((pc.clone(), 1)), "c's problem");
+
+    // A file sorting above it gets problems: the same problem stays selected.
+    fs::write(root.join("b0.cpp"), "int b0;\n").unwrap();
+    publish(
+        &app,
+        Language::Cpp,
+        &root.join("b0.cpp"),
+        None,
+        json!([diag(0, 4, 6, 2, "b0 warning")]),
+    );
+    assert!(app.settle(|a| a.lsp.diagnostics.files().count() == 4).await);
+    assert_eq!(selected(&app), Some((pc.clone(), 1)));
+    draw(&mut term, &mut app);
+    let rows = panel_rows(&term, &app);
+    let b0 = rows.iter().position(|r| r.starts_with("b0.cpp")).expect("b0.cpp's row");
+    assert!(
+        rows[b0 + 1].starts_with("⚠ b0 warning") && rows[b0 + 2].starts_with("c.cpp"),
+        "{rows:#?}"
+    );
+    let (_, y) = find_cells(&term, "ⓘ c info").unwrap();
+    let active_bg = app.theme.get("list.active").bg.unwrap();
+    assert_eq!(
+        term.backend().buffer()[(panel_x(&app) + 1, y)].bg,
+        active_bg,
+        "still the highlighted row"
+    );
+
+    // Enter: c.cpp (not open) opens with `oops` selected, the editor focused.
+    app.press(K::Enter, M::NONE);
+    assert!(app.settle(|a| active_path(a).as_deref() == Some(pc.as_path())).await);
+    assert_eq!(selection(&app), (8, 12));
+    assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+
+    // a.cpp's error, after typing before it on its line: the mark moved, and so do the row's
+    // column and what Enter selects.
+    app.press(K::Char('m'), cmd() | M::SHIFT);
+    app.press(K::Home, M::NONE);
+    app.press(K::Down, M::NONE);
+    assert_eq!(selected(&app), Some((pa.clone(), 1)));
+    app.press(K::Enter, M::NONE);
+    assert_eq!(active_path(&app).as_deref(), Some(pa.as_path()));
+    assert_eq!(selection(&app), (8, 11));
+    app.press(K::Home, M::NONE);
+    app.type_text("abc ");
+    draw(&mut term, &mut app);
+    assert!(find_cells(&term, "clang(undeclared_var_use) [Ln 1, Col 13]").is_some());
+    app.press(K::Char('m'), cmd() | M::SHIFT);
+    app.press(K::Enter, M::NONE);
+    assert_eq!(selection(&app), (12, 15));
+    let text = app.active_buffer().unwrap().rope.to_string();
+    assert_eq!(&text[12..15], "foo");
+
+    // A click on a problem: opened, the list keeps the keys; a double click: the editor.
+    draw(&mut term, &mut app);
+    let bar = find_cells(&term, "⚠ unused bar").unwrap();
+    click(&mut app, bar);
+    assert_eq!(app.ui.focus, crate::app::Focus::Panel);
+    assert_eq!(selected(&app), Some((pa.clone(), 2)));
+    let bar_at = text.find("bar;").unwrap();
+    assert_eq!(selection(&app), (bar_at, bar_at + 3));
+    app.press(K::Home, M::NONE); // in the list: the first row
+    assert_eq!(selected(&app), Some((pa.clone(), 0)));
+    click(&mut app, bar);
+    click(&mut app, bar);
+    assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+    // A file row: a click only selects it; a double click opens its first problem (selected)
+    // and focuses the editor.
+    app.press(K::Char('m'), cmd() | M::SHIFT);
+    draw(&mut term, &mut app);
+    let a_row = panel_row_starting(&term, &app, "a.cpp").expect("a.cpp's row");
+    click(&mut app, a_row);
+    assert_eq!(selected(&app), Some((pa.clone(), 0)));
+    assert_eq!(selection(&app), (bar_at, bar_at + 3), "not opened");
+    assert_eq!(app.ui.focus, crate::app::Focus::Panel);
+    click(&mut app, a_row);
+    assert_eq!(selection(&app), (12, 15), "its first problem, `foo`");
+    assert_eq!(selected(&app), Some((pa.clone(), 1)), "which becomes the selection");
+    assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+    // A file not open yet, by a click (End scrolls the list down to it).
+    app.press(K::Char('m'), cmd() | M::SHIFT);
+    app.press(K::End, M::NONE);
+    draw(&mut term, &mut app);
+    let b = find_cells(&term, "⊗ b error").unwrap();
+    click(&mut app, b);
+    assert!(app.settle(|a| active_path(a).as_deref() == Some(pb.as_path())).await);
+    assert_eq!(selection(&app), (10, 14), "line 3, `nope`");
+    assert_eq!(app.ui.focus, crate::app::Focus::Panel);
+
+    // A long list: End selects the last row and scrolls to it.
+    let many: Vec<Value> = (0..300).map(|i| diag(i, 0, 1, 2, &format!("many {i}"))).collect();
+    publish(&app, Language::Cpp, &root.join("c.cpp"), None, json!(many));
+    assert!(
+        app.settle(|a| a.lsp.diagnostics.counts().of(Severity::Warning) == 302)
+            .await
+    );
+    app.press(K::End, M::NONE);
+    draw(&mut term, &mut app);
+    let rows = panel_rows(&term, &app);
+    assert_eq!(rows.last().unwrap(), "⊗ b error  [Ln 3, Col 9]", "{rows:#?}");
+    // Rows: a.cpp + 2, b0.cpp + 1, c.cpp + 300, sub/b.cpp + 1 = 308; 8 on screen, so End
+    // shows rows 300..308 and two PageUps (7 rows each) select row 293, now the top one.
+    let files = |a: &App| crate::problems::files(&a.lsp.diagnostics, &a.buffers).len();
+    let selected_row = |a: &App| {
+        a.problems
+            .list
+            .selected_row(&crate::problems::files(&a.lsp.diagnostics, &a.buffers))
+    };
+    assert_eq!((files(&app), selected_row(&app)), (4, Some(307)));
+    app.press(K::PageUp, M::NONE);
+    app.press(K::PageUp, M::NONE);
+    assert_eq!(selected_row(&app), Some(293));
+    draw(&mut term, &mut app);
+    let rows = panel_rows(&term, &app);
+    assert!(rows[0].starts_with("⚠ many 287 "), "{rows:#?}");
+    assert!(rows[7].starts_with("⚠ many 294 "), "{rows:#?}");
+    // The wheel over the list scrolls it (3 rows a notch), not the selection.
+    let list_y = app.hits.regions.panel.unwrap().y + 4;
+    app.mouse(crossterm::event::MouseEventKind::ScrollDown, 70, list_y);
+    draw(&mut term, &mut app);
+    let rows = panel_rows(&term, &app);
+    assert!(rows[0].starts_with("⚠ many 290 "), "{rows:#?}");
+    assert_eq!(selected_row(&app), Some(293));
+    app.shutdown_servers().await;
+}
+
+fn panel_x(app: &App) -> u16 {
+    app.hits.regions.panel.unwrap().x
+}
+
+/// The first cell of the panel's list row whose text starts with `prefix`.
+fn panel_row_starting(
+    term: &ratatui::Terminal<ratatui::backend::TestBackend>,
+    app: &App,
+    prefix: &str,
+) -> Option<(u16, u16)> {
+    let panel = app.hits.regions.panel?;
+    (panel.y + 2..panel.y + panel.height).find_map(|y| {
+        let row = screen_row(term, panel.x, y);
+        let x = row.chars().take_while(|c| *c == ' ').count() as u16;
+        row.trim_start().starts_with(prefix).then_some((panel.x + x, y))
+    })
+}
+
+/// F8 / Shift+F8 go from the cursor to the next / previous problem (several starting at one
+/// place one by one), on to the next file with problems (opening it), wrapping; a cursor at the
+/// start, the message in the status bar, the Problems list's selection following; the focus
+/// stays where it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_next_problem_goes_through_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _fake, root) = problems_project(dir.path()).await;
+    let (pa, pc, pb) = (root.join("a.cpp"), root.join("c.cpp"), root.join("sub/b.cpp"));
+    // A hint where the error starts: both are visited.
+    let mut foo = diag(0, 8, 11, 1, "use of undeclared identifier 'foo'");
+    foo["source"] = json!("clang");
+    publish(
+        &app,
+        Language::Cpp,
+        &pa,
+        None,
+        json!([diag(1, 20, 23, 2, "unused bar"), foo, diag(0, 8, 9, 4, "a hint")]),
+    );
+    assert!(app.settle(|a| a.lsp.diagnostics.counts().of(Severity::Hint) == 1).await);
+    // Wide enough for the whole message in the status bar.
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 30)).unwrap();
+    let f8 = |app: &mut App, shift: bool| app.press(K::F(8), if shift { M::SHIFT } else { M::NONE });
+    let at = |app: &App| (active_path(app).unwrap(), selection(app));
+    let bar = A_CPP.find("bar;").unwrap();
+
+    f8(&mut app, false);
+    assert_eq!(at(&app), (pa.clone(), (8, 8)), "the hint, first by (start, end)");
+    draw(&mut term, &mut app);
+    assert!(status(&term).contains("… a hint  (1 of 3)"), "{}", status(&term));
+    f8(&mut app, false);
+    assert_eq!(at(&app), (pa.clone(), (8, 8)), "the error at the same place");
+    draw(&mut term, &mut app);
+    assert!(
+        status(&term).contains("⊗ use of undeclared identifier 'foo'  clang  (2 of 3)"),
+        "{}",
+        status(&term)
+    );
+    f8(&mut app, false);
+    assert_eq!(at(&app), (pa.clone(), (bar, bar)));
+    f8(&mut app, false);
+    assert!(app.settle(|a| active_path(a).as_deref() == Some(pc.as_path())).await);
+    assert_eq!(selection(&app), (8, 8));
+    assert_eq!(app.problems.list.selected().cloned(), Some((pc.clone(), 1)));
+    f8(&mut app, false);
+    assert!(app.settle(|a| active_path(a).as_deref() == Some(pb.as_path())).await);
+    assert_eq!(selection(&app), (10, 10));
+    f8(&mut app, false);
+    assert_eq!(at(&app), (pa.clone(), (8, 8)), "wrapped to the first file");
+    assert_eq!(app.problems.list.selected().cloned(), Some((pa.clone(), 1)));
+
+    // Back.
+    f8(&mut app, true);
+    assert_eq!(at(&app), (pb.clone(), (10, 10)), "wrapped to the last file");
+    f8(&mut app, true);
+    assert_eq!(at(&app), (pc.clone(), (8, 8)));
+    f8(&mut app, true);
+    assert_eq!(at(&app), (pa.clone(), (bar, bar)));
+    f8(&mut app, true);
+    assert_eq!(at(&app), (pa.clone(), (8, 8)));
+    draw(&mut term, &mut app);
+    assert!(status(&term).contains("(2 of 3)"), "the error: {}", status(&term));
+    // From the list, the focus stays there.
+    app.press(K::Char('m'), cmd() | M::SHIFT);
+    f8(&mut app, false);
+    assert_eq!(app.ui.focus, crate::app::Focus::Panel);
+    assert_eq!(at(&app), (pa.clone(), (bar, bar)));
+    // A cursor moved off the last one: from its position again.
+    app.press(K::Esc, M::NONE);
+    app.press(K::Up, M::NONE);
+    app.press(K::Home, M::NONE);
+    f8(&mut app, false);
+    assert_eq!(at(&app), (pa.clone(), (8, 8)), "the hint again (by position)");
+    app.shutdown_servers().await;
+}
+
+/// Keys and focus: Cmd+Shift+M gives the list the keys (typing does nothing to the buffer), Esc
+/// and a click in the editor give them back, Cmd+Shift+M from the list hides the panel; the
+/// status bar's counts toggle it; its tab focuses it; dragging its top border resizes it.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_problems_focus_and_mouse() {
+    use crate::app::Focus;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _fake, _root) = problems_project(dir.path()).await;
+    let mut term = big_terminal();
+    let text = |app: &App| app.active_buffer().unwrap().rope.to_string();
+
+    app.press(K::Char('m'), cmd() | M::SHIFT);
+    assert_eq!((app.ui.panel_visible, app.ui.focus), (true, Focus::Panel));
+    assert_eq!(
+        app.problems
+            .list
+            .selected_row(&crate::problems::files(&app.lsp.diagnostics, &app.buffers)),
+        Some(0)
+    );
+    app.type_text("xy");
+    app.press(K::Backspace, M::NONE);
+    assert_eq!(text(&app), A_CPP, "keys in the list don't edit");
+    app.press(K::Down, M::NONE);
+    assert_eq!(
+        app.last_command,
+        Some(crate::command::Command::Problems(crate::command::ProblemsCommand::Down))
+    );
+    assert!(app.ui.side_visible);
+    app.press(K::Char('b'), cmd());
+    assert!(!app.ui.side_visible);
+    assert_eq!(
+        app.ui.focus,
+        Focus::Panel,
+        "hiding the side panel leaves the keys in the list"
+    );
+    app.press(K::Char('b'), cmd());
+    app.press(K::Esc, M::NONE);
+    assert_eq!((app.ui.panel_visible, app.ui.focus), (true, Focus::Editor));
+    app.press(K::Char('m'), cmd() | M::SHIFT);
+    assert_eq!(app.ui.focus, Focus::Panel);
+    app.press(K::Char('m'), cmd() | M::SHIFT);
+    assert_eq!((app.ui.panel_visible, app.ui.focus), (false, Focus::Editor));
+
+    // The status bar's counts: show and focus, then hide.
+    draw(&mut term, &mut app);
+    let counts = find_cells(&term, "⊗ 2").unwrap();
+    assert_eq!(counts.1, 29);
+    click(&mut app, counts);
+    assert_eq!((app.ui.panel_visible, app.ui.focus), (true, Focus::Panel));
+    // A click in the editor gives it the keys; one on the panel's tab gives them back.
+    draw(&mut term, &mut app);
+    click(&mut app, (60, 3));
+    assert_eq!(app.ui.focus, Focus::Editor);
+    // Shown but not focused: the counts hide it all the same (Cmd+Shift+M would focus it).
+    click(&mut app, counts);
+    assert_eq!((app.ui.panel_visible, app.ui.focus), (false, Focus::Editor));
+    click(&mut app, counts);
+    assert_eq!((app.ui.panel_visible, app.ui.focus), (true, Focus::Panel));
+    click(&mut app, (60, 3));
+    app.press(K::Char('m'), cmd() | M::SHIFT);
+    assert_eq!(app.ui.focus, Focus::Panel, "shown, unfocused: Cmd+Shift+M focuses it");
+    click(&mut app, (60, 3));
+    assert_eq!(app.ui.focus, Focus::Editor);
+    let tab = find_cells(&term, "PROBLEMS").unwrap();
+    click(&mut app, tab);
+    assert_eq!(app.ui.focus, Focus::Panel);
+    draw(&mut term, &mut app);
+    click(&mut app, counts);
+    assert!(!app.ui.panel_visible);
+    assert_eq!(app.ui.focus, Focus::Editor);
+
+    // Dragging the top border up makes it taller (the editor smaller); it stops at the
+    // editor's minimum.
+    use crossterm::event::{MouseButton, MouseEventKind};
+    app.press(K::Char('j'), cmd());
+    draw(&mut term, &mut app);
+    let panel = app.hits.regions.panel.unwrap();
+    let before = view_height(&app);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), 70, panel.y);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), 70, panel.y - 5);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), 70, panel.y - 5);
+    draw(&mut term, &mut app);
+    assert_eq!(app.hits.regions.panel.unwrap().height, panel.height + 5);
+    assert_eq!(view_height(&app), before - 5);
+    let panel = app.hits.regions.panel.unwrap();
+    app.mouse(MouseEventKind::Down(MouseButton::Left), 70, panel.y);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), 70, 0);
+    draw(&mut term, &mut app);
+    assert_eq!(app.hits.regions.editor.height, crate::layout::MIN_EDITOR_HEIGHT);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), 70, 29);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), 70, 29);
+    draw(&mut term, &mut app);
+    assert_eq!(app.hits.regions.panel.unwrap().height, crate::layout::MIN_PANEL_HEIGHT);
+    app.shutdown_servers().await;
+}
+
+/// Edge cases: F8 and the list's keys with no problems at all (a message, nothing else), a
+/// problem in a file outside the root (listed with its whole folder, opened at its range), and
+/// the panel on terminals too small for it and the editor (the editor keeps its rows first; no
+/// panic drawing, moving, dragging or clicking).
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_problems_edge_cases() {
+    use crate::app::Focus;
+    use crossterm::event::{MouseButton, MouseEventKind};
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[("a.cpp", A_CPP)]);
+    let fake = FakeLauncher::new(FakeOptions {
+        utf8: true,
+        ..Default::default()
+    });
+    let mut app = open_app(&root, fake.clone());
+    let pa = root.join("a.cpp");
+    open_synced(&mut app, &fake, &pa).await;
+    let mut term = big_terminal();
+
+    // No problems: F8 says so and moves nothing; the list's keys do nothing.
+    app.press(K::F(8), M::NONE);
+    assert_eq!(app.message.as_ref().map(|m| m.text.as_str()), Some("No problems"));
+    assert_eq!((active_path(&app), selection(&app)), (Some(pa.clone()), (0, 0)));
+    app.press(K::Char('j'), cmd());
+    for key in [K::Down, K::End, K::PageDown, K::Up, K::Enter] {
+        app.press(key, M::NONE);
+    }
+    assert_eq!(app.problems.list.selected(), None);
+    assert_eq!(app.ui.focus, Focus::Panel);
+    draw(&mut term, &mut app);
+    assert!(find_cells(&term, "No problems have been detected in the workspace.").is_some());
+    assert!(find_cells(&term, "PROBLEMS  ").is_some());
+    let panel = app.hits.regions.panel.unwrap();
+    click(&mut app, (panel.x + 5, panel.y + 3));
+    assert_eq!((active_path(&app), selection(&app)), (Some(pa.clone()), (0, 0)));
+
+    // A file outside the root: its whole folder is shown; Enter opens it at its range.
+    let outside = workspace::normalize(dir.path()).join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    let px = outside.join("x.cpp");
+    fs::write(&px, "int x = zap;\n").unwrap();
+    publish(&app, Language::Cpp, &px, None, json!([diag(0, 8, 11, 1, "zap?")]));
+    assert!(app.settle(|a| a.lsp.diagnostics.files().count() == 1).await);
+    app.press(K::Home, M::NONE);
+    draw(&mut term, &mut app);
+    let rows = panel_rows(&term, &app);
+    let folder = outside.display().to_string();
+    assert!(
+        rows[0].starts_with(&format!("x.cpp {folder}")) && rows[0].ends_with(" 1"),
+        "{rows:#?}"
+    );
+    app.press(K::Enter, M::NONE);
+    assert!(app.settle(|a| active_path(a).as_deref() == Some(px.as_path())).await);
+    assert_eq!(selection(&app), (8, 11));
+    // F8 from it: the only file, so round to its own problem.
+    app.press(K::F(8), M::NONE);
+    assert_eq!((active_path(&app), selection(&app)), (Some(px.clone()), (8, 8)));
+
+    // Tiny terminals: the editor keeps `MIN_EDITOR_HEIGHT` (or all there is), the panel only
+    // what's left; drawing, keys, wheel, a border drag and clicks never panic.
+    app.press(K::Char('m'), cmd() | M::SHIFT);
+    for h in 4..=13 {
+        for w in [30, 41] {
+            let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+            draw(&mut term, &mut app);
+            let r = app.hits.regions;
+            let body = h - 1;
+            assert_eq!(
+                r.editor.height,
+                body.min(crate::layout::MIN_EDITOR_HEIGHT.max(body.saturating_sub(app.ui.panel_height))),
+                "{w}x{h}"
+            );
+            if let Some(p) = r.panel {
+                assert_eq!(r.editor.height + p.height, body, "{w}x{h}");
+                app.mouse(MouseEventKind::Down(MouseButton::Left), r.editor.x + 2, p.y);
+                app.mouse(MouseEventKind::Drag(MouseButton::Left), r.editor.x + 2, 0);
+                app.mouse(MouseEventKind::Up(MouseButton::Left), r.editor.x + 2, 0);
+                draw(&mut term, &mut app);
+                assert_eq!(
+                    app.hits.regions.editor.height,
+                    crate::layout::MIN_EDITOR_HEIGHT.min(body)
+                );
+                for y in p.y..h {
+                    click(&mut app, (r.editor.x + 3, y));
+                    app.mouse(MouseEventKind::ScrollDown, r.editor.x + 3, y);
+                    draw(&mut term, &mut app);
+                }
+                app.ui.panel_height = crate::app::PANEL_HEIGHT;
+            } else {
+                assert_eq!(r.editor.height, body, "no room for the panel: {w}x{h}");
+            }
+            app.ui.focus = Focus::Panel;
+            for key in [K::Down, K::PageDown, K::End, K::PageUp] {
+                app.press(key, M::NONE);
+                draw(&mut term, &mut app);
+            }
+        }
     }
     app.shutdown_servers().await;
 }

@@ -72,6 +72,8 @@ bindings = [
   { key = "Left", mods = "Command|Alt", action = "ReceiveChar" },
   { key = "P", mods = "Command|Shift", action = "ReceiveChar" },
   { key = "P", mods = "Command", action = "ReceiveChar" },
+  { key = "J", mods = "Command", action = "ReceiveChar" },
+  { key = "M", mods = "Command|Shift", action = "ReceiveChar" },
 ]
 ```
 

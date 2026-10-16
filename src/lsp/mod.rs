@@ -35,6 +35,10 @@ use crate::syntax::Language;
 use crate::workspace::config::WorkspaceConfig;
 use crate::workspace::trust::Trust;
 
+/// How long quitting waits past `SHUTDOWN_TIMEOUT` for the server tasks (which kill their
+/// servers at `SHUTDOWN_TIMEOUT`) before aborting them.
+const ABORT_MARGIN: Duration = Duration::from_secs(1);
+
 /// Numbers started servers; never reused, so events from a replaced server are dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ServerId(u64);
@@ -427,6 +431,15 @@ impl Manager {
     /// plus a little (each task kills its server after that); then gives up on the stragglers
     /// (aborting a task drops its process, which kills it). The future borrows nothing.
     pub fn shutdown(&mut self) -> impl Future<Output = ()> + 'static {
+        let stopped = self.shutdown_within(SHUTDOWN_TIMEOUT + ABORT_MARGIN);
+        async move {
+            stopped.await;
+        }
+    }
+
+    /// `shutdown`, aborting the server tasks still running after `limit`; true if every task
+    /// ended by itself (its server exited, or the task's own `SHUTDOWN_TIMEOUT` killed it).
+    pub fn shutdown_within(&mut self, limit: Duration) -> impl Future<Output = bool> + 'static {
         self.sink = None;
         let mut tasks = std::mem::take(&mut self.stopping);
         for s in self.servers.drain(..) {
@@ -436,16 +449,15 @@ impl Manager {
         let aborts: Vec<_> = tasks.iter().map(JoinHandle::abort_handle).collect();
         async move {
             if tasks.is_empty() {
-                return;
+                return true;
             }
             let all = futures_util::future::join_all(tasks);
-            if tokio::time::timeout(SHUTDOWN_TIMEOUT + Duration::from_secs(1), all)
-                .await
-                .is_err()
-            {
+            if tokio::time::timeout(limit, all).await.is_err() {
                 tracing::warn!("language servers didn't stop in time");
                 aborts.iter().for_each(|a| a.abort());
+                return false;
             }
+            true
         }
     }
 }

@@ -42,6 +42,16 @@ impl Severity {
         }
     }
 
+    /// The theme key of its icon in the Problems list (VS Code's names; hints have none there).
+    pub fn icon_key(self) -> &'static str {
+        match self {
+            Self::Error => "problemsErrorIcon.foreground",
+            Self::Warning => "problemsWarningIcon.foreground",
+            Self::Info => "problemsInfoIcon.foreground",
+            Self::Hint => "problemsHintIcon.foreground",
+        }
+    }
+
     /// The status bar's symbol (VS Code's codicons, as near as a terminal gets).
     pub fn icon(self) -> &'static str {
         match self {
@@ -86,13 +96,12 @@ pub struct Marks {
 }
 
 impl Marks {
-    #[cfg_attr(not(test), allow(dead_code))] // tests; the Problems list (9d)
+    #[cfg_attr(not(test), allow(dead_code))] // tests
     pub fn is_empty(&self) -> bool {
         self.marks.is_empty()
     }
 
     /// Every mark, sorted by (start, end).
-    #[cfg_attr(not(test), allow(dead_code))] // tests; the Problems list (9d)
     pub fn all(&self) -> &[Mark] {
         &self.marks
     }

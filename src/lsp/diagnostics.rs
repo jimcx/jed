@@ -184,7 +184,6 @@ impl Store {
     }
 
     /// Every file with diagnostics, sorted by path (for the Problems list).
-    #[cfg_attr(not(test), allow(dead_code))] // the Problems list (9d)
     pub fn files(&self) -> impl Iterator<Item = (&Path, &[FileSet])> {
         self.files.iter().map(|(p, s)| (p.as_path(), s.as_slice()))
     }

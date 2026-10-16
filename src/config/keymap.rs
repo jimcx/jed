@@ -1,6 +1,6 @@
 //! Key combos to commands. Keymaps are data; commands never look at keys.
 //! A binding applies in one context (editor, explorer, palette, find, replace, search,
-//! searchResults) or everywhere.
+//! searchResults, problems) or everywhere.
 //! The defaults are VS Code's; `keybindings.toml` replaces bindings command by command.
 
 use std::collections::{HashMap, HashSet};
@@ -10,7 +10,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
 
 use crate::command::{
-    ColumnMotion, Command, ExplorerCommand as X, FindCommand as F, Motion, PaletteCommand as P, SearchCommand as S,
+    ColumnMotion, Command, ExplorerCommand as X, FindCommand as F, Motion, PaletteCommand as P, ProblemsCommand as Pr,
+    SearchCommand as S,
 };
 
 pub const FILE_NAME: &str = "keybindings.toml";
@@ -170,10 +171,12 @@ pub enum Context {
     Search,
     /// The Search view's results list has the focus; bindings not found here come from `Search`.
     SearchResults,
+    /// The bottom panel's Problems list has the focus.
+    Problems,
 }
 
 impl Context {
-    const ALL: [(Context, &'static str); 7] = [
+    const ALL: [(Context, &'static str); 8] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
@@ -181,6 +184,7 @@ impl Context {
         (Context::Replace, "replace"),
         (Context::Search, "search"),
         (Context::SearchResults, "searchResults"),
+        (Context::Problems, "problems"),
     ];
 
     fn parse(name: &str) -> Option<Context> {
@@ -540,6 +544,10 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Char('g'), ctrl, Command::GoToLine),
         (KeyCode::F(4), none, Command::Search(S::NextResult)),
         (KeyCode::F(4), shift, Command::Search(S::PreviousResult)),
+        (KeyCode::Char('j'), cmd, Command::TogglePanel),
+        (KeyCode::Char('m'), cmd | shift, Command::ToggleProblems),
+        (KeyCode::F(8), none, Command::Problems(Pr::Next)),
+        (KeyCode::F(8), shift, Command::Problems(Pr::Previous)),
     ]);
 
     let palette = [
@@ -581,6 +589,18 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Enter, none, S::Open),
     ];
 
+    // The Problems list in the bottom panel.
+    let problems = [
+        (KeyCode::Up, none, Pr::Up),
+        (KeyCode::Down, none, Pr::Down),
+        (KeyCode::PageUp, none, Pr::PageUp),
+        (KeyCode::PageDown, none, Pr::PageDown),
+        (KeyCode::Home, none, Pr::First),
+        (KeyCode::End, none, Pr::Last),
+        (KeyCode::Enter, none, Pr::Open),
+        (KeyCode::Esc, none, Pr::FocusEditor),
+    ];
+
     let bind = |code, mods, context, command| Binding {
         combo: KeyCombo { code, mods },
         context,
@@ -614,6 +634,11 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         search_results
             .into_iter()
             .map(|(k, m, c)| bind(k, m, Some(Context::SearchResults), Command::Search(c))),
+    );
+    out.extend(
+        problems
+            .into_iter()
+            .map(|(k, m, c)| bind(k, m, Some(Context::Problems), Command::Problems(c))),
     );
     out
 }
@@ -761,6 +786,59 @@ mod tests {
                 assert_eq!(km.lookup(&f4, ctx), Some(Command::Search(S::NextResult)));
                 assert_eq!(km.lookup(&shift_f4, ctx), Some(Command::Search(S::PreviousResult)));
             }
+        }
+    }
+
+    #[test]
+    fn problems_context_and_panel_keys() {
+        for platform in [Platform::MacOs, Platform::Linux] {
+            let km = Keymap::default_for(platform);
+            let cmd = if platform == Platform::MacOs {
+                KeyModifiers::SUPER
+            } else {
+                KeyModifiers::CONTROL
+            };
+            let none = KeyModifiers::NONE;
+            let p = Context::Problems;
+            for ctx in [Context::Editor, Context::Explorer, Context::Search, p, Context::Find] {
+                assert_eq!(
+                    km.lookup(&key(KeyCode::Char('j'), cmd), ctx),
+                    Some(Command::TogglePanel)
+                );
+                assert_eq!(
+                    km.lookup(&key(KeyCode::Char('M'), cmd | KeyModifiers::SHIFT), ctx),
+                    Some(Command::ToggleProblems)
+                );
+                assert_eq!(
+                    km.lookup(&key(KeyCode::F(8), none), ctx),
+                    Some(Command::Problems(Pr::Next))
+                );
+                assert_eq!(
+                    km.lookup(&key(KeyCode::F(8), KeyModifiers::SHIFT), ctx),
+                    Some(Command::Problems(Pr::Previous))
+                );
+            }
+            assert_eq!(
+                km.lookup(&key(KeyCode::Down, none), p),
+                Some(Command::Problems(Pr::Down))
+            );
+            assert_eq!(
+                km.lookup(&key(KeyCode::Enter, none), p),
+                Some(Command::Problems(Pr::Open))
+            );
+            assert_eq!(
+                km.lookup(&key(KeyCode::Esc, none), p),
+                Some(Command::Problems(Pr::FocusEditor))
+            );
+            assert_eq!(
+                km.lookup(&key(KeyCode::Char('x'), none), p),
+                None,
+                "typing does nothing"
+            );
+            assert_eq!(
+                km.binding_for(Command::TogglePanel).map(|k| k.label()),
+                Some(if platform == Platform::MacOs { "Cmd+J" } else { "Ctrl+J" }.to_string())
+            );
         }
     }
 

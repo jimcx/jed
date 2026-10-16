@@ -5,6 +5,7 @@ mod dialog;
 mod editor;
 mod find;
 mod palette;
+mod panel;
 mod search;
 mod side;
 mod status;
@@ -21,7 +22,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if area.height < 4 || area.width < 30 {
         return;
     }
-    let regions = layout::compute(area, app.ui.side_visible, app.ui.side_width);
+    let panel_height = app.ui.panel_visible.then_some(app.ui.panel_height);
+    let regions = layout::compute(area, app.ui.side_visible, app.ui.side_width, panel_height);
     let mut hits = HitMap {
         regions,
         ..HitMap::default()
@@ -94,8 +96,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
         }
     }
     hits.dividers = dividers;
+    if let Some(panel) = regions.panel {
+        (hits.panel_tabs, hits.problems) = panel::render(f, panel, app);
+    }
 
-    status::render(f, regions.status, app);
+    hits.status_problems = status::render(f, regions.status, app);
     hits.find = active_editor.and_then(|area| find::render(f, area, app));
     hits.palette = palette::render(f, area, app);
     if let Some(prompt) = &app.prompt {

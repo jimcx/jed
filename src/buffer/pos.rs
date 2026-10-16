@@ -157,7 +157,6 @@ impl<'a> LspWalker<'a> {
 /// The byte offset of an LSP position, clamped as the protocol says: a line past the end is the
 /// text's end, a column past the line's content is its end (before the line break). A column
 /// inside a char (a UTF-8 byte or the second half of a surrogate pair) rounds down to its start.
-#[cfg_attr(not(test), allow(dead_code))] // diagnostics convert many with `LspReader`
 pub fn from_lsp_pos(rope: &Rope, pos: LspPos, encoding: PosEncoding) -> ByteIdx {
     let line = pos.line as usize;
     if line >= line_count(rope) {

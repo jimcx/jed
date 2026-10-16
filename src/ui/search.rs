@@ -98,7 +98,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<SearchHit> {
         width: area.width,
         height: bottom.saturating_sub(y + 1),
     };
-    view.height = list.height.max(1) as usize;
+    view.list.height = list.height.max(1) as usize;
     // Clamp (the list may have shrunk), keeping the same row on top.
     let top = view.scroll(results);
     view.set_scroll(results, top);

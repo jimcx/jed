@@ -10,7 +10,9 @@ use crate::buffer::pos;
 use crate::diagnostics::Severity;
 use crate::workspace::trust::Trust;
 
-pub fn render(f: &mut Frame, area: Rect, app: &App) {
+/// Draws the status bar; returns where the problem counts are (a click toggles the Problems
+/// list).
+pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
     let style = app.theme.get("statusBar");
     let out = f.buffer_mut();
     out.set_style(area, style);
@@ -46,6 +48,17 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     });
 
     let mut right_x = area.x + area.width;
+    // The counts' cells: from `x`, `problems` (without its trailing gap) cut at `end`.
+    let counts_at = |x: u16, end: u16| {
+        let w = (problems.trim_end().width() as u16).min(end.saturating_sub(x));
+        (w > 0).then_some(Rect {
+            x,
+            y: area.y,
+            width: w,
+            height: 1,
+        })
+    };
+    let mut counts = None;
     if let (Some(buf), Some(tab)) = (app.active_buffer(), app.group().active_tab()) {
         if message.is_none() {
             let head = tab.view.selections.primary().head;
@@ -64,7 +77,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         } else {
             ""
         };
-        let left = format!(" {}{dirty}{flag}  {problems}", buf.name());
+        let name = format!(" {}{dirty}{flag}  ", buf.name());
+        let left = format!("{name}{problems}");
 
         // As VS Code: the position for one selection, the count for several.
         let count = tab.view.selections.len();
@@ -93,13 +107,20 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         right_x = area.x + (width - right_w) as u16;
         out.set_stringn(right_x, area.y, &right, right_w, style);
         let room = right_x.saturating_sub(x) as usize;
+        let start = x;
         x = out.set_stringn(x, area.y, &left, room, style).0;
+        if !problems.is_empty() {
+            counts = counts_at(start + name.width() as u16, x);
+        }
     } else if !problems.is_empty() {
+        let start = x;
         x = out.set_stringn(x, area.y, format!(" {problems}"), width, style).0;
+        counts = counts_at(start + 1, x);
     }
 
     if let Some((text, msg_style)) = message {
         let room = right_x.saturating_sub(x + 1) as usize;
         out.set_stringn(x, area.y, format!(" {text} "), room, msg_style);
     }
+    counts
 }

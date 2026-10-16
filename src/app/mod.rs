@@ -6,6 +6,7 @@ mod find;
 mod lsp;
 mod mouse;
 mod palette;
+mod problems;
 mod prompt;
 mod side;
 mod syntax;
@@ -31,7 +32,7 @@ use crate::edit::{self, Settings};
 use crate::explorer::{self, Explorer};
 use crate::find::{Field, FindWidget};
 use crate::group::{Group, Groups};
-use crate::layout::{GroupId, HitMap, SidePanel, SplitDir};
+use crate::layout::{GroupId, HitMap, PanelTab, SidePanel, SplitDir};
 use crate::palette::{FileMatcher, Palette, Picker};
 use crate::search_view::SearchView;
 use crate::terminal::Term;
@@ -77,6 +78,8 @@ pub enum Focus {
     SidePanel,
     /// The find widget's input (`app.find.field` says which one).
     Find,
+    /// The bottom panel (its tab, `ui.panel_tab`: the Problems list).
+    Panel,
 }
 
 pub struct UiState {
@@ -84,7 +87,15 @@ pub struct UiState {
     pub side_width: u16,
     pub side_panel: SidePanel,
     pub focus: Focus,
+    /// The bottom panel: shown, its height (border and tab strip included; clamped by
+    /// `layout::compute`) and which tab it shows.
+    pub panel_visible: bool,
+    pub panel_height: u16,
+    pub panel_tab: PanelTab,
 }
+
+/// The bottom panel's height until it's resized.
+pub const PANEL_HEIGHT: u16 = 10;
 
 /// What to do once pending saves finish.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,6 +225,11 @@ pub struct App {
     search_generation: u64,
     /// `.workspace` `[files] associations`, compiled.
     associations: crate::syntax::Associations,
+    /// The Problems list's scroll and selection.
+    pub problems: crate::problems::ProblemsView,
+    /// Where the last F8 / Shift+F8 went: file, problem index, cursor position (so a cursor
+    /// still there goes on from that problem).
+    last_problem: Option<(PathBuf, usize, crate::buffer::pos::ByteIdx)>,
     /// Language servers.
     pub lsp: crate::lsp::Manager,
     /// Open files' languages, the config or trust changed: `sync_servers` has work to do.
@@ -242,6 +258,9 @@ impl App {
                 side_width: 30,
                 side_panel: SidePanel::Explorer,
                 focus: Focus::Editor,
+                panel_visible: false,
+                panel_height: PANEL_HEIGHT,
+                panel_tab: PanelTab::Problems,
             },
             hits: HitMap::default(),
             keymap: Keymap::default_for(Platform::current()),
@@ -281,6 +300,8 @@ impl App {
             search_task: None,
             search_generation: 0,
             associations: crate::syntax::Associations::default(),
+            problems: Default::default(),
+            last_problem: None,
             // Tests run no servers unless they plug in a launcher (`lsp.set_launcher`).
             #[cfg(not(test))]
             lsp: crate::lsp::Manager::new(Some(Arc::new(crate::lsp::ProcessLauncher))),
@@ -467,6 +488,9 @@ impl App {
             Focus::SidePanel => Context::Explorer,
             Focus::Find if self.find.field == Field::Replace => Context::Replace,
             Focus::Find => Context::Find,
+            Focus::Panel => match self.ui.panel_tab {
+                PanelTab::Problems => Context::Problems,
+            },
         }
     }
 
@@ -579,7 +603,7 @@ impl App {
             Command::PrevTab => self.cycle_tab(-1),
             Command::ToggleSidebar => {
                 self.ui.side_visible = !self.ui.side_visible;
-                if !self.ui.side_visible {
+                if !self.ui.side_visible && self.ui.focus == Focus::SidePanel {
                     self.ui.focus = Focus::Editor;
                 }
             }
@@ -613,6 +637,9 @@ impl App {
             Command::Find(c) => self.find_command(c),
             Command::FindInFiles => self.find_in_files(),
             Command::Search(c) => self.search_command(c),
+            Command::TogglePanel => self.toggle_panel(),
+            Command::ToggleProblems => self.toggle_problems(),
+            Command::Problems(c) => self.problems_command(c),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
             _ => {

@@ -68,6 +68,8 @@ keybind = cmd+alt+arrow_right=unbind
 keybind = cmd+alt+arrow_left=unbind
 keybind = cmd+shift+p=unbind
 keybind = cmd+p=unbind
+keybind = cmd+j=unbind
+keybind = cmd+shift+m=unbind
 
 # --- red: Option acts as Alt ---
 macos-option-as-alt = true

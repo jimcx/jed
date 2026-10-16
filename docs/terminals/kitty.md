@@ -67,6 +67,8 @@ map cmd+alt+right
 map cmd+alt+left
 map cmd+shift+p
 map cmd+p
+map cmd+j
+map cmd+shift+m
 
 # --- red: Option acts as Alt ---
 macos_option_as_alt both

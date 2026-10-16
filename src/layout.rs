@@ -9,6 +9,10 @@ pub const MIN_EDITOR_WIDTH: u16 = 20;
 /// Smallest editor group a split or a divider drag may produce (tab bar included).
 pub const MIN_GROUP_WIDTH: u16 = 12;
 pub const MIN_GROUP_HEIGHT: u16 = 4;
+/// The bottom panel's smallest height: its top border, its tab strip and two rows.
+pub const MIN_PANEL_HEIGHT: u16 = 4;
+/// Room always left above the bottom panel for the editor (a tab bar and a few lines).
+pub const MIN_EDITOR_HEIGHT: u16 = 5;
 
 pub type GroupId = u64;
 
@@ -31,6 +35,22 @@ impl SidePanel {
     }
 }
 
+/// The bottom panel's tabs (M12 adds task runs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelTab {
+    Problems,
+}
+
+impl PanelTab {
+    pub const ALL: [PanelTab; 1] = [PanelTab::Problems];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            PanelTab::Problems => "PROBLEMS",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Regions {
     pub activity: Rect,
@@ -38,10 +58,14 @@ pub struct Regions {
     pub side: Option<Rect>,
     /// All editor groups, with their tab bars.
     pub editor: Rect,
+    /// The bottom panel under the editor groups (its top row is the border), when shown.
+    pub panel: Option<Rect>,
     pub status: Rect,
 }
 
-pub fn compute(area: Rect, side_visible: bool, side_width: u16) -> Regions {
+/// The screen's regions. `panel_height` (`None`: hidden) is clamped so the editor keeps
+/// `MIN_EDITOR_HEIGHT` rows; the panel gets at least `MIN_PANEL_HEIGHT` when that fits.
+pub fn compute(area: Rect, side_visible: bool, side_width: u16, panel_height: Option<u16>) -> Regions {
     let body_h = area.height.saturating_sub(1);
     let status = Rect {
         y: area.y + body_h,
@@ -71,16 +95,29 @@ pub fn compute(area: Rect, side_visible: bool, side_width: u16) -> Regions {
         x += w;
         r
     });
-    let editor = Rect {
+    let mut editor = Rect {
         x,
         y: area.y,
         width: (area.x + area.width).saturating_sub(x),
         height: body_h,
     };
+    let panel = panel_height.and_then(|h| {
+        let max = body_h.saturating_sub(MIN_EDITOR_HEIGHT);
+        let h = h.min(max).max(MIN_PANEL_HEIGHT.min(max));
+        (h > 0).then(|| {
+            editor.height -= h;
+            Rect {
+                y: editor.y + editor.height,
+                height: h,
+                ..editor
+            }
+        })
+    });
     Regions {
         activity,
         side,
         editor,
+        panel,
         status,
     }
 }
@@ -306,6 +343,20 @@ pub struct HitMap {
     pub find: Option<FindHit>,
     /// The Search view, when shown.
     pub search: Option<SearchHit>,
+    /// The bottom panel's tab labels.
+    pub panel_tabs: Vec<(Rect, PanelTab)>,
+    /// The Problems list, when shown.
+    pub problems: Option<ListHit>,
+    /// The status bar's problem counts (a click toggles the Problems panel).
+    pub status_problems: Option<Rect>,
+}
+
+/// A grouped list (`grouped`) as drawn: its rect and the row each line shows (`rows[i]` is at
+/// `list.y + i`), by key so a click lands on what was drawn.
+#[derive(Debug, Clone, Default)]
+pub struct ListHit {
+    pub list: Rect,
+    pub rows: Vec<crate::grouped::RowKey>,
 }
 
 /// The Search view: its option toggles (case, regex), and its results list with the row each
@@ -367,7 +418,14 @@ pub enum Hit {
     TabClose(GroupId, usize),
     TabBar(GroupId),
     Editor(GroupId),
+    /// The bottom panel's top border (dragging it resizes the panel).
+    PanelBorder,
+    PanelTab(PanelTab),
+    /// Anywhere else in the bottom panel (its list: `HitMap::problems`).
+    Panel,
     Status,
+    /// The status bar's problem counts.
+    StatusProblems,
     Nothing,
 }
 
@@ -393,6 +451,17 @@ impl HitMap {
             }
             return Hit::SidePanel;
         }
+        if let Some(panel) = r.panel
+            && panel.contains(p)
+        {
+            if y == panel.y {
+                return Hit::PanelBorder;
+            }
+            return match self.panel_tabs.iter().find(|(rect, _)| rect.contains(p)) {
+                Some((_, tab)) => Hit::PanelTab(*tab),
+                None => Hit::Panel,
+            };
+        }
         if let Some(i) = self.dividers.iter().position(|d| d.rect.contains(p)) {
             return Hit::Divider(i);
         }
@@ -409,6 +478,9 @@ impl HitMap {
             }
         }
         if r.status.contains(p) {
+            if self.status_problems.is_some_and(|c| c.contains(p)) {
+                return Hit::StatusProblems;
+            }
             return Hit::Status;
         }
         Hit::Nothing
@@ -425,23 +497,42 @@ mod tests {
 
     #[test]
     fn regions_tile_the_screen() {
-        let r = compute(Rect::new(0, 0, 100, 30), true, 25);
+        let r = compute(Rect::new(0, 0, 100, 30), true, 25, None);
         assert_eq!(r.activity, Rect::new(0, 0, 3, 29));
         assert_eq!(r.side, Some(Rect::new(3, 0, 25, 29)));
         assert_eq!(r.editor, Rect::new(28, 0, 72, 29));
         assert_eq!(r.status, Rect::new(0, 29, 100, 1));
 
-        let r = compute(Rect::new(0, 0, 100, 30), false, 25);
+        let r = compute(Rect::new(0, 0, 100, 30), false, 25, None);
         assert_eq!(r.side, None);
         assert_eq!(r.editor.x, 3);
     }
 
     #[test]
     fn side_width_is_clamped() {
-        let r = compute(Rect::new(0, 0, 60, 10), true, 200);
+        let r = compute(Rect::new(0, 0, 60, 10), true, 200, None);
         assert_eq!(r.side.unwrap().width, 60 - ACTIVITY_WIDTH - MIN_EDITOR_WIDTH);
-        let r = compute(Rect::new(0, 0, 60, 10), true, 1);
+        let r = compute(Rect::new(0, 0, 60, 10), true, 1, None);
         assert_eq!(r.side.unwrap().width, MIN_SIDE_WIDTH);
+    }
+
+    /// The panel sits under the editor groups (not the side panel), clamped both ways.
+    #[test]
+    fn panel_under_the_editor() {
+        let r = compute(Rect::new(0, 0, 100, 30), true, 25, Some(10));
+        assert_eq!(r.editor, Rect::new(28, 0, 72, 19));
+        assert_eq!(r.panel, Some(Rect::new(28, 19, 72, 10)));
+        assert_eq!(r.side, Some(Rect::new(3, 0, 25, 29)), "the side panel keeps its height");
+        let r = compute(Rect::new(0, 0, 100, 30), true, 25, Some(100));
+        assert_eq!(r.editor.height, MIN_EDITOR_HEIGHT);
+        assert_eq!(r.panel.unwrap().height, 29 - MIN_EDITOR_HEIGHT);
+        let r = compute(Rect::new(0, 0, 100, 30), true, 25, Some(1));
+        assert_eq!(r.panel.unwrap().height, MIN_PANEL_HEIGHT);
+        // Too small for both: the editor wins.
+        let r = compute(Rect::new(0, 0, 100, 7), true, 25, Some(10));
+        assert_eq!((r.editor.height, r.panel.unwrap().height), (5, 1));
+        let r = compute(Rect::new(0, 0, 100, 5), true, 25, Some(10));
+        assert_eq!((r.editor.height, r.panel), (4, None));
     }
 
     #[test]
@@ -494,7 +585,7 @@ mod tests {
 
     #[test]
     fn hits() {
-        let regions = compute(Rect::new(0, 0, 100, 30), true, 25);
+        let regions = compute(Rect::new(0, 0, 100, 30), true, 25, Some(6));
         let mut t = SplitTree::new(7);
         t.split(7, SplitDir::Right, 8);
         let (cells, dividers) = t.layout(regions.editor);
@@ -526,6 +617,9 @@ mod tests {
             palette: None,
             find: None,
             search: None,
+            panel_tabs: vec![(Rect::new(30, 24, 10, 1), PanelTab::Problems)],
+            problems: None,
+            status_problems: Some(Rect::new(10, 29, 8, 1)),
         };
         assert_eq!(map.hit(1, 1), Hit::Icon(SidePanel::Explorer));
         assert_eq!(map.hit(27, 5), Hit::SideBorder);
@@ -536,6 +630,11 @@ mod tests {
         assert_eq!(map.hit(50, 0), Hit::TabBar(7));
         assert_eq!(map.hit(50, 10), Hit::Editor(7));
         assert_eq!(map.hit(64, 10), Hit::Divider(0));
+        assert_eq!(map.hit(50, 23), Hit::PanelBorder);
+        assert_eq!(map.hit(31, 24), Hit::PanelTab(PanelTab::Problems));
+        assert_eq!(map.hit(50, 26), Hit::Panel);
+        assert_eq!(map.hit(12, 29), Hit::StatusProblems);
+        assert_eq!(map.hit(5, 25), Hit::ExplorerRow(23), "the side panel beside it");
         assert_eq!(map.hit(66, 0), Hit::Tab(8, 0));
         assert_eq!(map.hit(80, 10), Hit::Editor(8));
         assert_eq!(map.hit(60, 29), Hit::Status);

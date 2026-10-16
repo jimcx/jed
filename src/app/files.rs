@@ -11,6 +11,7 @@ use crate::buffer::file::LoadError;
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::buffer::{Buffer, BufferId};
 use crate::layout::{GroupId, SplitDir};
+use crate::problems::Place;
 use crate::selection::{Selection, Selections};
 use crate::view::View;
 
@@ -22,6 +23,10 @@ pub(super) enum Goto {
     /// A workspace search match: 0-based line and byte offsets into it, selected (anchor at the
     /// start) and centred if off screen. Clamped to the text, which may have changed since.
     Match { line: usize, range: Range<usize> },
+    /// A problem (the Problems list, F8): its range selected (`select`) or a cursor at its
+    /// start, centred if off screen. A `Place::Text` range is in the buffer's current text
+    /// (clamped); a `Place::Lsp` one is read in the text as loaded.
+    Problem { place: Place, select: bool },
 }
 
 /// An open in flight: what to do once the buffer arrives. A later request for the same file
@@ -298,6 +303,20 @@ pub(super) fn apply_goto(view: &mut View, rope: &Rope, goto: &Goto, tab_width: u
     match goto {
         Goto::Cursor(line, col) => place_cursor(view, rope, (*line, *col), tab_width),
         Goto::Match { line, range } => select_in_line(view, rope, *line, range),
+        Goto::Problem { place, select } => {
+            let clamp = |b: ByteIdx| ByteIdx(rope.floor_char_boundary(b.0.min(rope.len())));
+            let (start, end) = match *place {
+                Place::Text { start, end } => (clamp(start), clamp(end)),
+                Place::Lsp { start, end, encoding } => (
+                    pos::from_lsp_pos(rope, start, encoding),
+                    pos::from_lsp_pos(rope, end, encoding),
+                ),
+            };
+            let end = end.max(start);
+            let head = if *select { end } else { start };
+            view.selections = Selections::single(Selection::new(start, head));
+            view.reveal_range = Some((start, end));
+        }
     }
 }
 

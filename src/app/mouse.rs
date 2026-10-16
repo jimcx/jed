@@ -7,7 +7,7 @@ use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use super::{App, Focus};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::column::{self, Cell};
-use crate::layout::{Divider, Hit, MIN_SIDE_WIDTH, SidePanel};
+use crate::layout::{Divider, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, PanelTab, SidePanel};
 use crate::selection::{Selection, Selections};
 use crate::view::View;
 
@@ -17,6 +17,8 @@ const WHEEL_LINES: isize = 3;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Drag {
     SideBorder,
+    /// Resizing the bottom panel by its top border.
+    PanelBorder,
     /// Resizing a split.
     Divider(Divider),
     /// Extending a selection; the anchor range is kept for word/line drags.
@@ -65,6 +67,7 @@ impl App {
                 match hit {
                     Hit::SidePanel if self.ui.side_panel == SidePanel::Search => self.search_scroll(delta),
                     Hit::ExplorerRow(_) | Hit::SidePanel => self.explorer.scroll_by(delta),
+                    Hit::Panel | Hit::PanelTab(_) | Hit::PanelBorder => self.problems_scroll(delta),
                     // Scrolls the group under the mouse, without focusing it.
                     Hit::Editor(g) => {
                         let tab = self.groups.get_mut(g).and_then(|g| g.tabs.get_mut(g.active));
@@ -91,6 +94,13 @@ impl App {
                     if let Some(side) = self.hits.regions.side {
                         self.ui.side_width = (m.column + 1).saturating_sub(side.x).max(MIN_SIDE_WIDTH);
                     }
+                }
+                Some(Drag::PanelBorder) => {
+                    // Its top row follows the pointer; `layout::compute` keeps both minimums.
+                    let bottom = self.hits.regions.status.y;
+                    self.ui.panel_height = bottom
+                        .saturating_sub(m.row)
+                        .clamp(MIN_PANEL_HEIGHT, bottom.max(MIN_PANEL_HEIGHT));
                 }
                 Some(Drag::Divider(d)) => self.groups.tree.set_ratio(&d, d.ratio_at(m.column, m.row)),
                 Some(Drag::Text { anchor }) => {
@@ -166,6 +176,12 @@ impl App {
                 self.focus_group(g);
                 self.editor_click(m, count);
             }
+            Hit::PanelBorder => self.drag = Some(Drag::PanelBorder),
+            Hit::PanelTab(tab) => self.focus_panel(tab),
+            Hit::Panel => match self.ui.panel_tab {
+                PanelTab::Problems => self.problems_click(m, count),
+            },
+            Hit::StatusProblems => self.problem_counts_clicked(),
             Hit::Status | Hit::Nothing => {}
         }
     }

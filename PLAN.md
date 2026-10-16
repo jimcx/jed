@@ -657,7 +657,12 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - 31.6k diagnostics on a 1 MB file (release): placed in ≤ 19 ms, typing at 63k cursors ~8 ms
        - Not done: undercurl (ratatui has none), hint dots, `Unnecessary` / `Deprecated` tags, source / code in the message; marks of a renamed buffer stay until the server publishes for the new URI
        - Still to check by hand: underline colour in real terminals and its fallback; the width of `⊗` / `⚠`
-     - 9d: bottom panel with the Problems list (Cmd+J toggles, grouped by file, Enter / click opens at the position, next / previous problem)
+     - ✅ 9d: bottom panel with the Problems list (Cmd+J toggles, grouped by file, Enter / click opens at the position, next / previous problem)
+       - Panel under the editor groups (border row, tab strip with `PanelTab::ALL`, list), drag the border to resize (`PANEL_HEIGHT` 10, editor ≥ 5, panel ≥ 4); `Focus::Panel` → `Context::Problems`; Cmd+J `view.togglePanel`, Cmd+Shift+M `view.toggleProblems`, F8 / Shift+F8 `problems.next` / `previous` (status bar message "(k of n)" instead of VS Code's peek); status bar counts click toggles Problems
+       - `grouped.rs` (`Group`, `RowKey`, `ListState`): grouped lists with scroll / selection kept by key, shared by the Search view and Problems — 9g's references list should use it, and `Goto::Problem { place: Place::Lsp, … }` opens LSP locations in unopened files
+       - For M12: add a `PanelTab` variant, its context in `App::context()` and its drawing in `ui/panel.rs`
+       - Not done (VS Code differences): problems ordered by position, not severity first; no collapsing, filter or copy; unopened files show the LSP character + 1 as the column
+       - Still to check by hand: Ctrl+J on Linux needs the kitty protocol (else it's Enter); Cmd+J / Cmd+Shift+M reach red in each terminal (iTerm2 menu items); panel border drag; icon widths
      - 9e: hover (a popup at the cursor, a command and mouse rest) and go to definition (F12; several locations → the results list)
      - 9f: completion: popup on trigger characters and Ctrl+Space, filtered as you type, accepted text (and `textEdit`s) inserted at every cursor
      - 9g: find references (Shift+F12, the results list) and rename symbol (F2 in the editor: a prompt, `WorkspaceEdit` across open and unopened files, one undo step per buffer)

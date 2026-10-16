@@ -139,6 +139,12 @@ pub enum Command {
     FindInFiles,
     /// The Search view's commands.
     Search(SearchCommand),
+    /// Cmd+J: show (and focus) or hide the bottom panel.
+    TogglePanel,
+    /// Cmd+Shift+M: show and focus the Problems list, or hide the panel when it has the keys.
+    ToggleProblems,
+    /// The Problems list's commands, and next / previous problem.
+    Problems(ProblemsCommand),
 }
 
 /// Focus-group commands listed in the palette and accepted in keybindings (as VS Code: 1 to 8).
@@ -288,6 +294,41 @@ impl SearchCommand {
     ];
 }
 
+/// The Problems list in the bottom panel (M9), and stepping through problems.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProblemsCommand {
+    /// The list's selection: a row up / down, a page, the first / last row.
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    First,
+    Last,
+    /// Enter: open the selected problem (a file row: its first) and focus the editor.
+    Open,
+    /// Esc: back to the editor; the panel stays.
+    FocusEditor,
+    /// F8 / Shift+F8 from anywhere: the next / previous problem after the cursor, on through the
+    /// files with problems (VS Code's "in files").
+    Next,
+    Previous,
+}
+
+impl ProblemsCommand {
+    pub const ALL: [ProblemsCommand; 10] = [
+        ProblemsCommand::Up,
+        ProblemsCommand::Down,
+        ProblemsCommand::PageUp,
+        ProblemsCommand::PageDown,
+        ProblemsCommand::First,
+        ProblemsCommand::Last,
+        ProblemsCommand::Open,
+        ProblemsCommand::FocusEditor,
+        ProblemsCommand::Next,
+        ProblemsCommand::Previous,
+    ];
+}
+
 impl Command {
     /// Every command, in a stable order: what the palette lists and keybindings can name.
     pub fn all() -> Vec<Command> {
@@ -352,6 +393,8 @@ impl Command {
         all.extend(FindCommand::ALL.map(Command::Find));
         all.push(Command::FindInFiles);
         all.extend(SearchCommand::ALL.map(Command::Search));
+        all.extend([Command::TogglePanel, Command::ToggleProblems]);
+        all.extend(ProblemsCommand::ALL.map(Command::Problems));
         all
     }
 
@@ -496,6 +539,23 @@ impl Command {
                     SearchCommand::PreviousResult => "previous",
                 }
             ),
+            Command::TogglePanel => "view.togglePanel".into(),
+            Command::ToggleProblems => "view.toggleProblems".into(),
+            Command::Problems(c) => format!(
+                "problems.{}",
+                match c {
+                    ProblemsCommand::Up => "up",
+                    ProblemsCommand::Down => "down",
+                    ProblemsCommand::PageUp => "pageUp",
+                    ProblemsCommand::PageDown => "pageDown",
+                    ProblemsCommand::First => "first",
+                    ProblemsCommand::Last => "last",
+                    ProblemsCommand::Open => "open",
+                    ProblemsCommand::FocusEditor => "focusEditor",
+                    ProblemsCommand::Next => "next",
+                    ProblemsCommand::Previous => "previous",
+                }
+            ),
         }
     }
 
@@ -630,6 +690,20 @@ impl Command {
                 SearchCommand::NextResult => "Search: Go to Next Result",
                 SearchCommand::PreviousResult => "Search: Go to Previous Result",
             },
+            Command::TogglePanel => "View: Toggle Panel Visibility",
+            Command::ToggleProblems => "View: Toggle Problems",
+            Command::Problems(c) => match c {
+                ProblemsCommand::Up => "Problems: Select Previous Row",
+                ProblemsCommand::Down => "Problems: Select Next Row",
+                ProblemsCommand::PageUp => "Problems: Select Row a Page Up",
+                ProblemsCommand::PageDown => "Problems: Select Row a Page Down",
+                ProblemsCommand::First => "Problems: Select First Row",
+                ProblemsCommand::Last => "Problems: Select Last Row",
+                ProblemsCommand::Open => "Problems: Open Selected Problem",
+                ProblemsCommand::FocusEditor => "Problems: Back to Editor",
+                ProblemsCommand::Next => "Go to Next Problem in Files (Error, Warning, Info)",
+                ProblemsCommand::Previous => "Go to Previous Problem in Files (Error, Warning, Info)",
+            },
         };
         s.into()
     }
@@ -717,9 +791,12 @@ mod tests {
             Command::Search(_) => 49,
             Command::CommentLine => 50,
             Command::OpenUserSettings => 51,
+            Command::TogglePanel => 52,
+            Command::ToggleProblems => 53,
+            Command::Problems(_) => 54,
         }
     }
-    const VARIANTS: u8 = 52;
+    const VARIANTS: u8 = 55;
 
     #[test]
     fn all_lists_every_variant() {
@@ -735,6 +812,7 @@ mod tests {
         assert_eq!(count(40), ColumnMotion::ALL.len());
         assert_eq!(count(47), FindCommand::ALL.len());
         assert_eq!(count(49), SearchCommand::ALL.len());
+        assert_eq!(count(54), ProblemsCommand::ALL.len());
     }
 
     #[test]

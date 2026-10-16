@@ -72,7 +72,7 @@ impl App {
                 }
             }
             S::Up | S::Down | S::PageUp | S::PageDown => {
-                let page = self.search_view.height.max(2) as isize - 1;
+                let page = self.search_view.list.height.max(2) as isize - 1;
                 let delta = match cmd {
                     S::Up => -1,
                     S::Down => 1,

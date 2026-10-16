@@ -84,6 +84,24 @@ impl Theme {
             ("search.count", fg_bg(0xFFFFFF, 0x4D4D4D)),
             ("search.error", Style::new().fg(c(0xF48771))),
             ("search.warning", Style::new().fg(c(0xCCA700))),
+            // The bottom panel (Dark+: panel background as the editor's, a #80808059 border).
+            ("panel", fg_bg(0xCCCCCC, 0x1E1E1E)),
+            ("panel.border", Style::new().fg(c(0x4B4B4B))),
+            ("panel.dim", Style::new().fg(c(0x8C8C8C))),
+            (
+                "panelTitle.active",
+                Style::new().fg(c(0xE7E7E7)).add_modifier(Modifier::UNDERLINED),
+            ),
+            ("panelTitle.inactive", Style::new().fg(c(0x969696))),
+            ("panel.badge", fg_bg(0xFFFFFF, 0x4D4D4D)),
+            (
+                "panel.fileName",
+                Style::new().fg(c(0xE7E7E7)).add_modifier(Modifier::BOLD),
+            ),
+            ("problemsErrorIcon.foreground", Style::new().fg(c(0xF14C4C))),
+            ("problemsWarningIcon.foreground", Style::new().fg(c(0xCCA700))),
+            ("problemsInfoIcon.foreground", Style::new().fg(c(0x3794FF))),
+            ("problemsHintIcon.foreground", Style::new().fg(c(0xB0B0B0))),
             // Syntax (the capture keys in `syntax::KEYS`): VS Code Dark+'s token colours.
             ("comment", Style::new().fg(c(0x6A9955))),
             ("constant", Style::new().fg(c(0x4FC1FF))),
