@@ -6,7 +6,37 @@ use ratatui::style::{Color, Modifier, Style};
 
 pub struct Theme {
     styles: HashMap<&'static str, Style>,
+    /// Task terminals' colours (`terminal_cell`).
+    terminal: TerminalColors,
 }
+
+/// The 16 ANSI colours (`terminal.ansi*`), the default foreground and background.
+struct TerminalColors {
+    ansi: [Color; 16],
+    fg: Color,
+    bg: Color,
+    truecolor: bool,
+}
+
+/// The `terminal.ansi*` keys, in ANSI order (0–7, then the bright 8–15).
+pub const ANSI_KEYS: [&str; 16] = [
+    "terminal.ansiBlack",
+    "terminal.ansiRed",
+    "terminal.ansiGreen",
+    "terminal.ansiYellow",
+    "terminal.ansiBlue",
+    "terminal.ansiMagenta",
+    "terminal.ansiCyan",
+    "terminal.ansiWhite",
+    "terminal.ansiBrightBlack",
+    "terminal.ansiBrightRed",
+    "terminal.ansiBrightGreen",
+    "terminal.ansiBrightYellow",
+    "terminal.ansiBrightBlue",
+    "terminal.ansiBrightMagenta",
+    "terminal.ansiBrightCyan",
+    "terminal.ansiBrightWhite",
+];
 
 impl Theme {
     pub fn get(&self, key: &str) -> Style {
@@ -14,6 +44,25 @@ impl Theme {
             tracing::warn!(key, "missing theme key");
             Style::default()
         })
+    }
+
+    /// Maps a task terminal's cell as `tui-term` drew it from the `vt100` screen (`Reset` for
+    /// the defaults, `Indexed` for palette colours, `Rgb`) to the theme: the defaults to
+    /// `terminal.foreground` / `.background`, ANSI 0–15 to `terminal.ansi*` (0–7 drawn bright
+    /// when bold, VS Code's `drawBoldTextInBrightColors`), 16–255 kept, RGB to the nearest
+    /// 256-colour index without truecolor.
+    pub fn terminal_cell(&self, cell: &mut ratatui::buffer::Cell) {
+        let t = &self.terminal;
+        let bold = cell.modifier.contains(Modifier::BOLD);
+        let map = |c: Color, default: Color, fg: bool| match c {
+            Color::Reset => default,
+            Color::Indexed(i) if i < 8 && fg && bold => t.ansi[i as usize + 8],
+            Color::Indexed(i) if i < 16 => t.ansi[i as usize],
+            Color::Rgb(r, g, b) if !t.truecolor => Color::Indexed(to_ansi256(r, g, b)),
+            c => c,
+        };
+        cell.fg = map(cell.fg, t.fg, true);
+        cell.bg = map(cell.bg, t.bg, false);
     }
 
     /// The built-in dark theme, modelled on VS Code Dark+.
@@ -140,6 +189,29 @@ impl Theme {
                 "panel.fileName",
                 Style::new().fg(c(0xE7E7E7)).add_modifier(Modifier::BOLD),
             ),
+            // Task terminals (Dark+'s integrated terminal: its foreground, the panel's background,
+            // the ANSI palette), and their tabs' state marks.
+            ("terminal.foreground", Style::new().fg(c(0xCCCCCC))),
+            ("terminal.background", Style::new().bg(c(0x1E1E1E))),
+            ("terminal.ansiBlack", Style::new().fg(c(0x000000))),
+            ("terminal.ansiRed", Style::new().fg(c(0xCD3131))),
+            ("terminal.ansiGreen", Style::new().fg(c(0x0DBC79))),
+            ("terminal.ansiYellow", Style::new().fg(c(0xE5E510))),
+            ("terminal.ansiBlue", Style::new().fg(c(0x2472C8))),
+            ("terminal.ansiMagenta", Style::new().fg(c(0xBC3FBC))),
+            ("terminal.ansiCyan", Style::new().fg(c(0x11A8CD))),
+            ("terminal.ansiWhite", Style::new().fg(c(0xE5E5E5))),
+            ("terminal.ansiBrightBlack", Style::new().fg(c(0x666666))),
+            ("terminal.ansiBrightRed", Style::new().fg(c(0xF14C4C))),
+            ("terminal.ansiBrightGreen", Style::new().fg(c(0x23D18B))),
+            ("terminal.ansiBrightYellow", Style::new().fg(c(0xF5F543))),
+            ("terminal.ansiBrightBlue", Style::new().fg(c(0x3B8EEA))),
+            ("terminal.ansiBrightMagenta", Style::new().fg(c(0xD670D6))),
+            ("terminal.ansiBrightCyan", Style::new().fg(c(0x29B8DB))),
+            ("terminal.ansiBrightWhite", Style::new().fg(c(0xE5E5E5))),
+            ("task.running", Style::new().fg(c(0x3794FF))),
+            ("task.succeeded", Style::new().fg(c(0x89D185))),
+            ("task.failed", Style::new().fg(c(0xF14C4C))),
             ("problemsErrorIcon.foreground", Style::new().fg(c(0xF14C4C))),
             ("problemsWarningIcon.foreground", Style::new().fg(c(0xCCA700))),
             ("problemsInfoIcon.foreground", Style::new().fg(c(0x3794FF))),
@@ -207,7 +279,17 @@ impl Theme {
             ("variable.builtin", Style::new().fg(c(0x569CD6))),
             ("variable.parameter", Style::new().fg(c(0x9CDCFE))),
         ]);
-        Self { styles }
+        let fg = |key: &str| styles.get(key).and_then(|s| s.fg).unwrap_or(Color::Reset);
+        let terminal = TerminalColors {
+            ansi: ANSI_KEYS.map(fg),
+            fg: fg("terminal.foreground"),
+            bg: styles
+                .get("terminal.background")
+                .and_then(|s| s.bg)
+                .unwrap_or(Color::Reset),
+            truecolor,
+        };
+        Self { styles, terminal }
     }
 }
 
@@ -293,6 +375,51 @@ mod tests {
                 let style = theme.styles[s.theme_key()];
                 assert!(style.add_modifier.contains(Modifier::UNDERLINED), "{s:?}");
                 assert!(style.underline_color.is_some() && style.fg.is_none() && style.bg.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_cells_take_the_theme_colours() {
+        use ratatui::buffer::Cell;
+        for truecolor in [true, false] {
+            let theme = Theme::dark_plus(truecolor);
+            let mapped = |fg: Color, bg: Color, bold: bool| {
+                let mut cell = Cell::default();
+                cell.fg = fg;
+                cell.bg = bg;
+                if bold {
+                    cell.modifier = Modifier::BOLD;
+                }
+                theme.terminal_cell(&mut cell);
+                (cell.fg, cell.bg)
+            };
+            let key_fg = |k: &str| theme.get(k).fg.unwrap();
+            assert_eq!(
+                mapped(Color::Reset, Color::Reset, false),
+                (
+                    key_fg("terminal.foreground"),
+                    theme.get("terminal.background").bg.unwrap()
+                )
+            );
+            let (fg, bg) = mapped(Color::Indexed(1), Color::Indexed(4), false);
+            assert_eq!((fg, bg), (key_fg("terminal.ansiRed"), key_fg("terminal.ansiBlue")));
+            assert_eq!(
+                mapped(Color::Indexed(1), Color::Reset, true).0,
+                key_fg("terminal.ansiBrightRed")
+            );
+            assert_eq!(
+                mapped(Color::Indexed(9), Color::Reset, false).0,
+                key_fg("terminal.ansiBrightRed")
+            );
+            assert_eq!(mapped(Color::Indexed(208), Color::Reset, false).0, Color::Indexed(208));
+            let rgb = mapped(Color::Rgb(0, 0x7A, 0xCC), Color::Reset, false).0;
+            if truecolor {
+                assert_eq!(rgb, Color::Rgb(0, 0x7A, 0xCC));
+                assert_eq!(key_fg("terminal.ansiRed"), Color::Rgb(0xCD, 0x31, 0x31));
+            } else {
+                assert_eq!(rgb, Color::Indexed(32));
+                assert!(matches!(key_fg("terminal.ansiRed"), Color::Indexed(_)));
             }
         }
     }

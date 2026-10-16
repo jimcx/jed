@@ -106,6 +106,15 @@ impl App {
                 }
                 None => Vec::new(),
             },
+            Mode::Tasks => {
+                let rows = palette::task_rows(&query, &self.task_templates());
+                hint = if rows.is_empty() {
+                    Some("No matching tasks".into())
+                } else {
+                    self.restricted_tasks_note()
+                };
+                rows
+            }
             Mode::Files => {
                 let files = self.file_matcher();
                 files.set_query(palette::file_query(&query));
@@ -254,6 +263,10 @@ impl App {
                 if let Some(picker) = picker {
                     self.history_picked(picker, snapshot);
                 }
+            }
+            (_, Some(Action::RunTask(name))) => {
+                self.close_palette();
+                self.run_task(&name);
             }
             (_, Some(Action::Open(rel))) => {
                 let goto = paths::strip_position(&query).map(|(_, (l, c))| super::files::Goto::Cursor(l, c));

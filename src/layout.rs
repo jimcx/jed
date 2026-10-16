@@ -35,22 +35,38 @@ impl SidePanel {
     }
 }
 
-/// The bottom panel's tabs (M12 adds task runs).
+/// The bottom panel's tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelTab {
     Problems,
     /// Places go to definition found (9g: references); its tab shows while there's a list.
     Locations,
+    /// A task run's terminal (one tab per run, until closed).
+    Task(crate::tasks::RunId),
 }
 
 impl PanelTab {
+    /// The tabs always there (Locations only while there's a list), before the task tabs.
     pub const ALL: [PanelTab; 2] = [PanelTab::Problems, PanelTab::Locations];
 
+    /// A fixed tab's title; a task tab shows its run's name and state instead.
     pub fn title(self) -> &'static str {
         match self {
             PanelTab::Problems => "PROBLEMS",
             PanelTab::Locations => "LOCATIONS",
+            PanelTab::Task(_) => "TASK",
         }
+    }
+}
+
+/// A task tab's terminal in the panel `panel` (border row included): below the border and the
+/// tab strip, one column of padding on the left. The PTY gets its size.
+pub fn task_area(panel: Rect) -> Rect {
+    Rect {
+        x: panel.x + 1,
+        y: panel.y + 2,
+        width: panel.width.saturating_sub(1),
+        height: panel.height.saturating_sub(2),
     }
 }
 
@@ -350,6 +366,8 @@ pub struct HitMap {
     pub scm: Option<ScmHit>,
     /// The bottom panel's tab labels.
     pub panel_tabs: Vec<(Rect, PanelTab)>,
+    /// The task tabs' close buttons (`×`).
+    pub panel_closes: Vec<(Rect, crate::tasks::RunId)>,
     /// The bottom panel's list (Problems or Locations, whichever tab is shown), when shown.
     pub panel_list: Option<ListHit>,
     /// The status bar's problem counts (a click toggles the Problems panel).
@@ -480,6 +498,8 @@ pub enum Hit {
     /// The bottom panel's top border (dragging it resizes the panel).
     PanelBorder,
     PanelTab(PanelTab),
+    /// A task tab's close button.
+    PanelTabClose(crate::tasks::RunId),
     /// Anywhere else in the bottom panel (its list: `HitMap::problems`).
     Panel,
     Status,
@@ -530,6 +550,9 @@ impl HitMap {
         {
             if y == panel.y {
                 return Hit::PanelBorder;
+            }
+            if let Some((_, id)) = self.panel_closes.iter().find(|(rect, _)| rect.contains(p)) {
+                return Hit::PanelTabClose(*id);
             }
             return match self.panel_tabs.iter().find(|(rect, _)| rect.contains(p)) {
                 Some((_, tab)) => Hit::PanelTab(*tab),
@@ -708,7 +731,11 @@ mod tests {
             find: None,
             search: None,
             scm: None,
-            panel_tabs: vec![(Rect::new(30, 24, 10, 1), PanelTab::Problems)],
+            panel_tabs: vec![
+                (Rect::new(30, 24, 10, 1), PanelTab::Problems),
+                (Rect::new(42, 24, 7, 1), PanelTab::Task(crate::tasks::RunId(3))),
+            ],
+            panel_closes: vec![(Rect::new(50, 24, 1, 1), crate::tasks::RunId(3))],
             panel_list: None,
             status_problems: Some(Rect::new(10, 29, 8, 1)),
             hover: Some(Rect::new(40, 5, 10, 4)),
@@ -737,6 +764,8 @@ mod tests {
         assert_eq!(map.hit(64, 10), Hit::Divider(0));
         assert_eq!(map.hit(50, 23), Hit::PanelBorder);
         assert_eq!(map.hit(31, 24), Hit::PanelTab(PanelTab::Problems));
+        assert_eq!(map.hit(44, 24), Hit::PanelTab(PanelTab::Task(crate::tasks::RunId(3))));
+        assert_eq!(map.hit(50, 24), Hit::PanelTabClose(crate::tasks::RunId(3)));
         assert_eq!(map.hit(50, 26), Hit::Panel);
         assert_eq!(map.hit(12, 29), Hit::StatusProblems);
         assert_eq!(map.hit(5, 25), Hit::ExplorerRow(23), "the side panel beside it");

@@ -81,9 +81,11 @@ impl App {
                     Hit::SidePanel if self.ui.side_panel == SidePanel::Search => self.search_scroll(delta),
                     Hit::SidePanel if self.ui.side_panel == SidePanel::SourceControl => self.scm_scroll(delta),
                     Hit::ExplorerRow(_) | Hit::SidePanel => self.explorer.scroll_by(delta),
-                    Hit::Panel | Hit::PanelTab(_) | Hit::PanelBorder => match self.ui.panel_tab {
+                    Hit::Panel | Hit::PanelTab(_) | Hit::PanelTabClose(_) | Hit::PanelBorder => match self.ui.panel_tab
+                    {
                         PanelTab::Problems => self.problems_scroll(delta),
                         PanelTab::Locations => self.locations_scroll(delta),
+                        PanelTab::Task(_) => self.task_scroll(delta),
                     },
                     // Scrolls the group under the mouse, without focusing it.
                     Hit::Editor(g) => {
@@ -101,11 +103,11 @@ impl App {
                 let count = self.clicks.click(Instant::now(), m.column, m.row);
                 self.left_click(hit, m, count);
             }
-            MouseEventKind::Down(MouseButton::Middle) => {
-                if let Hit::Tab(g, i) | Hit::TabClose(g, i) = hit {
-                    self.close_tab(g, i);
-                }
-            }
+            MouseEventKind::Down(MouseButton::Middle) => match hit {
+                Hit::Tab(g, i) | Hit::TabClose(g, i) => self.close_tab(g, i),
+                Hit::PanelTab(PanelTab::Task(id)) | Hit::PanelTabClose(id) => self.close_task(id),
+                _ => {}
+            },
             MouseEventKind::Down(MouseButton::Right) => self.right_click(hit),
             MouseEventKind::Drag(MouseButton::Left) => match self.drag.clone() {
                 Some(Drag::SideBorder) => {
@@ -205,9 +207,11 @@ impl App {
             }
             Hit::PanelBorder => self.drag = Some(Drag::PanelBorder),
             Hit::PanelTab(tab) => self.focus_panel(tab),
+            Hit::PanelTabClose(id) => self.close_task(id),
             Hit::Panel => match self.ui.panel_tab {
                 PanelTab::Problems => self.problems_click(m, count),
                 PanelTab::Locations => self.locations_click(m, count),
+                PanelTab::Task(_) => self.task_click(m),
             },
             Hit::StatusProblems => self.problem_counts_clicked(),
             Hit::Status | Hit::Hover | Hit::Completion | Hit::QuickDiff | Hit::Nothing => {}

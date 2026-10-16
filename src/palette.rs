@@ -11,6 +11,7 @@ use nucleo::{Config, Matcher, Nucleo, Utf32Str, Utf32String};
 use crate::command::Command;
 use crate::field::TextField;
 use crate::history::{self, Entry, Snapshot};
+use crate::tasks::{Source, Template};
 
 /// Quick open shows at most this many files (the best matches).
 pub const MAX_FILE_ROWS: u32 = 200;
@@ -25,6 +26,8 @@ pub enum Picker {
     /// "File History: Show" / "Restore": an entry of the active file's history (the entries are
     /// the app's: `app.file_history.picker`). Accepting compares, or with `restore` restores.
     History { restore: bool },
+    /// "Run Task": a task template (`App::task_templates`); accepting runs it.
+    Tasks,
 }
 
 /// What the rows are, from the picker and the input.
@@ -35,6 +38,7 @@ pub enum Mode {
     GoToLine,
     LogLevel,
     History,
+    Tasks,
 }
 
 pub const COMMANDS_PREFIX: char = '>';
@@ -49,6 +53,8 @@ pub enum Action {
     SetLogLevel(&'static str),
     /// A file history entry.
     History(Snapshot),
+    /// A task template, by name.
+    RunTask(String),
 }
 
 /// One line in the list. Hits are char indices to highlight.
@@ -102,6 +108,7 @@ impl Palette {
         match self.picker {
             Picker::LogLevel => Mode::LogLevel,
             Picker::History { .. } => Mode::History,
+            Picker::Tasks => Mode::Tasks,
             Picker::QuickOpen => match self.field.text.chars().next() {
                 Some(COMMANDS_PREFIX) => Mode::Commands,
                 Some(LINE_PREFIX) => Mode::GoToLine,
@@ -114,7 +121,7 @@ impl Palette {
     pub fn query(&self) -> &str {
         match self.mode() {
             Mode::Commands | Mode::GoToLine => &self.field.text[1..],
-            Mode::Files | Mode::LogLevel | Mode::History => &self.field.text,
+            Mode::Files | Mode::LogLevel | Mode::History | Mode::Tasks => &self.field.text,
         }
     }
 
@@ -249,6 +256,46 @@ pub fn history_rows(query: &str, entries: &[Entry], now: u64) -> Vec<Row> {
             })
         })
         .collect()
+}
+
+/// Rows for "Run Task": each template matching `query` by name (else by command), best first
+/// (all, by name, for an empty query): the name, the command dimmed, where it's defined at the
+/// right (`.workspace` / `tasks.toml`).
+pub fn task_rows(query: &str, templates: &[Template]) -> Vec<Row> {
+    let pattern = pattern(query);
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let mut buf = Vec::new();
+    let mut scored: Vec<(u32, Row)> = templates
+        .iter()
+        .filter_map(|t| {
+            let (mut label_hits, mut detail_hits) = (Vec::new(), Vec::new());
+            let detail = t.task.command.replace(['\n', '\r', '\t'], " ");
+            let score = match pattern.indices(Utf32Str::new(&t.name, &mut buf), &mut matcher, &mut label_hits) {
+                Some(s) => s,
+                None => {
+                    label_hits.clear();
+                    pattern.indices(Utf32Str::new(&detail, &mut buf), &mut matcher, &mut detail_hits)?
+                }
+            };
+            let source = match t.source {
+                Source::Workspace => crate::workspace::FILE_NAME,
+                Source::User => crate::tasks::templates::FILE_NAME,
+            };
+            Some((
+                score,
+                Row {
+                    label: t.name.clone(),
+                    label_hits: sorted(label_hits),
+                    detail,
+                    detail_hits: sorted(detail_hits),
+                    keys: Some(source.to_string()),
+                    action: Action::RunTask(t.name.clone()),
+                },
+            ))
+        })
+        .collect();
+    scored.sort_by(|(sa, a), (sb, b)| sb.cmp(sa).then_with(|| a.label.cmp(&b.label)));
+    scored.into_iter().map(|(_, r)| r).collect()
 }
 
 /// A go to line query: `12`, `12:5` or `12,5` (1-based). `None` if it isn't one.
@@ -408,6 +455,47 @@ mod tests {
         p.field = TextField::new("main.rs".into());
         assert_eq!((p.mode(), p.query()), (Mode::Files, "main.rs"));
         assert_eq!(Palette::new(Picker::LogLevel, ">x").mode(), Mode::LogLevel);
+    }
+
+    #[test]
+    fn task_rows_show_name_command_and_source() {
+        let t = |name: &str, command: &str, source| Template {
+            name: name.into(),
+            task: crate::tasks::Task {
+                command: command.into(),
+                cwd: None,
+                env: Default::default(),
+            },
+            source,
+        };
+        let templates = [
+            t("build", "cargo build", Source::Workspace),
+            t("test", "cargo test\n--all", Source::User),
+        ];
+        let rows = task_rows("", &templates);
+        let shown: Vec<_> = rows
+            .iter()
+            .map(|r| (r.label.as_str(), r.detail.as_str(), r.keys.as_deref()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("build", "cargo build", Some(".workspace")),
+                ("test", "cargo test --all", Some("tasks.toml"))
+            ]
+        );
+        assert_eq!(rows[0].action, Action::RunTask("build".into()));
+        let rows = task_rows("tst", &templates);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (rows[0].label.as_str(), rows[0].label_hits.as_slice()),
+            ("test", &[0, 2, 3][..])
+        );
+        // By command when the name doesn't match.
+        let rows = task_rows("--all", &templates);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].label_hits.is_empty() && !rows[0].detail_hits.is_empty());
+        assert_eq!(Palette::new(Picker::Tasks, ">x").mode(), Mode::Tasks);
     }
 
     #[test]

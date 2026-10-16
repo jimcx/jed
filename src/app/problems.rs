@@ -73,11 +73,12 @@ impl App {
                     l.list.select(&l.files, 0);
                 }
             }
+            PanelTab::Task(_) => {}
         }
     }
 
     /// Back to the editor when there's a tab, else the side panel when it's shown.
-    fn focus_editor_or_side(&mut self) {
+    pub(super) fn focus_editor_or_side(&mut self) {
         self.ui.focus = if self.group().tabs.is_empty() && self.ui.side_visible {
             Focus::SidePanel
         } else {

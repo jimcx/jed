@@ -1,10 +1,11 @@
 //! The bottom panel under the editor groups: a top border (dragged to resize), a tab strip
 //! ("PROBLEMS" with its count, as VS Code; "LOCATIONS" with its count and title while there's a
-//! Locations list; M12 adds task tabs) and the shown tab's content — the Problems list: a row
-//! per file (name, dimmed folder, count) followed by its problems (severity icon, the message's
-//! first line, `source(code)` and `[Ln x, Col y]` dimmed); or the Locations list: the same file
-//! rows, each place's line as a preview with the place highlighted (`search.match`; "Ln x, Col y"
-//! dimmed until the file is read). Only the rows on screen are looked at.
+//! Locations list; a tab per task run: its name, state and a close button) and the shown tab's
+//! content — the Problems list: a row per file (name, dimmed folder, count) followed by its
+//! problems (severity icon, the message's first line, `source(code)` and `[Ln x, Col y]`
+//! dimmed); the Locations list: the same file rows, each place's line as a preview with the
+//! place highlighted (`search.match`; "Ln x, Col y" dimmed until the file is read); or a task's
+//! terminal (`ui::task`). Only the rows on screen are looked at.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -16,13 +17,36 @@ use crate::grouped;
 use crate::layout::{ListHit, PanelTab};
 use crate::locations::Locations;
 use crate::problems::{self, Problem};
+use crate::tasks::{RunId, Status};
 
 /// Cells a problem row is indented by.
 const INDENT: u16 = 3;
 
-/// Draws the panel in `area` (its top row is the border); returns its tab labels and the shown
-/// list's hits.
-pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Vec<(Rect, PanelTab)>, Option<ListHit>) {
+/// What the panel drew for the hit map.
+#[derive(Default)]
+pub struct PanelHits {
+    pub tabs: Vec<(Rect, PanelTab)>,
+    /// Task tabs' close buttons.
+    pub closes: Vec<(Rect, RunId)>,
+    /// The shown list (Problems or Locations).
+    pub list: Option<ListHit>,
+}
+
+/// A task tab's state mark and its theme key: `●` running, `✓` exit 0, `✗ 2` a failing exit
+/// code, `✗ killed`, `✗` another signal or a failed start.
+pub fn task_mark(status: &Status) -> (String, &'static str) {
+    match status {
+        Status::Starting | Status::Running => ("●".into(), "task.running"),
+        Status::Exited(e) if e.success() => ("✓".into(), "task.succeeded"),
+        Status::Exited(e) if e.killed => ("✗ killed".into(), "task.failed"),
+        Status::Exited(e) if e.signal.is_none() => (format!("✗ {}", e.code), "task.failed"),
+        Status::Exited(_) | Status::Failed(_) => ("✗".into(), "task.failed"),
+    }
+}
+
+/// Draws the panel in `area` (its top row is the border); returns its tab labels, the task
+/// tabs' close buttons and the shown list's hits.
+pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> PanelHits {
     let theme = &app.theme;
     let base = theme.get("panel");
     let dim = base.patch(theme.get("panel.dim"));
@@ -32,18 +56,26 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Vec<(Rect, PanelTab)
     for x in area.x..area.x + area.width {
         out.set_stringn(x, area.y, "─", 1, border);
     }
+    let mut hits = PanelHits::default();
     if area.height < 2 {
-        return (Vec::new(), None);
+        return hits;
     }
 
     let files = problems::files(&app.lsp.diagnostics, &app.buffers);
     let total = problems::total(&files);
 
-    // The tab strip: " PROBLEMS  12 ".
+    // The tab strip: " PROBLEMS  12 ", then the task tabs: "build ● ×".
     let tabs_y = area.y + 1;
-    let mut tabs = Vec::new();
     let mut x = area.x + 1;
     let end = area.x + area.width;
+    let title_style = |tab: PanelTab| {
+        let key = if tab == app.ui.panel_tab {
+            "panelTitle.active"
+        } else {
+            "panelTitle.inactive"
+        };
+        base.patch(theme.get(key))
+    };
     for tab in PanelTab::ALL {
         let badge_count = match tab {
             PanelTab::Problems => total,
@@ -51,21 +83,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Vec<(Rect, PanelTab)
                 Some(l) => l.total(),
                 None => continue,
             },
-        };
-        let key = if tab == app.ui.panel_tab {
-            "panelTitle.active"
-        } else {
-            "panelTitle.inactive"
+            PanelTab::Task(_) => continue,
         };
         let start = x;
         x = out
-            .set_stringn(
-                x,
-                tabs_y,
-                tab.title(),
-                end.saturating_sub(x) as usize,
-                base.patch(theme.get(key)),
-            )
+            .set_stringn(x, tabs_y, tab.title(), end.saturating_sub(x) as usize, title_style(tab))
             .0;
         if badge_count > 0 && x + 1 < end {
             let badge = format!(" {badge_count} ");
@@ -79,7 +101,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Vec<(Rect, PanelTab)
                 )
                 .0;
         }
-        tabs.push((
+        hits.tabs.push((
             Rect {
                 x: start,
                 y: tabs_y,
@@ -88,6 +110,43 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Vec<(Rect, PanelTab)
             },
             tab,
         ));
+        x += 2;
+    }
+    for run in app.tasks.runs() {
+        if x >= end {
+            break;
+        }
+        let tab = PanelTab::Task(run.id);
+        let start = x;
+        x = out
+            .set_stringn(x, tabs_y, &run.name, end.saturating_sub(x) as usize, title_style(tab))
+            .0;
+        let (mark, key) = task_mark(&run.status());
+        if x + 1 < end {
+            x = out
+                .set_stringn(
+                    x + 1,
+                    tabs_y,
+                    &mark,
+                    end.saturating_sub(x + 1) as usize,
+                    base.patch(theme.get(key)),
+                )
+                .0;
+        }
+        hits.tabs.push((
+            Rect {
+                x: start,
+                y: tabs_y,
+                width: x - start,
+                height: 1,
+            },
+            tab,
+        ));
+        if x + 1 < end {
+            out.set_stringn(x + 1, tabs_y, "×", 1, dim);
+            hits.closes.push((Rect::new(x + 1, tabs_y, 1, 1), run.id));
+            x += 2;
+        }
         x += 2;
     }
     if app.ui.panel_tab == PanelTab::Locations
@@ -104,11 +163,20 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Vec<(Rect, PanelTab)
         height: area.height.saturating_sub(2),
     };
     if list.height == 0 {
-        return (tabs, None);
+        return hits;
     }
-    if app.ui.panel_tab == PanelTab::Locations {
-        drop(files);
-        return (tabs, Some(locations(out, list, app)));
+    match app.ui.panel_tab {
+        PanelTab::Task(id) => {
+            drop(files);
+            super::task::render(f, area, Rect::new(x, tabs_y, end.saturating_sub(x), 1), app, id);
+            return hits;
+        }
+        PanelTab::Locations => {
+            drop(files);
+            hits.list = Some(locations(out, list, app));
+            return hits;
+        }
+        PanelTab::Problems => {}
     }
     if files.is_empty() {
         out.set_stringn(
@@ -118,7 +186,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Vec<(Rect, PanelTab)
             list.width.saturating_sub(3) as usize,
             dim,
         );
-        return (tabs, Some(ListHit { list, rows: Vec::new() }));
+        hits.list = Some(ListHit { list, rows: Vec::new() });
+        return hits;
     }
 
     let view = &mut app.problems.list;
@@ -196,7 +265,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Vec<(Rect, PanelTab)
         .iter()
         .map(|&(i, offset)| (files[i].path.to_path_buf(), offset))
         .collect();
-    (tabs, Some(ListHit { list, rows }))
+    hits.list = Some(ListHit { list, rows });
+    hits
 }
 
 /// The Locations list in `list`: file rows as the Problems list's, then each place's line.

@@ -4,12 +4,11 @@
 //!   name; untrusted workspaces contribute none), resolved to a `Spec` (`$SHELL -c command`, cwd,
 //!   env)
 //! - `run`: one `Run` in a PTY, its output in a `vt100` screen with scrollback; `Event`s through a
-//!   `Sink` (the app's channel)
+//!   `Sink` (the app's channel); input via `Run::write`
+//! - `keys`: keys and pastes encoded as a terminal sends them
 //! - `Tasks` (`app.tasks`): the user's templates, the runs (kept until closed), their sink
 
-// Until 12b's picker and panel tabs use the rest of the API.
-#![cfg_attr(not(test), allow(dead_code, unused_imports))]
-
+pub mod keys;
 pub mod run;
 pub mod templates;
 
@@ -54,6 +53,20 @@ impl Default for Tasks {
     }
 }
 
+/// The line written below a run's output once it ends ("Task 'build' exited with code 2");
+/// `None` while it runs.
+pub fn end_note(name: &str, status: &Status) -> Option<String> {
+    Some(match status {
+        Status::Starting | Status::Running => return None,
+        Status::Failed(e) => format!("Task '{name}' failed to start: {e}"),
+        Status::Exited(Exit { killed: true, .. }) => format!("Task '{name}' was killed"),
+        Status::Exited(Exit {
+            signal: Some(signal), ..
+        }) => format!("Task '{name}' ended by signal: {signal}"),
+        Status::Exited(e) => format!("Task '{name}' exited with code {}", e.code),
+    })
+}
+
 impl Tasks {
     pub fn start(&mut self, sink: Sink) {
         self.sink = Some(sink);
@@ -83,6 +96,11 @@ impl Tasks {
 
     pub fn get(&self, id: RunId) -> Option<&Run> {
         self.runs.iter().find(|r| r.id == id)
+    }
+
+    /// The newest run still starting or running.
+    pub fn newest_running(&self) -> Option<&Run> {
+        self.runs.iter().rev().find(|r| r.status().is_running())
     }
 
     /// Drops the run (killing it if it still runs). False if there's none.
@@ -196,6 +214,121 @@ mod tests {
         })
         .await;
         assert_eq!(events.lock().unwrap().first(), Some(&Event::Started(id)));
+    }
+
+    #[test]
+    fn end_notes() {
+        let exit = |code, signal: Option<&str>, killed| {
+            Status::Exited(Exit {
+                code,
+                signal: signal.map(str::to_string),
+                killed,
+            })
+        };
+        assert_eq!(end_note("b", &Status::Running), None);
+        assert_eq!(
+            end_note("b", &exit(2, None, false)).unwrap(),
+            "Task 'b' exited with code 2"
+        );
+        assert_eq!(
+            end_note("b", &exit(1, Some("Hangup"), true)).unwrap(),
+            "Task 'b' was killed"
+        );
+        assert_eq!(
+            end_note("b", &exit(1, Some("Segmentation fault"), false)).unwrap(),
+            "Task 'b' ended by signal: Segmentation fault"
+        );
+        assert_eq!(
+            end_note("b", &Status::Failed("x: no such folder".into())).unwrap(),
+            "Task 'b' failed to start: x: no such folder"
+        );
+    }
+
+    /// A paste far bigger than the PTY's input buffer, to a process that never reads it: `write`
+    /// returns at once (the writer thread blocks, not the caller), and the run still dies.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn writing_to_a_process_that_doesnt_read_never_blocks() {
+        let (mut t, _) = tasks();
+        let dir = tempfile::tempdir().unwrap();
+        let id = t.run(&template("echo ready; sleep 30"), dir.path());
+        let run = t.get(id).unwrap();
+        wait_until("ready", || run.screen().screen().contents().contains("ready")).await;
+        let big = vec![b'x'; 4 << 20];
+        let started = Instant::now();
+        for _ in 0..4 {
+            assert!(run.write(&big));
+        }
+        assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
+        let pid = run.pid().unwrap();
+        run.kill();
+        wait_until("exit", || !run.status().is_running()).await;
+        assert!(exit(run).killed);
+        assert!(!run.write(b"x"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while group_alive(pid) {
+            assert!(Instant::now() < deadline, "the group outlived the kill");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn input_reaches_the_process() {
+        let (mut t, _) = tasks();
+        let dir = tempfile::tempdir().unwrap();
+        let id = t.run(&template("printf 'name? '; read n; echo \"hi $n\""), dir.path());
+        let run = t.get(id).unwrap();
+        wait_until("prompt", || run.screen().screen().contents().contains("name?")).await;
+        let key = |c| keys::encode(&crossterm::event::KeyEvent::from(c), false).unwrap();
+        for c in "bob".chars() {
+            assert!(run.write(&key(crossterm::event::KeyCode::Char(c))));
+        }
+        assert!(run.write(&key(crossterm::event::KeyCode::Enter)));
+        wait_until("exit", || !run.status().is_running()).await;
+        assert_eq!(run.screen().screen().contents(), "name? bob\nhi bob");
+        assert!(!run.write(b"x"), "nothing to write to once ended");
+        run.append_line(&end_note(&run.name, &run.status()).unwrap());
+        assert_eq!(
+            run.screen().screen().contents(),
+            "name? bob\nhi bob\nTask 't' exited with code 0"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ctrl_c_interrupts_the_foreground_process() {
+        let (mut t, _) = tasks();
+        let dir = tempfile::tempdir().unwrap();
+        let id = t.run(&template("echo ready; sleep 30"), dir.path());
+        let run = t.get(id).unwrap();
+        wait_until("ready", || run.screen().screen().contents().contains("ready")).await;
+        let ctrl_c = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        assert!(run.write(&keys::encode(&ctrl_c, false).unwrap()));
+        wait_until("exit", || !run.status().is_running()).await;
+        let e = exit(run);
+        assert!(!e.success() && !e.killed, "{e:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scrolling_through_the_scrollback() {
+        let (mut t, _) = tasks();
+        t.size = (5, 40);
+        let dir = tempfile::tempdir().unwrap();
+        let id = t.run(&template("seq 1 50"), dir.path());
+        let run = t.get(id).unwrap();
+        wait_until("exit", || !run.status().is_running()).await;
+        run.scroll(-3);
+        assert_eq!(run.screen().screen().scrollback(), 3);
+        assert!(run.screen().screen().contents().starts_with("44\n"));
+        run.scroll(1);
+        assert_eq!(run.screen().screen().scrollback(), 2);
+        run.scroll(10);
+        assert_eq!(run.screen().screen().scrollback(), 0);
+        run.scroll_to(true);
+        assert_eq!(run.screen().screen().scrollback(), 46);
+        run.scroll_to(false);
+        assert_eq!(run.screen().screen().scrollback(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -1,6 +1,6 @@
 //! Key combos to commands. Keymaps are data; commands never look at keys.
 //! A binding applies in one context (editor, explorer, palette, find, replace, search,
-//! searchResults, problems, locations, suggest) or everywhere.
+//! searchResults, problems, locations, suggest, diff, scm, task) or everywhere.
 //! The defaults are VS Code's; `keybindings.toml` replaces bindings command by command.
 
 use std::collections::{HashMap, HashSet};
@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use crate::command::{
     ColumnMotion, Command, ExplorerCommand as X, FindCommand as F, LocationsCommand as L, Motion, PaletteCommand as P,
-    ProblemsCommand as Pr, ScmCommand as Sc, SearchCommand as S, SuggestCommand as Sg,
+    ProblemsCommand as Pr, ScmCommand as Sc, SearchCommand as S, SuggestCommand as Sg, TaskCommand as T,
 };
 
 pub const FILE_NAME: &str = "keybindings.toml";
@@ -188,10 +188,13 @@ pub enum Context {
     Diff,
     /// The Source Control view's list has the focus.
     Scm,
+    /// A task tab in the bottom panel has the focus: keys bound to nothing (here or globally)
+    /// go to the task's terminal.
+    Task,
 }
 
 impl Context {
-    const ALL: [(Context, &'static str); 12] = [
+    const ALL: [(Context, &'static str); 13] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
@@ -204,6 +207,7 @@ impl Context {
         (Context::Suggest, "suggest"),
         (Context::Diff, "diff"),
         (Context::Scm, "scm"),
+        (Context::Task, "task"),
     ];
 
     fn parse(name: &str) -> Option<Context> {
@@ -686,6 +690,19 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Esc, none, Sc::FocusEditor),
     ];
 
+    // A task tab: scrolling through its output (VS Code's terminal keys, Ctrl rather than Cmd on
+    // macOS), back to the editor, close. Every other key not bound globally goes to the task.
+    let task = [
+        (KeyCode::PageUp, shift, Command::Task(T::PageUp)),
+        (KeyCode::PageDown, shift, Command::Task(T::PageDown)),
+        (KeyCode::Up, ctrl | shift, Command::Task(T::ScrollUp)),
+        (KeyCode::Down, ctrl | shift, Command::Task(T::ScrollDown)),
+        (KeyCode::Home, ctrl, Command::Task(T::Top)),
+        (KeyCode::End, ctrl, Command::Task(T::Bottom)),
+        (KeyCode::Esc, none, Command::Task(T::FocusEditor)),
+        (KeyCode::Char('w'), cmd, Command::CloseTask),
+    ];
+
     let bind = |code, mods, context, command| Binding {
         combo: KeyCombo { code, mods },
         context,
@@ -740,6 +757,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         scm.into_iter()
             .map(|(k, m, c)| bind(k, m, Some(Context::Scm), Command::Scm(c))),
     );
+    out.extend(task.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Task), c)));
     out
 }
 
@@ -781,6 +799,39 @@ mod tests {
             assert_eq!(km.lookup(&x, Context::Scm), None, "plain keys don't type");
         }
         assert_eq!(Context::parse("scm"), Some(Context::Scm));
+    }
+
+    #[test]
+    fn task_tabs_keep_global_keys_and_leave_the_rest_to_the_task() {
+        for p in [Platform::MacOs, Platform::Linux] {
+            let km = Keymap::default_for(p);
+            let cmd = if p == Platform::MacOs {
+                KeyModifiers::SUPER
+            } else {
+                KeyModifiers::CONTROL
+            };
+            let t = Context::Task;
+            assert_eq!(km.lookup(&key(KeyCode::Char('w'), cmd), t), Some(Command::CloseTask));
+            assert_eq!(
+                km.lookup(&key(KeyCode::Char('p'), cmd | KeyModifiers::SHIFT), t),
+                Some(Command::ShowCommands)
+            );
+            assert_eq!(
+                km.lookup(&key(KeyCode::PageUp, KeyModifiers::SHIFT), t),
+                Some(Command::Task(T::PageUp))
+            );
+            for unbound in [
+                key(KeyCode::Char('y'), KeyModifiers::NONE),
+                key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                key(KeyCode::Char('d'), KeyModifiers::CONTROL),
+                key(KeyCode::Enter, KeyModifiers::NONE),
+                key(KeyCode::Up, KeyModifiers::NONE),
+                key(KeyCode::Tab, KeyModifiers::NONE),
+            ] {
+                assert_eq!(km.lookup(&unbound, t), None, "{p:?} {unbound:?}");
+            }
+        }
+        assert_eq!(Context::parse("task"), Some(Context::Task));
     }
 
     #[test]

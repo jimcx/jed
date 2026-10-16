@@ -98,7 +98,7 @@ pub enum Focus {
     SidePanel,
     /// The find widget's input (`app.find.field` says which one).
     Find,
-    /// The bottom panel (its tab, `ui.panel_tab`: the Problems list).
+    /// The bottom panel (its tab, `ui.panel_tab`: the Problems list, the Locations list, a task).
     Panel,
 }
 
@@ -630,6 +630,7 @@ impl App {
             Focus::Panel => match self.ui.panel_tab {
                 PanelTab::Problems => Context::Problems,
                 PanelTab::Locations => Context::Locations,
+                PanelTab::Task(_) => Context::Task,
             },
         }
     }
@@ -675,6 +676,8 @@ impl App {
                     self.find_key(key);
                 } else if self.search_focused() {
                     self.search_key(key);
+                } else if self.task_focused().is_some() {
+                    self.task_key(key);
                 } else if let KeyCode::Char(c) = key.code
                     && (key.modifiers - KeyModifiers::SHIFT).is_empty()
                     && self.ui.focus == Focus::Editor
@@ -699,6 +702,8 @@ impl App {
                     self.find_paste(&text);
                 } else if self.prompt.is_none() && self.search_focused() {
                     self.search_paste(&text);
+                } else if self.prompt.is_none() && self.task_focused().is_some() {
+                    self.task_paste(&text);
                 } else if self.prompt.is_none() && self.ui.focus == Focus::Editor {
                     self.paste(&text);
                 }
@@ -853,6 +858,10 @@ impl App {
             Command::Scm(c) => self.scm_command(c),
             Command::ShowFileHistory => self.show_file_history(false),
             Command::RestoreFileHistory => self.show_file_history(true),
+            Command::RunTask => self.show_run_task(),
+            Command::KillTask => self.kill_task(),
+            Command::CloseTask => self.close_shown_task(),
+            Command::Task(c) => self.task_command(c),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
             // A diff tab: its own movement keys; other editor commands do nothing.

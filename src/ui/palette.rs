@@ -54,6 +54,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<PaletteHit> {
         Mode::Files if p.field.text.is_empty() => Some("Search files by name (> for commands, : for a line)"),
         Mode::LogLevel if p.field.text.is_empty() => Some("Log level or filter"),
         Mode::History if p.field.text.is_empty() => Some("Pick an entry (type to filter by time or size)"),
+        Mode::Tasks if p.field.text.is_empty() => Some("Select the task to run"),
         _ => None,
     };
     match placeholder {

@@ -1793,6 +1793,7 @@ dependencies = [
  "tree-sitter-toml-ng",
  "tree-sitter-xml",
  "tree-sitter-yaml",
+ "tui-term",
  "unicode-segmentation",
  "unicode-width",
  "vt100",
@@ -2655,6 +2656,17 @@ checksum = "53c223db85f05e34794f065454843b0668ebc15d240ada63e2b5939f43ce7c97"
 dependencies = [
  "cc",
  "tree-sitter-language",
+]
+
+[[package]]
+name = "tui-term"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a338ded85dbe7f9ea2298321d126244f54e531e2b2006b97abdab8e47d6f3c88"
+dependencies = [
+ "ratatui-core",
+ "ratatui-widgets",
+ "vt100",
 ]
 
 [[package]]

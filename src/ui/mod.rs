@@ -17,6 +17,7 @@ mod search;
 mod side;
 mod status;
 mod tabs;
+mod task;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -137,7 +138,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     hits.dividers = dividers;
     if let Some(panel) = regions.panel {
-        (hits.panel_tabs, hits.panel_list) = panel::render(f, panel, app);
+        let panel = panel::render(f, panel, app);
+        (hits.panel_tabs, hits.panel_closes, hits.panel_list) = (panel.tabs, panel.closes, panel.list);
     }
 
     hits.status_problems = status::render(f, regions.status, app);

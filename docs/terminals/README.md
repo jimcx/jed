@@ -65,7 +65,7 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+alt+shift+n` | New folder | explorer |
 | `cmd+s` | Save | everywhere |
 | `cmd+q` | Quit | everywhere |
-| `cmd+w` | Close tab | everywhere |
+| `cmd+w` | Close tab (a task tab in the panel: closes it, killing its task) | everywhere, task |
 | `cmd+b` | Toggle sidebar | everywhere |
 | `cmd+shift+e` | Focus explorer | everywhere |
 | `cmd+shift+f` | Search in workspace (Search view, seeded with the selection) | everywhere |

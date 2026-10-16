@@ -197,6 +197,41 @@ pub enum Command {
     /// On a history diff tab: its entry replaces the buffer's text (one undo step, not saved).
     /// Elsewhere: the history picker, whose pick is restored.
     RestoreFileHistory,
+    /// "Run Task": a picker of the task templates; picking one runs it in a new panel tab.
+    RunTask,
+    /// Kills the shown task tab's run (else the newest running one).
+    KillTask,
+    /// Closes the shown task tab, killing its run if it still runs.
+    CloseTask,
+    /// A task tab's keys (`Context::Task`): scrolling, back to the editor.
+    Task(TaskCommand),
+}
+
+/// A task tab in the bottom panel (`Context::Task`, while it has the keys); keys bound to
+/// nothing go to the task's terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TaskCommand {
+    /// Through the scrollback: a line, a page, the oldest output, the live screen.
+    ScrollUp,
+    ScrollDown,
+    PageUp,
+    PageDown,
+    Top,
+    Bottom,
+    /// Esc: back to the editor; the panel stays.
+    FocusEditor,
+}
+
+impl TaskCommand {
+    pub const ALL: [TaskCommand; 7] = [
+        TaskCommand::ScrollUp,
+        TaskCommand::ScrollDown,
+        TaskCommand::PageUp,
+        TaskCommand::PageDown,
+        TaskCommand::Top,
+        TaskCommand::Bottom,
+        TaskCommand::FocusEditor,
+    ];
 }
 
 /// Focus-group commands listed in the palette and accepted in keybindings (as VS Code: 1 to 8).
@@ -562,6 +597,8 @@ impl Command {
         ]);
         all.extend(ScmCommand::ALL.map(Command::Scm));
         all.extend([Command::ShowFileHistory, Command::RestoreFileHistory]);
+        all.extend([Command::RunTask, Command::KillTask, Command::CloseTask]);
+        all.extend(TaskCommand::ALL.map(Command::Task));
         all
     }
 
@@ -785,6 +822,21 @@ impl Command {
                 }
             ),
             Command::PreviousChange => "editor.previousChange".into(),
+            Command::RunTask => "task.run".into(),
+            Command::KillTask => "task.kill".into(),
+            Command::CloseTask => "task.close".into(),
+            Command::Task(c) => format!(
+                "task.{}",
+                match c {
+                    TaskCommand::ScrollUp => "scrollUp",
+                    TaskCommand::ScrollDown => "scrollDown",
+                    TaskCommand::PageUp => "scrollPageUp",
+                    TaskCommand::PageDown => "scrollPageDown",
+                    TaskCommand::Top => "scrollToTop",
+                    TaskCommand::Bottom => "scrollToBottom",
+                    TaskCommand::FocusEditor => "focusEditor",
+                }
+            ),
         }
     }
 
@@ -986,6 +1038,18 @@ impl Command {
                 ScmCommand::FocusEditor => "Source Control: Back to Editor",
             },
             Command::PreviousChange => "Go to Previous Change",
+            Command::RunTask => "Tasks: Run Task",
+            Command::KillTask => "Tasks: Kill Task",
+            Command::CloseTask => "Tasks: Close Task Tab",
+            Command::Task(c) => match c {
+                TaskCommand::ScrollUp => "Tasks: Scroll Up",
+                TaskCommand::ScrollDown => "Tasks: Scroll Down",
+                TaskCommand::PageUp => "Tasks: Scroll Page Up",
+                TaskCommand::PageDown => "Tasks: Scroll Page Down",
+                TaskCommand::Top => "Tasks: Scroll to Top",
+                TaskCommand::Bottom => "Tasks: Scroll to Bottom",
+                TaskCommand::FocusEditor => "Tasks: Back to Editor",
+            },
         };
         s.into()
     }
@@ -1100,9 +1164,13 @@ mod tests {
             Command::Scm(_) => 76,
             Command::ShowFileHistory => 77,
             Command::RestoreFileHistory => 78,
+            Command::RunTask => 79,
+            Command::KillTask => 80,
+            Command::CloseTask => 81,
+            Command::Task(_) => 82,
         }
     }
-    const VARIANTS: u8 = 79;
+    const VARIANTS: u8 = 83;
 
     #[test]
     fn all_lists_every_variant() {
@@ -1122,6 +1190,7 @@ mod tests {
         assert_eq!(count(57), LocationsCommand::ALL.len());
         assert_eq!(count(59), SuggestCommand::ALL.len());
         assert_eq!(count(76), ScmCommand::ALL.len());
+        assert_eq!(count(82), TaskCommand::ALL.len());
     }
 
     #[test]

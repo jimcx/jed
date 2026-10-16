@@ -7,12 +7,15 @@
 //! (portable-pty's `setsid`) and the PTY its controlling terminal, so its process group is
 //! everything the shell started: kills signal the whole group.
 //!
+//! Input (`write`: keys, pastes) goes through a channel to a writer thread, so a process that
+//! doesn't read never blocks the UI thread.
+//!
 //! The waiter sees the exit with `waitid(WNOWAIT)` and reaps only with the state locked, so a kill
 //! never signals a reaped (reusable) pid. It reaps after the reader hit end of output (bounded by
 //! `OUTPUT_GRACE`: a background process can hold the PTY open), so `Exited` means the screen holds
 //! all the output.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -106,6 +109,8 @@ struct State {
     /// The process (group) id while it can be signalled: set when spawned, until reaped.
     pid: Option<i32>,
     master: Option<Box<dyn MasterPty + Send>>,
+    /// To the writer thread (the PTY's input), while the process runs.
+    input: Option<std::sync::mpsc::Sender<Vec<u8>>>,
     /// The process group (= the first process's pid), kept after reaping: background processes
     /// it started may still hold the PTY (`reader_done` false), and dropping the run kills them.
     group: Option<i32>,
@@ -132,6 +137,7 @@ impl Run {
                 pid: None,
                 group: None,
                 master: None,
+                input: None,
                 kill_when_started: None,
                 killed: false,
             }),
@@ -161,6 +167,7 @@ impl Run {
     }
 
     /// The process (group) id while it runs (also between its exit and its reaping).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn pid(&self) -> Option<u32> {
         lock(&self.shared.state).pid.map(|p| p as u32)
     }
@@ -185,6 +192,43 @@ impl Run {
         {
             tracing::debug!(run = self.id.0, "resize: {e}");
         }
+    }
+
+    /// Sends `bytes` to the process's terminal input (keys, a paste); false when it isn't running.
+    pub fn write(&self, bytes: &[u8]) -> bool {
+        let state = lock(&self.shared.state);
+        match (&state.status, &state.input) {
+            (Status::Running, Some(input)) => input.send(bytes.to_vec()).is_ok(),
+            _ => false,
+        }
+    }
+
+    /// Scrolls the view through the scrollback by `lines` (negative: up, to older output),
+    /// clamped; 0 rows back is the live screen.
+    pub fn scroll(&self, lines: isize) {
+        let mut parser = self.screen();
+        let back = parser.screen().scrollback();
+        parser.screen_mut().set_scrollback(back.saturating_add_signed(-lines));
+    }
+
+    /// Scrolls to the oldest output kept (`top`) or back to the live screen.
+    pub fn scroll_to(&self, top: bool) {
+        self.screen()
+            .screen_mut()
+            .set_scrollback(if top { usize::MAX } else { 0 });
+    }
+
+    /// Writes `text` on a line of its own below the output (attributes reset): the exit note.
+    pub fn append_line(&self, text: &str) {
+        let mut parser = self.screen();
+        let at_line_start = parser.screen().cursor_position().1 == 0;
+        let mut bytes = Vec::with_capacity(text.len() + 8);
+        if !at_line_start {
+            bytes.extend_from_slice(b"\r\n");
+        }
+        bytes.extend_from_slice(b"\x1b[0m");
+        bytes.extend_from_slice(text.as_bytes());
+        parser.process(&bytes);
     }
 
     /// SIGHUP to the process group (what closing a terminal sends), SIGKILL to the group after
@@ -287,6 +331,10 @@ fn spawn(shared: Arc<Shared>, spec: Spec, sink: Sink) {
         Ok(r) => r,
         Err(e) => return shared.fail(format!("can't read the terminal: {e}"), &sink),
     };
+    let writer = match pair.master.take_writer() {
+        Ok(w) => w,
+        Err(e) => return shared.fail(format!("can't write to the terminal: {e}"), &sink),
+    };
     let mut cmd = CommandBuilder::from_argv(spec.argv.clone());
     cmd.cwd(&spec.cwd);
     for (k, v) in &spec.env {
@@ -314,6 +362,14 @@ fn spawn(shared: Arc<Shared>, spec: Spec, sink: Sink) {
             let _ = pair.master.resize(pty_size(size.0, size.1));
         }
         state.master = Some(pair.master);
+        let (input, keys) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name(format!("task-{}-in", shared.id.0))
+            .spawn(move || write_input(writer, keys));
+        match spawned {
+            Ok(_) => state.input = Some(input),
+            Err(e) => tracing::error!("task writer thread: {e}"),
+        }
         state.kill_when_started.take()
     };
     sink(Event::Started(shared.id));
@@ -361,6 +417,15 @@ fn read_output(shared: Arc<Shared>, mut reader: Box<dyn Read + Send>) {
     shared.notify.notify_one();
 }
 
+/// Writer thread: input into the PTY until the run is dropped (or the terminal is gone).
+fn write_input(mut writer: Box<dyn Write + Send>, input: std::sync::mpsc::Receiver<Vec<u8>>) {
+    while let Ok(bytes) = input.recv() {
+        if writer.write_all(&bytes).and_then(|()| writer.flush()).is_err() {
+            return;
+        }
+    }
+}
+
 /// Waiter thread: blocks until the process exits, lets the reader finish, reaps it.
 fn wait_exit(shared: Arc<Shared>, mut child: Box<dyn Child + Send + Sync>, pid: i32, sink: Sink) {
     wait_without_reaping(pid);
@@ -372,6 +437,7 @@ fn wait_exit(shared: Arc<Shared>, mut child: Box<dyn Child + Send + Sync>, pid: 
         let mut state = lock(&shared.state);
         let status = child.wait();
         state.pid = None;
+        state.input = None;
         state.status = match status {
             Ok(s) => Status::Exited(Exit {
                 code: s.exit_code(),
