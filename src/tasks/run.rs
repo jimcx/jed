@@ -8,7 +8,8 @@
 //! everything the shell started: kills signal the whole group.
 //!
 //! Input (`write`: keys, pastes) goes through a channel to a writer thread, so a process that
-//! doesn't read never blocks the UI thread.
+//! doesn't read never blocks the UI thread. Input written while the run is still starting is kept
+//! and sent first once the process runs.
 //!
 //! The waiter sees the exit with `waitid(WNOWAIT)` and reaps only with the state locked, so a kill
 //! never signals a reaped (reusable) pid. It reaps after the reader hit end of output (bounded by
@@ -111,6 +112,8 @@ struct State {
     master: Option<Box<dyn MasterPty + Send>>,
     /// To the writer thread (the PTY's input), while the process runs.
     input: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    /// Input written while starting, sent once the writer thread exists.
+    queued: Vec<u8>,
     /// The process group (= the first process's pid), kept after reaping: background processes
     /// it started may still hold the PTY (`reader_done` false), and dropping the run kills them.
     group: Option<i32>,
@@ -138,6 +141,7 @@ impl Run {
                 group: None,
                 master: None,
                 input: None,
+                queued: Vec::new(),
                 kill_when_started: None,
                 killed: false,
             }),
@@ -194,11 +198,16 @@ impl Run {
         }
     }
 
-    /// Sends `bytes` to the process's terminal input (keys, a paste); false when it isn't running.
+    /// Sends `bytes` to the process's terminal input (keys, a paste); while it's starting they're
+    /// queued and sent once it runs (dropped if it fails to start). False once it ended.
     pub fn write(&self, bytes: &[u8]) -> bool {
-        let state = lock(&self.shared.state);
+        let mut state = lock(&self.shared.state);
         match (&state.status, &state.input) {
             (Status::Running, Some(input)) => input.send(bytes.to_vec()).is_ok(),
+            (Status::Starting, _) => {
+                state.queued.extend_from_slice(bytes);
+                true
+            }
             _ => false,
         }
     }
@@ -288,7 +297,11 @@ impl Shared {
 
     fn fail(&self, message: String, sink: &Sink) {
         tracing::warn!(run = self.id.0, "task failed to start: {message}");
-        lock(&self.state).status = Status::Failed(message);
+        {
+            let mut state = lock(&self.state);
+            state.status = Status::Failed(message);
+            state.queued = Vec::new();
+        }
         self.reader_done.store(true, Ordering::Release);
         self.notify.notify_one();
         sink(Event::Ended(self.id));
@@ -363,6 +376,10 @@ fn spawn(shared: Arc<Shared>, spec: Spec, sink: Sink) {
         }
         state.master = Some(pair.master);
         let (input, keys) = std::sync::mpsc::channel();
+        let queued = std::mem::take(&mut state.queued);
+        if !queued.is_empty() {
+            let _ = input.send(queued);
+        }
         let spawned = std::thread::Builder::new()
             .name(format!("task-{}-in", shared.id.0))
             .spawn(move || write_input(writer, keys));

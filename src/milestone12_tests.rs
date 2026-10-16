@@ -22,7 +22,23 @@
 //! (`milestone_12_frames_resize_the_pty_only_when_the_size_changes`); Shift+PageUp, Ctrl+Home / End and the wheel
 //! scroll the output (`milestone_12_scrolling_through_a_task_output`); a tab per run, clicks on
 //! tabs, kill, and closing (Cmd+W, `×`, a middle click, the palette) kills a running task
-//! (`milestone_12_kill_and_close_task_tabs`).
+//! (`milestone_12_kill_and_close_task_tabs`); keys typed while a run is still starting are
+//! queued and reach it (`milestone_12_keys_typed_while_a_task_starts_reach_it`).
+//!
+//! 12c, the done-when: "a colourful build (e.g. `cargo build`) renders as in a real terminal" —
+//! a real `cargo build --color=always` of a small crate with a warning and a slow build script
+//! (cargo's progress bar), run from "Run Task", draws the same text and colours as an
+//! independent model of a terminal (`reference`) fed cargo's coloured output from another build,
+//! the progress bar gone, "Compiling" / "Finished" bright green, "warning" bold yellow drawn
+//! bright, the exit code below (`milestone_12_done_when_a_colourful_build_renders_as_in_a_terminal`;
+//! skipped with a note without `cargo`); a script's `\r`-overwritten progress line, `ESC[K` and
+//! cursor moves end as a terminal shows them, checked against the same model and spelled out
+//! (`milestone_12_done_when_progress_output_renders_as_in_a_terminal`). "Restricted mode runs no
+//! `.workspace` task": undecided, restricted from the dialog and restricted as stored, the
+//! picker doesn't list it, `run_task` refuses, no run starts and the marker file it would write
+//! never appears, while the user's `tasks.toml` tasks run and a name both define runs the
+//! user's; once trusted the workspace's runs
+//! (`milestone_12_done_when_restricted_mode_runs_no_workspace_task`).
 
 use std::fs;
 use std::path::Path;
@@ -814,4 +830,500 @@ async fn milestone_12_kill_and_close_task_tabs() {
     assert!(app.tasks.runs().is_empty());
     assert_eq!(app.ui.panel_tab, PanelTab::Problems);
     assert_ne!(app.ui.focus, Focus::Panel);
+}
+
+// 12c: the done-when tests.
+
+use ratatui::style::Modifier;
+
+/// A cell of `reference`'s screen: the char, its foreground (`Reset`, `Indexed`, `Rgb`, as
+/// `tui-term` gives it before the theme) and bold.
+type RefCell = (char, Color, bool);
+
+/// What a terminal shows for `text`, modelled independently of `vt100` and only as far as the
+/// output these tests check needs: printable chars, CR, LF (to the next line's start, as a PTY's
+/// `onlcr` makes it), `CSI K` (erase to the line's end), `CSI n A / B / C / D` (cursor moves),
+/// SGR (bold, 16 colours, `38;5;n`, `38;2;r;g;b`, resets) and OSC (cargo's hyperlinks: nothing
+/// shown). Anything else panics: the model would be wrong. No wrapping or scrolling (the tests
+/// keep the output within the screen). Rows of cells, erased cells dropped from row ends, trailing
+/// empty rows dropped.
+fn reference(text: &str) -> Vec<Vec<RefCell>> {
+    let mut rows: Vec<Vec<RefCell>> = Vec::new();
+    let (mut row, mut col) = (0usize, 0usize);
+    let (mut fg, mut bold) = (Color::Reset, false);
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => col = 0,
+            '\n' => (row, col) = (row + 1, 0),
+            '\x1b' => {
+                let next = chars.next();
+                if next == Some(']') {
+                    // OSC (cargo's hyperlinks, a title): shows nothing; ends at BEL or ESC \.
+                    loop {
+                        match chars.next().expect("a whole OSC") {
+                            '\x07' => break,
+                            '\x1b' => {
+                                assert_eq!(chars.next(), Some('\\'), "OSC ends with ST");
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    continue;
+                }
+                assert_eq!(next, Some('['), "only CSI and OSC sequences are modelled");
+                let mut params = String::new();
+                let end = loop {
+                    match chars.next().expect("a whole sequence") {
+                        c if c.is_ascii_digit() || c == ';' => params.push(c),
+                        c => break c,
+                    }
+                };
+                let n = params.parse::<usize>().unwrap_or(1).max(1);
+                match end {
+                    'K' => {
+                        assert!(params.is_empty() || params == "0", "CSI {params} K");
+                        if let Some(line) = rows.get_mut(row) {
+                            line.truncate(col);
+                        }
+                    }
+                    'A' => row = row.saturating_sub(n),
+                    'B' => row += n,
+                    'C' => col += n,
+                    'D' => col = col.saturating_sub(n),
+                    'm' => {
+                        let codes: Vec<u8> = params.split(';').map(|p| p.parse().unwrap_or(0)).collect();
+                        let mut codes = codes.into_iter();
+                        while let Some(code) = codes.next() {
+                            match code {
+                                0 => (fg, bold) = (Color::Reset, false),
+                                1 => bold = true,
+                                22 => bold = false,
+                                // Italic, underline: not compared.
+                                3 | 4 | 23 | 24 => {}
+                                30..=37 => fg = Color::Indexed(code - 30),
+                                39 => fg = Color::Reset,
+                                90..=97 => fg = Color::Indexed(code - 90 + 8),
+                                38 => match codes.next() {
+                                    Some(5) => fg = Color::Indexed(codes.next().unwrap()),
+                                    Some(2) => {
+                                        let mut c = || codes.next().unwrap();
+                                        fg = Color::Rgb(c(), c(), c());
+                                    }
+                                    other => panic!("SGR 38;{other:?}"),
+                                },
+                                other => panic!("SGR {other} isn't modelled"),
+                            }
+                        }
+                    }
+                    other => panic!("CSI {params} {other} isn't modelled"),
+                }
+            }
+            c if c.is_control() => panic!("{c:?} isn't modelled"),
+            c => {
+                if rows.len() <= row {
+                    rows.resize(row + 1, Vec::new());
+                }
+                let line = &mut rows[row];
+                if line.len() < col {
+                    line.resize(col, (' ', Color::Reset, false));
+                }
+                if col < line.len() {
+                    line[col] = (c, fg, bold);
+                } else {
+                    line.push((c, fg, bold));
+                }
+                col += 1;
+            }
+        }
+    }
+    while rows.last().is_some_and(|r| r.iter().all(|c| c.0 == ' ')) {
+        rows.pop();
+    }
+    rows
+}
+
+fn reference_text(rows: &[Vec<RefCell>]) -> String {
+    let lines: Vec<String> = rows
+        .iter()
+        .map(|r| r.iter().map(|c| c.0).collect::<String>().trim_end().to_string())
+        .collect();
+    lines.join("\n")
+}
+
+/// Checks the task tab drawn in `term` shows the `expected` rows from its top: the same text,
+/// and each visible char in the colour the theme gives the reference cell's colour (bold
+/// included), as a terminal with Dark+'s palette would show it. A row's comparison stops where
+/// `cut` says (a build time that differs between runs). Returns the drawn rows below them.
+fn assert_drawn_as(
+    app: &App,
+    term: &Terminal<TestBackend>,
+    expected: &[Vec<RefCell>],
+    cut: impl Fn(&str) -> Option<usize>,
+) -> Vec<String> {
+    let area = crate::layout::task_area(app.hits.regions.panel.unwrap());
+    let buf = term.backend().buffer();
+    let drawn = |row: u16, col: u16| &buf[(area.x + col, area.y + row)];
+    let drawn_row = |row: u16| -> String { (0..area.width).map(|col| drawn(row, col).symbol()).collect() };
+    let themed = |&(_, fg, bold): &RefCell| {
+        let mut cell = ratatui::buffer::Cell::default();
+        cell.fg = fg;
+        if bold {
+            cell.modifier = Modifier::BOLD;
+        }
+        app.theme.terminal_cell(&mut cell);
+        cell.fg
+    };
+    assert!(expected.len() < area.height as usize, "the output fits");
+    for (row, cells) in expected.iter().enumerate() {
+        assert!(cells.len() < area.width as usize, "no line wraps");
+        let text: String = cells.iter().map(|c| c.0).collect();
+        let n = cut(&text).unwrap_or(cells.len());
+        let got = drawn_row(row as u16);
+        assert_eq!(
+            got.chars().take(n).collect::<String>(),
+            text.chars().take(n).collect::<String>(),
+            "row {row}"
+        );
+        if n == cells.len() {
+            assert_eq!(got.trim_end(), text.trim_end(), "row {row}");
+        }
+        for (col, cell) in cells.iter().enumerate().take(n) {
+            if cell.0 != ' ' {
+                assert_eq!(
+                    drawn(row as u16, col as u16).fg,
+                    themed(cell),
+                    "row {row} col {col} ({:?} in {text:?})",
+                    cell.0
+                );
+            }
+        }
+    }
+    (expected.len() as u16..area.height).map(drawn_row).collect()
+}
+
+/// Settles until run `id` ended (`settle_ended`), for up to `limit` (a real build under a loaded
+/// test run takes longer than `settle`'s 5 s). `each` sees the app at every step.
+async fn settle_ended_within(app: &mut App, id: RunId, limit: std::time::Duration, each: impl Fn(&App)) -> bool {
+    let until = std::time::Instant::now() + limit;
+    while std::time::Instant::now() < until {
+        let ended = app
+            .settle(|a| {
+                each(a);
+                let run = a.tasks.get(id).unwrap();
+                tasks::end_note(&run.name, &run.status())
+                    .is_some_and(|n| run.screen().screen().contents().ends_with(&n))
+            })
+            .await;
+        if ended {
+            return true;
+        }
+    }
+    false
+}
+
+/// A script's progress line (`\r`-overwritten frames, `ESC[K`), cursor movement up and right
+/// and colours end up on screen as a terminal shows them: the same text and colours as an
+/// independent model of a terminal (`reference`) fed the script's output, and as written out.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_12_done_when_progress_output_renders_as_in_a_terminal() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    let script = r#"printf 'header\n'
+printf '\033[1;32mBuilding\033[0m [=  ] 1/3\r'; sleep 0.05
+printf '\033[1;32mBuilding\033[0m [== ] 2/3\r'; sleep 0.05
+printf '\033[1;32mBuilding\033[0m [===] 3/3\r'; sleep 0.05
+printf '\033[K'
+printf 'line a\nline b\n'
+printf '\033[2A\033[33mLINE\033[0m\r\n\n'
+printf 'progress 10%%\rprogress 100%%\n'
+printf 'abcdef\r\033[3C\033[K!\n'
+printf '\033[1;32mFinished\033[0m\n'"#;
+    let mut app = open_app(
+        &root,
+        &state,
+        Some(&format!("[tasks.progress]\ncommand = '''{script}'''\n")),
+    );
+    draw_sized(&mut app, 100, 30);
+    let id = pick_task(&mut app, "progress");
+    assert!(settle_ended(&mut app, id).await);
+    match app.tasks.get(id).unwrap().status() {
+        Status::Exited(e) => assert!(e.success(), "{e:?}"),
+        s => panic!("{s:?}"),
+    }
+    assert_eq!(
+        screen_text(&app, id),
+        "header\nLINE a\nline b\nprogress 100%\nabc!\nFinished\nTask 'progress' exited with code 0"
+    );
+
+    // The same script's bytes through the reference model.
+    let output = std::process::Command::new(&app.tasks.shell)
+        .args(["-c", script])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let expected = reference(&String::from_utf8(output.stdout).unwrap());
+    assert_eq!(
+        reference_text(&expected),
+        "header\nLINE a\nline b\nprogress 100%\nabc!\nFinished"
+    );
+    let term = draw_sized(&mut app, 100, 30);
+    let rest = assert_drawn_as(&app, &term, &expected, |_| None);
+    assert_eq!(rest[0].trim_end(), "Task 'progress' exited with code 0");
+    assert!(rest[1..].iter().all(|r| r.trim().is_empty()));
+    // Spelled out: bold green drawn bright, plain yellow, the default colour.
+    let key_fg = |k: &str| app.theme.get(k).fg.unwrap();
+    let finished = find(&term, "Finished").unwrap();
+    assert_eq!(fg(&term, finished), key_fg("terminal.ansiBrightGreen"));
+    let line = find(&term, "LINE a").unwrap();
+    assert_eq!(fg(&term, line), key_fg("terminal.ansiYellow"));
+    assert_eq!(fg(&term, (line.0 + 5, line.1)), key_fg("terminal.foreground"));
+}
+
+/// The done-when: `cargo build` of a small crate with a warning (and a build script slow enough
+/// for cargo's progress bar), run from "Run Task", shows on screen what cargo prints — the same
+/// text and colours as an independent model of a terminal fed cargo's coloured output from a
+/// build run just before (piped: no progress bar), the progress bar gone — with "Compiling" /
+/// "Finished" in bold bright green, "warning" in bold yellow drawn bright, and the exit code.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_12_done_when_a_colourful_build_renders_as_in_a_terminal() {
+    let has_cargo = std::process::Command::new("cargo")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !has_cargo {
+        eprintln!("note: no cargo on PATH, skipping the colourful build");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    let demo = root.join("demo");
+    fs::create_dir_all(demo.join("src")).unwrap();
+    fs::write(
+        demo.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(demo.join("src/main.rs"), "fn main() {\n    let unused = 1;\n}\n").unwrap();
+    // Cargo draws its progress bar once a build has taken 0.5 s.
+    fs::write(
+        demo.join("build.rs"),
+        "fn main() {\n    std::thread::sleep(std::time::Duration::from_millis(1200));\n}\n",
+    )
+    .unwrap();
+    let build = "cargo build --color=always --offline";
+    // Each build with its own target folder and cargo home: no lock shared with the other build
+    // or any other cargo running ("Blocking waiting for file lock …" would change the output).
+    // Cargo's settings that change what it prints, as they'd be without the environment's (a
+    // CI's `RUSTFLAGS=-Dwarnings` would fail the build, `CARGO_TERM_*` drop the progress bar or
+    // add lines); `CARGO_HOME` keeps `~/.cargo/config.toml` out. The terminal's own variables
+    // (`TERM_PROGRAM` turning on cargo's hyperlinks) are left alone, as a real run has them.
+    let pinned = [
+        ("RUSTFLAGS", ""),
+        ("CARGO_ENCODED_RUSTFLAGS", ""),
+        ("CARGO_TERM_PROGRESS_WHEN", "auto"),
+        ("CARGO_TERM_VERBOSE", "false"),
+        ("CARGO_TERM_QUIET", "false"),
+    ];
+    let pinned_toml: String = pinned.iter().map(|(k, v)| format!(", {k} = '{v}'")).collect();
+    let tasks_toml = format!(
+        "[tasks.build]\ncommand = \"{build}\"\ncwd = \"demo\"\nenv = {{ CARGO_TARGET_DIR = '{}', CARGO_HOME = '{}'{pinned_toml} }}\n",
+        state.join("target").display(),
+        state.join("cargo-home").display()
+    );
+    // The reference build first (two builds of one crate at once wait for each other's lock on
+    // its `Cargo.lock`, printing that): its own target folder, output piped.
+    let output = {
+        let (demo, target, home) = (
+            demo.clone(),
+            state.join("reference-target"),
+            state.join("reference-cargo-home"),
+        );
+        tokio::task::spawn_blocking(move || {
+            std::process::Command::new("sh")
+                .args(["-c", build])
+                .current_dir(demo)
+                .env("CARGO_TARGET_DIR", target)
+                .env("CARGO_HOME", home)
+                .envs(pinned)
+                .output()
+                .unwrap()
+        })
+        .await
+        .unwrap()
+    };
+    let mut app = open_app(&root, &state, Some(&tasks_toml));
+    app.ui.panel_height = 22;
+    draw_sized(&mut app, 200, 40);
+
+    let id = pick_task(&mut app, "build");
+    let saw_progress = std::cell::Cell::new(false);
+    let ended = settle_ended_within(&mut app, id, std::time::Duration::from_secs(120), |a| {
+        if screen_text(a, id).contains("Building [") {
+            saw_progress.set(true);
+        }
+    })
+    .await;
+    assert!(ended, "{}", screen_text(&app, id));
+    match app.tasks.get(id).unwrap().status() {
+        Status::Exited(e) => assert!(e.success(), "{e:?}"),
+        s => panic!("{s:?}"),
+    }
+    // Cargo draws no progress bar in a CI (`CI` or `TF_BUILD` set, whatever their value).
+    if ["CI", "TF_BUILD"].iter().all(|v| std::env::var_os(v).is_none()) {
+        assert!(saw_progress.get(), "cargo drew its progress bar");
+    }
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let expected = reference(&String::from_utf8(output.stderr).unwrap());
+    let text = reference_text(&expected);
+    assert!(
+        text.starts_with(&format!(
+            "   Compiling demo v0.1.0 ({})\nwarning: unused variable: `unused`",
+            demo.display()
+        )),
+        "{text}"
+    );
+
+    let term = draw_sized(&mut app, 200, 40);
+    let time = regex::Regex::new(r" in \d+(\.\d+)?s$").unwrap();
+    let rest = assert_drawn_as(&app, &term, &expected, |row| {
+        row.trim_start()
+            .starts_with("Finished")
+            .then(|| row.find(" in ").unwrap())
+    });
+    let finished = find(&term, "Finished `dev` profile").unwrap();
+    let row = &lines(&term)[finished.1 as usize];
+    assert!(time.is_match(row.trim_end()), "{row}");
+    assert_eq!(rest[0].trim_end(), "Task 'build' exited with code 0");
+    assert!(!screen_text(&app, id).contains("Building"), "the progress bar is gone");
+    // Spelled out.
+    let key_fg = |k: &str| app.theme.get(k).fg.unwrap();
+    for word in ["Compiling", "Finished"] {
+        let at = find(&term, word).unwrap();
+        assert_eq!(fg(&term, at), key_fg("terminal.ansiBrightGreen"), "{word}");
+        assert!(term.backend().buffer()[at].modifier.contains(Modifier::BOLD));
+    }
+    let warning = find(&term, "warning: unused").unwrap();
+    assert_eq!(fg(&term, warning), key_fg("terminal.ansiBrightYellow"));
+    let note = find(&term, "Task 'build' exited with code 0").unwrap();
+    assert_eq!(fg(&term, note), key_fg("terminal.foreground"));
+    assert!(find(&term, "build ✓ ×").is_some());
+}
+
+/// The done-when: while the workspace isn't trusted — undecided (the dialog up), restricted from
+/// the dialog, restricted as stored — no `.workspace` task is listed or runs (the marker file it
+/// would create never appears, no run starts), the user's `tasks.toml` tasks still run, and a
+/// name both define runs the user's; once trusted, the workspace's run.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_12_done_when_restricted_mode_runs_no_workspace_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    let (ws_marker, user_marker) = (state.join("ws-marker"), state.join("user-marker"));
+    let workspace = format!(
+        "[tasks.deploy]\ncommand = \"touch '{}'\"\n\n[tasks.build]\ncommand = \"echo workspace build\"\n",
+        ws_marker.display()
+    );
+    let user = format!(
+        "[tasks.build]\ncommand = \"echo user build\"\n\n[tasks.touch-user]\ncommand = \"touch '{}'\"\n",
+        user_marker.display()
+    );
+    fs::write(root.join(".workspace"), &workspace).unwrap();
+    let names =
+        |app: &App| -> Vec<(String, Source)> { app.task_templates().into_iter().map(|t| (t.name, t.source)).collect() };
+    let user_only = vec![
+        ("build".to_string(), Source::User),
+        ("touch-user".to_string(), Source::User),
+    ];
+    let run_and_wait = async |app: &mut App, name: &str| {
+        let id = pick_task(app, name);
+        assert!(settle_ended(app, id).await);
+        screen_text(app, id)
+    };
+    /// Restricted: the picker hides `deploy`, says why, runs nothing for it; `run_task` refuses.
+    async fn refuses_deploy(app: &mut App) {
+        open_run_task(app);
+        let p = app.palette.as_ref().unwrap();
+        let labels: Vec<&str> = p.rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["build", "touch-user"]);
+        assert!(
+            p.hint.as_deref().is_some_and(|h| h.contains("2 tasks in .workspace")),
+            "{:?}",
+            p.hint
+        );
+        app.type_text("deploy");
+        assert!(app.palette.as_ref().unwrap().rows.is_empty());
+        let runs = app.tasks.runs().len();
+        app.press(KeyCode::Enter, M::NONE);
+        assert_eq!(app.run_task("deploy"), None);
+        assert_eq!(app.message.as_ref().unwrap().text, "No task named 'deploy'");
+        assert_eq!(app.tasks.runs().len(), runs, "no run started");
+    }
+
+    // Undecided: the trust dialog is up.
+    let mut app = open_app(&root, &state, Some(&user));
+    assert_eq!(app.trust, Trust::Undecided);
+    assert!(app.prompt.is_some());
+    assert_eq!(names(&app), user_only);
+    assert_eq!(app.run_task("deploy"), None);
+    assert!(app.tasks.runs().is_empty());
+    let id = app.run_task("build").unwrap();
+    assert!(settle_ended(&mut app, id).await);
+    assert!(screen_text(&app, id).starts_with("user build\n"));
+
+    // Restricted from the dialog.
+    app.press(KeyCode::Char('r'), M::NONE);
+    assert_eq!(app.trust, Trust::Restricted);
+    refuses_deploy(&mut app).await;
+    assert!(run_and_wait(&mut app, "build").await.starts_with("user build\n"));
+    assert!(
+        run_and_wait(&mut app, "touch-user")
+            .await
+            .ends_with("exited with code 0")
+    );
+    assert!(user_marker.exists(), "the user's task ran");
+    assert!(!ws_marker.exists(), "no .workspace task ran");
+
+    // Trusted (Manage Workspace Trust): the workspace's run, its build winning.
+    app.test_execute(Command::ManageWorkspaceTrust);
+    app.press(KeyCode::Char('t'), M::NONE);
+    assert_eq!(app.trust, Trust::Trusted);
+    assert!(run_and_wait(&mut app, "build").await.starts_with("workspace build\n"));
+    assert!(run_and_wait(&mut app, "deploy").await.ends_with("exited with code 0"));
+    assert!(ws_marker.exists(), "trusted: the workspace's task ran");
+    drop(app);
+
+    // Restricted as stored (no dialog), in a fresh workspace.
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    fs::write(root.join(".workspace"), &workspace).unwrap();
+    fs::remove_file(&ws_marker).unwrap();
+    let mut store = TrustStore::load(state.join("trust.toml"));
+    store.record(&root, &Workspace::load(root.clone()).config, false);
+    store.write().unwrap();
+    let mut app = open_app(&root, &state, Some(&user));
+    assert_eq!(app.trust, Trust::Restricted);
+    assert!(app.prompt.is_none());
+    refuses_deploy(&mut app).await;
+    assert!(run_and_wait(&mut app, "build").await.starts_with("user build\n"));
+    assert!(!ws_marker.exists(), "no .workspace task ran");
+}
+
+/// Keys typed while a run is still starting (its process not spawned yet) reach it once it runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_12_keys_typed_while_a_task_starts_reach_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    let mut app = open_app(&root, &state, Some(TASKS));
+    let id = pick_task(&mut app, "ask");
+    assert_eq!(app.tasks.get(id).unwrap().status(), Status::Starting);
+    app.type_text("y");
+    app.press(KeyCode::Enter, M::NONE);
+    assert!(
+        app.settle(|a| screen_text(a, id).contains("got y")).await,
+        "{}",
+        screen_text(&app, id)
+    );
+    app.test_execute(Command::KillTask);
+    assert!(settle_ended(&mut app, id).await);
 }

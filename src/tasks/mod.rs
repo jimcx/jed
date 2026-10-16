@@ -244,6 +244,32 @@ mod tests {
         );
     }
 
+    /// Input written before the process exists (status `Starting`) is queued and reaches it, in
+    /// order, ahead of later input; a run that fails to start takes none.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn input_written_while_starting_is_sent_once_running() {
+        let (mut t, _) = tasks();
+        let dir = tempfile::tempdir().unwrap();
+        let id = t.run(&template("read -r a; read -r b; echo \"got $a $b\""), dir.path());
+        let run = t.get(id).unwrap();
+        assert_eq!(run.status(), Status::Starting);
+        assert!(run.write(b"one\n"));
+        wait_until("running", || run.status() == Status::Running).await;
+        assert!(run.write(b"two\n"));
+        wait_until("exit", || !run.status().is_running()).await;
+        assert!(exit(run).success());
+        assert!(run.screen().screen().contents().ends_with("got one two"));
+        assert!(!run.write(b"late\n"), "ended");
+
+        let mut failing = template("true");
+        failing.task.cwd = Some("missing".into());
+        let id = t.run(&failing, dir.path());
+        let run = t.get(id).unwrap();
+        assert!(run.write(b"x"));
+        wait_until("failed", || matches!(run.status(), Status::Failed(_))).await;
+        assert!(!run.write(b"x"));
+    }
+
     /// A paste far bigger than the PTY's input buffer, to a process that never reads it: `write`
     /// returns at once (the writer thread blocks, not the caller), and the run still dies.
     #[tokio::test(flavor = "multi_thread")]
