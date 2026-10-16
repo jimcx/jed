@@ -787,6 +787,11 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
     - Kitty: `jed_workspace` user var on start / exit / panic; `kitten @ ls` to find and focus jed's window, `kitten @ launch` for a new tab; message fallback outside kitty
     - Tests drive the kitty side through a fake `kitten` on `PATH` (canned `ls` JSON, records its arguments)
     - Done when: quit and reopen gives back the same tabs, splits, cursors and scroll; killing the terminal loses at most one backup interval of edits; picking a recent workspace open in another kitty tab or OS window focuses it, and one not open starts jed in a new kitty OS window
+    - Tasks (one agent and one commit each):
+      - 13a: sessions: per-workspace session file in the state dir (keyed by workspace path); saved on quit (off the UI thread, atomic), restored on start: groups and the split tree, tabs per group (text tabs by path; git and history diff tabs by path and pair; task tabs never), active tab and group, selections and scroll, side / bottom panel layout; missing files and bad session files skipped with a log line
+      - 13b: crash recovery: dirty buffers backed up periodically to `~/.local/state/jed/backup/` (one format shared with the panic hook), backups removed when a buffer is saved / discarded / jed quits cleanly; on the next start, an offer to restore them into their buffers (left dirty, nothing written)
+      - 13c: recent workspaces: `recent.toml` recorded on every start (most recent first, no duplicates, cap 50); "Open Recent Workspace" (Ctrl+R) as a palette picker (folder name, `~` path, current workspace left out, missing folders dropped); picking one outside kitty: status-bar message with `jed <path>`
+      - 13d: kitty integration (`jed_workspace` user var on start / exit / panic; `kitten @ ls` marks open rows and focuses a window; `kitten @ launch --type=os-window` for one not open; off the UI thread with a timeout, message fallback), fake `kitten` on `PATH` in tests, `docs/terminals/kitty.md`; the done-when tests; marks M13 ✅
 14. **Polish**: settings, the rest of the editor list, performance
     - Settings: live reload of `settings.toml` and `.workspace` overrides (the files themselves load at startup since M8, 8d)
     - Soft wrap toggle (the view must stop assuming one screen row per line: up/down, mouse hits, scroll)
