@@ -43,7 +43,8 @@ pub enum Text {
     WorkTree,
     /// The file on disk, even when it's open.
     Disk,
-    /// The open buffer's text only.
+    /// The open buffer's text; the file on disk while it isn't open (File History's Compare of
+    /// a file not open: the diff reads the buffer once the file opens).
     Buffer,
     /// An entry of the file's history (`.red/history/`).
     History(Snapshot),
@@ -426,7 +427,7 @@ fn read(job: &Job, text: Text) -> Result<Vec<u8>, stage::Error> {
             None => disk(&job.path)?,
         },
         Text::Disk => disk(&job.path)?,
-        Text::Buffer => return Err(not_found("the file isn't open")),
+        Text::Buffer => disk(&job.path)?,
         Text::History(snapshot) => {
             let rel = history::relative(&job.root, &job.path).ok_or_else(|| not_found("outside the workspace"))?;
             let bytes = history::read_snapshot(&job.root, &rel, snapshot)
@@ -899,7 +900,10 @@ mod tests {
         };
         let doc = load(job(Some("new\n"))).unwrap();
         assert_eq!((doc.left.line(0), doc.right.line(0)), ("old", "new"));
-        assert!(load(job(None)).unwrap_err().contains("isn't open"));
+        // Not open: the file on disk (none: empty).
+        assert_eq!(load(job(None)).unwrap().right.len(), 0);
+        std::fs::write(root.join(rel), "disk\n").unwrap();
+        assert_eq!(load(job(None)).unwrap().right.line(0), "disk");
         let gone = Pair::history(Snapshot { time: 1, hash: 1 });
         assert!(
             load(Job {

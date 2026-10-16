@@ -73,7 +73,7 @@ impl App {
     }
 
     /// The file the active tab is about: a text tab's buffer's, or a diff tab's.
-    fn active_path(&self) -> Option<PathBuf> {
+    pub(super) fn active_path(&self) -> Option<PathBuf> {
         if let Some(d) = self.group().active_diff() {
             return Some(d.path.clone());
         }

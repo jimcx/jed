@@ -150,8 +150,9 @@ impl App {
 }
 
 impl App {
-    /// "File History: Show" (`restore` false) / "Restore": lists the active file's entries
-    /// (read off-thread) in the palette. On a history diff tab, Restore restores its entry.
+    /// "File History: Show" (`restore` false) / "Restore": lists the active tab's file's entries
+    /// (read off-thread) in the palette; a diff tab's file needn't be open. On a history diff
+    /// tab, Restore restores its entry.
     pub(super) fn show_file_history(&mut self, restore: bool) {
         if restore
             && let Some(d) = self.group().active_diff()
@@ -163,7 +164,29 @@ impl App {
             }
             return;
         }
-        let Some(path) = self.history_file() else { return };
+        let Some(path) = self.active_path() else { return };
+        self.list_history(path, restore);
+    }
+
+    /// "Explorer: Show File History" (also a right-click on a file's row): the selected file's
+    /// entries, whether it's open or not.
+    pub(super) fn explorer_file_history(&mut self) {
+        let Some(path) = self.explorer.selected.clone() else {
+            return;
+        };
+        if self.explorer.find(&path).is_some_and(|e| e.is_dir) {
+            let name = file_name(&path);
+            self.notify(
+                Level::Info,
+                format!("{name} is a folder: file history is kept per file"),
+            );
+            return;
+        }
+        self.list_history(path, false);
+    }
+
+    /// Lists `path`'s entries off-thread; the picker opens on `AppEvent::HistoryListed`.
+    fn list_history(&mut self, path: PathBuf, restore: bool) {
         let name = file_name(&path);
         let root = self.workspace.root.clone();
         let Some(rel) = history::relative(&root, &path) else {
@@ -173,7 +196,7 @@ impl App {
             );
             return;
         };
-        if restore && !self.history_writable(&path) {
+        if restore && self.history_read_only(&path) {
             return;
         }
         self.file_history.listing += 1;
@@ -192,30 +215,18 @@ impl App {
         });
     }
 
-    /// The file "File History" is about: the active text tab's, or the open buffer of a diff
-    /// tab's file (Compare needs the buffer). `None` (with a message on a diff tab) otherwise.
-    fn history_file(&mut self) -> Option<PathBuf> {
-        if let Some(id) = self.active_file_buffer() {
-            return self.buffers.get(id).map(|b| b.path.clone());
-        }
-        let name = file_name(&self.group().active_diff()?.path);
-        self.notify(Level::Info, format!("Open {name} to see its file history"));
-        None
-    }
-
-    /// The file is open and writable (else a message): a restore can go ahead.
-    fn history_writable(&mut self, path: &Path) -> bool {
+    /// The file is open read-only (with a message): a restore can't go ahead. A file that
+    /// isn't open can: the restore opens it first.
+    fn history_read_only(&mut self, path: &Path) -> bool {
         let Some(buf) = self.buffer_of(path).and_then(|id| self.buffers.get(id)) else {
-            let name = file_name(path);
-            self.notify(Level::Info, format!("Open {name} to restore it from its history"));
             return false;
         };
         if let Some(reason) = &buf.read_only {
             let text = format!("Read-only: {reason}");
             self.notify(Level::Error, text);
-            return false;
+            return true;
         }
-        true
+        false
     }
 
     /// `AppEvent::HistoryListed`: the picker opens with the entries (none: a message).
@@ -261,12 +272,19 @@ impl App {
     }
 
     /// Reads the entry and diffs it against the open buffer of `path` off-thread; the
-    /// `AppEvent::HistoryRestore` that follows applies it. Refused for a read-only buffer.
-    fn restore_history(&mut self, path: PathBuf, rel: PathBuf, snapshot: Snapshot) {
-        if !self.history_writable(&path) {
+    /// `AppEvent::HistoryRestore` that follows applies it. Refused for a read-only buffer. A
+    /// file that isn't open opens in a tab first (`OpenRequest::restore`), then restores.
+    pub(super) fn restore_history(&mut self, path: PathBuf, rel: PathBuf, snapshot: Snapshot) {
+        let Some(buffer) = self.buffer_of(&path) else {
+            self.open_file(path.clone(), true, None);
+            if let Some(request) = self.opening.get_mut(&path) {
+                request.restore = Some(snapshot);
+            }
+            return;
+        };
+        if self.history_read_only(&path) {
             return;
         }
-        let Some(buffer) = self.buffer_of(&path) else { return };
         let Some(buf) = self.buffers.get(buffer) else { return };
         let (rope, revision) = (buf.rope.clone(), buf.revision());
         let root = self.workspace.root.clone();

@@ -7,6 +7,7 @@ use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use super::{App, Focus};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::column::{self, Cell};
+use crate::command::{Command, ExplorerCommand};
 use crate::layout::{Divider, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, PanelTab, SidePanel};
 use crate::selection::{Selection, Selections};
 use crate::view::View;
@@ -105,6 +106,7 @@ impl App {
                     self.close_tab(g, i);
                 }
             }
+            MouseEventKind::Down(MouseButton::Right) => self.right_click(hit),
             MouseEventKind::Drag(MouseButton::Left) => match self.drag.clone() {
                 Some(Drag::SideBorder) => {
                     if let Some(side) = self.hits.regions.side {
@@ -209,6 +211,28 @@ impl App {
             },
             Hit::StatusProblems => self.problem_counts_clicked(),
             Hit::Status | Hit::Hover | Hit::Completion | Hit::QuickDiff | Hit::Nothing => {}
+        }
+    }
+
+    /// Right-click (red has no context menus): on a tab, its file's history ("File History:
+    /// Show", the tab activated first); on an explorer file, that file's.
+    fn right_click(&mut self, hit: Hit) {
+        match hit {
+            Hit::Tab(g, i) | Hit::TabClose(g, i) => {
+                self.focus_group(g);
+                self.activate_tab(i);
+                self.execute(Command::ShowFileHistory);
+            }
+            Hit::ExplorerRow(row) if self.ui.side_panel == SidePanel::Explorer => {
+                let index = self.explorer.scroll + row as usize;
+                let Some(path) = self.explorer.rows().get(index).map(|r| r.entry.path.clone()) else {
+                    return;
+                };
+                self.ui.focus = Focus::SidePanel;
+                self.explorer.selected = Some(path);
+                self.execute(Command::Explorer(ExplorerCommand::ShowHistory));
+            }
+            _ => {}
         }
     }
 

@@ -222,10 +222,12 @@ pub enum ExplorerCommand {
     NewFolder,
     Rename,
     Delete,
+    /// "File History: Show" for the selected file (also a right-click on a file's row).
+    ShowHistory,
 }
 
 impl ExplorerCommand {
-    pub const ALL: [ExplorerCommand; 14] = [
+    pub const ALL: [ExplorerCommand; 15] = [
         X::Up,
         X::Down,
         X::PageUp,
@@ -240,6 +242,7 @@ impl ExplorerCommand {
         X::NewFolder,
         X::Rename,
         X::Delete,
+        X::ShowHistory,
     ];
 }
 
@@ -646,6 +649,7 @@ impl Command {
                     X::NewFolder => "newFolder",
                     X::Rename => "rename",
                     X::Delete => "delete",
+                    X::ShowHistory => "showFileHistory",
                 }
             ),
             Command::ShowCommands => "palette.showCommands".into(),
@@ -868,6 +872,7 @@ impl Command {
                 X::NewFolder => "Explorer: New Folder",
                 X::Rename => "Explorer: Rename",
                 X::Delete => "Explorer: Delete",
+                X::ShowHistory => "Explorer: Show File History",
             },
             Command::ShowCommands => "Show All Commands",
             Command::QuickOpen => "Go to File…",

@@ -161,6 +161,8 @@ Go back to any earlier save of a file, independent of git.
   - Compare: side-by-side diff, entry vs current buffer (reuses the git diff view)
   - Restore: replaces the buffer text as one undoable edit; nothing written until you save
 - Also reachable from the explorer (on a file) and the tab bar
+  - Explorer: "Explorer: Show File History" (palette, on the selected file) or right-click on a file's row; tab bar: right-click on a tab (activates it); red has no context menus, so the right-click runs the command directly
+  - The file needn't be open: Compare shows the entry against the file on disk (the buffer once it opens); Restore opens the file first, then restores into the buffer
 
 ### Explorer (file tree)
 - Lazy-loaded directory tree
@@ -732,7 +734,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
         - Done-when tests: `milestone_10_done_when_*` (gutter marker + peek Stage clicked as drawn = `git add -p`; an outside write updates the buffer, gutter and panel, then a CLI `git add` moves it to Staged)
     - Deferred: commit input, discard / revert changes, open-file buttons, merge-conflict section, rename detection; staging a selection or several changes; markers for staged changes; editing / syntax colours in the diff view; clean filters (`core.autocrlf`, `.gitattributes`) when staging hunks; files outside the workspace root aren't watched; a diff tab doesn't follow an explorer rename
     - Still to check by hand: Ctrl+Shift+G, Alt+F5 and F7 per terminal (macOS and Linux); hover `+` / `−` buttons (mouse-move reporting); the `▎ ▁ ▔ ╱ ⎇ −` glyphs and diff backgrounds in 256 colours; the panel, gutter and branch following `git add` / `checkout` / `commit` in another terminal (also with the workspace in a repo subdirectory); gutter peek staging on a real project vs `git add -p`; diff view side by side and inline, typing in the file while it's open; the changed-on-disk banner with an external editor (Reload, Keep Mine, Show Diff); Stage All with several dirty buffers; a repository with thousands of untracked files (the panel rebuilds its rows per frame)
-11. **File history**: snapshot on save, history list, compare (diff view), restore — see [File history](#file-history)
+11. ✅ **File history**: snapshot on save, history list, compare (diff view), restore — see [File history](#file-history)
     - Needs: the atomic save path (M1), the palette (M5), the diff view (M10), explorer rename (M2)
     - The diff view's sides are `diff_view::Text` variants: add one for a history entry (`Pair` of entry ↔ `Text::Buffer`)
     - `history` module: `.red/history/` with its `.gitignore`, snapshot after the save's rename, skip duplicates, `[history]` limits
@@ -748,7 +750,12 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
         - `fileHistory.show` / `fileHistory.restore` (palette, unbound): entries read off-thread, then the palette opens on them (`Picker::History { restore }`; no history → a message, never an empty picker); Enter = Compare (a diff tab `name (History: 3 min ago)`, entry ↔ yours) or, for Restore, restores; Restore on a history diff tab restores its entry
         - `diff_view::Text::History(history::Snapshot)` (Copy: time + 8 hash bytes, read back with `history::read_snapshot`); restore decodes like a load, refuses binary / non-UTF-8 / read-only, diffs like `disk::changes` (re-diffed if the buffer changed meanwhile) and applies one undo step via `apply_changes`; keeps the buffer's BOM / EOL setting
         - Not done: absolute times are UTC (no time-zone database); no key inside the picker to restore instead of compare
-      - 11c: entry points from the explorer (on a file) and the tab bar; the done-when tests (a history write failure never fails a save; restore then undo gives the exact buffer); marks M11 ✅
+      - ✅ 11c: entry points from the explorer (on a file) and the tab bar; the done-when tests (a history write failure never fails a save; restore then undo gives the exact buffer); marks M11 ✅
+        - `explorer.showFileHistory` (palette, unbound; a folder gets a message) and right-click on an explorer row; right-click on a tab activates it and runs File History: Show for its file (also a diff tab's file). red has no context menus: right-click runs the command directly
+        - Files not open: Compare reads the disk (`Text::Buffer` falls back to the file, switching to the buffer once it opens); Restore opens the file first (`OpenRequest.restore`), nothing written
+        - Done-when tests: `milestone_11_done_when_a_history_write_failure_never_fails_a_save`, `milestone_11_done_when_restore_then_undo_gives_back_the_exact_buffer` (text, selections, primary, BOM, dirty state)
+    - Deferred: absolute times in UTC; no key in the picker to restore instead of compare; no context menus (right-click runs the command); two red processes writing one history at once; delete keeping history is untested (explorer delete uses the real Trash)
+    - Still to check by hand: right-click on explorer rows and tabs in real terminals (kitty, iTerm2, tmux may take right-click); Compare / Restore of a file not open from the explorer; restore then undo on a real file with multiple cursors; a broken `.red/history` (e.g. read-only) still lets saves through with the warning; `git status` never shows `.red/`; the `·` in the picker rows
 12. **Tasks**: templates, PTY runner, task tabs in the bottom panel — see [Tasks](#tasks-throwaway-terminals)
     - Needs: workspace trust (M2), the palette (M5), the bottom panel (M9)
     - Templates from `.workspace` `[tasks]` and `~/.config/red/tasks.toml`, workspace wins on a clash

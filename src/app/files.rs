@@ -40,6 +40,9 @@ pub(super) struct OpenRequest {
     pub background: bool,
     /// A rename's edits to make once it's loaded (`App::apply_pending_edits`).
     pub edits: Vec<super::rename::PendingEdit>,
+    /// A file history entry to restore into the buffer once it's loaded (Restore on a file
+    /// that isn't open: `App::restore_history`).
+    pub restore: Option<crate::history::Snapshot>,
 }
 
 impl App {
@@ -96,6 +99,7 @@ impl App {
             goto,
             background,
             edits,
+            restore,
         } = self.opening.remove(&path).unwrap_or_default();
         match result {
             Ok(buffer) => {
@@ -113,6 +117,11 @@ impl App {
                 }
                 if !edits.is_empty() {
                     self.apply_pending_edits(&path, edits);
+                }
+                if let Some(snapshot) = restore
+                    && let Some(rel) = crate::history::relative(&self.workspace.root, &path)
+                {
+                    self.restore_history(path, rel, snapshot);
                 }
             }
             Err(e) if !edits.is_empty() => {

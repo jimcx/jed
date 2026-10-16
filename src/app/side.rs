@@ -48,6 +48,7 @@ impl App {
                     self.prompt = Some(Prompt::ConfirmDelete { path, is_dir });
                 }
             }
+            X::ShowHistory => self.explorer_file_history(),
         }
     }
 
