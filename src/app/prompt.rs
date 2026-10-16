@@ -35,6 +35,10 @@ pub enum Prompt {
         /// The whole file (`git.stageFile`), not the change at `line`.
         file: bool,
     },
+    /// Stage All (the Source Control view) with dirty buffers among the files: save them first.
+    SaveBeforeStageAll {
+        buffers: Vec<BufferId>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,6 +161,14 @@ impl App {
                 }
                 _ if esc || ch == Some('c') => self.close_prompt(),
                 _ => self.prompt = Some(Prompt::SaveBeforeStage { buffer, line, file }),
+            },
+            Prompt::SaveBeforeStageAll { buffers } => match ch {
+                _ if enter || ch == Some('s') => {
+                    self.close_prompt();
+                    self.save_then_stage_all(buffers);
+                }
+                _ if esc || ch == Some('c') => self.close_prompt(),
+                _ => self.prompt = Some(Prompt::SaveBeforeStageAll { buffers }),
             },
             Prompt::ConfirmDelete { path, is_dir } => match ch {
                 _ if enter || ch == Some('t') => {

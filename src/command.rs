@@ -184,6 +184,13 @@ pub enum Command {
     /// Stages / unstages the active file's changes (all of them; from disk after saving).
     StageFile,
     UnstageFile,
+    /// Stages / unstages every changed file (the Source Control view's section buttons).
+    StageAll,
+    UnstageAll,
+    /// Ctrl+Shift+G: shows the Source Control view and gives it the keys.
+    FocusScm,
+    /// The Source Control view's list (`Context::Scm`).
+    Scm(ScmCommand),
 }
 
 /// Focus-group commands listed in the palette and accepted in keybindings (as VS Code: 1 to 8).
@@ -397,6 +404,43 @@ impl LocationsCommand {
     ];
 }
 
+/// The Source Control view's list (`Context::Scm`, while it has the keys).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScmCommand {
+    /// The selection: a row up / down, a page, the first / last row.
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    First,
+    Last,
+    /// Left: collapse a section (from a file: select its section's header); Right: expand it.
+    Collapse,
+    Expand,
+    /// Enter: open the selected file's diff and focus it (a header: collapse / expand).
+    Open,
+    /// Space: open the diff, keeping the keys in the list.
+    Preview,
+    /// Esc: back to the editor.
+    FocusEditor,
+}
+
+impl ScmCommand {
+    pub const ALL: [ScmCommand; 11] = [
+        ScmCommand::Up,
+        ScmCommand::Down,
+        ScmCommand::PageUp,
+        ScmCommand::PageDown,
+        ScmCommand::First,
+        ScmCommand::Last,
+        ScmCommand::Collapse,
+        ScmCommand::Expand,
+        ScmCommand::Open,
+        ScmCommand::Preview,
+        ScmCommand::FocusEditor,
+    ];
+}
+
 /// The completion list (`Context::Suggest`, while it's shown).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SuggestCommand {
@@ -503,7 +547,11 @@ impl Command {
             Command::OpenChange,
             Command::StageFile,
             Command::UnstageFile,
+            Command::StageAll,
+            Command::UnstageAll,
+            Command::FocusScm,
         ]);
+        all.extend(ScmCommand::ALL.map(Command::Scm));
         all
     }
 
@@ -704,6 +752,25 @@ impl Command {
             Command::OpenChange => "git.openChange".into(),
             Command::StageFile => "git.stageFile".into(),
             Command::UnstageFile => "git.unstageFile".into(),
+            Command::StageAll => "git.stageAll".into(),
+            Command::UnstageAll => "git.unstageAll".into(),
+            Command::FocusScm => "view.focusSourceControl".into(),
+            Command::Scm(c) => format!(
+                "scm.{}",
+                match c {
+                    ScmCommand::Up => "up",
+                    ScmCommand::Down => "down",
+                    ScmCommand::PageUp => "pageUp",
+                    ScmCommand::PageDown => "pageDown",
+                    ScmCommand::First => "first",
+                    ScmCommand::Last => "last",
+                    ScmCommand::Collapse => "collapse",
+                    ScmCommand::Expand => "expand",
+                    ScmCommand::Open => "open",
+                    ScmCommand::Preview => "preview",
+                    ScmCommand::FocusEditor => "focusEditor",
+                }
+            ),
             Command::PreviousChange => "editor.previousChange".into(),
         }
     }
@@ -886,6 +953,22 @@ impl Command {
             Command::OpenChange => "Git: Open Changes",
             Command::StageFile => "Git: Stage File",
             Command::UnstageFile => "Git: Unstage File",
+            Command::StageAll => "Git: Stage All Changes",
+            Command::UnstageAll => "Git: Unstage All Changes",
+            Command::FocusScm => "View: Show Source Control",
+            Command::Scm(c) => match c {
+                ScmCommand::Up => "Source Control: Select Previous Row",
+                ScmCommand::Down => "Source Control: Select Next Row",
+                ScmCommand::PageUp => "Source Control: Select Row a Page Up",
+                ScmCommand::PageDown => "Source Control: Select Row a Page Down",
+                ScmCommand::First => "Source Control: Select First Row",
+                ScmCommand::Last => "Source Control: Select Last Row",
+                ScmCommand::Collapse => "Source Control: Collapse",
+                ScmCommand::Expand => "Source Control: Expand",
+                ScmCommand::Open => "Source Control: Open Changes",
+                ScmCommand::Preview => "Source Control: Open Changes, Keep Focus",
+                ScmCommand::FocusEditor => "Source Control: Back to Editor",
+            },
             Command::PreviousChange => "Go to Previous Change",
         };
         s.into()
@@ -995,9 +1078,13 @@ mod tests {
             Command::OpenChange => 70,
             Command::StageFile => 71,
             Command::UnstageFile => 72,
+            Command::StageAll => 73,
+            Command::UnstageAll => 74,
+            Command::FocusScm => 75,
+            Command::Scm(_) => 76,
         }
     }
-    const VARIANTS: u8 = 73;
+    const VARIANTS: u8 = 77;
 
     #[test]
     fn all_lists_every_variant() {
@@ -1016,6 +1103,7 @@ mod tests {
         assert_eq!(count(54), ProblemsCommand::ALL.len());
         assert_eq!(count(57), LocationsCommand::ALL.len());
         assert_eq!(count(59), SuggestCommand::ALL.len());
+        assert_eq!(count(76), ScmCommand::ALL.len());
     }
 
     #[test]

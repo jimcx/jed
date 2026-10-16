@@ -84,6 +84,19 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) {
             lines.push(Line::raw(""));
             lines.push(buttons(&[("S", "ave and Stage"), ("C", "ancel")]));
         }
+        Prompt::SaveBeforeStageAll { buffers } => {
+            let q = match buffers.as_slice() {
+                [one] => format!(" Save {} before staging all changes?", name_of(*one)),
+                many => format!(" Save {} files before staging all changes?", many.len()),
+            };
+            lines.push(Line::raw(q));
+            for id in buffers.iter().take(8).filter(|_| buffers.len() > 1) {
+                lines.push(Line::raw(format!("   {}", name_of(*id))));
+            }
+            lines.push(Line::raw(" Changes are staged from the files on disk."));
+            lines.push(Line::raw(""));
+            lines.push(buttons(&[("S", "ave and Stage"), ("C", "ancel")]));
+        }
         Prompt::ConfirmDelete { path, is_dir } => {
             let what = if *is_dir { "folder" } else { "file" };
             lines.push(Line::raw(format!(" Move {what} {} to the Trash?", rel(path))));

@@ -1,4 +1,9 @@
-//! Milestone 10 end to end (so far 10a–10d). 10a: the git status read off-thread at startup and
+//! Milestone 10 end to end. Done when: staging a single hunk from the gutter gives the same
+//! index as `git add -p` (`milestone_10_done_when_staging_a_hunk_from_the_gutter_matches_add_p`,
+//! real mouse clicks on the drawn marker and Stage button); changing a file outside red updates
+//! the gutter, the Source Control panel and the open buffer, and `git add` from the command line
+//! moves it to Staged Changes and clears the gutter
+//! (`milestone_10_done_when_a_change_outside_red_updates_gutter_panel_and_buffer`). 10a: the git status read off-thread at startup and
 //! kept current through `notify` (work tree edits, staging and branch switches made outside
 //! red), the branch in the status bar (unborn and detached HEAD too), git colouring in the
 //! explorer (changed files and the folders holding them), no repository (git off), and a
@@ -28,6 +33,16 @@
 //! copies it, closing asks nothing; every other command does nothing to the buffer from it;
 //! the banner's Show Diff (on disk ↔ yours, the banner's buttons working over it); a 1 MB
 //! diff loads off the UI thread and scrolls within a frame (release).
+//! 10e, the Source Control view: Ctrl+Shift+G shows it with the keys (Esc back to an editor
+//! tab), the branch, "Staged Changes" / "Changes" with counts (untracked `U` and deleted files
+//! in Changes, letters and names in the explorer's colours), collapsing (keys, Enter, clicks),
+//! the selection kept on its file across status reads (the next file once it leaves its
+//! section); Enter / Space / click / double click open the right diff (staged, unstaged,
+//! untracked, deleted) with the focus where VS Code puts it; staging / unstaging a file
+//! (command on the selected row, `+` / `−` buttons) and Stage All / Unstage All (header
+//! buttons, palette) give `git add -A` / `git reset`'s index; a dirty open file is saved first
+//! (asked; one prompt for Stage All, every save waited for, a save in flight too), a deleted
+//! file's open tab stages its deletion without saving; no repository until `git init`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1959,4 +1974,603 @@ async fn milestone_10_diff_of_a_big_file() {
         assert!(loaded < Duration::from_secs(2), "slow load: {loaded:?}");
         assert!(frames / n < Duration::from_millis(16), "slow frames: {:?}", frames / n);
     }
+}
+
+// 10e: the Source Control view, and the done-when tests.
+
+use crate::app::Prompt;
+use crate::scm::{RowKey, Section};
+
+fn ctrl_shift_g(app: &mut App) {
+    app.press(KeyCode::Char('g'), M::CONTROL | M::SHIFT);
+}
+
+/// The Source Control list as drawn: each row's words (stage / unstage buttons left out).
+fn scm_rows(app: &mut App) -> Vec<String> {
+    let term = draw(app);
+    let Some(hit) = app.hits.scm.clone() else {
+        return Vec::new();
+    };
+    let screen = lines(&term);
+    (0..hit.rows.len())
+        .map(|i| {
+            let row: String = screen[(hit.list.y + i as u16) as usize]
+                .chars()
+                .skip(hit.list.x as usize)
+                .take(hit.list.width as usize)
+                .collect();
+            row.split_whitespace()
+                .filter(|w| *w != "+" && *w != "−")
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect()
+}
+
+/// The side panel's text below its title (the branch line, a message), words joined.
+fn side_text(app: &mut App) -> String {
+    let term = draw(app);
+    let side = app.hits.regions.side.unwrap();
+    let screen = lines(&term);
+    screen[(side.y + 1) as usize..(side.y + side.height) as usize]
+        .iter()
+        .map(|r| {
+            r.chars()
+                .skip(side.x as usize)
+                .take(side.width as usize - 1)
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The screen cell of the row `key` names (its first column), after a draw.
+fn scm_row(app: &mut App, key: &RowKey) -> (u16, u16) {
+    let _ = draw(app);
+    let hit = app.hits.scm.clone().unwrap();
+    let i = hit.rows.iter().position(|k| k == key).expect("the row is drawn");
+    (hit.list.x + 2, hit.list.y + i as u16)
+}
+
+/// The row `key`'s button: the pointer moves over the row (buttons show on hover), then it's drawn.
+fn scm_button(app: &mut App, key: &RowKey) -> (u16, u16) {
+    let (x, y) = scm_row(app, key);
+    app.mouse(MouseEventKind::Moved, x, y);
+    let _ = draw(app);
+    let hit = app.hits.scm.clone().unwrap();
+    let (r, ..) = hit
+        .buttons
+        .iter()
+        .find(|(_, k, _)| k == key)
+        .expect("the row's button is drawn");
+    (r.x, r.y)
+}
+
+fn click(app: &mut App, (x, y): (u16, u16)) {
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+}
+
+fn file(section: Section, path: &str) -> RowKey {
+    RowKey::File(section, PathBuf::from(path))
+}
+
+fn selected_key(app: &App) -> Option<RowKey> {
+    let status = app.git.status.as_ref()?;
+    let rows = app.scm.rows(status);
+    app.scm.selected(&rows).map(|r| r.key())
+}
+
+/// Every stage / unstage task ended and the status read after it.
+async fn settle_stage(app: &mut App) -> bool {
+    app.settle(|a| a.diffs.staging == 0 && a.quick_diff.staging == 0 && !a.git.running() && a.git.status.is_some())
+        .await
+}
+
+/// a.txt modified, b.txt new and staged, c.txt staged and modified again, d.txt deleted,
+/// sub/e.txt untracked.
+fn scm_repo(root: &Path) {
+    repo_with(
+        root,
+        &[("a.txt", "a\n"), ("c.txt", "c\n"), ("d.txt", "d\n")],
+        &[("a.txt", "a2\n"), ("b.txt", "b\n"), ("c.txt", "c2\n")],
+    );
+    git(root, &["add", "b.txt", "c.txt"]);
+    fs::write(root.join("c.txt"), "c3\n").unwrap();
+    fs::remove_file(root.join("d.txt")).unwrap();
+    fs::create_dir(root.join("sub")).unwrap();
+    fs::write(root.join("sub/e.txt"), "e\n").unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_10_done_when_staging_a_hunk_from_the_gutter_matches_add_p() {
+    let (_d, root, state) = dirs();
+    let (original, changed) = three_changes();
+    repo_with(&root, &[("f.txt", &original)], &[("f.txt", &changed)]);
+    let mut app = open_file_app(&root, &state, "f.txt");
+    assert!(settle_markers(&mut app).await);
+    let reference = copy_repo(&root, "reference");
+    // The middle change (the line added after line 10, buffer line 11), clicked in its gutter
+    // cell as drawn, then the peek's Stage button as drawn.
+    let _ = markers(&mut app);
+    let text_rect = app.hits.group(app.groups.active).unwrap().text;
+    let top = app.group().active_tab().unwrap().view.top_line();
+    assert_eq!(top, 0);
+    click(&mut app, (text_rect.x - 1, text_rect.y + 11));
+    assert_eq!(app.quick_diff.peek.as_ref().map(|p| p.lines.clone()), Some(11..12));
+    let _ = draw(&mut app);
+    let stage = app.hits.quick_diff.expect("the peek is drawn").stage;
+    click(&mut app, (stage.x + 1, stage.y));
+    assert!(settle_staged(&mut app, "Staged the change at line 12").await);
+    // `git add -p` in a copy, answering yes to the second hunk only.
+    git_with_input(&reference, &["add", "-p", "--", "f.txt"], Some("n\ny\nn\n"));
+    assert_eq!(index_state(&root), index_state(&reference));
+    assert!(git(&root, &["diff", "--cached"]).contains("+added"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_10_done_when_a_change_outside_red_updates_gutter_panel_and_buffer() {
+    let (_d, root, state) = dirs();
+    let original = numbered(10);
+    repo_with(&root, &[("f.txt", &original)], &[]);
+    let mut app = open_file_app(&root, &state, "f.txt");
+    ctrl_shift_g(&mut app);
+    app.press(KeyCode::Esc, M::NONE);
+    assert_eq!(app.ui.focus, Focus::Editor);
+    assert!(settle_markers(&mut app).await);
+    assert!(side_text(&mut app).contains("No changes in the working tree."));
+    assert_eq!(markers(&mut app), vec![]);
+
+    // Written outside red: the clean buffer reloads, the gutter marks the line, the panel lists it.
+    let changed = original.replace("line 3\n", "three\n");
+    fs::write(root.join("f.txt"), &changed).unwrap();
+    assert!(
+        app.settle(|a| text(a) == changed && a.git.status.as_ref().is_some_and(|s| !s.entries.is_empty()))
+            .await
+    );
+    assert!(settle_markers(&mut app).await);
+    let modified = marker_colour(&app, "editorGutter.modifiedBackground");
+    assert_eq!(markers(&mut app), vec![(3, "▎".to_string(), modified)]);
+    assert_eq!(scm_rows(&mut app), ["▾ Changes 1", "f.txt M"]);
+
+    // `git add` from the command line: it moves to Staged Changes, the gutter is clear.
+    git(&root, &["add", "f.txt"]);
+    assert!(
+        settle_git(&mut app, |s| s
+            .entries
+            .iter()
+            .all(|e| e.staged.is_some() && e.unstaged.is_none()))
+        .await
+    );
+    assert!(settle_markers(&mut app).await);
+    assert_eq!(markers(&mut app), vec![]);
+    assert_eq!(scm_rows(&mut app), ["▾ Staged Changes 1", "f.txt M", "▾ Changes 0"]);
+    assert_eq!(text(&app), changed);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_10_source_control_sections_counts_and_keys() {
+    let (_d, root, state) = dirs();
+    scm_repo(&root);
+    let mut app = open_app(&root, &state);
+    assert!(settle_git(&mut app, |s| s.entries.len() == 5).await);
+    // The activity bar's icon shows it; Ctrl+Shift+G (both platforms) gives it the keys with
+    // the first file selected.
+    ctrl_shift_g(&mut app);
+    assert_eq!(
+        (app.ui.focus, app.ui.side_panel),
+        (Focus::SidePanel, crate::layout::SidePanel::SourceControl)
+    );
+    assert_eq!(app.last_command, Some(Command::FocusScm));
+    assert_eq!(selected_key(&app), Some(file(Section::Staged, "b.txt")));
+    assert!(
+        side_text(&mut app).starts_with("⎇ main*+ ▾ Staged Changes 2"),
+        "{}",
+        side_text(&mut app)
+    );
+    let rows = scm_rows(&mut app);
+    assert_eq!(
+        rows,
+        [
+            "▾ Staged Changes 2",
+            "b.txt A",
+            "c.txt M",
+            "▾ Changes 4",
+            "a.txt M",
+            "c.txt M",
+            "d.txt D",
+            "e.txt sub U"
+        ]
+    );
+    // Letters and names in the explorer's colours; a deleted file struck through.
+    let term = draw(&mut app);
+    let hit = app.hits.scm.clone().unwrap();
+    let buf = term.backend().buffer();
+    let letter = |row: u16| buf[(hit.list.x + hit.list.width - 2, hit.list.y + row)].clone();
+    assert_eq!(Option::<Color>::from(letter(1).fg), colour(&app, Decoration::Added));
+    assert_eq!(Option::<Color>::from(letter(4).fg), colour(&app, Decoration::Modified));
+    assert_eq!(Option::<Color>::from(letter(7).fg), colour(&app, Decoration::Untracked));
+    let d_name = buf[(hit.list.x + 4, hit.list.y + 6)].clone();
+    assert_eq!(Option::<Color>::from(d_name.fg), colour(&app, Decoration::Deleted));
+    assert!(d_name.modifier.contains(Modifier::CROSSED_OUT));
+
+    // Keys: Down / End / Home / Page, Left on a file selects its header and collapses it.
+    app.press(KeyCode::Down, M::NONE);
+    assert_eq!(selected_key(&app), Some(file(Section::Staged, "c.txt")));
+    app.press(KeyCode::End, M::NONE);
+    assert_eq!(selected_key(&app), Some(file(Section::Changes, "sub/e.txt")));
+    app.press(KeyCode::Left, M::NONE);
+    assert_eq!(selected_key(&app), Some(RowKey::Header(Section::Changes)));
+    app.press(KeyCode::Left, M::NONE);
+    assert_eq!(scm_rows(&mut app)[3..], ["▸ Changes 4"]);
+    app.press(KeyCode::Right, M::NONE);
+    assert_eq!(scm_rows(&mut app).len(), 8);
+    // Enter on a header toggles it too; a click on a header as well.
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(scm_rows(&mut app).len(), 4);
+    let header = scm_row(&mut app, &RowKey::Header(Section::Changes));
+    click(&mut app, header);
+    assert_eq!(scm_rows(&mut app).len(), 8);
+    let header = scm_row(&mut app, &RowKey::Header(Section::Staged));
+    click(&mut app, header);
+    assert_eq!(scm_rows(&mut app)[..2], ["▸ Staged Changes 2", "▾ Changes 4"]);
+    click(&mut app, header);
+    app.press(KeyCode::Home, M::NONE);
+    assert_eq!(selected_key(&app), Some(RowKey::Header(Section::Staged)));
+    app.press(KeyCode::PageDown, M::NONE);
+    assert_eq!(selected_key(&app), Some(file(Section::Changes, "sub/e.txt")));
+    // Plain keys don't type anywhere; Esc goes back to the editor only when there's a tab.
+    app.press(KeyCode::Char('x'), M::NONE);
+    app.press(KeyCode::Esc, M::NONE);
+    assert_eq!(app.ui.focus, Focus::SidePanel, "no tab: the panel keeps the keys");
+    app.test_open(Buffer::open(&root.join("a.txt")).unwrap());
+    ctrl_shift_g(&mut app);
+    assert_eq!(app.ui.focus, Focus::SidePanel);
+    app.press(KeyCode::Esc, M::NONE);
+    assert_eq!(app.ui.focus, Focus::Editor);
+    assert_eq!(text(&app), "a2\n", "nothing typed");
+    // The wheel scrolls a list taller than the panel.
+    let mut small = Terminal::new(TestBackend::new(100, 7)).unwrap();
+    small.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    let list = app.hits.scm.clone().unwrap().list;
+    app.mouse(MouseEventKind::ScrollDown, list.x + 2, list.y);
+    small.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    assert_ne!(app.hits.scm.clone().unwrap().rows[0], RowKey::Header(Section::Staged));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_10_source_control_opens_diffs() {
+    let (_d, root, state) = dirs();
+    scm_repo(&root);
+    let mut app = open_app(&root, &state);
+    assert!(settle_git(&mut app, |s| s.entries.len() == 5).await);
+    ctrl_shift_g(&mut app);
+    // Enter on a staged file: the staged diff (HEAD ↔ index), the editor focused.
+    app.press(KeyCode::Down, M::NONE);
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(app.ui.focus, Focus::Editor);
+    assert_eq!(
+        (diff_tab(&app).path.clone(), diff_tab(&app).pair),
+        (root.join("c.txt"), Pair::STAGED)
+    );
+    // Space on a Changes row: its unstaged diff, the keys staying in the list.
+    ctrl_shift_g(&mut app);
+    let key = file(Section::Changes, "c.txt");
+    let (x, y) = scm_row(&mut app, &key);
+    app.mouse(MouseEventKind::Moved, x, y); // only shows the buttons
+    // From the staged c.txt (still selected) down to it.
+    assert_eq!(selected_key(&app), Some(file(Section::Staged, "c.txt")));
+    for _ in 0..3 {
+        app.press(KeyCode::Down, M::NONE);
+    }
+    assert_eq!(selected_key(&app), Some(key));
+    app.press(KeyCode::Char(' '), M::NONE);
+    assert_eq!(app.ui.focus, Focus::SidePanel);
+    assert_eq!(
+        (diff_tab(&app).path.clone(), diff_tab(&app).pair),
+        (root.join("c.txt"), Pair::UNSTAGED)
+    );
+    assert_eq!(app.group().tabs.len(), 2);
+    assert!(settle_diffs(&mut app).await);
+    let screen = lines(&draw(&mut app));
+    assert!(
+        screen.iter().any(|r| r.contains("- c2")) && screen.iter().any(|r| r.contains("+ c3")),
+        "{screen:#?}"
+    );
+    // A click on the untracked file opens its diff (all added), keeping the list's keys; a
+    // double click focuses the editor.
+    let e = scm_row(&mut app, &file(Section::Changes, "sub/e.txt"));
+    click(&mut app, e);
+    assert_eq!(app.ui.focus, Focus::SidePanel);
+    assert_eq!(
+        (diff_tab(&app).path.clone(), diff_tab(&app).pair),
+        (root.join("sub/e.txt"), Pair::UNSTAGED)
+    );
+    assert!(settle_diffs(&mut app).await);
+    assert!(diff_tab(&app).doc.as_ref().is_some());
+    let d = scm_row(&mut app, &file(Section::Changes, "d.txt"));
+    click(&mut app, d);
+    click(&mut app, d);
+    assert_eq!(app.ui.focus, Focus::Editor);
+    assert_eq!(diff_tab(&app).path, root.join("d.txt"));
+    // The same file again: its tab is shown, not another.
+    let tabs = app.group().tabs.len();
+    ctrl_shift_g(&mut app);
+    let e = scm_row(&mut app, &file(Section::Changes, "sub/e.txt"));
+    click(&mut app, e);
+    assert_eq!(app.group().tabs.len(), tabs);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_10_source_control_stages_and_unstages() {
+    let (_d, root, state) = dirs();
+    scm_repo(&root);
+    let mut app = open_app(&root, &state);
+    assert!(settle_git(&mut app, |s| s.entries.len() == 5).await);
+    let reference = copy_repo(&root, "reference");
+    ctrl_shift_g(&mut app);
+
+    // The command on the selected file (a.txt in Changes): staged; the selection goes to the
+    // next file in Changes.
+    let a = file(Section::Changes, "a.txt");
+    let (x, y) = scm_row(&mut app, &a);
+    click(&mut app, (x, y));
+    assert_eq!(selected_key(&app), Some(a));
+    ctrl_shift_g(&mut app);
+    run_command(&mut app, "Git: Stage File");
+    assert!(settle_stage(&mut app).await);
+    assert_eq!(
+        git(&root, &["diff", "--cached", "--name-only"]),
+        "a.txt\nb.txt\nc.txt\n"
+    );
+    assert_eq!(selected_key(&app), Some(file(Section::Changes, "c.txt")));
+    // Unstaging a file with no staged changes says so.
+    let e = file(Section::Changes, "sub/e.txt");
+    assert!(app.scm.select_key(&app.scm.rows(app.git.status.as_ref().unwrap()), &e));
+    run_command(&mut app, "Git: Unstage File");
+    assert!(
+        app.message
+            .as_ref()
+            .unwrap()
+            .text
+            .contains("e.txt has no staged changes")
+    );
+    // The `+` button of the untracked file (shown on hover): staged as added.
+    let b = scm_button(&mut app, &e);
+    click(&mut app, b);
+    assert!(settle_stage(&mut app).await);
+    assert!(git(&root, &["diff", "--cached", "--name-status"]).contains("A\tsub/e.txt"));
+    // The `−` button of a staged file: unstaged.
+    let b = scm_button(&mut app, &file(Section::Staged, "a.txt"));
+    click(&mut app, b);
+    assert!(settle_stage(&mut app).await);
+    assert!(!git(&root, &["diff", "--cached", "--name-only"]).contains("a.txt"));
+
+    // Changes' Stage All (its header's button): `git add -A`, the deletion staged too.
+    let b = scm_button(&mut app, &RowKey::Header(Section::Changes));
+    click(&mut app, b);
+    assert!(settle_stage(&mut app).await);
+    git(&reference, &["add", "-A"]);
+    assert_eq!(index_state(&root), index_state(&reference));
+    assert_eq!(
+        scm_rows(&mut app),
+        [
+            "▾ Staged Changes 5",
+            "a.txt M",
+            "b.txt A",
+            "c.txt M",
+            "d.txt D",
+            "e.txt sub U".replace(" U", " A").as_str(),
+            "▾ Changes 0"
+        ]
+    );
+    // Staged Changes' Unstage All: `git reset`.
+    let b = scm_button(&mut app, &RowKey::Header(Section::Staged));
+    click(&mut app, b);
+    assert!(settle_stage(&mut app).await);
+    git(&reference, &["reset", "-q"]);
+    assert_eq!(index_state(&root), index_state(&reference));
+    // And the palette commands, from anywhere.
+    app.press(KeyCode::Esc, M::NONE);
+    run_command(&mut app, "Git: Stage All Changes");
+    assert!(settle_stage(&mut app).await);
+    git(&reference, &["add", "-A"]);
+    assert_eq!(index_state(&root), index_state(&reference));
+    run_command(&mut app, "Git: Unstage All Changes");
+    assert!(settle_stage(&mut app).await);
+    git(&reference, &["reset", "-q"]);
+    assert_eq!(index_state(&root), index_state(&reference));
+    run_command(&mut app, "Git: Unstage All Changes");
+    assert!(app.message.as_ref().unwrap().text.contains("No staged changes"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_10_source_control_selection_kept_across_live_updates() {
+    let (_d, root, state) = dirs();
+    scm_repo(&root);
+    let mut app = open_app(&root, &state);
+    assert!(settle_git(&mut app, |s| s.entries.len() == 5).await);
+    ctrl_shift_g(&mut app);
+    let c = file(Section::Changes, "c.txt");
+    let at = scm_row(&mut app, &c);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), at.0, at.1);
+    assert_eq!(selected_key(&app), Some(c.clone()));
+    // Files appear above it outside red (one untracked, one staged): still on c.txt.
+    fs::write(root.join("0.txt"), "0\n").unwrap();
+    fs::write(root.join("1.txt"), "1\n").unwrap();
+    git(&root, &["add", "1.txt"]);
+    assert!(settle_git(&mut app, |s| s.entries.len() == 7).await);
+    assert_eq!(selected_key(&app), Some(c.clone()));
+    let rows = scm_rows(&mut app);
+    assert_eq!(rows[0], "▾ Staged Changes 3");
+    // c.txt's work tree change undone outside red: it leaves Changes, the next file (d.txt)
+    // is selected — and stays so when c.txt comes back.
+    fs::write(root.join("c.txt"), "c2\n").unwrap();
+    assert!(
+        settle_git(&mut app, |s| s
+            .entry(Path::new("c.txt"))
+            .is_some_and(|e| e.unstaged.is_none()))
+        .await
+    );
+    assert_eq!(selected_key(&app), Some(file(Section::Changes, "d.txt")));
+    fs::write(root.join("c.txt"), "c4\n").unwrap();
+    assert!(
+        settle_git(&mut app, |s| s
+            .entry(Path::new("c.txt"))
+            .is_some_and(|e| e.unstaged.is_some()))
+        .await
+    );
+    assert_eq!(selected_key(&app), Some(file(Section::Changes, "d.txt")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_10_source_control_saves_dirty_files_before_staging() {
+    let (_d, root, state) = dirs();
+    scm_repo(&root);
+    let mut app = open_file_app(&root, &state, "a.txt");
+    assert!(settle_git(&mut app, |s| s.entries.len() == 5).await);
+    app.press(KeyCode::End, M::NONE);
+    app.type_text("x");
+    assert!(app.active_buffer().unwrap().is_dirty());
+    // Staging a.txt from the list: asked to save first; Cancel stages nothing.
+    ctrl_shift_g(&mut app);
+    let a = file(Section::Changes, "a.txt");
+    let b = scm_button(&mut app, &a);
+    click(&mut app, b);
+    assert!(matches!(app.prompt, Some(Prompt::SaveBeforeStage { file: true, .. })));
+    app.press(KeyCode::Esc, M::NONE);
+    assert!(app.prompt.is_none() && app.active_buffer().unwrap().is_dirty());
+    assert!(!git(&root, &["diff", "--cached", "--name-only"]).contains("a.txt"));
+    // Save and Stage: written, then staged from disk.
+    let b = scm_button(&mut app, &a);
+    click(&mut app, b);
+    app.press(KeyCode::Char('s'), M::NONE);
+    assert!(settle_staged(&mut app, "Staged a.txt").await);
+    assert!(settle_stage(&mut app).await);
+    assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "a2x\n");
+    assert!(git(&root, &["diff", "--cached"]).contains("+a2x"));
+
+    // Stage All with dirty buffers among its files: one prompt, every one saved, then
+    // everything staged from disk.
+    let c = root.join("c.txt");
+    let e = root.join("sub/e.txt");
+    for (path, typed) in [(&c, "y"), (&e, "z")] {
+        app.test_open(Buffer::open(path).unwrap());
+        app.press(KeyCode::End, M::NONE);
+        app.type_text(typed);
+    }
+    ctrl_shift_g(&mut app);
+    let b = scm_button(&mut app, &RowKey::Header(Section::Changes));
+    click(&mut app, b);
+    assert!(matches!(&app.prompt, Some(Prompt::SaveBeforeStageAll { buffers }) if buffers.len() == 2));
+    let screen = lines(&draw(&mut app));
+    assert!(
+        screen
+            .iter()
+            .any(|r| r.contains("Save 2 files before staging all changes?")),
+        "{screen:#?}"
+    );
+    // Cancel: nothing saved or staged.
+    app.press(KeyCode::Esc, M::NONE);
+    assert!(app.prompt.is_none());
+    assert_eq!(fs::read_to_string(&c).unwrap(), "c3\n");
+    assert_eq!(
+        git(&root, &["diff", "--cached", "--name-only"]),
+        "a.txt\nb.txt\nc.txt\n"
+    );
+    click(&mut app, b);
+    app.press(KeyCode::Enter, M::NONE);
+    assert!(
+        app.settle(|a| a.message.as_ref().is_some_and(|m| m.text.contains("Staged 3 files")))
+            .await
+    );
+    assert!(settle_stage(&mut app).await);
+    assert_eq!(fs::read_to_string(&c).unwrap(), "c3y\n");
+    assert_eq!(fs::read_to_string(&e).unwrap(), "ez\n");
+    assert_eq!(git(&root, &["diff", "--name-only"]), "", "nothing left unstaged");
+    let cached = git(&root, &["diff", "--cached"]);
+    assert!(cached.contains("+c3y") && cached.contains("+ez"), "{cached}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_10_source_control_stage_all_waits_for_a_save_in_flight() {
+    let (_d, root, state) = dirs();
+    scm_repo(&root);
+    let mut app = open_file_app(&root, &state, "a.txt");
+    assert!(settle_git(&mut app, |s| s.entries.len() == 5).await);
+    app.press(KeyCode::End, M::NONE);
+    app.type_text("x");
+    // Saved, and Stage All before the save has ended: no prompt, it waits for the save.
+    app.press(KeyCode::Char('s'), cmd());
+    assert!(app.active_buffer().unwrap().save_in_flight());
+    run_command(&mut app, "Git: Stage All Changes");
+    assert!(app.prompt.is_none());
+    assert!(app.message.as_ref().unwrap().text.contains("Waiting for the saves"));
+    assert!(settle_staged(&mut app, "Staged 4 files").await);
+    assert!(settle_stage(&mut app).await);
+    assert_eq!(git(&root, &["diff", "--name-only"]), "", "nothing left unstaged");
+    assert!(git(&root, &["diff", "--cached"]).contains("+a2x"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_10_source_control_without_a_repository() {
+    let (_d, root, state) = dirs();
+    fs::write(root.join("a.txt"), "a\n").unwrap();
+    let mut app = open_app(&root, &state);
+    assert!(app.settle(|a| !a.git.running()).await);
+    ctrl_shift_g(&mut app);
+    assert_eq!(app.ui.focus, Focus::SidePanel);
+    let text = side_text(&mut app);
+    assert!(text.contains("doesn't have a git repository"), "{text}");
+    assert!(app.hits.scm.is_none());
+    run_command(&mut app, "Git: Stage All Changes");
+    assert!(app.message.as_ref().unwrap().text.contains("Not in a git repository"));
+    // The keys do nothing, and clicks don't panic.
+    app.press(KeyCode::Down, M::NONE);
+    app.press(KeyCode::Enter, M::NONE);
+    let side = app.hits.regions.side.unwrap();
+    click(&mut app, (side.x + 3, side.y + 3));
+    assert!(app.group().tabs.is_empty());
+    // `git init` outside red: the view comes alive.
+    init(&root);
+    assert!(settle_git(&mut app, |s| !s.entries.is_empty()).await);
+    assert_eq!(scm_rows(&mut app), ["▾ Changes 1", "a.txt U"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_10_source_control_stages_a_deleted_file_with_its_tab_open() {
+    let (_d, root, state) = dirs();
+    repo_with(&root, &[("d.txt", "d\n"), ("e.txt", "e\n")], &[]);
+    let mut app = open_file_app(&root, &state, "d.txt");
+    app.test_open(Buffer::open(&root.join("e.txt")).unwrap());
+    assert!(app.settle(|a| a.git.status.is_some()).await);
+    fs::remove_file(root.join("d.txt")).unwrap();
+    fs::remove_file(root.join("e.txt")).unwrap();
+    assert!(
+        app.settle(
+            |a| a.buffers.iter().all(|(_, b)| b.deleted) && a.git.status.as_ref().is_some_and(|s| s.entries.len() == 2)
+        )
+        .await
+    );
+    // The file's button: the deletion is staged, nothing asked, the file not recreated.
+    ctrl_shift_g(&mut app);
+    let b = scm_button(&mut app, &file(Section::Changes, "d.txt"));
+    click(&mut app, b);
+    assert!(app.prompt.is_none(), "nothing asked");
+    assert!(settle_stage(&mut app).await);
+    assert!(!root.join("d.txt").exists());
+    assert_eq!(git(&root, &["diff", "--cached", "--name-status"]), "D\td.txt\n");
+    // Stage All likewise.
+    let b = scm_button(&mut app, &RowKey::Header(Section::Changes));
+    click(&mut app, b);
+    assert!(app.prompt.is_none(), "nothing asked");
+    assert!(settle_stage(&mut app).await);
+    assert!(!root.join("e.txt").exists());
+    assert_eq!(
+        git(&root, &["diff", "--cached", "--name-status"]),
+        "D\td.txt\nD\te.txt\n"
+    );
 }

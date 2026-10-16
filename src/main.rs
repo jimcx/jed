@@ -53,6 +53,7 @@ mod paths;
 mod problems;
 mod quick_diff;
 mod rename;
+mod scm;
 mod search;
 mod search_view;
 mod selection;

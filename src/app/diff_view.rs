@@ -81,7 +81,7 @@ impl App {
     }
 
     /// The buffer open on `path`.
-    fn buffer_of(&self, path: &Path) -> Option<BufferId> {
+    pub(super) fn buffer_of(&self, path: &Path) -> Option<BufferId> {
         self.buffers.iter().find(|(_, b)| b.path == path).map(|(id, _)| id)
     }
 
@@ -95,7 +95,7 @@ impl App {
     }
 
     /// The repository and `path` in it; `None` (with a message) outside one.
-    fn repo_path(&mut self, path: &Path) -> Option<(Repo, PathBuf)> {
+    pub(super) fn repo_path(&mut self, path: &Path) -> Option<(Repo, PathBuf)> {
         let found = self
             .git
             .status
@@ -314,12 +314,24 @@ impl App {
     /// `git.stageFile` / `git.unstageFile`: the active file (a text or diff tab's). Staging an
     /// open buffer's file goes through the gutter's path (saved first).
     pub(super) fn stage_file_command(&mut self, unstage: bool) {
-        let Some(path) = self.active_path() else { return };
+        if let Some(path) = self.active_path() {
+            self.stage_path(path, unstage);
+        }
+    }
+
+    /// Stages / unstages the whole file at `path` (absolute; the Source Control view's rows
+    /// too): an open buffer's through the gutter's path (saved first, a save in flight waited
+    /// for), else — also a deleted file's open tab — off-thread at once.
+    pub(super) fn stage_path(&mut self, path: PathBuf, unstage: bool) {
         let Some((repo, rel)) = self.repo_path(&path) else {
             return;
         };
         let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        if !unstage && let Some(buffer) = self.buffer_of(&path) {
+        // A deleted file's tab isn't saved first: its deletion is what's staged.
+        if !unstage
+            && let Some(buffer) = self.buffer_of(&path)
+            && !self.buffers.get(buffer).is_some_and(|b| b.deleted)
+        {
             self.stage_at(StageAt {
                 buffer,
                 line: 0,
@@ -334,7 +346,7 @@ impl App {
         }
     }
 
-    fn spawn_diff_stage(
+    pub(super) fn spawn_diff_stage(
         &mut self,
         done: String,
         failed: &'static str,

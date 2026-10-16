@@ -121,15 +121,21 @@ impl Entry {
     /// The explorer's colour for this file: the work tree's change wins over the index's (VS
     /// Code's git decorations).
     pub fn decoration(&self) -> Option<Decoration> {
-        let d = |c| match c {
+        self.unstaged.or(self.staged).map(Change::decoration)
+    }
+}
+
+impl Change {
+    /// The colour and letter of this change (the Source Control view shows each side's).
+    pub fn decoration(self) -> Decoration {
+        match self {
             Change::Added => Decoration::Added,
             Change::Modified | Change::TypeChanged => Decoration::Modified,
             Change::Deleted => Decoration::Deleted,
             Change::Renamed => Decoration::Renamed,
             Change::Untracked => Decoration::Untracked,
             Change::Conflicted => Decoration::Conflicted,
-        };
-        self.unstaged.or(self.staged).map(d)
+        }
     }
 }
 

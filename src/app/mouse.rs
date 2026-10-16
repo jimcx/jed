@@ -78,6 +78,7 @@ impl App {
                 };
                 match hit {
                     Hit::SidePanel if self.ui.side_panel == SidePanel::Search => self.search_scroll(delta),
+                    Hit::SidePanel if self.ui.side_panel == SidePanel::SourceControl => self.scm_scroll(delta),
                     Hit::ExplorerRow(_) | Hit::SidePanel => self.explorer.scroll_by(delta),
                     Hit::Panel | Hit::PanelTab(_) | Hit::PanelBorder => match self.ui.panel_tab {
                         PanelTab::Problems => self.problems_scroll(delta),
@@ -149,6 +150,7 @@ impl App {
                 None => {}
             },
             MouseEventKind::Up(MouseButton::Left) => self.drag = None,
+            MouseEventKind::Moved => self.scm_hover(&m, hit),
             _ => {}
         }
     }
@@ -179,6 +181,7 @@ impl App {
                 }
             }
             Hit::SidePanel if self.ui.side_panel == SidePanel::Search => self.search_click(m, count),
+            Hit::SidePanel if self.ui.side_panel == SidePanel::SourceControl => self.scm_click(m, count),
             Hit::ExplorerRow(_) | Hit::SidePanel => self.ui.focus = Focus::SidePanel,
             Hit::Divider(i) => self.drag = self.hits.dividers.get(i).cloned().map(Drag::Divider),
             Hit::Tab(g, i) => {

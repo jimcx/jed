@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use crate::command::{
     ColumnMotion, Command, ExplorerCommand as X, FindCommand as F, LocationsCommand as L, Motion, PaletteCommand as P,
-    ProblemsCommand as Pr, SearchCommand as S, SuggestCommand as Sg,
+    ProblemsCommand as Pr, ScmCommand as Sc, SearchCommand as S, SuggestCommand as Sg,
 };
 
 pub const FILE_NAME: &str = "keybindings.toml";
@@ -186,10 +186,12 @@ pub enum Context {
     /// The editor has the focus and its active tab is a diff view; bindings not found here come
     /// from `Editor`.
     Diff,
+    /// The Source Control view's list has the focus.
+    Scm,
 }
 
 impl Context {
-    const ALL: [(Context, &'static str); 11] = [
+    const ALL: [(Context, &'static str); 12] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
@@ -201,6 +203,7 @@ impl Context {
         (Context::Locations, "locations"),
         (Context::Suggest, "suggest"),
         (Context::Diff, "diff"),
+        (Context::Scm, "scm"),
     ];
 
     fn parse(name: &str) -> Option<Context> {
@@ -557,6 +560,8 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Char('w'), cmd, Command::CloseTab),
         (KeyCode::Char('b'), cmd, Command::ToggleSidebar),
         (KeyCode::Char('e'), cmd | shift, Command::FocusExplorer),
+        // Ctrl on macOS too, as in VS Code.
+        (KeyCode::Char('g'), ctrl | shift, Command::FocusScm),
         (KeyCode::Char('f'), cmd | shift, Command::FindInFiles),
         (KeyCode::Char('1'), cmd, Command::FocusGroup(1)),
         (KeyCode::Char('2'), cmd, Command::FocusGroup(2)),
@@ -666,6 +671,21 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::F(7), shift, Command::PreviousChange),
     ];
 
+    // The Source Control view's list: the explorer's keys (Space too).
+    let scm = [
+        (KeyCode::Up, none, Sc::Up),
+        (KeyCode::Down, none, Sc::Down),
+        (KeyCode::PageUp, none, Sc::PageUp),
+        (KeyCode::PageDown, none, Sc::PageDown),
+        (KeyCode::Home, none, Sc::First),
+        (KeyCode::End, none, Sc::Last),
+        (KeyCode::Left, none, Sc::Collapse),
+        (KeyCode::Right, none, Sc::Expand),
+        (KeyCode::Enter, none, Sc::Open),
+        (KeyCode::Char(' '), none, Sc::Preview),
+        (KeyCode::Esc, none, Sc::FocusEditor),
+    ];
+
     let bind = |code, mods, context, command| Binding {
         combo: KeyCombo { code, mods },
         context,
@@ -716,6 +736,10 @@ fn defaults(platform: Platform) -> Vec<Binding> {
             .map(|(k, m, c)| bind(k, m, Some(Context::Suggest), Command::Suggest(c))),
     );
     out.extend(diff.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Diff), c)));
+    out.extend(
+        scm.into_iter()
+            .map(|(k, m, c)| bind(k, m, Some(Context::Scm), Command::Scm(c))),
+    );
     out
 }
 
@@ -741,6 +765,22 @@ mod tests {
             km.lookup(&key(KeyCode::Char('z'), KeyModifiers::SUPER | KeyModifiers::SHIFT), ed),
             redo
         );
+    }
+
+    #[test]
+    fn source_control_is_ctrl_shift_g_on_both_platforms() {
+        let g = key(KeyCode::Char('g'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        for p in [Platform::MacOs, Platform::Linux] {
+            let km = Keymap::default_for(p);
+            for ctx in [Context::Editor, Context::Explorer, Context::Scm, Context::Search] {
+                assert_eq!(km.lookup(&g, ctx), Some(Command::FocusScm), "{p:?} {ctx:?}");
+            }
+            let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+            assert_eq!(km.lookup(&enter, Context::Scm), Some(Command::Scm(Sc::Open)));
+            let x = key(KeyCode::Char('x'), KeyModifiers::NONE);
+            assert_eq!(km.lookup(&x, Context::Scm), None, "plain keys don't type");
+        }
+        assert_eq!(Context::parse("scm"), Some(Context::Scm));
     }
 
     #[test]

@@ -291,6 +291,7 @@ impl App {
         let name = buf.name();
         // A stage waiting for this save goes ahead (or is dropped if it failed).
         self.stage_save_done(id, result.is_ok());
+        self.stage_all_save_done(id, result.is_ok());
         match result {
             Ok(_) => {
                 self.disk_save_done(id);

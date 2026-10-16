@@ -93,6 +93,11 @@ impl Theme {
                 Style::new().fg(c(0xE4676B)),
             ),
             ("list.inactive", Style::new().bg(c(0x37373D))),
+            // The Source Control view: section counts (Dark+'s `badge.*`), the rows' stage /
+            // unstage buttons, a deleted file's name struck through (as VS Code).
+            ("scm.count", fg_bg(0xFFFFFF, 0x4D4D4D)),
+            ("scm.action", Style::new().fg(c(0xFFFFFF)).add_modifier(Modifier::BOLD)),
+            ("scm.deleted", Style::new().add_modifier(Modifier::CROSSED_OUT)),
             ("tabBar", Style::new().bg(c(0x252526))),
             ("tab.active", fg_bg(0xFFFFFF, 0x1E1E1E)),
             ("tab.inactive", fg_bg(0x969696, 0x2D2D2D)),

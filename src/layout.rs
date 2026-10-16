@@ -346,6 +346,8 @@ pub struct HitMap {
     pub find: Option<FindHit>,
     /// The Search view, when shown.
     pub search: Option<SearchHit>,
+    /// The Source Control view, when shown.
+    pub scm: Option<ScmHit>,
     /// The bottom panel's tab labels.
     pub panel_tabs: Vec<(Rect, PanelTab)>,
     /// The bottom panel's list (Problems or Locations, whichever tab is shown), when shown.
@@ -393,6 +395,15 @@ pub struct SearchHit {
     pub toggles: [Rect; 2],
     pub list: Rect,
     pub rows: Vec<crate::search_view::RowKey>,
+}
+
+/// The Source Control view's list as drawn: its rect, the row each line shows (`rows[i]` is
+/// at `list.y + i`, by key) and each stage / unstage button (its row, `true` = unstage).
+#[derive(Debug, Clone, Default)]
+pub struct ScmHit {
+    pub list: Rect,
+    pub rows: Vec<crate::scm::RowKey>,
+    pub buttons: Vec<(Rect, crate::scm::RowKey, bool)>,
 }
 
 /// The find widget: its box, the replace row (if shown) and the three option toggles
@@ -696,6 +707,7 @@ mod tests {
             palette: None,
             find: None,
             search: None,
+            scm: None,
             panel_tabs: vec![(Rect::new(30, 24, 10, 1), PanelTab::Problems)],
             panel_list: None,
             status_problems: Some(Rect::new(10, 29, 8, 1)),

@@ -17,6 +17,7 @@ mod problems;
 mod prompt;
 mod quick_diff;
 mod rename;
+mod scm;
 mod side;
 mod syntax;
 mod workspace_search;
@@ -301,6 +302,10 @@ pub struct App {
     pub quick_diff: quick_diff::QuickDiffState,
     /// Diff tabs' ids, their reload delay, stages started from them.
     pub diffs: diff_view::DiffViews,
+    /// The Source Control view: collapsed sections, scroll, selection.
+    pub scm: crate::scm::ScmView,
+    /// Stage All waiting for these buffers' saves to end.
+    stage_all_after_save: Option<HashSet<BufferId>>,
     /// The last command `execute` ran, for tests.
     #[cfg(test)]
     pub last_command: Option<Command>,
@@ -385,6 +390,8 @@ impl App {
             disk: Default::default(),
             quick_diff: Default::default(),
             diffs: Default::default(),
+            scm: Default::default(),
+            stage_all_after_save: None,
             #[cfg(test)]
             last_command: None,
         };
@@ -589,6 +596,7 @@ impl App {
                 Context::SearchResults
             }
             Focus::SidePanel if self.ui.side_panel == SidePanel::Search => Context::Search,
+            Focus::SidePanel if self.ui.side_panel == SidePanel::SourceControl => Context::Scm,
             Focus::SidePanel => Context::Explorer,
             Focus::Find if self.find.field == Field::Replace => Context::Replace,
             Focus::Find => Context::Find,
@@ -807,8 +815,15 @@ impl App {
             Command::PreviousChange => self.go_to_change(false),
             Command::CompareWithSaved => self.compare_with_saved(),
             Command::OpenChange => self.open_changes(),
+            Command::StageFile | Command::UnstageFile if self.scm_focused() => {
+                self.scm_stage(cmd == Command::UnstageFile)
+            }
             Command::StageFile => self.stage_file_command(false),
             Command::UnstageFile => self.stage_file_command(true),
+            Command::StageAll => self.stage_all(),
+            Command::UnstageAll => self.unstage_all(),
+            Command::FocusScm => self.focus_scm(),
+            Command::Scm(c) => self.scm_command(c),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
             // A diff tab: its own movement keys; other editor commands do nothing.
@@ -890,6 +905,9 @@ impl App {
         self.ui.side_panel = panel;
         self.ui.focus = Focus::SidePanel;
         self.search_view.list_focused = false;
+        if panel == SidePanel::SourceControl {
+            self.scm_select_first();
+        }
         if panel == SidePanel::Explorer && self.explorer.selected.is_none() {
             self.explorer.select_index(0);
         }

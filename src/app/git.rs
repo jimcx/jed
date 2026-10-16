@@ -88,6 +88,7 @@ impl App {
                     tracing::info!("no git repository any more");
                     self.quick_diff_index_changed();
                     self.diffs_index_changed();
+                    self.scm_status_changed();
                 }
             }
             Ok(Refreshed::Unchanged) => {}
@@ -103,6 +104,7 @@ impl App {
                 // The index may have changed: the gutter markers and diff tabs compare against it.
                 self.quick_diff_index_changed();
                 self.diffs_index_changed();
+                self.scm_status_changed();
             }
             Err(e) => tracing::warn!("git status failed: {e}"),
         }

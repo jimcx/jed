@@ -141,28 +141,46 @@ pub fn file_diff(repo: &Repo, path: &Path, side: Side, context: u32) -> Result<F
 
 /// Blocking: stages the whole file (`git add`, or `git rm --cached` when it's gone from disk).
 pub fn stage_file(repo: &Repo, path: &Path) -> Result<(), Error> {
+    stage_files(repo, &[path])
+}
+
+/// Blocking: stages each whole file (as [`stage_file`]), writing the index once (the Source
+/// Control view's Stage All).
+pub fn stage_files<P: AsRef<Path>>(repo: &Repo, paths: &[P]) -> Result<(), Error> {
     let r = repo.open()?;
     let mut index = r.index()?;
-    if disk_text(repo, path)?.is_some() {
-        index.add_path(path)?;
-    } else {
-        index.remove_path(path)?;
+    for path in paths {
+        let path = path.as_ref();
+        if disk_text(repo, path)?.is_some() {
+            index.add_path(path)?;
+        } else {
+            index.remove_path(path)?;
+        }
     }
     index.write()?;
-    tracing::info!(path = %path.display(), "staged file");
+    tracing::info!(files = paths.len(), first = ?paths.first().map(|p| p.as_ref().display().to_string()), "staged files");
     Ok(())
 }
 
 /// Blocking: unstages the whole file (`git reset -- path`: the index entry back to HEAD's, or
 /// removed with no commits yet / not in HEAD).
 pub fn unstage_file(repo: &Repo, path: &Path) -> Result<(), Error> {
+    unstage_files(repo, &[path])
+}
+
+/// Blocking: unstages each whole file (as [`unstage_file`]; the Source Control view's Unstage
+/// All).
+pub fn unstage_files<P: AsRef<Path>>(repo: &Repo, paths: &[P]) -> Result<(), Error> {
+    if paths.is_empty() {
+        return Ok(());
+    }
     let r = repo.open()?;
     let head = match r.head() {
         Ok(h) => Some(h.peel_to_commit()?),
         Err(_) => None,
     };
-    r.reset_default(head.as_ref().map(|c| c.as_object()), [path])?;
-    tracing::info!(path = %path.display(), "unstaged file");
+    r.reset_default(head.as_ref().map(|c| c.as_object()), paths.iter().map(|p| p.as_ref()))?;
+    tracing::info!(files = paths.len(), first = ?paths.first().map(|p| p.as_ref().display().to_string()), "unstaged files");
     Ok(())
 }
 

@@ -1,14 +1,23 @@
-//! Side panel: explorer tree, the Search view (`ui::search`), or a placeholder for panels not
-//! built yet.
+//! Side panel: explorer tree, the Search view (`ui::search`) or the Source Control view
+//! (`ui::scm`).
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::app::{App, Focus};
-use crate::layout::{SearchHit, SidePanel};
+use crate::layout::{ScmHit, SearchHit, SidePanel};
 
-/// Draws the panel; returns the area holding explorer rows, and the Search view's hits.
-pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Rect, Option<SearchHit>) {
+/// What the side panel drew, for hit-testing.
+#[derive(Default)]
+pub struct SideHits {
+    /// The area holding explorer rows.
+    pub explorer_rows: Rect,
+    pub search: Option<SearchHit>,
+    pub scm: Option<ScmHit>,
+}
+
+/// Draws the panel.
+pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
     let theme = &app.theme;
     let base = theme.get("sideBar");
     let out = f.buffer_mut();
@@ -36,24 +45,25 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Rect, Option<SearchH
         width: inner_w,
         height: area.height.saturating_sub(2),
     };
-    if app.ui.side_panel == SidePanel::Search {
-        let view = Rect {
-            y: area.y + 1,
-            height: area.height.saturating_sub(1),
-            ..body
-        };
-        return (Rect::default(), super::search::render(f, view, app));
-    }
-    if app.ui.side_panel != SidePanel::Explorer {
-        let dim = base.patch(theme.get("sideBar.dim"));
-        out.set_stringn(
-            body.x + 2,
-            body.y,
-            "Coming in milestone 10 (Git)",
-            inner_w.saturating_sub(2) as usize,
-            dim,
-        );
-        return (Rect::default(), None);
+    let view = Rect {
+        y: area.y + 1,
+        height: area.height.saturating_sub(1),
+        ..body
+    };
+    match app.ui.side_panel {
+        SidePanel::Search => {
+            return SideHits {
+                search: super::search::render(f, view, app),
+                ..SideHits::default()
+            };
+        }
+        SidePanel::SourceControl => {
+            return SideHits {
+                scm: super::scm::render(f, view, app),
+                ..SideHits::default()
+            };
+        }
+        SidePanel::Explorer => {}
     }
 
     let header = base.patch(theme.get("sideBar.header"));
@@ -111,5 +121,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Rect, Option<SearchH
         let text = format!("{}{marker}{}", "  ".repeat(row.depth + 1), e.name);
         out.set_stringn(body.x, y, text, room, style);
     }
-    (body, None)
+    SideHits {
+        explorer_rows: body,
+        ..SideHits::default()
+    }
 }
