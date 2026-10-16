@@ -762,6 +762,10 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
     - "Run Task" from the palette; one tab per run; PTY via `portable-pty` + `vt100` + `tui-term`
     - Exit code shown, output kept until the tab closes; kill a running task
     - Done when: a colourful build (e.g. `cargo build`) renders as in a real terminal; restricted mode runs no `.workspace` task
+    - Tasks (one agent and one commit each):
+      - 12a: `tasks` module, no UI: templates from `.workspace` `[tasks]` and `~/.config/red/tasks.toml` (workspace wins on a clash; restricted / undecided trust: no `.workspace` tasks), cwd / env resolution; the PTY runner (`portable-pty` + `vt100`): spawn off the UI thread, output parsed into a screen with scrollback, resize, exit code, kill; results reported through `AppEvent`s
+      - 12b: "Run Task" in the palette (a picker of templates); one bottom-panel tab per run (`PanelTab` for task runs, drawn with `tui-term`, Dark+ colours), PTY resized to the panel, exit code shown when it ends, output kept until the tab closes; kill a running task; close a run's tab (killing it if running); keys while the panel has focus
+      - 12c: the done-when tests (a colourful build renders its colours and progress as in a real terminal; restricted mode runs no `.workspace` task), remaining gaps and hand checks; marks M12 ✅
 13. **Sessions and recent workspaces**: restore open tabs, splits and layout per workspace; jump between workspaces — see [Workspace](#workspace) (incl. Recent workspaces), [Files](#files)
     - Needs: the split tree (M3), state paths (M2), the palette (M5), the panic hook (M1)
     - Session state in `~/.local/state/red/`, keyed by workspace path
