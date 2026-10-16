@@ -4,8 +4,10 @@ mod activity;
 mod dialog;
 mod editor;
 mod find;
+mod hover;
 mod palette;
 mod panel;
+mod popup;
 mod search;
 mod side;
 mod status;
@@ -97,11 +99,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
     hits.dividers = dividers;
     if let Some(panel) = regions.panel {
-        (hits.panel_tabs, hits.problems) = panel::render(f, panel, app);
+        (hits.panel_tabs, hits.panel_list) = panel::render(f, panel, app);
     }
 
     hits.status_problems = status::render(f, regions.status, app);
     hits.find = active_editor.and_then(|area| find::render(f, area, app));
+    hits.hover = hover::render(f, app, &hits.groups);
     hits.palette = palette::render(f, area, app);
     if let Some(prompt) = &app.prompt {
         dialog::render(f, area, app, prompt);

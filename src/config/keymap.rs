@@ -10,8 +10,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
 
 use crate::command::{
-    ColumnMotion, Command, ExplorerCommand as X, FindCommand as F, Motion, PaletteCommand as P, ProblemsCommand as Pr,
-    SearchCommand as S,
+    ColumnMotion, Command, ExplorerCommand as X, FindCommand as F, LocationsCommand as L, Motion, PaletteCommand as P,
+    ProblemsCommand as Pr, SearchCommand as S,
 };
 
 pub const FILE_NAME: &str = "keybindings.toml";
@@ -173,10 +173,12 @@ pub enum Context {
     SearchResults,
     /// The bottom panel's Problems list has the focus.
     Problems,
+    /// The bottom panel's Locations list (definitions, references) has the focus.
+    Locations,
 }
 
 impl Context {
-    const ALL: [(Context, &'static str); 8] = [
+    const ALL: [(Context, &'static str); 9] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
@@ -185,6 +187,7 @@ impl Context {
         (Context::Search, "search"),
         (Context::SearchResults, "searchResults"),
         (Context::Problems, "problems"),
+        (Context::Locations, "locations"),
     ];
 
     fn parse(name: &str) -> Option<Context> {
@@ -463,6 +466,9 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Up, alt | shift, Command::CopyLinesUp),
         (KeyCode::Down, alt | shift, Command::CopyLinesDown),
         (KeyCode::Char('/'), cmd, Command::CommentLine),
+        // No chords, so not VS Code's Cmd+K Cmd+I.
+        (KeyCode::Char('i'), cmd | alt, Command::ShowHover),
+        (KeyCode::F(12), none, Command::RevealDefinition),
     ]);
     // The find widget: opening it, and what also works from the editor (VS Code: `editorFocus`).
     // VS Code's toggles are Cmd+Alt+C / W / R on macOS, Alt+C / W / R on Linux.
@@ -601,6 +607,18 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Esc, none, Pr::FocusEditor),
     ];
 
+    // The Locations list in the bottom panel: the Problems list's keys.
+    let locations = [
+        (KeyCode::Up, none, L::Up),
+        (KeyCode::Down, none, L::Down),
+        (KeyCode::PageUp, none, L::PageUp),
+        (KeyCode::PageDown, none, L::PageDown),
+        (KeyCode::Home, none, L::First),
+        (KeyCode::End, none, L::Last),
+        (KeyCode::Enter, none, L::Open),
+        (KeyCode::Esc, none, L::FocusEditor),
+    ];
+
     let bind = |code, mods, context, command| Binding {
         combo: KeyCombo { code, mods },
         context,
@@ -639,6 +657,11 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         problems
             .into_iter()
             .map(|(k, m, c)| bind(k, m, Some(Context::Problems), Command::Problems(c))),
+    );
+    out.extend(
+        locations
+            .into_iter()
+            .map(|(k, m, c)| bind(k, m, Some(Context::Locations), Command::Locations(c))),
     );
     out
 }

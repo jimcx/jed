@@ -145,6 +145,12 @@ pub enum Command {
     ToggleProblems,
     /// The Problems list's commands, and next / previous problem.
     Problems(ProblemsCommand),
+    /// Show the language server's hover for the cursor's position (VS Code's Cmd+K Cmd+I).
+    ShowHover,
+    /// F12: go to the definition of the symbol at the cursor (several: the Locations list).
+    RevealDefinition,
+    /// The Locations list's commands (the bottom panel's "LOCATIONS" tab).
+    Locations(LocationsCommand),
 }
 
 /// Focus-group commands listed in the palette and accepted in keybindings (as VS Code: 1 to 8).
@@ -329,6 +335,35 @@ impl ProblemsCommand {
     ];
 }
 
+/// The Locations list in the bottom panel (definitions; 9g's references).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LocationsCommand {
+    /// The list's selection: a row up / down, a page, the first / last row.
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    First,
+    Last,
+    /// Enter: open the selected place (a file row: its first) and focus the editor.
+    Open,
+    /// Esc: back to the editor; the panel stays.
+    FocusEditor,
+}
+
+impl LocationsCommand {
+    pub const ALL: [LocationsCommand; 8] = [
+        LocationsCommand::Up,
+        LocationsCommand::Down,
+        LocationsCommand::PageUp,
+        LocationsCommand::PageDown,
+        LocationsCommand::First,
+        LocationsCommand::Last,
+        LocationsCommand::Open,
+        LocationsCommand::FocusEditor,
+    ];
+}
+
 impl Command {
     /// Every command, in a stable order: what the palette lists and keybindings can name.
     pub fn all() -> Vec<Command> {
@@ -395,6 +430,8 @@ impl Command {
         all.extend(SearchCommand::ALL.map(Command::Search));
         all.extend([Command::TogglePanel, Command::ToggleProblems]);
         all.extend(ProblemsCommand::ALL.map(Command::Problems));
+        all.extend([Command::ShowHover, Command::RevealDefinition]);
+        all.extend(LocationsCommand::ALL.map(Command::Locations));
         all
     }
 
@@ -556,6 +593,21 @@ impl Command {
                     ProblemsCommand::Previous => "previous",
                 }
             ),
+            Command::ShowHover => "editor.showHover".into(),
+            Command::RevealDefinition => "editor.revealDefinition".into(),
+            Command::Locations(c) => format!(
+                "locations.{}",
+                match c {
+                    LocationsCommand::Up => "up",
+                    LocationsCommand::Down => "down",
+                    LocationsCommand::PageUp => "pageUp",
+                    LocationsCommand::PageDown => "pageDown",
+                    LocationsCommand::First => "first",
+                    LocationsCommand::Last => "last",
+                    LocationsCommand::Open => "open",
+                    LocationsCommand::FocusEditor => "focusEditor",
+                }
+            ),
         }
     }
 
@@ -704,6 +756,18 @@ impl Command {
                 ProblemsCommand::Next => "Go to Next Problem in Files (Error, Warning, Info)",
                 ProblemsCommand::Previous => "Go to Previous Problem in Files (Error, Warning, Info)",
             },
+            Command::ShowHover => "Show or Focus Hover",
+            Command::RevealDefinition => "Go to Definition",
+            Command::Locations(c) => match c {
+                LocationsCommand::Up => "Locations: Select Previous Row",
+                LocationsCommand::Down => "Locations: Select Next Row",
+                LocationsCommand::PageUp => "Locations: Select Row a Page Up",
+                LocationsCommand::PageDown => "Locations: Select Row a Page Down",
+                LocationsCommand::First => "Locations: Select First Row",
+                LocationsCommand::Last => "Locations: Select Last Row",
+                LocationsCommand::Open => "Locations: Open Selected Location",
+                LocationsCommand::FocusEditor => "Locations: Back to Editor",
+            },
         };
         s.into()
     }
@@ -794,9 +858,12 @@ mod tests {
             Command::TogglePanel => 52,
             Command::ToggleProblems => 53,
             Command::Problems(_) => 54,
+            Command::ShowHover => 55,
+            Command::RevealDefinition => 56,
+            Command::Locations(_) => 57,
         }
     }
-    const VARIANTS: u8 = 55;
+    const VARIANTS: u8 = 58;
 
     #[test]
     fn all_lists_every_variant() {
@@ -813,6 +880,7 @@ mod tests {
         assert_eq!(count(47), FindCommand::ALL.len());
         assert_eq!(count(49), SearchCommand::ALL.len());
         assert_eq!(count(54), ProblemsCommand::ALL.len());
+        assert_eq!(count(57), LocationsCommand::ALL.len());
     }
 
     #[test]

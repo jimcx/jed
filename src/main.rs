@@ -13,9 +13,11 @@ mod field;
 mod find;
 mod group;
 mod grouped;
+mod hover;
 mod indent;
 mod layout;
 mod lines;
+mod locations;
 mod logging;
 mod lsp;
 #[cfg(test)]

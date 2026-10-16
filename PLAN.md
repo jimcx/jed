@@ -663,7 +663,12 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - For M12: add a `PanelTab` variant, its context in `App::context()` and its drawing in `ui/panel.rs`
        - Not done (VS Code differences): problems ordered by position, not severity first; no collapsing, filter or copy; unopened files show the LSP character + 1 as the column
        - Still to check by hand: Ctrl+J on Linux needs the kitty protocol (else it's Enter); Cmd+J / Cmd+Shift+M reach red in each terminal (iTerm2 menu items); panel border drag; icon widths
-     - 9e: hover (a popup at the cursor, a command and mouse rest) and go to definition (F12; several locations → the results list)
+     - ✅ 9e: hover (a popup at the cursor, a command and mouse rest) and go to definition (F12; several locations → the results list)
+       - Requests: `Manager::request_at` (syncs documents first) / `cancel` (`$/cancelRequest`); the app's `requests` map; a new request cancels a pending one of the same kind; `check_requests` after every input cancels requests whose place moved on (edit, cursor, pointer); stale / error answers dropped; Failed / Exited drop a server's pending requests
+       - Hover: `editor.showHover` on Cmd+Alt+I (VS Code's chord Cmd+K Cmd+I: red has no chords), mouse rest 300 ms (`next_timer`); popup (`ui/popup.rs`: `cell_of`, `place`, `frame` — 9f reuses it) above else below the word, ≤ 72×14, wrapped, simple markdown, wheel-scrollable; closes on any key, click, edit, scroll, tab change, pointer leaving the word
+       - Definition: F12 and Ctrl/Cmd+Click; Location / Location[] / LocationLink (`targetSelectionRange`); one → jump (Cmd+U goes back); several → the panel's LOCATIONS tab (`PanelTab::Locations`, `Context::Locations`, previews of unopened files read off-thread) — 9g: `App::show_locations(title, locations, encoding)`
+       - Not done (VS Code differences): no syntax colours in hover code blocks; no navigation history across files; no F4 through Locations; hover under the find widget still asks
+       - Still to check by hand: mouse-motion hover per terminal; Cmd+Alt+I and F12 reaching red on macOS; Ctrl+Click on Linux, Cmd+Click on macOS
      - 9f: completion: popup on trigger characters and Ctrl+Space, filtered as you type, accepted text (and `textEdit`s) inserted at every cursor
      - 9g: find references (Shift+F12, the results list) and rename symbol (F2 in the editor: a prompt, `WorkspaceEdit` across open and unopened files, one undo step per buffer)
      - 9h: format document (Shift+Alt+F), the SCons `__builtins__.pyi` (if supported), the done-when tests on a C++ project with `compile_commands.json` and an SCons project; marks M9 ✅

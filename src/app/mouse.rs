@@ -53,10 +53,13 @@ impl ClickTracker {
 
 impl App {
     pub(super) fn handle_mouse(&mut self, m: MouseEvent) {
+        let hit = self.hits.hit(m.column, m.row);
+        if self.hover_mouse(&m, hit) {
+            return;
+        }
         if self.find_mouse(m) {
             return;
         }
-        let hit = self.hits.hit(m.column, m.row);
         match m.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let delta = if m.kind == MouseEventKind::ScrollUp {
@@ -67,7 +70,10 @@ impl App {
                 match hit {
                     Hit::SidePanel if self.ui.side_panel == SidePanel::Search => self.search_scroll(delta),
                     Hit::ExplorerRow(_) | Hit::SidePanel => self.explorer.scroll_by(delta),
-                    Hit::Panel | Hit::PanelTab(_) | Hit::PanelBorder => self.problems_scroll(delta),
+                    Hit::Panel | Hit::PanelTab(_) | Hit::PanelBorder => match self.ui.panel_tab {
+                        PanelTab::Problems => self.problems_scroll(delta),
+                        PanelTab::Locations => self.locations_scroll(delta),
+                    },
                     // Scrolls the group under the mouse, without focusing it.
                     Hit::Editor(g) => {
                         let tab = self.groups.get_mut(g).and_then(|g| g.tabs.get_mut(g.active));
@@ -180,9 +186,10 @@ impl App {
             Hit::PanelTab(tab) => self.focus_panel(tab),
             Hit::Panel => match self.ui.panel_tab {
                 PanelTab::Problems => self.problems_click(m, count),
+                PanelTab::Locations => self.locations_click(m, count),
             },
             Hit::StatusProblems => self.problem_counts_clicked(),
-            Hit::Status | Hit::Nothing => {}
+            Hit::Status | Hit::Hover | Hit::Nothing => {}
         }
     }
 
@@ -226,6 +233,12 @@ impl App {
         } else {
             Selections::single(Selection::new(start, end))
         };
+        // Cmd+Click (Ctrl+Click on Linux; mouse reports carry Ctrl, rarely Cmd): go to definition.
+        let go = m.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER);
+        if go && !shift && count == 1 {
+            self.go_to_definition();
+            return;
+        }
         self.drag = Some(Drag::Text { anchor: (start, end) });
     }
 

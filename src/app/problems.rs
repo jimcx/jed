@@ -53,15 +53,26 @@ impl App {
         }
     }
 
-    /// Shows the panel on `tab` and gives it the keys; the Problems list selects its first row
-    /// when nothing is selected.
+    /// Shows the panel on `tab` and gives it the keys; its list selects its first row when
+    /// nothing is selected.
     pub(super) fn focus_panel(&mut self, tab: PanelTab) {
         self.ui.panel_visible = true;
         self.ui.panel_tab = tab;
         self.ui.focus = Focus::Panel;
-        let files = problems::files(&self.lsp.diagnostics, &self.buffers);
-        if self.problems.list.selected_row(&files).is_none() {
-            self.problems.list.select(&files, 0);
+        match tab {
+            PanelTab::Problems => {
+                let files = problems::files(&self.lsp.diagnostics, &self.buffers);
+                if self.problems.list.selected_row(&files).is_none() {
+                    self.problems.list.select(&files, 0);
+                }
+            }
+            PanelTab::Locations => {
+                if let Some(l) = self.locations.as_mut()
+                    && l.list.selected_row(&l.files).is_none()
+                {
+                    l.list.select(&l.files, 0);
+                }
+            }
         }
     }
 
@@ -175,7 +186,7 @@ impl App {
     /// first problem) opens it and focuses the editor. Elsewhere in the panel: the keys only.
     pub(super) fn problems_click(&mut self, m: MouseEvent, count: u8) {
         self.ui.focus = Focus::Panel;
-        let Some(hit) = self.hits.problems.take() else { return };
+        let Some(hit) = self.hits.panel_list.take() else { return };
         let at = ratatui::layout::Position { x: m.column, y: m.row };
         if hit.list.contains(at)
             && let Some(key) = hit.rows.get((at.y - hit.list.y) as usize)
@@ -190,7 +201,7 @@ impl App {
                 }
             }
         }
-        self.hits.problems = Some(hit);
+        self.hits.panel_list = Some(hit);
     }
 
     /// The mouse wheel over the panel scrolls its list.

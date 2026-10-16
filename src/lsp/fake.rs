@@ -11,6 +11,11 @@
 //! with the same params (a test's way to publish diagnostics: for any URI and version, in order
 //! after the document notifications sent before it); `test/crash` makes it hang up.
 //!
+//! Scripted answers: `respond(method, result)` makes it answer every `method` request (e.g.
+//! `textDocument/hover`) with `result`; `hold(method, true)` keeps those answers until a
+//! `test/flush` (out of order, as `test/later`). A `$/cancelRequest` for a held request answers
+//! it at once with RequestCancelled (-32800), as servers do.
+//!
 //! Documents: it keeps its own copy of every document opened (`didOpen`), applies each
 //! `didChange` to it (ranges in the negotiated encoding, converted here independently of
 //! `buffer::pos`; checks that versions go up by one, ranges are in the text and a `didSave`'s text is
@@ -69,6 +74,10 @@ struct Shared {
     saves: Vec<(String, Option<String>)>,
     /// What was wrong in the document notifications.
     errors: Vec<String>,
+    /// Scripted answers by request method.
+    scripts: HashMap<String, Value>,
+    /// Methods whose scripted answers wait for `test/flush`.
+    holding: std::collections::HashSet<String>,
 }
 
 pub struct FakeLauncher {
@@ -123,6 +132,39 @@ impl FakeLauncher {
     /// Problems found in the document notifications (none expected).
     pub fn errors(&self) -> Vec<String> {
         self.shared.lock().unwrap().errors.clone()
+    }
+
+    /// Answers every `method` request with `result` from now on.
+    pub fn respond(&self, method: &str, result: Value) {
+        self.shared.lock().unwrap().scripts.insert(method.into(), result);
+    }
+
+    /// Holds (`true`) the scripted answers to `method` until a `test/flush`, or stops holding.
+    pub fn hold(&self, method: &str, on: bool) {
+        let mut shared = self.shared.lock().unwrap();
+        if on {
+            shared.holding.insert(method.into());
+        } else {
+            shared.holding.remove(method);
+        }
+    }
+
+    /// The `params` of every request received with `method`, in order.
+    pub fn requests(&self, method: &str) -> Vec<Value> {
+        self.received()
+            .into_iter()
+            .filter(|m| m["method"] == method && m.get("id").is_some())
+            .map(|m| m["params"].clone())
+            .collect()
+    }
+
+    /// The ids `$/cancelRequest` named, in order.
+    pub fn cancelled(&self) -> Vec<i64> {
+        self.received()
+            .into_iter()
+            .filter(|m| m["method"] == "$/cancelRequest")
+            .filter_map(|m| m["params"]["id"].as_i64())
+            .collect()
     }
 
     /// How many fake servers have stopped.
@@ -205,7 +247,11 @@ async fn serve(
                             "window/logMessage",
                             json!({ "type": 3, "message": "fake ready" }),
                         ));
-                        let mut caps = json!({ "textDocumentSync": options.sync.clone().unwrap_or(json!(2)) });
+                        let mut caps = json!({
+                            "textDocumentSync": options.sync.clone().unwrap_or(json!(2)),
+                            "hoverProvider": true,
+                            "definitionProvider": true,
+                        });
                         if options.utf8 {
                             caps["positionEncoding"] = json!("utf-8");
                         }
@@ -223,6 +269,15 @@ async fn serve(
                     }),
                     "test/echo" => out.push(Message::Response { id, result: Ok(params) }),
                     "test/later" => held.push((id, params)),
+                    m if shared.lock().unwrap().scripts.contains_key(m) => {
+                        let shared = shared.lock().unwrap();
+                        let result = shared.scripts[m].clone();
+                        if shared.holding.contains(m) {
+                            held.push((id, result));
+                        } else {
+                            out.push(Message::Response { id, result: Ok(result) });
+                        }
+                    }
                     _ => out.push(Message::Response {
                         id,
                         result: Err(RpcError {
@@ -241,6 +296,19 @@ async fn serve(
                     }
                     "initialized" if options.crash_after_init => return,
                     "test/crash" => return,
+                    "$/cancelRequest" => {
+                        let id = params["id"].as_i64();
+                        if let Some(i) = held.iter().position(|(h, _)| matches!(h, Id::Num(n) if Some(*n) == id)) {
+                            let (id, _) = held.remove(i);
+                            out.push(Message::Response {
+                                id,
+                                result: Err(RpcError {
+                                    code: -32800,
+                                    message: "cancelled".into(),
+                                }),
+                            });
+                        }
+                    }
                     "test/publish" => out.push(Message::notification("textDocument/publishDiagnostics", params)),
                     "test/flush" => {
                         for (id, params) in held.drain(..).rev() {

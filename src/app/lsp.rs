@@ -1,9 +1,53 @@
-//! Language servers from the app's side: starting the ones open files need, their events, and
-//! stopping them on quit. The servers themselves live in `crate::lsp`.
+//! Language servers from the app's side: starting the ones open files need, their events,
+//! requests and their answers, and stopping them on quit. The servers themselves live in
+//! `crate::lsp`.
+//!
+//! Requests: `send_request` asks about a position in a buffer shown in a group and keeps a
+//! `Pending` in `App::requests` by (server, id). A newer request of the same kind replaces
+//! (cancels: `$/cancelRequest`) the older one; after every input event `check_requests` cancels
+//! those whose place moved on (an edit, the cursor or the mouse elsewhere); an answer is taken
+//! only while its request is still pending and current, and goes to its kind's handler; a server
+//! that fails or exits drops its pending requests (it answers none of them).
+
+use lsp_types::ServerCapabilities;
+use serde_json::Value;
 
 use super::App;
-use crate::lsp::Event;
+use crate::buffer::BufferId;
+use crate::buffer::pos::{ByteIdx, PosEncoding};
+use crate::layout::GroupId;
+use crate::lsp::rpc::RpcError;
+use crate::lsp::{Event, ServerId};
 use crate::syntax::Language;
+
+/// What a pending request is for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Request {
+    /// Hover: for the mouse resting on `word` (`Some`: the run under the pointer), else for the
+    /// cursor (the command).
+    Hover { word: Option<(ByteIdx, ByteIdx)> },
+    /// Go to definition of `word` (the name under the cursor, for the "not found" message).
+    Definition { word: String },
+}
+
+impl Request {
+    fn same_kind(&self, other: &Request) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
+
+/// A request waiting for its answer, and where it was asked.
+#[derive(Debug, Clone)]
+pub(super) struct Pending {
+    pub request: Request,
+    pub group: GroupId,
+    pub buffer: BufferId,
+    /// The buffer's revision when sent: an edit since makes the answer stale.
+    pub revision: u64,
+    pub at: ByteIdx,
+    /// The server's position encoding, to read the answer.
+    pub encoding: PosEncoding,
+}
 
 impl App {
     /// Starts (or stops) servers to match the open files' languages, `.workspace` `[lsp.*]` and
@@ -42,7 +86,15 @@ impl App {
                     self.needs_redraw = true;
                 }
             }
+            Event::Response { server, id, result } => match self.requests.remove(&(server, id)) {
+                Some(p) => self.answer(p, result),
+                None => tracing::debug!(id, "answer to a request nobody waits for (cancelled or replaced)"),
+            },
             event => {
+                if let Event::Failed { server, .. } | Event::Exited { server, .. } = &event {
+                    // It answers none of them now.
+                    self.requests.retain(|(s, _), _| s != server);
+                }
                 if let Some(notice) = self.lsp.handle(event) {
                     self.notify(notice.level, notice.text);
                 }
@@ -59,6 +111,114 @@ impl App {
                 buf.diagnostics.clear(server);
             }
             self.needs_redraw = true;
+        }
+    }
+
+    /// Sends `method` about `at` in `buffer` (shown in `group`) to the server that has it open,
+    /// replacing a pending request of the same kind. False when no running server has the
+    /// document or `supported` says it lacks the feature.
+    pub(super) fn send_request(
+        &mut self,
+        group: GroupId,
+        buffer: BufferId,
+        at: ByteIdx,
+        method: &str,
+        supported: fn(&ServerCapabilities) -> bool,
+        request: Request,
+    ) -> bool {
+        self.cancel_requests(|p| p.request.same_kind(&request));
+        if !self.lsp.started() {
+            return false;
+        }
+        let Some(sent) = self
+            .lsp
+            .request_at(&mut self.buffers, buffer, at, method, supported, Value::Null)
+        else {
+            return false;
+        };
+        let revision = self.buffers.get(buffer).map_or(0, |b| b.revision());
+        self.requests.insert(
+            (sent.server, sent.id),
+            Pending {
+                request,
+                group,
+                buffer,
+                revision,
+                at,
+                encoding: sent.encoding,
+            },
+        );
+        true
+    }
+
+    /// Cancels (and forgets) the pending requests `which` picks.
+    pub(super) fn cancel_requests(&mut self, which: impl Fn(&Pending) -> bool) {
+        let gone: Vec<(ServerId, i64)> = self
+            .requests
+            .iter()
+            .filter(|(_, p)| which(p))
+            .map(|(k, _)| *k)
+            .collect();
+        for (server, id) in gone {
+            self.requests.remove(&(server, id));
+            self.lsp.cancel(server, id);
+        }
+    }
+
+    /// After an input event: cancels the requests whose place moved on.
+    pub(super) fn check_requests(&mut self) {
+        let stale: Vec<(ServerId, i64)> = self
+            .requests
+            .iter()
+            .filter(|(_, p)| !self.request_current(p))
+            .map(|(k, _)| *k)
+            .collect();
+        for (server, id) in stale {
+            self.requests.remove(&(server, id));
+            self.lsp.cancel(server, id);
+        }
+    }
+
+    /// Whether an answer to `p` still fits: the buffer unedited, and the cursor (the active view
+    /// of `p.group`, still the active group) or for a mouse hover the pointer still there.
+    fn request_current(&self, p: &Pending) -> bool {
+        if self.buffers.get(p.buffer).is_none_or(|b| b.revision() != p.revision) {
+            return false;
+        }
+        match &p.request {
+            Request::Hover { word: Some(word) } => self.hover.mouse == Some((p.group, p.buffer, *word)),
+            _ => {
+                self.groups.active == p.group
+                    && self
+                        .group()
+                        .active_tab()
+                        .is_some_and(|t| t.buffer == p.buffer && t.view.selections.primary().head == p.at)
+            }
+        }
+    }
+
+    /// An answer to a pending request: dropped when stale or an error, else handed to its kind.
+    fn answer(&mut self, p: Pending, result: Result<Value, RpcError>) {
+        if !self.request_current(&p) {
+            tracing::debug!(request = ?p.request, "stale answer dropped");
+            return;
+        }
+        let value = match result {
+            Ok(v) => v,
+            Err(e) => {
+                // Cancelled (-32800) or content modified (-32801) are routine.
+                tracing::debug!(code = e.code, "request failed: {}", e.message);
+                if let Request::Definition { word } = &p.request {
+                    let text = super::locations::no_definition(word);
+                    self.notify(super::Level::Info, text);
+                }
+                return;
+            }
+        };
+        self.needs_redraw = true;
+        match p.request.clone() {
+            Request::Hover { word } => self.hover_answer(&p, word, &value),
+            Request::Definition { word } => self.definition_answer(&p, &word, &value),
         }
     }
 

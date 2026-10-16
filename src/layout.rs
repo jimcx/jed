@@ -39,14 +39,17 @@ impl SidePanel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelTab {
     Problems,
+    /// Places go to definition found (9g: references); its tab shows while there's a list.
+    Locations,
 }
 
 impl PanelTab {
-    pub const ALL: [PanelTab; 1] = [PanelTab::Problems];
+    pub const ALL: [PanelTab; 2] = [PanelTab::Problems, PanelTab::Locations];
 
     pub fn title(self) -> &'static str {
         match self {
             PanelTab::Problems => "PROBLEMS",
+            PanelTab::Locations => "LOCATIONS",
         }
     }
 }
@@ -345,10 +348,12 @@ pub struct HitMap {
     pub search: Option<SearchHit>,
     /// The bottom panel's tab labels.
     pub panel_tabs: Vec<(Rect, PanelTab)>,
-    /// The Problems list, when shown.
-    pub problems: Option<ListHit>,
+    /// The bottom panel's list (Problems or Locations, whichever tab is shown), when shown.
+    pub panel_list: Option<ListHit>,
     /// The status bar's problem counts (a click toggles the Problems panel).
     pub status_problems: Option<Rect>,
+    /// The hover popup, when shown: on top of everything under it.
+    pub hover: Option<Rect>,
 }
 
 /// A grouped list (`grouped`) as drawn: its rect and the row each line shows (`rows[i]` is at
@@ -426,6 +431,8 @@ pub enum Hit {
     Status,
     /// The status bar's problem counts.
     StatusProblems,
+    /// The hover popup (over an editor).
+    Hover,
     Nothing,
 }
 
@@ -433,6 +440,9 @@ impl HitMap {
     pub fn hit(&self, x: u16, y: u16) -> Hit {
         let p = Position { x, y };
         let r = &self.regions;
+        if self.hover.is_some_and(|h| h.contains(p)) {
+            return Hit::Hover;
+        }
         if r.activity.contains(p) {
             return self
                 .icons
@@ -618,9 +628,11 @@ mod tests {
             find: None,
             search: None,
             panel_tabs: vec![(Rect::new(30, 24, 10, 1), PanelTab::Problems)],
-            problems: None,
+            panel_list: None,
             status_problems: Some(Rect::new(10, 29, 8, 1)),
+            hover: Some(Rect::new(40, 5, 10, 4)),
         };
+        assert_eq!(map.hit(41, 6), Hit::Hover, "the popup is on top");
         assert_eq!(map.hit(1, 1), Hit::Icon(SidePanel::Explorer));
         assert_eq!(map.hit(27, 5), Hit::SideBorder);
         assert_eq!(map.hit(5, 4), Hit::ExplorerRow(2));

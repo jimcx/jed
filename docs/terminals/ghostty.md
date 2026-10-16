@@ -23,6 +23,7 @@ keybind = cmd+shift+z=unbind
 keybind = cmd+c=unbind
 keybind = cmd+x=unbind
 keybind = cmd+slash=unbind
+keybind = cmd+alt+i=unbind
 keybind = cmd+d=unbind
 keybind = cmd+shift+l=unbind
 keybind = cmd+alt+d=unbind
@@ -77,13 +78,13 @@ macos-option-as-alt = true
 
 Don't unbind `cmd+v`: Ghostty's paste is how text gets into red.
 
-Ghostty defaults that clash with red (macOS): `cmd+a` select all, `cmd+c` copy, `cmd+z`/`cmd+shift+z` undo/redo, `cmd+left`/`cmd+right`/`cmd+backspace` send line-editing control codes, `cmd+up`/`cmd+down` and `cmd+shift+up`/`cmd+shift+down` jump to prompt, `cmd+q` quit, `cmd+w` close split/tab, `cmd+1..3` go to tab, `cmd+alt+arrows` move between splits (red: Cmd+Alt+Up/Down add a cursor above/below), `cmd+shift+p` Ghostty's own command palette (recent releases), `cmd+d` new split right (red's Cmd+D, add next match), `cmd+f` Ghostty's search (recent releases; red's find).
+Ghostty defaults that clash with red (macOS): `cmd+a` select all, `cmd+c` copy, `cmd+z`/`cmd+shift+z` undo/redo, `cmd+left`/`cmd+right`/`cmd+backspace` send line-editing control codes, `cmd+up`/`cmd+down` and `cmd+shift+up`/`cmd+shift+down` jump to prompt, `cmd+q` quit, `cmd+w` close split/tab, `cmd+1..3` go to tab, `cmd+alt+arrows` move between splits (red: Cmd+Alt+Up/Down add a cursor above/below), `cmd+shift+p` Ghostty's own command palette (recent releases), `cmd+d` new split right (red's Cmd+D, add next match), `cmd+f` Ghostty's search (recent releases; red's find), `cmd+alt+i` the terminal inspector (red's show hover).
 
 `macos-option-as-alt` already defaults to `true` on the U.S. and U.S. International layouts; setting it makes other layouts behave the same (`left`/`right` limit it to one Option key).
 
 ## What you lose
 
-Ghostty's Cmd+C (copy screen text), Cmd+W, Cmd+Q, Cmd+1..3, Cmd+A, Cmd+Z, prompt jumping, Cmd+D (new split right; Cmd+Shift+D still splits down) and Cmd+Alt+arrow split navigation in every Ghostty window. Close with Cmd+Alt+W (close tab) or Cmd+Shift+W (close window). Ghostty has no per-program config, so this can't be scoped to red.
+Ghostty's Cmd+C (copy screen text), Cmd+W, Cmd+Q, Cmd+1..3, Cmd+A, Cmd+Z, prompt jumping, Cmd+D (new split right; Cmd+Shift+D still splits down), Cmd+Alt+arrow split navigation and the terminal inspector (Cmd+Alt+I) in every Ghostty window. Close with Cmd+Alt+W (close tab) or Cmd+Shift+W (close window). Ghostty has no per-program config, so this can't be scoped to red.
 
 ## Checklist
 

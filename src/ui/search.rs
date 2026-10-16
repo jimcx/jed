@@ -142,7 +142,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<SearchHit> {
                 y,
                 list.width.saturating_sub(LINE_INDENT + 1),
                 m,
-                s,
+                (s.base, s.dim, s.matched),
             ),
         }
     }
@@ -212,8 +212,16 @@ fn draw_file(out: &mut ratatui::buffer::Buffer, x: u16, y: u16, width: u16, file
     }
 }
 
-/// One matching line in `width` cells, its matches highlighted; "…" where text is cut.
-fn draw_line(out: &mut ratatui::buffer::Buffer, x: u16, y: u16, width: u16, m: &LineMatch, s: &Styles) {
+/// One matching line in `width` cells, its matches highlighted; "…" where text is cut. Also the
+/// Locations list's previews (`ui::panel`).
+pub(super) fn draw_line(
+    out: &mut ratatui::buffer::Buffer,
+    x: u16,
+    y: u16,
+    width: u16,
+    m: &LineMatch,
+    (base, dim, matched): (Style, Style, Style),
+) {
     let width = width as usize;
     if width < 2 {
         return;
@@ -221,7 +229,7 @@ fn draw_line(out: &mut ratatui::buffer::Buffer, x: u16, y: u16, width: u16, m: &
     let p = search_view::preview(m, width);
     let mut col = 0;
     if p.cut {
-        out.set_stringn(x, y, "…", 1, s.dim);
+        out.set_stringn(x, y, "…", 1, dim);
         col = 1;
     }
     let mut ranges = p.ranges.iter().peekable();
@@ -231,14 +239,14 @@ fn draw_line(out: &mut ratatui::buffer::Buffer, x: u16, y: u16, width: u16, m: &
         let last = k + 1 == graphemes.len();
         // Keep a cell for "…" unless this is the last grapheme.
         if col + w > width || (!last && col + w == width) {
-            out.set_stringn(x + col as u16, y, "…", 1, s.dim);
+            out.set_stringn(x + col as u16, y, "…", 1, dim);
             break;
         }
         while ranges.peek().is_some_and(|r| r.end <= off) {
             ranges.next();
         }
         let hit = ranges.peek().is_some_and(|r| r.start <= off && off < r.end);
-        let style = if hit { s.matched } else { s.base };
+        let style = if hit { matched } else { base };
         out.set_stringn(x + col as u16, y, &shown, w, style);
         col += w;
     }

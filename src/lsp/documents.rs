@@ -224,10 +224,15 @@ impl Documents {
         server.notify("textDocument/didSave", params);
     }
 
-    /// The version of the document open for `buffer` (tests; requests from 9e on).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The version of the document open for `buffer`.
+    #[cfg_attr(not(test), allow(dead_code))] // tests
     pub fn version(&self, buffer: BufferId) -> Option<i32> {
         self.open.get(&buffer).map(|d| d.version)
+    }
+
+    /// The server `buffer`'s document is open on, its URI and version (requests about it).
+    pub fn document(&self, buffer: BufferId) -> Option<(ServerId, &Uri, i32)> {
+        self.open.get(&buffer).map(|d| (d.server, &d.uri, d.version))
     }
 
     /// For diagnostics `server` published for `version` of `buffer`'s document: the text of that

@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use lsp_types::ServerCapabilities;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -29,7 +29,7 @@ pub use server::{Launcher, ProcessLauncher, SHUTDOWN_TIMEOUT};
 use server::{Task, ToServer};
 
 use crate::app::Level;
-use crate::buffer::pos::PosEncoding;
+use crate::buffer::pos::{self, ByteIdx, PosEncoding};
 use crate::buffer::{BufferId, Buffers};
 use crate::syntax::Language;
 use crate::workspace::config::WorkspaceConfig;
@@ -88,7 +88,6 @@ pub enum Event {
         params: Value,
     },
     /// The answer to `Server::request`'s request `id`.
-    #[cfg_attr(not(test), allow(dead_code))] // read from hover / definition (9e) on
     Response {
         server: ServerId,
         id: i64,
@@ -132,7 +131,6 @@ impl Server {
     /// Sends a request; its answer comes back as `Event::Response` with the returned id. Before
     /// `initialize` is answered it waits in the task. A server that fails or exits first answers
     /// none of its outstanding requests: callers drop them on `Event::Failed` / `Event::Exited`.
-    #[cfg_attr(not(test), allow(dead_code))] // first used by hover / definition (9e)
     pub fn request(&self, method: &str, params: Value) -> i64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let _ = self.tx.send(ToServer::Request {
@@ -154,6 +152,15 @@ impl Server {
     fn stop(&self) {
         let _ = self.tx.send(ToServer::Shutdown);
     }
+}
+
+/// A request `Manager::request_at` sent: its server, id, and the server's position encoding
+/// (to read positions in the answer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sent {
+    pub server: ServerId,
+    pub id: i64,
+    pub encoding: PosEncoding,
 }
 
 /// Something for the status bar.
@@ -217,7 +224,7 @@ impl Manager {
     }
 
     /// The server for `language`, in any state.
-    #[cfg_attr(not(test), allow(dead_code))] // tests; requests from 9c on
+    #[cfg_attr(not(test), allow(dead_code))] // tests
     pub fn server_for(&self, language: Language) -> Option<&Server> {
         self.servers.iter().find(|s| s.languages.contains(&language))
     }
@@ -300,9 +307,60 @@ impl Manager {
     }
 
     /// The document version a server has for `buffer`, if open.
-    #[cfg_attr(not(test), allow(dead_code))] // tests; requests from 9c on
+    #[cfg_attr(not(test), allow(dead_code))] // tests
     pub fn version(&self, buffer: BufferId) -> Option<i32> {
         self.docs.version(buffer)
+    }
+
+    /// Sends `method` about position `at` of `buffer` (`textDocument` + `position`, plus the
+    /// fields of `extra` if it's an object) to the server that has the buffer's document open,
+    /// once this turn's changes went out (`sync_documents` first, so the position is in the text
+    /// the server has). `None` when no running server has it open, or `supported` says the
+    /// server lacks the feature. The answer comes as `Event::Response` with `Sent::id`.
+    pub fn request_at(
+        &mut self,
+        buffers: &mut Buffers,
+        buffer: BufferId,
+        at: ByteIdx,
+        method: &str,
+        supported: fn(&ServerCapabilities) -> bool,
+        extra: Value,
+    ) -> Option<Sent> {
+        self.docs.sync(&self.servers, buffers);
+        let (server, uri, version) = self.docs.document(buffer)?;
+        let s = self.servers.iter().find(|s| s.id == server)?;
+        let State::Running { encoding, capabilities } = &s.state else {
+            return None;
+        };
+        if !supported(capabilities) {
+            tracing::debug!(server = %s.config.name, method, "not supported by the server");
+            return None;
+        }
+        let rope = &buffers.get(buffer)?.rope;
+        let p = pos::lsp_pos(rope, ByteIdx(at.0.min(rope.len())), *encoding);
+        let mut params = json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": p.line, "character": p.character },
+        });
+        if let Value::Object(fields) = extra {
+            params.as_object_mut().expect("object").extend(fields);
+        }
+        let id = s.request(method, params);
+        tracing::debug!(server = %s.config.name, method, id, version, "request");
+        Some(Sent {
+            server,
+            id,
+            encoding: *encoding,
+        })
+    }
+
+    /// Tells a server the app no longer waits for request `id` (`$/cancelRequest`); its answer,
+    /// if one still comes, is dropped as nobody's.
+    pub fn cancel(&self, server: ServerId, id: i64) {
+        if let Some(s) = self.servers.iter().find(|s| s.id == server) {
+            tracing::debug!(server = %s.config.name, id, "cancelling request");
+            s.notify("$/cancelRequest", json!({ "id": id }));
+        }
     }
 
     /// A server's `textDocument/publishDiagnostics`: stored by path, replacing that server's

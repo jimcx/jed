@@ -30,7 +30,7 @@ config.send_composed_key_when_right_alt_is_pressed = false
 -- red: send these Cmd keys to the program
 local release = {
   { 'a', 'CMD' }, { 'z', 'CMD' }, { 'z', 'CMD|SHIFT' },
-  { 'c', 'CMD' }, { 'x', 'CMD' }, { '/', 'CMD' },
+  { 'c', 'CMD' }, { 'x', 'CMD' }, { '/', 'CMD' }, { 'i', 'CMD|ALT' },
   { 'd', 'CMD' }, { 'l', 'CMD|SHIFT' }, { 'd', 'CMD|ALT' }, { 'u', 'CMD' },
   { 'UpArrow', 'CMD|ALT' }, { 'DownArrow', 'CMD|ALT' },
   { 'LeftArrow', 'CMD|ALT|SHIFT' }, { 'RightArrow', 'CMD|ALT|SHIFT' },

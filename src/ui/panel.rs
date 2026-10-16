@@ -1,8 +1,10 @@
 //! The bottom panel under the editor groups: a top border (dragged to resize), a tab strip
-//! ("PROBLEMS" with its count, as VS Code; M12 adds task tabs) and the shown tab's content —
-//! the Problems list: a row per file (name, dimmed folder, count) followed by its problems
-//! (severity icon, the message's first line, `source(code)` and `[Ln x, Col y]` dimmed). Only
-//! the rows on screen are looked at.
+//! ("PROBLEMS" with its count, as VS Code; "LOCATIONS" with its count and title while there's a
+//! Locations list; M12 adds task tabs) and the shown tab's content — the Problems list: a row
+//! per file (name, dimmed folder, count) followed by its problems (severity icon, the message's
+//! first line, `source(code)` and `[Ln x, Col y]` dimmed); or the Locations list: the same file
+//! rows, each place's line as a preview with the place highlighted (`search.match`; "Ln x, Col y"
+//! dimmed until the file is read). Only the rows on screen are looked at.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -12,13 +14,14 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{App, Focus};
 use crate::grouped;
 use crate::layout::{ListHit, PanelTab};
-use crate::problems::{self, FileProblems, Problem};
+use crate::locations::Locations;
+use crate::problems::{self, Problem};
 
 /// Cells a problem row is indented by.
 const INDENT: u16 = 3;
 
-/// Draws the panel in `area` (its top row is the border); returns its tab labels and the
-/// Problems list's hits.
+/// Draws the panel in `area` (its top row is the border); returns its tab labels and the shown
+/// list's hits.
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Vec<(Rect, PanelTab)>, Option<ListHit>) {
     let theme = &app.theme;
     let base = theme.get("panel");
@@ -42,6 +45,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Vec<(Rect, PanelTab)
     let mut x = area.x + 1;
     let end = area.x + area.width;
     for tab in PanelTab::ALL {
+        let badge_count = match tab {
+            PanelTab::Problems => total,
+            PanelTab::Locations => match &app.locations {
+                Some(l) => l.total(),
+                None => continue,
+            },
+        };
         let key = if tab == app.ui.panel_tab {
             "panelTitle.active"
         } else {
@@ -57,8 +67,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Vec<(Rect, PanelTab)
                 base.patch(theme.get(key)),
             )
             .0;
-        if tab == PanelTab::Problems && total > 0 && x + 1 < end {
-            let badge = format!(" {total} ");
+        if badge_count > 0 && x + 1 < end {
+            let badge = format!(" {badge_count} ");
             x = out
                 .set_stringn(
                     x + 1,
@@ -80,6 +90,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Vec<(Rect, PanelTab)
         ));
         x += 2;
     }
+    if app.ui.panel_tab == PanelTab::Locations
+        && let Some(l) = &app.locations
+        && x + 2 < end
+    {
+        out.set_stringn(x + 1, tabs_y, &l.title, (end - x - 2) as usize, dim);
+    }
 
     let list = Rect {
         x: area.x,
@@ -89,6 +105,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Vec<(Rect, PanelTab)
     };
     if list.height == 0 {
         return (tabs, None);
+    }
+    if app.ui.panel_tab == PanelTab::Locations {
+        drop(files);
+        return (tabs, Some(locations(out, list, app)));
     }
     if files.is_empty() {
         out.set_stringn(
@@ -147,7 +167,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Vec<(Rect, PanelTab)
         };
         let file = &files[i];
         if offset == 0 {
-            draw_file(out, list.x, y, list.width, file, root, s);
+            draw_file(out, list.x, y, list.width, file.path, file.count(), root, s);
             continue;
         }
         let k = offset - 1;
@@ -179,6 +199,83 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Vec<(Rect, PanelTab)
     (tabs, Some(ListHit { list, rows }))
 }
 
+/// The Locations list in `list`: file rows as the Problems list's, then each place's line.
+fn locations(out: &mut ratatui::buffer::Buffer, list: Rect, app: &mut App) -> ListHit {
+    let theme = &app.theme;
+    let base = theme.get("panel");
+    let dim = base.patch(theme.get("panel.dim"));
+    let Some(l) = app.locations.as_mut() else {
+        out.set_stringn(
+            list.x + 2,
+            list.y,
+            "No locations.",
+            list.width.saturating_sub(3) as usize,
+            dim,
+        );
+        return ListHit { list, rows: Vec::new() };
+    };
+    let Locations { files, list: view, .. } = l;
+    view.height = list.height as usize;
+    view.clamp(files);
+    let top = view.scroll(files);
+    let selected_row = view.selected_row(files);
+    let focused = app.ui.focus == Focus::Panel && app.prompt.is_none() && app.palette.is_none();
+    let selection = if focused {
+        theme.get("list.active")
+    } else {
+        theme.get("list.inactive")
+    };
+    let bg = Style {
+        bg: selection.bg,
+        ..Style::default()
+    };
+    let plain = Styles {
+        base,
+        dim,
+        name: base.patch(theme.get("panel.fileName")),
+        badge: base.patch(theme.get("panel.badge")),
+        icons: [base; 4],
+    };
+    let on_selection = Styles {
+        base: base.patch(selection),
+        dim: dim.patch(bg),
+        name: plain.name.patch(bg),
+        badge: plain.badge,
+        icons: [base; 4],
+    };
+    let matched = theme.get("search.match");
+    let root = app.workspace.root.as_path();
+    let shown = grouped::rows(files, top, list.height as usize);
+    for (r, &(i, offset)) in shown.iter().enumerate() {
+        let y = list.y + r as u16;
+        let s = if selected_row == Some(top + r) {
+            out.set_style(Rect { y, height: 1, ..list }, on_selection.base);
+            &on_selection
+        } else {
+            &plain
+        };
+        let file = &files[i];
+        if offset == 0 {
+            draw_file(out, list.x, y, list.width, &file.path, file.items.len(), root, s);
+            continue;
+        }
+        let item = &file.items[offset - 1];
+        let (x, width) = (list.x + INDENT, list.width.saturating_sub(INDENT + 1));
+        match &item.preview {
+            Some(m) => super::search::draw_line(out, x, y, width, m, (s.base, s.dim, s.base.patch(matched))),
+            None => {
+                let at = format!("Ln {}, Col {}", item.start.line + 1, item.start.character + 1);
+                out.set_stringn(x, y, &at, width as usize, s.dim);
+            }
+        }
+    }
+    let rows = shown
+        .iter()
+        .map(|&(i, offset)| (files[i].path.clone(), offset))
+        .collect();
+    ListHit { list, rows }
+}
+
 struct Styles {
     base: Style,
     dim: Style,
@@ -189,21 +286,23 @@ struct Styles {
 
 /// " name  folder        3 ": the path relative to the root (a file outside it: its whole
 /// folder), the count right-aligned; the folder gives way first.
+#[allow(clippy::too_many_arguments)]
 fn draw_file(
     out: &mut ratatui::buffer::Buffer,
     x: u16,
     y: u16,
     width: u16,
-    file: &FileProblems,
+    path: &std::path::Path,
+    count: usize,
     root: &std::path::Path,
     s: &Styles,
 ) {
-    let rel = file.path.strip_prefix(root).unwrap_or(file.path);
+    let rel = path.strip_prefix(root).unwrap_or(path);
     let name = rel
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
     let dir = rel.parent().map_or_else(String::new, |d| d.display().to_string());
-    let count = format!(" {} ", file.count());
+    let count = format!(" {count} ");
     let count_w = count.width() as u16;
     let room = width.saturating_sub(count_w + 2) as usize;
     let (nx, _) = out.set_stringn(x + 1, y, &name, room, s.name);

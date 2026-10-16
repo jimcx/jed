@@ -27,6 +27,7 @@ bindings = [
   { key = "C", mods = "Command", action = "ReceiveChar" },
   { key = "X", mods = "Command", action = "ReceiveChar" },
   { key = "Slash", mods = "Command", action = "ReceiveChar" },
+  { key = "I", mods = "Command|Alt", action = "ReceiveChar" },
   { key = "D", mods = "Command", action = "ReceiveChar" },
   { key = "L", mods = "Command|Shift", action = "ReceiveChar" },
   { key = "D", mods = "Command|Alt", action = "ReceiveChar" },

@@ -18,7 +18,6 @@ pub fn from_path(path: &Path) -> Uri {
 }
 
 /// The path of a `file://` URI; `None` for other schemes or a malformed escape.
-#[cfg_attr(not(test), allow(dead_code))] // first used by diagnostics (9c)
 pub fn to_path(uri: &Uri) -> Option<PathBuf> {
     let rest = uri.as_str().strip_prefix("file://")?;
     // `file://host/path`: only an empty or `localhost` host is ours.

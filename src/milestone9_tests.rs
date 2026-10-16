@@ -1,5 +1,5 @@
 //! Milestone 9 end to end (so far: 9a, the `lsp` core; 9b, document sync; 9c, diagnostics;
-//! 9d, the bottom panel and its Problems list).
+//! 9d, the bottom panel and its Problems list; 9e, hover and go to definition).
 //!
 //! 9a: opening a C++ file starts its server (the in-process fake, `lsp::fake`) once: `initialize`
 //! carries the root and offers UTF-8 then UTF-16 positions, UTF-8 is negotiated when the server
@@ -55,6 +55,27 @@
 //! border resizes it within the editor's and its own minimum heights. With no problems F8 and
 //! the list's keys only say so; a file outside the root is listed with its folder and opens;
 //! tiny terminals give the editor its rows first and never panic.
+//!
+//! 9e: Cmd+Alt+I (Ctrl+Alt+I) asks the server for the hover at the cursor; the answer (markdown:
+//! code block, rule, a long paragraph) is drawn in a popup just above the hovered word's row
+//! (below near the top), at the range's start, in the hover colours, the paragraph wrapped at
+//! spaces to the editor's width; a long one fills the room above, shows "…" and scrolls with
+//! the wheel over it, and clicks on it don't reach the text. A key, a paste (an edit) or the
+//! wheel elsewhere closes it; Esc only closes it. Resting the mouse on text asks once the timer
+//! fires (fired by `test_hover_tick`, nothing before); the popup stays while the pointer moves
+//! within the word or onto it and closes past the line's end. A newer hover cancels the pending
+//! one (`$/cancelRequest`), moving the pointer or a key cancels a pending one, an answer arriving
+//! after the cursor moved is dropped, an empty one to the command says "No hover information".
+//! F12 (and Ctrl+Click) asks for the definition (UTF-16 positions): one place in the same file
+//! moves the cursor there (Cmd+U goes back), one in a file not open opens it there (column read
+//! past an astral char), a `LocationLink` uses its selection range, none says "No definition
+//! found for 'target'"; several fill the panel's LOCATIONS tab (grouped by file, each line
+//! previewed with the place highlighted, files not open read in the background), focused on the
+//! first place; Down / Enter open one, a click opens one keeping the list focused. A server that
+//! crashes with requests pending drops them; an edit that leaves the cursor (Delete) drops a
+//! pending definition; the popup takes clicks over the find widget and stays in its group's
+//! editor at any size. Real clangd and ty show a symbol's signature on
+//! hover and F12 opens the definition in another file.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -2157,4 +2178,922 @@ async fn milestone_9_problems_edge_cases() {
         }
     }
     app.shutdown_servers().await;
+}
+
+// ---- 9e: hover and go to definition ----
+
+/// `a.cpp` for the hover tests: twelve comment lines, then `int x = value;` (line 12).
+fn hover_text() -> String {
+    let mut text: String = (0..12).map(|i| format!("// line {i}\n")).collect();
+    text.push_str("int x = value;\n");
+    text
+}
+
+/// A project with `a.cpp` (`text`) open and synced with a fake server (UTF-8 unless `utf16`).
+async fn lsp_project(dir: &Path, files: &[(&str, &str)], utf16: bool) -> (App, Arc<FakeLauncher>, PathBuf) {
+    let root = project(dir, files);
+    let fake = FakeLauncher::new(FakeOptions {
+        utf8: !utf16,
+        ..Default::default()
+    });
+    let mut app = open_app(&root, fake.clone());
+    open_synced(&mut app, &fake, &root.join("a.cpp")).await;
+    (app, fake, root)
+}
+
+fn put_cursor(app: &mut App, at: usize) {
+    use crate::buffer::pos::ByteIdx;
+    use crate::selection::{Selection, Selections};
+    let (_, view) = app.active_mut().unwrap();
+    view.selections = Selections::single(Selection::cursor(ByteIdx(at)));
+}
+
+fn show_hover(app: &mut App) {
+    app.press(K::Char('i'), cmd() | M::ALT);
+}
+
+/// The popup's inside as drawn: one string per row (padding and trailing spaces trimmed).
+fn popup_rows(term: &ratatui::Terminal<ratatui::backend::TestBackend>, app: &App) -> Vec<String> {
+    let r = app.hits.hover.expect("popup drawn");
+    let buf = term.backend().buffer();
+    (r.y + 1..r.y + r.height - 1)
+        .map(|y| {
+            (r.x + 1..r.x + r.width - 1)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .trim()
+                .to_string()
+        })
+        .collect()
+}
+
+/// The last `textDocument/hover` (or other) request's position.
+fn last_position(fake: &FakeLauncher, method: &str) -> (u64, u64) {
+    let p = fake.requests(method).last().expect("a request").clone();
+    (
+        p["position"]["line"].as_u64().unwrap(),
+        p["position"]["character"].as_u64().unwrap(),
+    )
+}
+
+/// Request ids of `method` received, in order.
+fn request_ids(fake: &FakeLauncher, method: &str) -> Vec<i64> {
+    fake.received()
+        .into_iter()
+        .filter(|m| m["method"] == method)
+        .filter_map(|m| m["id"].as_i64())
+        .collect()
+}
+
+const SENTENCE: &str = "The value of x, a long line that wraps because it is longer than the popup can be wide, \
+                        which is at most seventy-two cells and here less";
+
+/// The command asks for the cursor's position; the answer (markdown: a code block, a rule, a
+/// paragraph) is drawn in a popup above the hovered word (its range from the server), in the
+/// hover colours, as wide as the editor allows, the long paragraph wrapped at spaces. Near the
+/// top it goes below; a long one is cut with "…" and scrolls with the wheel over it. A key, an
+/// edit and Esc close it (Esc does nothing else); the hover is asked for again each time.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_hover_popup_from_the_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = hover_text();
+    let (mut app, fake, _root) = lsp_project(dir.path(), &[("a.cpp", &text)], false).await;
+    let range = json!({ "start": { "line": 12, "character": 8 }, "end": { "line": 12, "character": 13 } });
+    fake.respond(
+        "textDocument/hover",
+        json!({
+            "contents": { "kind": "markdown", "value": format!("```cpp\nint value\n```\n---\n{SENTENCE}") },
+            "range": range,
+        }),
+    );
+    let mut term = terminal();
+    let value_at = text.find("value").unwrap();
+    put_cursor(&mut app, value_at + 2);
+    draw(&mut term, &mut app);
+    let (vx, vy) = find_cells(&term, "value;").unwrap();
+    show_hover(&mut app);
+    assert!(
+        app.settle(|a| a.hover.popup.is_some()).await,
+        "{:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    assert_eq!(last_position(&fake, "textDocument/hover"), (12, 10));
+    draw(&mut term, &mut app);
+    let r = app.hits.hover.unwrap();
+    let editor = app.hits.group(app.groups.active).unwrap().editor;
+    assert_eq!(r.y + r.height, vy, "just above the hovered row");
+    assert_eq!(
+        (r.x, r.width),
+        (editor.x, editor.width),
+        "as wide as the editor (pushed left)"
+    );
+    assert!(vx >= r.x);
+    let rows = popup_rows(&term, &app);
+    assert_eq!(rows[0], "int value");
+    assert!(rows[1].chars().all(|c| c == '─'), "a rule: {rows:?}");
+    assert_eq!(rows[2..].join(" "), SENTENCE, "wrapped at spaces: {rows:?}");
+    assert!(rows.len() > 4);
+    assert!(rows[2..].iter().all(|r| r.chars().count() <= editor.width as usize - 4));
+    // Colours: the hover's background and code colour.
+    let buf = term.backend().buffer();
+    let (cx, cy) = (r.x + 2, r.y + 1);
+    assert_eq!(
+        buf[(cx, cy)].bg,
+        app.theme.get("editorHoverWidget.background").bg.unwrap()
+    );
+    assert_eq!(buf[(cx, cy)].fg, app.theme.get("textPreformat.foreground").fg.unwrap());
+    assert_eq!(buf[(r.x, r.y)].symbol(), "┌");
+    assert_eq!(app.hits.hit(cx, cy), crate::layout::Hit::Hover);
+
+    // A key closes it (and moves as usual).
+    app.press(K::Right, M::NONE);
+    assert!(app.hover.popup.is_none());
+    draw(&mut term, &mut app);
+    assert!(app.hits.hover.is_none());
+    assert!(find_cells(&term, "int value").is_none());
+
+    // An edit closes it (a paste: not a key).
+    show_hover(&mut app);
+    assert!(app.settle(|a| a.hover.popup.is_some()).await);
+    app.handle_test_event(crossterm::event::Event::Paste("z".into()));
+    assert!(app.hover.popup.is_none());
+    app.press(K::Char('z'), cmd());
+
+    // Esc closes only it: the cursors stay.
+    app.press(K::Up, cmd() | M::ALT);
+    let sels = app.group().active_tab().unwrap().view.selections.len();
+    assert_eq!(sels, 2);
+    show_hover(&mut app);
+    assert!(app.settle(|a| a.hover.popup.is_some()).await);
+    app.press(K::Esc, M::NONE);
+    assert!(app.hover.popup.is_none());
+    assert_eq!(
+        app.group().active_tab().unwrap().view.selections.len(),
+        2,
+        "Esc only closed it"
+    );
+    app.press(K::Esc, M::NONE);
+    assert_eq!(app.group().active_tab().unwrap().view.selections.len(), 1);
+    assert_eq!(fake.requests("textDocument/hover").len(), 3);
+
+    // Near the top: below the row.
+    fake.respond(
+        "textDocument/hover",
+        json!({ "contents": "`int x`", "range": { "start": { "line": 0, "character": 3 }, "end": { "line": 0, "character": 7 } } }),
+    );
+    put_cursor(&mut app, 4);
+    draw(&mut term, &mut app);
+    show_hover(&mut app);
+    assert!(app.settle(|a| a.hover.popup.is_some()).await);
+    draw(&mut term, &mut app);
+    let (_, line0) = find_cells(&term, "// line 0").unwrap();
+    let r = app.hits.hover.unwrap();
+    assert_eq!(r.y, line0 + 1, "below");
+    assert_eq!((r.width, r.height), (5 + 4, 3), "as wide as its text: {r:?}");
+    assert_eq!(popup_rows(&term, &app), ["int x"]);
+    assert_eq!(r.x, find_cells(&term, "line 0").unwrap().0, "at the range's start");
+    let buf = term.backend().buffer();
+    assert_eq!(
+        buf[(r.x + 2, r.y + 1)].fg,
+        app.theme.get("textPreformat.foreground").fg.unwrap(),
+        "inline code"
+    );
+
+    // A heading is bold, inline code in the code colour, the rest in the hover's text colour.
+    fake.respond(
+        "textDocument/hover",
+        json!({ "contents": "### Head\nsome `code` here" }),
+    );
+    show_hover(&mut app);
+    assert!(app.settle(|a| a.hover.popup.is_some()).await);
+    draw(&mut term, &mut app);
+    assert_eq!(popup_rows(&term, &app), ["Head", "some code here"]);
+    let r = app.hits.hover.unwrap();
+    let buf = term.backend().buffer();
+    let bold = app.theme.get("editorHoverWidget.heading").add_modifier;
+    let (head, text) = ((r.x + 2, r.y + 1), (r.x + 2, r.y + 2));
+    assert!(buf[head].modifier.contains(bold));
+    assert!(!buf[text].modifier.contains(bold));
+    assert_eq!(buf[text].fg, app.theme.get("editorHoverWidget.foreground").fg.unwrap());
+    let code_x = r.x + 2 + "some ".len() as u16;
+    assert_eq!(buf[(code_x, r.y + 2)].symbol(), "c");
+    assert_eq!(
+        buf[(code_x, r.y + 2)].fg,
+        app.theme.get("textPreformat.foreground").fg.unwrap()
+    );
+    assert_eq!(
+        buf[(code_x + 5, r.y + 2)].fg,
+        app.theme.get("editorHoverWidget.foreground").fg.unwrap(),
+        "after the code span"
+    );
+    app.press(K::Esc, M::NONE);
+
+    // Long: cut to the room above, "…" in the border, the wheel scrolls it.
+    let long: Vec<String> = (0..40).map(|i| format!("row {i}")).collect();
+    fake.respond(
+        "textDocument/hover",
+        json!({ "contents": { "kind": "plaintext", "value": long.join("\n") }, "range": range }),
+    );
+    put_cursor(&mut app, value_at);
+    draw(&mut term, &mut app);
+    show_hover(&mut app);
+    assert!(app.settle(|a| a.hover.popup.is_some()).await);
+    draw(&mut term, &mut app);
+    let r = app.hits.hover.unwrap();
+    assert_eq!((r.y, r.y + r.height), (editor.y, vy), "all the room above");
+    let rows = popup_rows(&term, &app);
+    assert_eq!(rows.len(), r.height as usize - 2);
+    assert_eq!(rows[0], "row 0");
+    let buf = term.backend().buffer();
+    assert_eq!(buf[(r.x + r.width - 3, r.y + r.height - 1)].symbol(), "…", "more below");
+    use crossterm::event::MouseEventKind as E;
+    app.mouse(E::ScrollDown, r.x + 3, r.y + 2);
+    assert!(app.hover.popup.is_some(), "the wheel over it scrolls it");
+    draw(&mut term, &mut app);
+    assert_eq!(popup_rows(&term, &app)[0], "row 3");
+    let buf = term.backend().buffer();
+    assert_eq!(buf[(r.x + r.width - 3, r.y)].symbol(), "…", "more above");
+    for _ in 0..20 {
+        app.mouse(E::ScrollDown, r.x + 3, r.y + 2);
+    }
+    draw(&mut term, &mut app);
+    assert_eq!(
+        popup_rows(&term, &app).last().unwrap(),
+        "row 39",
+        "down to the last row"
+    );
+    // A click on it does nothing (it doesn't reach the text under it).
+    let before = selection(&app);
+    click(&mut app, (r.x + 3, r.y + 2));
+    assert!(app.hover.popup.is_some());
+    assert_eq!(selection(&app), before);
+    // The wheel elsewhere closes it.
+    app.mouse(E::ScrollDown, r.x + 3, vy + 1);
+    assert!(app.hover.popup.is_none());
+
+    // Its view scrolled or its tab changed by something other than a key or the wheel (the
+    // view revealing its cursor while drawing, a file opening): the next event closes it, here
+    // a move over it (which itself keeps it).
+    show_hover(&mut app);
+    assert!(app.settle(|a| a.hover.popup.is_some()).await);
+    draw(&mut term, &mut app);
+    let r = app.hits.hover.unwrap();
+    app.mouse(E::Moved, r.x + 3, r.y + 2);
+    assert!(app.hover.popup.is_some(), "a move over it keeps it");
+    {
+        let (buf, view) = app.active_mut().unwrap();
+        let top = view.top_line();
+        view.set_top_line(&buf.rope, top + 1);
+    }
+    app.mouse(E::Moved, r.x + 3, r.y + 2);
+    assert!(app.hover.popup.is_none(), "scrolled: closed");
+    {
+        let (buf, view) = app.active_mut().unwrap();
+        view.set_top_line(&buf.rope, 0);
+    }
+    show_hover(&mut app);
+    assert!(app.settle(|a| a.hover.popup.is_some()).await);
+    draw(&mut term, &mut app);
+    let r = app.hits.hover.unwrap();
+    app.test_open(Buffer::from_str("other\n"));
+    app.mouse(E::Moved, r.x + 3, r.y + 2);
+    assert!(app.hover.popup.is_none(), "another tab: closed");
+    assert!(fake.errors().is_empty(), "{:?}", fake.errors());
+}
+
+/// The popup is drawn over the find widget and takes the clicks there: they don't reach the
+/// widget's input.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_hover_popup_over_the_find_widget() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = hover_text();
+    let (mut app, fake, _root) = lsp_project(dir.path(), &[("a.cpp", &text)], false).await;
+    let mut term = terminal();
+    draw(&mut term, &mut app);
+    let editor = app.hits.group(app.groups.active).unwrap().editor;
+    // One line as wide as the editor allows: the popup spans it.
+    let wide = "w".repeat(editor.width as usize - 4);
+    fake.respond("textDocument/hover", json!({ "contents": wide }));
+    app.press(K::Char('f'), cmd());
+    put_cursor(&mut app, text.find("line 3").unwrap());
+    let (x, y) = find_cells(&term, "line 3").unwrap();
+    click(&mut app, (x, y));
+    assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+    assert!(app.find.visible);
+    show_hover(&mut app);
+    assert!(app.settle(|a| a.hover.popup.is_some()).await);
+    draw(&mut term, &mut app);
+    let find = app.hits.find.unwrap().area;
+    let r = app.hits.hover.unwrap();
+    assert!(r.intersects(find), "{r:?} over {find:?}");
+    let on = (find.x + 2, find.y);
+    assert!(r.contains(ratatui::layout::Position { x: on.0, y: on.1 }));
+    click(&mut app, on);
+    assert_eq!(
+        app.ui.focus,
+        crate::app::Focus::Editor,
+        "the find widget didn't get the click"
+    );
+    assert!(app.hover.popup.is_some());
+
+    // Any terminal size, a split beside it: drawn inside its group's editor or not at all.
+    app.press(K::Char('\\'), cmd());
+    app.press(K::Char('1'), cmd());
+    show_hover(&mut app);
+    assert!(app.settle(|a| a.hover.popup.is_some()).await);
+    draw(&mut term, &mut app);
+    assert_eq!(app.hits.groups.len(), 2, "split");
+    let mut drawn = 0;
+    for (w, h) in [(30, 4), (31, 5), (34, 6), (40, 8), (60, 12), (80, 3), (200, 50)] {
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        draw(&mut t, &mut app);
+        if let Some(r) = app.hits.hover {
+            drawn += 1;
+            let group = app.hover.popup.as_ref().unwrap().group;
+            let editor = app.hits.group(group).unwrap().editor;
+            assert_eq!(r.intersection(editor), r, "{w}x{h}: {r:?} in {editor:?}");
+        }
+    }
+    assert!(drawn >= 2, "{drawn}");
+}
+
+/// Resting the mouse on text asks for its hover once the timer fires (no request before);
+/// the popup stays while the pointer moves within the word or onto the popup, and closes when it
+/// moves off. Moving to another word while an answer is pending cancels it (`$/cancelRequest`)
+/// and the next word's answer is the one shown. A click closes the popup.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_hover_on_mouse_rest() {
+    use crossterm::event::MouseEventKind as E;
+    let dir = tempfile::tempdir().unwrap();
+    let text = hover_text();
+    let (mut app, fake, _root) = lsp_project(dir.path(), &[("a.cpp", &text)], false).await;
+    fake.respond("textDocument/hover", json!({ "contents": "about it" }));
+    let mut term = terminal();
+    put_cursor(&mut app, 0);
+    draw(&mut term, &mut app);
+    let (vx, vy) = find_cells(&term, "value;").unwrap();
+    app.mouse(E::Moved, vx + 2, vy);
+    assert!(app.hover.rest.is_some(), "the timer runs");
+    idle(&mut app).await;
+    assert!(
+        fake.requests("textDocument/hover").is_empty(),
+        "nothing before the delay"
+    );
+    // Moving within the word keeps the timer; firing it early does nothing.
+    let deadline = app.hover.rest.as_ref().unwrap().deadline;
+    app.mouse(E::Moved, vx + 3, vy);
+    assert_eq!(app.hover.rest.as_ref().unwrap().deadline, deadline);
+    app.test_hover_tick(deadline - Duration::from_millis(1));
+    assert!(app.pending_requests().is_empty());
+    app.test_hover_tick(deadline);
+    // Where the pointer came to rest on the word.
+    assert_eq!(
+        app.pending_requests(),
+        [("mouse hover", text.find("value").unwrap() + 2)]
+    );
+    assert!(app.settle(|a| a.hover.popup.is_some()).await);
+    assert_eq!(last_position(&fake, "textDocument/hover"), (12, 10));
+    draw(&mut term, &mut app);
+    let r = app.hits.hover.unwrap();
+    assert_eq!(r.y + r.height, vy);
+    assert_eq!(r.x, vx, "at the word under the pointer (no range from the server)");
+    assert_eq!(popup_rows(&term, &app), ["about it"]);
+    // Within the word, onto the popup: it stays.
+    app.mouse(E::Moved, vx, vy);
+    app.mouse(E::Moved, r.x + 2, r.y + 1);
+    assert!(app.hover.popup.is_some());
+    assert!(app.hover.rest.is_none());
+    // Past the line's end: it closes.
+    app.mouse(E::Moved, vx + 20, vy);
+    assert!(app.hover.popup.is_none());
+    assert!(app.hover.rest.is_none(), "no timer off the text");
+
+    // A pending answer for a word the pointer left is cancelled.
+    fake.hold("textDocument/hover", true);
+    let (ix, iy) = find_cells(&term, "int x").unwrap();
+    app.mouse(E::Moved, ix + 1, iy);
+    app.test_hover_tick(Instant::now() + crate::hover::DELAY);
+    assert_eq!(
+        app.pending_requests(),
+        [("mouse hover", text.find("int x").unwrap() + 1)]
+    );
+    assert!(
+        app.settle(|_| request_ids(&fake, "textDocument/hover").len() == 2)
+            .await
+    );
+    let first = *request_ids(&fake, "textDocument/hover").last().unwrap();
+    app.mouse(E::Moved, vx, vy);
+    assert!(app.pending_requests().is_empty(), "cancelled when the pointer moved on");
+    app.test_hover_tick(Instant::now() + crate::hover::DELAY);
+    assert_eq!(app.pending_requests().len(), 1);
+    app.pump();
+    assert!(
+        app.settle(|_| fake.cancelled().contains(&first)).await,
+        "{:?}",
+        fake.cancelled()
+    );
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/flush", Value::Null);
+    assert!(app.settle(|a| a.hover.popup.is_some()).await);
+    draw(&mut term, &mut app);
+    assert_eq!(popup_rows(&term, &app), ["about it"]);
+    assert_eq!(app.hits.hover.unwrap().x, vx, "the second word's popup");
+    // A click elsewhere closes it.
+    click(&mut app, (ix, iy));
+    assert!(app.hover.popup.is_none());
+
+    // Moving on to another word before the timer fires restarts it there; the event loop's
+    // timer (not the test hook) then asks, no earlier than the delay.
+    fake.hold("textDocument/hover", false);
+    app.mouse(E::Moved, ix + 1, iy);
+    assert!(app.hover.rest.is_some());
+    app.mouse(E::Moved, vx + 1, vy);
+    let rest = app.hover.rest.clone().unwrap();
+    assert_eq!(rest.at.0, text.find("value").unwrap() + 1, "the second word");
+    let asked = fake.requests("textDocument/hover").len();
+    assert!(app.settle(|a| a.hover.popup.is_some()).await);
+    assert!(Instant::now() >= rest.deadline);
+    assert_eq!(fake.requests("textDocument/hover").len(), asked + 1, "asked once");
+    assert_eq!(last_position(&fake, "textDocument/hover"), (12, 9));
+    assert!(app.hover.rest.is_none(), "the timer is done");
+    assert!(fake.errors().is_empty());
+}
+
+/// A newer hover replaces a pending one (`$/cancelRequest` for the old id, only the new answer
+/// shown); a key cancels a pending one; an answer that arrives after the cursor moved (no event
+/// in between to cancel it) is dropped; an empty answer to the command says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_hover_requests_superseded_cancelled_and_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = hover_text();
+    let (mut app, fake, _root) = lsp_project(dir.path(), &[("a.cpp", &text)], false).await;
+    let value_at = text.find("value").unwrap();
+    put_cursor(&mut app, value_at);
+    fake.respond("textDocument/hover", json!({ "contents": "v" }));
+    fake.hold("textDocument/hover", true);
+    show_hover(&mut app);
+    show_hover(&mut app);
+    assert!(
+        app.settle(|_| request_ids(&fake, "textDocument/hover").len() == 2 && !fake.cancelled().is_empty())
+            .await
+    );
+    let ids = request_ids(&fake, "textDocument/hover");
+    assert_eq!(fake.cancelled(), [ids[0]], "the first one, replaced");
+    assert_eq!(app.pending_requests(), [("hover", value_at)]);
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/flush", Value::Null);
+    assert!(app.settle(|a| a.hover.popup.is_some()).await);
+    assert!(app.pending_requests().is_empty());
+
+    // A key cancels a pending one.
+    app.press(K::Esc, M::NONE);
+    show_hover(&mut app);
+    app.press(K::Right, M::NONE);
+    assert!(app.pending_requests().is_empty());
+    assert!(
+        app.settle(|_| request_ids(&fake, "textDocument/hover").len() == 3)
+            .await
+    );
+    let last = *request_ids(&fake, "textDocument/hover").last().unwrap();
+    assert!(app.settle(|_| fake.cancelled().contains(&last)).await);
+    idle(&mut app).await;
+    assert!(app.hover.popup.is_none());
+
+    // Stale: the cursor moved without an event that would cancel it.
+    put_cursor(&mut app, value_at);
+    show_hover(&mut app);
+    app.pump();
+    assert!(
+        app.settle(|_| request_ids(&fake, "textDocument/hover").len() == 4)
+            .await
+    );
+    put_cursor(&mut app, value_at + 1);
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/flush", Value::Null);
+    assert!(app.settle(|a| a.pending_requests().is_empty()).await);
+    idle(&mut app).await;
+    assert!(app.hover.popup.is_none(), "the stale answer was dropped");
+
+    // Nothing to show.
+    fake.hold("textDocument/hover", false);
+    fake.respond("textDocument/hover", Value::Null);
+    show_hover(&mut app);
+    assert!(
+        app.settle(|a| a.message.as_ref().is_some_and(|m| m.text == "No hover information"))
+            .await
+    );
+    assert!(app.hover.popup.is_none());
+
+    // A hover doesn't replace a pending definition (a key, F12 too, drops a pending hover).
+    fake.hold("textDocument/hover", true);
+    app.press(K::F(12), M::NONE);
+    show_hover(&mut app);
+    assert_eq!(
+        app.pending_requests(),
+        [("definition", value_at + 1), ("hover", value_at + 1)]
+    );
+    // The definition request failed (the fake doesn't know it): "No definition found".
+    assert!(
+        app.settle(|a| a
+            .message
+            .as_ref()
+            .is_some_and(|m| m.text == "No definition found for 'value'"))
+            .await,
+        "{:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    assert!(fake.errors().is_empty());
+}
+
+/// A definition answer that arrives after an edit that left the cursor where it was (Delete)
+/// is dropped: the edit cancels it.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_definition_dropped_after_an_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, fake, root) = lsp_project(dir.path(), &[("a.cpp", DEF_A)], false).await;
+    let use_at = DEF_A.find("= target").unwrap() + 2;
+    put_cursor(&mut app, use_at);
+    fake.respond("textDocument/definition", location(&root.join("a.cpp"), 0, 4, 10));
+    fake.hold("textDocument/definition", true);
+    app.press(K::F(12), M::NONE);
+    assert!(
+        app.settle(|_| fake.requests("textDocument/definition").len() == 1)
+            .await
+    );
+    let id = *request_ids(&fake, "textDocument/definition").last().unwrap();
+    app.press(K::Delete, M::NONE);
+    assert_eq!(selection(&app), (use_at, use_at), "the cursor stayed");
+    assert!(app.pending_requests().is_empty(), "the edit cancelled it");
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/flush", Value::Null);
+    assert!(app.settle(|_| fake.cancelled().contains(&id)).await);
+    idle(&mut app).await;
+    assert_eq!(selection(&app), (use_at, use_at), "no jump");
+    assert!(fake.errors().is_empty());
+}
+
+fn location(path: &Path, line: u32, from: u32, to: u32) -> Value {
+    json!({
+        "uri": uri(path),
+        "range": { "start": { "line": line, "character": from }, "end": { "line": line, "character": to } },
+    })
+}
+
+/// The active view's cursor as (line, byte column).
+fn cursor_line_col(app: &App) -> (usize, usize) {
+    let buf = app.active_buffer().unwrap();
+    let at = app.group().active_tab().unwrap().view.selections.primary().head;
+    let line = crate::buffer::pos::line_of(&buf.rope, at);
+    (line, at.0 - crate::buffer::pos::line_start(&buf.rope, line).0)
+}
+
+const DEF_A: &str = "int target = 1;\nint use = target;\nint other = 2;\n";
+const DEF_B: &str = "int 😀x = 1;\n// 😀 here: target\nint z;\n";
+
+/// F12 asks for the definition at the cursor (UTF-16 positions here). One place in the same
+/// file: the cursor goes to its start; in a file not open: it's opened there (the column read
+/// past an astral char); a `LocationLink` goes to its `targetSelectionRange`; nothing: "No
+/// definition found for 'target'". Ctrl+Click (Cmd+Click) moves the cursor and asks too.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_go_to_definition() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, fake, root) = lsp_project(dir.path(), &[("a.cpp", DEF_A), ("b.cpp", DEF_B)], true).await;
+    let (a, b) = (root.join("a.cpp"), root.join("b.cpp"));
+    let use_at = DEF_A.find("= target").unwrap() + 4;
+    put_cursor(&mut app, use_at);
+    fake.respond("textDocument/definition", location(&a, 0, 4, 10));
+    app.press(K::F(12), M::NONE);
+    assert!(
+        app.settle(|a| cursor_line_col(a) == (0, 4)).await,
+        "{:?}",
+        cursor_line_col(&app)
+    );
+    assert_eq!(last_position(&fake, "textDocument/definition"), (1, 12));
+    assert_eq!(
+        fake.requests("textDocument/definition")[0]["textDocument"]["uri"],
+        json!(uri(&a))
+    );
+    assert_eq!(selection(&app), (4, 4), "a cursor, nothing selected");
+    app.press(K::Char('u'), cmd());
+    assert_eq!(selection(&app), (use_at, use_at), "Cmd+U goes back");
+    app.press(K::F(12), M::NONE);
+    assert!(app.settle(|a| cursor_line_col(a) == (0, 4)).await);
+
+    // Another file, not open: opened there; UTF-16 column 6 is after "int 😀".
+    fake.respond("textDocument/definition", location(&b, 0, 6, 7));
+    app.press(K::F(12), M::NONE);
+    assert!(app.settle(|a| active_path(a).as_deref() == Some(b.as_path())).await);
+    assert_eq!(cursor_line_col(&app), (0, "int 😀".len()));
+    assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+
+    // A link: its selection range (the name), not the whole range.
+    put_cursor(&mut app, 0);
+    fake.respond(
+        "textDocument/definition",
+        json!([{
+            "targetUri": uri(&b),
+            "targetRange": { "start": { "line": 1, "character": 0 }, "end": { "line": 2, "character": 0 } },
+            "targetSelectionRange": { "start": { "line": 1, "character": 12 }, "end": { "line": 1, "character": 18 } },
+        }]),
+    );
+    app.press(K::F(12), M::NONE);
+    assert!(app.settle(|a| cursor_line_col(a).0 == 1).await);
+    assert_eq!(cursor_line_col(&app), (1, "// 😀 here: ".len()));
+
+    // Nothing.
+    app.press(K::Char('w'), cmd());
+    assert_eq!(active_path(&app).as_deref(), Some(a.as_path()));
+    put_cursor(&mut app, use_at);
+    fake.respond("textDocument/definition", Value::Null);
+    app.press(K::F(12), M::NONE);
+    assert!(
+        app.settle(|a| a
+            .message
+            .as_ref()
+            .is_some_and(|m| m.text == "No definition found for 'target'"))
+            .await,
+        "{:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+
+    // Ctrl+Click: the cursor goes to the click, then to the definition.
+    fake.respond("textDocument/definition", location(&a, 2, 4, 9));
+    let mut term = terminal();
+    draw(&mut term, &mut app);
+    let (x, y) = find_cells(&term, "target;").unwrap();
+    use crossterm::event::{MouseButton, MouseEventKind as E};
+    app.mouse_with(E::Down(MouseButton::Left), x + 1, y, M::CONTROL);
+    assert!(
+        app.settle(|_| fake.requests("textDocument/definition").len() == 6)
+            .await
+    );
+    assert_eq!(
+        last_position(&fake, "textDocument/definition"),
+        (1, 11),
+        "asked at the click"
+    );
+    app.mouse_with(E::Up(MouseButton::Left), x + 1, y, M::CONTROL);
+    assert!(app.settle(|a| cursor_line_col(a) == (2, 4)).await);
+
+    // Ctrl+Shift+Click extends the selection and asks nothing; neither does a plain click.
+    let asked = fake.requests("textDocument/definition").len();
+    draw(&mut term, &mut app);
+    let (x, y) = find_cells(&term, "target;").unwrap();
+    app.mouse_with(E::Down(MouseButton::Left), x + 1, y, M::CONTROL | M::SHIFT);
+    app.mouse_with(E::Up(MouseButton::Left), x + 1, y, M::CONTROL | M::SHIFT);
+    let (anchor, head) = selection(&app);
+    assert_ne!(anchor, head, "extended");
+    click(&mut app, (x + 2, y));
+    idle(&mut app).await;
+    assert_eq!(fake.requests("textDocument/definition").len(), asked);
+    assert!(fake.errors().is_empty());
+}
+
+/// Several places: the Locations tab of the bottom panel shows them grouped by file with each
+/// place's line (a file not open read off the UI thread), focused on the first place; Down and
+/// Enter open the next one (in a file not open) and focus the editor; a click on a row opens it
+/// keeping the list focused; Esc goes back to the editor.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_definitions_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, fake, root) = lsp_project(dir.path(), &[("a.cpp", DEF_A), ("b.cpp", DEF_B)], true).await;
+    let (a, b) = (root.join("a.cpp"), root.join("b.cpp"));
+    // a.cpp edited, not saved: its preview comes from the buffer, not the file.
+    put_cursor(&mut app, 0);
+    app.type_text("X");
+    put_cursor(&mut app, DEF_A.find("= target").unwrap() + 5);
+    fake.respond(
+        "textDocument/definition",
+        json!([location(&b, 1, 12, 18), location(&a, 0, 5, 11), location(&b, 0, 6, 7)]),
+    );
+    app.press(K::F(12), M::NONE);
+    assert!(app.settle(|a| a.locations.is_some()).await);
+    assert!(app.ui.panel_visible);
+    assert_eq!(app.ui.panel_tab, crate::layout::PanelTab::Locations);
+    assert_eq!(app.ui.focus, crate::app::Focus::Panel);
+    let l = app.locations.as_ref().unwrap();
+    assert_eq!(l.total(), 3);
+    assert_eq!(l.list.selected(), Some(&(a.clone(), 1)), "the first place");
+    assert!(
+        app.settle(|a| a.locations.as_ref().unwrap().unread().is_empty()).await,
+        "b.cpp read for its previews"
+    );
+    let mut term = big_terminal();
+    draw(&mut term, &mut app);
+    let rows = panel_rows(&term, &app);
+    assert_eq!(rows.len(), 5, "{rows:?}");
+    assert!(rows[0].starts_with("a.cpp") && rows[0].ends_with('1'), "{rows:?}");
+    assert_eq!(rows[1], "Xint target = 1;");
+    assert!(rows[2].starts_with("b.cpp") && rows[2].ends_with('2'), "{rows:?}");
+    // (A wide char's second cell reads as a space.)
+    assert_eq!(rows[3], "int 😀 x = 1;");
+    assert_eq!(rows[4], "// 😀  here: target");
+    let tabs = screen_row(&term, 0, app.hits.regions.panel.unwrap().y + 1);
+    assert!(tabs.contains("LOCATIONS  3 "), "{tabs:?}");
+    assert!(tabs.contains("Definitions of 'target'"), "{tabs:?}");
+    // The place is highlighted (UTF-16 range read past the astral char).
+    let (x, y) = find_cells(&term, "x = 1;").unwrap();
+    let buf = term.backend().buffer();
+    let matched = app.theme.get("search.match").bg;
+    assert_eq!(Some(buf[(x, y)].bg), matched);
+    assert_ne!(Some(buf[(x + 1, y)].bg), matched);
+
+    // Down, Enter: b.cpp's first place, the editor focused.
+    app.press(K::Down, M::NONE);
+    app.press(K::Down, M::NONE);
+    app.press(K::Enter, M::NONE);
+    assert!(app.settle(|a| active_path(a).as_deref() == Some(b.as_path())).await);
+    assert_eq!(cursor_line_col(&app), (0, "int 😀".len()));
+    assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+    // A click on a row: opened, the list keeps the keys.
+    draw(&mut term, &mut app);
+    let panel = app.hits.regions.panel.unwrap();
+    assert!(screen_row(&term, panel.x, panel.y + 6).contains("here: target"));
+    click(&mut app, (panel.x + 5, panel.y + 6));
+    assert_eq!(app.ui.focus, crate::app::Focus::Panel);
+    assert_eq!(cursor_line_col(&app), (1, "// 😀 here: ".len()));
+    app.press(K::Esc, M::NONE);
+    assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+    // Cmd+Shift+M still switches to Problems; the Locations tab stays in the strip.
+    app.press(K::Char('m'), cmd() | M::SHIFT);
+    draw(&mut term, &mut app);
+    let tabs = screen_row(&term, 0, app.hits.regions.panel.unwrap().y + 1);
+    assert!(tabs.contains("PROBLEMS") && tabs.contains("LOCATIONS"), "{tabs:?}");
+
+    // A file read for a replaced list is dropped; one for the current list is taken.
+    let generation = app.locations.as_ref().unwrap().generation;
+    let preview = |app: &App| {
+        let item = &app.locations.as_ref().unwrap().files[1].items[0];
+        item.preview.as_ref().unwrap().text.clone()
+    };
+    assert_eq!(preview(&app), "int 😀x = 1;");
+    app.test_locations_read(generation - 1, vec![(b.clone(), ropey::Rope::from_str("old\n"))]);
+    assert_eq!(preview(&app), "int 😀x = 1;", "another list's read");
+    app.test_locations_read(generation, vec![(b.clone(), ropey::Rope::from_str("new\n"))]);
+    assert_eq!(preview(&app), "new");
+
+    // A longer list: the wheel over the panel scrolls it.
+    app.press(K::Esc, M::NONE);
+    assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+    let many: Vec<Value> = (0..12).map(|i| location(&a, 2, i, i + 1)).collect();
+    fake.respond("textDocument/definition", Value::Array(many));
+    app.press(K::F(12), M::NONE);
+    assert!(
+        app.settle(|a| a.locations.as_ref().is_some_and(|l| l.total() == 12))
+            .await
+    );
+    draw(&mut term, &mut app);
+    let panel = app.hits.regions.panel.unwrap();
+    let rows = panel_rows(&term, &app);
+    assert!(rows[0].starts_with("a.cpp"), "{rows:?}");
+    use crossterm::event::MouseEventKind as E;
+    app.mouse(E::ScrollDown, panel.x + 5, panel.y + 4);
+    draw(&mut term, &mut app);
+    let scrolled = panel_rows(&term, &app);
+    assert!(!scrolled[0].starts_with("a.cpp"), "scrolled: {scrolled:?}");
+    assert!(fake.errors().is_empty());
+}
+
+/// A server that dies with a hover and a definition pending drops both: no popup, no jump, its
+/// crash reported once.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_server_crash_drops_pending_requests() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, fake, _root) = lsp_project(dir.path(), &[("a.cpp", DEF_A)], false).await;
+    fake.respond("textDocument/hover", json!({ "contents": "x" }));
+    fake.hold("textDocument/hover", true);
+    fake.respond("textDocument/definition", Value::Null);
+    fake.hold("textDocument/definition", true);
+    put_cursor(&mut app, 4);
+    app.press(K::F(12), M::NONE);
+    show_hover(&mut app);
+    assert_eq!(app.pending_requests(), [("definition", 4), ("hover", 4)]);
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/crash", Value::Null);
+    assert!(
+        app.settle(|a| matches!(a.lsp.server_for(Language::Cpp).unwrap().state, State::Failed))
+            .await
+    );
+    assert!(app.pending_requests().is_empty());
+    assert!(app.hover.popup.is_none());
+    assert!(app.message.as_ref().is_some_and(|m| m.text.contains("stopped")));
+    // Without a server the commands say so.
+    app.press(K::F(12), M::NONE);
+    assert_eq!(app.message.as_ref().unwrap().text, "No definition found for 'target'");
+    show_hover(&mut app);
+    assert_eq!(app.message.as_ref().unwrap().text, "No hover information");
+}
+
+/// A real server: hover on `word`'s use in `a` shows `hover` in the popup; F12 there opens
+/// `def_file` at its definition (`def_line`, 0-based).
+#[allow(clippy::too_many_arguments)]
+async fn real_hover_and_definition(
+    files: &[(&str, &str)],
+    word: &str,
+    hover: &str,
+    def_file: &str,
+    def_line: usize,
+    configure: impl FnOnce(&mut App),
+    process: &str,
+) {
+    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), files);
+    let mut app = open_app(&root, Arc::new(ProcessLauncher));
+    configure(&mut app);
+    let a = root.join(files[0].0);
+    open(&mut app, &a);
+    assert!(
+        settle_for(&mut app, 30, |a| a
+            .lsp
+            .server_for(a.active_buffer().unwrap().syntax.language())
+            .is_some_and(|s| s.encoding().is_some()))
+        .await,
+        "{process} initialized"
+    );
+    let text = files[0].1;
+    let at = text.rfind(word).unwrap() + 1;
+    put_cursor(&mut app, at);
+    let mut term = terminal();
+    draw(&mut term, &mut app);
+    // The server may answer nothing until it has read the file: ask until it shows something.
+    let t = Instant::now();
+    while app.hover.popup.is_none() && t.elapsed() < Duration::from_secs(60) {
+        show_hover(&mut app);
+        settle_for(&mut app, 3, |a| a.hover.popup.is_some()).await;
+    }
+    draw(&mut term, &mut app);
+    let rows = popup_rows(&term, &app).join("\n");
+    assert!(rows.contains(hover), "{process} hover: {rows}");
+
+    app.press(K::F(12), M::NONE);
+    let def = root.join(def_file);
+    assert!(
+        settle_for(&mut app, 60, |a| active_path(a).as_deref() == Some(def.as_path())).await,
+        "{process} went to the definition; message {:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    assert_eq!(cursor_line_col(&app).0, def_line, "{process}");
+    app.press(K::Char('q'), cmd());
+    app.shutdown_servers().await;
+    if let Some(n) = children_named(process) {
+        assert_eq!(n, 0, "no {process} left");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_real_clangd_hover_and_definition() {
+    if which("clangd").is_none() {
+        eprintln!("milestone_9_real_clangd_hover_and_definition: skipped, clangd isn't on PATH");
+        return;
+    }
+    real_hover_and_definition(
+        &[
+            ("a.cpp", "#include \"b.h\"\nint main() {\n  return answer(1);\n}\n"),
+            (
+                "b.h",
+                "// The answer.\ninline int answer(int x) {\n  return 41 + x;\n}\n",
+            ),
+        ],
+        "answer",
+        "int answer(int x)",
+        "b.h",
+        1,
+        |_| {},
+        "clangd",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_real_ty_hover_and_definition() {
+    let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv/bin/ty");
+    let Some(ty) = which("ty").or_else(|| venv.is_file().then_some(venv)) else {
+        eprintln!("milestone_9_real_ty_hover_and_definition: skipped, ty isn't on PATH or in .venv/bin");
+        return;
+    };
+    let configure = |app: &mut App| app.lsp.builtins.ty = ServerConfig::new(ty.to_str().unwrap(), &["server"]);
+    real_hover_and_definition(
+        &[
+            ("a.py", "from b import answer\n\nprint(answer(1))\n"),
+            ("b.py", "\ndef answer(x: int) -> int:\n    return 41 + x\n"),
+        ],
+        "answer",
+        "def answer(x: int) -> int",
+        "b.py",
+        1,
+        configure,
+        "ty",
+    )
+    .await;
 }

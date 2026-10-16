@@ -3,6 +3,8 @@
 mod cursors;
 mod files;
 mod find;
+mod hover;
+mod locations;
 mod lsp;
 mod mouse;
 mod palette;
@@ -69,6 +71,8 @@ pub struct Message {
 enum Timer {
     FsChanges,
     SearchDebounce,
+    /// The mouse has rested on text for `hover::DELAY`.
+    Hover,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +158,11 @@ enum AppEvent {
     },
     /// From a language server's task.
     Lsp(crate::lsp::Event),
+    /// Files read for the Locations list's previews (`generation`: the list they're for).
+    LocationsRead {
+        generation: u64,
+        files: Vec<(PathBuf, ropey::Rope)>,
+    },
 }
 
 /// The file to open at startup, with an optional 1-based line and column.
@@ -234,6 +243,14 @@ pub struct App {
     pub lsp: crate::lsp::Manager,
     /// Open files' languages, the config or trust changed: `sync_servers` has work to do.
     servers_dirty: bool,
+    /// Language server requests waiting for their answers, by server and request id.
+    requests: HashMap<(crate::lsp::ServerId, i64), lsp::Pending>,
+    /// The hover popup and the mouse's resting timer.
+    pub hover: crate::hover::HoverState,
+    /// The Locations list (go to definition's places), while there is one.
+    pub locations: Option<crate::locations::Locations>,
+    /// Numbers Locations lists, so file reads for a replaced one are dropped.
+    locations_generation: u64,
     /// The last command `execute` ran, for tests.
     #[cfg(test)]
     pub last_command: Option<Command>,
@@ -308,6 +325,10 @@ impl App {
             #[cfg(test)]
             lsp: crate::lsp::Manager::new(None),
             servers_dirty: true,
+            requests: HashMap::new(),
+            hover: Default::default(),
+            locations: None,
+            locations_generation: 0,
             #[cfg(test)]
             last_command: None,
         };
@@ -396,18 +417,19 @@ impl App {
     }
 
     /// Sleeps until the earliest pending deadline (the fs-event batch, the Search view's
-    /// debounce), or forever when none is pending; `run` and `settle` both wait on it. The future
-    /// borrows nothing, so it can sit in a `select!` beside `self.rx`.
+    /// debounce, the mouse's hover rest), or forever when none is pending; `run` and `settle` both
+    /// wait on it. The future borrows nothing, so it can sit in a `select!` beside `self.rx`.
     fn next_timer(&self) -> impl Future<Output = Timer> + 'static {
         let fs = self.fs_deadline.map(|d| (d, Timer::FsChanges));
         let search = self
             .search_view
             .deadline()
             .map(|d| (tokio::time::Instant::from_std(d), Timer::SearchDebounce));
-        let next = match (fs, search) {
-            (Some(f), Some(s)) => Some(if s.0 < f.0 { s } else { f }),
-            (f, s) => f.or(s),
-        };
+        let hover = self
+            .hover
+            .deadline()
+            .map(|d| (tokio::time::Instant::from_std(d), Timer::Hover));
+        let next = [fs, search, hover].into_iter().flatten().min_by_key(|(at, _)| *at);
         async move {
             match next {
                 Some((at, timer)) => {
@@ -424,6 +446,7 @@ impl App {
         match timer {
             Timer::FsChanges => self.flush_fs_changes(),
             Timer::SearchDebounce => self.search_tick(Instant::now()),
+            Timer::Hover => self.hover_tick(Instant::now()),
         }
     }
 
@@ -490,6 +513,7 @@ impl App {
             Focus::Find => Context::Find,
             Focus::Panel => match self.ui.panel_tab {
                 PanelTab::Problems => Context::Problems,
+                PanelTab::Locations => Context::Locations,
             },
         }
     }
@@ -501,8 +525,16 @@ impl App {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 tracing::trace!(target: "input", ?key);
                 self.message = None;
+                // Any key closes the hover popup; Esc in the editor does only that.
+                let popup = self.hover.popup.is_some();
+                if !matches!(key.code, KeyCode::Modifier(_)) {
+                    self.close_hover();
+                }
+                let esc = key.code == KeyCode::Esc && key.modifiers.is_empty();
                 if self.prompt.is_some() {
                     self.handle_prompt_key(key);
+                } else if popup && esc && self.palette.is_none() && self.ui.focus == Focus::Editor {
+                    // Closed above.
                 } else if let Some(cmd) = self.keymap.lookup(&key, self.context()) {
                     self.execute(cmd);
                 } else if self.palette.is_some() {
@@ -542,6 +574,8 @@ impl App {
         }
         self.sync_views();
         self.refresh_find();
+        self.check_requests();
+        self.check_hover();
     }
 
     /// Edits go through the active tab's view; every other view on an edited buffer
@@ -640,6 +674,9 @@ impl App {
             Command::TogglePanel => self.toggle_panel(),
             Command::ToggleProblems => self.toggle_problems(),
             Command::Problems(c) => self.problems_command(c),
+            Command::ShowHover => self.show_hover(),
+            Command::RevealDefinition => self.go_to_definition(),
+            Command::Locations(c) => self.locations_command(c),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
             _ => {
@@ -753,8 +790,10 @@ impl App {
             AppEvent::SearchResults(batch) => self.search_results(batch),
             AppEvent::Parsed { buffer, parsed } => self.parsed(buffer, parsed),
             AppEvent::Lsp(ev) => self.lsp_event(ev),
+            AppEvent::LocationsRead { generation, files } => self.locations_read(generation, files),
         }
         self.refresh_find();
+        self.check_hover();
     }
 
     fn update_crash_snapshot(&self) {
@@ -818,6 +857,35 @@ impl App {
     /// Takes in a workspace search batch as if the running search had sent it.
     pub fn test_search_batch(&mut self, batch: crate::workspace_search::Batch) {
         self.handle_app_event(AppEvent::SearchResults(batch));
+    }
+
+    /// Fires the hover resting timer as the event loop would at `now` (no sleeping in tests).
+    pub fn test_hover_tick(&mut self, now: Instant) {
+        self.hover_tick(now);
+    }
+
+    /// Takes in file texts read for the Locations list `generation`, as if the background read
+    /// had sent them (to test that a replaced list's reads are dropped).
+    pub fn test_locations_read(&mut self, generation: u64, files: Vec<(PathBuf, ropey::Rope)>) {
+        self.handle_app_event(AppEvent::LocationsRead { generation, files });
+    }
+
+    /// Language server requests waiting for answers: (method kind, buffer position) pairs.
+    pub fn pending_requests(&self) -> Vec<(&'static str, usize)> {
+        let mut v: Vec<_> = self
+            .requests
+            .values()
+            .map(|p| {
+                let kind = match p.request {
+                    lsp::Request::Hover { word: None } => "hover",
+                    lsp::Request::Hover { word: Some(_) } => "mouse hover",
+                    lsp::Request::Definition { .. } => "definition",
+                };
+                (kind, p.at.0)
+            })
+            .collect();
+        v.sort();
+        v
     }
 
     /// Takes in a language server event as if it had come through the channel, before the turn's

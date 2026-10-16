@@ -10,9 +10,9 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use lsp_types::{
-    ClientCapabilities, ClientInfo, GeneralClientCapabilities, InitializeParams, PositionEncodingKind,
-    PublishDiagnosticsClientCapabilities, ServerCapabilities, TextDocumentClientCapabilities, WindowClientCapabilities,
-    WorkspaceFolder,
+    ClientCapabilities, ClientInfo, GeneralClientCapabilities, GotoCapability, HoverClientCapabilities,
+    InitializeParams, MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities, ServerCapabilities,
+    TextDocumentClientCapabilities, WindowClientCapabilities, WorkspaceFolder,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -534,8 +534,9 @@ impl Conn {
 /// What red tells servers it can do: UTF-8 positions first (UTF-16 is the fallback every server
 /// must support), work-done progress, pushed diagnostics (with the document version they're
 /// for, so red can map them through the edits made since; no pull diagnostics: ty and clangd
-/// push when the client doesn't declare `textDocument.diagnostic`). Later tasks add the text
-/// document features they use.
+/// push when the client doesn't declare `textDocument.diagnostic`), hover (markdown first) and
+/// go to definition (`LocationLink`s welcome). Later tasks add the text document features they
+/// use.
 fn client_capabilities() -> ClientCapabilities {
     ClientCapabilities {
         general: Some(GeneralClientCapabilities {
@@ -546,6 +547,14 @@ fn client_capabilities() -> ClientCapabilities {
             publish_diagnostics: Some(PublishDiagnosticsClientCapabilities {
                 version_support: Some(true),
                 ..Default::default()
+            }),
+            hover: Some(HoverClientCapabilities {
+                dynamic_registration: None,
+                content_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
+            }),
+            definition: Some(GotoCapability {
+                dynamic_registration: None,
+                link_support: Some(true),
             }),
             ..Default::default()
         }),

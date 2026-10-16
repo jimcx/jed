@@ -499,7 +499,7 @@ fn search_rope(matcher: &Matcher, rope: &Rope, limit: usize) -> Vec<LineMatch> {
 }
 
 /// A `LineMatch`, cutting a long line's text down to a piece around the first match.
-fn line_match(line: usize, text: &str, ranges: Vec<Range<usize>>) -> LineMatch {
+pub fn line_match(line: usize, text: &str, ranges: Vec<Range<usize>>) -> LineMatch {
     if text.len() <= PREVIEW_LEN {
         return LineMatch {
             line,
