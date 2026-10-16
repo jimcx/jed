@@ -354,6 +354,29 @@ impl Manager {
         })
     }
 
+    /// The server that has `buffer`'s document open, if it's running: its id, position encoding
+    /// and capabilities.
+    pub fn server_of(&self, buffer: BufferId) -> Option<(ServerId, PosEncoding, &ServerCapabilities)> {
+        let (server, ..) = self.docs.document(buffer)?;
+        let s = self.servers.iter().find(|s| s.id == server)?;
+        match &s.state {
+            State::Running { encoding, capabilities } => Some((server, *encoding, capabilities)),
+            _ => None,
+        }
+    }
+
+    /// Sends `method` with `params` as they are to `server` if it's running (a request not about
+    /// a position: `completionItem/resolve`). The answer comes as `Event::Response` with the id.
+    pub fn request(&self, server: ServerId, method: &str, params: Value) -> Option<i64> {
+        let s = self.servers.iter().find(|s| s.id == server)?;
+        if !matches!(s.state, State::Running { .. }) {
+            return None;
+        }
+        let id = s.request(method, params);
+        tracing::debug!(server = %s.config.name, method, id, "request");
+        Some(id)
+    }
+
     /// Tells a server the app no longer waits for request `id` (`$/cancelRequest`); its answer,
     /// if one still comes, is dropped as nobody's.
     pub fn cancel(&self, server: ServerId, id: i64) {

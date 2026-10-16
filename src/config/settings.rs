@@ -9,6 +9,7 @@
 //! | `auto_close_pairs` | bool | true      | Brackets/quotes auto-close, type over, delete in pairs, wrap   |
 //! | `auto_indent`      | bool | true      | Enter indents; a closing bracket first on a line outdents it    |
 //! | `match_brackets`   | bool | true      | Highlight the bracket next to the cursor and its partner       |
+//! | `quick_suggestions`| bool | true      | Typing a word asks the language server for completions         |
 //!
 //! Precedence, per key: defaults ← `settings.toml` ← `.workspace` (`layer`).
 //!
@@ -44,6 +45,8 @@ pub struct SettingsOverrides {
     pub auto_indent: Option<bool>,
     /// Highlight the bracket at the cursor and its partner (VS Code's `editor.matchBrackets`).
     pub match_brackets: Option<bool>,
+    /// Typing a word char asks for completions (VS Code's `editor.quickSuggestions`, code only).
+    pub quick_suggestions: Option<bool>,
 }
 
 impl SettingsOverrides {
@@ -66,6 +69,9 @@ impl SettingsOverrides {
         }
         if let Some(on) = self.match_brackets {
             s.match_brackets = on;
+        }
+        if let Some(on) = self.quick_suggestions {
+            s.quick_suggestions = on;
         }
     }
 }
@@ -179,6 +185,7 @@ pub const TEMPLATE: &str = "\
 # auto_close_pairs = true
 # auto_indent = true
 # match_brackets = true
+# quick_suggestions = true
 ";
 
 #[cfg(test)]
@@ -195,7 +202,7 @@ mod tests {
     fn parses_every_key() {
         let o = set(
             "[settings]\ntab_width = 2\ninsert_spaces = false\nsyntax_max_bytes = 10\nauto_close_pairs = false\n\
-             auto_indent = false\nmatch_brackets = false\n",
+             auto_indent = false\nmatch_brackets = false\nquick_suggestions = false\n",
         );
         assert_eq!(
             o,
@@ -206,6 +213,7 @@ mod tests {
                 auto_close_pairs: Some(false),
                 auto_indent: Some(false),
                 match_brackets: Some(false),
+                quick_suggestions: Some(false),
             }
         );
     }
@@ -344,6 +352,7 @@ mod tests {
             auto_close_pairs: Some(true),
             auto_indent: Some(true),
             match_brackets: Some(true),
+            quick_suggestions: Some(true),
         };
         let fields = toml::Table::try_from(&every).unwrap();
         assert_eq!(
@@ -358,7 +367,10 @@ mod tests {
             (s.tab_width, s.insert_spaces, s.syntax_max_bytes, s.auto_close_pairs),
             (d.tab_width, d.insert_spaces, d.syntax_max_bytes, d.auto_close_pairs)
         );
-        assert_eq!((s.auto_indent, s.match_brackets), (d.auto_indent, d.match_brackets));
+        assert_eq!(
+            (s.auto_indent, s.match_brackets, s.quick_suggestions),
+            (d.auto_indent, d.match_brackets, d.quick_suggestions)
+        );
         assert!(parse(TEMPLATE).errors.is_empty());
     }
 

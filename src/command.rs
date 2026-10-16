@@ -151,6 +151,10 @@ pub enum Command {
     RevealDefinition,
     /// The Locations list's commands (the bottom panel's "LOCATIONS" tab).
     Locations(LocationsCommand),
+    /// Ctrl+Space: ask the language server for completions at the cursor.
+    TriggerSuggest,
+    /// The completion list's keys (only while it's shown).
+    Suggest(SuggestCommand),
 }
 
 /// Focus-group commands listed in the palette and accepted in keybindings (as VS Code: 1 to 8).
@@ -364,6 +368,31 @@ impl LocationsCommand {
     ];
 }
 
+/// The completion list (`Context::Suggest`, while it's shown).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SuggestCommand {
+    /// Up / Down: the previous / next item, wrapping round.
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    /// Enter / Tab: insert the selected item at every cursor.
+    Accept,
+    /// Esc: close the list.
+    Close,
+}
+
+impl SuggestCommand {
+    pub const ALL: [SuggestCommand; 6] = [
+        SuggestCommand::Up,
+        SuggestCommand::Down,
+        SuggestCommand::PageUp,
+        SuggestCommand::PageDown,
+        SuggestCommand::Accept,
+        SuggestCommand::Close,
+    ];
+}
+
 impl Command {
     /// Every command, in a stable order: what the palette lists and keybindings can name.
     pub fn all() -> Vec<Command> {
@@ -432,6 +461,8 @@ impl Command {
         all.extend(ProblemsCommand::ALL.map(Command::Problems));
         all.extend([Command::ShowHover, Command::RevealDefinition]);
         all.extend(LocationsCommand::ALL.map(Command::Locations));
+        all.push(Command::TriggerSuggest);
+        all.extend(SuggestCommand::ALL.map(Command::Suggest));
         all
     }
 
@@ -608,6 +639,18 @@ impl Command {
                     LocationsCommand::FocusEditor => "focusEditor",
                 }
             ),
+            Command::TriggerSuggest => "editor.triggerSuggest".into(),
+            Command::Suggest(c) => format!(
+                "suggest.{}",
+                match c {
+                    SuggestCommand::Up => "up",
+                    SuggestCommand::Down => "down",
+                    SuggestCommand::PageUp => "pageUp",
+                    SuggestCommand::PageDown => "pageDown",
+                    SuggestCommand::Accept => "accept",
+                    SuggestCommand::Close => "close",
+                }
+            ),
         }
     }
 
@@ -768,6 +811,15 @@ impl Command {
                 LocationsCommand::Open => "Locations: Open Selected Location",
                 LocationsCommand::FocusEditor => "Locations: Back to Editor",
             },
+            Command::TriggerSuggest => "Trigger Suggest",
+            Command::Suggest(c) => match c {
+                SuggestCommand::Up => "Suggest: Select Previous Suggestion",
+                SuggestCommand::Down => "Suggest: Select Next Suggestion",
+                SuggestCommand::PageUp => "Suggest: Select Previous Page of Suggestions",
+                SuggestCommand::PageDown => "Suggest: Select Next Page of Suggestions",
+                SuggestCommand::Accept => "Suggest: Accept Selected Suggestion",
+                SuggestCommand::Close => "Suggest: Hide Suggestions",
+            },
         };
         s.into()
     }
@@ -861,9 +913,11 @@ mod tests {
             Command::ShowHover => 55,
             Command::RevealDefinition => 56,
             Command::Locations(_) => 57,
+            Command::TriggerSuggest => 58,
+            Command::Suggest(_) => 59,
         }
     }
-    const VARIANTS: u8 = 58;
+    const VARIANTS: u8 = 60;
 
     #[test]
     fn all_lists_every_variant() {
@@ -881,6 +935,7 @@ mod tests {
         assert_eq!(count(49), SearchCommand::ALL.len());
         assert_eq!(count(54), ProblemsCommand::ALL.len());
         assert_eq!(count(57), LocationsCommand::ALL.len());
+        assert_eq!(count(59), SuggestCommand::ALL.len());
     }
 
     #[test]

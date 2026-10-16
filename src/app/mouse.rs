@@ -54,6 +54,9 @@ impl ClickTracker {
 impl App {
     pub(super) fn handle_mouse(&mut self, m: MouseEvent) {
         let hit = self.hits.hit(m.column, m.row);
+        if self.completion_mouse(&m, hit) {
+            return;
+        }
         if self.hover_mouse(&m, hit) {
             return;
         }
@@ -189,7 +192,7 @@ impl App {
                 PanelTab::Locations => self.locations_click(m, count),
             },
             Hit::StatusProblems => self.problem_counts_clicked(),
-            Hit::Status | Hit::Hover | Hit::Nothing => {}
+            Hit::Status | Hit::Hover | Hit::Completion | Hit::Nothing => {}
         }
     }
 

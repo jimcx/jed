@@ -354,6 +354,17 @@ pub struct HitMap {
     pub status_problems: Option<Rect>,
     /// The hover popup, when shown: on top of everything under it.
     pub hover: Option<Rect>,
+    /// The completion list, when shown: on top of everything (the hover too).
+    pub completion: Option<CompletionHit>,
+}
+
+/// The completion list as drawn: its box, the rows' area and the list row at its top (row
+/// `rows.y + i` shows the list's row `top + i`).
+#[derive(Debug, Clone, Copy)]
+pub struct CompletionHit {
+    pub rect: Rect,
+    pub rows: Rect,
+    pub top: usize,
 }
 
 /// A grouped list (`grouped`) as drawn: its rect and the row each line shows (`rows[i]` is at
@@ -433,6 +444,8 @@ pub enum Hit {
     StatusProblems,
     /// The hover popup (over an editor).
     Hover,
+    /// The completion list (over an editor).
+    Completion,
     Nothing,
 }
 
@@ -440,6 +453,9 @@ impl HitMap {
     pub fn hit(&self, x: u16, y: u16) -> Hit {
         let p = Position { x, y };
         let r = &self.regions;
+        if self.completion.is_some_and(|c| c.rect.contains(p)) {
+            return Hit::Completion;
+        }
         if self.hover.is_some_and(|h| h.contains(p)) {
             return Hit::Hover;
         }
@@ -631,8 +647,14 @@ mod tests {
             panel_list: None,
             status_problems: Some(Rect::new(10, 29, 8, 1)),
             hover: Some(Rect::new(40, 5, 10, 4)),
+            completion: Some(CompletionHit {
+                rect: Rect::new(44, 7, 5, 3),
+                rows: Rect::new(45, 8, 3, 1),
+                top: 0,
+            }),
         };
         assert_eq!(map.hit(41, 6), Hit::Hover, "the popup is on top");
+        assert_eq!(map.hit(46, 8), Hit::Completion, "the completion list over the hover");
         assert_eq!(map.hit(1, 1), Hit::Icon(SidePanel::Explorer));
         assert_eq!(map.hit(27, 5), Hit::SideBorder);
         assert_eq!(map.hit(5, 4), Hit::ExplorerRow(2));

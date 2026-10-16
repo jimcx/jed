@@ -42,6 +42,8 @@ pub struct Buffer {
     applied: Vec<Arc<ChangeSet>>,
     /// Counts text changes (edits, undos, redos): equal revisions mean the same text.
     revision: u64,
+    /// Counts change sets applied (an undo step can apply several in one revision).
+    sets_applied: u64,
     /// Language and parse tree; every change set applied here reaches `Syntax::edit`.
     pub syntax: Syntax,
     /// While a language server has this document open (`track_changes`): every change set
@@ -88,6 +90,7 @@ impl Buffer {
             saving_state: None,
             applied: Vec::new(),
             revision: 0,
+            sets_applied: 0,
             syntax: Syntax::default(),
             tracked: None,
             diagnostics: Marks::default(),
@@ -164,6 +167,7 @@ impl Buffer {
             });
         }
         let inverse = changes.apply(&mut self.rope);
+        self.sets_applied += 1;
         self.syntax.map_highlights(changes);
         self.diagnostics.map(changes);
         if let Some(old) = old {
@@ -175,6 +179,12 @@ impl Buffer {
     /// Changes with every edit, undo and redo: what cached search results are keyed on.
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// How many change sets were applied so far: the ones `take_applied` returns are the last of
+    /// them (completion anchors skip those their text already has).
+    pub fn sets_applied(&self) -> u64 {
+        self.sets_applied
     }
 
     /// Changes applied since the last call, in order.

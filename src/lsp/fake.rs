@@ -14,7 +14,9 @@
 //! Scripted answers: `respond(method, result)` makes it answer every `method` request (e.g.
 //! `textDocument/hover`) with `result`; `hold(method, true)` keeps those answers until a
 //! `test/flush` (out of order, as `test/later`). A `$/cancelRequest` for a held request answers
-//! it at once with RequestCancelled (-32800), as servers do.
+//! it at once with RequestCancelled (-32800), as servers do. It advertises `hoverProvider`,
+//! `definitionProvider` and `completionProvider` (trigger characters `.` and `>`, resolve); an
+//! unscripted `completionItem/resolve` answers with the item it got.
 //!
 //! Documents: it keeps its own copy of every document opened (`didOpen`), applies each
 //! `didChange` to it (ranges in the negotiated encoding, converted here independently of
@@ -251,6 +253,10 @@ async fn serve(
                             "textDocumentSync": options.sync.clone().unwrap_or(json!(2)),
                             "hoverProvider": true,
                             "definitionProvider": true,
+                            "completionProvider": {
+                                "triggerCharacters": [".", ">"],
+                                "resolveProvider": true,
+                            },
                         });
                         if options.utf8 {
                             caps["positionEncoding"] = json!("utf-8");
@@ -278,6 +284,8 @@ async fn serve(
                             out.push(Message::Response { id, result: Ok(result) });
                         }
                     }
+                    // Unscripted, a resolve answers with the item as it came.
+                    "completionItem/resolve" => out.push(Message::Response { id, result: Ok(params) }),
                     _ => out.push(Message::Response {
                         id,
                         result: Err(RpcError {

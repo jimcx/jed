@@ -28,6 +28,17 @@ pub(super) enum Request {
     Hover { word: Option<(ByteIdx, ByteIdx)> },
     /// Go to definition of `word` (the name under the cursor, for the "not found" message).
     Definition { word: String },
+    /// Completion at the cursor; `app.completion.ask` with this generation holds where it was
+    /// asked (current while the cursor stays in that word: typing on doesn't make it stale).
+    Completion { generation: u64 },
+    /// `completionItem/resolve` for item `index` of the list `generation`: current while that list
+    /// is shown; with `accepted`, the item was inserted leaving the buffer at that revision, and
+    /// the answer's additional edits go in while it still is.
+    Resolve {
+        generation: u64,
+        index: usize,
+        accepted: Option<u64>,
+    },
 }
 
 impl Request {
@@ -126,13 +137,28 @@ impl App {
         supported: fn(&ServerCapabilities) -> bool,
         request: Request,
     ) -> bool {
+        self.send_request_with(group, buffer, at, method, supported, request, Value::Null)
+    }
+
+    /// `send_request` with `extra`'s fields added to the params (`textDocument`, `position`).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn send_request_with(
+        &mut self,
+        group: GroupId,
+        buffer: BufferId,
+        at: ByteIdx,
+        method: &str,
+        supported: fn(&ServerCapabilities) -> bool,
+        request: Request,
+        extra: Value,
+    ) -> bool {
         self.cancel_requests(|p| p.request.same_kind(&request));
         if !self.lsp.started() {
             return false;
         }
         let Some(sent) = self
             .lsp
-            .request_at(&mut self.buffers, buffer, at, method, supported, Value::Null)
+            .request_at(&mut self.buffers, buffer, at, method, supported, extra)
         else {
             return false;
         };
@@ -146,6 +172,38 @@ impl App {
                 revision,
                 at,
                 encoding: sent.encoding,
+            },
+        );
+        true
+    }
+
+    /// Sends `method` with `params` as they are to `server` (a request not about a position:
+    /// `completionItem/resolve`), replacing a pending request of the same kind; the `Pending` gets
+    /// `group`, `buffer` and `at`. False when the server isn't running.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn send_server_request(
+        &mut self,
+        server: ServerId,
+        encoding: PosEncoding,
+        (group, buffer, at): (GroupId, BufferId, ByteIdx),
+        method: &str,
+        params: Value,
+        request: Request,
+    ) -> bool {
+        self.cancel_requests(|p| p.request.same_kind(&request));
+        let Some(id) = self.lsp.request(server, method, params) else {
+            return false;
+        };
+        let revision = self.buffers.get(buffer).map_or(0, |b| b.revision());
+        self.requests.insert(
+            (server, id),
+            Pending {
+                request,
+                group,
+                buffer,
+                revision,
+                at,
+                encoding,
             },
         );
         true
@@ -182,6 +240,25 @@ impl App {
     /// Whether an answer to `p` still fits: the buffer unedited, and the cursor (the active view
     /// of `p.group`, still the active group) or for a mouse hover the pointer still there.
     fn request_current(&self, p: &Pending) -> bool {
+        match &p.request {
+            Request::Completion { generation } => return self.completion_ask_current(*generation),
+            Request::Resolve {
+                generation,
+                accepted: None,
+                ..
+            } => {
+                return self
+                    .completion
+                    .popup
+                    .as_ref()
+                    .is_some_and(|c| c.generation == *generation);
+            }
+            Request::Resolve {
+                accepted: Some(revision),
+                ..
+            } => return self.buffers.get(p.buffer).is_some_and(|b| b.revision() == *revision),
+            _ => {}
+        }
         if self.buffers.get(p.buffer).is_none_or(|b| b.revision() != p.revision) {
             return false;
         }
@@ -208,9 +285,13 @@ impl App {
             Err(e) => {
                 // Cancelled (-32800) or content modified (-32801) are routine.
                 tracing::debug!(code = e.code, "request failed: {}", e.message);
-                if let Request::Definition { word } = &p.request {
-                    let text = super::locations::no_definition(word);
-                    self.notify(super::Level::Info, text);
+                match &p.request {
+                    Request::Definition { word } => {
+                        let text = super::locations::no_definition(word);
+                        self.notify(super::Level::Info, text);
+                    }
+                    Request::Completion { generation } => self.completion_failed(*generation),
+                    _ => {}
                 }
                 return;
             }
@@ -219,6 +300,12 @@ impl App {
         match p.request.clone() {
             Request::Hover { word } => self.hover_answer(&p, word, &value),
             Request::Definition { word } => self.definition_answer(&p, &word, &value),
+            Request::Completion { generation } => self.completion_answer(generation, &value),
+            Request::Resolve {
+                generation,
+                index,
+                accepted,
+            } => self.resolve_answer(&p, generation, index, accepted, &value),
         }
     }
 

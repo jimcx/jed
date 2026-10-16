@@ -10,9 +10,10 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use lsp_types::{
-    ClientCapabilities, ClientInfo, GeneralClientCapabilities, GotoCapability, HoverClientCapabilities,
-    InitializeParams, MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities, ServerCapabilities,
-    TextDocumentClientCapabilities, WindowClientCapabilities, WorkspaceFolder,
+    ClientCapabilities, ClientInfo, CompletionClientCapabilities, CompletionItemCapability,
+    CompletionItemCapabilityResolveSupport, CompletionListCapability, GeneralClientCapabilities, GotoCapability,
+    HoverClientCapabilities, InitializeParams, MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
+    ServerCapabilities, TextDocumentClientCapabilities, WindowClientCapabilities, WorkspaceFolder,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -555,6 +556,31 @@ fn client_capabilities() -> ClientCapabilities {
             definition: Some(GotoCapability {
                 dynamic_registration: None,
                 link_support: Some(true),
+            }),
+            // No `snippetSupport`: without a snippet session (tab stops) placeholders would stay
+            // in the text; a snippet a server sends anyway is read (`completion::strip_snippet`).
+            completion: Some(CompletionClientCapabilities {
+                completion_item: Some(CompletionItemCapability {
+                    commit_characters_support: Some(true),
+                    deprecated_support: Some(true),
+                    preselect_support: Some(true),
+                    insert_replace_support: Some(true),
+                    label_details_support: Some(true),
+                    resolve_support: Some(CompletionItemCapabilityResolveSupport {
+                        properties: vec!["detail".into(), "documentation".into(), "additionalTextEdits".into()],
+                    }),
+                    ..Default::default()
+                }),
+                context_support: Some(true),
+                completion_list: Some(CompletionListCapability {
+                    item_defaults: Some(vec![
+                        "editRange".into(),
+                        "insertTextFormat".into(),
+                        "commitCharacters".into(),
+                        "data".into(),
+                    ]),
+                }),
+                ..Default::default()
             }),
             ..Default::default()
         }),

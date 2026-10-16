@@ -1,5 +1,5 @@
-//! Popups anchored at a buffer position in an editor view: the hover (`ui::hover`) and, from 9f,
-//! the completion list. `cell_of` finds the anchor's screen cell, `place` the popup's rect
+//! Popups anchored at a buffer position in an editor view: the hover (`ui::hover`) and the
+//! completion list (`ui::completion`). `cell_of` finds the anchor's screen cell, `place` the popup's rect
 //! (clipped to the editor), `frame` draws its border and fill. The caller draws the content and
 //! returns the rect for `HitMap` (mouse events on it don't fall through).
 
@@ -16,8 +16,7 @@ use crate::view::View;
 pub enum Side {
     /// Above (the hover, as VS Code).
     Above,
-    /// Below (a completion list).
-    #[allow(dead_code)] // completion (9f)
+    /// Below (the completion list).
     Below,
 }
 

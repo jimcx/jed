@@ -5,6 +5,7 @@ mod clipboard;
 mod column;
 mod command;
 mod comment;
+mod completion;
 mod config;
 mod diagnostics;
 mod edit;

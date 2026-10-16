@@ -1,6 +1,6 @@
 //! Key combos to commands. Keymaps are data; commands never look at keys.
 //! A binding applies in one context (editor, explorer, palette, find, replace, search,
-//! searchResults, problems) or everywhere.
+//! searchResults, problems, locations, suggest) or everywhere.
 //! The defaults are VS Code's; `keybindings.toml` replaces bindings command by command.
 
 use std::collections::{HashMap, HashSet};
@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use crate::command::{
     ColumnMotion, Command, ExplorerCommand as X, FindCommand as F, LocationsCommand as L, Motion, PaletteCommand as P,
-    ProblemsCommand as Pr, SearchCommand as S,
+    ProblemsCommand as Pr, SearchCommand as S, SuggestCommand as Sg,
 };
 
 pub const FILE_NAME: &str = "keybindings.toml";
@@ -61,6 +61,11 @@ impl KeyCombo {
             ev.modifiers & (KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
         let chord = mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
         let code = match ev.code {
+            // Ctrl+Space as a legacy terminal may report it (NUL, read as Ctrl+@ or Ctrl+Shift+2).
+            KeyCode::Char('@') if mods - KeyModifiers::SHIFT == KeyModifiers::CONTROL => {
+                mods = KeyModifiers::CONTROL;
+                KeyCode::Char(' ')
+            }
             KeyCode::Char(c) if c.is_uppercase() => {
                 mods |= KeyModifiers::SHIFT;
                 KeyCode::Char(c.to_lowercase().next().unwrap_or(c))
@@ -175,10 +180,13 @@ pub enum Context {
     Problems,
     /// The bottom panel's Locations list (definitions, references) has the focus.
     Locations,
+    /// The editor has the focus and the completion list is shown; bindings not found here come
+    /// from `Editor`.
+    Suggest,
 }
 
 impl Context {
-    const ALL: [(Context, &'static str); 9] = [
+    const ALL: [(Context, &'static str); 10] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
@@ -188,6 +196,7 @@ impl Context {
         (Context::SearchResults, "searchResults"),
         (Context::Problems, "problems"),
         (Context::Locations, "locations"),
+        (Context::Suggest, "suggest"),
     ];
 
     fn parse(name: &str) -> Option<Context> {
@@ -199,6 +208,7 @@ impl Context {
         match self {
             Context::Replace => Some(Context::Find),
             Context::SearchResults => Some(Context::Search),
+            Context::Suggest => Some(Context::Editor),
             _ => None,
         }
     }
@@ -469,6 +479,8 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         // No chords, so not VS Code's Cmd+K Cmd+I.
         (KeyCode::Char('i'), cmd | alt, Command::ShowHover),
         (KeyCode::F(12), none, Command::RevealDefinition),
+        // Ctrl on macOS too, as in VS Code.
+        (KeyCode::Char(' '), ctrl, Command::TriggerSuggest),
     ]);
     // The find widget: opening it, and what also works from the editor (VS Code: `editorFocus`).
     // VS Code's toggles are Cmd+Alt+C / W / R on macOS, Alt+C / W / R on Linux.
@@ -619,6 +631,17 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Esc, none, L::FocusEditor),
     ];
 
+    // The completion list, while shown (falls back to the editor's keys).
+    let suggest = [
+        (KeyCode::Up, none, Sg::Up),
+        (KeyCode::Down, none, Sg::Down),
+        (KeyCode::PageUp, none, Sg::PageUp),
+        (KeyCode::PageDown, none, Sg::PageDown),
+        (KeyCode::Enter, none, Sg::Accept),
+        (KeyCode::Tab, none, Sg::Accept),
+        (KeyCode::Esc, none, Sg::Close),
+    ];
+
     let bind = |code, mods, context, command| Binding {
         combo: KeyCombo { code, mods },
         context,
@@ -662,6 +685,11 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         locations
             .into_iter()
             .map(|(k, m, c)| bind(k, m, Some(Context::Locations), Command::Locations(c))),
+    );
+    out.extend(
+        suggest
+            .into_iter()
+            .map(|(k, m, c)| bind(k, m, Some(Context::Suggest), Command::Suggest(c))),
     );
     out
 }
@@ -889,6 +917,51 @@ mod tests {
             mac.lookup(&key(KeyCode::Char('!'), KeyModifiers::SUPER), Context::Find),
             Some(Command::Find(F::ReplaceOne))
         );
+    }
+
+    /// Ctrl+Space triggers completion however it arrives (kitty: Ctrl+Space; a legacy terminal's
+    /// NUL: Ctrl+@, maybe with Shift); the list's keys apply only in its context, the editor's
+    /// otherwise.
+    #[test]
+    fn ctrl_space_and_the_suggest_context() {
+        for platform in [Platform::MacOs, Platform::Linux] {
+            let km = Keymap::default_for(platform);
+            let ed = Context::Editor;
+            for (code, mods) in [
+                (KeyCode::Char(' '), KeyModifiers::CONTROL),
+                (KeyCode::Char('@'), KeyModifiers::CONTROL),
+                (KeyCode::Char('@'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            ] {
+                assert_eq!(
+                    km.lookup(&key(code, mods), ed),
+                    Some(Command::TriggerSuggest),
+                    "{code:?} {mods:?}"
+                );
+            }
+            assert_eq!(
+                km.binding_for(Command::TriggerSuggest).map(|k| k.label()).as_deref(),
+                Some("Ctrl+Space")
+            );
+            let s = Context::Suggest;
+            let none = KeyModifiers::NONE;
+            for (code, c) in [
+                (KeyCode::Up, Sg::Up),
+                (KeyCode::Down, Sg::Down),
+                (KeyCode::PageDown, Sg::PageDown),
+                (KeyCode::Enter, Sg::Accept),
+                (KeyCode::Tab, Sg::Accept),
+                (KeyCode::Esc, Sg::Close),
+            ] {
+                assert_eq!(km.lookup(&key(code, none), s), Some(Command::Suggest(c)));
+            }
+            assert_eq!(km.lookup(&key(KeyCode::Enter, none), ed), Some(Command::InsertNewline));
+            assert_eq!(
+                km.lookup(&key(KeyCode::Backspace, none), s),
+                Some(Command::DeleteLeft),
+                "the editor's"
+            );
+            assert_eq!(km.lookup(&key(KeyCode::Char('@'), none), s), None, "typed");
+        }
     }
 
     #[test]

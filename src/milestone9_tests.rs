@@ -1,5 +1,5 @@
 //! Milestone 9 end to end (so far: 9a, the `lsp` core; 9b, document sync; 9c, diagnostics;
-//! 9d, the bottom panel and its Problems list; 9e, hover and go to definition).
+//! 9d, the bottom panel and its Problems list; 9e, hover and go to definition; 9f, completion).
 //!
 //! 9a: opening a C++ file starts its server (the in-process fake, `lsp::fake`) once: `initialize`
 //! carries the root and offers UTF-8 then UTF-16 positions, UTF-8 is negotiated when the server
@@ -76,6 +76,27 @@
 //! pending definition; the popup takes clicks over the find widget and stays in its group's
 //! editor at any size. Real clangd and ty show a symbol's signature on
 //! hover and F12 opens the definition in another file.
+//!
+//! 9f: typing a word asks for completions once the quick-suggestion timer fires (in code, not in
+//! a comment or string, not with `quick_suggestions` off); a trigger character (`.`, `>`) asks at
+//! once with `triggerKind` 2 (UTF-16 positions past an astral char); Ctrl+Space (also as Ctrl+@)
+//! asks, "No suggestions." for an empty or failed answer or no server. The list is drawn below
+//! the word with the labels lined up under it, kind icons and the typed chars in their colours,
+//! the selected row's detail; typing filters it (fuzzy, by score then `sortText`) without asking
+//! again unless the list is incomplete (`triggerKind` 3, the answer replacing it); Up / Down
+//! wrap, PageUp / PageDown, the wheel scrolls it, a click inserts a row; Enter and Tab insert,
+//! Esc, a space, Backspace or Home past the word's start, a click or the wheel elsewhere close
+//! it. Inserting: `textEdit` (an `InsertReplaceEdit`'s insert range), `additionalTextEdits` in the
+//! same undo step, a snippet with its placeholder selected, at every Cmd+D cursor (each replacing
+//! its own word), next to auto-closed pairs (the closer still typed over), commit characters;
+//! selecting resolves an item (its detail drawn), an item inserted before its resolve answered
+//! gets the resolve's additional edits after (not once the buffer was edited again). Ranges are
+//! read where the request was asked and followed through typing since, at every cursor: one that
+//! also replaces the `.` before the word, one that runs past the cursor. A read-only buffer gets
+//! nothing inserted. A newer request cancels the pending one, typing in the word keeps it,
+//! leaving the word drops it and its answer; a quick suggestion's error says nothing. At ~63k cursors in 1 MB a key
+//! with the list and inserting stay within M6's keystroke / line-command budgets (release). Real
+//! clangd and ty list a struct member / module attribute after `.`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -3096,4 +3117,995 @@ async fn milestone_9_real_ty_hover_and_definition() {
         "ty",
     )
     .await;
+}
+
+// ---- 9f: completion ----
+
+fn completion_list(items: Value, incomplete: bool) -> Value {
+    json!({ "isIncomplete": incomplete, "items": items })
+}
+
+/// The labels of the list's rows, best first (empty when there's no list).
+fn shown(app: &App) -> Vec<String> {
+    app.completion.popup.as_ref().map_or_else(Vec::new, |p| {
+        p.shown.iter().map(|&i| p.items[i].label.clone()).collect()
+    })
+}
+
+fn selected_label(app: &App) -> Option<String> {
+    let p = app.completion.popup.as_ref()?;
+    p.selected_item().map(|i| i.label.clone())
+}
+
+fn text(app: &App) -> String {
+    app.active_buffer().unwrap().rope.to_string()
+}
+
+fn ctrl_space(app: &mut App) {
+    app.press(K::Char(' '), M::CONTROL);
+}
+
+fn list_shown(app: &App) -> bool {
+    app.completion.popup.as_ref().is_some_and(|p| !p.shown.is_empty())
+}
+
+/// The list's rows as drawn (inside its border), trailing spaces trimmed.
+fn completion_rows(term: &ratatui::Terminal<ratatui::backend::TestBackend>, app: &App) -> Vec<String> {
+    let h = app.hits.completion.expect("list drawn");
+    let buf = term.backend().buffer();
+    (h.rows.y..h.rows.y + h.rows.height)
+        .map(|y| {
+            (h.rows.x..h.rows.x + h.rows.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
+/// Waits until the fake got `n` completion requests.
+async fn asked(app: &mut App, fake: &FakeLauncher, n: usize) {
+    let got = app
+        .settle(|_| fake.requests("textDocument/completion").len() >= n)
+        .await;
+    assert!(got, "{n} completion requests");
+}
+
+/// The last completion request's `context`.
+fn last_context(fake: &FakeLauncher) -> Value {
+    fake.requests("textDocument/completion").last().expect("a request")["context"].clone()
+}
+
+/// Typing a word asks once the quick-suggestion timer fires (code, not before it), at the cursor;
+/// the list is drawn under the word, labels lined up with it, kind icons in their colours, the
+/// typed chars highlighted, the selected row with its detail. Typing on filters it (no new
+/// request), Up / Down wrap, Enter inserts the selected item (one undo step back to what was
+/// typed); Tab inserts too; Esc only closes it; a space, Backspace past the word's start, Home
+/// and a click elsewhere close it; Ctrl+Space (also as a legacy terminal's Ctrl+@) asks again,
+/// listing everything sorted by `sortText` with an empty word.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_completion_filters_and_inserts() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "int main() {\n    \n}\n";
+    let (mut app, fake, _root) = lsp_project(dir.path(), &[("a.cpp", src)], false).await;
+    fake.respond(
+        "textDocument/completion",
+        completion_list(
+            json!([
+                { "label": "alpha", "kind": 5, "detail": "int alpha", "sortText": "1" },
+                { "label": "alphabet", "kind": 3, "detail": "void alphabet()", "sortText": "2" },
+                { "label": "beta", "kind": 6, "sortText": "0" },
+                { "label": "Alpine", "kind": 7, "sortText": "3" },
+            ]),
+            false,
+        ),
+    );
+    let mut term = terminal();
+    put_cursor(&mut app, 17);
+    draw(&mut term, &mut app);
+    app.type_text("al");
+    assert!(app.completion.quick.is_some(), "the timer runs");
+    assert!(
+        fake.requests("textDocument/completion").is_empty(),
+        "nothing before it fires"
+    );
+    assert!(app.settle(list_shown).await);
+    assert_eq!(fake.requests("textDocument/completion").len(), 1);
+    assert_eq!(last_position(&fake, "textDocument/completion"), (1, 6));
+    assert_eq!(last_context(&fake), json!({ "triggerKind": 1 }));
+    assert_eq!(shown(&app), ["alpha", "alphabet", "Alpine"]);
+
+    draw(&mut term, &mut app);
+    let rows = completion_rows(&term, &app);
+    assert_eq!(rows.len(), 3);
+    assert!(
+        rows[0].starts_with("d alpha ") && rows[0].ends_with("int alpha"),
+        "{rows:?}"
+    );
+    assert_eq!(rows[1..], ["f alphabet", "C Alpine"], "detail only on the selected row");
+    let h = app.hits.completion.unwrap();
+    let text_rect = app.hits.group(app.groups.active).unwrap().text;
+    assert_eq!(h.rect.y, text_rect.y + 2, "just below the cursor's line");
+    assert_eq!(h.rows.x + 2, text_rect.x + 4, "the labels under the word");
+    let buf = term.backend().buffer();
+    let theme = &app.theme;
+    let (lx, ly) = (h.rows.x + 2, h.rows.y);
+    let highlight = theme.get("editorSuggestWidget.highlightForeground").fg;
+    assert_eq!(buf[(lx, ly)].fg, highlight.unwrap(), "a typed");
+    assert_eq!(buf[(lx + 1, ly)].fg, highlight.unwrap(), "l typed");
+    assert_ne!(buf[(lx + 2, ly)].fg, highlight.unwrap(), "p not");
+    assert_eq!(
+        buf[(lx + 2, ly)].bg,
+        theme.get("editorSuggestWidget.selectedBackground").bg.unwrap()
+    );
+    assert_eq!(
+        buf[(lx, ly + 1)].bg,
+        theme.get("editorSuggestWidget.background").bg.unwrap()
+    );
+    assert_eq!(
+        buf[(h.rows.x, ly)].fg,
+        theme.get("symbolIcon.variableForeground").fg.unwrap()
+    );
+    assert_eq!(
+        buf[(h.rows.x, ly + 1)].fg,
+        theme.get("symbolIcon.functionForeground").fg.unwrap()
+    );
+    assert_eq!(app.hits.hit(lx, ly), crate::layout::Hit::Completion);
+
+    // Typing on filters; no new request.
+    app.type_text("ph");
+    assert_eq!(shown(&app), ["alpha", "alphabet"]);
+    app.type_text("a");
+    assert_eq!(shown(&app), ["alpha", "alphabet"]);
+    app.press(K::Down, M::NONE);
+    assert_eq!(selected_label(&app).as_deref(), Some("alphabet"));
+    app.press(K::Down, M::NONE);
+    assert_eq!(selected_label(&app).as_deref(), Some("alpha"), "wraps");
+    app.press(K::Up, M::NONE);
+    assert_eq!(selected_label(&app).as_deref(), Some("alphabet"), "wraps back");
+    idle(&mut app).await;
+    assert_eq!(fake.requests("textDocument/completion").len(), 1);
+    app.press(K::Enter, M::NONE);
+    assert_eq!(text(&app), "int main() {\n    alphabet\n}\n");
+    assert_eq!(selection(&app), (25, 25));
+    assert!(app.completion.popup.is_none());
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), "int main() {\n    alpha\n}\n", "one undo step");
+    assert_eq!(selection(&app), (22, 22));
+
+    // Ctrl+Space asks again; Down + Tab inserts.
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    assert_eq!(fake.requests("textDocument/completion").len(), 2);
+    app.press(K::Down, M::NONE);
+    app.press(K::Tab, M::NONE);
+    assert_eq!(text(&app), "int main() {\n    alphabet\n}\n");
+    app.press(K::Char('z'), cmd());
+
+    // Esc only closes it.
+    app.press(K::Char('@'), M::CONTROL); // a legacy terminal's Ctrl+Space
+    assert!(app.settle(list_shown).await);
+    app.press(K::Esc, M::NONE);
+    assert!(app.completion.popup.is_none());
+    assert_eq!((text(&app).len(), selection(&app)), (src.len() + 5, (22, 22)));
+
+    // Left within the word keeps it (filtered by less), as does Home to its start (everything);
+    // Home again leaves the word: closed.
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    app.press(K::Left, M::NONE);
+    assert_eq!(shown(&app), ["alpha", "alphabet"]);
+    app.press(K::Home, M::NONE);
+    assert_eq!(shown(&app).len(), 4);
+    app.press(K::Home, M::NONE);
+    assert!(app.completion.popup.is_none());
+    app.press(K::End, M::NONE);
+
+    // A space closes it (and is typed).
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    app.type_text(" ");
+    assert!(app.completion.popup.is_none());
+    assert_eq!(text(&app), "int main() {\n    alpha \n}\n");
+
+    // An empty word: everything, by sortText; Backspace past its start closes it.
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    assert_eq!(shown(&app), ["beta", "alpha", "alphabet", "Alpine"]);
+    app.press(K::Backspace, M::NONE);
+    assert!(app.completion.popup.is_none());
+
+    // A click elsewhere closes it.
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    draw(&mut term, &mut app);
+    click(&mut app, (text_rect.x + 1, text_rect.y));
+    assert!(app.completion.popup.is_none());
+    assert!(fake.errors().is_empty(), "{:?}", fake.errors());
+}
+
+fn range(l0: u32, c0: u32, l1: u32, c1: u32) -> Value {
+    json!({ "start": { "line": l0, "character": c0 }, "end": { "line": l1, "character": c1 } })
+}
+
+/// A trigger character asks at once (`triggerKind` 2 and the char; UTF-16 positions past an
+/// astral char); an item's `textEdit` and `additionalTextEdits` (an include at the top) go in as
+/// one undo step; an `InsertReplaceEdit` uses its insert range; a snippet's placeholder is
+/// selected (typing replaces it). Selecting an item resolves it (its detail is drawn); an item
+/// inserted before its resolve answered gets its additional edits from the answer (own step).
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_completion_trigger_characters_and_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "int main() {\n  😀s\n}\n";
+    let (mut app, fake, _root) = lsp_project(dir.path(), &[("a.cpp", src)], true).await;
+    fake.respond(
+        "textDocument/completion",
+        completion_list(
+            json!([
+                {
+                    "label": "member", "kind": 5,
+                    "textEdit": { "range": range(1, 6, 1, 6), "newText": "member" },
+                    "additionalTextEdits": [{ "range": range(0, 0, 0, 0), "newText": "#include <s.h>\n" }],
+                },
+                {
+                    "label": "method", "kind": 2, "insertTextFormat": 2,
+                    "textEdit": { "insert": range(1, 6, 1, 6), "replace": range(1, 6, 1, 8), "newText": "method(${1:int n})$0" },
+                },
+            ]),
+            false,
+        ),
+    );
+    put_cursor(&mut app, 20);
+    app.type_text(".");
+    assert!(app.completion.quick.is_none(), "no timer");
+    asked(&mut app, &fake, 1).await;
+    assert_eq!(
+        last_context(&fake),
+        json!({ "triggerKind": 2, "triggerCharacter": "." }),
+        "asked at once"
+    );
+    assert_eq!(last_position(&fake, "textDocument/completion"), (1, 6), "UTF-16");
+    assert!(app.settle(list_shown).await);
+    assert_eq!(shown(&app), ["member", "method"]);
+    app.press(K::Enter, M::NONE);
+    assert_eq!(text(&app), "#include <s.h>\nint main() {\n  😀s.member\n}\n");
+    let after_member = "#include <s.h>\nint main() {\n  😀s.member".len();
+    assert_eq!(selection(&app), (after_member, after_member));
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), "int main() {\n  😀s.\n}\n", "one step: the include too");
+
+    // Ctrl+Space at the trigger, then typing filters; the snippet's placeholder is selected.
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    app.type_text("met");
+    assert_eq!(shown(&app), ["method"]);
+    app.press(K::Tab, M::NONE);
+    assert_eq!(
+        text(&app),
+        "int main() {\n  😀s.method(int n)\n}\n",
+        "the insert range, not replace"
+    );
+    let open = "int main() {\n  😀s.method(".len();
+    assert_eq!(selection(&app), (open, open + "int n".len()));
+    app.type_text("5");
+    assert_eq!(text(&app), "int main() {\n  😀s.method(5)\n}\n");
+    app.press(K::Char('z'), cmd());
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), "int main() {\n  😀s.met\n}\n");
+
+    // Resolve: the selected item is resolved; its detail is drawn.
+    fake.respond(
+        "textDocument/completion",
+        completion_list(
+            json!([{ "label": "metric", "kind": 6 }, { "label": "meter", "kind": 6 }]),
+            false,
+        ),
+    );
+    fake.respond(
+        "completionItem/resolve",
+        json!({ "label": "x", "detail": "resolved detail" }),
+    );
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    assert!(
+        app.settle(|a| a
+            .completion
+            .popup
+            .as_ref()
+            .unwrap()
+            .selected_item()
+            .unwrap()
+            .detail
+            .is_some())
+            .await
+    );
+    let resolved = fake.requests("completionItem/resolve");
+    assert_eq!(resolved.last().unwrap()["label"], "meter", "the selected item as sent");
+    let mut term = terminal();
+    draw(&mut term, &mut app);
+    assert!(completion_rows(&term, &app)[0].ends_with("resolved detail"));
+    app.press(K::Esc, M::NONE);
+
+    // An item inserted before its resolve answered: the answer's additional edits go in after.
+    fake.respond(
+        "completionItem/resolve",
+        json!({ "label": "x", "additionalTextEdits": [{ "range": range(0, 0, 0, 0), "newText": "#include <m.h>\n" }] }),
+    );
+    fake.hold("completionItem/resolve", true);
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    app.press(K::Enter, M::NONE);
+    assert_eq!(text(&app), "int main() {\n  😀s.meter\n}\n");
+    assert!(
+        app.settle(|a| a.pending_requests().iter().any(|(k, _)| *k == "accepted resolve"))
+            .await
+    );
+    fake.hold("completionItem/resolve", false);
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/flush", Value::Null);
+    assert!(app.settle(|a| text(a).starts_with("#include <m.h>\n")).await);
+    assert_eq!(text(&app), "#include <m.h>\nint main() {\n  😀s.meter\n}\n");
+    let end = text(&app).find("meter").unwrap() + 5;
+    assert_eq!(selection(&app), (end, end), "the cursor follows");
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), "int main() {\n  😀s.meter\n}\n", "its own step");
+    // `>` is a trigger character too (the server decides what it means).
+    app.press(K::End, M::NONE);
+    let n = fake.requests("textDocument/completion").len();
+    app.type_text("->");
+    asked(&mut app, &fake, n + 1).await;
+    assert_eq!(
+        last_context(&fake),
+        json!({ "triggerKind": 2, "triggerCharacter": ">" })
+    );
+    assert!(fake.errors().is_empty(), "{:?}", fake.errors());
+}
+
+/// An incomplete list asks again (`triggerKind` 3) each time the word changes, the new answer
+/// replacing the list; a list with nothing matching waits for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_completion_incomplete_lists_ask_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "int main() {\n  \n}\n";
+    let (mut app, fake, _root) = lsp_project(dir.path(), &[("a.cpp", src)], false).await;
+    fake.respond(
+        "textDocument/completion",
+        completion_list(json!([{ "label": "one" }, { "label": "other" }]), true),
+    );
+    put_cursor(&mut app, 15);
+    app.type_text("o");
+    assert!(app.settle(list_shown).await);
+    assert_eq!(shown(&app), ["one", "other"]);
+    fake.respond(
+        "textDocument/completion",
+        completion_list(json!([{ "label": "only" }, { "label": "onward" }]), true),
+    );
+    app.type_text("n");
+    assert_eq!(shown(&app), ["one"], "filtered at once");
+    asked(&mut app, &fake, 2).await;
+    assert_eq!(last_context(&fake), json!({ "triggerKind": 3 }));
+    assert!(
+        app.settle(|a| shown(a) == ["only", "onward"]).await,
+        "{:?}",
+        shown(&app)
+    );
+    // Nothing in the list matches "onx": it waits (hidden) for the next answer.
+    fake.respond(
+        "textDocument/completion",
+        completion_list(json!([{ "label": "onyx" }, { "label": "onxbox" }]), false),
+    );
+    app.type_text("x");
+    assert!(shown(&app).is_empty());
+    asked(&mut app, &fake, 3).await;
+    assert!(
+        app.settle(|a| shown(a) == ["onxbox", "onyx"]).await,
+        "{:?}",
+        shown(&app)
+    );
+    // Complete now: typing on asks nothing more.
+    app.type_text("b");
+    idle(&mut app).await;
+    assert_eq!(fake.requests("textDocument/completion").len(), 3);
+    assert_eq!(shown(&app), ["onxbox"]);
+}
+
+/// A newer request cancels the pending one (`$/cancelRequest`); typing on in the word keeps a
+/// pending request (its answer is filtered by what was typed since); leaving the word cancels
+/// it and a late answer shows nothing; an error answer to Ctrl+Space says "No suggestions.", as
+/// does an empty one or a buffer no server has.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_completion_requests_superseded_and_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "int main() {\n  \n}\n";
+    let (mut app, fake, _root) = lsp_project(dir.path(), &[("a.cpp", src)], false).await;
+    fake.respond(
+        "textDocument/completion",
+        completion_list(json!([{ "label": "xylophone" }, { "label": "abc" }]), false),
+    );
+    fake.hold("textDocument/completion", true);
+    put_cursor(&mut app, 15);
+    ctrl_space(&mut app);
+    asked(&mut app, &fake, 1).await;
+    ctrl_space(&mut app);
+    asked(&mut app, &fake, 2).await;
+    let ids = request_ids(&fake, "textDocument/completion");
+    assert!(
+        app.settle(|_| fake.cancelled() == ids[..1]).await,
+        "the first cancelled"
+    );
+    assert_eq!(app.pending_requests(), [("completion", 15)]);
+    // Typing a word char keeps it.
+    app.type_text("x");
+    assert_eq!(app.pending_requests().len(), 1);
+    assert!(app.completion.quick.is_none(), "no quick request while one is pending");
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/flush", Value::Null);
+    assert!(app.settle(list_shown).await);
+    assert_eq!(shown(&app), ["xylophone"], "filtered by the x typed since");
+    app.press(K::Enter, M::NONE);
+    assert_eq!(text(&app), "int main() {\n  xylophone\n}\n");
+
+    // Leaving the word drops the pending request; its late answer shows nothing.
+    app.type_text(" ");
+    ctrl_space(&mut app);
+    asked(&mut app, &fake, 3).await;
+    app.press(K::Left, M::NONE);
+    assert!(app.pending_requests().is_empty());
+    let ids = request_ids(&fake, "textDocument/completion");
+    assert!(app.settle(|_| fake.cancelled().contains(&ids[2])).await);
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/flush", Value::Null);
+    idle(&mut app).await;
+    assert!(app.completion.popup.is_none());
+    app.type_text("q");
+    assert!(
+        app.completion.quick.is_some(),
+        "a dropped request doesn't block quick suggestions"
+    );
+    app.press(K::Backspace, M::NONE);
+
+    // An empty answer to Ctrl+Space says so; an error answer too.
+    fake.hold("textDocument/completion", false);
+    fake.respond("textDocument/completion", json!([]));
+    ctrl_space(&mut app);
+    assert!(
+        app.settle(|a| a.message.as_ref().is_some_and(|m| m.text == "No suggestions."))
+            .await
+    );
+    assert!(app.completion.popup.is_none());
+    // A plain text buffer has no server.
+    app.test_open(Buffer::from_str("plain\n"));
+    ctrl_space(&mut app);
+    assert_eq!(app.message.as_ref().map(|m| m.text.as_str()), Some("No suggestions."));
+    app.type_text("abc");
+    assert!(app.completion.quick.is_none(), "no server: no timer");
+}
+
+/// At Cmd+D cursors the item goes in at every cursor (each replacing its own word: VS Code
+/// replays the edit), a snippet's cursor inside its parens at each, one undo step; a click on a
+/// row inserts that row's item; the wheel over the list scrolls it.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_completion_at_every_cursor_and_by_mouse() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "int main() {\n  fo;\n  fo;\n  f;\n}\n";
+    let (mut app, fake, _root) = lsp_project(dir.path(), &[("a.cpp", src)], false).await;
+    let mut items = vec![
+        json!({ "label": "foobar", "insertTextFormat": 2, "insertText": "foobar($0)", "sortText": "0" }),
+        json!({ "label": "fox", "sortText": "1" }),
+    ];
+    items.extend((0..20).map(|i| json!({ "label": format!("fill{i:02}"), "sortText": format!("z{i:02}") })));
+    fake.respond("textDocument/completion", completion_list(Value::Array(items), false));
+    put_cursor(&mut app, 16);
+    app.press(K::Char('d'), cmd());
+    app.press(K::Char('d'), cmd());
+    app.press(K::Right, M::NONE);
+    {
+        use crate::buffer::pos::ByteIdx;
+        use crate::selection::{Selection, Selections};
+        let (_, view) = app.active_mut().unwrap();
+        let mut list: Vec<Selection> = view.selections.iter().copied().collect();
+        // A third cursor after the lone `f` (one char to replace there, not the space before).
+        list.push(Selection::cursor(ByteIdx(src.find("f;").unwrap() + 1)));
+        view.selections = Selections::new(list, 0);
+    }
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    assert_eq!(shown(&app), ["foobar", "fox"], "filtered by the primary's word");
+    app.press(K::Enter, M::NONE);
+    assert_eq!(text(&app), "int main() {\n  foobar();\n  foobar();\n  foobar();\n}\n");
+    let heads: Vec<usize> = app
+        .group()
+        .active_tab()
+        .unwrap()
+        .view
+        .selections
+        .iter()
+        .map(|s| s.head.0)
+        .collect();
+    let line = |n: usize| 13 + n * "  foobar();\n".len();
+    assert_eq!(
+        heads,
+        [line(0) + 9, line(1) + 9, line(2) + 9],
+        "inside each pair of parens"
+    );
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), src, "one undo step");
+    assert_eq!(app.group().active_tab().unwrap().view.selections.len(), 3);
+
+    // By mouse: the wheel scrolls the list, a click inserts the row's item.
+    let mut term = terminal();
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    draw(&mut term, &mut app);
+    let h = app.hits.completion.unwrap();
+    use crossterm::event::MouseEventKind as E;
+    app.mouse(E::ScrollDown, h.rows.x + 2, h.rows.y);
+    assert_eq!(
+        app.completion.popup.as_ref().unwrap().top,
+        0,
+        "two items: nothing to scroll"
+    );
+    click(&mut app, (h.rows.x + 3, h.rows.y + 1));
+    assert_eq!(text(&app), "int main() {\n  fox;\n  fox;\n  fox;\n}\n");
+    assert!(app.completion.popup.is_none());
+    app.press(K::Char('z'), cmd());
+
+    // A long list scrolls under the wheel; the selection stays.
+    app.press(K::Esc, M::NONE);
+    put_cursor(&mut app, src.len() - 2);
+    app.press(K::Enter, M::NONE);
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    let mut term = big_terminal();
+    draw(&mut term, &mut app);
+    let h = app.hits.completion.unwrap();
+    assert_eq!(h.rows.height as usize, crate::completion::MAX_ROWS);
+    let rows = completion_rows(&term, &app);
+    assert!(rows[0].starts_with("t foobar"), "{rows:?}");
+    let buf = term.backend().buffer();
+    assert_eq!(
+        buf[(h.rect.x + h.rect.width - 3, h.rect.y + h.rect.height - 1)].symbol(),
+        "…"
+    );
+    app.mouse(E::ScrollDown, h.rows.x + 2, h.rows.y);
+    assert_eq!(app.completion.popup.as_ref().unwrap().top, 3);
+    assert_eq!(selected_label(&app).as_deref(), Some("foobar"));
+    draw(&mut term, &mut app);
+    assert!(completion_rows(&term, &app)[0].starts_with("t fill01"));
+    // PageDown moves a page of rows; Up from the top wraps to the last.
+    app.press(K::PageDown, M::NONE);
+    assert_eq!(selected_label(&app).as_deref(), Some("fill10"));
+    app.press(K::PageUp, M::NONE);
+    app.press(K::Up, M::NONE);
+    assert_eq!(selected_label(&app).as_deref(), Some("fill19"));
+    // The wheel elsewhere closes it.
+    app.mouse(E::ScrollDown, 1, 1);
+    assert!(app.completion.popup.is_none());
+    assert!(fake.errors().is_empty(), "{:?}", fake.errors());
+}
+
+/// Completion and auto-close / auto-indent: an item inserted inside an auto-closed pair keeps the
+/// pair (its closer is typed over); a snippet's parens go inside it; a commit character inserts
+/// the item and then itself (auto-closing); Enter with the list shown inserts, without it
+/// breaks the line with its indentation.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_completion_with_auto_close_and_indent() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "int main() {\n  \n}\n";
+    let (mut app, fake, _root) = lsp_project(dir.path(), &[("a.cpp", src)], false).await;
+    fake.respond(
+        "textDocument/completion",
+        completion_list(json!([{ "label": "foo" }]), false),
+    );
+    put_cursor(&mut app, 15);
+    app.type_text("print(");
+    assert_eq!(text(&app), "int main() {\n  print()\n}\n", "auto-closed");
+    app.type_text("fo");
+    assert!(app.settle(list_shown).await);
+    app.press(K::Enter, M::NONE);
+    assert_eq!(text(&app), "int main() {\n  print(foo)\n}\n");
+    app.type_text(")");
+    assert_eq!(
+        text(&app),
+        "int main() {\n  print(foo)\n}\n",
+        "typed over the auto-closed paren"
+    );
+    assert_eq!(selection(&app).0, "int main() {\n  print(foo)".len());
+    app.type_text(";");
+    app.press(K::Enter, M::NONE);
+    assert_eq!(
+        text(&app),
+        "int main() {\n  print(foo);\n  \n}\n",
+        "Enter: a new line, indented"
+    );
+
+    // A snippet inside an auto-closed pair.
+    fake.respond(
+        "textDocument/completion",
+        completion_list(
+            json!([{ "label": "foo", "insertTextFormat": 2, "insertText": "foo($0)" }]),
+            false,
+        ),
+    );
+    app.type_text("print(fo");
+    assert!(app.settle(list_shown).await);
+    app.press(K::Tab, M::NONE);
+    assert_eq!(text(&app), "int main() {\n  print(foo);\n  print(foo())\n}\n");
+    assert_eq!(selection(&app).0, "int main() {\n  print(foo);\n  print(foo(".len());
+    app.press(K::End, M::NONE);
+    app.type_text(";");
+
+    // A commit character: inserts the item, then itself.
+    fake.respond(
+        "textDocument/completion",
+        completion_list(json!([{ "label": "foo", "commitCharacters": ["("] }]), false),
+    );
+    app.press(K::Enter, M::NONE);
+    app.type_text("fo");
+    assert!(app.settle(list_shown).await);
+    app.type_text("(");
+    assert_eq!(
+        text(&app),
+        "int main() {\n  print(foo);\n  print(foo());\n  foo()\n}\n",
+        "foo, then ( auto-closed"
+    );
+    assert!(app.completion.popup.is_none());
+    assert!(fake.errors().is_empty(), "{:?}", fake.errors());
+}
+
+/// Inserting an item at ~63k cursors (Cmd+Shift+L in a 1 MB file) stays within M6's
+/// line-command budget, and so does typing with the list shown (release); one undo step.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_completion_at_many_cursors_stays_fast() {
+    /// M6's `LINE_COMMAND_BUDGET`.
+    const LINE_COMMAND_BUDGET: Duration = Duration::from_millis(80);
+    /// M6's `KEYSTROKE_BUDGET`.
+    const KEYSTROKE_BUDGET: Duration = Duration::from_millis(16);
+    let size = if cfg!(debug_assertions) { 250_000 } else { 1_000_000 };
+    let mut src = String::new();
+    let mut i = 0;
+    while src.len() < size {
+        src.push_str(&format!("int item = value_{i}; // item\n"));
+        i += 1;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[("big.cpp", &src)]);
+    let path = root.join("big.cpp");
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let mut app = open_app(&root, fake.clone());
+    app.settings.syntax_max_bytes = 1000; // time completion, not tree-sitter
+    open_synced(&mut app, &fake, &path).await;
+    fake.respond(
+        "textDocument/completion",
+        completion_list(json!([{ "label": "items" }, { "label": "itemize" }]), false),
+    );
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    for _ in 0..5 {
+        app.press(K::Right, M::NONE);
+    }
+    app.press(K::Char('l'), cmd() | M::SHIFT);
+    app.press(K::Right, M::NONE);
+    let count = app.group().active_tab().unwrap().view.selections.len();
+    assert_eq!(count, 2 * i);
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    let t = Instant::now();
+    app.press(K::Char('i'), M::NONE);
+    app.pump();
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    let key = t.elapsed();
+    assert_eq!(shown(&app), ["itemize"]);
+    let t = Instant::now();
+    app.press(K::Enter, M::NONE);
+    app.pump();
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    let accept = t.elapsed();
+    println!("completion at {count} cursors: a key with the list {key:?}, inserting {accept:?}");
+    assert!(text(&app).starts_with("int itemize = value_0; // itemize\n"));
+    in_sync(&mut app, &fake, &path, "after inserting").await;
+    app.press(K::Char('z'), cmd());
+    assert!(
+        text(&app).starts_with("int itemi = value_0; // itemi\n"),
+        "one undo step"
+    );
+    if !cfg!(debug_assertions) {
+        assert!(key < KEYSTROKE_BUDGET, "a key with the list too slow: {key:?}");
+        assert!(accept < LINE_COMMAND_BUDGET, "inserting too slow: {accept:?}");
+    }
+    app.shutdown_servers().await;
+}
+
+/// A real server: typing `.` after `obj` in `a` lists `member`; Enter inserts it.
+async fn real_completion(file: (&str, &str), obj: &str, member: &str, configure: impl FnOnce(&mut App), process: &str) {
+    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[file]);
+    let mut app = open_app(&root, Arc::new(ProcessLauncher));
+    configure(&mut app);
+    open(&mut app, &root.join(file.0));
+    assert!(
+        settle_for(&mut app, 30, |a| a
+            .lsp
+            .server_for(a.active_buffer().unwrap().syntax.language())
+            .is_some_and(|s| s.encoding().is_some()))
+        .await,
+        "{process} initialized"
+    );
+    let at = file.1.rfind(obj).unwrap() + obj.len();
+    put_cursor(&mut app, at);
+    // The server may answer nothing until it has read the file: type the dot until it lists.
+    let t = Instant::now();
+    while !shown(&app).iter().any(|l| l.trim() == member) && t.elapsed() < Duration::from_secs(60) {
+        app.press(K::Esc, M::NONE);
+        put_cursor(&mut app, at);
+        if text(&app)[at..].starts_with('.') {
+            app.press(K::Delete, M::NONE);
+        }
+        app.type_text(".");
+        settle_for(&mut app, 5, |a| shown(a).iter().any(|l| l.trim() == member)).await;
+    }
+    assert!(
+        shown(&app).iter().any(|l| l.trim() == member),
+        "{process}: {:?}",
+        shown(&app)
+    );
+    app.type_text(&member[..2]);
+    let p = app.completion.popup.as_mut().unwrap();
+    let row = p.shown.iter().position(|&i| p.items[i].label.trim() == member).unwrap();
+    p.selected = row;
+    app.press(K::Enter, M::NONE);
+    let want = format!("{obj}.{member}");
+    assert!(text(&app).contains(&want), "{process}: {}", text(&app));
+    app.press(K::Char('q'), cmd());
+    app.shutdown_servers().await;
+    if let Some(n) = children_named(process) {
+        assert_eq!(n, 0, "no {process} left");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_real_clangd_completion() {
+    if which("clangd").is_none() {
+        eprintln!("milestone_9_real_clangd_completion: skipped, clangd isn't on PATH");
+        return;
+    }
+    real_completion(
+        (
+            "a.cpp",
+            "struct Point {\n  int xcoord;\n  int ycoord;\n};\nint main() {\n  Point pt;\n  pt\n}\n",
+        ),
+        "pt",
+        "ycoord",
+        |_| {},
+        "clangd",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_real_ty_completion() {
+    let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv/bin/ty");
+    let Some(ty) = which("ty").or_else(|| venv.is_file().then_some(venv)) else {
+        eprintln!("milestone_9_real_ty_completion: skipped, ty isn't on PATH or in .venv/bin");
+        return;
+    };
+    let configure = |app: &mut App| app.lsp.builtins.ty = ServerConfig::new(ty.to_str().unwrap(), &["server"]);
+    real_completion(("a.py", "import os\n\nos\n"), "os", "getcwd", configure, "ty").await;
+}
+
+/// Quick suggestions: only in code (typing in a comment or string asks nothing when the timer
+/// fires), not after typing moved on before it fired (the timer restarts), and not at all with
+/// `quick_suggestions = false`.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_quick_suggestions_only_in_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "int main() {\n  // note \n  const char *s = \"\";\n  \n}\n";
+    let (mut app, fake, _root) = lsp_project(dir.path(), &[("a.cpp", src)], false).await;
+    fake.respond(
+        "textDocument/completion",
+        completion_list(json!([{ "label": "abc" }]), false),
+    );
+    assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
+    let later = || Instant::now() + crate::completion::QUICK_DELAY;
+    // In a comment.
+    put_cursor(&mut app, src.find("note").unwrap() + 5);
+    app.type_text("ab");
+    assert!(app.completion.quick.is_some());
+    app.pump(); // the loop turn re-parses
+    app.test_completion_tick(later());
+    assert!(
+        app.completion.quick.is_none() && app.pending_requests().is_empty(),
+        "comment"
+    );
+    // In a string.
+    put_cursor(&mut app, src.find("\"\"").unwrap() + 1 + 2);
+    app.press(K::Left, M::NONE);
+    app.press(K::Left, M::NONE);
+    app.type_text("ab");
+    app.pump();
+    app.test_completion_tick(later());
+    assert!(app.pending_requests().is_empty(), "string");
+    // In code: asks.
+    let code = text(&app).find("\n  \n").unwrap() + 3;
+    put_cursor(&mut app, code);
+    app.type_text("a");
+    app.pump();
+    app.test_completion_tick(Instant::now());
+    assert!(app.pending_requests().is_empty(), "not before the deadline");
+    app.type_text("b");
+    app.pump();
+    app.test_completion_tick(later());
+    assert_eq!(app.pending_requests(), [("completion", code + 2)]);
+    assert!(app.settle(list_shown).await);
+    app.press(K::Esc, M::NONE);
+    // Off.
+    app.settings.quick_suggestions = false;
+    app.type_text("c");
+    assert!(app.completion.quick.is_none());
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await, "Ctrl+Space still asks");
+}
+
+/// An item's range read at every cursor after typing since the request: a `textEdit` that also
+/// replaces the `.` before the word (`->foo`) at two cursors with the primary on the later line
+/// (the typing on the earlier one moves its word), its `additionalTextEdits` mapped through that
+/// typing; a range that runs past the cursor (`fo|x`) replaces the rest of the word at each
+/// cursor, also after a char was typed in the word.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_completion_ranges_follow_typing() {
+    use crate::buffer::pos::ByteIdx;
+    use crate::selection::{Selection, Selections};
+    let dir = tempfile::tempdir().unwrap();
+    let src = "int main() {\n  s.\n  t.\n  fox;\n  fox;\n}\n";
+    let (mut app, fake, _root) = lsp_project(dir.path(), &[("a.cpp", src)], false).await;
+    fake.respond(
+        "textDocument/completion",
+        completion_list(
+            json!([{
+                "label": "foo", "filterText": ".foo",
+                "textEdit": { "range": range(2, 3, 2, 4), "newText": "->foo" },
+                "additionalTextEdits": [{ "range": range(2, 2, 2, 2), "newText": "/*a*/" }],
+            }]),
+            false,
+        ),
+    );
+    let set = |app: &mut App, cursors: &[usize], primary: usize| {
+        let (_, view) = app.active_mut().unwrap();
+        let list = cursors.iter().map(|&c| Selection::cursor(ByteIdx(c))).collect();
+        view.selections = Selections::new(list, primary);
+    };
+    let dot = |n: usize| src.match_indices('.').nth(n).unwrap().0 + 1;
+    set(&mut app, &[dot(0), dot(1)], 1);
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    assert_eq!(
+        last_position(&fake, "textDocument/completion"),
+        (2, 4),
+        "at the primary"
+    );
+    app.type_text("f");
+    assert_eq!(shown(&app), ["foo"], "`.f` matches `.foo`");
+    app.press(K::Enter, M::NONE);
+    assert_eq!(
+        text(&app),
+        "int main() {\n  s->foo\n  /*a*/t->foo\n  fox;\n  fox;\n}\n",
+        "the dot replaced at both; the import where the server meant it"
+    );
+    app.press(K::Char('z'), cmd());
+    assert_eq!(
+        text(&app),
+        "int main() {\n  s.f\n  t.f\n  fox;\n  fox;\n}\n",
+        "one step"
+    );
+
+    // A range past the cursor: `fo|x` → `foobar` (the `x` too), after typing an `o`.
+    fake.respond(
+        "textDocument/completion",
+        completion_list(
+            json!([{ "label": "foobar", "textEdit": { "range": range(3, 2, 3, 5), "newText": "foobar" } }]),
+            false,
+        ),
+    );
+    let fox = |app: &App, n: usize| text(app).match_indices("fox").nth(n).unwrap().0 + 2;
+    let cursors = [fox(&app, 0), fox(&app, 1)];
+    set(&mut app, &cursors, 0);
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    app.type_text("o");
+    assert_eq!(text(&app), "int main() {\n  s.f\n  t.f\n  foox;\n  foox;\n}\n");
+    assert_eq!(shown(&app), ["foobar"]);
+    app.press(K::Tab, M::NONE);
+    assert_eq!(text(&app), "int main() {\n  s.f\n  t.f\n  foobar;\n  foobar;\n}\n");
+    let heads: Vec<usize> = app
+        .group()
+        .active_tab()
+        .unwrap()
+        .view
+        .selections
+        .iter()
+        .map(|s| s.head.0)
+        .collect();
+    let ends: Vec<usize> = text(&app).match_indices("foobar").map(|(i, _)| i + 6).collect();
+    assert_eq!(heads, ends, "after each");
+    assert!(fake.errors().is_empty(), "{:?}", fake.errors());
+}
+
+/// An error answer to Ctrl+Space says "No suggestions.", one to a quick suggestion says
+/// nothing; the quick timer asks nothing once the text changed since the word char (Backspace);
+/// a resolve answer for an inserted item is dropped once the buffer was edited after it; a
+/// read-only buffer gets nothing inserted.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_completion_errors_late_resolves_and_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "int main() {\n  \n}\n";
+    let (mut app, fake, _root) = lsp_project(dir.path(), &[("a.cpp", src)], false).await;
+    let later = || Instant::now() + crate::completion::QUICK_DELAY;
+    put_cursor(&mut app, 15);
+    // Unscripted, the fake answers completion with an error.
+    app.type_text("ab");
+    app.test_completion_tick(later());
+    assert_eq!(app.pending_requests(), [("completion", 17)]);
+    assert!(app.settle(|a| a.pending_requests().is_empty()).await);
+    assert!(app.message.is_none(), "a quick suggestion's error says nothing");
+    ctrl_space(&mut app);
+    assert!(
+        app.settle(|a| a.message.as_ref().is_some_and(|m| m.text == "No suggestions."))
+            .await
+    );
+    assert!(app.completion.popup.is_none());
+
+    // The text changed after the word char: the timer asks nothing.
+    app.type_text("c");
+    assert!(app.completion.quick.is_some());
+    app.press(K::Backspace, M::NONE);
+    app.test_completion_tick(later());
+    assert!(app.pending_requests().is_empty());
+    assert_eq!(fake.requests("textDocument/completion").len(), 2);
+
+    // An item's resolve answer after the buffer was edited again: its edits are dropped.
+    fake.respond(
+        "textDocument/completion",
+        completion_list(json!([{ "label": "abacus" }]), false),
+    );
+    fake.respond(
+        "completionItem/resolve",
+        json!({ "label": "abacus", "additionalTextEdits": [{ "range": range(0, 0, 0, 0), "newText": "#include <a.h>\n" }] }),
+    );
+    fake.hold("completionItem/resolve", true);
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    app.press(K::Enter, M::NONE);
+    assert_eq!(text(&app), "int main() {\n  abacus\n}\n");
+    assert!(
+        app.settle(|a| a.pending_requests().iter().any(|(k, _)| *k == "accepted resolve"))
+            .await
+    );
+    app.type_text(";");
+    assert!(app.pending_requests().is_empty(), "the edit made it stale");
+    fake.hold("completionItem/resolve", false);
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/flush", Value::Null);
+    idle(&mut app).await;
+    assert_eq!(text(&app), "int main() {\n  abacus;\n}\n", "no include");
+
+    // Read-only: the list may show, but nothing goes in.
+    app.active_mut().unwrap().0.read_only = Some("test".into());
+    put_cursor(&mut app, "int main() {\n  aba".len());
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    app.press(K::Enter, M::NONE);
+    assert_eq!(text(&app), "int main() {\n  abacus;\n}\n");
+    assert!(app.completion.popup.is_none());
+    assert_eq!(app.message.as_ref().map(|m| m.text.as_str()), Some("Read-only: test"));
+    assert!(fake.errors().is_empty(), "{:?}", fake.errors());
 }

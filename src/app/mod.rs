@@ -1,5 +1,6 @@
 //! Event loop. Owns all state and sends commands where they need to go.
 
+mod completion;
 mod cursors;
 mod files;
 mod find;
@@ -73,6 +74,8 @@ enum Timer {
     SearchDebounce,
     /// The mouse has rested on text for `hover::DELAY`.
     Hover,
+    /// A word char was typed `completion::QUICK_DELAY` ago.
+    Completion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,6 +250,8 @@ pub struct App {
     requests: HashMap<(crate::lsp::ServerId, i64), lsp::Pending>,
     /// The hover popup and the mouse's resting timer.
     pub hover: crate::hover::HoverState,
+    /// The completion list, its pending request and the quick-suggestion timer.
+    pub completion: crate::completion::Completion,
     /// The Locations list (go to definition's places), while there is one.
     pub locations: Option<crate::locations::Locations>,
     /// Numbers Locations lists, so file reads for a replaced one are dropped.
@@ -327,6 +332,7 @@ impl App {
             servers_dirty: true,
             requests: HashMap::new(),
             hover: Default::default(),
+            completion: Default::default(),
             locations: None,
             locations_generation: 0,
             #[cfg(test)]
@@ -429,7 +435,14 @@ impl App {
             .hover
             .deadline()
             .map(|d| (tokio::time::Instant::from_std(d), Timer::Hover));
-        let next = [fs, search, hover].into_iter().flatten().min_by_key(|(at, _)| *at);
+        let completion = self
+            .completion
+            .deadline()
+            .map(|d| (tokio::time::Instant::from_std(d), Timer::Completion));
+        let next = [fs, search, hover, completion]
+            .into_iter()
+            .flatten()
+            .min_by_key(|(at, _)| *at);
         async move {
             match next {
                 Some((at, timer)) => {
@@ -447,6 +460,7 @@ impl App {
             Timer::FsChanges => self.flush_fs_changes(),
             Timer::SearchDebounce => self.search_tick(Instant::now()),
             Timer::Hover => self.hover_tick(Instant::now()),
+            Timer::Completion => self.completion_tick(Instant::now()),
         }
     }
 
@@ -503,6 +517,7 @@ impl App {
             return Context::Palette;
         }
         match self.ui.focus {
+            Focus::Editor if self.completion_shown() => Context::Suggest,
             Focus::Editor => Context::Editor,
             Focus::SidePanel if self.ui.side_panel == SidePanel::Search && self.search_view.list_focused => {
                 Context::SearchResults
@@ -548,10 +563,13 @@ impl App {
                     && self.ui.focus == Focus::Editor
                     && self.active_writable()
                 {
+                    // A commit character inserts the selected completion first.
+                    self.completion_commit(c);
                     let settings = self.settings.clone();
                     if let Some((buf, view)) = self.active_mut() {
                         edit::insert_char(buf, view, c, &settings);
                     }
+                    self.completion_typed(c);
                 }
             }
             Event::Paste(text) => {
@@ -574,6 +592,7 @@ impl App {
         }
         self.sync_views();
         self.refresh_find();
+        self.check_completion();
         self.check_requests();
         self.check_hover();
     }
@@ -592,6 +611,7 @@ impl App {
                 continue;
             }
             edited |= Some(id) == origin_buf;
+            self.completion.follow(id, &changes, buf.sets_applied());
             for (gid, group) in self.groups.iter_mut() {
                 for (i, tab) in group.tabs.iter_mut().enumerate() {
                     if tab.buffer != id {
@@ -677,6 +697,8 @@ impl App {
             Command::ShowHover => self.show_hover(),
             Command::RevealDefinition => self.go_to_definition(),
             Command::Locations(c) => self.locations_command(c),
+            Command::TriggerSuggest => self.trigger_suggest(),
+            Command::Suggest(c) => self.suggest_command(c),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
             _ => {
@@ -793,6 +815,7 @@ impl App {
             AppEvent::LocationsRead { generation, files } => self.locations_read(generation, files),
         }
         self.refresh_find();
+        self.check_completion();
         self.check_hover();
     }
 
@@ -864,6 +887,11 @@ impl App {
         self.hover_tick(now);
     }
 
+    /// Fires the quick-suggestion timer as the event loop would at `now`.
+    pub fn test_completion_tick(&mut self, now: Instant) {
+        self.completion_tick(now);
+    }
+
     /// Takes in file texts read for the Locations list `generation`, as if the background read
     /// had sent them (to test that a replaced list's reads are dropped).
     pub fn test_locations_read(&mut self, generation: u64, files: Vec<(PathBuf, ropey::Rope)>) {
@@ -880,6 +908,9 @@ impl App {
                     lsp::Request::Hover { word: None } => "hover",
                     lsp::Request::Hover { word: Some(_) } => "mouse hover",
                     lsp::Request::Definition { .. } => "definition",
+                    lsp::Request::Completion { .. } => "completion",
+                    lsp::Request::Resolve { accepted: None, .. } => "resolve",
+                    lsp::Request::Resolve { accepted: Some(_), .. } => "accepted resolve",
                 };
                 (kind, p.at.0)
             })

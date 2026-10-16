@@ -1,6 +1,7 @@
 //! ratatui widgets. Colours come from the theme only.
 
 mod activity;
+mod completion;
 mod dialog;
 mod editor;
 mod find;
@@ -105,6 +106,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     hits.status_problems = status::render(f, regions.status, app);
     hits.find = active_editor.and_then(|area| find::render(f, area, app));
     hits.hover = hover::render(f, app, &hits.groups);
+    hits.completion = completion::render(f, app, &hits.groups);
     hits.palette = palette::render(f, area, app);
     if let Some(prompt) = &app.prompt {
         dialog::render(f, area, app, prompt);

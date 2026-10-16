@@ -30,6 +30,9 @@ pub struct Settings {
     /// Highlight the bracket next to each cursor and its partner (`brackets`):
     /// `[settings] match_brackets`.
     pub match_brackets: bool,
+    /// Typing a word char asks the language server for completions (outside strings and
+    /// comments): `[settings] quick_suggestions`.
+    pub quick_suggestions: bool,
 }
 
 impl Default for Settings {
@@ -41,6 +44,7 @@ impl Default for Settings {
             auto_close_pairs: true,
             auto_indent: true,
             match_brackets: true,
+            quick_suggestions: true,
         }
     }
 }

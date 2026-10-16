@@ -109,6 +109,22 @@ impl Theme {
             ("editorHoverWidget.border", Style::new().fg(c(0x454545))),
             ("editorHoverWidget.heading", Style::new().add_modifier(Modifier::BOLD)),
             ("textPreformat.foreground", Style::new().fg(c(0xD7BA7D))),
+            // The completion list (Dark+'s suggest widget); the detail is Dark+'s
+            // `descriptionForeground` (#CCCCCCB3) blended over the widget.
+            ("editorSuggestWidget.background", Style::new().bg(c(0x252526))),
+            ("editorSuggestWidget.foreground", Style::new().fg(c(0xD4D4D4))),
+            ("editorSuggestWidget.border", Style::new().fg(c(0x454545))),
+            ("editorSuggestWidget.selectedBackground", fg_bg(0xFFFFFF, 0x04395E)),
+            (
+                "editorSuggestWidget.highlightForeground",
+                Style::new().fg(c(0x2AAAFF)).add_modifier(Modifier::BOLD),
+            ),
+            ("editorSuggestWidget.detail", Style::new().fg(c(0x9D9D9D))),
+            // Completion kind icons: Dark+'s `symbolIcon.*Foreground` groups.
+            ("symbolIcon.functionForeground", Style::new().fg(c(0xB180D7))),
+            ("symbolIcon.variableForeground", Style::new().fg(c(0x75BEFF))),
+            ("symbolIcon.classForeground", Style::new().fg(c(0xEE9D28))),
+            ("symbolIcon.foreground", Style::new().fg(c(0xCCCCCC))),
             // Syntax (the capture keys in `syntax::KEYS`): VS Code Dark+'s token colours.
             ("comment", Style::new().fg(c(0x6A9955))),
             ("constant", Style::new().fg(c(0x4FC1FF))),
