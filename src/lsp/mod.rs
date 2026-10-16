@@ -9,6 +9,7 @@ pub mod documents;
 #[cfg(test)]
 pub mod fake;
 pub mod rpc;
+pub mod scons;
 mod server;
 pub mod uri;
 
@@ -25,6 +26,8 @@ use tokio::task::JoinHandle;
 pub use config::{Builtins, Resolved, ServerConfig};
 use documents::Documents;
 use rpc::RpcError;
+#[cfg(test)]
+pub use server::Transport;
 pub use server::{Launcher, ProcessLauncher, SHUTDOWN_TIMEOUT};
 use server::{Task, ToServer};
 
@@ -187,6 +190,9 @@ pub struct Manager {
     /// Servers whose diagnostics were dropped since the last `take_cleared` (they stopped,
     /// failed or crashed): the app drops their marks from the buffers.
     cleared: Vec<ServerId>,
+    /// Where red writes files for servers (`scons`: ty's SCons builtins); `None` (tests'
+    /// default): nothing written.
+    pub support_dir: Option<PathBuf>,
 }
 
 impl Manager {
@@ -201,7 +207,15 @@ impl Manager {
             docs: Documents::default(),
             diagnostics: diagnostics::Store::default(),
             cleared: Vec::new(),
+            support_dir: None,
         }
+    }
+
+    /// Sets `support_dir` (`App::new`: `~/.local/state/red/lsp`).
+    #[cfg_attr(test, allow(dead_code))]
+    pub fn with_support_dir(mut self, dir: PathBuf) -> Self {
+        self.support_dir = Some(dir);
+        self
     }
 
     #[cfg(test)]
@@ -279,6 +293,7 @@ impl Manager {
                     rx,
                     sink: sink.clone(),
                     next_id: next_id.clone(),
+                    support_dir: self.support_dir.clone(),
                 }
                 .run(),
             );
@@ -326,6 +341,31 @@ impl Manager {
         supported: fn(&ServerCapabilities) -> bool,
         extra: Value,
     ) -> Option<Sent> {
+        self.request_about(buffers, buffer, Some(at), method, supported, extra)
+    }
+
+    /// `request_at` without a position: `textDocument` (+ `extra`'s fields) only
+    /// (`textDocument/formatting`).
+    pub fn request_doc(
+        &mut self,
+        buffers: &mut Buffers,
+        buffer: BufferId,
+        method: &str,
+        supported: fn(&ServerCapabilities) -> bool,
+        extra: Value,
+    ) -> Option<Sent> {
+        self.request_about(buffers, buffer, None, method, supported, extra)
+    }
+
+    fn request_about(
+        &mut self,
+        buffers: &mut Buffers,
+        buffer: BufferId,
+        at: Option<ByteIdx>,
+        method: &str,
+        supported: fn(&ServerCapabilities) -> bool,
+        extra: Value,
+    ) -> Option<Sent> {
         self.docs.sync(&self.servers, buffers);
         let (server, uri, version) = self.docs.document(buffer)?;
         let s = self.servers.iter().find(|s| s.id == server)?;
@@ -336,12 +376,12 @@ impl Manager {
             tracing::debug!(server = %s.config.name, method, "not supported by the server");
             return None;
         }
-        let rope = &buffers.get(buffer)?.rope;
-        let p = pos::lsp_pos(rope, ByteIdx(at.0.min(rope.len())), *encoding);
-        let mut params = json!({
-            "textDocument": { "uri": uri.as_str() },
-            "position": { "line": p.line, "character": p.character },
-        });
+        let mut params = json!({ "textDocument": { "uri": uri.as_str() } });
+        if let Some(at) = at {
+            let rope = &buffers.get(buffer)?.rope;
+            let p = pos::lsp_pos(rope, ByteIdx(at.0.min(rope.len())), *encoding);
+            params["position"] = json!({ "line": p.line, "character": p.character });
+        }
         if let Value::Object(fields) = extra {
             params.as_object_mut().expect("object").extend(fields);
         }

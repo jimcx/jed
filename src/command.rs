@@ -159,6 +159,8 @@ pub enum Command {
     GoToReferences,
     /// F2 in the editor: rename the symbol at the cursor across the workspace (a prompt).
     RenameSymbol,
+    /// Shift+Alt+F (Linux: Ctrl+Shift+I): format the whole file with the language server.
+    FormatDocument,
 }
 
 /// Focus-group commands listed in the palette and accepted in keybindings (as VS Code: 1 to 8).
@@ -467,7 +469,7 @@ impl Command {
         all.extend(LocationsCommand::ALL.map(Command::Locations));
         all.push(Command::TriggerSuggest);
         all.extend(SuggestCommand::ALL.map(Command::Suggest));
-        all.extend([Command::GoToReferences, Command::RenameSymbol]);
+        all.extend([Command::GoToReferences, Command::RenameSymbol, Command::FormatDocument]);
         all
     }
 
@@ -658,6 +660,7 @@ impl Command {
             ),
             Command::GoToReferences => "editor.goToReferences".into(),
             Command::RenameSymbol => "editor.rename".into(),
+            Command::FormatDocument => "editor.formatDocument".into(),
         }
     }
 
@@ -829,6 +832,7 @@ impl Command {
             },
             Command::GoToReferences => "Go to References",
             Command::RenameSymbol => "Rename Symbol",
+            Command::FormatDocument => "Format Document",
         };
         s.into()
     }
@@ -926,9 +930,10 @@ mod tests {
             Command::Suggest(_) => 59,
             Command::GoToReferences => 60,
             Command::RenameSymbol => 61,
+            Command::FormatDocument => 62,
         }
     }
-    const VARIANTS: u8 = 62;
+    const VARIANTS: u8 = 63;
 
     #[test]
     fn all_lists_every_variant() {

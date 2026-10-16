@@ -17,7 +17,7 @@ use crate::buffer::BufferId;
 use crate::buffer::pos::{ByteIdx, PosEncoding};
 use crate::layout::GroupId;
 use crate::lsp::rpc::RpcError;
-use crate::lsp::{Event, ServerId};
+use crate::lsp::{Event, Sent, ServerId};
 use crate::syntax::Language;
 
 /// What a pending request is for.
@@ -46,6 +46,9 @@ pub(super) enum Request {
     PrepareRename { word: String },
     /// `textDocument/rename` of `old` to `new` (for the messages).
     Rename { old: String, new: String },
+    /// `textDocument/formatting` of the whole document: current like hover / definition (VS Code
+    /// cancels formatting when the text or the cursor changes).
+    Format,
 }
 
 impl Request {
@@ -169,6 +172,36 @@ impl App {
         else {
             return false;
         };
+        self.track_request(sent, request, (group, buffer, at));
+        true
+    }
+
+    /// `send_request_with` about the whole document (no `position`; `extra`'s fields added);
+    /// `at` is the cursor that makes the answer current.
+    pub(super) fn send_doc_request(
+        &mut self,
+        (group, buffer, at): (GroupId, BufferId, ByteIdx),
+        method: &str,
+        supported: fn(&ServerCapabilities) -> bool,
+        request: Request,
+        extra: Value,
+    ) -> bool {
+        self.cancel_requests(|p| p.request.same_kind(&request));
+        if !self.lsp.started() {
+            return false;
+        }
+        let Some(sent) = self
+            .lsp
+            .request_doc(&mut self.buffers, buffer, method, supported, extra)
+        else {
+            return false;
+        };
+        self.track_request(sent, request, (group, buffer, at));
+        true
+    }
+
+    /// Keeps a sent request's `Pending` until its answer.
+    fn track_request(&mut self, sent: Sent, request: Request, (group, buffer, at): (GroupId, BufferId, ByteIdx)) {
         let revision = self.buffers.get(buffer).map_or(0, |b| b.revision());
         self.requests.insert(
             (sent.server, sent.id),
@@ -181,7 +214,6 @@ impl App {
                 encoding: sent.encoding,
             },
         );
-        true
     }
 
     /// Sends `method` with `params` as they are to `server` (a request not about a position:
@@ -314,6 +346,9 @@ impl App {
                     Request::Rename { .. } => {
                         self.notify(super::Level::Error, format!("Rename failed: {}", e.message));
                     }
+                    Request::Format => {
+                        self.notify(super::Level::Error, format!("Format Document failed: {}", e.message));
+                    }
                     _ => {}
                 }
                 return;
@@ -332,6 +367,7 @@ impl App {
             Request::References { word } => self.references_answer(&p, &word, &value),
             Request::PrepareRename { word } => self.prepare_rename_answer(&p, &word, &value),
             Request::Rename { old, new } => self.rename_answer(&p, &old, &new, &value),
+            Request::Format => self.format_answer(&p, &value),
         }
     }
 

@@ -4,6 +4,7 @@ mod completion;
 mod cursors;
 mod files;
 mod find;
+mod format;
 mod hover;
 mod locations;
 mod lsp;
@@ -327,7 +328,8 @@ impl App {
             last_problem: None,
             // Tests run no servers unless they plug in a launcher (`lsp.set_launcher`).
             #[cfg(not(test))]
-            lsp: crate::lsp::Manager::new(Some(Arc::new(crate::lsp::ProcessLauncher))),
+            lsp: crate::lsp::Manager::new(Some(Arc::new(crate::lsp::ProcessLauncher)))
+                .with_support_dir(crate::paths::state_dir().join("lsp")),
             #[cfg(test)]
             lsp: crate::lsp::Manager::new(None),
             servers_dirty: true,
@@ -710,6 +712,7 @@ impl App {
             Command::Suggest(c) => self.suggest_command(c),
             Command::GoToReferences => self.go_to_references(),
             Command::RenameSymbol => self.rename_symbol(),
+            Command::FormatDocument => self.format_document(),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
             _ => {
@@ -925,6 +928,7 @@ impl App {
                     lsp::Request::References { .. } => "references",
                     lsp::Request::PrepareRename { .. } => "prepare rename",
                     lsp::Request::Rename { .. } => "rename",
+                    lsp::Request::Format => "format",
                 };
                 (kind, p.at.0)
             })

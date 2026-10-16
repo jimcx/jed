@@ -423,6 +423,12 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         motion(KeyCode::Home, ctrl, Motion::DocStart);
         motion(KeyCode::End, ctrl, Motion::DocEnd);
     }
+    // VS Code's: Shift+Alt+F on macOS, Ctrl+Shift+I on Linux.
+    let format_document = if mac {
+        (KeyCode::Char('f'), alt | shift)
+    } else {
+        (KeyCode::Char('i'), ctrl | shift)
+    };
     editor.extend([
         (KeyCode::Backspace, none, Command::DeleteLeft),
         (KeyCode::Backspace, shift, Command::DeleteLeft),
@@ -482,6 +488,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::F(12), shift, Command::GoToReferences),
         // The explorer's F2 renames a file (its own context).
         (KeyCode::F(2), none, Command::RenameSymbol),
+        (format_document.0, format_document.1, Command::FormatDocument),
         // Ctrl on macOS too, as in VS Code.
         (KeyCode::Char(' '), ctrl, Command::TriggerSuggest),
     ]);
@@ -734,6 +741,27 @@ mod tests {
         assert_eq!(
             linux.lookup(&key(KeyCode::Char('s'), KeyModifiers::CONTROL), ed),
             Some(Command::Save)
+        );
+    }
+
+    #[test]
+    fn format_document_keys() {
+        let mac = Keymap::default_for(Platform::MacOs);
+        let linux = Keymap::default_for(Platform::Linux);
+        let ed = Context::Editor;
+        let fmt = Some(Command::FormatDocument);
+        let shift_alt = KeyModifiers::SHIFT | KeyModifiers::ALT;
+        assert_eq!(mac.lookup(&key(KeyCode::Char('F'), shift_alt), ed), fmt);
+        let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        assert_eq!(linux.lookup(&key(KeyCode::Char('I'), ctrl_shift), ed), fmt);
+        // Shift+Alt+I stays "cursors at line ends" on both.
+        assert_eq!(
+            linux.lookup(&key(KeyCode::Char('I'), shift_alt), ed),
+            Some(Command::CursorsAtLineEnds)
+        );
+        assert_eq!(
+            mac.binding_for(Command::FormatDocument).map(|k| k.label()).as_deref(),
+            Some("Alt+Shift+F")
         );
     }
 

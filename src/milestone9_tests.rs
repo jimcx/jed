@@ -1,6 +1,6 @@
-//! Milestone 9 end to end (so far: 9a, the `lsp` core; 9b, document sync; 9c, diagnostics;
-//! 9d, the bottom panel and its Problems list; 9e, hover and go to definition; 9f, completion;
-//! 9g, find references and rename symbol).
+//! Milestone 9 end to end (9a, the `lsp` core; 9b, document sync; 9c, diagnostics; 9d, the
+//! bottom panel and its Problems list; 9e, hover and go to definition; 9f, completion; 9g, find
+//! references and rename symbol; 9h, format document and the done-when projects).
 //!
 //! 9a: opening a C++ file starts its server (the in-process fake, `lsp::fake`) once: `initialize`
 //! carries the root and offers UTF-8 then UTF-16 positions, UTF-8 is negotiated when the server
@@ -118,6 +118,21 @@
 //! at once and typing right after the rename is an undo step of its own. Real clangd (with a
 //! compilation database, for its index) and ty list references in two files and rename a
 //! function across them.
+//!
+//! 9h: Shift+Alt+F (Linux Ctrl+Shift+I) sends `textDocument/formatting` (no position, the
+//! settings' `tabSize` / `insertSpaces`); a whole-document answer is applied as only what it
+//! changes (one undo step, cursors before it kept, after it shifted; the server's copy follows by
+//! ranges), several edits as one undo step too; an error says "Format Document failed: …", `null`
+//! changes nothing, an answer after an edit or a cursor move is dropped, a read-only buffer sends
+//! nothing (and one made read-only before the answer refuses it), no server or no provider
+//! says "There is no formatter for 'cpp' files installed.". Done when, against real servers
+//! (skipped when absent; every `didChange` sent checked to carry ranges): a C++ project with
+//! `compile_commands.json` (clangd) and an SCons project (ty, the extensionless `SConstruct` with
+//! red's SCons `__builtins__.pyi` on ty's search path, written outside the workspace) each get an
+//! error typed in, followed through an edit before it and cleared by undo; completion of a member
+//! (`env.Program` from the stub for SCons); hover; go to definition in another file; references
+//! across the files; rename across them; format document (clangd's LLVM style; ty has no
+//! formatter, which red says).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -4860,4 +4875,630 @@ async fn milestone_9_real_ty_references_and_rename() {
         "ty",
     )
     .await;
+}
+
+/// Shift+Alt+F on macOS, Ctrl+Shift+I on Linux (VS Code's).
+fn format_document(app: &mut App) {
+    if cfg!(target_os = "macos") {
+        app.press(K::Char('f'), M::SHIFT | M::ALT);
+    } else {
+        app.press(K::Char('i'), M::CONTROL | M::SHIFT);
+    }
+}
+
+fn cursor_offsets(app: &App) -> Vec<usize> {
+    app.group()
+        .active_tab()
+        .unwrap()
+        .view
+        .selections
+        .iter()
+        .map(|s| s.head.0)
+        .collect()
+}
+
+const UNFORMATTED: &str = "int main() {\nreturn 1;\n}\n// 😀 end\n";
+const FORMATTED: &str = "int main() {\n    return 1;\n}\n// 😀 end\n";
+
+/// Format document sends `textDocument/formatting` (no position; `tabSize` / `insertSpaces` from
+/// the `.workspace` settings); an answer replacing the whole document is applied as only what
+/// changed: one undo step, cursors before the change kept and after it shifted, the server's copy
+/// following by incremental `didChange`s; several edits are one undo step too. An error says
+/// "Format Document failed: …"; `null` changes nothing; an answer after the text or the cursor
+/// changed is dropped (the request cancelled); a read-only buffer sends nothing, and an answer
+/// reaching a buffer made read-only meanwhile is refused; a server without formatting, or no
+/// server, says "There is no formatter for 'cpp' files installed."
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_format_document() {
+    let dir = tempfile::tempdir().unwrap();
+    // Not the defaults: the settings reach the request.
+    let settings = "[settings]\ntab_width = 2\ninsert_spaces = false\n";
+    let files = [("a.cpp", UNFORMATTED), (".workspace", settings)];
+    let (mut app, fake, root) = lsp_project(dir.path(), &files, true).await;
+    let a = root.join("a.cpp");
+    let end_line = UNFORMATTED.find("// ").unwrap();
+    set_cursors(&mut app, &[5, 13, end_line + 3], 1);
+
+    // Unscripted: the fake answers MethodNotFound.
+    format_document(&mut app);
+    assert_eq!(app.pending_requests(), [("format", 13)]);
+    assert!(
+        app.settle(|a| message(a).is_some_and(|m| m.starts_with("Format Document failed: ")))
+            .await,
+        "{:?}",
+        message(&app)
+    );
+    let params = fake.requests("textDocument/formatting").pop().unwrap();
+    assert_eq!(params["textDocument"]["uri"], json!(uri(&a)));
+    assert_eq!(params["options"], json!({ "tabSize": 2, "insertSpaces": false }));
+    assert!(params.get("position").is_none());
+
+    // null: nothing.
+    fake.respond("textDocument/formatting", Value::Null);
+    format_document(&mut app);
+    assert!(app.settle(|a| a.pending_requests().is_empty()).await);
+    idle(&mut app).await;
+    assert_eq!(text(&app), UNFORMATTED);
+    assert_eq!(message(&app), None);
+
+    // The whole document replaced (UTF-16: the 😀 is two units).
+    let whole = json!([{
+        "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 4, "character": 0 } },
+        "newText": FORMATTED,
+    }]);
+    fake.respond("textDocument/formatting", whole.clone());
+    format_document(&mut app);
+    assert!(app.settle(|a| text(a) == FORMATTED).await);
+    assert_eq!(cursor_offsets(&app), [5, 13, end_line + 3 + 4]);
+    in_sync(&mut app, &fake, &a, "formatted").await;
+    assert_eq!(full_text_changes(&fake), 0, "never the full text");
+    let last = did_changes(&fake).pop().unwrap();
+    assert_eq!(
+        last["params"]["contentChanges"],
+        json!([{
+            "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 0 } },
+            "text": "    ",
+        }]),
+        "only what changed"
+    );
+    // One undo step back, cursors too.
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), UNFORMATTED);
+    assert_eq!(cursor_offsets(&app), [5, 13, end_line + 3]);
+    app.press(K::Char('z'), cmd() | M::SHIFT);
+    assert_eq!(text(&app), FORMATTED);
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), UNFORMATTED);
+
+    // Several edits: still one undo step.
+    fake.respond(
+        "textDocument/formatting",
+        json!([
+            {
+                "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 2, "character": 0 } },
+                "newText": "    return 1;\n",
+            },
+            {
+                "range": { "start": { "line": 3, "character": 0 }, "end": { "line": 3, "character": 2 } },
+                "newText": "///",
+            },
+        ]),
+    );
+    format_document(&mut app);
+    let two = FORMATTED.replace("// ", "/// ");
+    assert!(app.settle(|a| text(a) == two).await, "{:?}", text(&app));
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), UNFORMATTED, "one undo step");
+
+    // Stale: typing before the answer cancels it; the late answer changes nothing.
+    fake.hold("textDocument/formatting", true);
+    put_cursor(&mut app, 0);
+    format_document(&mut app);
+    assert!(
+        app.settle(|_| fake.requests("textDocument/formatting").len() == 5)
+            .await
+    );
+    app.type_text("x");
+    assert!(app.pending_requests().is_empty(), "the edit cancelled it");
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/flush", Value::Null);
+    idle(&mut app).await;
+    assert_eq!(text(&app), format!("x{UNFORMATTED}"));
+    // Moving the cursor cancels too.
+    format_document(&mut app);
+    app.press(K::Right, M::NONE);
+    assert!(app.pending_requests().is_empty(), "moving cancelled it");
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/flush", Value::Null);
+    idle(&mut app).await;
+    assert_eq!(text(&app), format!("x{UNFORMATTED}"));
+    // Read-only by the time the answer comes: refused.
+    let sent = fake.requests("textDocument/formatting").len();
+    format_document(&mut app);
+    assert!(
+        app.settle(|_| fake.requests("textDocument/formatting").len() == sent + 1)
+            .await
+    );
+    app.active_mut().unwrap().0.read_only = Some("answer".into());
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/flush", Value::Null);
+    assert!(app.settle(|a| a.pending_requests().is_empty()).await);
+    assert_eq!(message(&app).as_deref(), Some("Read-only: answer"));
+    assert_eq!(text(&app), format!("x{UNFORMATTED}"));
+    app.active_mut().unwrap().0.read_only = None;
+    fake.hold("textDocument/formatting", false);
+
+    // Read-only: nothing sent.
+    let sent = fake.requests("textDocument/formatting").len();
+    app.active_mut().unwrap().0.read_only = Some("test".into());
+    format_document(&mut app);
+    assert_eq!(message(&app).as_deref(), Some("Read-only: test"));
+    idle(&mut app).await;
+    assert_eq!(fake.requests("textDocument/formatting").len(), sent);
+    app.active_mut().unwrap().0.read_only = None;
+
+    // No server: said at once.
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/crash", Value::Null);
+    assert!(
+        app.settle(|a| matches!(a.lsp.server_for(Language::Cpp).unwrap().state, State::Failed))
+            .await
+    );
+    format_document(&mut app);
+    assert_eq!(
+        message(&app).as_deref(),
+        Some("There is no formatter for 'cpp' files installed.")
+    );
+    assert!(fake.errors().is_empty());
+}
+
+/// A server without `documentFormattingProvider` gets no request; the palette lists the command.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_format_document_without_provider() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[("a.cpp", UNFORMATTED)]);
+    let fake = FakeLauncher::new(FakeOptions {
+        no_formatting: true,
+        ..Default::default()
+    });
+    let mut app = open_app(&root, fake.clone());
+    open_synced(&mut app, &fake, &root.join("a.cpp")).await;
+    format_document(&mut app);
+    assert_eq!(
+        message(&app).as_deref(),
+        Some("There is no formatter for 'cpp' files installed.")
+    );
+    idle(&mut app).await;
+    assert!(fake.requests("textDocument/formatting").is_empty());
+    assert_eq!(text(&app), UNFORMATTED);
+    assert!(crate::command::Command::all().contains(&crate::command::Command::FormatDocument));
+    assert_eq!(
+        crate::command::Command::from_name("editor.formatDocument"),
+        Some(crate::command::Command::FormatDocument)
+    );
+}
+
+/// `ProcessLauncher` that also keeps every byte red writes to the server (to check what went
+/// out: `didChange`s with ranges only).
+struct Tee {
+    sent: Arc<std::sync::Mutex<Vec<u8>>>,
+}
+
+struct TeeWriter {
+    inner: std::pin::Pin<Box<dyn tokio::io::AsyncWrite + Send>>,
+    sent: Arc<std::sync::Mutex<Vec<u8>>>,
+}
+
+impl tokio::io::AsyncWrite for TeeWriter {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let r = self.inner.as_mut().poll_write(cx, buf);
+        if let std::task::Poll::Ready(Ok(n)) = &r {
+            self.sent.lock().unwrap().extend_from_slice(&buf[..*n]);
+        }
+        r
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        self.inner.as_mut().poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        self.inner.as_mut().poll_shutdown(cx)
+    }
+}
+
+impl Launcher for Tee {
+    fn launch(&self, config: &ServerConfig, root: &Path) -> std::io::Result<crate::lsp::Transport> {
+        let mut t = ProcessLauncher.launch(config, root)?;
+        t.writer = Box::pin(TeeWriter {
+            inner: t.writer,
+            sent: self.sent.clone(),
+        });
+        Ok(t)
+    }
+}
+
+impl Tee {
+    /// The messages red sent so far.
+    fn messages(&self) -> Vec<Value> {
+        let mut framer = crate::lsp::rpc::Framer::default();
+        framer.push(&self.sent.lock().unwrap());
+        let mut out = Vec::new();
+        while let Some(Ok(body)) = framer.next() {
+            out.push(serde_json::from_slice(&body).unwrap());
+        }
+        out
+    }
+
+    fn method(&self, method: &str) -> Vec<Value> {
+        self.messages().into_iter().filter(|m| m["method"] == method).collect()
+    }
+}
+
+/// Every `didChange` sent carried ranges (never the full text); returns how many were sent.
+fn incremental_only(tee: &Tee, process: &str) -> usize {
+    let changes = tee.method("textDocument/didChange");
+    for m in &changes {
+        for c in m["params"]["contentChanges"].as_array().unwrap() {
+            assert!(c.get("range").is_some(), "{process}: a full-text change: {m}");
+        }
+    }
+    changes.len()
+}
+
+/// Cmd+Z until the active buffer is `text` again (at most `steps` times).
+fn undo_to(app: &mut App, text_: &str, steps: usize) {
+    for _ in 0..steps {
+        if text(app) == text_ {
+            return;
+        }
+        app.press(K::Char('z'), cmd());
+    }
+    assert_eq!(text(app), text_, "undone");
+}
+
+fn errors_in(app: &App, path: &Path) -> Vec<String> {
+    marks(app, path)
+        .into_iter()
+        .filter(|m| m.1 == Severity::Error)
+        .map(|m| m.0)
+        .collect()
+}
+
+/// What the milestone's "done when" runs on one project with a real server.
+struct DoneWhen<'a> {
+    process: &'a str,
+    files: &'a [(&'a str, &'a str)],
+    /// Typed in front of `error_before` makes an error on `error_word`.
+    error_before: &'a str,
+    error_text: &'a str,
+    error_word: &'a str,
+    /// A `.` typed at the end of the (last) `complete_after` lists `member`.
+    complete_after: &'a str,
+    member: &'a str,
+    /// The last `symbol` in the first file: its hover shows `hover`, its definition is in one of
+    /// `def_files`, its references span `ref_files` files; renamed to `new_name`.
+    symbol: &'a str,
+    hover: &'a str,
+    def_files: &'a [&'a str],
+    ref_files: usize,
+    new_name: &'a str,
+    /// The first file after format document (once renamed); `None`: the server can't format.
+    formatted: Option<&'a str>,
+}
+
+/// The milestone's "done when" on one project: diagnostics follow edits (marks mapped at once,
+/// then re-published; cleared by undo), completion, hover, go to definition, find references,
+/// rename across files and format document all work, and no `didChange` ever carried the full
+/// text.
+async fn done_when(app: &mut App, root: &Path, tee: &Tee, d: &DoneWhen<'_>) {
+    let process = d.process;
+    let (first, original) = d.files[0];
+    let path = root.join(first);
+    open(app, &path);
+    assert!(
+        settle_for(app, 30, |a| a
+            .lsp
+            .server_for(a.active_buffer().unwrap().syntax.language())
+            .is_some_and(|s| s.encoding().is_some()))
+        .await,
+        "{process} initialized"
+    );
+
+    // Diagnostics: an error typed in, followed through an edit before it, gone after undo.
+    put_cursor(app, original.find(d.error_before).unwrap());
+    app.type_text(d.error_text);
+    assert!(
+        settle_for(app, 60, |a| errors_in(a, &path).iter().any(|w| w == d.error_word)).await,
+        "{process} reports the error: {:?}",
+        marks(app, &path)
+    );
+    assert_eq!(errors_in(app, &path), [d.error_word], "{process}: only the typed error");
+    put_cursor(app, 0);
+    app.press(K::Enter, M::NONE);
+    assert_eq!(
+        errors_in(app, &path),
+        [d.error_word],
+        "{process}: mapped through the edit"
+    );
+    assert!(
+        settle_for(app, 60, |a| {
+            let errors = errors_in(a, &path);
+            let doc = a.lsp.version(buffer_id(a, &path));
+            errors == [d.error_word] && doc.is_some_and(|v| v >= 3)
+        })
+        .await
+    );
+    undo_to(app, original, 4);
+    assert!(
+        settle_for(app, 60, |a| errors_in(a, &path).is_empty()).await,
+        "{process} clears it after undo: {:?}",
+        marks(app, &path)
+    );
+
+    // Completion: `.` after the object lists the member; Enter inserts it.
+    let at = original.rfind(d.complete_after).unwrap() + d.complete_after.len();
+    let listed = |a: &App| shown(a).iter().any(|l| l.trim() == d.member);
+    let t = Instant::now();
+    while !listed(app) && t.elapsed() < Duration::from_secs(60) {
+        app.press(K::Esc, M::NONE);
+        undo_to(app, original, 4);
+        put_cursor(app, at);
+        app.type_text(".");
+        settle_for(app, 5, listed).await;
+    }
+    assert!(listed(app), "{process} completion: {:?}", shown(app));
+    let p = app.completion.popup.as_mut().unwrap();
+    p.selected = p
+        .shown
+        .iter()
+        .position(|&i| p.items[i].label.trim() == d.member)
+        .unwrap();
+    app.press(K::Enter, M::NONE);
+    let want = format!("{}.{}", d.complete_after.trim(), d.member);
+    assert!(text(app).contains(&want), "{process}: {}", text(app));
+    undo_to(app, original, 4);
+
+    // Hover.
+    let at = original.rfind(d.symbol).unwrap() + 1;
+    put_cursor(app, at);
+    let mut term = terminal();
+    draw(&mut term, app);
+    let t = Instant::now();
+    while app.hover.popup.is_none() && t.elapsed() < Duration::from_secs(60) {
+        show_hover(app);
+        settle_for(app, 3, |a| a.hover.popup.is_some()).await;
+    }
+    draw(&mut term, app);
+    let rows = popup_rows(&term, app).join("\n");
+    assert!(rows.contains(d.hover), "{process} hover: {rows}");
+
+    // Go to definition, then back.
+    app.press(K::F(12), M::NONE);
+    let defs: Vec<PathBuf> = d.def_files.iter().map(|f| root.join(f)).collect();
+    assert!(
+        settle_for(app, 60, |a| active_path(a).is_some_and(|p| defs.contains(&p))).await,
+        "{process} went to the definition; message {:?}",
+        message(app)
+    );
+    while active_path(app).as_deref() != Some(path.as_path()) {
+        app.press(K::PageUp, M::CONTROL);
+    }
+
+    // Find references (the server may need to index the other files first).
+    put_cursor(app, at);
+    let all = |a: &App| a.locations.as_ref().is_some_and(|l| l.files.len() == d.ref_files);
+    let t = Instant::now();
+    while !all(app) && t.elapsed() < Duration::from_secs(60) {
+        app.press(K::F(12), M::SHIFT);
+        settle_for(app, 3, all).await;
+        app.press(K::Char('1'), cmd());
+        put_cursor(app, at);
+    }
+    assert!(
+        all(app),
+        "{process} references: {:?}; message {:?}",
+        app.locations.as_ref().map(|l| &l.files),
+        message(app)
+    );
+
+    // Rename across the files.
+    app.press(K::F(2), M::NONE);
+    assert!(
+        settle_for(app, 30, |a| a.prompt.is_some()).await,
+        "{process} rename prompt; message {:?}",
+        message(app)
+    );
+    app.type_text(d.new_name);
+    app.press(K::Enter, M::NONE);
+    let renamed = |a: &App| {
+        d.files.iter().filter(|(_, t)| t.contains(d.symbol)).all(|(name, _)| {
+            a.buffers.find_path(&root.join(name)).is_some_and(|id| {
+                let t = a.buffers.get(id).unwrap().rope.to_string();
+                t.contains(d.new_name) && !t.contains(d.symbol)
+            })
+        })
+    };
+    assert!(
+        settle_for(app, 30, renamed).await,
+        "{process} renamed; message {:?}; texts {:?}",
+        message(app),
+        app.buffers.iter().map(|(_, b)| b.rope.to_string()).collect::<Vec<_>>()
+    );
+    assert_eq!(active_path(app).as_deref(), Some(path.as_path()));
+    let renamed_text = text(app);
+
+    // Format document: one undo step.
+    format_document(app);
+    match d.formatted {
+        Some(formatted) => {
+            let want = formatted.replace(d.symbol, d.new_name);
+            assert!(
+                settle_for(app, 30, |a| text(a) == want).await,
+                "{process} formatted: {:?}; message {:?}",
+                text(app),
+                message(app)
+            );
+            app.press(K::Char('z'), cmd());
+            assert_eq!(text(app), renamed_text, "{process}: one undo step");
+        }
+        None => {
+            let language = app.active_buffer().unwrap().syntax.language().id();
+            let no = format!("There is no formatter for '{language}' files installed.");
+            assert_eq!(message(app), Some(no));
+        }
+    }
+
+    let n = incremental_only(tee, process);
+    assert!(n >= 5, "{process}: {n} didChanges");
+    app.press(K::Char('q'), cmd());
+    app.shutdown_servers().await;
+    if let Some(n) = children_named(process) {
+        assert_eq!(n, 0, "no {process} left");
+    }
+}
+
+const CPP_MAIN: &str = "#include \"util.h\"\nint   unused_fmt( ){return 0;}\nint main() {\n  Point pt{1, 2};\n  pt;\n  int t = total(pt);\n  return t;\n}\n";
+const CPP_MAIN_FORMATTED: &str = "#include \"util.h\"\nint unused_fmt() { return 0; }\nint main() {\n  Point pt{1, 2};\n  pt;\n  int t = total(pt);\n  return t;\n}\n";
+const CPP_UTIL_H: &str =
+    "#pragma once\nstruct Point {\n  int xcoord;\n  int ycoord;\n};\n// Adds the coordinates.\nint total(Point p);\n";
+const CPP_UTIL_CPP: &str = "#include \"util.h\"\nint total(Point p) { return p.xcoord + p.ycoord; }\n";
+
+/// M9 done when, C++: a project with `compile_commands.json` and real clangd.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_done_when_cpp_project() {
+    if which("clangd").is_none() {
+        eprintln!("milestone_9_done_when_cpp_project: skipped, clangd isn't on PATH");
+        return;
+    }
+    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let files = [
+        ("main.cpp", CPP_MAIN),
+        ("util.h", CPP_UTIL_H),
+        ("util.cpp", CPP_UTIL_CPP),
+    ];
+    let root = project(dir.path(), &files);
+    let commands: Vec<Value> = ["main.cpp", "util.cpp"]
+        .iter()
+        .map(|f| json!({ "directory": root, "file": f, "arguments": ["clang++", "-std=c++17", "-c", f] }))
+        .collect();
+    fs::write(root.join("compile_commands.json"), Value::Array(commands).to_string()).unwrap();
+    let tee = Arc::new(Tee {
+        sent: Default::default(),
+    });
+    let mut app = open_app(&root, tee.clone());
+    let d = DoneWhen {
+        process: "clangd",
+        files: &files,
+        error_before: "t;\n}",
+        error_text: "zz + ",
+        error_word: "zz",
+        complete_after: "  pt",
+        member: "ycoord",
+        symbol: "total",
+        hover: "function total",
+        def_files: &["util.h", "util.cpp"],
+        ref_files: 3,
+        new_name: "sum_of",
+        formatted: Some(CPP_MAIN_FORMATTED),
+    };
+    done_when(&mut app, &root, &tee, &d).await;
+}
+
+const SCONSTRUCT: &str = "import helpers
+
+env = Environment(CXXFLAGS=[\"-O2\"])
+env.Append(CPPPATH=[\"include\"])
+sources = helpers.cpp_files(Glob(\"src/*.cpp\"))
+program = env.Program(\"app\", sources)
+Default(program)
+Export(\"env\")
+SConscript(\"lib/SConscript\")
+if \"fast\" in COMMAND_LINE_TARGETS or ARGUMENTS.get(\"mode\") == \"fast\":
+    env.Append(CXXFLAGS=[\"-O3\"])
+env
+";
+const SCONS_HELPERS: &str = "def cpp_files(nodes: list) -> list:
+    \"\"\"The C++ sources among `nodes`.\"\"\"
+    return [n for n in nodes if str(n).endswith(\".cpp\")]
+";
+
+/// M9 done when, SCons: an extensionless `SConstruct` (Python) with real ty, SCons's globals
+/// known through red's `__builtins__.pyi` (written to the support dir, not the workspace, and put
+/// on ty's search path). ty has no formatter: format document says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_done_when_scons_project() {
+    let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv/bin/ty");
+    let Some(ty) = which("ty").or_else(|| venv.is_file().then_some(venv)) else {
+        eprintln!("milestone_9_done_when_scons_project: skipped, ty isn't on PATH or in .venv/bin");
+        return;
+    };
+    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let files = [("SConstruct", SCONSTRUCT), ("helpers.py", SCONS_HELPERS)];
+    let root = project(dir.path(), &files);
+    let support = dir.path().join("support");
+    let tee = Arc::new(Tee {
+        sent: Default::default(),
+    });
+    let mut app = open_app(&root, tee.clone());
+    app.lsp.builtins.ty = ServerConfig::new(ty.to_str().unwrap(), &["server"]);
+    app.lsp.support_dir = Some(support.clone());
+    let d = DoneWhen {
+        process: "ty",
+        files: &files,
+        error_before: "Default(program)",
+        error_text: "zz + ",
+        error_word: "zz",
+        complete_after: "env",
+        member: "Program",
+        symbol: "cpp_files",
+        hover: "def cpp_files",
+        def_files: &["helpers.py"],
+        ref_files: 2,
+        new_name: "sources_of",
+        formatted: None,
+    };
+    done_when(&mut app, &root, &tee, &d).await;
+    // The stub: in the support dir, on ty's search path; nothing written in the workspace.
+    let stub = support.join("scons/__builtins__.pyi");
+    assert_eq!(fs::read_to_string(&stub).unwrap(), crate::lsp::scons::BUILTINS);
+    let init = tee.method("initialize").pop().unwrap();
+    assert_eq!(
+        init["params"]["initializationOptions"]["configuration"]["environment"]["extra-paths"],
+        json!([support.join("scons")])
+    );
+    let mut names: Vec<_> = fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["SConstruct", "helpers.py"]);
+    let open = tee.method("textDocument/didOpen");
+    assert!(open.iter().any(|m| {
+        m["params"]["textDocument"]["languageId"] == "python"
+            && m["params"]["textDocument"]["uri"]
+                .as_str()
+                .unwrap()
+                .ends_with("/SConstruct")
+    }));
 }

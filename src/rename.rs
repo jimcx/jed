@@ -1,6 +1,6 @@
 //! Rename symbol's model (no drawing; `app/rename.rs` drives it): reading a
 //! `textDocument/prepareRename` answer and a `WorkspaceEdit`, and turning a file's `TextEdit`s
-//! into one `ChangeSet` (9h's format document reuses `changes` for its `TextEdit[]`).
+//! into one `ChangeSet` (format document reuses `text_edits` and `changes`).
 //!
 //! - `parse_prepare` → `Prepared::{Range, Default, Refused}` (`Range | { range, placeholder } |
 //!   { defaultBehavior } | null`).
@@ -88,7 +88,8 @@ pub struct FileEdit {
     pub edits: Vec<TextEdit>,
 }
 
-fn text_edits(v: &Value) -> Result<Vec<TextEdit>, String> {
+/// A `TextEdit[]` (a list of `{ range, newText }`).
+pub fn text_edits(v: &Value) -> Result<Vec<TextEdit>, String> {
     let items = v.as_array().ok_or("edits aren't a list")?;
     items
         .iter()

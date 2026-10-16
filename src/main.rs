@@ -12,6 +12,7 @@ mod edit;
 mod explorer;
 mod field;
 mod find;
+mod format;
 mod group;
 mod grouped;
 mod hover;

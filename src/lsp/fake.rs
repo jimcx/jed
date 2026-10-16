@@ -16,8 +16,9 @@
 //! `test/flush` (out of order, as `test/later`). A `$/cancelRequest` for a held request answers
 //! it at once with RequestCancelled (-32800), as servers do. It advertises `hoverProvider`,
 //! `definitionProvider`, `completionProvider` (trigger characters `.` and `>`, resolve),
-//! `referencesProvider` and `renameProvider` (with `prepareProvider` unless
-//! `FakeOptions::no_prepare_rename`); an unscripted `completionItem/resolve` answers with the
+//! `referencesProvider`, `renameProvider` (with `prepareProvider` unless
+//! `FakeOptions::no_prepare_rename`) and `documentFormattingProvider` (unless
+//! `FakeOptions::no_formatting`); an unscripted `completionItem/resolve` answers with the
 //! item it got, any other unscripted request with MethodNotFound.
 //!
 //! Documents: it keeps its own copy of every document opened (`didOpen`), applies each
@@ -56,6 +57,8 @@ pub struct FakeOptions {
     pub sync: Option<Value>,
     /// Advertise `renameProvider: true` (no `prepareRename`) instead of `{ prepareProvider: true }`.
     pub no_prepare_rename: bool,
+    /// Don't advertise `documentFormattingProvider`.
+    pub no_formatting: bool,
 }
 
 /// The fake's copy of an open document.
@@ -267,6 +270,7 @@ async fn serve(
                             } else {
                                 json!({ "prepareProvider": true })
                             },
+                            "documentFormattingProvider": !options.no_formatting,
                         });
                         if options.utf8 {
                             caps["positionEncoding"] = json!("utf-8");

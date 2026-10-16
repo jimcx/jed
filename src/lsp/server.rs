@@ -11,11 +11,11 @@ use std::time::Duration;
 
 use lsp_types::{
     ClientCapabilities, ClientInfo, CompletionClientCapabilities, CompletionItemCapability,
-    CompletionItemCapabilityResolveSupport, CompletionListCapability, GeneralClientCapabilities, GotoCapability,
-    HoverClientCapabilities, InitializeParams, MarkupKind, PositionEncodingKind, PrepareSupportDefaultBehavior,
-    PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities, RenameClientCapabilities, ServerCapabilities,
-    TextDocumentClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities,
-    WorkspaceEditClientCapabilities, WorkspaceFolder,
+    CompletionItemCapabilityResolveSupport, CompletionListCapability, DocumentFormattingClientCapabilities,
+    GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, InitializeParams, MarkupKind,
+    PositionEncodingKind, PrepareSupportDefaultBehavior, PublishDiagnosticsClientCapabilities,
+    ReferenceClientCapabilities, RenameClientCapabilities, ServerCapabilities, TextDocumentClientCapabilities,
+    WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceEditClientCapabilities, WorkspaceFolder,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -120,6 +120,8 @@ pub struct Task {
     pub sink: Sink,
     /// Request ids, shared with the app's handle (which numbers its own requests).
     pub next_id: Arc<AtomicI64>,
+    /// Where red writes files servers read (`Manager::support_dir`): ty's SCons builtins.
+    pub support_dir: Option<PathBuf>,
 }
 
 /// How the task ended.
@@ -135,6 +137,16 @@ enum End {
 impl Task {
     pub async fn run(self) {
         let name = self.config.name.clone();
+        let mut config = self.config.clone();
+        if let Some(dir) = self.support_dir.clone()
+            && super::scons::applies(&name)
+        {
+            let root = self.root.clone();
+            if let Ok(Some(stub)) = tokio::task::spawn_blocking(move || super::scons::prepare(&root, &dir)).await {
+                tracing::info!(server = %name, stub = %stub.display(), "SCons workspace: builtins stub on ty's search path");
+                config.init_options = Some(super::scons::with_extra_path(config.init_options.take(), &stub));
+            }
+        }
         let transport = match self.launcher.launch(&self.config, &self.root) {
             Ok(t) => t,
             Err(e) => {
@@ -172,7 +184,7 @@ impl Task {
             shutting_down: false,
             exit_sent: false,
         };
-        conn.send_initialize(&self.config);
+        conn.send_initialize(&config);
 
         let mut rx = self.rx;
         let mut rx_open = true;
@@ -560,6 +572,8 @@ fn client_capabilities() -> ClientCapabilities {
                 link_support: Some(true),
             }),
             references: Some(ReferenceClientCapabilities::default()),
+            // Format document (no range / on-type formatting).
+            formatting: Some(DocumentFormattingClientCapabilities::default()),
             // `prepareRename` (its range or placeholder fills the prompt; `defaultBehavior`: the
             // word at the cursor). No change annotations: edits are applied without asking.
             rename: Some(RenameClientCapabilities {

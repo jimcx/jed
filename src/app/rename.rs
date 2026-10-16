@@ -213,7 +213,7 @@ impl App {
     /// Edits `buffer` by `changes` as one undo step: the active editor's view (if it shows the
     /// buffer) gets its selections moved with the text and is what undo restores; other views
     /// follow in `follow_edits`.
-    fn apply_changes(&mut self, buffer: BufferId, changes: ChangeSet) {
+    pub(super) fn apply_changes(&mut self, buffer: BufferId, changes: ChangeSet) {
         // Undo restores these: a view of the buffer, the active one first.
         let shown = std::iter::once(self.groups.active)
             .chain(self.groups.ids())
