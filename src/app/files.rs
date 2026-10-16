@@ -94,6 +94,7 @@ impl App {
     /// Starts no background work (it runs from `App::new`); callers reveal the file.
     pub(super) fn add_buffer(&mut self, mut buffer: Buffer, goto: Option<Goto>, focus: bool) {
         buffer.syntax.set_language(self.detect_language(&buffer));
+        self.lsp.load_diagnostics(&mut buffer);
         let mut view = View::new();
         if let Some(goto) = &goto {
             apply_goto(&mut view, &buffer.rope, goto, self.settings.tab_width);

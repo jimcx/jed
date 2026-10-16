@@ -4,6 +4,7 @@
 //! state, and shutting them all down on quit.
 
 pub mod config;
+pub mod diagnostics;
 pub mod documents;
 #[cfg(test)]
 pub mod fake;
@@ -38,6 +39,13 @@ use crate::workspace::trust::Trust;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ServerId(u64);
 
+impl ServerId {
+    #[cfg(test)]
+    pub fn test(n: u64) -> Self {
+        Self(n)
+    }
+}
+
 /// Where server tasks send their events. Called on runtime threads.
 pub type Sink = Arc<dyn Fn(Event) + Send + Sync>;
 
@@ -63,6 +71,11 @@ pub enum Event {
     Failed { server: ServerId, error: StartError },
     /// It's gone: `crashed` is why, `None` after a requested shutdown.
     Exited { server: ServerId, crashed: Option<String> },
+    /// `textDocument/publishDiagnostics`, read (in the server's task).
+    Diagnostics {
+        server: ServerId,
+        published: Box<diagnostics::Published>,
+    },
     /// A server notification red's task doesn't handle itself (`window/logMessage` is logged,
     /// `$/progress` dropped).
     Notification {
@@ -105,7 +118,6 @@ pub struct Server {
 
 impl Server {
     /// The negotiated position encoding, once initialized.
-    #[cfg_attr(not(test), allow(dead_code))] // tests; requests from 9c on
     pub fn encoding(&self) -> Option<PosEncoding> {
         match self.state {
             State::Running { encoding, .. } => Some(encoding),
@@ -159,6 +171,11 @@ pub struct Manager {
     next_server: u64,
     /// Buffers open on servers (`textDocument/didOpen` …).
     docs: Documents,
+    /// Every file's published diagnostics (open in a buffer or not).
+    pub diagnostics: diagnostics::Store,
+    /// Servers whose diagnostics were dropped since the last `take_cleared` (they stopped,
+    /// failed or crashed): the app drops their marks from the buffers.
+    cleared: Vec<ServerId>,
 }
 
 impl Manager {
@@ -171,6 +188,8 @@ impl Manager {
             stopping: Vec::new(),
             next_server: 0,
             docs: Documents::default(),
+            diagnostics: diagnostics::Store::default(),
+            cleared: Vec::new(),
         }
     }
 
@@ -214,6 +233,9 @@ impl Manager {
             if s.languages.is_empty() {
                 tracing::info!(server = %s.config.name, "language server no longer configured: stopping it");
                 s.stop();
+                if self.diagnostics.clear_server(s.id) {
+                    self.cleared.push(s.id);
+                }
                 self.stopping.push(s.task);
             } else {
                 kept.push(s);
@@ -279,6 +301,48 @@ impl Manager {
         self.docs.version(buffer)
     }
 
+    /// A server's `textDocument/publishDiagnostics`: stored by path, replacing that server's
+    /// earlier set, and placed in the file's buffer if open (its marks replaced): read against
+    /// the document version it names (`Documents::since`, after `sync_documents` sends this turn's
+    /// changes so the newest version is the buffer's text) and mapped through the edits since;
+    /// without a version (or one no longer kept), against the current text. Dropped when the
+    /// server isn't running (stopped, replaced, failed). True if it was taken.
+    pub fn publish(&mut self, server: ServerId, published: diagnostics::Published, buffers: &mut Buffers) -> bool {
+        let Some(encoding) = self.servers.iter().find(|s| s.id == server).and_then(Server::encoding) else {
+            tracing::debug!("diagnostics from a language server that isn't running");
+            return false;
+        };
+        if let Some(id) = buffers.find_path(&published.path) {
+            self.docs.sync(&self.servers, buffers);
+            let kept = published.version.and_then(|v| self.docs.since(id, server, v));
+            if kept.is_none() && published.version.is_some() {
+                tracing::debug!(version = published.version, path = %published.path.display(), "diagnostics for a version no longer kept: read against the current text");
+            }
+            let buf = buffers.get_mut(id).expect("found");
+            let marks = match &kept {
+                Some((text, since)) => diagnostics::resolve(server, &published.items, text, encoding, since),
+                None => diagnostics::resolve(server, &published.items, &buf.rope, encoding, &[]),
+            };
+            buf.diagnostics.replace(server, marks);
+        }
+        self.diagnostics.publish(server, encoding, published);
+        true
+    }
+
+    /// Places the stored diagnostics of `buffer`'s file in it (just opened: read against its
+    /// text, which is what the server saw unless the file changed since).
+    pub fn load_diagnostics(&self, buffer: &mut crate::buffer::Buffer) {
+        for set in self.diagnostics.get(&buffer.path) {
+            let marks = diagnostics::resolve(set.server, &set.items, &buffer.rope, set.encoding, &[]);
+            buffer.diagnostics.replace(set.server, marks);
+        }
+    }
+
+    /// Servers whose diagnostics were dropped since the last call.
+    pub fn take_cleared(&mut self) -> Vec<ServerId> {
+        std::mem::take(&mut self.cleared)
+    }
+
     /// Takes in a server task's event; returns what the status bar should say, if anything.
     pub fn handle(&mut self, event: Event) -> Option<Notice> {
         let id = match &event {
@@ -286,12 +350,16 @@ impl Manager {
             | Event::Failed { server, .. }
             | Event::Exited { server, .. }
             | Event::Notification { server, .. }
+            | Event::Diagnostics { server, .. }
             | Event::Response { server, .. } => *server,
         };
         let Some(index) = self.servers.iter().position(|s| s.id == id) else {
             tracing::debug!(?event, "event from a stopped language server");
             return None;
         };
+        if matches!(event, Event::Failed { .. } | Event::Exited { .. }) && self.diagnostics.clear_server(id) {
+            self.cleared.push(id);
+        }
         let s = &mut self.servers[index];
         let name = s.config.name.clone();
         let error = |text: String| {
@@ -350,6 +418,8 @@ impl Manager {
                 tracing::debug!(server = %name, id, "response nobody waits for");
                 None
             }
+            // The app hands these to `publish` (it needs the buffers).
+            Event::Diagnostics { .. } => None,
         }
     }
 
@@ -508,6 +578,44 @@ mod tests {
         sync(&mut m, &[Language::Cpp]); // `tokio::spawn` here would panic: no runtime
         assert!(m.servers().is_empty());
         assert!(fake.launches().is_empty());
+    }
+
+    /// A publish is stored and placed in the file's buffer; a server that's stopped (here: no
+    /// longer configured) takes its diagnostics along, and later publishes from it are dropped.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn diagnostics_go_with_their_server() {
+        let fake = FakeLauncher::new(FakeOptions::default());
+        let (mut m, mut rx) = manager(&fake);
+        sync(&mut m, &[Language::Python]);
+        m.handle(next(&mut rx).await);
+        let id = m.server_for(Language::Python).unwrap().id;
+        let published = || {
+            diagnostics::parse(json!({
+                "uri": "file:///ws/a.py",
+                "diagnostics": [{
+                    "range": { "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 7 } },
+                    "message": "m",
+                }],
+            }))
+            .unwrap()
+        };
+        let mut buffers = Buffers::default();
+        let mut buf = crate::buffer::Buffer::from_str("x = abc\n");
+        buf.path = PathBuf::from("/ws/a.py");
+        let b = buffers.insert(buf);
+        assert!(m.publish(id, published(), &mut buffers));
+        let marks = buffers.get(b).unwrap().diagnostics.all();
+        assert_eq!((marks.len(), marks[0].start.0, marks[0].end.0), (1, 4, 7));
+        assert_eq!(m.diagnostics.files().count(), 1);
+        assert!(m.take_cleared().is_empty());
+
+        let ws = WorkspaceConfig::parse("[lsp.python]\ncommand = \"pyright\"").unwrap();
+        m.sync(Path::new("/ws"), &[Language::Python], &ws, Trust::Trusted);
+        assert_eq!(m.take_cleared(), [id]);
+        assert_eq!(m.diagnostics.files().count(), 0);
+        assert!(!m.publish(id, published(), &mut buffers), "from a stopped server");
+        assert_eq!(m.diagnostics.files().count(), 0);
+        m.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -1,4 +1,5 @@
-//! Status bar: trust mode, file, message, cursor position, file format, language mode.
+//! Status bar: trust mode, file, problem counts, message (else the cursor line's diagnostic),
+//! cursor position, file format, language mode.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -6,6 +7,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Level};
 use crate::buffer::pos;
+use crate::diagnostics::Severity;
 use crate::workspace::trust::Trust;
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
@@ -20,8 +22,40 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         x = nx;
     }
 
+    // Problems in the workspace (VS Code's `⊗ 1 ⚠ 2`), once a language server runs or any
+    // diagnostics were published.
+    let counts = app.lsp.diagnostics.counts();
+    let problems = (!app.lsp.servers().is_empty() || counts != Default::default()).then(|| {
+        format!(
+            "{} {}  {} {}  ",
+            Severity::Error.icon(),
+            counts.of(Severity::Error),
+            Severity::Warning.icon(),
+            counts.of(Severity::Warning)
+        )
+    });
+    let problems = problems.unwrap_or_default();
+    // The message to show: a notification, else the diagnostic on the cursor line.
+    let mut message = app.message.as_ref().map(|msg| {
+        let msg_style = match msg.level {
+            Level::Info => style,
+            Level::Warning => app.theme.get("statusBar.warning"),
+            Level::Error => app.theme.get("statusBar.error"),
+        };
+        (msg.text.clone(), msg_style)
+    });
+
     let mut right_x = area.x + area.width;
     if let (Some(buf), Some(tab)) = (app.active_buffer(), app.group().active_tab()) {
+        if message.is_none() {
+            let head = tab.view.selections.primary().head;
+            let line = pos::line_of(&buf.rope, head);
+            let (start, end, _) = pos::line_bounds(&buf.rope, line);
+            message = buf.diagnostics.for_line(start, end, head).map(|m| {
+                let text = m.diag.message.split_whitespace().collect::<Vec<_>>().join(" ");
+                (format!("{} {text}", m.diag.severity.icon()), style)
+            });
+        }
         let dirty = if buf.is_dirty() { " ●" } else { "" };
         let flag = if buf.deleted {
             " [deleted]"
@@ -30,7 +64,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         } else {
             ""
         };
-        let left = format!(" {}{dirty}{flag}  ", buf.name());
+        let left = format!(" {}{dirty}{flag}  {problems}", buf.name());
 
         // As VS Code: the position for one selection, the count for several.
         let count = tab.view.selections.len();
@@ -60,15 +94,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         out.set_stringn(right_x, area.y, &right, right_w, style);
         let room = right_x.saturating_sub(x) as usize;
         x = out.set_stringn(x, area.y, &left, room, style).0;
+    } else if !problems.is_empty() {
+        x = out.set_stringn(x, area.y, format!(" {problems}"), width, style).0;
     }
 
-    if let Some(msg) = &app.message {
-        let msg_style = match msg.level {
-            Level::Info => style,
-            Level::Warning => app.theme.get("statusBar.warning"),
-            Level::Error => app.theme.get("statusBar.error"),
-        };
+    if let Some((text, msg_style)) = message {
         let room = right_x.saturating_sub(x + 1) as usize;
-        out.set_stringn(x, area.y, format!(" {} ", msg.text), room, msg_style);
+        out.set_stringn(x, area.y, format!(" {text} "), room, msg_style);
     }
 }

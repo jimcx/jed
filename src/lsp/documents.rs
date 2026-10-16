@@ -9,8 +9,9 @@
 //! from `Buffer::take_tracked` (every change set `Buffer::apply` applied, edits and undo / redo
 //! alike, with the text from before it), converted by `content_changes`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use lsp_types::{
     ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncSaveOptions, Uri,
@@ -19,6 +20,7 @@ use ropey::Rope;
 use serde_json::{Value, json};
 
 use super::{Server, ServerId, State, uri};
+use crate::buffer::change::ChangeSet;
 use crate::buffer::pos::{ByteIdx, LspPos, LspWalker, PosEncoding};
 use crate::buffer::{BufferId, Buffers, Tracked};
 use crate::syntax::Language;
@@ -27,6 +29,11 @@ use crate::syntax::Language;
 /// between its first and last change, as it is after it): 60k cursors' typing as 60k ranges
 /// would be megabytes of JSON per key. `syntax` coalesces its tree edits from the same size.
 pub const COALESCE_AT: usize = 256;
+
+/// How many versions of a document are kept for diagnostics published for an older version
+/// (`Documents::since`). A server is rarely more than a few behind (one version per loop turn
+/// with an edit); a publish for a version no longer kept is read against the current text.
+pub const KEEP_VERSIONS: usize = 32;
 
 /// How a server wants `didChange`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +97,18 @@ struct Document {
     uri: Uri,
     language: Language,
     version: i32,
+    /// The versions a diagnostic may still be published for, oldest first, the newest (`version`)
+    /// last; with incremental or full sync only (else the server keeps version 1).
+    versions: VecDeque<Version>,
+}
+
+/// One version of a document as sent: its text (a cheap rope clone) and the change sets that
+/// lead from it to the next version.
+#[derive(Debug)]
+struct Version {
+    version: i32,
+    text: Rope,
+    then: Vec<Arc<ChangeSet>>,
 }
 
 /// The documents servers have open, by buffer.
@@ -164,6 +183,11 @@ impl Documents {
                 uri: uri::from_path(&buf.path),
                 language,
                 version: 1,
+                versions: VecDeque::from([Version {
+                    version: 1,
+                    text: buf.rope.clone(),
+                    then: Vec::new(),
+                }]),
             };
             tracing::debug!(server = %server.config.name, uri = doc.uri.as_str(), language = language.id(), "didOpen");
             server.notify(
@@ -205,6 +229,19 @@ impl Documents {
     pub fn version(&self, buffer: BufferId) -> Option<i32> {
         self.open.get(&buffer).map(|d| d.version)
     }
+
+    /// For diagnostics `server` published for `version` of `buffer`'s document: the text of that
+    /// version and the change sets applied since, in order (`sync` first, so the newest version
+    /// is the buffer's text). Versions before it are dropped (a server publishes in order).
+    /// `None` when the document isn't open on `server` or that version is no longer kept.
+    pub fn since(&mut self, buffer: BufferId, server: ServerId, version: i32) -> Option<(Rope, Vec<Arc<ChangeSet>>)> {
+        let doc = self.open.get_mut(&buffer).filter(|d| d.server == server)?;
+        let i = doc.versions.iter().position(|v| v.version == version)?;
+        doc.versions.drain(..i);
+        let text = doc.versions[0].text.clone();
+        let sets = doc.versions.iter().flat_map(|v| v.then.iter().cloned()).collect();
+        Some((text, sets))
+    }
 }
 
 fn send_changes(
@@ -219,11 +256,27 @@ fn send_changes(
         return;
     }
     let changes = match change {
-        ChangeSync::None => return,
+        ChangeSync::None => {
+            // The server's copy stays at version 1, the text as opened; its diagnostics are read
+            // against the current text (the edits since aren't kept).
+            doc.versions.clear();
+            return;
+        }
         ChangeSync::Full => vec![json!({ "text": current.to_string() })],
         ChangeSync::Incremental => content_changes(&tracked, current, encoding),
     };
     doc.version += 1;
+    if let Some(last) = doc.versions.back_mut() {
+        last.then.extend(tracked.iter().map(|t| t.changes.clone()));
+    }
+    doc.versions.push_back(Version {
+        version: doc.version,
+        text: current.clone(),
+        then: Vec::new(),
+    });
+    while doc.versions.len() > KEEP_VERSIONS {
+        doc.versions.pop_front();
+    }
     tracing::trace!(server = %server.config.name, uri = doc.uri.as_str(), version = doc.version, changes = changes.len(), "didChange");
     server.notify(
         "textDocument/didChange",

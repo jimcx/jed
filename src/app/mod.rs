@@ -793,6 +793,12 @@ impl App {
         self.handle_app_event(AppEvent::SearchResults(batch));
     }
 
+    /// Takes in a language server event as if it had come through the channel, before the turn's
+    /// `sync_servers` (as when a key and the event arrive in one loop turn).
+    pub fn test_lsp_event(&mut self, event: crate::lsp::Event) {
+        self.handle_app_event(AppEvent::Lsp(event));
+    }
+
     /// Handles every background result already queued, without waiting (as the event loop
     /// would between frames).
     pub fn pump(&mut self) {

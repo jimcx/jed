@@ -7,7 +7,9 @@
 //! (`"progress"`) and an unknown method (`"bogus"`) while initializing, answers `shutdown` and
 //! stops on `exit`. Test methods: `test/echo` answers with its params, `test/later` is held until
 //! a `test/flush` notification answers the held ones newest first; anything else gets
-//! MethodNotFound.
+//! MethodNotFound. A `test/publish` notification makes it send `textDocument/publishDiagnostics`
+//! with the same params (a test's way to publish diagnostics: for any URI and version, in order
+//! after the document notifications sent before it); `test/crash` makes it hang up.
 //!
 //! Documents: it keeps its own copy of every document opened (`didOpen`), applies each
 //! `didChange` to it (ranges in the negotiated encoding, converted here independently of
@@ -238,6 +240,8 @@ async fn serve(
                         }
                     }
                     "initialized" if options.crash_after_init => return,
+                    "test/crash" => return,
+                    "test/publish" => out.push(Message::notification("textDocument/publishDiagnostics", params)),
                     "test/flush" => {
                         for (id, params) in held.drain(..).rev() {
                             out.push(Message::Response { id, result: Ok(params) });

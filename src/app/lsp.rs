@@ -2,6 +2,7 @@
 //! stopping them on quit. The servers themselves live in `crate::lsp`.
 
 use super::App;
+use crate::lsp::Event;
 use crate::syntax::Language;
 
 impl App {
@@ -19,6 +20,7 @@ impl App {
             self.start_servers();
         }
         self.lsp.sync_documents(&mut self.buffers);
+        self.drop_cleared_diagnostics();
     }
 
     fn start_servers(&mut self) {
@@ -33,9 +35,30 @@ impl App {
             .sync(&self.workspace.root, &languages, &self.workspace.config, self.trust);
     }
 
-    pub(super) fn lsp_event(&mut self, event: crate::lsp::Event) {
-        if let Some(notice) = self.lsp.handle(event) {
-            self.notify(notice.level, notice.text);
+    pub(super) fn lsp_event(&mut self, event: Event) {
+        match event {
+            Event::Diagnostics { server, published } => {
+                if self.lsp.publish(server, *published, &mut self.buffers) {
+                    self.needs_redraw = true;
+                }
+            }
+            event => {
+                if let Some(notice) = self.lsp.handle(event) {
+                    self.notify(notice.level, notice.text);
+                }
+            }
+        }
+        self.drop_cleared_diagnostics();
+    }
+
+    /// Drops the marks of servers whose diagnostics the manager dropped (stopped, failed,
+    /// crashed) from every buffer.
+    fn drop_cleared_diagnostics(&mut self) {
+        for server in self.lsp.take_cleared() {
+            for (_, buf) in self.buffers.iter_mut() {
+                buf.diagnostics.clear(server);
+            }
+            self.needs_redraw = true;
         }
     }
 

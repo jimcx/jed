@@ -1,4 +1,4 @@
-//! Milestone 9 end to end (so far: 9a, the `lsp` core; 9b, document sync).
+//! Milestone 9 end to end (so far: 9a, the `lsp` core; 9b, document sync; 9c, diagnostics).
 //!
 //! 9a: opening a C++ file starts its server (the in-process fake, `lsp::fake`) once: `initialize`
 //! carries the root and offers UTF-8 then UTF-16 positions, UTF-8 is negotiated when the server
@@ -25,6 +25,18 @@
 //! reopens it with the new `languageId`, and one to plain text closes it and stops tracking. Typing at ~63k cursors in a 1 MB C++ file with the fake server
 //! stays within M6's keystroke budget (release). Real clangd and ty take edits at two cursors,
 //! undo and a save and stay up, and still exit quickly on quit.
+//!
+//! 9c: diagnostics the fake publishes (`test/publish`) are drawn as underlines in their
+//! severity's theme colour at exactly their cells (UTF-16 ranges past an astral char; the most
+//! severe wins where they overlap); the status bar counts errors and warnings in the workspace
+//! (also files not open, which get their marks when opened) and shows the cursor line's
+//! diagnostic unless a notification is up. Marks follow typing before them; a publish for an
+//! older version is read in that version's text and mapped through the edits since (also one
+//! not yet sent); without a version, or one no longer kept, in the current text; each publish
+//! replaces the last, an empty one clears; a crashed server's diagnostics all go. ~31k
+//! diagnostics on a 1 MB file are placed in one loop turn and followed through typing at ~63k
+//! cursors within the keystroke budget (release). Real clangd and ty report an error on the
+//! right word and clear it once it's fixed.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -32,10 +44,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode as K, KeyModifiers as M};
+use serde_json::{Value, json};
 
 use crate::app::{App, Level, Prompt};
 use crate::buffer::Buffer;
 use crate::buffer::pos::PosEncoding;
+use crate::diagnostics::Severity;
 use crate::lsp::fake::{FakeLauncher, FakeOptions};
 use crate::lsp::{Launcher, ProcessLauncher, SHUTDOWN_TIMEOUT, ServerConfig, State};
 use crate::syntax::Language;
@@ -271,7 +285,11 @@ async fn milestone_9_quit_shuts_servers_down() {
     assert!(app.settle(|a| encoding(a, Language::Cpp).is_some()).await);
     let t = Instant::now();
     app.shutdown_servers().await;
-    assert!(t.elapsed() >= SHUTDOWN_TIMEOUT && t.elapsed() < SHUTDOWN_TIMEOUT + Duration::from_secs(1));
+    let took = t.elapsed();
+    assert!(
+        took >= SHUTDOWN_TIMEOUT && took < SHUTDOWN_TIMEOUT + Duration::from_secs(1),
+        "{took:?}"
+    );
     assert!(!fake.methods().contains(&"exit".to_string()));
     assert_eq!(fake.exited(), 1, "its input closed");
 }
@@ -329,8 +347,13 @@ fn children_named(name: &str) -> Option<usize> {
     Some(count)
 }
 
+/// Held by each test that runs a real server: they count the test process's children by name,
+/// so two at once would see each other's.
+static REAL_SERVERS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Opens `file` against a real server and checks the handshake and a clean exit.
 async fn real_server(language: Language, file: (&str, &str), configure: impl FnOnce(&mut App), process: &str) {
+    let _one_at_a_time = REAL_SERVERS.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let root = project(dir.path(), &[file]);
     let mut app = open_app(&root, Arc::new(ProcessLauncher));
@@ -883,6 +906,605 @@ async fn milestone_9_typing_at_many_cursors_stays_fast() {
     assert_eq!(full_text_changes(&fake), 0);
     if !cfg!(debug_assertions) {
         assert!(typing / n < KEYSTROKE_BUDGET, "typing too slow: avg {:?}", typing / n);
+    }
+    app.shutdown_servers().await;
+}
+
+// ---- 9c: diagnostics ----
+
+/// Makes the fake server for `language` publish `diagnostics` for `path` (at `version`, if any).
+fn publish(app: &App, language: Language, path: &Path, version: Option<i32>, diagnostics: Value) {
+    let mut params = json!({ "uri": uri(path), "diagnostics": diagnostics });
+    if let Some(v) = version {
+        params["version"] = json!(v);
+    }
+    app.lsp.server_for(language).unwrap().notify("test/publish", params);
+}
+
+/// An LSP diagnostic on one line (`severity`: 1 error … 4 hint).
+fn diag(line: u32, from: u32, to: u32, severity: u8, message: &str) -> Value {
+    json!({
+        "range": { "start": { "line": line, "character": from }, "end": { "line": line, "character": to } },
+        "severity": severity,
+        "message": message,
+    })
+}
+
+/// The buffer's marks as (text under it, severity, message).
+fn marks(app: &App, path: &Path) -> Vec<(String, Severity, String)> {
+    let buf = app.buffers.get(buffer_id(app, path)).unwrap();
+    let text = buf.rope.to_string();
+    buf.diagnostics
+        .all()
+        .iter()
+        .map(|m| {
+            (
+                text[m.start.0..m.end.0].to_string(),
+                m.diag.severity,
+                m.diag.message.clone(),
+            )
+        })
+        .collect()
+}
+
+fn mark(text: &str, severity: Severity, message: &str) -> (String, Severity, String) {
+    (text.into(), severity, message.into())
+}
+
+fn terminal() -> ratatui::Terminal<ratatui::backend::TestBackend> {
+    ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 16)).unwrap()
+}
+
+fn draw(term: &mut ratatui::Terminal<ratatui::backend::TestBackend>, app: &mut App) {
+    term.draw(|f| crate::ui::render(f, app)).unwrap();
+}
+
+/// The first cell where `needle` is drawn, one char per cell.
+fn find_cells(term: &ratatui::Terminal<ratatui::backend::TestBackend>, needle: &str) -> Option<(u16, u16)> {
+    let buf = term.backend().buffer();
+    let chars: Vec<String> = needle.chars().map(String::from).collect();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width.saturating_sub(chars.len() as u16) {
+            if chars
+                .iter()
+                .enumerate()
+                .all(|(i, c)| buf[(x + i as u16, y)].symbol() == c)
+            {
+                return Some((x, y));
+            }
+        }
+    }
+    None
+}
+
+/// The squiggle colour of a cell (`None`: not underlined).
+fn squiggle(term: &ratatui::Terminal<ratatui::backend::TestBackend>, x: u16, y: u16) -> Option<ratatui::style::Color> {
+    let cell = &term.backend().buffer()[(x, y)];
+    cell.modifier
+        .contains(ratatui::style::Modifier::UNDERLINED)
+        .then_some(cell.underline_color)
+}
+
+/// The squiggle colours under `needle` (where it's first drawn), one per char.
+fn squiggles_under(
+    term: &ratatui::Terminal<ratatui::backend::TestBackend>,
+    needle: &str,
+) -> Vec<Option<ratatui::style::Color>> {
+    let (x, y) = find_cells(term, needle).unwrap_or_else(|| panic!("{needle:?} drawn"));
+    (0..needle.chars().count() as u16)
+        .map(|i| squiggle(term, x + i, y))
+        .collect()
+}
+
+fn status(term: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+    let buf = term.backend().buffer();
+    let y = buf.area.height - 1;
+    (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+}
+
+fn colour(app: &App, severity: Severity) -> Option<ratatui::style::Color> {
+    let c = app.theme.get(severity.theme_key()).underline_color;
+    assert!(c.is_some());
+    c
+}
+
+/// Published diagnostics (UTF-16 ranges, past an astral char) are drawn as underlines in their
+/// severity's colour at exactly their cells; the status bar counts errors and warnings across
+/// the workspace and shows the cursor line's diagnostic (the most severe; a notification wins
+/// until a key); a file that isn't open counts too and gets its marks when opened.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_diagnostics_show_as_squiggles_and_counts() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = "int main() {\n  /*😀*/ foo();\n  return bar;\n}\n";
+    let root = project(dir.path(), &[("a.cpp", text), ("b.cpp", "int b = /*😀*/ oops;\n")]);
+    let (pa, pb) = (root.join("a.cpp"), root.join("b.cpp"));
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let mut app = open_app(&root, fake.clone());
+    open_synced(&mut app, &fake, &pa).await;
+    let mut term = terminal();
+    draw(&mut term, &mut app);
+    assert!(status(&term).contains("⊗ 0  ⚠ 0"), "{}", status(&term));
+
+    // UTF-16: 😀 is two units, so `foo` is at 9..12 (bytes 11..14).
+    publish(
+        &app,
+        Language::Cpp,
+        &pa,
+        Some(1),
+        json!([
+            diag(2, 9, 12, 2, "unused\n  bar"),
+            diag(1, 9, 12, 1, "use of undeclared identifier 'foo'"),
+            diag(1, 9, 10, 4, "a hint"),
+        ]),
+    );
+    assert!(app.settle(|a| marks(a, &pa).len() == 3).await);
+    assert_eq!(
+        marks(&app, &pa),
+        [
+            mark("f", Severity::Hint, "a hint"),
+            mark("foo", Severity::Error, "use of undeclared identifier 'foo'"),
+            mark("bar", Severity::Warning, "unused\n  bar"),
+        ]
+    );
+    draw(&mut term, &mut app);
+    let (error, warning) = (colour(&app, Severity::Error), colour(&app, Severity::Warning));
+    assert_eq!(
+        squiggles_under(&term, " foo()"),
+        [None, error, error, error, None, None],
+        "the error wins over the hint"
+    );
+    assert_eq!(squiggles_under(&term, " bar;"), [None, warning, warning, warning, None]);
+    assert!(status(&term).contains("⊗ 1  ⚠ 1"), "{}", status(&term));
+    assert!(!status(&term).contains("undeclared"), "the cursor's line has none");
+
+    app.press(K::Down, M::NONE);
+    draw(&mut term, &mut app);
+    assert!(
+        status(&term).contains(" ⊗ use of undeclared identifier 'foo' "),
+        "{}",
+        status(&term)
+    );
+    app.press(K::Down, M::NONE);
+    draw(&mut term, &mut app);
+    assert!(status(&term).contains(" ⚠ unused bar "), "one line: {}", status(&term));
+    // A notification wins until the next key.
+    app.press(K::Char('s'), cmd());
+    assert!(app.settle(|a| a.message.is_some()).await);
+    draw(&mut term, &mut app);
+    assert!(status(&term).contains("Saved") && !status(&term).contains("unused"));
+    app.press(K::Right, M::NONE);
+    draw(&mut term, &mut app);
+    assert!(status(&term).contains(" ⚠ unused bar "), "{}", status(&term));
+
+    // A file that isn't open: counted, stored, and placed when it opens (in the server's
+    // encoding: UTF-16, `oops` at 15..19, bytes 17..21).
+    publish(
+        &app,
+        Language::Cpp,
+        &pb,
+        None,
+        json!([diag(0, 15, 19, 1, "use of undeclared identifier 'oops'")]),
+    );
+    assert!(
+        app.settle(|a| a.lsp.diagnostics.counts().of(Severity::Error) == 2)
+            .await
+    );
+    draw(&mut term, &mut app);
+    assert!(status(&term).contains("⊗ 2  ⚠ 1"), "{}", status(&term));
+    open(&mut app, &pb);
+    assert_eq!(
+        marks(&app, &pb),
+        [mark("oops", Severity::Error, "use of undeclared identifier 'oops'")]
+    );
+    draw(&mut term, &mut app);
+    assert_eq!(squiggles_under(&term, "oops;"), [error, error, error, error, None]);
+    // Open now: a publish without a version is read in its text, in UTF-16 too.
+    publish(&app, Language::Cpp, &pb, None, json!([diag(0, 15, 19, 2, "again")]));
+    assert!(app.settle(|a| marks(a, &pb).iter().any(|m| m.2 == "again")).await);
+    assert_eq!(marks(&app, &pb), [mark("oops", Severity::Warning, "again")]);
+    app.shutdown_servers().await;
+}
+
+/// Where squiggles go at the edges: an empty range under the char there, under the one before
+/// at a line end, on the cell past an empty line's end; a range over a line break underlines
+/// nothing past the line's last char.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_diagnostics_at_line_ends_and_empty_ranges() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[("a.cpp", "int a;\n\nint b = c\nlong yy\nz;\n")]);
+    let path = root.join("a.cpp");
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let mut app = open_app(&root, fake.clone());
+    open_synced(&mut app, &fake, &path).await;
+    let over_break = json!({
+        "range": { "start": { "line": 3, "character": 5 }, "end": { "line": 4, "character": 1 } },
+        "severity": 4,
+        "message": "over a line break",
+    });
+    publish(
+        &app,
+        Language::Cpp,
+        &path,
+        Some(1),
+        json!([
+            diag(0, 4, 4, 1, "e"),
+            diag(1, 0, 0, 2, "w"),
+            diag(2, 9, 9, 3, "i"),
+            over_break
+        ]),
+    );
+    assert!(app.settle(|a| marks(a, &path).len() == 4).await);
+    let mut term = terminal();
+    draw(&mut term, &mut app);
+    let [e, w, i, h] = Severity::ALL.map(|s| colour(&app, s));
+    assert_eq!(squiggles_under(&term, "int a;"), [None, None, None, None, e, None]);
+    let (x, y) = find_cells(&term, "int a;").unwrap();
+    assert_eq!(
+        (squiggle(&term, x, y + 1), squiggle(&term, x + 1, y + 1)),
+        (w, None),
+        "the empty line: one cell"
+    );
+    assert_eq!(squiggle(&term, x + 6, y), None, "nothing past `int a;`");
+    let (x, y) = find_cells(&term, "int b = c").unwrap();
+    assert_eq!(
+        (squiggle(&term, x + 8, y), squiggle(&term, x + 9, y)),
+        (i, None),
+        "under `c`"
+    );
+    assert_eq!(squiggles_under(&term, "int b = ")[..8], [None; 8]);
+    assert_eq!(squiggles_under(&term, "long yy"), [None, None, None, None, None, h, h]);
+    let (x, y) = find_cells(&term, "long yy").unwrap();
+    assert_eq!(squiggle(&term, x + 7, y), None, "not past the line's end");
+    assert_eq!(squiggles_under(&term, "z;"), [h, None]);
+    app.shutdown_servers().await;
+}
+
+/// Marks follow edits until the next publish: typing before a word keeps its squiggle on it; a
+/// publish for an older version is read in that version's text and mapped through the edits
+/// since (also ones made after it was sent); without a version (or one no longer kept) it's
+/// read in the current text; each publish replaces the last; an empty one clears.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_diagnostics_follow_edits_until_republished() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[("a.cpp", "int main() {\n  foo();\n}\n")]);
+    let path = root.join("a.cpp");
+    let fake = FakeLauncher::new(FakeOptions {
+        utf8: true,
+        ..Default::default()
+    });
+    let mut app = open_app(&root, fake.clone());
+    open_synced(&mut app, &fake, &path).await;
+    let id = buffer_id(&app, &path);
+    publish(&app, Language::Cpp, &path, Some(1), json!([diag(1, 2, 5, 1, "v1")]));
+    assert!(app.settle(|a| !marks(a, &path).is_empty()).await);
+
+    // Typing before it: the squiggle stays on its word.
+    app.press(K::Down, M::NONE);
+    app.press(K::Home, M::NONE);
+    app.type_text("xy ");
+    assert_eq!(marks(&app, &path), [mark("foo", Severity::Error, "v1")]);
+    let mut term = terminal();
+    draw(&mut term, &mut app);
+    let error = colour(&app, Severity::Error);
+    assert_eq!(
+        squiggles_under(&term, " xy foo("),
+        [None, None, None, None, error, error, error, None]
+    );
+    in_sync(&mut app, &fake, &path, "typed").await;
+    assert_eq!(app.lsp.version(id), Some(2));
+
+    // Published for version 2 ("  xy foo();": foo at 5..8) while the text moved on: version 3
+    // sent, and keys not yet sent when the publish comes in, one a line break above it (so
+    // reading line 1 in the current text instead of version 2's would land on `int main`).
+    app.press(K::Home, M::NONE);
+    app.type_text("w");
+    app.pump();
+    assert_eq!(app.lsp.version(id), Some(3));
+    publish(&app, Language::Cpp, &path, Some(2), json!([diag(1, 5, 8, 2, "v2")]));
+    app.type_text("v");
+    app.press(K::Up, M::NONE);
+    app.press(K::Home, M::NONE);
+    app.press(K::Enter, M::NONE);
+    assert!(app.settle(|a| marks(a, &path).iter().any(|m| m.2 == "v2")).await);
+    assert_eq!(
+        marks(&app, &path),
+        [mark("foo", Severity::Warning, "v2")],
+        "replaced, mapped"
+    );
+    assert_eq!(pos_line(&app, &path), "  wvxy foo();");
+
+    // No version: the current text ("  wvxy foo();" on line 2: foo at 7..10).
+    publish(&app, Language::Cpp, &path, None, json!([diag(2, 7, 10, 3, "now")]));
+    assert!(app.settle(|a| marks(a, &path).iter().any(|m| m.2 == "now")).await);
+    assert_eq!(marks(&app, &path), [mark("foo", Severity::Info, "now")]);
+    // Version 1 is no longer kept (versions before 2 went with the version-2 publish): read
+    // in the current text too.
+    publish(&app, Language::Cpp, &path, Some(1), json!([diag(2, 2, 5, 3, "old")]));
+    assert!(app.settle(|a| marks(a, &path).iter().any(|m| m.2 == "old")).await);
+    assert_eq!(marks(&app, &path), [mark("wvx", Severity::Info, "old")]);
+
+    // A publish handled in the same loop turn as a key not yet sent (both come before the
+    // turn's `sync_servers`): the key is sent first, so the publish (for the version before
+    // it) is mapped through it: a line break above `foo`.
+    let sent = app.lsp.version(id);
+    app.press(K::Enter, M::NONE);
+    let mut params = json!({ "uri": uri(&path), "diagnostics": [diag(2, 7, 10, 1, "same turn")] });
+    params["version"] = json!(sent);
+    app.test_lsp_event(crate::lsp::Event::Diagnostics {
+        server: app.lsp.server_for(Language::Cpp).unwrap().id,
+        published: Box::new(crate::lsp::diagnostics::parse(params).unwrap()),
+    });
+    assert_eq!(app.lsp.version(id), sent.map(|v| v + 1), "the key went out first");
+    assert_eq!(marks(&app, &path), [mark("foo", Severity::Error, "same turn")]);
+
+    // An empty publish clears.
+    let version = app.lsp.version(id);
+    publish(&app, Language::Cpp, &path, version, json!([]));
+    assert!(app.settle(|a| marks(a, &path).is_empty()).await);
+    assert_eq!(app.lsp.diagnostics.counts(), Default::default());
+    draw(&mut term, &mut app);
+    assert_eq!(squiggles_under(&term, "foo();"), [None; 6]);
+    in_sync(&mut app, &fake, &path, "after the publishes").await;
+    app.shutdown_servers().await;
+}
+
+/// Exactly `KEEP_VERSIONS` versions are kept: after 32 sent edits (each a line break above
+/// `foo`), version 1 is gone (read in the current text: an empty line) and version 2, the oldest
+/// kept, is read in its own text and mapped down to `foo`.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_diagnostics_keep_the_last_32_versions() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[("a.cpp", "\nfoo();\n")]);
+    let path = root.join("a.cpp");
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let mut app = open_app(&root, fake.clone());
+    open_synced(&mut app, &fake, &path).await;
+    let id = buffer_id(&app, &path);
+    assert_eq!(crate::lsp::documents::KEEP_VERSIONS, 32);
+    for _ in 0..32 {
+        app.press(K::Enter, M::NONE);
+        app.pump();
+    }
+    assert_eq!(app.lsp.version(id), Some(33));
+    in_sync(&mut app, &fake, &path, "32 line breaks").await;
+    publish(&app, Language::Cpp, &path, Some(1), json!([diag(1, 0, 3, 1, "v1")]));
+    assert!(app.settle(|a| marks(a, &path).iter().any(|m| m.2 == "v1")).await);
+    assert_eq!(marks(&app, &path), [mark("", Severity::Error, "v1")], "not kept");
+    publish(&app, Language::Cpp, &path, Some(2), json!([diag(2, 0, 3, 1, "v2")]));
+    assert!(app.settle(|a| marks(a, &path).iter().any(|m| m.2 == "v2")).await);
+    assert_eq!(marks(&app, &path), [mark("foo", Severity::Error, "v2")], "kept");
+    app.shutdown_servers().await;
+}
+
+/// Line 2 of the buffer at `path`.
+fn pos_line(app: &App, path: &Path) -> String {
+    let buf = app.buffers.get(buffer_id(app, path)).unwrap();
+    crate::buffer::pos::line_text(&buf.rope, 2)
+}
+
+/// A server that stops takes its diagnostics along: open and unopened files', squiggles and counts.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_diagnostics_go_when_the_server_dies() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[("a.cpp", "int a = x;\n"), ("b.cpp", "int b = y;\n")]);
+    let (pa, pb) = (root.join("a.cpp"), root.join("b.cpp"));
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let mut app = open_app(&root, fake.clone());
+    open_synced(&mut app, &fake, &pa).await;
+    publish(&app, Language::Cpp, &pa, Some(1), json!([diag(0, 8, 9, 1, "x?")]));
+    publish(&app, Language::Cpp, &pb, None, json!([diag(0, 8, 9, 2, "y?")]));
+    assert!(
+        app.settle(|a| a.lsp.diagnostics.counts().of(Severity::Warning) == 1)
+            .await
+    );
+    let mut term = terminal();
+    draw(&mut term, &mut app);
+    assert!(status(&term).contains("⊗ 1  ⚠ 1"));
+    assert_eq!(squiggles_under(&term, "x;")[0], colour(&app, Severity::Error));
+
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/crash", Value::Null);
+    assert!(app.settle(|a| a.message.is_some()).await);
+    assert!(app.message.as_ref().unwrap().text.contains("clangd stopped"));
+    assert!(marks(&app, &pa).is_empty());
+    assert_eq!(app.lsp.diagnostics.files().count(), 0);
+    draw(&mut term, &mut app);
+    assert!(status(&term).contains("⊗ 0  ⚠ 0"), "{}", status(&term));
+    assert_eq!(squiggles_under(&term, "x;"), [None, None]);
+    app.shutdown_servers().await;
+}
+
+/// A server stopped because the config no longer names it (a `.workspace` `[lsp.cpp]`) takes
+/// its diagnostics along in the same loop turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_diagnostics_go_when_the_server_is_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[("a.cpp", "int a = x;\n")]);
+    let path = root.join("a.cpp");
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let mut app = open_app(&root, fake.clone());
+    open_synced(&mut app, &fake, &path).await;
+    publish(&app, Language::Cpp, &path, Some(1), json!([diag(0, 8, 9, 1, "x?")]));
+    assert!(app.settle(|a| !marks(a, &path).is_empty()).await);
+    let old = app.lsp.server_for(Language::Cpp).unwrap().id;
+    fs::write(root.join(".workspace"), "[lsp.cpp]\ncommand = \"my-clangd\"\n").unwrap();
+    // `settle` checks right after the turn's `sync_servers`, before any event from the server.
+    assert!(
+        app.settle(|a| a.lsp.server_for(Language::Cpp).is_none_or(|s| s.id != old))
+            .await
+    );
+    assert!(marks(&app, &path).is_empty());
+    assert_eq!(app.lsp.diagnostics.counts(), Default::default());
+    app.shutdown_servers().await;
+}
+
+/// Waits up to `secs` for `done` (real servers can take a while).
+async fn settle_for(app: &mut App, secs: u64, done: impl Fn(&App) -> bool) -> bool {
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(secs) {
+        if app.settle(&done).await {
+            return true;
+        }
+    }
+    false
+}
+
+/// A real server reports an error in `file` on `word`; `fix` edits it away and the error goes.
+async fn real_diagnostics(
+    file: (&str, &str),
+    word: &str,
+    configure: impl FnOnce(&mut App),
+    fix: impl FnOnce(&mut App),
+    process: &str,
+) {
+    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[file]);
+    let path = root.join(file.0);
+    let mut app = open_app(&root, Arc::new(ProcessLauncher));
+    configure(&mut app);
+    open(&mut app, &path);
+    let has_error = |a: &App| marks(a, &path).iter().any(|m| m.1 == Severity::Error);
+    assert!(
+        settle_for(&mut app, 60, has_error).await,
+        "{process} reports an error; message: {:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    let errors: Vec<_> = marks(&app, &path)
+        .into_iter()
+        .filter(|m| m.1 == Severity::Error)
+        .collect();
+    assert!(errors.iter().any(|m| m.0 == word), "{process}: {errors:?}");
+    assert!(app.lsp.diagnostics.counts().of(Severity::Error) >= 1);
+    fix(&mut app);
+    assert!(
+        settle_for(&mut app, 60, |a| !has_error(a)).await,
+        "{process} clears the error after the fix: {:?}, text {:?}",
+        marks(&app, &path),
+        app.active_buffer().unwrap().rope.to_string()
+    );
+    assert_eq!(app.lsp.diagnostics.counts().of(Severity::Error), 0);
+    app.press(K::Char('q'), cmd());
+    app.shutdown_servers().await;
+    if let Some(n) = children_named(process) {
+        assert_eq!(n, 0, "no {process} left");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_real_clangd_diagnostics() {
+    if which("clangd").is_none() {
+        eprintln!("milestone_9_real_clangd_diagnostics: skipped, clangd isn't on PATH");
+        return;
+    }
+    let fix = |app: &mut App| {
+        // Select the identifier (the cursor at its end, Cmd+D) and replace it.
+        app.press(K::Down, M::NONE);
+        app.press(K::End, M::NONE);
+        app.press(K::Left, M::NONE);
+        app.press(K::Char('d'), cmd());
+        app.type_text("0");
+    };
+    real_diagnostics(
+        ("a.cpp", "int main() {\n  return undefined_thing;\n}\n"),
+        "undefined_thing",
+        |_| {},
+        fix,
+        "clangd",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_real_ty_diagnostics() {
+    let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv/bin/ty");
+    let Some(ty) = which("ty").or_else(|| venv.is_file().then_some(venv)) else {
+        eprintln!("milestone_9_real_ty_diagnostics: skipped, ty isn't on PATH or in .venv/bin");
+        return;
+    };
+    let configure = |app: &mut App| app.lsp.builtins.ty = ServerConfig::new(ty.to_str().unwrap(), &["server"]);
+    let fix = |app: &mut App| {
+        app.press(K::End, M::NONE);
+        app.press(K::Left, M::SHIFT);
+        app.press(K::Left, M::SHIFT);
+        app.press(K::Left, M::SHIFT);
+        app.type_text("1");
+    };
+    real_diagnostics(("a.py", "x: int = \"a\"\n"), "\"a\"", configure, fix, "ty").await;
+}
+
+/// Thousands of diagnostics (one per line of a 1 MB file): placed once, then mapped through a
+/// key at ~60k cursors and drawn within M6's keystroke budget (release only).
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_many_diagnostics_stay_cheap() {
+    const KEYSTROKE_BUDGET: Duration = Duration::from_millis(16);
+    let size = if cfg!(debug_assertions) { 250_000 } else { 1_000_000 };
+    let mut text = String::new();
+    let mut lines = 0;
+    while text.len() < size {
+        text.push_str(&format!("int item = value_{lines}; // item\n"));
+        lines += 1;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[("big.cpp", &text)]);
+    let path = root.join("big.cpp");
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let mut app = open_app(&root, fake.clone());
+    app.settings.syntax_max_bytes = 1000; // time diagnostics, not tree-sitter
+    open_synced(&mut app, &fake, &path).await;
+    let diags: Vec<Value> = (0..lines as u32)
+        .map(|l| diag(l, 11, 18, 1 + (l % 4) as u8, "value"))
+        .collect();
+    publish(&app, Language::Cpp, &path, Some(1), Value::Array(diags));
+    // Read in the server's task; placed on the UI thread in one loop turn (timed: the longest).
+    let t = Instant::now();
+    let mut longest = Duration::ZERO;
+    while marks(&app, &path).len() != lines && t.elapsed() < Duration::from_secs(10) {
+        let turn = Instant::now();
+        app.pump();
+        longest = longest.max(turn.elapsed());
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(marks(&app, &path).len(), lines);
+    println!(
+        "{lines} diagnostics published and placed in {:?}; the longest loop turn {longest:?}",
+        t.elapsed()
+    );
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+    draw(&mut term, &mut app);
+    for _ in 0..5 {
+        app.press(K::Right, M::NONE);
+    }
+    app.press(K::Char('l'), cmd() | M::SHIFT);
+    let count = app.group().active_tab().unwrap().view.selections.len();
+    assert_eq!(count, 2 * lines);
+    let n = 5u32;
+    let mut worst = Duration::ZERO;
+    let t = Instant::now();
+    for c in "thing".chars() {
+        let key = Instant::now();
+        app.press(K::Char(c), M::NONE);
+        app.pump();
+        draw(&mut term, &mut app);
+        worst = worst.max(key.elapsed());
+    }
+    let typing = t.elapsed();
+    println!(
+        "typing at {count} cursors with {lines} diagnostics: avg {:?}, worst {worst:?}",
+        typing / n
+    );
+    let on_value = |m: &(String, Severity, String)| m.0.starts_with("value_") && m.0.len() == 7;
+    assert!(
+        marks(&app, &path).iter().all(on_value),
+        "the squiggles stay on `value_…`"
+    );
+    let error = colour(&app, Severity::Error);
+    assert_eq!(squiggles_under(&term, " value_0;")[..3], [None, error, error]);
+    if !cfg!(debug_assertions) {
+        assert!(typing / n < KEYSTROKE_BUDGET, "typing too slow: avg {:?}", typing / n);
+        assert!(longest < 2 * KEYSTROKE_BUDGET, "placing them took {longest:?}");
     }
     app.shutdown_servers().await;
 }

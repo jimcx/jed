@@ -6,6 +6,7 @@ mod column;
 mod command;
 mod comment;
 mod config;
+mod diagnostics;
 mod edit;
 mod explorer;
 mod field;

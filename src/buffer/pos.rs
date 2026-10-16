@@ -157,7 +157,7 @@ impl<'a> LspWalker<'a> {
 /// The byte offset of an LSP position, clamped as the protocol says: a line past the end is the
 /// text's end, a column past the line's content is its end (before the line break). A column
 /// inside a char (a UTF-8 byte or the second half of a surrogate pair) rounds down to its start.
-#[cfg_attr(not(test), allow(dead_code))] // first used by diagnostics (9c)
+#[cfg_attr(not(test), allow(dead_code))] // diagnostics convert many with `LspReader`
 pub fn from_lsp_pos(rope: &Rope, pos: LspPos, encoding: PosEncoding) -> ByteIdx {
     let line = pos.line as usize;
     if line >= line_count(rope) {
@@ -181,6 +181,53 @@ pub fn from_lsp_pos(rope: &Rope, pos: LspPos, encoding: PosEncoding) -> ByteIdx 
             }
             ByteIdx(at)
         }
+    }
+}
+
+/// `from_lsp_pos` for many positions (a server's diagnostics): lines come from a `LineWalker`,
+/// so positions in increasing line order need no line lookup each; any order is correct.
+pub struct LspReader<'a> {
+    rope: &'a Rope,
+    encoding: PosEncoding,
+    lines: usize,
+    walker: LineWalker<'a>,
+}
+
+impl<'a> LspReader<'a> {
+    pub fn new(rope: &'a Rope, encoding: PosEncoding) -> Self {
+        Self {
+            rope,
+            encoding,
+            lines: line_count(rope),
+            walker: LineWalker::new(rope),
+        }
+    }
+
+    /// `from_lsp_pos(rope, pos, encoding)`, with the same clamping.
+    pub fn byte(&mut self, pos: LspPos) -> ByteIdx {
+        let line = pos.line as usize;
+        if line >= self.lines {
+            return ByteIdx(self.rope.len());
+        }
+        let line = self.walker.line(line);
+        let text = line.text();
+        let want = pos.character as usize;
+        let offset = match self.encoding {
+            PosEncoding::Utf8 => text.floor_char_boundary(want.min(text.len())),
+            PosEncoding::Utf16 => {
+                let mut units = 0;
+                let mut at = text.len();
+                for (i, c) in text.char_indices() {
+                    units += c.len_utf16();
+                    if units > want {
+                        at = i;
+                        break;
+                    }
+                }
+                at
+            }
+        };
+        ByteIdx(line.start().0 + offset)
     }
 }
 
@@ -1181,6 +1228,32 @@ mod tests {
         assert_eq!(from_lsp_pos(&rope, p(9, 0), Utf8), ByteIdx(text.len()));
         assert_eq!(from_lsp_pos(&rope, p(0, 2), Utf8), at("é"));
         assert_eq!(from_lsp_pos(&rope, p(0, 3), Utf16), at("😀"), "inside a surrogate pair");
+    }
+
+    /// `LspReader` agrees with `from_lsp_pos` for positions in and past every line, in order,
+    /// backwards and out of range, on text spanning many chunks.
+    #[test]
+    fn lsp_reader_matches_from_lsp_pos() {
+        for tail in ["", "\n", "z"] {
+            let text = format!("{}{tail}", "a界😀\r\nb\ré\n\n".repeat(150));
+            let rope = Rope::from_str(&text);
+            let lines = line_count(&rope) as u32;
+            for enc in [PosEncoding::Utf8, PosEncoding::Utf16] {
+                let mut positions = Vec::new();
+                for line in 0..lines + 2 {
+                    for character in 0..12 {
+                        positions.push(LspPos { line, character });
+                    }
+                }
+                let mut reader = LspReader::new(&rope, enc);
+                for &p in &positions {
+                    assert_eq!(reader.byte(p), from_lsp_pos(&rope, p, enc), "{enc:?} {p:?}");
+                }
+                for &p in positions.iter().rev().step_by(5) {
+                    assert_eq!(reader.byte(p), from_lsp_pos(&rope, p, enc), "{enc:?} back to {p:?}");
+                }
+            }
+        }
     }
 
     /// `LspWalker` agrees with a fresh `lsp_pos` at every char boundary visited in increasing

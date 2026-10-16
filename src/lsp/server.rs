@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use lsp_types::{
     ClientCapabilities, ClientInfo, GeneralClientCapabilities, InitializeParams, PositionEncodingKind,
-    ServerCapabilities, WindowClientCapabilities, WorkspaceFolder,
+    PublishDiagnosticsClientCapabilities, ServerCapabilities, TextDocumentClientCapabilities, WindowClientCapabilities,
+    WorkspaceFolder,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -400,6 +401,14 @@ impl Conn {
                     }
                 }
                 "$/progress" | "$/logTrace" | "telemetry/event" => {}
+                // Read here, off the UI thread (tens of ms for tens of thousands).
+                "textDocument/publishDiagnostics" => match super::diagnostics::parse(params) {
+                    Ok(published) => (self.sink)(Event::Diagnostics {
+                        server: self.id,
+                        published: Box::new(published),
+                    }),
+                    Err(e) => tracing::warn!(server = %self.name, "unreadable publishDiagnostics: {e}"),
+                },
                 _ => (self.sink)(Event::Notification {
                     server: self.id,
                     method,
@@ -523,11 +532,21 @@ impl Conn {
 }
 
 /// What red tells servers it can do: UTF-8 positions first (UTF-16 is the fallback every server
-/// must support), work-done progress. Later tasks add the text document features they use.
+/// must support), work-done progress, pushed diagnostics (with the document version they're
+/// for, so red can map them through the edits made since; no pull diagnostics: ty and clangd
+/// push when the client doesn't declare `textDocument.diagnostic`). Later tasks add the text
+/// document features they use.
 fn client_capabilities() -> ClientCapabilities {
     ClientCapabilities {
         general: Some(GeneralClientCapabilities {
             position_encodings: Some(vec![PositionEncodingKind::UTF8, PositionEncodingKind::UTF16]),
+            ..Default::default()
+        }),
+        text_document: Some(TextDocumentClientCapabilities {
+            publish_diagnostics: Some(PublishDiagnosticsClientCapabilities {
+                version_support: Some(true),
+                ..Default::default()
+            }),
             ..Default::default()
         }),
         window: Some(WindowClientCapabilities {
@@ -596,5 +615,7 @@ mod tests {
     fn client_offers_utf8_first() {
         let v = serde_json::to_value(client_capabilities()).unwrap();
         assert_eq!(v["general"]["positionEncodings"], json!(["utf-8", "utf-16"]));
+        assert_eq!(v["textDocument"]["publishDiagnostics"]["versionSupport"], json!(true));
+        assert!(v["textDocument"].get("diagnostic").is_none(), "no pull diagnostics");
     }
 }

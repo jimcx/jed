@@ -649,7 +649,14 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - 63k cursors with a server (release): a key 7.6 ms avg / 9.1 ms worst; undo 17 ms
        - clangd keeps indexing after `exit`: killed after `EXIT_GRACE` (300 ms)
        - Not done: buffers without a file path (red has none yet); reload-from-disk (M10) must go through `Buffer::edit` so servers see it
-     - 9c: diagnostics: `publishDiagnostics` → squiggles in the editor (mapped through edits until the next publish), error / warning counts in the status bar, the diagnostic message on hover of the cursor line (status bar)
+     - ✅ 9c: diagnostics: `publishDiagnostics` → squiggles in the editor (mapped through edits until the next publish), error / warning counts in the status bar, the diagnostic message on hover of the cursor line (status bar)
+       - Parsed in the server task (`Event::Diagnostics`); `lsp::diagnostics::Store` (`app.lsp.diagnostics`): per path, per server, LSP positions, sorted by path, incremental `counts()` — for 9d: `files()`, or `buf.diagnostics.all()` (current byte ranges) for open buffers, both sharing `Arc<Diagnostic>`
+       - `Buffer::diagnostics` (`diagnostics::Marks`: sorted, running max end, `overlapping`), mapped through every change set in `Buffer::apply`; a stale-version publish is read in that version's text (`Documents` keeps the last 32 sent versions) and mapped forward; no / unknown version: current text (VS Code)
+       - Squiggles: coloured underlines (`editorError/Warning/Info/Hint.foreground`, SGR 58 underline colour); status bar `⊗ n  ⚠ m` for the workspace and the cursor line's message (after a notification)
+       - A stopped / crashed server's diagnostics are cleared; closed files keep theirs
+       - 31.6k diagnostics on a 1 MB file (release): placed in ≤ 19 ms, typing at 63k cursors ~8 ms
+       - Not done: undercurl (ratatui has none), hint dots, `Unnecessary` / `Deprecated` tags, source / code in the message; marks of a renamed buffer stay until the server publishes for the new URI
+       - Still to check by hand: underline colour in real terminals and its fallback; the width of `⊗` / `⚠`
      - 9d: bottom panel with the Problems list (Cmd+J toggles, grouped by file, Enter / click opens at the position, next / previous problem)
      - 9e: hover (a popup at the cursor, a command and mouse rest) and go to definition (F12; several locations → the results list)
      - 9f: completion: popup on trigger characters and Ctrl+Space, filtered as you type, accepted text (and `textEdit`s) inserted at every cursor

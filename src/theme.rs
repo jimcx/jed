@@ -32,6 +32,13 @@ impl Theme {
             // has no border, so a stronger fill.
             ("editor.bracketMatch", Style::new().bg(c(0x2F4F3A))),
             ("editor.whitespace.control", Style::new().fg(c(0xF48771))),
+            // Diagnostics' squiggles (Dark+'s colours): a terminal has no undercurl through
+            // ratatui, so an underline in the colour (SGR 58; terminals without it underline in
+            // the text's colour). Dark+'s hint (#EEEEEEB3) blended over the editor.
+            ("editorError.foreground", squiggle(c(0xF14C4C))),
+            ("editorWarning.foreground", squiggle(c(0xCCA700))),
+            ("editorInfo.foreground", squiggle(c(0x3794FF))),
+            ("editorHint.foreground", squiggle(c(0xB0B0B0))),
             ("gutter", fg_bg(0x858585, 0x1E1E1E)),
             ("gutter.active", Style::new().fg(c(0xC6C6C6))),
             ("statusBar", fg_bg(0xFFFFFF, 0x007ACC)),
@@ -121,6 +128,11 @@ impl Theme {
     }
 }
 
+/// An underline in `color`, the text's own colour kept.
+fn squiggle(color: Color) -> Style {
+    Style::new().underline_color(color).add_modifier(Modifier::UNDERLINED)
+}
+
 /// Whether the terminal advertises 24-bit colour.
 pub fn terminal_has_truecolor() -> bool {
     std::env::var("COLORTERM").is_ok_and(|v| v == "truecolor" || v == "24bit")
@@ -186,6 +198,18 @@ mod tests {
         for (i, a) in kinds.iter().enumerate() {
             for b in &kinds[i + 1..] {
                 assert_ne!(fg(a), fg(b), "{a} and {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn squiggles_are_coloured_underlines() {
+        for truecolor in [true, false] {
+            let theme = Theme::dark_plus(truecolor);
+            for s in crate::diagnostics::Severity::ALL {
+                let style = theme.styles[s.theme_key()];
+                assert!(style.add_modifier.contains(Modifier::UNDERLINED), "{s:?}");
+                assert!(style.underline_color.is_some() && style.fg.is_none() && style.bg.is_none());
             }
         }
     }

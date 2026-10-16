@@ -16,6 +16,7 @@ use change::ChangeSet;
 use file::{Eol, LoadError};
 use undo::{EditKind, History};
 
+use crate::diagnostics::Marks;
 use crate::selection::Selections;
 use crate::syntax::Syntax;
 
@@ -46,6 +47,9 @@ pub struct Buffer {
     /// While a language server has this document open (`track_changes`): every change set
     /// applied since the last `take_tracked`, with the text from before it.
     tracked: Option<Vec<Tracked>>,
+    /// Language servers' diagnostics in this text, mapped through every change set applied
+    /// until a server publishes again (`lsp::Manager::publish`).
+    pub diagnostics: Marks,
 }
 
 /// A change set as a language server needs it: positions are in `before`'s coordinates.
@@ -86,6 +90,7 @@ impl Buffer {
             revision: 0,
             syntax: Syntax::default(),
             tracked: None,
+            diagnostics: Marks::default(),
         }
     }
 
@@ -148,8 +153,8 @@ impl Buffer {
         self.revision += 1;
     }
 
-    /// The one place change sets are applied: the syntax tree follows each one, and a language
-    /// server's document is told of each (`tracked`).
+    /// The one place change sets are applied: the syntax tree and the diagnostics follow each one,
+    /// and a language server's document is told of each (`tracked`).
     fn apply(&mut self, changes: &Arc<ChangeSet>) -> ChangeSet {
         let old = self.syntax.wants_edits().then(|| self.rope.clone());
         if let Some(tracked) = &mut self.tracked {
@@ -160,6 +165,7 @@ impl Buffer {
         }
         let inverse = changes.apply(&mut self.rope);
         self.syntax.map_highlights(changes);
+        self.diagnostics.map(changes);
         if let Some(old) = old {
             self.syntax.edit(changes, &old, &self.rope);
         }

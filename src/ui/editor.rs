@@ -1,5 +1,5 @@
-//! The text area: gutter, text (syntax colours), matched brackets, selections, find matches,
-//! cursors.
+//! The text area: gutter, text (syntax colours), matched brackets, diagnostics' squiggles,
+//! selections, find matches, cursors.
 
 use std::collections::HashSet;
 
@@ -9,6 +9,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::buffer::Buffer;
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
+use crate::diagnostics::{self, Severity};
 use crate::edit::Settings;
 use crate::find::FindWidget;
 use crate::search::Match;
@@ -121,7 +122,7 @@ pub fn render(
     // Find matches on screen (from the widget's cache), walked the same way. The one that is
     // the primary selection is the current match.
     let view_range = pos::line_start(rope, view.top_line())..pos::line_end(rope, last_line);
-    let matches: &[Match] = overlay.find.map_or(&[], |f| f.matches_in(view_range));
+    let matches: &[Match] = overlay.find.map_or(&[], |f| f.matches_in(view_range.clone()));
     let mut mi = 0;
     let mut in_match = |b: ByteIdx| {
         while mi < matches.len() && matches[mi].end <= b {
@@ -130,6 +131,34 @@ pub fn render(
         let m = matches.get(mi).filter(|m| m.start <= b)?;
         let sel = view.selections.primary();
         Some(m.start == sel.start() && m.end == sel.end())
+    };
+
+    // Diagnostics on screen: the marks overlapping the viewport (binary search: there may be
+    // thousands), flattened into runs (the most severe wins) and walked with one index. An empty
+    // range is drawn under the char there, the one before at a line end, or the cell past an
+    // empty line's end.
+    let squiggles = Severity::ALL.map(|s| theme.get(s.theme_key()));
+    let mut peek = pos::Peek::new(rope);
+    let marks = buf.diagnostics.overlapping(view_range.start, view_range.end);
+    let runs = diagnostics::runs(marks, |m| {
+        if m.start < m.end {
+            return (m.start, m.end);
+        }
+        let line_break = |c: Option<char>| matches!(c, None | Some('\n' | '\r'));
+        match (line_break(peek.after(m.start)), line_break(peek.before(m.start))) {
+            (false, _) => (m.start, pos::next_grapheme(rope, m.start)),
+            (true, false) => (pos::prev_grapheme(rope, m.start), m.start),
+            (true, true) => (m.start, ByteIdx(m.start.0 + 1)),
+        }
+    });
+    let mut ri = 0;
+    let mut squiggle_at = |b: ByteIdx| {
+        while ri < runs.len() && runs[ri].end <= b {
+            ri += 1;
+        }
+        runs.get(ri)
+            .filter(|r| r.start <= b)
+            .map(|r| squiggles[r.severity as usize])
     };
 
     let out = f.buffer_mut();
@@ -179,6 +208,9 @@ pub fn render(
             if is_bracket(b) {
                 style = style.patch(bracket_match);
             }
+            if let Some(squiggle) = squiggle_at(b) {
+                style = style.patch(squiggle);
+            }
             let found = in_match(b);
             if found.is_some() {
                 style = style.patch(find_highlight);
@@ -209,8 +241,16 @@ pub fn render(
         // End of line: selection running over the line break, or a secondary cursor here.
         let end = ByteIdx(start.0 + content.len());
         let over_eol = line + 1 < total && in_selection(end);
-        if (over_eol || secondary.contains(&end)) && col >= view.left_col && col < view.left_col + view.width {
+        // A squiggle past the end only on an empty line (an empty range there).
+        let squiggle = squiggle_at(end).filter(|_| content.is_empty());
+        if (over_eol || secondary.contains(&end) || squiggle.is_some())
+            && col >= view.left_col
+            && col < view.left_col + view.width
+        {
             let mut style = row_style;
+            if let Some(squiggle) = squiggle {
+                style = style.patch(squiggle);
+            }
             if over_eol {
                 style = style.patch(selection);
             }
