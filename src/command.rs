@@ -155,6 +155,10 @@ pub enum Command {
     TriggerSuggest,
     /// The completion list's keys (only while it's shown).
     Suggest(SuggestCommand),
+    /// Shift+F12: the references to the symbol at the cursor, in the Locations list.
+    GoToReferences,
+    /// F2 in the editor: rename the symbol at the cursor across the workspace (a prompt).
+    RenameSymbol,
 }
 
 /// Focus-group commands listed in the palette and accepted in keybindings (as VS Code: 1 to 8).
@@ -463,6 +467,7 @@ impl Command {
         all.extend(LocationsCommand::ALL.map(Command::Locations));
         all.push(Command::TriggerSuggest);
         all.extend(SuggestCommand::ALL.map(Command::Suggest));
+        all.extend([Command::GoToReferences, Command::RenameSymbol]);
         all
     }
 
@@ -651,6 +656,8 @@ impl Command {
                     SuggestCommand::Close => "close",
                 }
             ),
+            Command::GoToReferences => "editor.goToReferences".into(),
+            Command::RenameSymbol => "editor.rename".into(),
         }
     }
 
@@ -820,6 +827,8 @@ impl Command {
                 SuggestCommand::Accept => "Suggest: Accept Selected Suggestion",
                 SuggestCommand::Close => "Suggest: Hide Suggestions",
             },
+            Command::GoToReferences => "Go to References",
+            Command::RenameSymbol => "Rename Symbol",
         };
         s.into()
     }
@@ -915,9 +924,11 @@ mod tests {
             Command::Locations(_) => 57,
             Command::TriggerSuggest => 58,
             Command::Suggest(_) => 59,
+            Command::GoToReferences => 60,
+            Command::RenameSymbol => 61,
         }
     }
-    const VARIANTS: u8 = 60;
+    const VARIANTS: u8 = 62;
 
     #[test]
     fn all_lists_every_variant() {

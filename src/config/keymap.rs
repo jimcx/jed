@@ -479,6 +479,9 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         // No chords, so not VS Code's Cmd+K Cmd+I.
         (KeyCode::Char('i'), cmd | alt, Command::ShowHover),
         (KeyCode::F(12), none, Command::RevealDefinition),
+        (KeyCode::F(12), shift, Command::GoToReferences),
+        // The explorer's F2 renames a file (its own context).
+        (KeyCode::F(2), none, Command::RenameSymbol),
         // Ctrl on macOS too, as in VS Code.
         (KeyCode::Char(' '), ctrl, Command::TriggerSuggest),
     ]);

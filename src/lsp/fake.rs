@@ -15,8 +15,10 @@
 //! `textDocument/hover`) with `result`; `hold(method, true)` keeps those answers until a
 //! `test/flush` (out of order, as `test/later`). A `$/cancelRequest` for a held request answers
 //! it at once with RequestCancelled (-32800), as servers do. It advertises `hoverProvider`,
-//! `definitionProvider` and `completionProvider` (trigger characters `.` and `>`, resolve); an
-//! unscripted `completionItem/resolve` answers with the item it got.
+//! `definitionProvider`, `completionProvider` (trigger characters `.` and `>`, resolve),
+//! `referencesProvider` and `renameProvider` (with `prepareProvider` unless
+//! `FakeOptions::no_prepare_rename`); an unscripted `completionItem/resolve` answers with the
+//! item it got, any other unscripted request with MethodNotFound.
 //!
 //! Documents: it keeps its own copy of every document opened (`didOpen`), applies each
 //! `didChange` to it (ranges in the negotiated encoding, converted here independently of
@@ -52,6 +54,8 @@ pub struct FakeOptions {
     pub init_error: bool,
     /// The `textDocumentSync` capability to advertise (default `2`: incremental).
     pub sync: Option<Value>,
+    /// Advertise `renameProvider: true` (no `prepareRename`) instead of `{ prepareProvider: true }`.
+    pub no_prepare_rename: bool,
 }
 
 /// The fake's copy of an open document.
@@ -256,6 +260,12 @@ async fn serve(
                             "completionProvider": {
                                 "triggerCharacters": [".", ">"],
                                 "resolveProvider": true,
+                            },
+                            "referencesProvider": true,
+                            "renameProvider": if options.no_prepare_rename {
+                                json!(true)
+                            } else {
+                                json!({ "prepareProvider": true })
                             },
                         });
                         if options.utf8 {

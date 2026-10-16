@@ -36,6 +36,17 @@ impl Group {
         at
     }
 
+    /// Opens a tab to the right of the active one, keeping the active one (the first tab of an
+    /// empty group is active). Rename's edits open files this way.
+    pub fn open_background(&mut self, buffer: BufferId, view: View) -> usize {
+        if self.tabs.is_empty() {
+            return self.open(buffer, view);
+        }
+        let at = self.active + 1;
+        self.tabs.insert(at, Tab { buffer, view });
+        at
+    }
+
     /// Removes a tab; the tab to its right (or left, at the end) becomes active.
     pub fn close(&mut self, index: usize) -> Tab {
         let tab = self.tabs.remove(index);
@@ -171,6 +182,18 @@ mod tests {
         assert_eq!(g.tabs[g.active].buffer, 2, "left neighbour at the end");
         g.close(0);
         assert_eq!(g.tabs[g.active].buffer, 2, "closing to the left keeps the same tab");
+    }
+
+    #[test]
+    fn background_tabs_keep_the_active_one() {
+        let mut g = Group::default();
+        assert_eq!(g.open_background(7, View::new()), 0);
+        assert_eq!(g.active, 0, "the first tab of an empty group");
+        g.open(8, View::new());
+        g.active = 0;
+        assert_eq!(g.open_background(9, View::new()), 1);
+        assert_eq!(g.active, 0);
+        assert_eq!(g.tabs.iter().map(|t| t.buffer).collect::<Vec<_>>(), [7, 9, 8]);
     }
 
     #[test]

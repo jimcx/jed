@@ -39,6 +39,13 @@ pub(super) enum Request {
         index: usize,
         accepted: Option<u64>,
     },
+    /// Find references to `word` (the name under the cursor, for the title and messages).
+    References { word: String },
+    /// `textDocument/prepareRename` at the cursor; `word` is the name there (offered when the
+    /// server answers `defaultBehavior`).
+    PrepareRename { word: String },
+    /// `textDocument/rename` of `old` to `new` (for the messages).
+    Rename { old: String, new: String },
 }
 
 impl Request {
@@ -291,6 +298,22 @@ impl App {
                         self.notify(super::Level::Info, text);
                     }
                     Request::Completion { generation } => self.completion_failed(*generation),
+                    Request::References { word } => {
+                        let text = super::locations::no_references(word);
+                        self.notify(super::Level::Info, text);
+                    }
+                    // The server's reason (VS Code shows it as is).
+                    Request::PrepareRename { .. } => {
+                        let text = if e.message.is_empty() {
+                            super::rename::CANT_RENAME.to_string()
+                        } else {
+                            e.message.clone()
+                        };
+                        self.notify(super::Level::Info, text);
+                    }
+                    Request::Rename { .. } => {
+                        self.notify(super::Level::Error, format!("Rename failed: {}", e.message));
+                    }
                     _ => {}
                 }
                 return;
@@ -306,6 +329,9 @@ impl App {
                 index,
                 accepted,
             } => self.resolve_answer(&p, generation, index, accepted, &value),
+            Request::References { word } => self.references_answer(&p, &word, &value),
+            Request::PrepareRename { word } => self.prepare_rename_answer(&p, &word, &value),
+            Request::Rename { old, new } => self.rename_answer(&p, &old, &new, &value),
         }
     }
 

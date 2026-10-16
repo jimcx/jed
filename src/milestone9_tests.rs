@@ -1,5 +1,6 @@
 //! Milestone 9 end to end (so far: 9a, the `lsp` core; 9b, document sync; 9c, diagnostics;
-//! 9d, the bottom panel and its Problems list; 9e, hover and go to definition; 9f, completion).
+//! 9d, the bottom panel and its Problems list; 9e, hover and go to definition; 9f, completion;
+//! 9g, find references and rename symbol).
 //!
 //! 9a: opening a C++ file starts its server (the in-process fake, `lsp::fake`) once: `initialize`
 //! carries the root and offers UTF-8 then UTF-16 positions, UTF-8 is negotiated when the server
@@ -97,6 +98,26 @@
 //! leaving the word drops it and its answer; a quick suggestion's error says nothing. At ~63k cursors in 1 MB a key
 //! with the list and inserting stay within M6's keystroke / line-command budgets (release). Real
 //! clangd and ty list a struct member / module attribute after `.`.
+//!
+//! 9g: Shift+F12 asks for the references at the cursor (`includeDeclaration`, UTF-16 positions)
+//! and lists them in the panel's LOCATIONS tab ("References to 'target'", previews, focused on
+//! the first; one reference too), Enter opens one; none, or no server, says "No references found
+//! for 'target'"; an answer after the cursor moved is dropped. F2 in the editor (the explorer's
+//! F2 still renames files) asks `prepareRename`: its range's text, a placeholder or (for
+//! `defaultBehavior`, or a server without prepare support) the word fills a prompt, selected;
+//! `null` or an error refuses with a message, as does a read-only buffer or no word. Enter sends
+//! `textDocument/rename` with the new name (Esc or the same name sends nothing); its
+//! `WorkspaceEdit` (`documentChanges` with versions, or `changes`) is applied as one undo step
+//! per buffer: the open file at three cursors and in a split's second view (all following the
+//! text), another open file, and a file not open loaded into a tab beside the active one and
+//! left unsaved (undo goes back to the file); the server's copies follow. File operations, a
+//! read-only or changed (version) open file refuse the whole edit; `null` says "No result."; an
+//! error "Rename failed: …"; an answer after the cursor moved is dropped. A file not open that is
+//! missing or not valid UTF-8 isn't edited ("Rename not applied to …"), a CRLF one is; an emptied
+//! name sends nothing, a buffer changed while the prompt was open cancels; a split's view follows
+//! at once and typing right after the rename is an undo step of its own. Real clangd (with a
+//! compilation database, for its index) and ty list references in two files and rename a
+//! function across them.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -4108,4 +4129,735 @@ async fn milestone_9_completion_errors_late_resolves_and_read_only() {
     assert!(app.completion.popup.is_none());
     assert_eq!(app.message.as_ref().map(|m| m.text.as_str()), Some("Read-only: test"));
     assert!(fake.errors().is_empty(), "{:?}", fake.errors());
+}
+
+// ---- 9g: find references and rename symbol ----
+
+/// Every selection of the active view as (anchor, head) byte offsets.
+fn all_selections(app: &App) -> Vec<(usize, usize)> {
+    let view = &app.group().active_tab().unwrap().view;
+    view.selections.iter().map(|s| (s.anchor.0, s.head.0)).collect()
+}
+
+fn set_cursors(app: &mut App, at: &[usize], primary: usize) {
+    use crate::buffer::pos::ByteIdx;
+    use crate::selection::{Selection, Selections};
+    let (_, view) = app.active_mut().unwrap();
+    let list = at.iter().map(|&p| Selection::cursor(ByteIdx(p))).collect();
+    view.selections = Selections::new(list, primary);
+}
+
+fn message(app: &App) -> Option<String> {
+    app.message.as_ref().map(|m| m.text.clone())
+}
+
+/// The open rename prompt's kind and text.
+fn rename_prompt(app: &App) -> Option<(crate::app::InputKind, String, bool)> {
+    match &app.prompt {
+        Some(Prompt::Input(i)) => Some((i.kind.clone(), i.field.text.clone(), i.field.all_selected)),
+        _ => None,
+    }
+}
+
+fn text_edit(line: u32, from: u32, to: u32, text: &str) -> Value {
+    json!({
+        "range": { "start": { "line": line, "character": from }, "end": { "line": line, "character": to } },
+        "newText": text,
+    })
+}
+
+fn doc_edit(path: &Path, version: Option<i32>, edits: Vec<Value>) -> Value {
+    json!({ "textDocument": { "uri": uri(path), "version": version }, "edits": edits })
+}
+
+/// Shift+F12 asks for the references at the cursor (`includeDeclaration`, UTF-16 positions) and
+/// shows them in the Locations list titled "References to 'target'", focused on the first, even
+/// a single one; Enter opens one. None says "No references found for 'target'"; an answer
+/// arriving after the cursor moved is dropped; without a server it says so at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_find_references() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, fake, root) = lsp_project(dir.path(), &[("a.cpp", DEF_A), ("b.cpp", DEF_B)], true).await;
+    let (a, b) = (root.join("a.cpp"), root.join("b.cpp"));
+    let use_at = DEF_A.find("= target").unwrap() + 4;
+    put_cursor(&mut app, use_at);
+    fake.respond(
+        "textDocument/references",
+        json!([location(&a, 0, 4, 10), location(&b, 1, 12, 18), location(&a, 1, 10, 16)]),
+    );
+    app.press(K::F(12), M::SHIFT);
+    assert_eq!(app.pending_requests(), [("references", use_at)]);
+    assert!(app.settle(|a| a.locations.is_some()).await);
+    let params = fake.requests("textDocument/references").pop().unwrap();
+    assert_eq!(params["context"]["includeDeclaration"], json!(true));
+    assert_eq!(last_position(&fake, "textDocument/references"), (1, 12));
+    let l = app.locations.as_ref().unwrap();
+    assert_eq!(l.title, "References to 'target'");
+    assert_eq!(l.total(), 3);
+    assert_eq!(l.list.selected(), Some(&(a.clone(), 1)));
+    assert_eq!(app.ui.focus, crate::app::Focus::Panel);
+    assert!(app.settle(|a| a.locations.as_ref().unwrap().unread().is_empty()).await);
+    let mut term = big_terminal();
+    draw(&mut term, &mut app);
+    let rows = panel_rows(&term, &app);
+    assert_eq!(rows.len(), 5, "{rows:?}");
+    assert_eq!(rows[1], "int target = 1;");
+    assert_eq!(rows[2], "int use = target;");
+    assert_eq!(rows[4], "// 😀  here: target");
+    let tabs = screen_row(&term, 0, app.hits.regions.panel.unwrap().y + 1);
+    assert!(tabs.contains("References to 'target'"), "{tabs:?}");
+    // The last one: b.cpp, opened at the place.
+    app.press(K::End, M::NONE);
+    app.press(K::Enter, M::NONE);
+    assert!(app.settle(|a| active_path(a).as_deref() == Some(b.as_path())).await);
+    assert_eq!(cursor_line_col(&app), (1, "// 😀 here: ".len()));
+    assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+
+    // One reference: still the list.
+    app.press(K::PageUp, M::CONTROL);
+    assert_eq!(active_path(&app).as_deref(), Some(a.as_path()));
+    put_cursor(&mut app, 5);
+    fake.respond("textDocument/references", json!([location(&a, 0, 4, 10)]));
+    app.press(K::F(12), M::SHIFT);
+    assert!(
+        app.settle(|a| a.locations.as_ref().is_some_and(|l| l.total() == 1))
+            .await
+    );
+    assert_eq!(app.ui.focus, crate::app::Focus::Panel);
+    app.press(K::Esc, M::NONE);
+
+    // None.
+    fake.respond("textDocument/references", json!([]));
+    app.press(K::F(12), M::SHIFT);
+    assert!(
+        app.settle(|a| message(a).as_deref() == Some("No references found for 'target'"))
+            .await
+    );
+
+    // Stale: the cursor moved before the answer.
+    fake.respond(
+        "textDocument/references",
+        json!([location(&a, 2, 4, 9), location(&a, 0, 4, 10)]),
+    );
+    fake.hold("textDocument/references", true);
+    app.press(K::F(12), M::SHIFT);
+    assert!(
+        app.settle(|_| fake.requests("textDocument/references").len() == 4)
+            .await
+    );
+    app.press(K::Right, M::NONE);
+    assert!(app.pending_requests().is_empty(), "moving cancelled it");
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/flush", Value::Null);
+    idle(&mut app).await;
+    assert_eq!(app.locations.as_ref().unwrap().total(), 1, "the old list stays");
+    assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+
+    // No server: said at once.
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/crash", Value::Null);
+    assert!(
+        app.settle(|a| matches!(a.lsp.server_for(Language::Cpp).unwrap().state, State::Failed))
+            .await
+    );
+    app.press(K::F(12), M::SHIFT);
+    assert_eq!(message(&app).as_deref(), Some("No references found for 'target'"));
+    assert!(fake.errors().is_empty());
+}
+
+const REN_B: &str = "int f() { return target; }\n";
+const REN_C: &str = "// target\nint g = target + target;\n";
+
+/// F2: prepareRename's range fills the prompt ("target", all selected; the explorer's F2 still
+/// renames files); typing replaces it, Enter sends `textDocument/rename` with the new name at the
+/// cursor. The answer's `documentChanges` are applied: the open a.cpp (three cursors, and a
+/// second view in a split, all following the text) and b.cpp, each one undo step, and c.cpp,
+/// not open, loaded off the UI thread into a tab beside the active one and left unsaved (the
+/// file on disk unchanged), its undo going back to the file; the server's copies follow.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_rename_across_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = [("a.cpp", DEF_A), ("b.cpp", REN_B), ("c.cpp", REN_C)];
+    let (mut app, fake, root) = lsp_project(dir.path(), &files, false).await;
+    let (a, b, c) = (root.join("a.cpp"), root.join("b.cpp"), root.join("c.cpp"));
+    open_synced(&mut app, &fake, &b).await;
+    app.press(K::PageUp, M::CONTROL);
+    assert_eq!(active_path(&app).as_deref(), Some(a.as_path()));
+    // A second view of a.cpp, its cursor on line 1's ';'.
+    app.press(K::Char('\\'), cmd());
+    let semi = DEF_A.find(';').unwrap() + DEF_A[DEF_A.find(';').unwrap() + 1..].find(';').unwrap() + 1;
+    put_cursor(&mut app, semi);
+    app.press(K::Char('1'), cmd());
+    let line1 = DEF_A.find('\n').unwrap() + 1;
+    set_cursors(&mut app, &[5, 12, line1 + 12], 0);
+
+    // The explorer's F2 is still the file rename.
+    app.press(K::Char('e'), cmd() | M::SHIFT);
+    app.press(K::F(2), M::NONE);
+    assert!(matches!(
+        rename_prompt(&app),
+        Some((crate::app::InputKind::Rename { .. }, _, _))
+    ));
+    app.press(K::Esc, M::NONE);
+    app.press(K::Char('1'), cmd());
+    assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+
+    fake.respond(
+        "textDocument/prepareRename",
+        json!({ "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 10 } }),
+    );
+    app.press(K::F(2), M::NONE);
+    assert_eq!(app.pending_requests(), [("prepare rename", 5)]);
+    assert!(app.settle(|a| a.prompt.is_some()).await);
+    let (kind, name, selected) = rename_prompt(&app).unwrap();
+    assert!(matches!(kind, crate::app::InputKind::RenameSymbol { .. }), "{kind:?}");
+    assert_eq!((name.as_str(), selected), ("target", true));
+    assert_eq!(last_position(&fake, "textDocument/prepareRename"), (0, 5));
+    let mut term = big_terminal();
+    draw(&mut term, &mut app);
+    assert!(find_cells(&term, "Rename 'target' to").is_some());
+
+    let id_a = buffer_id(&app, &a);
+    let version = app.lsp.version(id_a);
+    assert!(version.is_some());
+    fake.respond(
+        "textDocument/rename",
+        json!({ "documentChanges": [
+            doc_edit(&a, version, vec![text_edit(1, 10, 16, "renamed"), text_edit(0, 4, 10, "renamed")]),
+            doc_edit(&b, None, vec![text_edit(0, 17, 23, "renamed")]),
+            doc_edit(&c, None, vec![text_edit(0, 3, 9, "renamed"), text_edit(1, 8, 14, "renamed"), text_edit(1, 17, 23, "renamed")]),
+        ]}),
+    );
+    app.type_text("renamed");
+    app.press(K::Enter, M::NONE);
+    assert!(app.prompt.is_none());
+    assert_eq!(app.pending_requests(), [("rename", 5)]);
+    let renamed_a = "int renamed = 1;\nint use = renamed;\nint other = 2;\n";
+    assert!(app.settle(|a| text(a) == renamed_a).await, "{}", text(&app));
+    let params = fake.requests("textDocument/rename").pop().unwrap();
+    assert_eq!(params["newName"], json!("renamed"));
+    assert_eq!(
+        (
+            params["position"]["line"].clone(),
+            params["position"]["character"].clone()
+        ),
+        (json!(0), json!(5))
+    );
+    // The cursors followed: inside the word kept their offset, the others moved with the text.
+    assert_eq!(
+        all_selections(&app),
+        [(5, 5), (13, 13), (line1 + 1 + 12, line1 + 1 + 12)]
+    );
+    // c.cpp loads into a tab beside a.cpp, which stays active.
+    assert!(app.settle(|a| a.buffers.find_path(&c).is_some()).await);
+    let renamed_c = "// renamed\nint g = renamed + renamed;\n";
+    let id_b = buffer_id(&app, &b);
+    let id_c = buffer_id(&app, &c);
+    assert_eq!(app.buffers.get(id_c).unwrap().rope.to_string(), renamed_c);
+    assert_eq!(
+        app.buffers.get(id_b).unwrap().rope.to_string(),
+        "int f() { return renamed; }\n"
+    );
+    assert_eq!(active_path(&app).as_deref(), Some(a.as_path()));
+    let tabs: Vec<_> = app.group().tabs.iter().map(|t| t.buffer).collect();
+    assert_eq!(tabs, [id_a, id_c, id_b]);
+    assert!(app.buffers.get(id_c).unwrap().is_dirty());
+    assert_eq!(fs::read_to_string(&c).unwrap(), REN_C, "not saved");
+    assert_eq!(
+        message(&app).as_deref(),
+        Some("Renamed 'target' to 'renamed': 6 edits in 3 files")
+    );
+    // The split's view of a.cpp followed too.
+    let other = app.groups.ids()[1];
+    let view = &app.groups.get(other).unwrap().active_tab().unwrap().view;
+    assert_eq!(view.selections.primary().head.0, semi + 2);
+    for path in [&a, &b, &c] {
+        in_sync(&mut app, &fake, path, "after the rename").await;
+    }
+
+    // Undo: one step per buffer, only that buffer.
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), DEF_A);
+    assert_eq!(all_selections(&app), [(5, 5), (12, 12), (line1 + 12, line1 + 12)]);
+    assert_eq!(
+        app.buffers.get(id_b).unwrap().rope.to_string(),
+        "int f() { return renamed; }\n"
+    );
+    app.press(K::PageDown, M::CONTROL);
+    assert_eq!(active_path(&app).as_deref(), Some(c.as_path()));
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), REN_C);
+    assert!(!app.buffers.get(id_c).unwrap().is_dirty(), "back to the file");
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), REN_C, "nothing more to undo");
+    for path in [&a, &c] {
+        in_sync(&mut app, &fake, path, "after undo").await;
+    }
+}
+
+/// What stops a rename: prepareRename's `null` ("The element can't be renamed.") or error (its
+/// message); Esc or the same name sends nothing; a read-only buffer refuses F2; an answer with
+/// a file operation, a read-only or changed (version) open file refuses the whole edit; one
+/// arriving after the cursor moved is dropped; `null` says "No result."; an error says "Rename
+/// failed: …"; a placeholder fills the prompt.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_rename_refusals() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = [("a.cpp", DEF_A), ("b.cpp", REN_B)];
+    let (mut app, fake, root) = lsp_project(dir.path(), &files, false).await;
+    let (a, b) = (root.join("a.cpp"), root.join("b.cpp"));
+    put_cursor(&mut app, 5);
+
+    // Unscripted, prepareRename fails with the fake's message.
+    app.press(K::F(2), M::NONE);
+    assert!(
+        app.settle(|a| message(a).as_deref() == Some("fake doesn't know textDocument/prepareRename"))
+            .await
+    );
+    fake.respond("textDocument/prepareRename", Value::Null);
+    app.press(K::F(2), M::NONE);
+    assert!(
+        app.settle(|a| message(a).as_deref() == Some("The element can't be renamed."))
+            .await
+    );
+    assert!(app.prompt.is_none());
+
+    // A placeholder fills the prompt; Esc and the same name send nothing.
+    fake.respond(
+        "textDocument/prepareRename",
+        json!({ "range": { "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 10 } }, "placeholder": "tar" }),
+    );
+    app.press(K::F(2), M::NONE);
+    assert!(app.settle(|a| a.prompt.is_some()).await);
+    assert_eq!(rename_prompt(&app).unwrap().1, "tar");
+    app.press(K::Esc, M::NONE);
+    assert!(app.prompt.is_none());
+    app.press(K::F(2), M::NONE);
+    assert!(app.settle(|a| a.prompt.is_some()).await);
+    app.press(K::Enter, M::NONE);
+    assert!(app.prompt.is_none());
+    idle(&mut app).await;
+    assert!(fake.requests("textDocument/rename").is_empty());
+    // `defaultBehavior`: the word.
+    fake.respond("textDocument/prepareRename", json!({ "defaultBehavior": true }));
+    app.press(K::F(2), M::NONE);
+    assert!(app.settle(|a| a.prompt.is_some()).await);
+    assert_eq!(rename_prompt(&app).unwrap().1, "target");
+
+    // Unscripted, the rename fails.
+    app.type_text("x");
+    app.press(K::Enter, M::NONE);
+    assert!(
+        app.settle(|a| message(a).as_deref() == Some("Rename failed: fake doesn't know textDocument/rename"))
+            .await
+    );
+    async fn rename(app: &mut App, name: &str) {
+        app.press(K::F(2), M::NONE);
+        assert!(app.settle(|a| a.prompt.is_some()).await);
+        app.type_text(name);
+    }
+    async fn submit(app: &mut App, fake: &FakeLauncher) {
+        let n = fake.requests("textDocument/rename").len();
+        app.press(K::Enter, M::NONE);
+        assert!(
+            app.settle(|_| fake.requests("textDocument/rename").len() == n + 1)
+                .await
+        );
+        assert!(app.settle(|a| a.pending_requests().is_empty()).await);
+    }
+
+    // `null`.
+    fake.respond("textDocument/rename", Value::Null);
+    rename(&mut app, "x").await;
+    submit(&mut app, &fake).await;
+    assert_eq!(message(&app).as_deref(), Some("No result."));
+
+    // A file operation refuses it all.
+    fake.respond(
+        "textDocument/rename",
+        json!({ "documentChanges": [
+            doc_edit(&a, None, vec![text_edit(0, 4, 10, "x")]),
+            { "kind": "create", "uri": uri(&root.join("new.cpp")) },
+        ]}),
+    );
+    rename(&mut app, "x").await;
+    submit(&mut app, &fake).await;
+    assert_eq!(
+        message(&app).as_deref(),
+        Some("Rename failed: file operations (create) aren't supported")
+    );
+    assert_eq!(text(&app), DEF_A);
+
+    // A read-only open file refuses it all (nothing changes in a.cpp either).
+    open_synced(&mut app, &fake, &b).await;
+    let id_b = buffer_id(&app, &b);
+    app.buffers.get_mut(id_b).unwrap().read_only = Some("test".into());
+    app.press(K::PageUp, M::CONTROL);
+    put_cursor(&mut app, 5);
+    fake.respond(
+        "textDocument/rename",
+        json!({ "changes": {
+            uri(&a): [text_edit(0, 4, 10, "x")],
+            uri(&b): [text_edit(0, 17, 23, "x")],
+        }}),
+    );
+    rename(&mut app, "x").await;
+    submit(&mut app, &fake).await;
+    assert_eq!(
+        message(&app).as_deref(),
+        Some("Rename failed: b.cpp is read-only (test)")
+    );
+    assert_eq!(text(&app), DEF_A);
+    // F2 in a read-only buffer.
+    app.press(K::PageDown, M::CONTROL);
+    let asked = fake.requests("textDocument/prepareRename").len();
+    app.press(K::F(2), M::NONE);
+    assert_eq!(message(&app).as_deref(), Some("Read-only: test"));
+    assert!(app.prompt.is_none());
+    app.buffers.get_mut(id_b).unwrap().read_only = None;
+    app.press(K::PageUp, M::CONTROL);
+    put_cursor(&mut app, 5);
+
+    // An edit for another version of an open file.
+    fake.respond(
+        "textDocument/rename",
+        json!({ "documentChanges": [doc_edit(&a, Some(99), vec![text_edit(0, 4, 10, "x")])] }),
+    );
+    rename(&mut app, "x").await;
+    submit(&mut app, &fake).await;
+    assert_eq!(
+        message(&app).as_deref(),
+        Some("Rename failed: a.cpp changed since it was asked")
+    );
+    assert_eq!(text(&app), DEF_A);
+    assert_eq!(
+        fake.requests("textDocument/prepareRename").len(),
+        asked + 1,
+        "none from the read-only buffer"
+    );
+
+    // Stale: the cursor moved after Enter.
+    fake.respond(
+        "textDocument/rename",
+        json!({ "changes": { uri(&a): [text_edit(0, 4, 10, "x")] } }),
+    );
+    fake.hold("textDocument/rename", true);
+    rename(&mut app, "x").await;
+    app.press(K::Enter, M::NONE);
+    assert_eq!(app.pending_requests(), [("rename", 5)]);
+    app.press(K::Left, M::NONE);
+    assert!(app.pending_requests().is_empty());
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/flush", Value::Null);
+    idle(&mut app).await;
+    assert_eq!(text(&app), DEF_A, "dropped");
+    assert!(fake.errors().is_empty(), "{:?}", fake.errors());
+}
+
+/// A server without prepareRename: F2 opens the prompt with the word at the cursor at once, and
+/// says "The element can't be renamed." away from any word; edits in `changes` (UTF-16) apply.
+/// A split's view of the file follows as soon as the answer is applied (not at the next key);
+/// typing right after the rename is an undo step of its own.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_rename_without_prepare() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[("a.cpp", "int 😀 = target;\n")]);
+    let fake = FakeLauncher::new(FakeOptions {
+        no_prepare_rename: true,
+        ..Default::default()
+    });
+    let mut app = open_app(&root, fake.clone());
+    let a = root.join("a.cpp");
+    open_synced(&mut app, &fake, &a).await;
+    // A second view in a split, its cursor after the ';'.
+    app.press(K::Char('\\'), cmd());
+    put_cursor(&mut app, "int 😀 = target;".len());
+    app.press(K::Char('1'), cmd());
+    put_cursor(&mut app, "int 😀 = tar".len());
+    app.press(K::F(2), M::NONE);
+    assert_eq!(rename_prompt(&app).unwrap().1, "target");
+    fake.respond(
+        "textDocument/rename",
+        json!({ "changes": { uri(&a): [text_edit(0, 9, 15, "goal")] } }),
+    );
+    app.press(K::Char('g'), M::NONE);
+    app.type_text("oal");
+    app.press(K::Enter, M::NONE);
+    assert!(app.settle(|a| text(a) == "int 😀 = goal;\n").await, "{}", text(&app));
+    let other = app.groups.ids()[1];
+    let view = &app.groups.get(other).unwrap().active_tab().unwrap().view;
+    assert_eq!(
+        view.selections.primary().head.0,
+        "int 😀 = goal;".len(),
+        "the split followed"
+    );
+    assert_eq!(
+        message(&app).as_deref(),
+        Some("Renamed 'target' to 'goal': 1 edit in 1 file")
+    );
+    assert_eq!(last_position(&fake, "textDocument/rename"), (0, 12));
+    assert!(fake.requests("textDocument/prepareRename").is_empty());
+    assert_eq!(selection(&app).1, "int 😀 = goa".len());
+    // Typing at once doesn't join the rename's undo step.
+    app.type_text("s");
+    assert_eq!(text(&app), "int 😀 = goasl;\n");
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), "int 😀 = goal;\n");
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), "int 😀 = target;\n");
+    put_cursor(&mut app, "int 😀 ".len());
+    app.press(K::F(2), M::NONE);
+    assert!(app.prompt.is_none());
+    assert_eq!(message(&app).as_deref(), Some("The element can't be renamed."));
+}
+
+/// Files not open: a CRLF one gets its edits; a missing one isn't created ("Rename not applied
+/// to …"), nor is an invalid UTF-8 one (read-only) edited. An emptied name sends nothing; a
+/// buffer changed while the prompt was open cancels the rename.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_rename_files_not_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let crlf_text = "int x = target;\r\nint y = target;\r\n";
+    let files = [("a.cpp", DEF_A), ("crlf.cpp", crlf_text)];
+    let (mut app, fake, root) = lsp_project(dir.path(), &files, false).await;
+    let (a, crlf, bad, gone) = (
+        root.join("a.cpp"),
+        root.join("crlf.cpp"),
+        root.join("bad.cpp"),
+        root.join("gone.cpp"),
+    );
+    fs::write(&bad, b"int target = 1; // \xff\n").unwrap();
+    put_cursor(&mut app, 5);
+    fake.respond("textDocument/prepareRename", json!({ "defaultBehavior": true }));
+    async fn prompt(app: &mut App) {
+        app.press(K::F(2), M::NONE);
+        assert!(app.settle(|a| a.prompt.is_some()).await);
+    }
+
+    // An emptied name sends nothing.
+    prompt(&mut app).await;
+    app.press(K::Backspace, M::NONE);
+    app.press(K::Enter, M::NONE);
+    assert!(app.prompt.is_none());
+    idle(&mut app).await;
+    assert!(fake.requests("textDocument/rename").is_empty());
+
+    // The buffer changed while the prompt was open (as a background edit could).
+    prompt(&mut app).await;
+    app.type_text("x");
+    {
+        use crate::buffer::change::ChangeSet;
+        use crate::buffer::pos::ByteIdx;
+        use crate::buffer::undo::EditKind;
+        let id = buffer_id(&app, &a);
+        let buf = app.buffers.get_mut(id).unwrap();
+        let mut set = ChangeSet::with_capacity(1, 1);
+        let end = ByteIdx(buf.rope.len());
+        set.push(end, end, "\n");
+        let sels = crate::selection::Selections::single(crate::selection::Selection::cursor(ByteIdx(5)));
+        buf.edit(set, sels.clone(), sels, EditKind::Other);
+    }
+    app.press(K::Enter, M::NONE);
+    assert_eq!(message(&app).as_deref(), Some("The file changed: rename cancelled"));
+    idle(&mut app).await;
+    assert!(fake.requests("textDocument/rename").is_empty());
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), DEF_A);
+    put_cursor(&mut app, 5);
+
+    async fn rename_in(app: &mut App, fake: &FakeLauncher, path: &Path, edits: Vec<Value>) {
+        fake.respond("textDocument/rename", json!({ "changes": { uri(path): edits } }));
+        prompt(app).await;
+        app.type_text("renamed");
+        app.press(K::Enter, M::NONE);
+    }
+
+    // Missing: nothing created.
+    rename_in(&mut app, &fake, &gone, vec![text_edit(0, 4, 10, "renamed")]).await;
+    let failed = format!("Rename not applied to {}: ", gone.display());
+    assert!(
+        app.settle(|a| message(a).is_some_and(|m| m.starts_with(&failed))).await,
+        "{:?}",
+        message(&app)
+    );
+    assert!(app.buffers.find_path(&gone).is_none());
+    assert!(!gone.exists());
+
+    // Invalid UTF-8: loaded read-only, not edited.
+    rename_in(&mut app, &fake, &bad, vec![text_edit(0, 4, 10, "renamed")]).await;
+    let failed = format!("Rename not applied to {}: read-only (not valid UTF-8)", bad.display());
+    assert!(
+        app.settle(|a| message(a).as_deref() == Some(failed.as_str())).await,
+        "{:?}",
+        message(&app)
+    );
+    let id_bad = buffer_id(&app, &bad);
+    assert!(
+        app.buffers
+            .get(id_bad)
+            .unwrap()
+            .rope
+            .to_string()
+            .starts_with("int target = 1;")
+    );
+    assert!(!app.buffers.get(id_bad).unwrap().is_dirty());
+
+    // CRLF: edited, the line breaks kept.
+    let edits = vec![text_edit(0, 8, 14, "renamed"), text_edit(1, 8, 14, "renamed")];
+    rename_in(&mut app, &fake, &crlf, edits).await;
+    let want = "int x = renamed;\r\nint y = renamed;\r\n";
+    assert!(
+        app.settle(|a| a
+            .buffers
+            .find_path(&crlf)
+            .is_some_and(|id| a.buffers.get(id).unwrap().rope == want))
+            .await,
+        "{:?}",
+        message(&app)
+    );
+    assert_eq!(active_path(&app).as_deref(), Some(a.as_path()));
+    assert_eq!(text(&app), DEF_A);
+    in_sync(&mut app, &fake, &crlf, "after the rename").await;
+    assert!(fake.errors().is_empty(), "{:?}", fake.errors());
+}
+
+/// A real server: Shift+F12 on `word`'s use in the first file lists its references in both
+/// files; F2 renames it to `new`, the first file edited and the other (not open) loaded with
+/// its edit, unsaved: `expect` is each file's text after.
+async fn real_references_and_rename(
+    files: &[(&str, &str)],
+    word: &str,
+    new: &str,
+    expect: &[(&str, &str)],
+    configure: impl FnOnce(&mut App),
+    process: &str,
+) {
+    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), files);
+    // clangd finds references in other files (and renames there) through its background index,
+    // which needs a compilation database.
+    let commands: Vec<Value> = files
+        .iter()
+        .filter(|(name, _)| name.ends_with(".cpp"))
+        .map(|(name, _)| json!({ "directory": root, "file": name, "arguments": ["clang++", "-c", name] }))
+        .collect();
+    if !commands.is_empty() {
+        fs::write(root.join("compile_commands.json"), Value::Array(commands).to_string()).unwrap();
+    }
+    let mut app = open_app(&root, Arc::new(ProcessLauncher));
+    configure(&mut app);
+    let a = root.join(files[0].0);
+    open(&mut app, &a);
+    assert!(
+        settle_for(&mut app, 30, |a| a
+            .lsp
+            .server_for(a.active_buffer().unwrap().syntax.language())
+            .is_some_and(|s| s.encoding().is_some()))
+        .await,
+        "{process} initialized"
+    );
+    let at = files[0].1.rfind(word).unwrap() + 1;
+    put_cursor(&mut app, at);
+    // The server may know nothing until it has read the files: ask until both are listed.
+    let both = |a: &App| a.locations.as_ref().is_some_and(|l| l.files.len() == 2);
+    let t = Instant::now();
+    while !both(&app) && t.elapsed() < Duration::from_secs(60) {
+        app.press(K::F(12), M::SHIFT);
+        settle_for(&mut app, 3, both).await;
+        app.press(K::Char('1'), cmd());
+        put_cursor(&mut app, at);
+    }
+    assert!(
+        both(&app),
+        "{process} references: {:?}; message {:?}",
+        app.locations.as_ref().map(|l| &l.files),
+        message(&app)
+    );
+    assert_eq!(app.locations.as_ref().unwrap().title, format!("References to '{word}'"));
+
+    app.press(K::F(2), M::NONE);
+    assert!(
+        settle_for(&mut app, 30, |a| a.prompt.is_some()).await,
+        "{process} rename prompt; message {:?}",
+        message(&app)
+    );
+    assert_eq!(rename_prompt(&app).unwrap().1, word);
+    app.type_text(new);
+    app.press(K::Enter, M::NONE);
+    let done = |app: &App| {
+        expect.iter().all(|(name, text)| {
+            app.buffers
+                .find_path(&root.join(name))
+                .is_some_and(|id| app.buffers.get(id).unwrap().rope == *text)
+        })
+    };
+    assert!(
+        settle_for(&mut app, 30, done).await,
+        "{process} renamed; message {:?}; texts {:?}",
+        message(&app),
+        app.buffers.iter().map(|(_, b)| b.rope.to_string()).collect::<Vec<_>>()
+    );
+    assert_eq!(active_path(&app).as_deref(), Some(a.as_path()));
+    for (name, text) in &files[1..] {
+        assert_eq!(fs::read_to_string(root.join(name)).unwrap(), *text, "not saved");
+    }
+    app.shutdown_servers().await;
+    if let Some(n) = children_named(process) {
+        assert_eq!(n, 0, "no {process} left");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_real_clangd_references_and_rename() {
+    if which("clangd").is_none() {
+        eprintln!("milestone_9_real_clangd_references_and_rename: skipped, clangd isn't on PATH");
+        return;
+    }
+    real_references_and_rename(
+        &[
+            ("a.cpp", "#include \"b.h\"\nint main() {\n  return answer(1);\n}\n"),
+            ("b.h", "inline int answer(int x) {\n  return 41 + x;\n}\n"),
+        ],
+        "answer",
+        "solution",
+        &[
+            ("a.cpp", "#include \"b.h\"\nint main() {\n  return solution(1);\n}\n"),
+            ("b.h", "inline int solution(int x) {\n  return 41 + x;\n}\n"),
+        ],
+        |_| {},
+        "clangd",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_real_ty_references_and_rename() {
+    let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv/bin/ty");
+    let Some(ty) = which("ty").or_else(|| venv.is_file().then_some(venv)) else {
+        eprintln!("milestone_9_real_ty_references_and_rename: skipped, ty isn't on PATH or in .venv/bin");
+        return;
+    };
+    let configure = |app: &mut App| app.lsp.builtins.ty = ServerConfig::new(ty.to_str().unwrap(), &["server"]);
+    real_references_and_rename(
+        &[
+            ("a.py", "from b import answer\n\nprint(answer(1))\n"),
+            ("b.py", "\ndef answer(x: int) -> int:\n    return 41 + x\n"),
+        ],
+        "answer",
+        "solution",
+        &[
+            ("a.py", "from b import solution\n\nprint(solution(1))\n"),
+            ("b.py", "\ndef solution(x: int) -> int:\n    return 41 + x\n"),
+        ],
+        configure,
+        "ty",
+    )
+    .await;
 }

@@ -11,6 +11,7 @@ mod mouse;
 mod palette;
 mod problems;
 mod prompt;
+mod rename;
 mod side;
 mod syntax;
 mod workspace_search;
@@ -601,6 +602,14 @@ impl App {
     /// (in any group) follows the changes so its cursors and viewport stay on the same text.
     /// Then records the active view's selection change for Cmd+U (`track_selections`).
     fn sync_views(&mut self) {
+        let edited = self.follow_edits();
+        self.track_selections(edited);
+    }
+
+    /// `sync_views` without the Cmd+U / Cmd+D tracking (for edits made by background results:
+    /// a rename's `WorkspaceEdit`). True when the active view's buffer changed. The active view
+    /// itself only re-anchors its viewport: whoever edited set its selections.
+    fn follow_edits(&mut self) -> bool {
         let origin = self.groups.active;
         let origin_tab = self.group().active;
         let origin_buf = self.group().active_tab().map(|t| t.buffer);
@@ -626,7 +635,7 @@ impl App {
                 }
             }
         }
-        self.track_selections(edited);
+        edited
     }
 
     fn execute(&mut self, cmd: Command) {
@@ -699,6 +708,8 @@ impl App {
             Command::Locations(c) => self.locations_command(c),
             Command::TriggerSuggest => self.trigger_suggest(),
             Command::Suggest(c) => self.suggest_command(c),
+            Command::GoToReferences => self.go_to_references(),
+            Command::RenameSymbol => self.rename_symbol(),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
             _ => {
@@ -911,6 +922,9 @@ impl App {
                     lsp::Request::Completion { .. } => "completion",
                     lsp::Request::Resolve { accepted: None, .. } => "resolve",
                     lsp::Request::Resolve { accepted: Some(_), .. } => "accepted resolve",
+                    lsp::Request::References { .. } => "references",
+                    lsp::Request::PrepareRename { .. } => "prepare rename",
+                    lsp::Request::Rename { .. } => "rename",
                 };
                 (kind, p.at.0)
             })

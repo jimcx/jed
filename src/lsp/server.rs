@@ -12,8 +12,10 @@ use std::time::Duration;
 use lsp_types::{
     ClientCapabilities, ClientInfo, CompletionClientCapabilities, CompletionItemCapability,
     CompletionItemCapabilityResolveSupport, CompletionListCapability, GeneralClientCapabilities, GotoCapability,
-    HoverClientCapabilities, InitializeParams, MarkupKind, PositionEncodingKind, PublishDiagnosticsClientCapabilities,
-    ServerCapabilities, TextDocumentClientCapabilities, WindowClientCapabilities, WorkspaceFolder,
+    HoverClientCapabilities, InitializeParams, MarkupKind, PositionEncodingKind, PrepareSupportDefaultBehavior,
+    PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities, RenameClientCapabilities, ServerCapabilities,
+    TextDocumentClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities,
+    WorkspaceEditClientCapabilities, WorkspaceFolder,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -535,9 +537,9 @@ impl Conn {
 /// What red tells servers it can do: UTF-8 positions first (UTF-16 is the fallback every server
 /// must support), work-done progress, pushed diagnostics (with the document version they're
 /// for, so red can map them through the edits made since; no pull diagnostics: ty and clangd
-/// push when the client doesn't declare `textDocument.diagnostic`), hover (markdown first) and
-/// go to definition (`LocationLink`s welcome). Later tasks add the text document features they
-/// use.
+/// push when the client doesn't declare `textDocument.diagnostic`), hover (markdown first),
+/// go to definition (`LocationLink`s welcome), completion, references and rename (with
+/// `prepareRename` and versioned `WorkspaceEdit`s).
 fn client_capabilities() -> ClientCapabilities {
     ClientCapabilities {
         general: Some(GeneralClientCapabilities {
@@ -556,6 +558,14 @@ fn client_capabilities() -> ClientCapabilities {
             definition: Some(GotoCapability {
                 dynamic_registration: None,
                 link_support: Some(true),
+            }),
+            references: Some(ReferenceClientCapabilities::default()),
+            // `prepareRename` (its range or placeholder fills the prompt; `defaultBehavior`: the
+            // word at the cursor). No change annotations: edits are applied without asking.
+            rename: Some(RenameClientCapabilities {
+                prepare_support: Some(true),
+                prepare_support_default_behavior: Some(PrepareSupportDefaultBehavior::IDENTIFIER),
+                ..Default::default()
             }),
             // No `snippetSupport`: without a snippet session (tab stops) placeholders would stay
             // in the text; a snippet a server sends anyway is read (`completion::strip_snippet`).
@@ -586,6 +596,16 @@ fn client_capabilities() -> ClientCapabilities {
         }),
         window: Some(WindowClientCapabilities {
             work_done_progress: Some(true),
+            ..Default::default()
+        }),
+        // Rename's `WorkspaceEdit`s: versioned `documentChanges` welcome; no file operations
+        // (create / rename / delete), which red refuses.
+        workspace: Some(WorkspaceClientCapabilities {
+            workspace_edit: Some(WorkspaceEditClientCapabilities {
+                document_changes: Some(true),
+                resource_operations: Some(Vec::new()),
+                ..Default::default()
+            }),
             ..Default::default()
         }),
         ..Default::default()
@@ -652,5 +672,9 @@ mod tests {
         assert_eq!(v["general"]["positionEncodings"], json!(["utf-8", "utf-16"]));
         assert_eq!(v["textDocument"]["publishDiagnostics"]["versionSupport"], json!(true));
         assert!(v["textDocument"].get("diagnostic").is_none(), "no pull diagnostics");
+        assert_eq!(v["textDocument"]["rename"]["prepareSupport"], json!(true));
+        assert_eq!(v["textDocument"]["rename"]["prepareSupportDefaultBehavior"], json!(1));
+        assert_eq!(v["workspace"]["workspaceEdit"]["documentChanges"], json!(true));
+        assert_eq!(v["workspace"]["workspaceEdit"]["resourceOperations"], json!([]));
     }
 }

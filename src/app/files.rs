@@ -31,10 +31,15 @@ pub(super) enum Goto {
 
 /// An open in flight: what to do once the buffer arrives. A later request for the same file
 /// replaces its `goto` (the last F4 wins) and can only add focus.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(super) struct OpenRequest {
-    focus: bool,
-    goto: Option<Goto>,
+    pub focus: bool,
+    pub goto: Option<Goto>,
+    /// Opened only for `edits` (a rename's file not open): a tab beside the active one, which
+    /// stays active. Any other request for the file clears it.
+    pub background: bool,
+    /// A rename's edits to make once it's loaded (`App::apply_pending_edits`).
+    pub edits: Vec<super::rename::PendingEdit>,
 }
 
 impl App {
@@ -64,12 +69,20 @@ impl App {
         }
         if let Some(pending) = self.opening.get_mut(&path) {
             pending.focus |= focus;
+            pending.background = false;
             if goto.is_some() {
                 pending.goto = goto;
             }
             return;
         }
-        self.opening.insert(path.clone(), OpenRequest { focus, goto });
+        self.opening.insert(
+            path.clone(),
+            OpenRequest {
+                focus,
+                goto,
+                ..Default::default()
+            },
+        );
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let result = Buffer::open(&path).map(Box::new);
@@ -78,17 +91,32 @@ impl App {
     }
 
     pub(super) fn opened(&mut self, path: PathBuf, result: Result<Box<Buffer>, LoadError>) {
-        let OpenRequest { focus, goto } = self.opening.remove(&path).unwrap_or(OpenRequest {
-            focus: false,
-            goto: None,
-        });
+        let OpenRequest {
+            focus,
+            goto,
+            background,
+            edits,
+        } = self.opening.remove(&path).unwrap_or_default();
         match result {
             Ok(buffer) => {
-                if let Some(reason) = &buffer.read_only {
+                if let Some(reason) = &buffer.read_only
+                    && edits.is_empty()
+                {
                     self.notify(Level::Warning, format!("{}: read-only, {reason}", buffer.name()));
                 }
-                self.add_buffer(*buffer, goto, focus);
-                self.reveal_active();
+                if background {
+                    let (id, view) = self.register_buffer(*buffer, None);
+                    self.group_mut().open_background(id, view);
+                } else {
+                    self.add_buffer(*buffer, goto, focus);
+                    self.reveal_active();
+                }
+                if !edits.is_empty() {
+                    self.apply_pending_edits(&path, edits);
+                }
+            }
+            Err(e) if !edits.is_empty() => {
+                self.notify(Level::Error, format!("Rename not applied to {}: {e}", path.display()))
             }
             Err(LoadError::Binary) => self.notify(Level::Error, format!("{}: binary file, not opened", path.display())),
             Err(e) => self.notify(Level::Error, format!("{}: {e}", path.display())),
@@ -97,7 +125,17 @@ impl App {
 
     /// Puts a loaded buffer in a new tab and activates it, with the selection at `goto`.
     /// Starts no background work (it runs from `App::new`); callers reveal the file.
-    pub(super) fn add_buffer(&mut self, mut buffer: Buffer, goto: Option<Goto>, focus: bool) {
+    pub(super) fn add_buffer(&mut self, buffer: Buffer, goto: Option<Goto>, focus: bool) {
+        let (id, view) = self.register_buffer(buffer, goto);
+        self.group_mut().open(id, view);
+        if focus {
+            self.ui.focus = Focus::Editor;
+        }
+    }
+
+    /// Adds a loaded buffer (language, stored diagnostics) and makes its first view, with the
+    /// selection at `goto`; the caller puts it in a tab.
+    pub(super) fn register_buffer(&mut self, mut buffer: Buffer, goto: Option<Goto>) -> (BufferId, View) {
         buffer.syntax.set_language(self.detect_language(&buffer));
         self.lsp.load_diagnostics(&mut buffer);
         let mut view = View::new();
@@ -107,10 +145,7 @@ impl App {
         }
         let id = self.buffers.insert(buffer);
         self.servers_dirty = true;
-        self.group_mut().open(id, view);
-        if focus {
-            self.ui.focus = Focus::Editor;
-        }
+        (id, view)
     }
 
     pub(super) fn activate_tab(&mut self, index: usize) {

@@ -6,6 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use super::{App, FileOp, Level};
 use crate::buffer::BufferId;
+use crate::buffer::pos::ByteIdx;
 use crate::explorer;
 use crate::field::{Outcome, TextField};
 use crate::layout::GroupId;
@@ -21,9 +22,24 @@ pub enum Prompt {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputKind {
-    NewFile { dir: PathBuf },
-    NewFolder { dir: PathBuf },
-    Rename { from: PathBuf },
+    NewFile {
+        dir: PathBuf,
+    },
+    NewFolder {
+        dir: PathBuf,
+    },
+    Rename {
+        from: PathBuf,
+    },
+    /// Rename symbol (F2 in the editor): the new name for `old`, at `at` in `buffer` (shown in
+    /// `group`) as it was at `revision`.
+    RenameSymbol {
+        group: GroupId,
+        buffer: BufferId,
+        at: ByteIdx,
+        revision: u64,
+        old: String,
+    },
 }
 
 /// A name prompt: a text field plus what the name is for.
@@ -139,6 +155,22 @@ impl App {
     }
 
     fn submit_input(&mut self, mut input: Input) {
+        if let InputKind::RenameSymbol {
+            group,
+            buffer,
+            at,
+            revision,
+            old,
+        } = input.kind
+        {
+            self.close_prompt();
+            let new = input.field.text;
+            // Nothing typed, or the same name: nothing to do (VS Code).
+            if !new.trim().is_empty() && new != old {
+                self.request_rename(group, buffer, at, revision, old, new);
+            }
+            return;
+        }
         let name = input.field.text.trim().to_string();
         let nested = !matches!(input.kind, InputKind::Rename { .. });
         if let Err(e) = explorer::validate_name(&name, nested) {
@@ -150,6 +182,7 @@ impl App {
         let op = match input.kind {
             InputKind::NewFile { dir } => FileOp::NewFile(dir.join(&name)),
             InputKind::NewFolder { dir } => FileOp::NewFolder(dir.join(&name)),
+            InputKind::RenameSymbol { .. } => return,
             InputKind::Rename { from } => {
                 let to = from.with_file_name(&name);
                 if to == from {

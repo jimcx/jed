@@ -88,13 +88,22 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) {
                 InputKind::NewFile { dir } => format!(" New file in {}/", rel(dir)),
                 InputKind::NewFolder { dir } => format!(" New folder in {}/", rel(dir)),
                 InputKind::Rename { from } => format!(" Rename {}", rel(from)),
+                InputKind::RenameSymbol { old, .. } => format!(" Rename '{old}' to"),
             };
             lines.push(Line::raw(title));
             lines.push(Line::raw(""));
-            lines.push(Line::styled(
-                format!(" {} ", input.field.text),
-                style.patch(app.theme.get("dialog.input")),
-            ));
+            let field = style.patch(app.theme.get("dialog.input"));
+            // Selected text (a rename's prefilled name) is replaced by typing.
+            let text = if input.field.all_selected {
+                field.patch(app.theme.get("editor.selection"))
+            } else {
+                field
+            };
+            lines.push(Line::from(vec![
+                Span::styled(" ", field),
+                Span::styled(input.field.text.clone(), text),
+                Span::styled(" ", field),
+            ]));
             cursor = Some((lines.len() - 1, 1 + input.field.text[..input.field.cursor].width()));
             lines.push(match input.error {
                 Some(e) => Line::styled(format!(" {e}"), style.patch(app.theme.get("dialog.error"))),

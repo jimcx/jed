@@ -45,6 +45,7 @@ mod palette;
 mod panic;
 mod paths;
 mod problems;
+mod rename;
 mod search;
 mod search_view;
 mod selection;

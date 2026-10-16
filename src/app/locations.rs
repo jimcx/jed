@@ -1,20 +1,21 @@
-//! Go to definition (F12, Ctrl / Cmd+Click) and the Locations list it fills when there are
-//! several places (`app.locations`, a `locations::Locations`; drawn by `ui::panel` in the bottom
-//! panel's "LOCATIONS" tab). 9g's references use the same list.
+//! Go to definition (F12, Ctrl / Cmd+Click), go to references (Shift+F12) and the Locations
+//! list they fill (`app.locations`, a `locations::Locations`; drawn by `ui::panel` in the bottom
+//! panel's "LOCATIONS" tab): definition's several places, references always.
 
 use std::path::PathBuf;
 
 use crossterm::event::MouseEvent;
 use lsp_types::{OneOf, ServerCapabilities};
 use ropey::Rope;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::files::Goto;
 use super::lsp::{Pending, Request};
 use super::{App, AppEvent, Focus, Level};
-use crate::buffer::pos;
+use crate::buffer::BufferId;
+use crate::buffer::pos::{self, ByteIdx};
 use crate::command::LocationsCommand as L;
-use crate::layout::PanelTab;
+use crate::layout::{GroupId, PanelTab};
 use crate::locations::{self, Location, Locations};
 use crate::problems::{Place, Target};
 
@@ -22,6 +23,21 @@ fn supports_definition(caps: &ServerCapabilities) -> bool {
     caps.definition_provider
         .as_ref()
         .is_some_and(|d| !matches!(d, OneOf::Left(false)))
+}
+
+fn supports_references(caps: &ServerCapabilities) -> bool {
+    caps.references_provider
+        .as_ref()
+        .is_some_and(|d| !matches!(d, OneOf::Left(false)))
+}
+
+/// The status bar's text when there are no references (VS Code's).
+pub(super) fn no_references(word: &str) -> String {
+    if word.is_empty() {
+        "No references found".into()
+    } else {
+        format!("No references found for '{word}'")
+    }
 }
 
 /// The status bar's text when there's no definition (VS Code's).
@@ -34,10 +50,11 @@ pub(super) fn no_definition(word: &str) -> String {
 }
 
 impl App {
-    /// F12: asks the server for the definition of what's at the active view's cursor.
-    pub(super) fn go_to_definition(&mut self) {
+    /// The active group, buffer and primary cursor of the active tab, and the word there (empty
+    /// when none); seals the buffer's undo step (a request isn't an edit).
+    pub(super) fn cursor_word(&mut self) -> Option<(GroupId, BufferId, ByteIdx, String)> {
         let group = self.groups.active;
-        let Some(tab) = self.group().active_tab() else { return };
+        let tab = self.group().active_tab()?;
         let (buffer, at) = (tab.buffer, tab.view.selections.primary().head);
         let word = self
             .buffers
@@ -47,6 +64,14 @@ impl App {
         if let Some((buf, _)) = self.active_mut() {
             buf.seal_undo();
         }
+        Some((group, buffer, at, word))
+    }
+
+    /// F12: asks the server for the definition of what's at the active view's cursor.
+    pub(super) fn go_to_definition(&mut self) {
+        let Some((group, buffer, at, word)) = self.cursor_word() else {
+            return;
+        };
         let request = Request::Definition { word: word.clone() };
         if !self.send_request(
             group,
@@ -92,6 +117,44 @@ impl App {
                 self.show_locations(title, places, p.encoding);
             }
         }
+    }
+
+    /// Shift+F12: asks the server for the references to what's at the active view's cursor
+    /// (the declaration included, as VS Code).
+    pub(super) fn go_to_references(&mut self) {
+        let Some((group, buffer, at, word)) = self.cursor_word() else {
+            return;
+        };
+        let request = Request::References { word: word.clone() };
+        let context = json!({ "context": { "includeDeclaration": true } });
+        if !self.send_request_with(
+            group,
+            buffer,
+            at,
+            "textDocument/references",
+            supports_references,
+            request,
+            context,
+        ) {
+            self.notify(Level::Info, no_references(&word));
+        }
+    }
+
+    /// A references answer (current): none → a message; else the Locations list, even for one
+    /// place (VS Code jumps to a lone reference; with the declaration included that's usually
+    /// where the cursor already is, so the list says "1" instead of seeming to do nothing).
+    pub(super) fn references_answer(&mut self, p: &Pending, word: &str, value: &Value) {
+        let places = locations::parse(value);
+        if places.is_empty() {
+            self.notify(Level::Info, no_references(word));
+            return;
+        }
+        let title = if word.is_empty() {
+            "References".to_string()
+        } else {
+            format!("References to '{word}'")
+        };
+        self.show_locations(title, places, p.encoding);
     }
 
     /// Fills the Locations list and shows it (panel focused, its first place selected); files not
