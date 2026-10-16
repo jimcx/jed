@@ -66,6 +66,9 @@ impl App {
         if self.find_mouse(m) {
             return;
         }
+        if self.diff_mouse(&m, hit) {
+            return;
+        }
         match m.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let delta = if m.kind == MouseEventKind::ScrollUp {
@@ -82,7 +85,7 @@ impl App {
                     },
                     // Scrolls the group under the mouse, without focusing it.
                     Hit::Editor(g) => {
-                        let tab = self.groups.get_mut(g).and_then(|g| g.tabs.get_mut(g.active));
+                        let tab = self.groups.get_mut(g).and_then(|g| g.active_tab_mut());
                         if let Some(tab) = tab
                             && let Some(buf) = self.buffers.get(tab.buffer)
                         {

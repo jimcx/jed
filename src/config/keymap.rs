@@ -183,10 +183,13 @@ pub enum Context {
     /// The editor has the focus and the completion list is shown; bindings not found here come
     /// from `Editor`.
     Suggest,
+    /// The editor has the focus and its active tab is a diff view; bindings not found here come
+    /// from `Editor`.
+    Diff,
 }
 
 impl Context {
-    const ALL: [(Context, &'static str); 10] = [
+    const ALL: [(Context, &'static str); 11] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
@@ -197,6 +200,7 @@ impl Context {
         (Context::Problems, "problems"),
         (Context::Locations, "locations"),
         (Context::Suggest, "suggest"),
+        (Context::Diff, "diff"),
     ];
 
     fn parse(name: &str) -> Option<Context> {
@@ -208,7 +212,7 @@ impl Context {
         match self {
             Context::Replace => Some(Context::Find),
             Context::SearchResults => Some(Context::Search),
-            Context::Suggest => Some(Context::Editor),
+            Context::Suggest | Context::Diff => Some(Context::Editor),
             _ => None,
         }
     }
@@ -655,6 +659,13 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Esc, none, Sg::Close),
     ];
 
+    // A diff tab (falls back to the editor's keys): VS Code's diff editor's next / previous
+    // difference.
+    let diff = [
+        (KeyCode::F(7), none, Command::NextChange),
+        (KeyCode::F(7), shift, Command::PreviousChange),
+    ];
+
     let bind = |code, mods, context, command| Binding {
         combo: KeyCombo { code, mods },
         context,
@@ -704,6 +715,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
             .into_iter()
             .map(|(k, m, c)| bind(k, m, Some(Context::Suggest), Command::Suggest(c))),
     );
+    out.extend(diff.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Diff), c)));
     out
 }
 

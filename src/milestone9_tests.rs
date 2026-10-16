@@ -4378,7 +4378,7 @@ async fn milestone_9_rename_across_files() {
         "int f() { return renamed; }\n"
     );
     assert_eq!(active_path(&app).as_deref(), Some(a.as_path()));
-    let tabs: Vec<_> = app.group().tabs.iter().map(|t| t.buffer).collect();
+    let tabs: Vec<_> = app.group().tabs.iter().filter_map(|t| t.buffer()).collect();
     assert_eq!(tabs, [id_a, id_c, id_b]);
     assert!(app.buffers.get(id_c).unwrap().is_dirty());
     assert_eq!(fs::read_to_string(&c).unwrap(), REN_C, "not saved");

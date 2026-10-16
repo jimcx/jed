@@ -172,9 +172,18 @@ pub enum Command {
     StageHunk,
     /// Unstages the staged change (index against HEAD) at the cursor's line.
     UnstageHunk,
-    /// Alt+F5 / Shift+Alt+F5: the cursor to the next / previous change in the gutter.
+    /// Alt+F5 / Shift+Alt+F5 (F7 / Shift+F7 in a diff tab): the cursor to the next / previous
+    /// change in the gutter, or in the diff view.
     NextChange,
     PreviousChange,
+    /// The diff view of the active file on disk against its buffer (the changed-on-disk
+    /// banner's Show Diff).
+    CompareWithSaved,
+    /// The diff view of the active file's unstaged changes (staged ones if it has only those).
+    OpenChange,
+    /// Stages / unstages the active file's changes (all of them; from disk after saving).
+    StageFile,
+    UnstageFile,
 }
 
 /// Focus-group commands listed in the palette and accepted in keybindings (as VS Code: 1 to 8).
@@ -490,6 +499,10 @@ impl Command {
             Command::UnstageHunk,
             Command::NextChange,
             Command::PreviousChange,
+            Command::CompareWithSaved,
+            Command::OpenChange,
+            Command::StageFile,
+            Command::UnstageFile,
         ]);
         all
     }
@@ -687,6 +700,10 @@ impl Command {
             Command::StageHunk => "git.stageHunk".into(),
             Command::UnstageHunk => "git.unstageHunk".into(),
             Command::NextChange => "editor.nextChange".into(),
+            Command::CompareWithSaved => "file.compareWithSaved".into(),
+            Command::OpenChange => "git.openChange".into(),
+            Command::StageFile => "git.stageFile".into(),
+            Command::UnstageFile => "git.unstageFile".into(),
             Command::PreviousChange => "editor.previousChange".into(),
         }
     }
@@ -865,6 +882,10 @@ impl Command {
             Command::StageHunk => "Git: Stage Change at Cursor",
             Command::UnstageHunk => "Git: Unstage Change at Cursor",
             Command::NextChange => "Go to Next Change",
+            Command::CompareWithSaved => "File: Compare with Disk",
+            Command::OpenChange => "Git: Open Changes",
+            Command::StageFile => "Git: Stage File",
+            Command::UnstageFile => "Git: Unstage File",
             Command::PreviousChange => "Go to Previous Change",
         };
         s.into()
@@ -970,9 +991,13 @@ mod tests {
             Command::UnstageHunk => 66,
             Command::NextChange => 67,
             Command::PreviousChange => 68,
+            Command::CompareWithSaved => 69,
+            Command::OpenChange => 70,
+            Command::StageFile => 71,
+            Command::UnstageFile => 72,
         }
     }
-    const VARIANTS: u8 = 69;
+    const VARIANTS: u8 = 73;
 
     #[test]
     fn all_lists_every_variant() {

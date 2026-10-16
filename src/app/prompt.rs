@@ -32,6 +32,8 @@ pub enum Prompt {
     SaveBeforeStage {
         buffer: BufferId,
         line: usize,
+        /// The whole file (`git.stageFile`), not the change at `line`.
+        file: bool,
     },
 }
 
@@ -148,13 +150,13 @@ impl App {
                 }
                 _ => self.prompt = Some(Prompt::Trust { commands }),
             },
-            Prompt::SaveBeforeStage { buffer, line } => match ch {
+            Prompt::SaveBeforeStage { buffer, line, file } => match ch {
                 _ if enter || ch == Some('s') => {
                     self.close_prompt();
-                    self.save_then_stage(super::quick_diff::StageAt { buffer, line });
+                    self.save_then_stage(super::quick_diff::StageAt { buffer, line, file });
                 }
                 _ if esc || ch == Some('c') => self.close_prompt(),
-                _ => self.prompt = Some(Prompt::SaveBeforeStage { buffer, line }),
+                _ => self.prompt = Some(Prompt::SaveBeforeStage { buffer, line, file }),
             },
             Prompt::ConfirmDelete { path, is_dir } => match ch {
                 _ if enter || ch == Some('t') => {

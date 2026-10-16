@@ -30,6 +30,10 @@ pub fn render(
         .tabs
         .iter()
         .map(|t| {
+            let Some(t) = t.text() else {
+                // A diff tab: `name (Working Tree)`.
+                return (t.diff().map(|d| d.title()).unwrap_or_default(), false, false);
+            };
             let buf = buffers.get(t.buffer);
             let deleted = buf.is_some_and(|b| b.deleted);
             let mut name = buf.map(|b| b.name()).unwrap_or_default();

@@ -78,7 +78,7 @@ impl App {
 
     /// Back to the editor when there's a tab, else the side panel when it's shown.
     fn focus_editor_or_side(&mut self) {
-        self.ui.focus = if self.group().active_tab().is_none() && self.ui.side_visible {
+        self.ui.focus = if self.group().tabs.is_empty() && self.ui.side_visible {
             Focus::SidePanel
         } else {
             Focus::Editor
@@ -109,7 +109,7 @@ impl App {
             }
             P::FocusEditor => {
                 drop(files);
-                if self.group().active_tab().is_some() {
+                if !self.group().tabs.is_empty() {
                     self.ui.focus = Focus::Editor;
                 }
             }

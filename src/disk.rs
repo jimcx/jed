@@ -116,22 +116,25 @@ fn line_starts(text: &str) -> Vec<usize> {
         .collect()
 }
 
-/// A button on the banner shown over a dirty buffer whose file changed on disk. 10d adds
-/// `ShowDiff` (the diff view of the file against the buffer).
+/// A button on the banner shown over a dirty buffer whose file changed on disk (and over a diff
+/// tab of that file).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BannerAction {
     Reload,
     KeepMine,
+    /// The diff view of the file on disk against the buffer.
+    ShowDiff,
 }
 
 impl BannerAction {
     /// In the order the banner shows them.
-    pub const ALL: [BannerAction; 2] = [BannerAction::Reload, BannerAction::KeepMine];
+    pub const ALL: [BannerAction; 3] = [BannerAction::Reload, BannerAction::KeepMine, BannerAction::ShowDiff];
 
     pub fn label(self) -> &'static str {
         match self {
             BannerAction::Reload => "Reload",
             BannerAction::KeepMine => "Keep Mine",
+            BannerAction::ShowDiff => "Show Diff",
         }
     }
 
@@ -140,6 +143,7 @@ impl BannerAction {
         match self {
             BannerAction::Reload => Command::ReloadFromDisk,
             BannerAction::KeepMine => Command::KeepMine,
+            BannerAction::ShowDiff => Command::CompareWithSaved,
         }
     }
 }

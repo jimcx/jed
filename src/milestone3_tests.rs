@@ -34,7 +34,14 @@ fn open_app(root: &Path, file: &str) -> App {
 /// Cursor heads of a group's active view.
 fn heads(app: &App, group: GroupId) -> Vec<usize> {
     let g = app.groups.get(group).unwrap();
-    g.tabs[g.active].view.selections.iter().map(|s| s.head.0).collect()
+    g.tabs[g.active]
+        .text()
+        .unwrap()
+        .view
+        .selections
+        .iter()
+        .map(|s| s.head.0)
+        .collect()
 }
 
 fn text(app: &App) -> String {
@@ -59,7 +66,7 @@ async fn milestone_3_splits_and_shared_buffers() {
     let second = app.groups.active;
     assert_ne!(first, second);
     assert_eq!(app.groups.ids(), vec![first, second]);
-    assert_eq!(app.groups.tabs_showing(app.group().tabs[0].buffer), 2);
+    assert_eq!(app.groups.tabs_showing(app.group().tabs[0].buffer().unwrap()), 2);
     assert_eq!(heads(&app, second), vec![6]);
 
     // Type in the second group above the first group's cursor: the first group's cursor follows.

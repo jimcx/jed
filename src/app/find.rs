@@ -150,7 +150,7 @@ impl App {
     /// The widget, and the active tab's buffer and view, borrowed together.
     fn find_target(&mut self) -> Option<(&FindWidget, &mut Buffer, &mut View)> {
         let group = self.groups.active_group_mut();
-        let tab = group.tabs.get_mut(group.active)?;
+        let tab = group.active_tab_mut()?;
         let buf = self.buffers.get_mut(tab.buffer)?;
         Some((&self.find, buf, &mut tab.view))
     }

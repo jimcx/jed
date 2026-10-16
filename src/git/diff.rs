@@ -2,14 +2,14 @@
 //! (`git2::Patch::from_buffers`, with git's defaults: Myers, the indent heuristic, no
 //! inter-hunk merging beyond what the context does).
 
-#![allow(dead_code)] // the diff view (10d)
-
 use std::ops::Range;
 
 use git2::{DiffOptions, Patch};
 
 /// The context `git add -p` and `git diff` use (`diff.context`'s default): staging one of these
-/// hunks stages what `git add -p` stages for it. The gutter uses 0 (one hunk per change).
+/// hunks stages what `git add -p` stages for it. The gutter and the diff view use 0 (one hunk
+/// per change).
+#[cfg_attr(not(test), allow(dead_code))]
 pub const GIT_CONTEXT: u32 = 3;
 
 /// One hunk: lines `old` of the old text became lines `new` of the new text. Both are 0-based,

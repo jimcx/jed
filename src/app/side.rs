@@ -187,6 +187,7 @@ impl App {
         let paths: Vec<PathBuf> = std::mem::take(&mut self.fs_pending).into_iter().collect();
         self.git_paths_changed(&paths);
         self.disk_paths_changed(&paths);
+        self.diffs_paths_changed(&paths);
         for p in paths {
             reload |= p == config;
             for d in [Some(p.as_path()), p.parent()].into_iter().flatten() {

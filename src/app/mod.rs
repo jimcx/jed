@@ -2,6 +2,7 @@
 
 mod completion;
 mod cursors;
+mod diff_view;
 mod disk;
 mod files;
 mod find;
@@ -83,6 +84,8 @@ enum Timer {
     Completion,
     /// Edited buffers' gutter markers are due (`quick_diff::DELAY`).
     QuickDiff,
+    /// Diff tabs of edited buffers are due (`diff_view::DELAY`).
+    Diff,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,6 +195,14 @@ enum AppEvent {
         unstage: bool,
         result: Result<Option<crate::git::Hunk>, String>,
     },
+    /// A diff tab's texts were read and diffed (`app/diff_view.rs`).
+    DiffLoaded {
+        id: u64,
+        generation: u64,
+        result: Box<Result<crate::diff_view::Doc, String>>,
+    },
+    /// A stage / unstage from a diff tab (or of a whole file) ended: the message to show.
+    DiffStaged(Result<String, String>),
 }
 
 /// The file to open at startup, with an optional 1-based line and column.
@@ -288,6 +299,8 @@ pub struct App {
     pub disk: disk::DiskChecks,
     /// The gutter markers' schedule, the peek, stages waiting for a save.
     pub quick_diff: quick_diff::QuickDiffState,
+    /// Diff tabs' ids, their reload delay, stages started from them.
+    pub diffs: diff_view::DiffViews,
     /// The last command `execute` ran, for tests.
     #[cfg(test)]
     pub last_command: Option<Command>,
@@ -371,6 +384,7 @@ impl App {
             git: Default::default(),
             disk: Default::default(),
             quick_diff: Default::default(),
+            diffs: Default::default(),
             #[cfg(test)]
             last_command: None,
         };
@@ -415,6 +429,7 @@ impl App {
         self.sync_syntax();
         self.sync_servers();
         self.sync_quick_diff();
+        self.sync_diffs();
     }
 
     pub async fn run(&mut self, terminal: &mut Term) -> anyhow::Result<()> {
@@ -429,6 +444,7 @@ impl App {
             self.sync_syntax();
             self.sync_servers();
             self.sync_quick_diff();
+            self.sync_diffs();
             if self.needs_redraw {
                 let t = Instant::now();
                 terminal.draw(|f| ui::render(f, self))?;
@@ -483,7 +499,11 @@ impl App {
             .quick_diff
             .deadline()
             .map(|d| (tokio::time::Instant::from_std(d), Timer::QuickDiff));
-        let next = [fs, search, hover, completion, quick_diff]
+        let diff = self
+            .diffs
+            .deadline()
+            .map(|d| (tokio::time::Instant::from_std(d), Timer::Diff));
+        let next = [fs, search, hover, completion, quick_diff, diff]
             .into_iter()
             .flatten()
             .min_by_key(|(at, _)| *at);
@@ -506,6 +526,7 @@ impl App {
             Timer::Hover => self.hover_tick(Instant::now()),
             Timer::Completion => self.completion_tick(Instant::now()),
             Timer::QuickDiff => self.sync_quick_diff(),
+            Timer::Diff => self.sync_diffs(),
         }
     }
 
@@ -547,8 +568,7 @@ impl App {
     }
 
     pub fn active_mut(&mut self) -> Option<(&mut Buffer, &mut View)> {
-        let group = self.groups.active_group_mut();
-        let tab = group.tabs.get_mut(group.active)?;
+        let tab = self.groups.active_group_mut().active_tab_mut()?;
         let buf = self.buffers.get_mut(tab.buffer)?;
         Some((buf, &mut tab.view))
     }
@@ -563,6 +583,7 @@ impl App {
         }
         match self.ui.focus {
             Focus::Editor if self.completion_shown() => Context::Suggest,
+            Focus::Editor if self.group().active_diff().is_some() => Context::Diff,
             Focus::Editor => Context::Editor,
             Focus::SidePanel if self.ui.side_panel == SidePanel::Search && self.search_view.list_focused => {
                 Context::SearchResults
@@ -684,7 +705,7 @@ impl App {
             self.completion.follow(id, &changes, buf.sets_applied());
             self.quick_diff.follow(id, &changes);
             for (gid, group) in self.groups.iter_mut() {
-                for (i, tab) in group.tabs.iter_mut().enumerate() {
+                for (i, tab) in group.text_tabs_mut() {
                     if tab.buffer != id {
                         continue;
                     }
@@ -718,8 +739,9 @@ impl App {
         }
         match cmd {
             Command::Save => {
-                if let Some(tab) = self.group().active_tab() {
-                    self.save(tab.buffer);
+                // A diff tab saves its file's buffer.
+                if let Some(id) = self.active_file_buffer() {
+                    self.save(id);
                 }
             }
             Command::Quit => self.request_quit(),
@@ -775,12 +797,22 @@ impl App {
             Command::FormatDocument => self.format_document(),
             Command::ReloadFromDisk => self.reload_from_disk(),
             Command::KeepMine => self.keep_mine(),
+            Command::StageHunk | Command::UnstageHunk if self.group().active_diff().is_some() => {
+                self.diff_stage(cmd == Command::UnstageHunk, None)
+            }
             Command::StageHunk => self.stage_command(false),
             Command::UnstageHunk => self.stage_command(true),
+            Command::NextChange | Command::PreviousChange if self.diff_command(cmd) => {}
             Command::NextChange => self.go_to_change(true),
             Command::PreviousChange => self.go_to_change(false),
+            Command::CompareWithSaved => self.compare_with_saved(),
+            Command::OpenChange => self.open_changes(),
+            Command::StageFile => self.stage_file_command(false),
+            Command::UnstageFile => self.stage_file_command(true),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
+            // A diff tab: its own movement keys; other editor commands do nothing.
+            _ if self.diff_command(cmd) => {}
             _ => {
                 if edit::is_edit(cmd) && !self.active_writable() {
                     return;
@@ -834,8 +866,7 @@ impl App {
         }
         let copied = self.clipboard.copied(text);
         let (whole_line, pieces) = copied.map_or((false, &[][..]), |c| (c.whole_line, c.pieces.as_slice()));
-        let group = self.groups.active_group_mut();
-        if let Some(tab) = group.tabs.get_mut(group.active)
+        if let Some(tab) = self.groups.active_group_mut().active_tab_mut()
             && let Some(buf) = self.buffers.get_mut(tab.buffer)
         {
             edit::paste(buf, &mut tab.view, text, whole_line, pieces);
@@ -897,6 +928,8 @@ impl App {
             AppEvent::DiskChecked(checked) => self.disk_checked(*checked),
             AppEvent::QuickDiff { buffer, computed } => self.quick_diff_done(buffer, computed),
             AppEvent::Staged { at, unstage, result } => self.staged(at, unstage, result),
+            AppEvent::DiffLoaded { id, generation, result } => self.diff_loaded(id, generation, *result),
+            AppEvent::DiffStaged(message) => self.diff_staged(message),
         }
         self.refresh_find();
         self.check_completion();
@@ -932,6 +965,17 @@ impl App {
 
     pub fn press(&mut self, code: KeyCode, mods: KeyModifiers) {
         self.handle_event(Event::Key(crossterm::event::KeyEvent::new(code, mods)));
+    }
+
+    /// Runs a command as a key bound to it would.
+    pub fn test_execute(&mut self, cmd: Command) {
+        self.execute(cmd);
+        self.sync_views();
+        self.refresh_find();
+        self.check_completion();
+        self.check_requests();
+        self.check_hover();
+        self.check_peek();
     }
 
     pub fn handle_test_event(&mut self, ev: Event) {
@@ -1023,6 +1067,7 @@ impl App {
         self.sync_syntax();
         self.sync_servers();
         self.sync_quick_diff();
+        self.sync_diffs();
     }
 
     /// Handles background results (and the Search view's debounce) until `done` holds; false after 5 s.
@@ -1034,6 +1079,7 @@ impl App {
             self.sync_syntax();
             self.sync_servers();
             self.sync_quick_diff();
+            self.sync_diffs();
             if done(self) {
                 break;
             }

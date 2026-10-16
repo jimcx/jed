@@ -16,6 +16,7 @@ use crate::buffer::change::ChangeSet;
 use crate::buffer::pos::{self, ByteIdx, PosEncoding};
 use crate::buffer::undo::EditKind;
 use crate::buffer::{Buffer, BufferId};
+use crate::group::Tab;
 use crate::layout::GroupId;
 use crate::rename::{self, FileEdit, Prepared, TextEdit};
 use crate::selection::{Selection, Selections};
@@ -220,12 +221,12 @@ impl App {
             .filter_map(|g| self.groups.get(g))
             .find_map(|g| {
                 let active = g.active_tab().filter(|t| t.buffer == buffer);
-                active.or_else(|| g.tabs.iter().find(|t| t.buffer == buffer))
+                active.or_else(|| g.tabs.iter().filter_map(Tab::text).find(|t| t.buffer == buffer))
             })
             .map(|t| t.view.selections.clone());
         let before = shown.unwrap_or_else(|| Selections::single(Selection::cursor(ByteIdx(0))));
         let g = self.groups.active_group_mut();
-        let active = g.tabs.get_mut(g.active).filter(|t| t.buffer == buffer);
+        let active = g.active_tab_mut().filter(|t| t.buffer == buffer);
         let Some(buf) = self.buffers.get_mut(buffer) else {
             return;
         };

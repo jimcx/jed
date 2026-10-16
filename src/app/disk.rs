@@ -189,7 +189,7 @@ impl App {
         let active = (self.groups.active, self.group().active);
         let mut before = None;
         for (gid, group) in self.groups.iter_mut() {
-            for (i, tab) in group.tabs.iter().enumerate() {
+            for (i, tab) in group.text_tabs_mut() {
                 if tab.buffer == id {
                     if (gid, i) == active || before.is_none() {
                         before = Some(tab.view.selections.clone());
@@ -208,7 +208,7 @@ impl App {
         let changes = buf.take_applied();
         self.completion.follow(id, &changes, buf.sets_applied());
         for (gid, i, sels) in follows {
-            if let Some(tab) = self.groups.get_mut(gid).and_then(|g| g.tabs.get_mut(i)) {
+            if let Some(tab) = self.groups.get_mut(gid).and_then(|g| g.tabs.get_mut(i)?.text_mut()) {
                 tab.view.map_through(&changes, &buf.rope);
                 tab.view.cursor_history.reset(&sels);
                 tab.view.selections = sels;
@@ -221,8 +221,7 @@ impl App {
     /// "File: Reload from Disk" (the banner's Reload): the active file's text from disk, even
     /// over unsaved edits (undo brings them back).
     pub(super) fn reload_from_disk(&mut self) {
-        if let Some(tab) = self.group().active_tab() {
-            let id = tab.buffer;
+        if let Some(id) = self.active_file_buffer() {
             if let Some(buf) = self.buffers.get_mut(id) {
                 buf.seal_undo();
             }
@@ -232,7 +231,7 @@ impl App {
 
     /// "File: Keep Mine" (the banner's): the next save overwrites the changed file.
     pub(super) fn keep_mine(&mut self) {
-        let Some(id) = self.group().active_tab().map(|t| t.buffer) else {
+        let Some(id) = self.active_file_buffer() else {
             return;
         };
         let Some(buf) = self.buffers.get_mut(id) else { return };

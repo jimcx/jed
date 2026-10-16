@@ -56,7 +56,7 @@ impl App {
             }
             S::Refresh => self.run_search(),
             S::FocusEditor => {
-                if self.group().active_tab().is_some() {
+                if !self.group().tabs.is_empty() {
                     self.ui.focus = Focus::Editor;
                 }
             }

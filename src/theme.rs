@@ -50,6 +50,13 @@ impl Theme {
             // #ff000033 and #9bb95533, blended over the peek's background), its buttons.
             ("diffEditor.removedLineBackground", Style::new().bg(c(0x511E1E))),
             ("diffEditor.insertedLineBackground", Style::new().bg(c(0x3D432F))),
+            // The diff view: the changed part of a changed line (Dark+'s `*TextBackground`,
+            // #ff000033 / #9ccc2c33, blended over the line's), the other side of a lone line
+            // (`diffEditor.diagonalFill`, #cccccc33 over the editor), the header row.
+            ("diffEditor.removedTextBackground", Style::new().bg(c(0x741818))),
+            ("diffEditor.insertedTextBackground", Style::new().bg(c(0x505F2F))),
+            ("diffEditor.diagonalFill", Style::new().fg(c(0x404040))),
+            ("diffEditor.header", fg_bg(0xBBBBBB, 0x252526)),
             ("quickDiff.title", Style::new().fg(c(0xBBBBBB))),
             ("quickDiff.action", fg_bg(0xFFFFFF, 0x0E639C)),
             ("statusBar", fg_bg(0xFFFFFF, 0x007ACC)),

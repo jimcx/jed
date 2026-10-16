@@ -3,12 +3,58 @@
 use std::collections::HashMap;
 
 use crate::buffer::BufferId;
+use crate::diff_view::DiffTab;
 use crate::layout::{GroupId, SplitDir, SplitTree};
 use crate::view::View;
 
-pub struct Tab {
+/// A text editor tab: a buffer and this tab's view of it.
+pub struct TextTab {
     pub buffer: BufferId,
     pub view: View,
+}
+
+/// What a tab shows: a buffer in a text editor, or a diff view (two texts side by side, read
+/// only). Commands that only make sense in a text editor find no `active_tab` on a diff tab.
+/// The diff is boxed; text tabs, most of them, stay inline.
+#[allow(clippy::large_enum_variant)]
+pub enum Tab {
+    Text(TextTab),
+    Diff(Box<DiffTab>),
+}
+
+impl Tab {
+    pub fn text(&self) -> Option<&TextTab> {
+        match self {
+            Tab::Text(t) => Some(t),
+            Tab::Diff(_) => None,
+        }
+    }
+
+    pub fn text_mut(&mut self) -> Option<&mut TextTab> {
+        match self {
+            Tab::Text(t) => Some(t),
+            Tab::Diff(_) => None,
+        }
+    }
+
+    pub fn diff(&self) -> Option<&DiffTab> {
+        match self {
+            Tab::Diff(d) => Some(d),
+            Tab::Text(_) => None,
+        }
+    }
+
+    pub fn diff_mut(&mut self) -> Option<&mut DiffTab> {
+        match self {
+            Tab::Diff(d) => Some(d),
+            Tab::Text(_) => None,
+        }
+    }
+
+    /// The buffer a text tab shows (`None` for a diff tab).
+    pub fn buffer(&self) -> Option<BufferId> {
+        self.text().map(|t| t.buffer)
+    }
 }
 
 #[derive(Default)]
@@ -20,18 +66,46 @@ pub struct Group {
 }
 
 impl Group {
-    pub fn active_tab(&self) -> Option<&Tab> {
-        self.tabs.get(self.active)
+    /// The active tab, when it's a text editor.
+    pub fn active_tab(&self) -> Option<&TextTab> {
+        self.tabs.get(self.active).and_then(Tab::text)
     }
 
+    pub fn active_tab_mut(&mut self) -> Option<&mut TextTab> {
+        self.tabs.get_mut(self.active).and_then(Tab::text_mut)
+    }
+
+    /// The active tab, when it's a diff view.
+    pub fn active_diff(&self) -> Option<&DiffTab> {
+        self.tabs.get(self.active).and_then(Tab::diff)
+    }
+
+    pub fn active_diff_mut(&mut self) -> Option<&mut DiffTab> {
+        self.tabs.get_mut(self.active).and_then(Tab::diff_mut)
+    }
+
+    /// The text tab showing `buffer`.
     pub fn find(&self, buffer: BufferId) -> Option<usize> {
-        self.tabs.iter().position(|t| t.buffer == buffer)
+        self.tabs.iter().position(|t| t.buffer() == Some(buffer))
     }
 
-    /// Opens a tab to the right of the active one and activates it.
+    /// Text tabs, with their indices.
+    pub fn text_tabs_mut(&mut self) -> impl Iterator<Item = (usize, &mut TextTab)> {
+        self.tabs
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(i, t)| Some((i, t.text_mut()?)))
+    }
+
+    /// Opens a text tab to the right of the active one and activates it.
     pub fn open(&mut self, buffer: BufferId, view: View) -> usize {
+        self.open_tab(Tab::Text(TextTab { buffer, view }))
+    }
+
+    /// Opens any tab to the right of the active one and activates it.
+    pub fn open_tab(&mut self, tab: Tab) -> usize {
         let at = if self.tabs.is_empty() { 0 } else { self.active + 1 };
-        self.tabs.insert(at, Tab { buffer, view });
+        self.tabs.insert(at, tab);
         self.active = at;
         at
     }
@@ -43,7 +117,7 @@ impl Group {
             return self.open(buffer, view);
         }
         let at = self.active + 1;
-        self.tabs.insert(at, Tab { buffer, view });
+        self.tabs.insert(at, Tab::Text(TextTab { buffer, view }));
         at
     }
 
@@ -118,21 +192,30 @@ impl Groups {
         self.map
             .values()
             .flat_map(|g| &g.tabs)
-            .filter(|t| t.buffer == buffer)
+            .filter(|t| t.buffer() == Some(buffer))
             .count()
     }
 
+    /// Every diff tab, in any group.
+    pub fn diff_tabs_mut(&mut self) -> impl Iterator<Item = (GroupId, &mut DiffTab)> {
+        self.map
+            .iter_mut()
+            .flat_map(|(id, g)| g.tabs.iter_mut().filter_map(move |t| Some((*id, t.diff_mut()?))))
+    }
+
     /// Splits the active group. The new group shows the active tab's buffer (same cursor and
-    /// scroll) and becomes active.
-    pub fn split(&mut self, dir: SplitDir) -> GroupId {
+    /// scroll), or a copy of its diff view (`diff_id`: the copy's id), and becomes active.
+    pub fn split(&mut self, dir: SplitDir, diff_id: u64) -> GroupId {
         let id = self.next;
         self.next += 1;
         let mut group = Group::default();
-        if let Some(tab) = self.active_group().active_tab() {
-            group.tabs.push(Tab {
+        match self.active_group().tabs.get(self.active_group().active) {
+            Some(Tab::Text(tab)) => group.tabs.push(Tab::Text(TextTab {
                 buffer: tab.buffer,
                 view: tab.view.clone(),
-            });
+            })),
+            Some(Tab::Diff(d)) => group.tabs.push(Tab::Diff(Box::new(d.copy(diff_id)))),
+            None => {}
         }
         self.tree.split(self.active, dir, id);
         self.map.insert(id, group);
@@ -163,10 +246,10 @@ mod tests {
     fn group(n: u64) -> Group {
         let mut g = Group::default();
         for id in 0..n {
-            g.tabs.push(Tab {
+            g.tabs.push(Tab::Text(TextTab {
                 buffer: id,
                 view: View::new(),
-            });
+            }));
         }
         g
     }
@@ -176,12 +259,16 @@ mod tests {
         let mut g = group(4);
         g.active = 1;
         g.close(1);
-        assert_eq!(g.tabs[g.active].buffer, 2, "right neighbour");
+        assert_eq!(g.tabs[g.active].buffer(), Some(2), "right neighbour");
         g.active = 2;
         g.close(2);
-        assert_eq!(g.tabs[g.active].buffer, 2, "left neighbour at the end");
+        assert_eq!(g.tabs[g.active].buffer(), Some(2), "left neighbour at the end");
         g.close(0);
-        assert_eq!(g.tabs[g.active].buffer, 2, "closing to the left keeps the same tab");
+        assert_eq!(
+            g.tabs[g.active].buffer(),
+            Some(2),
+            "closing to the left keeps the same tab"
+        );
     }
 
     #[test]
@@ -193,7 +280,7 @@ mod tests {
         g.active = 0;
         assert_eq!(g.open_background(9, View::new()), 1);
         assert_eq!(g.active, 0);
-        assert_eq!(g.tabs.iter().map(|t| t.buffer).collect::<Vec<_>>(), [7, 9, 8]);
+        assert_eq!(g.tabs.iter().filter_map(Tab::buffer).collect::<Vec<_>>(), [7, 9, 8]);
     }
 
     #[test]
@@ -201,7 +288,10 @@ mod tests {
         let mut g = group(3);
         g.active = 0;
         g.open(9, View::new());
-        assert_eq!(g.tabs.iter().map(|t| t.buffer).collect::<Vec<_>>(), vec![0, 9, 1, 2]);
+        assert_eq!(
+            g.tabs.iter().filter_map(Tab::buffer).collect::<Vec<_>>(),
+            vec![0, 9, 1, 2]
+        );
         assert_eq!(g.active, 1);
         g.cycle(-2);
         assert_eq!(g.active, 3);
@@ -212,9 +302,9 @@ mod tests {
         let mut gs = Groups::default();
         gs.active_group_mut().open(5, View::new());
         let first = gs.active;
-        let second = gs.split(SplitDir::Right);
+        let second = gs.split(SplitDir::Right, 0);
         assert_eq!(gs.active, second);
-        assert_eq!(gs.active_group().tabs[0].buffer, 5);
+        assert_eq!(gs.active_group().tabs[0].buffer(), Some(5));
         assert_eq!(gs.tabs_showing(5), 2);
         assert_eq!(gs.ids(), vec![first, second]);
 

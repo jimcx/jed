@@ -423,6 +423,16 @@ pub struct GroupHit {
     pub tabs: Vec<TabHit>,
     /// The changed-on-disk banner above the editor, when shown.
     pub banner: Option<BannerHit>,
+    /// The diff view, when the group shows a diff tab.
+    pub diff: Option<DiffHit>,
+}
+
+/// A diff tab: the rows' rect (below its header) and each change's Stage / Unstage button
+/// (with the change's hunk index).
+#[derive(Debug, Clone, Default)]
+pub struct DiffHit {
+    pub rows: Rect,
+    pub buttons: Vec<(Rect, usize)>,
 }
 
 /// The changed-on-disk banner: its row and each button.
@@ -674,6 +684,7 @@ mod tests {
                     },
                     actions: vec![(Rect::new(r.x + 2, r.y + 1, 6, 1), crate::disk::BannerAction::Reload)],
                 }),
+                diff: None,
             })
             .collect();
         let map = HitMap {

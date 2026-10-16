@@ -195,7 +195,8 @@ impl App {
         if let Some((buf, _)) = self.active_mut() {
             buf.seal_undo();
         }
-        self.groups.split(dir);
+        let diff_id = self.next_diff_id();
+        self.groups.split(dir, diff_id);
         self.ui.focus = Focus::Editor;
     }
 
@@ -208,7 +209,11 @@ impl App {
             }
             return;
         };
-        let id = tab.buffer;
+        // A diff tab closes without asking.
+        let Some(id) = tab.buffer() else {
+            self.discard_tab(group, index);
+            return;
+        };
         if self.groups.tabs_showing(id) == 1 && self.buffers.get(id).is_some_and(Buffer::is_dirty) {
             self.groups.active = group;
             self.group_mut().active = index;
@@ -227,8 +232,10 @@ impl App {
         }
         let tab = g.close(index);
         let now_empty = g.tabs.is_empty();
-        if self.groups.tabs_showing(tab.buffer) == 0 {
-            self.buffers.remove(tab.buffer);
+        if let Some(buffer) = tab.buffer()
+            && self.groups.tabs_showing(buffer) == 0
+        {
+            self.buffers.remove(buffer);
         }
         if now_empty {
             self.close_group(group);

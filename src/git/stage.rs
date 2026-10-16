@@ -8,8 +8,6 @@
 //! hunks that is what `git add -p` / `git reset -p` write for the same hunk. Texts are compared
 //! as stored (no clean filters such as `core.autocrlf`).
 
-#![allow(dead_code)] // 10d–10e (diff view, Source Control) call the rest
-
 use std::fmt;
 use std::path::Path;
 
@@ -73,7 +71,7 @@ pub struct Text {
 }
 
 /// Two texts of one file (a missing side is empty) and the hunks between them.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileDiff {
     pub old: Vec<u8>,
     pub new: Vec<u8>,

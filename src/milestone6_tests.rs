@@ -355,7 +355,7 @@ fn milestone_6_other_group_follows_multi_cursor_edit() {
     assert_ne!(first, second);
     let first_sels = |app: &App| {
         let g = app.groups.get(first).unwrap();
-        ranges_of(&g.tabs[g.active].view.selections)
+        ranges_of(&g.tabs[g.active].text().unwrap().view.selections)
     };
     assert_eq!(first_sels(&app).len(), 3);
 
@@ -425,7 +425,12 @@ fn milestone_6_select_all_matches_on_one_mb() {
     );
     assert!(text(&app).starts_with("let thing = value_0; // thing\n"));
     let g2 = app.groups.ids()[1];
-    let other = app.groups.get(g2).unwrap().tabs[0].view.selections.clone();
+    let other = app.groups.get(g2).unwrap().tabs[0]
+        .text()
+        .unwrap()
+        .view
+        .selections
+        .clone();
     assert_eq!(other.len(), count);
     let first = other.as_slice()[0];
     assert_eq!(

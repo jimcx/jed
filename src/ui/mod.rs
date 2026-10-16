@@ -4,6 +4,7 @@ mod activity;
 mod banner;
 mod completion;
 mod dialog;
+mod diff;
 mod editor;
 mod find;
 mod hover;
@@ -20,6 +21,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::app::{App, Focus};
+use crate::group::Tab;
 use crate::layout::{self, GroupHit, HitMap, SplitDir};
 
 pub fn render(f: &mut Frame, app: &mut App) {
@@ -54,9 +56,15 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let is_active = id == app.groups.active;
         let Some(group) = app.groups.get_mut(id) else { continue };
         let tabs = tabs::render(f, tab_bar, group, &app.buffers, &app.theme, is_active);
-        // The changed-on-disk banner takes the editor's first row (leaving it at least one).
+        // The changed-on-disk banner takes the editor's first row (leaving it at least one); a
+        // diff tab of the file shows it too.
         let mut banner = None;
-        if let Some(buf) = group.active_tab().and_then(|t| app.buffers.get(t.buffer))
+        let file = match group.tabs.get(group.active) {
+            Some(Tab::Text(t)) => app.buffers.get(t.buffer),
+            Some(Tab::Diff(d)) => app.buffers.iter().find(|(_, b)| b.path == d.path).map(|(_, b)| b),
+            None => None,
+        };
+        if let Some(buf) = file
             && buf.disk_conflict.is_some()
             && editor_area.height >= 2
         {
@@ -70,22 +78,31 @@ pub fn render(f: &mut Frame, app: &mut App) {
         }
 
         let mut text = Rect::default();
-        let active = group.active;
+        let mut diff_hit = None;
+        // Only the focused group shows the terminal cursor.
+        let focused = is_active && app.ui.focus == Focus::Editor && app.prompt.is_none() && app.palette.is_none();
+        if let Some(d) = group.active_diff_mut() {
+            diff_hit = Some(diff::render(
+                f,
+                editor_area,
+                d,
+                &app.theme,
+                app.settings.tab_width,
+                focused,
+            ));
+        }
         match group
-            .tabs
-            .get_mut(active)
+            .active_tab_mut()
             .and_then(|t| app.buffers.get_mut(t.buffer).map(|b| (t, b)))
         {
             Some((tab, buf)) => {
-                // Only the focused group shows the terminal cursor.
-                let focused =
-                    is_active && app.ui.focus == Focus::Editor && app.prompt.is_none() && app.palette.is_none();
                 // Find highlights in the active group, when the widget's matches are for this text.
                 let find = (is_active && app.find.visible && app.find.is_current(tab.buffer, buf.revision()))
                     .then_some(&app.find);
                 let overlay = editor::Overlay { focused, find };
                 text = editor::render(f, editor_area, buf, &mut tab.view, &app.theme, &app.settings, overlay);
             }
+            None if diff_hit.is_some() => {}
             None => f.buffer_mut().set_style(editor_area, app.theme.get("editor")),
         }
         if is_active {
@@ -98,6 +115,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             text,
             tabs,
             banner,
+            diff: diff_hit,
         });
     }
     let border = app.theme.get("editorGroup.border");

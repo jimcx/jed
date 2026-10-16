@@ -102,7 +102,7 @@ impl App {
                 // Set by a background answer, so no key records it: Cmd+U goes back from there.
                 // (A file loading now starts its own history.)
                 let g = self.groups.active_group_mut();
-                if let Some(tab) = g.tabs.get_mut(g.active) {
+                if let Some(tab) = g.active_tab_mut() {
                     let view = &mut tab.view;
                     let (top, left) = (view.top_line(), view.left_col);
                     view.cursor_history.record(&view.selections, top, left);
@@ -202,7 +202,7 @@ impl App {
 
     pub(super) fn locations_command(&mut self, cmd: L) {
         let Some(list) = self.locations.as_mut() else {
-            if cmd == L::FocusEditor && self.group().active_tab().is_some() {
+            if cmd == L::FocusEditor && !self.group().tabs.is_empty() {
                 self.ui.focus = Focus::Editor;
             }
             return;
@@ -226,7 +226,7 @@ impl App {
                 }
             }
             L::FocusEditor => {
-                if self.group().active_tab().is_some() {
+                if !self.group().tabs.is_empty() {
                     self.ui.focus = Focus::Editor;
                 }
             }

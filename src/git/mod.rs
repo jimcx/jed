@@ -17,8 +17,7 @@ use std::path::{Component, Path, PathBuf};
 
 use git2::{ErrorCode, Repository, Status as Flags, StatusOptions};
 
-#[allow(unused_imports)] // for 10d–10e
-pub use diff::{Diff, Hunk, HunkKind};
+pub use diff::{Hunk, HunkKind};
 
 /// Where a repository with a work tree is. Plain data: open it per task with [`Repo::open`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,7 +238,6 @@ impl Status {
     }
 
     /// The entry for `path` (relative to the work tree), if it changed.
-    #[cfg_attr(not(test), allow(dead_code))] // the Source Control panel (10e)
     pub fn entry(&self, path: &Path) -> Option<&Entry> {
         let i = self.entries.binary_search_by(|e| e.path.as_path().cmp(path)).ok()?;
         Some(&self.entries[i])

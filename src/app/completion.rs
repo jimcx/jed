@@ -459,8 +459,7 @@ impl App {
         let Some(group) = self.groups.get_mut(p.group) else {
             return;
         };
-        let active = group.active;
-        let Some(tab) = group.tabs.get_mut(active).filter(|t| t.buffer == p.buffer) else {
+        let Some(tab) = group.active_tab_mut().filter(|t| t.buffer == p.buffer) else {
             return;
         };
         let Some(buf) = self.buffers.get_mut(p.buffer) else {

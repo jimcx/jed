@@ -53,11 +53,13 @@ impl QuickDiffState {
     }
 }
 
-/// Which change to stage: the one the gutter shows on `line` (0-based) of `buffer`.
+/// Which change to stage: the one the gutter shows on `line` (0-based) of `buffer`, or with
+/// `file` the whole file (`git.stageFile`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StageAt {
     pub buffer: BufferId,
     pub line: usize,
+    pub file: bool,
 }
 
 /// The peek: one change's removed lines and a Stage button, below the change in `group`.
@@ -173,7 +175,11 @@ impl App {
         if unstage {
             self.unstage_at(buffer, line);
         } else {
-            self.stage_at(StageAt { buffer, line });
+            self.stage_at(StageAt {
+                buffer,
+                line,
+                file: false,
+            });
         }
     }
 
@@ -199,7 +205,7 @@ impl App {
         };
         let Some(buf) = self.buffers.get(at.buffer) else { return };
         let dirty = buf.is_dirty();
-        if dirty && buf.quick_diff.at_line(&buf.rope, at.line).is_none() {
+        if dirty && !at.file && buf.quick_diff.at_line(&buf.rope, at.line).is_none() {
             self.notify(Level::Info, format!("No change to stage at line {}", at.line + 1));
             return;
         }
@@ -214,10 +220,15 @@ impl App {
             self.prompt = Some(Prompt::SaveBeforeStage {
                 buffer: at.buffer,
                 line: at.line,
+                file: at.file,
             });
             return;
         }
-        self.spawn_stage(at, false, move || stage::stage_line(&repo, &path, at.line));
+        if at.file {
+            self.spawn_stage(at, false, move || stage::stage_file(&repo, &path).map(|()| None));
+        } else {
+            self.spawn_stage(at, false, move || stage::stage_line(&repo, &path, at.line));
+        }
     }
 
     /// The save prompt's Save: saves, then stages once the save is done.
@@ -243,7 +254,7 @@ impl App {
         let Some(buf) = self.buffers.get(buffer) else { return };
         let line = pos::line_of(&buf.rope, start.min(ByteIdx(buf.rope.len())));
         if saved {
-            self.stage_at(StageAt { buffer, line });
+            self.stage_at(StageAt { line, ..at });
         } else {
             tracing::info!(line = at.line, "not staging: the save didn't happen");
         }
@@ -257,7 +268,11 @@ impl App {
         };
         let Some(buf) = self.buffers.get(buffer) else { return };
         let (rope, bom) = (buf.rope.clone(), buf.bom);
-        let at = StageAt { buffer, line };
+        let at = StageAt {
+            buffer,
+            line,
+            file: false,
+        };
         self.spawn_stage(at, true, move || {
             let text = crate::buffer::file::encode(&rope, bom);
             stage::unstage_line(&repo, &path, &text, line)
@@ -283,7 +298,9 @@ impl App {
     pub(super) fn staged(&mut self, at: StageAt, unstage: bool, result: Result<Option<Hunk>, String>) {
         self.quick_diff.staging -= 1;
         let line = at.line + 1;
+        let name = self.buffers.get(at.buffer).map(|b| b.name()).unwrap_or_default();
         let (level, text) = match (result, unstage) {
+            (Ok(_), false) if at.file => (Level::Info, format!("Staged {name}")),
             (Ok(Some(_)), false) => (Level::Info, format!("Staged the change at line {line}")),
             (Ok(Some(_)), true) => (Level::Info, format!("Unstaged the change at line {line}")),
             (Ok(None), false) => (Level::Info, format!("No change to stage at line {line}")),
@@ -342,6 +359,7 @@ impl App {
             self.stage_at(StageAt {
                 buffer: p.buffer,
                 line: p.lines.start,
+                file: false,
             });
         }
     }
