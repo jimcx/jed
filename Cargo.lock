@@ -913,6 +913,57 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "jed"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "crossterm",
+ "futures-util",
+ "git2",
+ "globset",
+ "grep-matcher",
+ "grep-searcher",
+ "ignore",
+ "libc",
+ "lsp-types",
+ "notify",
+ "nucleo",
+ "portable-pty",
+ "ratatui",
+ "regex",
+ "ropey",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "trash",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "tree-sitter-c",
+ "tree-sitter-cmake",
+ "tree-sitter-containerfile",
+ "tree-sitter-cpp",
+ "tree-sitter-json",
+ "tree-sitter-make",
+ "tree-sitter-md",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-toml-ng",
+ "tree-sitter-xml",
+ "tree-sitter-yaml",
+ "tui-term",
+ "unicode-segmentation",
+ "unicode-width",
+ "vt100",
+]
+
+[[package]]
 name = "jobserver"
 version = "0.1.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1746,57 +1797,6 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
-]
-
-[[package]]
-name = "red"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "crossterm",
- "futures-util",
- "git2",
- "globset",
- "grep-matcher",
- "grep-searcher",
- "ignore",
- "libc",
- "lsp-types",
- "notify",
- "nucleo",
- "portable-pty",
- "ratatui",
- "regex",
- "ropey",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "tempfile",
- "tokio",
- "toml",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "trash",
- "tree-sitter",
- "tree-sitter-bash",
- "tree-sitter-c",
- "tree-sitter-cmake",
- "tree-sitter-containerfile",
- "tree-sitter-cpp",
- "tree-sitter-json",
- "tree-sitter-make",
- "tree-sitter-md",
- "tree-sitter-python",
- "tree-sitter-rust",
- "tree-sitter-toml-ng",
- "tree-sitter-xml",
- "tree-sitter-yaml",
- "tui-term",
- "unicode-segmentation",
- "unicode-width",
- "vt100",
 ]
 
 [[package]]

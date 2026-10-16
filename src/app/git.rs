@@ -114,7 +114,7 @@ impl App {
     }
 
     /// Watches the git directory when the root's watch doesn't cover it (the workspace is a
-    /// subdirectory of the work tree), so staging and branch switches outside red are seen.
+    /// subdirectory of the work tree), so staging and branch switches outside jed are seen.
     fn watch_git_dir(&mut self, git_dir: &Path) {
         if git_dir.starts_with(&self.workspace.root) || self.git.watched.as_deref() == Some(git_dir) {
             return;

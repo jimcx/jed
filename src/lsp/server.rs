@@ -120,7 +120,7 @@ pub struct Task {
     pub sink: Sink,
     /// Request ids, shared with the app's handle (which numbers its own requests).
     pub next_id: Arc<AtomicI64>,
-    /// Where red writes files servers read (`Manager::support_dir`): ty's SCons builtins.
+    /// Where jed writes files servers read (`Manager::support_dir`): ty's SCons builtins.
     pub support_dir: Option<PathBuf>,
 }
 
@@ -358,7 +358,7 @@ impl Conn {
             initialization_options: config.init_options.clone(),
             capabilities: client_capabilities(),
             client_info: Some(ClientInfo {
-                name: "red".into(),
+                name: "jed".into(),
                 version: Some(env!("CARGO_PKG_VERSION").into()),
             }),
             ..Default::default()
@@ -459,7 +459,7 @@ impl Conn {
                 tracing::debug!(server = %self.name, method, "unhandled server request");
                 Err(RpcError {
                     code: METHOD_NOT_FOUND,
-                    message: format!("red doesn't handle {method}"),
+                    message: format!("jed doesn't handle {method}"),
                 })
             }
         }
@@ -546,9 +546,9 @@ impl Conn {
     }
 }
 
-/// What red tells servers it can do: UTF-8 positions first (UTF-16 is the fallback every server
+/// What jed tells servers it can do: UTF-8 positions first (UTF-16 is the fallback every server
 /// must support), work-done progress, pushed diagnostics (with the document version they're
-/// for, so red can map them through the edits made since; no pull diagnostics: ty and clangd
+/// for, so jed can map them through the edits made since; no pull diagnostics: ty and clangd
 /// push when the client doesn't declare `textDocument.diagnostic`), hover (markdown first),
 /// go to definition (`LocationLink`s welcome), completion, references and rename (with
 /// `prepareRename` and versioned `WorkspaceEdit`s).
@@ -613,7 +613,7 @@ fn client_capabilities() -> ClientCapabilities {
             ..Default::default()
         }),
         // Rename's `WorkspaceEdit`s: versioned `documentChanges` welcome; no file operations
-        // (create / rename / delete), which red refuses.
+        // (create / rename / delete), which jed refuses.
         workspace: Some(WorkspaceClientCapabilities {
             workspace_edit: Some(WorkspaceEditClientCapabilities {
                 document_changes: Some(true),
@@ -627,7 +627,7 @@ fn client_capabilities() -> ClientCapabilities {
 }
 
 /// UTF-8 if the server chose it (`capabilities.positionEncoding`, or clangd's older
-/// `offsetEncoding` extension), else UTF-16: absent means UTF-16, and red offers nothing else.
+/// `offsetEncoding` extension), else UTF-16: absent means UTF-16, and jed offers nothing else.
 fn negotiated_encoding(result: &Value) -> PosEncoding {
     let chosen = result
         .pointer("/capabilities/positionEncoding")
@@ -639,7 +639,7 @@ fn negotiated_encoding(result: &Value) -> PosEncoding {
         Some(other) => {
             tracing::warn!(
                 encoding = other,
-                "server chose an encoding red didn't offer; using UTF-16"
+                "server chose an encoding jed didn't offer; using UTF-16"
             );
             PosEncoding::Utf16
         }

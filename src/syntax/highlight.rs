@@ -170,7 +170,7 @@ pub fn warm(language: Language) {
 ///
 /// Overlaps: an inner node's capture wins over an enclosing one (an escape inside a string), and
 /// for the same node a later pattern wins over an earlier one, as the grammars' queries expect
-/// (`(identifier) @variable` comes first, the more specific patterns after it; C++'s and red's
+/// (`(identifier) @variable` comes first, the more specific patterns after it; C++'s and jed's
 /// additions come after C's).
 pub fn compute(language: Language, tree: &Tree, rope: &Rope, start: ByteIdx, end: ByteIdx) -> Vec<Span> {
     let Some(q) = query(language) else {
@@ -445,7 +445,7 @@ mod tests {
     }
 
     /// Every language's query compiles, and each capture name colours something unless it is
-    /// one the grammars use for text red leaves plain (or for a predicate: `@_name`).
+    /// one the grammars use for text jed leaves plain (or for a predicate: `@_name`).
     #[test]
     fn every_query_compiles_and_its_captures_map() {
         const UNCOLOURED: &[&str] = &[
@@ -620,7 +620,7 @@ mod tests {
     #[test]
     fn toml_spans() {
         let text =
-            "# c\n[package]\nname = \"red\"\nversion.workspace = true\n[[bin]]\nx = 1\nd = 1979-05-27\n\"q\" = 'v'\n";
+            "# c\n[package]\nname = \"jed\"\nversion.workspace = true\n[[bin]]\nx = 1\nd = 1979-05-27\n\"q\" = 'v'\n";
         assert_has(
             Language::Toml,
             text,
@@ -629,7 +629,7 @@ mod tests {
                 ("package", "type"),
                 ("name", "property"),
                 ("=", "operator"),
-                ("\"red\"", "string"),
+                ("\"jed\"", "string"),
                 ("version", "property"),
                 ("workspace", "property"),
                 ("true", "constant.builtin"),
@@ -838,7 +838,7 @@ mod tests {
 
     /// Text predicates (`#match?`) are checked against the node's text, read from the rope even
     /// when it spans chunks: C's `^[A-Z][A-Z\\d_]*$` constants, Python's `^[A-Z]` constructors
-    /// and red's `self` / `cls`.
+    /// and jed's `self` / `cls`.
     #[test]
     fn match_predicates_read_the_text() {
         let spans = all(Language::C, "int v = MAX_2 + Max;");

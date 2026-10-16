@@ -431,7 +431,7 @@ mod tests {
         )
     }
 
-    /// Stages hunk `k` of `path` with red in a copy of the repo and with `git add -p` (answers
+    /// Stages hunk `k` of `path` with jed in a copy of the repo and with `git add -p` (answers
     /// `answers`) in the original; the indexes must match.
     fn same_as_add_p(root: &Path, path: &str, k: usize, answers: &str) {
         let other = copy(root);

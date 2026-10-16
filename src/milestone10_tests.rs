@@ -1,11 +1,11 @@
 //! Milestone 10 end to end. Done when: staging a single hunk from the gutter gives the same
 //! index as `git add -p` (`milestone_10_done_when_staging_a_hunk_from_the_gutter_matches_add_p`,
-//! real mouse clicks on the drawn marker and Stage button); changing a file outside red updates
+//! real mouse clicks on the drawn marker and Stage button); changing a file outside jed updates
 //! the gutter, the Source Control panel and the open buffer, and `git add` from the command line
 //! moves it to Staged Changes and clears the gutter
-//! (`milestone_10_done_when_a_change_outside_red_updates_gutter_panel_and_buffer`). 10a: the git status read off-thread at startup and
+//! (`milestone_10_done_when_a_change_outside_jed_updates_gutter_panel_and_buffer`). 10a: the git status read off-thread at startup and
 //! kept current through `notify` (work tree edits, staging and branch switches made outside
-//! red), the branch in the status bar (unborn and detached HEAD too), git colouring in the
+//! jed), the branch in the status bar (unborn and detached HEAD too), git colouring in the
 //! explorer (changed files and the folders holding them), no repository (git off), and a
 //! workspace that is a subdirectory of the work tree (its `.git` watched separately).
 //! 10b, files changed on disk, through the real watcher: a clean open file reloads (cursors and
@@ -15,7 +15,7 @@
 //! renamed away) is marked and saving recreates it. Checks racing a save or an edit are
 //! `app::disk`'s unit tests.
 //! 10c, the gutter: markers for added / modified / deleted lines drawn in their colours, moved
-//! with edits at once and recomputed after them, after `git add` outside red and for an
+//! with edits at once and recomputed after them, after `git add` outside jed and for an
 //! untracked file (none); a click on a marker opens the peek, whose Stage (button or Enter)
 //! gives the same index as `git add -p` for that hunk; a dirty buffer is saved first (asked;
 //! Cancel stages nothing), a save in flight is waited for; unstaging the change at the cursor is
@@ -29,7 +29,7 @@
 //! gives `git add -p`'s index — the file open (from disk, a dirty buffer saved first) or not;
 //! refused when the file changed since it was shown — and unstaging in the staged view `git
 //! reset -p`'s; Stage / Unstage File (a dirty open file saved first); no changes / untracked; the view follows
-//! the file and the index changing outside red and the open buffer's unsaved edits; splitting
+//! the file and the index changing outside jed and the open buffer's unsaved edits; splitting
 //! copies it, closing asks nothing; every other command does nothing to the buffer from it;
 //! the banner's Show Diff (on disk ↔ yours, the banner's buttons working over it); a 1 MB
 //! diff loads off the UI thread and scrolls within a frame (release).
@@ -163,7 +163,7 @@ async fn milestone_10_status_bar_and_explorer_follow_the_repository() {
         .await;
     assert!(!app.git.running(), "a refresh started with nothing changed");
 
-    // Edits on disk, outside red.
+    // Edits on disk, outside jed.
     fs::write(root.join("b.txt"), "b2\n").unwrap();
     assert!(
         settle_git(&mut app, |s| s.entry(Path::new("b.txt")).is_some()).await,
@@ -174,7 +174,7 @@ async fn milestone_10_status_bar_and_explorer_follow_the_repository() {
     assert_eq!(fg, colour(&app, Decoration::Modified));
     assert!(row.trim_end().ends_with('M'), "{row:?}");
 
-    // Staging outside red: only the index changes.
+    // Staging outside jed: only the index changes.
     git(&root, &["add", "b.txt", "new.txt"]);
     assert!(
         settle_git(&mut app, |s| s
@@ -765,7 +765,7 @@ async fn milestone_10_gutter_markers_follow_edits_and_the_index() {
     assert!(settle_markers(&mut app).await);
     assert_eq!(markers(&mut app), expected);
 
-    // `git add` outside red: the index now holds the file, nothing is marked.
+    // `git add` outside jed: the index now holds the file, nothing is marked.
     git(&root, &["add", "a.txt"]);
     assert!(
         app.settle(|a| a.active_buffer().unwrap().quick_diff.marks().is_empty())
@@ -902,7 +902,7 @@ async fn milestone_10_stage_from_the_gutter_like_add_p() {
     app.mouse(MouseEventKind::Up(MouseButton::Left), text_rect.x + 2, below);
     assert!(app.quick_diff.peek.is_none());
     assert_eq!(cursor_line(&app), top + (below - text_rect.y) as usize);
-    // The file changed outside red (a clean buffer reloads): the peek closes.
+    // The file changed outside jed (a clean buffer reloads): the peek closes.
     app.mouse(MouseEventKind::Down(MouseButton::Left), text_rect.x - 1, row(2));
     assert!(app.quick_diff.peek.is_some());
     fs::write(root.join("f.txt"), changed.replace("line 10\n", "ten\n")).unwrap();
@@ -1648,7 +1648,7 @@ async fn milestone_10_diff_view_refreshes() {
     );
     let mut app = open_file_app(&root, &state, "f.txt");
     assert!(settle_git(&mut app, |s| s.entries.len() == 2).await);
-    // A file not open: changed outside red, staged outside red.
+    // A file not open: changed outside jed, staged outside jed.
     app.open_diff(root.join("g.txt"), Pair::UNSTAGED);
     assert!(settle_diffs(&mut app).await);
     assert_eq!(diff_tab(&app).doc.as_ref().unwrap().hunks.len(), 3);
@@ -2112,7 +2112,7 @@ async fn milestone_10_done_when_staging_a_hunk_from_the_gutter_matches_add_p() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn milestone_10_done_when_a_change_outside_red_updates_gutter_panel_and_buffer() {
+async fn milestone_10_done_when_a_change_outside_jed_updates_gutter_panel_and_buffer() {
     let (_d, root, state) = dirs();
     let original = numbered(10);
     repo_with(&root, &[("f.txt", &original)], &[]);
@@ -2124,7 +2124,7 @@ async fn milestone_10_done_when_a_change_outside_red_updates_gutter_panel_and_bu
     assert!(side_text(&mut app).contains("No changes in the working tree."));
     assert_eq!(markers(&mut app), vec![]);
 
-    // Written outside red: the clean buffer reloads, the gutter marks the line, the panel lists it.
+    // Written outside jed: the clean buffer reloads, the gutter marks the line, the panel lists it.
     let changed = original.replace("line 3\n", "three\n");
     fs::write(root.join("f.txt"), &changed).unwrap();
     assert!(
@@ -2398,7 +2398,7 @@ async fn milestone_10_source_control_selection_kept_across_live_updates() {
     let at = scm_row(&mut app, &c);
     app.mouse(MouseEventKind::Down(MouseButton::Left), at.0, at.1);
     assert_eq!(selected_key(&app), Some(c.clone()));
-    // Files appear above it outside red (one untracked, one staged): still on c.txt.
+    // Files appear above it outside jed (one untracked, one staged): still on c.txt.
     fs::write(root.join("0.txt"), "0\n").unwrap();
     fs::write(root.join("1.txt"), "1\n").unwrap();
     git(&root, &["add", "1.txt"]);
@@ -2406,7 +2406,7 @@ async fn milestone_10_source_control_selection_kept_across_live_updates() {
     assert_eq!(selected_key(&app), Some(c.clone()));
     let rows = scm_rows(&mut app);
     assert_eq!(rows[0], "▾ Staged Changes 3");
-    // c.txt's work tree change undone outside red: it leaves Changes, the next file (d.txt)
+    // c.txt's work tree change undone outside jed: it leaves Changes, the next file (d.txt)
     // is selected — and stays so when c.txt comes back.
     fs::write(root.join("c.txt"), "c2\n").unwrap();
     assert!(
@@ -2534,7 +2534,7 @@ async fn milestone_10_source_control_without_a_repository() {
     let side = app.hits.regions.side.unwrap();
     click(&mut app, (side.x + 3, side.y + 3));
     assert!(app.group().tabs.is_empty());
-    // `git init` outside red: the view comes alive.
+    // `git init` outside jed: the view comes alive.
     init(&root);
     assert!(settle_git(&mut app, |s| !s.entries.is_empty()).await);
     assert_eq!(scm_rows(&mut app), ["▾ Changes 1", "a.txt U"]);

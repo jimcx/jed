@@ -7,7 +7,7 @@
 //! [tasks.build]
 //! command = "cargo build --color=always 2>&1 | tee build.log"   # run by `$SHELL -c`
 //! cwd = "src"                  # optional: relative to the workspace root; `~/…` is the home folder
-//! env = { RUST_LOG = "debug" } # optional: on top of red's environment, values taken literally
+//! env = { RUST_LOG = "debug" } # optional: on top of jed's environment, values taken literally
 //! ```
 //!
 //! Read once at startup like `settings.toml` (`main`), leniently: a TOML syntax error loses the
@@ -142,7 +142,7 @@ pub struct Spec {
     /// `[shell, "-c", command]`.
     pub argv: Vec<OsString>,
     pub cwd: PathBuf,
-    /// Set on top of red's own environment, in order (the template's last, so it wins).
+    /// Set on top of jed's own environment, in order (the template's last, so it wins).
     pub env: Vec<(String, String)>,
 }
 

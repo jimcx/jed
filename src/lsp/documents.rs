@@ -39,7 +39,7 @@ pub const KEEP_VERSIONS: usize = 32;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeSync {
     None,
-    /// The whole text each time (servers that can't take ranges; red never prefers it).
+    /// The whole text each time (servers that can't take ranges; jed never prefers it).
     Full,
     Incremental,
 }

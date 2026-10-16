@@ -1,4 +1,4 @@
-; red's additions to tree-sitter-yaml's highlights.scm, for VS Code Dark+'s colours: mapping keys
+; jed's additions to tree-sitter-yaml's highlights.scm, for VS Code Dark+'s colours: mapping keys
 ; are tags (blue), as YAML's TextMate grammar scopes them.
 
 (block_mapping_pair

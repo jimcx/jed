@@ -4,7 +4,7 @@
 //! `LanguageConfig`. Like VS Code each rule is all or nothing: it applies when every cursor
 //! qualifies, else the char is typed plainly at all of them.
 //!
-//! - Type-over: typing a closing char right before a closer red inserted itself (tracked in
+//! - Type-over: typing a closing char right before a closer jed inserted itself (tracked in
 //!   `AutoClosed`) steps over it (a quote after a backslash doesn't).
 //! - Auto-close: an opening char at empty cursors inserts the pair, the cursor between, when the
 //!   next char allows it (`LanguageConfig::closes_before`); `'` / `"` not after a word char

@@ -156,7 +156,7 @@ pub fn insert_char(buf: &mut Buffer, view: &mut View, c: char, s: &Settings) {
 /// Pasted text: line endings converted to the buffer's. `whole_line` (from a copy of one
 /// empty selection) puts it above each empty cursor's line, the cursor staying on its text.
 /// At several cursors the text is spread, one part per cursor in order, when it splits into as
-/// many parts: `pieces` (each selection's text from red's own copy), else its lines (VS Code's
+/// many parts: `pieces` (each selection's text from jed's own copy), else its lines (VS Code's
 /// `multiCursorPaste: spread`). Otherwise every cursor gets all of it.
 pub fn paste(buf: &mut Buffer, view: &mut View, text: &str, whole_line: bool, pieces: &[String]) {
     let crlf = buf.eol == Eol::Crlf;
@@ -185,7 +185,7 @@ pub fn paste(buf: &mut Buffer, view: &mut View, text: &str, whole_line: bool, pi
 }
 
 /// VS Code's `_distributePasteToCursors`: one part of `text` (newlines as `\n`) per cursor, or
-/// `None`. Never for a whole-line copy or one cursor; red's own pieces if there are `n`; else the
+/// `None`. Never for a whole-line copy or one cursor; jed's own pieces if there are `n`; else the
 /// lines, ignoring one final line break, if there are `n`.
 fn spread<'a>(text: &'a str, n: usize, whole_line: bool, pieces: &'a [String]) -> Option<Vec<&'a str>> {
     if whole_line || n == 1 {

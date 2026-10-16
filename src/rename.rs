@@ -6,7 +6,7 @@
 //!   { defaultBehavior } | null`).
 //! - `parse_workspace_edit` → one `FileEdit` per file (sorted by path; a file named twice gets
 //!   its edits merged): `documentChanges` (`TextDocumentEdit`s with their version) when present,
-//!   else `changes`. Resource operations (create / rename / delete a file) make it an `Err`: red
+//!   else `changes`. Resource operations (create / rename / delete a file) make it an `Err`: jed
 //!   doesn't advertise them, and applying only part of such an edit would leave a broken rename.
 //! - `changes(rope, edits, encoding)`: positions through `buffer::pos` (clamped as
 //!   `from_lsp_pos`), sorted (insertions at one place keep their order), overlapping edits → `Err`.

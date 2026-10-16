@@ -33,7 +33,7 @@ impl Eol {
     }
 }
 
-/// What a file held, to tell whether it changed since red last read or wrote it: its length and
+/// What a file held, to tell whether it changed since jed last read or wrote it: its length and
 /// a SHA-256 of its bytes (BOM included). Compared, never ordered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stamp {
@@ -179,7 +179,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let name = target
         .file_name()
         .ok_or_else(|| io::Error::other("path has no file name"))?;
-    let tmp = dir.join(format!(".{}.red-{}.tmp", name.to_string_lossy(), std::process::id()));
+    let tmp = dir.join(format!(".{}.jed-{}.tmp", name.to_string_lossy(), std::process::id()));
 
     let result = (|| {
         let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;

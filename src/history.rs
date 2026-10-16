@@ -1,9 +1,9 @@
-//! File history: a snapshot of every save under `<root>/.red/history/`, independent of git.
+//! File history: a snapshot of every save under `<root>/.jed/history/`, independent of git.
 //!
 //! One folder per file, named by `folder_name` (a hash of its workspace-relative path, `/`
 //! separated), holding `entries.toml` (the relative path and the entries, oldest first: id,
 //! time, size, content hash) and one snapshot file per entry, named by its id, with the exact
-//! bytes saved (BOM and line endings kept). `.red/.gitignore` (`*`) keeps it out of git.
+//! bytes saved (BOM and line endings kept). `.jed/.gitignore` (`*`) keeps it out of git.
 //!
 //! Every function here touching the disk is blocking, and they all take one process-wide lock,
 //! so concurrent saves (and renames) never lose an entry. `entries.toml` is written to a temp
@@ -21,9 +21,9 @@ use sha2::{Digest, Sha256};
 
 use crate::workspace::config::HistoryConfig;
 
-/// red's per-workspace folder (history; hidden from the explorer, quick open and search, its
+/// jed's per-workspace folder (history; hidden from the explorer, quick open and search, its
 /// watcher events ignored).
-pub const RED_DIR: &str = ".red";
+pub const JED_DIR: &str = ".jed";
 const INDEX: &str = "entries.toml";
 
 /// Serializes every history read and write in this process.
@@ -94,18 +94,18 @@ pub enum Recorded {
     Disabled,
 }
 
-/// `<root>/.red/history`.
+/// `<root>/.jed/history`.
 pub fn history_dir(root: &Path) -> PathBuf {
-    root.join(RED_DIR).join("history")
+    root.join(JED_DIR).join("history")
 }
 
-/// `path` relative to `root` when it has a history: inside the workspace, not in `.red/`, and
+/// `path` relative to `root` when it has a history: inside the workspace, not in `.jed/`, and
 /// valid UTF-8 (the key is a string).
 pub fn relative(root: &Path, path: &Path) -> Option<PathBuf> {
     let rel = path.strip_prefix(root).ok()?;
     let mut parts = rel.components();
     match parts.next()? {
-        Component::Normal(first) if first != RED_DIR => {}
+        Component::Normal(first) if first != JED_DIR => {}
         _ => return None,
     }
     if parts.any(|c| !matches!(c, Component::Normal(_))) {
@@ -189,11 +189,11 @@ fn write_index(dir: &Path, index: &Index) -> Result<(), String> {
     fs::rename(&tmp, &path).map_err(context("can't write", &path))
 }
 
-/// Creates `.red/` with its `.gitignore` (`*`) when missing.
-fn ensure_red_dir(root: &Path) -> Result<(), String> {
-    let red = root.join(RED_DIR);
-    fs::create_dir_all(&red).map_err(context("can't create", &red))?;
-    let ignore = red.join(".gitignore");
+/// Creates `.jed/` with its `.gitignore` (`*`) when missing.
+fn ensure_jed_dir(root: &Path) -> Result<(), String> {
+    let jed = root.join(JED_DIR);
+    fs::create_dir_all(&jed).map_err(context("can't create", &jed))?;
+    let ignore = jed.join(".gitignore");
     if !ignore.exists() {
         fs::write(&ignore, "*\n").map_err(context("can't write", &ignore))?;
     }
@@ -219,7 +219,7 @@ pub fn record(root: &Path, rel: &Path, bytes: &[u8], limits: &HistoryConfig) -> 
     if index.entries.last().is_some_and(|e| e.hash == hash) {
         return Ok(Recorded::Duplicate);
     }
-    ensure_red_dir(root)?;
+    ensure_jed_dir(root)?;
     fs::create_dir_all(&dir).map_err(context("can't create", &dir))?;
 
     let time = now_ms();
@@ -246,7 +246,7 @@ pub fn record(root: &Path, rel: &Path, bytes: &[u8], limits: &HistoryConfig) -> 
     }
     for old in dropped {
         if let Err(e) = fs::remove_file(dir.join(&old.id)) {
-            tracing::warn!(target: "red::history", id = old.id, "can't remove a trimmed snapshot: {e}");
+            tracing::warn!(target: "jed::history", id = old.id, "can't remove a trimmed snapshot: {e}");
         }
     }
     Ok(Recorded::Added(entry))
@@ -455,7 +455,7 @@ mod tests {
             Some(PathBuf::from("src/a.rs"))
         );
         assert_eq!(relative(root, Path::new("/x/a.rs")), None, "outside the workspace");
-        assert_eq!(relative(root, Path::new("/w/.red/history/x")), None);
+        assert_eq!(relative(root, Path::new("/w/.jed/history/x")), None);
         assert_eq!(relative(root, Path::new("/w")), None);
         assert_eq!(relative(root, Path::new("/w/a/../b")), None);
         assert_eq!(folder_name("src/a.rs").len(), 32);
@@ -489,7 +489,7 @@ mod tests {
             vec![b"one\r\n".to_vec(), b"\xEF\xBB\xBFtwo".to_vec(), b"one\r\n".to_vec()]
         );
         assert_eq!(entries(&root, rel).unwrap()[1], two);
-        assert_eq!(fs::read_to_string(root.join(".red/.gitignore")).unwrap(), "*\n");
+        assert_eq!(fs::read_to_string(root.join(".jed/.gitignore")).unwrap(), "*\n");
         let index = fs::read_to_string(history_dir(&root).join(folder_name("src/a.txt")).join(INDEX)).unwrap();
         assert!(index.starts_with("path = \"src/a.txt\""), "{index}");
         assert!(read(&root, rel, "nope").is_err());

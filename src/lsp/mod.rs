@@ -83,7 +83,7 @@ pub enum Event {
         server: ServerId,
         published: Box<diagnostics::Published>,
     },
-    /// A server notification red's task doesn't handle itself (`window/logMessage` is logged,
+    /// A server notification jed's task doesn't handle itself (`window/logMessage` is logged,
     /// `$/progress` dropped).
     Notification {
         server: ServerId,
@@ -190,7 +190,7 @@ pub struct Manager {
     /// Servers whose diagnostics were dropped since the last `take_cleared` (they stopped,
     /// failed or crashed): the app drops their marks from the buffers.
     cleared: Vec<ServerId>,
-    /// Where red writes files for servers (`scons`: ty's SCons builtins); `None` (tests'
+    /// Where jed writes files for servers (`scons`: ty's SCons builtins); `None` (tests'
     /// default): nothing written.
     pub support_dir: Option<PathBuf>,
 }
@@ -211,7 +211,7 @@ impl Manager {
         }
     }
 
-    /// Sets `support_dir` (`App::new`: `~/.local/state/red/lsp`).
+    /// Sets `support_dir` (`App::new`: `~/.local/state/jed/lsp`).
     #[cfg_attr(test, allow(dead_code))]
     pub fn with_support_dir(mut self, dir: PathBuf) -> Self {
         self.support_dir = Some(dir);

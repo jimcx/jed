@@ -78,7 +78,7 @@ impl App {
             Mode::LogLevel => {
                 let current = self.log.as_ref().and_then(logging::current_filter);
                 hint = Some(format!(
-                    "Current filter: {}. Pick a level, or type a filter like red::app=debug,info",
+                    "Current filter: {}. Pick a level, or type a filter like jed::app=debug,info",
                     current.as_deref().unwrap_or("logging is off")
                 ));
                 if query.contains('=') {

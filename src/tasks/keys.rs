@@ -5,7 +5,7 @@
 //! Alt as an Esc prefix; Enter `\r`, Tab, Shift+Tab `CSI Z`, Backspace DEL (Ctrl+Backspace BS),
 //! Esc; arrows / Home / End as `CSI A` (`SS3 A` in application cursor mode), with modifiers
 //! `CSI 1;m A`; Insert / Delete / PageUp / PageDown `CSI n ~`; F1–F12. Cmd (Super) never reaches
-//! the program: those keys are red's.
+//! the program: those keys are jed's.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 

@@ -31,7 +31,7 @@ pub fn install() {
         let backups = back_up_dirty();
         terminal::restore();
         tracing::error!(target: "panic", "{info}\n{backtrace}");
-        eprintln!("red crashed: {info}\n\n{backtrace}");
+        eprintln!("jed crashed: {info}\n\n{backtrace}");
         for path in backups {
             eprintln!("Unsaved changes backed up to {}", path.display());
         }

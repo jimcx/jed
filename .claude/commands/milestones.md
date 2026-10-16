@@ -40,7 +40,7 @@ Work through the milestones in PLAN.md with subagents, one task at a time, in se
 6. **Check and commit (you):**
    - Re-run all three checks yourself (see CLAUDE.md's Toolchain section for how to reach cargo on this platform).
    - Make sure the diff includes the CLAUDE.md updates.
-   - Check no test binaries are left running (`pgrep -fl deps/red-`); kill any strays.
+   - Check no test binaries are left running (`pgrep -fl deps/jed-`); kill any strays.
    - Commit everything with the subject `Milestone N (Na): <summary>`, a blank line, then `- ` bullets of behaviour and notable internals. End with the Co-Authored-By trailer.
 7. **On the milestone's last task**, in the same commit:
    - Mark it ✅ in PLAN.md and note any "Also:", "Deferred:" and "Still to check by hand:" items.

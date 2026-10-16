@@ -2,12 +2,12 @@
 
 use std::path::PathBuf;
 
-/// `$XDG_STATE_HOME/red`, defaulting to `~/.local/state/red`.
+/// `$XDG_STATE_HOME/jed`, defaulting to `~/.local/state/jed`.
 pub fn state_dir() -> PathBuf {
     xdg_dir("XDG_STATE_HOME", ".local/state")
 }
 
-/// `$XDG_CONFIG_HOME/red`, defaulting to `~/.config/red` (on macOS too).
+/// `$XDG_CONFIG_HOME/jed`, defaulting to `~/.config/jed` (on macOS too).
 pub fn config_dir() -> PathBuf {
     xdg_dir("XDG_CONFIG_HOME", ".config")
 }
@@ -17,7 +17,7 @@ fn xdg_dir(var: &str, default: &str) -> PathBuf {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| home().join(default));
-    base.join("red")
+    base.join("jed")
 }
 
 /// `$HOME`, else `.`.

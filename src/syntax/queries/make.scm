@@ -1,4 +1,4 @@
-; red's additions to tree-sitter-make's highlights.scm, for VS Code Dark+'s colours: targets are
+; jed's additions to tree-sitter-make's highlights.scm, for VS Code Dark+'s colours: targets are
 ; functions (yellow), variables light blue, values and recipes plain.
 
 (variable_assignment

@@ -1,4 +1,4 @@
-//! Editor settings: the `[settings]` table shared by the user's `~/.config/red/settings.toml` and a
+//! Editor settings: the `[settings]` table shared by the user's `~/.config/jed/settings.toml` and a
 //! workspace's `.workspace`, and how the two layer over the defaults.
 //!
 //! | key                | type | default   | what it does                                                   |
@@ -174,9 +174,9 @@ pub fn parse(text: &str) -> UserSettings {
 /// What "Preferences: Open User Settings" writes when there's no `settings.toml` yet: every key,
 /// commented out, at its default.
 pub const TEMPLATE: &str = "\
-# red user settings. Uncomment a line to change it.
+# jed user settings. Uncomment a line to change it.
 # A workspace's .workspace [settings] table overrides these, key by key.
-# Changes apply the next time red starts.
+# Changes apply the next time jed starts.
 
 [settings]
 # tab_width = 4

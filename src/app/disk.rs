@@ -124,7 +124,7 @@ impl App {
                     buf.disk_conflict = None;
                 }
                 Ok(OnDisk::Unchanged) => {
-                    // As the buffer knew it (it reappeared, or a change was undone outside red).
+                    // As the buffer knew it (it reappeared, or a change was undone outside jed).
                     buf.deleted = false;
                     buf.disk_conflict = None;
                 }

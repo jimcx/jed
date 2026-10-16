@@ -1,4 +1,4 @@
-# SCons's globals for SConstruct / SConscript files, as builtins: red hands this to ty in SCons
+# SCons's globals for SConstruct / SConscript files, as builtins: jed hands this to ty in SCons
 # workspaces (a root SConstruct) so `Environment`, `Import`, ... aren't "used when not defined".
 # Loose types on purpose: SCons is dynamic, and a wrong type would be a false error.
 

@@ -1,4 +1,4 @@
-; red's highlight query for tree-sitter-toml (instead of the grammar's, which captures each whole
+; jed's highlight query for tree-sitter-toml (instead of the grammar's, which captures each whole
 ; `pair` as a property): keys are properties, table names types, as in Even Better TOML.
 
 (comment) @comment

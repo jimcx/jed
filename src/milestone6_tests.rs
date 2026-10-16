@@ -842,7 +842,7 @@ async fn milestone_6_paste_spreads_across_cursors() {
     assert_eq!(text(&app), "onx\ny\ne two three\nx\ny\nz");
     undo(&mut app);
 
-    // Red's own pieces spread even when a piece holds a line break (three lines, two cursors).
+    // Jed's own pieces spread even when a piece holds a line break (three lines, two cursors).
     let view = app.active_mut().unwrap().1;
     view.selections = Selections::new(
         vec![

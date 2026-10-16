@@ -9,7 +9,7 @@
 //! a line comment token (plain text) does nothing.
 //!
 //! Unlike VS Code the smallest indentation isn't rounded down to a multiple of the indent size
-//! (red has no indentation detection, so a 2-space file with tab width 4 would get `//` at
+//! (jed has no indentation detection, so a 2-space file with tab width 4 would get `//` at
 //! column 0); with detection on VS Code usually gives the same result.
 //!
 //! Lines are read with a `LineWalker` and the edit is one `ChangeSet` built in order, so it

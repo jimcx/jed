@@ -1,5 +1,5 @@
 //! The system clipboard behind one interface: `arboard` locally, OSC 52 over SSH
-//! or when `arboard` fails. Remembers what red copied last, as VS Code's clipboard metadata:
+//! or when `arboard` fails. Remembers what jed copied last, as VS Code's clipboard metadata:
 //! whether it was a whole line (pasting it back inserts above the cursor's line) and the text of
 //! each selection (pasted back at as many cursors, each gets its own).
 
@@ -20,7 +20,7 @@ enum Backend {
 
 pub struct Clipboard {
     backend: Backend,
-    /// What red copied last (newlines as `\n`).
+    /// What jed copied last (newlines as `\n`).
     last: Option<Copied>,
 }
 
@@ -100,7 +100,7 @@ impl Clipboard {
         }
     }
 
-    /// What red knows about pasted `text`: the last copy, if `text` is still what it copied.
+    /// What jed knows about pasted `text`: the last copy, if `text` is still what it copied.
     /// Compared with newlines normalized: terminals may turn them into `\r` in a bracketed paste.
     pub fn copied(&self, text: &str) -> Option<&Copied> {
         self.last

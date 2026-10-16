@@ -16,20 +16,20 @@ pub fn log_dir() -> PathBuf {
     paths::state_dir().join("logs")
 }
 
-/// `filter` comes from `--log-level`; otherwise `RED_LOG`, otherwise `info`.
-/// Both use `EnvFilter` syntax, e.g. `red::buffer=debug,input=trace`.
+/// `filter` comes from `--log-level`; otherwise `JED_LOG`, otherwise `info`.
+/// Both use `EnvFilter` syntax, e.g. `jed::buffer=debug,input=trace`.
 pub fn init(filter: Option<&str>) -> anyhow::Result<LevelHandle> {
     let dir = log_dir();
     std::fs::create_dir_all(&dir)?;
     let appender = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
-        .filename_prefix("red")
+        .filename_prefix("jed")
         .filename_suffix("log")
         .max_log_files(7)
         .build(&dir)?;
     let filter = match filter {
         Some(f) => EnvFilter::try_new(f)?,
-        None => EnvFilter::try_from_env("RED_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
+        None => EnvFilter::try_from_env("JED_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
     };
     let (filter, handle) = reload::Layer::new(filter);
     // Blocking writer: the panic hook exits the process, which would lose a non-blocking writer's queue.
@@ -45,7 +45,7 @@ pub fn current_filter(handle: &LevelHandle) -> Option<String> {
     handle.with_current(|f| f.to_string()).ok()
 }
 
-/// Replaces the filter; `filter` uses `EnvFilter` syntax (`debug`, `red::lsp=trace,info`, …).
+/// Replaces the filter; `filter` uses `EnvFilter` syntax (`debug`, `jed::lsp=trace,info`, …).
 pub fn set_filter(handle: &LevelHandle, filter: &str) -> Result<(), String> {
     let new = EnvFilter::try_new(filter).map_err(|e| e.to_string())?;
     handle.reload(new).map_err(|e| e.to_string())?;
@@ -53,7 +53,7 @@ pub fn set_filter(handle: &LevelHandle, filter: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Blocking. The newest `red.*.log` in `dir` (daily files sort by date).
+/// Blocking. The newest `jed.*.log` in `dir` (daily files sort by date).
 pub fn newest_log(dir: &Path) -> Option<PathBuf> {
     std::fs::read_dir(dir)
         .ok()?
@@ -62,7 +62,7 @@ pub fn newest_log(dir: &Path) -> Option<PathBuf> {
         .filter(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("red.") && n.ends_with(".log"))
+                .is_some_and(|n| n.starts_with("jed.") && n.ends_with(".log"))
         })
         .max()
 }
@@ -76,14 +76,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(newest_log(dir.path()), None);
         for name in [
-            "red.2026-10-12.log",
-            "red.2026-10-14.log",
+            "jed.2026-10-12.log",
+            "jed.2026-10-14.log",
             "other.log",
-            "red.2026-10-13.log",
+            "jed.2026-10-13.log",
         ] {
             std::fs::write(dir.path().join(name), "").unwrap();
         }
-        assert_eq!(newest_log(dir.path()), Some(dir.path().join("red.2026-10-14.log")));
+        assert_eq!(newest_log(dir.path()), Some(dir.path().join("jed.2026-10-14.log")));
     }
 
     #[test]
@@ -91,9 +91,9 @@ mod tests {
         let (layer, handle) = reload::Layer::new(EnvFilter::new("info"));
         let _subscriber = tracing_subscriber::registry().with(layer);
         assert_eq!(current_filter(&handle).as_deref(), Some("info"));
-        set_filter(&handle, "red::app=trace").unwrap();
-        assert_eq!(current_filter(&handle).as_deref(), Some("red::app=trace"));
-        assert!(set_filter(&handle, "red::app=loud").is_err());
-        assert_eq!(current_filter(&handle).as_deref(), Some("red::app=trace"));
+        set_filter(&handle, "jed::app=trace").unwrap();
+        assert_eq!(current_filter(&handle).as_deref(), Some("jed::app=trace"));
+        assert!(set_filter(&handle, "jed::app=loud").is_err());
+        assert_eq!(current_filter(&handle).as_deref(), Some("jed::app=trace"));
     }
 }

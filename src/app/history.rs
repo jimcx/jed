@@ -67,7 +67,7 @@ impl HistoryTasks {
 }
 
 /// What recording a save's snapshot needs; `None` from `App::history_job` when the file has no
-/// history (outside the workspace, in `.red/`, history disabled).
+/// history (outside the workspace, in `.jed/`, history disabled).
 pub(super) struct Job {
     root: PathBuf,
     rel: PathBuf,
@@ -80,11 +80,11 @@ impl Job {
         let rel = self.rel.display();
         match history::record(&self.root, &self.rel, bytes, &self.limits) {
             Ok(Recorded::Added(entry)) => {
-                tracing::debug!(target: "red::history", %rel, id = entry.id, size = entry.size, "snapshot recorded");
+                tracing::debug!(target: "jed::history", %rel, id = entry.id, size = entry.size, "snapshot recorded");
                 Ok(())
             }
             Ok(other) => {
-                tracing::debug!(target: "red::history", %rel, ?other, "no snapshot");
+                tracing::debug!(target: "jed::history", %rel, ?other, "no snapshot");
                 Ok(())
             }
             Err(e) => Err(format!("File history of {rel} not saved: {e}")),
@@ -123,7 +123,7 @@ impl App {
         Some(move || {
             let moved = history::rename(&root, &from, &to)
                 .map_err(|e| format!("File history of {} not moved: {e}", from.display()))?;
-            tracing::debug!(target: "red::history", from = %from.display(), to = %to.display(), moved, "history moved");
+            tracing::debug!(target: "jed::history", from = %from.display(), to = %to.display(), moved, "history moved");
             Ok(())
         })
     }
@@ -136,10 +136,10 @@ impl App {
         }
     }
 
-    /// File system events under `.red/` (history writes) aren't changes anyone needs to see.
+    /// File system events under `.jed/` (history writes) aren't changes anyone needs to see.
     pub(super) fn fs_changed(&mut self, mut paths: Vec<std::path::PathBuf>) {
-        let red = self.workspace.root.join(history::RED_DIR);
-        paths.retain(|p| !p.starts_with(&red));
+        let jed = self.workspace.root.join(history::JED_DIR);
+        paths.retain(|p| !p.starts_with(&jed));
         if paths.is_empty() {
             return;
         }

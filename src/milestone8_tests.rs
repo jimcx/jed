@@ -1492,12 +1492,12 @@ async fn milestone_8_more_languages_are_detected_and_coloured() {
         ),
         (
             "package.json",
-            "{\"name\": \"red\", \"n\": 1}\n",
+            "{\"name\": \"jed\", \"n\": 1}\n",
             Language::Json,
             "JSON",
             &[
                 ("\"name\"", 1, "property"),
-                ("\"red\"", 1, "string"),
+                ("\"jed\"", 1, "string"),
                 (": 1}", 2, "number"),
             ],
         ),
@@ -1523,13 +1523,13 @@ async fn milestone_8_more_languages_are_detected_and_coloured() {
         ),
         (
             "Cargo.toml",
-            "[package]\nname = \"red\"\n",
+            "[package]\nname = \"jed\"\n",
             Language::Toml,
             "TOML",
             &[
                 ("[package]", 1, "type"),
                 ("name =", 0, "property"),
-                ("\"red\"", 1, "string"),
+                ("\"jed\"", 1, "string"),
             ],
         ),
         (
@@ -1559,10 +1559,10 @@ async fn milestone_8_more_languages_are_detected_and_coloured() {
         ),
         (
             "CMakeLists.txt",
-            "project(red VERSION 1.0)\n",
+            "project(jed VERSION 1.0)\n",
             Language::CMake,
             "CMake",
-            &[("project(red", 0, "function"), ("VERSION", 0, "constant")],
+            &[("project(jed", 0, "function"), ("VERSION", 0, "constant")],
         ),
         (
             "Makefile",

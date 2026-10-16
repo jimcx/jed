@@ -1,5 +1,5 @@
 //! Workspace search: every file under the root that the explorer would show (`.gitignore`,
-//! `.workspace` excludes, never `.git/` or `.red/`), searched with the `search::Matcher` find in
+//! `.workspace` excludes, never `.git/` or `.jed/`), searched with the `search::Matcher` find in
 //! file uses, off the UI thread. No drawing here: the Search view (`ui::search`) draws `Results`.
 //!
 //! - The walk is `explorer::walker`, run in parallel; each file is read whole and searched with
@@ -12,7 +12,7 @@
 //!   searched as a rope instead.
 //! - Open buffers with unsaved changes are searched from their text (a rope snapshot) instead of
 //!   the disk; one whose file doesn't exist (new, or deleted) is searched when it lies in the root
-//!   outside `.git/`, `.red/` and the excludes. Both paths give the same matches for the same text.
+//!   outside `.git/`, `.jed/` and the excludes. Both paths give the same matches for the same text.
 //! - Matches stay within one line: the matcher is `Matcher::new_single_line`, so a pattern naming
 //!   a line break (`\n`, `\W`, …) is searched line by line like any other.
 //! - Results go back in `Batch`es of whole files (at most every `BATCH_INTERVAL`), in no
@@ -382,7 +382,7 @@ pub fn run(job: Job, cancel: &AtomicBool, send: &(dyn Fn(Batch) + Sync)) -> Stat
     stats
 }
 
-/// Whether a path the walk doesn't reach would be searched: not under `.git/` or `.red/`, and
+/// Whether a path the walk doesn't reach would be searched: not under `.git/` or `.jed/`, and
 /// neither it nor a folder above it excluded. (`.gitignore` isn't checked.)
 fn in_scope(root: &Path, rel: &Path, excludes: &Override) -> bool {
     let hidden = rel
@@ -734,7 +734,7 @@ mod tests {
         let root = root_of(&dir);
         fs::create_dir_all(root.join(".git")).unwrap();
         write(&root, ".git/config", "needle");
-        write(&root, ".red/history/x", "needle");
+        write(&root, ".jed/history/x", "needle");
         write(&root, ".gitignore", "target/\n*.log\n");
         write(&root, "target/out.txt", "needle");
         write(&root, "app.log", "needle");
@@ -848,7 +848,7 @@ mod tests {
             // Not on disk: searched when in scope.
             (PathBuf::from("new/d.txt"), Rope::from_str("needle")),
             (PathBuf::from("build/e.txt"), Rope::from_str("needle")),
-            (PathBuf::from(".red/f.txt"), Rope::from_str("needle")),
+            (PathBuf::from(".jed/f.txt"), Rope::from_str("needle")),
         ];
         let (r, _) = search_with(&root, "needle", PLAIN, &["build/"], dirty);
         assert_eq!(

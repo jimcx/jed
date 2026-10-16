@@ -170,7 +170,7 @@ async fn reopening_trusted_workspace_does_not_ask() {
     assert_eq!(app.trust, Trust::Restricted);
 }
 
-/// Regression: `red src/main.rs` panicked because `App::new` started a listing outside the runtime.
+/// Regression: `jed src/main.rs` panicked because `App::new` started a listing outside the runtime.
 #[test]
 fn new_with_file_inside_workspace_needs_no_runtime() {
     let dir = tempfile::tempdir().unwrap();

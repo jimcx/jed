@@ -125,7 +125,7 @@ pub enum Command {
     ManageWorkspaceTrust,
     OpenLogFile,
     SetLogLevel,
-    /// Open `~/.config/red/settings.toml` (created from a template if missing).
+    /// Open `~/.config/jed/settings.toml` (created from a template if missing).
     OpenUserSettings,
     /// Keys inside the palette.
     Palette(PaletteCommand),

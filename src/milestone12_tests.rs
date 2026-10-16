@@ -14,7 +14,7 @@
 //! (`milestone_12_run_task_shows_a_coloured_tab_and_the_exit_code`); no templates → a message
 //! saying where to define them, restricted mode offering and running no `.workspace` task
 //! (`milestone_12_run_task_without_templates_says_where_to_define_them`); unbound keys and pastes
-//! go to the focused task, global keys and Esc stay red's
+//! go to the focused task, global keys and Esc stay jed's
 //! (`milestone_12_keys_and_pastes_go_to_the_focused_task`), encoded for the task's terminal modes
 //! (application cursor keys, bracketed paste), bringing the live screen back, never sent without
 //! the keys (`milestone_12_keys_follow_the_task_terminal_modes`); the PTY takes the panel's size
@@ -586,7 +586,7 @@ async fn milestone_12_keys_and_pastes_go_to_the_focused_task() {
     assert!(app.settle(|a| screen_text(a, id).contains("got y")).await);
     let term = draw_sized(&mut app, 100, 30);
     assert!(find(&term, "ask ● ×").is_some(), "running");
-    // Ctrl+C goes to the task (an interrupt), not to red's copy.
+    // Ctrl+C goes to the task (an interrupt), not to jed's copy.
     app.press(KeyCode::Char('c'), M::CONTROL);
     assert!(settle_ended(&mut app, id).await);
     match app.tasks.get(id).unwrap().status() {

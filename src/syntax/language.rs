@@ -116,10 +116,10 @@ impl Language {
     }
 
     /// The highlight queries, in order (for the same node a later pattern wins): the grammar's
-    /// `highlights.scm` (C++'s extends C's: C's first), then red's additions (`queries/*.scm`:
+    /// `highlights.scm` (C++'s extends C's: C's first), then jed's additions (`queries/*.scm`:
     /// control keywords, built-in types, parameters, … for Dark+'s colours). Rust starts with
     /// `(identifier) @variable` (its grammar colours no plain identifiers, Dark+ does). CMake's
-    /// and TOML's grammar queries are replaced by red's own (CMake's relies on Neovim's
+    /// and TOML's grammar queries are replaced by jed's own (CMake's relies on Neovim's
     /// `#lua-match?`; TOML's captures each whole `pair`).
     pub fn highlight_queries(self) -> &'static [&'static str] {
         const C: &str = include_str!("queries/c.scm");
@@ -206,7 +206,7 @@ pub fn detect(path: &Path, root: &Path, first_line: &str, associations: &Associa
 }
 
 /// File names and extensions, as VS Code's defaults (`.h` is C++, as there: the C++ grammar
-/// parses C headers, the C grammar not C++ ones). SCons files are Python; red's `.workspace` is
+/// parses C headers, the C grammar not C++ ones). SCons files are Python; jed's `.workspace` is
 /// TOML. Exact names first (`Makefile`, `CMakeLists.txt`, `Cargo.lock`, `.bashrc`, …), then name
 /// patterns (`Dockerfile.*`, `tsconfig.*.json`, `.vscode/*.json`), then the extension (a
 /// dotfile's name isn't one: `.c` is plain text), multi-dot ones (`.js.map`) included.
@@ -406,7 +406,7 @@ mod tests {
             ("tsconfig.json", Jsonc),
             ("tsconfig.base.json", Jsonc),
             ("a.jsonc", Jsonc),
-            ("red.code-workspace", Jsonc),
+            ("jed.code-workspace", Jsonc),
             (".eslintrc", Jsonc),
             ("pom.xml", Xml),
             ("icon.svg", Xml),

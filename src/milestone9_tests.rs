@@ -128,11 +128,11 @@
 //! says "There is no formatter for 'cpp' files installed.". Done when, against real servers
 //! (skipped when absent; every `didChange` sent checked to carry ranges): a C++ project with
 //! `compile_commands.json` (clangd) and an SCons project (ty, the extensionless `SConstruct` with
-//! red's SCons `__builtins__.pyi` on ty's search path, written outside the workspace) each get an
+//! jed's SCons `__builtins__.pyi` on ty's search path, written outside the workspace) each get an
 //! error typed in, followed through an edit before it and cleared by undo; completion of a member
 //! (`env.Program` from the stub for SCons); hover; go to definition in another file; references
 //! across the files; rename across them; format document (clangd's LLVM style; ty has no
-//! formatter, which red says).
+//! formatter, which jed says).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -305,14 +305,14 @@ async fn milestone_9_missing_binary_notifies_once() {
         &[("a.cpp", "int a;\n"), ("b.cpp", "int b;\n"), ("c.c", "int c;\n")],
     );
     let mut app = open_app(&root, Arc::new(ProcessLauncher));
-    app.lsp.builtins.clangd = ServerConfig::new("red-test-no-such-language-server", &[]);
+    app.lsp.builtins.clangd = ServerConfig::new("jed-test-no-such-language-server", &[]);
     open(&mut app, &root.join("a.cpp"));
     assert!(app.settle(|a| a.message.is_some()).await);
     let message = app.message.take().unwrap();
     assert_eq!(message.level, Level::Error);
     assert_eq!(
         message.text,
-        "Language server red-test-no-such-language-server not found: install it, or set [lsp.cpp] command in .workspace"
+        "Language server jed-test-no-such-language-server not found: install it, or set [lsp.cpp] command in .workspace"
     );
     open(&mut app, &root.join("b.cpp"));
     open(&mut app, &root.join("c.c"));
@@ -5086,7 +5086,7 @@ async fn milestone_9_format_document_without_provider() {
     );
 }
 
-/// `ProcessLauncher` that also keeps every byte red writes to the server (to check what went
+/// `ProcessLauncher` that also keeps every byte jed writes to the server (to check what went
 /// out: `didChange`s with ranges only).
 struct Tee {
     sent: Arc<std::sync::Mutex<Vec<u8>>>,
@@ -5137,7 +5137,7 @@ impl Launcher for Tee {
 }
 
 impl Tee {
-    /// The messages red sent so far.
+    /// The messages jed sent so far.
     fn messages(&self) -> Vec<Value> {
         let mut framer = crate::lsp::rpc::Framer::default();
         framer.push(&self.sent.lock().unwrap());
@@ -5443,7 +5443,7 @@ const SCONS_HELPERS: &str = "def cpp_files(nodes: list) -> list:
 ";
 
 /// M9 done when, SCons: an extensionless `SConstruct` (Python) with real ty, SCons's globals
-/// known through red's `__builtins__.pyi` (written to the support dir, not the workspace, and put
+/// known through jed's `__builtins__.pyi` (written to the support dir, not the workspace, and put
 /// on ty's search path). ty has no formatter: format document says so.
 #[tokio::test(flavor = "multi_thread")]
 async fn milestone_9_done_when_scons_project() {

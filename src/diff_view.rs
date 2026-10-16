@@ -46,7 +46,7 @@ pub enum Text {
     /// The open buffer's text; the file on disk while it isn't open (File History's Compare of
     /// a file not open: the diff reads the buffer once the file opens).
     Buffer,
-    /// An entry of the file's history (`.red/history/`).
+    /// An entry of the file's history (`.jed/history/`).
     History(Snapshot),
 }
 
@@ -381,7 +381,7 @@ impl Doc {
 /// What `load` reads.
 pub struct Job {
     pub repo: Option<Repo>,
-    /// The workspace root (a history side reads `.red/history/` there).
+    /// The workspace root (a history side reads `.jed/history/` there).
     pub root: PathBuf,
     /// Absolute.
     pub path: PathBuf,

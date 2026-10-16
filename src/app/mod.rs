@@ -911,7 +911,7 @@ impl App {
         }
     }
 
-    /// Pastes into the active view: a whole-line copy goes above the cursor's line, and red's
+    /// Pastes into the active view: a whole-line copy goes above the cursor's line, and jed's
     /// own copy of several selections spreads one per cursor when the counts match.
     fn paste(&mut self, text: &str) {
         if !self.active_writable() {

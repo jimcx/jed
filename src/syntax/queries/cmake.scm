@@ -1,4 +1,4 @@
-; red's highlight query for tree-sitter-cmake (instead of the grammar's, which relies on Neovim's
+; jed's highlight query for tree-sitter-cmake (instead of the grammar's, which relies on Neovim's
 ; `#lua-match?`, unknown to tree-sitter: its all-caps pattern would colour every argument).
 
 [

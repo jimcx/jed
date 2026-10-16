@@ -7,13 +7,13 @@
 //! clean; typing just before the restore stays its own undo step).
 //!
 //! 11a, recording: a save through the app snapshots the
-//! exact bytes written (BOM and CRLF kept) under `.red/history/`, once per content (a save of the
-//! same text adds nothing), `.red/.gitignore` keeping it out of git; `.workspace` `[history]`
+//! exact bytes written (BOM and CRLF kept) under `.jed/history/`, once per content (a save of the
+//! same text adds nothing), `.jed/.gitignore` keeping it out of git; `.workspace` `[history]`
 //! limits (`max_entries` drops the oldest, `max_file_size` skips big files, `enabled = false`
 //! records nothing, read live after a `.workspace` reload); a history write failure never fails
 //! the save (the file is written, the buffer clean, a warning shown); files outside the
 //! workspace get no history; an explorer rename moves the file's history (a failed one leaves
-//! it); watcher events under `.red/` never reach the app's file system handling (no listings,
+//! it); watcher events under `.jed/` never reach the app's file system handling (no listings,
 //! git refreshes or disk checks from history writes).
 //!
 //! 11b, Show / Compare / Restore: "File History: Show" from the palette lists the active file's
@@ -127,7 +127,7 @@ async fn milestone_11_a_save_records_its_bytes_once_per_content() {
         vec![first.clone()],
         "the exact bytes saved"
     );
-    assert_eq!(fs::read_to_string(root.join(".red/.gitignore")).unwrap(), "*\n");
+    assert_eq!(fs::read_to_string(root.join(".jed/.gitignore")).unwrap(), "*\n");
     let entry = &history::entries(&root, Path::new("src/a.txt")).unwrap()[0];
     assert_eq!(entry.size, first.len() as u64);
     let folder = history::history_dir(&root).join(history::folder_name("src/a.txt"));
@@ -147,7 +147,7 @@ async fn milestone_11_a_save_records_its_bytes_once_per_content() {
     assert_eq!(all[0], fs::read(root.join("src/a.txt")).unwrap());
     assert_eq!(all[1], first);
 
-    // Git sees the file's change, never `.red/`.
+    // Git sees the file's change, never `.jed/`.
     let status = crate::git::test_repo::git(&root, &["status", "--porcelain", "--untracked-files=all"]);
     assert_eq!(status.trim(), "M src/a.txt", "{status}");
     assert!(
@@ -203,7 +203,7 @@ async fn milestone_11_history_limits_from_the_workspace_file() {
 }
 
 /// Done when: a history write failure never fails a save. Two broken histories (a file where
-/// `.red/history/` should be, then a folder where the file's `entries.toml` should be): each
+/// `.jed/history/` should be, then a folder where the file's `entries.toml` should be): each
 /// save writes the file and leaves the buffer clean (no changed-on-disk conflict), with a
 /// warning; once fixed, saves record again.
 #[tokio::test(flavor = "multi_thread")]
@@ -211,8 +211,8 @@ async fn milestone_11_done_when_a_history_write_failure_never_fails_a_save() {
     let (_d, root, state) = dirs();
     fs::write(root.join("src/a.txt"), "a\n").unwrap();
     // A file where the history folder should be.
-    fs::create_dir(root.join(".red")).unwrap();
-    fs::write(root.join(".red/history"), "not a folder").unwrap();
+    fs::create_dir(root.join(".jed")).unwrap();
+    fs::write(root.join(".jed/history"), "not a folder").unwrap();
     let mut app = open_app(&root, &state);
     open(&mut app, &root.join("src/a.txt"));
 
@@ -234,7 +234,7 @@ async fn milestone_11_done_when_a_history_write_failure_never_fails_a_save() {
     saved_with_a_warning(&app, "ba\n");
 
     // Fixed: the next save records again.
-    fs::remove_file(root.join(".red/history")).unwrap();
+    fs::remove_file(root.join(".jed/history")).unwrap();
     app.type_text("c");
     save(&mut app).await;
     assert_eq!(snapshots(&root, "src/a.txt"), vec![b"bca\n".to_vec()]);
@@ -261,7 +261,7 @@ async fn milestone_11_files_outside_the_workspace_have_no_history() {
     save(&mut app).await;
     assert_eq!(fs::read_to_string(&outside).unwrap(), "xo\n");
     assert_eq!(app.file_history.done, 0);
-    assert!(!root.join(".red").exists());
+    assert!(!root.join(".jed").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -324,7 +324,7 @@ async fn milestone_11_an_explorer_rename_moves_the_history() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn milestone_11_watcher_events_under_red_are_ignored() {
+async fn milestone_11_watcher_events_under_jed_are_ignored() {
     let (_d, root, state) = dirs();
     fs::write(root.join("src/a.txt"), "a\n").unwrap();
     let mut app = open_app(&root, &state);
@@ -333,19 +333,19 @@ async fn milestone_11_watcher_events_under_red_are_ignored() {
     save(&mut app).await;
     assert_eq!(snapshots(&root, "src/a.txt").len(), 1);
 
-    // Writes under `.red/`, then one elsewhere: by the time that one is handled, the earlier
+    // Writes under `.jed/`, then one elsewhere: by the time that one is handled, the earlier
     // ones have arrived too (one watcher, one channel).
     fs::write(history::history_dir(&root).join("junk"), "j").unwrap();
-    fs::write(root.join(".red/other"), "o").unwrap();
+    fs::write(root.join(".jed/other"), "o").unwrap();
     let sentinel = root.join("sentinel.txt");
     fs::write(&sentinel, "s").unwrap();
     assert!(
         app.settle(|a| a.fs_flushed.contains(&sentinel)).await,
         "the watcher works"
     );
-    let red = root.join(".red");
-    let under_red: Vec<_> = app.fs_flushed.iter().filter(|p| p.starts_with(&red)).collect();
-    assert!(under_red.is_empty(), "{under_red:?}");
+    let jed = root.join(".jed");
+    let under_jed: Vec<_> = app.fs_flushed.iter().filter(|p| p.starts_with(&jed)).collect();
+    assert!(under_jed.is_empty(), "{under_jed:?}");
 }
 
 // 11b: Show, Compare, Restore.

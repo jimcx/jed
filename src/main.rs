@@ -80,7 +80,7 @@ use config::keymap::{self, Keymap, Platform};
 use workspace::Workspace;
 use workspace::trust::TrustStore;
 
-const USAGE: &str = "usage: red [--log-level <filter>] [<folder> | <file>[:<line>[:<col>]]]";
+const USAGE: &str = "usage: jed [--log-level <filter>] [<folder> | <file>[:<line>[:<col>]]]";
 
 struct Args {
     target: Option<String>,
@@ -94,7 +94,7 @@ fn parse_args() -> Result<Args, String> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Err(USAGE.into()),
-            "-V" | "--version" => return Err(format!("red {}", env!("CARGO_PKG_VERSION"))),
+            "-V" | "--version" => return Err(format!("jed {}", env!("CARGO_PKG_VERSION"))),
             "--log-level" => log_level = Some(args.next().ok_or("--log-level needs a value")?),
             a if a.starts_with('-') => return Err(format!("unknown option {a}\n{USAGE}")),
             a if target.is_none() => target = Some(a.to_string()),
@@ -143,14 +143,14 @@ fn main() -> ExitCode {
     let log = match logging::init(args.log_level.as_deref()) {
         Ok(handle) => Some(handle),
         Err(e) => {
-            eprintln!("red: logging disabled: {e}");
+            eprintln!("jed: logging disabled: {e}");
             None
         }
     };
     let (root, file) = match resolve_target(args.target.as_deref()) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("red: {e}");
+            eprintln!("jed: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -161,7 +161,7 @@ fn main() -> ExitCode {
         Some((path, goto)) => match Buffer::open(&path) {
             Ok(buffer) => Some(app::InitialFile { buffer, goto }),
             Err(e) => {
-                eprintln!("red: {}: {e}", path.display());
+                eprintln!("jed: {}: {e}", path.display());
                 return ExitCode::FAILURE;
             }
         },
@@ -177,7 +177,7 @@ fn main() -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("red: can't start runtime: {e}");
+            eprintln!("jed: can't start runtime: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -205,7 +205,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("{e:#}");
-            eprintln!("red: {e:#}");
+            eprintln!("jed: {e:#}");
             ExitCode::FAILURE
         }
     }

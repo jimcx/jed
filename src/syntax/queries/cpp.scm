@@ -1,4 +1,4 @@
-; red's additions to tree-sitter-cpp's highlights.scm (after C's, C's additions and C++'s).
+; jed's additions to tree-sitter-cpp's highlights.scm (after C's, C's additions and C++'s).
 
 [
   "try"

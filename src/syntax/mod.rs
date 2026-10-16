@@ -413,7 +413,7 @@ impl ParseJob {
     }
 }
 
-/// The scope a node of this kind sets for the text in it, across red's grammars; `None`: its
+/// The scope a node of this kind sets for the text in it, across jed's grammars; `None`: its
 /// parent's. Comments: any kind naming one (`comment`, Rust's `line_comment`, CMake's
 /// `bracket_comment`, XML's `Comment`). Strings: kinds naming one (`string_literal`, `raw_string`,
 /// YAML's plain `string_scalar`, …, but not the Dockerfile's `unquoted_string`) and the grammars'

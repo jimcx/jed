@@ -42,7 +42,7 @@ fn command_name(command: &str) -> String {
         .map_or_else(|| command.to_string(), |n| n.to_string_lossy().into_owned())
 }
 
-/// The servers red knows without configuration: `clangd` for C and C++, `ty server` for Python.
+/// The servers jed knows without configuration: `clangd` for C and C++, `ty server` for Python.
 #[derive(Debug, Clone)]
 pub struct Builtins {
     pub clangd: ServerConfig,

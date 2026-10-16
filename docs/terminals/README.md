@@ -1,12 +1,12 @@
-# Terminal setup for red (macOS)
+# Terminal setup for jed (macOS)
 
-red uses VS Code's Cmd shortcuts. Most terminals keep many Cmd keys for themselves, so out of the box:
+jed uses VS Code's Cmd shortcuts. Most terminals keep many Cmd keys for themselves, so out of the box:
 
-- the terminal acts on the key and red never sees it (Cmd+1 switches terminal tab, Cmd+Up scrolls, …)
-- **Cmd+W can close the terminal tab or window, losing unsaved work in red** (red's crash backup only covers panics, not a killed terminal)
+- the terminal acts on the key and jed never sees it (Cmd+1 switches terminal tab, Cmd+Up scrolls, …)
+- **Cmd+W can close the terminal tab or window, losing unsaved work in jed** (jed's crash backup only covers panics, not a killed terminal)
 - Option types characters (∂, ˆ, …) instead of acting as Alt, so Alt bindings (word movement, Cmd+Alt+…) don't arrive
 
-Each file below has a snippet that releases red's Cmd keys and turns Option into Alt.
+Each file below has a snippet that releases jed's Cmd keys and turns Option into Alt.
 
 | Terminal | Kitty keyboard protocol | File |
 |---|---|---|
@@ -16,11 +16,11 @@ Each file below has a snippet that releases red's Cmd keys and turns Option into
 | iTerm2 | setting — snippet turns it on | [iterm2.md](iterm2.md) |
 | Alacritty | always available (0.13+) | [alacritty.md](alacritty.md) |
 
-Terminal.app doesn't support the kitty keyboard protocol and can't send Cmd keys; it isn't supported (stretch goal in PLAN.md). Ctrl+Q always quits red, in any terminal.
+Terminal.app doesn't support the kitty keyboard protocol and can't send Cmd keys; it isn't supported (stretch goal in PLAN.md). Ctrl+Q always quits jed, in any terminal.
 
-## Cmd bindings red uses
+## Cmd bindings jed uses
 
-Every macOS binding with Cmd in red's default keymap. **Keep this table in sync with `src/config/keymap.rs`**: a unit test (`terminal_docs_list_every_cmd_binding`) fails if a Cmd binding is missing here or listed but no longer bound. When the table changes, update every snippet too.
+Every macOS binding with Cmd in jed's default keymap. **Keep this table in sync with `src/config/keymap.rs`**: a unit test (`terminal_docs_list_every_cmd_binding`) fails if a Cmd binding is missing here or listed but no longer bound. When the table changes, update every snippet too.
 
 Canonical spelling (the test parses the first column): modifiers in the order `cmd`, `ctrl`, `alt`, `shift`; lowercase key names; `backslash` for `\`.
 
@@ -59,7 +59,7 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+alt+c` | Toggle match case (find widget, Search view) | editor, find, search |
 | `cmd+alt+w` | Toggle match whole word | editor, find |
 | `cmd+alt+r` | Toggle regular expression (find widget, Search view) | editor, find, search |
-| `cmd+shift+1` | Replace one (terminals report it as Cmd+`!`; red reads both) | editor, find |
+| `cmd+shift+1` | Replace one (terminals report it as Cmd+`!`; jed reads both) | editor, find |
 | `cmd+alt+enter` | Replace all | editor, find |
 | `cmd+alt+n` | New file | explorer |
 | `cmd+alt+shift+n` | New folder | explorer |
@@ -81,18 +81,18 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+j` | Toggle the bottom panel (Problems) | everywhere |
 | `cmd+shift+m` | Toggle Problems (show and focus the list, or hide the panel) | everywhere |
 
-**Mouse with modifiers.** Alt+Click adds or removes a cursor and Shift+Alt+drag makes a box selection. Most terminals keep Shift+drag for their own text selection while a program uses the mouse (kitty `terminal_select_modifiers`, WezTerm `bypass_mouse_reporting_modifiers`), and some use Alt or Cmd+Alt with the mouse for rectangle selection, so these may not reach red. The keyboard box select (Cmd+Shift+Alt+arrows) always works.
+**Mouse with modifiers.** Alt+Click adds or removes a cursor and Shift+Alt+drag makes a box selection. Most terminals keep Shift+drag for their own text selection while a program uses the mouse (kitty `terminal_select_modifiers`, WezTerm `bypass_mouse_reporting_modifiers`), and some use Alt or Cmd+Alt with the mouse for rectangle selection, so these may not reach jed. The keyboard box select (Cmd+Shift+Alt+arrows) always works.
 
 The palette is also on F1, go to line is Ctrl+G and the Source Control view Ctrl+Shift+G (as VS Code on macOS); none needs a terminal change. Neither do the find widget's other keys: Enter / Shift+Enter and F3 / Shift+F3 (next / previous match), Alt+Enter (select all matches), Tab (find ↔ replace) and Esc. The Search view's Esc (back to the editor) needs nothing either, nor do F8 / Shift+F8 (next / previous problem), the Problems list's arrows, Enter and Esc, and the Source Control list's arrows, Enter, Space and Esc.
 
-**Leave Cmd+V with the terminal.** red doesn't bind it: the terminal's paste arrives in red as a bracketed paste, which works the same locally and over SSH. Cmd+C and Cmd+X must reach red, since the terminal's own copy takes text off the screen, not red's selection.
+**Leave Cmd+V with the terminal.** jed doesn't bind it: the terminal's paste arrives in jed as a bracketed paste, which works the same locally and over SSH. Cmd+C and Cmd+X must reach jed, since the terminal's own copy takes text off the screen, not jed's selection.
 
 ## Checking a terminal
 
 1. Apply the snippet and restart the terminal.
-2. Run `RED_LOG=input=trace red <some file>`.
+2. Run `JED_LOG=input=trace jed <some file>`.
 3. Press every key in the table, then quit with Ctrl+Q.
-4. In the newest file in `~/.local/state/red/logs/`, each key should appear as a line like
+4. In the newest file in `~/.local/state/jed/logs/`, each key should appear as a line like
    `TRACE input: key=KeyEvent { code: Char('w'), modifiers: KeyModifiers(SUPER), … }`.
    A key with no line was kept by the terminal; a key logged without `SUPER` lost its Cmd.
 5. Check Option: Alt+Left should log `modifiers: KeyModifiers(ALT)`, not a typed character.

@@ -218,7 +218,7 @@ impl App {
         }
     }
 
-    /// Right-click (red has no context menus): on a tab, its file's history ("File History:
+    /// Right-click (jed has no context menus): on a tab, its file's history ("File History:
     /// Show", the tab activated first); on an explorer file, that file's.
     fn right_click(&mut self, hit: Hit) {
         match hit {

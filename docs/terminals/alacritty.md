@@ -15,10 +15,10 @@ The docs: "To unset a default binding, you can use the action "ReceiveChar" to r
 
 ```toml
 [window]
-# red: Option acts as Alt
+# jed: Option acts as Alt
 option_as_alt = "Both"
 
-# red: send these Cmd keys to the program
+# jed: send these Cmd keys to the program
 [keyboard]
 bindings = [
   { key = "A", mods = "Command", action = "ReceiveChar" },
@@ -80,9 +80,9 @@ bindings = [
 
 If you already have a `[keyboard]` section, merge the entries into its `bindings`.
 
-Don't add `cmd+v`: Alacritty's paste is how text gets into red.
+Don't add `cmd+v`: Alacritty's paste is how text gets into jed.
 
-Alacritty defaults that clash with red: `cmd+c` copy, `cmd+w` and `cmd+q` **both quit Alacritty** (Cmd+W isn't "close tab"), `cmd+f` / `cmd+b` search forward / backward, `cmd+1..3` select tab.
+Alacritty defaults that clash with jed: `cmd+c` copy, `cmd+w` and `cmd+q` **both quit Alacritty** (Cmd+W isn't "close tab"), `cmd+f` / `cmd+b` search forward / backward, `cmd+1..3` select tab.
 
 ## What you lose
 
@@ -92,8 +92,8 @@ Alacritty's Cmd+C copy, Cmd+W/Cmd+Q quit, Cmd+F/Cmd+B search and Cmd+1..3 tab sw
 
 - [ ] Snippet added; Alacritty reloads config live (restart if not)
 - [ ] `alacritty --version` is 0.13 or later
-- [ ] **Check by hand:** the docs don't say whether Alacritty forwards Cmd combos under the kitty protocol once released; confirm every key in the [table](README.md#cmd-bindings-red-uses) logs with `SUPER`
+- [ ] **Check by hand:** the docs don't say whether Alacritty forwards Cmd combos under the kitty protocol once released; confirm every key in the [table](README.md#cmd-bindings-jed-uses) logs with `SUPER`
 - [ ] **Check by hand:** key names `Back` and `Backslash` are accepted (Alacritty warns about unknown keys in its log; try `"\\"` for backslash if needed)
-- [ ] Cmd+W closes red's tab and Alacritty stays open
+- [ ] Cmd+W closes jed's tab and Alacritty stays open
 - [ ] **Check by hand:** Cmd+/ (comment line) logs as `SUPER` with `/`; on layouts where `/` is a shifted key (German: Shift+7) the terminal may report Cmd+Shift+7 instead: bind `edit.commentLine` to that in `keybindings.toml`
 - [ ] Alt+Left logs `ALT`

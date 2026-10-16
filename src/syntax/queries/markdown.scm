@@ -1,4 +1,4 @@
-; red's additions to tree-sitter-markdown's (block grammar) highlights.scm, for VS Code Dark+'s
+; jed's additions to tree-sitter-markdown's (block grammar) highlights.scm, for VS Code Dark+'s
 ; colours. Inline text (emphasis, code spans, links in paragraphs) is one `inline` leaf here: the
 ; inline grammar isn't run, so it stays plain.
 

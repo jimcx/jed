@@ -4,7 +4,7 @@
 
 use super::Language;
 
-/// One auto-closing pair (single chars: red has no multi-char pairs such as `/**`).
+/// One auto-closing pair (single chars: jed has no multi-char pairs such as `/**`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AutoPair {
     pub open: char,

@@ -1,4 +1,4 @@
-; red's additions to tree-sitter-bash's highlights.scm, for VS Code Dark+'s colours.
+; jed's additions to tree-sitter-bash's highlights.scm, for VS Code Dark+'s colours.
 
 [
   "if"

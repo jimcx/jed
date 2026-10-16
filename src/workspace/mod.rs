@@ -81,7 +81,7 @@ pub fn normalize(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()))
 }
 
-/// For `red <file>`: the nearest ancestor with a `.workspace`, else the file's directory.
+/// For `jed <file>`: the nearest ancestor with a `.workspace`, else the file's directory.
 pub fn root_for_file(file: &Path) -> PathBuf {
     let dir = file.parent().unwrap_or(Path::new("/"));
     dir.ancestors()

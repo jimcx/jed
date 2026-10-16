@@ -1,6 +1,6 @@
 //! Milestone 7 end to end (7a, the engine): searches started through `App::start_search` run in
 //! the background and stream into `app.search` (files in path order, line text and match ranges,
-//! the total); `.gitignore`, `.workspace` excludes, `.red/` and binary files are skipped; an
+//! the total); `.gitignore`, `.workspace` excludes, `.jed/` and binary files are skipped; an
 //! unsaved edit typed into an open buffer shows up in the results (and the disk version
 //! doesn't); a new search replaces a running one and its stale results are dropped; an empty
 //! pattern finishes at once and an invalid regex returns its error.
@@ -60,7 +60,7 @@ fn open_app(dir: &tempfile::TempDir) -> (App, PathBuf) {
     write(&root, "src/c.rs", "nothing here\n");
     write(&root, "target/out.txt", "needle\n");
     write(&root, "build/gen.txt", "needle\n");
-    write(&root, ".red/history/x", "needle\n");
+    write(&root, ".jed/history/x", "needle\n");
     write(&root, "img.bin", b"needle\0\x01\x02");
     let buffer = Buffer::open(&root.join("a.txt")).unwrap();
     let mut app = test_app(&root, buffer);

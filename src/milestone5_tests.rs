@@ -395,14 +395,14 @@ async fn milestone_5_quick_open() {
     fs::create_dir_all(root.join("src/deep")).unwrap();
     fs::create_dir_all(root.join("target")).unwrap();
     fs::create_dir_all(root.join("gen")).unwrap();
-    fs::create_dir_all(root.join(".red/history")).unwrap();
+    fs::create_dir_all(root.join(".jed/history")).unwrap();
     fs::write(root.join(".gitignore"), "target/\n").unwrap();
     fs::write(root.join(workspace::FILE_NAME), "[files]\nexclude = [\"gen/\"]\n").unwrap();
     fs::write(root.join("src/deep/needle.rs"), "a\nbb\n\tccc\n").unwrap();
     fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
     fs::write(root.join("target/needle.rs"), "").unwrap();
     fs::write(root.join("gen/needle.rs"), "").unwrap();
-    fs::write(root.join(".red/history/needle.rs"), "").unwrap();
+    fs::write(root.join(".jed/history/needle.rs"), "").unwrap();
     let mut app = open_app(&root, None);
 
     app.press(K::Char('p'), cmd());
@@ -415,7 +415,7 @@ async fn milestone_5_quick_open() {
     all.sort();
     assert_eq!(all, [".gitignore", ".workspace", "main.rs", "needle.rs"]);
 
-    // Fuzzy; skips .gitignore'd, excluded and .red/ files.
+    // Fuzzy; skips .gitignore'd, excluded and .jed/ files.
     app.type_text("ndl");
     // Wait for matching on the whole query (each row comes with its own hits).
     assert!(
@@ -562,12 +562,12 @@ async fn milestone_5_trust_and_log_commands() {
 
     // Open Log File: the newest log.
     fs::create_dir_all(&app.log_dir).unwrap();
-    fs::write(app.log_dir.join("red.2026-10-13.log"), "old\n").unwrap();
-    fs::write(app.log_dir.join("red.2026-10-14.log"), "INFO starting\n").unwrap();
+    fs::write(app.log_dir.join("jed.2026-10-13.log"), "old\n").unwrap();
+    fs::write(app.log_dir.join("jed.2026-10-14.log"), "INFO starting\n").unwrap();
     command_palette(&mut app);
     app.type_text("open log file");
     app.press(K::Enter, M::NONE);
-    let newest = app.log_dir.join("red.2026-10-14.log");
+    let newest = app.log_dir.join("jed.2026-10-14.log");
     assert!(
         app.settle(|a| a.active_buffer().is_some_and(|b| b.path == newest))
             .await
@@ -606,10 +606,10 @@ async fn milestone_5_trust_and_log_commands() {
     app.press(K::F(1), M::NONE);
     app.type_text("set log level");
     app.press(K::Enter, M::NONE);
-    app.type_text("red::app=trace,info");
+    app.type_text("jed::app=trace,info");
     assert!(app.palette.as_ref().unwrap().rows.is_empty());
     app.press(K::Enter, M::NONE);
-    assert_eq!(logging::current_filter(&handle).as_deref(), Some("red::app=trace,info"));
+    assert_eq!(logging::current_filter(&handle).as_deref(), Some("jed::app=trace,info"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

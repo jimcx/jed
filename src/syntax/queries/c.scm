@@ -1,4 +1,4 @@
-; red's additions to tree-sitter-c's highlights.scm, for VS Code Dark+'s colours. Read after the
+; jed's additions to tree-sitter-c's highlights.scm, for VS Code Dark+'s colours. Read after the
 ; grammar's queries: for the same node a later pattern wins.
 
 [

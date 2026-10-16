@@ -16,7 +16,7 @@
 //! - C/C++ and Rust (VS Code's `indentationRules` for them, when nothing above applied): an
 //!   opening bracket left unclosed anywhere before the cursor (`g(a,`, `{ x;`) adds a level;
 //!   text after the cursor starting with a closing bracket removes one (`x;|}` puts the `}` a
-//!   level left). Rust's rules leave `[` out and stop at a quote; red uses C's for both.
+//!   level left). Rust's rules leave `[` out and stop at a quote; jed uses C's for both.
 //! - YAML (its `indentationRules`' increase pattern): a line ending with `:` or `-` (a mapping
 //!   key, a sequence dash) adds a level.
 //! - Python (VS Code's `onEnterRules`, which come before brackets): a line starting with a block

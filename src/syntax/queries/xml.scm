@@ -1,4 +1,4 @@
-; red's additions to tree-sitter-xml's highlights.scm, for VS Code Dark+'s colours: tag names
+; jed's additions to tree-sitter-xml's highlights.scm, for VS Code Dark+'s colours: tag names
 ; blue, attribute names light blue, tag brackets grey.
 
 (STag (Name) @tag)

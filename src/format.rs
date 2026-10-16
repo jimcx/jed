@@ -2,7 +2,7 @@
 //! `textDocument/formatting` request sends, reading its `TextEdit[]` answer, and shrinking each
 //! edit to what it really changes.
 //!
-//! - `options(settings)`: `tabSize` and `insertSpaces` from the buffer language's settings (red
+//! - `options(settings)`: `tabSize` and `insertSpaces` from the buffer language's settings (jed
 //!   has no trim-whitespace / final-newline settings; VS Code sends those only when they're on).
 //! - `parse(answer)`: `TextEdit[]`; `null` is no edits.
 //! - `minimize(rope, changes)`: each change trimmed of the text it keeps at its start and end (a

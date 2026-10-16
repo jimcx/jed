@@ -294,11 +294,11 @@ pub fn excludes(root: &Path, globs: &[String]) -> Override {
     b.build().unwrap_or_else(|_| Override::empty())
 }
 
-/// Never shown, listed or searched: git's store and red's own state (file history).
-pub const HIDDEN_DIRS: [&str; 2] = [".git", ".red"];
+/// Never shown, listed or searched: git's store and jed's own state (file history).
+pub const HIDDEN_DIRS: [&str; 2] = [".git", ".jed"];
 
 /// The walk the explorer, quick open and workspace search share: `.gitignore` (inside git
-/// repos), the excludes, and never `.git/` or `.red/`. Dotfiles are shown.
+/// repos), the excludes, and never `.git/` or `.jed/`. Dotfiles are shown.
 pub fn walker(dir: &Path, excludes: &Override) -> WalkBuilder {
     let mut b = WalkBuilder::new(dir);
     b.hidden(false)
@@ -413,8 +413,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = crate::workspace::normalize(dir.path());
         fs::create_dir_all(root.join(".git")).unwrap();
-        fs::create_dir_all(root.join(".red/history")).unwrap();
-        fs::write(root.join(".red/history/entries.toml"), "").unwrap();
+        fs::create_dir_all(root.join(".jed/history")).unwrap();
+        fs::write(root.join(".jed/history/entries.toml"), "").unwrap();
         fs::create_dir_all(root.join("src/deep")).unwrap();
         fs::create_dir_all(root.join("target")).unwrap();
         fs::create_dir_all(root.join("build")).unwrap();

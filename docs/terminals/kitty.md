@@ -15,7 +15,7 @@ Config: `~/.config/kitty/kitty.conf`. Kitty keyboard protocol: always available,
 ## Snippet
 
 ```conf
-# --- red: send these Cmd keys to the program ---
+# --- jed: send these Cmd keys to the program ---
 map cmd+a
 map cmd+z
 map cmd+shift+z
@@ -71,25 +71,25 @@ map cmd+p
 map cmd+j
 map cmd+shift+m
 
-# --- red: Option acts as Alt ---
+# --- jed: Option acts as Alt ---
 macos_option_as_alt both
 ```
 
-Don't add `cmd+v`: kitty's paste is how text gets into red.
+Don't add `cmd+v`: kitty's paste is how text gets into jed.
 
-Only some of these are kitty defaults (`cmd+c` copy, `cmd+up`/`cmd+down` scroll, `cmd+1..3` switch window, `cmd+w` close tab, `cmd+q` quit); the rest are listed so the snippet stays a copy of red's table.
+Only some of these are kitty defaults (`cmd+c` copy, `cmd+up`/`cmd+down` scroll, `cmd+1..3` switch window, `cmd+w` close tab, `cmd+q` quit); the rest are listed so the snippet stays a copy of jed's table.
 
 ## What you lose
 
 Kitty's own Cmd+C (copy screen text; use the mouse selection, which kitty can copy on select), Cmd+W (close tab), Cmd+Q (quit), Cmd+1..3 (switch window) and Cmd+Up/Down (scroll) in **every** kitty window. Close tabs with Cmd+Shift+W (close OS window) or the menu.
 
-Scoping to red only: kitty supports conditional mappings (`map --when-focus-on var:<name> <key>`), but red doesn't set a kitty user variable yet, so there's nothing to match on. Until it does, the unmapping is global.
+Scoping to jed only: kitty supports conditional mappings (`map --when-focus-on var:<name> <key>`), but jed doesn't set a kitty user variable yet, so there's nothing to match on. Until it does, the unmapping is global.
 
 ## Checklist
 
 - [ ] Snippet added, kitty restarted
-- [ ] Every key in the [table](README.md#cmd-bindings-red-uses) logs with `SUPER` (see [Checking a terminal](README.md#checking-a-terminal))
-- [ ] Cmd+W closes red's tab, not kitty's
-- [ ] Cmd+Q reaches red. **Check by hand:** kitty builds its macOS menu from mappings; confirm the Quit menu item no longer grabs Cmd+Q after unmapping
+- [ ] Every key in the [table](README.md#cmd-bindings-jed-uses) logs with `SUPER` (see [Checking a terminal](README.md#checking-a-terminal))
+- [ ] Cmd+W closes jed's tab, not kitty's
+- [ ] Cmd+Q reaches jed. **Check by hand:** kitty builds its macOS menu from mappings; confirm the Quit menu item no longer grabs Cmd+Q after unmapping
 - [ ] **Check by hand:** Cmd+/ (comment line) logs as `SUPER` with `/`; on layouts where `/` is a shifted key (German: Shift+7) the terminal may report Cmd+Shift+7 instead: bind `edit.commentLine` to that in `keybindings.toml`
 - [ ] Alt+Left logs `ALT` (Option-as-Alt works)

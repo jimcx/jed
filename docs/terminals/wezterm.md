@@ -6,7 +6,7 @@ Checked against:
 - https://wezterm.org/config/default-keys.html
 - https://wezterm.org/config/keyboard-concepts.html (macOS Option keys)
 
-Config: `~/.wezterm.lua` (or `~/.config/wezterm/wezterm.lua`). **Kitty keyboard protocol is off by default** (`enable_kitty_keyboard = false`): red can't see Cmd at all until it's on.
+Config: `~/.wezterm.lua` (or `~/.config/wezterm/wezterm.lua`). **Kitty keyboard protocol is off by default** (`enable_kitty_keyboard = false`): jed can't see Cmd at all until it's on.
 
 ## How releasing works
 
@@ -20,14 +20,14 @@ Merge into your existing `config` table:
 local wezterm = require 'wezterm'
 local config = wezterm.config_builder()
 
--- red needs the kitty keyboard protocol to see Cmd
+-- jed needs the kitty keyboard protocol to see Cmd
 config.enable_kitty_keyboard = true
 
--- red: Option acts as Alt (left Option already does by default; this makes both)
+-- jed: Option acts as Alt (left Option already does by default; this makes both)
 config.send_composed_key_when_left_alt_is_pressed = false
 config.send_composed_key_when_right_alt_is_pressed = false
 
--- red: send these Cmd keys to the program
+-- jed: send these Cmd keys to the program
 local release = {
   { 'a', 'CMD' }, { 'z', 'CMD' }, { 'z', 'CMD|SHIFT' },
   { 'c', 'CMD' }, { 'x', 'CMD' }, { '/', 'CMD' }, { 'i', 'CMD|ALT' },
@@ -62,9 +62,9 @@ end
 return config
 ```
 
-Don't release `cmd+v`: WezTerm's paste is how text gets into red.
+Don't release `cmd+v`: WezTerm's paste is how text gets into jed.
 
-WezTerm defaults that clash with red: `cmd+c` copy, `cmd+w` close tab (with confirmation), `cmd+1..3` activate tab, `cmd+f` search. The rest of red's Cmd keys have no WezTerm default.
+WezTerm defaults that clash with jed: `cmd+c` copy, `cmd+w` close tab (with confirmation), `cmd+1..3` activate tab, `cmd+f` search. The rest of jed's Cmd keys have no WezTerm default.
 
 ## What you lose
 
@@ -73,11 +73,11 @@ WezTerm's Cmd+C (copy screen text; Ctrl+Shift+C still copies), Cmd+W, Cmd+1..3 a
 ## Checklist
 
 - [ ] Snippet merged, config reloaded (Cmd+R) or WezTerm restarted
-- [ ] red's start-up warning about the kitty protocol is gone
-- [ ] Every key in the [table](README.md#cmd-bindings-red-uses) logs with `SUPER`
-- [ ] **Check by hand:** Cmd+Q isn't in WezTerm's default key table, so it may come from the macOS app menu; confirm it reaches red (Ctrl+Q always quits red)
+- [ ] jed's start-up warning about the kitty protocol is gone
+- [ ] Every key in the [table](README.md#cmd-bindings-jed-uses) logs with `SUPER`
+- [ ] **Check by hand:** Cmd+Q isn't in WezTerm's default key table, so it may come from the macOS app menu; confirm it reaches jed (Ctrl+Q always quits jed)
 - [ ] `{ 'e', 'CMD|SHIFT' }`, `{ 'f', 'CMD|SHIFT' }` and `{ 'm', 'CMD|SHIFT' }` match: if Cmd+Shift+E, Cmd+Shift+F or Cmd+Shift+M doesn't arrive, try `key = 'E'` / `key = 'F'` / `key = 'M'`
-- [ ] **Check by hand:** Cmd+Shift+P opens red's palette, not WezTerm's command palette (WezTerm's own is on Ctrl+Shift+P; if it still grabs Cmd+Shift+P, try `key = 'P'`)
+- [ ] **Check by hand:** Cmd+Shift+P opens jed's palette, not WezTerm's command palette (WezTerm's own is on Ctrl+Shift+P; if it still grabs Cmd+Shift+P, try `key = 'P'`)
 - [ ] `{ '1', 'CMD|SHIFT' }` matches: if Cmd+Shift+1 doesn't arrive, try `key = '!'`
 - [ ] **Check by hand:** Cmd+/ (comment line) logs as `SUPER` with `/`; on layouts where `/` is a shifted key (German: Shift+7) the terminal may report Cmd+Shift+7 instead: bind `edit.commentLine` to that in `keybindings.toml`
 - [ ] Alt+Left logs `ALT`

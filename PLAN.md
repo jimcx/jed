@@ -1,4 +1,4 @@
-# red — rust editor
+# jed — rust editor
 
 A terminal text editor with a VS Code-style layout and keybindings. Not modal, nothing like vim.
 
@@ -33,7 +33,7 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
 | Git | `git2` | mature libgit2 bindings |
 | Diff | `imara-diff` | buffer/file diffs for the diff view |
 | File watching | `notify` | |
-| Config | TOML via `serde` | `~/.config/red/` |
+| Config | TOML via `serde` | `~/.config/jed/` |
 | Fuzzy finding | `nucleo` | Cmd/Ctrl+P, command palette |
 | Search | `regex` + `ignore` + `grep-searcher` + `grep-matcher` | find in file, Cmd+D, workspace search share one matcher (`search::Matcher` implements `grep_matcher::Matcher`; no `grep-regex`, whose word rules differ) |
 | Task terminals | `portable-pty` + `vt100` + `tui-term` | PTY, VT parser, ratatui widget |
@@ -66,18 +66,18 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
 ### Workspace
 - A workspace is a root directory, optionally with a `.workspace` file (TOML) at its root
 - Opening:
-  - `red <dir>`: workspace root is `<dir>`
-  - `red <file>` / `red <file>:<line>[:<col>]`: walk up from the file to the nearest `.workspace`; else use the file's directory
-  - `red` with no args: current directory
+  - `jed <dir>`: workspace root is `<dir>`
+  - `jed <file>` / `jed <file>:<line>[:<col>]`: walk up from the file to the nearest `.workspace`; else use the file's directory
+  - `jed` with no args: current directory
 - `.workspace` contents:
-  - Settings overrides (tab size, wrap, …) on top of `~/.config/red/`
+  - Settings overrides (tab size, wrap, …) on top of `~/.config/jed/`
   - LSP servers per language (command, args, init options)
-  - Task templates (`[tasks]`); merged with global `~/.config/red/tasks.toml`, workspace wins on name clash
+  - Task templates (`[tasks]`); merged with global `~/.config/jed/tasks.toml`, workspace wins on name clash
   - Excluded paths for explorer, quick open and search (on top of `.gitignore`)
   - File history limits (`[history]`) — see [File history](#file-history)
   - File associations (e.g. `SConstruct`, `*.scons` → Python)
 - Meant to be committed: no per-user state in it
-- Per-user session state (open tabs, splits, layout) lives in `~/.local/state/red/`, keyed by workspace path
+- Per-user session state (open tabs, splits, layout) lives in `~/.local/state/jed/`, keyed by workspace path
 - Reloaded live when `.workspace` changes (via `notify`)
 - Workspace root is the LSP `rootUri`, task default cwd and search root
 
@@ -90,29 +90,29 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
   - No LSP servers or tasks from `.workspace`; servers and tasks from global config still run
   - Editing, git, search all work
   - Status bar shows "Restricted"
-- Trust is per user, stored in `~/.local/state/red/trust.toml`, keyed by workspace path + SHA-256 of the command entries
+- Trust is per user, stored in `~/.local/state/jed/trust.toml`, keyed by workspace path + SHA-256 of the command entries
   - Both answers are stored, so Restricted isn't asked again on every open
   - Esc = Restricted
 - Re-prompt when the command entries in `.workspace` change
 - Command palette: "Manage Workspace Trust"
 
 **Recent workspaces**
-- Every start records the workspace root in `~/.local/state/red/recent.toml`: most recent first, no duplicates, capped at 50
+- Every start records the workspace root in `~/.local/state/jed/recent.toml`: most recent first, no duplicates, capped at 50
 - "Open Recent Workspace" in the command palette (Ctrl+R, as VS Code's Open Recent): a fuzzy list in the palette's input widget
   - Each row: folder name, then the path with `~` for home; the current workspace is left out
   - Folders that no longer exist are dropped from the list when it opens
   - Rows already open in a kitty window are marked
 - Picking one:
-  - Already open in red in a kitty window (any tab, any OS window): focus that window
-  - Else, inside kitty with remote control: open a new kitty OS window running `red <path>`, with that folder as its cwd
-  - Else (another terminal, or remote control off): status-bar message with the path and the `red <path>` command; nothing else happens
-  - red never switches its own workspace in place
+  - Already open in jed in a kitty window (any tab, any OS window): focus that window
+  - Else, inside kitty with remote control: open a new kitty OS window running `jed <path>`, with that folder as its cwd
+  - Else (another terminal, or remote control off): status-bar message with the path and the `jed <path>` command; nothing else happens
+  - jed never switches its own workspace in place
 - Kitty integration (other terminals are ignored for now):
   - Inside kitty when `KITTY_WINDOW_ID` is set
-  - red marks its window by setting a kitty user var `red_workspace` (OSC 1337 `SetUserVar`, base64 path) at startup, and clears it on exit and in the panic hook
-  - Finding windows: `kitten @ ls` → JSON → the window whose `user_vars.red_workspace` is the path; focus by id with `kitten @ focus-window --match id:<id>`
-    - Match on the user var, not the window title or cwd, so a shell `cd`'d into the folder isn't mistaken for red
-  - New OS window: `kitten @ launch --type=os-window --cwd <path> red <path>`
+  - jed marks its window by setting a kitty user var `jed_workspace` (OSC 1337 `SetUserVar`, base64 path) at startup, and clears it on exit and in the panic hook
+  - Finding windows: `kitten @ ls` → JSON → the window whose `user_vars.jed_workspace` is the path; focus by id with `kitten @ focus-window --match id:<id>`
+    - Match on the user var, not the window title or cwd, so a shell `cd`'d into the folder isn't mistaken for jed
+  - New OS window: `kitten @ launch --type=os-window --cwd <path> jed <path>`
   - `kitten` runs off the UI thread with a short timeout; failure (remote control off, `kitten` missing) falls back to the message, and is logged
   - Needs `allow_remote_control yes` (or `socket-only` with `listen_on`) in `kitty.conf`: documented in `docs/terminals/kitty.md`
 
@@ -129,18 +129,18 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
   - Dirty buffer: banner — reload / keep mine / show diff
   - Deleted: mark tab as deleted; save recreates it
 - Unsaved changes on close tab / quit: prompt save / discard / cancel
-- Crash recovery: dirty buffers backed up periodically to `~/.local/state/red/backup/`; offer restore on next start
+- Crash recovery: dirty buffers backed up periodically to `~/.local/state/jed/backup/`; offer restore on next start
 
 ### File history
 Go back to any earlier save of a file, independent of git.
 
 **Storage**
-- Per workspace, in `<root>/.red/history/`
+- Per workspace, in `<root>/.jed/history/`
 - One folder per file, named by a hash of its workspace-relative path (no deep or long paths)
   - `entries.toml`: relative path + list of entries (id, time, size, content hash)
   - One snapshot file per entry, exact saved bytes (BOM and line endings kept)
-- red creates `.red/.gitignore` containing `*`, so history is never committed
-- `.red/` hidden from explorer, quick open and search; watcher events under it ignored
+- jed creates `.jed/.gitignore` containing `*`, so history is never committed
+- `.jed/` hidden from explorer, quick open and search; watcher events under it ignored
 - Files outside the workspace: no history
 
 **Recording**
@@ -161,7 +161,7 @@ Go back to any earlier save of a file, independent of git.
   - Compare: side-by-side diff, entry vs current buffer (reuses the git diff view)
   - Restore: replaces the buffer text as one undoable edit; nothing written until you save
 - Also reachable from the explorer (on a file) and the tab bar
-  - Explorer: "Explorer: Show File History" (palette, on the selected file) or right-click on a file's row; tab bar: right-click on a tab (activates it); red has no context menus, so the right-click runs the command directly
+  - Explorer: "Explorer: Show File History" (palette, on the selected file) or right-click on a file's row; tab bar: right-click on a tab (activates it); jed has no context menus, so the right-click runs the command directly
   - The file needn't be open: Compare shows the entry against the file on disk (the buffer once it opens); Restore opens the file first, then restores into the buffer
 
 ### Explorer (file tree)
@@ -203,9 +203,9 @@ Go back to any earlier save of a file, independent of git.
 - Local: system clipboard through `arboard`
 - Over SSH (`SSH_TTY` set) or if `arboard` fails: copy through OSC 52
 - Paste from the terminal (Cmd+V) arrives as a bracketed-paste event; handle it the same as clipboard paste
-  - macOS: red leaves Cmd+V to the terminal, so paste works the same locally and over SSH (most terminals block OSC 52 reads)
+  - macOS: jed leaves Cmd+V to the terminal, so paste works the same locally and over SSH (most terminals block OSC 52 reads)
   - Linux: Ctrl+V reads `arboard`; the terminal's own Ctrl+Shift+V still arrives as bracketed paste
-  - Cmd+C / Cmd+X must reach red (the terminal's copy would take screen text, not the selection): add them to `docs/terminals/`
+  - Cmd+C / Cmd+X must reach jed (the terminal's copy would take screen text, not the selection): add them to `docs/terminals/`
 - Copy or cut of a whole line (empty selection) marks the clipboard entry; pasting it inserts above the cursor's line (VS Code behaviour)
 - Copy/cut with an empty selection takes the whole line (VS Code behaviour)
 - Multi-cursor copy/paste rules: see [Multi-cursor](#multi-cursor)
@@ -331,7 +331,7 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
 
 ### Tasks (throwaway terminals)
 - A terminal is spawned for one task, then thrown away when it finishes
-- Templates: name, command, cwd, env — in `.workspace` and/or `~/.config/red/tasks.toml` (see [Workspace](#workspace))
+- Templates: name, command, cwd, env — in `.workspace` and/or `~/.config/jed/tasks.toml` (see [Workspace](#workspace))
 - Run from the command palette: "Run Task" (_TBD: shortcut_)
 - Each run gets its own tab in the bottom panel
 - Runs in a PTY, so tools keep their colours and progress bars
@@ -344,7 +344,7 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
 - Cmd/Ctrl+Shift+P: command palette — every named `Command`, with its current binding
 - Cmd/Ctrl+P: quick open file (fuzzy); accepts `file:line[:col]` like the command line
 - Ctrl+G: go to line, in the same input widget
-- Quick open skips what the explorer skips: `.gitignore`, `.workspace` excludes, `.red/`
+- Quick open skips what the explorer skips: `.gitignore`, `.workspace` excludes, `.jed/`
 
 ### Workspace search
 - Cmd/Ctrl+Shift+F: Search view in the side panel (the activity bar's Search icon)
@@ -354,7 +354,7 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
   - Regex: Rust `regex` syntax; an invalid pattern shows the error under the input and nothing runs
   - Toggles combine (e.g. case-sensitive regex)
 - Same matcher (`search` module) as find in file, so each option means the same thing in both
-- Scope: workspace root; skips `.gitignore`d files, `.workspace` excludes, `.red/` and binary files
+- Scope: workspace root; skips `.gitignore`d files, `.workspace` excludes, `.jed/` and binary files
 - Open buffers with unsaved changes are searched from the buffer, not the disk
 - Off the UI thread (`ignore` walker + `grep-searcher` in `spawn_blocking`)
   - Results stream in as files finish
@@ -453,9 +453,9 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
 
 ### Logging
 - `tracing` everywhere; never write to stdout/stderr while the UI is up (corrupts the screen)
-- Log file: `~/.local/state/red/logs/red.YYYY-MM-DD.log`, rotated daily, keep last 7
-- Level from `--log-level` or the `RED_LOG` env var (`EnvFilter` syntax, e.g. `RED_LOG=red::lsp=trace,red::git=debug`); default `info`
-- Targets are module paths (`red::app`, `red::buffer`, …) so each can be turned up alone; plus `input` and `panic`
+- Log file: `~/.local/state/jed/logs/jed.YYYY-MM-DD.log`, rotated daily, keep last 7
+- Level from `--log-level` or the `JED_LOG` env var (`EnvFilter` syntax, e.g. `JED_LOG=jed::lsp=trace,jed::git=debug`); default `info`
+- Targets are module paths (`jed::app`, `jed::buffer`, …) so each can be turned up alone; plus `input` and `panic`
 - LSP:
   - `lsp::wire` at `trace`: every JSON-RPC message in and out, tagged with server name
   - Server stderr captured and logged under `lsp::stderr`
@@ -468,7 +468,7 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
 ### Panic hook
 - Installed at startup, before entering raw mode
 - On panic:
-  - Back up dirty buffers to `~/.local/state/red/backup/` (best effort)
+  - Back up dirty buffers to `~/.local/state/jed/backup/` (best effort)
   - Restore the terminal: pop kitty keyboard flags, disable mouse capture and bracketed paste, leave alternate screen, disable raw mode
   - Write the panic message and backtrace to the log
   - Then print them to stderr
@@ -499,21 +499,21 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
    - Copy works on the whole selection list from the start (joined with newlines), so M6 only adds the paste spreading
    - Paste: Cmd+V stays with the terminal on macOS (bracketed paste); Ctrl+V reads `arboard` on Linux
    - Terminal snippets: pass Cmd+C / Cmd+X through
-   - Done when: copy in red → paste in another app → copy there → paste back into red, both locally and over SSH; empty-selection copy/cut/paste matches VS Code
+   - Done when: copy in jed → paste in another app → copy there → paste back into jed, both locally and over SSH; empty-selection copy/cut/paste matches VS Code
    - Implemented; automated tests cover the editing rules with an in-memory clipboard. Still to check by hand: the round trip with another app locally (`arboard`) and over SSH (OSC 52), incl. inside tmux
 5. ✅ **Palette**: command palette, quick open, keybinding config with contexts — see [Command palette and quick open](#command-palette-and-quick-open), [Keybindings](#keybindings-vs-code-defaults)
    - Needs: named `Command`s (M1), workspace excludes and the explorer's `ignore` walk (M2)
    - Needed by: the find widget and Search view (M6, M7 key contexts), F2 meaning rename-file in the explorer and rename-symbol in the editor (M9), palette commands in M9–M11
    - Command palette over every `Command`, fuzzy via `nucleo`, showing each one's binding
-   - Quick open: walk off the UI thread, fuzzy, `file:line[:col]`; skips `.red/`
+   - Quick open: walk off the UI thread, fuzzy, `file:line[:col]`; skips `.jed/`
    - Go to line (Ctrl+G) in the same input widget
    - `keybindings.toml`: user bindings over the defaults, each limited to a context (editor, find widget, palette, explorer, search, …)
    - Keymaps stay data, chosen at startup (keeps [Basic terminals](#basic-terminals) open)
    - Commands owed from earlier: "Manage Workspace Trust" (M2), "Open Log File", "Set Log Level" ([Logging](#logging))
    - Done when: every command can be run from the palette; a binding in `keybindings.toml` replaces the default and shows in the palette; Esc closes the palette and does nothing else
-   - Also: F1 opens the palette (VS Code default); the explorer hides `.red/` too (shared walker with quick open)
+   - Also: F1 opens the palette (VS Code default); the explorer hides `.jed/` too (shared walker with quick open)
    - Deferred: live preview for go to line; unbinding in `keybindings.toml`; live reload of `keybindings.toml` (M14); find-widget and search contexts arrive with M6 / M7
-   - Still to check by hand: Cmd+P / Cmd+Shift+P reach red in each terminal (Ghostty and WezTerm palettes, iTerm2 Print menu); quick open speed on a large repo
+   - Still to check by hand: Cmd+P / Cmd+Shift+P reach jed in each terminal (Ghostty and WezTerm palettes, iTerm2 Print menu); quick open speed on a large repo
 6. ✅ **Multi-cursor and find**: Cmd+D, Cmd+Shift+L, add above/below, Alt+Click, box select, paste spread across cursors, find/replace in the file — see [Multi-cursor](#multi-cursor), [Editor](#editor)
    - Needs: selection list (M1), clipboard (M4), key contexts (M5)
    - Needed by: workspace search (M7, the matcher), auto-close and auto-indent at every cursor (M8), completion at every cursor (M9)
@@ -533,13 +533,13 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - Session ends on any other selection change, Cmd+U, or focus leaving the editor; skips matches already selected (VS Code would merge)
        - Perf: `ChangeSet::mapper()` (binary search) for other views, one-pass rope rebuild from 256 changes, editor draws only visible selections; 1 MB / 63k matches: Cmd+Shift+L 3 ms, 5.5 ms a key, undo 15 ms
        - Not done: cursor redo (no VS Code default key); word characters are `is_word_char`, not VS Code's `wordSeparators`
-       - Still to check by hand: Cmd+D / Cmd+Shift+L / Cmd+Alt+D / Cmd+U reach red in each terminal (Ghostty and iTerm2 split on Cmd+D; iTerm2's Cmd+U menu item is unverified)
+       - Still to check by hand: Cmd+D / Cmd+Shift+L / Cmd+Alt+D / Cmd+U reach jed in each terminal (Ghostty and iTerm2 split on Cmd+D; iTerm2's Cmd+U menu item is unverified)
      - ✅ 6c: add cursor above / below, Shift+Alt+I, Alt+Click, box select (mouse and keyboard), paste spread across cursors, move / duplicate line at every cursor
        - `column.rs` (add cursor above / below, cursors at line ends, box select as VS Code's ColumnSelection) and `lines.rs` (move / copy lines as blocks, one undo step, no-op adds none); `clipboard::Copied { text, whole_line, pieces }`; `pos::Line` / `LineWalker` / `line_bounds` and an ASCII fast path for 60k-cursor speed
        - Paste spread as VS Code's `multiCursorPaste: spread`; copying from several empty cursors is no longer whole-line (VS Code marks only one cursor), changing M4's behaviour
        - Also (separate commit before 6c): typing at 63k cursors sped up for slower machines (one-string `ChangeSet`, `Arc` change sets, copy-on-write `Selections`)
        - Not done: move lines doesn't re-indent (M8); middle-button box select; a mix of empty and non-empty selections copies `""` for the empty ones (VS Code copies their lines) and cut leaves those lines
-       - Still to check by hand: Shift+Alt+drag and Alt+Click reach red (terminals keep these for their own selection); Cmd+Alt+Up/Down vs Ghostty / iTerm2 pane keys; Cmd+Shift+Alt+arrows / PageUp / PageDown arrive with Super; Shift+Alt+I needs Option-as-Alt; on Linux GNOME takes Ctrl+Alt+Up/Down and Ctrl+Shift+Alt+arrows
+       - Still to check by hand: Shift+Alt+drag and Alt+Click reach jed (terminals keep these for their own selection); Cmd+Alt+Up/Down vs Ghostty / iTerm2 pane keys; Cmd+Shift+Alt+arrows / PageUp / PageDown arrive with Super; Shift+Alt+I needs Option-as-Alt; on Linux GNOME takes Ctrl+Alt+Up/Down and Ctrl+Shift+Alt+arrows
      - ✅ 6d: find / replace widget (Cmd+F / Cmd+Alt+F) and its key context; owns the find options that Cmd+D on selected text borrows (`App::find_options`); replace all as one undo step; Alt+Enter selects every match; marks M6 ✅
        - `find.rs` (model), `app/find.rs`, `ui/find.rs`; `find` and `replace` key contexts (replace → find → global) for `keybindings.toml`; match cache keyed on `Buffer::revision()`, drawn only in view; `search::Replacement` (`$1`, `$&`, `$$`, `\n` …)
        - Keys: Cmd+F / Cmd+Alt+F (Ctrl+F / Ctrl+H on Linux), Enter / Shift+Enter and F3 / Shift+F3, toggles Cmd+Alt+C/W/R (Alt+C/W/R on Linux) also from the editor, Cmd+Shift+1 replace one, Cmd+Alt+Enter replace all (one undo step), Alt+Enter selects every match; first Esc in the editor closes the widget
@@ -558,7 +558,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
    - Cap at 20,000 matches
    - Done when: searching this repo with all three modes gives the same hits as `rg` (with `-F` / `-s` / regex); typing in the query never stalls the UI; an unsaved edit shows up in the results
    - Tasks (one agent and one commit each):
-     - ✅ 7a: search engine, no UI: a `workspace_search` module that walks the root with the shared `ignore` walker (excludes, `.red/`, skip binary) and runs `grep-searcher` with `search::Matcher` in `spawn_blocking`; dirty buffers searched from memory instead of disk; a cancel token; results stream back as `AppEvent` batches grouped by file (line, columns, line text); 20,000 cap with a truncated flag. Tests compare all three modes against a naive reference search (no `rg` binary on the Linux box; check once by hand against `rg -F` / `-s` / regex on this repo)
+     - ✅ 7a: search engine, no UI: a `workspace_search` module that walks the root with the shared `ignore` walker (excludes, `.jed/`, skip binary) and runs `grep-searcher` with `search::Matcher` in `spawn_blocking`; dirty buffers searched from memory instead of disk; a cancel token; results stream back as `AppEvent` batches grouped by file (line, columns, line text); 20,000 cap with a truncated flag. Tests compare all three modes against a naive reference search (no `rg` binary on the Linux box; check once by hand against `rg -F` / `-s` / regex on this repo)
        - `workspace_search.rs`: `matcher(&Query)`, `start(Job, send) -> Handle` (cancel on drop), `Batch { generation, files, done, truncated }` every ≤50 ms, `Results` model (sorted by path, drops stale generations); `app/workspace_search.rs`: `App::start_search`, `app.search`, `AppEvent::SearchResults`
        - Binary skip uses the buffer's own rule (`file::looks_binary`); BOM stripped, lossy UTF-8; lone-CR files and dirty buffers go through the rope path (same results); unsaved files inside the root are searched too
        - `LineMatch` keeps full-line byte ranges plus a ≤300-byte `text` window (`text_start`, `text_ranges()` for drawing)
@@ -571,14 +571,14 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - Timers: `App::next_timer` / `on_timer` serve both the fs debounce and the search debounce, in `run` and `settle` alike
        - 10 MB workspace: a query key + frame 0.4 ms avg, 2.3 ms worst (release)
        - Not done: whole-word toggle, collapsing file rows (later)
-       - Still to check by hand: Cmd+Shift+F reaches red in each terminal (iTerm2 may bind ⇧⌘F to Find Globally; WezTerm may need `key = 'F'`); on Linux Ctrl+Shift+F needs the kitty protocol (else it arrives as Ctrl+F, the find widget)
+       - Still to check by hand: Cmd+Shift+F reaches jed in each terminal (iTerm2 may bind ⇧⌘F to Find Globally; WezTerm may need `key = 'F'`); on Linux Ctrl+Shift+F needs the kitty protocol (else it arrives as Ctrl+F, the find widget)
      - ✅ 7c: navigating results: Up/Down in the list, Enter or click opens the match in the focused group with it selected, F4 / Shift+F4 step through results from anywhere; end-to-end "done when" tests (the three modes, an unsaved edit in the results, typing never stalls); marks M7 ✅
        - The list's selection is (file, row in file) plus the match index, stable while results stream in; new `searchResults` key context (falls back to `search`); 10 `search.*` list / open / next / previous commands
        - Enter and double click open the match in the last focused group and focus the editor; single click and F4 keep focus; Enter on a file row opens its first match; typing or pasting in the list goes back to the query
        - Opening with a position: `App::opening` (by path) holds a `Goto` (`Cursor` for `file:line:col`, `Match { line, range }` for search) until the file loads; clamped to the current text; centred with `reveal_range`
        - Done-when tests: three modes vs an independent reference (`workspace_search::reference`) on a copy of `src/` and `docs/`, driven through the view; an unsaved edit found and opened; a 5-key burst during a 10 MB search (0.2 ms + frame, release) ends with only the final query's hits
        - Not done: collapsing file rows, whole word, replace across files, include / exclude globs (all "Later"); F4 across two files that are still loading can leave the later-finishing one active
-       - Still to check by hand: F4 / Shift+F4 reach red in each terminal (some desktops take F4); Enter, click and double click in a real terminal; results open in the last focused split
+       - Still to check by hand: F4 / Shift+F4 reach jed in each terminal (some desktops take F4); Enter, click and double click in a real terminal; results open in the last focused split
 8. ✅ **Highlighting**: grammars and the built-in dark theme — see [Syntax highlighting](#syntax-highlighting), [Themes](#themes)
    - Needs: byte-indexed edits (M1) to feed tree-sitter's incremental parse; `theme` keys (M1); multi-cursor (M6) so the language-aware editing below runs at every cursor
    - Needed by: LSP (M9, language detection gives the `languageId`)
@@ -601,18 +601,18 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - Not done: "Change Language Mode" command; tree-sitter's error recovery can give a slightly different tree incrementally than from scratch on badly broken code (inherent)
      - ✅ 8b: highlighting: `highlights.scm` queries over the visible range plus a margin, captures → named theme keys in Dark+ (truecolor, 256-colour fallback), drawn in the editor under selections / find matches; spans readable for any line range (Minimap); plain text until the tree arrives; the "done when" perf tests (typing in a 1 MB C++ file, frames under 16 ms; open shows plain text then colours)
        - `syntax/highlight.rs`: capture → theme key with longest-prefix fallback; queries compiled once and warmed off-thread; inner node wins, then the later pattern; `Syntax::spans(rope, lines)` caches up to 4 regions (±50 lines) per tree version — the Minimap API (ask for big ranges in pieces: queries stop at 16 KB from the first line, as VS Code stops tokenizing long lines)
-       - red's own query additions in `syntax/queries/` (control keywords purple, builtin types / constants, `this` / `self`, …); 20 Dark+ token keys in the theme
+       - jed's own query additions in `syntax/queries/` (control keywords purple, builtin types / constants, `this` / `self`, …); 20 Dark+ token keys in the theme
        - While a background reparse runs, the last spans are mapped through each edit (text typed at a span's edge stays plain until the new tree), so colours never flash off
        - 1 MB C++ (release, i7-2600K): open draws plain text in 1 ms and stays under 3 ms a frame during the 620 ms parse; typing avg 5.3 ms, worst ~11 ms; paging worst 2.2 ms; a 1 MB single line ~10 ms
        - Not done: an unclosed `/*` isn't coloured as a comment (tree-sitter error recovery); C macro calls and goto labels; semantic highlighting
        - Still to check by hand: colours against VS Code Dark+; 256-colour mode with `COLORTERM` unset; a big C++ file opening plain then coloured without a stall
      - ✅ 8c: comment line (Cmd+/) and auto-close pairs (brackets and quotes, type-over, delete the pair, wrap a selection) at every cursor, from a per-language config (comment tokens, pairs)
-       - `syntax/config.rs` `LanguageConfig` (VS Code's C/C++, Python and plaintext language configurations: comment token, auto-close pairs with `notIn`, surround pairs, `autoCloseBefore`, Python string prefixes); `comment.rs` (toggle per selection as VS Code's LineCommentCommand); `pairs.rs` (type-over → auto-close → wrap; `delete_pair`; `View::auto_closed` tracks red-inserted closers so only those are typed over / deleted, dropped on any other change or a line break inside)
+       - `syntax/config.rs` `LanguageConfig` (VS Code's C/C++, Python and plaintext language configurations: comment token, auto-close pairs with `notIn`, surround pairs, `autoCloseBefore`, Python string prefixes); `comment.rs` (toggle per selection as VS Code's LineCommentCommand); `pairs.rs` (type-over → auto-close → wrap; `delete_pair`; `View::auto_closed` tracks jed-inserted closers so only those are typed over / deleted, dropped on any other change or a line break inside)
        - `[settings] auto_close_pairs` (default true) turns off auto-close, type-over, pair delete and wrap; comment line unaffected
        - 63k cursors (release): `(` 9 ms, type-over 10 ms, pair Backspace 11 ms; Cmd+/ on 84k lines ≤ 46 ms
        - Not done (VS Code differences): no auto-close before an unmatched closing bracket (needs bracket matching, 8e); no stand-in-character quote check; without a current tree the "not in string / comment" rule is skipped; comment indentation isn't rounded to the indent size
-       - Still to check by hand: Cmd+/ reaches red (iTerm2's Find Cursor menu item; layouts where `/` is shifted may send Cmd+Shift+7; on Linux without the kitty protocol Ctrl+/ arrives as Ctrl+7)
-     - ✅ 8d: user settings file: `~/.config/red/settings.toml` (`paths::config_dir()`, the same `[settings]` keys as `.workspace`) loaded at startup like `keybindings.toml`, errors reported via notify; `.workspace` `[settings]` override it per key; `auto_close_pairs` (added in 8c) and the other settings work from either. Live reload stays in M14
+       - Still to check by hand: Cmd+/ reaches jed (iTerm2's Find Cursor menu item; layouts where `/` is shifted may send Cmd+Shift+7; on Linux without the kitty protocol Ctrl+/ arrives as Ctrl+7)
+     - ✅ 8d: user settings file: `~/.config/jed/settings.toml` (`paths::config_dir()`, the same `[settings]` keys as `.workspace`) loaded at startup like `keybindings.toml`, errors reported via notify; `.workspace` `[settings]` override it per key; `auto_close_pairs` (added in 8c) and the other settings work from either. Live reload stays in M14
        - `config/settings.rs`: `SettingsOverrides` (shared with `.workspace`), `layer(user, workspace)` is the one precedence function (defaults ← `settings.toml` ← `.workspace`, per key); `TEMPLATE` documents every key (a compile-time check keeps it complete)
        - `settings.toml` is lenient (bad keys / types reported and skipped, a syntax error keeps the defaults); `.workspace` stays strict; load errors from settings and keybindings show together after start (`App::report_errors`)
        - "Preferences: Open User Settings" (palette) creates the file from the template if missing (never overwrites) and opens it
@@ -624,7 +624,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
      - ✅ 8f: more languages: Rust, Markdown, YAML, JSON (and JSONC), XML, TOML, Bash / shell, CMake, Makefile, Dockerfile — each a tree-sitter grammar crate compatible with the pinned tree-sitter version, detection (extensions, file names like `Makefile` / `CMakeLists.txt` / `Cargo.lock` / `Dockerfile` / `Containerfile` / `*.dockerfile`, shebangs like `sh` / `bash`), a `highlights.scm` mapped onto the existing Dark+ keys (adding keys only where needed, e.g. Markdown headings / emphasis / links, XML tags / attributes), and a `LanguageConfig` (comment tokens, pairs) so comment line and auto-close work; a language with no usable grammar crate is dropped and noted; marks M8 ✅
        - Grammars: tree-sitter-rust, -md (block grammar), -yaml, -json (JSON and JSONC), -xml, -toml-ng, -bash, -cmake, -make, -containerfile (for Dockerfile: tree-sitter-dockerfile needs tree-sitter 0.20); none dropped
        - Detection (VS Code ids and lists): exact names (`Makefile`, `CMakeLists.txt`, `Dockerfile`, `Cargo.lock`, `tsconfig.json` (JSONC), shell dotfiles, …), name patterns (`Dockerfile.*`, `tsconfig.*.json`, `.vscode/*.json`), multi-dot suffixes, extensions, shell / `make` shebangs; associations still first; `.workspace` is TOML
-       - Highlighting: each grammar's `highlights.scm` + red's `queries/<lang>.scm` (CMake and TOML: red's own only); `ALIASES` maps grammar captures onto existing keys; new keys `markup.heading` / `list` / `quote` / `raw` / `link`, `tag`, `tag.attribute`, `punctuation.tag` (YAML keys use `tag`, as Dark+)
+       - Highlighting: each grammar's `highlights.scm` + jed's `queries/<lang>.scm` (CMake and TOML: jed's own only); `ALIASES` maps grammar captures onto existing keys; new keys `markup.heading` / `list` / `quote` / `raw` / `link`, `tag`, `tag.attribute`, `punctuation.tag` (YAML keys use `tag`, as Dark+)
        - `LanguageConfig` gained explicit `brackets`, `tree_tokens` (false for Markdown: brackets matched from the text) and `insert_spaces` (Makefiles: tabs, via `edit::Settings::for_language`); `Syntax::scope_of(kind)` is one string / comment / code table across grammars; `Tokens::node_at` finds comments whose text is in no leaf (Rust); Rust uses C's `indentationRules`, YAML indents after `:` / `-`
        - 1 MB files (release) in Rust, JSON, YAML, Markdown, XML, TOML, shell: open frames ≤ 4.5 ms, a key + re-parse + frame 9–11 ms, background parses 120–690 ms
        - Not done (VS Code differences): Markdown inline formatting (emphasis, code spans, links in paragraphs: needs injections) and embedded languages in fenced code; block-comment toggling (Markdown, XML have no Cmd+/); JSON has no `//`; no general per-language settings (only Makefile `insert_spaces`); `fish` shebang; `.xsl` / `.xslt`
@@ -655,7 +655,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - For 9c on: requests about a document call `lsp.sync_documents` first; `lsp.version(buffer)` is the last version sent
        - 63k cursors with a server (release): a key 7.6 ms avg / 9.1 ms worst; undo 17 ms
        - clangd keeps indexing after `exit`: killed after `EXIT_GRACE` (300 ms)
-       - Not done: buffers without a file path (red has none yet); reload-from-disk (M10) must go through `Buffer::edit` so servers see it
+       - Not done: buffers without a file path (jed has none yet); reload-from-disk (M10) must go through `Buffer::edit` so servers see it
      - ✅ 9c: diagnostics: `publishDiagnostics` → squiggles in the editor (mapped through edits until the next publish), error / warning counts in the status bar, the diagnostic message on hover of the cursor line (status bar)
        - Parsed in the server task (`Event::Diagnostics`); `lsp::diagnostics::Store` (`app.lsp.diagnostics`): per path, per server, LSP positions, sorted by path, incremental `counts()` — for 9d: `files()`, or `buf.diagnostics.all()` (current byte ranges) for open buffers, both sharing `Arc<Diagnostic>`
        - `Buffer::diagnostics` (`diagnostics::Marks`: sorted, running max end, `overlapping`), mapped through every change set in `Buffer::apply`; a stale-version publish is read in that version's text (`Documents` keeps the last 32 sent versions) and mapped forward; no / unknown version: current text (VS Code)
@@ -669,13 +669,13 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - `grouped.rs` (`Group`, `RowKey`, `ListState`): grouped lists with scroll / selection kept by key, shared by the Search view and Problems — 9g's references list should use it, and `Goto::Problem { place: Place::Lsp, … }` opens LSP locations in unopened files
        - For M12: add a `PanelTab` variant, its context in `App::context()` and its drawing in `ui/panel.rs`
        - Not done (VS Code differences): problems ordered by position, not severity first; no collapsing, filter or copy; unopened files show the LSP character + 1 as the column
-       - Still to check by hand: Ctrl+J on Linux needs the kitty protocol (else it's Enter); Cmd+J / Cmd+Shift+M reach red in each terminal (iTerm2 menu items); panel border drag; icon widths
+       - Still to check by hand: Ctrl+J on Linux needs the kitty protocol (else it's Enter); Cmd+J / Cmd+Shift+M reach jed in each terminal (iTerm2 menu items); panel border drag; icon widths
      - ✅ 9e: hover (a popup at the cursor, a command and mouse rest) and go to definition (F12; several locations → the results list)
        - Requests: `Manager::request_at` (syncs documents first) / `cancel` (`$/cancelRequest`); the app's `requests` map; a new request cancels a pending one of the same kind; `check_requests` after every input cancels requests whose place moved on (edit, cursor, pointer); stale / error answers dropped; Failed / Exited drop a server's pending requests
-       - Hover: `editor.showHover` on Cmd+Alt+I (VS Code's chord Cmd+K Cmd+I: red has no chords), mouse rest 300 ms (`next_timer`); popup (`ui/popup.rs`: `cell_of`, `place`, `frame` — 9f reuses it) above else below the word, ≤ 72×14, wrapped, simple markdown, wheel-scrollable; closes on any key, click, edit, scroll, tab change, pointer leaving the word
+       - Hover: `editor.showHover` on Cmd+Alt+I (VS Code's chord Cmd+K Cmd+I: jed has no chords), mouse rest 300 ms (`next_timer`); popup (`ui/popup.rs`: `cell_of`, `place`, `frame` — 9f reuses it) above else below the word, ≤ 72×14, wrapped, simple markdown, wheel-scrollable; closes on any key, click, edit, scroll, tab change, pointer leaving the word
        - Definition: F12 and Ctrl/Cmd+Click; Location / Location[] / LocationLink (`targetSelectionRange`); one → jump (Cmd+U goes back); several → the panel's LOCATIONS tab (`PanelTab::Locations`, `Context::Locations`, previews of unopened files read off-thread) — 9g: `App::show_locations(title, locations, encoding)`
        - Not done (VS Code differences): no syntax colours in hover code blocks; no navigation history across files; no F4 through Locations; hover under the find widget still asks
-       - Still to check by hand: mouse-motion hover per terminal; Cmd+Alt+I and F12 reaching red on macOS; Ctrl+Click on Linux, Cmd+Click on macOS
+       - Still to check by hand: mouse-motion hover per terminal; Cmd+Alt+I and F12 reaching jed on macOS; Ctrl+Click on Linux, Cmd+Click on macOS
      - ✅ 9f: completion: popup on trigger characters and Ctrl+Space, filtered as you type, accepted text (and `textEdit`s) inserted at every cursor
        - Asking: Ctrl+Space `editor.triggerSuggest` (Ctrl on macOS too; legacy Ctrl+@ works), server trigger characters (`triggerKind` 2), quick suggestions 10 ms after a word char, not in strings / comments (`[settings] quick_suggestions`, default true); "No suggestions." only for Ctrl+Space
        - List (`Context::Suggest`): below the word (else above), kind letter in `symbolIcon.*` colours, matched chars highlighted, the selected item's detail right-aligned, ≤ 12 rows, wheel scrolls; nucleo fuzzy filter (first char at a word start), score → `sortText` → label; incomplete lists re-ask (`triggerKind` 3); Up / Down wrap, PageUp / PageDown, Enter / Tab accept, Esc closes, click inserts, commit characters; closes on leaving the word, clicks / wheel elsewhere, focus / tab change
@@ -693,7 +693,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - Still to check by hand: F2 / Shift+F12 per terminal; the prompt's selected prefill; clangd cross-file rename once indexed on a large project
      - ✅ 9h: format document (Shift+Alt+F), the SCons `__builtins__.pyi` (if supported), the done-when tests on a C++ project with `compile_commands.json` and an SCons project; marks M9 ✅
        - Format document: `editor.formatDocument` (Shift+Alt+F on macOS, Ctrl+Shift+I on Linux), `textDocument/formatting` with the buffer language's `tabSize` / `insertSpaces`; edits trimmed to what changes (`format::minimize`), one undo step via rename's `apply_changes` / `rename::follow`; dropped if text or cursor changed meanwhile; read-only refused; no provider → "There is no formatter for 'x' files installed."
-       - SCons: `lsp/scons_builtins.pyi` embedded; when ty starts in a workspace with a root `SConstruct` and no `__builtins__.pyi` of its own, red writes it under `state_dir()/lsp/scons/` (off-thread, only when changed) and adds that dir to ty's `environment.extra-paths` via `initializationOptions.configuration` (merged with the project's) — nothing is written into the workspace
+       - SCons: `lsp/scons_builtins.pyi` embedded; when ty starts in a workspace with a root `SConstruct` and no `__builtins__.pyi` of its own, jed writes it under `state_dir()/lsp/scons/` (off-thread, only when changed) and adds that dir to ty's `environment.extra-paths` via `initializationOptions.configuration` (merged with the project's) — nothing is written into the workspace
        - Done-when tests with real clangd (C++ with `compile_commands.json`) and ty (SConstruct + helper): diagnostics follow edits, every `didChange` incremental (a `Tee` launcher records the wire), completion, hover, definition, references, rename, format (clangd)
        - `format.rs`, `app/format.rs`, `lsp/scons.rs`; `Manager::request_doc` / `App::send_doc_request` for position-less requests
    - Deferred: Python formatting (ty 0.0.88 has no formatter; VS Code uses a separate ruff extension: needs a second, formatting-only server per language); format selection / on save / on type; SCons `Import("env")` names are still flagged undefined; only a root `SConstruct` is detected; the 9a–9g "Not done" items above
@@ -706,7 +706,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
     - Stage / unstage file or hunk, always from disk after any pending save
     - Owed from M2: git colouring in the explorer; branch in the status bar
     - Files changed on disk ([Files](#files)), owed from M2: ignore our own saves, reload clean buffers silently, banner for dirty ones (reload / keep mine / show diff, using the diff view), deleted-file tabs
-    - Done when: staging a single hunk from the gutter gives the same index as `git add -p`; changing a file outside red updates the gutter, the panel and the open buffer
+    - Done when: staging a single hunk from the gutter gives the same index as `git add -p`; changing a file outside jed updates the gutter, the panel and the open buffer
     - Tasks (one agent and one commit each):
       - ✅ 10a: `git` module (`git2`, a fresh `Repository` per blocking task): repo discovery, status (staged / unstaged / untracked per path), hunks between two texts via `git2::Patch::from_buffers` (the one diff engine for gutter, staging and diff view), stage / unstage a whole file or one hunk (new index blob = index text with that hunk applied / reverted); refreshed off-thread on `notify` events (debounced); branch in the status bar; git colouring in the explorer
         - `git/{mod,diff,stage}.rs`: `Repo::discover`, `Status::read` (`Head::{Branch, Unborn, Detached}`, `Entry { staged, unstaged }`, `decoration`, `label` `main*+!`), `refresh` → `Refreshed`; `diff::diff(old, new, context)` (`GIT_CONTEXT` 3 = `git add -p`'s hunks, 0 for the gutter), `Hunk { old, new }` 0-based half-open line ranges; `stage::file_diff(repo, path, Side, context)`, `stage_file` / `unstage_file`, `stage_hunk(repo, path, &shown, k)` / `unstage_hunk` take the shown `FileDiff` and refuse with `Error::Stale` if index / disk / HEAD moved on (10c: save, `file_diff` from disk, pick the hunk, stage); binary and conflicted refused; index mode kept
@@ -737,33 +737,33 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
 11. ✅ **File history**: snapshot on save, history list, compare (diff view), restore — see [File history](#file-history)
     - Needs: the atomic save path (M1), the palette (M5), the diff view (M10), explorer rename (M2)
     - The diff view's sides are `diff_view::Text` variants: add one for a history entry (`Pair` of entry ↔ `Text::Buffer`)
-    - `history` module: `.red/history/` with its `.gitignore`, snapshot after the save's rename, skip duplicates, `[history]` limits
-    - Ignore watcher events under `.red/` (the explorer and quick open already hide it, M5; search skips it, M7)
+    - `history` module: `.jed/history/` with its `.gitignore`, snapshot after the save's rename, skip duplicates, `[history]` limits
+    - Ignore watcher events under `.jed/` (the explorer and quick open already hide it, M5; search skips it, M7)
     - "File History: Show" in the palette, explorer and tab bar; compare; restore as one undo step
     - Done when: a history write failure never fails a save; restore and then undo gives back the exact buffer
     - Tasks (one agent and one commit each):
-      - ✅ 11a: `history` module and recording: `.red/history/` storage (per-file folder by path hash, `entries.toml`, snapshot files, `.red/.gitignore`), snapshot off-thread after each successful save's rename, skip duplicates, `[history]` limits (`enabled`, `max_entries`, `max_file_size`), failures logged + status message (never fail the save); watcher events under `.red/` ignored; explorer rename moves a file's history (delete keeps it)
-        - `history.rs` (blocking, one process-wide lock): folder = 32 hex of SHA-256 of the `/`-separated relative path; `entries.toml` (path + `[[entry]]` id, time ms, size, hash; oldest first, temp + rename); `relative(root, path)` (`None` outside the root / under `.red/`), `record` → Added / Duplicate / TooLarge / Disabled, `entries(root, rel)` newest first and `read(root, rel, id)` for 11b, `rename` (file or folder; merges by time into an existing history)
-        - `app/history.rs`: `SaveJob::write` returns the written bytes; after `SaveDone` a second blocking task records, `AppEvent::HistoryDone` (warning "File history of <rel> not saved: …" on error); explorer rename moves history in its own blocking task (only when the rename succeeded); `App::fs_changed` drops paths under `.red/`
-        - Not done: two red processes writing one history at once; delete-keeps-history has no test (explorer delete uses the real Trash)
+      - ✅ 11a: `history` module and recording: `.jed/history/` storage (per-file folder by path hash, `entries.toml`, snapshot files, `.jed/.gitignore`), snapshot off-thread after each successful save's rename, skip duplicates, `[history]` limits (`enabled`, `max_entries`, `max_file_size`), failures logged + status message (never fail the save); watcher events under `.jed/` ignored; explorer rename moves a file's history (delete keeps it)
+        - `history.rs` (blocking, one process-wide lock): folder = 32 hex of SHA-256 of the `/`-separated relative path; `entries.toml` (path + `[[entry]]` id, time ms, size, hash; oldest first, temp + rename); `relative(root, path)` (`None` outside the root / under `.jed/`), `record` → Added / Duplicate / TooLarge / Disabled, `entries(root, rel)` newest first and `read(root, rel, id)` for 11b, `rename` (file or folder; merges by time into an existing history)
+        - `app/history.rs`: `SaveJob::write` returns the written bytes; after `SaveDone` a second blocking task records, `AppEvent::HistoryDone` (warning "File history of <rel> not saved: …" on error); explorer rename moves history in its own blocking task (only when the rename succeeded); `App::fs_changed` drops paths under `.jed/`
+        - Not done: two jed processes writing one history at once; delete-keeps-history has no test (explorer delete uses the real Trash)
       - ✅ 11b: "File History: Show" for the active file: a palette picker of entries (newest first, "3 min ago · 12 KB"), Compare (a `diff_view::Text` variant for an entry, `Pair` entry ↔ `Text::Buffer`) and Restore (buffer text replaced as one undoable edit, not saved)
         - `fileHistory.show` / `fileHistory.restore` (palette, unbound): entries read off-thread, then the palette opens on them (`Picker::History { restore }`; no history → a message, never an empty picker); Enter = Compare (a diff tab `name (History: 3 min ago)`, entry ↔ yours) or, for Restore, restores; Restore on a history diff tab restores its entry
         - `diff_view::Text::History(history::Snapshot)` (Copy: time + 8 hash bytes, read back with `history::read_snapshot`); restore decodes like a load, refuses binary / non-UTF-8 / read-only, diffs like `disk::changes` (re-diffed if the buffer changed meanwhile) and applies one undo step via `apply_changes`; keeps the buffer's BOM / EOL setting
         - Not done: absolute times are UTC (no time-zone database); no key inside the picker to restore instead of compare
       - ✅ 11c: entry points from the explorer (on a file) and the tab bar; the done-when tests (a history write failure never fails a save; restore then undo gives the exact buffer); marks M11 ✅
-        - `explorer.showFileHistory` (palette, unbound; a folder gets a message) and right-click on an explorer row; right-click on a tab activates it and runs File History: Show for its file (also a diff tab's file). red has no context menus: right-click runs the command directly
+        - `explorer.showFileHistory` (palette, unbound; a folder gets a message) and right-click on an explorer row; right-click on a tab activates it and runs File History: Show for its file (also a diff tab's file). jed has no context menus: right-click runs the command directly
         - Files not open: Compare reads the disk (`Text::Buffer` falls back to the file, switching to the buffer once it opens); Restore opens the file first (`OpenRequest.restore`), nothing written
         - Done-when tests: `milestone_11_done_when_a_history_write_failure_never_fails_a_save`, `milestone_11_done_when_restore_then_undo_gives_back_the_exact_buffer` (text, selections, primary, BOM, dirty state)
-    - Deferred: absolute times in UTC; no key in the picker to restore instead of compare; no context menus (right-click runs the command); two red processes writing one history at once; delete keeping history is untested (explorer delete uses the real Trash)
-    - Still to check by hand: right-click on explorer rows and tabs in real terminals (kitty, iTerm2, tmux may take right-click); Compare / Restore of a file not open from the explorer; restore then undo on a real file with multiple cursors; a broken `.red/history` (e.g. read-only) still lets saves through with the warning; `git status` never shows `.red/`; the `·` in the picker rows
+    - Deferred: absolute times in UTC; no key in the picker to restore instead of compare; no context menus (right-click runs the command); two jed processes writing one history at once; delete keeping history is untested (explorer delete uses the real Trash)
+    - Still to check by hand: right-click on explorer rows and tabs in real terminals (kitty, iTerm2, tmux may take right-click); Compare / Restore of a file not open from the explorer; restore then undo on a real file with multiple cursors; a broken `.jed/history` (e.g. read-only) still lets saves through with the warning; `git status` never shows `.jed/`; the `·` in the picker rows
 12. ✅ **Tasks**: templates, PTY runner, task tabs in the bottom panel — see [Tasks](#tasks-throwaway-terminals)
     - Needs: workspace trust (M2), the palette (M5), the bottom panel (M9)
-    - Templates from `.workspace` `[tasks]` and `~/.config/red/tasks.toml`, workspace wins on a clash
+    - Templates from `.workspace` `[tasks]` and `~/.config/jed/tasks.toml`, workspace wins on a clash
     - "Run Task" from the palette; one tab per run; PTY via `portable-pty` + `vt100` + `tui-term`
     - Exit code shown, output kept until the tab closes; kill a running task
     - Done when: a colourful build (e.g. `cargo build`) renders as in a real terminal; restricted mode runs no `.workspace` task
     - Tasks (one agent and one commit each):
-      - ✅ 12a: `tasks` module, no UI: templates from `.workspace` `[tasks]` and `~/.config/red/tasks.toml` (workspace wins on a clash; restricted / undecided trust: no `.workspace` tasks), cwd / env resolution; the PTY runner (`portable-pty` + `vt100`): spawn off the UI thread, output parsed into a screen with scrollback, resize, exit code, kill; results reported through `AppEvent`s
+      - ✅ 12a: `tasks` module, no UI: templates from `.workspace` `[tasks]` and `~/.config/jed/tasks.toml` (workspace wins on a clash; restricted / undecided trust: no `.workspace` tasks), cwd / env resolution; the PTY runner (`portable-pty` + `vt100`): spawn off the UI thread, output parsed into a screen with scrollback, resize, exit code, kill; results reported through `AppEvent`s
         - `tasks/templates.rs`: `tasks.toml` uses `.workspace`'s `[tasks.<name>]` tables, read once at startup in `main` (lenient like `settings.toml`); `merge` (by name, workspace wins, `Source`), cwd (root / relative / `~`), env (`TERM=xterm-256color`, `COLORTERM=truecolor` unless set); `App::task_templates()` takes `.workspace` tasks only when `Trusted`
         - `tasks/run.rs`: `Run::start` (openpty + spawn in `spawn_blocking`, `$SHELL -c`, falling back to `/bin/sh`), a reader thread into a `vt100::Parser` (5000 lines of scrollback) behind a mutex, a `waitid(WNOWAIT)` waiter, `Event::{Started, Output (≤ one per 20 ms), Ended}`; `Status::{Starting, Running, Exited(Exit { code, signal, killed }), Failed}`; `resize`, `kill` (SIGHUP + SIGCONT to the group, SIGKILL after 1 s, also to leftovers holding the PTY), `force_kill`; dropping a `Run` kills it
         - `app.tasks` (`Tasks`: `run`, `get`, `close`, `size` 24×80 until 12b, `shutdown`); `AppEvent::Task`; `App::shutdown` stops servers and tasks together on quit
@@ -771,7 +771,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
       - ✅ 12b: "Run Task" in the palette (a picker of templates); one bottom-panel tab per run (`PanelTab` for task runs, drawn with `tui-term`, Dark+ colours), PTY resized to the panel, exit code shown when it ends, output kept until the tab closes; kill a running task; close a run's tab (killing it if running); keys while the panel has focus
         - `task.run` (palette, unbound: name, command, source; no templates / restricted mode → a message naming `.workspace` and `tasks.toml`), `task.kill` (the shown tab's run, else the newest running), `task.close` (Cmd+W in a task tab, the tab's `×`, middle click; kills if running)
         - `PanelTab::Task(id)` after Problems / Locations, marks `●` / `✓` / `✗ 2` / `✗ killed`; drawn with `tui-term` through `Theme::terminal_cell` (`terminal.*` keys, Dark+'s ANSI palette, bold → bright, RGB → 256 without truecolor); PTYs resized to the panel at draw time (only on change); an end note under the output and in the status bar
-        - `Context::Task` (`task`): Shift+PageUp / Down, Ctrl+Shift+Up / Down, Ctrl+Home / End scroll the scrollback, Esc back to the editor; every other key and pastes go to the PTY as xterm encodes them (application cursor, bracketed paste), through a writer thread (never blocks the UI); global keys stay red's
+        - `Context::Task` (`task`): Shift+PageUp / Down, Ctrl+Shift+Up / Down, Ctrl+Home / End scroll the scrollback, Esc back to the editor; every other key and pastes go to the PTY as xterm encodes them (application cursor, bracketed paste), through a writer thread (never blocks the UI); global keys stay jed's
         - Not done: answers to terminal queries; keys typed while a run is still starting are dropped; Esc never reaches a task; no spinner; the tab strip doesn't scroll; ended runs aren't resized; no mouse selection / copy in a task
       - ✅ 12c: the done-when tests (a colourful build renders its colours and progress as in a real terminal; restricted mode runs no `.workspace` task), remaining gaps and hand checks; marks M12 ✅
         - Input written while a run is still starting is queued (`State::queued`) and sent first once it spawns; dropped if the start fails
@@ -780,19 +780,19 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
     - Still to check by hand: `cargo build` of a real project with dependencies in kitty, iTerm2 and tmux (colours, progress bar, wide output wrapping); truecolor vs 256 colours; typing into a task right after picking it; Shift+PageUp / Down and Ctrl+Shift+Up / Down not grabbed by the terminal; Ctrl+C and a y/n prompt in a task; kill / close of a long build; quitting with a build running leaves no processes; the restricted-mode hint and running after Manage Workspace Trust; macOS `waitid` and process-group kills; a fish `$SHELL`
 13. **Sessions and recent workspaces**: restore open tabs, splits and layout per workspace; jump between workspaces — see [Workspace](#workspace) (incl. Recent workspaces), [Files](#files)
     - Needs: the split tree (M3), state paths (M2), the palette (M5), the panic hook (M1)
-    - Session state in `~/.local/state/red/`, keyed by workspace path
+    - Session state in `~/.local/state/jed/`, keyed by workspace path
     - Task tabs (M12) are throwaway: not restored; history diff tabs (M11) and git diff tabs (M10) may be restored by path and pair
-    - Crash recovery: back up dirty buffers periodically to `~/.local/state/red/backup/` (the panic hook already writes there); offer restore on next start
+    - Crash recovery: back up dirty buffers periodically to `~/.local/state/jed/backup/` (the panic hook already writes there); offer restore on next start
     - Recent workspaces: `recent.toml`; "Open Recent Workspace" (Ctrl+R) in the palette
-    - Kitty: `red_workspace` user var on start / exit / panic; `kitten @ ls` to find and focus red's window, `kitten @ launch` for a new tab; message fallback outside kitty
+    - Kitty: `jed_workspace` user var on start / exit / panic; `kitten @ ls` to find and focus jed's window, `kitten @ launch` for a new tab; message fallback outside kitty
     - Tests drive the kitty side through a fake `kitten` on `PATH` (canned `ls` JSON, records its arguments)
-    - Done when: quit and reopen gives back the same tabs, splits, cursors and scroll; killing the terminal loses at most one backup interval of edits; picking a recent workspace open in another kitty tab or OS window focuses it, and one not open starts red in a new kitty OS window
+    - Done when: quit and reopen gives back the same tabs, splits, cursors and scroll; killing the terminal loses at most one backup interval of edits; picking a recent workspace open in another kitty tab or OS window focuses it, and one not open starts jed in a new kitty OS window
 14. **Polish**: settings, the rest of the editor list, performance
     - Settings: live reload of `settings.toml` and `.workspace` overrides (the files themselves load at startup since M8, 8d)
     - Soft wrap toggle (the view must stop assuming one screen row per line: up/down, mouse hits, scroll)
     - Owed from M3: move tabs between groups, drag-and-drop tabs, keyboard resize of splits
     - Back / forward navigation ([Editor](#editor)): `nav.back` / `nav.forward` on Ctrl+- / Ctrl+Shift+- (macOS) and Ctrl+Alt+- / Ctrl+Shift+- (Linux), and the mouse back / forward buttons
-      - crossterm 0.29 drops SGR mouse buttons 8 / 9 (`parse_cb`: "We do not support other buttons"): needs a patched crossterm or red's own parse of those reports; not every terminal sends them (check kitty, Ghostty, WezTerm, iTerm2, Alacritty)
+      - crossterm 0.29 drops SGR mouse buttons 8 / 9 (`parse_cb`: "We do not support other buttons"): needs a patched crossterm or jed's own parse of those reports; not every terminal sends them (check kitty, Ghostty, WezTerm, iTerm2, Alacritty)
     - Performance against the [Goals](#goals): startup time, memory, 1 MB files; check the slow-frame warnings in the log
     - Done when: no warnings over 16 ms in a day of normal use
 
@@ -836,7 +836,7 @@ Broad items not tied to a milestone.
   - `docs/terminals/<terminal>.md` for Kitty, Ghostty, WezTerm, iTerm2, Alacritty
   - Each: pass through every Cmd binding in the default keymap; turn on Option-as-Alt
   - Update the snippets whenever a Cmd binding is added (keymap change → snippet change)
-  - Per-terminal check: press every binding and confirm it arrives (`RED_LOG=input=trace`)
+  - Per-terminal check: press every binding and confirm it arrives (`JED_LOG=input=trace`)
   - Done: `docs/terminals/` (README + kitty, ghostty, wezterm, iterm2, alacritty); unit test `terminal_docs_list_every_cmd_binding` fails if the README table and the macOS Cmd keymap differ
   - Still to do: hand-check each terminal with its checklist (iTerm2 least certain)
 

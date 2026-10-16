@@ -1,8 +1,8 @@
 //! SCons support for ty: SCons runs `SConstruct` / `SConscript` with its globals (`Environment`,
 //! `Import`, …) injected, which ty would flag as undefined. ty treats the symbols of a
 //! `__builtins__.pyi` it finds on its search path as builtins, so in an SCons workspace (an
-//! `SConstruct` at the root) red writes its own `__builtins__.pyi` (`BUILTINS`, embedded in the
-//! binary) to `<support dir>/scons/` (`~/.local/state/red/lsp/scons/`) and adds that directory to
+//! `SConstruct` at the root) jed writes its own `__builtins__.pyi` (`BUILTINS`, embedded in the
+//! binary) to `<support dir>/scons/` (`~/.local/state/jed/lsp/scons/`) and adds that directory to
 //! ty's `environment.extra-paths` through `initializationOptions.configuration` (ty's inline
 //! settings; its arrays are merged with the project's own `ty.toml` / `pyproject.toml` ones).
 //! Nothing is written into the workspace. A workspace with its own root `__builtins__.pyi` keeps
@@ -44,7 +44,7 @@ pub fn prepare(root: &Path, support_dir: &Path) -> Option<PathBuf> {
     if std::fs::read_to_string(&file).is_ok_and(|t| t == BUILTINS) {
         return Some(dir);
     }
-    // Written aside and renamed: two red instances (or tests) may write it at once.
+    // Written aside and renamed: two jed instances (or tests) may write it at once.
     let tmp = dir.join(format!(".__builtins__.pyi.{}.tmp", std::process::id()));
     let written = std::fs::create_dir_all(&dir)
         .and_then(|()| std::fs::write(&tmp, BUILTINS))
