@@ -191,6 +191,10 @@ Go back to any earlier save of a file, independent of git.
   - Alt+Enter turns every match into a selection (as VS Code)
 - Auto-indent, bracket matching, auto-close of pairs
 - Line numbers, current-line highlight, soft wrap toggle
+- Back / forward navigation (VS Code's Go Back / Go Forward): return the cursor to where it was before a jump, across files and tabs
+  - A location is recorded on jumps: opening or switching files, go to line / definition / references, search and problem results, F4 / F8, Cmd+Home / End, clicks and moves of more than a screen's worth of lines; typing records where the edit was (one entry per place, not per keystroke)
+  - Entries are (file, position) that follow edits; capped (VS Code keeps 50); closed tabs reopen; going back then jumping elsewhere drops the forward entries
+  - Mouse back / forward buttons (buttons 8 / 9) and a keyboard shortcut
 - Minimap: see [Stretch goals](#stretch-goals)
 
 ### Clipboard
@@ -386,6 +390,7 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
 | Cut / copy / paste | Cmd+X / Cmd+C / Cmd+V | Ctrl+X / Ctrl+C / Ctrl+V |
 | Add next match / all matches | Cmd+D, Cmd+Shift+L | Ctrl+D, Ctrl+Shift+L |
 | Toggle panel | Cmd+J | Ctrl+J |
+| Go back / go forward | Ctrl+- / Ctrl+Shift+- | Ctrl+Alt+- / Ctrl+Shift+- |
 
 - Configurable through `keybindings.toml`
 - Single key combos only — no chords
@@ -733,6 +738,8 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
     - Settings: live reload of `settings.toml` and `.workspace` overrides (the files themselves load at startup since M8, 8d)
     - Soft wrap toggle (the view must stop assuming one screen row per line: up/down, mouse hits, scroll)
     - Owed from M3: move tabs between groups, drag-and-drop tabs, keyboard resize of splits
+    - Back / forward navigation ([Editor](#editor)): `nav.back` / `nav.forward` on Ctrl+- / Ctrl+Shift+- (macOS) and Ctrl+Alt+- / Ctrl+Shift+- (Linux), and the mouse back / forward buttons
+      - crossterm 0.29 drops SGR mouse buttons 8 / 9 (`parse_cb`: "We do not support other buttons"): needs a patched crossterm or red's own parse of those reports; not every terminal sends them (check kitty, Ghostty, WezTerm, iTerm2, Alacritty)
     - Performance against the [Goals](#goals): startup time, memory, 1 MB files; check the slow-frame warnings in the log
     - Done when: no warnings over 16 ms in a day of normal use
 
