@@ -31,6 +31,8 @@ mod milestone10_tests;
 #[cfg(test)]
 mod milestone11_tests;
 #[cfg(test)]
+mod milestone12_tests;
+#[cfg(test)]
 mod milestone2_tests;
 #[cfg(test)]
 mod milestone3_tests;
@@ -61,6 +63,7 @@ mod search;
 mod search_view;
 mod selection;
 mod syntax;
+mod tasks;
 mod terminal;
 mod theme;
 mod ui;
@@ -165,6 +168,7 @@ fn main() -> ExitCode {
         None => None,
     };
     let user_settings = config::settings::load(&paths::config_dir().join(config::settings::FILE_NAME));
+    let user_tasks = tasks::templates::load(&paths::config_dir().join(tasks::templates::FILE_NAME));
     let workspace = Workspace::load(root).with_user_settings(user_settings.overrides);
     let trust_store = TrustStore::load(TrustStore::default_path());
     let platform = Platform::current();
@@ -186,7 +190,9 @@ fn main() -> ExitCode {
         .and_then(|mut term| {
             runtime.block_on(async {
                 let mut app = app::App::new(workspace, trust_store, initial, kitty);
+                app.tasks.user = user_tasks.tasks;
                 let mut errors = user_settings.errors;
+                errors.extend(user_tasks.errors);
                 errors.extend(keymap_errors);
                 app.set_keymap(keymap, errors);
                 app.log = log;

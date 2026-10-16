@@ -372,7 +372,8 @@ impl App {
     }
 
     /// Asks every server to exit and waits for them (bounded: see `lsp::Manager::shutdown`).
-    /// `run` calls it on quit; tests call it after `Quit`.
+    /// `run` (via `shutdown`) on quit; tests call it after `Quit`.
+    #[cfg_attr(not(test), allow(dead_code))] // tests
     pub async fn shutdown_servers(&mut self) {
         self.lsp.shutdown().await;
     }

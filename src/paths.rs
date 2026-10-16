@@ -20,7 +20,8 @@ fn xdg_dir(var: &str, default: &str) -> PathBuf {
     base.join("red")
 }
 
-fn home() -> PathBuf {
+/// `$HOME`, else `.`.
+pub fn home() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))

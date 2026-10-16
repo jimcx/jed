@@ -21,6 +21,7 @@ mod rename;
 mod scm;
 mod side;
 mod syntax;
+mod tasks;
 mod workspace_search;
 
 use std::collections::{HashMap, HashSet};
@@ -213,6 +214,8 @@ enum AppEvent {
     },
     /// A stage / unstage from a diff tab (or of a whole file) ended: the message to show.
     DiffStaged(Result<String, String>),
+    /// A task run started, has new output (throttled) or ended (`app/tasks.rs`).
+    Task(crate::tasks::Event),
 }
 
 /// The file to open at startup, with an optional 1-based line and column.
@@ -317,6 +320,8 @@ pub struct App {
     pub scm: crate::scm::ScmView,
     /// Stage All waiting for these buffers' saves to end.
     stage_all_after_save: Option<HashSet<BufferId>>,
+    /// Task templates from `tasks.toml` and the task runs (`app/tasks.rs`).
+    pub tasks: crate::tasks::Tasks,
     /// The last command `execute` ran, for tests.
     #[cfg(test)]
     pub last_command: Option<Command>,
@@ -407,6 +412,7 @@ impl App {
             diffs: Default::default(),
             scm: Default::default(),
             stage_all_after_save: None,
+            tasks: Default::default(),
             #[cfg(test)]
             last_command: None,
             #[cfg(test)]
@@ -440,6 +446,10 @@ impl App {
             let _ = tx.send(AppEvent::Lsp(ev));
         }));
         let tx = self.tx.clone();
+        self.tasks.start(Arc::new(move |ev| {
+            let _ = tx.send(AppEvent::Task(ev));
+        }));
+        let tx = self.tx.clone();
         match watcher::start(&self.workspace.root, move |paths| {
             let _ = tx.send(AppEvent::FsChanged(paths));
         }) {
@@ -461,7 +471,7 @@ impl App {
         let mut events = EventStream::new();
         loop {
             if self.should_quit {
-                self.shutdown_servers().await;
+                self.shutdown().await;
                 return Ok(());
             }
             // Once per turn, so a burst of keys is one incremental re-parse.
@@ -482,7 +492,7 @@ impl App {
                 ev = events.next() => match ev {
                     Some(ev) => self.handle_event(ev?),
                     None => {
-                        self.shutdown_servers().await;
+                        self.shutdown().await;
                         return Ok(());
                     }
                 },
@@ -972,6 +982,7 @@ impl App {
             AppEvent::Staged { at, unstage, result } => self.staged(at, unstage, result),
             AppEvent::DiffLoaded { id, generation, result } => self.diff_loaded(id, generation, *result),
             AppEvent::DiffStaged(message) => self.diff_staged(message),
+            AppEvent::Task(ev) => self.task_event(ev),
         }
         self.refresh_find();
         self.check_completion();
