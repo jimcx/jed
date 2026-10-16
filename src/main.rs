@@ -13,6 +13,7 @@ mod explorer;
 mod field;
 mod find;
 mod format;
+mod git;
 mod group;
 mod grouped;
 mod hover;
@@ -22,6 +23,8 @@ mod lines;
 mod locations;
 mod logging;
 mod lsp;
+#[cfg(test)]
+mod milestone10_tests;
 #[cfg(test)]
 mod milestone2_tests;
 #[cfg(test)]

@@ -60,6 +60,20 @@ impl Theme {
             ("sideBar.border", Style::new().fg(c(0x3C3C3C))),
             ("sideBar.dim", Style::new().fg(c(0x858585))),
             ("list.active", fg_bg(0xFFFFFF, 0x04395E)),
+            // Explorer entries by git status (Dark+'s `gitDecoration.*`; a folder takes its most
+            // important file's).
+            ("gitDecoration.addedResourceForeground", Style::new().fg(c(0x81B88B))),
+            ("gitDecoration.modifiedResourceForeground", Style::new().fg(c(0xE2C08D))),
+            ("gitDecoration.deletedResourceForeground", Style::new().fg(c(0xC74E39))),
+            ("gitDecoration.renamedResourceForeground", Style::new().fg(c(0x73C991))),
+            (
+                "gitDecoration.untrackedResourceForeground",
+                Style::new().fg(c(0x73C991)),
+            ),
+            (
+                "gitDecoration.conflictingResourceForeground",
+                Style::new().fg(c(0xE4676B)),
+            ),
             ("list.inactive", Style::new().bg(c(0x37373D))),
             ("tabBar", Style::new().bg(c(0x252526))),
             ("tab.active", fg_bg(0xFFFFFF, 0x1E1E1E)),

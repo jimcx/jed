@@ -6,7 +6,15 @@ use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 /// Stops watching when dropped.
 pub struct Watcher {
-    _inner: RecommendedWatcher,
+    inner: RecommendedWatcher,
+}
+
+impl Watcher {
+    /// Also watches `path` (recursively), reporting through the same callback: the git
+    /// directory when it's outside the workspace root.
+    pub fn watch(&mut self, path: &Path) -> notify::Result<()> {
+        self.inner.watch(path, RecursiveMode::Recursive)
+    }
 }
 
 pub fn start(root: &Path, on_change: impl Fn(Vec<PathBuf>) + Send + 'static) -> notify::Result<Watcher> {
@@ -16,5 +24,5 @@ pub fn start(root: &Path, on_change: impl Fn(Vec<PathBuf>) + Send + 'static) -> 
         Err(e) => tracing::warn!("watch error: {e}"),
     })?;
     w.watch(root, RecursiveMode::Recursive)?;
-    Ok(Watcher { _inner: w })
+    Ok(Watcher { inner: w })
 }

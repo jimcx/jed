@@ -93,8 +93,23 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Rect, Option<SearchH
             (true, false) => "▸ ",
             (false, _) => "  ",
         };
+        // Git colouring (VS Code): the name in its status's colour, a changed file's letter at
+        // the right edge.
+        let decoration = app.git.status.as_ref().and_then(|s| s.decoration(&e.path));
+        let style = match decoration {
+            Some(d) => style.patch(theme.get(d.theme_key())),
+            None => style,
+        };
+        let mut room = body.width as usize;
+        if let Some(d) = decoration
+            && !e.is_dir
+            && body.width > 6
+        {
+            room -= 3;
+            out.set_stringn(body.x + body.width - 2, y, d.letter().to_string(), 1, style);
+        }
         let text = format!("{}{marker}{}", "  ".repeat(row.depth + 1), e.name);
-        out.set_stringn(body.x, y, text, body.width as usize, style);
+        out.set_stringn(body.x, y, text, room, style);
     }
     (body, None)
 }

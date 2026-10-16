@@ -5,6 +5,7 @@ mod cursors;
 mod files;
 mod find;
 mod format;
+mod git;
 mod hover;
 mod locations;
 mod lsp;
@@ -168,6 +169,11 @@ enum AppEvent {
         generation: u64,
         files: Vec<(PathBuf, ropey::Rope)>,
     },
+    /// A git status refresh finished (`app/git.rs`).
+    GitRefreshed {
+        result: Result<crate::git::Refreshed, String>,
+        elapsed: Duration,
+    },
 }
 
 /// The file to open at startup, with an optional 1-based line and column.
@@ -258,6 +264,8 @@ pub struct App {
     pub locations: Option<crate::locations::Locations>,
     /// Numbers Locations lists, so file reads for a replaced one are dropped.
     locations_generation: u64,
+    /// The git status (branch, changed files) and its refresh.
+    pub git: git::GitState,
     /// The last command `execute` ran, for tests.
     #[cfg(test)]
     pub last_command: Option<Command>,
@@ -338,6 +346,7 @@ impl App {
             completion: Default::default(),
             locations: None,
             locations_generation: 0,
+            git: Default::default(),
             #[cfg(test)]
             last_command: None,
         };
@@ -361,7 +370,8 @@ impl App {
         app
     }
 
-    /// Background work that needs the runtime: watching, the first listing, language servers.
+    /// Background work that needs the runtime: watching, the first listing and git status,
+    /// language servers.
     fn start(&mut self) {
         let tx = self.tx.clone();
         self.lsp.start(Arc::new(move |ev| {
@@ -374,6 +384,7 @@ impl App {
             Ok(w) => self.watcher = Some(w),
             Err(e) => self.notify(Level::Warning, format!("Not watching for file changes: {e}")),
         }
+        self.refresh_git(None);
         let root = self.workspace.root.clone();
         self.request_listing(root);
         self.reveal_active();
@@ -827,6 +838,7 @@ impl App {
             AppEvent::Parsed { buffer, parsed } => self.parsed(buffer, parsed),
             AppEvent::Lsp(ev) => self.lsp_event(ev),
             AppEvent::LocationsRead { generation, files } => self.locations_read(generation, files),
+            AppEvent::GitRefreshed { result, elapsed } => self.git_refreshed(result, elapsed),
         }
         self.refresh_find();
         self.check_completion();

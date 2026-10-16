@@ -1,4 +1,4 @@
-//! Status bar: trust mode, file, problem counts, message (else the cursor line's diagnostic),
+//! Status bar: trust mode, git branch, file, problem counts, message (else the cursor line's diagnostic),
 //! cursor position, file format, language mode.
 
 use ratatui::Frame;
@@ -22,6 +22,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
     if app.trust == Trust::Restricted {
         let (nx, _) = out.set_stringn(x, area.y, " Restricted ", width, app.theme.get("statusBar.restricted"));
         x = nx;
+    }
+    // The git branch (or detached commit), `*` / `+` / `!` for unstaged / staged / conflicted
+    // changes, as VS Code.
+    if let Some(git) = &app.git.status {
+        let room = width.saturating_sub((x - area.x) as usize);
+        x = out
+            .set_stringn(x, area.y, format!(" ⎇ {} ", git.label()), room, style)
+            .0;
     }
 
     // Problems in the workspace (VS Code's `⊗ 1 ⚠ 2`), once a language server runs or any
