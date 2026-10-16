@@ -23,6 +23,7 @@ use crate::buffer::BufferId;
 use crate::git::Repo;
 use crate::git::diff::{self, Hunk};
 use crate::git::stage::{self, FileDiff, Side};
+use crate::history::{self, Snapshot};
 use crate::quick_diff::Want;
 
 /// How long after an edit of a live side's buffer the diff is taken again (the gutter's delay).
@@ -44,16 +45,19 @@ pub enum Text {
     Disk,
     /// The open buffer's text only.
     Buffer,
+    /// An entry of the file's history (`.red/history/`).
+    History(Snapshot),
 }
 
 impl Text {
-    pub fn title(self) -> &'static str {
+    pub fn title(self) -> String {
         match self {
-            Text::Head => "HEAD",
-            Text::Index => "Index",
-            Text::WorkTree => "Working Tree",
-            Text::Disk => "On Disk",
-            Text::Buffer => "Yours",
+            Text::Head => "HEAD".into(),
+            Text::Index => "Index".into(),
+            Text::WorkTree => "Working Tree".into(),
+            Text::Disk => "On Disk".into(),
+            Text::Buffer => "Yours".into(),
+            Text::History(s) => format!("History: {}", history::ago(s.time, history::now_ms())),
         }
     }
 
@@ -91,6 +95,22 @@ impl Pair {
         right: Text::Buffer,
     };
 
+    /// File History's Compare: an entry against the buffer.
+    pub fn history(snapshot: Snapshot) -> Pair {
+        Pair {
+            left: Text::History(snapshot),
+            right: Text::Buffer,
+        }
+    }
+
+    /// The history entry compared, if any.
+    pub fn snapshot(self) -> Option<Snapshot> {
+        match self.left {
+            Text::History(s) => Some(s),
+            _ => None,
+        }
+    }
+
     pub fn git(side: Side) -> Pair {
         match side {
             Side::Unstaged => Pair::UNSTAGED,
@@ -116,6 +136,10 @@ impl Pair {
     pub fn tab_title(self, name: &str) -> String {
         match self {
             Pair::UNSTAGED | Pair::STAGED => format!("{name} ({})", self.right.title()),
+            Pair {
+                left: Text::History(_),
+                right: Text::Buffer,
+            } => format!("{name} ({})", self.left.title()),
             _ => format!("{name} ({} ↔ {})", self.left.title(), self.right.title()),
         }
     }
@@ -356,6 +380,8 @@ impl Doc {
 /// What `load` reads.
 pub struct Job {
     pub repo: Option<Repo>,
+    /// The workspace root (a history side reads `.red/history/` there).
+    pub root: PathBuf,
     /// Absolute.
     pub path: PathBuf,
     pub pair: Pair,
@@ -401,6 +427,12 @@ fn read(job: &Job, text: Text) -> Result<Vec<u8>, stage::Error> {
         },
         Text::Disk => disk(&job.path)?,
         Text::Buffer => return Err(not_found("the file isn't open")),
+        Text::History(snapshot) => {
+            let rel = history::relative(&job.root, &job.path).ok_or_else(|| not_found("outside the workspace"))?;
+            let bytes = history::read_snapshot(&job.root, &rel, snapshot)
+                .map_err(|e| stage::Error::Io(std::io::Error::other(e)))?;
+            Some(bytes)
+        }
     };
     Ok(bytes.unwrap_or_default())
 }
@@ -843,6 +875,39 @@ mod tests {
         assert_eq!(
             DiffTab::new(3, "/r/f.txt".into(), Pair::SAVED).title(),
             "f.txt (On Disk ↔ Yours)"
+        );
+    }
+
+    #[test]
+    fn a_history_entry_against_the_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let rel = Path::new("a.txt");
+        history::record(&root, rel, b"\xEF\xBB\xBFold\n", &Default::default()).unwrap();
+        let entry = &history::entries(&root, rel).unwrap()[0];
+        let pair = Pair::history(entry.snapshot());
+        assert_eq!(pair.snapshot(), Some(entry.snapshot()));
+        assert_eq!(pair.staging(), None);
+        assert!(!pair.needs_repo());
+        assert_eq!(pair.tab_title("a.txt"), "a.txt (History: just now)");
+        let job = |live: Option<&str>| Job {
+            repo: None,
+            root: root.clone(),
+            path: root.join(rel),
+            pair,
+            live: live.map(|t| (Rope::from_str(t), false)),
+        };
+        let doc = load(job(Some("new\n"))).unwrap();
+        assert_eq!((doc.left.line(0), doc.right.line(0)), ("old", "new"));
+        assert!(load(job(None)).unwrap_err().contains("isn't open"));
+        let gone = Pair::history(Snapshot { time: 1, hash: 1 });
+        assert!(
+            load(Job {
+                pair: gone,
+                ..job(Some("x"))
+            })
+            .unwrap_err()
+            .contains("gone")
         );
     }
 }

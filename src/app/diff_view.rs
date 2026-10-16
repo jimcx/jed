@@ -173,6 +173,7 @@ impl App {
             let generation = d.begin(live);
             let job = Job {
                 repo: repo.clone(),
+                root: self.workspace.root.clone(),
                 path: d.path.clone(),
                 pair: d.pair,
                 live: open.map(|(_, b)| (b.rope.clone(), b.bom)),

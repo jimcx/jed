@@ -47,6 +47,31 @@ pub struct Entry {
     pub hash: String,
 }
 
+impl Entry {
+    /// What names this entry where a `Copy` value is needed (a diff tab's side).
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            time: self.time,
+            hash: hash_prefix(&self.hash),
+        }
+    }
+}
+
+/// An entry as a diff tab's side names it: its time and the first 8 bytes of its hash (an id is
+/// a `String`, and `diff_view::Text` is `Copy`). Entries of one file never share both (`record`
+/// skips a duplicate of the newest; a rename's merge keeps ids apart, not contents).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Snapshot {
+    pub time: u64,
+    pub hash: u64,
+}
+
+fn hash_prefix(hash: &str) -> u64 {
+    hash.get(..16)
+        .and_then(|h| u64::from_str_radix(h, 16).ok())
+        .unwrap_or(0)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Index {
@@ -105,7 +130,8 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn now_ms() -> u64 {
+/// Now, in milliseconds since the Unix epoch (entries' `time`).
+pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
@@ -229,7 +255,6 @@ pub fn record(root: &Path, rel: &Path, bytes: &[u8], limits: &HistoryConfig) -> 
 /// The file's entries, newest first (none without a history).
 ///
 /// Blocking: call from spawn_blocking.
-#[cfg_attr(not(test), allow(dead_code))] // 11b's File History: Show
 pub fn entries(root: &Path, rel: &Path) -> Result<Vec<Entry>, String> {
     let key = key_of(rel)?;
     let _guard = lock();
@@ -241,7 +266,7 @@ pub fn entries(root: &Path, rel: &Path) -> Result<Vec<Entry>, String> {
 /// The bytes of the entry `id` of the file.
 ///
 /// Blocking: call from spawn_blocking.
-#[cfg_attr(not(test), allow(dead_code))] // 11b's Compare / Restore
+#[cfg_attr(not(test), allow(dead_code))] // tests (the app reads by `Snapshot`)
 pub fn read(root: &Path, rel: &Path, id: &str) -> Result<Vec<u8>, String> {
     let key = key_of(rel)?;
     let _guard = lock();
@@ -251,6 +276,80 @@ pub fn read(root: &Path, rel: &Path, id: &str) -> Result<Vec<u8>, String> {
     }
     let path = dir.join(id);
     fs::read(&path).map_err(context("can't read", &path))
+}
+
+/// The bytes of the entry named by `snapshot` (the newest, should several match).
+///
+/// Blocking: call from spawn_blocking.
+pub fn read_snapshot(root: &Path, rel: &Path, snapshot: Snapshot) -> Result<Vec<u8>, String> {
+    let key = key_of(rel)?;
+    let _guard = lock();
+    let dir = folder(root, &key);
+    let index = index_for(&dir, &key)?;
+    let Some(entry) = index.entries.iter().rev().find(|e| e.snapshot() == snapshot) else {
+        return Err(format!("that history entry of {key} is gone"));
+    };
+    let path = dir.join(&entry.id);
+    fs::read(&path).map_err(context("can't read", &path))
+}
+
+/// How long before `now` (ms) `time` (ms) was, as the history list shows it: "just now",
+/// "42 sec ago", "3 min ago", "5 hr ago", "2 days ago", "3 mo ago", "1 yr ago".
+pub fn ago(time: u64, now: u64) -> String {
+    let secs = now.saturating_sub(time) / 1000;
+    let (mins, hours, days) = (secs / 60, secs / 3600, secs / 86_400);
+    match () {
+        _ if secs < 5 => "just now".into(),
+        _ if secs < 60 => format!("{secs} sec ago"),
+        _ if mins < 60 => format!("{mins} min ago"),
+        _ if hours < 24 => format!("{hours} hr ago"),
+        _ if days == 1 => "1 day ago".into(),
+        _ if days < 30 => format!("{days} days ago"),
+        _ if days < 365 => format!("{} mo ago", days / 30),
+        _ => format!("{} yr ago", days / 365),
+    }
+}
+
+/// A size as the history list shows it: "512 B", "1.5 KB", "12 KB", "3.2 MB".
+pub fn size_label(bytes: u64) -> String {
+    const K: f64 = 1024.0;
+    let b = bytes as f64;
+    let scaled = |v: f64, unit: &str| {
+        if v < 10.0 {
+            format!("{v:.1} {unit}")
+        } else {
+            format!("{} {unit}", v.round() as u64)
+        }
+    };
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if b < K * K {
+        scaled(b / K, "KB")
+    } else {
+        scaled(b / (K * K), "MB")
+    }
+}
+
+/// `time` (ms since the epoch) as `2026-10-17 14:03:09 UTC` (no time zone database: UTC).
+pub fn utc_label(time: u64) -> String {
+    let secs = time / 1000;
+    let (days, rest) = ((secs / 86_400) as i64, secs % 86_400);
+    // Howard Hinnant's civil_from_days.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02} UTC",
+        rest / 3600,
+        rest / 60 % 60,
+        rest % 60
+    )
 }
 
 /// Moves the history of `from` (a file, or every file under a folder) to `to`, after the file
@@ -478,5 +577,45 @@ mod tests {
             t.join().unwrap().unwrap();
         }
         assert_eq!(entries(&root, Path::new("a")).unwrap().len(), 8);
+    }
+
+    #[test]
+    fn read_snapshot_finds_the_entry_by_time_and_hash() {
+        let (_d, root) = root();
+        let rel = Path::new("a");
+        record(&root, rel, b"one", &limits()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        record(&root, rel, b"two", &limits()).unwrap();
+        let all = entries(&root, rel).unwrap();
+        assert_eq!(read_snapshot(&root, rel, all[0].snapshot()), Ok(b"two".to_vec()));
+        assert_eq!(read_snapshot(&root, rel, all[1].snapshot()), Ok(b"one".to_vec()));
+        assert_ne!(all[0].snapshot(), all[1].snapshot());
+        let gone = Snapshot { time: 1, hash: 2 };
+        assert!(read_snapshot(&root, rel, gone).unwrap_err().contains("gone"));
+    }
+
+    #[test]
+    fn labels_for_the_list() {
+        let now = 1_000_000_000_000;
+        let ago_s = |s: u64| ago(now - s * 1000, now);
+        assert_eq!(ago_s(0), "just now");
+        assert_eq!(ago(now + 5000, now), "just now", "a clock that went back");
+        assert_eq!(ago_s(42), "42 sec ago");
+        assert_eq!(ago_s(180), "3 min ago");
+        assert_eq!(ago_s(5 * 3600 + 59), "5 hr ago");
+        assert_eq!(ago_s(86_400), "1 day ago");
+        assert_eq!(ago_s(3 * 86_400), "3 days ago");
+        assert_eq!(ago_s(95 * 86_400), "3 mo ago");
+        assert_eq!(ago_s(400 * 86_400), "1 yr ago");
+
+        assert_eq!(size_label(0), "0 B");
+        assert_eq!(size_label(512), "512 B");
+        assert_eq!(size_label(1536), "1.5 KB");
+        assert_eq!(size_label(12 * 1024 + 100), "12 KB");
+        assert_eq!(size_label(3_355_443), "3.2 MB");
+
+        assert_eq!(utc_label(0), "1970-01-01 00:00:00 UTC");
+        assert_eq!(utc_label(1_792_245_789_000), "2026-10-17 14:03:09 UTC");
+        assert_eq!(utc_label(951_782_400_000), "2000-02-29 00:00:00 UTC");
     }
 }

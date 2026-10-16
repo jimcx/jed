@@ -10,6 +10,7 @@ use nucleo::{Config, Matcher, Nucleo, Utf32Str, Utf32String};
 
 use crate::command::Command;
 use crate::field::TextField;
+use crate::history::{self, Entry, Snapshot};
 
 /// Quick open shows at most this many files (the best matches).
 pub const MAX_FILE_ROWS: u32 = 200;
@@ -21,6 +22,9 @@ pub enum Picker {
     QuickOpen,
     /// "Set Log Level": a level, or a typed filter.
     LogLevel,
+    /// "File History: Show" / "Restore": an entry of the active file's history (the entries are
+    /// the app's: `app.file_history.picker`). Accepting compares, or with `restore` restores.
+    History { restore: bool },
 }
 
 /// What the rows are, from the picker and the input.
@@ -30,6 +34,7 @@ pub enum Mode {
     Files,
     GoToLine,
     LogLevel,
+    History,
 }
 
 pub const COMMANDS_PREFIX: char = '>';
@@ -42,6 +47,8 @@ pub enum Action {
     /// Workspace-relative path.
     Open(PathBuf),
     SetLogLevel(&'static str),
+    /// A file history entry.
+    History(Snapshot),
 }
 
 /// One line in the list. Hits are char indices to highlight.
@@ -94,6 +101,7 @@ impl Palette {
     pub fn mode(&self) -> Mode {
         match self.picker {
             Picker::LogLevel => Mode::LogLevel,
+            Picker::History { .. } => Mode::History,
             Picker::QuickOpen => match self.field.text.chars().next() {
                 Some(COMMANDS_PREFIX) => Mode::Commands,
                 Some(LINE_PREFIX) => Mode::GoToLine,
@@ -106,7 +114,7 @@ impl Palette {
     pub fn query(&self) -> &str {
         match self.mode() {
             Mode::Commands | Mode::GoToLine => &self.field.text[1..],
-            Mode::Files | Mode::LogLevel => &self.field.text,
+            Mode::Files | Mode::LogLevel | Mode::History => &self.field.text,
         }
     }
 
@@ -207,6 +215,37 @@ pub fn log_level_rows(query: &str, current: Option<&str>) -> Vec<Row> {
                 detail_hits: Vec::new(),
                 keys: None,
                 action: Action::SetLogLevel(level),
+            })
+        })
+        .collect()
+}
+
+/// Rows for a file's history `entries` (newest first, kept in that order) matching `query`:
+/// "3 min ago · 12 KB", the time (UTC) dimmed after it. `now` in ms since the epoch.
+pub fn history_rows(query: &str, entries: &[Entry], now: u64) -> Vec<Row> {
+    let pattern = pattern(query);
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let mut buf = Vec::new();
+    entries
+        .iter()
+        .filter_map(|e| {
+            let label = format!("{} · {}", history::ago(e.time, now), history::size_label(e.size));
+            let detail = history::utc_label(e.time);
+            let (mut label_hits, mut detail_hits) = (Vec::new(), Vec::new());
+            if !query.is_empty() {
+                let by_label = pattern.indices(Utf32Str::new(&label, &mut buf), &mut matcher, &mut label_hits);
+                if by_label.is_none() {
+                    label_hits.clear();
+                    pattern.indices(Utf32Str::new(&detail, &mut buf), &mut matcher, &mut detail_hits)?;
+                }
+            }
+            Some(Row {
+                label,
+                label_hits: sorted(label_hits),
+                detail,
+                detail_hits: sorted(detail_hits),
+                keys: None,
+                action: Action::History(e.snapshot()),
             })
         })
         .collect()
@@ -430,5 +469,29 @@ mod tests {
         p.move_selection(-5);
         assert_eq!((p.selected, p.scroll), (0, 0));
         assert_eq!(log_level_rows("dbg", None)[0].label, "debug");
+    }
+
+    #[test]
+    fn history_rows_keep_the_order_and_filter() {
+        let entry = |time: u64, size: u64, hash: &str| Entry {
+            id: format!("{time}"),
+            time,
+            size,
+            hash: hash.repeat(64),
+        };
+        let now = 1_792_245_789_000;
+        let entries = [entry(now - 180_000, 12 * 1024, "a"), entry(now - 7_200_000, 300, "b")];
+        let rows = history_rows("", &entries, now);
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["3 min ago · 12 KB", "2 hr ago · 300 B"]);
+        assert_eq!(rows[0].detail, "2026-10-17 14:00:09 UTC");
+        assert_eq!(rows[1].action, Action::History(entries[1].snapshot()));
+        let rows = history_rows("300", &entries, now);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label_hits, [11, 12, 13]);
+        // The time matches too.
+        let rows = history_rows("12:03", &entries, now);
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].detail_hits.is_empty());
     }
 }

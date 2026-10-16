@@ -28,6 +28,7 @@ impl App {
 
     pub(super) fn close_palette(&mut self) {
         self.palette = None;
+        self.file_history.picker = None;
         if let Some(files) = &mut self.files {
             files.stop();
         }
@@ -61,7 +62,7 @@ impl App {
     }
 
     /// Rebuilds the rows for the current input.
-    fn refresh_palette(&mut self) {
+    pub(super) fn refresh_palette(&mut self) {
         let Some(p) = &self.palette else { return };
         let (mode, query) = (p.mode(), p.query().to_string());
         let mut hint = None;
@@ -90,6 +91,21 @@ impl App {
                 hint = Some(self.line_hint(&query));
                 Vec::new()
             }
+            Mode::History => match &self.file_history.picker {
+                Some(h) => {
+                    let rows = palette::history_rows(&query, &h.entries, crate::history::now_ms());
+                    let rel = h.rel.display();
+                    hint = Some(if rows.is_empty() {
+                        "No matching entries".into()
+                    } else if h.restore {
+                        format!("{rel}: Enter restores the entry into the buffer (not saved)")
+                    } else {
+                        format!("{rel}: Enter compares the entry with yours")
+                    });
+                    rows
+                }
+                None => Vec::new(),
+            },
             Mode::Files => {
                 let files = self.file_matcher();
                 files.set_query(palette::file_query(&query));
@@ -231,6 +247,13 @@ impl App {
             (_, Some(Action::Run(cmd))) => {
                 self.close_palette();
                 self.execute(cmd);
+            }
+            (_, Some(Action::History(snapshot))) => {
+                let picker = self.file_history.picker.take();
+                self.close_palette();
+                if let Some(picker) = picker {
+                    self.history_picked(picker, snapshot);
+                }
             }
             (_, Some(Action::Open(rel))) => {
                 let goto = paths::strip_position(&query).map(|(_, (l, c))| super::files::Goto::Cursor(l, c));

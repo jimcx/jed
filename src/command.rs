@@ -191,6 +191,12 @@ pub enum Command {
     FocusScm,
     /// The Source Control view's list (`Context::Scm`).
     Scm(ScmCommand),
+    /// The active file's history entries in the palette; picking one compares it with the
+    /// buffer (a diff tab).
+    ShowFileHistory,
+    /// On a history diff tab: its entry replaces the buffer's text (one undo step, not saved).
+    /// Elsewhere: the history picker, whose pick is restored.
+    RestoreFileHistory,
 }
 
 /// Focus-group commands listed in the palette and accepted in keybindings (as VS Code: 1 to 8).
@@ -552,6 +558,7 @@ impl Command {
             Command::FocusScm,
         ]);
         all.extend(ScmCommand::ALL.map(Command::Scm));
+        all.extend([Command::ShowFileHistory, Command::RestoreFileHistory]);
         all
     }
 
@@ -749,6 +756,8 @@ impl Command {
             Command::UnstageHunk => "git.unstageHunk".into(),
             Command::NextChange => "editor.nextChange".into(),
             Command::CompareWithSaved => "file.compareWithSaved".into(),
+            Command::ShowFileHistory => "fileHistory.show".into(),
+            Command::RestoreFileHistory => "fileHistory.restore".into(),
             Command::OpenChange => "git.openChange".into(),
             Command::StageFile => "git.stageFile".into(),
             Command::UnstageFile => "git.unstageFile".into(),
@@ -950,6 +959,8 @@ impl Command {
             Command::UnstageHunk => "Git: Unstage Change at Cursor",
             Command::NextChange => "Go to Next Change",
             Command::CompareWithSaved => "File: Compare with Disk",
+            Command::ShowFileHistory => "File History: Show",
+            Command::RestoreFileHistory => "File History: Restore",
             Command::OpenChange => "Git: Open Changes",
             Command::StageFile => "Git: Stage File",
             Command::UnstageFile => "Git: Unstage File",
@@ -1082,9 +1093,11 @@ mod tests {
             Command::UnstageAll => 74,
             Command::FocusScm => 75,
             Command::Scm(_) => 76,
+            Command::ShowFileHistory => 77,
+            Command::RestoreFileHistory => 78,
         }
     }
-    const VARIANTS: u8 = 77;
+    const VARIANTS: u8 = 79;
 
     #[test]
     fn all_lists_every_variant() {

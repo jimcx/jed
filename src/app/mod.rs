@@ -155,6 +155,10 @@ enum AppEvent {
     FsChanged(Vec<PathBuf>),
     /// A file history task (a save's snapshot, a rename's move) ended; `Err` = the message.
     HistoryDone(Result<(), String>),
+    /// A file's history entries were read for the picker.
+    HistoryListed(Box<history::Listed>),
+    /// A history entry was read and diffed against its buffer, to restore it.
+    HistoryRestore(Box<history::Restore>),
     ConfigLoaded(Result<WorkspaceConfig, String>),
     FileOpDone {
         op: FileOp,
@@ -837,6 +841,8 @@ impl App {
             Command::UnstageAll => self.unstage_all(),
             Command::FocusScm => self.focus_scm(),
             Command::Scm(c) => self.scm_command(c),
+            Command::ShowFileHistory => self.show_file_history(false),
+            Command::RestoreFileHistory => self.show_file_history(true),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
             // A diff tab: its own movement keys; other editor commands do nothing.
@@ -945,6 +951,8 @@ impl App {
             AppEvent::Listed { dir, result } => self.listed(dir, result),
             AppEvent::FsChanged(paths) => self.fs_changed(paths),
             AppEvent::HistoryDone(result) => self.history_done(result),
+            AppEvent::HistoryListed(listed) => self.history_listed(*listed),
+            AppEvent::HistoryRestore(restore) => self.history_restored(*restore),
             AppEvent::ConfigLoaded(result) => self.config_loaded(result),
             AppEvent::FileOpDone { op, result } => self.file_op_done(op, result),
             AppEvent::FilesMatched => self.files_matched(),
