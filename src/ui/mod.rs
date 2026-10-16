@@ -15,6 +15,7 @@ mod quick_diff;
 mod scm;
 mod search;
 mod side;
+mod splash;
 mod status;
 mod tabs;
 mod task;
@@ -106,7 +107,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 text = editor::render(f, editor_area, buf, &mut tab.view, &app.theme, &app.settings, overlay);
             }
             None if diff_hit.is_some() => {}
-            None => f.buffer_mut().set_style(editor_area, app.theme.get("editor")),
+            None => {
+                f.buffer_mut().set_style(editor_area, app.theme.get("editor"));
+                splash::render(f, editor_area, &app.theme);
+            }
         }
         if is_active {
             active_editor = Some(editor_area);

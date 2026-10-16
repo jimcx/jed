@@ -152,6 +152,10 @@ impl Theme {
             ("tab.inactive", fg_bg(0x969696, 0x2D2D2D)),
             ("tab.unfocusedActive", fg_bg(0x8F8F8F, 0x1E1E1E)),
             ("editorGroup.border", fg_bg(0x444444, 0x1E1E1E)),
+            // The splash screen in an editor group with no tabs (a quiet logo, like VS Code's
+            // watermark).
+            ("splash.logo", Style::new().fg(c(0x3B6EA5))),
+            ("splash.subtitle", Style::new().fg(c(0x858585))),
             ("tab.deleted", Style::new().add_modifier(Modifier::CROSSED_OUT)),
             // The changed-on-disk banner over an editor (VS Code's `banner.*`; its buttons are
             // Dark+'s `button.*`, the icon its warning colour).
