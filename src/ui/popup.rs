@@ -70,11 +70,12 @@ pub fn place(area: Rect, (ax, ay): (u16, u16), width: u16, height: u16, prefer: 
     Some(Rect { x, y, width, height })
 }
 
-/// Fills `rect` and draws its border; returns the inside.
+/// Fills `rect` and draws its border; returns the inside. Cells are reset first: styles only
+/// patch, so the text's modifiers and underline colour (squiggles) would show through.
 pub fn frame(out: &mut Buffer, rect: Rect, fill: Style, border: Style) -> Rect {
-    out.set_style(rect, fill);
     for y in rect.y..rect.y + rect.height {
         for x in rect.x..rect.x + rect.width {
+            out[(x, y)].reset();
             out[(x, y)].set_symbol(" ").set_style(fill);
         }
     }

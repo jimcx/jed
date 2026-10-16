@@ -2574,6 +2574,34 @@ async fn milestone_9_hover_popup_over_the_find_widget() {
     assert!(drawn >= 2, "{drawn}");
 }
 
+/// Squiggles under the popup don't show through it: its cells take none of the text's underline.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_hover_popup_hides_squiggles_under_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = hover_text();
+    let (mut app, fake, root) = lsp_project(dir.path(), &[("a.cpp", &text)], false).await;
+    let path = root.join("a.cpp");
+    // Every comment line above `value` squiggled from end to end.
+    let diags: Vec<Value> = (0..12).map(|line| diag(line, 0, 10, 1, "bad")).collect();
+    publish(&app, Language::Cpp, &path, Some(1), json!(diags));
+    assert!(app.settle(|a| marks(a, &path).len() == 12).await);
+    fake.respond("textDocument/hover", json!({ "contents": "w".repeat(40) }));
+    put_cursor(&mut app, text.find("value").unwrap());
+    show_hover(&mut app);
+    assert!(app.settle(|a| a.hover.popup.is_some()).await);
+    let mut term = terminal();
+    draw(&mut term, &mut app);
+    let r = app.hits.hover.expect("popup drawn");
+    let underlined: Vec<(u16, u16)> = (r.y..r.y + r.height)
+        .flat_map(|y| (r.x..r.x + r.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| squiggle(&term, x, y).is_some())
+        .collect();
+    // The popup starts at `value`'s column 8, over the comments' last chars: left of it they show.
+    assert!(squiggle(&term, r.x - 1, r.y + 1).is_some(), "squiggled beside {r:?}");
+    assert_eq!(underlined, [], "no squiggle in the popup {r:?}");
+    app.shutdown_servers().await;
+}
+
 /// Resting the mouse on text asks for its hover once the timer fires (no request before);
 /// the popup stays while the pointer moves within the word or onto the popup, and closes when it
 /// moves off. Moving to another word while an answer is pending cancels it (`$/cancelRequest`)
