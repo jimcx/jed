@@ -25,6 +25,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::app::{App, Focus};
+use crate::edit::RenderWhitespace;
 use crate::group::Tab;
 use crate::layout::{self, GroupHit, HitMap, ScrollTarget, SplitDir};
 use crate::scrollbar::Scrollable;
@@ -132,7 +133,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 let overlay = editor::Overlay {
                     focused,
                     find,
-                    whitespace,
+                    // A log is read, not edited: no whitespace glyphs.
+                    whitespace: if buf.log.is_some() {
+                        RenderWhitespace::None
+                    } else {
+                        whitespace
+                    },
                     blame: app.blame.on,
                 };
                 text = editor::render(f, editor_area, buf, &mut tab.view, &app.theme, &app.settings, overlay);

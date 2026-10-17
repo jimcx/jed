@@ -237,7 +237,12 @@ impl App {
                     }
                     match tab {
                         Tab::Text(t) => {
-                            let Some(buf) = self.buffers.get(t.buffer).filter(|b| b.path.is_absolute()) else {
+                            // Log tabs are never saved: a restart shows none.
+                            let Some(buf) = self
+                                .buffers
+                                .get(t.buffer)
+                                .filter(|b| b.log.is_none() && b.path.is_absolute())
+                            else {
                                 continue;
                             };
                             let sels = &t.view.selections;

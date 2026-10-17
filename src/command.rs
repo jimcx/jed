@@ -221,6 +221,11 @@ pub enum Command {
     NavBack,
     /// "Go Forward": the place the last "Go Back" left.
     NavForward,
+    /// "Tools: Open Log": a picker of the tools with a log; picking one opens (or shows) its
+    /// read-only log tab in the active group.
+    OpenToolLog,
+    /// "Tools: Clear Log": empties the active log tab's tool's log.
+    ClearToolLog,
 }
 
 /// A task tab in the bottom panel (`Context::Task`, while it has the keys); keys bound to
@@ -633,6 +638,7 @@ impl Command {
         all.push(Command::ToggleRenderWhitespace);
         all.push(Command::ToggleBlame);
         all.extend([Command::NavBack, Command::NavForward]);
+        all.extend([Command::OpenToolLog, Command::ClearToolLog]);
         all
     }
 
@@ -869,6 +875,8 @@ impl Command {
             Command::ToggleBlame => "git.toggleBlame".into(),
             Command::NavBack => "nav.back".into(),
             Command::NavForward => "nav.forward".into(),
+            Command::OpenToolLog => "tools.openLog".into(),
+            Command::ClearToolLog => "tools.clearLog".into(),
             Command::Task(c) => format!(
                 "task.{}",
                 match c {
@@ -1095,6 +1103,8 @@ impl Command {
             Command::ToggleBlame => "Git: Toggle Inline Blame",
             Command::NavBack => "Go Back",
             Command::NavForward => "Go Forward",
+            Command::OpenToolLog => "Tools: Open Log",
+            Command::ClearToolLog => "Tools: Clear Log",
             Command::Task(c) => match c {
                 TaskCommand::ScrollUp => "Tasks: Scroll Up",
                 TaskCommand::ScrollDown => "Tasks: Scroll Down",
@@ -1228,9 +1238,11 @@ mod tests {
             Command::ToggleBlame => 85,
             Command::NavBack => 86,
             Command::NavForward => 87,
+            Command::OpenToolLog => 88,
+            Command::ClearToolLog => 89,
         }
     }
-    const VARIANTS: u8 = 88;
+    const VARIANTS: u8 = 90;
 
     #[test]
     fn all_lists_every_variant() {

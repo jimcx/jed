@@ -57,7 +57,7 @@ impl App {
         let ids: Vec<BufferId> = self
             .buffers
             .iter()
-            .filter(|(_, b)| b.path.ancestors().any(|a| changed.contains(a)))
+            .filter(|(_, b)| b.log.is_none() && b.path.ancestors().any(|a| changed.contains(a)))
             .map(|(id, _)| id)
             .collect();
         for id in ids {

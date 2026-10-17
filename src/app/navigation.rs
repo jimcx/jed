@@ -50,7 +50,8 @@ impl App {
         let group = self.group();
         match group.tabs.get(group.active)? {
             Tab::Text(t) => {
-                let buf = self.buffers.get(t.buffer)?;
+                // A log tab has no file to come back to.
+                let buf = self.buffers.get(t.buffer).filter(|b| b.log.is_none())?;
                 let primary = t.view.selections.primary();
                 let pos = Pos {
                     anchor: primary.anchor,

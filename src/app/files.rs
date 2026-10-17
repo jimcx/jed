@@ -204,7 +204,7 @@ impl App {
 
     /// Shows the active file in the explorer.
     pub(super) fn reveal_active(&mut self) {
-        let Some(path) = self.active_buffer().map(|b| b.path.clone()) else {
+        let Some(path) = self.active_buffer().filter(|b| b.log.is_none()).map(|b| b.path.clone()) else {
             return;
         };
         for dir in self.explorer.reveal(&path) {

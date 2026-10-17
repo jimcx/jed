@@ -56,6 +56,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<PaletteHit> {
         Mode::History if p.field.text.is_empty() => Some("Pick an entry (type to filter by time or size)"),
         Mode::Tasks if p.field.text.is_empty() => Some("Select the task to run"),
         Mode::Recent if p.field.text.is_empty() => Some("Select a workspace to open (type to filter)"),
+        Mode::Logs if p.field.text.is_empty() => Some("Select a log to open"),
         _ => None,
     };
     match placeholder {

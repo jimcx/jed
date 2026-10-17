@@ -11,6 +11,7 @@ use nucleo::{Config, Matcher, Nucleo, Utf32Str, Utf32String};
 use crate::command::Command;
 use crate::field::TextField;
 use crate::history::{self, Entry, Snapshot};
+use crate::logs::Tool;
 use crate::recent;
 use crate::tasks::{Source, Template};
 
@@ -32,6 +33,8 @@ pub enum Picker {
     /// "Open Recent Workspace": a recent workspace (the entries are the app's:
     /// `app.recent.picker`); accepting opens it in another jed (`recent::how_to_open`).
     Recent,
+    /// "Tools: Open Log": a tool with a log (`App::log_tools`); accepting opens its log tab.
+    Logs,
 }
 
 /// What the rows are, from the picker and the input.
@@ -44,6 +47,7 @@ pub enum Mode {
     History,
     Tasks,
     Recent,
+    Logs,
 }
 
 pub const COMMANDS_PREFIX: char = '>';
@@ -62,6 +66,8 @@ pub enum Action {
     RunTask(String),
     /// A recent workspace's root.
     OpenWorkspace(PathBuf),
+    /// A tool's log.
+    OpenLog(Tool),
 }
 
 /// One line in the list. Hits are char indices to highlight.
@@ -117,6 +123,7 @@ impl Palette {
             Picker::History { .. } => Mode::History,
             Picker::Tasks => Mode::Tasks,
             Picker::Recent => Mode::Recent,
+            Picker::Logs => Mode::Logs,
             Picker::QuickOpen => match self.field.text.chars().next() {
                 Some(COMMANDS_PREFIX) => Mode::Commands,
                 Some(LINE_PREFIX) => Mode::GoToLine,
@@ -129,7 +136,7 @@ impl Palette {
     pub fn query(&self) -> &str {
         match self.mode() {
             Mode::Commands | Mode::GoToLine => &self.field.text[1..],
-            Mode::Files | Mode::LogLevel | Mode::History | Mode::Tasks | Mode::Recent => &self.field.text,
+            Mode::Files | Mode::LogLevel | Mode::History | Mode::Tasks | Mode::Recent | Mode::Logs => &self.field.text,
         }
     }
 
@@ -303,6 +310,39 @@ pub fn task_rows(query: &str, templates: &[Template]) -> Vec<Row> {
         })
         .collect();
     scored.sort_by(|(sa, a), (sb, b)| sb.cmp(sa).then_with(|| a.label.cmp(&b.label)));
+    scored.into_iter().map(|(_, r)| r).collect()
+}
+
+/// Rows for "Tools: Open Log": the `tools` (in their order) whose name matches `query`, best
+/// first, each with what it is dimmed after it.
+pub fn log_rows(query: &str, tools: &[Tool]) -> Vec<Row> {
+    let pattern = pattern(query);
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let mut buf = Vec::new();
+    let mut scored: Vec<(u32, Row)> = tools
+        .iter()
+        .filter_map(|tool| {
+            let mut hits = Vec::new();
+            let score = pattern.indices(Utf32Str::new(tool.name(), &mut buf), &mut matcher, &mut hits)?;
+            let detail = match tool {
+                Tool::Jed => "jed's own log",
+                Tool::Server(_) => "language server",
+            };
+            Some((
+                score,
+                Row {
+                    label: tool.name().to_string(),
+                    label_hits: sorted(hits),
+                    detail: detail.into(),
+                    detail_hits: Vec::new(),
+                    keys: None,
+                    action: Action::OpenLog(tool.clone()),
+                },
+            ))
+        })
+        .collect();
+    // Stable: equal scores (an empty query) keep the tools' order.
+    scored.sort_by(|(a, _), (b, _)| b.cmp(a));
     scored.into_iter().map(|(_, r)| r).collect()
 }
 
@@ -545,6 +585,29 @@ mod tests {
     }
 
     #[test]
+    fn log_rows_list_tools_in_order_and_filter_by_name() {
+        let tools = [
+            Tool::Jed,
+            Tool::Server("clangd".into()),
+            Tool::Server("rust-analyzer".into()),
+        ];
+        let rows = log_rows("", &tools);
+        let shown: Vec<_> = rows.iter().map(|r| (r.label.as_str(), r.detail.as_str())).collect();
+        assert_eq!(
+            shown,
+            [
+                ("jed", "jed's own log"),
+                ("clangd", "language server"),
+                ("rust-analyzer", "language server")
+            ]
+        );
+        let rows = log_rows("rust", &tools);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].action, Action::OpenLog(tools[2].clone()));
+        assert_eq!(rows[0].label_hits, [0, 1, 2, 3]);
+    }
+
+    #[test]
     fn recent_rows_show_name_and_tilde_path_in_recency_order() {
         let home = std::path::Path::new("/home/me");
         let mut entries = vec![
@@ -578,6 +641,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(rows[0].label_hits.is_empty() && rows[0].detail_hits == [1, 2, 3]);
         assert_eq!(Palette::new(Picker::Recent, ">x").mode(), Mode::Recent);
+        assert_eq!(Palette::new(Picker::Logs, ">x").mode(), Mode::Logs);
     }
 
     #[test]

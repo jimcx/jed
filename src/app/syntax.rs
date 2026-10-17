@@ -8,6 +8,9 @@ use super::{App, AppEvent, Level};
 impl App {
     /// The language of `buf`: `.workspace` associations, then its name, then its shebang.
     pub(super) fn detect_language(&self, buf: &Buffer) -> Language {
+        if buf.log.is_some() {
+            return Language::PlainText;
+        }
         let rope = &buf.rope;
         let head = rope.slice(..rope.floor_char_boundary(rope.len().min(256))).to_string();
         let first_line = head.lines().next().unwrap_or("");

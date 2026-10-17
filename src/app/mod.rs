@@ -100,6 +100,8 @@ enum Timer {
     Blame,
     /// Dirty buffers changed since their backup are due (`backup::INTERVAL`).
     Backup,
+    /// Log tabs may wake the loop again (`tools::LOG_FRAME` after the last wake).
+    Logs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,6 +251,8 @@ enum AppEvent {
     RecentRecorded(Result<(), String>),
     /// The recent workspaces were read for "Open Recent Workspace".
     RecentListed(Box<recent::Listed>),
+    /// A tool log got lines since the app last rearmed the store's waker (`app/tools.rs`).
+    LogsChanged,
 }
 
 /// The file to open at startup, with an optional 1-based line and column.
@@ -286,6 +290,8 @@ pub struct App {
     /// layer feeds. `start` hands it to the language servers and, with a `state_dir`, gives it
     /// `<state dir>/logs/tools` to write to.
     pub logs: crate::logs::Logs,
+    /// Log tabs' wake-up throttle (`app/tools.rs`).
+    pub log_tabs: tools::LogTabs,
     /// Holds `settings.toml` (for "Preferences: Open User Settings"); `paths::config_dir()`.
     pub config_dir: PathBuf,
     /// Where the session file goes (`paths::state_dir()`); `None` turns sessions off (tests,
@@ -419,6 +425,7 @@ impl App {
             log: None,
             log_dir: logging::log_dir(),
             logs: Default::default(),
+            log_tabs: Default::default(),
             config_dir: crate::paths::config_dir(),
             #[cfg(not(test))]
             state_dir: Some(crate::paths::state_dir()),
@@ -552,6 +559,7 @@ impl App {
             self.sync_diffs();
             self.sync_backups();
             self.report_log_errors();
+            self.sync_logs();
             if self.needs_redraw {
                 let t = Instant::now();
                 terminal.draw(|f| ui::render(f, self))?;
@@ -619,7 +627,11 @@ impl App {
             .backups
             .deadline()
             .map(|d| (tokio::time::Instant::from_std(d), Timer::Backup));
-        let next = [fs, search, hover, completion, quick_diff, diff, blame, backup]
+        let logs = self
+            .log_tabs
+            .deadline()
+            .map(|d| (tokio::time::Instant::from_std(d), Timer::Logs));
+        let next = [fs, search, hover, completion, quick_diff, diff, blame, backup, logs]
             .into_iter()
             .flatten()
             .min_by_key(|(at, _)| *at);
@@ -645,6 +657,7 @@ impl App {
             Timer::Diff => self.sync_diffs(),
             Timer::Blame => self.sync_blame(),
             Timer::Backup => self.backup_tick(Instant::now()),
+            Timer::Logs => self.logs_tick(),
         }
     }
 
@@ -974,6 +987,8 @@ impl App {
             Command::Task(c) => self.task_command(c),
             Command::NavBack => self.navigate(crate::navigation::Dir::Back),
             Command::NavForward => self.navigate(crate::navigation::Dir::Forward),
+            Command::OpenToolLog => self.show_log_picker(),
+            Command::ClearToolLog => self.clear_tool_log(),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
             // A diff tab: its own movement keys; other editor commands do nothing.
@@ -1116,6 +1131,7 @@ impl App {
             AppEvent::BackupRestore(r) => self.backup_restored(*r),
             AppEvent::RecentRecorded(result) => self.recent_recorded(result),
             AppEvent::RecentListed(listed) => self.recent_listed(*listed),
+            AppEvent::LogsChanged => self.logs_changed(),
         }
         self.nav_end(here, false);
         self.refresh_find();
@@ -1267,6 +1283,28 @@ impl App {
         self.sync_diffs();
         self.sync_backups();
         self.report_log_errors();
+        self.sync_logs();
+    }
+
+    /// One turn of `run` without a terminal: waits up to `within` for an app event or the
+    /// earliest timer as `run`'s `select!` does (no polling, unlike `settle`, so a test sees
+    /// what really wakes the loop), handles it and what else is queued, then runs the turn's
+    /// syncs (`pump`). False when nothing woke it in time.
+    pub async fn test_turn(&mut self, within: Duration) -> bool {
+        let timer = self.next_timer();
+        let woke = tokio::select! {
+            Some(msg) = self.rx.recv() => {
+                self.handle_app_event(msg);
+                true
+            }
+            t = timer => {
+                self.on_timer(t);
+                true
+            }
+            _ = tokio::time::sleep(within) => false,
+        };
+        self.pump();
+        woke
     }
 
     /// Handles background results (and the Search view's debounce) until `done` holds; false after 5 s.
@@ -1282,6 +1320,7 @@ impl App {
             self.sync_diffs();
             self.sync_backups();
             self.report_log_errors();
+            self.sync_logs();
             if done(self) {
                 break;
             }

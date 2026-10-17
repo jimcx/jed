@@ -17,6 +17,7 @@
 
 pub mod disk;
 pub mod layer;
+pub mod tab;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
@@ -46,7 +47,6 @@ pub enum Tool {
 }
 
 impl Tool {
-    #[cfg_attr(not(test), allow(dead_code))] // log tabs, the Tools view
     pub fn name(&self) -> &str {
         match self {
             Tool::Jed => "jed",
@@ -300,7 +300,14 @@ struct Inner {
     disk: Mutex<DiskState>,
     /// `disk.error` is set: lets the app's per-turn check skip the lock.
     has_error: AtomicBool,
+    /// Called on the first push after the app last `rearm`ed (`Logs::set_waker`).
+    waker: Mutex<Option<Waker>>,
+    /// A push woke the app (or there was no waker) and it hasn't rearmed since.
+    woken: AtomicBool,
 }
+
+/// Wakes the app's event loop (sends it an event); called from whichever thread pushed.
+pub type Waker = Arc<dyn Fn() + Send + Sync>;
 
 /// The log store: every tool's ring, and the queue to disk. Cloning shares it.
 #[derive(Clone, Default)]
@@ -373,6 +380,24 @@ impl Logs {
         if !formatted.is_empty() {
             self.queue(formatted);
         }
+        if !self.inner.woken.swap(true, Ordering::AcqRel) {
+            let waker = lock(&self.inner.waker).clone();
+            if let Some(waker) = waker {
+                waker();
+            }
+        }
+    }
+
+    /// From now on the first push after each [`Logs::rearm`] calls `waker` (once: later pushes
+    /// wait for the next rearm), so the app's log tabs learn of new lines without polling.
+    pub fn set_waker(&self, waker: Waker) {
+        *lock(&self.inner.waker) = Some(waker);
+        self.rearm();
+    }
+
+    /// The next push wakes the app again (call before reading, so no line goes unnoticed).
+    pub fn rearm(&self) {
+        self.inner.woken.store(false, Ordering::Release);
     }
 
     fn queue(&self, lines: Vec<(String, String)>) {
@@ -481,7 +506,6 @@ impl Logs {
     }
 
     /// The lines of `tool` since `cursor` (an empty read for a tool with no log yet).
-    #[cfg_attr(not(test), allow(dead_code))] // log tabs (tools-b)
     pub fn read(&self, tool: &Tool, cursor: Cursor) -> Read {
         match lock(&self.inner.rings).get(tool) {
             Some(ring) => ring.read(cursor),
@@ -490,7 +514,6 @@ impl Logs {
     }
 
     /// Empties `tool`'s ring ("Tools: Clear Log"); its file is kept.
-    #[cfg_attr(not(test), allow(dead_code))] // tools-b
     pub fn clear(&self, tool: &Tool) {
         if let Some(ring) = lock(&self.inner.rings).get_mut(tool) {
             ring.clear();
@@ -498,7 +521,6 @@ impl Logs {
     }
 
     /// The tools with a log, sorted ("jed" first).
-    #[cfg_attr(not(test), allow(dead_code))] // tools-b / tools-c
     pub fn tools(&self) -> Vec<Tool> {
         lock(&self.inner.rings).keys().cloned().collect()
     }
@@ -507,6 +529,12 @@ impl Logs {
     #[cfg_attr(not(test), allow(dead_code))] // the Tools view's badge (tools-c)
     pub fn errors(&self, tool: &Tool) -> u64 {
         lock(&self.inner.rings).get(tool).map_or(0, Ring::errors)
+    }
+
+    /// Replaces `tool`'s ring by an empty one with these caps (tests: a ring that drops soon).
+    #[cfg(test)]
+    pub fn set_caps(&self, tool: &Tool, max_lines: usize, max_bytes: usize) {
+        lock(&self.inner.rings).insert(tool.clone(), Ring::with_caps(max_lines, max_bytes));
     }
 
     /// `tool`'s lines' texts, oldest first.
@@ -563,6 +591,26 @@ mod tests {
 
     fn texts(read: &Read) -> Vec<&str> {
         read.lines.iter().map(|l| l.text.as_str()).collect()
+    }
+
+    /// The waker runs on the first push after each rearm only, whatever the tool.
+    #[test]
+    fn the_waker_runs_once_per_rearm() {
+        use std::sync::atomic::AtomicUsize;
+        let logs = Logs::default();
+        logs.push(&Tool::Jed, Level::Info, "before any waker");
+        let woken = Arc::new(AtomicUsize::new(0));
+        let w = woken.clone();
+        logs.set_waker(Arc::new(move || {
+            w.fetch_add(1, Ordering::SeqCst);
+        }));
+        logs.push(&Tool::Jed, Level::Info, "a");
+        logs.push(&Tool::Server("x".into()), Level::Info, "b");
+        assert_eq!(woken.load(Ordering::SeqCst), 1);
+        logs.rearm();
+        logs.push(&Tool::Jed, Level::Info, "c");
+        logs.push(&Tool::Jed, Level::Info, "d");
+        assert_eq!(woken.load(Ordering::SeqCst), 2);
     }
 
     #[test]

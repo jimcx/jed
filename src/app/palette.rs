@@ -126,6 +126,13 @@ impl App {
                 }
                 None => Vec::new(),
             },
+            Mode::Logs => {
+                let rows = palette::log_rows(&query, &self.log_tools());
+                if rows.is_empty() {
+                    hint = Some("No matching logs".into());
+                }
+                rows
+            }
             Mode::Files => {
                 let files = self.file_matcher();
                 files.set_query(palette::file_query(&query));
@@ -287,6 +294,10 @@ impl App {
             (_, Some(Action::RunTask(name))) => {
                 self.close_palette();
                 self.run_task(&name);
+            }
+            (_, Some(Action::OpenLog(tool))) => {
+                self.close_palette();
+                self.open_tool_log(tool);
             }
             (_, Some(Action::Open(rel))) => {
                 let goto = paths::strip_position(&query).map(|(_, (l, c))| super::files::Goto::Cursor(l, c));

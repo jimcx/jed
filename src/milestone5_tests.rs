@@ -179,7 +179,11 @@ async fn milestone_5_every_command_runs_from_the_palette() {
         assert_eq!(app.last_command, Some(c), "Enter ran the selected command");
         let reopens = matches!(
             c,
-            Command::ShowCommands | Command::QuickOpen | Command::GoToLine | Command::SetLogLevel
+            Command::ShowCommands
+                | Command::QuickOpen
+                | Command::GoToLine
+                | Command::SetLogLevel
+                | Command::OpenToolLog
         );
         assert_eq!(app.palette.is_some(), reopens, "{c:?}");
         // Dismiss whatever it opened (prompts, the palette again).

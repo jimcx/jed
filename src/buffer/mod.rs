@@ -18,6 +18,8 @@ use undo::{EditKind, History};
 
 use crate::blame::Blame;
 use crate::diagnostics::Marks;
+use crate::logs::Tool;
+use crate::logs::tab::LogTab;
 use crate::quick_diff::QuickDiff;
 use crate::selection::Selections;
 use crate::syntax::Syntax;
@@ -73,6 +75,9 @@ pub struct Buffer {
     /// Inline blame's hunks (each line's last commit), mapped through every change set applied
     /// until the next computation (`app/blame.rs`, only while the toggle is on).
     pub blame: Blame,
+    /// A tool's log (`Buffer::log`): no file (an empty `path`), read-only, its text only ever
+    /// changed by `append` (no undo, never dirty); what it has read of the tool's ring.
+    pub log: Option<LogTab>,
 }
 
 /// A change set as a language server needs it: positions are in `before`'s coordinates.
@@ -130,7 +135,26 @@ impl Buffer {
             diagnostics: Marks::default(),
             quick_diff: QuickDiff::default(),
             blame: Blame::default(),
+            log: None,
         }
+    }
+
+    /// An empty log buffer for `tool` (`app/tools.rs` fills it with `append`): no path, so
+    /// nothing keyed by a file (saves, disk checks, git, language servers, history, backups,
+    /// sessions) ever takes it; read-only, so edits are refused.
+    pub fn log(tool: Tool) -> Self {
+        let mut buf = Self::from_loaded(
+            file::Loaded {
+                rope: Rope::new(),
+                bom: false,
+                eol: Eol::Lf,
+                read_only: Some("a log can't be edited".into()),
+                stamp: None,
+            },
+            PathBuf::new(),
+        );
+        buf.log = Some(LogTab::new(tool));
+        buf
     }
 
     #[cfg(test)]
@@ -140,6 +164,9 @@ impl Buffer {
     }
 
     pub fn name(&self) -> String {
+        if let Some(log) = &self.log {
+            return format!("{} (log)", log.tool.name());
+        }
         self.path
             .file_name()
             .map_or_else(|| self.path.display().to_string(), |n| n.to_string_lossy().into_owned())
@@ -215,6 +242,18 @@ impl Buffer {
         self.revision += 1;
         self.history
             .record(changes, inverse, before, after, kind, Instant::now());
+    }
+
+    /// Applies `changes` outside the undo history (a log tab's new and dropped lines): no undo
+    /// step, never dirty, but other views and the syntax colours follow as for any edit.
+    pub fn append(&mut self, changes: ChangeSet) {
+        if changes.is_empty() {
+            return;
+        }
+        let changes = Arc::new(changes);
+        self.apply(&changes);
+        self.applied.push(changes);
+        self.revision += 1;
     }
 
     /// Called for any command that isn't an edit, so the next edit starts a new undo step.
@@ -406,6 +445,27 @@ mod tests {
 
     fn cursor(at: usize) -> Selections {
         Selections::single(crate::selection::Selection::cursor(ByteIdx(at)))
+    }
+
+    /// `append` changes the text and tells other views (`take_applied`, a new revision) but
+    /// leaves no undo step and never makes the buffer dirty; a log buffer is read-only and has
+    /// no file.
+    #[test]
+    fn append_skips_undo_and_dirtiness() {
+        let mut buf = Buffer::log(crate::logs::Tool::Jed);
+        assert!(buf.read_only.is_some() && buf.path.as_os_str().is_empty());
+        assert_eq!(buf.name(), "jed (log)");
+        let revision = buf.revision();
+        buf.append(insert(0, "a\n"));
+        buf.append(insert(2, "b\n"));
+        assert_eq!(buf.rope.to_string(), "a\nb\n");
+        assert_eq!(buf.revision(), revision + 2);
+        assert_eq!(buf.take_applied().len(), 2);
+        assert!(!buf.is_dirty() && !buf.has_edits());
+        assert!(buf.undo().is_none(), "nothing to undo");
+        assert_eq!(buf.rope.to_string(), "a\nb\n");
+        buf.append(ChangeSet::default());
+        assert_eq!(buf.revision(), revision + 2, "an empty set changes nothing");
     }
 
     /// A save refuses to overwrite a file changed since it was loaded; "keep mine" lets the

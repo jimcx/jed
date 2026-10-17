@@ -90,7 +90,8 @@ impl App {
 
     fn start_servers(&mut self) {
         let mut languages: Vec<Language> = Vec::new();
-        for (_, buf) in self.buffers.iter() {
+        // A log tab has no document to open: its Plain Text mustn't start a `[lsp.plaintext]`.
+        for (_, buf) in self.buffers.iter().filter(|(_, b)| b.log.is_none()) {
             let l = buf.syntax.language();
             if !languages.contains(&l) {
                 languages.push(l);
