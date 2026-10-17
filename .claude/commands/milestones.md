@@ -2,18 +2,19 @@
 description: Resume the milestone workflow — implement, validate and commit PLAN.md milestones task by task with subagents
 ---
 
-Work through the milestones in PLAN.md with subagents, one task at a time, in sequence. $ARGUMENTS
+Build one of PLAN.md's milestones with subagents, one task at a time, in sequence. $ARGUMENTS
 
 ## Find where we are
 
 1. `git log --oneline -15`, `git status`, and the `## Milestones` section of PLAN.md.
-   - The first milestone without ✅ is the current one.
-   - Task commits are named `Milestone N (Na): …`. The last one shows the last finished task.
+   - Milestones 1–13 are done. Later milestones are under `### Named milestones`: they have names and short ids (`tools`, `soft_wrap`, …), not numbers, and **no order**.
+   - The current one: the milestone named in the arguments (by name or id); else one with some tasks ✅ but not all (work in progress); else list the named milestones without ✅ in a few lines and ask the user which. Stop until they answer.
+   - Task commits are named `<Milestone name> (<id>-a): …`. The last one shows the last finished task.
 2. If the tree has uncommitted changes, a task was interrupted:
    - If it looks complete, run the validator (step 4) and commit.
    - If it's partial, have an implementer finish it (tell it what's already there).
-   - If it's broken beyond repair, `git stash` it and restart the task. Tell the user.
-3. If the current milestone has no task commits yet, split its PLAN.md entry into 3–5 tasks that build on each other. Each task must leave fmt, clippy and tests green. If it has some, follow the task list already in its PLAN.md entry. Tell the user the split in a few lines. Write the split into the milestone's PLAN.md entry as a `- Tasks (one agent and one commit each):` list (one line per task, saying what it covers); mark each task ✅ in its own commit, with notes on what it changed for later tasks.
+   - If it's broken beyond repair, stop and tell the user. Don't stash or discard it yourself.
+3. If the current milestone has no task commits yet, split its PLAN.md entry into 3–5 tasks that build on each other. Each task must leave fmt, clippy and tests green. If it has some, follow the task list already in its PLAN.md entry. Tell the user the split in a few lines. Write the split into the milestone's PLAN.md entry as a `- Tasks (one agent and one commit each):` list (one line per task, `<id>-a: …`, saying what it covers); mark each task ✅ in its own commit, with notes on what it changed for later tasks.
 
 ## Each task
 
@@ -21,7 +22,7 @@ Work through the milestones in PLAN.md with subagents, one task at a time, in se
    - Read `CLAUDE.md` at the repo root first, plus the nested CLAUDE.md of any directory it edits. PLAN.md is the source of truth for design.
    - List every task in the milestone, mark which one is its own, and say what's already done.
    - Read the milestone entry and every PLAN.md section it links.
-   - Build only this task. Write tests in `src/milestoneN_tests.rs` (create it and register it in `main.rs` if it doesn't exist) and unit tests in modules. Tests go through real code paths.
+   - Build only this task. Write tests in `src/<id>_tests.rs`, named `<id>_*` (create it with a `//!` doc and register it in `main.rs` if it doesn't exist) and unit tests in modules. Tests go through real code paths.
    - Any new Cmd binding also updates `docs/terminals/`.
    - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` must pass.
    - Update the CLAUDE.md files for what it adds (module map, conventions, test helpers, background-work patterns).
@@ -39,12 +40,11 @@ Work through the milestones in PLAN.md with subagents, one task at a time, in se
    - Re-run all three checks yourself (see CLAUDE.md's Toolchain section for how to reach cargo on this platform).
    - Make sure the diff includes the CLAUDE.md updates.
    - Check no test binaries are left running (`pgrep -fl deps/jed-`); kill any strays.
-   - Commit everything with the subject `Milestone N (Na): <summary>`, a blank line, then `- ` bullets of behaviour and notable internals. End with the Co-Authored-By trailer.
+   - Commit everything with the subject `<Milestone name> (<id>-a): <summary>`, a blank line, then `- ` bullets of behaviour and notable internals. End with the Co-Authored-By trailer.
 7. **On the milestone's last task**, in the same commit:
    - Mark it ✅ in PLAN.md and note any "Also:", "Deferred:" and "Still to check by hand:" items.
    - Fix later milestones' entries if this work changed them.
-   - Bump "Milestones 1–N are done" in CLAUDE.md.
-8. Give the user a short update after each commit. Then move on to the next task or milestone.
+8. Give the user a short update after each commit. Then move on to the milestone's next task. When the milestone is done, stop: don't start another one unless asked.
 
 ## Stop and ask the user when
 

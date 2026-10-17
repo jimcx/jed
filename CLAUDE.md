@@ -6,7 +6,7 @@ guessing: Features (one subsection per area), [Keybindings](PLAN.md#keybindings-
 [Architecture](PLAN.md#architecture), [Text positions](PLAN.md#text-positions),
 [Async and blocking work](PLAN.md#async-and-blocking-work), [Logging](PLAN.md#logging),
 [Milestones](PLAN.md#milestones) (each has "Needs", "Deferred" and a "Done when" to test against).
-Milestones 1–13 are done; 14 (Tools view and logs) is next, built task by task via `/milestones`. Further work is PLAN.md's TODO list, one item per commit via `/todo` (an item too big becomes smaller items or a new milestone, built task by task — 8a, 8b, … — one commit per task via `/milestones`).
+Milestones 1–13 are done and keep their numbers; later ones have names and short ids, not numbers, and no order ([Named milestones](PLAN.md#named-milestones): those marked ✅ are done), each built task by task (`tools-a`, `tools-b`, …), one commit per task, via `/milestones <name>`. Further work is PLAN.md's TODO list, one item per commit via `/todo` (an item too big becomes smaller items or a new named milestone).
 
 ## Toolchain and checks
 
@@ -123,7 +123,7 @@ All three must pass before a commit. Cap test runs with `scripts/timeout 300 car
 ## Tests
 
 - Unit tests sit in `#[cfg(test)] mod tests` at the bottom of each module.
-- End-to-end tests: `src/milestone_tests.rs` (M1), `src/milestone2_tests.rs` … `milestone8_tests.rs`, named `milestone_N_*`. A new milestone adds `src/milestoneN_tests.rs` and a `#[cfg(test)] mod` line in `main.rs`. Each file opens with a `//!` doc saying what "done when" it covers.
+- End-to-end tests: `src/milestone_tests.rs` (M1), `src/milestone2_tests.rs` … `milestone8_tests.rs`, named `milestone_N_*`. A named milestone adds `src/<id>_tests.rs` (e.g. `tools_tests.rs`, tests named `<id>_*`; a release budget test keeps `milestone` in its name, e.g. `milestone_soft_wrap_budget_*`, so the release command above picks it up) and a `#[cfg(test)] mod` line in `main.rs`. Each file opens with a `//!` doc saying what "done when" it covers.
 - Driving the app headlessly (helpers are `#[cfg(test)] impl App` in `app/mod.rs`):
   - Build: `App::new(Workspace::load(root), TrustStore::load(dir.join("trust.toml")), Some(InitialFile { buffer, goto: None }), true)`, then `app.test_start()` (watcher + first listing). See `open_app` in each milestone file and `milestone_tests::test_app`. With user settings: `Workspace::load(root).with_user_settings(config::settings::load(path).overrides)`, set `app.config_dir`, and `app.report_errors(errors)` as `main` does (`milestone8_tests::user_app`); never set `XDG_CONFIG_HOME` (tests run in parallel).
   - Use `tempfile::tempdir()` and `workspace::normalize(dir.path())` for the root (macOS temp paths are symlinks). Keep the trust store inside the tempdir.
@@ -161,7 +161,7 @@ All three must pass before a commit. Cap test runs with `scripts/timeout 300 car
 
 ## Commits
 
-Look at `git log`. Milestone work: subject `Milestone N: <short summary>` (whole milestone) or `Milestone N (Na): <short summary>` (one task), blank line, `- ` bullets of user-visible behaviour and notable internals (wrapped ~75 cols). Smaller changes: short imperative subject (`Mark milestone 4 done in the plan`, `Fix crash opening a file inside its workspace; add .workspace`) with a prose body explaining the why when non-obvious. Plan-only edits go in their own commit. End with the `Co-Authored-By:` trailer.
+Look at `git log`. Milestone work: subject `<Milestone name> (<task id>): <short summary>` (one task, e.g. `Tools view and logs (tools-a): …`; the numbered milestones used `Milestone N (Na): …`), blank line, `- ` bullets of user-visible behaviour and notable internals (wrapped ~75 cols). Smaller changes: short imperative subject (`Mark milestone 4 done in the plan`, `Fix crash opening a file inside its workspace; add .workspace`) with a prose body explaining the why when non-obvious. Plan-only edits go in their own commit. End with the `Co-Authored-By:` trailer.
 
 ## Keeping these files current
 
