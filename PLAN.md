@@ -489,7 +489,7 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
    - Deferred: "Manage Workspace Trust" (needs the palette, M5), git colouring in the explorer (M10), external changes to open files (M10)
 3. ✅ **Splits**: editor groups, resizing, focus switching
    - Split down is Cmd+Alt+\\ (no chords, so not VS Code's Cmd+K Cmd+\\)
-   - Deferred: moving tabs between groups, drag-and-drop tabs, keyboard resize of splits (M14)
+   - Deferred: moving tabs between groups, drag-and-drop tabs, keyboard resize of splits (TODO: Polish)
 
 Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the `terminal_docs_list_every_cmd_binding` test fails otherwise) — see [Terminals](#terminals).
 
@@ -515,7 +515,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
    - Commands owed from earlier: "Manage Workspace Trust" (M2), "Open Log File", "Set Log Level" ([Logging](#logging))
    - Done when: every command can be run from the palette; a binding in `keybindings.toml` replaces the default and shows in the palette; Esc closes the palette and does nothing else
    - Also: F1 opens the palette (VS Code default); the explorer hides `.jed/` too (shared walker with quick open)
-   - Deferred: live preview for go to line; unbinding in `keybindings.toml`; live reload of `keybindings.toml` (M14); find-widget and search contexts arrive with M6 / M7
+   - Deferred: live preview for go to line; unbinding in `keybindings.toml`; live reload of `keybindings.toml` (TODO: Polish); find-widget and search contexts arrive with M6 / M7
    - Still to check by hand: Cmd+P / Cmd+Shift+P reach jed in each terminal (Ghostty and WezTerm palettes, iTerm2 Print menu); quick open speed on a large repo
 6. ✅ **Multi-cursor and find**: Cmd+D, Cmd+Shift+L, add above/below, Alt+Click, box select, paste spread across cursors, find/replace in the file — see [Multi-cursor](#multi-cursor), [Editor](#editor)
    - Needs: selection list (M1), clipboard (M4), key contexts (M5)
@@ -615,7 +615,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - 63k cursors (release): `(` 9 ms, type-over 10 ms, pair Backspace 11 ms; Cmd+/ on 84k lines ≤ 46 ms
        - Not done (VS Code differences): no auto-close before an unmatched closing bracket (needs bracket matching, 8e); no stand-in-character quote check; without a current tree the "not in string / comment" rule is skipped; comment indentation isn't rounded to the indent size
        - Still to check by hand: Cmd+/ reaches jed (iTerm2's Find Cursor menu item; layouts where `/` is shifted may send Cmd+Shift+7; on Linux without the kitty protocol Ctrl+/ arrives as Ctrl+7)
-     - ✅ 8d: user settings file: `~/.config/jed/settings.toml` (`paths::config_dir()`, the same `[settings]` keys as `.workspace`) loaded at startup like `keybindings.toml`, errors reported via notify; `.workspace` `[settings]` override it per key; `auto_close_pairs` (added in 8c) and the other settings work from either. Live reload stays in M14
+     - ✅ 8d: user settings file: `~/.config/jed/settings.toml` (`paths::config_dir()`, the same `[settings]` keys as `.workspace`) loaded at startup like `keybindings.toml`, errors reported via notify; `.workspace` `[settings]` override it per key; `auto_close_pairs` (added in 8c) and the other settings work from either. Live reload is in the TODO list (Polish)
        - `config/settings.rs`: `SettingsOverrides` (shared with `.workspace`), `layer(user, workspace)` is the one precedence function (defaults ← `settings.toml` ← `.workspace`, per key); `TEMPLATE` documents every key (a compile-time check keeps it complete)
        - `settings.toml` is lenient (bad keys / types reported and skipped, a syntax error keeps the defaults); `.workspace` stays strict; load errors from settings and keybindings show together after start (`App::report_errors`)
        - "Preferences: Open User Settings" (palette) creates the file from the template if missing (never overwrites) and opens it
@@ -631,7 +631,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
        - `LanguageConfig` gained explicit `brackets`, `tree_tokens` (false for Markdown: brackets matched from the text) and `insert_spaces` (Makefiles: tabs, via `edit::Settings::for_language`); `Syntax::scope_of(kind)` is one string / comment / code table across grammars; `Tokens::node_at` finds comments whose text is in no leaf (Rust); Rust uses C's `indentationRules`, YAML indents after `:` / `-`
        - 1 MB files (release) in Rust, JSON, YAML, Markdown, XML, TOML, shell: open frames ≤ 4.5 ms, a key + re-parse + frame 9–11 ms, background parses 120–690 ms
        - Not done (VS Code differences): Markdown inline formatting (emphasis, code spans, links in paragraphs: needs injections) and embedded languages in fenced code; block-comment toggling (Markdown, XML have no Cmd+/); JSON has no `//`; no general per-language settings (only Makefile `insert_spaces`); `fish` shebang; `.xsl` / `.xslt`
-       - Known: with the cursor on the root `{` of a 1 MB flat JSON object, tree bracket matching walks all its siblings (~6 ms, a ~14.5 ms frame); cap the partner search like the text scan's `WINDOW` (M14)
+       - Known: with the cursor on the root `{` of a 1 MB flat JSON object, tree bracket matching walks all its siblings (~6 ms, a ~14.5 ms frame); cap the partner search like the text scan's `WINDOW` (TODO: Polish)
        - Still to check by hand: colours against VS Code Dark+ per language (YAML keys, XML tag brackets, Markdown headings and link underline); a real Makefile's Tab and status bar; brackets in a Markdown paragraph
 9. ✅ **LSP**: clangd and ty — see [LSP](#lsp), [Text positions](#text-positions)
    - Needs: language detection (M8), `LspPos` in `buffer::pos` (M1), workspace trust (M2: servers named in `.workspace` only run when trusted), key contexts (M5), multi-cursor (M6), the results list (M7)
@@ -787,9 +787,8 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
     - Task tabs (M12) are throwaway: not restored; history diff tabs (M11) and git diff tabs (M10) may be restored by path and pair
     - Crash recovery: back up dirty buffers periodically to `~/.local/state/jed/backup/` (the panic hook already writes there); offer restore on next start
     - Recent workspaces: `recent.toml`; "Open Recent Workspace" (Ctrl+R) in the palette
-    - Kitty: `jed_workspace` user var on start / exit / panic; `kitten @ ls` to find and focus jed's window, `kitten @ launch` for a new tab; message fallback outside kitty
-    - Tests drive the kitty side through a fake `kitten` on `PATH` (canned `ls` JSON, records its arguments)
-    - Done when: quit and reopen gives back the same tabs, splits, cursors and scroll; killing the terminal loses at most one backup interval of edits; picking a recent workspace open in another kitty tab or OS window focuses it, and one not open starts jed in a new kitty OS window
+    - Kitty (focus / launch from Open Recent Workspace): deferred to the TODO list; picking a recent workspace shows the `jed <path>` message everywhere
+    - Done when: quit and reopen gives back the same tabs, splits, cursors and scroll; killing the terminal loses at most one backup interval of edits (the kitty clause — focus a workspace open in another kitty window, start one not open in a new OS window — moved to the TODO list with the kitty work)
     - Tasks (one agent and one commit each):
       - ✅ 13a: sessions: per-workspace session file in the state dir (keyed by workspace path); saved on quit (off the UI thread, atomic), restored on start: groups and the split tree, tabs per group (text tabs by path; git and history diff tabs by path and pair; task tabs never), active tab and group, selections and scroll, side / bottom panel layout; missing files and bad session files skipped with a log line
         - `session.rs` (model, blocking load / save: `<state>/sessions/<sha256 of root>.json`, root and version checked), `app/session.rs`: one `spawn_blocking` reads the session and every tab's file → `AppEvent::SessionRead`, applied in one step (no half-restored layout); the save runs in `App::shutdown` with servers and tasks, skipped while the restore is still loading
@@ -800,15 +799,7 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
         - Offer after the session restore and the trust dialog: Restore (Enter) / Discard / Later (Esc: kept and offered next start, survives a clean quit); restore = one `EditKind::Other` step via `apply_changes`, dirty, nothing written; a file changed since the backup gets the backup's base stamp (`Buffer::set_disk_base`), so the banner shows and a save conflicts
         - Not done: no untitled buffers to back up; old-format panic backups (`backup/%path.pid.bak`) ignored; the panic hook doesn't spare a not-yet-offered backup; "Later" then saving still offers the stale backup (restoring shows the banner)
       - 13c: recent workspaces: `recent.toml` recorded on every start (most recent first, no duplicates, cap 50); "Open Recent Workspace" (Ctrl+R) as a palette picker (folder name, `~` path, current workspace left out, missing folders dropped); picking one outside kitty: status-bar message with `jed <path>`
-      - 13d: kitty integration (`jed_workspace` user var on start / exit / panic; `kitten @ ls` marks open rows and focuses a window; `kitten @ launch --type=os-window` for one not open; off the UI thread with a timeout, message fallback), fake `kitten` on `PATH` in tests, `docs/terminals/kitty.md`; the done-when tests; marks M13 ✅
-14. **Polish**: settings, the rest of the editor list, performance
-    - Settings: live reload of `settings.toml` and `.workspace` overrides (the files themselves load at startup since M8, 8d)
-    - Soft wrap toggle (the view must stop assuming one screen row per line: up/down, mouse hits, scroll)
-    - Owed from M3: move tabs between groups, drag-and-drop tabs, keyboard resize of splits
-    - Back / forward navigation ([Editor](#editor)): `nav.back` / `nav.forward` on Ctrl+- / Ctrl+Shift+- (macOS) and Ctrl+Alt+- / Ctrl+Shift+- (Linux), and the mouse back / forward buttons
-      - crossterm 0.29 drops SGR mouse buttons 8 / 9 (`parse_cb`: "We do not support other buttons"): needs a patched crossterm or jed's own parse of those reports; not every terminal sends them (check kitty, Ghostty, WezTerm, iTerm2, Alacritty)
-    - Performance against the [Goals](#goals): startup time, memory, 1 MB files; check the slow-frame warnings in the log
-    - Done when: no warnings over 16 ms in a day of normal use
+      - 13d: the done-when tests (quit and reopen gives back the same tabs, splits, cursors and scroll; killing the terminal loses at most one backup interval of edits), remaining gaps and hand checks; marks M13 ✅. Kitty integration is deferred (see the TODO list)
 
 ## Stretch goals
 Very low priority. Don't build these yet, but don't make design choices that would block them.
@@ -854,7 +845,18 @@ Broad items not tied to a milestone.
   - Done: `docs/terminals/` (README + kitty, ghostty, wezterm, iterm2, alacritty); unit test `terminal_docs_list_every_cmd_binding` fails if the README table and the macOS Cmd keymap differ
   - Still to do: hand-check each terminal with its checklist (iTerm2 least certain)
 
-- **Remove the `/milestones` command** (`.claude/commands/milestones.md`) once the last milestone is done; it only drives the agent workflow
+- **Polish** (was milestone 14; pick items off one at a time)
+  - Settings: live reload of `settings.toml`, `.workspace` overrides and `keybindings.toml` (the files themselves load at startup since M8, 8d)
+  - Soft wrap toggle (the view must stop assuming one screen row per line: up/down, mouse hits, scroll)
+  - Owed from M3: move tabs between groups, drag-and-drop tabs, keyboard resize of splits
+  - Back / forward navigation ([Editor](#editor)): `nav.back` / `nav.forward` on Ctrl+- / Ctrl+Shift+- (macOS) and Ctrl+Alt+- / Ctrl+Shift+- (Linux), and the mouse back / forward buttons
+    - crossterm 0.29 drops SGR mouse buttons 8 / 9 (`parse_cb`: "We do not support other buttons"): needs a patched crossterm or jed's own parse of those reports; not every terminal sends them (check kitty, Ghostty, WezTerm, iTerm2, Alacritty)
+  - Performance against the [Goals](#goals): startup time, memory, 1 MB files; check the slow-frame warnings in the log; tree bracket matching on a 1 MB flat JSON root (see M8)
+  - Done when: no warnings over 16 ms in a day of normal use
+- **Scroll bars in the editors**: a vertical scroll bar per editor group (position and viewport size over the whole text; click and drag to scroll), as VS Code; also marks for selections / find matches / diagnostics / git changes later (VS Code's overview ruler)
+- **Revert hunks in the diff view**: a red Revert button on the index (left) side of an unstaged diff (Index ↔ Working Tree), opposite each hunk's Stage button; reverts that hunk in the working tree (the open buffer through `Buffer::edit`, one undo step, or the file on disk when not open) back to the index's text; a new theme key for the button
+- **Kitty integration for recent workspaces** (deferred from M13; see [Recent workspaces](#workspace)): `jed_workspace` user var on start / exit / panic; `kitten @ ls` marks rows already open and focuses that window; `kitten @ launch --type=os-window --cwd <path> jed <path>` for one not open; off the UI thread with a timeout, message fallback; tests through a fake `kitten` on `PATH` (canned `ls` JSON, records its arguments); `docs/terminals/kitty.md` (`allow_remote_control`). Kitty isn't installed on the Linux test box: real-kitty behaviour is a hand check
+- **Remove the `/milestones` command** (`.claude/commands/milestones.md`) once milestone 13 (the last) is done; it only drives the agent workflow
 
 ## Open questions
 - _Add your own_
