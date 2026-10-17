@@ -4,23 +4,28 @@ use std::backtrace::Backtrace;
 use std::path::PathBuf;
 use std::sync::{Mutex, TryLockError};
 
-use ropey::Rope;
+use crate::backup::{self, Snapshot};
+use crate::{logging, terminal};
 
-use crate::buffer::file;
-use crate::{logging, paths, terminal};
-
-/// A dirty buffer's text, refreshed by the app after each event (rope clones are cheap).
-pub struct Snapshot {
-    pub path: PathBuf,
-    pub rope: Rope,
-    pub bom: bool,
+/// Where the backups go and the dirty buffers' texts, refreshed by the app after each event
+/// loop turn (rope clones are cheap).
+struct Dirty {
+    state_dir: PathBuf,
+    root: PathBuf,
+    snapshots: Vec<Snapshot>,
 }
 
-static DIRTY: Mutex<Vec<Snapshot>> = Mutex::new(Vec::new());
+static DIRTY: Mutex<Option<Dirty>> = Mutex::new(None);
 
-pub fn set_dirty(snapshots: Vec<Snapshot>) {
+/// The dirty buffers to back up if jed panics, into `state_dir`'s backups of the workspace at
+/// `root` (the same files `backup` writes periodically).
+pub fn set_dirty(state_dir: PathBuf, root: PathBuf, snapshots: Vec<Snapshot>) {
     if let Ok(mut d) = DIRTY.lock() {
-        *d = snapshots;
+        *d = Some(Dirty {
+            state_dir,
+            root,
+            snapshots,
+        });
     }
 }
 
@@ -41,23 +46,21 @@ pub fn install() {
     }));
 }
 
-/// Best effort: never blocks, never panics.
-fn back_up_dirty() -> Vec<PathBuf> {
+/// Best effort: never blocks on the lock, never panics. `backup::write`, so the next start
+/// offers them like the periodic backups.
+pub(crate) fn back_up_dirty() -> Vec<PathBuf> {
     let guard = match DIRTY.try_lock() {
         Ok(g) => g,
         Err(TryLockError::Poisoned(p)) => p.into_inner(),
         Err(TryLockError::WouldBlock) => return Vec::new(),
     };
-    let dir = paths::state_dir().join("backup");
-    if std::fs::create_dir_all(&dir).is_err() {
+    let Some(dirty) = guard.as_ref() else {
         return Vec::new();
-    }
-    guard
+    };
+    let time = crate::history::now_ms();
+    dirty
+        .snapshots
         .iter()
-        .filter_map(|s| {
-            let name = s.path.to_string_lossy().replace('/', "%");
-            let dest = dir.join(format!("{name}.{}.bak", std::process::id()));
-            std::fs::write(&dest, file::encode(&s.rope, s.bom)).ok().map(|_| dest)
-        })
+        .filter_map(|s| backup::write(&dirty.state_dir, &dirty.root, s, time).ok())
         .collect()
 }

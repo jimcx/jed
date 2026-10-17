@@ -48,6 +48,27 @@ impl Stamp {
             hash: Sha256::digest(bytes).into(),
         }
     }
+
+    /// As text (`len:hex`), for files that store one (crash backups); `parse` reads it back.
+    pub fn encode(&self) -> String {
+        let hex: String = self.hash.iter().map(|b| format!("{b:02x}")).collect();
+        format!("{}:{hex}", self.len)
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        let (len, hex) = text.split_once(':')?;
+        if hex.len() != 64 || !hex.is_ascii() {
+            return None;
+        }
+        let mut hash = [0; 32];
+        for (i, b) in hash.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
+        }
+        Some(Self {
+            len: len.parse().ok()?,
+            hash,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -212,6 +233,16 @@ fn resolve_target(path: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stamps_read_back_as_written() {
+        let s = Stamp::of(b"hello");
+        assert_eq!(Stamp::parse(&s.encode()), Some(s));
+        assert!(s.encode().starts_with("5:"));
+        assert_eq!(Stamp::parse("5:zz"), None);
+        assert_eq!(Stamp::parse(&s.encode().replace("5:", "x:")), None);
+        assert_eq!(Stamp::parse(""), None);
+    }
 
     #[test]
     fn detects_binary_bom_and_eol() {

@@ -265,7 +265,9 @@ mod tests {
         failing.task.cwd = Some("missing".into());
         let id = t.run(&failing, dir.path());
         let run = t.get(id).unwrap();
-        assert!(run.write(b"x"));
+        // Queued while starting; the failed start may already have finished under load.
+        let queued = run.write(b"x");
+        assert!(queued || matches!(run.status(), Status::Failed(_)));
         wait_until("failed", || matches!(run.status(), Status::Failed(_))).await;
         assert!(!run.write(b"x"));
     }

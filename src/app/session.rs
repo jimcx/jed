@@ -51,7 +51,13 @@ impl App {
     /// The session's groups, split tree, tabs, selections, scroll and panels replace the start
     /// layout; tabs already open (the command line's file) go on top in the restored active
     /// group, activated. A bad session is logged and changes nothing.
+    /// Then offers the crash backups found meanwhile (their tabs now exist).
     pub(super) fn session_read(&mut self, result: Result<Option<Restore>, String>) {
+        self.apply_session(result);
+        self.offer_backups();
+    }
+
+    fn apply_session(&mut self, result: Result<Option<Restore>, String>) {
         self.session.loading = false;
         let Restore { session, buffers } = match result {
             Ok(Some(r)) => r,

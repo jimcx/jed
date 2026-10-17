@@ -39,6 +39,8 @@ pub enum Prompt {
     SaveBeforeStageAll {
         buffers: Vec<BufferId>,
     },
+    /// Crash backups found at start (`app.backups.offered`): Restore / Discard / Later (Esc).
+    RestoreBackups,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +109,8 @@ impl App {
         self.prompt = None;
         if self.trust_pending {
             self.ask_trust();
+        } else if self.backup_offer_pending() {
+            self.offer_backups();
         }
     }
 
@@ -169,6 +173,21 @@ impl App {
                 }
                 _ if esc || ch == Some('c') => self.close_prompt(),
                 _ => self.prompt = Some(Prompt::SaveBeforeStageAll { buffers }),
+            },
+            Prompt::RestoreBackups => match ch {
+                _ if enter || ch == Some('r') => {
+                    self.close_prompt();
+                    self.restore_backups();
+                }
+                Some('d') => {
+                    self.close_prompt();
+                    self.discard_backups();
+                }
+                _ if esc || ch == Some('l') => {
+                    self.close_prompt();
+                    self.keep_backups();
+                }
+                _ => self.prompt = Some(Prompt::RestoreBackups),
             },
             Prompt::ConfirmDelete { path, is_dir } => match ch {
                 _ if enter || ch == Some('t') => {

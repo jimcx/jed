@@ -172,6 +172,13 @@ impl Buffer {
         true
     }
 
+    /// The text is based on the file as it was at `stamp` (a crash backup's base, restored over
+    /// a file that changed since): the next disk check sees the newer file as a change made
+    /// while the buffer had edits (the banner), and a save refuses to overwrite it unasked.
+    pub fn set_disk_base(&mut self, stamp: Option<Stamp>) {
+        self.disk = stamp;
+    }
+
     /// Takes in the file as it is now on disk: `changes` (from the current text to the file's)
     /// as one undo step of its own (undo brings the text from before back, dirty), then the
     /// buffer is clean at the new text, with the file's BOM, line ending and read-only state.

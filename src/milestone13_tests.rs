@@ -12,15 +12,37 @@
 //! over the session's cursor (`milestone_13_a_command_line_file_opens_on_top_of_the_session`);
 //! quitting before the restore finished keeps the old session
 //! (`milestone_13_quitting_while_restoring_keeps_the_session`).
+//!
+//! 13b, crash recovery: dirty buffers are backed up each interval (only those changed since
+//! their backup), a killed jed's next start offers them, Restore puts each back into its buffer
+//! (opening the file if needed) as one undo step, dirty, nothing written; reverting to clean and
+//! saving remove the backup (`milestone_13_a_killed_jed_offers_its_unsaved_changes_back`); a
+//! clean quit leaves none, the terminal going away writes them, Later keeps them for the next
+//! start and Discard removes them (`milestone_13_quitting_cleanly_leaves_no_backups`); corrupt
+//! backups and another workspace's aren't offered
+//! (`milestone_13_corrupt_and_other_workspaces_backups_are_not_offered`); a backup of a file
+//! changed on disk since restores with the banner and a save that won't overwrite it unasked
+//! (`milestone_13_a_backup_of_a_file_changed_since_shows_the_banner`); the offer waits for the
+//! trust dialog (`milestone_13_the_backup_offer_waits_for_the_trust_dialog`).
+//! The deadline is set by the first edit and not put off by more typing, so killing the
+//! terminal loses at most one interval (`milestone_13_typing_does_not_put_the_backup_off`); the
+//! panic hook writes the same files the next start offers
+//! (`milestone_13_a_panic_backs_up_what_the_next_start_offers`); closing a dirty tab with Don't
+//! Save removes its backup and an explorer rename moves it to the new name
+//! (`milestone_13_closing_or_renaming_a_dirty_buffer_moves_its_backup`); a backup found but not
+//! yet offered is neither replaced nor removed at shutdown
+//! (`milestone_13_a_backup_not_offered_yet_is_never_replaced`).
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-use crossterm::event::{MouseButton, MouseEventKind};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-use crate::app::{App, Focus, InitialFile};
+use crate::app::{App, Focus, InitialFile, Prompt};
+use crate::backup;
 use crate::buffer::Buffer;
 use crate::buffer::pos::ByteIdx;
 use crate::command::Command;
@@ -474,4 +496,418 @@ async fn milestone_13_quitting_while_restoring_keeps_the_session() {
     assert_eq!(fs::read(&file).unwrap(), saved);
     let app = reopen(&root, &state, None).await;
     assert_eq!(layout(&app)[0].1.len(), 2, "unchanged");
+}
+
+// 13b: crash recovery.
+
+fn buf_of<'a>(app: &'a App, root: &Path, name: &str) -> Option<&'a Buffer> {
+    app.buffers.get(app.buffers.find_path(&root.join(name))?)
+}
+
+fn text_of(app: &App, root: &Path, name: &str) -> String {
+    buf_of(app, root, name).unwrap().rope.to_string()
+}
+
+/// Fires the backup timer as if `backup::INTERVAL` had passed and waits for its job.
+async fn back_up(app: &mut App) {
+    app.test_backup_tick(backup::INTERVAL);
+    assert!(app.settle(|a| !a.backups.busy()).await, "the backup job ends");
+}
+
+/// Waits for the start's offer to restore backups.
+async fn offered(app: &mut App) -> Vec<PathBuf> {
+    let shown = app.settle(|a| matches!(a.prompt, Some(Prompt::RestoreBackups))).await;
+    assert!(shown, "the restore prompt");
+    app.backups.offered.iter().map(|b| b.path.clone()).collect()
+}
+
+fn backup_file(state: &Path, root: &Path, name: &str) -> PathBuf {
+    backup::file(state, root, &root.join(name))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_13_a_killed_jed_offers_its_unsaved_changes_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    fs::write(root.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+    fs::write(root.join("b.txt"), "bee\n").unwrap();
+    let mut app = reopen(&root, &state, Some(("a.txt", None))).await;
+    app.type_text("X");
+    open(&mut app, &root, "b.txt");
+    app.type_text("B");
+    back_up(&mut app).await;
+    let (a_file, b_file) = (backup_file(&state, &root, "a.txt"), backup_file(&state, &root, "b.txt"));
+    let first_b = backup::read(&state, &root, &b_file).unwrap();
+    assert_eq!(first_b.text.to_string(), "Bbee\n");
+
+    // Only buffers changed since their backup are written again.
+    std::thread::sleep(Duration::from_millis(5));
+    app.test_execute(Command::PrevTab);
+    app.type_text("Z");
+    back_up(&mut app).await;
+    let a = backup::read(&state, &root, &a_file).unwrap();
+    assert_eq!(a.text.to_string(), "XZone\ntwo\nthree\n");
+    assert!(a.time > first_b.time, "a.txt rewritten");
+    assert_eq!(
+        backup::read(&state, &root, &b_file).unwrap().time,
+        first_b.time,
+        "b.txt not"
+    );
+
+    // Edits after the last backup are what a kill loses (at most one interval).
+    app.type_text("Y");
+    drop(app);
+    assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "one\ntwo\nthree\n");
+
+    // The next start (a.txt open from the command line, b.txt not open) offers both.
+    let mut app = reopen(&root, &state, Some(("a.txt", None))).await;
+    assert_eq!(offered(&mut app).await, [root.join("a.txt"), root.join("b.txt")]);
+    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    draw(&mut app, &mut term);
+    let screen: String = term.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+    assert!(screen.contains("Unsaved changes to 2 files were backed up"), "{screen}");
+    assert!(screen.contains("[R]estore"));
+    app.press(KeyCode::Char('r'), KeyModifiers::NONE);
+    assert!(app.prompt.is_none());
+    let restored = app
+        .settle(|a| a.backups.restoring() == 0 && buf_of(a, &root, "b.txt").is_some_and(|b| b.is_dirty()))
+        .await;
+    assert!(restored, "both restored");
+    assert_eq!(text_of(&app, &root, "a.txt"), "XZone\ntwo\nthree\n");
+    assert_eq!(text_of(&app, &root, "b.txt"), "Bbee\n");
+    assert!(buf_of(&app, &root, "a.txt").unwrap().is_dirty());
+    assert_eq!(app.group().tabs.len(), 2, "b.txt opened in a tab");
+    assert!(
+        app.message
+            .as_ref()
+            .unwrap()
+            .text
+            .contains("Restored unsaved changes to a.txt, b.txt")
+    );
+    // Nothing written.
+    assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "one\ntwo\nthree\n");
+    assert_eq!(fs::read_to_string(root.join("b.txt")).unwrap(), "bee\n");
+
+    // One undo step brings the file's text back, clean: its backup goes.
+    let a = app.buffers.find_path(&root.join("a.txt")).unwrap();
+    app.buffers.get_mut(a).unwrap().undo();
+    assert_eq!(text_of(&app, &root, "a.txt"), "one\ntwo\nthree\n");
+    assert!(!buf_of(&app, &root, "a.txt").unwrap().is_dirty());
+    assert!(
+        app.settle(|_| !a_file.exists()).await,
+        "reverted to clean: backup removed"
+    );
+
+    // Saving removes the backup.
+    assert_eq!(app.active_buffer().unwrap().name(), "b.txt");
+    app.test_execute(Command::Save);
+    assert!(app.settle(|_| !b_file.exists()).await, "saved: backup removed");
+    assert_eq!(fs::read_to_string(root.join("b.txt")).unwrap(), "Bbee\n");
+    quit(app).await;
+    let mut app = reopen(&root, &state, None).await;
+    assert!(app.settle(|a| !a.backups.busy()).await);
+    assert!(app.prompt.is_none(), "nothing left to offer");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_13_quitting_cleanly_leaves_no_backups() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    fs::write(root.join("a.txt"), "a\n").unwrap();
+    let a_file = backup_file(&state, &root, "a.txt");
+
+    // Quit with Don't Save: the backups go with the edits.
+    let mut app = reopen(&root, &state, Some(("a.txt", None))).await;
+    app.type_text("1");
+    back_up(&mut app).await;
+    assert!(a_file.exists());
+    app.test_execute(Command::Quit);
+    app.press(KeyCode::Char('d'), KeyModifiers::NONE);
+    assert!(app.quitting());
+    app.shutdown().await;
+    assert!(!backup::dir(&state, &root).exists(), "no backups after a clean quit");
+
+    // The terminal going away (no Quit) brings the backups up to date instead.
+    let mut app = reopen(&root, &state, Some(("a.txt", None))).await;
+    app.type_text("2");
+    app.shutdown().await;
+    let b = backup::read(&state, &root, &a_file).unwrap();
+    assert_eq!(b.text.to_string(), "a2\n", "typed at the session's cursor");
+
+    // Later (Esc) keeps them, past a clean quit, offered again at the next start…
+    let mut app = reopen(&root, &state, None).await;
+    assert_eq!(offered(&mut app).await, [root.join("a.txt")]);
+    app.press(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.prompt.is_none());
+    assert_eq!(
+        text_of(&app, &root, "a.txt"),
+        "a\n",
+        "nothing restored (the session's tab)"
+    );
+    quit(app).await;
+    assert!(a_file.exists(), "kept");
+
+    // …where Discard removes them.
+    let mut app = reopen(&root, &state, None).await;
+    offered(&mut app).await;
+    app.press(KeyCode::Char('d'), KeyModifiers::NONE);
+    assert!(app.settle(|_| !a_file.exists()).await, "discarded");
+    assert!(!buf_of(&app, &root, "a.txt").unwrap().is_dirty());
+    drop(app);
+    let mut app = reopen(&root, &state, None).await;
+    assert!(app.settle(|a| !a.backups.busy()).await);
+    assert!(app.prompt.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_13_corrupt_and_other_workspaces_backups_are_not_offered() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    fs::write(root.join("a.txt"), "a\n").unwrap();
+    let snap = |path: PathBuf, text: &str| backup::Snapshot {
+        path,
+        rope: ropey::Rope::from_str(text),
+        bom: false,
+        disk: None,
+    };
+    let other = root.parent().unwrap().join("other");
+    backup::write(&state, &other, &snap(other.join("a.txt"), "theirs"), 1).unwrap();
+    backup::write(&state, &root, &snap(root.join("a.txt"), "mine\n"), 1).unwrap();
+    // Corrupt: cut short, and garbage.
+    let cut = backup::write(&state, &root, &snap(root.join("b.txt"), "bbbb"), 1).unwrap();
+    let bytes = fs::read(&cut).unwrap();
+    fs::write(&cut, &bytes[..bytes.len() - 2]).unwrap();
+    fs::write(backup_file(&state, &root, "c.txt"), "not a backup").unwrap();
+
+    let mut app = reopen(&root, &state, None).await;
+    assert_eq!(
+        offered(&mut app).await,
+        [root.join("a.txt")],
+        "only the good one of this workspace"
+    );
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        app.settle(|a| buf_of(a, &root, "a.txt").is_some_and(|b| b.is_dirty()))
+            .await
+    );
+    assert_eq!(text_of(&app, &root, "a.txt"), "mine\n");
+    // The other workspace's backup is left alone, even by a clean quit.
+    app.test_execute(Command::Quit);
+    app.press(KeyCode::Char('d'), KeyModifiers::NONE);
+    app.shutdown().await;
+    assert!(!backup::dir(&state, &root).exists(), "the corrupt ones went too");
+    assert!(backup::file(&state, &other, &other.join("a.txt")).exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_13_a_backup_of_a_file_changed_since_shows_the_banner() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    fs::write(root.join("a.txt"), "base\n").unwrap();
+    let mut app = reopen(&root, &state, Some(("a.txt", None))).await;
+    app.type_text("mine ");
+    back_up(&mut app).await;
+    drop(app);
+    // Someone else changes the file before jed starts again.
+    fs::write(root.join("a.txt"), "theirs\n").unwrap();
+
+    let mut app = reopen(&root, &state, None).await;
+    offered(&mut app).await;
+    app.press(KeyCode::Char('r'), KeyModifiers::NONE);
+    let banner = app
+        .settle(|a| buf_of(a, &root, "a.txt").is_some_and(|b| b.disk_conflict.is_some()))
+        .await;
+    assert!(banner, "the changed-on-disk banner");
+    assert_eq!(text_of(&app, &root, "a.txt"), "mine base\n");
+    assert!(
+        app.message
+            .as_ref()
+            .unwrap()
+            .text
+            .contains("changed on disk since: a.txt")
+    );
+    // A save doesn't overwrite the newer file unasked…
+    app.test_execute(Command::Save);
+    assert!(app.settle(|a| !a.buffers.any_saving()).await);
+    assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "theirs\n");
+    assert!(buf_of(&app, &root, "a.txt").unwrap().is_dirty());
+    // …Keep Mine does.
+    app.test_execute(Command::KeepMine);
+    app.test_execute(Command::Save);
+    assert!(
+        app.settle(|a| !a.buffers.any_saving() && !a.active_buffer().unwrap().is_dirty())
+            .await
+    );
+    assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "mine base\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_13_the_backup_offer_waits_for_the_trust_dialog() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    fs::write(root.join("a.txt"), "a\n").unwrap();
+    fs::write(root.join(".workspace"), "[tasks.build]\ncommand = \"make\"\n").unwrap();
+    let snap = backup::Snapshot {
+        path: root.join("a.txt"),
+        rope: ropey::Rope::from_str("mine\n"),
+        bom: false,
+        disk: None,
+    };
+    backup::write(&state, &root, &snap, 1).unwrap();
+    let mut app = reopen(&root, &state, None).await;
+    assert!(app.settle(|a| !a.backups.busy()).await);
+    assert!(matches!(app.prompt, Some(Prompt::Trust { .. })), "trust first");
+    app.press(KeyCode::Char('r'), KeyModifiers::NONE);
+    assert!(matches!(app.prompt, Some(Prompt::RestoreBackups)), "then the offer");
+}
+
+fn snap(path: PathBuf, text: &str) -> backup::Snapshot {
+    backup::Snapshot {
+        path,
+        rope: ropey::Rope::from_str(text),
+        bom: false,
+        disk: None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_13_typing_does_not_put_the_backup_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    fs::write(root.join("a.txt"), "a\n").unwrap();
+    let a_file = backup_file(&state, &root, "a.txt");
+    let mut app = reopen(&root, &state, Some(("a.txt", None))).await;
+    assert!(app.settle(|a| !a.backups.busy()).await);
+    app.pump();
+    assert_eq!(app.backups.deadline(), None, "nothing dirty, nothing due");
+
+    let before = Instant::now();
+    app.type_text("1");
+    app.pump();
+    let first = app.backups.deadline().expect("the first edit sets the deadline");
+    assert!(first >= before + backup::INTERVAL && first <= Instant::now() + backup::INTERVAL);
+    // A constant typist is still backed up: more edits don't move the deadline.
+    for c in ["2", "3"] {
+        std::thread::sleep(Duration::from_millis(5));
+        app.type_text(c);
+        app.pump();
+        assert_eq!(app.backups.deadline(), Some(first), "not put off by typing");
+    }
+    // Before the deadline nothing is written…
+    app.test_backup_tick(backup::INTERVAL - Duration::from_secs(1));
+    assert!(!app.backups.busy() && !a_file.exists());
+    // …at it, the buffer as it is then.
+    back_up(&mut app).await;
+    assert_eq!(backup::read(&state, &root, &a_file).unwrap().text.to_string(), "123a\n");
+    assert_eq!(app.backups.deadline(), None, "nothing changed since");
+    app.type_text("4");
+    app.pump();
+    assert!(
+        app.backups.deadline().is_some(),
+        "the next edit starts the next interval"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_13_a_panic_backs_up_what_the_next_start_offers() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    fs::write(root.join("a.txt"), "a\n").unwrap();
+    fs::write(root.join("b.txt"), "b\n").unwrap();
+    fs::write(root.join("c.txt"), "c\n").unwrap();
+    let mut app = reopen(&root, &state, Some(("a.txt", None))).await;
+    app.type_text("P");
+    open(&mut app, &root, "b.txt");
+    app.type_text("Q");
+    open(&mut app, &root, "c.txt");
+    // No periodic backup has run: the hook writes them itself, clean buffers left out.
+    assert!(!backup::dir(&state, &root).exists());
+    let mut written = app.test_panic_backup();
+    written.sort();
+    let mut expected = vec![backup_file(&state, &root, "a.txt"), backup_file(&state, &root, "b.txt")];
+    expected.sort();
+    assert_eq!(written, expected);
+    drop(app);
+
+    let mut app = reopen(&root, &state, None).await;
+    assert_eq!(offered(&mut app).await, [root.join("a.txt"), root.join("b.txt")]);
+    app.press(KeyCode::Char('r'), KeyModifiers::NONE);
+    let restored = app
+        .settle(|a| a.backups.restoring() == 0 && buf_of(a, &root, "b.txt").is_some_and(|b| b.is_dirty()))
+        .await;
+    assert!(restored);
+    assert_eq!(text_of(&app, &root, "a.txt"), "Pa\n");
+    assert_eq!(text_of(&app, &root, "b.txt"), "Qb\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_13_closing_or_renaming_a_dirty_buffer_moves_its_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    fs::write(root.join("a.txt"), "a\n").unwrap();
+    fs::write(root.join("b.txt"), "b\n").unwrap();
+    let (a_file, b_file, c_file) = (
+        backup_file(&state, &root, "a.txt"),
+        backup_file(&state, &root, "b.txt"),
+        backup_file(&state, &root, "c.txt"),
+    );
+    let mut app = reopen(&root, &state, Some(("a.txt", None))).await;
+    app.type_text("A");
+    open(&mut app, &root, "b.txt");
+    app.type_text("B");
+    back_up(&mut app).await;
+    assert!(a_file.exists() && b_file.exists());
+
+    // Closing b.txt with Don't Save discards its edits and its backup.
+    app.test_execute(Command::CloseTab);
+    assert!(matches!(app.prompt, Some(Prompt::SaveBeforeClose { .. })));
+    app.press(KeyCode::Char('d'), KeyModifiers::NONE);
+    assert!(buf_of(&app, &root, "b.txt").is_none());
+    assert!(app.settle(|_| !b_file.exists()).await, "discarded: backup removed");
+    assert!(a_file.exists());
+
+    // Renaming a.txt in the explorer: the old name's backup goes, the new name's comes with the
+    // next backup.
+    let cmd = if cfg!(target_os = "macos") {
+        KeyModifiers::SUPER
+    } else {
+        KeyModifiers::CONTROL
+    };
+    app.press(KeyCode::Char('e'), cmd | KeyModifiers::SHIFT);
+    let a = root.join("a.txt");
+    assert!(app.settle(|app| app.explorer.find(&a).is_some()).await, "root listed");
+    app.explorer.selected = Some(a.clone());
+    app.press(KeyCode::F(2), KeyModifiers::NONE);
+    for _ in 0.."a.txt".len() {
+        app.press(KeyCode::Backspace, KeyModifiers::NONE);
+    }
+    app.type_text("c.txt");
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.settle(|a| buf_of(a, &root, "c.txt").is_some()).await, "renamed");
+    assert!(app.settle(|_| !a_file.exists()).await, "the old name's backup removed");
+    back_up(&mut app).await;
+    let c = backup::read(&state, &root, &c_file).unwrap();
+    assert_eq!((c.path, c.text.to_string()), (root.join("c.txt"), "Aa\n".to_string()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_13_a_backup_not_offered_yet_is_never_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    fs::write(root.join("a.txt"), "a\n").unwrap();
+    let a_file = backup_file(&state, &root, "a.txt");
+    backup::write(&state, &root, &snap(root.join("a.txt"), "mine\n"), 1).unwrap();
+    // The start's scan hasn't been handled (no `settle`): its backups aren't offered yet.
+    let mut app = start(&root, &state, Some(("a.txt", None)));
+    assert!(app.backups.busy(), "scanning");
+    app.type_text("Z");
+    // The terminal goes away: the edit isn't written over the backup still to be offered.
+    app.shutdown().await;
+    drop(app);
+    assert_eq!(backup::read(&state, &root, &a_file).unwrap().text.to_string(), "mine\n");
+    // Nor removed by a clean quit.
+    quit(start(&root, &state, Some(("a.txt", None)))).await;
+    assert_eq!(backup::read(&state, &root, &a_file).unwrap().text.to_string(), "mine\n");
+    let mut app = reopen(&root, &state, None).await;
+    assert_eq!(offered(&mut app).await, [root.join("a.txt")]);
 }

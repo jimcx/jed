@@ -1,5 +1,6 @@
 //! Event loop. Owns all state and sends commands where they need to go.
 
+mod backup;
 mod completion;
 mod cursors;
 mod diff_view;
@@ -55,7 +56,7 @@ use crate::watcher::{self, Watcher};
 use crate::workspace::Workspace;
 use crate::workspace::config::WorkspaceConfig;
 use crate::workspace::trust::{Trust, TrustStore};
-use crate::{logging, panic, search, ui};
+use crate::{logging, search, ui};
 
 pub use mouse::ClickTracker;
 pub use prompt::{InputKind, Prompt};
@@ -90,6 +91,8 @@ enum Timer {
     QuickDiff,
     /// Diff tabs of edited buffers are due (`diff_view::DELAY`).
     Diff,
+    /// Dirty buffers changed since their backup are due (`backup::INTERVAL`).
+    Backup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,6 +222,12 @@ enum AppEvent {
     Task(crate::tasks::Event),
     /// The workspace's session was read, with its text tabs' files (`app/session.rs`).
     SessionRead(Box<Result<Option<crate::session::Restore>, String>>),
+    /// The workspace's crash backups were looked for at start (`app/backup.rs`).
+    BackupsFound(Vec<crate::backup::Backup>),
+    /// A backup job (removals, writes) ended.
+    BackupDone(backup::Done),
+    /// A backup was diffed against its buffer, to restore it.
+    BackupRestore(Box<backup::Restoring>),
 }
 
 /// The file to open at startup, with an optional 1-based line and column.
@@ -259,6 +268,8 @@ pub struct App {
     pub state_dir: Option<PathBuf>,
     /// The session's restore at start and save at quit.
     pub session: session::SessionState,
+    /// Crash backups: the periodic writes, removals, the start's offer.
+    pub backups: backup::BackupState,
     pub message: Option<Message>,
     after_save: Option<AfterSave>,
     /// A trust decision is needed but another prompt is open.
@@ -380,6 +391,7 @@ impl App {
             #[cfg(test)]
             state_dir: None,
             session: Default::default(),
+            backups: Default::default(),
             message: None,
             after_save: None,
             trust_pending: false,
@@ -474,6 +486,7 @@ impl App {
         }
         self.refresh_git(None);
         self.restore_session();
+        self.scan_backups();
         let root = self.workspace.root.clone();
         self.request_listing(root);
         self.reveal_active();
@@ -496,6 +509,7 @@ impl App {
             self.sync_servers();
             self.sync_quick_diff();
             self.sync_diffs();
+            self.sync_backups();
             if self.needs_redraw {
                 let t = Instant::now();
                 terminal.draw(|f| ui::render(f, self))?;
@@ -554,7 +568,11 @@ impl App {
             .diffs
             .deadline()
             .map(|d| (tokio::time::Instant::from_std(d), Timer::Diff));
-        let next = [fs, search, hover, completion, quick_diff, diff]
+        let backup = self
+            .backups
+            .deadline()
+            .map(|d| (tokio::time::Instant::from_std(d), Timer::Backup));
+        let next = [fs, search, hover, completion, quick_diff, diff, backup]
             .into_iter()
             .flatten()
             .min_by_key(|(at, _)| *at);
@@ -578,6 +596,7 @@ impl App {
             Timer::Completion => self.completion_tick(Instant::now()),
             Timer::QuickDiff => self.sync_quick_diff(),
             Timer::Diff => self.sync_diffs(),
+            Timer::Backup => self.backup_tick(Instant::now()),
         }
     }
 
@@ -1010,25 +1029,14 @@ impl App {
             AppEvent::DiffStaged(message) => self.diff_staged(message),
             AppEvent::Task(ev) => self.task_event(ev),
             AppEvent::SessionRead(result) => self.session_read(*result),
+            AppEvent::BackupsFound(found) => self.backups_found(found),
+            AppEvent::BackupDone(done) => self.backup_done(done),
+            AppEvent::BackupRestore(r) => self.backup_restored(*r),
         }
         self.refresh_find();
         self.check_completion();
         self.check_hover();
         self.check_peek();
-    }
-
-    fn update_crash_snapshot(&self) {
-        let snapshots = self
-            .buffers
-            .iter()
-            .filter(|(_, b)| b.is_dirty())
-            .map(|(_, b)| panic::Snapshot {
-                path: b.path.clone(),
-                rope: b.rope.clone(),
-                bom: b.bom,
-            })
-            .collect();
-        panic::set_dirty(snapshots);
     }
 }
 
@@ -1096,6 +1104,20 @@ impl App {
         self.hover_tick(now);
     }
 
+    /// Fires the backup timer as the event loop would `after` from now (after the turn's
+    /// `sync_backups`, which sets the deadline): with `backup::INTERVAL`, what's due is written.
+    pub fn test_backup_tick(&mut self, after: Duration) {
+        self.sync_backups();
+        self.backup_tick(Instant::now() + after);
+    }
+
+    /// What the panic hook backs up if jed panics now: the loop turn's crash snapshot, then the
+    /// hook's own write (`panic::back_up_dirty`), returning the files written.
+    pub fn test_panic_backup(&self) -> Vec<PathBuf> {
+        self.update_crash_snapshot();
+        crate::panic::back_up_dirty()
+    }
+
     /// Fires the quick-suggestion timer as the event loop would at `now`.
     pub fn test_completion_tick(&mut self, now: Instant) {
         self.completion_tick(now);
@@ -1148,6 +1170,7 @@ impl App {
         self.sync_servers();
         self.sync_quick_diff();
         self.sync_diffs();
+        self.sync_backups();
     }
 
     /// Handles background results (and the Search view's debounce) until `done` holds; false after 5 s.
@@ -1160,6 +1183,7 @@ impl App {
             self.sync_servers();
             self.sync_quick_diff();
             self.sync_diffs();
+            self.sync_backups();
             if done(self) {
                 break;
             }

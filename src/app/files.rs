@@ -43,6 +43,8 @@ pub(super) struct OpenRequest {
     /// A file history entry to restore into the buffer once it's loaded (Restore on a file
     /// that isn't open: `App::restore_history`).
     pub restore: Option<crate::history::Snapshot>,
+    /// A crash backup to restore into the buffer once it's loaded (`App::restore_backup`).
+    pub backup: Option<Box<crate::backup::Backup>>,
 }
 
 impl App {
@@ -100,7 +102,13 @@ impl App {
             background,
             edits,
             restore,
+            mut backup,
         } = self.opening.remove(&path).unwrap_or_default();
+        // Said after the load error's own message, which it would otherwise hide.
+        let unopened = match &result {
+            Err(e) => backup.take().map(|b| (b, e.to_string())),
+            Ok(_) => None,
+        };
         match result {
             Ok(buffer) => {
                 if let Some(reason) = &buffer.read_only
@@ -129,12 +137,18 @@ impl App {
                 {
                     self.restore_history(path, rel, snapshot);
                 }
+                if let Some(b) = backup {
+                    self.restore_backup(*b);
+                }
             }
             Err(e) if !edits.is_empty() => {
                 self.notify(Level::Error, format!("Rename not applied to {}: {e}", path.display()))
             }
             Err(LoadError::Binary) => self.notify(Level::Error, format!("{}: binary file, not opened", path.display())),
             Err(e) => self.notify(Level::Error, format!("{}: {e}", path.display())),
+        }
+        if let Some((b, e)) = unopened {
+            self.backup_not_opened(*b, e);
         }
     }
 

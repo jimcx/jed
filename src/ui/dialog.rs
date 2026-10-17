@@ -97,6 +97,31 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) {
             lines.push(Line::raw(""));
             lines.push(buttons(&[("S", "ave and Stage"), ("C", "ancel")]));
         }
+        Prompt::RestoreBackups => {
+            let offered = &app.backups.offered;
+            let q = match offered.as_slice() {
+                [one] => format!(" Unsaved changes to {} were backed up", rel(&one.path)),
+                many => format!(" Unsaved changes to {} files were backed up", many.len()),
+            };
+            lines.push(Line::raw(q));
+            lines.push(Line::raw(" when jed last stopped without saving them:"));
+            let now = crate::history::now_ms();
+            for b in offered.iter().take(MAX_TRUST_LINES) {
+                let ago = crate::history::ago(b.time, now);
+                lines.push(Line::from(vec![
+                    Span::styled(format!("   {}", rel(&b.path)), key),
+                    Span::styled(format!("  {ago}"), style),
+                ]));
+            }
+            if offered.len() > MAX_TRUST_LINES {
+                lines.push(Line::raw(format!("   …and {} more", offered.len() - MAX_TRUST_LINES)));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::raw(" Restore puts them back in their tabs, unsaved."));
+            lines.push(Line::raw(" Later keeps them for the next time jed opens this folder."));
+            lines.push(Line::raw(""));
+            lines.push(buttons(&[("R", "estore"), ("D", "iscard"), ("L", "ater")]));
+        }
         Prompt::ConfirmDelete { path, is_dir } => {
             let what = if *is_dir { "folder" } else { "file" };
             lines.push(Line::raw(format!(" Move {what} {} to the Trash?", rel(path))));
