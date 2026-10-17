@@ -217,6 +217,10 @@ pub enum Command {
     /// "Git: Toggle Inline Blame": the primary cursor line's blame after its text (off at
     /// start; for the session only).
     ToggleBlame,
+    /// "Go Back": the place before the last jump (the navigation history, `navigation.rs`).
+    NavBack,
+    /// "Go Forward": the place the last "Go Back" left.
+    NavForward,
 }
 
 /// A task tab in the bottom panel (`Context::Task`, while it has the keys); keys bound to
@@ -628,6 +632,7 @@ impl Command {
         all.push(Command::OpenRecentWorkspace);
         all.push(Command::ToggleRenderWhitespace);
         all.push(Command::ToggleBlame);
+        all.extend([Command::NavBack, Command::NavForward]);
         all
     }
 
@@ -862,6 +867,8 @@ impl Command {
             Command::OpenRecentWorkspace => "workspace.openRecent".into(),
             Command::ToggleRenderWhitespace => "view.toggleRenderWhitespace".into(),
             Command::ToggleBlame => "git.toggleBlame".into(),
+            Command::NavBack => "nav.back".into(),
+            Command::NavForward => "nav.forward".into(),
             Command::Task(c) => format!(
                 "task.{}",
                 match c {
@@ -1086,6 +1093,8 @@ impl Command {
             Command::OpenRecentWorkspace => "Workspaces: Open Recent Workspace",
             Command::ToggleRenderWhitespace => "View: Toggle Render Whitespace",
             Command::ToggleBlame => "Git: Toggle Inline Blame",
+            Command::NavBack => "Go Back",
+            Command::NavForward => "Go Forward",
             Command::Task(c) => match c {
                 TaskCommand::ScrollUp => "Tasks: Scroll Up",
                 TaskCommand::ScrollDown => "Tasks: Scroll Down",
@@ -1217,9 +1226,11 @@ mod tests {
             Command::OpenRecentWorkspace => 83,
             Command::ToggleRenderWhitespace => 84,
             Command::ToggleBlame => 85,
+            Command::NavBack => 86,
+            Command::NavForward => 87,
         }
     }
-    const VARIANTS: u8 = 86;
+    const VARIANTS: u8 = 88;
 
     #[test]
     fn all_lists_every_variant() {

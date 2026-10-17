@@ -158,6 +158,11 @@ impl View {
         self.top_line
     }
 
+    /// The first shown line's start (kept with `top_line`).
+    pub fn top_byte(&self) -> ByteIdx {
+        self.top_byte
+    }
+
     pub fn set_top_line(&mut self, rope: &Rope, line: usize) {
         self.top_line = line.min(pos::line_count(rope) - 1);
         self.top_byte = pos::line_start(rope, self.top_line);

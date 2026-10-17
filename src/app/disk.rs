@@ -207,6 +207,7 @@ impl App {
         // change didn't come from that view, so its viewport follows the text like the others.
         let changes = buf.take_applied();
         self.completion.follow(id, &changes, buf.sets_applied());
+        self.nav.history.map(&buf.path, &changes);
         for (gid, i, sels) in follows {
             if let Some(tab) = self.groups.get_mut(gid).and_then(|g| g.tabs.get_mut(i)?.text_mut()) {
                 tab.view.map_through(&changes, &buf.rope);

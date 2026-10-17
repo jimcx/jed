@@ -55,7 +55,7 @@ const SHIFTED_DIGITS: &str = "!@#$%^&*()";
 impl KeyCombo {
     /// Uppercase letters become lowercase + Shift, so `Cmd+Shift+Z` matches however the terminal reports it.
     /// With Cmd, Ctrl or Alt held, a shifted digit (US layout: `!` … `)`) becomes the digit + Shift,
-    /// since kitty-protocol terminals report Cmd+Shift+1 as Cmd+`!`.
+    /// since kitty-protocol terminals report Cmd+Shift+1 as Cmd+`!`; likewise `_` becomes `-` + Shift.
     pub fn from_event(ev: &KeyEvent) -> Self {
         let mut mods =
             ev.modifiers & (KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
@@ -74,6 +74,11 @@ impl KeyCombo {
                 mods |= KeyModifiers::SHIFT;
                 let i = SHIFTED_DIGITS.chars().position(|d| d == c).unwrap_or(0);
                 KeyCode::Char(char::from(b'0' + ((i + 1) % 10) as u8))
+            }
+            // Shift+- as a kitty-protocol terminal with alternate keys reports it (Go Forward).
+            KeyCode::Char('_') if chord => {
+                mods |= KeyModifiers::SHIFT;
+                KeyCode::Char('-')
             }
             KeyCode::BackTab => {
                 mods |= KeyModifiers::SHIFT;
@@ -594,6 +599,13 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Char('m'), cmd | shift, Command::ToggleProblems),
         (KeyCode::F(8), none, Command::Problems(Pr::Next)),
         (KeyCode::F(8), shift, Command::Problems(Pr::Previous)),
+        // VS Code's Go Back / Go Forward: Ctrl on macOS too; Ctrl+Alt+- on Linux.
+        (
+            KeyCode::Char('-'),
+            if mac { ctrl } else { ctrl | alt },
+            Command::NavBack,
+        ),
+        (KeyCode::Char('-'), ctrl | shift, Command::NavForward),
     ]);
 
     let palette = [
@@ -1057,6 +1069,52 @@ mod tests {
                 Some(if platform == Platform::MacOs { "Cmd+J" } else { "Ctrl+J" }.to_string())
             );
         }
+    }
+
+    #[test]
+    fn go_back_and_forward_keys_as_terminals_report_them() {
+        let mac = Keymap::default_for(Platform::MacOs);
+        let linux = Keymap::default_for(Platform::Linux);
+        let ctrl = KeyModifiers::CONTROL;
+        let shift = KeyModifiers::SHIFT;
+        let alt = KeyModifiers::ALT;
+        for ctx in [
+            Context::Editor,
+            Context::Explorer,
+            Context::Diff,
+            Context::Problems,
+            Context::Task,
+        ] {
+            assert_eq!(mac.lookup(&key(KeyCode::Char('-'), ctrl), ctx), Some(Command::NavBack));
+            assert_eq!(
+                linux.lookup(&key(KeyCode::Char('-'), ctrl | alt), ctx),
+                Some(Command::NavBack)
+            );
+            for km in [&mac, &linux] {
+                // Plain disambiguated Ctrl+Shift+-, and with alternate keys: Ctrl+`_` (+ Shift).
+                for ev in [
+                    key(KeyCode::Char('-'), ctrl | shift),
+                    key(KeyCode::Char('_'), ctrl | shift),
+                    key(KeyCode::Char('_'), ctrl),
+                ] {
+                    assert_eq!(km.lookup(&ev, ctx), Some(Command::NavForward), "{ev:?} {ctx:?}");
+                }
+            }
+        }
+        assert_eq!(linux.lookup(&key(KeyCode::Char('-'), ctrl), Context::Editor), None);
+        let label = |km: &Keymap, c| km.binding_for(c).map(|k| k.label());
+        assert_eq!(label(&mac, Command::NavBack).as_deref(), Some("Ctrl+-"));
+        assert_eq!(label(&mac, Command::NavForward).as_deref(), Some("Ctrl+Shift+-"));
+        assert_eq!(label(&linux, Command::NavBack).as_deref(), Some("Ctrl+Alt+-"));
+        assert_eq!(label(&linux, Command::NavForward).as_deref(), Some("Ctrl+Shift+-"));
+        // Written either way in keybindings.toml.
+        assert_eq!(
+            KeyCombo::parse("ctrl+_").unwrap(),
+            KeyCombo::parse("ctrl+shift+-").unwrap()
+        );
+        // Typed without a chord, `_` stays a character.
+        let typed = KeyCombo::from_event(&key(KeyCode::Char('_'), shift));
+        assert_eq!((typed.code, typed.mods), (KeyCode::Char('_'), shift));
     }
 
     #[test]

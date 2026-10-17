@@ -49,6 +49,15 @@
 //!   step each), refused when the buffer changed since the diff; a file not open is rewritten on
 //!   disk (index untouched, not opened, its text before kept in the file history), refused when
 //!   it changed; none on staged or Compare with Disk diffs, refused for an untracked file.
+//! - `back_forward`: Go Back / Go Forward (Ctrl+- / Ctrl+Shift+-; Linux Ctrl+Alt+-) return to
+//!   the places before jumps — quick open, go to line, Cmd+Home / End, switching tabs, F8, go to
+//!   definition (here and in a file not open), a Search view result, a Problems / Locations list
+//!   row, quick open's `:line` and `file:line` in the same file — with their selection and
+//!   scroll, and forward again; a new jump drops the forward entries; a move of 10+ lines in one
+//!   step is recorded (10 lines are, 9 aren't), edits aren't; edits before an entry (and a
+//!   reload from disk) move it; a closed tab's file is reopened, a file deleted from disk
+//!   skipped; a closed group's place opens in the active group; a diff tab counts as its file;
+//!   at most 50 entries.
 
 mod render_whitespace {
     use std::fs;
@@ -3260,5 +3269,709 @@ mod revert_hunks {
             assert_eq!(message(&app), format!("Can't revert the change in {name}: {why}"));
             assert_eq!(text_of(&app, &path), text, "{name}");
         }
+    }
+}
+
+mod back_forward {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use serde_json::{Value, json};
+
+    use crate::app::{App, InitialFile};
+    use crate::buffer::Buffer;
+    use crate::buffer::pos;
+    use crate::lsp::fake::{FakeLauncher, FakeOptions};
+    use crate::navigation::MAX;
+    use crate::syntax::Language;
+    use crate::workspace::trust::TrustStore;
+    use crate::workspace::{self, Workspace};
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    fn back(app: &mut App) {
+        if cfg!(target_os = "macos") {
+            app.press(K::Char('-'), M::CONTROL);
+        } else {
+            app.press(K::Char('-'), M::CONTROL | M::ALT);
+        }
+    }
+
+    /// As a kitty-protocol terminal with alternate keys reports Ctrl+Shift+-.
+    fn forward(app: &mut App) {
+        app.press(K::Char('_'), M::CONTROL | M::SHIFT);
+    }
+
+    fn numbered(name: &str, lines: usize) -> String {
+        (1..=lines).map(|i| format!("{name} {i}\n")).collect()
+    }
+
+    /// A workspace `<dir>/proj` with `files`, its trust store in `<dir>/state`.
+    fn project(dir: &Path, files: &[(&str, String)]) -> PathBuf {
+        let root = workspace::normalize(dir).join("proj");
+        fs::create_dir_all(&root).unwrap();
+        for (name, text) in files {
+            fs::write(root.join(name), text).unwrap();
+        }
+        root
+    }
+
+    fn trust(root: &Path) -> TrustStore {
+        TrustStore::load(root.parent().unwrap().join("state/trust.toml"))
+    }
+
+    /// The app on `root` with `first` open, drawn once.
+    fn open_app(root: &Path, first: &str) -> App {
+        let initial = InitialFile {
+            buffer: Buffer::open(&root.join(first)).unwrap(),
+            goto: None,
+        };
+        let mut app = App::new(Workspace::load(root.to_path_buf()), trust(root), Some(initial), true);
+        app.test_start();
+        draw(&mut app);
+        app
+    }
+
+    fn draw(app: &mut App) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    /// The active editor: its file's name, the primary head's 0-based line and byte column.
+    fn place(app: &App) -> (String, usize, usize) {
+        let buf = app.active_buffer().expect("a text tab");
+        let head = app.group().active_tab().unwrap().view.selections.primary().head;
+        let line = pos::line_of(&buf.rope, head);
+        (buf.name(), line, head.0 - pos::line_start(&buf.rope, line).0)
+    }
+
+    fn at(name: &str, line: usize) -> (String, usize, usize) {
+        (name.to_string(), line, 0)
+    }
+
+    fn top(app: &App) -> usize {
+        app.group().active_tab().unwrap().view.top_line()
+    }
+
+    /// The history's entries as (file name, line of the head): `usize::MAX` for a diff tab's or
+    /// a file not open.
+    fn entries(app: &App) -> Vec<(String, usize)> {
+        app.nav
+            .history
+            .entries()
+            .iter()
+            .map(|e| {
+                let name = e.path.file_name().unwrap().to_string_lossy().into_owned();
+                let line = match (e.pos, app.buffers.find_path(&e.path)) {
+                    (Some(p), Some(id)) => pos::line_of(&app.buffers.get(id).unwrap().rope, p.head),
+                    _ => usize::MAX,
+                };
+                (name, line)
+            })
+            .collect()
+    }
+
+    fn e(name: &str, line: usize) -> (String, usize) {
+        (name.to_string(), line)
+    }
+
+    /// Ctrl+G, the 1-based line, Enter.
+    fn go_to_line(app: &mut App, line: usize) {
+        app.press(K::Char('g'), M::CONTROL);
+        app.type_text(&line.to_string());
+        app.press(K::Enter, M::NONE);
+    }
+
+    /// Cmd+P, the file's name, Enter once it's listed; waits until it's the active tab.
+    async fn quick_open(app: &mut App, name: &str) {
+        app.press(K::Char('p'), cmd());
+        app.type_text(name);
+        let listed = app
+            .settle(|a| {
+                a.palette
+                    .as_ref()
+                    .is_some_and(|p| p.rows.first().is_some_and(|r| r.label == name))
+            })
+            .await;
+        assert!(listed, "quick open lists {name}");
+        app.press(K::Enter, M::NONE);
+        let opened = app
+            .settle(|a| a.active_buffer().is_some_and(|b| b.name() == name))
+            .await;
+        assert!(opened, "{name} opened");
+    }
+
+    fn has_tab(app: &App, name: &str) -> bool {
+        app.group().tabs.iter().any(|t| {
+            t.buffer()
+                .and_then(|b| app.buffers.get(b))
+                .is_some_and(|b| b.name() == name)
+        })
+    }
+
+    fn is_active(app: &App, name: &str) -> bool {
+        app.active_buffer().is_some_and(|b| b.name() == name)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn quick_open_and_go_to_line_go_back_and_forward_with_selection_and_scroll() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(
+            dir.path(),
+            &[("a.txt", numbered("a", 100)), ("b.txt", numbered("b", 100))],
+        );
+        let mut app = open_app(&root, "a.txt");
+        go_to_line(&mut app, 50);
+        draw(&mut app);
+        let top_a = top(&app);
+        assert!(top_a > 0, "scrolled to line 50");
+        assert_eq!(place(&app), at("a.txt", 49));
+        quick_open(&mut app, "b.txt").await;
+        assert_eq!(entries(&app), [e("a.txt", 0), e("a.txt", 49)]);
+
+        back(&mut app);
+        assert_eq!(place(&app), at("a.txt", 49));
+        assert_eq!(top(&app), top_a, "the scroll comes back");
+        assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+        back(&mut app);
+        assert_eq!((place(&app), top(&app)), (at("a.txt", 0), 0));
+        back(&mut app);
+        assert_eq!(place(&app), at("a.txt", 0), "nothing further back");
+
+        forward(&mut app);
+        assert_eq!((place(&app), top(&app)), (at("a.txt", 49), top_a));
+        forward(&mut app);
+        assert_eq!(place(&app), at("b.txt", 0));
+        forward(&mut app);
+        assert_eq!(place(&app), at("b.txt", 0), "nothing further forward");
+        assert_eq!(app.group().tabs.len(), 2, "no tab opened twice");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_new_jump_after_going_back_drops_the_forward_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &[("a.txt", numbered("a", 100))]);
+        let mut app = open_app(&root, "a.txt");
+        go_to_line(&mut app, 30);
+        go_to_line(&mut app, 60);
+        back(&mut app);
+        assert_eq!(place(&app), at("a.txt", 29));
+        go_to_line(&mut app, 80);
+        assert_eq!(entries(&app), [e("a.txt", 0), e("a.txt", 29)], "60 dropped");
+        forward(&mut app);
+        assert_eq!(place(&app), at("a.txt", 79), "nothing forward");
+        back(&mut app);
+        assert_eq!(place(&app), at("a.txt", 29));
+        back(&mut app);
+        assert_eq!(place(&app), at("a.txt", 0));
+        forward(&mut app);
+        forward(&mut app);
+        assert_eq!(place(&app), at("a.txt", 79));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn moves_of_ten_lines_or_more_in_one_step_are_recorded_shorter_ones_and_edits_are_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &[("a.txt", numbered("a", 200))]);
+        let mut app = open_app(&root, "a.txt");
+        for _ in 0..12 {
+            app.press(K::Down, M::NONE);
+        }
+        assert_eq!(place(&app), at("a.txt", 12));
+        assert!(entries(&app).is_empty(), "{:?}", entries(&app));
+        app.press(K::PageDown, M::NONE);
+        let paged = place(&app).1;
+        assert!(paged >= 22, "a page down: {paged}");
+        assert_eq!(entries(&app), [e("a.txt", 12)]);
+        // A click far away (scrolled down with the wheel first) is a move too.
+        draw(&mut app);
+        let text = app.hits.groups[0].text;
+        for _ in 0..5 {
+            app.mouse(MouseEventKind::ScrollDown, text.x, text.y);
+        }
+        assert!(entries(&app).len() == 1, "scrolling isn't a move");
+        draw(&mut app);
+        let y = text.y + text.height - 1;
+        app.mouse(MouseEventKind::Down(MouseButton::Left), text.x, y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), text.x, y);
+        let clicked = place(&app).1;
+        assert!(clicked >= paged + 10, "{clicked}");
+        assert_eq!(entries(&app), [e("a.txt", 12), e("a.txt", paged)]);
+        back(&mut app);
+        assert_eq!(place(&app).1, paged);
+        forward(&mut app);
+        assert_eq!(place(&app).1, clicked);
+
+        // Edits moving the cursor far in one step (a 12-line paste, its undo) record nothing:
+        // checked while live (after a jump), where a record would append.
+        go_to_line(&mut app, 150);
+        let (before, index) = (entries(&app), app.nav.history.index());
+        assert_eq!(index, before.len(), "live");
+        app.handle_test_event(crossterm::event::Event::Paste("x\n".repeat(12)));
+        assert_eq!(place(&app).1, 161);
+        app.press(K::Char('z'), cmd());
+        assert_eq!(place(&app).1, 149);
+        assert_eq!((entries(&app), app.nav.history.index()), (before, index));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_move_of_nine_lines_is_not_recorded_one_of_ten_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &[("a.txt", numbered("a", 100))]);
+        let mut app = open_app(&root, "a.txt");
+        let text = app.hits.groups[0].text;
+        let click = |app: &mut App, row: u16| {
+            app.mouse(MouseEventKind::Down(MouseButton::Left), text.x, text.y + row);
+            app.mouse(MouseEventKind::Up(MouseButton::Left), text.x, text.y + row);
+        };
+        click(&mut app, 9);
+        assert_eq!(place(&app), at("a.txt", 9));
+        assert!(entries(&app).is_empty(), "{:?}", entries(&app));
+        click(&mut app, 19);
+        assert_eq!(place(&app), at("a.txt", 19));
+        assert_eq!(entries(&app), [e("a.txt", 9)]);
+        // Up again by exactly ten.
+        click(&mut app, 9);
+        assert_eq!(entries(&app), [e("a.txt", 9), e("a.txt", 19)]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn quick_open_go_to_line_and_a_file_position_in_the_same_file_are_jumps() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &[("a.txt", numbered("a", 30))]);
+        let mut app = open_app(&root, "a.txt");
+        // `:3` in quick open: two lines down.
+        app.press(K::Char('p'), cmd());
+        app.type_text(":3");
+        app.press(K::Enter, M::NONE);
+        assert_eq!(place(&app), at("a.txt", 2));
+        assert_eq!(entries(&app), [e("a.txt", 0)]);
+        // `a.txt:5`, the file already open and active.
+        app.press(K::Char('p'), cmd());
+        app.type_text("a.txt:5");
+        let listed = app
+            .settle(|a| {
+                a.palette
+                    .as_ref()
+                    .is_some_and(|p| p.rows.first().is_some_and(|r| r.label == "a.txt"))
+            })
+            .await;
+        assert!(listed);
+        app.press(K::Enter, M::NONE);
+        assert_eq!(place(&app), at("a.txt", 4));
+        assert_eq!(entries(&app), [e("a.txt", 0), e("a.txt", 2)]);
+        back(&mut app);
+        assert_eq!(place(&app), at("a.txt", 2));
+        back(&mut app);
+        assert_eq!(place(&app), at("a.txt", 0));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_from_disk_moves_the_entries_of_its_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &[("a.txt", numbered("a", 100))]);
+        let mut app = open_app(&root, "a.txt");
+        go_to_line(&mut app, 30);
+        go_to_line(&mut app, 60);
+        assert_eq!(entries(&app), [e("a.txt", 0), e("a.txt", 29)]);
+        // Five lines added at the top on disk; the clean buffer reloads.
+        fs::write(
+            root.join("a.txt"),
+            format!("{}{}", numbered("new", 5), numbered("a", 100)),
+        )
+        .unwrap();
+        let reloaded = app
+            .settle(|a| a.active_buffer().unwrap().rope.to_string().starts_with("new 1\n"))
+            .await;
+        assert!(reloaded);
+        assert_eq!(entries(&app), [e("a.txt", 0), e("a.txt", 34)]);
+        back(&mut app);
+        assert_eq!(place(&app), at("a.txt", 34));
+        let buf = app.active_buffer().unwrap();
+        assert_eq!(
+            buf.rope
+                .slice(pos::line_start(&buf.rope, 34).0..)
+                .to_string()
+                .lines()
+                .next(),
+            Some("a 30")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cmd_home_and_end_are_jumps_even_in_a_short_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &[("a.txt", numbered("a", 4))]);
+        let mut app = open_app(&root, "a.txt");
+        app.press(K::Down, M::NONE);
+        app.press(K::End, cmd());
+        assert_eq!(place(&app), at("a.txt", 4));
+        app.press(K::Home, cmd());
+        assert_eq!(entries(&app), [e("a.txt", 1), e("a.txt", 4)]);
+        back(&mut app);
+        assert_eq!(place(&app), at("a.txt", 4));
+        back(&mut app);
+        assert_eq!(place(&app), at("a.txt", 1));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn switching_tabs_records_the_place_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(
+            dir.path(),
+            &[("a.txt", numbered("a", 50)), ("b.txt", numbered("b", 50))],
+        );
+        let mut app = open_app(&root, "a.txt");
+        quick_open(&mut app, "b.txt").await;
+        go_to_line(&mut app, 7);
+        app.press(K::PageUp, M::CONTROL);
+        assert_eq!(place(&app), at("a.txt", 0));
+        assert_eq!(entries(&app), [e("a.txt", 0), e("b.txt", 0), e("b.txt", 6)]);
+        back(&mut app);
+        assert_eq!(place(&app), at("b.txt", 6));
+        back(&mut app);
+        assert_eq!(place(&app), at("b.txt", 0));
+        back(&mut app);
+        assert_eq!(place(&app), at("a.txt", 0));
+        forward(&mut app);
+        forward(&mut app);
+        assert_eq!(place(&app), at("b.txt", 6));
+        forward(&mut app);
+        assert_eq!(place(&app), at("a.txt", 0));
+        assert_eq!(app.group().tabs.len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn edits_before_an_entry_move_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &[("a.txt", numbered("a", 100))]);
+        let mut app = open_app(&root, "a.txt");
+        go_to_line(&mut app, 50);
+        app.press(K::Right, M::NONE);
+        app.press(K::Right, M::NONE);
+        go_to_line(&mut app, 1);
+        // Three lines typed above line 50: two here, one in another view of the buffer (a
+        // split, which records the place left in the first group, at line 2).
+        app.type_text("new\n\n");
+        app.press(K::Char('\\'), cmd());
+        app.press(K::Enter, M::NONE);
+        back(&mut app);
+        assert_eq!(place(&app), at("a.txt", 2));
+        back(&mut app);
+        assert_eq!(place(&app), ("a.txt".to_string(), 52, 2));
+        let buf = app.active_buffer().unwrap();
+        let head = app.group().active_tab().unwrap().view.selections.primary().head;
+        assert!(buf.rope.slice(head.0..).to_string().starts_with("50\n"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn going_back_to_a_closed_tab_reopens_its_file_at_its_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(
+            dir.path(),
+            &[("a.txt", numbered("a", 100)), ("b.txt", numbered("b", 100))],
+        );
+        let mut app = open_app(&root, "a.txt");
+        quick_open(&mut app, "b.txt").await;
+        go_to_line(&mut app, 70);
+        draw(&mut app);
+        let top_b = top(&app);
+        app.press(K::Char('w'), cmd());
+        assert_eq!(place(&app), at("a.txt", 0));
+        assert!(!has_tab(&app, "b.txt") && app.buffers.find_path(&root.join("b.txt")).is_none());
+
+        back(&mut app);
+        assert!(app.settle(|a| is_active(a, "b.txt")).await);
+        assert_eq!((place(&app), top(&app)), (at("b.txt", 69), top_b));
+        assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+        // Its arrival is no jump of its own.
+        assert_eq!(
+            entries(&app),
+            [e("a.txt", 0), e("b.txt", 0), e("b.txt", 69), e("a.txt", 0)]
+        );
+        forward(&mut app);
+        assert_eq!(place(&app), at("a.txt", 0));
+        back(&mut app);
+        assert_eq!(place(&app), at("b.txt", 69));
+        assert_eq!(app.group().tabs.len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_file_deleted_from_disk_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = [
+            ("a.txt", numbered("a", 50)),
+            ("b.txt", numbered("b", 50)),
+            ("c.txt", numbered("c", 50)),
+        ];
+        let root = project(dir.path(), &files);
+        let mut app = open_app(&root, "a.txt");
+        quick_open(&mut app, "b.txt").await;
+        go_to_line(&mut app, 20);
+        quick_open(&mut app, "c.txt").await;
+        // b's tab closed with a middle click (c stays active), then b deleted.
+        draw(&mut app);
+        let t = app.hits.groups[0].tabs.iter().find(|t| t.index == 1).copied().unwrap();
+        let y = app.hits.groups[0].tab_bar.y;
+        app.mouse(MouseEventKind::Down(MouseButton::Middle), t.x0 + 1, y);
+        assert!(!has_tab(&app, "b.txt"));
+        assert_eq!(place(&app), at("c.txt", 0));
+        fs::remove_file(root.join("b.txt")).unwrap();
+        assert_eq!(entries(&app).len(), 3);
+
+        back(&mut app);
+        assert!(app.settle(|a| is_active(a, "a.txt")).await);
+        assert_eq!(place(&app), at("a.txt", 0));
+        assert!(
+            app.buffers.find_path(&root.join("b.txt")).is_none(),
+            "no empty buffer for it"
+        );
+        assert!(!has_tab(&app, "b.txt"));
+        assert_eq!(entries(&app), [e("a.txt", 0), e("c.txt", 0)]);
+        forward(&mut app);
+        assert_eq!(place(&app), at("c.txt", 0));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_diff_tab_counts_as_its_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(
+            dir.path(),
+            &[("a.txt", numbered("a", 10)), ("b.txt", numbered("b", 10))],
+        );
+        let mut app = open_app(&root, "a.txt");
+        // Switching between a file and its diff tab is no jump.
+        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.type_text("File: Compare with Disk");
+        app.press(K::Enter, M::NONE);
+        assert!(app.group().active_diff().is_some());
+        app.press(K::PageUp, M::CONTROL);
+        app.press(K::PageDown, M::CONTROL);
+        assert!(app.group().active_diff().is_some());
+        assert!(entries(&app).is_empty(), "{:?}", entries(&app));
+        quick_open(&mut app, "b.txt").await;
+        assert_eq!(entries(&app), [e("a.txt", usize::MAX)]);
+        back(&mut app);
+        let diff = app.group().active_diff().expect("the diff tab");
+        assert_eq!(diff.path, root.join("a.txt"));
+        forward(&mut app);
+        assert_eq!(place(&app), at("b.txt", 0));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_place_in_a_closed_group_opens_in_the_active_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &[("a.txt", numbered("a", 100))]);
+        let mut app = open_app(&root, "a.txt");
+        app.press(K::Char('\\'), cmd());
+        let second = app.groups.active;
+        go_to_line(&mut app, 30);
+        // Closing the second group's only tab closes the group.
+        app.press(K::Char('w'), cmd());
+        assert_eq!(app.groups.len(), 1);
+        assert_ne!(app.groups.active, second);
+        assert_eq!(place(&app), at("a.txt", 0));
+        back(&mut app);
+        assert_eq!(app.groups.len(), 1);
+        assert_eq!(place(&app), at("a.txt", 29));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_history_keeps_the_last_fifty_places() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &[("a.txt", numbered("a", 200))]);
+        let mut app = open_app(&root, "a.txt");
+        for i in 1..=60 {
+            go_to_line(&mut app, i * 3);
+        }
+        assert_eq!(entries(&app).len(), MAX);
+        // The oldest kept: the place before the 11th jump (line 30).
+        assert_eq!(entries(&app)[0], e("a.txt", 29));
+        let mut steps = 0;
+        loop {
+            let before = place(&app);
+            back(&mut app);
+            if place(&app) == before {
+                break;
+            }
+            steps += 1;
+        }
+        // Going back stored the current place too, dropping the oldest once more.
+        assert_eq!(steps, MAX - 1);
+        assert_eq!(place(&app), at("a.txt", 32));
+    }
+
+    /// A C++ project's app with the fake server, `a.cpp` open.
+    async fn lsp_app(root: &Path) -> (App, std::sync::Arc<FakeLauncher>) {
+        let fake = FakeLauncher::new(FakeOptions {
+            utf8: true,
+            ..Default::default()
+        });
+        let mut app = App::new(Workspace::load(root.to_path_buf()), trust(root), None, true);
+        app.lsp.set_launcher(fake.clone());
+        app.test_start();
+        app.test_open(Buffer::open(&root.join("a.cpp")).unwrap());
+        draw(&mut app);
+        let ready = app
+            .settle(|a| a.lsp.server_for(Language::Cpp).and_then(|s| s.encoding()).is_some())
+            .await;
+        assert!(ready, "the fake server started");
+        (app, fake)
+    }
+
+    fn uri(path: &Path) -> String {
+        crate::lsp::uri::from_path(path).as_str().to_string()
+    }
+
+    fn range(line: u32, from: u32, to: u32) -> Value {
+        json!({ "start": { "line": line, "character": from }, "end": { "line": line, "character": to } })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn f8_and_go_to_definition_go_back_and_forward() {
+        let dir = tempfile::tempdir().unwrap();
+        let a_text = format!(
+            "int target = 1;\nint use = target;\nint x = 0;\n{}",
+            numbered("// a", 40)
+        );
+        let root = project(dir.path(), &[("a.cpp", a_text), ("b.cpp", numbered("// b", 40))]);
+        let (mut app, fake) = lsp_app(&root).await;
+        let (a, b) = (root.join("a.cpp"), root.join("b.cpp"));
+
+        // F8 to a problem two lines down: a jump, though a short one.
+        let params = json!({
+            "uri": uri(&a),
+            "diagnostics": [{ "range": range(2, 4, 5), "severity": 1, "message": "bad x" }],
+        });
+        app.lsp
+            .server_for(Language::Cpp)
+            .unwrap()
+            .notify("test/publish", params);
+        assert!(
+            app.settle(|a| a.active_buffer().unwrap().diagnostics.all().len() == 1)
+                .await
+        );
+        app.press(K::F(8), M::NONE);
+        assert_eq!(place(&app), ("a.cpp".to_string(), 2, 4));
+        back(&mut app);
+        assert_eq!(place(&app), at("a.cpp", 0));
+        forward(&mut app);
+        assert_eq!(place(&app), ("a.cpp".to_string(), 2, 4));
+
+        // Go to definition in the same file.
+        app.press(K::Up, M::NONE);
+        app.press(K::End, M::NONE);
+        let use_at = place(&app);
+        assert_eq!(use_at.1, 1);
+        fake.respond(
+            "textDocument/definition",
+            json!({ "uri": uri(&a), "range": range(0, 4, 10) }),
+        );
+        app.press(K::F(12), M::NONE);
+        assert!(app.settle(|a| place(a) == ("a.cpp".to_string(), 0, 4)).await);
+        back(&mut app);
+        assert_eq!(place(&app), use_at);
+
+        // In a file not open.
+        fake.respond(
+            "textDocument/definition",
+            json!({ "uri": uri(&b), "range": range(30, 3, 4) }),
+        );
+        app.press(K::F(12), M::NONE);
+        assert!(app.settle(|a| a.active_buffer().is_some_and(|x| x.path == b)).await);
+        assert_eq!(place(&app), ("b.cpp".to_string(), 30, 3));
+        back(&mut app);
+        assert_eq!(place(&app), use_at);
+        forward(&mut app);
+        assert_eq!(place(&app), ("b.cpp".to_string(), 30, 3));
+        app.shutdown_servers().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn opening_a_problem_or_a_reference_from_their_lists_is_a_jump() {
+        let dir = tempfile::tempdir().unwrap();
+        let a_text = format!(
+            "int target = 1;\nint use = target;\nint x = 0;\n{}",
+            numbered("// a", 40)
+        );
+        let root = project(dir.path(), &[("a.cpp", a_text)]);
+        let (mut app, fake) = lsp_app(&root).await;
+        let a = root.join("a.cpp");
+        let params = json!({
+            "uri": uri(&a),
+            "diagnostics": [{ "range": range(2, 4, 5), "severity": 1, "message": "bad x" }],
+        });
+        app.lsp
+            .server_for(Language::Cpp)
+            .unwrap()
+            .notify("test/publish", params);
+        assert!(
+            app.settle(|a| a.active_buffer().unwrap().diagnostics.all().len() == 1)
+                .await
+        );
+        // The Problems list (Cmd+Shift+M, its file row selected): Enter opens the first problem.
+        app.press(K::Down, M::NONE);
+        app.press(K::Char('m'), cmd() | M::SHIFT);
+        assert_eq!(app.ui.focus, crate::app::Focus::Panel);
+        app.press(K::Enter, M::NONE);
+        assert_eq!(place(&app), ("a.cpp".to_string(), 2, 5));
+        assert_eq!(entries(&app), [e("a.cpp", 1)]);
+        back(&mut app);
+        assert_eq!(place(&app), at("a.cpp", 1));
+
+        // The Locations list of references: Enter opens the selected one.
+        app.press(K::End, M::NONE);
+        let use_at = place(&app);
+        fake.respond(
+            "textDocument/references",
+            json!([
+                { "uri": uri(&a), "range": range(0, 4, 10) },
+                { "uri": uri(&a), "range": range(1, 10, 16) },
+            ]),
+        );
+        app.press(K::F(12), M::SHIFT);
+        assert!(app.settle(|a| a.locations.is_some()).await);
+        assert_eq!(app.ui.focus, crate::app::Focus::Panel);
+        app.press(K::Home, M::NONE);
+        app.press(K::Down, M::NONE);
+        app.press(K::Enter, M::NONE);
+        assert_eq!(place(&app), ("a.cpp".to_string(), 0, 4));
+        back(&mut app);
+        assert_eq!(place(&app), use_at);
+        app.shutdown_servers().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn opening_a_search_result_goes_back_to_where_it_was_opened_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut b_text = numbered("b", 60);
+        b_text.push_str("the needle\n");
+        let root = project(dir.path(), &[("a.txt", numbered("a", 60)), ("b.txt", b_text)]);
+        let mut app = open_app(&root, "a.txt");
+        go_to_line(&mut app, 5);
+        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.type_text("needle");
+        assert!(
+            app.settle(|a| a.search.as_ref().is_some_and(|r| r.done && r.total == 1))
+                .await
+        );
+        app.press(K::F(4), M::NONE);
+        assert!(app.settle(|a| is_active(a, "b.txt")).await);
+        assert_eq!(place(&app).1, 60);
+        back(&mut app);
+        assert_eq!(place(&app), at("a.txt", 4));
+        assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+        forward(&mut app);
+        assert_eq!(place(&app).1, 60);
     }
 }

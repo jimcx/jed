@@ -15,6 +15,7 @@ mod hover;
 mod locations;
 mod lsp;
 mod mouse;
+mod navigation;
 mod palette;
 mod problems;
 mod prompt;
@@ -364,6 +365,8 @@ pub struct App {
     stage_all_after_save: Option<HashSet<BufferId>>,
     /// Task templates from `tasks.toml` and the task runs (`app/tasks.rs`).
     pub tasks: crate::tasks::Tasks,
+    /// Back / forward navigation's history (`app/navigation.rs`).
+    pub nav: navigation::NavState,
     /// The last command `execute` ran, for tests.
     #[cfg(test)]
     pub last_command: Option<Command>,
@@ -465,6 +468,7 @@ impl App {
             scm: Default::default(),
             stage_all_after_save: None,
             tasks: Default::default(),
+            nav: Default::default(),
             #[cfg(test)]
             last_command: None,
             #[cfg(test)]
@@ -720,6 +724,7 @@ impl App {
     fn handle_event(&mut self, ev: Event) {
         self.needs_redraw = true;
         self.note_pre_event();
+        let here = self.nav_begin();
         match ev {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 tracing::trace!(target: "input", ?key);
@@ -794,6 +799,7 @@ impl App {
             Event::Mouse(m) if self.prompt.is_none() => self.handle_mouse(m),
             _ => {}
         }
+        self.nav_end(here, true);
         self.sync_views();
         self.refresh_find();
         self.check_completion();
@@ -826,6 +832,7 @@ impl App {
             edited |= Some(id) == origin_buf;
             self.completion.follow(id, &changes, buf.sets_applied());
             self.quick_diff.follow(id, &changes);
+            self.nav.history.map(&buf.path, &changes);
             for (gid, group) in self.groups.iter_mut() {
                 for (i, tab) in group.text_tabs_mut() {
                     if tab.buffer != id {
@@ -858,6 +865,15 @@ impl App {
             )
         {
             self.close_palette();
+        }
+        if matches!(
+            cmd,
+            Command::Move {
+                motion: crate::command::Motion::DocStart | crate::command::Motion::DocEnd,
+                ..
+            }
+        ) {
+            self.nav_jump();
         }
         match cmd {
             Command::Save => {
@@ -948,6 +964,8 @@ impl App {
             Command::KillTask => self.kill_task(),
             Command::CloseTask => self.close_shown_task(),
             Command::Task(c) => self.task_command(c),
+            Command::NavBack => self.navigate(crate::navigation::Dir::Back),
+            Command::NavForward => self.navigate(crate::navigation::Dir::Forward),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
             // A diff tab: its own movement keys; other editor commands do nothing.
@@ -1039,6 +1057,11 @@ impl App {
 
     fn handle_app_event(&mut self, ev: AppEvent) {
         self.needs_redraw = true;
+        // A session's restore replaces the layout: not a jump.
+        let here = match ev {
+            AppEvent::SessionRead(_) => None,
+            _ => self.nav_begin(),
+        };
         match ev {
             AppEvent::SaveDone {
                 buffer,
@@ -1086,6 +1109,7 @@ impl App {
             AppEvent::RecentRecorded(result) => self.recent_recorded(result),
             AppEvent::RecentListed(listed) => self.recent_listed(*listed),
         }
+        self.nav_end(here, false);
         self.refresh_find();
         self.check_completion();
         self.check_hover();
@@ -1117,7 +1141,9 @@ impl App {
 
     /// Runs a command as a key bound to it would.
     pub fn test_execute(&mut self, cmd: Command) {
+        let here = self.nav_begin();
         self.execute(cmd);
+        self.nav_end(here, true);
         self.sync_views();
         self.refresh_find();
         self.check_completion();

@@ -27,6 +27,8 @@ pub(super) enum Goto {
     /// start, centred if off screen. A `Place::Text` range is in the buffer's current text
     /// (clamped); a `Place::Lsp` one is read in the text as loaded.
     Problem { place: Place, select: bool },
+    /// A place Go Back / Go Forward returns to: its selection and scroll, clamped.
+    Place(crate::navigation::Pos),
 }
 
 /// An open in flight: what to do once the buffer arrives. A later request for the same file
@@ -52,6 +54,8 @@ impl App {
     /// selection at `goto` if given. Loading happens off the UI thread; an already open buffer
     /// gets the selection at once.
     pub(super) fn open_file(&mut self, path: PathBuf, focus: bool, goto: Option<Goto>) {
+        // A jump: the place before it is recorded for Go Back (`app/navigation.rs`).
+        self.nav_jump();
         if let Some(id) = self.buffers.find_path(&path) {
             match self.group().find(id) {
                 Some(i) => self.activate_tab(i),
@@ -96,6 +100,9 @@ impl App {
     }
 
     pub(super) fn opened(&mut self, path: PathBuf, result: Result<Box<Buffer>, LoadError>) {
+        if self.nav_opened(&path, &result) {
+            return;
+        }
         let OpenRequest {
             focus,
             goto,
@@ -413,6 +420,7 @@ pub(super) fn apply_goto(view: &mut View, rope: &Rope, goto: &Goto, tab_width: u
             view.selections = Selections::single(Selection::new(start, head));
             view.reveal_range = Some((start, end));
         }
+        Goto::Place(p) => super::navigation::place_view(view, rope, p),
     }
 }
 

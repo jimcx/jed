@@ -322,6 +322,7 @@ impl App {
 
     /// Puts the cursor on a 1-based line and column of the active view.
     fn go_to_line(&mut self, line: usize, col: usize) {
+        self.nav_jump();
         let tab_width = self.settings.tab_width;
         if let Some((buf, view)) = self.active_mut() {
             buf.seal_undo();

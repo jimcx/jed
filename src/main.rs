@@ -55,6 +55,7 @@ mod milestone9_tests;
 #[cfg(test)]
 mod milestone_tests;
 mod multicursor;
+mod navigation;
 mod pairs;
 mod palette;
 mod panic;
