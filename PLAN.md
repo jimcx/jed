@@ -352,6 +352,15 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
     - Buffer dirty → prompt to save first
     - Save in flight → wait for it to finish
     - Then recompute the diff from disk and stage
+- Git history (the [Git history](#named-milestones) milestone), read-only:
+  - A "Git History" section in the Explorer view, under the tree (the side panel split vertically: a header row with the section's title, collapsible, and a draggable divider between the two; VS Code's Timeline): the commits that touched the active editor's file (a diff tab counts as its file), newest first — summary, author, relative date (`history::ago`), short id dimmed; nothing for a file outside a repository or untracked ("No history")
+    - `git log -- <path>` on HEAD: a `git2` revwalk with the path filter (commits whose tree entry for the path differs from every parent's, as git's default history simplification), off the UI thread, read in pages of 200 as the list scrolls; refreshed when HEAD moves; renames not followed (`--follow`): the list stops at the commit that added the path
+    - Selection, scrolling and the scroll bar like the other side lists (`Scrollable`); Enter or a click opens the commit
+  - A commit tab (a new `Tab` kind, read-only, one per commit, reused): the commit as `git show --stat <commit>` prints it, with git's default colours (theme keys): `commit <full id>` (yellow) with `Merge: a b` for a merge, `Author: Name <email>`, `Date:` (git's default date format, the commit's own offset), the message indented four spaces, then the stat — ` path | 12 ++++++--` per file (insertions green, deletions red, the graph scaled to the tab's width as git scales to the terminal's; `Bin 0 -> 1234 bytes` for binary; renames `old => new` with git's default rename detection), then ` 3 files changed, 10 insertions(+), 2 deletions(-)`
+    - Diffed against the first parent; a root commit against the empty tree. A merge: `git show` prints no stat for one by default — _decide in git_history-a_, leaning: the stat against the first parent, labelled so
+    - Scrolls, selects and copies like a read-only editor (the text is plain; colours come from the line kinds); the file's own row in the stat is highlighted
+    - Enter or a click on a stat row opens that file's change in a diff tab in the group to the right of the commit tab's (split right when there's none; reused for the next file clicked): the parent's text ↔ the commit's (`diff_view::Text::Commit`, a new side: a blob read from a commit's tree by path), titled `name (abc1234)`; no staging or revert buttons
+  - Sessions keep commit tabs and commit diff tabs by commit id (dropped when the commit is gone), the section's collapsed state and divider position
 - Current branch shown in the status bar (read-only)
 
 ### Tasks (throwaway terminals)
@@ -911,6 +920,16 @@ Milestones 1–13 above are done and keep their numbers. Milestones planned afte
     - themes-a: Light+ (`Theme::light_plus`, the same-keys test, 256-colour fallback) and the `theme` setting (`dark` / `light`), live on a `.workspace` reload
     - themes-b: "Preferences: Color Theme": the picker with live preview, Esc restores, Enter writes `theme` to the user's `settings.toml` keeping comments
     - themes-c: theme files: decide the format first (see [Themes](#themes)), load from `~/.config/jed/themes/`, list in the picker, fallbacks and error reports; the done-when tests, gaps and hand checks; marks the milestone ✅
+- **Git history** (`git_history`): a file's commits in the Explorer view, each commit shown as `git show --stat` in its own tab, and a file's change in a commit as a diff — see [Git](#git-view-and-stage-only)
+  - Needs: `git2` and the diff view (M10), side panel lists and their scroll bars, sessions (M13)
+  - The Explorer view split vertically: the tree above, "Git History" for the active file below (header, collapsible, draggable divider); commits read off-thread in pages, refreshed when HEAD moves
+  - Commit tabs: a new read-only tab kind drawn like `git show --stat`, with git's colours; clicking a file opens its diff (parent ↔ commit) in the group to the right
+  - Done when: in a repository with a few commits touching a file, opening that file lists its commits newest first in the Explorer view's lower section (and switching tabs switches the list); clicking a commit opens a tab whose text matches `git show --stat --format=medium <commit>` at the tab's width (a test compares them line by line, colours by line kind); clicking a file row there opens a side-by-side diff of that file's change to the right, matching `git diff <commit>^ <commit> -- <file>`; a new commit made outside jed appears at the top; quit and reopen restores the tabs
+  - Tasks (one agent and one commit each):
+    - git_history-a: the model, no UI: `git::log` (a path's commits from HEAD, git's default simplification, paged, off-thread job), `git::show` (a commit's header, message and per-file stat: insertions / deletions, binary sizes, renames with git's default detection, first parent / root) and `git_show::render(show, width)` → lines with kinds (git's `--stat` graph scaling); `diff_view::Text::Commit` (a blob from a commit's tree); unit tests against the `git` CLI's own output on test repositories
+    - git_history-b: the Explorer view split: the "Git History" section (header, collapse, draggable divider, `Scrollable` list, the active file followed, pages read as it scrolls, refreshed when HEAD moves, "No history"), theme keys; no commit tab yet (Enter does nothing)
+    - git_history-c: commit tabs (`Tab::Commit`: drawing with git's colours, scroll / select / copy, reuse per commit, splits) opened from the section, and stat rows opening the file's diff in the group to the right (split when none, reused); sessions keep both and the section's layout
+    - git_history-d: the done-when tests (against the `git` CLI), gaps and hand checks; marks the milestone ✅
 
 ## Stretch goals
 Very low priority. Don't build these yet, but don't make design choices that would block them.
