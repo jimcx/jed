@@ -87,6 +87,7 @@ impl App {
                 if self.git.status.take().is_some() {
                     tracing::info!("no git repository any more");
                     self.quick_diff_index_changed();
+                    self.blame_head_changed();
                     self.diffs_index_changed();
                     self.scm_status_changed();
                 }
@@ -103,6 +104,7 @@ impl App {
                 self.git.status = Some(*s);
                 // The index may have changed: the gutter markers and diff tabs compare against it.
                 self.quick_diff_index_changed();
+                self.blame_head_changed();
                 self.diffs_index_changed();
                 self.scm_status_changed();
             }

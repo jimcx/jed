@@ -19,6 +19,15 @@
 //!   selection and the focus unchanged; counts, git letters and buttons left of it; lists that
 //!   fit show no thumb and their bar ignores clicks; no bar for an empty list or another tab;
 //!   a drag whose list goes away (another view, the panel hidden, another tab) scrolls nothing.
+//! - `inline_blame`: "Git: Toggle Inline Blame" (off by default; palette or command) draws the
+//!   primary cursor line's blame `GAP` cells after its text in
+//!   `git.blame.editorDecorationForeground` (`Ann, 6 yr ago • First commit`), following the
+//!   cursor without recomputing; hidden by a selection over lines; "Uncommitted changes" for an
+//!   unsaved edit (after the delay), back after undo; a new commit outside jed shows; cut with
+//!   "…" at the text area's edge (not on the scroll bar), none on a line filling the width,
+//!   the text never moved; nothing for untracked files, outside a repository, or toggled off;
+//!   staged lines still uncommitted; nothing computed while off or for background tabs; turned
+//!   off and on again it is blamed afresh (an amended HEAD commit shows).
 
 mod render_whitespace {
     use std::fs;
@@ -1356,5 +1365,349 @@ mod side_scroll_bars {
         app.ui.panel_tab = PanelTab::Locations;
         app.mouse(DRAG, track.x, track.y + 3);
         assert_eq!((list.top)(&app), 0, "the Problems list, no longer shown, stays");
+    }
+}
+
+mod inline_blame {
+    use std::fs;
+    use std::path::Path;
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+
+    use crate::app::App;
+    use crate::blame::Want;
+    use crate::command::Command;
+    use crate::git::test_repo::{git, init};
+    use crate::milestone10_tests::{dirs, open_file_app, settle_git};
+
+    /// 2020-01-01T00:00:00Z and 2021-06-01T12:00:00Z.
+    const ANN: (&str, u64) = ("2020-01-01T00:00:00Z", 1_577_836_800);
+    const BOB: (&str, u64) = ("2021-06-01T12:00:00Z", 1_622_548_800);
+
+    /// The width of the text area `draw` gives (the explorer and the scroll bar left out).
+    const WIDTH: usize = 61;
+
+    /// Commits everything as `who` (`<who>@example.com`), authored at `date`.
+    fn commit_as(root: &Path, who: &str, date: &str, message: &str) {
+        git(root, &["add", "-A"]);
+        let author = format!("{who} <{}@example.com>", who.to_lowercase());
+        git(
+            root,
+            &["commit", "-q", "--author", &author, "--date", date, "-m", message],
+        );
+    }
+
+    /// Line 0 by Ann; lines 1–6 by Bob: a short one, one long enough to cut the blame, one
+    /// filling the width, one past it, one leaving `MIN_WIDTH` cells after the gap, one less.
+    fn text() -> String {
+        let gap = crate::blame::GAP;
+        let min = crate::blame::MIN_WIDTH;
+        format!(
+            "alpha\nbeta\n{}\n{}\n{}\n{}\n{}\n",
+            "c".repeat(WIDTH - 20),
+            "d".repeat(WIDTH),
+            "e".repeat(WIDTH + 5),
+            "f".repeat(WIDTH - gap - min),
+            "g".repeat(WIDTH - gap - min + 1)
+        )
+    }
+
+    /// A repository with `a.txt` committed by Ann, then changed by Bob, and the app on it with the
+    /// status read.
+    async fn blamed_project() -> (tempfile::TempDir, std::path::PathBuf, App) {
+        let (dir, root, state) = dirs();
+        init(&root);
+        fs::write(root.join("a.txt"), "alpha\nold\n").unwrap();
+        commit_as(&root, "Ann", ANN.0, "First commit\n\nWith a body");
+        fs::write(root.join("a.txt"), text()).unwrap();
+        commit_as(&root, "Bob", BOB.0, "Second change");
+        let mut app = open_file_app(&root, &state, "a.txt");
+        assert!(settle_git(&mut app, |_| true).await);
+        (dir, root, app)
+    }
+
+    async fn settle_blame(app: &mut App) -> bool {
+        app.settle(|a| {
+            let b = a.active_buffer().unwrap();
+            !b.blame.running() && b.blame.want(b.revision()) == Want::Nothing
+        })
+        .await
+    }
+
+    fn draw(app: &mut App) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        assert_eq!(app.hits.groups[0].text.width as usize, WIDTH);
+        term
+    }
+
+    /// Buffer line `line` as drawn across the text area (no scrolling), trailing blanks dropped.
+    fn row(app: &App, term: &Terminal<TestBackend>, line: u16) -> String {
+        let text = app.hits.groups[0].text;
+        let buf = term.backend().buffer();
+        let s: String = (0..text.width)
+            .map(|x| buf[(text.x + x, text.y + line)].symbol())
+            .collect();
+        s.trim_end().to_string()
+    }
+
+    /// The foreground of the cell at column `col` of buffer line `line`.
+    fn fg(app: &App, term: &Terminal<TestBackend>, line: u16, col: u16) -> Color {
+        let text = app.hits.groups[0].text;
+        term.backend().buffer()[(text.x + col, text.y + line)].fg
+    }
+
+    fn blame_colour(app: &App) -> Color {
+        app.theme.get("git.blame.editorDecorationForeground").fg.unwrap()
+    }
+
+    fn label(who: &str, secs: u64, summary: &str) -> String {
+        let when = crate::history::ago(secs * 1000, crate::history::now_ms());
+        format!("{who}, {when} • {summary}")
+    }
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    fn go_to_line(app: &mut App, line: usize) {
+        app.press(K::Home, cmd());
+        for _ in 0..line {
+            app.press(K::Down, M::NONE);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_cursor_lines_blame_follows_the_cursor_and_edits() {
+        let (_d, _root, mut app) = blamed_project().await;
+        // Off by default: nothing drawn, nothing computed.
+        app.pump();
+        let term = draw(&mut app);
+        assert_eq!(row(&app, &term, 0), "alpha");
+        let b = &app.active_buffer().unwrap().blame;
+        assert!(!b.running() && b.hunks().is_empty());
+
+        app.test_execute(Command::ToggleBlame);
+        assert!(settle_blame(&mut app).await);
+        let term = draw(&mut app);
+        let ann = label("Ann", ANN.1, "First commit");
+        assert_eq!(row(&app, &term, 0), format!("alpha   {ann}"));
+        assert_eq!(fg(&app, &term, 0, 8), blame_colour(&app));
+        assert_eq!(row(&app, &term, 1), "beta", "only the cursor line");
+
+        // Another commit's line: drawn at once, nothing recomputed.
+        go_to_line(&mut app, 1);
+        app.pump();
+        assert!(!app.active_buffer().unwrap().blame.running());
+        let term = draw(&mut app);
+        assert_eq!(row(&app, &term, 0), "alpha");
+        assert_eq!(
+            row(&app, &term, 1),
+            format!("beta   {}", label("Bob", BOB.1, "Second change"))
+        );
+
+        // A selection over two lines hides it; within one line it stays.
+        app.press(K::Up, M::SHIFT);
+        let term = draw(&mut app);
+        assert_eq!(
+            (row(&app, &term, 0), row(&app, &term, 1)),
+            ("alpha".into(), "beta".into())
+        );
+        app.press(K::Down, M::NONE);
+        app.press(K::End, M::SHIFT);
+        let term = draw(&mut app);
+        assert!(row(&app, &term, 1).starts_with("beta   Bob, "));
+
+        // An unsaved edit: uncommitted once recomputed (after the delay); other lines keep theirs.
+        // Until then the hunks follow the edit: Bob's still, no computation before the delay.
+        app.press(K::End, M::NONE);
+        app.type_text("!");
+        app.pump();
+        assert!(!app.active_buffer().unwrap().blame.running());
+        assert!(app.blame.deadline().is_some());
+        let term = draw(&mut app);
+        assert!(row(&app, &term, 1).starts_with("beta!   Bob, "));
+        assert!(settle_blame(&mut app).await);
+        let term = draw(&mut app);
+        assert_eq!(row(&app, &term, 1), "beta!   Uncommitted changes");
+        go_to_line(&mut app, 0);
+        let term = draw(&mut app);
+        assert_eq!(row(&app, &term, 0), format!("alpha   {ann}"));
+
+        // Undone: Bob's again.
+        app.press(K::Char('z'), cmd());
+        assert!(settle_blame(&mut app).await);
+        go_to_line(&mut app, 1);
+        let term = draw(&mut app);
+        assert!(row(&app, &term, 1).starts_with("beta   Bob, "));
+
+        // Turned off: nothing.
+        app.test_execute(Command::ToggleBlame);
+        let term = draw(&mut app);
+        assert_eq!(row(&app, &term, 1), "beta");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn long_lines_cut_the_blame_at_the_edge_and_full_ones_draw_none() {
+        let (_d, _root, mut app) = blamed_project().await;
+        app.test_execute(Command::ToggleBlame);
+        assert!(settle_blame(&mut app).await);
+        let bob = label("Bob", BOB.1, "Second change");
+
+        // 17 cells after the line's end: cut with "…" in the text area's last cell, never on
+        // the scroll bar.
+        go_to_line(&mut app, 2);
+        let term = draw(&mut app);
+        let line = "c".repeat(WIDTH - 20);
+        let room = 20 - crate::blame::GAP;
+        let cut: String = bob.chars().take(room - 1).collect();
+        assert_eq!(row(&app, &term, 2), format!("{line}   {cut}…"));
+        assert_eq!(fg(&app, &term, 2, WIDTH as u16 - 1), blame_colour(&app));
+
+        // Filling the width, or past it: no blame, the text unchanged.
+        for (l, c) in [(3, 'd'), (4, 'e')] {
+            go_to_line(&mut app, l);
+            let term = draw(&mut app);
+            assert_eq!(row(&app, &term, l as u16), c.to_string().repeat(WIDTH));
+        }
+
+        // `MIN_WIDTH` cells left after the gap: cut to them; one fewer: none.
+        let min = crate::blame::MIN_WIDTH;
+        go_to_line(&mut app, 5);
+        let term = draw(&mut app);
+        let line = "f".repeat(WIDTH - crate::blame::GAP - min);
+        let cut: String = bob.chars().take(min - 1).collect();
+        assert_eq!(row(&app, &term, 5), format!("{line}   {cut}…"));
+        go_to_line(&mut app, 6);
+        let term = draw(&mut app);
+        assert_eq!(row(&app, &term, 6), "g".repeat(WIDTH - crate::blame::GAP - min + 1));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_new_commit_updates_it() {
+        let (_d, root, mut app) = blamed_project().await;
+        // From the palette.
+        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.type_text("Git: Toggle Inline Blame");
+        let p = app.palette.as_ref().unwrap();
+        assert_eq!(p.rows[p.selected].label, "Git: Toggle Inline Blame");
+        app.press(K::Enter, M::NONE);
+        assert!(app.blame.on);
+        assert!(settle_blame(&mut app).await);
+        go_to_line(&mut app, 1);
+        app.press(K::End, M::NONE);
+        app.type_text("!");
+        app.press(K::Char('s'), cmd());
+        assert!(app.settle(|a| !a.active_buffer().unwrap().is_dirty()).await);
+        assert!(settle_blame(&mut app).await);
+        let term = draw(&mut app);
+        assert_eq!(row(&app, &term, 1), "beta!   Uncommitted changes");
+
+        // Staged, not committed: still uncommitted.
+        git(&root, &["add", "a.txt"]);
+        assert!(settle_git(&mut app, |s| s.entries.iter().any(|e| e.staged.is_some())).await);
+        assert!(settle_blame(&mut app).await);
+        let term = draw(&mut app);
+        assert_eq!(row(&app, &term, 1), "beta!   Uncommitted changes");
+
+        commit_as(&root, "Cy", "2022-01-01T00:00:00Z", "Third");
+        assert!(settle_git(&mut app, |s| s.entries.is_empty()).await);
+        assert!(settle_blame(&mut app).await);
+        let term = draw(&mut app);
+        assert_eq!(
+            row(&app, &term, 1),
+            format!("beta!   {}", label("Cy", 1_640_995_200, "Third"))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn untracked_files_and_files_outside_a_repository_have_none() {
+        // Untracked.
+        let (_d, root, state) = dirs();
+        init(&root);
+        fs::write(root.join("a.txt"), "alpha\n").unwrap();
+        commit_as(&root, "Ann", ANN.0, "First");
+        fs::write(root.join("new.txt"), "fresh\n").unwrap();
+        let mut app = open_file_app(&root, &state, "new.txt");
+        assert!(settle_git(&mut app, |s| !s.entries.is_empty()).await);
+        app.test_execute(Command::ToggleBlame);
+        assert!(settle_blame(&mut app).await);
+        let term = draw(&mut app);
+        assert_eq!(row(&app, &term, 0), "fresh");
+        assert!(app.active_buffer().unwrap().blame.hunks().is_empty());
+
+        // No repository.
+        let (_d, root, state) = dirs();
+        fs::write(root.join("a.txt"), "alpha\n").unwrap();
+        let mut app = open_file_app(&root, &state, "a.txt");
+        app.test_execute(Command::ToggleBlame);
+        assert!(app.settle(|a| !a.git.running()).await);
+        assert!(settle_blame(&mut app).await);
+        let term = draw(&mut app);
+        assert_eq!(row(&app, &term, 0), "alpha");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn only_shown_buffers_are_blamed_and_turning_it_off_forgets() {
+        let (_d, root, mut app) = blamed_project().await;
+        fs::write(root.join("b.txt"), "bee\n").unwrap();
+        commit_as(&root, "Cy", "2022-01-01T00:00:00Z", "Third");
+        assert!(settle_git(&mut app, |s| s.entries.is_empty()).await);
+        let a = app.active_buffer().unwrap().path.clone();
+        app.test_open(crate::buffer::Buffer::open(&root.join("b.txt")).unwrap());
+        app.test_execute(Command::ToggleBlame);
+        assert!(settle_blame(&mut app).await);
+        let term = draw(&mut app);
+        assert_eq!(
+            row(&app, &term, 0),
+            format!("bee   {}", label("Cy", 1_640_995_200, "Third"))
+        );
+        // a.txt, in a background tab: not blamed until shown.
+        let buf = app.buffers.iter().map(|(_, b)| b).find(|b| b.path == a).unwrap();
+        assert!(buf.blame.hunks().is_empty() && buf.blame.want(buf.revision()) == Want::Now);
+        app.test_execute(Command::NextTab);
+        assert_eq!(app.active_buffer().unwrap().path, a);
+        assert!(settle_blame(&mut app).await);
+        go_to_line(&mut app, 1);
+        let term = draw(&mut app);
+        assert_eq!(
+            row(&app, &term, 1),
+            format!("beta   {}", label("Bob", BOB.1, "Second change"))
+        );
+
+        // Back on b.txt: turned off, HEAD's commit rewritten (b.txt's text unchanged), turned on:
+        // blamed afresh at once, not the blame from before.
+        app.test_execute(Command::NextTab);
+        assert_ne!(app.active_buffer().unwrap().path, a);
+        app.test_execute(Command::ToggleBlame);
+        git(
+            &root,
+            &[
+                "commit",
+                "-q",
+                "--amend",
+                "--author",
+                "Eve <eve@example.com>",
+                "-m",
+                "Amended",
+            ],
+        );
+        assert!(settle_git(&mut app, |_| true).await);
+        app.test_execute(Command::ToggleBlame);
+        assert!(app.active_buffer().unwrap().blame.running(), "computed at once");
+        assert!(settle_blame(&mut app).await);
+        let term = draw(&mut app);
+        let row0 = row(&app, &term, 0);
+        assert!(
+            row0.starts_with("bee   Eve, ") && row0.ends_with(" • Amended"),
+            "{row0}"
+        );
     }
 }

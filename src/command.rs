@@ -211,6 +211,9 @@ pub enum Command {
     /// "View: Toggle Render Whitespace": whitespace drawn as `·` / `→` off, or back to the
     /// `render_whitespace` setting (`all` when that is `none`); for the session only.
     ToggleRenderWhitespace,
+    /// "Git: Toggle Inline Blame": the primary cursor line's blame after its text (off at
+    /// start; for the session only).
+    ToggleBlame,
 }
 
 /// A task tab in the bottom panel (`Context::Task`, while it has the keys); keys bound to
@@ -607,6 +610,7 @@ impl Command {
         all.extend(TaskCommand::ALL.map(Command::Task));
         all.push(Command::OpenRecentWorkspace);
         all.push(Command::ToggleRenderWhitespace);
+        all.push(Command::ToggleBlame);
         all
     }
 
@@ -835,6 +839,7 @@ impl Command {
             Command::CloseTask => "task.close".into(),
             Command::OpenRecentWorkspace => "workspace.openRecent".into(),
             Command::ToggleRenderWhitespace => "view.toggleRenderWhitespace".into(),
+            Command::ToggleBlame => "git.toggleBlame".into(),
             Command::Task(c) => format!(
                 "task.{}",
                 match c {
@@ -1053,6 +1058,7 @@ impl Command {
             Command::CloseTask => "Tasks: Close Task Tab",
             Command::OpenRecentWorkspace => "Workspaces: Open Recent Workspace",
             Command::ToggleRenderWhitespace => "View: Toggle Render Whitespace",
+            Command::ToggleBlame => "Git: Toggle Inline Blame",
             Command::Task(c) => match c {
                 TaskCommand::ScrollUp => "Tasks: Scroll Up",
                 TaskCommand::ScrollDown => "Tasks: Scroll Down",
@@ -1182,9 +1188,10 @@ mod tests {
             Command::Task(_) => 82,
             Command::OpenRecentWorkspace => 83,
             Command::ToggleRenderWhitespace => 84,
+            Command::ToggleBlame => 85,
         }
     }
-    const VARIANTS: u8 = 85;
+    const VARIANTS: u8 = 86;
 
     #[test]
     fn all_lists_every_variant() {

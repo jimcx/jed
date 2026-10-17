@@ -1,5 +1,6 @@
 mod app;
 mod backup;
+mod blame;
 mod brackets;
 mod buffer;
 mod clipboard;

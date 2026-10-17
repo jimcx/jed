@@ -133,6 +133,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     focused,
                     find,
                     whitespace,
+                    blame: app.blame.on,
                 };
                 text = editor::render(f, editor_area, buf, &mut tab.view, &app.theme, &app.settings, overlay);
                 if let Some(bar) = bar {

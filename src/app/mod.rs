@@ -1,6 +1,7 @@
 //! Event loop. Owns all state and sends commands where they need to go.
 
 mod backup;
+mod blame;
 mod completion;
 mod cursors;
 mod diff_view;
@@ -93,6 +94,8 @@ enum Timer {
     QuickDiff,
     /// Diff tabs of edited buffers are due (`diff_view::DELAY`).
     Diff,
+    /// Edited buffers' inline blame is due (`blame::DELAY`).
+    Blame,
     /// Dirty buffers changed since their backup are due (`backup::INTERVAL`).
     Backup,
 }
@@ -210,6 +213,11 @@ enum AppEvent {
     QuickDiff {
         buffer: BufferId,
         computed: crate::quick_diff::Computed,
+    },
+    /// A buffer's inline blame was computed (`app/blame.rs`).
+    Blame {
+        buffer: BufferId,
+        computed: crate::blame::Computed,
     },
     /// A change was staged or unstaged (or wasn't).
     Staged {
@@ -346,6 +354,8 @@ pub struct App {
     pub file_history: history::HistoryTasks,
     /// The gutter markers' schedule, the peek, stages waiting for a save.
     pub quick_diff: quick_diff::QuickDiffState,
+    /// Inline blame's toggle and its recompute delay.
+    pub blame: blame::BlameState,
     /// Diff tabs' ids, their reload delay, stages started from them.
     pub diffs: diff_view::DiffViews,
     /// The Source Control view: collapsed sections, scroll, selection.
@@ -450,6 +460,7 @@ impl App {
             disk: Default::default(),
             file_history: Default::default(),
             quick_diff: Default::default(),
+            blame: Default::default(),
             diffs: Default::default(),
             scm: Default::default(),
             stage_all_after_save: None,
@@ -510,6 +521,7 @@ impl App {
         self.sync_syntax();
         self.sync_servers();
         self.sync_quick_diff();
+        self.sync_blame();
         self.sync_diffs();
     }
 
@@ -525,6 +537,7 @@ impl App {
             self.sync_syntax();
             self.sync_servers();
             self.sync_quick_diff();
+            self.sync_blame();
             self.sync_diffs();
             self.sync_backups();
             if self.needs_redraw {
@@ -561,7 +574,8 @@ impl App {
     }
 
     /// Sleeps until the earliest pending deadline (the fs-event batch, the Search view's
-    /// debounce, the mouse's hover rest, quick suggestions, the gutter markers' delay), or forever when none is pending; `run` and `settle` both
+    /// debounce, the mouse's hover rest, quick suggestions, the gutter markers', diff tabs' and
+    /// inline blame's delays, crash backups), or forever when none is pending; `run` and `settle` both
     /// wait on it. The future borrows nothing, so it can sit in a `select!` beside `self.rx`.
     fn next_timer(&self) -> impl Future<Output = Timer> + 'static {
         let fs = self.fs_deadline.map(|d| (d, Timer::FsChanges));
@@ -585,11 +599,15 @@ impl App {
             .diffs
             .deadline()
             .map(|d| (tokio::time::Instant::from_std(d), Timer::Diff));
+        let blame = self
+            .blame
+            .deadline()
+            .map(|d| (tokio::time::Instant::from_std(d), Timer::Blame));
         let backup = self
             .backups
             .deadline()
             .map(|d| (tokio::time::Instant::from_std(d), Timer::Backup));
-        let next = [fs, search, hover, completion, quick_diff, diff, backup]
+        let next = [fs, search, hover, completion, quick_diff, diff, blame, backup]
             .into_iter()
             .flatten()
             .min_by_key(|(at, _)| *at);
@@ -613,6 +631,7 @@ impl App {
             Timer::Completion => self.completion_tick(Instant::now()),
             Timer::QuickDiff => self.sync_quick_diff(),
             Timer::Diff => self.sync_diffs(),
+            Timer::Blame => self.sync_blame(),
             Timer::Backup => self.backup_tick(Instant::now()),
         }
     }
@@ -924,6 +943,7 @@ impl App {
             Command::RunTask => self.show_run_task(),
             Command::OpenRecentWorkspace => self.show_recent(),
             Command::ToggleRenderWhitespace => self.ui.whitespace_toggled = !self.ui.whitespace_toggled,
+            Command::ToggleBlame => self.toggle_blame(),
             Command::KillTask => self.kill_task(),
             Command::CloseTask => self.close_shown_task(),
             Command::Task(c) => self.task_command(c),
@@ -1053,6 +1073,7 @@ impl App {
             AppEvent::GitRefreshed { result, elapsed } => self.git_refreshed(result, elapsed),
             AppEvent::DiskChecked(checked) => self.disk_checked(*checked),
             AppEvent::QuickDiff { buffer, computed } => self.quick_diff_done(buffer, computed),
+            AppEvent::Blame { buffer, computed } => self.blame_done(buffer, computed),
             AppEvent::Staged { at, unstage, result } => self.staged(at, unstage, result),
             AppEvent::DiffLoaded { id, generation, result } => self.diff_loaded(id, generation, *result),
             AppEvent::DiffStaged(message) => self.diff_staged(message),
@@ -1207,6 +1228,7 @@ impl App {
         self.sync_syntax();
         self.sync_servers();
         self.sync_quick_diff();
+        self.sync_blame();
         self.sync_diffs();
         self.sync_backups();
     }
@@ -1220,6 +1242,7 @@ impl App {
             self.sync_syntax();
             self.sync_servers();
             self.sync_quick_diff();
+            self.sync_blame();
             self.sync_diffs();
             self.sync_backups();
             if done(self) {

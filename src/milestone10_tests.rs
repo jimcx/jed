@@ -72,7 +72,7 @@ fn open_app(root: &Path, state: &Path) -> App {
 }
 
 /// A temp dir with `proj/` (the workspace) and `state/` (the trust store, outside the repo).
-fn dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
+pub(crate) fn dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let base = workspace::normalize(dir.path());
     let (root, state) = (base.join("proj"), base.join("state"));
@@ -118,7 +118,7 @@ fn colour(app: &App, d: Decoration) -> Option<Color> {
 }
 
 /// Waits for a git status matching `f` (after any refresh in flight).
-async fn settle_git(app: &mut App, f: impl Fn(&crate::git::Status) -> bool) -> bool {
+pub(crate) async fn settle_git(app: &mut App, f: impl Fn(&crate::git::Status) -> bool) -> bool {
     app.settle(|a| !a.git.running() && a.git.status.as_ref().is_some_and(&f))
         .await
 }
@@ -272,7 +272,7 @@ fn cmd() -> M {
 }
 
 /// The app with `file` (in `root`) open in the editor.
-fn open_file_app(root: &Path, state: &Path, file: &str) -> App {
+pub(crate) fn open_file_app(root: &Path, state: &Path, file: &str) -> App {
     let ws = Workspace::load(root.to_path_buf());
     let trust = TrustStore::load(state.join("trust.toml"));
     let buffer = Buffer::open(&root.join(file)).unwrap();

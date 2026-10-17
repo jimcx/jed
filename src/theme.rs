@@ -83,6 +83,9 @@ impl Theme {
             ("editor.whitespace.control", Style::new().fg(c(0xF48771))),
             // Rendered spaces and tabs (`·` / `→`): Dark+'s #E3E4E229 blended over the editor.
             ("editorWhitespace.foreground", Style::new().fg(c(0x3E3E3D))),
+            // Inline blame after the cursor line (VS Code's `git.blame.editorDecorationForeground`,
+            // Dark+'s `editorCodeLens.foreground`).
+            ("git.blame.editorDecorationForeground", Style::new().fg(c(0x999999))),
             // The editors' scroll bar thumb (its track is the editor's background): Dark+'s
             // translucent sliders blended over the editor — #79797966, hover #646464B3, while
             // dragged #BFBFBF66.

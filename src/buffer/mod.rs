@@ -16,6 +16,7 @@ use change::ChangeSet;
 use file::{DiskMeta, Eol, LoadError, Stamp};
 use undo::{EditKind, History};
 
+use crate::blame::Blame;
 use crate::diagnostics::Marks;
 use crate::quick_diff::QuickDiff;
 use crate::selection::Selections;
@@ -69,6 +70,9 @@ pub struct Buffer {
     /// The gutter's git markers (lines changed against the index), mapped through every change
     /// set applied until the next computation (`app/quick_diff.rs`).
     pub quick_diff: QuickDiff,
+    /// Inline blame's hunks (each line's last commit), mapped through every change set applied
+    /// until the next computation (`app/blame.rs`, only while the toggle is on).
+    pub blame: Blame,
 }
 
 /// A change set as a language server needs it: positions are in `before`'s coordinates.
@@ -125,6 +129,7 @@ impl Buffer {
             tracked: None,
             diagnostics: Marks::default(),
             quick_diff: QuickDiff::default(),
+            blame: Blame::default(),
         }
     }
 
@@ -253,6 +258,7 @@ impl Buffer {
         self.syntax.map_highlights(changes);
         self.diagnostics.map(changes);
         self.quick_diff.map(changes);
+        self.blame.map(changes);
         if let Some(old) = old {
             self.syntax.edit(changes, &old, &self.rope);
         }

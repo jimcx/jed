@@ -1,5 +1,6 @@
 //! The text area: gutter (line numbers, quick diff's markers), text (syntax colours), matched
-//! brackets, diagnostics' squiggles, selections, find matches, cursors, rendered whitespace.
+//! brackets, diagnostics' squiggles, selections, find matches, cursors, rendered whitespace,
+//! the cursor line's inline blame.
 
 use std::collections::HashSet;
 
@@ -7,6 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::blame;
 use crate::buffer::Buffer;
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::diagnostics::{self, Severity};
@@ -24,6 +26,8 @@ pub struct Overlay<'a> {
     pub find: Option<&'a FindWidget>,
     /// Which spaces and tabs are drawn as `·` / `→` (`App::render_whitespace`).
     pub whitespace: RenderWhitespace,
+    /// Inline blame is on (`app.blame.on`): the primary cursor line's blame after its text.
+    pub blame: bool,
 }
 
 /// Spaces and tabs only, as VS Code's renderer (other Unicode spaces aren't whitespace here).
@@ -126,6 +130,20 @@ pub fn render(
 
     let primary = view.selections.primary().head;
     let cursor_line = pos::line_of(rope, primary);
+    // Inline blame: the cursor line's label (one binary search), unless the primary selection
+    // spans lines.
+    let blame = overlay
+        .blame
+        .then(|| {
+            let sel = view.selections.primary();
+            if pos::line_of(rope, sel.start()) != pos::line_of(rope, sel.end()) {
+                return None;
+            }
+            let line = buf.blame.line(rope, cursor_line)?;
+            Some(blame::label(line, crate::history::now_ms()))
+        })
+        .flatten();
+    let blame_style = theme.get("git.blame.editorDecorationForeground");
     let last_line = (view.top_line() + view.height).min(total - 1);
     // Only the selections on screen: there may be tens of thousands.
     let sels = view
@@ -343,6 +361,22 @@ pub fn render(
                 style = style.patch(secondary_cursor);
             }
             out.set_stringn(text.x + (col - view.left_col) as u16, y, " ", 1, style);
+        }
+
+        // Inline blame: `GAP` cells after the line's end (`col`: its whole width, unless the
+        // line reached the right edge), cut with "…" at the edge, nothing when too little room
+        // is left or the label's start is scrolled off to the left.
+        if line == cursor_line
+            && let Some(label) = &blame
+            && col < view.left_col + view.width
+        {
+            let start = col + blame::GAP;
+            if start >= view.left_col
+                && let Some(shown) = blame::fit(label, (view.left_col + view.width).saturating_sub(start))
+            {
+                let x = text.x + (start - view.left_col) as u16;
+                out.set_stringn(x, y, &shown, (right - x) as usize, row_style.patch(blame_style));
+            }
         }
     }
 
