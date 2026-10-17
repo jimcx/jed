@@ -13,6 +13,7 @@ mod panel;
 mod popup;
 mod quick_diff;
 mod scm;
+mod scrollbar;
 mod search;
 mod side;
 mod splash;
@@ -26,6 +27,7 @@ use ratatui::layout::Rect;
 use crate::app::{App, Focus};
 use crate::group::Tab;
 use crate::layout::{self, GroupHit, HitMap, SplitDir};
+use crate::scrollbar::Scroll;
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -59,6 +61,13 @@ pub fn render(f: &mut Frame, app: &mut App) {
             ..rect
         };
         let is_active = id == app.groups.active;
+        let look = if app.scrollbar_dragged() == Some(id) {
+            scrollbar::Look::Active
+        } else if app.ui.scrollbar_hover == Some(id) {
+            scrollbar::Look::Hover
+        } else {
+            scrollbar::Look::Normal
+        };
         let Some(group) = app.groups.get_mut(id) else { continue };
         let tabs = tabs::render(f, tab_bar, group, &app.buffers, &app.theme, is_active);
         // The changed-on-disk banner takes the editor's first row (leaving it at least one); a
@@ -82,8 +91,18 @@ pub fn render(f: &mut Frame, app: &mut App) {
             editor_area.height -= 1;
         }
 
+        // A text or diff tab keeps the editor's last column for its scroll bar.
+        let bar = (!group.tabs.is_empty() && editor_area.width >= 2).then(|| Rect {
+            x: editor_area.x + editor_area.width - 1,
+            width: 1,
+            ..editor_area
+        });
+        if bar.is_some() {
+            editor_area.width -= 1;
+        }
         let mut text = Rect::default();
         let mut diff_hit = None;
+        let mut scroll_hit = None;
         // Only the focused group shows the terminal cursor.
         let focused = is_active && app.ui.focus == Focus::Editor && app.prompt.is_none() && app.palette.is_none();
         if let Some(d) = group.active_diff_mut() {
@@ -95,6 +114,19 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 app.settings.tab_width,
                 focused,
             ));
+            if let Some(bar) = bar {
+                // The header row's cell, then the rows' track.
+                let out = f.buffer_mut();
+                out.set_style(bar, app.theme.get("editor"));
+                out.set_style(Rect { height: 1, ..bar }, app.theme.get("diffEditor.header"));
+                let track = Rect {
+                    y: bar.y + 1,
+                    height: bar.height.saturating_sub(1),
+                    ..bar
+                };
+                let scroll = Scroll::rows(d.rows().len(), d.height, d.top);
+                scroll_hit = Some(scrollbar::render(out, track, scroll, look, &app.theme));
+            }
         }
         match group
             .active_tab_mut()
@@ -110,6 +142,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     whitespace,
                 };
                 text = editor::render(f, editor_area, buf, &mut tab.view, &app.theme, &app.settings, overlay);
+                if let Some(bar) = bar {
+                    let lines = crate::buffer::pos::line_count(&buf.rope);
+                    let scroll = Scroll::text(lines, tab.view.height, tab.view.top_line());
+                    scroll_hit = Some(scrollbar::render(f.buffer_mut(), bar, scroll, look, &app.theme));
+                }
             }
             None if diff_hit.is_some() => {}
             None => {
@@ -128,6 +165,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             tabs,
             banner,
             diff: diff_hit,
+            scrollbar: scroll_hit,
         });
     }
     let border = app.theme.get("editorGroup.border");

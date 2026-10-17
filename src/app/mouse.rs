@@ -8,7 +8,7 @@ use super::{App, Focus};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::column::{self, Cell};
 use crate::command::{Command, ExplorerCommand};
-use crate::layout::{Divider, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, PanelTab, SidePanel};
+use crate::layout::{Divider, GroupId, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, PanelTab, SidePanel};
 use crate::selection::{Selection, Selections};
 use crate::view::View;
 
@@ -32,6 +32,11 @@ pub enum Drag {
     },
     /// Shift+Alt+drag: a box selection (its corners live in `view.column`).
     Column,
+    /// A group's scroll bar thumb, held by its cell `grab` (`app/scrollbar.rs`).
+    ScrollBar {
+        group: GroupId,
+        grab: u16,
+    },
 }
 
 /// Counts clicks on the same cell in quick succession (1, 2, 3).
@@ -54,7 +59,13 @@ impl ClickTracker {
 
 impl App {
     pub(super) fn handle_mouse(&mut self, m: MouseEvent) {
-        let hit = self.hits.hit(m.column, m.row);
+        let hit = match self.hits.hit(m.column, m.row) {
+            // The wheel over a scroll bar scrolls its editor.
+            Hit::ScrollBar(g) if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) => {
+                Hit::Editor(g)
+            }
+            hit => hit,
+        };
         if self.completion_mouse(&m, hit) {
             return;
         }
@@ -151,10 +162,19 @@ impl App {
                         self.column_select_to(to);
                     }
                 }
+                Some(Drag::ScrollBar { group, grab }) => self.scrollbar_drag(group, m.row, grab),
                 None => {}
             },
-            MouseEventKind::Up(MouseButton::Left) => self.drag = None,
-            MouseEventKind::Moved => self.scm_hover(&m, hit),
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.drag = None;
+                // No moves arrive during a drag: the thumb released away from the pointer
+                // mustn't keep the hover colour from before the press.
+                self.scrollbar_hover(&m, hit);
+            }
+            MouseEventKind::Moved => {
+                self.scm_hover(&m, hit);
+                self.scrollbar_hover(&m, hit);
+            }
             _ => {}
         }
     }
@@ -205,6 +225,8 @@ impl App {
                 self.focus_group(g);
                 self.editor_click(m, count);
             }
+            // Scrolls without focusing the group or moving a cursor.
+            Hit::ScrollBar(g) => self.scrollbar_click(g, m.row),
             Hit::PanelBorder => self.drag = Some(Drag::PanelBorder),
             Hit::PanelTab(tab) => self.focus_panel(tab),
             Hit::PanelTabClose(id) => self.close_task(id),

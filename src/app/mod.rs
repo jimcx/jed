@@ -21,6 +21,7 @@ mod quick_diff;
 mod recent;
 mod rename;
 mod scm;
+mod scrollbar;
 mod session;
 mod side;
 mod syntax;
@@ -120,6 +121,8 @@ pub struct UiState {
     /// "View: Toggle Render Whitespace" flipped the `render_whitespace` setting for this session
     /// (`App::render_whitespace`). Never written to a settings file; a `.workspace` reload keeps it.
     pub whitespace_toggled: bool,
+    /// The group whose scroll bar thumb is under the pointer (drawn in its hover colour).
+    pub scrollbar_hover: Option<GroupId>,
 }
 
 /// The bottom panel's height until it's resized.
@@ -382,6 +385,7 @@ impl App {
                 panel_height: PANEL_HEIGHT,
                 panel_tab: PanelTab::Problems,
                 whitespace_toggled: false,
+                scrollbar_hover: None,
             },
             hits: HitMap::default(),
             keymap: Keymap::default_for(Platform::current()),

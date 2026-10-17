@@ -464,7 +464,7 @@ pub struct PaletteHit {
 pub struct GroupHit {
     pub id: GroupId,
     pub tab_bar: Rect,
-    /// Below the tab bar (and the banner, if shown).
+    /// Below the tab bar (and the banner, if shown), the scroll bar's column excluded.
     pub editor: Rect,
     /// Text area (gutter excluded).
     pub text: Rect,
@@ -473,6 +473,16 @@ pub struct GroupHit {
     pub banner: Option<BannerHit>,
     /// The diff view, when the group shows a diff tab.
     pub diff: Option<DiffHit>,
+    /// The vertical scroll bar at the editor's right edge (a text or diff tab).
+    pub scrollbar: Option<ScrollBarHit>,
+}
+
+/// A scroll bar as drawn: its track (one column) and the thumb on it (`None`: nothing to
+/// scroll), in cells from the track's top.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScrollBarHit {
+    pub track: Rect,
+    pub thumb: Option<crate::scrollbar::Thumb>,
 }
 
 /// A diff tab: the rows' rect (below its header) and each change's Stage / Unstage button
@@ -514,6 +524,8 @@ pub enum Hit {
     /// The changed-on-disk banner over a group's editor, on a button or not.
     Banner(GroupId, Option<crate::disk::BannerAction>),
     Editor(GroupId),
+    /// A group's scroll bar (`GroupHit::scrollbar`).
+    ScrollBar(GroupId),
     /// The bottom panel's top border (dragging it resizes the panel).
     PanelBorder,
     PanelTab(PanelTab),
@@ -594,6 +606,9 @@ impl HitMap {
             {
                 let action = b.actions.iter().find(|(r, _)| r.contains(p)).map(|(_, a)| *a);
                 return Hit::Banner(g.id, action);
+            }
+            if g.scrollbar.is_some_and(|s| s.track.contains(p)) {
+                return Hit::ScrollBar(g.id);
             }
             if g.editor.contains(p) {
                 return Hit::Editor(g.id);
@@ -719,6 +734,7 @@ mod tests {
                 editor: Rect {
                     y: r.y + 1,
                     height: r.height - 1,
+                    width: r.width - 1,
                     ..*r
                 },
                 text: Rect::default(),
@@ -738,6 +754,16 @@ mod tests {
                     actions: vec![(Rect::new(r.x + 2, r.y + 1, 6, 1), crate::disk::BannerAction::Reload)],
                 }),
                 diff: None,
+                // Its scroll bar at the right edge.
+                scrollbar: Some(ScrollBarHit {
+                    track: Rect {
+                        x: r.x + r.width - 1,
+                        y: r.y + 1,
+                        width: 1,
+                        height: r.height - 1,
+                    },
+                    thumb: None,
+                }),
             })
             .collect();
         let map = HitMap {
@@ -780,6 +806,9 @@ mod tests {
         assert_eq!(map.hit(36, 0), Hit::TabClose(7, 0));
         assert_eq!(map.hit(50, 0), Hit::TabBar(7));
         assert_eq!(map.hit(50, 10), Hit::Editor(7));
+        assert_eq!(map.hit(63, 10), Hit::ScrollBar(7), "the editor's last column");
+        assert_eq!(map.hit(62, 10), Hit::Editor(7));
+        assert_eq!(map.hit(63, 0), Hit::TabBar(7), "the tab bar runs over it");
         assert_eq!(map.hit(64, 10), Hit::Divider(0));
         assert_eq!(map.hit(50, 23), Hit::PanelBorder);
         assert_eq!(map.hit(31, 24), Hit::PanelTab(PanelTab::Problems));

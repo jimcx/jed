@@ -63,6 +63,7 @@ mod quick_diff;
 mod recent;
 mod rename;
 mod scm;
+mod scrollbar;
 mod search;
 mod search_view;
 mod selection;

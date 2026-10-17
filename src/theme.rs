@@ -83,6 +83,12 @@ impl Theme {
             ("editor.whitespace.control", Style::new().fg(c(0xF48771))),
             // Rendered spaces and tabs (`·` / `→`): Dark+'s #E3E4E229 blended over the editor.
             ("editorWhitespace.foreground", Style::new().fg(c(0x3E3E3D))),
+            // The editors' scroll bar thumb (its track is the editor's background): Dark+'s
+            // translucent sliders blended over the editor — #79797966, hover #646464B3, while
+            // dragged #BFBFBF66.
+            ("scrollbarSlider.background", Style::new().bg(c(0x424242))),
+            ("scrollbarSlider.hoverBackground", Style::new().bg(c(0x4F4F4F))),
+            ("scrollbarSlider.activeBackground", Style::new().bg(c(0x5E5E5E))),
             // Diagnostics' squiggles (Dark+'s colours): a terminal has no undercurl through
             // ratatui, so an underline in the colour (SGR 58; terminals without it underline in
             // the text's colour). Dark+'s hint (#EEEEEEB3) blended over the editor.
