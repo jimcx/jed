@@ -8,17 +8,17 @@ use unicode_width::UnicodeWidthStr;
 use crate::theme::Theme;
 
 const LOGO: [&str; 7] = [
-    "██████████                 ███",
-    "     █████  ▄██▀▀██▄  ▄██▀▀███",
-    "     █████  ███▀▀▀▀▀  ███  ███",
-    "     █████  ▀██▄▄▄█▀  ▀██▄▄███",
-    "     █████",
-    "██▄  ████▀",
-    " ▀█████▀",
+    "███████▄                 ███",
+    "     ███  ▄██▀▀██▄  ▄██▀▀███",
+    "     ███  ███▀▀▀▀▀  ███  ███",
+    "     ███  ▀██▄▄▄█▀  ▀██▄▄███",
+    "     ███",
+    "██▄  ███",
+    " ▀█████",
 ];
 
 /// Where the "ed" starts in the logo's rows, and how wide it is: the subtitle is centred under it.
-const ED_COL: u16 = 12;
+const ED_COL: u16 = 10;
 const ED_WIDTH: u16 = 18;
 /// The logo row the subtitle goes on (a blank row below the "ed").
 const SUBTITLE_ROW: u16 = 5;
