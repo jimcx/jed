@@ -344,6 +344,19 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
 - Out of scope: a general-purpose interactive shell
 - Later: parse compiler errors into the Problems list (`file:line:col`)
 
+### Tools and logs
+- A Tools view in the side panel (its own activity bar icon), like VS Code's Output panel: every tool jed runs, one row each with its state
+  - Each language server: name / command, language, root, state (starting / running / failed / exited), its progress if any, a badge when its log has errors
+  - Task runs: name and status; the row focuses the run's panel tab (no second copy of its output)
+  - "jed": jed's own background work (git, file watcher, parses, workspace search, crash backups) as one log
+  - Selection, scrolling and the scroll bar as the other side lists; Enter or a click opens the row's log
+- A log is a read-only editor tab, one per tool, reused when opened again (e.g. `rust-analyzer (log)`): find, copy, select all, scrolling and splits work as in any editor; it follows the tail while the cursor is on the last line (as VS Code's Output), else stays put; never dirty, no undo, not typed into
+- Each log is an in-memory ring (the last 10,000 lines / 2 MB, the oldest dropped), filled off the UI thread:
+  - A language server: its stderr, its lifecycle (start with the command line, the server info from `initialize`, exit / crash with the code), `window/logMessage` / `window/showMessage` (with type); its JSON-RPC traffic only while a protocol trace is on for it
+  - "jed": jed's own `tracing` events at the current log level (the same lines as the log file)
+- Commands: "Tools: Show" (`tools.show`), "Tools: Open Log" (`tools.openLog`, a picker), "Tools: Clear Log", "Tools: Toggle Protocol Trace" and "Tools: Restart Server" (a language server: a failed one otherwise stays failed until jed restarts); unbound
+- Cost: appends batched per frame; drawing reads only the visible lines, as any buffer
+
 ### Command palette and quick open
 - Cmd/Ctrl+Shift+P: command palette — every named `Command`, with its current binding
 - Cmd/Ctrl+P: quick open file (fuzzy); accepts `file:line[:col]` like the command line
@@ -815,6 +828,19 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
     - Deferred: kitty integration (TODO list); diff tabs' own cursor / scroll, expanded explorer folders, the Search query, the shown panel tab, focus and the Source Control selection aren't in the session; no untitled buffers to back up; old-format panic backups ignored; Ctrl+R is global, so a task tab never gets it (no reverse-i-search)
     - Still to check by hand: quit / reopen in a real terminal (groups, ratios, tabs, cursors, scroll, panels, diff tabs reload); `jed <file>:<line>` on a workspace with a session; edit, wait > 30 s, edit, `kill -9`, reopen and Restore (then Cmd+Z, save removes the backup); closing the terminal window with dirty buffers; a forced panic's backups offered next start; restore after another program changed the file (banner, save conflicts until Keep Mine); Later then a clean quit offers again, Discard removes; Ctrl+R in two workspaces (each lists the other, deleted folders vanish, spaced paths quoted); files land in `~/.local/state/jed/sessions/`, `backup/`, `recent.toml`, and a corrupt session file is ignored and replaced
 
+14. **Tools view and logs**: a side panel view of every tool jed runs, each with its log in a read-only editor tab — see [Tools and logs](#tools-and-logs)
+    - Needs: language servers (M9), tasks (M12), side panel lists and their scroll bars
+    - Per-tool log rings filled off the UI thread: language servers' stderr, lifecycle, `window/logMessage` / `showMessage`, optional protocol trace; jed's own `tracing` events
+    - Read-only log tabs (a buffer appended to without undo or dirtiness, following the tail), one per tool
+    - `SidePanel::Tools` with an activity bar icon: servers, task runs, "jed"; open a log, focus a task's tab
+    - Commands: Show, Open Log, Clear Log, Toggle Protocol Trace, Restart Server
+    - Done when: with rust-analyzer and clangd running, the Tools view lists both with their states; opening rust-analyzer's log shows its stderr and lifecycle lines and keeps up while it indexes (following the tail, not while scrolled up); a server that crashes shows as failed with its last lines in its log, and Restart Server brings it back; a protocol trace shows the JSON-RPC messages
+    - Tasks (one agent and one commit each):
+      - 14a: the log store: `logs` module (a ring per tool: lines with time and level, capped by lines and bytes, a generation for readers), fed by language servers (stderr, lifecycle, `window/logMessage` / `showMessage`) and a `tracing` layer for "jed"; no UI yet beyond tests
+      - 14b: read-only log tabs: a buffer kind appended through one `ChangeSet` per frame without undo or dirtiness, never typed into; "Tools: Open Log" (picker) and "Tools: Clear Log"; following the tail; reused per tool; splits and sessions (a log tab isn't restored, or reopens empty — decide)
+      - 14c: the Tools view: activity bar icon, `SidePanel::Tools` rows (servers with state / progress / error badge, task runs, "jed"), `Scrollable`, click / Enter opens the log or focuses the task tab, "Tools: Show"
+      - 14d: "Tools: Toggle Protocol Trace" (the `lsp::wire` messages into that server's log) and "Tools: Restart Server" (stops it and lets `sync` start it again, also after a failure); the done-when tests, gaps and hand checks; marks M14 ✅
+
 ## Stretch goals
 Very low priority. Don't build these yet, but don't make design choices that would block them.
 
@@ -936,11 +962,7 @@ Broad items not tied to a milestone.
   - Deferred: the hover colour can stay on after switching side views until the pointer moves
   - Still to check by hand: the slider colours over `sideBar` and `panel`; the blank column between counts / letters and the bar; dragging the explorer thumb in a large tree
 - **First reveal in a never-drawn list**: a list's first selection reveal runs while its `height` is still 0 (never drawn), so the selected row is scrolled to the top — e.g. the first Ctrl+Shift+G hides the Source Control "Changes" header; skip the reveal (or defer it to the first draw) while `height == 0`, for every `ListState` / `ScmView` / explorer list, with a test per list
-- **Tools view and tool logs** (VS Code's Output panel, as a side panel view): a new activity bar icon and `SidePanel::Tools` listing every tool jed runs, one row each with its state — each language server (name / command, language, root, `State`: starting / running / failed / exited, its progress if any, a badge for errors in its log), task runs (name, status, also reachable from their panel tabs), and jed's own background work worth watching (git, file watcher, syntax parses, workspace search, crash backups: one row "jed" for its log); selection / scroll / scroll bar like the other side lists (`Scrollable`), Enter or click opens the row's log
-  - A log is a read-only editor tab (a text tab on a read-only, never-dirty buffer with no file, titled e.g. `rust-analyzer (log)`, Plain Text — or a `Log` language with simple highlighting of levels / timestamps), one per tool, reused when opened again; find, copy, Cmd+A, scrolling and splits work as in any editor; it follows the tail while the cursor is on the last line (as VS Code's Output), else stays put; edits only through a log-append path on `Buffer` (one `ChangeSet` per frame's new lines, no undo history, not marked dirty), never typing
-  - Sources: per tool an in-memory ring buffer (e.g. the last 10,000 lines / 2 MB, the oldest dropped from the top) filled off the UI thread — a language server's stderr (`lsp::stderr`, today only logged), its lifecycle (start, command line, initialize result's server info, exit / crash with code), `window/logMessage` and `window/showMessage` (with type), and optionally its JSON-RPC traffic (`lsp::wire`, off by default: a "Tools: Toggle Protocol Trace" command per server); "jed" = a `tracing` layer feeding jed's own events at the current `--log-level` (the same lines as the log file); tasks keep their terminal tabs (the row focuses it), no duplicate log
-  - Commands: "Tools: Show" (`tools.show`, the view), "Tools: Open Log" (`tools.openLog`, a picker of tools), "Tools: Clear Log", "Tools: Restart Server" for a language server (a failed one today is never retried until restart); unbound unless VS Code has a key
-  - Cost: appends batched per frame; drawing reads only the visible lines as any buffer; no per-line work on the UI thread beyond the append
+- **Tools view and tool logs**: now [Milestone 14](#milestones)
 - **PTY smoke tests**: a few end-to-end tests that run the real `jed` binary (`env!("CARGO_BIN_EXE_jed")`) in a pseudo-terminal (`portable-pty`, already a dependency) and parse what it writes with `vt100` (as task runs do), so the bytes crossterm emits and the bytes a terminal sends are tested, not just `TestBackend`: (1) after start the vt100 screen equals the `TestBackend` frame of the same state (text and colours, cell by cell; also after an edit and a scroll, to catch stale cells from ratatui's diff flush); (2) real input sequences reach the right commands — legacy and kitty-protocol (`CSI u`) keys incl. `Cmd+!` / Ctrl+@, bracketed paste, SGR mouse clicks and wheel; (3) start / quit leaves the terminal as it was (raw mode off, alt screen left, mouse / bracketed paste / kitty flags popped: check the mode-setting sequences in the output and the PTY's termios), and so does a forced panic (a test-only `JED_TEST_PANIC` hook or similar), which also leaves its crash backup; (4) wide graphemes (CJK, emoji, combining marks) land in the columns `pos::display_grapheme` says. Isolated `XDG_STATE_HOME` / `XDG_CONFIG_HOME` per test (they're child processes, so setting them is fine), a fixed size (e.g. 100×30), waits on screen contents with a timeout (no sleeps), `TERM=xterm-256color` and `COLORTERM=truecolor`; skip with a note where PTYs aren't available. Not a cross-emulator matrix: vt100 is one emulator; termless (TypeScript; xterm.js / Ghostty backends) or esctest could be added later if wide-character or protocol differences between terminals become a real problem
 
 ## Open questions

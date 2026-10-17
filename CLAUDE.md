@@ -6,7 +6,7 @@ guessing: Features (one subsection per area), [Keybindings](PLAN.md#keybindings-
 [Architecture](PLAN.md#architecture), [Text positions](PLAN.md#text-positions),
 [Async and blocking work](PLAN.md#async-and-blocking-work), [Logging](PLAN.md#logging),
 [Milestones](PLAN.md#milestones) (each has "Needs", "Deferred" and a "Done when" to test against).
-Milestones 1–13 are done (the last one). Further work is PLAN.md's TODO list, one item per commit via `/todo` (an item too big becomes smaller items or a new milestone, built task by task — 8a, 8b, … — one commit per task via `/milestones`).
+Milestones 1–13 are done; 14 (Tools view and logs) is next, built task by task via `/milestones`. Further work is PLAN.md's TODO list, one item per commit via `/todo` (an item too big becomes smaller items or a new milestone, built task by task — 8a, 8b, … — one commit per task via `/milestones`).
 
 ## Toolchain and checks
 
