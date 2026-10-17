@@ -1794,6 +1794,7 @@ async fn milestone_10_editor_commands_on_a_diff_tab_do_nothing() {
                 | Command::UnstageFile
                 | Command::StageHunk
                 | Command::UnstageHunk
+                | Command::RevertHunk
                 | Command::OpenUserSettings
                 | Command::OpenLogFile
         )

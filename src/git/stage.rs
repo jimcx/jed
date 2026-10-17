@@ -26,6 +26,10 @@ pub enum Error {
     Binary,
     /// The file has merge conflicts: resolve them (stage the whole file) first.
     Conflicted,
+    /// The file isn't in the index: there is no text to revert to.
+    Untracked,
+    /// A symbolic link: its target isn't reverted line by line.
+    Symlink,
 }
 
 impl fmt::Display for Error {
@@ -36,6 +40,8 @@ impl fmt::Display for Error {
             Error::Stale => write!(f, "the file changed since the diff was shown"),
             Error::Binary => write!(f, "binary files can only be staged whole"),
             Error::Conflicted => write!(f, "the file has merge conflicts"),
+            Error::Untracked => write!(f, "the file isn't in the index"),
+            Error::Symlink => write!(f, "symbolic links can't be reverted by change"),
         }
     }
 }
@@ -231,6 +237,43 @@ pub fn unstage_hunk(repo: &Repo, path: &Path, shown: &FileDiff, k: usize) -> Res
     tracing::info!(path = %path.display(), ?hunk, "unstaged hunk");
     Ok(())
 }
+
+/// Blocking: reverts hunk `k` of `shown` (an `Unstaged` [`file_diff`]) in the working tree:
+/// the file on disk gets the index's lines of that hunk back in place of its own (with
+/// `GIT_CONTEXT` hunks what `git checkout -p` writes answering yes to it), bytes exactly as
+/// stored (line endings, BOM), its permissions kept (a deleted file comes back with the index
+/// entry's executable bit). Checks first that the index and the file still hold `shown`'s texts
+/// (else `Stale`); a file not in the index, with conflicts, binary or a symbolic link is refused.
+/// The index isn't touched. Returns the file's bytes before.
+pub fn revert_hunk(repo: &Repo, path: &Path, shown: &FileDiff, k: usize) -> Result<Vec<u8>, Error> {
+    let r = repo.open()?;
+    let index = r.index()?;
+    if conflicted(&index, path) {
+        return Err(Error::Conflicted);
+    }
+    let entry = in_index(&r, path)?;
+    let Some(mode) = entry.as_ref().map(|e| e.mode) else {
+        return Err(Error::Untracked);
+    };
+    let disk = disk_text(repo, path)?;
+    if mode == SYMLINK || disk.as_ref().is_some_and(|t| t.mode == SYMLINK) {
+        return Err(Error::Symlink);
+    }
+    let hunk = check(shown, k, &entry, &disk)?;
+    let text = diff::revert(&shown.old, &shown.new, hunk);
+    let full = repo.workdir.join(path);
+    crate::buffer::file::atomic_write(&full, &text)?;
+    #[cfg(unix)]
+    if disk.is_none() && mode == 0o100755 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&full, std::fs::Permissions::from_mode(0o755))?;
+    }
+    tracing::info!(path = %path.display(), ?hunk, "reverted hunk");
+    Ok(shown.new.clone())
+}
+
+/// A symbolic link's git mode.
+const SYMLINK: u32 = 0o120000;
 
 /// What [`index_blob`] found.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -723,6 +766,9 @@ mod tests {
         assert!(matches!(e, Error::Conflicted), "{e}");
         let e = unstage_hunk(&repo, Path::new("f"), &d, 0).unwrap_err();
         assert!(matches!(e, Error::Conflicted), "{e}");
+        let e = revert_hunk(&repo, Path::new("f"), &d, 0).unwrap_err();
+        assert!(matches!(e, Error::Conflicted), "{e}");
+        assert!(std::fs::read_to_string(root.join("f")).unwrap().starts_with("<<<<<<<"));
         // Staging the whole file resolves it.
         stage_file(&repo, Path::new("f")).unwrap();
         assert_eq!(git(&root, &["status", "--porcelain"]), "M  f\n");
@@ -856,5 +902,150 @@ mod tests {
         stage_hunk(&repo, Path::new("f"), &d, 1).unwrap();
         let staged = index_text(&repo, Path::new("f")).unwrap().unwrap().bytes;
         assert_eq!(String::from_utf8(staged).unwrap(), text.replace("line 4\n", "four\n"));
+    }
+
+    /// Reverts hunk `k` of `path` with jed in a copy and with `git checkout -p` (answers
+    /// `answers`) in the original: the files on disk, the indexes and the status must match.
+    fn same_as_checkout_p(root: &Path, path: &str, k: usize, answers: &str) {
+        let other = copy(root);
+        let repo = r(&other);
+        let d = file_diff(&repo, Path::new(path), Side::Unstaged, GIT_CONTEXT).unwrap();
+        let before = revert_hunk(&repo, Path::new(path), &d, k).unwrap();
+        assert_eq!(before, d.new);
+        git_with_input(root, &["checkout", "-p", "--", path], Some(answers));
+        assert_eq!(
+            std::fs::read(other.join(path)).unwrap(),
+            std::fs::read(root.join(path)).unwrap()
+        );
+        assert_eq!(index_state(&other), index_state(root));
+        assert_eq!(
+            git(&other, &["status", "--porcelain"]),
+            git(root, &["status", "--porcelain"])
+        );
+    }
+
+    #[test]
+    fn revert_middle_hunk_like_checkout_p() {
+        let text = numbered(40);
+        let (_d, root) = repo(&[("f.txt", text.as_bytes())]);
+        let changed = text
+            .replace("line 2\n", "two\n")
+            .replace("line 20\n", "twenty\nmore\n")
+            .replace("line 35\n", "");
+        std::fs::write(root.join("f.txt"), changed).unwrap();
+        same_as_checkout_p(&root, "f.txt", 1, "n\ny\nn\n");
+    }
+
+    #[test]
+    fn revert_with_staged_changes_goes_back_to_the_index() {
+        let text = numbered(30);
+        let (_d, root) = repo(&[("f.txt", text.as_bytes())]);
+        let staged = text.replace("line 5\n", "five\n");
+        std::fs::write(root.join("f.txt"), &staged).unwrap();
+        git(&root, &["add", "f.txt"]);
+        std::fs::write(root.join("f.txt"), staged.replace("line 25\n", "x\ny\n")).unwrap();
+        same_as_checkout_p(&root, "f.txt", 0, "y\n");
+        assert_eq!(std::fs::read_to_string(root.join("f.txt")).unwrap(), staged);
+    }
+
+    #[test]
+    fn revert_crlf_and_last_line_hunks_like_checkout_p() {
+        let text = format!("{}last", numbered(20).replace('\n', "\r\n"));
+        let (_d, root) = repo(&[("f.txt", text.as_bytes())]);
+        let changed = text
+            .replace("line 3\r\n", "three\r\n")
+            .replace("last", "last line\nadded");
+        std::fs::write(root.join("f.txt"), changed).unwrap();
+        same_as_checkout_p(&root, "f.txt", 1, "n\ny\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn revert_keeps_the_executable_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let text = numbered(20);
+        let (_d, root) = repo(&[("run.sh", text.as_bytes())]);
+        std::fs::set_permissions(root.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        commit_all(&root, "exec");
+        std::fs::write(root.join("run.sh"), text.replace("line 1\n", "one\n")).unwrap();
+        same_as_checkout_p(&root, "run.sh", 0, "y\n");
+        let mode = std::fs::metadata(root.join("run.sh")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0o111);
+    }
+
+    #[test]
+    fn revert_a_deleted_file_brings_it_back() {
+        let (_d, root) = repo(&[("gone.txt", numbered(5).as_bytes())]);
+        std::fs::remove_file(root.join("gone.txt")).unwrap();
+        let repo = r(&root);
+        let d = file_diff(&repo, Path::new("gone.txt"), Side::Unstaged, 0).unwrap();
+        assert_eq!(revert_hunk(&repo, Path::new("gone.txt"), &d, 0).unwrap(), b"");
+        assert_eq!(std::fs::read_to_string(root.join("gone.txt")).unwrap(), numbered(5));
+        assert_eq!(git(&root, &["status", "--porcelain"]), "");
+    }
+
+    /// A deleted executable comes back executable, as `git checkout -p` brings it back.
+    #[cfg(unix)]
+    #[test]
+    fn revert_a_deleted_executable_brings_back_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_d, root) = repo(&[("run.sh", numbered(5).as_bytes())]);
+        std::fs::set_permissions(root.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        commit_all(&root, "exec");
+        std::fs::remove_file(root.join("run.sh")).unwrap();
+        let other = copy(&root);
+        let repo = r(&other);
+        let d = file_diff(&repo, Path::new("run.sh"), Side::Unstaged, GIT_CONTEXT).unwrap();
+        revert_hunk(&repo, Path::new("run.sh"), &d, 0).unwrap();
+        git_with_input(&root, &["checkout", "-p", "--", "run.sh"], Some("y\n"));
+        let mode = |p: &Path| std::fs::metadata(p.join("run.sh")).unwrap().permissions().mode() & 0o111;
+        assert_eq!(mode(&root), 0o111, "git checkout -p makes it executable");
+        assert_eq!(mode(&other), mode(&root));
+        assert_eq!(git(&other, &["status", "--porcelain"]), "");
+    }
+
+    /// A symbolic link isn't reverted by change, and nothing is written through it.
+    #[cfg(unix)]
+    #[test]
+    fn revert_refuses_a_symlink() {
+        let (_d, root) = repo(&[("target.txt", b"t\n")]);
+        std::os::unix::fs::symlink("target.txt", root.join("link")).unwrap();
+        commit_all(&root, "link");
+        std::fs::remove_file(root.join("link")).unwrap();
+        std::os::unix::fs::symlink("elsewhere.txt", root.join("link")).unwrap();
+        let repo = r(&root);
+        let d = file_diff(&repo, Path::new("link"), Side::Unstaged, 0).unwrap();
+        let res = revert_hunk(&repo, Path::new("link"), &d, 0);
+        assert!(matches!(res, Err(Error::Symlink)), "{res:?}");
+        let target = std::fs::read_link(root.join("link")).unwrap();
+        assert_eq!(target, Path::new("elsewhere.txt"));
+    }
+
+    #[test]
+    fn revert_refuses_a_changed_file_and_an_untracked_one() {
+        let text = numbered(10);
+        let (_d, root) = repo(&[("f.txt", text.as_bytes())]);
+        std::fs::write(root.join("f.txt"), text.replace("line 2\n", "two\n")).unwrap();
+        let repo = r(&root);
+        let d = file_diff(&repo, Path::new("f.txt"), Side::Unstaged, 0).unwrap();
+        let moved_on = text.replace("line 2\n", "two\n").replace("line 8\n", "eight\n");
+        std::fs::write(root.join("f.txt"), &moved_on).unwrap();
+        let res = revert_hunk(&repo, Path::new("f.txt"), &d, 0);
+        assert!(matches!(res, Err(Error::Stale)), "{res:?}");
+        assert_eq!(std::fs::read_to_string(root.join("f.txt")).unwrap(), moved_on);
+
+        // The index moved on (another change staged): stale too, the file left alone.
+        let d = file_diff(&repo, Path::new("f.txt"), Side::Unstaged, 0).unwrap();
+        git(&root, &["add", "f.txt"]);
+        std::fs::write(root.join("f.txt"), &moved_on).unwrap();
+        let res = revert_hunk(&repo, Path::new("f.txt"), &d, 0);
+        assert!(matches!(res, Err(Error::Stale)), "{res:?}");
+        assert_eq!(std::fs::read_to_string(root.join("f.txt")).unwrap(), moved_on);
+
+        std::fs::write(root.join("new.txt"), "x\n").unwrap();
+        let d = file_diff(&repo, Path::new("new.txt"), Side::Unstaged, 0).unwrap();
+        let res = revert_hunk(&repo, Path::new("new.txt"), &d, 0);
+        assert!(matches!(res, Err(Error::Untracked)), "{res:?}");
+        assert_eq!(std::fs::read_to_string(root.join("new.txt")).unwrap(), "x\n");
     }
 }

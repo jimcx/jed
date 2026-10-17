@@ -119,6 +119,8 @@ impl Theme {
             ("diffEditor.header", fg_bg(0xBBBBBB, 0x252526)),
             ("quickDiff.title", Style::new().fg(c(0xBBBBBB))),
             ("quickDiff.action", fg_bg(0xFFFFFF, 0x0E639C)),
+            // The diff view's Revert button (red: Dark+'s `statusBarItem.errorBackground`).
+            ("diffEditor.revertAction", fg_bg(0xFFFFFF, 0xC72E0F)),
             ("statusBar", fg_bg(0xFFFFFF, 0x007ACC)),
             ("statusBar.warning", fg_bg(0x1E1E1E, 0xCCA700)),
             ("statusBar.error", fg_bg(0xFFFFFF, 0xC72E0F)),

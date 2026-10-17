@@ -5,7 +5,8 @@
 //! ones on `insertedLineBackground`, the changed part of a changed pair (common ends trimmed)
 //! on `removedTextBackground` / `insertedTextBackground`, the other side of a lone line filled
 //! with `diffEditor.diagonalFill`. Plain text (no syntax colours). Each change's first row ends
-//! with a ` Stage ` / ` Unstage ` button when the view stages. Only the visible rows are drawn.
+//! with a ` Stage ` / ` Unstage ` button when the view stages, and an unstaged view's with a red
+//! ` Revert ` on the index (left) side. Only the visible rows are drawn.
 
 use std::ops::Range;
 
@@ -21,6 +22,9 @@ use crate::diff_view::{self, DiffTab, Kind, Lines, Row};
 use crate::git::stage::Side;
 use crate::layout::DiffHit;
 use crate::theme::Theme;
+
+/// The Revert button's label.
+const REVERT: &str = " Revert ";
 
 /// The colours, looked up once per frame.
 struct Styles {
@@ -132,8 +136,10 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
         Some(Side::Staged) => Some(" Unstage "),
         None => None,
     };
+    // Revert: only working tree changes against the index.
+    let revertible = d.pair == diff_view::Pair::UNSTAGED;
     let starts = &aligned.starts;
-    let first_start = starts.partition_point(|&r| r < top);
+    let mut next_start = starts.partition_point(|&r| r < top);
     let mut cursor_cell = None;
     for (i, row) in shown.iter().enumerate() {
         let index = top + i;
@@ -168,21 +174,32 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
         if current {
             cursor_cell = Some(cell);
         }
-        // The change's button at the row's right end.
+        // The change's buttons on its first row: Stage / Unstage at the row's right end; Revert
+        // (an unstaged view) at the left column's right end, or left of Stage inline.
         if let Some(label) = button
-            && starts.get(first_start + hit.buttons.len()) == Some(&index)
+            && starts.get(next_start) == Some(&index)
         {
+            next_start += 1;
+            let k = row.hunk.unwrap_or_default();
             let w = label.width() as u16;
+            let rw = REVERT.width() as u16;
             if body.width > w + 24 {
                 let rect = Rect::new(body.x + body.width - w, y, w, 1);
                 out.set_stringn(rect.x, y, label, w as usize, theme.get("quickDiff.action"));
-                hit.buttons.push((rect, row.hunk.unwrap_or_default()));
-            } else {
-                hit.buttons.push((Rect::default(), row.hunk.unwrap_or_default()));
+                hit.buttons.push((rect, k));
+            }
+            let revert = match (revertible, inline) {
+                (false, _) => None,
+                (true, false) if half > rw + 12 => Some(Rect::new(body.x + half - rw, y, rw, 1)),
+                (true, true) if body.width > w + rw + 25 => Some(Rect::new(body.x + body.width - w - rw - 1, y, rw, 1)),
+                _ => None,
+            };
+            if let Some(rect) = revert {
+                out.set_stringn(rect.x, y, REVERT, rw as usize, theme.get("diffEditor.revertAction"));
+                hit.reverts.push((rect, k));
             }
         }
     }
-    hit.buttons.retain(|(r, _)| r.width > 0);
     if focused && let Some((x, y)) = cursor_cell {
         f.set_cursor_position(Position { x, y });
     }

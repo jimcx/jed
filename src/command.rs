@@ -172,6 +172,9 @@ pub enum Command {
     StageHunk,
     /// Unstages the staged change (index against HEAD) at the cursor's line.
     UnstageHunk,
+    /// In an unstaged diff view (Index ↔ Working Tree): the change at the cursor back to the
+    /// index's text in the working tree (the open buffer, one undo step, or the file on disk).
+    RevertHunk,
     /// Alt+F5 / Shift+Alt+F5 (F7 / Shift+F7 in a diff tab): the cursor to the next / previous
     /// change in the gutter, or in the diff view.
     NextChange,
@@ -607,6 +610,7 @@ impl Command {
         all.extend([
             Command::StageHunk,
             Command::UnstageHunk,
+            Command::RevertHunk,
             Command::NextChange,
             Command::PreviousChange,
             Command::CompareWithSaved,
@@ -824,6 +828,7 @@ impl Command {
             Command::KeepMine => "file.keepMine".into(),
             Command::StageHunk => "git.stageHunk".into(),
             Command::UnstageHunk => "git.unstageHunk".into(),
+            Command::RevertHunk => "git.revertHunk".into(),
             Command::NextChange => "editor.nextChange".into(),
             Command::CompareWithSaved => "file.compareWithSaved".into(),
             Command::ShowFileHistory => "fileHistory.show".into(),
@@ -1050,6 +1055,7 @@ impl Command {
             Command::KeepMine => "File: Keep Mine (Overwrite the Changed File)",
             Command::StageHunk => "Git: Stage Change at Cursor",
             Command::UnstageHunk => "Git: Unstage Change at Cursor",
+            Command::RevertHunk => "Git: Revert Change at Cursor",
             Command::NextChange => "Go to Next Change",
             Command::CompareWithSaved => "File: Compare with Disk",
             Command::ShowFileHistory => "File History: Show",
@@ -1191,6 +1197,7 @@ mod tests {
             Command::KeepMine => 64,
             Command::StageHunk => 65,
             Command::UnstageHunk => 66,
+            Command::RevertHunk => 85,
             Command::NextChange => 67,
             Command::PreviousChange => 68,
             Command::CompareWithSaved => 69,

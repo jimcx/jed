@@ -924,6 +924,7 @@ impl App {
             }
             Command::StageHunk => self.stage_command(false),
             Command::UnstageHunk => self.stage_command(true),
+            Command::RevertHunk => self.diff_revert(None),
             Command::NextChange | Command::PreviousChange if self.diff_command(cmd) => {}
             Command::NextChange => self.go_to_change(true),
             Command::PreviousChange => self.go_to_change(false),

@@ -509,7 +509,10 @@ pub struct ScrollBarHit {
 #[derive(Debug, Clone, Default)]
 pub struct DiffHit {
     pub rows: Rect,
+    /// Stage / Unstage, by hunk.
     pub buttons: Vec<(Rect, usize)>,
+    /// Revert (an unstaged diff only), by hunk.
+    pub reverts: Vec<(Rect, usize)>,
 }
 
 /// The changed-on-disk banner: its row and each button.

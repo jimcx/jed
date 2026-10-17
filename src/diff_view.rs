@@ -20,6 +20,7 @@ use std::time::Duration;
 use ropey::Rope;
 
 use crate::buffer::BufferId;
+use crate::buffer::pos::ByteIdx;
 use crate::git::Repo;
 use crate::git::diff::{self, Hunk};
 use crate::git::stage::{self, FileDiff, Side};
@@ -378,6 +379,33 @@ impl Doc {
     }
 }
 
+/// The edit reverting hunk `k` of `shown` (an unstaged diff whose new side is an open buffer's
+/// encoded text; `bom`: the buffer has one) in that buffer: the byte range of the hunk's lines
+/// in the buffer's text (its BOM not counted) and the index's lines for it, bytes as stored.
+/// `None`: no such hunk, or the index's lines aren't UTF-8.
+pub fn revert_edit(shown: &FileDiff, k: usize, bom: bool) -> Option<(ByteIdx, ByteIdx, String)> {
+    let h = shown.diff.hunks.get(k)?;
+    let new = diff::lines(&shown.new);
+    let len = |lines: &[&[u8]]| lines.iter().map(|l| l.len()).sum::<usize>();
+    let start = len(&new[..h.new.start.min(new.len())]);
+    let end = start + len(&new[h.new.start.min(new.len())..h.new.end.min(new.len())]);
+    let shift = if bom { BOM.len() } else { 0 };
+    let old = diff::lines(&shown.old);
+    let mut text = old[h.old.start.min(old.len())..h.old.end.min(old.len())].concat();
+    // The buffer keeps its own BOM: the index's isn't text.
+    if h.old.start == 0 && text.starts_with(BOM) {
+        text.drain(..BOM.len());
+    }
+    let text = String::from_utf8(text).ok()?;
+    Some((
+        ByteIdx(start.saturating_sub(shift)),
+        ByteIdx(end.saturating_sub(shift)),
+        text,
+    ))
+}
+
+const BOM: &[u8] = b"\xEF\xBB\xBF";
+
 /// What `load` reads.
 pub struct Job {
     pub repo: Option<Repo>,
@@ -707,6 +735,41 @@ mod tests {
             .iter()
             .map(|r| (r.left, r.right, r.hunk))
             .collect()
+    }
+
+    /// The buffer text (`new` without a BOM) with `revert_edit` of every hunk, one at a time,
+    /// is `diff::revert` of the bytes without the BOM.
+    #[test]
+    fn revert_edit_is_the_hunk_reverted() {
+        let cases: [(&[u8], &[u8]); 5] = [
+            (b"a\nb\nc\nd\n", b"a\nB\nc\nd\ne\n"),
+            (b"a\r\nb\r\nc", b"x\r\na\r\nc\r\nmore"),
+            (b"\xEF\xBB\xBFa\nb\n", b"\xEF\xBB\xBFz\nb\nc\n"),
+            (b"one\ntwo\n", b""),
+            (b"", b"new\nlines"),
+        ];
+        for (old, new) in cases {
+            let doc = Doc::new(old.to_vec(), new.to_vec()).unwrap();
+            let bom = new.starts_with(BOM);
+            let text = &new[if bom { BOM.len() } else { 0 }..];
+            for k in 0..doc.hunks.len() {
+                let (start, end, with) = revert_edit(&doc.shown, k, bom).unwrap();
+                let mut got = text[..start.0].to_vec();
+                got.extend_from_slice(with.as_bytes());
+                got.extend_from_slice(&text[end.0..]);
+                let want = diff::revert(old, new, &doc.hunks[k]);
+                let want = want.strip_prefix(BOM).unwrap_or(&want);
+                assert_eq!(
+                    String::from_utf8_lossy(&got),
+                    String::from_utf8_lossy(want),
+                    "{old:?} {new:?} {k}"
+                );
+            }
+        }
+        // Not UTF-8 in the index: no edit.
+        let doc = Doc::new(b"\xFF\n".to_vec(), b"x\n".to_vec()).unwrap();
+        assert_eq!(revert_edit(&doc.shown, 0, false), None);
+        assert_eq!(revert_edit(&doc.shown, 1, false), None);
     }
 
     #[test]

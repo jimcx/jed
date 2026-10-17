@@ -42,6 +42,13 @@
 //!   (its last stderr line); and against the real `rust-analyzer` (skipped
 //!   with a note when it doesn't run) on a tiny crate: hover, definition, references, completion,
 //!   `cargo check` errors on save, rename and format document.
+//! - `revert_hunks`: a red Revert button (`diffEditor.revertAction`) on each change's first row
+//!   of an unstaged diff (Index ↔ Working Tree) — the left column's right end side by side, left
+//!   of Stage inline — and "Git: Revert Change at Cursor": an open file's buffer gets the index's
+//!   lines back as `git checkout -p` would write them (dirty, disk and index untouched, one undo
+//!   step each), refused when the buffer changed since the diff; a file not open is rewritten on
+//!   disk (index untouched, not opened, its text before kept in the file history), refused when
+//!   it changed; none on staged or Compare with Disk diffs, refused for an untracked file.
 
 mod render_whitespace {
     use std::fs;
@@ -2856,6 +2863,402 @@ mod rust_language_server {
         app.shutdown_servers().await;
         if let Some(n) = children_named("rust-analyzer") {
             assert_eq!(n, 0, "no rust-analyzer left");
+        }
+    }
+}
+
+mod revert_hunks {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind as Mouse};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+
+    use crate::app::{App, InitialFile};
+    use crate::buffer::Buffer;
+    use crate::command::Command;
+    use crate::diff_view::Pair;
+    use crate::git::test_repo::{commit_all, git, git_with_input, init};
+    use crate::history;
+    use crate::workspace::trust::TrustStore;
+    use crate::workspace::{self, Workspace};
+
+    const DOWN: Mouse = Mouse::Down(MouseButton::Left);
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    /// A temp dir with `proj/` (the workspace, a repository with `f.txt` = `original`
+    /// committed, then `changed` on disk) and `state/` (the trust store, outside the repo).
+    fn project(original: &str, changed: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let (root, state) = (base.join("proj"), base.join("state"));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        init(&root);
+        fs::write(root.join("f.txt"), original).unwrap();
+        commit_all(&root, "one");
+        fs::write(root.join("f.txt"), changed).unwrap();
+        (dir, root, state)
+    }
+
+    fn numbered(n: usize) -> String {
+        (0..n).map(|i| format!("line {i}\n")).collect()
+    }
+
+    /// Lines 0..40 with line 2 changed, a line added after line 20 and line 35 deleted.
+    fn three_changes() -> (String, String) {
+        let original = numbered(40);
+        let changed = original
+            .replace("line 2\n", "two\n")
+            .replace("line 20\n", "twenty\nmore\n")
+            .replace("line 35\n", "");
+        (original, changed)
+    }
+
+    /// The app on `root`, with `file` open in the editor if given.
+    async fn open_app(root: &Path, state: &Path, file: Option<&str>) -> App {
+        let ws = Workspace::load(root.to_path_buf());
+        let trust = TrustStore::load(state.join("trust.toml"));
+        let initial = file.map(|f| InitialFile {
+            buffer: Buffer::open(&root.join(f)).unwrap(),
+            goto: None,
+        });
+        let mut app = App::new(ws, trust, initial, true);
+        app.test_start();
+        app.test_plain_whitespace();
+        assert!(
+            app.settle(|a| !a.git.running() && a.git.status.as_ref().is_some_and(|s| !s.entries.is_empty()))
+                .await
+        );
+        app
+    }
+
+    /// Waits until every diff tab is loaded and current and the git status read.
+    async fn settle_diffs(app: &mut App) -> bool {
+        app.settle(|a| a.diffs_settled() && a.git.status.is_some()).await
+    }
+
+    fn draw(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    fn diff_hit(app: &App) -> crate::layout::DiffHit {
+        app.hits.group(app.groups.active).unwrap().diff.clone().unwrap()
+    }
+
+    fn revert_button(app: &App, k: usize) -> Rect {
+        diff_hit(app)
+            .reverts
+            .iter()
+            .find(|(_, h)| *h == k)
+            .map(|(r, _)| *r)
+            .expect("its Revert button")
+    }
+
+    fn cell_text(term: &Terminal<TestBackend>, r: Rect) -> String {
+        let buf = term.backend().buffer();
+        (r.x..r.x + r.width).map(|x| buf[(x, r.y)].symbol()).collect()
+    }
+
+    /// What `git checkout -p` leaves in a copy of the repository answering `answers`, and the
+    /// copy's index.
+    fn checkout_p(root: &Path, answers: &str) -> (String, String) {
+        let to = root.with_file_name(format!("ref-{}", answers.replace('\n', "")));
+        let ok = std::process::Command::new("cp")
+            .arg("-a")
+            .arg(root)
+            .arg(&to)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        git_with_input(&to, &["checkout", "-p", "--", "f.txt"], Some(answers));
+        (fs::read_to_string(to.join("f.txt")).unwrap(), index(&to))
+    }
+
+    fn index(root: &Path) -> String {
+        git(root, &["ls-files", "-s"]) + &git(root, &["diff", "--cached"])
+    }
+
+    fn buffer_text(app: &App) -> String {
+        app.buffers.iter().next().unwrap().1.rope.to_string()
+    }
+
+    fn message(app: &App) -> String {
+        app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn revert_hunks_in_an_open_buffer() {
+        let (original, changed) = three_changes();
+        let (_d, root, state) = project(&original, &changed);
+        let (want, want_index) = checkout_p(&root, "n\ny\nn\n");
+        let index_before = index(&root);
+        assert_eq!(want_index, index_before);
+        let mut app = open_app(&root, &state, Some("f.txt")).await;
+        app.test_execute(Command::OpenChange);
+        assert!(settle_diffs(&mut app).await);
+
+        // Side by side: Revert at the right end of the left (index) column, on each change's
+        // first row, red; Stage at the right end of the row.
+        let term = draw(&mut app, 150, 60);
+        let hit = diff_hit(&app);
+        assert_eq!(hit.reverts.len(), 3);
+        assert_eq!(hit.buttons.len(), 3);
+        let middle = hit.rows.x + hit.rows.width / 2;
+        for ((r, k), (s, sk)) in hit.reverts.iter().zip(&hit.buttons) {
+            assert_eq!((k, r.y), (sk, s.y), "the same row as Stage");
+            assert_eq!(cell_text(&term, *r), " Revert ");
+            assert!(
+                r.x + r.width <= middle + 1 && r.x + r.width >= middle - 1,
+                "{r:?} {middle}"
+            );
+            assert!(s.x > middle);
+            let cell = &term.backend().buffer()[(r.x + 1, r.y)];
+            let style = app.theme.get("diffEditor.revertAction");
+            assert_eq!((Some(cell.fg), Some(cell.bg)), (style.fg, style.bg));
+        }
+
+        // Its middle change: the buffer, as `git checkout -p` leaves the file; nothing else.
+        let r = revert_button(&app, 1);
+        app.mouse(DOWN, r.x + 1, r.y);
+        assert_eq!(buffer_text(&app), want);
+        assert_eq!(message(&app), "Reverted the change at line 21 of f.txt (not saved)");
+        let buf = app.buffers.iter().next().unwrap().1;
+        assert!(buf.is_dirty(), "not saved");
+        assert_eq!(
+            fs::read_to_string(root.join("f.txt")).unwrap(),
+            changed,
+            "disk untouched"
+        );
+        assert_eq!(index(&root), index_before, "index untouched");
+        assert!(
+            app.settle(|a| a.diffs_settled() && a.group().active_diff().unwrap().doc.as_ref().unwrap().hunks.len() == 2)
+                .await,
+            "the diff follows the buffer"
+        );
+        assert!(app.group().active_diff().is_some(), "the diff tab stays active");
+
+        // The command, at the cursor (the next change: the deletion), in the one-column layout.
+        app.press(K::F(7), M::NONE);
+        let k = app.group().active_diff().unwrap().hunk_at_cursor();
+        assert_eq!(k, Some(1));
+        draw(&mut app, 80, 60);
+        assert!(app.group().active_diff().unwrap().inline);
+        let hit = diff_hit(&app);
+        let (r, s) = (
+            revert_button(&app, 1),
+            hit.buttons.iter().find(|(_, h)| *h == 1).unwrap().0,
+        );
+        assert!(r.y == s.y && r.x + r.width < s.x, "inline: left of Stage");
+        app.test_execute(Command::RevertHunk);
+        assert_eq!(buffer_text(&app), want.replace("line 34\n", "line 34\nline 35\n"));
+
+        // One undo step each, in the file's text tab.
+        app.press(K::PageUp, M::CONTROL);
+        assert!(app.group().active_tab().is_some());
+        app.press(K::Char('z'), cmd());
+        assert_eq!(buffer_text(&app), want);
+        app.press(K::Char('z'), cmd());
+        assert_eq!(buffer_text(&app), changed);
+        assert!(!app.buffers.iter().next().unwrap().1.is_dirty());
+
+        // Edited since the diff was taken: refused until it reads the buffer again.
+        app.press(K::PageDown, M::CONTROL);
+        assert!(settle_diffs(&mut app).await);
+        app.press(K::F(7), M::NONE);
+        assert!(app.group().active_diff().unwrap().hunk_at_cursor().is_some());
+        app.press(K::PageUp, M::CONTROL);
+        app.press(K::Home, cmd());
+        app.type_text("x");
+        app.press(K::PageDown, M::CONTROL);
+        assert!(app.group().active_diff().is_some());
+        app.test_execute(Command::RevertHunk);
+        assert_eq!(
+            message(&app),
+            "Can't revert the change in f.txt: the file changed, try again"
+        );
+        assert_eq!(buffer_text(&app), format!("x{changed}"));
+        assert!(
+            app.settle(|a| a.diffs_settled() && a.group().active_diff().unwrap().doc.as_ref().unwrap().hunks.len() == 4)
+                .await
+        );
+        app.press(K::Home, cmd());
+        app.test_execute(Command::RevertHunk);
+        assert_eq!(buffer_text(&app), changed, "line 0 back");
+        assert_eq!(message(&app), "Reverted the change at line 1 of f.txt (not saved)");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn revert_hunks_of_a_file_not_open() {
+        let (original, changed) = three_changes();
+        let (_d, root, state) = project(&original, &changed);
+        let (want, _) = checkout_p(&root, "y\nn\nn\n");
+        let index_before = index(&root);
+        let mut app = open_app(&root, &state, None).await;
+        app.open_diff(root.join("f.txt"), Pair::UNSTAGED);
+        assert!(settle_diffs(&mut app).await);
+
+        // The file moved on since the diff was read: refused, nothing written.
+        let moved_on = changed.replace("line 10\n", "ten\n");
+        fs::write(root.join("f.txt"), &moved_on).unwrap();
+        draw(&mut app, 150, 60);
+        let r = revert_button(&app, 0);
+        app.mouse(DOWN, r.x + 1, r.y);
+        assert!(app.settle(|a| a.diffs.staging == 0 && a.message.is_some()).await);
+        assert_eq!(
+            message(&app),
+            "Can't revert the change in f.txt: the file changed, try again"
+        );
+        assert_eq!(fs::read_to_string(root.join("f.txt")).unwrap(), moved_on);
+        fs::write(root.join("f.txt"), &changed).unwrap();
+        assert!(
+            app.settle(|a| a.diffs_settled() && a.group().active_diff().unwrap().doc.as_ref().unwrap().hunks.len() == 3)
+                .await
+        );
+
+        // The first change: the file on disk as `git checkout -p` leaves it, the index as it was,
+        // not opened; the text before kept in the file history.
+        draw(&mut app, 150, 60);
+        let r = revert_button(&app, 0);
+        app.mouse(DOWN, r.x + 1, r.y);
+        assert!(
+            app.settle(|a| a.diffs.staging == 0 && a.file_history.running() == 0)
+                .await
+        );
+        assert_eq!(message(&app), "Reverted the change at line 3 of f.txt");
+        assert_eq!(fs::read_to_string(root.join("f.txt")).unwrap(), want);
+        assert_eq!(index(&root), index_before);
+        assert_eq!(app.buffers.iter().count(), 0, "not opened");
+        let entries = history::entries(&root, Path::new("f.txt")).unwrap();
+        assert_eq!(entries.len(), 1);
+        let kept = history::read(&root, Path::new("f.txt"), &entries[0].id).unwrap();
+        assert_eq!(String::from_utf8(kept).unwrap(), changed);
+        assert!(
+            app.settle(|a| a.diffs_settled() && a.group().active_diff().unwrap().doc.as_ref().unwrap().hunks.len() == 2)
+                .await,
+            "the diff reads the file again"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_revert_on_other_diffs_or_untracked_files() {
+        let (original, changed) = three_changes();
+        let (_d, root, state) = project(&original, &changed);
+        git(&root, &["add", "f.txt"]);
+        fs::write(root.join("new.txt"), "new\n").unwrap();
+        let mut app = open_app(&root, &state, Some("f.txt")).await;
+
+        // Staged changes (HEAD ↔ Index): Unstage buttons, no Revert; the command says why.
+        app.open_diff(root.join("f.txt"), Pair::STAGED);
+        assert!(settle_diffs(&mut app).await);
+        let term = draw(&mut app, 150, 60);
+        let hit = diff_hit(&app);
+        assert_eq!(hit.buttons.len(), 3);
+        assert!(hit.reverts.is_empty());
+        let screen: String = term.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(!screen.contains("Revert"));
+        app.test_execute(Command::RevertHunk);
+        assert!(message(&app).starts_with("Only working tree changes can be reverted"));
+
+        // The buffer against the disk (Compare with Disk): none either.
+        app.test_execute(Command::CompareWithSaved);
+        assert!(settle_diffs(&mut app).await);
+        draw(&mut app, 150, 60);
+        assert!(diff_hit(&app).reverts.is_empty());
+
+        // An untracked file: nothing in the index to go back to.
+        app.open_diff(root.join("new.txt"), Pair::UNSTAGED);
+        assert!(settle_diffs(&mut app).await);
+        draw(&mut app, 150, 60);
+        let r = revert_button(&app, 0);
+        app.mouse(DOWN, r.x + 1, r.y);
+        assert_eq!(
+            message(&app),
+            "Can't revert the change in new.txt: it isn't in the index"
+        );
+        assert_eq!(fs::read_to_string(root.join("new.txt")).unwrap(), "new\n");
+
+        // In a text tab: where to do it.
+        app.press(K::PageUp, M::CONTROL);
+        while app.group().active_tab().is_none() {
+            app.press(K::PageUp, M::CONTROL);
+        }
+        app.test_execute(Command::RevertHunk);
+        assert!(message(&app).contains("Git: Open Changes"));
+        assert_eq!(buffer_text(&app), changed);
+    }
+
+    /// The text of the open buffer of `path`.
+    fn text_of(app: &App, path: &Path) -> String {
+        app.buffers.get(id_of(app, path)).unwrap().rope.to_string()
+    }
+
+    fn id_of(app: &App, path: &Path) -> crate::buffer::BufferId {
+        app.buffers.iter().find(|(_, b)| b.path == path).unwrap().0
+    }
+
+    /// Open buffers that can't be reverted: read-only, untracked (its whole text would go),
+    /// with merge conflicts. Each is left as it was, with a message.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_revert_in_read_only_untracked_or_conflicted_buffers() {
+        let (original, changed) = three_changes();
+        let (_d, root, state) = project(&original, &changed);
+        fs::write(root.join("new.txt"), "new\n").unwrap();
+        // `c.txt` unmerged: conflict stages in the index, markers on disk.
+        const MARKERS: &str = "<<<<<<<\nours\n=======\ntheirs\n>>>>>>>\n";
+        fs::write(root.join("c.txt"), MARKERS).unwrap();
+        let blob = |text: &str| git_with_input(&root, &["hash-object", "-w", "--stdin"], Some(text));
+        let (base, ours, theirs) = (blob("base\n"), blob("ours\n"), blob("theirs\n"));
+        let info = format!(
+            "100644 {} 1\tc.txt\n100644 {} 2\tc.txt\n100644 {} 3\tc.txt\n",
+            base.trim(),
+            ours.trim(),
+            theirs.trim()
+        );
+        git_with_input(&root, &["update-index", "--index-info"], Some(&info));
+        let mut app = open_app(&root, &state, Some("f.txt")).await;
+        app.test_open(Buffer::open(&root.join("new.txt")).unwrap());
+        app.test_open(Buffer::open(&root.join("c.txt")).unwrap());
+        assert!(
+            app.settle(|a| a.git.status.as_ref().is_some_and(|s| s.entries.len() == 3))
+                .await
+        );
+
+        // Read-only: refused with its reason.
+        let f = root.join("f.txt");
+        let id = id_of(&app, &f);
+        app.buffers.get_mut(id).unwrap().read_only = Some("locked".into());
+        app.open_diff(f.clone(), Pair::UNSTAGED);
+        assert!(settle_diffs(&mut app).await);
+        app.test_execute(Command::RevertHunk);
+        assert_eq!(message(&app), "Read-only: locked");
+        assert_eq!(text_of(&app, &f), changed);
+        assert!(!app.buffers.get(id).unwrap().is_dirty());
+
+        // Untracked and conflicted, though open: their buttons refuse.
+        for (name, why, text) in [
+            ("new.txt", "it isn't in the index", "new\n"),
+            ("c.txt", "it has merge conflicts", MARKERS),
+        ] {
+            let path = root.join(name);
+            app.open_diff(path.clone(), Pair::UNSTAGED);
+            assert!(settle_diffs(&mut app).await);
+            draw(&mut app, 150, 60);
+            let r = revert_button(&app, 0);
+            app.mouse(DOWN, r.x + 1, r.y);
+            assert_eq!(message(&app), format!("Can't revert the change in {name}: {why}"));
+            assert_eq!(text_of(&app, &path), text, "{name}");
         }
     }
 }

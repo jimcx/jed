@@ -3,7 +3,8 @@
 //! the index or the file changes, and `diff_view::DELAY` after edits to an open buffer shown on
 //! a live side — the keys and the mouse in them, and staging / unstaging from them. Staging works
 //! as the gutter's (`app/quick_diff.rs`): a hunk of the working tree is staged from the file on
-//! disk, after saving a dirty buffer (asking) and waiting for a save in flight.
+//! disk, after saving a dirty buffer (asking) and waiting for a save in flight. Reverting a
+//! change of an unstaged view edits the open buffer (one undo step), else the file on disk.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -13,10 +14,11 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use super::quick_diff::StageAt;
 use super::{App, AppEvent, Focus, Level};
 use crate::buffer::BufferId;
+use crate::buffer::change::ChangeSet;
 use crate::command::{Command, Motion};
 use crate::diff_view::{self, DiffTab, Doc, Job, Pair};
 use crate::git::stage::{self, Side};
-use crate::git::{Repo, diff};
+use crate::git::{Change, Repo, diff};
 use crate::group::Tab;
 use crate::layout::Hit;
 use crate::quick_diff::Want;
@@ -312,6 +314,92 @@ impl App {
         });
     }
 
+    /// `git.revertHunk` on a diff tab (or its Revert button: `hunk`): the change at the cursor
+    /// of an unstaged view (Index ↔ Working Tree) back to the index's lines in the working tree.
+    /// An open file's buffer is edited (one undo step, left unsaved), refused when its text
+    /// isn't what the diff shows; a file not open is rewritten on disk off-thread
+    /// (`stage::revert_hunk`, refused when the file or index moved on), its text before the
+    /// revert then kept in the file history (when it has one) so it can be restored; a failed
+    /// record is a warning, the revert stands.
+    pub(super) fn diff_revert(&mut self, hunk: Option<usize>) {
+        let Some(d) = self.group().active_diff() else {
+            let text = "Revert a change from its diff: Git: Open Changes";
+            return self.notify(Level::Info, text.into());
+        };
+        let (path, pair, doc) = (d.path.clone(), d.pair, d.doc.clone());
+        let Some(k) = hunk.or_else(|| d.hunk_at_cursor()) else {
+            if doc.is_some() {
+                self.notify(Level::Info, "No change at the cursor".into());
+            }
+            return;
+        };
+        if pair != Pair::UNSTAGED {
+            let text = "Only working tree changes can be reverted (Index ↔ Working Tree)";
+            return self.notify(Level::Info, text.into());
+        }
+        let Some(doc) = doc else { return };
+        let Some(h) = doc.hunks.get(k).cloned() else { return };
+        let Some((repo, rel)) = self.repo_path(&path) else {
+            return;
+        };
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let refuse = |why: &str| refused(&name, why);
+        let entry = self.git.status.as_ref().and_then(|s| s.entry(&rel));
+        if entry.is_some_and(|e| e.unstaged == Some(Change::Untracked)) {
+            return self.notify(Level::Info, refuse("it isn't in the index"));
+        }
+        if entry.is_some_and(|e| e.unstaged == Some(Change::Conflicted) || e.staged == Some(Change::Conflicted)) {
+            return self.notify(Level::Info, refuse("it has merge conflicts"));
+        }
+        let line = h.new.start + 1;
+        if let Some(buffer) = self.buffer_of(&path) {
+            let buf = self.buffers.get(buffer).expect("an open buffer");
+            if let Some(reason) = &buf.read_only {
+                let text = format!("Read-only: {reason}");
+                return self.notify(Level::Error, text);
+            }
+            if crate::buffer::file::encode(&buf.rope, buf.bom) != doc.shown.new {
+                return self.notify(Level::Error, refuse("the file changed, try again"));
+            }
+            let Some((start, end, text)) = diff_view::revert_edit(&doc.shown, k, buf.bom) else {
+                return self.notify(Level::Error, refuse("the index's text isn't UTF-8"));
+            };
+            let mut changes = ChangeSet::with_capacity(1, text.len());
+            changes.push(start, end, &text);
+            self.apply_changes(buffer, changes);
+            self.follow_edits();
+            self.notify(
+                Level::Info,
+                format!("Reverted the change at line {line} of {name} (not saved)"),
+            );
+            return;
+        }
+        // Not open: the file on disk, exactly the hunk shown.
+        let history = self.history_job(&path);
+        if history.is_some() {
+            self.history_started();
+        }
+        self.diffs.staging += 1;
+        let tx = self.tx.clone();
+        let done = format!("Reverted the change at line {line} of {name}");
+        tokio::task::spawn_blocking(move || {
+            let result = stage::revert_hunk(&repo, &rel, &doc.shown, k);
+            if let Some(job) = history {
+                let recorded = match &result {
+                    Ok(before) => job.record(before),
+                    Err(_) => Ok(()),
+                };
+                super::history::send_done(&tx, recorded);
+            }
+            let message = match result {
+                Ok(_) => Ok(done),
+                Err(stage::Error::Stale) => Err(refused(&name, "the file changed, try again")),
+                Err(e) => Err(refused(&name, &e.to_string())),
+            };
+            let _ = tx.send(AppEvent::DiffStaged(message));
+        });
+    }
+
     /// `git.stageFile` / `git.unstageFile`: the active file (a text or diff tab's). Staging an
     /// open buffer's file goes through the gutter's path (saved first).
     pub(super) fn stage_file_command(&mut self, unstage: bool) {
@@ -378,7 +466,7 @@ impl App {
     }
 
     /// The mouse over a group's editor area showing a diff tab: the wheel scrolls it (without
-    /// focusing), a click focuses it and puts the cursor on that row, or stages that change.
+    /// focusing), a click focuses it and puts the cursor on that row, or stages / reverts that change.
     /// False when the group shows no diff tab there, and for other events (moves, drags,
     /// releases), which go on to the rest of `handle_mouse`.
     pub(super) fn diff_mouse(&mut self, m: &MouseEvent, hit: Hit) -> bool {
@@ -397,6 +485,7 @@ impl App {
                 };
                 let p = ratatui::layout::Position { x: m.column, y: m.row };
                 let button = h.buttons.iter().find(|(r, _)| r.contains(p)).map(|(_, k)| *k);
+                let revert = h.reverts.iter().find(|(r, _)| r.contains(p)).map(|(_, k)| *k);
                 if h.rows.contains(p) {
                     let row = d.top + (m.row - h.rows.y) as usize;
                     if row < d.rows().len() {
@@ -410,6 +499,8 @@ impl App {
                         .active_diff()
                         .is_some_and(|d| d.pair.staging() == Some(Side::Staged));
                     self.diff_stage(unstage, Some(k));
+                } else if let Some(k) = revert {
+                    self.diff_revert(Some(k));
                 }
             }
             // A divider or panel border dragged over the diff, a release, a move: not its.
@@ -417,6 +508,11 @@ impl App {
         }
         true
     }
+}
+
+/// A revert's refusal.
+fn refused(name: &str, why: &str) -> String {
+    format!("Can't revert the change in {name}: {why}")
 }
 
 #[cfg(test)]
