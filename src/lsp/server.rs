@@ -259,7 +259,22 @@ impl Task {
                 }
             }
         };
+        let initialized = conn.initialized;
         drop(conn);
+        // A server that died before answering `initialize` may still have its reason in the
+        // stderr pipe: read what's left (briefly) for the crash message.
+        if let (End::Crashed(_), false, Some(lines)) = (&end, initialized, stderr.as_mut()) {
+            let rest = async {
+                while let Ok(Some(line)) = lines.next_line().await {
+                    tracing::debug!(target: "lsp::stderr", server = %name, "{line}");
+                    if tail.len() == STDERR_TAIL {
+                        tail.pop_front();
+                    }
+                    tail.push_back(line);
+                }
+            };
+            let _ = tokio::time::timeout(Duration::from_millis(300), rest).await;
+        }
         let _ = write_task.await;
         let status = match &mut child {
             // Out of time already: no more waiting.
@@ -285,7 +300,12 @@ impl Task {
                 });
             }
             End::Failed => {}
-            End::Crashed(why) => {
+            End::Crashed(mut why) => {
+                // Gone before answering `initialize`: its last words usually say why (a rustup
+                // proxy whose toolchain lacks the component: "Unknown binary 'rust-analyzer' …").
+                if !initialized && let Some(last) = tail.iter().rev().map(|l| l.trim()).find(|l| !l.is_empty()) {
+                    why = format!("{why}: {last}");
+                }
                 let why = match status {
                     Some(s) => format!("{why}, {s}"),
                     None => why,
@@ -415,7 +435,7 @@ impl Conn {
                         _ => tracing::debug!(server = %self.name, "{text}"),
                     }
                 }
-                "$/progress" | "$/logTrace" | "telemetry/event" => {}
+                "$/logTrace" | "telemetry/event" => {}
                 // Read here, off the UI thread (tens of ms for tens of thousands).
                 "textDocument/publishDiagnostics" => match super::diagnostics::parse(params) {
                     Ok(published) => (self.sink)(Event::Diagnostics {
@@ -686,6 +706,7 @@ mod tests {
         assert_eq!(v["general"]["positionEncodings"], json!(["utf-8", "utf-16"]));
         assert_eq!(v["textDocument"]["publishDiagnostics"]["versionSupport"], json!(true));
         assert!(v["textDocument"].get("diagnostic").is_none(), "no pull diagnostics");
+        assert_eq!(v["window"]["workDoneProgress"], json!(true));
         assert_eq!(v["textDocument"]["rename"]["prepareSupport"], json!(true));
         assert_eq!(v["textDocument"]["rename"]["prepareSupportDefaultBehavior"], json!(1));
         assert_eq!(v["workspace"]["workspaceEdit"]["documentChanges"], json!(true));

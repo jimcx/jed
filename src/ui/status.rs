@@ -1,5 +1,5 @@
-//! Status bar: trust mode, git branch, file, problem counts, message (else the cursor line's diagnostic),
-//! cursor position, file format, language mode.
+//! Status bar: trust mode, git branch, file, problem counts, language server progress, message
+//! (else the cursor line's diagnostic), cursor position, file format, language mode.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -124,6 +124,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
         let start = x;
         x = out.set_stringn(x, area.y, format!(" {problems}"), width, style).0;
         counts = counts_at(start + 1, x);
+    }
+
+    // A language server at work (`$/progress`): `rust-analyzer: Indexing 40% 3/25 (core)`.
+    if let Some(progress) = app.lsp.progress() {
+        let room = right_x.saturating_sub(x + 1) as usize;
+        x = out.set_stringn(x, area.y, format!(" {progress} "), room, style).0;
     }
 
     if let Some((text, msg_style)) = message {

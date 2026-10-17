@@ -35,6 +35,13 @@
 //!   run; hidden fields still apply (`…` lit); Tab / Shift+Tab, clicks, pastes, the debounce and
 //!   the list below them; "Find in Folder…" from an explorer folder's right-click and the
 //!   palette (a file's right-click still shows its history).
+//! - `rust_language_server`: `rust-analyzer` is the built-in server for Rust (no
+//!   `initializationOptions`; `.workspace` `[lsp.rust]` overrides it when trusted); work-done
+//!   progress shows in the status bar ("rust-analyzer: Indexing 40% 3/25 (core)") until it ends;
+//!   ContentModified answers are dropped quietly; a server dying during `initialize` says why
+//!   (its last stderr line); and against the real `rust-analyzer` (skipped
+//!   with a note when it doesn't run) on a tiny crate: hover, definition, references, completion,
+//!   `cargo check` errors on save, rename and format document.
 
 mod render_whitespace {
     use std::fs;
@@ -2213,5 +2220,642 @@ mod folder_filter {
         run_command(&mut app, "Explorer: Find in Folder…");
         assert_eq!(app.search_view.include.text, "./lib/src", "a file: unchanged");
         assert!(app.message.as_ref().is_some_and(|m| m.text.contains("is a file")));
+    }
+}
+
+mod rust_language_server {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use serde_json::{Value, json};
+
+    use crate::app::{App, Prompt};
+    use crate::buffer::Buffer;
+    use crate::buffer::pos::{self, ByteIdx, PosEncoding};
+    use crate::diagnostics::Severity;
+    use crate::lsp::fake::{FakeLauncher, FakeOptions};
+    use crate::lsp::rpc::CONTENT_MODIFIED;
+    use crate::lsp::{Launcher, ProcessLauncher, State};
+    use crate::milestone9_tests::{REAL_SERVERS, children_named};
+    use crate::selection::{Selection, Selections};
+    use crate::syntax::Language;
+    use crate::workspace::trust::{Trust, TrustStore};
+    use crate::workspace::{self, Workspace};
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    /// A workspace `<dir>/proj` with `files` (folders made as needed), its trust store in
+    /// `<dir>/state`.
+    fn project(dir: &Path, files: &[(&str, &str)]) -> PathBuf {
+        let root = workspace::normalize(dir).join("proj");
+        for (name, text) in files {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        root
+    }
+
+    /// The app on `root` with servers started by `launcher`, no file open yet.
+    fn open_app(root: &Path, launcher: Arc<dyn Launcher>) -> App {
+        let trust = TrustStore::load(root.parent().unwrap().join("state/trust.toml"));
+        let mut app = App::new(Workspace::load(root.to_path_buf()), trust, None, true);
+        app.lsp.set_launcher(launcher);
+        app.test_start();
+        app.test_plain_whitespace();
+        app
+    }
+
+    fn open(app: &mut App, path: &Path) {
+        app.test_open(Buffer::open(path).unwrap());
+    }
+
+    fn encoding(app: &App) -> Option<PosEncoding> {
+        app.lsp.server_for(Language::Rust).and_then(|s| s.encoding())
+    }
+
+    fn message(app: &App) -> Option<String> {
+        app.message.as_ref().map(|m| m.text.clone())
+    }
+
+    fn text(app: &App) -> String {
+        app.active_buffer().unwrap().rope.to_string()
+    }
+
+    fn put_cursor(app: &mut App, at: usize) {
+        let (_, view) = app.active_mut().unwrap();
+        view.selections = Selections::single(Selection::cursor(ByteIdx(at)));
+    }
+
+    fn cursor_line(app: &App) -> usize {
+        let buf = app.active_buffer().unwrap();
+        let at = app.group().active_tab().unwrap().view.selections.primary().head;
+        pos::line_of(&buf.rope, at)
+    }
+
+    fn active_path(app: &App) -> Option<PathBuf> {
+        app.active_buffer().map(|b| b.path.clone())
+    }
+
+    fn format_document(app: &mut App) {
+        if cfg!(target_os = "macos") {
+            app.press(K::Char('f'), M::SHIFT | M::ALT);
+        } else {
+            app.press(K::Char('i'), M::CONTROL | M::SHIFT);
+        }
+    }
+
+    fn show_hover(app: &mut App) {
+        app.press(K::Char('i'), cmd() | M::ALT);
+    }
+
+    fn terminal() -> Terminal<TestBackend> {
+        Terminal::new(TestBackend::new(120, 16)).unwrap()
+    }
+
+    fn draw(term: &mut Terminal<TestBackend>, app: &mut App) {
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+    }
+
+    fn status(term: &Terminal<TestBackend>) -> String {
+        let buf = term.backend().buffer();
+        let y = buf.area.height - 1;
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    /// `settle`, for up to `secs` seconds.
+    async fn settle_for(app: &mut App, secs: u64, done: impl Fn(&App) -> bool) -> bool {
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_secs(secs) {
+            if app.settle(&done).await {
+                return true;
+            }
+        }
+        false
+    }
+
+    const MAIN: &str = "fn helper() -> i32 {\n    1\n}\n\nfn main() {\n    let _ = helper();\n}\n";
+
+    /// A crate with `src/main.rs` open and its fake server (UTF-8) running.
+    async fn fake_project(dir: &Path, workspace: Option<&str>) -> (App, Arc<FakeLauncher>, PathBuf) {
+        let mut files = vec![("Cargo.toml", "[package]\nname = \"tiny\"\n"), ("src/main.rs", MAIN)];
+        if let Some(ws) = workspace {
+            files.push((".workspace", ws));
+        }
+        let root = project(dir, &files);
+        let fake = FakeLauncher::new(FakeOptions {
+            utf8: true,
+            ..Default::default()
+        });
+        let mut app = open_app(&root, fake.clone());
+        open(&mut app, &root.join("src/main.rs"));
+        (app, fake, root)
+    }
+
+    /// A Rust file starts the built-in `rust-analyzer` (no arguments, no
+    /// `initializationOptions`) with the workspace root as its root; the document goes out as
+    /// `rust`. Starting is quiet.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rust_files_start_rust_analyzer_without_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, fake, root) = fake_project(dir.path(), None).await;
+        assert!(app.settle(|a| encoding(a).is_some()).await);
+        assert_eq!(fake.launches(), ["rust-analyzer"]);
+        let s = app.lsp.server_for(Language::Rust).unwrap();
+        assert_eq!((s.config.command.as_str(), s.config.args.len()), ("rust-analyzer", 0));
+        assert!(!s.config.from_workspace);
+        let init = fake.first("initialize").unwrap();
+        assert_eq!(init["params"]["rootUri"], crate::lsp::uri::from_path(&root).as_str());
+        assert!(
+            init["params"].get("initializationOptions").is_none_or(Value::is_null),
+            "{init}"
+        );
+        assert!(app.settle(|_| fake.first("textDocument/didOpen").is_some()).await);
+        let open = fake.first("textDocument/didOpen").unwrap();
+        assert_eq!(open["params"]["textDocument"]["languageId"], "rust");
+        assert_eq!(encoding(&app), Some(PosEncoding::Utf8));
+        assert_eq!(message(&app), None, "starting is quiet");
+        app.shutdown_servers().await;
+    }
+
+    /// `.workspace` `[lsp.rust]` replaces the built-in once the workspace is trusted (its
+    /// `init_options` go out as `initializationOptions`); restricted, the built-in runs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn workspace_lsp_rust_overrides_the_built_in() {
+        let ws =
+            "[lsp.rust]\ncommand = \"/opt/ra/rust-analyzer\"\ninit_options = { check = { command = \"clippy\" } }\n";
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, fake, _) = fake_project(dir.path(), Some(ws)).await;
+        assert!(matches!(app.prompt, Some(Prompt::Trust { .. })));
+        app.press(K::Char('t'), M::NONE);
+        assert_eq!(app.trust, Trust::Trusted);
+        assert!(app.settle(|a| encoding(a).is_some()).await);
+        assert_eq!(fake.launches(), ["rust-analyzer"], "named after the command's file");
+        let s = app.lsp.server_for(Language::Rust).unwrap();
+        assert_eq!(s.config.command, "/opt/ra/rust-analyzer");
+        assert!(s.config.from_workspace);
+        let init = fake.first("initialize").unwrap();
+        assert_eq!(
+            init["params"]["initializationOptions"],
+            json!({ "check": { "command": "clippy" } })
+        );
+        app.shutdown_servers().await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, fake, _) = fake_project(dir.path(), Some(ws)).await;
+        app.press(K::Esc, M::NONE);
+        assert_eq!(app.trust, Trust::Restricted);
+        assert!(app.settle(|a| encoding(a).is_some()).await);
+        let s = app.lsp.server_for(Language::Rust).unwrap();
+        assert_eq!(s.config.command, "rust-analyzer", "restricted: the built-in");
+        assert!(
+            fake.first("initialize").unwrap()["params"]
+                .get("initializationOptions")
+                .is_none_or(Value::is_null)
+        );
+        app.shutdown_servers().await;
+    }
+
+    fn progress(token: &str, value: Value) -> Value {
+        json!({ "token": token, "value": value })
+    }
+
+    /// `window/workDoneProgress/create` is answered; `$/progress` begin / report / end show the
+    /// latest unfinished work in the status bar after the problem counts ("rust-analyzer:
+    /// Indexing 40% 3/25 (core)"), gone once it ends; a server that dies takes its progress along.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn progress_shows_in_the_status_bar_until_it_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, fake, _) = fake_project(dir.path(), None).await;
+        assert!(app.settle(|a| encoding(a).is_some()).await);
+        // The fake asks during `initialize`; its answer is recorded when the fake reads it.
+        assert!(
+            app.settle(|_| fake.answers().get("progress") == Some(&Value::Null))
+                .await,
+            "create answered"
+        );
+        let mut term = terminal();
+        let notify = |app: &App, params: Value| {
+            app.lsp
+                .server_for(Language::Rust)
+                .unwrap()
+                .notify("test/progress", params);
+        };
+        let shows = |app: &App, want: Option<&str>| {
+            let want = want.map(String::from);
+            app.lsp.progress() == want
+        };
+
+        notify(
+            &app,
+            progress(
+                "rustAnalyzer/Indexing",
+                json!({ "kind": "begin", "title": "Indexing", "percentage": 0, "cancellable": false }),
+            ),
+        );
+        assert!(app.settle(|a| shows(a, Some("rust-analyzer: Indexing 0%"))).await);
+        notify(
+            &app,
+            progress(
+                "rustAnalyzer/Indexing",
+                json!({ "kind": "report", "message": "3/25 (core)", "percentage": 40 }),
+            ),
+        );
+        let indexing = "rust-analyzer: Indexing 40% 3/25 (core)";
+        assert!(app.settle(|a| shows(a, Some(indexing))).await);
+        draw(&mut term, &mut app);
+        let bar = status(&term);
+        let counts = bar.find("⊗ 0").expect("problem counts");
+        let at = bar.find(indexing).unwrap_or_else(|| panic!("{bar}"));
+        assert!(counts < at, "after the counts: {bar}");
+
+        // A second piece of work shows while it runs, then the first again.
+        notify(
+            &app,
+            progress(
+                "rustAnalyzer/flycheck/0",
+                json!({ "kind": "begin", "title": "cargo check" }),
+            ),
+        );
+        assert!(app.settle(|a| shows(a, Some("rust-analyzer: cargo check"))).await);
+        draw(&mut term, &mut app);
+        assert!(status(&term).contains("rust-analyzer: cargo check"));
+        notify(&app, progress("rustAnalyzer/flycheck/0", json!({ "kind": "end" })));
+        assert!(app.settle(|a| shows(a, Some(indexing))).await);
+
+        // A message shows after the progress.
+        app.press(K::Char('s'), cmd());
+        assert!(app.settle(|a| message(a).is_some_and(|m| m.starts_with("Saved"))).await);
+        draw(&mut term, &mut app);
+        let bar = status(&term);
+        assert!(bar.find(indexing).unwrap() < bar.find("Saved").unwrap(), "{bar}");
+
+        notify(&app, progress("rustAnalyzer/Indexing", json!({ "kind": "end" })));
+        assert!(app.settle(|a| shows(a, None)).await);
+        draw(&mut term, &mut app);
+        assert!(!status(&term).contains("rust-analyzer:"), "{}", status(&term));
+
+        // Unfinished work goes with a crashed server.
+        notify(&app, progress("t", json!({ "kind": "begin", "title": "Loading" })));
+        assert!(app.settle(|a| shows(a, Some("rust-analyzer: Loading"))).await);
+        app.lsp
+            .server_for(Language::Rust)
+            .unwrap()
+            .notify("test/crash", Value::Null);
+        assert!(
+            app.settle(|a| matches!(a.lsp.server_for(Language::Rust).unwrap().state, State::Failed))
+                .await
+        );
+        assert_eq!(app.lsp.progress(), None);
+        let s = app.lsp.server_for(Language::Rust).unwrap();
+        assert_eq!(s.progress.latest(), None, "dropped, not just hidden");
+        draw(&mut term, &mut app);
+        assert!(!status(&term).contains("Loading"), "{}", status(&term));
+        app.shutdown_servers().await;
+    }
+
+    /// Answers of ContentModified (-32801: rust-analyzer before its workspace is loaded, or
+    /// mid-edit) are dropped quietly: no "not found", "failed" or "No suggestions." message.
+    /// Other errors are still reported.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn content_modified_answers_are_dropped_quietly() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, fake, _) = fake_project(dir.path(), None).await;
+        assert!(app.settle(|a| encoding(a).is_some()).await);
+        for method in [
+            "textDocument/definition",
+            "textDocument/references",
+            "textDocument/hover",
+            "textDocument/completion",
+            "textDocument/formatting",
+            "textDocument/prepareRename",
+        ] {
+            fake.fail(method, CONTENT_MODIFIED, "content modified");
+        }
+        put_cursor(&mut app, MAIN.rfind("helper").unwrap() + 1);
+        // Each request's key (`None`: format document's, by platform).
+        let keys = [
+            ("textDocument/definition", Some((K::F(12), M::NONE))),
+            ("textDocument/references", Some((K::F(12), M::SHIFT))),
+            ("textDocument/hover", Some((K::Char('i'), cmd() | M::ALT))),
+            ("textDocument/completion", Some((K::Char(' '), M::CONTROL))),
+            ("textDocument/prepareRename", Some((K::F(2), M::NONE))),
+            ("textDocument/formatting", None),
+        ];
+        for (method, key) in keys {
+            match key {
+                Some((key, mods)) => app.press(key, mods),
+                None => format_document(&mut app),
+            }
+            assert!(
+                app.settle(|a| fake.requests(method).len() == 1 && a.pending_requests().is_empty())
+                    .await,
+                "{method} answered"
+            );
+            app.pump();
+            assert_eq!(message(&app), None, "{method}");
+            assert!(app.prompt.is_none(), "{method}");
+        }
+        assert!(app.hover.popup.is_none());
+        assert!(app.completion.ask.is_none());
+        assert!(app.locations.is_none());
+
+        // Any other error is still an error.
+        fake.fail("textDocument/formatting", -32603, "rustfmt failed");
+        format_document(&mut app);
+        assert!(
+            app.settle(|a| message(a).as_deref() == Some("Format Document failed: rustfmt failed"))
+                .await,
+            "{:?}",
+            message(&app)
+        );
+        app.shutdown_servers().await;
+    }
+
+    /// A server that dies before answering `initialize` (a rustup proxy whose toolchain lacks the
+    /// component) says why in the error message: the last non-blank line of its stderr, written
+    /// after it closed its output.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_startup_crash_quotes_the_servers_last_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &[("src/main.rs", MAIN)]);
+        let mut app = open_app(&root, Arc::new(ProcessLauncher));
+        let script = "exec 1>&-; echo 'info: syncing' >&2; \
+                      echo \"error: Unknown binary 'rust-analyzer' in official toolchain\" >&2; echo >&2; exit 1";
+        app.lsp.builtins.rust_analyzer = crate::lsp::ServerConfig::new("sh", &["-c", script]);
+        open(&mut app, &root.join("src/main.rs"));
+        let failed = |a: &App| {
+            a.lsp
+                .server_for(Language::Rust)
+                .is_some_and(|s| matches!(s.state, State::Failed))
+        };
+        assert!(app.settle(failed).await, "{:?}", message(&app));
+        let text = message(&app).unwrap_or_default();
+        assert!(
+            text.contains("exited during initialize: error: Unknown binary 'rust-analyzer' in official toolchain"),
+            "{text}"
+        );
+        assert!(!text.contains("syncing"), "only the last line: {text}");
+        app.shutdown_servers().await;
+    }
+
+    // ---- the real rust-analyzer ----
+
+    const CARGO_TOML: &str = "[package]\nname = \"tiny\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n";
+    const RA_MAIN: &str = "mod util;\n\nuse util::Point;\n\nfn   helper_fmt( )->i32{0}\n\nfn main() {\n    let pt = Point { xcoord: 1, ycoord: 2 };\n    let t = util::total(&pt) + helper_fmt();\n    let _ = t;\n}\n";
+    const RA_MAIN_FORMATTED: &str = "mod util;\n\nuse util::Point;\n\nfn helper_fmt() -> i32 {\n    0\n}\n\nfn main() {\n    let pt = Point {\n        xcoord: 1,\n        ycoord: 2,\n    };\n    let t = util::total(&pt) + helper_fmt();\n    let _ = t;\n}\n";
+    const RA_UTIL: &str = "/// A point.\npub struct Point {\n    pub xcoord: i32,\n    pub ycoord: i32,\n}\n\n/// Adds the coordinates.\npub fn total(p: &Point) -> i32 {\n    p.xcoord + p.ycoord\n}\n";
+
+    fn rustc_errors(app: &App, path: &Path) -> Vec<String> {
+        let Some(id) = app.buffers.find_path(path) else {
+            return Vec::new();
+        };
+        let buf = app.buffers.get(id).unwrap();
+        let text = buf.rope.to_string();
+        buf.diagnostics
+            .all()
+            .iter()
+            .filter(|m| m.diag.severity == Severity::Error && m.diag.source.as_deref() == Some("rustc"))
+            .map(|m| text[m.start.0..m.end.0].to_string())
+            .collect()
+    }
+
+    /// Cmd+Z until the active buffer is `want` again (at most `steps` times).
+    fn undo_to(app: &mut App, want: &str, steps: usize) {
+        for _ in 0..steps {
+            if text(app) == want {
+                return;
+            }
+            app.press(K::Char('z'), cmd());
+        }
+        assert_eq!(text(app), want, "undone");
+    }
+
+    async fn save(app: &mut App) {
+        app.press(K::Char('s'), cmd());
+        assert!(
+            app.settle(|a| !a.active_buffer().unwrap().is_dirty()).await,
+            "saved; {:?}",
+            message(app)
+        );
+    }
+
+    /// The v1 features against the real `rust-analyzer` (the built-in command, run through the
+    /// rustup proxy: the crate pins the repo's toolchain, which has the component) on a tiny
+    /// crate with no dependencies: work-done progress while it loads, hover, go to definition,
+    /// references, completion, `cargo check` errors on save (source `rustc`, pushed) and gone
+    /// after the fix is saved, rename across files and format document (rustfmt). Requests
+    /// answered before it's ready (nothing, ContentModified) are retried. Skipped with a note
+    /// when `rust-analyzer` doesn't run there.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn real_rust_analyzer_on_a_cargo_crate() {
+        let _one_at_a_time = REAL_SERVERS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let toolchain = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("rust-toolchain.toml")).unwrap();
+        let root = project(
+            dir.path(),
+            &[
+                ("Cargo.toml", CARGO_TOML),
+                ("rust-toolchain.toml", &toolchain),
+                ("src/main.rs", RA_MAIN),
+                ("src/util.rs", RA_UTIL),
+            ],
+        );
+        let runs = std::process::Command::new("rust-analyzer")
+            .arg("--version")
+            .current_dir(&root)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !runs {
+            eprintln!(
+                "real_rust_analyzer_on_a_cargo_crate: skipped, rust-analyzer doesn't run (`rustup component add rust-analyzer`)"
+            );
+            return;
+        }
+        let mut app = open_app(&root, Arc::new(ProcessLauncher));
+        // Its own target directory: its `cargo check` never waits on (or for) another build.
+        let target = workspace::normalize(dir.path()).join("target");
+        app.lsp.builtins.rust_analyzer.init_options = Some(json!({ "cargo": { "targetDir": target } }));
+        let main = root.join("src/main.rs");
+        let util = root.join("src/util.rs");
+        open(&mut app, &main);
+        assert!(
+            settle_for(&mut app, 60, |a| encoding(a).is_some()).await,
+            "rust-analyzer initialized; message {:?}",
+            message(&app)
+        );
+        assert_eq!(encoding(&app), Some(PosEncoding::Utf8));
+        if let Some(n) = children_named("rust-analyzer") {
+            assert_eq!(n, 1, "rust-analyzer running");
+        }
+        let begun = |a: &App| a.lsp.server_for(Language::Rust).is_some_and(|s| s.progress.begun() > 0);
+        assert!(settle_for(&mut app, 120, begun).await, "rust-analyzer reports progress");
+
+        // Hover (asked until it has loaded the crate).
+        let at = RA_MAIN.find("total").unwrap() + 1;
+        put_cursor(&mut app, at);
+        let hover = "pub fn total(p: &Point) -> i32";
+        let hovered = |a: &App| {
+            a.hover
+                .popup
+                .as_ref()
+                .is_some_and(|p| p.lines.iter().any(|l| l.text.contains(hover)))
+        };
+        let t = Instant::now();
+        while !hovered(&app) && t.elapsed() < Duration::from_secs(180) {
+            show_hover(&mut app);
+            settle_for(&mut app, 3, hovered).await;
+        }
+        assert!(
+            hovered(&app),
+            "rust-analyzer hover: {:?}; message {:?}",
+            app.hover.popup.as_ref().map(|p| &p.lines),
+            message(&app)
+        );
+        app.press(K::Esc, M::NONE);
+
+        // Go to definition (asked again while it answers nothing or ContentModified), and back.
+        let went = |a: &App| active_path(a).as_deref() == Some(util.as_path());
+        let t = Instant::now();
+        while !went(&app) && t.elapsed() < Duration::from_secs(60) {
+            put_cursor(&mut app, at);
+            app.press(K::F(12), M::NONE);
+            settle_for(&mut app, 3, went).await;
+        }
+        assert!(went(&app), "went to the definition; message {:?}", message(&app));
+        assert_eq!(cursor_line(&app), 7);
+        while active_path(&app).as_deref() != Some(main.as_path()) {
+            app.press(K::PageUp, M::CONTROL);
+        }
+
+        // References: the call and the definition, in two files.
+        let both = |a: &App| a.locations.as_ref().is_some_and(|l| l.files.len() == 2);
+        let t = Instant::now();
+        while !both(&app) && t.elapsed() < Duration::from_secs(60) {
+            put_cursor(&mut app, at);
+            app.press(K::F(12), M::SHIFT);
+            settle_for(&mut app, 3, both).await;
+            app.press(K::Char('1'), cmd());
+        }
+        assert!(
+            both(&app),
+            "references: {:?}; message {:?}",
+            app.locations.as_ref().map(|l| &l.files),
+            message(&app)
+        );
+
+        // Completion after `pt.`: the field, inserted with Enter.
+        let after = RA_MAIN.find("(&pt").unwrap() + 4;
+        let listed = |a: &App| {
+            a.completion
+                .popup
+                .as_ref()
+                .is_some_and(|p| p.shown.iter().any(|&i| p.items[i].label.trim() == "ycoord"))
+        };
+        let t = Instant::now();
+        while !listed(&app) && t.elapsed() < Duration::from_secs(60) {
+            app.press(K::Esc, M::NONE);
+            undo_to(&mut app, RA_MAIN, 4);
+            put_cursor(&mut app, after);
+            app.type_text(".");
+            settle_for(&mut app, 5, listed).await;
+        }
+        assert!(listed(&app), "completion; message {:?}", message(&app));
+        let p = app.completion.popup.as_mut().unwrap();
+        p.selected = p
+            .shown
+            .iter()
+            .position(|&i| p.items[i].label.trim() == "ycoord")
+            .unwrap();
+        app.press(K::Enter, M::NONE);
+        assert!(text(&app).contains("(&pt.ycoord)"), "{}", text(&app));
+        undo_to(&mut app, RA_MAIN, 4);
+
+        // `cargo check` on save: a type error, reported by rustc; gone once the fix is saved.
+        let line = RA_MAIN.find("    let _ = t;").unwrap();
+        put_cursor(&mut app, line);
+        app.type_text("let bad: u32 = \"s\";\n    ");
+        save(&mut app).await;
+        assert!(
+            settle_for(&mut app, 180, |a| rustc_errors(a, &main).iter().any(|e| e == "\"s\"")).await,
+            "cargo check's error: {:?}; message {:?}",
+            app.active_buffer().unwrap().diagnostics.all(),
+            message(&app)
+        );
+        assert!(target.join("debug").is_dir(), "checked in its own target directory");
+        // The check's progress ends (and the status bar clears) before the fix is saved: a save
+        // during a check restarts it, which may keep its stale errors.
+        assert!(
+            settle_for(&mut app, 120, |a| a.lsp.progress().is_none()).await,
+            "work done: {:?}",
+            app.lsp.progress()
+        );
+        undo_to(&mut app, RA_MAIN, 4);
+        save(&mut app).await;
+        assert!(
+            settle_for(&mut app, 180, |a| rustc_errors(a, &main).is_empty()).await,
+            "cleared after the fix: {:?}; progress {:?}; message {:?}; text {:?}",
+            rustc_errors(&app, &main),
+            app.lsp.progress(),
+            message(&app),
+            text(&app)
+        );
+
+        // Rename across both files (asked again while it answers ContentModified, which is
+        // dropped quietly: rust-analyzer re-analysing after the save).
+        let renamed = |a: &App| {
+            [&main, &util].iter().all(|p| {
+                a.buffers.find_path(p).is_some_and(|id| {
+                    let t = a.buffers.get(id).unwrap().rope.to_string();
+                    t.contains("sum_of") && !t.contains("total")
+                })
+            })
+        };
+        let t = Instant::now();
+        while !renamed(&app) && t.elapsed() < Duration::from_secs(90) {
+            put_cursor(&mut app, at);
+            app.press(K::F(2), M::NONE);
+            if !settle_for(&mut app, 3, |a| a.prompt.is_some()).await {
+                continue;
+            }
+            app.type_text("sum_of");
+            app.press(K::Enter, M::NONE);
+            settle_for(&mut app, 5, renamed).await;
+        }
+        assert!(renamed(&app), "renamed; message {:?}", message(&app));
+        assert_eq!(active_path(&app).as_deref(), Some(main.as_path()));
+        let renamed_text = text(&app);
+
+        // Format document (rustfmt): one undo step.
+        let want = RA_MAIN_FORMATTED.replace("total", "sum_of");
+        let t = Instant::now();
+        while text(&app) != want && t.elapsed() < Duration::from_secs(60) {
+            format_document(&mut app);
+            settle_for(&mut app, 5, |a| text(a) == want).await;
+        }
+        assert_eq!(text(&app), want, "formatted; message {:?}", message(&app));
+        app.press(K::Char('z'), cmd());
+        assert_eq!(text(&app), renamed_text, "one undo step");
+
+        assert!(matches!(
+            app.lsp.server_for(Language::Rust).unwrap().state,
+            State::Running { .. }
+        ));
+        app.press(K::Char('q'), cmd());
+        app.shutdown_servers().await;
+        if let Some(n) = children_named("rust-analyzer") {
+            assert_eq!(n, 0, "no rust-analyzer left");
+        }
     }
 }

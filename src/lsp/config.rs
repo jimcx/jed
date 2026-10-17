@@ -1,5 +1,5 @@
-//! Which language server runs for a language: the built-ins, or `.workspace` `[lsp.<language id>]`
-//! when the workspace is trusted.
+//! Which language server runs for a language: the built-ins (`clangd`, `ty`, `rust-analyzer`), or
+//! `.workspace` `[lsp.<language id>]` when the workspace is trusted.
 
 use std::path::Path;
 
@@ -42,11 +42,14 @@ fn command_name(command: &str) -> String {
         .map_or_else(|| command.to_string(), |n| n.to_string_lossy().into_owned())
 }
 
-/// The servers jed knows without configuration: `clangd` for C and C++, `ty server` for Python.
+/// The servers jed knows without configuration: `clangd` for C and C++, `ty server` for Python,
+/// `rust-analyzer` for Rust (no `initializationOptions`: it finds the cargo workspace under the
+/// root itself, and checks with `cargo check` on save).
 #[derive(Debug, Clone)]
 pub struct Builtins {
     pub clangd: ServerConfig,
     pub ty: ServerConfig,
+    pub rust_analyzer: ServerConfig,
 }
 
 impl Default for Builtins {
@@ -54,6 +57,7 @@ impl Default for Builtins {
         Self {
             clangd: ServerConfig::new("clangd", &[]),
             ty: ServerConfig::new("ty", &["server"]),
+            rust_analyzer: ServerConfig::new("rust-analyzer", &[]),
         }
     }
 }
@@ -63,6 +67,7 @@ impl Builtins {
         match language {
             Language::C | Language::Cpp => Some(&self.clangd),
             Language::Python => Some(&self.ty),
+            Language::Rust => Some(&self.rust_analyzer),
             _ => None,
         }
     }
@@ -145,8 +150,39 @@ init_options = { python = { venv = ".venv" } }
             resolve(Language::C, &ws, Trust::Undecided, &b),
             Resolved::Server(b.clangd.clone())
         );
-        assert_eq!(resolve(Language::Rust, &none, Trust::NotNeeded, &b), Resolved::None);
+        assert_eq!(resolve(Language::Markdown, &none, Trust::NotNeeded, &b), Resolved::None);
         assert_eq!(b.ty.command, "ty");
         assert_eq!(b.ty.args, ["server"]);
+    }
+
+    #[test]
+    fn rust_analyzer_is_built_in_and_overridable() {
+        let b = Builtins::default();
+        let none = WorkspaceConfig::default();
+        let Resolved::Server(s) = resolve(Language::Rust, &none, Trust::NotNeeded, &b) else {
+            panic!()
+        };
+        assert_eq!(s, b.rust_analyzer);
+        assert_eq!(
+            (s.name.as_str(), s.command.as_str()),
+            ("rust-analyzer", "rust-analyzer")
+        );
+        assert!(s.args.is_empty());
+        assert_eq!(s.init_options, None, "rust-analyzer's defaults: `cargo check` on save");
+        assert!(!s.from_workspace);
+
+        let ws = WorkspaceConfig::parse("[lsp.rust]\ncommand = \"/opt/ra\"\n").unwrap();
+        let Resolved::Server(s) = resolve(Language::Rust, &ws, Trust::Trusted, &b) else {
+            panic!()
+        };
+        assert_eq!((s.name.as_str(), s.from_workspace), ("ra", true));
+        assert_eq!(
+            resolve(Language::Rust, &ws, Trust::Restricted, &b),
+            Resolved::Server(b.rust_analyzer.clone())
+        );
+        assert_eq!(
+            resolve(Language::Rust, &ws, Trust::Undecided, &b),
+            Resolved::AwaitingTrust
+        );
     }
 }

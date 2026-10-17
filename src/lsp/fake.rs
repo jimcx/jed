@@ -9,12 +9,15 @@
 //! a `test/flush` notification answers the held ones newest first; anything else gets
 //! MethodNotFound. A `test/publish` notification makes it send `textDocument/publishDiagnostics`
 //! with the same params (a test's way to publish diagnostics: for any URI and version, in order
-//! after the document notifications sent before it); `test/crash` makes it hang up.
+//! after the document notifications sent before it), `test/progress` a `$/progress` with its
+//! params (a token's `begin` / `report` / `end`); `test/crash` makes it hang up.
 //!
 //! Scripted answers: `respond(method, result)` makes it answer every `method` request (e.g.
 //! `textDocument/hover`) with `result`; `hold(method, true)` keeps those answers until a
 //! `test/flush` (out of order, as `test/later`). A `$/cancelRequest` for a held request answers
-//! it at once with RequestCancelled (-32800), as servers do. It advertises `hoverProvider`,
+//! it at once with RequestCancelled (-32800), as servers do. `fail(method, code, message)` makes
+//! it answer every `method` request with that error instead (e.g. ContentModified, -32801). It
+//! advertises `hoverProvider`,
 //! `definitionProvider`, `completionProvider` (trigger characters `.` and `>`, resolve),
 //! `referencesProvider`, `renameProvider` (with `prepareProvider` unless
 //! `FakeOptions::no_prepare_rename`) and `documentFormattingProvider` (unless
@@ -87,6 +90,8 @@ struct Shared {
     scripts: HashMap<String, Value>,
     /// Methods whose scripted answers wait for `test/flush`.
     holding: std::collections::HashSet<String>,
+    /// Scripted errors by request method (before `scripts`).
+    failures: HashMap<String, RpcError>,
 }
 
 pub struct FakeLauncher {
@@ -146,6 +151,15 @@ impl FakeLauncher {
     /// Answers every `method` request with `result` from now on.
     pub fn respond(&self, method: &str, result: Value) {
         self.shared.lock().unwrap().scripts.insert(method.into(), result);
+    }
+
+    /// Answers every `method` request with the error `code` / `message` from now on.
+    pub fn fail(&self, method: &str, code: i64, message: &str) {
+        let error = RpcError {
+            code,
+            message: message.into(),
+        };
+        self.shared.lock().unwrap().failures.insert(method.into(), error);
     }
 
     /// Holds (`true`) the scripted answers to `method` until a `test/flush`, or stops holding.
@@ -289,6 +303,10 @@ async fn serve(
                     }),
                     "test/echo" => out.push(Message::Response { id, result: Ok(params) }),
                     "test/later" => held.push((id, params)),
+                    m if shared.lock().unwrap().failures.contains_key(m) => {
+                        let error = shared.lock().unwrap().failures[m].clone();
+                        out.push(Message::Response { id, result: Err(error) });
+                    }
                     m if shared.lock().unwrap().scripts.contains_key(m) => {
                         let shared = shared.lock().unwrap();
                         let result = shared.scripts[m].clone();
@@ -332,6 +350,7 @@ async fn serve(
                         }
                     }
                     "test/publish" => out.push(Message::notification("textDocument/publishDiagnostics", params)),
+                    "test/progress" => out.push(Message::notification("$/progress", params)),
                     "test/flush" => {
                         for (id, params) in held.drain(..).rev() {
                             out.push(Message::Response { id, result: Ok(params) });

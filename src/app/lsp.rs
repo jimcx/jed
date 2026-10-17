@@ -322,8 +322,15 @@ impl App {
         let value = match result {
             Ok(v) => v,
             Err(e) => {
-                // Cancelled (-32800) or content modified (-32801) are routine.
                 tracing::debug!(code = e.code, "request failed: {}", e.message);
+                // Cancelled or content modified (rust-analyzer while it loads the workspace):
+                // dropped quietly, no "not found" or "failed" message.
+                if e.is_routine() {
+                    if let Request::Completion { generation } = p.request {
+                        self.completion.ask.take_if(|a| a.generation == generation);
+                    }
+                    return;
+                }
                 match &p.request {
                     Request::Definition { word } => {
                         let text = super::locations::no_definition(word);

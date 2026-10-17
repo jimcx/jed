@@ -430,7 +430,7 @@ async fn milestone_9_noisy_stuck_server_is_killed() {
 
 /// Child processes of this test process named `name` (clangd renames itself `clangd.main`);
 /// `None` without `pgrep`.
-fn children_named(name: &str) -> Option<usize> {
+pub(crate) fn children_named(name: &str) -> Option<usize> {
     let out = std::process::Command::new("pgrep")
         .args(["-l", "-P", &std::process::id().to_string()])
         .output()
@@ -446,7 +446,7 @@ fn children_named(name: &str) -> Option<usize> {
 
 /// Held by each test that runs a real server: they count the test process's children by name,
 /// so two at once would see each other's.
-static REAL_SERVERS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static REAL_SERVERS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Opens `file` against a real server and checks the handshake and a clean exit.
 async fn real_server(language: Language, file: (&str, &str), configure: impl FnOnce(&mut App), process: &str) {

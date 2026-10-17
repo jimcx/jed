@@ -8,6 +8,7 @@ pub mod diagnostics;
 pub mod documents;
 #[cfg(test)]
 pub mod fake;
+pub mod progress;
 pub mod rpc;
 pub mod scons;
 mod server;
@@ -83,8 +84,8 @@ pub enum Event {
         server: ServerId,
         published: Box<diagnostics::Published>,
     },
-    /// A server notification jed's task doesn't handle itself (`window/logMessage` is logged,
-    /// `$/progress` dropped).
+    /// A server notification jed's task doesn't handle itself (`window/logMessage` is logged;
+    /// `$/progress` goes to the server's `progress`).
     Notification {
         server: ServerId,
         method: String,
@@ -117,6 +118,8 @@ pub struct Server {
     /// Languages it serves (of those opened so far).
     pub languages: Vec<Language>,
     pub state: State,
+    /// Its work-done progress (`$/progress`), for the status bar.
+    pub progress: progress::Progress,
     tx: mpsc::UnboundedSender<ToServer>,
     next_id: Arc<AtomicI64>,
     task: JoinHandle<()>,
@@ -303,6 +306,7 @@ impl Manager {
                 root: root.to_path_buf(),
                 languages: vec![language],
                 state: State::Starting,
+                progress: progress::Progress::default(),
                 tx,
                 next_id,
                 task,
@@ -502,6 +506,7 @@ impl Manager {
             }
             Event::Failed { error: e, .. } => {
                 s.state = State::Failed;
+                s.progress.clear();
                 let section = s.languages.first().map_or("…", |l| l.id());
                 error(match e {
                     StartError::NotFound if s.config.from_workspace => format!(
@@ -517,6 +522,7 @@ impl Manager {
             }
             Event::Exited { crashed: Some(why), .. } => {
                 s.state = State::Failed;
+                s.progress.clear();
                 error(format!("Language server {name} stopped ({why}); not restarted"))
             }
             Event::Exited { crashed: None, .. } => {
@@ -535,6 +541,10 @@ impl Manager {
                     text: format!("{name}: {text}"),
                 })
             }
+            Event::Notification { method, params, .. } if method == "$/progress" => {
+                s.progress.update(&params);
+                None
+            }
             Event::Notification { method, .. } => {
                 tracing::debug!(server = %name, method, "unhandled server notification");
                 None
@@ -546,6 +556,15 @@ impl Manager {
             // The app hands these to `publish` (it needs the buffers).
             Event::Diagnostics { .. } => None,
         }
+    }
+
+    /// What the status bar says about servers at work: the latest unfinished `$/progress` of the
+    /// first running server with one, e.g. `rust-analyzer: Indexing 40% 3/25 (core)`.
+    pub fn progress(&self) -> Option<String> {
+        self.servers
+            .iter()
+            .filter(|s| matches!(s.state, State::Running { .. }))
+            .find_map(|s| s.progress.latest().map(|w| format!("{}: {}", s.config.name, w.label())))
     }
 
     /// Asks every server to shut down and waits for them to exit, at most `SHUTDOWN_TIMEOUT`

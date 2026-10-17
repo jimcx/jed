@@ -35,6 +35,21 @@ pub struct RpcError {
 }
 
 pub const METHOD_NOT_FOUND: i64 = -32601;
+/// LSP: the client cancelled the request (`$/cancelRequest`).
+pub const REQUEST_CANCELLED: i64 = -32800;
+/// LSP: the document changed while the server worked on it (rust-analyzer while it loads the
+/// workspace, or mid-edit): the answer would be out of date.
+pub const CONTENT_MODIFIED: i64 = -32801;
+/// LSP 3.17: the server cancelled the request itself.
+pub const SERVER_CANCELLED: i64 = -32802;
+
+impl RpcError {
+    /// Cancelled or out of date (`REQUEST_CANCELLED`, `CONTENT_MODIFIED`, `SERVER_CANCELLED`):
+    /// routine, never shown as an error.
+    pub fn is_routine(&self) -> bool {
+        matches!(self.code, REQUEST_CANCELLED | CONTENT_MODIFIED | SERVER_CANCELLED)
+    }
+}
 
 /// One message, either way.
 #[derive(Debug, Clone, PartialEq)]
@@ -206,6 +221,20 @@ mod tests {
         std::iter::from_fn(|| framer.next())
             .map(|b| String::from_utf8(b.unwrap()).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn cancelled_and_out_of_date_errors_are_routine() {
+        let error = |code| RpcError {
+            code,
+            message: String::new(),
+        };
+        for code in [-32800, -32801, -32802] {
+            assert!(error(code).is_routine(), "{code}");
+        }
+        for code in [METHOD_NOT_FOUND, -32603, -32602, -32803, -32799, 0] {
+            assert!(!error(code).is_routine(), "{code}");
+        }
     }
 
     #[test]
