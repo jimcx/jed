@@ -11,7 +11,9 @@
 //! hunk per change) and aligns them into rows ([`align`]): unchanged lines side by side, a
 //! change's old lines beside its new ones (the extra lines of the longer side against filler),
 //! or, in the one-column (inline) layout, a change's old lines above its new ones. Both layouts
-//! are built once per load, so drawing and scrolling only index into them.
+//! are built once per load, so drawing and scrolling only index into them. Each side's syntax
+//! colours are computed in the load too ([`Doc::highlight`]: the side's whole text parsed, so a
+//! comment or string over several lines colours every one of them).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,6 +28,7 @@ use crate::git::diff::{self, Hunk};
 use crate::git::stage::{self, FileDiff, Side};
 use crate::history::{self, Snapshot};
 use crate::quick_diff::Want;
+use crate::syntax::{self, Language, Span};
 
 /// How long after an edit of a live side's buffer the diff is taken again (the gutter's delay).
 pub const DELAY: Duration = crate::quick_diff::DELAY;
@@ -159,6 +162,9 @@ impl Pair {
 pub struct Lines {
     text: String,
     starts: Vec<usize>,
+    /// Syntax colours over `text` (byte ranges of it: line breaks counted), sorted; empty when
+    /// not highlighted (plain text, too large, binary).
+    spans: Vec<Span>,
 }
 
 impl Lines {
@@ -170,7 +176,37 @@ impl Lines {
             starts.push(0);
             starts.extend(text.match_indices('\n').map(|(i, _)| i + 1).filter(|&i| i < text.len()));
         }
-        Lines { text, starts }
+        Lines {
+            text,
+            starts,
+            spans: Vec::new(),
+        }
+    }
+
+    /// Blocking: colours the whole text in `language` (one parse, so a comment or string over
+    /// several lines colours each of them), unless it's over `max_bytes` (0: never).
+    fn highlight(&mut self, language: Language, max_bytes: usize) {
+        if max_bytes == 0 || self.text.len() > max_bytes {
+            return;
+        }
+        self.spans = syntax::highlight_text(language, &self.text);
+    }
+
+    /// Where line `i` starts in the text (its length past the end): spans' coordinates.
+    pub fn start(&self, i: usize) -> usize {
+        self.starts.get(i).copied().unwrap_or(self.text.len())
+    }
+
+    /// The syntax colours (empty: plain).
+    pub fn spans(&self) -> &[Span] {
+        &self.spans
+    }
+
+    /// The first span ending after line `i`'s start (a binary search: where a walk over the
+    /// visible lines starts).
+    pub fn first_span(&self, i: usize) -> usize {
+        let start = self.start(i);
+        self.spans.partition_point(|s| s.end.0 <= start)
     }
 
     pub fn len(&self) -> usize {
@@ -374,6 +410,23 @@ impl Doc {
         })
     }
 
+    /// Blocking: colours both sides in `language` (`None`: the one the text's shebang names),
+    /// each side only up to `max_bytes` (0: never); a binary diff stays plain.
+    pub fn highlight(&mut self, language: Option<Language>, max_bytes: usize) {
+        if self.binary {
+            return;
+        }
+        let language = language.unwrap_or_else(|| {
+            let first = if self.right.len() > 0 { &self.right } else { &self.left };
+            syntax::detect_shebang(first.line(0))
+        });
+        if language.grammar().is_none() {
+            return;
+        }
+        self.left.highlight(language, max_bytes);
+        self.right.highlight(language, max_bytes);
+    }
+
     pub fn aligned(&self, inline: bool) -> &Aligned {
         if inline { &self.inline } else { &self.split }
     }
@@ -416,13 +469,20 @@ pub struct Job {
     pub pair: Pair,
     /// The open buffer's text and BOM (a live side reads it).
     pub live: Option<(Rope, bool)>,
+    /// The file's language for the syntax colours (the open buffer's, else by its path); `None`:
+    /// the one its text's shebang names.
+    pub language: Option<Language>,
+    /// `Settings::syntax_max_bytes`: a bigger side stays plain (0: always).
+    pub syntax_max_bytes: usize,
 }
 
 /// Blocking: reads both sides of `job` and diffs them.
 pub fn load(job: Job) -> Result<Doc, String> {
     let left = read(&job, job.pair.left).map_err(|e| e.to_string())?;
     let right = read(&job, job.pair.right).map_err(|e| e.to_string())?;
-    Doc::new(left, right)
+    let mut doc = Doc::new(left, right)?;
+    doc.highlight(job.language, job.syntax_max_bytes);
+    Ok(doc)
 }
 
 fn read(job: &Job, text: Text) -> Result<Vec<u8>, stage::Error> {
@@ -647,15 +707,20 @@ impl DiffTab {
         &self.aligned().rows
     }
 
-    /// Drawing found the layout to use: the cursor and scroll move to the same lines in it.
+    /// Drawing found the layout to use: the cursor and scroll move to the same lines in it; a
+    /// cursor on a change's first row (opening, next / previous change) stays on that change's
+    /// first row, so where a first load lands doesn't depend on whether it was drawn before.
     pub fn set_layout(&mut self, inline: bool) {
         if inline == self.inline {
             return;
         }
         let cursor = self.rows().get(self.cursor).map(Row::line);
+        let start = self.aligned().starts.binary_search(&self.cursor).ok();
         let top = self.rows().get(self.top).map(Row::line);
         self.inline = inline;
-        if let Some((right, line)) = cursor {
+        if let Some(k) = start {
+            self.cursor = self.aligned().starts[k];
+        } else if let Some((right, line)) = cursor {
             self.cursor = self.aligned().row_of(right, line);
         }
         if let Some((right, line)) = top {
@@ -932,6 +997,16 @@ mod tests {
         assert_eq!(t.want(Some((3, 2))), Want::Later);
         t.mark_stale();
         assert_eq!(t.want(Some((3, 1))), Want::Now);
+        // On a change's first row: on its first row in the other layout too.
+        assert_eq!((t.cursor, t.rows()[1].right), (1, Some(1)));
+        t.set_layout(true);
+        assert_eq!(
+            (t.cursor, t.rows()[t.cursor].left),
+            (1, Some(1)),
+            "the change's `-` row"
+        );
+        t.set_layout(false);
+        assert_eq!(t.cursor, 1);
         // The cursor on right line 4 ("d") stays on it in the other layout.
         t.cursor = 4;
         t.set_layout(true);
@@ -972,6 +1047,8 @@ mod tests {
             path: root.join(rel),
             pair,
             live: live.map(|t| (Rope::from_str(t), false)),
+            language: None,
+            syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
         };
         let doc = load(job(Some("new\n"))).unwrap();
         assert_eq!((doc.left.line(0), doc.right.line(0)), ("old", "new"));
@@ -988,5 +1065,61 @@ mod tests {
             .unwrap_err()
             .contains("gone")
         );
+    }
+
+    /// Each side's spans as (text, key) pairs, line by line.
+    fn coloured(lines: &Lines) -> Vec<(usize, String, &'static str)> {
+        let mut out = Vec::new();
+        for i in 0..lines.len() {
+            let (start, line) = (lines.start(i), lines.line(i));
+            for sp in &lines.spans()[lines.first_span(i)..] {
+                if sp.start.0 >= start + line.len() {
+                    break;
+                }
+                let (a, b) = (sp.start.0.max(start) - start, (sp.end.0 - start).min(line.len()));
+                out.push((i, line[a..b].to_string(), sp.highlight.key()));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn both_sides_are_coloured_from_their_whole_text() {
+        let old = "fn a() {}\n/* one\ntwo */\n";
+        let new = "\u{FEFF}fn a() {}\r\n/* one\r\nthree */\r\nlet x = 1;\r\n";
+        let mut doc = Doc::new(old.into(), new.into()).unwrap();
+        doc.highlight(Some(Language::Rust), crate::syntax::DEFAULT_MAX_BYTES);
+        let left = coloured(&doc.left);
+        assert!(left.contains(&(0, "fn".into(), "keyword")), "{left:?}");
+        // A comment over two lines colours both, each clipped to its line.
+        assert!(left.contains(&(1, "/* one".into(), "comment")), "{left:?}");
+        assert!(left.contains(&(2, "two */".into(), "comment")), "{left:?}");
+        // The BOM dropped and `\r\n` lines: offsets still match the text as shown.
+        let right = coloured(&doc.right);
+        assert!(right.contains(&(0, "fn".into(), "keyword")), "{right:?}");
+        assert!(right.contains(&(2, "three */".into(), "comment")), "{right:?}");
+        assert!(right.contains(&(3, "let".into(), "keyword")), "{right:?}");
+    }
+
+    #[test]
+    fn plain_when_too_large_binary_or_without_a_grammar() {
+        let text = "fn a() {}\n";
+        let plain = |language, max| {
+            let mut doc = Doc::new(text.into(), text.into()).unwrap();
+            doc.highlight(language, max);
+            doc.left.spans().is_empty() && doc.right.spans().is_empty()
+        };
+        assert!(!plain(Some(Language::Rust), text.len()));
+        assert!(plain(Some(Language::Rust), text.len() - 1));
+        assert!(plain(Some(Language::Rust), 0));
+        assert!(plain(Some(Language::PlainText), 1 << 20));
+        // `None`: the shebang decides.
+        assert!(plain(None, 1 << 20));
+        let mut doc = Doc::new("#!/bin/sh\necho hi\n".into(), b"#!/bin/sh\n".to_vec()).unwrap();
+        doc.highlight(None, 1 << 20);
+        assert!(!doc.left.spans().is_empty());
+        let mut doc = Doc::new(b"fn\0".to_vec(), text.into()).unwrap();
+        doc.highlight(Some(Language::Rust), 1 << 20);
+        assert!(doc.binary && doc.right.spans().is_empty());
     }
 }

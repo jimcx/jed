@@ -23,7 +23,7 @@ use tree_sitter::{InputEdit, ParseOptions, Parser, Point, Tree};
 
 pub use config::{AutoPair, LanguageConfig, is_quote};
 pub use highlight::{KEYS, Span};
-pub use language::{Associations, Language, detect};
+pub use language::{Associations, Language, detect, detect_path, detect_shebang};
 pub use tokens::Tokens;
 
 use crate::buffer::change::ChangeSet;
@@ -411,6 +411,22 @@ impl ParseJob {
             tree,
         }
     }
+}
+
+/// Blocking: the highlight spans of a whole `text` in `language` (sorted, non-overlapping byte
+/// ranges of `text`), from one full parse; none without a grammar. For texts no buffer holds
+/// (a diff tab's sides): the caller applies the size limit.
+pub fn highlight_text(language: Language, text: &str) -> Vec<Span> {
+    if language.grammar().is_none() || text.is_empty() {
+        return Vec::new();
+    }
+    let rope = Rope::from_str(text);
+    let mut parser = new_parser(language);
+    let never = AtomicBool::new(false);
+    let Some(tree) = parse(&mut parser, &rope, None, Stop::Cancel(&never)) else {
+        return Vec::new();
+    };
+    highlight::compute(language, &tree, &rope, ByteIdx(0), ByteIdx(rope.len()))
 }
 
 /// The scope a node of this kind sets for the text in it, across jed's grammars; `None`: its

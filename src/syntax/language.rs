@@ -198,11 +198,18 @@ impl Associations {
 
 /// The language of the file at `path` (absolute) whose text starts with `first_line`.
 pub fn detect(path: &Path, root: &Path, first_line: &str, associations: &Associations) -> Language {
-    associations
-        .lookup(path, root)
-        .or_else(|| by_name(path))
-        .or_else(|| by_shebang(first_line))
-        .unwrap_or_default()
+    detect_path(path, root, associations).unwrap_or_else(|| detect_shebang(first_line))
+}
+
+/// `detect`'s first steps (associations, then the name), without the text: `None` when the
+/// shebang decides (a diff tab of a file not open reads its text off the UI thread).
+pub fn detect_path(path: &Path, root: &Path, associations: &Associations) -> Option<Language> {
+    associations.lookup(path, root).or_else(|| by_name(path))
+}
+
+/// `detect`'s last step: the language a text's first line names (a shebang), else plain text.
+pub fn detect_shebang(first_line: &str) -> Language {
+    by_shebang(first_line).unwrap_or_default()
 }
 
 /// File names and extensions, as VS Code's defaults (`.h` is C++, as there: the C++ grammar

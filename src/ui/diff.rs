@@ -4,7 +4,9 @@
 //! side has its own line numbers; removed lines on `diffEditor.removedLineBackground`, inserted
 //! ones on `insertedLineBackground`, the changed part of a changed pair (common ends trimmed)
 //! on `removedTextBackground` / `insertedTextBackground`, the other side of a lone line filled
-//! with `diffEditor.diagonalFill`. Plain text (no syntax colours). Each change's first row ends
+//! with `diffEditor.diagonalFill`. Each side's syntax colours (`Lines::spans`, from the load) are
+//! token foregrounds under those backgrounds (VS Code), walked with one index per side over the
+//! visible rows; a side without spans is plain. Each change's first row ends
 //! with a ` Stage ` / ` Unstage ` button when the view stages, and an unstaged view's with a red
 //! ` Revert ` on the index (left) side. Only the visible rows are drawn.
 
@@ -21,6 +23,7 @@ use crate::buffer::pos::{self, DisplayCol};
 use crate::diff_view::{self, DiffTab, Kind, Lines, Row};
 use crate::git::stage::Side;
 use crate::layout::DiffHit;
+use crate::syntax::Span;
 use crate::theme::Theme;
 
 /// The Revert button's label.
@@ -38,6 +41,45 @@ struct Styles {
     inserted_text: Style,
     fill: Style,
     control: Style,
+    /// Per `syntax::KEYS` index: the token's foreground (and modifiers), never a background.
+    tokens: Vec<Style>,
+}
+
+/// One side's syntax colours over the visible rows: its lines are visited in increasing order,
+/// so one index walks its spans (a binary search for the first line only).
+struct Walk<'a> {
+    lines: &'a Lines,
+    at: Option<usize>,
+}
+
+impl<'a> Walk<'a> {
+    fn new(lines: &'a Lines) -> Walk<'a> {
+        Walk { lines, at: None }
+    }
+
+    /// Line `line`'s text, where it starts in the side's text and the spans from the first one
+    /// ending after that start.
+    fn line(&mut self, line: usize) -> Line<'a> {
+        let (lines, start) = (self.lines, self.lines.start(line));
+        let spans = lines.spans();
+        let mut i = self.at.unwrap_or_else(|| lines.first_span(line));
+        while i < spans.len() && spans[i].end.0 <= start {
+            i += 1;
+        }
+        self.at = Some(i);
+        Line {
+            text: lines.line(line),
+            start,
+            spans: &spans[i..],
+        }
+    }
+}
+
+/// A line to draw: its text, its start in its side's text and the spans from there on.
+struct Line<'a> {
+    text: &'a str,
+    start: usize,
+    spans: &'a [Span],
 }
 
 /// Draws the diff tab in `area`; `focused` puts the terminal cursor on the current row. Writes
@@ -56,6 +98,13 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
         inserted_text: theme.get("diffEditor.insertedTextBackground"),
         fill: theme.get("editor").patch(theme.get("diffEditor.diagonalFill")),
         control: theme.get("editor.whitespace.control"),
+        tokens: crate::syntax::KEYS
+            .iter()
+            .map(|k| Style {
+                bg: None,
+                ..theme.get(k)
+            })
+            .collect(),
     };
     let out = f.buffer_mut();
     out.set_style(area, st.base);
@@ -141,6 +190,7 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
     let starts = &aligned.starts;
     let mut next_start = starts.partition_point(|&r| r < top);
     let mut cursor_cell = None;
+    let (mut left_walk, mut right_walk) = (Walk::new(&doc.left), Walk::new(&doc.right));
     for (i, row) in shown.iter().enumerate() {
         let index = top + i;
         let y = body.y + i as u16;
@@ -148,15 +198,18 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
         let parts = (row.kind() == Kind::Changed)
             .then(|| diff_view::changed_parts(doc.left.line(row.left.unwrap()), doc.right.line(row.right.unwrap())));
         let cell = if inline {
-            draw_inline(out, body, y, row, &doc, digits, d.left_col, tab_width, &st, current)
+            let line = match row.kind() {
+                Kind::Removed => left_walk.line(row.left.unwrap_or_default()),
+                _ => right_walk.line(row.right.unwrap_or_default()),
+            };
+            draw_inline(out, body, y, row, line, digits, d.left_col, tab_width, &st, current)
         } else {
             let left = Rect::new(body.x, y, half, 1);
             let right = Rect::new(body.x + half + 1, y, body.width - half - 1, 1);
-            let side = |rect, line, lines, removed, part| {
+            let side = |rect, line, removed, part| {
                 let ctx = Half {
                     rect,
                     line,
-                    lines,
                     digits,
                     left_col: d.left_col,
                     tab_width,
@@ -164,8 +217,10 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
                 };
                 (ctx, removed, part)
             };
-            let (l, lr, lp) = side(left, row.left, &doc.left, true, parts.as_ref().map(|p| p.0.clone()));
-            let (r, rr, rp) = side(right, row.right, &doc.right, false, parts.map(|p| p.1));
+            let left_line = row.left.map(|l| (l, left_walk.line(l)));
+            let right_line = row.right.map(|l| (l, right_walk.line(l)));
+            let (l, lr, lp) = side(left, left_line, true, parts.as_ref().map(|p| p.0.clone()));
+            let (r, rr, rp) = side(right, right_line, false, parts.map(|p| p.1));
             let at_left = draw_half(out, &l, row, lr, lp, &st);
             let at_right = draw_half(out, &r, row, rr, rp, &st);
             out.set_stringn(body.x + half, y, "│", 1, theme.get("editorGroup.border"));
@@ -209,8 +264,8 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
 /// One side of a side-by-side row.
 struct Half<'a> {
     rect: Rect,
-    line: Option<usize>,
-    lines: &'a Lines,
+    /// The line's number and what to draw of it; `None`: filler.
+    line: Option<(usize, Line<'a>)>,
     digits: usize,
     left_col: usize,
     tab_width: usize,
@@ -229,7 +284,7 @@ fn draw_half(
 ) -> (u16, u16) {
     let Rect { x, y, width, .. } = h.rect;
     let text_x = x + (h.digits as u16 + 2).min(width);
-    let Some(line) = h.line else {
+    let Some((line, text)) = &h.line else {
         out.set_stringn(x, y, "╱".repeat(width as usize), width as usize, st.fill);
         return (text_x, y);
     };
@@ -245,16 +300,7 @@ fn draw_half(
     out.set_stringn(x, y, format!("{:>w$} ", line + 1, w = h.digits), width as usize, number);
     let highlight = part.map(|p| (p, if removed { st.removed_text } else { st.inserted_text }));
     let room = width.saturating_sub(text_x - x);
-    draw_text(
-        out,
-        (text_x, y, room),
-        h.lines.line(line),
-        h.left_col,
-        h.tab_width,
-        bg,
-        highlight,
-        st,
-    );
+    draw_text(out, (text_x, y, room), text, h.left_col, h.tab_width, bg, highlight, st);
     (text_x, y)
 }
 
@@ -266,18 +312,18 @@ fn draw_inline(
     body: Rect,
     y: u16,
     row: &Row,
-    doc: &diff_view::Doc,
+    line: Line,
     digits: usize,
     left_col: usize,
     tab_width: usize,
     st: &Styles,
     current: bool,
 ) -> (u16, u16) {
-    let (bg, sign, text) = match row.kind() {
-        Kind::Removed => (st.removed, "-", doc.left.line(row.left.unwrap_or_default())),
-        Kind::Added | Kind::Changed => (st.inserted, "+", doc.right.line(row.right.unwrap_or_default())),
-        Kind::Same if current => (st.current, " ", doc.right.line(row.right.unwrap_or_default())),
-        Kind::Same => (st.base, " ", doc.right.line(row.right.unwrap_or_default())),
+    let (bg, sign) = match row.kind() {
+        Kind::Removed => (st.removed, "-"),
+        Kind::Added | Kind::Changed => (st.inserted, "+"),
+        Kind::Same if current => (st.current, " "),
+        Kind::Same => (st.base, " "),
     };
     let width = body.width as usize;
     out.set_stringn(body.x, y, " ".repeat(width), width, bg);
@@ -294,18 +340,18 @@ fn draw_inline(
         bg,
     );
     let room = body.width.saturating_sub(sx - body.x);
-    draw_text(out, (sx, y, room), text, left_col, tab_width, bg, None, st);
+    draw_text(out, (sx, y, room), &line, left_col, tab_width, bg, None, st);
     (sx, y)
 }
 
 /// A line's text from display column `left_col`, `width` cells at most, through
-/// `pos::display_grapheme` (tabs, control characters) as the editor draws it; `highlight` patches
-/// a byte range.
+/// `pos::display_grapheme` (tabs, control characters) as the editor draws it: the token colours
+/// of its spans over `style`, then `highlight`'s background over a byte range.
 #[allow(clippy::too_many_arguments)]
 fn draw_text(
     out: &mut Cells,
     (x, y, width): (u16, u16, u16),
-    text: &str,
+    line: &Line,
     left_col: usize,
     tab_width: usize,
     style: Style,
@@ -314,7 +360,8 @@ fn draw_text(
 ) {
     let width = width as usize;
     let mut col = 0usize;
-    for (off, g) in text.grapheme_indices(true) {
+    let mut k = 0;
+    for (off, g) in line.text.grapheme_indices(true) {
         let (shown, w) = pos::display_grapheme(g, DisplayCol(col), tab_width);
         if col < left_col {
             col += w;
@@ -324,6 +371,15 @@ fn draw_text(
             break;
         }
         let mut s = style;
+        let at = line.start + off;
+        while k < line.spans.len() && line.spans[k].end.0 <= at {
+            k += 1;
+        }
+        if let Some(span) = line.spans.get(k)
+            && span.start.0 <= at
+        {
+            s = s.patch(st.tokens[span.highlight.index()]);
+        }
         if let Some((range, h)) = &highlight
             && range.contains(&off)
         {

@@ -58,6 +58,12 @@
 //!   reload from disk) move it; a closed tab's file is reopened, a file deleted from disk
 //!   skipped; a closed group's place opens in the active group; a diff tab counts as its file;
 //!   at most 50 entries.
+//! - `diff_syntax`: diff tabs draw both sides in the file's syntax colours (token foregrounds),
+//!   side by side and inline, a block comment over several lines coloured where only its middle
+//!   line changed, under the removed / inserted line and changed-part backgrounds; plain over
+//!   `syntax_max_bytes` and for an unknown extension; `.workspace` associations pick the
+//!   language; a comment opened above a scrolled view coloured; an edit of the open buffer
+//!   re-coloured after the diff's reload.
 
 mod render_whitespace {
     use std::fs;
@@ -3973,5 +3979,295 @@ mod back_forward {
         assert_eq!(app.ui.focus, crate::app::Focus::Editor);
         forward(&mut app);
         assert_eq!(place(&app).1, 60);
+    }
+}
+
+mod diff_syntax {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+
+    use crate::app::{App, InitialFile};
+    use crate::buffer::Buffer;
+    use crate::diff_view::Pair;
+    use crate::git::test_repo::{commit_all, init};
+    use crate::workspace::trust::TrustStore;
+    use crate::workspace::{self, Workspace};
+
+    const ORIGINAL: &str = "fn one() {}\n/* alpha\nbeta\ngamma */\nfn main() {}\n";
+    const CHANGED: &str = "fn two() {}\n/* alpha\nBETA\ngamma */\nfn main() {}\n";
+
+    /// A temp dir with `proj/` (a repository with `file` = `ORIGINAL` committed, `CHANGED` on
+    /// disk, and `workspace` as `.workspace` when given) and `state/` (outside the repo).
+    fn project(file: &str, workspace: Option<&str>) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        project_with(file, workspace, ORIGINAL, CHANGED)
+    }
+
+    /// `project` with `original` committed and `changed` on disk.
+    fn project_with(
+        file: &str,
+        workspace: Option<&str>,
+        original: &str,
+        changed: &str,
+    ) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let (root, state) = (base.join("proj"), base.join("state"));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        init(&root);
+        if let Some(w) = workspace {
+            fs::write(root.join(".workspace"), w).unwrap();
+        }
+        fs::write(root.join(file), original).unwrap();
+        commit_all(&root, "one");
+        fs::write(root.join(file), changed).unwrap();
+        (dir, root, state)
+    }
+
+    /// The app on `root` (with `file` open if given), its unstaged diff of `diffed` open and
+    /// loaded.
+    async fn open_diff(root: &Path, state: &Path, file: Option<&str>, diffed: &str) -> App {
+        let ws = Workspace::load(root.to_path_buf());
+        let trust = TrustStore::load(state.join("trust.toml"));
+        let initial = file.map(|f| InitialFile {
+            buffer: Buffer::open(&root.join(f)).unwrap(),
+            goto: None,
+        });
+        let mut app = App::new(ws, trust, initial, true);
+        app.test_start();
+        app.test_plain_whitespace();
+        assert!(
+            app.settle(|a| !a.git.running() && a.git.status.as_ref().is_some_and(|s| !s.entries.is_empty()))
+                .await
+        );
+        app.open_diff(root.join(diffed), Pair::UNSTAGED);
+        assert!(settle_diffs(&mut app).await);
+        app
+    }
+
+    async fn settle_diffs(app: &mut App) -> bool {
+        app.settle(|a| a.diffs_settled() && a.git.status.is_some()).await
+    }
+
+    fn draw(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    /// Where `needle` starts on screen: exactly one place.
+    fn at(term: &Terminal<TestBackend>, needle: &str) -> (u16, u16) {
+        let found = every(term, needle);
+        assert_eq!(found.len(), 1, "{needle:?} at {found:?}");
+        found[0]
+    }
+
+    /// Every place `needle` starts on screen.
+    fn every(term: &Terminal<TestBackend>, needle: &str) -> Vec<(u16, u16)> {
+        let found = every_or_none(term, needle);
+        assert!(!found.is_empty(), "{needle:?} not drawn");
+        found
+    }
+
+    /// Every place `needle` starts on screen, maybe none.
+    fn every_or_none(term: &Terminal<TestBackend>, needle: &str) -> Vec<(u16, u16)> {
+        let buf = term.backend().buffer();
+        let mut found = Vec::new();
+        for y in 0..buf.area.height {
+            let row: Vec<&str> = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            let n: Vec<String> = needle.chars().map(String::from).collect();
+            for x in 0..row.len().saturating_sub(n.len() - 1) {
+                if row[x..x + n.len()].iter().zip(&n).all(|(a, b)| a == b) {
+                    found.push((x as u16, y));
+                }
+            }
+        }
+        found
+    }
+
+    fn fg(term: &Terminal<TestBackend>, (x, y): (u16, u16)) -> Color {
+        term.backend().buffer()[(x, y)].fg
+    }
+
+    fn bg(term: &Terminal<TestBackend>, (x, y): (u16, u16)) -> Color {
+        term.backend().buffer()[(x, y)].bg
+    }
+
+    fn key_fg(app: &App, key: &str) -> Color {
+        app.theme.get(key).fg.unwrap()
+    }
+
+    fn key_bg(app: &App, key: &str) -> Color {
+        app.theme.get(key).bg.unwrap()
+    }
+
+    fn right(at: (u16, u16), n: u16) -> (u16, u16) {
+        (at.0 + n, at.1)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn both_sides_coloured_side_by_side_and_inline_under_the_diff_backgrounds() {
+        let (_d, root, state) = project("a.rs", None);
+        let mut app = open_diff(&root, &state, None, "a.rs").await;
+        let (keyword, comment, function) = (
+            key_fg(&app, "keyword"),
+            key_fg(&app, "comment"),
+            key_fg(&app, "function"),
+        );
+        let (removed, inserted) = (
+            key_bg(&app, "diffEditor.removedLineBackground"),
+            key_bg(&app, "diffEditor.insertedLineBackground"),
+        );
+        let (removed_text, inserted_text) = (
+            key_bg(&app, "diffEditor.removedTextBackground"),
+            key_bg(&app, "diffEditor.insertedTextBackground"),
+        );
+        let editor = key_bg(&app, "editor");
+        for (w, inline) in [(150, false), (80, true)] {
+            let term = draw(&mut app, w, 24);
+            assert_eq!(app.group().active_diff().unwrap().inline, inline);
+            let (old, new) = (at(&term, "fn one"), at(&term, "fn two"));
+            if inline {
+                assert_eq!(old.0, new.0);
+                assert!(old.1 < new.1, "the old line above the new one");
+            } else {
+                assert!(old.0 < new.0, "the old line on the left");
+            }
+            // The keyword in its colour on the line's background; the changed part (the name)
+            // in its token colour on the changed-text background.
+            assert_eq!((fg(&term, old), bg(&term, old)), (keyword, removed), "inline {inline}");
+            assert_eq!((fg(&term, new), bg(&term, new)), (keyword, inserted), "inline {inline}");
+            // (Inline draws no changed parts: the line's background.)
+            let (removed_text, inserted_text) = if inline {
+                (removed, inserted)
+            } else {
+                (removed_text, inserted_text)
+            };
+            let (name_old, name_new) = (right(old, 3), right(new, 3));
+            assert_eq!((fg(&term, name_old), bg(&term, name_old)), (function, removed_text));
+            assert_eq!((fg(&term, name_new), bg(&term, name_new)), (function, inserted_text));
+            // A comment's middle line changed alone is still a comment: both sides parsed whole.
+            let (beta, big) = (at(&term, "beta"), at(&term, "BETA"));
+            assert_eq!((fg(&term, beta), bg(&term, beta)), (comment, removed_text));
+            assert_eq!((fg(&term, big), bg(&term, big)), (comment, inserted_text));
+            // Unchanged lines (on both sides, or once inline): token colours on the editor's
+            // background.
+            let shown = if inline { 1 } else { 2 };
+            let gamma = every(&term, "gamma");
+            assert_eq!(gamma.len(), shown);
+            assert!(gamma.iter().all(|&c| fg(&term, c) == comment));
+            let main = every(&term, "fn main");
+            assert_eq!(main.len(), shown);
+            for c in main {
+                assert_eq!((fg(&term, c), bg(&term, c)), (keyword, editor), "inline {inline}");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn plain_over_the_size_limit() {
+        let (_d, root, state) = project("a.rs", Some("[settings]\nsyntax_max_bytes = 20\n"));
+        let mut app = open_diff(&root, &state, None, "a.rs").await;
+        assert_eq!(app.settings.syntax_max_bytes, 20);
+        let term = draw(&mut app, 150, 24);
+        let plain = key_fg(&app, "editor");
+        for text in ["fn one", "fn two", "beta", "BETA", "fn main"] {
+            for c in every(&term, text) {
+                assert_eq!(fg(&term, c), plain, "{text}");
+            }
+        }
+        assert_eq!(
+            bg(&term, at(&term, "fn one")),
+            key_bg(&app, "diffEditor.removedLineBackground")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn plain_for_an_unknown_extension() {
+        let (_d, root, state) = project("a.zzz", None);
+        let mut app = open_diff(&root, &state, None, "a.zzz").await;
+        let term = draw(&mut app, 150, 24);
+        let plain = key_fg(&app, "editor");
+        for text in ["fn one", "fn two", "beta", "BETA", "fn main"] {
+            for c in every(&term, text) {
+                assert_eq!(fg(&term, c), plain, "{text}");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_edit_of_the_open_buffer_is_recoloured_after_the_reload() {
+        let (_d, root, state) = project("a.rs", None);
+        let mut app = open_diff(&root, &state, Some("a.rs"), "a.rs").await;
+        let term = draw(&mut app, 150, 24);
+        assert_eq!(fg(&term, at(&term, "fn two")), key_fg(&app, "keyword"));
+        // Comment out the changed line in the buffer, unsaved.
+        app.press(K::PageUp, M::CONTROL);
+        assert_eq!(app.active_buffer().unwrap().path, root.join("a.rs"));
+        app.type_text("// ");
+        app.pump();
+        assert!(app.diffs.deadline().is_some());
+        assert!(settle_diffs(&mut app).await);
+        app.press(K::PageDown, M::CONTROL);
+        assert!(app.group().active_diff().is_some());
+        let term = draw(&mut app, 150, 24);
+        let new = at(&term, "// fn two");
+        assert_eq!(fg(&term, right(new, 3)), key_fg(&app, "comment"));
+        // The left side (the index) is unchanged.
+        assert_eq!(fg(&term, at(&term, "fn one")), key_fg(&app, "keyword"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn workspace_associations_pick_the_language() {
+        let ws = "[files]\nassociations = { \"*.zzz\" = \"rust\" }\n";
+        let (_d, root, state) = project("a.zzz", Some(ws));
+        let mut app = open_diff(&root, &state, None, "a.zzz").await;
+        let term = draw(&mut app, 150, 24);
+        let (keyword, comment) = (key_fg(&app, "keyword"), key_fg(&app, "comment"));
+        assert_eq!(fg(&term, at(&term, "fn one")), keyword);
+        assert_eq!(fg(&term, at(&term, "BETA")), comment);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_comment_opened_above_a_scrolled_view_is_coloured() {
+        // Line 1 opens a comment closed 40 lines on; only the line after it changes.
+        let comment_lines: String = (0..40).map(|i| format!("c{i:02}\n")).collect();
+        let text = |name: &str| format!("fn f() {{}}\n/*\n{comment_lines}*/\nfn {name}() {{}}\nfn main() {{}}\n");
+        let (_d, root, state) = project_with("a.rs", None, &text("g"), &text("h"));
+        let mut app = open_diff(&root, &state, None, "a.rs").await;
+        let (keyword, comment, editor) = (key_fg(&app, "keyword"), key_fg(&app, "comment"), key_fg(&app, "editor"));
+        for (w, inline) in [(150, false), (80, true)] {
+            draw(&mut app, w, 40);
+            let d = app.group_mut().active_diff_mut().unwrap();
+            assert_eq!(d.inline, inline);
+            // Scrolled to the end: the last page, starting inside the comment.
+            d.top = 0;
+            d.scroll_by(1000);
+            assert!((4..20).contains(&d.top), "top {} inline {inline}", d.top);
+            let term = draw(&mut app, w, 40);
+            // Neither the comment's opening line nor the code before it is on screen.
+            assert!(every_or_none(&term, "/*").is_empty() && every_or_none(&term, "fn f").is_empty());
+            let shown = if inline { 1 } else { 2 };
+            for line in ["c20", "c30", "c39"] {
+                let cells = every(&term, line);
+                assert_eq!(cells.len(), shown, "{line}");
+                assert!(cells.iter().all(|&c| fg(&term, c) == comment), "{line} inline {inline}");
+            }
+            // The digits of the line numbers stay plain gutter text, not comment-coloured.
+            let (x, y) = every(&term, "c20")[0];
+            assert_ne!(fg(&term, (x - 2, y)), comment);
+            // After the comment: code again, on both sides.
+            for c in every(&term, "fn main") {
+                assert_eq!(fg(&term, c), keyword, "inline {inline}");
+            }
+            assert_eq!(fg(&term, at(&term, "fn g")), keyword);
+            assert_eq!(fg(&term, at(&term, "fn h")), keyword);
+            assert_ne!(keyword, editor);
+        }
     }
 }

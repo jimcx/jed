@@ -22,6 +22,7 @@ use crate::git::{Change, Repo, diff};
 use crate::group::Tab;
 use crate::layout::Hit;
 use crate::quick_diff::Want;
+use crate::syntax;
 
 /// Columns the view scrolls sideways per Left / Right.
 const SIDE_STEP: isize = 4;
@@ -179,6 +180,12 @@ impl App {
                 path: d.path.clone(),
                 pair: d.pair,
                 live: open.map(|(_, b)| (b.rope.clone(), b.bom)),
+                // The open buffer's language; else its path's, its text's shebang off-thread.
+                language: match open {
+                    Some((_, b)) => Some(b.syntax.language()),
+                    None => syntax::detect_path(&d.path, &self.workspace.root, &self.associations),
+                },
+                syntax_max_bytes: self.settings.syntax_max_bytes,
             };
             jobs.push((d.id, generation, job));
         }
