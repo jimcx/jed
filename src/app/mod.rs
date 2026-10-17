@@ -28,6 +28,7 @@ mod session;
 mod side;
 mod syntax;
 mod tasks;
+mod tools;
 mod workspace_search;
 
 use std::collections::{HashMap, HashSet};
@@ -281,6 +282,10 @@ pub struct App {
     /// Changes the log filter; `None` when logging is off (and in tests, unless set).
     pub log: Option<logging::LevelHandle>,
     pub log_dir: PathBuf,
+    /// The tool logs (language servers', "jed"'s); `main` puts in the store its `tracing`
+    /// layer feeds. `start` hands it to the language servers and, with a `state_dir`, gives it
+    /// `<state dir>/logs/tools` to write to.
+    pub logs: crate::logs::Logs,
     /// Holds `settings.toml` (for "Preferences: Open User Settings"); `paths::config_dir()`.
     pub config_dir: PathBuf,
     /// Where the session file goes (`paths::state_dir()`); `None` turns sessions off (tests,
@@ -413,6 +418,7 @@ impl App {
             files_pending: Arc::new(AtomicBool::new(false)),
             log: None,
             log_dir: logging::log_dir(),
+            logs: Default::default(),
             config_dir: crate::paths::config_dir(),
             #[cfg(not(test))]
             state_dir: Some(crate::paths::state_dir()),
@@ -500,6 +506,7 @@ impl App {
     /// Background work that needs the runtime: watching, the first listing and git status,
     /// language servers.
     fn start(&mut self) {
+        self.start_tool_logs();
         let tx = self.tx.clone();
         self.lsp.start(Arc::new(move |ev| {
             let _ = tx.send(AppEvent::Lsp(ev));
@@ -544,6 +551,7 @@ impl App {
             self.sync_blame();
             self.sync_diffs();
             self.sync_backups();
+            self.report_log_errors();
             if self.needs_redraw {
                 let t = Instant::now();
                 terminal.draw(|f| ui::render(f, self))?;
@@ -1258,6 +1266,7 @@ impl App {
         self.sync_blame();
         self.sync_diffs();
         self.sync_backups();
+        self.report_log_errors();
     }
 
     /// Handles background results (and the Search view's debounce) until `done` holds; false after 5 s.
@@ -1272,6 +1281,7 @@ impl App {
             self.sync_blame();
             self.sync_diffs();
             self.sync_backups();
+            self.report_log_errors();
             if done(self) {
                 break;
             }

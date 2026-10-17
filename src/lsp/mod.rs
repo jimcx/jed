@@ -16,7 +16,7 @@ pub mod uri;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use lsp_types::ServerCapabilities;
@@ -122,6 +122,8 @@ pub struct Server {
     pub progress: progress::Progress,
     tx: mpsc::UnboundedSender<ToServer>,
     next_id: Arc<AtomicI64>,
+    /// Its protocol trace is on: every JSON-RPC message in / out also goes to its tool log.
+    trace: Arc<AtomicBool>,
     task: JoinHandle<()>,
 }
 
@@ -153,6 +155,18 @@ impl Server {
             method: method.into(),
             params,
         });
+    }
+
+    /// Turns the protocol trace (every message to its tool log) on or off ("Tools: Toggle
+    /// Protocol Trace", tools-d).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn set_trace(&self, on: bool) {
+        self.trace.store(on, Ordering::Relaxed);
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn trace(&self) -> bool {
+        self.trace.load(Ordering::Relaxed)
     }
 
     fn stop(&self) {
@@ -196,6 +210,9 @@ pub struct Manager {
     /// Where jed writes files for servers (`scons`: ty's SCons builtins); `None` (tests'
     /// default): nothing written.
     pub support_dir: Option<PathBuf>,
+    /// The tool logs: each server's task writes its stderr, lifecycle and messages to the
+    /// ring of its name (`App::start` sets the app's store).
+    pub logs: crate::logs::Logs,
 }
 
 impl Manager {
@@ -211,6 +228,7 @@ impl Manager {
             diagnostics: diagnostics::Store::default(),
             cleared: Vec::new(),
             support_dir: None,
+            logs: crate::logs::Logs::default(),
         }
     }
 
@@ -286,6 +304,7 @@ impl Manager {
             let id = ServerId(self.next_server);
             let (tx, rx) = mpsc::unbounded_channel();
             let next_id = Arc::new(AtomicI64::new(1));
+            let trace = Arc::new(AtomicBool::new(false));
             tracing::info!(server = %config.name, language = language.id(), "starting language server");
             let task = tokio::spawn(
                 Task {
@@ -297,6 +316,8 @@ impl Manager {
                     sink: sink.clone(),
                     next_id: next_id.clone(),
                     support_dir: self.support_dir.clone(),
+                    log: self.logs.tool(crate::logs::Tool::Server(config.name.clone())),
+                    trace: trace.clone(),
                 }
                 .run(),
             );
@@ -309,6 +330,7 @@ impl Manager {
                 progress: progress::Progress::default(),
                 tx,
                 next_id,
+                trace,
                 task,
             });
         }

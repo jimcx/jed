@@ -17,8 +17,9 @@ pub fn log_dir() -> PathBuf {
 }
 
 /// `filter` comes from `--log-level`; otherwise `JED_LOG`, otherwise `info`.
-/// Both use `EnvFilter` syntax, e.g. `jed::buffer=debug,input=trace`.
-pub fn init(filter: Option<&str>) -> anyhow::Result<LevelHandle> {
+/// Both use `EnvFilter` syntax, e.g. `jed::buffer=debug,input=trace`. What passes the filter
+/// also goes to `tools`' "jed" ring (`logs::layer`).
+pub fn init(filter: Option<&str>, tools: crate::logs::Logs) -> anyhow::Result<LevelHandle> {
     let dir = log_dir();
     std::fs::create_dir_all(&dir)?;
     let appender = RollingFileAppender::builder()
@@ -31,13 +32,28 @@ pub fn init(filter: Option<&str>) -> anyhow::Result<LevelHandle> {
         Some(f) => EnvFilter::try_new(f)?,
         None => EnvFilter::try_from_env("JED_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
     };
-    let (filter, handle) = reload::Layer::new(filter);
     // Blocking writer: the panic hook exits the process, which would lose a non-blocking writer's queue.
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(tracing_subscriber::fmt::layer().with_writer(appender).with_ansi(false))
-        .init();
+    let (subscriber, handle) = subscriber(filter, appender, tools);
+    subscriber.init();
     Ok(handle)
+}
+
+/// jed's `tracing` stack: the reloadable `filter`, then the log file's lines to `writer` and
+/// the same events to `tools`' "jed" ring.
+pub fn subscriber<W>(
+    filter: EnvFilter,
+    writer: W,
+    tools: crate::logs::Logs,
+) -> (impl tracing::Subscriber + Send + Sync, LevelHandle)
+where
+    W: for<'w> tracing_subscriber::fmt::MakeWriter<'w> + Send + Sync + 'static,
+{
+    let (filter, handle) = reload::Layer::new(filter);
+    let subscriber = tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(writer).with_ansi(false))
+        .with(crate::logs::layer::layer(tools));
+    (subscriber, handle)
 }
 
 /// The filter in use, in `EnvFilter` syntax.

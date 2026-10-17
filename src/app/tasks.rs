@@ -251,6 +251,8 @@ impl App {
             }
         };
         tokio::join!(self.lsp.shutdown(), self.tasks.shutdown(), session);
+        // The servers' last lines (their "Stopped") onto disk.
+        self.flush_tool_logs().await;
         // After the session: a clean quit removes the backups, else they're brought up to date.
         self.finish_backups().await;
     }

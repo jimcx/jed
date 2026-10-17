@@ -10,7 +10,10 @@
 //! MethodNotFound. A `test/publish` notification makes it send `textDocument/publishDiagnostics`
 //! with the same params (a test's way to publish diagnostics: for any URI and version, in order
 //! after the document notifications sent before it), `test/progress` a `$/progress` with its
-//! params (a token's `begin` / `report` / `end`); `test/crash` makes it hang up.
+//! params (a token's `begin` / `report` / `end`); `test/crash` makes it hang up. For tool logs:
+//! it writes `fake server starting` to its stderr when launched, `test/stderr` writes its
+//! `text` param as a stderr line, `test/log` / `test/show` send `window/logMessage` /
+//! `window/showMessage` with their params.
 //!
 //! Scripted answers: `respond(method, result)` makes it answer every `method` request (e.g.
 //! `textDocument/hover`) with `result`; `hold(method, true)` keeps those answers until a
@@ -212,7 +215,7 @@ impl Launcher for FakeLauncher {
         tokio::spawn(async move {
             let _ = stderr_write.write_all(b"fake server starting\n").await;
             let mut server_write = server_write;
-            serve(server_read, &mut server_write, options, shared).await;
+            serve(server_read, &mut server_write, &mut stderr_write, options, shared).await;
             // Counted before the output closes, so a client that saw it close sees the count.
             exited.fetch_add(1, Ordering::SeqCst);
             drop(server_write);
@@ -229,6 +232,7 @@ impl Launcher for FakeLauncher {
 async fn serve(
     mut input: impl AsyncRead + Unpin,
     mut output: impl AsyncWrite + Unpin,
+    mut stderr: impl AsyncWrite + Unpin,
     options: FakeOptions,
     shared: Arc<Mutex<Shared>>,
 ) {
@@ -349,6 +353,12 @@ async fn serve(
                             });
                         }
                     }
+                    "test/stderr" => {
+                        let text = params["text"].as_str().unwrap_or("");
+                        let _ = stderr.write_all(format!("{text}\n").as_bytes()).await;
+                    }
+                    "test/log" => out.push(Message::notification("window/logMessage", params)),
+                    "test/show" => out.push(Message::notification("window/showMessage", params)),
                     "test/publish" => out.push(Message::notification("textDocument/publishDiagnostics", params)),
                     "test/progress" => out.push(Message::notification("$/progress", params)),
                     "test/flush" => {

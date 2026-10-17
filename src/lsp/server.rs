@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use lsp_types::{
@@ -25,6 +25,7 @@ use super::config::ServerConfig;
 use super::rpc::{Framer, Id, METHOD_NOT_FOUND, Message, RpcError};
 use super::{Event, ServerId, Sink, StartError, uri};
 use crate::buffer::pos::PosEncoding;
+use crate::logs::{Level, ToolLog};
 
 /// After asking a server to shut down, how long it gets to exit before it is killed.
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -75,6 +76,15 @@ impl Launcher for ProcessLauncher {
     }
 }
 
+/// The command and its arguments as one line, for the log (arguments with spaces quoted).
+fn command_line(config: &ServerConfig) -> String {
+    std::iter::once(&config.command)
+        .chain(&config.args)
+        .map(|a| crate::recent::shell_quote(a).into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// A bare name is looked up on `PATH` (by `Command`); a relative path is relative to the root.
 fn program(command: &str, root: &Path) -> PathBuf {
     let path = Path::new(command);
@@ -122,6 +132,10 @@ pub struct Task {
     pub next_id: Arc<AtomicI64>,
     /// Where jed writes files servers read (`Manager::support_dir`): ty's SCons builtins.
     pub support_dir: Option<PathBuf>,
+    /// Its tool log: stderr, lifecycle, `window/logMessage` / `showMessage`, the protocol trace.
+    pub log: ToolLog,
+    /// The protocol trace is on (`Server::set_trace`).
+    pub trace: Arc<AtomicBool>,
 }
 
 /// How the task ended.
@@ -147,13 +161,21 @@ impl Task {
                 config.init_options = Some(super::scons::with_extra_path(config.init_options.take(), &stub));
             }
         }
+        let log = self.log.clone();
+        log.info(&format!(
+            "Starting: {} (in {})",
+            command_line(&self.config),
+            self.root.display()
+        ));
         let transport = match self.launcher.launch(&self.config, &self.root) {
             Ok(t) => t,
             Err(e) => {
                 tracing::warn!(server = %name, command = %self.config.command, "can't start language server: {e}");
                 let error = if e.kind() == std::io::ErrorKind::NotFound {
+                    log.error(&format!("Can't start: {} not found", self.config.command));
                     StartError::NotFound
                 } else {
+                    log.error(&format!("Can't start: {e}"));
                     StartError::Spawn(e.to_string())
                 };
                 (self.sink)(Event::Failed { server: self.id, error });
@@ -161,6 +183,9 @@ impl Task {
             }
         };
         tracing::info!(server = %name, command = %self.config.command, root = %self.root.display(), "language server started");
+        if let Some(pid) = transport.child.as_ref().and_then(tokio::process::Child::id) {
+            log.info(&format!("Started, pid {pid}"));
+        }
         let Transport {
             mut reader,
             writer,
@@ -183,6 +208,8 @@ impl Task {
             queued: Vec::new(),
             shutting_down: false,
             exit_sent: false,
+            log: log.clone(),
+            trace: self.trace.clone(),
         };
         conn.send_initialize(&config);
 
@@ -228,6 +255,7 @@ impl Task {
                     match line {
                         Ok(Some(line)) => {
                             tracing::debug!(target: "lsp::stderr", server = %name, "{line}");
+                            log.info(&line);
                             if tail.len() == STDERR_TAIL {
                                 tail.pop_front();
                             }
@@ -267,6 +295,7 @@ impl Task {
             let rest = async {
                 while let Ok(Some(line)) = lines.next_line().await {
                     tracing::debug!(target: "lsp::stderr", server = %name, "{line}");
+                    log.info(&line);
                     if tail.len() == STDERR_TAIL {
                         tail.pop_front();
                     }
@@ -294,6 +323,7 @@ impl Task {
         match end {
             End::Requested => {
                 tracing::info!(server = %name, status = status.as_deref().unwrap_or("killed"), "language server stopped");
+                log.info(&format!("Stopped ({})", status.as_deref().unwrap_or("killed")));
                 (self.sink)(Event::Exited {
                     server: self.id,
                     crashed: None,
@@ -312,6 +342,7 @@ impl Task {
                 };
                 let lines: Vec<String> = tail.into();
                 tracing::warn!(server = %name, stderr = %lines.join("\n"), "language server exited: {why}");
+                log.error(&format!("Crashed: {why}"));
                 (self.sink)(Event::Exited {
                     server: self.id,
                     crashed: Some(why),
@@ -346,12 +377,18 @@ struct Conn {
     shutting_down: bool,
     /// `exit` went out: the server has `EXIT_GRACE` left.
     exit_sent: bool,
+    log: ToolLog,
+    /// The protocol trace is on: messages also go to `log`.
+    trace: Arc<AtomicBool>,
 }
 
 impl Conn {
     fn send(&self, msg: &Message) {
         let body = msg.to_value().to_string();
         tracing::trace!(target: "lsp::wire", server = %self.name, "→ {body}");
+        if self.trace.load(Ordering::Relaxed) {
+            self.log.push(Level::Trace, &format!("→ {body}"));
+        }
         let _ = self.out.send(super::rpc::encode_body(body.as_bytes()));
     }
 
@@ -392,6 +429,10 @@ impl Conn {
     /// One body from the server; `Some` ends the task.
     fn incoming(&mut self, body: &[u8]) -> Option<End> {
         tracing::trace!(target: "lsp::wire", server = %self.name, "← {}", String::from_utf8_lossy(body));
+        if self.trace.load(Ordering::Relaxed) {
+            self.log
+                .push(Level::Trace, &format!("← {}", String::from_utf8_lossy(body)));
+        }
         let msg = match serde_json::from_slice(body).ok().and_then(Message::from_value) {
             Some(m) => m,
             None => {
@@ -429,11 +470,24 @@ impl Conn {
             Message::Notification { method, params } => match method.as_str() {
                 "window/logMessage" => {
                     let text = params.get("message").and_then(Value::as_str).unwrap_or("");
-                    match params.get("type").and_then(Value::as_i64) {
+                    let kind = params.get("type").and_then(Value::as_i64);
+                    self.log.push(Level::from_lsp(kind), text);
+                    match kind {
                         Some(1) => tracing::warn!(server = %self.name, "{text}"),
                         Some(2) | Some(3) => tracing::info!(server = %self.name, "{text}"),
                         _ => tracing::debug!(server = %self.name, "{text}"),
                     }
+                }
+                // Logged here; the app shows it (`Manager::handle`).
+                "window/showMessage" => {
+                    let text = params.get("message").and_then(Value::as_str).unwrap_or("");
+                    let kind = params.get("type").and_then(Value::as_i64);
+                    self.log.push(Level::from_lsp(kind), &format!("Message: {text}"));
+                    (self.sink)(Event::Notification {
+                        server: self.id,
+                        method,
+                        params,
+                    });
                 }
                 "$/logTrace" | "telemetry/event" => {}
                 // Read here, off the UI thread (tens of ms for tens of thousands).
@@ -489,6 +543,7 @@ impl Conn {
         let value = match result {
             Ok(v) => v,
             Err(e) => {
+                self.log.error(&format!("Failed to initialize: {}", e.message));
                 (self.sink)(Event::Failed {
                     server: self.id,
                     error: StartError::Initialize(e.message),
@@ -512,6 +567,15 @@ impl Conn {
             .and_then(Value::as_str)
             .unwrap_or("?");
         tracing::info!(server = %self.name, ?encoding, version, "language server initialized");
+        let info = match value.pointer("/serverInfo/name").and_then(Value::as_str) {
+            Some(server) => format!("{server} {version}"),
+            None => format!("version {version}"),
+        };
+        let positions = match encoding {
+            PosEncoding::Utf8 => "UTF-8",
+            PosEncoding::Utf16 => "UTF-16",
+        };
+        self.log.info(&format!("Initialized: {info}, positions in {positions}"));
         self.initialized = true;
         self.send(&Message::notification("initialized", json!({})));
         (self.sink)(Event::Initialized {

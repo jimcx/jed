@@ -27,6 +27,7 @@ mod layout;
 mod lines;
 mod locations;
 mod logging;
+mod logs;
 mod lsp;
 #[cfg(test)]
 mod milestone10_tests;
@@ -77,6 +78,8 @@ mod terminal;
 mod theme;
 #[cfg(test)]
 mod todo_tests;
+#[cfg(test)]
+mod tools_tests;
 mod ui;
 mod view;
 mod watcher;
@@ -151,7 +154,8 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let log = match logging::init(args.log_level.as_deref()) {
+    let tool_logs = logs::Logs::default();
+    let log = match logging::init(args.log_level.as_deref(), tool_logs.clone()) {
         Ok(handle) => Some(handle),
         Err(e) => {
             eprintln!("jed: logging disabled: {e}");
@@ -207,6 +211,7 @@ fn main() -> ExitCode {
                 errors.extend(keymap_errors);
                 app.set_keymap(keymap, errors);
                 app.log = log;
+                app.logs = tool_logs;
                 app.run(&mut term).await
             })
         });
