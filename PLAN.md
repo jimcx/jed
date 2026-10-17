@@ -356,6 +356,8 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
   - "jed": jed's own `tracing` events at the current log level (the same lines as the log file)
 - Commands: "Tools: Show" (`tools.show`), "Tools: Open Log" (`tools.openLog`, a picker), "Tools: Clear Log", "Tools: Toggle Protocol Trace" and "Tools: Restart Server" (a language server: a failed one otherwise stays failed until jed restarts); unbound
 - Cost: appends batched per frame; drawing reads only the visible lines, as any buffer
+- Logs are transient in the editor: log tabs are never saved in sessions (a restart shows none) and the rings start empty
+- On disk too: each tool's lines are also appended (off the UI thread, batched) to `<state dir>/logs/tools/<tool>.log` (e.g. `rust-analyzer.log`, `clangd.log`; the language server's name, else its command's file name), each line with time, pid and workspace root so several jed windows can share a file; rotated by size: past 4 MB the file becomes `<tool>.log.1` (older ones shifted, up to `.3`, the oldest removed), under a `File::lock` on `<tool>.log.lock` as `recent.toml` does; "jed" isn't written again — it is already the daily `jed.<date>.log`. A protocol trace goes to the file too while it's on. Write errors are reported once and logging carries on in memory
 
 ### Command palette and quick open
 - Cmd/Ctrl+Shift+P: command palette — every named `Command`, with its current binding
@@ -830,14 +832,14 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
 
 14. **Tools view and logs**: a side panel view of every tool jed runs, each with its log in a read-only editor tab — see [Tools and logs](#tools-and-logs)
     - Needs: language servers (M9), tasks (M12), side panel lists and their scroll bars
-    - Per-tool log rings filled off the UI thread: language servers' stderr, lifecycle, `window/logMessage` / `showMessage`, optional protocol trace; jed's own `tracing` events
+    - Per-tool log rings filled off the UI thread, also written to `<state dir>/logs/tools/` with size rotation: language servers' stderr, lifecycle, `window/logMessage` / `showMessage`, optional protocol trace; jed's own `tracing` events
     - Read-only log tabs (a buffer appended to without undo or dirtiness, following the tail), one per tool
     - `SidePanel::Tools` with an activity bar icon: servers, task runs, "jed"; open a log, focus a task's tab
     - Commands: Show, Open Log, Clear Log, Toggle Protocol Trace, Restart Server
     - Done when: with rust-analyzer and clangd running, the Tools view lists both with their states; opening rust-analyzer's log shows its stderr and lifecycle lines and keeps up while it indexes (following the tail, not while scrolled up); a server that crashes shows as failed with its last lines in its log, and Restart Server brings it back; a protocol trace shows the JSON-RPC messages
     - Tasks (one agent and one commit each):
-      - 14a: the log store: `logs` module (a ring per tool: lines with time and level, capped by lines and bytes, a generation for readers), fed by language servers (stderr, lifecycle, `window/logMessage` / `showMessage`) and a `tracing` layer for "jed"; no UI yet beyond tests
-      - 14b: read-only log tabs: a buffer kind appended through one `ChangeSet` per frame without undo or dirtiness, never typed into; "Tools: Open Log" (picker) and "Tools: Clear Log"; following the tail; reused per tool; splits and sessions (a log tab isn't restored, or reopens empty — decide)
+      - 14a: the log store: `logs` module (a ring per tool: lines with time and level, capped by lines and bytes, a generation for readers), fed by language servers (stderr, lifecycle, `window/logMessage` / `showMessage`) and a `tracing` layer for "jed"; each tool's log also written to `<state dir>/logs/tools/<tool>.log`, rotated past 4 MB (`.1`–`.3`, under a lock: several jed windows share it); no UI yet beyond tests
+      - 14b: read-only log tabs: a buffer kind appended through one `ChangeSet` per frame without undo or dirtiness, never typed into; "Tools: Open Log" (picker) and "Tools: Clear Log"; following the tail; reused per tool; splits; never in sessions (a log tab isn't restored)
       - 14c: the Tools view: activity bar icon, `SidePanel::Tools` rows (servers with state / progress / error badge, task runs, "jed"), `Scrollable`, click / Enter opens the log or focuses the task tab, "Tools: Show"
       - 14d: "Tools: Toggle Protocol Trace" (the `lsp::wire` messages into that server's log) and "Tools: Restart Server" (stops it and lets `sync` start it again, also after a failure); the done-when tests, gaps and hand checks; marks M14 ✅
 
