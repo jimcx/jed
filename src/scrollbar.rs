@@ -1,6 +1,19 @@
-//! The editors' vertical scroll bar, the model (no drawing: `ui::scrollbar`; `app/scrollbar.rs`
-//! drives the mouse): where the thumb goes on a track for a scroll position, and back. Plain
-//! cells, no sub-cell glyphs. Everything is O(1): the caller gives the line or row count.
+//! Vertical scroll bars (the editors', the side bar's and the bottom panel's lists), the model
+//! (no drawing: `ui::scrollbar`; `app/scrollbar.rs` drives the mouse): where the thumb goes on a
+//! track for a scroll position, and back. Plain cells, no sub-cell glyphs. Everything is O(1):
+//! the caller gives the line or row count. Anything scrolled gets a bar by implementing
+//! [`Scrollable`] (on its state, or a borrow of it with what it needs).
+
+/// Something a scroll bar scrolls: a text view, a diff, a list. Implemented next to each list's
+/// model; `App::with_scrollable` (`app/scrollbar.rs`) picks the one a `ScrollTarget` names, and
+/// drawing builds the same one for the thumb. `scroll` must not walk the list's rows (a count
+/// and an index: lists that keep their top by key convert with a binary search).
+pub trait Scrollable {
+    /// Where it is now (`Scroll::rows` for a list whose last page stays full, `Scroll::text`).
+    fn scroll(&self) -> Scroll;
+    /// Puts row `top` at the top, clamped as its own scrolling clamps (the wheel's end).
+    fn set_top(&mut self, top: usize);
+}
 
 /// A scroll position: the first row shown, the rows on screen and the largest first row the
 /// view can scroll to. The thumb's length is the screen's share of `max_top + height` (every

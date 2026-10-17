@@ -34,6 +34,16 @@ pub struct Explorer {
     reveal: Option<PathBuf>,
 }
 
+impl crate::scrollbar::Scrollable for Explorer {
+    fn scroll(&self) -> crate::scrollbar::Scroll {
+        crate::scrollbar::Scroll::rows(self.row_count(), self.height, self.scroll)
+    }
+
+    fn set_top(&mut self, top: usize) {
+        self.scroll = top.min(self.row_count().saturating_sub(self.height));
+    }
+}
+
 impl Explorer {
     pub fn new(root: PathBuf) -> Self {
         let name = root
@@ -255,6 +265,18 @@ impl Explorer {
         } else {
             self.expand(&sel)
         }
+    }
+
+    /// How many rows `rows` gives, without collecting them.
+    pub fn row_count(&self) -> usize {
+        fn count(e: &Entry) -> usize {
+            e.children
+                .iter()
+                .flatten()
+                .map(|c| 1 + if c.expanded { count(c) } else { 0 })
+                .sum()
+        }
+        count(&self.root)
     }
 
     pub fn scroll_by(&mut self, delta: isize) {
@@ -508,6 +530,33 @@ mod tests {
         assert!(x.find(&root.join("c.txt")).is_some());
         x.left();
         assert!(!x.find(&root.join("src")).unwrap().expanded);
+    }
+
+    /// `row_count` counts what `rows` gives (expanded folders' children only) without
+    /// collecting; the scroll bar's `set_top` clamps as the wheel does, the selection stays.
+    #[test]
+    fn row_count_and_the_scroll_bars_top() {
+        use crate::scrollbar::Scrollable;
+        let (_d, root) = tree();
+        let ex = excludes(&root, &["build/".into(), "*.o".into()]);
+        let mut x = Explorer::new(root.clone());
+        let mut todo = vec![root.clone()];
+        todo.extend(x.reveal(&root.join("src/deep/f.rs")));
+        while let Some(dir) = todo.pop() {
+            let listing = list_dir(&dir, &ex).unwrap();
+            todo.extend(x.set_children(&dir, listing));
+        }
+        assert_eq!((x.row_count(), x.rows().len()), (7, 7));
+        x.collapse(&root.join("src/deep"));
+        assert_eq!((x.row_count(), x.rows().len()), (6, 6), "a collapsed folder's children");
+        x.height = 4;
+        x.set_top(1);
+        assert_eq!(x.scroll().top, 1);
+        x.set_top(100);
+        assert_eq!(x.scroll, 2, "the last row at the bottom");
+        assert_eq!(x.selected.as_deref(), Some(root.join("src/deep/f.rs").as_path()));
+        x.collapse(&root.join("src"));
+        assert_eq!((x.row_count(), x.rows().len()), (4, 4));
     }
 
     #[test]

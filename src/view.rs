@@ -114,6 +114,26 @@ impl CursorHistory {
     }
 }
 
+/// A text view's scroll bar: the view with its buffer's text.
+pub struct TextScroll<'a> {
+    pub view: &'a mut View,
+    pub rope: &'a Rope,
+}
+
+impl crate::scrollbar::Scrollable for TextScroll<'_> {
+    fn scroll(&self) -> crate::scrollbar::Scroll {
+        crate::scrollbar::Scroll::text(pos::line_count(self.rope), self.view.height, self.view.top_line())
+    }
+
+    /// Drops pending reveals: the pointer decides where the view is.
+    fn set_top(&mut self, top: usize) {
+        self.view.set_top_line(self.rope, top);
+        self.view.reveal_cursor = false;
+        self.view.reveal_range = None;
+        self.view.reveal_pos = None;
+    }
+}
+
 impl View {
     pub fn new() -> Self {
         let selections = Selections::single(Selection::cursor(ByteIdx(0)));

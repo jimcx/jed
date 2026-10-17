@@ -12,6 +12,13 @@
 //!   the group; the wheel over it scrolls; hover / drag colours (no hover left after a release
 //!   elsewhere); text clicks unchanged; below the changed-on-disk banner, none for a group
 //!   without tabs, the find widget left of it, tiny editors.
+//! - `side_scroll_bars`: the same bar in the last column of the explorer tree, the Search view's
+//!   results, the Source Control list and the bottom panel's Problems / Locations lists: the
+//!   thumb from the list's rows, height and top; hover, press-and-drag (off the bar and past the
+//!   end: where the wheel's end is), a press on the track, the wheel over it; the list's
+//!   selection and the focus unchanged; counts, git letters and buttons left of it; lists that
+//!   fit show no thumb and their bar ignores clicks; no bar for an empty list or another tab;
+//!   a drag whose list goes away (another view, the panel hidden, another tab) scrolls nothing.
 
 mod render_whitespace {
     use std::fs;
@@ -823,5 +830,531 @@ mod scroll_bars {
             }
             assert!(thumbs >= 4, "tab {tab}: {thumbs} thumbs drawn");
         }
+    }
+}
+
+mod side_scroll_bars {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind as Mouse};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use serde_json::json;
+
+    use crate::app::{App, Focus};
+    use crate::buffer::Buffer;
+    use crate::buffer::pos::{LspPos, PosEncoding};
+    use crate::grouped;
+    use crate::layout::{PanelTab, ScrollBarHit, ScrollTarget, SidePanel};
+    use crate::locations::{Location, Locations};
+    use crate::lsp::ServerId;
+    use crate::problems;
+    use crate::scrollbar::Scroll;
+    use crate::workspace::trust::TrustStore;
+    use crate::workspace::{self, Workspace};
+
+    const DOWN: Mouse = Mouse::Down(MouseButton::Left);
+    const DRAG: Mouse = Mouse::Drag(MouseButton::Left);
+    const UP: Mouse = Mouse::Up(MouseButton::Left);
+    const NORMAL: &str = "scrollbarSlider.background";
+    const HOVER: &str = "scrollbarSlider.hoverBackground";
+    const ACTIVE: &str = "scrollbarSlider.activeBackground";
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    /// A temp dir with `proj/` (the workspace) and `state/` (the trust store, outside the repo).
+    fn dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let (root, state) = (base.join("proj"), base.join("state"));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        (dir, root, state)
+    }
+
+    /// `n` files `fNN.txt` in `root`, each holding `text`.
+    fn files(root: &Path, n: usize, text: &str) {
+        for i in 0..n {
+            fs::write(root.join(format!("f{i:02}.txt")), text).unwrap();
+        }
+    }
+
+    /// The app on `root` with `f00.txt` open (the editor focused), the explorer listed.
+    async fn open_app(root: &Path, state: &Path) -> App {
+        let ws = Workspace::load(root.to_path_buf());
+        let trust = TrustStore::load(state.join("trust.toml"));
+        let buffer = Buffer::open(&root.join("f00.txt")).unwrap();
+        let initial = crate::app::InitialFile { buffer, goto: None };
+        let mut app = App::new(ws, trust, Some(initial), true);
+        app.test_start();
+        app.test_plain_whitespace();
+        assert!(app.settle(|a| a.explorer.row_count() > 0).await);
+        app
+    }
+
+    fn draw(app: &mut App) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    fn bar(app: &App, t: ScrollTarget) -> ScrollBarHit {
+        app.hits.scrollbar(t).expect("a scroll bar")
+    }
+
+    /// The track's rows drawn in the slider colour `key` as (start, len), checked to be one run
+    /// and (in any colour but a missing one) where the hit map says.
+    fn drawn_thumb(app: &App, term: &Terminal<TestBackend>, t: ScrollTarget, key: &str) -> Option<(u16, u16)> {
+        let track = bar(app, t).track;
+        let colour = app.theme.get(key).bg.unwrap();
+        let rows: Vec<u16> = (0..track.height)
+            .filter(|&y| term.backend().buffer()[(track.x, track.y + y)].bg == colour)
+            .collect();
+        let drawn = rows.first().map(|&s| (s, rows.len() as u16));
+        if let Some((s, n)) = drawn {
+            assert_eq!(rows, (s..s + n).collect::<Vec<_>>(), "one run");
+        }
+        if drawn.is_some() || key == NORMAL {
+            assert_eq!(
+                drawn,
+                bar(app, t).thumb.map(|t| (t.start, t.len)),
+                "drawn where the hit map says"
+            );
+        }
+        drawn
+    }
+
+    /// What a list's thumb should be: `rows` rows on a track as tall as the list, from `top`.
+    fn expected(rows: usize, track: u16, top: usize) -> Option<(u16, u16)> {
+        Scroll::rows(rows, track as usize, top)
+            .thumb(track)
+            .map(|t| (t.start, t.len))
+    }
+
+    /// A list under test: its bar, its row count, its top row and what must not change
+    /// (its selection, by key).
+    struct List {
+        target: ScrollTarget,
+        rows: fn(&App) -> usize,
+        top: fn(&App) -> usize,
+        selection: fn(&App) -> String,
+    }
+
+    /// The shared checks: the drawn thumb follows the list's scroll; hover, press-and-drag
+    /// (off the bar too, past the end: the wheel's end), a press on the track, the wheel over
+    /// the bar; the list's selection and the focus never change.
+    fn drag_the_bar(app: &mut App, l: &List) {
+        let (t, rows) = (l.target, (l.rows)(app));
+        let (focus, selection) = (app.ui.focus, (l.selection)(app));
+        let term = draw(app);
+        let track = bar(app, t).track;
+        let h = track.height;
+        assert!(rows > h as usize, "{rows} rows in {h}: the list must not fit");
+        assert_eq!((l.top)(app), 0);
+        assert_eq!(drawn_thumb(app, &term, t, NORMAL), expected(rows, h, 0));
+        let (_, len) = drawn_thumb(app, &term, t, NORMAL).unwrap();
+        assert!(len < h);
+
+        // The pointer over the thumb: the hover colour.
+        app.mouse(Mouse::Moved, track.x, track.y);
+        let term = draw(app);
+        assert_eq!(drawn_thumb(app, &term, t, HOVER), Some((0, len)));
+
+        // Pressed and dragged 3 rows: the thumb follows the pointer.
+        app.mouse(DOWN, track.x, track.y);
+        assert_eq!((l.top)(app), 0, "a press on the thumb doesn't scroll");
+        app.mouse(DRAG, track.x, track.y + 3);
+        let mid = (l.top)(app);
+        assert!(mid > 0);
+        let term = draw(app);
+        assert_eq!(drawn_thumb(app, &term, t, ACTIVE), Some((3, len)));
+        assert_eq!(expected(rows, h, mid), Some((3, len)));
+
+        // Off the bar and past the bottom: the list's end, as the wheel's.
+        app.mouse(DRAG, 0, 23);
+        let end = rows - h as usize;
+        assert_eq!((l.top)(app), end, "the last row at the bottom");
+        app.mouse(UP, 0, 23);
+        app.mouse(DRAG, track.x, track.y);
+        assert_eq!((l.top)(app), end, "released: drags do nothing");
+        let term = draw(app);
+        assert_eq!(
+            drawn_thumb(app, &term, t, NORMAL),
+            Some((h - len, len)),
+            "at the track's end"
+        );
+
+        // A press on the track above it: the thumb centres there (and is held until release).
+        app.mouse(DOWN, track.x, track.y + 1);
+        app.mouse(UP, track.x, track.y + 1);
+        let at = (l.top)(app);
+        assert!(at < mid, "{at} {mid}");
+        let term = draw(app);
+        assert_eq!(drawn_thumb(app, &term, t, NORMAL), expected(rows, h, at));
+        assert_eq!(at, 0, "1 - len / 2 is above the track: the top");
+
+        // The wheel over the bar scrolls the list as the wheel over it, to the same end.
+        app.mouse(Mouse::ScrollDown, track.x, track.y + 2);
+        assert_eq!((l.top)(app), 3.min(end));
+        for _ in 0..rows {
+            app.mouse(Mouse::ScrollDown, track.x, track.y + 2);
+        }
+        assert_eq!((l.top)(app), end);
+        app.mouse(Mouse::ScrollUp, track.x, track.y + 2);
+        assert_eq!((l.top)(app), end - 3);
+
+        assert_eq!(app.ui.focus, focus, "the focus stays");
+        assert_eq!((l.selection)(app), selection, "the list's selection stays");
+    }
+
+    fn explorer_list() -> List {
+        List {
+            target: ScrollTarget::Side(SidePanel::Explorer),
+            rows: |a| a.explorer.row_count(),
+            top: |a| a.explorer.scroll,
+            selection: |a| format!("{:?}", a.explorer.selected),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_explorer_tree_has_a_bar_that_scrolls_it_without_selecting() {
+        let (_dir, root, state) = dirs();
+        files(&root, 60, "x\n");
+        let mut app = open_app(&root, &state).await;
+        assert!(app.settle(|a| a.explorer.row_count() == 60).await);
+        app.explorer.selected = Some(root.join("f02.txt"));
+        let _ = draw(&mut app);
+        let side = app.hits.regions.side.unwrap();
+        let track = bar(&app, explorer_list().target).track;
+        // The rows' last column (left of the side bar's border), from the first row down.
+        assert_eq!(track.x, side.x + side.width - 2);
+        assert_eq!(
+            (track.y, track.height),
+            (app.hits.explorer_rows.y, app.hits.explorer_rows.height)
+        );
+        assert_eq!(
+            app.hits.explorer_rows.x + app.hits.explorer_rows.width,
+            track.x,
+            "rows left of it"
+        );
+        drag_the_bar(&mut app, &explorer_list());
+        assert_eq!(app.ui.focus, Focus::Editor);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_explorer_that_fits_shows_no_thumb_and_its_bar_ignores_clicks() {
+        let (_dir, root, state) = dirs();
+        files(&root, 5, "x\n");
+        let mut app = open_app(&root, &state).await;
+        assert!(app.settle(|a| a.explorer.row_count() == 5).await);
+        let term = draw(&mut app);
+        let t = explorer_list().target;
+        assert_eq!(drawn_thumb(&app, &term, t, NORMAL), None);
+        let track = bar(&app, t).track;
+        // A press on the bar beside a row: the selection (the open file) stays, no focus, no
+        // scroll.
+        assert_eq!(app.explorer.selected, Some(root.join("f00.txt")));
+        let row_y = app.hits.explorer_rows.y + 1;
+        app.mouse(DOWN, track.x, row_y);
+        app.mouse(DRAG, track.x, row_y + 3);
+        app.mouse(UP, track.x, row_y + 3);
+        assert_eq!(app.explorer.selected, Some(root.join("f00.txt")));
+        assert_eq!(app.ui.focus, Focus::Editor);
+        assert_eq!(app.explorer.scroll, 0);
+        // A click on the row itself, left of the bar, still selects it.
+        app.mouse(DOWN, track.x - 1, row_y);
+        app.mouse(UP, track.x - 1, row_y);
+        assert_eq!(app.explorer.selected, Some(root.join("f01.txt")));
+        assert_eq!(app.ui.focus, Focus::SidePanel);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_search_views_results_have_a_bar_below_the_query() {
+        let (_dir, root, state) = dirs();
+        files(&root, 10, &"a needle here\n".repeat(5));
+        let mut app = open_app(&root, &state).await;
+        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.type_text("needle");
+        app.search_tick(std::time::Instant::now() + crate::search_view::DEBOUNCE);
+        assert!(
+            app.settle(|a| a.search.as_ref().is_some_and(|r| r.done && r.files.len() == 10))
+                .await
+        );
+        // The results take the keys, their first row selected.
+        app.press(K::Down, M::NONE);
+        assert!(app.search_view.list_focused);
+        let list = List {
+            target: ScrollTarget::Side(SidePanel::Search),
+            rows: |a| grouped::row_count(&a.search.as_ref().unwrap().files),
+            top: |a| a.search_view.scroll(a.search.as_ref().unwrap()),
+            selection: |a| format!("{:?} {}", a.search_view.list.selected(), a.search_view.list_focused),
+        };
+        let term = draw(&mut app);
+        let hit = app.hits.search.clone().unwrap();
+        let track = bar(&app, list.target).track;
+        assert_eq!(
+            (track.y, track.height),
+            (hit.list.y, hit.list.height),
+            "beside the results only"
+        );
+        assert_eq!(hit.list.x + hit.list.width, track.x);
+        // The bar in the column left of the side bar's border; the query row keeps the full
+        // width: its toggles end where they did without a bar (one cell from the border).
+        let side = app.hits.regions.side.unwrap();
+        assert_eq!(track.x, side.x + side.width - 2);
+        assert_eq!(hit.toggles[1].x + hit.toggles[1].width, side.x + side.width - 2);
+        // The file rows' counts end left of the bar (one cell between).
+        let buf = term.backend().buffer();
+        let row = hit.rows.iter().position(|k| k.1 == 0).unwrap() as u16 + hit.list.y;
+        assert_eq!(
+            buf[(track.x - 3, row)].symbol(),
+            "5",
+            "the count right-aligned left of the bar"
+        );
+        drag_the_bar(&mut app, &list);
+        assert_eq!(app.ui.focus, Focus::SidePanel);
+    }
+
+    /// A repository with `n` untracked files.
+    async fn scm_app(n: usize) -> (tempfile::TempDir, App) {
+        let (dir, root, state) = dirs();
+        crate::git::test_repo::init(&root);
+        files(&root, n, "x\n");
+        let mut app = open_app(&root, &state).await;
+        assert!(
+            app.settle(|a| !a.git.running() && a.git.status.as_ref().is_some_and(|s| s.entries.len() == n))
+                .await
+        );
+        app.press(K::Char('g'), M::CONTROL | M::SHIFT);
+        (dir, app)
+    }
+
+    fn scm_list() -> List {
+        List {
+            target: ScrollTarget::Side(SidePanel::SourceControl),
+            rows: |a| a.scm.rows(a.git.status.as_ref().unwrap()).len(),
+            top: |a| a.scm.scroll(&a.scm.rows(a.git.status.as_ref().unwrap())),
+            selection: |a| {
+                let rows = a.scm.rows(a.git.status.as_ref().unwrap());
+                format!("{:?}", a.scm.selected(&rows).map(|r| r.key()))
+            },
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_source_control_list_has_a_bar_left_of_which_letters_and_buttons_go() {
+        let (_dir, mut app) = scm_app(40).await;
+        assert_eq!(app.ui.focus, Focus::SidePanel);
+        let list = scm_list();
+        assert!((list.selection)(&app).contains("f00.txt"), "the first file selected");
+        // (Selected before the view's first frame, so scrolled below its header: back up.)
+        let _ = draw(&mut app);
+        let track = bar(&app, list.target).track;
+        app.mouse(Mouse::ScrollUp, track.x - 5, track.y);
+        let term = draw(&mut app);
+        let hit = app.hits.scm.clone().unwrap();
+        assert_eq!((track.y, track.height), (hit.list.y, hit.list.height));
+        assert_eq!(hit.list.x + hit.list.width, track.x);
+        // The selected file's letter and its stage button left of the bar.
+        let buf = term.backend().buffer();
+        let y = hit.list.y + 1;
+        assert_eq!(buf[(track.x - 2, y)].symbol(), "U");
+        let (button, ..) = hit.buttons.iter().find(|(r, ..)| r.y == y).unwrap();
+        assert_eq!(button.x, track.x - 4);
+        assert_eq!(buf[(track.x, y)].symbol(), " ", "nothing drawn on the bar");
+        drag_the_bar(&mut app, &list);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_source_control_list_that_fits_shows_no_thumb() {
+        let (_dir, mut app) = scm_app(3).await;
+        let term = draw(&mut app);
+        let t = scm_list().target;
+        assert_eq!(drawn_thumb(&app, &term, t, NORMAL), None);
+        let before = (scm_list().selection)(&app);
+        let track = bar(&app, t).track;
+        // The keys back in the editor; a press on the bar beside a file row: no selection
+        // change, no diff opened, the focus stays.
+        app.press(K::Esc, M::NONE);
+        assert_eq!(app.ui.focus, Focus::Editor);
+        app.mouse(DOWN, track.x, track.y + 2);
+        app.mouse(UP, track.x, track.y + 2);
+        assert_eq!((scm_list().selection)(&app), before);
+        assert!(app.group().active_diff().is_none());
+        assert_eq!(app.ui.focus, Focus::Editor);
+    }
+
+    /// `n` files with 5 problems each in the language server store (files not open: their
+    /// LSP positions).
+    fn plant_problems(app: &mut App, root: &Path, n: usize) {
+        for i in 0..n {
+            let path = root.join(format!("p{i:02}.cpp"));
+            let diagnostics: Vec<_> = (0..5)
+                .map(|l| {
+                    json!({
+                        "range": { "start": { "line": l, "character": 0 }, "end": { "line": l, "character": 1 } },
+                        "severity": 1,
+                        "message": format!("problem {l}"),
+                    })
+                })
+                .collect();
+            let params = json!({ "uri": crate::lsp::uri::from_path(&path).as_str(), "diagnostics": diagnostics });
+            let published = crate::lsp::diagnostics::parse(params).unwrap();
+            app.lsp
+                .diagnostics
+                .publish(ServerId::test(1), PosEncoding::Utf8, published);
+        }
+    }
+
+    fn problems_list() -> List {
+        List {
+            target: ScrollTarget::Panel(PanelTab::Problems),
+            rows: |a| grouped::row_count(&problems::files(&a.lsp.diagnostics, &a.buffers)),
+            top: |a| a.problems.list.scroll(&problems::files(&a.lsp.diagnostics, &a.buffers)),
+            selection: |a| format!("{:?}", a.problems.list.selected()),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_problems_list_has_a_bar_at_the_panels_right_edge() {
+        let (_dir, root, state) = dirs();
+        files(&root, 1, "x\n");
+        let mut app = open_app(&root, &state).await;
+        plant_problems(&mut app, &root, 6);
+        app.press(K::Char('m'), cmd() | M::SHIFT);
+        assert_eq!(app.ui.focus, Focus::Panel);
+        let list = problems_list();
+        assert!(app.problems.list.selected().is_some(), "the first row selected");
+        let term = draw(&mut app);
+        let panel = app.hits.regions.panel.unwrap();
+        let hit = app.hits.panel_list.clone().unwrap();
+        let track = bar(&app, list.target).track;
+        assert_eq!(track.x, panel.x + panel.width - 1, "the panel's last column");
+        assert_eq!(
+            (track.y, track.height),
+            (hit.list.y, hit.list.height),
+            "below the tab strip"
+        );
+        assert_eq!(hit.list.x + hit.list.width, track.x);
+        // A file row's count left of the bar.
+        let buf = term.backend().buffer();
+        assert_eq!(buf[(track.x - 3, hit.list.y)].symbol(), "5");
+        drag_the_bar(&mut app, &list);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_empty_problems_list_has_no_bar() {
+        let (_dir, root, state) = dirs();
+        files(&root, 1, "x\n");
+        let mut app = open_app(&root, &state).await;
+        app.press(K::Char('m'), cmd() | M::SHIFT);
+        let _ = draw(&mut app);
+        assert!(app.hits.scrollbar(ScrollTarget::Panel(PanelTab::Problems)).is_none());
+        // A list that fits: a bar without a thumb.
+        plant_problems(&mut app, &root, 1);
+        let term = draw(&mut app);
+        assert_eq!(drawn_thumb(&app, &term, problems_list().target, NORMAL), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_locations_list_has_a_bar_too() {
+        let (_dir, root, state) = dirs();
+        files(&root, 1, "x\n");
+        let mut app = open_app(&root, &state).await;
+        let places = (0..4)
+            .flat_map(|f| {
+                let path = root.join(format!("l{f}.rs"));
+                (0..6).map(move |line| {
+                    let at = LspPos { line, character: 0 };
+                    Location {
+                        path: path.clone(),
+                        start: at,
+                        end: at,
+                    }
+                })
+            })
+            .collect();
+        app.locations = Some(Locations::new("References to 'x'".into(), PosEncoding::Utf8, places, 1));
+        app.ui.panel_visible = true;
+        app.ui.panel_tab = PanelTab::Locations;
+        // A row on screen selected (once drawn, so it doesn't scroll).
+        let _ = draw(&mut app);
+        let l = app.locations.as_mut().unwrap();
+        l.list.select(&l.files, 2);
+        let term = draw(&mut app);
+        let panel = app.hits.regions.panel.unwrap();
+        let hit = app.hits.panel_list.clone().unwrap();
+        let track = bar(&app, ScrollTarget::Panel(PanelTab::Locations)).track;
+        assert_eq!(track.x, panel.x + panel.width - 1, "the panel's last column");
+        assert_eq!((track.y, track.height), (hit.list.y, hit.list.height));
+        assert_eq!(hit.list.x + hit.list.width, track.x);
+        // A file row's count left of the bar.
+        assert_eq!(term.backend().buffer()[(track.x - 3, hit.list.y)].symbol(), "6");
+        let list = List {
+            target: ScrollTarget::Panel(PanelTab::Locations),
+            rows: |a| grouped::row_count(&a.locations.as_ref().unwrap().files),
+            top: |a| {
+                let l = a.locations.as_ref().unwrap();
+                l.list.scroll(&l.files)
+            },
+            selection: |a| format!("{:?}", a.locations.as_ref().unwrap().list.selected()),
+        };
+        drag_the_bar(&mut app, &list);
+        assert_eq!(app.ui.focus, Focus::Editor);
+        // Another tab shown: its bar is gone, and the Locations target scrolls nothing.
+        app.ui.panel_tab = PanelTab::Problems;
+        let _ = draw(&mut app);
+        assert!(app.hits.scrollbar(list.target).is_none());
+    }
+    /// A drag whose list goes away (another side bar view, the panel hidden, another panel
+    /// tab) scrolls nothing, even before a frame redraws the bars.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_drag_whose_list_goes_away_scrolls_nothing() {
+        let (_dir, root, state) = dirs();
+        files(&root, 60, "x\n");
+        let mut app = open_app(&root, &state).await;
+        assert!(app.settle(|a| a.explorer.row_count() == 60).await);
+        let _ = draw(&mut app);
+        let track = bar(&app, explorer_list().target).track;
+        app.mouse(DOWN, track.x, track.y);
+        // The Search view instead (nothing searched yet).
+        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.mouse(DRAG, track.x, track.y + 5);
+        assert_eq!(app.explorer.scroll, 0, "the hidden explorer stays");
+        app.mouse(UP, track.x, track.y + 5);
+
+        plant_problems(&mut app, &root, 6);
+        app.press(K::Char('m'), cmd() | M::SHIFT);
+        let _ = draw(&mut app);
+        let list = problems_list();
+        let track = bar(&app, list.target).track;
+        app.mouse(DOWN, track.x, track.y);
+        app.press(K::Char('j'), cmd());
+        assert!(!app.ui.panel_visible);
+        app.mouse(DRAG, track.x, track.y + 3);
+        assert_eq!((list.top)(&app), 0, "the hidden panel's list stays");
+        app.mouse(UP, track.x, track.y + 3);
+
+        // Another tab mid-drag (the Locations list shown instead).
+        app.press(K::Char('j'), cmd());
+        let _ = draw(&mut app);
+        app.mouse(DOWN, track.x, track.y);
+        let at = LspPos { line: 0, character: 0 };
+        let place = Location {
+            path: root.join("f00.txt"),
+            start: at,
+            end: at,
+        };
+        app.locations = Some(Locations::new("x".into(), PosEncoding::Utf8, vec![place], 1));
+        app.ui.panel_tab = PanelTab::Locations;
+        app.mouse(DRAG, track.x, track.y + 3);
+        assert_eq!((list.top)(&app), 0, "the Problems list, no longer shown, stays");
     }
 }

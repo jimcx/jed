@@ -26,8 +26,9 @@ use ratatui::layout::Rect;
 
 use crate::app::{App, Focus};
 use crate::group::Tab;
-use crate::layout::{self, GroupHit, HitMap, SplitDir};
-use crate::scrollbar::Scroll;
+use crate::layout::{self, GroupHit, HitMap, ScrollTarget, SplitDir};
+use crate::scrollbar::Scrollable;
+use crate::view::TextScroll;
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -45,6 +46,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if let Some(side) = regions.side {
         let side = side::render(f, side, app);
         (hits.explorer_rows, hits.search, hits.scm) = (side.explorer_rows, side.search, side.scm);
+        hits.side_scrollbar = side.scrollbar;
     }
 
     let (cells, dividers) = app.groups.tree.layout(regions.editor);
@@ -61,13 +63,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
             ..rect
         };
         let is_active = id == app.groups.active;
-        let look = if app.scrollbar_dragged() == Some(id) {
-            scrollbar::Look::Active
-        } else if app.ui.scrollbar_hover == Some(id) {
-            scrollbar::Look::Hover
-        } else {
-            scrollbar::Look::Normal
-        };
+        let look = scrollbar::look(app, ScrollTarget::Group(id));
+        let editor_bg = app.theme.get("editor");
         let Some(group) = app.groups.get_mut(id) else { continue };
         let tabs = tabs::render(f, tab_bar, group, &app.buffers, &app.theme, is_active);
         // The changed-on-disk banner takes the editor's first row (leaving it at least one); a
@@ -92,14 +89,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
         }
 
         // A text or diff tab keeps the editor's last column for its scroll bar.
-        let bar = (!group.tabs.is_empty() && editor_area.width >= 2).then(|| Rect {
-            x: editor_area.x + editor_area.width - 1,
-            width: 1,
-            ..editor_area
-        });
-        if bar.is_some() {
-            editor_area.width -= 1;
-        }
+        let bar = if group.tabs.is_empty() {
+            None
+        } else {
+            scrollbar::take_column(&mut editor_area)
+        };
         let mut text = Rect::default();
         let mut diff_hit = None;
         let mut scroll_hit = None;
@@ -117,15 +111,14 @@ pub fn render(f: &mut Frame, app: &mut App) {
             if let Some(bar) = bar {
                 // The header row's cell, then the rows' track.
                 let out = f.buffer_mut();
-                out.set_style(bar, app.theme.get("editor"));
+                out.set_style(bar, editor_bg);
                 out.set_style(Rect { height: 1, ..bar }, app.theme.get("diffEditor.header"));
                 let track = Rect {
                     y: bar.y + 1,
                     height: bar.height.saturating_sub(1),
                     ..bar
                 };
-                let scroll = Scroll::rows(d.rows().len(), d.height, d.top);
-                scroll_hit = Some(scrollbar::render(out, track, scroll, look, &app.theme));
+                scroll_hit = Some(scrollbar::render(out, track, d.scroll(), look, editor_bg, &app.theme));
             }
         }
         match group
@@ -143,9 +136,19 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 };
                 text = editor::render(f, editor_area, buf, &mut tab.view, &app.theme, &app.settings, overlay);
                 if let Some(bar) = bar {
-                    let lines = crate::buffer::pos::line_count(&buf.rope);
-                    let scroll = Scroll::text(lines, tab.view.height, tab.view.top_line());
-                    scroll_hit = Some(scrollbar::render(f.buffer_mut(), bar, scroll, look, &app.theme));
+                    let scroll = TextScroll {
+                        view: &mut tab.view,
+                        rope: &buf.rope,
+                    }
+                    .scroll();
+                    scroll_hit = Some(scrollbar::render(
+                        f.buffer_mut(),
+                        bar,
+                        scroll,
+                        look,
+                        editor_bg,
+                        &app.theme,
+                    ));
                 }
             }
             None if diff_hit.is_some() => {}
@@ -187,6 +190,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if let Some(panel) = regions.panel {
         let panel = panel::render(f, panel, app);
         (hits.panel_tabs, hits.panel_closes, hits.panel_list) = (panel.tabs, panel.closes, panel.list);
+        hits.panel_scrollbar = panel.scrollbar;
     }
 
     hits.status_problems = status::render(f, regions.status, app);

@@ -13,16 +13,20 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use unicode_width::UnicodeWidthStr;
 
+use super::scrollbar;
 use crate::app::{App, Focus};
 use crate::git::Change;
-use crate::layout::ScmHit;
+use crate::layout::{ScmHit, ScrollBarHit, ScrollTarget, SidePanel};
 use crate::scm::{Row, Section};
+use crate::scrollbar::Scrollable;
 
-/// Draws the view in `area` (the side panel below its title, without its border).
-pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<ScmHit> {
+/// Draws the view in `area` (the side panel below its title, without its border), and the
+/// list's scroll bar in its last column.
+pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ScmHit>, Option<ScrollBarHit>) {
     if area.width < 8 || area.height < 2 {
-        return None;
+        return (None, None);
     }
+    let look = scrollbar::look(app, ScrollTarget::Side(SidePanel::SourceControl));
     let theme = &app.theme;
     let base = theme.get("sideBar");
     let dim = base.patch(theme.get("sideBar.dim"));
@@ -37,7 +41,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<ScmHit> {
             "The folder currently open doesn't have a git repository."
         };
         wrap(out, area, text, dim);
-        return None;
+        return (None, None);
     };
     out.set_stringn(area.x, area.y, format!(" ⎇ {}", status.label()), width, header);
     let list = Rect {
@@ -47,11 +51,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<ScmHit> {
     };
     if status.entries.is_empty() {
         wrap(out, list, "No changes in the working tree.", dim);
-        return Some(ScmHit {
+        let hit = ScmHit {
             list,
             ..ScmHit::default()
-        });
+        };
+        return (Some(hit), None);
     }
+    let mut list = list;
+    let bar = scrollbar::take_column(&mut list);
 
     let focused = app.ui.focus == Focus::SidePanel && app.prompt.is_none() && app.palette.is_none();
     let selected_style = if focused {
@@ -65,6 +72,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<ScmHit> {
     view.clamp(&rows);
     let top = view.scroll(&rows);
     let selected = view.selected_row(&rows);
+    let scroll = view.scrollable(&rows).scroll();
+    let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme));
+    let view = &app.scm;
     let mut hit = ScmHit {
         list,
         ..ScmHit::default()
@@ -139,7 +149,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<ScmHit> {
         }
         hit.rows.push(key);
     }
-    Some(hit)
+    (Some(hit), bar)
 }
 
 /// `text` word-wrapped from the second column of `area`'s rows.

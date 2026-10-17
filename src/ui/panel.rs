@@ -12,11 +12,13 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use unicode_width::UnicodeWidthStr;
 
+use super::scrollbar;
 use crate::app::{App, Focus};
 use crate::grouped;
-use crate::layout::{ListHit, PanelTab};
+use crate::layout::{ListHit, PanelTab, ScrollBarHit, ScrollTarget};
 use crate::locations::Locations;
 use crate::problems::{self, Problem};
+use crate::scrollbar::Scrollable;
 use crate::tasks::{RunId, Status};
 
 /// Cells a problem row is indented by.
@@ -30,6 +32,8 @@ pub struct PanelHits {
     pub closes: Vec<(Rect, RunId)>,
     /// The shown list (Problems or Locations).
     pub list: Option<ListHit>,
+    /// Its scroll bar (the list's last column).
+    pub scrollbar: Option<(ScrollTarget, ScrollBarHit)>,
 }
 
 /// A task tab's state mark and its theme key: `●` running, `✓` exit 0, `✗ 2` a failing exit
@@ -173,7 +177,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> PanelHits {
         }
         PanelTab::Locations => {
             drop(files);
-            hits.list = Some(locations(out, list, app));
+            let look = scrollbar::look(app, ScrollTarget::Panel(PanelTab::Locations));
+            let (list, bar) = locations(out, list, app, look);
+            hits.list = Some(list);
+            hits.scrollbar = bar.map(|b| (ScrollTarget::Panel(PanelTab::Locations), b));
             return hits;
         }
         PanelTab::Problems => {}
@@ -190,11 +197,19 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> PanelHits {
         return hits;
     }
 
+    let look = scrollbar::look(app, ScrollTarget::Panel(PanelTab::Problems));
+    let mut list = list;
+    let bar = scrollbar::take_column(&mut list);
     let view = &mut app.problems.list;
     view.height = list.height as usize;
     view.clamp(&files);
     let top = view.scroll(&files);
     let selected_row = view.selected_row(&files);
+    let scroll = view.scrollable(&files).scroll();
+    if let Some(track) = bar {
+        let bar = scrollbar::render(out, track, scroll, look, base, theme);
+        hits.scrollbar = Some((ScrollTarget::Panel(PanelTab::Problems), bar));
+    }
     let focused = app.ui.focus == Focus::Panel && app.prompt.is_none() && app.palette.is_none();
     let selection = if focused {
         theme.get("list.active")
@@ -269,8 +284,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> PanelHits {
     hits
 }
 
-/// The Locations list in `list`: file rows as the Problems list's, then each place's line.
-fn locations(out: &mut ratatui::buffer::Buffer, list: Rect, app: &mut App) -> ListHit {
+/// The Locations list in `list`: file rows as the Problems list's, then each place's line; its
+/// scroll bar in the last column.
+fn locations(
+    out: &mut ratatui::buffer::Buffer,
+    list: Rect,
+    app: &mut App,
+    look: scrollbar::Look,
+) -> (ListHit, Option<ScrollBarHit>) {
     let theme = &app.theme;
     let base = theme.get("panel");
     let dim = base.patch(theme.get("panel.dim"));
@@ -282,13 +303,17 @@ fn locations(out: &mut ratatui::buffer::Buffer, list: Rect, app: &mut App) -> Li
             list.width.saturating_sub(3) as usize,
             dim,
         );
-        return ListHit { list, rows: Vec::new() };
+        return (ListHit { list, rows: Vec::new() }, None);
     };
+    let mut list = list;
+    let bar = scrollbar::take_column(&mut list);
     let Locations { files, list: view, .. } = l;
     view.height = list.height as usize;
     view.clamp(files);
     let top = view.scroll(files);
     let selected_row = view.selected_row(files);
+    let scroll = view.scrollable(files).scroll();
+    let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme));
     let focused = app.ui.focus == Focus::Panel && app.prompt.is_none() && app.palette.is_none();
     let selection = if focused {
         theme.get("list.active")
@@ -343,7 +368,7 @@ fn locations(out: &mut ratatui::buffer::Buffer, list: Rect, app: &mut App) -> Li
         .iter()
         .map(|&(i, offset)| (files[i].path.clone(), offset))
         .collect();
-    ListHit { list, rows }
+    (ListHit { list, rows }, bar)
 }
 
 struct Styles {

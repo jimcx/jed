@@ -8,7 +8,7 @@ use super::{App, Focus};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::column::{self, Cell};
 use crate::command::{Command, ExplorerCommand};
-use crate::layout::{Divider, GroupId, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, PanelTab, SidePanel};
+use crate::layout::{Divider, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, PanelTab, ScrollTarget, SidePanel};
 use crate::selection::{Selection, Selections};
 use crate::view::View;
 
@@ -32,9 +32,9 @@ pub enum Drag {
     },
     /// Shift+Alt+drag: a box selection (its corners live in `view.column`).
     Column,
-    /// A group's scroll bar thumb, held by its cell `grab` (`app/scrollbar.rs`).
+    /// A scroll bar's thumb, held by its cell `grab` (`app/scrollbar.rs`).
     ScrollBar {
-        group: GroupId,
+        target: ScrollTarget,
         grab: u16,
     },
 }
@@ -60,10 +60,12 @@ impl ClickTracker {
 impl App {
     pub(super) fn handle_mouse(&mut self, m: MouseEvent) {
         let hit = match self.hits.hit(m.column, m.row) {
-            // The wheel over a scroll bar scrolls its editor.
-            Hit::ScrollBar(g) if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) => {
-                Hit::Editor(g)
-            }
+            // The wheel over a scroll bar scrolls what it scrolls, as the wheel over that.
+            Hit::ScrollBar(t) if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) => match t {
+                ScrollTarget::Group(g) => Hit::Editor(g),
+                ScrollTarget::Side(_) => Hit::SidePanel,
+                ScrollTarget::Panel(_) => Hit::Panel,
+            },
             hit => hit,
         };
         if self.completion_mouse(&m, hit) {
@@ -162,7 +164,7 @@ impl App {
                         self.column_select_to(to);
                     }
                 }
-                Some(Drag::ScrollBar { group, grab }) => self.scrollbar_drag(group, m.row, grab),
+                Some(Drag::ScrollBar { target, grab }) => self.scrollbar_drag(target, m.row, grab),
                 None => {}
             },
             MouseEventKind::Up(MouseButton::Left) => {
@@ -225,8 +227,8 @@ impl App {
                 self.focus_group(g);
                 self.editor_click(m, count);
             }
-            // Scrolls without focusing the group or moving a cursor.
-            Hit::ScrollBar(g) => self.scrollbar_click(g, m.row),
+            // Scrolls without focusing anything or moving a cursor or a list's selection.
+            Hit::ScrollBar(t) => self.scrollbar_click(t, m.row),
             Hit::PanelBorder => self.drag = Some(Drag::PanelBorder),
             Hit::PanelTab(tab) => self.focus_panel(tab),
             Hit::PanelTabClose(id) => self.close_task(id),

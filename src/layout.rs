@@ -389,6 +389,11 @@ pub struct HitMap {
     pub panel_closes: Vec<(Rect, crate::tasks::RunId)>,
     /// The bottom panel's list (Problems or Locations, whichever tab is shown), when shown.
     pub panel_list: Option<ListHit>,
+    /// The side bar's list's scroll bar (the explorer, the Search view's results, the Source
+    /// Control list), when drawn.
+    pub side_scrollbar: Option<(ScrollTarget, ScrollBarHit)>,
+    /// The bottom panel's list's scroll bar (Problems, Locations), when drawn.
+    pub panel_scrollbar: Option<(ScrollTarget, ScrollBarHit)>,
     /// The status bar's problem counts (a click toggles the Problems panel).
     pub status_problems: Option<Rect>,
     /// The hover popup, when shown: on top of everything under it.
@@ -477,6 +482,16 @@ pub struct GroupHit {
     pub scrollbar: Option<ScrollBarHit>,
 }
 
+/// What a scroll bar scrolls: a group's active tab, the side bar's list (by the view showing
+/// it), the bottom panel's list (by its tab). `App::with_scrollable` maps it to the list's
+/// `scrollbar::Scrollable`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollTarget {
+    Group(GroupId),
+    Side(SidePanel),
+    Panel(PanelTab),
+}
+
 /// A scroll bar as drawn: its track (one column) and the thumb on it (`None`: nothing to
 /// scroll), in cells from the track's top.
 #[derive(Debug, Clone, Copy, Default)]
@@ -524,8 +539,9 @@ pub enum Hit {
     /// The changed-on-disk banner over a group's editor, on a button or not.
     Banner(GroupId, Option<crate::disk::BannerAction>),
     Editor(GroupId),
-    /// A group's scroll bar (`GroupHit::scrollbar`).
-    ScrollBar(GroupId),
+    /// A scroll bar: a group's (`GroupHit::scrollbar`), the side bar's or the panel's list's
+    /// (`HitMap::side_scrollbar` / `panel_scrollbar`).
+    ScrollBar(ScrollTarget),
     /// The bottom panel's top border (dragging it resizes the panel).
     PanelBorder,
     PanelTab(PanelTab),
@@ -571,6 +587,11 @@ impl HitMap {
             if x == side.x + side.width - 1 {
                 return Hit::SideBorder;
             }
+            if let Some((t, s)) = self.side_scrollbar
+                && s.track.contains(p)
+            {
+                return Hit::ScrollBar(t);
+            }
             if self.explorer_rows.contains(p) {
                 return Hit::ExplorerRow(y - self.explorer_rows.y);
             }
@@ -584,6 +605,11 @@ impl HitMap {
             }
             if let Some((_, id)) = self.panel_closes.iter().find(|(rect, _)| rect.contains(p)) {
                 return Hit::PanelTabClose(*id);
+            }
+            if let Some((t, s)) = self.panel_scrollbar
+                && s.track.contains(p)
+            {
+                return Hit::ScrollBar(t);
             }
             return match self.panel_tabs.iter().find(|(rect, _)| rect.contains(p)) {
                 Some((_, tab)) => Hit::PanelTab(*tab),
@@ -608,7 +634,7 @@ impl HitMap {
                 return Hit::Banner(g.id, action);
             }
             if g.scrollbar.is_some_and(|s| s.track.contains(p)) {
-                return Hit::ScrollBar(g.id);
+                return Hit::ScrollBar(ScrollTarget::Group(g.id));
             }
             if g.editor.contains(p) {
                 return Hit::Editor(g.id);
@@ -625,6 +651,16 @@ impl HitMap {
 
     pub fn group(&self, id: GroupId) -> Option<&GroupHit> {
         self.groups.iter().find(|g| g.id == id)
+    }
+
+    /// The scroll bar `target` names, as the last frame drew it.
+    pub fn scrollbar(&self, target: ScrollTarget) -> Option<ScrollBarHit> {
+        let drawn = |bar: Option<(ScrollTarget, ScrollBarHit)>| bar.filter(|(t, _)| *t == target).map(|(_, s)| s);
+        match target {
+            ScrollTarget::Group(g) => self.group(g)?.scrollbar,
+            ScrollTarget::Side(_) => drawn(self.side_scrollbar),
+            ScrollTarget::Panel(_) => drawn(self.panel_scrollbar),
+        }
     }
 }
 
@@ -769,7 +805,8 @@ mod tests {
         let map = HitMap {
             regions,
             icons: vec![(1, SidePanel::Explorer)],
-            explorer_rows: Rect::new(3, 2, 24, 27),
+            // The explorer's rows, its scroll bar in the column left of the border.
+            explorer_rows: Rect::new(3, 2, 23, 27),
             groups,
             dividers,
             palette: None,
@@ -782,6 +819,21 @@ mod tests {
             ],
             panel_closes: vec![(Rect::new(50, 24, 1, 1), crate::tasks::RunId(3))],
             panel_list: None,
+            side_scrollbar: Some((
+                ScrollTarget::Side(SidePanel::Explorer),
+                ScrollBarHit {
+                    track: Rect::new(26, 2, 1, 27),
+                    thumb: None,
+                },
+            )),
+            // The panel's list from row 25, its bar at the right edge.
+            panel_scrollbar: Some((
+                ScrollTarget::Panel(PanelTab::Problems),
+                ScrollBarHit {
+                    track: Rect::new(99, 25, 1, 4),
+                    thumb: None,
+                },
+            )),
             status_problems: Some(Rect::new(10, 29, 8, 1)),
             hover: Some(Rect::new(40, 5, 10, 4)),
             completion: Some(CompletionHit {
@@ -802,11 +854,31 @@ mod tests {
         assert_eq!(map.hit(27, 5), Hit::SideBorder);
         assert_eq!(map.hit(5, 4), Hit::ExplorerRow(2));
         assert_eq!(map.hit(5, 0), Hit::SidePanel);
+        let side_bar = Hit::ScrollBar(ScrollTarget::Side(SidePanel::Explorer));
+        assert_eq!(map.hit(26, 4), side_bar, "the list's last column");
+        assert_eq!(map.hit(25, 4), Hit::ExplorerRow(2));
+        assert_eq!(map.hit(26, 1), Hit::SidePanel, "above the list");
+        assert_eq!(map.hit(99, 26), Hit::ScrollBar(ScrollTarget::Panel(PanelTab::Problems)));
+        assert_eq!(map.hit(98, 26), Hit::Panel);
+        assert_eq!(map.hit(99, 24), Hit::Panel, "the tab strip runs over it");
+        assert_eq!(
+            map.scrollbar(ScrollTarget::Side(SidePanel::Explorer)).unwrap().track.x,
+            26
+        );
+        assert!(
+            map.scrollbar(ScrollTarget::Side(SidePanel::Search)).is_none(),
+            "another view's"
+        );
+        assert!(map.scrollbar(ScrollTarget::Group(7)).is_some());
         assert_eq!(map.hit(30, 0), Hit::Tab(7, 0));
         assert_eq!(map.hit(36, 0), Hit::TabClose(7, 0));
         assert_eq!(map.hit(50, 0), Hit::TabBar(7));
         assert_eq!(map.hit(50, 10), Hit::Editor(7));
-        assert_eq!(map.hit(63, 10), Hit::ScrollBar(7), "the editor's last column");
+        assert_eq!(
+            map.hit(63, 10),
+            Hit::ScrollBar(ScrollTarget::Group(7)),
+            "the editor's last column"
+        );
         assert_eq!(map.hit(62, 10), Hit::Editor(7));
         assert_eq!(map.hit(63, 0), Hit::TabBar(7), "the tab bar runs over it");
         assert_eq!(map.hit(64, 10), Hit::Divider(0));

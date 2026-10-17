@@ -477,6 +477,18 @@ pub struct DiffTab {
     stale: bool,
 }
 
+impl crate::scrollbar::Scrollable for DiffTab {
+    fn scroll(&self) -> crate::scrollbar::Scroll {
+        crate::scrollbar::Scroll::rows(self.rows().len(), self.height, self.top)
+    }
+
+    /// The pointer decides where the view is: no reveal of the cursor's row.
+    fn set_top(&mut self, top: usize) {
+        self.top = top;
+        self.reveal = false;
+    }
+}
+
 impl DiffTab {
     pub fn new(id: u64, path: PathBuf, pair: Pair) -> DiffTab {
         DiffTab {

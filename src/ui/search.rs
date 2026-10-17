@@ -11,9 +11,11 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::find::draw_field;
+use super::scrollbar;
 use crate::app::{App, Focus};
 use crate::buffer::pos::{self, DisplayCol};
-use crate::layout::SearchHit;
+use crate::layout::{ScrollBarHit, ScrollTarget, SearchHit, SidePanel};
+use crate::scrollbar::Scrollable;
 use crate::search_view::{self, Row};
 use crate::workspace_search::{FileMatches, LineMatch, MAX_MATCHES, Results};
 
@@ -21,11 +23,13 @@ const TOGGLES: [&str; 2] = ["Aa", ".*"];
 /// Cells a result line is indented by.
 const LINE_INDENT: u16 = 3;
 
-/// Draws the view in `area` (the side panel below its title, without its border).
-pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<SearchHit> {
+/// Draws the view in `area` (the side panel below its title, without its border), and the
+/// results' scroll bar in the list's last column (the query and toggles keep the full width).
+pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, Option<ScrollBarHit>) {
     if area.width < 10 || area.height < 2 {
-        return None;
+        return (None, None);
     }
+    let look = scrollbar::look(app, ScrollTarget::Side(SidePanel::Search));
     let theme = &app.theme;
     let base = theme.get("sideBar");
     let input = base.patch(theme.get("dialog.input"));
@@ -91,13 +95,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<SearchHit> {
         list: Rect::default(),
         rows: Vec::new(),
     };
-    let Some(results) = results else { return Some(hit) };
-    let list = Rect {
+    let Some(results) = results else {
+        return (Some(hit), None);
+    };
+    let mut list = Rect {
         x: area.x,
         y: (y + 1).min(bottom),
         width: area.width,
         height: bottom.saturating_sub(y + 1),
     };
+    let bar = scrollbar::take_column(&mut list);
     view.list.height = list.height.max(1) as usize;
     // Clamp (the list may have shrunk), keeping the same row on top.
     let top = view.scroll(results);
@@ -105,6 +112,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<SearchHit> {
     let top = view.scroll(results);
     let selected_row = view.selected_row(results);
     let out = f.buffer_mut();
+    let scroll = view.list.scrollable(&results.files).scroll();
+    let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme));
     let styles = Styles {
         base,
         dim,
@@ -148,7 +157,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<SearchHit> {
     }
     hit.list = list;
     hit.rows = shown.iter().map(|r| r.key()).collect();
-    Some(hit)
+    (Some(hit), bar)
 }
 
 /// Just the background of `style` (so text keeps its own colour on a selected row).

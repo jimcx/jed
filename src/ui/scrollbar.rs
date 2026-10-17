@@ -1,10 +1,12 @@
-//! An editor group's vertical scroll bar: one column at the editor's right edge, the editor's
-//! background with the thumb (`scrollbar::Scroll::thumb`) as cells of `scrollbarSlider.*`.
+//! Vertical scroll bars: one column at the right edge of an editor or a list, the background of
+//! what it scrolls with the thumb (`scrollbar::Scroll::thumb`) as cells of `scrollbarSlider.*`.
 
 use ratatui::buffer::Buffer as Cells;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 
-use crate::layout::ScrollBarHit;
+use crate::app::App;
+use crate::layout::{ScrollBarHit, ScrollTarget};
 use crate::scrollbar::Scroll;
 use crate::theme::Theme;
 
@@ -18,9 +20,41 @@ pub enum Look {
     Active,
 }
 
-/// Draws the bar on `track` (one column) for `scroll`; returns it for the mouse.
-pub fn render(out: &mut Cells, track: Rect, mut scroll: Scroll, look: Look, theme: &Theme) -> ScrollBarHit {
-    let base = theme.get("editor");
+/// How `target`'s thumb looks: dragged, under the pointer, or neither.
+pub fn look(app: &App, target: ScrollTarget) -> Look {
+    if app.scrollbar_dragged() == Some(target) {
+        Look::Active
+    } else if app.ui.scrollbar_hover == Some(target) {
+        Look::Hover
+    } else {
+        Look::Normal
+    }
+}
+
+/// Takes the last column off `area` for a bar (the column is always kept, so nothing reflows
+/// when a thumb appears); `None` when `area` is narrower than two columns.
+pub fn take_column(area: &mut Rect) -> Option<Rect> {
+    if area.width < 2 || area.height == 0 {
+        return None;
+    }
+    area.width -= 1;
+    Some(Rect {
+        x: area.x + area.width,
+        width: 1,
+        ..*area
+    })
+}
+
+/// Draws the bar on `track` (one column, on `base`: the background of what it scrolls) for
+/// `scroll`; returns it for the mouse.
+pub fn render(
+    out: &mut Cells,
+    track: Rect,
+    mut scroll: Scroll,
+    look: Look,
+    base: Style,
+    theme: &Theme,
+) -> ScrollBarHit {
     out.set_style(track, base);
     scroll.shown |= look == Look::Active;
     let thumb = scroll.thumb(track.height);

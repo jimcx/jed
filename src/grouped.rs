@@ -85,7 +85,30 @@ pub struct ListState {
     pub height: usize,
 }
 
+/// A grouped list's scroll bar: its state with its groups (`ListState::scrollable`).
+pub struct GroupedScroll<'a, G> {
+    state: &'a mut ListState,
+    groups: &'a [G],
+}
+
+impl<G: Group> crate::scrollbar::Scrollable for GroupedScroll<'_, G> {
+    /// Per group, not per row: the row count, the top key's index by binary search.
+    fn scroll(&self) -> crate::scrollbar::Scroll {
+        let rows = row_count(self.groups);
+        crate::scrollbar::Scroll::rows(rows, self.state.height, self.state.scroll(self.groups))
+    }
+
+    fn set_top(&mut self, top: usize) {
+        self.state.set_scroll(self.groups, top);
+    }
+}
+
 impl ListState {
+    /// This list's scroll bar over `groups`.
+    pub fn scrollable<'a, G: Group>(&'a mut self, groups: &'a [G]) -> GroupedScroll<'a, G> {
+        GroupedScroll { state: self, groups }
+    }
+
     /// Back to the top, nothing selected.
     pub fn reset(&mut self) {
         self.top = None;
@@ -209,6 +232,29 @@ pub mod tests {
         );
         assert_eq!(group(&g, Path::new("d")).map(|(i, _)| i), Some(1));
         assert!(group(&g, Path::new("c")).is_none());
+    }
+
+    /// The scroll bar's view of the list: rows, height and top by index; its end is the
+    /// wheel's (the last row at the bottom); the selection never moves.
+    #[test]
+    fn the_scroll_bar_reads_and_sets_the_top_by_index() {
+        use crate::scrollbar::Scrollable;
+        let g = groups(&[("b", 2), ("d", 3)]);
+        let mut l = ListState {
+            height: 3,
+            ..ListState::default()
+        };
+        l.select(&g, 1);
+        l.set_scroll(&g, 2);
+        let s = l.scrollable(&g).scroll();
+        assert_eq!((s.top, s.height, s.max_top, s.shown), (2, 3, 4, true));
+        l.scrollable(&g).set_top(100);
+        assert_eq!(l.scroll(&g), 4);
+        l.scroll_by(&g, 100);
+        assert_eq!(l.scroll(&g), 4, "where the wheel ends");
+        assert_eq!(l.selected_row(&g), Some(1));
+        let fits = groups(&[("a", 1)]);
+        assert!(!l.scrollable(&fits).scroll().shown, "fits: no thumb");
     }
 
     /// The top row and the selection stay on their keys when a group arrives above them.

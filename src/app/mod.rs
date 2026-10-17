@@ -121,8 +121,8 @@ pub struct UiState {
     /// "View: Toggle Render Whitespace" flipped the `render_whitespace` setting for this session
     /// (`App::render_whitespace`). Never written to a settings file; a `.workspace` reload keeps it.
     pub whitespace_toggled: bool,
-    /// The group whose scroll bar thumb is under the pointer (drawn in its hover colour).
-    pub scrollbar_hover: Option<GroupId>,
+    /// The scroll bar whose thumb is under the pointer (drawn in its hover colour).
+    pub scrollbar_hover: Option<crate::layout::ScrollTarget>,
 }
 
 /// The bottom panel's height until it's resized.

@@ -130,7 +130,29 @@ pub struct ScmView {
     pub hover: Option<RowKey>,
 }
 
+/// The view's scroll bar: its state with its rows (`ScmView::scrollable`).
+pub struct ScmScroll<'a, 'r> {
+    view: &'a mut ScmView,
+    rows: &'a [Row<'r>],
+}
+
+impl crate::scrollbar::Scrollable for ScmScroll<'_, '_> {
+    fn scroll(&self) -> crate::scrollbar::Scroll {
+        crate::scrollbar::Scroll::rows(self.rows.len(), self.view.height, self.view.scroll(self.rows))
+    }
+
+    fn set_top(&mut self, top: usize) {
+        self.view.top = top;
+        self.view.clamp(self.rows);
+    }
+}
+
 impl ScmView {
+    /// The list's scroll bar over `rows` (this view's `rows(status)`).
+    pub fn scrollable<'a, 'r>(&'a mut self, rows: &'a [Row<'r>]) -> ScmScroll<'a, 'r> {
+        ScmScroll { view: self, rows }
+    }
+
     pub fn collapsed(&self, section: Section) -> bool {
         self.collapsed[section.index()]
     }
@@ -412,5 +434,28 @@ mod tests {
         assert!(v.select_key(&rows, &RowKey::Header(Section::Changes)));
         assert_eq!(v.scroll(&rows), 0);
         assert!(!v.select_key(&rows, &RowKey::Header(Section::Staged)));
+    }
+
+    /// The scroll bar's view: rows, height, top; `set_top` clamps as the wheel does and never
+    /// moves the selection.
+    #[test]
+    fn the_scroll_bar_reads_and_sets_the_top() {
+        use crate::scrollbar::Scrollable;
+        let entries: Vec<String> = (0..20).map(|i| format!("f{i:02}")).collect();
+        let entries: Vec<(&str, _, _)> = entries.iter().map(|p| (p.as_str(), None, M)).collect();
+        let s = status(&entries);
+        let mut v = ScmView {
+            height: 5,
+            ..ScmView::default()
+        };
+        let rows = v.rows(&s);
+        v.select(&rows, 2);
+        v.scrollable(&rows).set_top(7);
+        assert_eq!(v.scroll(&rows), 7);
+        let sc = v.scrollable(&rows).scroll();
+        assert_eq!((sc.top, sc.height, sc.max_top, sc.shown), (7, 5, 16, true));
+        v.scrollable(&rows).set_top(100);
+        assert_eq!(v.top, 16, "clamped where the wheel ends");
+        assert_eq!(v.selected_row(&rows), Some(2));
     }
 }

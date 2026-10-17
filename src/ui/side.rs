@@ -4,8 +4,10 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
+use super::scrollbar;
 use crate::app::{App, Focus};
-use crate::layout::{ScmHit, SearchHit, SidePanel};
+use crate::layout::{ScmHit, ScrollBarHit, ScrollTarget, SearchHit, SidePanel};
+use crate::scrollbar::Scroll;
 
 /// What the side panel drew, for hit-testing.
 #[derive(Default)]
@@ -14,6 +16,8 @@ pub struct SideHits {
     pub explorer_rows: Rect,
     pub search: Option<SearchHit>,
     pub scm: Option<ScmHit>,
+    /// The shown list's scroll bar (its last column).
+    pub scrollbar: Option<(ScrollTarget, ScrollBarHit)>,
 }
 
 /// Draws the panel.
@@ -52,14 +56,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
     };
     match app.ui.side_panel {
         SidePanel::Search => {
+            let (search, bar) = super::search::render(f, view, app);
             return SideHits {
-                search: super::search::render(f, view, app),
+                search,
+                scrollbar: bar.map(|b| (ScrollTarget::Side(SidePanel::Search), b)),
                 ..SideHits::default()
             };
         }
         SidePanel::SourceControl => {
+            let (scm, bar) = super::scm::render(f, view, app);
             return SideHits {
-                scm: super::scm::render(f, view, app),
+                scm,
+                scrollbar: bar.map(|b| (ScrollTarget::Side(SidePanel::SourceControl), b)),
                 ..SideHits::default()
             };
         }
@@ -70,10 +78,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
     let name = app.workspace.name().to_uppercase();
     out.set_stringn(area.x, area.y + 1, format!(" ▾ {name}"), inner_w as usize, header);
 
+    // The rows keep their last column for the scroll bar.
+    let mut body = body;
+    let bar = scrollbar::take_column(&mut body);
+    let look = scrollbar::look(app, ScrollTarget::Side(SidePanel::Explorer));
     let explorer = &mut app.explorer;
     explorer.height = body.height.max(1) as usize;
-    let max_scroll = explorer.rows().len().saturating_sub(explorer.height);
-    explorer.scroll = explorer.scroll.min(max_scroll);
+    let count = explorer.row_count();
+    explorer.scroll = explorer.scroll.min(count.saturating_sub(explorer.height));
+    let scroll = Scroll::rows(count, explorer.height, explorer.scroll);
+    let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme));
     let rows = explorer.rows();
     let focused = app.ui.focus == Focus::SidePanel && app.prompt.is_none() && app.palette.is_none();
     let selected_style = if focused {
@@ -123,6 +137,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
     }
     SideHits {
         explorer_rows: body,
+        scrollbar: bar.map(|b| (ScrollTarget::Side(SidePanel::Explorer), b)),
         ..SideHits::default()
     }
 }
