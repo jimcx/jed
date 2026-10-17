@@ -435,6 +435,10 @@ pub struct ListHit {
 #[derive(Debug, Clone)]
 pub struct SearchHit {
     pub toggles: [Rect; 2],
+    /// The `…` button (show / hide the files to include / exclude).
+    pub details: Rect,
+    /// The query, files to include and files to exclude inputs (the last two empty while hidden).
+    pub inputs: [Rect; 3],
     pub list: Rect,
     pub rows: Vec<crate::search_view::RowKey>,
 }

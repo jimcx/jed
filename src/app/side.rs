@@ -49,6 +49,7 @@ impl App {
                 }
             }
             X::ShowHistory => self.explorer_file_history(),
+            X::FindInFolder => self.find_in_folder(),
         }
     }
 

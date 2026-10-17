@@ -69,6 +69,7 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+b` | Toggle sidebar | everywhere |
 | `cmd+shift+e` | Focus explorer | everywhere |
 | `cmd+shift+f` | Search in workspace (Search view, seeded with the selection) | everywhere |
+| `cmd+shift+j` | Toggle search details (the Search view's files to include / exclude) | search |
 | `cmd+1` | Focus group 1 | everywhere |
 | `cmd+2` | Focus group 2 | everywhere |
 | `cmd+3` | Focus group 3 | everywhere |

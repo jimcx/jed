@@ -1,5 +1,6 @@
 //! The Search view, in the side panel below its title: the query input with the case and regex
-//! toggles (`Aa .*`), an invalid regex's message under it, a summary ("12 results in 3 files",
+//! toggles (`Aa .*`) and the details button (`…`), the files to include / exclude inputs under it
+//! while the details show, an invalid regex's or glob's message under them, a summary ("12 results in 3 files",
 //! "Searching…", "No results found", the truncated note), then the results: a row per file
 //! (name, dimmed folder, match count) followed by its matching lines with the matches
 //! highlighted. Only the rows on screen are looked at.
@@ -16,7 +17,7 @@ use crate::app::{App, Focus};
 use crate::buffer::pos::{self, DisplayCol};
 use crate::layout::{ScrollBarHit, ScrollTarget, SearchHit, SidePanel};
 use crate::scrollbar::Scrollable;
-use crate::search_view::{self, Row};
+use crate::search_view::{self, Input, Row};
 use crate::workspace_search::{FileMatches, LineMatch, MAX_MATCHES, Results};
 
 const TOGGLES: [&str; 2] = ["Aa", ".*"];
@@ -39,15 +40,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
     let out = f.buffer_mut();
     let bottom = area.y + area.height;
 
-    // " [query] Aa .* "
-    let field_w = area.width.saturating_sub(1 + 1 + 3 * TOGGLES.len() as u16).max(4);
+    // " [query] Aa .* … "
+    let field_w = area.width.saturating_sub(1 + 3 * TOGGLES.len() as u16 + 2 + 1).max(4);
     let field = Rect {
         x: area.x + 1,
         y: area.y,
         width: field_w,
         height: 1,
     };
-    let cursor = draw_field(out, field, &view.query, "Search", input, selected, dim);
+    let mut inputs = [field, Rect::default(), Rect::default()];
+    let mut cursors = [draw_field(out, field, &view.query, "Search", input, selected, dim); 3];
     let on = [view.options.case_sensitive, view.options.regex];
     let mut toggles = [Rect::default(); 2];
     for (i, label) in TOGGLES.iter().enumerate() {
@@ -61,7 +63,42 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
             height: 1,
         };
     }
+    // `…`: lit while the details show, or while hidden ones still filter.
+    let details = Rect {
+        x: field.x + field_w + 1 + 3 * TOGGLES.len() as u16,
+        y: area.y,
+        width: 1,
+        height: 1,
+    };
+    let key = if view.details || view.hidden_filter() {
+        "find.option.active"
+    } else {
+        "find.option"
+    };
+    out.set_stringn(details.x, details.y, "…", 1, base.patch(theme.get(key)));
     let mut y = area.y + 1;
+    if view.details {
+        let fields = [(&view.include, "files to include"), (&view.exclude, "files to exclude")];
+        for (i, (text, placeholder)) in fields.into_iter().enumerate() {
+            if y >= bottom {
+                break;
+            }
+            let r = Rect {
+                x: area.x + 1,
+                y,
+                width: area.width.saturating_sub(2),
+                height: 1,
+            };
+            cursors[i + 1] = draw_field(out, r, text, placeholder, input, selected, dim);
+            inputs[i + 1] = r;
+            y += 1;
+        }
+    }
+    let cursor = match view.input {
+        Input::Query => cursors[0],
+        Input::Include => cursors[1],
+        Input::Exclude => cursors[2],
+    };
     let text_w = area.width.saturating_sub(2) as usize;
     let line = |out: &mut ratatui::buffer::Buffer, y: &mut u16, text: &str, style: Style| {
         if *y < bottom {
@@ -92,6 +129,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
     }
     let mut hit = SearchHit {
         toggles,
+        details,
+        inputs,
         list: Rect::default(),
         rows: Vec::new(),
     };

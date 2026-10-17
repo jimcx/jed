@@ -6,13 +6,14 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use super::files::Goto;
-use super::{App, AppEvent, Focus};
+use super::{App, AppEvent, Focus, Level};
 use crate::buffer::pos;
 use crate::command::SearchCommand as S;
 use crate::field::{Outcome, TextField};
 use crate::layout::SidePanel;
+use crate::path_filter;
 use crate::search::SearchError;
-use crate::search_view::Target;
+use crate::search_view::{Input, Target};
 use crate::workspace_search::{self, Batch, Job, Query, Results};
 
 impl App {
@@ -102,7 +103,45 @@ impl App {
                     self.open_result(t, false);
                 }
             }
+            S::ToggleDetails => {
+                // From elsewhere (the palette, the editor) the view is shown and focused first.
+                if !self.search_focused() {
+                    self.focus_side(SidePanel::Search);
+                }
+                self.search_view.toggle_details();
+            }
+            S::NextInput | S::PreviousInput => {
+                self.search_view.cycle(self.search.as_ref(), cmd == S::NextInput);
+            }
         }
+    }
+
+    /// "Find in Folder…" (an explorer folder's right-click, `explorer.findInFolder`): the Search
+    /// view with its details shown and the folder (relative to the root, escaped) as the files to
+    /// include; the query takes the keys, selected, and the search runs now. On a file: a message.
+    pub(super) fn find_in_folder(&mut self) {
+        let Some(path) = self.explorer.selected.clone() else {
+            return;
+        };
+        if !self.explorer.find(&path).is_some_and(|e| e.is_dir) {
+            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            self.notify(
+                Level::Info,
+                format!("{name} is a file: Find in Folder… searches a folder"),
+            );
+            return;
+        }
+        let Ok(rel) = path.strip_prefix(&self.workspace.root) else {
+            return;
+        };
+        let pattern = path_filter::folder_pattern(rel);
+        self.focus_side(SidePanel::Search);
+        let view = &mut self.search_view;
+        view.include = TextField::new(pattern);
+        view.details = true;
+        view.input = Input::Query;
+        view.query.select_all();
+        self.run_search();
     }
 
     /// Opens a search result in the active (last focused) editor group with the match selected
@@ -117,9 +156,10 @@ impl App {
         self.open_file(path, focus, Some(goto));
     }
 
-    /// Keys the keymap doesn't bind in the Search view edit its query. An edit restarts the
-    /// search after the debounce; emptying the query clears the results at once. In the results
-    /// list, typing a character goes back to the query and types it; other keys do nothing.
+    /// Keys the keymap doesn't bind in the Search view edit its focused input (the query, or the
+    /// files to include / exclude). An edit restarts the search after the debounce; emptying the
+    /// query clears the results at once. In the results list, typing a character goes back to the
+    /// input that last had the keys and types it; other keys do nothing.
     pub(super) fn search_key(&mut self, key: KeyEvent) {
         if self.search_view.list_focused {
             let typed = matches!(key.code, KeyCode::Char(_)) && (key.modifiers - KeyModifiers::SHIFT).is_empty();
@@ -128,14 +168,15 @@ impl App {
             }
             self.search_view.list_focused = false;
         }
-        if self.search_view.query.key(key) == Outcome::Edited {
+        if self.search_view.input_mut().key(key) == Outcome::Edited {
             self.search_edited();
         }
     }
 
+    /// A paste goes to the focused input (from the list: the input that last had the keys).
     pub(super) fn search_paste(&mut self, text: &str) {
         self.search_view.list_focused = false;
-        self.search_view.query.insert(&text.replace(['\r', '\n'], ""));
+        self.search_view.input_mut().insert(&text.replace(['\r', '\n'], ""));
         self.search_edited();
     }
 
@@ -155,24 +196,34 @@ impl App {
         }
     }
 
-    /// Searches for the view's query now, cancelling the running search; an invalid regex
-    /// shows its error instead.
+    /// Searches for the view's query now, cancelling the running search; an invalid regex or
+    /// glob shows its error instead.
     fn run_search(&mut self) {
         self.search_view.started();
         self.search_view.error = self.start_search(self.search_view.query()).err();
     }
 
-    /// A click in the Search view: an option toggle; a result row (selected, and the list takes
+    /// A click in the Search view: an option toggle or the `…` details button; an input (it takes
+    /// the keys); a result row (selected, and the list takes
     /// the keys): a match opens with the focus staying in the list, a double click opens a match
     /// or a file's first match and focuses the editor; anywhere else the query takes the keys.
     pub(super) fn search_click(&mut self, m: MouseEvent, count: u8) {
         self.ui.focus = Focus::SidePanel;
         let Some(hit) = self.hits.search.take() else { return };
         let at = ratatui::layout::Position { x: m.column, y: m.row };
+        let input = [Input::Query, Input::Include, Input::Exclude]
+            .into_iter()
+            .zip(hit.inputs)
+            .find(|(_, r)| r.contains(at));
         if hit.toggles[0].contains(at) {
             self.search_command(S::ToggleCase);
         } else if hit.toggles[1].contains(at) {
             self.search_command(S::ToggleRegex);
+        } else if hit.details.contains(at) {
+            self.search_command(S::ToggleDetails);
+        } else if let Some((input, _)) = input {
+            self.search_view.input = input;
+            self.search_view.list_focused = false;
         } else if hit.list.contains(at) {
             let row = hit.rows.get((at.y - hit.list.y) as usize);
             if let (Some(key), Some(results)) = (row, &self.search) {
@@ -199,20 +250,22 @@ impl App {
     }
 
     /// Starts searching the workspace for `query`, cancelling the running search. Open buffers
-    /// with unsaved changes inside the root are searched from their text. An empty pattern
-    /// gives finished, empty results without searching; an invalid regex clears the results
-    /// and returns the error (nothing runs).
+    /// with unsaved changes inside the root are searched from their text. The query's files to
+    /// include / exclude narrow both. An empty pattern gives finished, empty results without
+    /// searching; an invalid regex or glob clears the results and returns the error (nothing
+    /// runs).
     pub fn start_search(&mut self, query: Query) -> Result<(), SearchError> {
         self.search_task = None; // cancels it
         self.search_generation += 1;
         let generation = self.search_generation;
-        let matcher = match workspace_search::matcher(&query) {
-            Ok(m) => m,
-            Err(e) => {
-                self.search = None;
-                return Err(e);
-            }
-        };
+        let (matcher, filter) =
+            match workspace_search::matcher(&query).and_then(|m| Ok((m, workspace_search::filter(&query)?))) {
+                Ok(both) => both,
+                Err(e) => {
+                    self.search = None;
+                    return Err(e);
+                }
+            };
         let mut results = Results::new(generation, query);
         if matcher.is_empty() {
             results.done = true;
@@ -230,6 +283,7 @@ impl App {
             root,
             excludes: self.excludes.clone(),
             matcher,
+            filter,
             dirty,
             generation,
         };

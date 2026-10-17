@@ -77,6 +77,7 @@ fn query(pattern: &str, regex: bool, case_sensitive: bool) -> Query {
             case_sensitive,
             whole_word: false,
         },
+        ..Query::default()
     }
 }
 

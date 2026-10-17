@@ -268,10 +268,13 @@ pub enum ExplorerCommand {
     Delete,
     /// "File History: Show" for the selected file (also a right-click on a file's row).
     ShowHistory,
+    /// "Find in Folder…": the Search view with the selected folder as its files to include
+    /// (also a right-click on a folder's row).
+    FindInFolder,
 }
 
 impl ExplorerCommand {
-    pub const ALL: [ExplorerCommand; 15] = [
+    pub const ALL: [ExplorerCommand; 16] = [
         X::Up,
         X::Down,
         X::PageUp,
@@ -287,6 +290,7 @@ impl ExplorerCommand {
         X::Rename,
         X::Delete,
         X::ShowHistory,
+        X::FindInFolder,
     ];
 }
 
@@ -372,10 +376,16 @@ pub enum SearchCommand {
     /// F4 / Shift+F4 from anywhere: open the next / previous match, focus where it was.
     NextResult,
     PreviousResult,
+    /// The `…` button: show / hide the files to include / exclude inputs.
+    ToggleDetails,
+    /// Tab / Shift+Tab: the next / previous of the query, include and exclude inputs and the
+    /// results list.
+    NextInput,
+    PreviousInput,
 }
 
 impl SearchCommand {
-    pub const ALL: [SearchCommand; 14] = [
+    pub const ALL: [SearchCommand; 17] = [
         SearchCommand::ToggleCase,
         SearchCommand::ToggleRegex,
         SearchCommand::Refresh,
@@ -390,6 +400,9 @@ impl SearchCommand {
         SearchCommand::Open,
         SearchCommand::NextResult,
         SearchCommand::PreviousResult,
+        SearchCommand::ToggleDetails,
+        SearchCommand::NextInput,
+        SearchCommand::PreviousInput,
     ];
 }
 
@@ -699,6 +712,7 @@ impl Command {
                     X::Rename => "rename",
                     X::Delete => "delete",
                     X::ShowHistory => "showFileHistory",
+                    X::FindInFolder => "findInFolder",
                 }
             ),
             Command::ShowCommands => "palette.showCommands".into(),
@@ -754,6 +768,9 @@ impl Command {
                     SearchCommand::Open => "open",
                     SearchCommand::NextResult => "next",
                     SearchCommand::PreviousResult => "previous",
+                    SearchCommand::ToggleDetails => "toggleDetails",
+                    SearchCommand::NextInput => "nextInput",
+                    SearchCommand::PreviousInput => "previousInput",
                 }
             ),
             Command::TogglePanel => "view.togglePanel".into(),
@@ -940,6 +957,7 @@ impl Command {
                 X::Rename => "Explorer: Rename",
                 X::Delete => "Explorer: Delete",
                 X::ShowHistory => "Explorer: Show File History",
+                X::FindInFolder => "Explorer: Find in Folder…",
             },
             Command::ShowCommands => "Show All Commands",
             Command::QuickOpen => "Go to File…",
@@ -986,6 +1004,9 @@ impl Command {
                 SearchCommand::Open => "Search: Open Selected Result",
                 SearchCommand::NextResult => "Search: Go to Next Result",
                 SearchCommand::PreviousResult => "Search: Go to Previous Result",
+                SearchCommand::ToggleDetails => "Search: Toggle Search Details",
+                SearchCommand::NextInput => "Search: Focus Next Input",
+                SearchCommand::PreviousInput => "Search: Focus Previous Input",
             },
             Command::TogglePanel => "View: Toggle Panel Visibility",
             Command::ToggleProblems => "View: Toggle Problems",

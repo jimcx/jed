@@ -322,10 +322,20 @@ pub const HIDDEN_DIRS: [&str; 2] = [".git", ".jed"];
 /// The walk the explorer, quick open and workspace search share: `.gitignore` (inside git
 /// repos), the excludes, and never `.git/` or `.jed/`. Dotfiles are shown.
 pub fn walker(dir: &Path, excludes: &Override) -> WalkBuilder {
+    walker_with(dir, excludes, |_| true)
+}
+
+/// `walker`, also skipping the entries (below `dir`) `keep` refuses: workspace search's folder
+/// filter prunes folders with it.
+pub fn walker_with(
+    dir: &Path,
+    excludes: &Override,
+    keep: impl Fn(&ignore::DirEntry) -> bool + Send + Sync + 'static,
+) -> WalkBuilder {
     let mut b = WalkBuilder::new(dir);
     b.hidden(false)
         .overrides(excludes.clone())
-        .filter_entry(|e| e.depth() == 0 || !HIDDEN_DIRS.iter().any(|h| e.file_name() == *h));
+        .filter_entry(move |e| e.depth() == 0 || (!HIDDEN_DIRS.iter().any(|h| e.file_name() == *h) && keep(e)));
     b
 }
 

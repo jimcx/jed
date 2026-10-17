@@ -243,7 +243,8 @@ impl App {
     }
 
     /// Right-click (jed has no context menus): on a tab, its file's history ("File History:
-    /// Show", the tab activated first); on an explorer file, that file's.
+    /// Show", the tab activated first); on an explorer file, that file's; on an explorer folder,
+    /// "Find in Folder…" (the row selected first).
     fn right_click(&mut self, hit: Hit) {
         match hit {
             Hit::Tab(g, i) | Hit::TabClose(g, i) => {
@@ -256,9 +257,16 @@ impl App {
                 let Some(path) = self.explorer.rows().get(index).map(|r| r.entry.path.clone()) else {
                     return;
                 };
+                // A folder: "Find in Folder…"; a file: its history.
+                let is_dir = self.explorer.find(&path).is_some_and(|e| e.is_dir);
                 self.ui.focus = Focus::SidePanel;
                 self.explorer.selected = Some(path);
-                self.execute(Command::Explorer(ExplorerCommand::ShowHistory));
+                let cmd = if is_dir {
+                    ExplorerCommand::FindInFolder
+                } else {
+                    ExplorerCommand::ShowHistory
+                };
+                self.execute(Command::Explorer(cmd));
             }
             _ => {}
         }

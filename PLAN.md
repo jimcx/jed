@@ -178,6 +178,7 @@ Go back to any earlier save of a file, independent of git.
 - Respects `.gitignore`
 - Live refresh through `notify`
 - Git status colouring on entries
+- "Find in Folder…" (`explorer.findInFolder`; right-click on a folder's row — a file's row shows its history): the Search view with that folder as its files to include (folders only, as VS Code)
 
 ### Editor
 - Multiple cursors — see [Multi-cursor](#multi-cursor)
@@ -359,6 +360,12 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
 - Same matcher (`search` module) as find in file, so each option means the same thing in both
 - Scope: workspace root; skips `.gitignore`d files, `.workspace` excludes, `.jed/` and binary files
 - Open buffers with unsaved changes are searched from the buffer, not the disk
+- Files to include / exclude (VS Code's "Toggle Search Details": the `…` button or Cmd/Ctrl+Shift+J shows two inputs under the query; hidden, they still apply and `…` stays lit):
+  - Comma-separated globs (`src/**`, `*.rs`, `{a,b}`), relative to the root; a pattern without `/` matches at any depth (`*.rs`, `src` = every folder named `src`), one with a `/` (or a leading `./`) from the root; a folder or path means everything under it (`src` = `src/**`)
+  - `!` takes a pattern's matches back out of its own field (`src, !src/gen`); exclude beats include
+  - On top of `.gitignore` and `.workspace` excludes; dirty buffers filtered the same way (one matcher, `path_filter`); an invalid glob shows its error like an invalid regex and nothing runs
+  - Edits re-search after the debounce, like the query's; Tab / Shift+Tab go query → include → exclude → results
+  - Search view state, like the query (not in sessions)
 - Off the UI thread (`ignore` walker + `grep-searcher` in `spawn_blocking`)
   - Results stream in as files finish
   - Typing restarts the search (short debounce) and cancels the running one
@@ -368,7 +375,7 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
   - F4 / Shift+F4: next / previous result
   - Capped at 20,000 matches, with a "results truncated" note (as VS Code)
 - Matches stay within one line in v1
-- Later: replace across files, include/exclude glob fields, whole-word toggle
+- Later: replace across files, whole-word toggle
 
 ## Keybindings (VS Code defaults)
 | Action | macOS | Linux |
@@ -386,6 +393,7 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
 | Find / replace | Cmd+F / Cmd+Alt+F | Ctrl+F / Ctrl+H |
 | Toggle case / whole word / regex (find, search) | Cmd+Alt+C / W / R | Alt+C / W / R |
 | Next / previous search result | F4 / Shift+F4 | F4 / Shift+F4 |
+| Toggle search details (files to include / exclude) | Cmd+Shift+J | Ctrl+Shift+J |
 | Go to line | Ctrl+G | Ctrl+G |
 | Open recent workspace | Ctrl+R | Ctrl+R |
 | Comment line | Cmd+/ | Ctrl+/ |
@@ -862,7 +870,10 @@ Broad items not tied to a milestone.
   - `edit::RenderWhitespace` (`Settings::render_whitespace`, both settings files); drawn in `ui/editor.rs` (`shows_whitespace`, `Overlay::whitespace`): only U+0020 and tab (NBSP draws as itself), a tab's `→` in its first cell, `editorWhitespace.foreground` over token colours, under selection / find backgrounds, not at secondary cursors or the focused primary; `view.toggleRenderWhitespace` flips `UiState::whitespace_toggled` (session-only, survives `.workspace` reloads), read via `App::render_whitespace()`
   - Tests: `todo_tests::render_whitespace`; older end-to-end tests that read drawn text call `App::test_plain_whitespace()`; the M1 / M6 1 MB frame-budget tests assert they draw with `all`
   - Still to check by hand: the dim colour on the current line (256 colours: 237 on 235) and a block cursor over `·` in a real terminal; the release budget run on an idle machine (it missed by < 1 ms under a load of ~9 from a kernel build, the same with whitespace off)
-- **Folder filter in the Search view** ([Workspace search](#workspace-search)): VS Code's "files to include" / "files to exclude" fields under the query (toggled by a `…` button, as VS Code's "Toggle Search Details"); comma-separated globs (`src/**`, `*.rs`, `!tests`), a bare folder name or path meaning everything under it (`src` = `src/**`), relative to the root; applied on top of `.gitignore` and `.workspace` `[files] exclude` (same `ignore` walker overrides), dirty buffers filtered the same way; re-searches with the debounce like the query; "Find in Folder…" on an explorer folder (right-click / a command) opens the Search view with that folder filled in; the fields are Search view state (kept with the query)
+- ✅ **Folder filter in the Search view** ([Workspace search](#workspace-search)): VS Code's "files to include" / "files to exclude" fields under the query (toggled by a `…` button, as VS Code's "Toggle Search Details"); comma-separated globs (`src/**`, `*.rs`, `!tests`), a bare folder name or path meaning everything under it (`src` = `src/**`), relative to the root; applied on top of `.gitignore` and `.workspace` `[files] exclude` (same `ignore` walker overrides), dirty buffers filtered the same way; re-searches with the debounce like the query; "Find in Folder…" on an explorer folder (right-click / a command) opens the Search view with that folder filled in; the fields are Search view state (kept with the query)
+  - `path_filter.rs` (VS Code's globs: comma-split, `{…}` / `\,` aware; no `/` = any depth (`src` = every folder named src, VS Code — a deviation from "relative to the root"), a `/` or `./` = rooted; each pattern takes everything under it; `!` within a field; exclude beats include; an only-`!` include = everything else; `folder_pattern` escapes a folder for Find in Folder), one matcher for the walk (`explorer::walker_with` prunes only excluded folders), files and dirty buffers (also deleted files); `search_view.rs` `include` / `exclude` fields, `details`, `input`, `cycle`; `…` on the query row and `search.toggleDetails` (Cmd+Shift+J, `docs/terminals` updated); Tab / Shift+Tab cycle query → include → exclude → list; the 150 ms debounce for every field; hidden fields still apply (`…` lit); `explorer.findInFolder` (palette; right-click on a folder row — a file row still shows its history) fills include with `./path`, shows details and searches; not in sessions
+  - Deferred: nothing of the item
+  - Still to check by hand: Cmd+Shift+J reaching jed in each terminal with the updated snippets (iTerm2's default Jump to Mark is on it); the `…` button and the inputs in a narrow side bar; right-clicking a folder
 - **Feature-based end-to-end test files**: the `src/milestone*_tests.rs` files (and `src/todo_tests.rs`) are named after when the work was done, not what they test (`milestone2_tests.rs` = workspace, trust, explorer, tabs, file ops): move them to `src/tests/<feature>.rs` (e.g. `editing`, `multicursor`, `find`, `workspace_search`, `explorer`, `splits`, `palette`, `highlighting`, `lsp`, `git`, `diff_view`, `file_history`, `tasks`, `sessions`, `backups`, `recent`, …), splitting a milestone's file where it spans features and merging tests of one feature from several milestones; shared helpers (`open_app`, `cmd`, `settle_git`, `draw_sized`, …, now duplicated or reached across files as `milestone10_tests::…`) into `src/tests/support.rs`
   - Rename tests from `milestone_N_*` to the behaviour (`done_when` tests keep a recognisable name, e.g. `done_when_*`, and their file's `//!` doc says which milestone's "Done when" they cover); the release budget tests get a filterable name (e.g. `budget_*`) and CLAUDE.md's `cargo test --release milestone` commands change to match
   - Pure move and rename: no test logic changes; the test count stays the same (compare `cargo test -- --list` before / after)

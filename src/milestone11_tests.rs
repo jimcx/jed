@@ -905,8 +905,12 @@ async fn milestone_11_explorer_shows_the_history_of_a_file_not_open() {
     assert_eq!(text(&app), "disk\n");
     assert!(!app.active_buffer().unwrap().is_dirty());
 
-    // A folder: a message, no picker.
+    // A folder's right-click is "Find in Folder…" (no picker); the command on it: a message.
     right_click_row(&mut app, &root.join("src"));
+    assert!(app.palette.is_none());
+    assert_eq!(app.search_view.include.text, "./src");
+    app.explorer.selected = Some(root.join("src"));
+    run_command(&mut app, "Explorer: Show File History");
     assert!(app.palette.is_none());
     assert_eq!(
         app.message.as_ref().unwrap().text,

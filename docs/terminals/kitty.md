@@ -59,6 +59,7 @@ map cmd+w
 map cmd+b
 map cmd+shift+e
 map cmd+shift+f
+map cmd+shift+j
 map cmd+1
 map cmd+2
 map cmd+3

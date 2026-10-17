@@ -40,9 +40,16 @@ pub struct Match {
     pub end: ByteIdx,
 }
 
-/// An invalid regex. `Display` is one line, meant to be shown under the search input.
+/// An invalid regex (or, from `path_filter`, glob). `Display` is one line, meant to be shown
+/// under the search input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchError(String);
+
+impl SearchError {
+    pub fn new(message: String) -> Self {
+        SearchError(message)
+    }
+}
 
 impl fmt::Display for SearchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

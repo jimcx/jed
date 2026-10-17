@@ -13,7 +13,13 @@
 //! - The list has a selected row (also a `RowKey`, so streaming doesn't move it either) and,
 //!   for F4 / Shift+F4, which match on that line: `step` goes to the next / previous match
 //!   (wrapping), `target` is the match Enter opens. Up/Down move it (`move_selection`), keeping it
-//!   on screen; `list_focused` says whether the list or the query input has the keys.
+//!   on screen; `list_focused` says whether the list or an input has the keys.
+//! - Search details (VS Code's "Toggle Search Details", the `…` button): the "files to include"
+//!   and "files to exclude" inputs under the query (`path_filter` reads them), shown while
+//!   `details`. Hidden, they still apply (as VS Code). `input` is the input that has the keys
+//!   while the list doesn't; Tab / Shift+Tab go query → include → exclude → list → query
+//!   (`cycle`: hidden inputs and an empty list left out). Edits to them are debounced like the
+//!   query's.
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -34,9 +40,25 @@ pub const DEBOUNCE: Duration = Duration::from_millis(150);
 /// Cells of text kept before the first match when a result line has to be cut to show it.
 const CONTEXT_BEFORE: usize = 12;
 
+/// One of the view's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Input {
+    #[default]
+    Query,
+    Include,
+    Exclude,
+}
+
 #[derive(Debug, Default)]
 pub struct SearchView {
     pub query: TextField,
+    /// Files to include / exclude: comma-separated globs (`path_filter`).
+    pub include: TextField,
+    pub exclude: TextField,
+    /// The include / exclude inputs are shown (they apply either way).
+    pub details: bool,
+    /// The input that has the keys while the list doesn't.
+    pub input: Input,
     /// Case and regex (whole word stays off in v1).
     pub options: Options,
     /// The query is an invalid regex: shown under the input, nothing runs.
@@ -101,6 +123,64 @@ impl SearchView {
         Query {
             pattern: self.query.text.clone(),
             options: self.options,
+            include: self.include.text.clone(),
+            exclude: self.exclude.text.clone(),
+        }
+    }
+
+    /// The input that has the keys while the list doesn't.
+    pub fn input_mut(&mut self) -> &mut TextField {
+        match self.input {
+            Input::Query => &mut self.query,
+            Input::Include => &mut self.include,
+            Input::Exclude => &mut self.exclude,
+        }
+    }
+
+    /// Whether the hidden include / exclude inputs hold a filter (it still applies).
+    pub fn hidden_filter(&self) -> bool {
+        !self.details && !(self.include.text.trim().is_empty() && self.exclude.text.trim().is_empty())
+    }
+
+    /// Shows the include / exclude inputs, giving the include input the keys, or hides them,
+    /// giving the query the keys if one of them had them.
+    pub fn toggle_details(&mut self) {
+        self.details = !self.details;
+        if self.details {
+            self.input = Input::Include;
+            self.list_focused = false;
+        } else if self.input != Input::Query {
+            self.input = Input::Query;
+        }
+    }
+
+    /// Tab (`forward`) / Shift+Tab: the next / previous of query, include, exclude (while shown)
+    /// and the results list (while it has rows: it selects its first row when none is), wrapping.
+    pub fn cycle(&mut self, results: Option<&Results>, forward: bool) {
+        let list = results.filter(|r| !r.files.is_empty());
+        let mut stops = vec![Some(Input::Query)];
+        if self.details {
+            stops.extend([Some(Input::Include), Some(Input::Exclude)]);
+        }
+        if list.is_some() {
+            stops.push(None);
+        }
+        let here = if self.list_focused { None } else { Some(self.input) };
+        let i = stops.iter().position(|s| *s == here).unwrap_or(0);
+        let n = stops.len();
+        let next = stops[if forward { (i + 1) % n } else { (i + n - 1) % n }];
+        match (next, list) {
+            (Some(input), _) => {
+                self.input = input;
+                self.list_focused = false;
+            }
+            (None, Some(results)) => {
+                self.list_focused = true;
+                if self.selected_row(results).is_none() {
+                    self.select(results, 0);
+                }
+            }
+            (None, None) => {}
         }
     }
 
@@ -395,6 +475,40 @@ mod tests {
         v.edited(t);
         v.started();
         assert_eq!(v.deadline(), None, "starting a search clears it");
+    }
+
+    /// Tab / Shift+Tab visit the shown inputs and a non-empty list, wrapping; toggling the
+    /// details gives the include input the keys and, hiding them, the query back.
+    #[test]
+    fn tab_cycles_through_the_inputs_and_the_list() {
+        let r = results(&[("a", 1)]);
+        let empty = results(&[]);
+        let mut v = with_height(5);
+        let at = |v: &SearchView| if v.list_focused { None } else { Some(v.input) };
+        v.cycle(Some(&empty), true);
+        assert_eq!(at(&v), Some(Input::Query), "only the query: stays");
+        v.cycle(Some(&r), true);
+        assert_eq!(at(&v), None, "the list");
+        assert_eq!(v.selected_row(&r), Some(0), "its first row selected");
+        v.cycle(Some(&r), true);
+        assert_eq!(at(&v), Some(Input::Query));
+
+        v.toggle_details();
+        assert_eq!(at(&v), Some(Input::Include));
+        v.cycle(Some(&r), true);
+        assert_eq!(at(&v), Some(Input::Exclude));
+        v.cycle(None, true);
+        assert_eq!(at(&v), Some(Input::Query), "no results: wraps past the list");
+        v.cycle(Some(&r), false);
+        assert_eq!(at(&v), None);
+        v.cycle(Some(&r), false);
+        assert_eq!(at(&v), Some(Input::Exclude));
+        assert!(!v.hidden_filter());
+        v.exclude.insert("target");
+        v.toggle_details();
+        assert_eq!(at(&v), Some(Input::Query), "hidden: the query gets the keys back");
+        assert!(v.hidden_filter(), "still applies");
+        assert_eq!(v.query().exclude, "target");
     }
 
     #[test]

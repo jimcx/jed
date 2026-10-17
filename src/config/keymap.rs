@@ -623,6 +623,9 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Enter, none, S::Refresh),
         (KeyCode::Esc, none, S::FocusEditor),
         (KeyCode::Down, none, S::FocusResults),
+        (KeyCode::Char('j'), cmd | shift, S::ToggleDetails),
+        (KeyCode::Tab, none, S::NextInput),
+        (KeyCode::Tab, shift, S::PreviousInput),
     ];
     // Its results list (falls back to the input's keys: toggles, Esc).
     let search_results = [

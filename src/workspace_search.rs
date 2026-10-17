@@ -13,6 +13,9 @@
 //! - Open buffers with unsaved changes are searched from their text (a rope snapshot) instead of
 //!   the disk; one whose file doesn't exist (new, or deleted) is searched when it lies in the root
 //!   outside `.git/`, `.jed/` and the excludes. Both paths give the same matches for the same text.
+//! - The Search view's files to include / exclude (`path_filter::PathFilter`, `Job::filter`)
+//!   narrow both: the walk skips folders they rule out wholly, and every file it reaches and
+//!   every dirty buffer is checked with the same `PathFilter::matches`.
 //! - Matches stay within one line: the matcher is `Matcher::new_single_line`, so a pattern naming
 //!   a line break (`\n`, `\W`, …) is searched line by line like any other.
 //! - Results go back in `Batch`es of whole files (at most every `BATCH_INTERVAL`), in no
@@ -35,6 +38,7 @@ use ropey::Rope;
 use crate::buffer::file;
 use crate::buffer::pos::{self, ByteIdx};
 use crate::explorer;
+use crate::path_filter::PathFilter;
 use crate::search::{self, Matcher, SearchError};
 
 /// The most matches one search reports (VS Code's `search.maxResults`).
@@ -51,6 +55,9 @@ const BATCH_INTERVAL: Duration = Duration::from_millis(50);
 pub struct Query {
     pub pattern: String,
     pub options: search::Options,
+    /// The Search view's "files to include" / "files to exclude" (`path_filter`).
+    pub include: String,
+    pub exclude: String,
 }
 
 /// The matches on one line.
@@ -153,11 +160,18 @@ pub fn matcher(query: &Query) -> Result<Matcher, SearchError> {
     Matcher::new_single_line(&query.pattern, query.options)
 }
 
+/// The query's folder filter: `Err` for an invalid glob (shown under the input; nothing runs).
+pub fn filter(query: &Query) -> Result<PathFilter, SearchError> {
+    PathFilter::new(&query.include, &query.exclude)
+}
+
 /// Everything a search needs, owned so it can move to another thread.
 pub struct Job {
     pub root: PathBuf,
     pub excludes: Override,
     pub matcher: Matcher,
+    /// Files to include / exclude, on top of `.gitignore` and `excludes`; dirty buffers too.
+    pub filter: PathFilter,
     /// Snapshots of open buffers with unsaved changes: path relative to the root, and text.
     pub dirty: Vec<(PathBuf, Rope)>,
     pub generation: u64,
@@ -268,6 +282,7 @@ pub fn run(job: Job, cancel: &AtomicBool, send: &(dyn Fn(Batch) + Sync)) -> Stat
         root,
         excludes,
         matcher,
+        filter,
         dirty,
         generation,
     } = job;
@@ -306,7 +321,7 @@ pub fn run(job: Job, cancel: &AtomicBool, send: &(dyn Fn(Batch) + Sync)) -> Stat
     // Unsaved buffers the walk won't reach: their file doesn't exist.
     let mut unsaved: Vec<_> = dirty
         .iter()
-        .filter(|(rel, _)| !root.join(rel).is_file() && in_scope(&root, rel, &excludes))
+        .filter(|(rel, _)| !root.join(rel).is_file() && filter.matches(rel) && in_scope(&root, rel, &excludes))
         .collect();
     unsaved.sort_by(|a, b| a.0.cmp(b.0));
     for (rel, rope) in unsaved {
@@ -317,13 +332,23 @@ pub fn run(job: Job, cancel: &AtomicBool, send: &(dyn Fn(Batch) + Sync)) -> Stat
     }
     if !shared.stopped() {
         // As many threads as cores (`ignore`'s default, capped at 12).
-        explorer::walker(&root, &excludes).build_parallel().run(|| {
+        // Folders the filter rules out wholly aren't entered; files are checked one by one.
+        let walker = if filter.is_empty() {
+            explorer::walker(&root, &excludes)
+        } else {
+            let (top, filter) = (root.clone(), filter.clone());
+            explorer::walker_with(&root, &excludes, move |e| {
+                !e.file_type().is_some_and(|t| t.is_dir())
+                    || e.path().strip_prefix(&top).is_ok_and(|rel| !filter.skips_folder(rel))
+            })
+        };
+        walker.build_parallel().run(|| {
             let mut searcher = SearcherBuilder::new()
                 .line_number(true)
                 .binary_detection(BinaryDetection::none())
                 .bom_sniffing(false)
                 .build();
-            let (root, matcher, dirty, shared) = (&root, &matcher, &dirty, &shared);
+            let (root, matcher, filter, dirty, shared) = (&root, &matcher, &filter, &dirty, &shared);
             Box::new(move |entry| {
                 if shared.stopped() {
                     return WalkState::Quit;
@@ -335,6 +360,9 @@ pub fn run(job: Job, cancel: &AtomicBool, send: &(dyn Fn(Batch) + Sync)) -> Stat
                 let Ok(rel) = entry.path().strip_prefix(root) else {
                     return WalkState::Continue;
                 };
+                if !filter.matches(rel) {
+                    return WalkState::Continue;
+                }
                 let lines = match dirty.get(rel) {
                     Some(rope) => search_rope(matcher, rope, shared.room()),
                     None => match search_file(&mut searcher, matcher, entry.path(), shared) {
@@ -634,11 +662,13 @@ mod tests {
         let query = Query {
             pattern: pattern.to_string(),
             options,
+            ..Query::default()
         };
         let job = Job {
             root: root.to_path_buf(),
             excludes: excludes(root, &exclude.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
             matcher: matcher(&query).unwrap(),
+            filter: Default::default(),
             dirty,
             generation: 7,
         };
@@ -716,6 +746,7 @@ mod tests {
         let q = |pattern: &str, regex| Query {
             pattern: pattern.into(),
             options: opts(regex, false),
+            ..Query::default()
         };
         assert!(matcher(&q("", false)).unwrap().is_empty());
         assert_eq!(matcher(&q("(a", true)).unwrap_err().to_string(), "unclosed group");
@@ -940,6 +971,7 @@ mod tests {
         let m = matcher(&Query {
             pattern: "ab".into(),
             options: PLAIN,
+            ..Query::default()
         })
         .unwrap();
         let text = "ab ab ab\nab ab\n";
@@ -974,11 +1006,13 @@ mod tests {
         let query = Query {
             pattern: "needle".into(),
             options: PLAIN,
+            ..Query::default()
         };
         let job = || Job {
             root: root.clone(),
             excludes: Override::empty(),
             matcher: matcher(&query).unwrap(),
+            filter: Default::default(),
             dirty: Vec::new(),
             generation: 1,
         };

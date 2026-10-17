@@ -58,6 +58,7 @@ mod multicursor;
 mod pairs;
 mod palette;
 mod panic;
+mod path_filter;
 mod paths;
 mod problems;
 mod quick_diff;

@@ -28,6 +28,13 @@
 //!   the text never moved; nothing for untracked files, outside a repository, or toggled off;
 //!   staged lines still uncommitted; nothing computed while off or for background tabs; turned
 //!   off and on again it is blamed afresh (an amended HEAD commit shows).
+//! - `folder_filter`: the Search view's files to include / exclude (shown by `…` / Cmd+Shift+J)
+//!   narrow the search as the reference filtered by hand (folder names, paths, `*.md`, lists),
+//!   on top of `.workspace`'s excludes; exclude beats include; `!` within a field; dirty buffers
+//!   (also ones whose file is gone) filtered the same way; an invalid glob's error and nothing
+//!   run; hidden fields still apply (`…` lit); Tab / Shift+Tab, clicks, pastes, the debounce and
+//!   the list below them; "Find in Folder…" from an explorer folder's right-click and the
+//!   palette (a file's right-click still shows its history).
 
 mod render_whitespace {
     use std::fs;
@@ -1118,7 +1125,7 @@ mod side_scroll_bars {
         // width: its toggles end where they did without a bar (one cell from the border).
         let side = app.hits.regions.side.unwrap();
         assert_eq!(track.x, side.x + side.width - 2);
-        assert_eq!(hit.toggles[1].x + hit.toggles[1].width, side.x + side.width - 2);
+        assert_eq!(hit.details.x + hit.details.width, side.x + side.width - 2);
         // The file rows' counts end left of the bar (one cell between).
         let buf = term.backend().buffer();
         let row = hit.rows.iter().position(|k| k.1 == 0).unwrap() as u16 + hit.list.y;
@@ -1709,5 +1716,502 @@ mod inline_blame {
             row0.starts_with("bee   Eve, ") && row0.ends_with(" • Amended"),
             "{row0}"
         );
+    }
+}
+
+mod folder_filter {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::Instant;
+
+    use crossterm::event::{Event, KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind as Mouse};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::{App, Focus};
+    use crate::buffer::Buffer;
+    use crate::layout::SidePanel;
+    use crate::search::Options;
+    use crate::search_view::{DEBOUNCE, Input};
+    use crate::workspace::trust::TrustStore;
+    use crate::workspace::{self, Workspace};
+    use crate::workspace_search::reference;
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    fn write(root: &Path, rel: &str, text: &str) {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, text).unwrap();
+    }
+
+    /// A temp dir with `proj/` (the workspace: needles in several folders, `docs/` excluded by
+    /// `.workspace`) and `state/` (the trust store).
+    fn project() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let (root, state) = (base.join("proj"), base.join("state"));
+        fs::create_dir_all(&state).unwrap();
+        for (rel, text) in [
+            ("README.md", "a needle in the readme\n"),
+            ("src/main.rs", "fn main() { needle(); }\n"),
+            ("src/app/mod.rs", "// needle\nneedle needle\n"),
+            ("src/app/notes.md", "needle notes\n"),
+            ("src/gen/out.rs", "needle gen\n"),
+            ("lib/src/x.rs", "a needle\n"),
+            ("tests/t.rs", "needle test\n"),
+            ("docs/d.md", "needle docs\n"),
+            (".workspace", "[files]\nexclude = [\"docs/\"]\n"),
+        ] {
+            write(&root, rel, text);
+        }
+        (dir, root, state)
+    }
+
+    /// The app on `root` with `README.md` open (the editor focused), the explorer listed.
+    async fn open_app(root: &Path, state: &Path) -> App {
+        let ws = Workspace::load(root.to_path_buf());
+        let trust = TrustStore::load(state.join("trust.toml"));
+        let buffer = Buffer::open(&root.join("README.md")).unwrap();
+        let initial = crate::app::InitialFile { buffer, goto: None };
+        let mut app = App::new(ws, trust, Some(initial), true);
+        app.test_start();
+        app.test_plain_whitespace();
+        assert!(app.settle(|a| a.explorer.row_count() > 0).await);
+        app
+    }
+
+    fn draw(app: &mut App) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    /// The drawn text of row `y` between columns `x` and `x + width`.
+    fn text_at(term: &Terminal<TestBackend>, x: u16, y: u16, width: u16) -> String {
+        let buf = term.backend().buffer();
+        (x..x + width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    /// The reference search (every file, then this test's own idea of the filter: `keep` on the
+    /// relative path; `docs/` is `.workspace`'s exclude) as `path:line:start-end`.
+    fn expected(root: &Path, keep: impl Fn(&str) -> bool) -> Vec<String> {
+        reference::reference(root, "needle", Options::default())
+            .into_iter()
+            .filter(|h| {
+                let path = h.split(':').next().unwrap();
+                !path.starts_with("docs/") && keep(path)
+            })
+            .collect()
+    }
+
+    /// Gives `input` the keys with Tab (showing the details first when it's one of theirs) and
+    /// replaces its text by typing.
+    fn set_field(app: &mut App, input: Input, text: &str) {
+        if input != Input::Query && !app.search_view.details {
+            app.press(K::Char('j'), cmd() | M::SHIFT);
+        }
+        for _ in 0..4 {
+            if !app.search_view.list_focused && app.search_view.input == input {
+                break;
+            }
+            app.press(K::Tab, M::NONE);
+        }
+        assert!(!app.search_view.list_focused && app.search_view.input == input);
+        app.press(K::End, M::NONE);
+        for _ in 0..app.search_view.input_mut().text.chars().count() {
+            app.press(K::Backspace, M::NONE);
+        }
+        app.type_text(text);
+    }
+
+    /// Runs a palette command by its title.
+    fn run_command(app: &mut App, title: &str) {
+        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.type_text(title);
+        let p = app.palette.as_ref().unwrap();
+        assert_eq!(p.rows[p.selected].label, title);
+        app.press(K::Enter, M::NONE);
+    }
+
+    /// Waits for the debounced search of the view's current fields to finish.
+    async fn finish(app: &mut App) -> Vec<String> {
+        app.search_tick(Instant::now() + DEBOUNCE);
+        let want = app.search_view.query();
+        assert!(
+            app.settle(|a| a.search.as_ref().is_some_and(|r| r.done && r.query == want))
+                .await,
+            "the search of {want:?}"
+        );
+        reference::hits(app.search.as_ref().unwrap())
+    }
+
+    /// Searches for "needle" through the Search view's inputs, typed.
+    async fn search(app: &mut App, include: &str, exclude: &str) -> Vec<String> {
+        app.press(K::Char('f'), cmd() | M::SHIFT);
+        set_field(app, Input::Query, "needle");
+        set_field(app, Input::Include, include);
+        set_field(app, Input::Exclude, exclude);
+        finish(app).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn include_and_exclude_narrow_the_search_like_the_reference() {
+        let (_dir, root, state) = project();
+        let mut app = open_app(&root, &state).await;
+        type Keep = fn(&str) -> bool;
+        let cases: [(&str, &str, Keep); 10] = [
+            ("", "", |_| true),
+            // A bare folder name: that folder anywhere, everything under it.
+            ("src", "", |p| p.starts_with("src/") || p.contains("/src/")),
+            // A path: relative to the root.
+            ("./src", "", |p| p.starts_with("src/")),
+            ("src/app", "", |p| p.starts_with("src/app/")),
+            ("src/**/*.rs", "", |p| p.starts_with("src/") && p.ends_with(".rs")),
+            // `*.md` at any depth; a list.
+            ("*.md", "", |p| p.ends_with(".md")),
+            ("tests, README.md", "", |p| p.starts_with("tests/") || p == "README.md"),
+            ("", "*.rs", |p| !p.ends_with(".rs")),
+            ("", "gen, tests/", |p| {
+                !p.starts_with("src/gen/") && !p.starts_with("tests/")
+            }),
+            // On top of `.workspace`'s excludes: `docs` stays out even when included.
+            ("docs", "", |_| false),
+        ];
+        for (include, exclude, keep) in cases {
+            let got = search(&mut app, include, exclude).await;
+            let want = expected(&root, keep);
+            assert_eq!(got, want, "include {include:?}, exclude {exclude:?}");
+            if include.is_empty() && exclude.is_empty() {
+                assert_eq!(want.len(), 9, "every needle outside docs/");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn exclude_beats_include() {
+        let (_dir, root, state) = project();
+        let mut app = open_app(&root, &state).await;
+        assert!(search(&mut app, "src", "src").await.is_empty());
+        let draw_term = draw(&mut app);
+        let side = app.hits.regions.side.unwrap();
+        let text: String = (side.y..side.y + side.height)
+            .map(|y| text_at(&draw_term, side.x, y, side.width))
+            .collect();
+        assert!(text.contains("No results found"), "{text}");
+        let got = search(&mut app, "*.rs", "app").await;
+        assert_eq!(got, expected(&root, |p| p.ends_with(".rs") && !p.contains("app/")));
+        assert!(!got.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn negation_takes_matches_back_within_a_field() {
+        let (_dir, root, state) = project();
+        let mut app = open_app(&root, &state).await;
+        // Include: `!` takes paths out of the field's others.
+        let got = search(&mut app, "./src, !gen, !*.md", "").await;
+        let want = expected(&root, |p| {
+            p.starts_with("src/") && !p.starts_with("src/gen/") && !p.ends_with(".md")
+        });
+        assert_eq!(got, want);
+        assert_eq!(want.len(), 4);
+        // Exclude: `!` takes paths back.
+        let got = search(&mut app, "", "src, !src/app").await;
+        assert_eq!(
+            got,
+            expected(&root, |p| !(p.starts_with("src/") || p.contains("/src/"))
+                || p.starts_with("src/app/"))
+        );
+        // Only negations in include: everything else.
+        let got = search(&mut app, "!src", "").await;
+        assert_eq!(
+            got,
+            expected(&root, |p| !(p.starts_with("src/") || p.contains("/src/")))
+        );
+    }
+
+    /// Dirty buffers are searched from their text and filtered by the same rules, also ones
+    /// whose file is gone from disk.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dirty_buffers_are_filtered_the_same_way() {
+        let (_dir, root, state) = project();
+        write(&root, "src/new.rs", "\n");
+        write(&root, "lib/new.rs", "\n");
+        let mut app = open_app(&root, &state).await;
+        for rel in ["src/main.rs", "src/new.rs", "lib/new.rs"] {
+            app.test_open(Buffer::open(&root.join(rel)).unwrap());
+            app.type_text("needle ");
+        }
+        fs::remove_file(root.join("src/new.rs")).unwrap();
+        fs::remove_file(root.join("lib/new.rs")).unwrap();
+        assert!(
+            app.settle(|a| a.buffers.iter().filter(|(_, b)| b.deleted).count() == 2)
+                .await
+        );
+        assert_eq!(app.buffers.iter().filter(|(_, b)| b.is_dirty()).count(), 3);
+
+        let dirty = |p: &str| match p {
+            "src/main.rs" => vec!["src/main.rs:1:0-6".to_string(), "src/main.rs:1:19-25".into()],
+            "src/new.rs" => vec!["src/new.rs:1:0-6".into()],
+            "lib/new.rs" => vec!["lib/new.rs:1:0-6".into()],
+            _ => unreachable!(),
+        };
+        // The reference reads the disk: swap in the buffers' matches (main.rs's moved over).
+        let with_dirty = |keep: fn(&str) -> bool| {
+            let mut want: Vec<String> = expected(&root, keep)
+                .into_iter()
+                .filter(|h| !h.starts_with("src/main.rs:"))
+                .collect();
+            for p in ["src/main.rs", "src/new.rs", "lib/new.rs"] {
+                if keep(p) {
+                    want.extend(dirty(p));
+                }
+            }
+            want.sort_by(|a, b| a.split(':').next().cmp(&b.split(':').next()).then(a.cmp(b)));
+            want
+        };
+        let mut got = search(&mut app, "./src", "").await;
+        got.sort_by(|a, b| a.split(':').next().cmp(&b.split(':').next()).then(a.cmp(b)));
+        assert_eq!(got, with_dirty(|p| p.starts_with("src/")));
+        assert!(got.iter().any(|h| h.starts_with("src/new.rs:")));
+        assert!(!got.iter().any(|h| h.starts_with("lib/")));
+
+        // An include prunes no folder: the walk reaches the dirty `src/main.rs`, which the
+        // filter must still refuse.
+        let mut got = search(&mut app, "lib", "").await;
+        got.sort_by(|a, b| a.split(':').next().cmp(&b.split(':').next()).then(a.cmp(b)));
+        assert_eq!(got, with_dirty(|p| p.starts_with("lib/")));
+        assert!(got.iter().any(|h| h.starts_with("lib/new.rs:")));
+
+        let mut got = search(&mut app, "", "src").await;
+        got.sort_by(|a, b| a.split(':').next().cmp(&b.split(':').next()).then(a.cmp(b)));
+        assert_eq!(got, with_dirty(|p| !(p.starts_with("src/") || p.contains("/src/"))));
+        assert!(got.iter().any(|h| h.starts_with("lib/new.rs:")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_invalid_glob_shows_an_error_and_runs_nothing() {
+        let (_dir, root, state) = project();
+        let mut app = open_app(&root, &state).await;
+        assert!(!search(&mut app, "", "").await.is_empty());
+        set_field(&mut app, Input::Include, "src, {a");
+        app.search_tick(Instant::now() + DEBOUNCE);
+        let error = app
+            .search_view
+            .error
+            .as_ref()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(error.starts_with("files to include: {a: "), "{error}");
+        assert!(app.search.is_none(), "nothing runs");
+        let term = draw(&mut app);
+        let hit = app.hits.search.clone().unwrap();
+        let y = hit.inputs[2].y + 1;
+        let side = app.hits.regions.side.unwrap();
+        assert!(text_at(&term, side.x, y, side.width).contains("files to include: {a"));
+
+        set_field(&mut app, Input::Exclude, "[z-a]");
+        app.search_tick(Instant::now() + DEBOUNCE);
+        assert!(app.search_view.error.is_some());
+        set_field(&mut app, Input::Include, "src");
+        set_field(&mut app, Input::Exclude, "");
+        let got = finish(&mut app).await;
+        assert!(app.search_view.error.is_none());
+        assert_eq!(got, expected(&root, |p| p.starts_with("src/") || p.contains("/src/")));
+    }
+
+    /// Hidden, the include / exclude fields still apply (as VS Code); the `…` button stays lit
+    /// while they do, and a click on it shows them again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hidden_fields_still_apply() {
+        let (_dir, root, state) = project();
+        let mut app = open_app(&root, &state).await;
+        search(&mut app, "tests", "").await;
+        let term = draw(&mut app);
+        let hit = app.hits.search.clone().unwrap();
+        let off = app.theme.get("sideBar").patch(app.theme.get("find.option"));
+        let lit = app.theme.get("sideBar").patch(app.theme.get("find.option.active"));
+        let style = |term: &Terminal<TestBackend>, r: ratatui::layout::Rect| term.backend().buffer()[(r.x, r.y)].fg;
+        let (off, lit) = (off.fg.unwrap(), lit.fg.unwrap());
+        assert_eq!(style(&term, hit.details), lit, "shown");
+
+        app.press(K::Char('j'), cmd() | M::SHIFT);
+        assert!(!app.search_view.details);
+        assert_eq!(app.search_view.input, Input::Query, "the query gets the keys back");
+        set_field(&mut app, Input::Query, "NEEDLE");
+        let got = finish(&mut app).await;
+        assert_eq!(got, expected(&root, |p| p.starts_with("tests/")));
+        let term = draw(&mut app);
+        let hit = app.hits.search.clone().unwrap();
+        assert_eq!(hit.inputs[1], ratatui::layout::Rect::default(), "not drawn");
+        assert_eq!(hit.list.y, hit.inputs[0].y + 3, "the summary, a blank row, the list");
+        assert_eq!(style(&term, hit.details), lit, "lit: a hidden filter applies");
+
+        app.mouse(Mouse::Down(MouseButton::Left), hit.details.x, hit.details.y);
+        assert!(app.search_view.details);
+        assert_eq!(app.search_view.input, Input::Include);
+        app.press(K::End, M::NONE);
+        for _ in 0..5 {
+            app.press(K::Backspace, M::NONE);
+        }
+        assert!(app.search_view.include.text.is_empty());
+        app.press(K::Char('j'), cmd() | M::SHIFT);
+        let term = draw(&mut app);
+        let hit = app.hits.search.clone().unwrap();
+        assert_ne!(off, lit);
+        assert_eq!(style(&term, hit.details), off, "hidden and empty");
+        let got = finish(&mut app).await;
+        assert_eq!(got, expected(&root, |_| true));
+    }
+
+    /// The inputs are drawn under the query, take the keys by Tab / Shift+Tab, a click or the
+    /// list's typing, and get pastes; their edits wait for the debounce; the results list and its
+    /// scroll bar start below them.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_details_inputs_take_keys_clicks_and_pastes() {
+        let (_dir, root, state) = project();
+        let mut app = open_app(&root, &state).await;
+        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.type_text("needle");
+        finish(&mut app).await;
+        app.press(K::Char('j'), cmd() | M::SHIFT);
+        let mut term = draw(&mut app);
+        let hit = app.hits.search.clone().unwrap();
+        let [q, inc, exc] = hit.inputs;
+        assert_eq!((inc.y, exc.y), (q.y + 1, q.y + 2));
+        assert_eq!(text_at(&term, inc.x, inc.y, 16), "files to include");
+        assert_eq!(text_at(&term, exc.x, exc.y, 16), "files to exclude");
+        assert_eq!(text_at(&term, hit.details.x, hit.details.y, 1), "…");
+        assert!(hit.list.y > exc.y);
+        let track = app
+            .hits
+            .scrollbar(crate::layout::ScrollTarget::Side(SidePanel::Search))
+            .unwrap()
+            .track;
+        assert_eq!(
+            (track.y, track.height),
+            (hit.list.y, hit.list.height),
+            "beside the list only"
+        );
+        assert_eq!(
+            term.get_cursor_position().unwrap(),
+            ratatui::layout::Position { x: inc.x, y: inc.y },
+            "the cursor in the include input"
+        );
+
+        // A paste goes to the focused input and waits for the debounce.
+        let generation = app.search.as_ref().unwrap().generation;
+        app.handle_test_event(Event::Paste("tests\n".into()));
+        assert_eq!(app.search_view.include.text, "tests");
+        assert_eq!(app.search_view.query.text, "needle");
+        assert!(app.search_view.deadline().is_some());
+        assert_eq!(app.search.as_ref().unwrap().generation, generation);
+        assert_eq!(finish(&mut app).await, expected(&root, |p| p.starts_with("tests/")));
+
+        // Tab: exclude, the list, the query; Shift+Tab back.
+        app.press(K::Tab, M::NONE);
+        assert_eq!(app.search_view.input, Input::Exclude);
+        app.press(K::Tab, M::NONE);
+        assert!(app.search_view.list_focused);
+        app.press(K::Tab, M::NONE);
+        assert_eq!(
+            (app.search_view.list_focused, app.search_view.input),
+            (false, Input::Query)
+        );
+        app.press(K::Tab, M::SHIFT);
+        assert!(app.search_view.list_focused);
+        // Typing in the list goes to the input that last had the keys.
+        app.press(K::Tab, M::SHIFT);
+        assert_eq!(app.search_view.input, Input::Exclude);
+        app.press(K::Down, M::NONE);
+        assert!(app.search_view.list_focused, "Down: the list");
+        app.type_text("x");
+        assert_eq!(app.search_view.exclude.text, "x");
+        // A click on an input gives it the keys.
+        draw(&mut app);
+        app.mouse(Mouse::Down(MouseButton::Left), q.x + 2, q.y);
+        assert_eq!((app.ui.focus, app.search_view.input), (Focus::SidePanel, Input::Query));
+        app.handle_test_event(Event::Paste("!".into()));
+        assert_eq!(app.search_view.query.text, "needle!");
+    }
+
+    /// "Find in Folder…": a right-click on an explorer folder (a file's still shows its history)
+    /// or the command on the selected folder: the Search view, its details shown, the folder as
+    /// the files to include, the query focused, searched now.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn find_in_folder_from_the_explorer() {
+        let (_dir, root, state) = project();
+        let mut app = open_app(&root, &state).await;
+        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.type_text("needle");
+        finish(&mut app).await;
+        assert!(!app.search_view.details);
+
+        let explorer = |app: &mut App| {
+            app.press(K::Char('e'), cmd() | M::SHIFT);
+            draw(app);
+        };
+        let row_of = |app: &App, rel: &str| -> u16 {
+            let i = app
+                .explorer
+                .rows()
+                .iter()
+                .position(|r| r.entry.path == root.join(rel))
+                .unwrap();
+            app.hits.explorer_rows.y + (i - app.explorer.scroll) as u16
+        };
+        // A file's row: its history, the Search view untouched.
+        explorer(&mut app);
+        let y = row_of(&app, "README.md");
+        app.mouse(Mouse::Down(MouseButton::Right), app.hits.explorer_rows.x + 2, y);
+        assert_eq!(app.ui.side_panel, SidePanel::Explorer);
+        assert!(app.search_view.include.text.is_empty());
+
+        let y = row_of(&app, "src");
+        app.mouse(Mouse::Down(MouseButton::Right), app.hits.explorer_rows.x + 2, y);
+        assert_eq!((app.ui.focus, app.ui.side_panel), (Focus::SidePanel, SidePanel::Search));
+        assert_eq!(app.search_view.include.text, "./src");
+        assert!(app.search_view.details && !app.search_view.list_focused);
+        assert_eq!(app.search_view.input, Input::Query);
+        assert!(app.search_view.query.all_selected, "typing replaces the query");
+        assert!(app.search_view.deadline().is_none(), "searched at once");
+        let want = app.search_view.query();
+        assert!(
+            app.settle(|a| a.search.as_ref().is_some_and(|r| r.done && r.query == want))
+                .await
+        );
+        let got = reference::hits(app.search.as_ref().unwrap());
+        assert_eq!(got, expected(&root, |p| p.starts_with("src/")));
+
+        // The command, on a folder deeper down (expanded first) and on a file.
+        explorer(&mut app);
+        let y = row_of(&app, "lib");
+        app.mouse(Mouse::Down(MouseButton::Left), app.hits.explorer_rows.x + 2, y);
+        assert!(
+            app.settle(|a| a.explorer.rows().iter().any(|r| r.entry.path.ends_with("lib/src")))
+                .await
+        );
+        app.explorer.selected = Some(root.join("lib/src"));
+        run_command(&mut app, "Explorer: Find in Folder…");
+        assert_eq!(app.search_view.include.text, "./lib/src");
+        let want = app.search_view.query();
+        assert!(
+            app.settle(|a| a.search.as_ref().is_some_and(|r| r.done && r.query == want))
+                .await
+        );
+        let got = reference::hits(app.search.as_ref().unwrap());
+        assert_eq!(got, expected(&root, |p| p.starts_with("lib/src/")));
+
+        explorer(&mut app);
+        app.explorer.selected = Some(root.join("README.md"));
+        run_command(&mut app, "Explorer: Find in Folder…");
+        assert_eq!(app.search_view.include.text, "./lib/src", "a file: unchanged");
+        assert!(app.message.as_ref().is_some_and(|m| m.text.contains("is a file")));
     }
 }
