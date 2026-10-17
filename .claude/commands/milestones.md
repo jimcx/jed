@@ -2,8 +2,6 @@
 description: Resume the milestone workflow — implement, validate and commit PLAN.md milestones task by task with subagents
 ---
 
-<!-- TEMPORARY: delete this command (and its PLAN.md TODO entry) once the last milestone in PLAN.md is done. -->
-
 Work through the milestones in PLAN.md with subagents, one task at a time, in sequence. $ARGUMENTS
 
 ## Find where we are

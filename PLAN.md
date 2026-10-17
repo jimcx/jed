@@ -858,7 +858,6 @@ Broad items not tied to a milestone.
 - **Scroll bars in the editors**: a vertical scroll bar per editor group (position and viewport size over the whole text; click and drag to scroll), as VS Code; also marks for selections / find matches / diagnostics / git changes later (VS Code's overview ruler)
 - **Revert hunks in the diff view**: a red Revert button on the index (left) side of an unstaged diff (Index ↔ Working Tree), opposite each hunk's Stage button; reverts that hunk in the working tree (the open buffer through `Buffer::edit`, one undo step, or the file on disk when not open) back to the index's text; a new theme key for the button
 - **Kitty integration for recent workspaces** (deferred from M13; see [Recent workspaces](#workspace)): `jed_workspace` user var on start / exit / panic; `kitten @ ls` marks rows already open and focuses that window; `kitten @ launch --type=os-window --cwd <path> jed <path>` for one not open; off the UI thread with a timeout, message fallback; tests through a fake `kitten` on `PATH` (canned `ls` JSON, records its arguments); `docs/terminals/kitty.md` (`allow_remote_control`). Kitty isn't installed on the Linux test box: real-kitty behaviour is a hand check
-- **Remove the `/milestones` command** (`.claude/commands/milestones.md`) once milestone 13 (the last) is done; it only drives the agent workflow
 
 ## Open questions
 - _Add your own_
