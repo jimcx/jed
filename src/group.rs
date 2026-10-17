@@ -223,6 +223,25 @@ impl Groups {
         id
     }
 
+    /// Groups restored from a session: `tree`'s leaves must be exactly `groups`' ids (each
+    /// once), and `active` one of them, else `Err` and nothing changes. Group ids after the
+    /// largest are given to new groups.
+    pub fn restore(
+        &mut self,
+        mut tree: SplitTree,
+        groups: Vec<(GroupId, Group)>,
+        active: GroupId,
+    ) -> Result<(), String> {
+        let ids: Vec<GroupId> = groups.iter().map(|(id, _)| *id).collect();
+        check_restore(&tree, &ids, active)?;
+        tree.sanitize();
+        self.next = ids.iter().max().map_or(0, |m| m + 1);
+        self.map = groups.into_iter().collect();
+        self.tree = tree;
+        self.active = active;
+        Ok(())
+    }
+
     /// Removes a group (never the last one). Its neighbour becomes active if it was.
     pub fn remove(&mut self, id: GroupId) -> bool {
         if self.map.len() <= 1 {
@@ -237,6 +256,22 @@ impl Groups {
         }
         true
     }
+}
+
+/// Whether `Groups::restore` would take groups `ids` laid out by `tree` with `active` active:
+/// the tree's leaves are exactly `ids`, each once, and `active` is one of them.
+pub fn check_restore(tree: &SplitTree, ids: &[GroupId], active: GroupId) -> Result<(), String> {
+    let mut leaves = tree.groups();
+    let mut ids = ids.to_vec();
+    leaves.sort_unstable();
+    ids.sort_unstable();
+    if leaves.is_empty() || leaves != ids || ids.windows(2).any(|w| w[0] == w[1]) {
+        return Err(format!("groups {ids:?} don't match the split tree's {leaves:?}"));
+    }
+    if !ids.contains(&active) {
+        return Err(format!("active group {active} isn't one of {ids:?}"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -295,6 +330,43 @@ mod tests {
         assert_eq!(g.active, 1);
         g.cycle(-2);
         assert_eq!(g.active, 3);
+    }
+
+    #[test]
+    fn restore_checks_the_tree_against_the_groups() {
+        let mut gs = Groups::default();
+        gs.split(SplitDir::Right, 0);
+        gs.split(SplitDir::Down, 0);
+        let tree = gs.tree.clone();
+        let ids = gs.ids();
+        let groups = |ids: &[GroupId]| ids.iter().map(|&id| (id, group(1))).collect::<Vec<_>>();
+
+        let mut fresh = Groups::default();
+        assert!(
+            fresh.restore(tree.clone(), groups(&ids[..2]), ids[0]).is_err(),
+            "a leaf without a group"
+        );
+        assert!(
+            fresh
+                .restore(tree.clone(), groups(&[ids[0], ids[1], ids[2], 9]), ids[0])
+                .is_err()
+        );
+        assert!(
+            fresh
+                .restore(tree.clone(), groups(&[ids[0], ids[1], ids[1]]), ids[0])
+                .is_err()
+        );
+        assert!(
+            fresh.restore(tree.clone(), groups(&ids), 9).is_err(),
+            "active not a group"
+        );
+        assert_eq!((fresh.len(), fresh.ids()), (1, vec![0]), "unchanged");
+
+        fresh.restore(tree.clone(), groups(&ids), ids[1]).unwrap();
+        assert_eq!((fresh.ids(), fresh.active, fresh.len()), (ids.clone(), ids[1], 3));
+        assert_eq!(fresh.tree, tree);
+        let new = fresh.split(SplitDir::Right, 0);
+        assert!(!ids.contains(&new), "new groups get new ids");
     }
 
     #[test]

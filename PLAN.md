@@ -78,6 +78,9 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
   - File associations (e.g. `SConstruct`, `*.scons` → Python)
 - Meant to be committed: no per-user state in it
 - Per-user session state (open tabs, splits, layout) lives in `~/.local/state/jed/`, keyed by workspace path
+  - `sessions/<hash of the root>.json`, the root inside: groups and the split tree (ratios too), each group's tabs (text tabs by path with every selection and the scroll; git and history diff tabs by path and pair; task tabs never), the active tab and group, the side panel (shown, width, view) and the bottom panel (shown, height; back on Problems)
+  - Written on quit, off the UI thread, atomically; read on start off the UI thread with the files it names; a missing file's tab is skipped (its group closes if left empty), a bad session file restores nothing; both logged
+  - `jed <file>` restores the session, then opens the file on top in the active group (VS Code): onto its tab if the session has one there, keeping the session's cursor unless a line was given
 - Reloaded live when `.workspace` changes (via `notify`)
 - Workspace root is the LSP `rootUri`, task default cwd and search root
 
@@ -788,7 +791,10 @@ Each milestone below that adds a Cmd binding also updates `docs/terminals/` (the
     - Tests drive the kitty side through a fake `kitten` on `PATH` (canned `ls` JSON, records its arguments)
     - Done when: quit and reopen gives back the same tabs, splits, cursors and scroll; killing the terminal loses at most one backup interval of edits; picking a recent workspace open in another kitty tab or OS window focuses it, and one not open starts jed in a new kitty OS window
     - Tasks (one agent and one commit each):
-      - 13a: sessions: per-workspace session file in the state dir (keyed by workspace path); saved on quit (off the UI thread, atomic), restored on start: groups and the split tree, tabs per group (text tabs by path; git and history diff tabs by path and pair; task tabs never), active tab and group, selections and scroll, side / bottom panel layout; missing files and bad session files skipped with a log line
+      - ✅ 13a: sessions: per-workspace session file in the state dir (keyed by workspace path); saved on quit (off the UI thread, atomic), restored on start: groups and the split tree, tabs per group (text tabs by path; git and history diff tabs by path and pair; task tabs never), active tab and group, selections and scroll, side / bottom panel layout; missing files and bad session files skipped with a log line
+        - `session.rs` (model, blocking load / save: `<state>/sessions/<sha256 of root>.json`, root and version checked), `app/session.rs`: one `spawn_blocking` reads the session and every tab's file → `AppEvent::SessionRead`, applied in one step (no half-restored layout); the save runs in `App::shutdown` with servers and tasks, skipped while the restore is still loading
+        - `App::state_dir` (`None` in tests: sessions off unless a test sets it); `jed <file>` restores, then opens the file on top in the active group; `opened` drops a buffer for a path loaded meanwhile (restore / quick open race)
+        - Not done: diff tabs' own cursor / scroll, expanded explorer folders, the Search query, the shown panel tab, focus; a first frame may draw before the session arrives
       - 13b: crash recovery: dirty buffers backed up periodically to `~/.local/state/jed/backup/` (one format shared with the panic hook), backups removed when a buffer is saved / discarded / jed quits cleanly; on the next start, an offer to restore them into their buffers (left dirty, nothing written)
       - 13c: recent workspaces: `recent.toml` recorded on every start (most recent first, no duplicates, cap 50); "Open Recent Workspace" (Ctrl+R) as a palette picker (folder name, `~` path, current workspace left out, missing folders dropped); picking one outside kitty: status-bar message with `jed <path>`
       - 13d: kitty integration (`jed_workspace` user var on start / exit / panic; `kitten @ ls` marks open rows and focuses a window; `kitten @ launch --type=os-window` for one not open; off the UI thread with a timeout, message fallback), fake `kitten` on `PATH` in tests, `docs/terminals/kitty.md`; the done-when tests; marks M13 ✅

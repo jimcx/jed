@@ -239,8 +239,17 @@ impl App {
     }
 
     /// On quit (and when the terminal goes away): language servers asked to exit and running
-    /// tasks killed, both bounded (`lsp::SHUTDOWN_TIMEOUT`, `tasks::SHUTDOWN_TIMEOUT`).
+    /// tasks killed, both bounded (`lsp::SHUTDOWN_TIMEOUT`, `tasks::SHUTDOWN_TIMEOUT`), and the
+    /// session written (`save_session`), all at once.
     pub async fn shutdown(&mut self) {
-        tokio::join!(self.lsp.shutdown(), self.tasks.shutdown());
+        let session = self.save_session();
+        let session = async {
+            if let Some(task) = session
+                && let Err(e) = task.await
+            {
+                tracing::warn!("session not saved: {e}");
+            }
+        };
+        tokio::join!(self.lsp.shutdown(), self.tasks.shutdown(), session);
     }
 }

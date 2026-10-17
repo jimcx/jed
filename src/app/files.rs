@@ -108,7 +108,13 @@ impl App {
                 {
                     self.notify(Level::Warning, format!("{}: read-only, {reason}", buffer.name()));
                 }
-                if background {
+                if self.buffers.find_path(&path).is_some() {
+                    // Loaded meanwhile (a session's restore): shown from that buffer, not a
+                    // second one.
+                    if !background {
+                        self.open_file(path.clone(), focus, goto);
+                    }
+                } else if background {
                     let (id, view) = self.register_buffer(*buffer, None);
                     self.group_mut().open_background(id, view);
                 } else {

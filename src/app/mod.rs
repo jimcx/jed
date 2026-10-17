@@ -19,6 +19,7 @@ mod prompt;
 mod quick_diff;
 mod rename;
 mod scm;
+mod session;
 mod side;
 mod syntax;
 mod tasks;
@@ -216,6 +217,8 @@ enum AppEvent {
     DiffStaged(Result<String, String>),
     /// A task run started, has new output (throttled) or ended (`app/tasks.rs`).
     Task(crate::tasks::Event),
+    /// The workspace's session was read, with its text tabs' files (`app/session.rs`).
+    SessionRead(Box<Result<Option<crate::session::Restore>, String>>),
 }
 
 /// The file to open at startup, with an optional 1-based line and column.
@@ -251,6 +254,11 @@ pub struct App {
     pub log_dir: PathBuf,
     /// Holds `settings.toml` (for "Preferences: Open User Settings"); `paths::config_dir()`.
     pub config_dir: PathBuf,
+    /// Where the session file goes (`paths::state_dir()`); `None` turns sessions off (tests,
+    /// unless set before `test_start`).
+    pub state_dir: Option<PathBuf>,
+    /// The session's restore at start and save at quit.
+    pub session: session::SessionState,
     pub message: Option<Message>,
     after_save: Option<AfterSave>,
     /// A trust decision is needed but another prompt is open.
@@ -367,6 +375,11 @@ impl App {
             log: None,
             log_dir: logging::log_dir(),
             config_dir: crate::paths::config_dir(),
+            #[cfg(not(test))]
+            state_dir: Some(crate::paths::state_dir()),
+            #[cfg(test)]
+            state_dir: None,
+            session: Default::default(),
             message: None,
             after_save: None,
             trust_pending: false,
@@ -420,7 +433,10 @@ impl App {
         };
         app.load_associations();
         match initial {
-            Some(f) => app.add_buffer(f.buffer, f.goto.map(|(l, c)| files::Goto::Cursor(l, c)), true),
+            Some(f) => {
+                app.session.initial_goto = f.goto.is_some();
+                app.add_buffer(f.buffer, f.goto.map(|(l, c)| files::Goto::Cursor(l, c)), true)
+            }
             None => app.ui.focus = Focus::SidePanel,
         }
         if !kitty {
@@ -457,6 +473,7 @@ impl App {
             Err(e) => self.notify(Level::Warning, format!("Not watching for file changes: {e}")),
         }
         self.refresh_git(None);
+        self.restore_session();
         let root = self.workspace.root.clone();
         self.request_listing(root);
         self.reveal_active();
@@ -992,6 +1009,7 @@ impl App {
             AppEvent::DiffLoaded { id, generation, result } => self.diff_loaded(id, generation, *result),
             AppEvent::DiffStaged(message) => self.diff_staged(message),
             AppEvent::Task(ev) => self.task_event(ev),
+            AppEvent::SessionRead(result) => self.session_read(*result),
         }
         self.refresh_find();
         self.check_completion();

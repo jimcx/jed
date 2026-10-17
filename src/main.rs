@@ -33,6 +33,8 @@ mod milestone11_tests;
 #[cfg(test)]
 mod milestone12_tests;
 #[cfg(test)]
+mod milestone13_tests;
+#[cfg(test)]
 mod milestone2_tests;
 #[cfg(test)]
 mod milestone3_tests;
@@ -62,6 +64,7 @@ mod scm;
 mod search;
 mod search_view;
 mod selection;
+mod session;
 mod syntax;
 mod tasks;
 mod terminal;

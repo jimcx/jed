@@ -16,7 +16,8 @@ pub const MIN_EDITOR_HEIGHT: u16 = 5;
 
 pub type GroupId = u64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SidePanel {
     Explorer,
     Search,
@@ -142,7 +143,8 @@ pub fn compute(area: Rect, side_visible: bool, side_width: u16, panel_height: Op
 }
 
 /// Which way a split lays out its two halves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SplitDir {
     /// Side by side, with a vertical divider.
     Right,
@@ -150,7 +152,8 @@ pub enum SplitDir {
     Down,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum Node {
     Leaf(GroupId),
     Split {
@@ -194,8 +197,9 @@ impl Divider {
     }
 }
 
-/// The layout of editor groups: a binary tree of splits with groups at the leaves.
-#[derive(Debug, Clone, PartialEq)]
+/// The layout of editor groups: a binary tree of splits with groups at the leaves. Serialized
+/// as is (group ids at the leaves) in the session file (`session`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SplitTree {
     root: Node,
 }
@@ -291,6 +295,21 @@ impl SplitTree {
         let (mut cells, mut divs) = (Vec::new(), Vec::new());
         walk(&self.root, area, &mut Vec::new(), &mut cells, &mut divs);
         (cells, divs)
+    }
+
+    /// Repairs a tree read from a file: ratios outside 0..=1 (or NaN) become 0.5. The caller
+    /// checks the leaves (`groups`) against its groups.
+    pub fn sanitize(&mut self) {
+        fn walk(n: &mut Node) {
+            if let Node::Split { ratio, a, b, .. } = n {
+                if !(0.0..=1.0).contains(ratio) {
+                    *ratio = 0.5;
+                }
+                walk(a);
+                walk(b);
+            }
+        }
+        walk(&mut self.root);
     }
 
     /// Moves a divider (from `layout`). The layout keeps groups at their minimum size.
