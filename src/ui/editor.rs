@@ -1,5 +1,5 @@
 //! The text area: gutter (line numbers, quick diff's markers), text (syntax colours), matched
-//! brackets, diagnostics' squiggles, selections, find matches, cursors.
+//! brackets, diagnostics' squiggles, selections, find matches, cursors, rendered whitespace.
 
 use std::collections::HashSet;
 
@@ -10,7 +10,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::buffer::Buffer;
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::diagnostics::{self, Severity};
-use crate::edit::Settings;
+use crate::edit::{RenderWhitespace, Settings};
 use crate::find::FindWidget;
 use crate::search::Match;
 use crate::theme::Theme;
@@ -22,6 +22,57 @@ pub struct Overlay<'a> {
     pub focused: bool,
     /// The find widget, when it's open on this view and its matches are for this text.
     pub find: Option<&'a FindWidget>,
+    /// Which spaces and tabs are drawn as `·` / `→` (`App::render_whitespace`).
+    pub whitespace: RenderWhitespace,
+}
+
+/// Spaces and tabs only, as VS Code's renderer (other Unicode spaces aren't whitespace here).
+fn is_blank(c: char) -> bool {
+    c == ' ' || c == '\t'
+}
+
+/// Where a line's leading whitespace ends and its trailing whitespace starts (byte offsets into
+/// the line; a blank line is all leading and all trailing). Only for the modes that need them.
+fn whitespace_bounds(mode: RenderWhitespace, line: &str) -> (usize, usize) {
+    match mode {
+        RenderWhitespace::Boundary => (
+            line.len() - line.trim_start_matches(is_blank).len(),
+            line.trim_end_matches(is_blank).len(),
+        ),
+        RenderWhitespace::Trailing => (0, line.trim_end_matches(is_blank).len()),
+        _ => (0, line.len()),
+    }
+}
+
+/// Whether the grapheme `g` at byte `off` of `line` is whitespace drawn as `·` / `→` in `mode`
+/// (VS Code's `renderWhitespace`): `bounds` from `whitespace_bounds`, `selected` whether it's in
+/// a selection. `boundary` leaves out a single space between two non-whitespace chars.
+fn shows_whitespace(
+    mode: RenderWhitespace,
+    line: &str,
+    off: usize,
+    g: &str,
+    (lead_end, trail_start): (usize, usize),
+    selected: bool,
+) -> bool {
+    let tab = g == "\t";
+    if !tab && g != " " {
+        return false;
+    }
+    match mode {
+        RenderWhitespace::None => false,
+        RenderWhitespace::All => true,
+        RenderWhitespace::Selection => selected,
+        RenderWhitespace::Trailing => off >= trail_start,
+        RenderWhitespace::Boundary => {
+            // Space and tab are ASCII, so the neighbouring bytes tell.
+            let blank_at = |i: Option<usize>| {
+                i.and_then(|i| line.as_bytes().get(i))
+                    .is_some_and(|b| matches!(b, b' ' | b'\t'))
+            };
+            tab || off < lead_end || off >= trail_start || blank_at(off.checked_sub(1)) || blank_at(Some(off + 1))
+        }
+    }
 }
 
 /// Draws the editor and returns the text area (excluding the gutter), for mouse hit-testing.
@@ -68,6 +119,8 @@ pub fn render(
     let find_match = theme.get("editor.findMatch");
     let find_highlight = theme.get("editor.findMatchHighlight");
     let control = theme.get("editor.whitespace.control");
+    let whitespace = overlay.whitespace;
+    let whitespace_fg = theme.get("editorWhitespace.foreground");
     let gutter = theme.get("gutter");
     let gutter_active = theme.get("gutter.active");
 
@@ -203,10 +256,11 @@ pub fn render(
 
         let start = pos::line_start(rope, line);
         let content = pos::line_text(rope, line);
+        let bounds = whitespace_bounds(whitespace, &content);
         let mut col = 0usize;
         for (off, g) in content.grapheme_indices(true) {
             let b = ByteIdx(start.0 + off);
-            let (shown, w) = pos::display_grapheme(g, DisplayCol(col), tab);
+            let (mut shown, w) = pos::display_grapheme(g, DisplayCol(col), tab);
             let selected = in_selection(b);
             if col + w <= view.left_col {
                 col += w;
@@ -225,6 +279,23 @@ pub fn render(
             if let Some(squiggle) = squiggle_at(b) {
                 style = style.patch(squiggle);
             }
+            // Rendered whitespace: the glyph in the tab's first cell (columns unchanged), its
+            // colour over the token's, under backgrounds; not at a drawn cursor (a secondary's
+            // reversed cell would take the dim colour as its background; the terminal cursor
+            // marks the primary only when focused).
+            let secondary_here = secondary.contains(&b);
+            let cursor_here = secondary_here || (focused && b == primary);
+            if whitespace != RenderWhitespace::None && shows_whitespace(whitespace, &content, off, g, bounds, selected)
+            {
+                shown = if g == "\t" {
+                    format!("→{}", " ".repeat(w - 1)).into()
+                } else {
+                    "·".into()
+                };
+                if !cursor_here {
+                    style = style.patch(whitespace_fg);
+                }
+            }
             let found = in_match(b);
             if found.is_some() {
                 style = style.patch(find_highlight);
@@ -238,7 +309,7 @@ pub fn render(
             if g.starts_with(|c: char| c.is_control()) && g != "\t" {
                 style = style.patch(control);
             }
-            if secondary.contains(&b) {
+            if secondary_here {
                 style = style.patch(secondary_cursor);
             }
             let x = text.x + (col.max(view.left_col) - view.left_col) as u16;
@@ -285,4 +356,49 @@ pub fn render(
         }
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `line` with each whitespace char `mode` shows replaced by `·` / `→`; `selected` is a byte
+    /// range in a selection.
+    fn shown(mode: RenderWhitespace, line: &str, selected: std::ops::Range<usize>) -> String {
+        let bounds = whitespace_bounds(mode, line);
+        line.grapheme_indices(true)
+            .map(
+                |(off, g)| match shows_whitespace(mode, line, off, g, bounds, selected.contains(&off)) {
+                    true if g == "\t" => "→",
+                    true => "·",
+                    false => g,
+                },
+            )
+            .collect()
+    }
+
+    #[test]
+    fn each_mode_picks_its_whitespace() {
+        use RenderWhitespace::*;
+        let line = "  a b  c\td  ";
+        assert_eq!(shown(None, line, 0..99), line);
+        assert_eq!(shown(All, line, 0..0), "··a·b··c→d··");
+        assert_eq!(
+            shown(Boundary, line, 0..0),
+            "··a b··c→d··",
+            "single spaces between words stay"
+        );
+        assert_eq!(shown(Trailing, line, 0..99), "  a b  c\td··");
+        assert_eq!(shown(Selection, line, 1..5), " ·a·b  c\td  ");
+        assert_eq!(shown(Selection, line, 0..0), line);
+        // A blank line is all trailing; a space next to a tab is a boundary.
+        assert_eq!(shown(Trailing, " \t ", 0..0), "·→·");
+        assert_eq!(shown(Boundary, "a \tb c", 0..0), "a·→b c");
+        assert_eq!(shown(Boundary, "a b", 0..0), "a b");
+        // A single leading or trailing space is a boundary.
+        assert_eq!(shown(Boundary, " a b ", 0..0), "·a b·");
+        assert_eq!(shown(Boundary, "\ta b", 0..0), "→a b");
+        // Only U+0020 and tab: a no-break space is left alone.
+        assert_eq!(shown(All, "a\u{a0}b ", 0..0), "a\u{a0}b·");
+    }
 }

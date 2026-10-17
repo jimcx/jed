@@ -65,6 +65,7 @@ fn open_app(dir: &tempfile::TempDir) -> (App, PathBuf) {
     let buffer = Buffer::open(&root.join("a.txt")).unwrap();
     let mut app = test_app(&root, buffer);
     app.test_start();
+    app.test_plain_whitespace();
     (app, root)
 }
 
@@ -1252,6 +1253,7 @@ mod done_when {
         copy_dir(&repo.join("docs"), &root.join("docs"));
         let mut app = test_app(&root, Buffer::open(&root.join("src/main.rs")).unwrap());
         app.test_start();
+        app.test_plain_whitespace();
         let o = |regex, case_sensitive| Options {
             regex,
             case_sensitive,

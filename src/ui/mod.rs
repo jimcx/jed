@@ -47,6 +47,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     let (cells, dividers) = app.groups.tree.layout(regions.editor);
     let mut active_editor = None;
+    let whitespace = app.render_whitespace();
     for (id, rect) in cells {
         let tab_bar = Rect {
             height: rect.height.min(1),
@@ -103,7 +104,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 // Find highlights in the active group, when the widget's matches are for this text.
                 let find = (is_active && app.find.visible && app.find.is_current(tab.buffer, buf.revision()))
                     .then_some(&app.find);
-                let overlay = editor::Overlay { focused, find };
+                let overlay = editor::Overlay {
+                    focused,
+                    find,
+                    whitespace,
+                };
                 text = editor::render(f, editor_area, buf, &mut tab.view, &app.theme, &app.settings, overlay);
             }
             None if diff_hit.is_some() => {}

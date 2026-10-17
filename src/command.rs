@@ -208,6 +208,9 @@ pub enum Command {
     /// "Open Recent Workspace" (Ctrl+R): a picker of recent workspaces; picking one opens it in
     /// another jed (jed never switches its own workspace).
     OpenRecentWorkspace,
+    /// "View: Toggle Render Whitespace": whitespace drawn as `·` / `→` off, or back to the
+    /// `render_whitespace` setting (`all` when that is `none`); for the session only.
+    ToggleRenderWhitespace,
 }
 
 /// A task tab in the bottom panel (`Context::Task`, while it has the keys); keys bound to
@@ -603,6 +606,7 @@ impl Command {
         all.extend([Command::RunTask, Command::KillTask, Command::CloseTask]);
         all.extend(TaskCommand::ALL.map(Command::Task));
         all.push(Command::OpenRecentWorkspace);
+        all.push(Command::ToggleRenderWhitespace);
         all
     }
 
@@ -830,6 +834,7 @@ impl Command {
             Command::KillTask => "task.kill".into(),
             Command::CloseTask => "task.close".into(),
             Command::OpenRecentWorkspace => "workspace.openRecent".into(),
+            Command::ToggleRenderWhitespace => "view.toggleRenderWhitespace".into(),
             Command::Task(c) => format!(
                 "task.{}",
                 match c {
@@ -1047,6 +1052,7 @@ impl Command {
             Command::KillTask => "Tasks: Kill Task",
             Command::CloseTask => "Tasks: Close Task Tab",
             Command::OpenRecentWorkspace => "Workspaces: Open Recent Workspace",
+            Command::ToggleRenderWhitespace => "View: Toggle Render Whitespace",
             Command::Task(c) => match c {
                 TaskCommand::ScrollUp => "Tasks: Scroll Up",
                 TaskCommand::ScrollDown => "Tasks: Scroll Down",
@@ -1175,9 +1181,10 @@ mod tests {
             Command::CloseTask => 81,
             Command::Task(_) => 82,
             Command::OpenRecentWorkspace => 83,
+            Command::ToggleRenderWhitespace => 84,
         }
     }
-    const VARIANTS: u8 = 84;
+    const VARIANTS: u8 = 85;
 
     #[test]
     fn all_lists_every_variant() {

@@ -66,6 +66,8 @@ fn milestone_1_round_trip_one_mb_crlf() {
     println!("open: {:?}", t.elapsed());
     assert_eq!(buf.eol, Eol::Crlf);
     let mut app = test_app(dir.path(), buf);
+    // Frames draw every tab and space as `→` / `·` (the default): the costliest drawing.
+    assert_eq!(app.render_whitespace(), crate::edit::RenderWhitespace::All);
     let s = app.settings.clone();
     let mut term = Terminal::new(TestBackend::new(160, 50)).unwrap();
 
@@ -140,6 +142,7 @@ fn milestone_1_round_trip_one_mb_crlf() {
 fn renders_layout_text_gutter_and_status() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = test_app(dir.path(), Buffer::from_str("hello\r\n\tworld\r\n"));
+    app.test_plain_whitespace();
     let mut term = Terminal::new(TestBackend::new(100, 6)).unwrap();
     term.draw(|f| ui::render(f, &mut app)).unwrap();
     let screen: Vec<String> = (0..6)

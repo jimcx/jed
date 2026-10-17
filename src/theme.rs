@@ -81,6 +81,8 @@ impl Theme {
             // has no border, so a stronger fill.
             ("editor.bracketMatch", Style::new().bg(c(0x2F4F3A))),
             ("editor.whitespace.control", Style::new().fg(c(0xF48771))),
+            // Rendered spaces and tabs (`·` / `→`): Dark+'s #E3E4E229 blended over the editor.
+            ("editorWhitespace.foreground", Style::new().fg(c(0x3E3E3D))),
             // Diagnostics' squiggles (Dark+'s colours): a terminal has no undercurl through
             // ratatui, so an underline in the colour (SGR 58; terminals without it underline in
             // the text's colour). Dark+'s hint (#EEEEEEB3) blended over the editor.

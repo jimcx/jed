@@ -176,6 +176,7 @@ fn open_app(root: &Path, launcher: Arc<dyn Launcher>) -> App {
     let mut app = App::new(Workspace::load(root.to_path_buf()), trust, None, true);
     app.lsp.set_launcher(launcher);
     app.test_start();
+    app.test_plain_whitespace();
     app
 }
 

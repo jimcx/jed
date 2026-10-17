@@ -114,6 +114,7 @@ fn open_app(dir: &tempfile::TempDir, config: &str, rel: &str, text: &str) -> (Ap
     let path = write(&root, rel, text);
     let mut app = test_app(&root, Buffer::open(&path).unwrap());
     app.test_start();
+    app.test_plain_whitespace();
     (app, root)
 }
 
@@ -1098,6 +1099,7 @@ fn user_app(
     app.config_dir = config_dir.clone();
     app.report_errors(loaded.errors);
     app.test_start();
+    app.test_plain_whitespace();
     (app, root, config_dir)
 }
 

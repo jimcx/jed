@@ -43,7 +43,7 @@ use crate::buffer::{Buffer, BufferId, Buffers};
 use crate::clipboard::{self, Clipboard};
 use crate::command::Command;
 use crate::config::keymap::{Context, Keymap, Platform};
-use crate::edit::{self, Settings};
+use crate::edit::{self, RenderWhitespace, Settings};
 use crate::explorer::{self, Explorer};
 use crate::find::{Field, FindWidget};
 use crate::group::{Group, Groups};
@@ -117,6 +117,9 @@ pub struct UiState {
     pub panel_visible: bool,
     pub panel_height: u16,
     pub panel_tab: PanelTab,
+    /// "View: Toggle Render Whitespace" flipped the `render_whitespace` setting for this session
+    /// (`App::render_whitespace`). Never written to a settings file; a `.workspace` reload keeps it.
+    pub whitespace_toggled: bool,
 }
 
 /// The bottom panel's height until it's resized.
@@ -378,6 +381,7 @@ impl App {
                 panel_visible: false,
                 panel_height: PANEL_HEIGHT,
                 panel_tab: PanelTab::Problems,
+                whitespace_toggled: false,
             },
             hits: HitMap::default(),
             keymap: Keymap::default_for(Platform::current()),
@@ -652,6 +656,16 @@ impl App {
         Some((buf, &mut tab.view))
     }
 
+    /// The whitespace the editor draws: the `render_whitespace` setting, or — after "View: Toggle
+    /// Render Whitespace" — `none`, or the setting's mode again (`all` if that is `none`).
+    pub fn render_whitespace(&self) -> RenderWhitespace {
+        match (self.settings.render_whitespace, self.ui.whitespace_toggled) {
+            (mode, false) => mode,
+            (RenderWhitespace::None, true) => RenderWhitespace::All,
+            (_, true) => RenderWhitespace::None,
+        }
+    }
+
     pub fn active_buffer(&self) -> Option<&Buffer> {
         self.buffers.get(self.group().active_tab()?.buffer)
     }
@@ -905,6 +919,7 @@ impl App {
             Command::RestoreFileHistory => self.show_file_history(true),
             Command::RunTask => self.show_run_task(),
             Command::OpenRecentWorkspace => self.show_recent(),
+            Command::ToggleRenderWhitespace => self.ui.whitespace_toggled = !self.ui.whitespace_toggled,
             Command::KillTask => self.kill_task(),
             Command::CloseTask => self.close_shown_task(),
             Command::Task(c) => self.task_command(c),
@@ -1056,6 +1071,13 @@ impl App {
 impl App {
     pub fn test_start(&mut self) {
         self.start();
+    }
+
+    /// Whitespace drawn as plain blanks, as before `render_whitespace` (default `all`): for tests
+    /// that read drawn text with spaces in it. Uses the session toggle, so it lasts through
+    /// `.workspace` reloads (while the setting isn't changed to `none`).
+    pub fn test_plain_whitespace(&mut self) {
+        self.ui.whitespace_toggled = self.settings.render_whitespace != RenderWhitespace::None;
     }
 
     /// Opens `buffer` in a new active tab, as a finished file open would (no file I/O).

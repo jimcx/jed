@@ -100,6 +100,7 @@ fn start(root: &Path, state: &Path, file: Option<(&str, Option<(usize, usize)>)>
     let mut app = App::new(ws, trust, initial, true);
     app.state_dir = Some(state.to_path_buf());
     app.test_start();
+    app.test_plain_whitespace();
     app
 }
 
@@ -359,6 +360,7 @@ async fn milestone_13_task_tabs_are_not_restored() {
     app.state_dir = Some(state.clone());
     app.tasks.user = crate::tasks::templates::load(&tasks_toml).tasks;
     app.test_start();
+    app.test_plain_whitespace();
     assert!(app.settle(|a| !a.session.loading()).await);
     let id = app.run_task("hello").unwrap();
     assert!(
@@ -513,6 +515,7 @@ async fn milestone_13_quitting_while_restoring_keeps_the_session() {
     let ws = Workspace::load(root.clone());
     let mut app = App::new(ws, TrustStore::load(state.join("trust.toml")), None, true);
     app.test_start();
+    app.test_plain_whitespace();
     assert!(!app.session.loading());
     let buffer = Buffer::open(&root.join("b.txt")).unwrap();
     app.test_open(buffer);
@@ -1084,6 +1087,7 @@ async fn milestone_13_no_other_recent_workspace_says_so() {
     let ws = Workspace::load(root.clone());
     let mut app = App::new(ws, TrustStore::load(state.join("trust.toml")), None, true);
     app.test_start();
+    app.test_plain_whitespace();
     assert!(app.settle(|a| !a.session.loading()).await);
     assert_eq!(app.recent.recorded, 0);
     assert_eq!(ctrl_r(&mut app).await, None);

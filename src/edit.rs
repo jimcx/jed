@@ -33,6 +33,30 @@ pub struct Settings {
     /// Typing a word char asks the language server for completions (outside strings and
     /// comments): `[settings] quick_suggestions`.
     pub quick_suggestions: bool,
+    /// Which spaces and tabs the editor draws as `·` / `→` (`ui::editor`, drawing only):
+    /// `[settings] render_whitespace`. "View: Toggle Render Whitespace" overrides it for the
+    /// session (`App::render_whitespace`).
+    pub render_whitespace: RenderWhitespace,
+}
+
+/// VS Code's `editor.renderWhitespace`: which whitespace the editor draws visibly. Only U+0020
+/// (as `·`) and tabs (as `→`) count, as in VS Code; other Unicode spaces (NBSP, …) are drawn as
+/// themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RenderWhitespace {
+    /// None of it.
+    None,
+    /// All but a single space between two non-whitespace chars: leading and trailing whitespace,
+    /// tabs, runs of two or more spaces.
+    Boundary,
+    /// Only whitespace inside a selection.
+    Selection,
+    /// Only trailing whitespace (all of a blank line's).
+    Trailing,
+    /// All of it.
+    #[default]
+    All,
 }
 
 impl Default for Settings {
@@ -45,6 +69,7 @@ impl Default for Settings {
             auto_indent: true,
             match_brackets: true,
             quick_suggestions: true,
+            render_whitespace: RenderWhitespace::All,
         }
     }
 }

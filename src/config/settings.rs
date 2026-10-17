@@ -10,6 +10,7 @@
 //! | `auto_indent`      | bool | true      | Enter indents; a closing bracket first on a line outdents it    |
 //! | `match_brackets`   | bool | true      | Highlight the bracket next to the cursor and its partner       |
 //! | `quick_suggestions`| bool | true      | Typing a word asks the language server for completions         |
+//! | `render_whitespace`| str  | `"all"`   | Draw spaces `·` / tabs `→`: `none` `boundary` `selection` `trailing` `all` |
 //!
 //! Precedence, per key: defaults ← `settings.toml` ← `.workspace` (`layer`).
 //!
@@ -26,7 +27,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::edit::Settings;
+use crate::edit::{RenderWhitespace, Settings};
 
 pub const FILE_NAME: &str = "settings.toml";
 
@@ -47,6 +48,8 @@ pub struct SettingsOverrides {
     pub match_brackets: Option<bool>,
     /// Typing a word char asks for completions (VS Code's `editor.quickSuggestions`, code only).
     pub quick_suggestions: Option<bool>,
+    /// Which whitespace is drawn as `·` / `→` (VS Code's `editor.renderWhitespace`).
+    pub render_whitespace: Option<RenderWhitespace>,
 }
 
 impl SettingsOverrides {
@@ -72,6 +75,9 @@ impl SettingsOverrides {
         }
         if let Some(on) = self.quick_suggestions {
             s.quick_suggestions = on;
+        }
+        if let Some(mode) = self.render_whitespace {
+            s.render_whitespace = mode;
         }
     }
 }
@@ -186,6 +192,7 @@ pub const TEMPLATE: &str = "\
 # auto_indent = true
 # match_brackets = true
 # quick_suggestions = true
+# render_whitespace = \"all\"  # none, boundary, selection, trailing or all
 ";
 
 #[cfg(test)]
@@ -202,7 +209,7 @@ mod tests {
     fn parses_every_key() {
         let o = set(
             "[settings]\ntab_width = 2\ninsert_spaces = false\nsyntax_max_bytes = 10\nauto_close_pairs = false\n\
-             auto_indent = false\nmatch_brackets = false\nquick_suggestions = false\n",
+             auto_indent = false\nmatch_brackets = false\nquick_suggestions = false\nrender_whitespace = \"trailing\"\n",
         );
         assert_eq!(
             o,
@@ -214,8 +221,30 @@ mod tests {
                 auto_indent: Some(false),
                 match_brackets: Some(false),
                 quick_suggestions: Some(false),
+                render_whitespace: Some(RenderWhitespace::Trailing),
             }
         );
+    }
+
+    #[test]
+    fn render_whitespace_parses_each_mode_and_reports_a_bad_value() {
+        for (text, mode) in [
+            ("none", RenderWhitespace::None),
+            ("boundary", RenderWhitespace::Boundary),
+            ("selection", RenderWhitespace::Selection),
+            ("trailing", RenderWhitespace::Trailing),
+            ("all", RenderWhitespace::All),
+        ] {
+            let o = set(&format!("[settings]\nrender_whitespace = \"{text}\"\n"));
+            assert_eq!(o.render_whitespace, Some(mode));
+        }
+        assert_eq!(Settings::default().render_whitespace, RenderWhitespace::All);
+        let u = parse("[settings]\nrender_whitespace = \"some\"\ntab_width = 2\n");
+        assert_eq!(u.overrides.render_whitespace, None);
+        assert_eq!(u.overrides.tab_width, Some(2), "the other key still applies");
+        assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+        assert!(u.errors[0].contains("`render_whitespace`"), "{:?}", u.errors);
+        assert_eq!(parse("[settings]\nrender_whitespace = true\n").errors.len(), 1);
     }
 
     #[test]
@@ -353,6 +382,7 @@ mod tests {
             auto_indent: Some(true),
             match_brackets: Some(true),
             quick_suggestions: Some(true),
+            render_whitespace: Some(RenderWhitespace::All),
         };
         let fields = toml::Table::try_from(&every).unwrap();
         assert_eq!(
@@ -368,8 +398,18 @@ mod tests {
             (d.tab_width, d.insert_spaces, d.syntax_max_bytes, d.auto_close_pairs)
         );
         assert_eq!(
-            (s.auto_indent, s.match_brackets, s.quick_suggestions),
-            (d.auto_indent, d.match_brackets, d.quick_suggestions)
+            (
+                s.auto_indent,
+                s.match_brackets,
+                s.quick_suggestions,
+                s.render_whitespace
+            ),
+            (
+                d.auto_indent,
+                d.match_brackets,
+                d.quick_suggestions,
+                d.render_whitespace
+            )
         );
         assert!(parse(TEMPLATE).errors.is_empty());
     }

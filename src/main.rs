@@ -71,6 +71,8 @@ mod syntax;
 mod tasks;
 mod terminal;
 mod theme;
+#[cfg(test)]
+mod todo_tests;
 mod ui;
 mod view;
 mod watcher;

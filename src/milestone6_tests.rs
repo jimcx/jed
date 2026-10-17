@@ -277,6 +277,7 @@ async fn milestone_6_focus_loss_ends_word_mode() {
 fn milestone_6_draws_every_selection_and_cursor() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_with(&dir, "ab ab ab\nzz\n", 0);
+    app.test_plain_whitespace();
     select_all(&mut app);
     let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
     term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
@@ -317,6 +318,7 @@ fn milestone_6_draws_every_selection_and_cursor() {
     // selections overlapping the viewport are looked at).
     let text: String = (0..100).map(|_| "ab cd\n").collect();
     let mut app = app_with(&dir, &text, 0);
+    app.test_plain_whitespace();
     select_all(&mut app);
     assert_eq!(ranges(&app).len(), 100);
     let rope = app.active_buffer().unwrap().rope.clone();
@@ -392,6 +394,8 @@ fn milestone_6_select_all_matches_on_one_mb() {
     }
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_with(&dir, &original, 5);
+    // Frames draw every space as `·` (the default): the costliest drawing.
+    assert_eq!(app.render_whitespace(), crate::edit::RenderWhitespace::All);
     let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
     term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
 
@@ -933,6 +937,8 @@ fn milestone_6_cursor_and_line_commands_on_one_mb() {
     }
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_with(&dir, &original, 5);
+    // Frames draw every space as `·` (the default): the costliest drawing.
+    assert_eq!(app.render_whitespace(), crate::edit::RenderWhitespace::All);
     let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
     draw(&mut term, &mut app);
     select_all(&mut app);
@@ -1032,6 +1038,7 @@ fn milestone_6_find_is_incremental_and_wraps() {
     let dir = tempfile::tempdir().unwrap();
     let original = "foo bar\nFoo baz foo\n";
     let mut app = app_with(&dir, original, 5);
+    app.test_plain_whitespace();
     // Wide enough that the widget (top right) leaves the start of line 1 visible.
     let mut term = Terminal::new(TestBackend::new(160, 10)).unwrap();
 
@@ -1337,6 +1344,7 @@ fn milestone_6_find_zero_length_matches() {
 fn milestone_6_find_follows_edits_and_tabs() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_with(&dir, "ab ab ab\n", 0);
+    app.test_plain_whitespace();
     let mut term = Terminal::new(TestBackend::new(160, 10)).unwrap();
     let bg = |term: &Terminal<TestBackend>, x: u16, y: u16| Some(term.backend().buffer()[(x, y)].bg);
     let highlight = app.theme.get("editor.findMatchHighlight").bg;
