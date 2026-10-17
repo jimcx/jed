@@ -1734,6 +1734,17 @@ async fn milestone_10_split_and_close_a_diff_tab() {
     assert!(d.doc.is_some());
     let screen = lines(&draw_sized(&mut app, 200, 24));
     assert_eq!(screen[0].matches("f.txt (Working Tree)").count(), 2, "{:?}", screen[0]);
+    // The divider between them drags over a diff (which takes clicks and the wheel, not drags).
+    let r = app.hits.dividers[0].rect;
+    for (kind, x) in [
+        (MouseEventKind::Down(MouseButton::Left), r.x),
+        (MouseEventKind::Drag(MouseButton::Left), r.x - 30),
+        (MouseEventKind::Up(MouseButton::Left), r.x - 30),
+    ] {
+        app.mouse(kind, x, r.y + 3);
+    }
+    draw_sized(&mut app, 200, 24);
+    assert_eq!(app.hits.dividers[0].rect.x, r.x - 30, "the divider moved");
     // Both follow the file.
     fs::write(root.join("f.txt"), &original).unwrap();
     assert!(

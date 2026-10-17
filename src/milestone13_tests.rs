@@ -42,6 +42,18 @@
 //! the palette with its key (`milestone_13_open_recent_workspace_is_in_the_palette`); with no
 //! other workspace, or no state dir, a message instead
 //! (`milestone_13_no_other_recent_workspace_says_so`).
+//!
+//! 13d, the done when (minus the kitty clause, deferred to the TODO list), on one git project
+//! driven through keys: quit and reopen gives back the same frame cell for cell — three groups
+//! with a diff tab and both dividers dragged, several cursors and selections (one primary not
+//! the first), scrolled views, the Source Control view and the bottom panel, every tab of the
+//! first group too, and again after a second round trip
+//! (`milestone_13_done_when_quit_and_reopen_gives_back_the_same_screen`); killing the terminal
+//! (the app dropped without Quit or shutdown) after a backup interval and more edits gives back
+//! the session's tabs and, on Restore, exactly the text of the last backup — only the edits
+//! after it are lost — and one undo per file brings back the disk's text
+//! (`milestone_13_done_when_a_kill_loses_at_most_one_backup_interval`). The panic hook's path
+//! is 13b's `milestone_13_a_panic_backs_up_what_the_next_start_offers`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -59,7 +71,7 @@ use crate::command::Command;
 use crate::diff_view::Pair;
 use crate::git::test_repo::{commit_all, init};
 use crate::group::Tab;
-use crate::layout::{GroupId, PanelTab, SidePanel, SplitTree};
+use crate::layout::{GroupId, PanelTab, SidePanel, SplitDir, SplitTree};
 use crate::palette::Mode;
 use crate::recent;
 use crate::selection::{Selection, Selections};
@@ -1077,4 +1089,359 @@ async fn milestone_13_no_other_recent_workspace_says_so() {
     assert_eq!(ctrl_r(&mut app).await, None);
     let message = &app.message.as_ref().unwrap().text;
     assert!(message.contains("no state directory"), "{message}");
+}
+
+// 13d: the done-when tests, end to end on one workspace, through keys and real files.
+
+/// A small Rust project in a git repository: `src/main.rs` (300 lines), `src/lib.rs` (changed
+/// on disk since the commit, so it has a diff), `README.md`, `Cargo.toml`.
+fn project(root: &Path) {
+    init(root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    let main: String = (0..300)
+        .map(|i| format!("    let value_{i} = compute({i}, \"item {i}\"); // step {i}\n"))
+        .collect();
+    fs::write(root.join("src/main.rs"), format!("fn main() {{\n{main}}}\n")).unwrap();
+    let lib: String = (0..120)
+        .map(|i| format!("pub fn f{i}(x: u32) -> u32 {{\n    x + {i}\n}}\n"))
+        .collect();
+    fs::write(root.join("src/lib.rs"), &lib).unwrap();
+    let readme: String = (0..60).map(|i| format!("Paragraph {i} of the readme.\n\n")).collect();
+    fs::write(root.join("README.md"), format!("# demo\n\n{readme}")).unwrap();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    commit_all(root, "first");
+    fs::write(root.join("src/lib.rs"), lib.replace("x + 7\n", "x * 7 // changed\n")).unwrap();
+}
+
+/// Quick open (Cmd+P): types `name`, waits for it to be the first row, Enter, waits for the open.
+async fn quick_open(app: &mut App, name: &str) {
+    app.press(KeyCode::Char('p'), cmd());
+    app.type_text(name);
+    let found = app
+        .settle(|a| {
+            a.palette
+                .as_ref()
+                .is_some_and(|p| p.rows.first().is_some_and(|r| r.label == name))
+        })
+        .await;
+    assert!(found, "quick open lists {name}");
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.palette.is_none());
+    let opened = app
+        .settle(|a| a.active_buffer().is_some_and(|b| b.name() == name))
+        .await;
+    assert!(opened, "{name} opened");
+}
+
+/// Runs the palette command titled `title` (Cmd+Shift+P).
+fn palette_command(app: &mut App, title: &str) {
+    app.press(KeyCode::Char('p'), cmd() | KeyModifiers::SHIFT);
+    app.type_text(title);
+    let p = app.palette.as_ref().unwrap();
+    assert_eq!(p.rows[p.selected].label, title);
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+}
+
+/// Everything a frame shows has arrived: the session, the git status, every diff tab, the gutter
+/// markers and each buffer's parse tree.
+fn screen_settled(a: &App) -> bool {
+    !a.session.loading()
+        && a.git.status.is_some()
+        && !a.git.running()
+        && a.diffs_settled()
+        && a.buffers.iter().all(|(_, b)| {
+            b.syntax.tree().is_some()
+                && !b.quick_diff.running()
+                && b.quick_diff.want(b.revision()) == crate::quick_diff::Want::Nothing
+        })
+}
+
+/// A drawn frame: every row's text and every cell's style outside the side panel, the side
+/// panel's rows without the Source Control view's `+` / `−` buttons (drawn on the selected or
+/// hovered row: the list's selection isn't part of the session), and the terminal cursor.
+#[derive(Debug, PartialEq)]
+struct Frame {
+    rows: Vec<String>,
+    styles: Vec<ratatui::style::Style>,
+    side: Vec<String>,
+    cursor: ratatui::layout::Position,
+}
+
+fn frame(app: &mut App, term: &mut Terminal<TestBackend>) -> Frame {
+    use ratatui::backend::Backend;
+    draw(app, term);
+    let side = app.hits.regions.side.unwrap_or_default();
+    let buf = term.backend().buffer().clone();
+    let in_side = |x, y| side.contains(ratatui::layout::Position { x, y });
+    let (mut rows, mut styles, mut side_rows) = (Vec::new(), Vec::new(), Vec::new());
+    for y in 0..buf.area.height {
+        let (mut row, mut side_row) = (String::new(), String::new());
+        for x in 0..buf.area.width {
+            let cell = &buf[(x, y)];
+            if in_side(x, y) {
+                row.push(' ');
+                styles.push(ratatui::style::Style::default());
+                side_row.push_str(match cell.symbol() {
+                    "+" | "−" => " ",
+                    s => s,
+                });
+            } else {
+                row.push_str(cell.symbol());
+                styles.push(cell.style());
+            }
+        }
+        rows.push(row);
+        if !side_row.is_empty() {
+            side_rows.push(side_row);
+        }
+    }
+    Frame {
+        rows,
+        styles,
+        side: side_rows,
+        cursor: term.backend_mut().get_cursor_position().unwrap(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_13_done_when_quit_and_reopen_gives_back_the_same_screen() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    project(&root);
+    let mut term = Terminal::new(TestBackend::new(150, 44)).unwrap();
+
+    // `jed proj`, then everything through keys.
+    let mut app = reopen(&root, &state, None).await;
+    draw(&mut app, &mut term);
+    // Group 1: main.rs scrolled to line 120 with three cursors selecting a word each, the
+    // bottom one primary (the status bar's Ln / Col and the terminal cursor are its)…
+    quick_open(&mut app, "main.rs").await;
+    app.press(KeyCode::Char('g'), KeyModifiers::CONTROL);
+    app.type_text("122:5");
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    for _ in 0..2 {
+        app.press(KeyCode::Up, cmd() | KeyModifiers::ALT);
+    }
+    for _ in 0..3 {
+        app.press(KeyCode::Right, KeyModifiers::SHIFT);
+    }
+    // …lib.rs paged down, and its git changes in a diff tab (active).
+    quick_open(&mut app, "lib.rs").await;
+    app.press(KeyCode::PageDown, KeyModifiers::NONE);
+    app.press(KeyCode::PageDown, KeyModifiers::NONE);
+    assert!(app.settle(|a| a.git.status.is_some()).await);
+    palette_command(&mut app, "Git: Open Changes");
+    assert!(app.group().active_diff().is_some(), "the diff tab");
+    // Group 2, right: README.md near its end, "Paragraph" and its next match selected with Cmd+D.
+    app.press(KeyCode::Char('\\'), cmd());
+    quick_open(&mut app, "README.md").await;
+    app.press(KeyCode::End, cmd());
+    app.press(KeyCode::Char('g'), KeyModifiers::CONTROL);
+    app.type_text("101:3");
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    app.press(KeyCode::Char('d'), cmd());
+    app.press(KeyCode::Char('d'), cmd());
+    assert_eq!(
+        app.group().active_tab().unwrap().view.selections.len(),
+        2,
+        "Cmd+D added a match"
+    );
+    // Group 3, below group 2: Cargo.toml.
+    app.press(KeyCode::Char('\\'), cmd() | KeyModifiers::ALT);
+    quick_open(&mut app, "Cargo.toml").await;
+    assert_eq!(app.groups.ids().len(), 3);
+    // Side panel on Source Control, the bottom panel shown; then back to group 2's editor.
+    app.press(KeyCode::Char('g'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    app.press(KeyCode::Char('j'), cmd());
+    assert!(app.ui.panel_visible);
+    // Both dividers dragged off the middle (the ratios are the session's).
+    for dir in [SplitDir::Right, SplitDir::Down] {
+        draw(&mut app, &mut term);
+        let r = app.hits.dividers.iter().find(|d| d.dir == dir).unwrap().rect;
+        let ((x, y), to) = match dir {
+            SplitDir::Right => ((r.x, r.y + 3), (r.x + 9, r.y + 3)),
+            SplitDir::Down => ((r.x + r.width / 2, r.y), (r.x + r.width / 2, r.y + 6)),
+        };
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), to.0, to.1);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), to.0, to.1);
+    }
+    app.press(KeyCode::Char('2'), cmd());
+    assert_eq!(app.ui.focus, Focus::Editor);
+    assert_eq!(
+        app.group().active_tab().unwrap().view.selections.len(),
+        2,
+        "group 2 kept its selections"
+    );
+    let group1 = app.groups.get(app.groups.ids()[0]).unwrap();
+    let main_sels = &group1.tabs[0].text().unwrap().view.selections;
+    assert_eq!(main_sels.primary_index(), 2, "main.rs's primary is its last");
+    assert!(app.settle(screen_settled).await, "everything drawn has arrived");
+    let before = frame(&mut app, &mut term);
+    let ratios = format!("{:?}", app.groups.tree);
+    assert!(!ratios.contains("ratio: 0.5,"), "both dividers moved: {ratios}");
+    // Group 1's other tabs, drawn one by one (Ctrl+PageUp), then back to the diff.
+    app.press(KeyCode::Char('1'), cmd());
+    let mut tabs_before = Vec::new();
+    for _ in 0..2 {
+        app.press(KeyCode::PageUp, KeyModifiers::CONTROL);
+        tabs_before.push(frame(&mut app, &mut term));
+    }
+    app.press(KeyCode::PageDown, KeyModifiers::CONTROL);
+    app.press(KeyCode::PageDown, KeyModifiers::CONTROL);
+    app.press(KeyCode::Char('2'), cmd());
+    assert!(frame(&mut app, &mut term) == before, "looking changed nothing");
+    let screen = format!("{}\n{}", before.rows.join("\n"), before.side.join("\n"));
+    for text in [
+        "main.rs",
+        "lib.rs (Working Tree)",
+        "README.md",
+        "Cargo.toml",
+        "SOURCE CONTROL",
+    ] {
+        assert!(
+            screen.to_uppercase().contains(&text.to_uppercase()),
+            "{text} drawn:\n{screen}"
+        );
+    }
+    assert!(screen.contains("Paragraph 49"), "README scrolled:\n{screen}");
+
+    // Quit (Cmd+Q: nothing unsaved, no prompt), as `run` does.
+    app.press(KeyCode::Char('q'), cmd());
+    assert!(app.quitting());
+    app.shutdown().await;
+
+    // `jed proj` again: the same frame, cell for cell — tab bars, the visible lines, every
+    // selection and the cursor, the gutter, both panels, the dividers.
+    let mut app = reopen(&root, &state, None).await;
+    assert_eq!(app.session.restored, 1);
+    assert!(app.settle(screen_settled).await, "everything drawn has arrived");
+    let after = frame(&mut app, &mut term);
+    for (y, (a, b)) in before.rows.iter().zip(&after.rows).enumerate() {
+        assert_eq!(a, b, "row {y}");
+    }
+    assert!(before.styles == after.styles, "every cell's colours and modifiers");
+    assert_eq!(before.side, after.side, "the Source Control view's rows");
+    assert_eq!(before.cursor, after.cursor, "the terminal cursor");
+    // Group 1's other tabs: main.rs at line 120 with its three selections, lib.rs paged down.
+    app.press(KeyCode::Char('1'), cmd());
+    for (i, shot) in tabs_before.iter().enumerate() {
+        app.press(KeyCode::PageUp, KeyModifiers::CONTROL);
+        let tab = frame(&mut app, &mut term);
+        for (y, (a, b)) in shot.rows.iter().zip(&tab.rows).enumerate() {
+            assert_eq!(a, b, "tab {i}, row {y}");
+        }
+        assert!(tab == *shot, "tab {i}: colours, the side panel, the cursor");
+    }
+    app.press(KeyCode::PageDown, KeyModifiers::CONTROL);
+    app.press(KeyCode::PageDown, KeyModifiers::CONTROL);
+    app.press(KeyCode::Char('2'), cmd());
+
+    // And again after a second quit with nothing touched.
+    quit(app).await;
+    let mut app = reopen(&root, &state, None).await;
+    assert!(app.settle(screen_settled).await);
+    let again = frame(&mut app, &mut term);
+    assert!(again == before, "a second round trip changes nothing");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_13_done_when_a_kill_loses_at_most_one_backup_interval() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    project(&root);
+    let disk = |name: &str| fs::read_to_string(root.join(name)).unwrap();
+    let (main0, readme0) = (disk("src/main.rs"), disk("README.md"));
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+
+    // A session to come back to: main.rs, and README.md in a split.
+    let mut app = reopen(&root, &state, None).await;
+    quick_open(&mut app, "main.rs").await;
+    app.press(KeyCode::Char('\\'), cmd());
+    quick_open(&mut app, "README.md").await;
+    quit(app).await;
+
+    // Edits: three cursors in main.rs, a line in README.md.
+    let mut app = reopen(&root, &state, None).await;
+    app.press(KeyCode::Char('1'), cmd());
+    app.press(KeyCode::Char('g'), KeyModifiers::CONTROL);
+    app.type_text("10");
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    app.press(KeyCode::Down, cmd() | KeyModifiers::ALT);
+    app.press(KeyCode::Down, cmd() | KeyModifiers::ALT);
+    app.type_text("kept ");
+    app.press(KeyCode::Char('2'), cmd());
+    app.type_text("Saved by the backup.");
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    // One backup interval passes: everything so far is backed up.
+    back_up(&mut app).await;
+    let main_at_tick = text_of(&app, &root, "src/main.rs");
+    let readme_at_tick = text_of(&app, &root, "README.md");
+    assert_eq!(main_at_tick.matches("kept ").count(), 3);
+    // More edits, less than an interval before the kill: the next backup isn't due yet.
+    app.type_text("lost");
+    app.press(KeyCode::Char('1'), cmd());
+    app.type_text("lost ");
+    app.pump();
+    let due = app.backups.deadline().expect("the next backup is pending");
+    assert!(due > Instant::now() && due <= Instant::now() + backup::INTERVAL);
+    let main_killed = text_of(&app, &root, "src/main.rs");
+    assert_eq!(main_killed.matches("kept lost ").count(), 3);
+    // The terminal is killed: no Quit, no shutdown.
+    drop(app);
+    assert_eq!(
+        (disk("src/main.rs"), disk("README.md")),
+        (main0.clone(), readme0.clone())
+    );
+
+    // The next start gives back the session's tabs and offers the backups; Restore brings back
+    // every edit up to the last backup, only the later ones are lost.
+    let mut app = reopen(&root, &state, None).await;
+    assert_eq!(app.groups.ids().len(), 2, "the session's split");
+    assert_eq!(
+        offered(&mut app).await,
+        [root.join("README.md"), root.join("src/main.rs")]
+    );
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    let restored = app
+        .settle(|a| a.backups.restoring() == 0 && a.buffers.iter().all(|(_, b)| b.is_dirty()))
+        .await;
+    assert!(restored, "both restored");
+    assert_eq!(text_of(&app, &root, "src/main.rs"), main_at_tick);
+    assert_eq!(text_of(&app, &root, "README.md"), readme_at_tick);
+    assert_eq!(
+        main_killed.replace("kept lost ", "kept "),
+        main_at_tick,
+        "only `lost` is lost"
+    );
+    assert_eq!(app.groups.ids().len(), 2, "into the session's tabs, none added");
+    let screen = frame(&mut app, &mut term).rows.join("\n");
+    assert!(
+        screen.contains("Saved by the backup.") && screen.contains("kept "),
+        "{screen}"
+    );
+    assert!(!screen.contains("lost"), "{screen}");
+    // Nothing written; one undo per file (Cmd+Z) gives back the disk's text, clean, and the
+    // backups go.
+    assert_eq!(
+        (disk("src/main.rs"), disk("README.md")),
+        (main0.clone(), readme0.clone())
+    );
+    for g in ['1', '2'] {
+        app.press(KeyCode::Char(g), cmd());
+        app.press(KeyCode::Char('z'), cmd());
+        assert!(!app.active_buffer().unwrap().is_dirty());
+    }
+    assert_eq!(text_of(&app, &root, "src/main.rs"), main0);
+    assert_eq!(text_of(&app, &root, "README.md"), readme0);
+    assert!(
+        app.settle(|_| !backup::dir(&state, &root).exists()
+            || fs::read_dir(backup::dir(&state, &root)).unwrap().next().is_none())
+            .await,
+        "backups removed"
+    );
 }

@@ -90,7 +90,7 @@ impl App {
         self.refresh_palette();
     }
 
-    /// The picker's choice: opened in another jed, never in this one (13d: kitty's windows).
+    /// The picker's choice: opened in another jed, never in this one (kitty's windows: a TODO in PLAN.md).
     pub(super) fn open_recent(&mut self, entry: Entry) {
         match recent::how_to_open(&entry) {
             Open::Message => {

@@ -150,7 +150,7 @@ fn write(path: &Path, text: &str) -> std::io::Result<()> {
     result
 }
 
-/// A kitty window id (13d).
+/// A kitty window id (for the deferred kitty integration: a TODO in PLAN.md).
 pub type WindowId = u64;
 
 /// A recent workspace as the picker lists it.
@@ -158,7 +158,7 @@ pub type WindowId = u64;
 pub struct Entry {
     pub path: PathBuf,
     /// The terminal window already showing jed on this workspace, when known: its row is
-    /// marked. Kitty integration (13d) fills it; `None` until then.
+    /// marked. Kitty integration (a TODO in PLAN.md) would fill it; `None` until then.
     pub window: Option<WindowId>,
 }
 
@@ -169,7 +169,7 @@ impl Entry {
 }
 
 /// What picking a recent workspace does. jed never switches its own workspace: it opens the
-/// folder in another jed. Kitty integration (13d) adds focusing `entry.window` and launching jed
+/// folder in another jed. Kitty integration (a TODO in PLAN.md) would add focusing `entry.window` and launching jed
 /// in a new kitty OS window; until then, and outside kitty, it's a message with the command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Open {

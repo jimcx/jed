@@ -379,7 +379,8 @@ impl App {
 
     /// The mouse over a group's editor area showing a diff tab: the wheel scrolls it (without
     /// focusing), a click focuses it and puts the cursor on that row, or stages that change.
-    /// False when the group shows no diff tab there.
+    /// False when the group shows no diff tab there, and for other events (moves, drags,
+    /// releases), which go on to the rest of `handle_mouse`.
     pub(super) fn diff_mouse(&mut self, m: &MouseEvent, hit: Hit) -> bool {
         let Hit::Editor(g) = hit else { return false };
         let Some(d) = self.groups.get_mut(g).and_then(|g| g.active_diff_mut()) else {
@@ -411,7 +412,8 @@ impl App {
                     self.diff_stage(unstage, Some(k));
                 }
             }
-            _ => {}
+            // A divider or panel border dragged over the diff, a release, a move: not its.
+            _ => return false,
         }
         true
     }
