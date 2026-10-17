@@ -11,6 +11,7 @@ use nucleo::{Config, Matcher, Nucleo, Utf32Str, Utf32String};
 use crate::command::Command;
 use crate::field::TextField;
 use crate::history::{self, Entry, Snapshot};
+use crate::recent;
 use crate::tasks::{Source, Template};
 
 /// Quick open shows at most this many files (the best matches).
@@ -28,6 +29,9 @@ pub enum Picker {
     History { restore: bool },
     /// "Run Task": a task template (`App::task_templates`); accepting runs it.
     Tasks,
+    /// "Open Recent Workspace": a recent workspace (the entries are the app's:
+    /// `app.recent.picker`); accepting opens it in another jed (`recent::how_to_open`).
+    Recent,
 }
 
 /// What the rows are, from the picker and the input.
@@ -39,6 +43,7 @@ pub enum Mode {
     LogLevel,
     History,
     Tasks,
+    Recent,
 }
 
 pub const COMMANDS_PREFIX: char = '>';
@@ -55,6 +60,8 @@ pub enum Action {
     History(Snapshot),
     /// A task template, by name.
     RunTask(String),
+    /// A recent workspace's root.
+    OpenWorkspace(PathBuf),
 }
 
 /// One line in the list. Hits are char indices to highlight.
@@ -109,6 +116,7 @@ impl Palette {
             Picker::LogLevel => Mode::LogLevel,
             Picker::History { .. } => Mode::History,
             Picker::Tasks => Mode::Tasks,
+            Picker::Recent => Mode::Recent,
             Picker::QuickOpen => match self.field.text.chars().next() {
                 Some(COMMANDS_PREFIX) => Mode::Commands,
                 Some(LINE_PREFIX) => Mode::GoToLine,
@@ -121,7 +129,7 @@ impl Palette {
     pub fn query(&self) -> &str {
         match self.mode() {
             Mode::Commands | Mode::GoToLine => &self.field.text[1..],
-            Mode::Files | Mode::LogLevel | Mode::History | Mode::Tasks => &self.field.text,
+            Mode::Files | Mode::LogLevel | Mode::History | Mode::Tasks | Mode::Recent => &self.field.text,
         }
     }
 
@@ -295,6 +303,44 @@ pub fn task_rows(query: &str, templates: &[Template]) -> Vec<Row> {
         })
         .collect();
     scored.sort_by(|(sa, a), (sb, b)| sb.cmp(sa).then_with(|| a.label.cmp(&b.label)));
+    scored.into_iter().map(|(_, r)| r).collect()
+}
+
+/// Rows for "Open Recent Workspace": each entry (most recent first) matching `query` by folder
+/// name, else by path, best first (ties keep the recency order): the folder name, its path with
+/// `~` for `home` dimmed, and "open" at the right for one already open in a terminal window.
+pub fn recent_rows(query: &str, entries: &[recent::Entry], home: &std::path::Path) -> Vec<Row> {
+    let pattern = pattern(query);
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let mut buf = Vec::new();
+    let mut scored: Vec<(u32, Row)> = entries
+        .iter()
+        .filter_map(|e| {
+            let label = recent::folder_name(&e.path);
+            let detail = recent::display(&e.path, home);
+            let (mut label_hits, mut detail_hits) = (Vec::new(), Vec::new());
+            let score = match pattern.indices(Utf32Str::new(&label, &mut buf), &mut matcher, &mut label_hits) {
+                Some(s) => s,
+                None => {
+                    label_hits.clear();
+                    pattern.indices(Utf32Str::new(&detail, &mut buf), &mut matcher, &mut detail_hits)?
+                }
+            };
+            Some((
+                score,
+                Row {
+                    label,
+                    label_hits: sorted(label_hits),
+                    detail,
+                    detail_hits: sorted(detail_hits),
+                    keys: e.window.map(|_| "open".to_string()),
+                    action: Action::OpenWorkspace(e.path.clone()),
+                },
+            ))
+        })
+        .collect();
+    // Stable: equal scores (all of them for an empty query) stay most recent first.
+    scored.sort_by(|(sa, _), (sb, _)| sb.cmp(sa));
     scored.into_iter().map(|(_, r)| r).collect()
 }
 
@@ -496,6 +542,42 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(rows[0].label_hits.is_empty() && !rows[0].detail_hits.is_empty());
         assert_eq!(Palette::new(Picker::Tasks, ">x").mode(), Mode::Tasks);
+    }
+
+    #[test]
+    fn recent_rows_show_name_and_tilde_path_in_recency_order() {
+        let home = std::path::Path::new("/home/me");
+        let mut entries = vec![
+            recent::Entry::new("/home/me/src/jed".into()),
+            recent::Entry::new("/srv/www".into()),
+            recent::Entry::new("/home/me/notes".into()),
+        ];
+        entries[1].window = Some(7);
+        let rows = recent_rows("", &entries, home);
+        let shown: Vec<_> = rows
+            .iter()
+            .map(|r| (r.label.as_str(), r.detail.as_str(), r.keys.as_deref()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("jed", "~/src/jed", None),
+                ("www", "/srv/www", Some("open")),
+                ("notes", "~/notes", None)
+            ]
+        );
+        assert_eq!(rows[2].action, Action::OpenWorkspace("/home/me/notes".into()));
+        let rows = recent_rows("nts", &entries, home);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (rows[0].label.as_str(), rows[0].label_hits.as_slice()),
+            ("notes", &[0, 2, 4][..])
+        );
+        // By path when the name doesn't match.
+        let rows = recent_rows("srv", &entries, home);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].label_hits.is_empty() && rows[0].detail_hits == [1, 2, 3]);
+        assert_eq!(Palette::new(Picker::Recent, ">x").mode(), Mode::Recent);
     }
 
     #[test]

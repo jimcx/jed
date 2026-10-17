@@ -29,6 +29,7 @@ impl App {
     pub(super) fn close_palette(&mut self) {
         self.palette = None;
         self.file_history.picker = None;
+        self.recent.picker = None;
         if let Some(files) = &mut self.files {
             files.stop();
         }
@@ -115,6 +116,16 @@ impl App {
                 };
                 rows
             }
+            Mode::Recent => match &self.recent.picker {
+                Some(entries) => {
+                    let rows = palette::recent_rows(&query, entries, &paths::home());
+                    if rows.is_empty() {
+                        hint = Some("No matching workspaces".into());
+                    }
+                    rows
+                }
+                None => Vec::new(),
+            },
             Mode::Files => {
                 let files = self.file_matcher();
                 files.set_query(palette::file_query(&query));
@@ -263,6 +274,15 @@ impl App {
                 if let Some(picker) = picker {
                     self.history_picked(picker, snapshot);
                 }
+            }
+            (_, Some(Action::OpenWorkspace(path))) => {
+                let entry = self
+                    .recent
+                    .picker
+                    .take()
+                    .and_then(|e| e.into_iter().find(|e| e.path == path));
+                self.close_palette();
+                self.open_recent(entry.unwrap_or_else(|| crate::recent::Entry::new(path)));
             }
             (_, Some(Action::RunTask(name))) => {
                 self.close_palette();

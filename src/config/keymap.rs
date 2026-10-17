@@ -586,6 +586,8 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Char('p'), cmd, Command::QuickOpen),
         // Ctrl on macOS too, as in VS Code.
         (KeyCode::Char('g'), ctrl, Command::GoToLine),
+        // VS Code's Open Recent: Ctrl on macOS too. Global, so a task tab doesn't get it either.
+        (KeyCode::Char('r'), ctrl, Command::OpenRecentWorkspace),
         (KeyCode::F(4), none, Command::Search(S::NextResult)),
         (KeyCode::F(4), shift, Command::Search(S::PreviousResult)),
         (KeyCode::Char('j'), cmd, Command::TogglePanel),
@@ -799,6 +801,30 @@ mod tests {
             assert_eq!(km.lookup(&x, Context::Scm), None, "plain keys don't type");
         }
         assert_eq!(Context::parse("scm"), Some(Context::Scm));
+    }
+
+    #[test]
+    fn open_recent_workspace_is_ctrl_r_on_both_platforms() {
+        let r = key(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        for p in [Platform::MacOs, Platform::Linux] {
+            let km = Keymap::default_for(p);
+            for ctx in [
+                Context::Editor,
+                Context::Explorer,
+                Context::Palette,
+                Context::Find,
+                Context::Task,
+            ] {
+                assert_eq!(km.lookup(&r, ctx), Some(Command::OpenRecentWorkspace), "{p:?} {ctx:?}");
+            }
+            let shown = km.binding_for(Command::OpenRecentWorkspace).map(|k| k.label());
+            assert_eq!(shown.as_deref(), Some("Ctrl+R"), "{p:?}");
+        }
+        let mac = Keymap::default_for(Platform::MacOs);
+        assert_eq!(
+            mac.lookup(&key(KeyCode::Char('r'), KeyModifiers::SUPER), Context::Editor),
+            None
+        );
     }
 
     #[test]

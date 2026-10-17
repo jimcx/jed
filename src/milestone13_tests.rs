@@ -32,6 +32,16 @@
 //! (`milestone_13_closing_or_renaming_a_dirty_buffer_moves_its_backup`); a backup found but not
 //! yet offered is neither replaced nor removed at shutdown
 //! (`milestone_13_a_backup_not_offered_yet_is_never_replaced`).
+//!
+//! 13c, recent workspaces: every start records its root in `recent.toml`, most recent first, no
+//! duplicates, a corrupt list replaced (`milestone_13_each_start_records_the_workspace_most_recent_first`);
+//! Ctrl+R lists the others in the palette — folder name, then the path with `~` for home — the
+//! current workspace and folders gone since left out (and pruned from the file), filtered by
+//! typing; picking one leaves jed on its workspace and says how to open it, `jed <path>`
+//! shell-quoted when needed (`milestone_13_ctrl_r_picks_a_recent_workspace`); the command is in
+//! the palette with its key (`milestone_13_open_recent_workspace_is_in_the_palette`); with no
+//! other workspace, or no state dir, a message instead
+//! (`milestone_13_no_other_recent_workspace_says_so`).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -50,6 +60,8 @@ use crate::diff_view::Pair;
 use crate::git::test_repo::{commit_all, init};
 use crate::group::Tab;
 use crate::layout::{GroupId, PanelTab, SidePanel, SplitTree};
+use crate::palette::Mode;
+use crate::recent;
 use crate::selection::{Selection, Selections};
 use crate::session;
 use crate::workspace::trust::TrustStore;
@@ -910,4 +922,159 @@ async fn milestone_13_a_backup_not_offered_yet_is_never_replaced() {
     assert_eq!(backup::read(&state, &root, &a_file).unwrap().text.to_string(), "mine\n");
     let mut app = reopen(&root, &state, None).await;
     assert_eq!(offered(&mut app).await, [root.join("a.txt")]);
+}
+
+// 13c: recent workspaces.
+
+/// Starts jed on `root` with `state` as its state dir and waits for the root to be recorded.
+async fn started(root: &Path, state: &Path) -> App {
+    let mut app = start(root, state, None);
+    assert!(app.settle(|a| a.recent.recorded == 1).await, "recorded");
+    app
+}
+
+fn recent_on_disk(state: &Path) -> Vec<PathBuf> {
+    recent::parse(&fs::read_to_string(recent::file(state)).unwrap()).unwrap()
+}
+
+/// Ctrl+R, then waits for the listing: the picker's rows (folder name, path), or none.
+async fn ctrl_r(app: &mut App) -> Option<Vec<(String, String)>> {
+    app.press(KeyCode::Char('r'), KeyModifiers::CONTROL);
+    assert!(app.settle(|a| a.recent.listing_running == 0).await, "listed");
+    let p = app.palette.as_ref()?;
+    assert_eq!(p.mode(), Mode::Recent);
+    Some(p.rows.iter().map(|r| (r.label.clone(), r.detail.clone())).collect())
+}
+
+fn cmd() -> KeyModifiers {
+    if cfg!(target_os = "macos") {
+        KeyModifiers::SUPER
+    } else {
+        KeyModifiers::CONTROL
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_13_each_start_records_the_workspace_most_recent_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    let other = root.parent().unwrap().join("other");
+    fs::create_dir_all(&other).unwrap();
+    for r in [&root, &other, &root] {
+        quit(started(r, &state).await).await;
+    }
+    assert_eq!(recent_on_disk(&state), [root.clone(), other.clone()], "no duplicates");
+    // A corrupt list is replaced by the next start.
+    fs::write(recent::file(&state), "[[workspace]\npath = 1").unwrap();
+    let app = started(&other, &state).await;
+    assert_eq!(recent_on_disk(&state), [other]);
+    quit(app).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_13_ctrl_r_picks_a_recent_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    let base = root.parent().unwrap().to_path_buf();
+    let (gone, second, spaced) = (base.join("gone"), base.join("second"), base.join("other one"));
+    for r in [&gone, &second, &spaced] {
+        fs::create_dir_all(r).unwrap();
+        quit(started(r, &state).await).await;
+    }
+    fs::remove_dir(&gone).unwrap();
+    let mut app = started(&root, &state).await;
+    let show = |p: &Path| recent::display(p, &crate::paths::home());
+    // Most recent first; the current workspace and the folder gone since are left out.
+    let rows = ctrl_r(&mut app).await.expect("the picker opens");
+    assert_eq!(
+        rows,
+        [
+            ("other one".to_string(), show(&spaced)),
+            ("second".to_string(), show(&second))
+        ]
+    );
+    assert_eq!(
+        recent_on_disk(&state),
+        [root.clone(), spaced.clone(), second.clone()],
+        "pruned"
+    );
+    // Drawn: the folder name, then its path.
+    let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    draw(&mut app, &mut term);
+    let screen: String = term.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+    assert!(screen.contains(&format!("other one  {}", show(&spaced))), "{screen}");
+    // Fuzzy: type to filter, Enter picks; jed stays on its workspace and says how to open it.
+    app.type_text("scnd");
+    assert_eq!(app.palette.as_ref().unwrap().rows.len(), 1);
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.palette.is_none() && app.recent.picker.is_none());
+    let message = app.message.as_ref().unwrap().text.clone();
+    assert_eq!(
+        message,
+        format!("To open {}, run: jed {}", show(&second), second.display())
+    );
+    assert_eq!(app.workspace.root, root);
+    // A path the shell would split is quoted.
+    ctrl_r(&mut app).await.unwrap();
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    let message = app.message.as_ref().unwrap().text.clone();
+    assert!(
+        message.ends_with(&format!("run: jed '{}'", spaced.display())),
+        "{message}"
+    );
+    // Esc closes it and drops the entries.
+    ctrl_r(&mut app).await.unwrap();
+    app.press(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.palette.is_none() && app.recent.picker.is_none());
+    quit(app).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_13_open_recent_workspace_is_in_the_palette() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    let other = root.parent().unwrap().join("other");
+    fs::create_dir_all(&other).unwrap();
+    quit(started(&other, &state).await).await;
+    let mut app = started(&root, &state).await;
+    app.press(KeyCode::Char('p'), cmd() | KeyModifiers::SHIFT);
+    app.type_text("Open Recent Workspace");
+    let p = app.palette.as_ref().unwrap();
+    let row = &p.rows[p.selected];
+    assert_eq!(
+        (row.label.as_str(), row.keys.as_deref()),
+        ("Workspaces: Open Recent Workspace", Some("Ctrl+R"))
+    );
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.settle(|a| a.recent.listing_running == 0).await);
+    let p = app.palette.as_ref().expect("the picker opens");
+    assert_eq!(p.mode(), Mode::Recent);
+    assert_eq!(p.rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), ["other"]);
+    quit(app).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_13_no_other_recent_workspace_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    let gone = root.parent().unwrap().join("gone");
+    fs::create_dir_all(&gone).unwrap();
+    quit(started(&gone, &state).await).await;
+    fs::remove_dir(&gone).unwrap();
+    // Only the current workspace and a folder gone since: no picker, a message.
+    let mut app = started(&root, &state).await;
+    assert_eq!(ctrl_r(&mut app).await, None);
+    let message = &app.message.as_ref().unwrap().text;
+    assert!(message.starts_with("No other recent workspaces"), "{message}");
+    assert_eq!(recent_on_disk(&state), std::slice::from_ref(&root));
+    quit(app).await;
+    // No state dir (tests' default): nothing recorded, and Ctrl+R says why.
+    let ws = Workspace::load(root.clone());
+    let mut app = App::new(ws, TrustStore::load(state.join("trust.toml")), None, true);
+    app.test_start();
+    assert!(app.settle(|a| !a.session.loading()).await);
+    assert_eq!(app.recent.recorded, 0);
+    assert_eq!(ctrl_r(&mut app).await, None);
+    let message = &app.message.as_ref().unwrap().text;
+    assert!(message.contains("no state directory"), "{message}");
 }

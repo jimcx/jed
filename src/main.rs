@@ -60,6 +60,7 @@ mod panic;
 mod paths;
 mod problems;
 mod quick_diff;
+mod recent;
 mod rename;
 mod scm;
 mod search;

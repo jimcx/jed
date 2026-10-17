@@ -18,6 +18,7 @@ mod palette;
 mod problems;
 mod prompt;
 mod quick_diff;
+mod recent;
 mod rename;
 mod scm;
 mod session;
@@ -228,6 +229,10 @@ enum AppEvent {
     BackupDone(backup::Done),
     /// A backup was diffed against its buffer, to restore it.
     BackupRestore(Box<backup::Restoring>),
+    /// The workspace was recorded in the recent workspaces list (`app/recent.rs`).
+    RecentRecorded(Result<(), String>),
+    /// The recent workspaces were read for "Open Recent Workspace".
+    RecentListed(Box<recent::Listed>),
 }
 
 /// The file to open at startup, with an optional 1-based line and column.
@@ -270,6 +275,8 @@ pub struct App {
     pub session: session::SessionState,
     /// Crash backups: the periodic writes, removals, the start's offer.
     pub backups: backup::BackupState,
+    /// Recent workspaces: the start's record, the picker's entries.
+    pub recent: recent::RecentState,
     pub message: Option<Message>,
     after_save: Option<AfterSave>,
     /// A trust decision is needed but another prompt is open.
@@ -392,6 +399,7 @@ impl App {
             state_dir: None,
             session: Default::default(),
             backups: Default::default(),
+            recent: Default::default(),
             message: None,
             after_save: None,
             trust_pending: false,
@@ -487,6 +495,7 @@ impl App {
         self.refresh_git(None);
         self.restore_session();
         self.scan_backups();
+        self.record_recent();
         let root = self.workspace.root.clone();
         self.request_listing(root);
         self.reveal_active();
@@ -895,6 +904,7 @@ impl App {
             Command::ShowFileHistory => self.show_file_history(false),
             Command::RestoreFileHistory => self.show_file_history(true),
             Command::RunTask => self.show_run_task(),
+            Command::OpenRecentWorkspace => self.show_recent(),
             Command::KillTask => self.kill_task(),
             Command::CloseTask => self.close_shown_task(),
             Command::Task(c) => self.task_command(c),
@@ -1032,6 +1042,8 @@ impl App {
             AppEvent::BackupsFound(found) => self.backups_found(found),
             AppEvent::BackupDone(done) => self.backup_done(done),
             AppEvent::BackupRestore(r) => self.backup_restored(*r),
+            AppEvent::RecentRecorded(result) => self.recent_recorded(result),
+            AppEvent::RecentListed(listed) => self.recent_listed(*listed),
         }
         self.refresh_find();
         self.check_completion();

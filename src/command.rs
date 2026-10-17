@@ -205,6 +205,9 @@ pub enum Command {
     CloseTask,
     /// A task tab's keys (`Context::Task`): scrolling, back to the editor.
     Task(TaskCommand),
+    /// "Open Recent Workspace" (Ctrl+R): a picker of recent workspaces; picking one opens it in
+    /// another jed (jed never switches its own workspace).
+    OpenRecentWorkspace,
 }
 
 /// A task tab in the bottom panel (`Context::Task`, while it has the keys); keys bound to
@@ -599,6 +602,7 @@ impl Command {
         all.extend([Command::ShowFileHistory, Command::RestoreFileHistory]);
         all.extend([Command::RunTask, Command::KillTask, Command::CloseTask]);
         all.extend(TaskCommand::ALL.map(Command::Task));
+        all.push(Command::OpenRecentWorkspace);
         all
     }
 
@@ -825,6 +829,7 @@ impl Command {
             Command::RunTask => "task.run".into(),
             Command::KillTask => "task.kill".into(),
             Command::CloseTask => "task.close".into(),
+            Command::OpenRecentWorkspace => "workspace.openRecent".into(),
             Command::Task(c) => format!(
                 "task.{}",
                 match c {
@@ -1041,6 +1046,7 @@ impl Command {
             Command::RunTask => "Tasks: Run Task",
             Command::KillTask => "Tasks: Kill Task",
             Command::CloseTask => "Tasks: Close Task Tab",
+            Command::OpenRecentWorkspace => "Workspaces: Open Recent Workspace",
             Command::Task(c) => match c {
                 TaskCommand::ScrollUp => "Tasks: Scroll Up",
                 TaskCommand::ScrollDown => "Tasks: Scroll Down",
@@ -1168,9 +1174,10 @@ mod tests {
             Command::KillTask => 80,
             Command::CloseTask => 81,
             Command::Task(_) => 82,
+            Command::OpenRecentWorkspace => 83,
         }
     }
-    const VARIANTS: u8 = 83;
+    const VARIANTS: u8 = 84;
 
     #[test]
     fn all_lists_every_variant() {
