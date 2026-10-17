@@ -78,12 +78,12 @@ mod tests {
     #[test]
     fn logo_centred_with_the_subtitle_under_the_ed() {
         let rows = draw(40, 13);
-        // 7 rows in 13: three above; 5 columns left; the subtitle 3 in from the "ed".
-        assert_eq!(rows[3], format!("     {}", LOGO[0]));
+        // 7 rows in 13: three above; 6 columns left; the subtitle 3 in from the "ed".
+        assert_eq!(rows[3], format!("      {}", LOGO[0]));
         let row = &rows[3 + SUBTITLE_ROW as usize];
         let at = row.find(SUBTITLE).expect("subtitle drawn");
         let col = row[..at].chars().count();
-        assert_eq!(col, 5 + 12 + 3);
+        assert_eq!(col, 6 + ED_COL as usize + 3);
     }
 
     #[test]
