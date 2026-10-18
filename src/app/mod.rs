@@ -926,6 +926,9 @@ impl App {
             self.nav_jump();
         }
         match cmd {
+            // A commit tab is read only. These app-level arms look up a buffer or a diff and
+            // would otherwise message; `commit_command` below does nothing for them.
+            Command::RevertHunk | Command::TriggerSuggest if self.group().active_commit().is_some() => {}
             Command::Save => {
                 // A diff tab saves its file's buffer.
                 if let Some(id) = self.active_file_buffer() {

@@ -144,9 +144,9 @@ impl App {
         true
     }
 
-    /// Opens the change of `show.files[k]` in `group`'s commit tab as a diff in the next group
-    /// in reading order (splitting one when there is none), reusing that group's diff of the
-    /// same commit (a stat row of another file) when it has one.
+    /// Opens the change of `show.files[k]` in `group`'s commit tab as a diff in the group to
+    /// its right (splitting one when there is none), reusing that group's diff of the same
+    /// commit (a stat row of another file) when it has one.
     fn open_commit_diff(&mut self, group: GroupId, k: usize) {
         let Some(c) = self.groups.get(group).and_then(|g| g.active_commit()) else {
             return;
@@ -183,14 +183,38 @@ impl App {
         self.sync_diffs();
     }
 
-    /// The group after `group` in reading order, or a new one split to the right of it.
+    /// A group drawn strictly to the right of `group` (sharing rows with it, nearest first).
+    /// With a frame and nothing there, a new group splits to the right (a group below is not
+    /// "to the right"); before the first frame, a sensible guess is the next group in reading
+    /// order, else a new group to the right.
     fn group_to_the_right(&mut self, group: GroupId) -> GroupId {
+        if let Some(cells) = self.drawn_groups()
+            && let Some(&here) = cells.iter().find(|(g, _)| *g == group).map(|(_, r)| r)
+        {
+            let right = cells
+                .iter()
+                .filter(|(g, r)| {
+                    *g != group && r.x >= here.x + here.width && r.y < here.y + here.height && here.y < r.y + r.height
+                })
+                .min_by_key(|(_, r)| r.x)
+                .map(|(g, _)| *g);
+            return right.unwrap_or_else(|| {
+                self.groups.active = group;
+                self.groups.split_empty(SplitDir::Right)
+            });
+        }
         let ids = self.groups.ids();
         if let Some(next) = ids.iter().position(|&g| g == group).and_then(|i| ids.get(i + 1)) {
             return *next;
         }
         self.groups.active = group;
         self.groups.split_empty(SplitDir::Right)
+    }
+
+    /// The groups as the last frame laid them out, `None` before the first frame.
+    fn drawn_groups(&self) -> Option<Vec<(GroupId, ratatui::layout::Rect)>> {
+        let area = self.hits.regions.editor;
+        (area.width > 0 && area.height > 0).then(|| self.groups.tree.layout(area).0)
     }
 
     /// The mouse over a group's editor showing a commit: the wheel scrolls it (without

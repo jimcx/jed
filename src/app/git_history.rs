@@ -163,6 +163,11 @@ impl App {
             C::First => self.git_history.first(),
             C::Last => self.git_history.last(),
             C::Open => {
+                // Nothing selected (the section was just focused): Enter opens the first
+                // commit, as a click on it would.
+                if self.git_history.selected().is_none() {
+                    self.git_history.select_row(0);
+                }
                 let Some(id) = self.git_history.selected().map(str::to_string) else {
                     return;
                 };

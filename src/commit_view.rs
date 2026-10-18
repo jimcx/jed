@@ -262,8 +262,25 @@ impl CommitTab {
                 c.row = (c.row + page).min(last);
                 c.col = goal;
             }
-            Motion::Left => c.col = c.col.saturating_sub(1),
-            Motion::Right => c.col = (c.col + 1).min(self.line_len(c.row)),
+            // A read-only editor's lines flow into each other: Left at a line's start is the
+            // previous line's end, Right at its end the next line's start.
+            Motion::Left => {
+                if c.col > 0 {
+                    c.col -= 1;
+                } else if c.row > 0 {
+                    c.row -= 1;
+                    c.col = self.line_len(c.row);
+                }
+            }
+            Motion::Right => {
+                let len = self.line_len(c.row);
+                if c.col < len {
+                    c.col += 1;
+                } else if c.row < last {
+                    c.row += 1;
+                    c.col = 0;
+                }
+            }
             Motion::WordLeft => c.col = self.word_left(c.row, c.col),
             Motion::WordRight => c.col = self.word_right(c.row, c.col),
             Motion::LineStart => c.col = 0,
@@ -620,6 +637,46 @@ mod tests {
         empty.move_motion(Motion::Down, false);
         empty.move_motion(Motion::DocEnd, false);
         assert_eq!((empty.cursor, empty.top), (TextPos::default(), 0));
+    }
+
+    #[test]
+    fn left_and_right_cross_line_ends() {
+        let mut t = tab();
+        // Left at a line's start: the previous line's end; home stays at the line's start.
+        t.cursor = TextPos::new(1, 0);
+        t.move_motion(Motion::Left, false);
+        assert_eq!(t.cursor, TextPos::new(0, t.line_len(0)));
+        t.move_motion(Motion::LineStart, false);
+        assert_eq!(t.cursor, TextPos::new(0, 0));
+        // Left at the document's first column stays.
+        t.move_motion(Motion::Left, false);
+        assert_eq!(t.cursor, TextPos::new(0, 0));
+        // Right at a line's end: the next line's start; End stays at the line's end.
+        t.move_motion(Motion::LineEnd, false);
+        assert_eq!(t.cursor, TextPos::new(0, t.line_len(0)));
+        t.move_motion(Motion::Right, false);
+        assert_eq!(t.cursor, TextPos::new(1, 0));
+        t.move_motion(Motion::LineEnd, false);
+        t.move_motion(Motion::Right, false);
+        assert_eq!(t.cursor, TextPos::new(2, 0), "an empty line crossed");
+        // Right at the document's end stays.
+        t.move_motion(Motion::DocEnd, false);
+        t.move_motion(Motion::Right, false);
+        assert_eq!(t.cursor, TextPos::new(7, t.line_len(7)));
+        // Shift extends across lines from the anchor.
+        t.cursor = TextPos::new(0, 1);
+        t.move_motion(Motion::Right, true);
+        t.move_motion(Motion::Right, true);
+        assert_eq!(t.anchor, Some(TextPos::new(0, 1)));
+        assert_eq!(t.cursor, TextPos::new(0, 3));
+        for _ in 0..12 {
+            t.move_motion(Motion::Right, true);
+        }
+        assert_eq!(t.cursor, TextPos::new(1, 0), "crossed into the next line");
+        t.move_motion(Motion::Right, true);
+        assert_eq!(t.cursor, TextPos::new(1, 1));
+        assert_eq!(t.row_selection(0), Some((1, t.line_len(0))), "the first line's end");
+        assert_eq!(t.row_selection(1), Some((0, 1)), "the next line's start");
     }
 
     #[test]
