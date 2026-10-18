@@ -515,16 +515,8 @@ pub struct GroupHit {
     pub banner: Option<BannerHit>,
     /// The diff view, when the group shows a diff tab.
     pub diff: Option<DiffHit>,
-    /// The commit view, when the group shows a commit tab.
-    pub commit: Option<CommitHit>,
-    /// The vertical scroll bar at the editor's right edge (a text, diff or commit tab).
+    /// The vertical scroll bar at the editor's right edge (a text or diff tab).
     pub scrollbar: Option<ScrollBarHit>,
-}
-
-/// A commit tab as drawn: its lines' rect (line `top + i` on screen is at `rows.y + i`).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct CommitHit {
-    pub rows: Rect,
 }
 
 /// What a scroll bar scrolls: a group's active tab, the side bar's list (by the view showing
@@ -847,7 +839,6 @@ mod tests {
                     ..*r
                 },
                 text: Rect::default(),
-                commit: None,
                 tabs: vec![TabHit {
                     index: 0,
                     x0: r.x,

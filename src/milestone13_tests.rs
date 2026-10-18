@@ -147,8 +147,6 @@ fn layout(app: &App) -> Vec<(GroupId, Vec<TabShot>, usize)> {
                         )
                     }
                     Tab::Diff(d) => (d.title(), None, Some(d.pair)),
-                    // Commit tabs aren't part of these tests' layouts.
-                    Tab::Commit(c) => (c.title(), None, None),
                 })
                 .collect();
             (id, tabs, g.active)

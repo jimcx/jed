@@ -17,6 +17,7 @@ use file::{DiskMeta, Eol, LoadError, Stamp};
 use undo::{EditKind, History};
 
 use crate::blame::Blame;
+use crate::commit_view::CommitDoc;
 use crate::diagnostics::Marks;
 use crate::logs::Tool;
 use crate::logs::tab::LogTab;
@@ -78,6 +79,9 @@ pub struct Buffer {
     /// A tool's log (`Buffer::log`): no file (an empty `path`), read-only, its text only ever
     /// changed by `append` (no undo, never dirty); what it has read of the tool's ring.
     pub log: Option<LogTab>,
+    /// A commit tab's text (`Buffer::commit`): no file either, read-only, changed only by
+    /// `append`; what the text was rendered from.
+    pub commit: Option<CommitDoc>,
 }
 
 /// A change set as a language server needs it: positions are in `before`'s coordinates.
@@ -136,25 +140,43 @@ impl Buffer {
             quick_diff: QuickDiff::default(),
             blame: Blame::default(),
             log: None,
+            commit: None,
         }
     }
 
-    /// An empty log buffer for `tool` (`app/tools.rs` fills it with `append`): no path, so
-    /// nothing keyed by a file (saves, disk checks, git, language servers, history, backups,
-    /// sessions) ever takes it; read-only, so edits are refused.
+    /// An empty log buffer for `tool` (`app/tools.rs` fills it with `append`).
     pub fn log(tool: Tool) -> Self {
-        let mut buf = Self::from_loaded(
+        let mut buf = Self::without_file("a log can't be edited");
+        buf.log = Some(LogTab::new(tool));
+        buf
+    }
+
+    /// An empty buffer for commit `commit` (`app/commit_tabs.rs` loads it and fills it with
+    /// `append`); `file` is the work-tree-relative path whose history opened it.
+    pub fn commit(commit: String, file: Option<String>) -> Self {
+        let mut buf = Self::without_file("a commit can't be edited");
+        buf.commit = Some(CommitDoc::new(commit, file));
+        buf
+    }
+
+    /// An empty read-only buffer with no path, so nothing keyed by a file (saves, disk checks,
+    /// git, language servers, history, backups, sessions) ever takes it: a log's or a commit's.
+    fn without_file(why: &str) -> Self {
+        Self::from_loaded(
             file::Loaded {
                 rope: Rope::new(),
                 bom: false,
                 eol: Eol::Lf,
-                read_only: Some("a log can't be edited".into()),
+                read_only: Some(why.into()),
                 stamp: None,
             },
             PathBuf::new(),
-        );
-        buf.log = Some(LogTab::new(tool));
-        buf
+        )
+    }
+
+    /// Whether the buffer is a file's (not a log's or a commit's, which have no path).
+    pub fn has_file(&self) -> bool {
+        self.log.is_none() && self.commit.is_none()
     }
 
     #[cfg(test)]
@@ -166,6 +188,9 @@ impl Buffer {
     pub fn name(&self) -> String {
         if let Some(log) = &self.log {
             return format!("{} (log)", log.tool.name());
+        }
+        if let Some(commit) = &self.commit {
+            return commit.title();
         }
         self.path
             .file_name()

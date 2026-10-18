@@ -30,8 +30,6 @@ pub fn render(
         .tabs
         .iter()
         .map(|t| match t {
-            // A commit tab: its short id.
-            Tab::Commit(c) => (c.title(), false, false),
             // A diff tab: `name (Working Tree)`.
             Tab::Diff(d) => (d.title(), false, false),
             Tab::Text(t) => {

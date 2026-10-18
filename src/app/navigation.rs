@@ -51,7 +51,7 @@ impl App {
         match group.tabs.get(group.active)? {
             Tab::Text(t) => {
                 // A log tab has no file to come back to.
-                let buf = self.buffers.get(t.buffer).filter(|b| b.log.is_none())?;
+                let buf = self.buffers.get(t.buffer).filter(|b| b.has_file())?;
                 let primary = t.view.selections.primary();
                 let pos = Pos {
                     anchor: primary.anchor,
@@ -76,8 +76,6 @@ impl App {
                 },
                 revision: 0,
             }),
-            // A commit has no file to come back to.
-            Tab::Commit(_) => None,
         }
     }
 

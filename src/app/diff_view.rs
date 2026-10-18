@@ -81,7 +81,7 @@ impl App {
         if let Some(d) = self.group().active_diff() {
             return Some(d.path.clone());
         }
-        self.active_buffer().filter(|b| b.log.is_none()).map(|b| b.path.clone())
+        self.active_buffer().filter(|b| b.has_file()).map(|b| b.path.clone())
     }
 
     /// The buffer open on `path`.
@@ -98,7 +98,7 @@ impl App {
                 .group()
                 .active_tab()
                 .map(|t| t.buffer)
-                .filter(|&id| self.buffers.get(id).is_some_and(|b| b.log.is_none())),
+                .filter(|&id| self.buffers.get(id).is_some_and(|b| b.has_file())),
         }
     }
 

@@ -1032,7 +1032,7 @@ async fn tools_every_command_on_a_log_tab_leaves_it_alone() {
         assert!(
             app.buffers
                 .iter()
-                .all(|(_, b)| b.log.is_some() || !b.path.as_os_str().is_empty()),
+                .all(|(_, b)| !b.has_file() || !b.path.as_os_str().is_empty()),
             "{c:?}"
         );
         // No message about a file without a name ("Not in a git repository", " has no file

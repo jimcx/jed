@@ -45,7 +45,6 @@ impl App {
                         }))
                     }
                     Tab::Diff(d) => Some(f(d.as_mut())),
-                    Tab::Commit(c) => Some(f(c.as_mut())),
                 }
             }
             ScrollTarget::Side(panel) if !self.ui.side_visible || self.ui.side_panel != panel => None,

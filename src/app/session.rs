@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use super::{App, AppEvent, Focus};
 use crate::buffer::pos::ByteIdx;
 use crate::buffer::{Buffer, BufferId};
-use crate::commit_view::CommitTab;
 use crate::diff_view::DiffTab;
 use crate::group::{self, Group, Groups, Tab, TextTab};
 use crate::layout::{MIN_SIDE_WIDTH, PanelTab};
@@ -123,7 +122,11 @@ impl App {
                         tabs.push(Tab::Diff(Box::new(DiffTab::new(id, path, Side::pair(left, right)))));
                     }
                     TabState::Commit { commit } => {
-                        tabs.push(Tab::Commit(Box::new(CommitTab::new(commit, None))));
+                        let id = self.commit_buffer(&commit, None);
+                        tabs.push(Tab::Text(TextTab {
+                            buffer: id,
+                            view: View::new(),
+                        }));
                     }
                 }
             }
@@ -244,14 +247,19 @@ impl App {
                     }
                     match tab {
                         Tab::Text(t) => {
-                            // Log tabs are never saved: a restart shows none.
-                            let Some(buf) = self
-                                .buffers
-                                .get(t.buffer)
-                                .filter(|b| b.log.is_none() && b.path.is_absolute())
-                            else {
+                            let Some(buf) = self.buffers.get(t.buffer) else {
                                 continue;
                             };
+                            if let Some(c) = &buf.commit {
+                                tabs.push(TabState::Commit {
+                                    commit: c.commit.clone(),
+                                });
+                                continue;
+                            }
+                            // Log tabs are never saved: a restart shows none.
+                            if !buf.has_file() || !buf.path.is_absolute() {
+                                continue;
+                            }
                             let sels = &t.view.selections;
                             tabs.push(TabState::Text {
                                 path: session::stored(root, &buf.path),
@@ -265,9 +273,6 @@ impl App {
                             path: session::stored(root, &d.path),
                             left: d.pair.left.into(),
                             right: d.pair.right.into(),
-                        }),
-                        Tab::Commit(c) => tabs.push(TabState::Commit {
-                            commit: c.commit.clone(),
                         }),
                     }
                 }

@@ -1828,7 +1828,8 @@ async fn milestone_10_editor_commands_on_a_diff_tab_do_nothing() {
     app.mouse(MouseEventKind::Moved, rows.x + 20, rows.y + 4);
     app.test_hover_tick(std::time::Instant::now() + crate::hover::DELAY);
     assert!(app.settle(|a| !a.buffers.iter().any(|(_, b)| b.save_in_flight())).await);
-    let (_, buf) = app.buffers.iter().next().unwrap();
+    // The file's buffer (a command may have opened a commit's, read only).
+    let (_, buf) = app.buffers.iter().find(|(_, b)| b.has_file()).unwrap();
     assert_eq!(buf.rope.to_string(), changed, "the buffer untouched");
     assert!(!buf.is_dirty());
     assert!(app.group().active_diff().is_some());

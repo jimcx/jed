@@ -6,6 +6,7 @@ use std::collections::HashSet;
 
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
+use ratatui::style::Style;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::blame;
@@ -79,6 +80,17 @@ fn shows_whitespace(
     }
 }
 
+/// The gutter's width for `rope`: its line numbers (at least 3 digits) and a space each side.
+fn gutter_width(rope: &ropey::Rope) -> u16 {
+    (pos::line_count(rope).to_string().len().max(3) + 2) as u16
+}
+
+/// The text width `render` gives `rope` in an editor area `width` columns wide (the gutter
+/// excluded): what a commit tab is rendered for before it's drawn.
+pub fn text_width(width: u16, rope: &ropey::Rope) -> usize {
+    width.saturating_sub(gutter_width(rope)).max(1) as usize
+}
+
 /// Draws the editor and returns the text area (excluding the gutter), for mouse hit-testing.
 pub fn render(
     f: &mut Frame,
@@ -94,7 +106,7 @@ pub fn render(
     let rope = &buf.rope;
     let total = pos::line_count(rope);
     let digits = total.to_string().len().max(3);
-    let gutter_w = (digits + 2) as u16;
+    let gutter_w = gutter_width(rope);
     let text = Rect {
         x: area.x + gutter_w,
         width: area.width.saturating_sub(gutter_w),
@@ -167,18 +179,30 @@ pub fn render(
     };
 
     // Syntax colours: the token's foreground, under selection / find backgrounds. From the
-    // buffer's highlight cache (no query unless the tree changed or the view left the cached lines).
-    let token_styles: Vec<_> = crate::syntax::KEYS.iter().map(|k| theme.get(k)).collect();
-    let spans = buf.syntax.spans(rope, view.top_line()..last_line + 1);
+    // buffer's highlight cache (no query unless the tree changed or the view left the cached
+    // lines); a commit's are git's (`CommitDoc::spans`).
+    let lines = view.top_line()..last_line + 1;
+    let spans: Vec<(ByteIdx, ByteIdx, Style)> = match &buf.commit {
+        Some(c) => c
+            .spans(rope, lines)
+            .into_iter()
+            .map(|(start, end, key)| (start, end, theme.get(key)))
+            .collect(),
+        None => {
+            let token_styles: Vec<_> = crate::syntax::KEYS.iter().map(|k| theme.get(k)).collect();
+            buf.syntax
+                .spans(rope, lines)
+                .iter()
+                .map(|s| (s.start, s.end, token_styles[s.highlight.index()]))
+                .collect()
+        }
+    };
     let mut ki = 0;
     let mut token_at = |b: ByteIdx| {
-        while ki < spans.len() && spans[ki].end <= b {
+        while ki < spans.len() && spans[ki].1 <= b {
             ki += 1;
         }
-        spans
-            .get(ki)
-            .filter(|s| s.start <= b)
-            .map(|s| token_styles[s.highlight.index()])
+        spans.get(ki).filter(|s| s.0 <= b).map(|s| s.2)
     };
 
     let secondary: HashSet<ByteIdx> = sels.iter().map(|s| s.head).filter(|h| *h != primary).collect();

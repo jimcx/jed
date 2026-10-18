@@ -750,7 +750,7 @@ impl App {
         match self.ui.focus {
             Focus::Editor if self.completion_shown() => Context::Suggest,
             Focus::Editor if self.group().active_diff().is_some() => Context::Diff,
-            Focus::Editor if self.group().active_commit().is_some() => Context::Commit,
+            Focus::Editor if self.active_commit().is_some() => Context::Commit,
             Focus::Editor => Context::Editor,
             Focus::SidePanel if self.ui.side_panel == SidePanel::Search && self.search_view.list_focused => {
                 Context::SearchResults
@@ -926,9 +926,6 @@ impl App {
             self.nav_jump();
         }
         match cmd {
-            // A commit tab is read only. These app-level arms look up a buffer or a diff and
-            // would otherwise message; `commit_command` below does nothing for them.
-            Command::RevertHunk | Command::TriggerSuggest if self.group().active_commit().is_some() => {}
             Command::Save => {
                 // A diff tab saves its file's buffer.
                 if let Some(id) = self.active_file_buffer() {
@@ -1009,6 +1006,7 @@ impl App {
             Command::FocusScm => self.focus_scm(),
             Command::Scm(c) => self.scm_command(c),
             Command::GitHistory(c) => self.git_history_command(c),
+            Command::Commit(crate::command::CommitCommand::Open) => self.open_commit_line(),
             Command::ShowFileHistory => self.show_file_history(false),
             Command::RestoreFileHistory => self.show_file_history(true),
             Command::RunTask => self.show_run_task(),
@@ -1028,8 +1026,6 @@ impl App {
             Command::RestartServer => self.restart_server(),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
-            // A commit tab: its own keys; other editor commands do nothing.
-            _ if self.commit_command(cmd) => {}
             // A diff tab: its own movement keys; other editor commands do nothing.
             _ if self.diff_command(cmd) => {}
             _ => {
@@ -1047,14 +1043,6 @@ impl App {
 
     /// Copies (or cuts) the active view's selections to the clipboard.
     fn copy(&mut self, cut: bool) {
-        if let Some(c) = self.group().active_commit() {
-            // A commit tab is read only: copy its selection (or cursor line); nothing to cut.
-            if !cut {
-                let copied = c.copy_text();
-                self.clipboard.write(copied);
-            }
-            return;
-        }
         if cut && !self.active_writable() {
             return;
         }

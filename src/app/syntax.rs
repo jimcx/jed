@@ -8,7 +8,7 @@ use super::{App, AppEvent, Level};
 impl App {
     /// The language of `buf`: `.workspace` associations, then its name, then its shebang.
     pub(super) fn detect_language(&self, buf: &Buffer) -> Language {
-        if buf.log.is_some() {
+        if !buf.has_file() {
             return Language::PlainText;
         }
         let rope = &buf.rope;

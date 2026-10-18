@@ -186,7 +186,7 @@ impl App {
     /// The repository and the buffer's path in it; `None` (with a message) outside one, and
     /// (silently) for a log tab: no file.
     fn git_path(&mut self, buffer: BufferId) -> Option<(Repo, PathBuf)> {
-        let path = self.buffers.get(buffer).filter(|b| b.log.is_none())?.path.clone();
+        let path = self.buffers.get(buffer).filter(|b| b.has_file())?.path.clone();
         let found = self
             .git
             .status

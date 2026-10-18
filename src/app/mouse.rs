@@ -8,8 +8,7 @@ use super::{App, Focus};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::column::{self, Cell};
 use crate::command::{Command, ExplorerCommand};
-use crate::commit_view::TextPos;
-use crate::layout::{Divider, GroupId, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, PanelTab, ScrollTarget, SidePanel};
+use crate::layout::{Divider, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, PanelTab, ScrollTarget, SidePanel};
 use crate::selection::{Selection, Selections};
 use crate::view::View;
 
@@ -40,11 +39,6 @@ pub enum Drag {
     },
     /// The Explorer view's Git History divider (its row sets the section's height).
     HistoryDivider,
-    /// Extending a commit tab's selection from `anchor`.
-    Commit {
-        group: GroupId,
-        anchor: TextPos,
-    },
 }
 
 /// Counts clicks on the same cell in quick succession (1, 2, 3).
@@ -91,9 +85,6 @@ impl App {
             return;
         }
         if self.diff_mouse(&m, hit) {
-            return;
-        }
-        if self.commit_mouse(&m, hit) {
             return;
         }
         match m.kind {
@@ -180,13 +171,6 @@ impl App {
                     }
                 }
                 Some(Drag::ScrollBar { target, grab }) => self.scrollbar_drag(target, m.row, grab),
-                Some(Drag::Commit { group, anchor }) => {
-                    if let Some(to) = self.commit_drag_position(group, m.column, m.row)
-                        && let Some(c) = self.groups.get_mut(group).and_then(|g| g.active_commit_mut())
-                    {
-                        c.drag_select(anchor, to);
-                    }
-                }
                 Some(Drag::HistoryDivider) => {
                     // The divider's row is the section's top; the section reaches the body's end
                     // (the side panel's last row, above the status bar).
@@ -346,6 +330,8 @@ impl App {
         let Some((buf, view)) = self.active_mut() else { return };
         buf.seal_undo();
         let rope = &buf.rope;
+        // A commit tab's stat line: a click opens that file's change.
+        let stat = buf.commit.as_ref().and_then(|c| c.file_at(pos::line_of(rope, at)));
         let (start, end) = match count {
             2 => pos::word_range(rope, at),
             3 => {
@@ -372,6 +358,13 @@ impl App {
         let go = m.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER);
         if go && !shift && count == 1 {
             self.go_to_definition();
+            return;
+        }
+        if let Some(k) = stat
+            && !shift
+            && count == 1
+        {
+            self.open_commit_diff(self.groups.active, k);
             return;
         }
         self.drag = Some(Drag::Text { anchor: (start, end) });
