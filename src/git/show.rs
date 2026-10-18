@@ -134,11 +134,7 @@ fn blob(r: &Repository, tree: Option<&Tree>, path: Option<&Path>) -> Option<(Oid
     let entry = tree?.get_path(path?).ok()?;
     let blob = r.find_blob(entry.id()).ok()?;
     let bytes = blob.content();
-    Some((entry.id(), bytes.len() as u64, is_binary(bytes)))
-}
-
-fn is_binary(bytes: &[u8]) -> bool {
-    bytes.iter().take(8000).any(|&b| b == 0)
+    Some((entry.id(), bytes.len() as u64, crate::buffer::file::looks_binary(bytes)))
 }
 
 #[cfg(test)]

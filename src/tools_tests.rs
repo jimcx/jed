@@ -220,8 +220,12 @@ async fn tools_protocol_trace_goes_to_the_log_while_on() {
     server.set_trace(false);
     let before = traced(&app);
     server.request("test/echo", json!({ "ping": 2 }));
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    app.pump();
+    // A logMessage (always logged) sent after it: once it's in, so is the answer before it.
+    server.notify("test/log", json!({ "type": 3, "message": "after ping 2" }));
+    assert!(
+        app.settle(|a| a.logs.texts(&tool).iter().any(|t| t.contains("after ping 2")))
+            .await
+    );
     assert_eq!(traced(&app), before, "off again");
     app.shutdown_servers().await;
 }

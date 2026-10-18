@@ -1188,7 +1188,7 @@ impl App {
             AppEvent::BackupRestore(r) => self.backup_restored(*r),
             AppEvent::RecentRecorded(result) => self.recent_recorded(result),
             AppEvent::RecentListed(listed) => self.recent_listed(*listed),
-            AppEvent::LogsChanged => {}
+            AppEvent::LogsChanged => {} // handled above: no redraw, no navigation
         }
         self.nav_end(here, false);
         self.refresh_find();

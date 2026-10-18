@@ -17,19 +17,26 @@ use crate::scrollbar::Scrollable;
 
 impl App {
     /// Each loop turn (`start`, `run`, `pump` / `settle`): follows the active file, reloads the
-    /// history after HEAD moved, and reads the next page once the list is near its end. Nothing
-    /// without a tokio runtime.
+    /// history after HEAD moved, and reads the next page once the list is near its end. Only
+    /// while the section is on screen: hidden or collapsed, a new file or HEAD only marks it
+    /// `stale`, read when it shows again. Nothing without a tokio runtime.
     pub(super) fn sync_git_history(&mut self) {
         if tokio::runtime::Handle::try_current().is_err() {
             return;
         }
         let path = self.active_path();
+        let shown = self.ui.side_visible && self.ui.side_panel == SidePanel::Explorer && !self.git_history.collapsed();
         if path != self.git_history.path {
             let found = path.as_deref().and_then(|p| self.history_repo(p));
             self.git_history.reset(path);
-            if let Some((repo, rel)) = found {
-                self.history_page(repo, rel, 0);
+            match found {
+                Some((repo, rel)) if shown => self.history_page(repo, rel, 0),
+                Some(_) => self.git_history.stale = true,
+                None => {}
             }
+            return;
+        }
+        if !shown {
             return;
         }
         if self.git_history.stale && !self.git_history.loading {

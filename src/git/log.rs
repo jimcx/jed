@@ -14,7 +14,6 @@
 //! A page is one blocking call: [`commits`] takes a skip and a limit (the app uses [`PAGE`]) and
 //! stops the walk once it has one commit past the page, so a long history costs only the commits
 //! before it.
-#![allow(dead_code)] // the Git History section reads these (git_history-b)
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};

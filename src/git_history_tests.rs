@@ -1118,6 +1118,40 @@ async fn git_history_done_when() {
     assert_eq!(app.git_history.section_height, 7);
 }
 
+/// The history is read only while the section shows: with the side bar hidden (or the section
+/// collapsed) a new active file reads nothing until it shows again.
+#[tokio::test(flavor = "multi_thread")]
+async fn git_history_reads_only_while_shown() {
+    let (_d, root, state) = dirs();
+    init(&root);
+    two_commits(&root);
+    let mut app = open_file_app(&root, &state, "a.txt");
+    assert!(settle_history(&mut app, &root.join("a.txt"), 2).await);
+
+    app.test_execute(Command::ToggleSidebar);
+    assert!(!app.ui.side_visible);
+    app.test_open(Buffer::open(&root.join("b.txt")).unwrap());
+    app.pump();
+    assert_eq!(app.git_history.path.as_deref(), Some(root.join("b.txt").as_path()));
+    assert!(!app.git_history.loading, "nothing read while hidden");
+    assert!(app.git_history.commits.is_empty());
+
+    app.test_execute(Command::ToggleSidebar);
+    assert!(
+        settle_history(&mut app, &root.join("b.txt"), 2).await,
+        "read once shown"
+    );
+
+    // Collapsed: the same.
+    app.git_history.set_collapsed(true);
+    app.test_execute(Command::PrevTab);
+    app.pump();
+    assert_eq!(app.git_history.path.as_deref(), Some(root.join("a.txt").as_path()));
+    assert!(!app.git_history.loading && app.git_history.commits.is_empty());
+    app.git_history.set_collapsed(false);
+    assert!(settle_history(&mut app, &root.join("a.txt"), 2).await);
+}
+
 /// Enter with the section focused but nothing selected opens the first commit (as a click
 /// would); a file with no history opens nothing.
 #[tokio::test(flavor = "multi_thread")]

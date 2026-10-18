@@ -220,10 +220,10 @@ impl GitHistory {
     }
 
     /// Splits a body of `height` rows into the tree's rows and the section's (divider, header
-    /// and commits), clamping `section_height` so the tree keeps [`MIN_TREE_HEIGHT`] rows.
-    /// `None` when not both fit: the tree takes the body. A collapsed section is just its
-    /// divider and header (its dragged height is kept for reopening).
-    pub fn split(&mut self, height: u16) -> Option<(u16, u16)> {
+    /// and commits): `section_height`, clamped so the tree keeps [`MIN_TREE_HEIGHT`] rows (only
+    /// for this body: a taller one gets the dragged height back). `None` when not both fit: the
+    /// tree takes the body. A collapsed section is just its divider and header.
+    pub fn split(&self, height: u16) -> Option<(u16, u16)> {
         if height < MIN_TREE_HEIGHT + MIN_SECTION_HEIGHT {
             return None;
         }
@@ -231,7 +231,6 @@ impl GitHistory {
             return Some((height - MIN_SECTION_HEIGHT, MIN_SECTION_HEIGHT));
         }
         let section = self.section_height.clamp(MIN_SECTION_HEIGHT, height - MIN_TREE_HEIGHT);
-        self.section_height = section;
         Some((height - section, section))
     }
 
@@ -313,9 +312,10 @@ mod tests {
         assert_eq!(h.section_height, 10);
         // Too short for both: the tree gets it all.
         assert_eq!(h.split(4), None);
-        // The tree keeps at least three rows: the section is clamped.
+        // The tree keeps at least three rows: the section is clamped, for that body only.
         assert_eq!(h.split(8), Some((3, 5)));
-        assert_eq!(h.section_height, 5);
+        assert_eq!(h.section_height, 10);
+        assert_eq!(h.split(20), Some((10, 10)), "a taller body: the height back");
         // A dragged height is clamped both ways.
         h.set_section_height(100, 20);
         assert_eq!(h.section_height, 17);

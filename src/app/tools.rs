@@ -254,30 +254,22 @@ impl App {
                 return;
             }
         };
-        let state = self
+        let Some(server) = self
             .lsp
             .server_named(&name)
-            .map(|s| (!matches!(s.state, crate::lsp::State::Failed), s.trace()));
-        let Some((running, on)) = state else {
+            .filter(|s| !matches!(s.state, crate::lsp::State::Failed))
+        else {
             self.notify(
                 Level::Info,
                 format!("{name}: not running (Tools: Restart Server starts it again)"),
             );
             return;
         };
-        if !running {
-            self.notify(
-                Level::Info,
-                format!("{name}: not running (Tools: Restart Server starts it again)"),
-            );
-            return;
-        }
-        if let Some(server) = self.lsp.server_named(&name) {
-            server.set_trace(!on);
-        }
+        let on = !server.trace();
+        server.set_trace(on);
         self.notify(
             Level::Info,
-            format!("{name}: protocol trace {}", if on { "off" } else { "on" }),
+            format!("{name}: protocol trace {}", if on { "on" } else { "off" }),
         );
     }
 
