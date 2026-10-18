@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use super::{App, AppEvent, Focus};
 use crate::buffer::pos::ByteIdx;
 use crate::buffer::{Buffer, BufferId};
+use crate::commit_view::CommitTab;
 use crate::diff_view::DiffTab;
 use crate::group::{self, Group, Groups, Tab, TextTab};
 use crate::layout::{MIN_SIDE_WIDTH, PanelTab};
@@ -121,6 +122,9 @@ impl App {
                         let id = self.next_diff_id();
                         tabs.push(Tab::Diff(Box::new(DiffTab::new(id, path, Side::pair(left, right)))));
                     }
+                    TabState::Commit { commit } => {
+                        tabs.push(Tab::Commit(Box::new(CommitTab::new(commit, None))));
+                    }
                 }
             }
             let active = g.active.min(tabs.len().saturating_sub(1));
@@ -174,6 +178,8 @@ impl App {
         self.ui.side_visible = side.visible;
         self.ui.side_width = side.width.max(MIN_SIDE_WIDTH);
         self.ui.side_panel = side.view;
+        self.git_history.set_collapsed(side.history_collapsed);
+        self.git_history.section_height = side.history_height;
         self.ui.panel_visible = panel.visible;
         self.ui.panel_height = panel.height;
         self.ui.panel_tab = PanelTab::Problems;
@@ -189,6 +195,7 @@ impl App {
         self.needs_redraw = true;
         self.reveal_active();
         self.sync_diffs();
+        self.sync_commit_tabs();
     }
 
     /// Buffers no tab shows (registered for a restore that didn't place them).
@@ -259,6 +266,9 @@ impl App {
                             left: d.pair.left.into(),
                             right: d.pair.right.into(),
                         }),
+                        Tab::Commit(c) => tabs.push(TabState::Commit {
+                            commit: c.commit.clone(),
+                        }),
                     }
                 }
                 let active = active.min(tabs.len().saturating_sub(1));
@@ -272,6 +282,8 @@ impl App {
                 visible: self.ui.side_visible,
                 width: self.ui.side_width,
                 view: self.ui.side_panel,
+                history_collapsed: self.git_history.collapsed(),
+                history_height: self.git_history.section_height,
             },
             panel: PanelState {
                 visible: self.ui.panel_visible,
@@ -374,6 +386,8 @@ mod tests {
                 visible: true,
                 width: 30,
                 view: SidePanel::Explorer,
+                history_collapsed: false,
+                history_height: crate::git_history::DEFAULT_SECTION_HEIGHT,
             },
             panel: PanelState {
                 visible: false,

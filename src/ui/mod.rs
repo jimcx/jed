@@ -2,6 +2,7 @@
 
 mod activity;
 mod banner;
+mod commit;
 mod completion;
 mod dialog;
 mod diff;
@@ -78,7 +79,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let file = match group.tabs.get(group.active) {
             Some(Tab::Text(t)) => app.buffers.get(t.buffer),
             Some(Tab::Diff(d)) => app.buffers.iter().find(|(_, b)| b.path == d.path).map(|(_, b)| b),
-            None => None,
+            Some(Tab::Commit(_)) | None => None,
         };
         if let Some(buf) = file
             && buf.disk_conflict.is_some()
@@ -101,6 +102,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         };
         let mut text = Rect::default();
         let mut diff_hit = None;
+        let mut commit_hit = None;
         let mut scroll_hit = None;
         // Only the focused group shows the terminal cursor.
         let focused = is_active && app.ui.focus == Focus::Editor && app.prompt.is_none() && app.palette.is_none();
@@ -124,6 +126,19 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     ..bar
                 };
                 scroll_hit = Some(scrollbar::render(out, track, d.scroll(), look, editor_bg, &app.theme));
+            }
+        }
+        if let Some(c) = group.active_commit_mut() {
+            commit_hit = Some(commit::render(f, editor_area, c, &app.theme, focused));
+            if let Some(bar) = bar {
+                scroll_hit = Some(scrollbar::render(
+                    f.buffer_mut(),
+                    bar,
+                    c.scroll(),
+                    look,
+                    editor_bg,
+                    &app.theme,
+                ));
             }
         }
         match group
@@ -162,7 +177,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     ));
                 }
             }
-            None if diff_hit.is_some() => {}
+            None if diff_hit.is_some() || commit_hit.is_some() => {}
             None => {
                 f.buffer_mut().set_style(editor_area, app.theme.get("editor"));
                 splash::render(f, editor_area, &app.theme);
@@ -179,6 +194,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             tabs,
             banner,
             diff: diff_hit,
+            commit: commit_hit,
             scrollbar: scroll_hit,
         });
     }

@@ -104,6 +104,11 @@ impl GitHistory {
         self.collapsed = !self.collapsed;
     }
 
+    /// The section's collapse, as a session restores it.
+    pub fn set_collapsed(&mut self, collapsed: bool) {
+        self.collapsed = collapsed;
+    }
+
     /// The section (not the tree) has the keys.
     pub fn focused(&self) -> bool {
         self.focused
@@ -131,7 +136,7 @@ impl GitHistory {
     }
 
     /// Selects the commit `id` (false when it isn't loaded) and scrolls to it.
-    #[cfg_attr(not(test), allow(dead_code))] // the commit tab (git_history-c) selects by id
+    #[cfg_attr(not(test), allow(dead_code))] // its tests select by id
     pub fn select(&mut self, id: &str) -> bool {
         match self.commits.iter().position(|c| c.id == id) {
             Some(row) => {

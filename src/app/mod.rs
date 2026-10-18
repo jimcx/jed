@@ -2,6 +2,7 @@
 
 mod backup;
 mod blame;
+mod commit_tabs;
 mod completion;
 mod cursors;
 mod diff_view;
@@ -245,6 +246,11 @@ enum AppEvent {
     },
     /// A stage / unstage from a diff tab (or of a whole file) ended: the message to show.
     DiffStaged(Result<String, String>),
+    /// A commit tab's `git show` was read (`app/commit_tabs.rs`).
+    CommitLoaded {
+        commit: String,
+        result: Result<crate::git::show::Show, String>,
+    },
     /// A task run started, has new output (throttled) or ended (`app/tasks.rs`).
     Task(crate::tasks::Event),
     /// The workspace's session was read, with its text tabs' files (`app/session.rs`).
@@ -556,6 +562,7 @@ impl App {
         self.sync_quick_diff();
         self.sync_blame();
         self.sync_diffs();
+        self.sync_commit_tabs();
         self.sync_git_history();
     }
 
@@ -573,6 +580,7 @@ impl App {
             self.sync_quick_diff();
             self.sync_blame();
             self.sync_diffs();
+            self.sync_commit_tabs();
             self.sync_git_history();
             self.sync_backups();
             self.report_log_errors();
@@ -742,6 +750,7 @@ impl App {
         match self.ui.focus {
             Focus::Editor if self.completion_shown() => Context::Suggest,
             Focus::Editor if self.group().active_diff().is_some() => Context::Diff,
+            Focus::Editor if self.group().active_commit().is_some() => Context::Commit,
             Focus::Editor => Context::Editor,
             Focus::SidePanel if self.ui.side_panel == SidePanel::Search && self.search_view.list_focused => {
                 Context::SearchResults
@@ -1016,6 +1025,8 @@ impl App {
             Command::RestartServer => self.restart_server(),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
+            // A commit tab: its own keys; other editor commands do nothing.
+            _ if self.commit_command(cmd) => {}
             // A diff tab: its own movement keys; other editor commands do nothing.
             _ if self.diff_command(cmd) => {}
             _ => {
@@ -1033,6 +1044,14 @@ impl App {
 
     /// Copies (or cuts) the active view's selections to the clipboard.
     fn copy(&mut self, cut: bool) {
+        if let Some(c) = self.group().active_commit() {
+            // A commit tab is read only: copy its selection (or cursor line); nothing to cut.
+            if !cut {
+                let copied = c.copy_text();
+                self.clipboard.write(copied);
+            }
+            return;
+        }
         if cut && !self.active_writable() {
             return;
         }
@@ -1170,6 +1189,7 @@ impl App {
             AppEvent::Staged { at, unstage, result } => self.staged(at, unstage, result),
             AppEvent::DiffLoaded { id, generation, result } => self.diff_loaded(id, generation, *result),
             AppEvent::DiffStaged(message) => self.diff_staged(message),
+            AppEvent::CommitLoaded { commit, result } => self.commit_loaded(commit, result),
             AppEvent::Task(ev) => self.task_event(ev),
             AppEvent::SessionRead(result) => self.session_read(*result),
             AppEvent::BackupsFound(found) => self.backups_found(found),
@@ -1339,6 +1359,7 @@ impl App {
         self.sync_quick_diff();
         self.sync_blame();
         self.sync_diffs();
+        self.sync_commit_tabs();
         self.sync_git_history();
         self.sync_backups();
         self.report_log_errors();
@@ -1382,6 +1403,7 @@ impl App {
             self.sync_quick_diff();
             self.sync_blame();
             self.sync_diffs();
+            self.sync_commit_tabs();
             self.sync_git_history();
             self.sync_backups();
             self.report_log_errors();

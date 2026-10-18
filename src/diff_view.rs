@@ -123,9 +123,8 @@ impl Pair {
         }
     }
 
-    /// A commit's change to a file: the parent's blob against the commit's (`parent` `None` for
-    /// a root commit: the empty tree against the commit's blob).
-    #[cfg_attr(not(test), allow(dead_code))] // a stat row opens it (git_history-c)
+    /// A commit's change to a file (a commit tab's stat row): the parent's blob against the
+    /// commit's (`parent` `None` for a root commit: the empty tree against the commit's blob).
     pub fn commit(commit: Oid, parent: Option<Oid>) -> Pair {
         Pair {
             left: parent.map_or(Text::Empty, Text::Commit),

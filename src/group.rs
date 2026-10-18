@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use crate::buffer::BufferId;
+use crate::commit_view::CommitTab;
 use crate::diff_view::DiffTab;
 use crate::layout::{GroupId, SplitDir, SplitTree};
 use crate::view::View;
@@ -13,45 +14,61 @@ pub struct TextTab {
     pub view: View,
 }
 
-/// What a tab shows: a buffer in a text editor, or a diff view (two texts side by side, read
-/// only). Commands that only make sense in a text editor find no `active_tab` on a diff tab.
-/// The diff is boxed; text tabs, most of them, stay inline.
+/// What a tab shows: a buffer in a text editor, a diff view (two texts side by side, read only)
+/// or a commit (`git show`'s text, read only). Commands that only make sense in a text editor
+/// find no `active_tab` on a diff or commit tab. The non-text tabs are boxed; text tabs, most of
+/// them, stay inline.
 #[allow(clippy::large_enum_variant)]
 pub enum Tab {
     Text(TextTab),
     Diff(Box<DiffTab>),
+    Commit(Box<CommitTab>),
 }
 
 impl Tab {
     pub fn text(&self) -> Option<&TextTab> {
         match self {
             Tab::Text(t) => Some(t),
-            Tab::Diff(_) => None,
+            Tab::Diff(_) | Tab::Commit(_) => None,
         }
     }
 
     pub fn text_mut(&mut self) -> Option<&mut TextTab> {
         match self {
             Tab::Text(t) => Some(t),
-            Tab::Diff(_) => None,
+            Tab::Diff(_) | Tab::Commit(_) => None,
         }
     }
 
     pub fn diff(&self) -> Option<&DiffTab> {
         match self {
             Tab::Diff(d) => Some(d),
-            Tab::Text(_) => None,
+            Tab::Text(_) | Tab::Commit(_) => None,
         }
     }
 
     pub fn diff_mut(&mut self) -> Option<&mut DiffTab> {
         match self {
             Tab::Diff(d) => Some(d),
-            Tab::Text(_) => None,
+            Tab::Text(_) | Tab::Commit(_) => None,
         }
     }
 
-    /// The buffer a text tab shows (`None` for a diff tab).
+    pub fn commit(&self) -> Option<&CommitTab> {
+        match self {
+            Tab::Commit(c) => Some(c),
+            Tab::Text(_) | Tab::Diff(_) => None,
+        }
+    }
+
+    pub fn commit_mut(&mut self) -> Option<&mut CommitTab> {
+        match self {
+            Tab::Commit(c) => Some(c),
+            Tab::Text(_) | Tab::Diff(_) => None,
+        }
+    }
+
+    /// The buffer a text tab shows (`None` for a diff or commit tab).
     pub fn buffer(&self) -> Option<BufferId> {
         self.text().map(|t| t.buffer)
     }
@@ -82,6 +99,15 @@ impl Group {
 
     pub fn active_diff_mut(&mut self) -> Option<&mut DiffTab> {
         self.tabs.get_mut(self.active).and_then(Tab::diff_mut)
+    }
+
+    /// The active tab, when it's a commit.
+    pub fn active_commit(&self) -> Option<&CommitTab> {
+        self.tabs.get(self.active).and_then(Tab::commit)
+    }
+
+    pub fn active_commit_mut(&mut self) -> Option<&mut CommitTab> {
+        self.tabs.get_mut(self.active).and_then(Tab::commit_mut)
     }
 
     /// The text tab showing `buffer`.
@@ -203,22 +229,39 @@ impl Groups {
             .flat_map(|(id, g)| g.tabs.iter_mut().filter_map(move |t| Some((*id, t.diff_mut()?))))
     }
 
+    /// Every commit tab, in any group.
+    pub fn commit_tabs_mut(&mut self) -> impl Iterator<Item = (GroupId, &mut CommitTab)> {
+        self.map
+            .iter_mut()
+            .flat_map(|(id, g)| g.tabs.iter_mut().filter_map(move |t| Some((*id, t.commit_mut()?))))
+    }
+
     /// Splits the active group. The new group shows the active tab's buffer (same cursor and
-    /// scroll), or a copy of its diff view (`diff_id`: the copy's id), and becomes active.
+    /// scroll), or a copy of its diff view (`diff_id`: the copy's id) or its commit, and becomes
+    /// active.
     pub fn split(&mut self, dir: SplitDir, diff_id: u64) -> GroupId {
-        let id = self.next;
-        self.next += 1;
-        let mut group = Group::default();
-        match self.active_group().tabs.get(self.active_group().active) {
-            Some(Tab::Text(tab)) => group.tabs.push(Tab::Text(TextTab {
+        let tab = match self.active_group().tabs.get(self.active_group().active) {
+            Some(Tab::Text(tab)) => Some(Tab::Text(TextTab {
                 buffer: tab.buffer,
                 view: tab.view.clone(),
             })),
-            Some(Tab::Diff(d)) => group.tabs.push(Tab::Diff(Box::new(d.copy(diff_id)))),
-            None => {}
+            Some(Tab::Diff(d)) => Some(Tab::Diff(Box::new(d.copy(diff_id)))),
+            Some(Tab::Commit(c)) => Some(Tab::Commit(Box::new(c.copy()))),
+            None => None,
+        };
+        let id = self.split_empty(dir);
+        if let Some(tab) = tab {
+            self.map.get_mut(&id).expect("just split").tabs.push(tab);
         }
+        id
+    }
+
+    /// Splits the active group into a new group with no tabs, which becomes active.
+    pub fn split_empty(&mut self, dir: SplitDir) -> GroupId {
+        let id = self.next;
+        self.next += 1;
         self.tree.split(self.active, dir, id);
-        self.map.insert(id, group);
+        self.map.insert(id, Group::default());
         self.active = id;
         id
     }
@@ -367,6 +410,22 @@ mod tests {
         assert_eq!(fresh.tree, tree);
         let new = fresh.split(SplitDir::Right, 0);
         assert!(!ids.contains(&new), "new groups get new ids");
+    }
+
+    #[test]
+    fn splitting_a_commit_tab_copies_the_commit() {
+        let id = "a".repeat(40);
+        let mut gs = Groups::default();
+        gs.active_group_mut()
+            .open_tab(Tab::Commit(Box::new(CommitTab::new(id.clone(), Some("a.txt".into())))));
+        let second = gs.split(SplitDir::Right, 0);
+        let copy = gs.active_group().active_commit().unwrap();
+        assert_eq!(
+            (copy.commit.as_str(), copy.file.as_deref()),
+            (id.as_str(), Some("a.txt"))
+        );
+        assert_eq!(gs.active, second);
+        assert!(gs.get(second).unwrap().tabs[0].commit().is_some());
     }
 
     #[test]

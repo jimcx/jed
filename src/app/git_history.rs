@@ -162,8 +162,23 @@ impl App {
             C::PageDown => self.git_history.move_selection(page),
             C::First => self.git_history.first(),
             C::Last => self.git_history.last(),
+            C::Open => {
+                let Some(id) = self.git_history.selected().map(str::to_string) else {
+                    return;
+                };
+                let file = self.git_history_file();
+                self.open_commit(&id, file);
+            }
             C::FocusTree => self.git_history.set_focused(false),
         }
+    }
+
+    /// The history's file (the active file), work-tree-relative: what a commit tab opened from
+    /// the section highlights and opens first (`None`: unknown).
+    pub(super) fn git_history_file(&self) -> Option<String> {
+        let path = self.git_history.path.as_ref()?;
+        let (_, rel) = self.history_repo(path)?;
+        Some(rel.to_string_lossy().into_owned())
     }
 
     /// The history section has the keys (the side panel shows the Explorer and the section was

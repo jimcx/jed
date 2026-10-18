@@ -8,7 +8,8 @@ use super::{App, Focus};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::column::{self, Cell};
 use crate::command::{Command, ExplorerCommand};
-use crate::layout::{Divider, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, PanelTab, ScrollTarget, SidePanel};
+use crate::commit_view::TextPos;
+use crate::layout::{Divider, GroupId, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, PanelTab, ScrollTarget, SidePanel};
 use crate::selection::{Selection, Selections};
 use crate::view::View;
 
@@ -39,6 +40,11 @@ pub enum Drag {
     },
     /// The Explorer view's Git History divider (its row sets the section's height).
     HistoryDivider,
+    /// Extending a commit tab's selection from `anchor`.
+    Commit {
+        group: GroupId,
+        anchor: TextPos,
+    },
 }
 
 /// Counts clicks on the same cell in quick succession (1, 2, 3).
@@ -85,6 +91,9 @@ impl App {
             return;
         }
         if self.diff_mouse(&m, hit) {
+            return;
+        }
+        if self.commit_mouse(&m, hit) {
             return;
         }
         match m.kind {
@@ -171,6 +180,13 @@ impl App {
                     }
                 }
                 Some(Drag::ScrollBar { target, grab }) => self.scrollbar_drag(target, m.row, grab),
+                Some(Drag::Commit { group, anchor }) => {
+                    if let Some(to) = self.commit_drag_position(group, m.column, m.row)
+                        && let Some(c) = self.groups.get_mut(group).and_then(|g| g.active_commit_mut())
+                    {
+                        c.drag_select(anchor, to);
+                    }
+                }
                 Some(Drag::HistoryDivider) => {
                     // The divider's row is the section's top; the section reaches the body's end
                     // (the side panel's last row, above the status bar).
@@ -236,6 +252,11 @@ impl App {
                 self.git_history.set_focused(true);
                 let top = self.hits.history.map_or(0, |h| h.top);
                 self.git_history.select_row(top + row as usize);
+                // A single click opens the commit (Enter's too).
+                if let Some(id) = self.git_history.selected().map(str::to_string) {
+                    let file = self.git_history_file();
+                    self.open_commit(&id, file);
+                }
             }
             Hit::HistoryDivider => self.drag = Some(Drag::HistoryDivider),
             Hit::ExplorerRow(_) | Hit::SidePanel => {

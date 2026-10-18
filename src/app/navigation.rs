@@ -76,6 +76,8 @@ impl App {
                 },
                 revision: 0,
             }),
+            // A commit has no file to come back to.
+            Tab::Commit(_) => None,
         }
     }
 

@@ -1,27 +1,31 @@
 //! Git history (git_history-b): the Explorer view's "Git History" section — the active file's
 //! commits newest first, the list following the active file, paging as it scrolls, "No history"
 //! when there is none, the collapse and the draggable divider, the mouse and the section's
-//! keys, and a commit made outside jed appearing at the top. (Commit tabs, stat rows and
-//! sessions are git_history-c.)
+//! keys, and a commit made outside jed appearing at the top. (git_history-c: Enter / a click
+//! opens a commit tab, its `git show` text and colours, a stat row's diff in the group to the
+//! right, selecting and copying, and sessions restoring the tabs and the section's layout.)
 
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use crossterm::event::{KeyCode, KeyModifiers as M, MouseButton, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyModifiers as M, MouseButton, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 
-use crate::app::App;
+use crate::app::{App, Focus, InitialFile};
 use crate::buffer::Buffer;
 use crate::command::{Command, ExplorerCommand, GitHistoryCommand as G};
-use crate::diff_view::Pair;
+use crate::diff_view::{Pair, Text};
 use crate::git::log::{Commit, Page};
 use crate::git::test_repo::{commit_all, git, init};
+use crate::group::Tab;
 use crate::history;
 use crate::layout::SidePanel;
 use crate::milestone10_tests::{dirs, open_file_app};
+use crate::workspace::Workspace;
+use crate::workspace::trust::TrustStore;
 
 const SIDE_WIDTH: u16 = 44;
 
@@ -69,6 +73,87 @@ fn list_row(term: &Terminal<TestBackend>, list: Rect, i: u16) -> String {
 
 fn summaries(app: &App) -> Vec<String> {
     app.git_history.rows().iter().map(|c| c.summary.clone()).collect()
+}
+
+/// Gives the section the keys without opening a commit (a click on a row opens one).
+fn focus_history(app: &mut App) {
+    app.ui.focus = Focus::SidePanel;
+    app.ui.side_panel = SidePanel::Explorer;
+    app.git_history.set_focused(true);
+}
+
+/// The app on `root` with sessions in `state` (as milestone 13's tests build one).
+fn open_state_app(root: &Path, state: &Path, file: Option<&str>) -> App {
+    let ws = Workspace::load(root.to_path_buf());
+    let trust = TrustStore::load(state.join("trust.toml"));
+    let initial = file.map(|file| InitialFile {
+        buffer: Buffer::open(&root.join(file)).unwrap(),
+        goto: None,
+    });
+    let mut app = App::new(ws, trust, initial, true);
+    app.state_dir = Some(state.to_path_buf());
+    app.test_start();
+    app.test_plain_whitespace();
+    app
+}
+
+/// The commit tab's rendered lines, at the width the last frame gave its text area.
+fn commit_lines(app: &mut App) -> Vec<String> {
+    let group = app.groups.active;
+    let width = app.hits.group(group).map_or(80, |h| h.editor.width) as usize;
+    let c = app.groups.get_mut(group).unwrap().active_commit_mut().unwrap();
+    c.lines(width).iter().map(|l| l.text()).collect()
+}
+
+/// What `git show --stat --format=medium --stat-width=<width>` prints, without its last line break.
+fn cli_show(root: &Path, id: &str, width: usize) -> String {
+    let width = format!("--stat-width={width}");
+    git(root, &["show", "--stat", "--format=medium", &width, id])
+        .trim_end_matches('\n')
+        .to_string()
+}
+
+/// Opens the selected history commit with the keyboard and waits for its `git show`.
+async fn enter_commit(app: &mut App) -> String {
+    focus_history(app);
+    if app.git_history.selected().is_none() {
+        app.press(KeyCode::Down, M::NONE);
+    }
+    let id = app.git_history.selected().unwrap_or_default().to_string();
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(app.last_command, Some(Command::GitHistory(G::Open)));
+    assert!(
+        app.settle(|a| {
+            a.group()
+                .active_commit()
+                .is_some_and(|c| c.loaded() || c.error.is_some())
+        })
+        .await
+    );
+    id
+}
+
+/// The commit tab's text of `id` in `group`.
+fn commit_of(app: &App, group: crate::layout::GroupId) -> &crate::commit_view::CommitTab {
+    app.groups.get(group).unwrap().active_commit().unwrap()
+}
+
+/// Every commit tab loaded (a session restore starts their reads).
+fn commits_loaded(app: &App) -> bool {
+    app.groups.ids().into_iter().all(|g| {
+        app.groups
+            .get(g)
+            .unwrap()
+            .tabs
+            .iter()
+            .all(|t| t.commit().is_none_or(|c| c.loaded() || c.error.is_some()))
+    })
+}
+
+async fn quit(mut app: App) {
+    app.test_execute(Command::Quit);
+    assert!(app.quitting());
+    app.shutdown().await;
 }
 
 /// 205 real commits on `a.txt`, made with `git2` (one CLI call per commit would be slow); each
@@ -300,16 +385,14 @@ async fn git_history_selects_with_the_keyboard() {
     let ids: Vec<String> = app.git_history.rows().iter().map(|c| c.id.clone()).collect();
 
     draw(&mut app);
-    let hit = app.hits.history.unwrap();
-    // A click on a commit row selects it and gives the section the keys.
-    app.mouse(MouseEventKind::Down(MouseButton::Left), hit.list.x + 2, hit.list.y + 1);
-    assert!(app.git_history.focused());
-    assert_eq!(app.ui.focus, crate::app::Focus::SidePanel);
-    assert_eq!(app.ui.side_panel, SidePanel::Explorer);
-    assert_eq!(app.git_history.selected(), Some(ids[1].as_str()));
-
+    focus_history(&mut app);
+    assert_eq!(app.git_history.selected(), None);
     app.press(KeyCode::Down, M::NONE);
     assert_eq!(app.last_command, Some(Command::GitHistory(G::Down)));
+    assert_eq!(app.git_history.selected(), Some(ids[0].as_str()));
+    app.press(KeyCode::Down, M::NONE);
+    assert_eq!(app.git_history.selected(), Some(ids[1].as_str()));
+    app.press(KeyCode::Down, M::NONE);
     assert_eq!(app.git_history.selected(), Some(ids[2].as_str()));
     app.press(KeyCode::Down, M::NONE);
     app.press(KeyCode::Down, M::NONE);
@@ -336,17 +419,13 @@ async fn git_history_selects_with_the_keyboard() {
     assert_eq!(app.git_history.selected(), Some(ids[3].as_str()));
     // Esc does the same from the list.
     app.test_execute(Command::GitHistory(G::FocusTree));
-    let hit = app.hits.history.unwrap();
-    app.mouse(MouseEventKind::Down(MouseButton::Left), hit.list.x + 2, hit.list.y);
-    assert!(app.git_history.focused());
+    focus_history(&mut app);
     app.press(KeyCode::Esc, M::NONE);
     assert!(!app.git_history.focused());
     assert_eq!(app.last_command, Some(Command::GitHistory(G::FocusTree)));
 
     // Focusing the Explorer (Ctrl+Shift+E) likewise gives the tree the keys.
-    let hit = app.hits.history.unwrap();
-    app.mouse(MouseEventKind::Down(MouseButton::Left), hit.list.x + 2, hit.list.y);
-    assert!(app.git_history.focused());
+    focus_history(&mut app);
     app.test_execute(Command::FocusExplorer);
     assert!(!app.git_history.focused());
     app.press(KeyCode::Down, M::NONE);
@@ -371,8 +450,7 @@ async fn git_history_pages_load_as_it_scrolls() {
 
     // Put the end of the list on screen: the next page follows.
     draw(&mut app);
-    let hit = app.hits.history.unwrap();
-    app.mouse(MouseEventKind::Down(MouseButton::Left), hit.list.x + 2, hit.list.y);
+    focus_history(&mut app);
     app.press(KeyCode::End, M::NONE);
     assert_eq!(app.last_command, Some(Command::GitHistory(G::Last)));
     assert_eq!(app.git_history.scroll(), 192, "End revealed the last of 200");
@@ -520,6 +598,15 @@ async fn git_history_wheel_and_scroll_bar_scroll_only_its_list() {
     let target = app.git_history.rows()[top + 1].id.clone();
     app.mouse(MouseEventKind::Down(MouseButton::Left), hit.list.x + 2, hit.list.y + 1);
     assert_eq!(app.git_history.selected(), Some(target.as_str()));
+    // A click opens the commit too (as Enter does), reusing a tab if there is one.
+    let commit = app.groups.ids().into_iter().find_map(|g| {
+        Some((
+            g,
+            app.groups.get(g)?.tabs.iter().find_map(|t| t.commit())?.commit.clone(),
+        ))
+    });
+    assert_eq!(commit.map(|(_, c)| c), Some(target), "the clicked commit's tab");
+    assert_eq!(app.ui.focus, Focus::Editor, "the commit tab has the keys");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -535,8 +622,7 @@ async fn git_history_head_change_without_new_commits_keeps_its_place() {
     assert!(settle_history(&mut app, &a, 21).await);
 
     let term = draw(&mut app);
-    let hit = app.hits.history.unwrap();
-    app.mouse(MouseEventKind::Down(MouseButton::Left), hit.list.x + 2, hit.list.y);
+    focus_history(&mut app);
     app.press(KeyCode::End, M::NONE);
     app.press(KeyCode::Up, M::NONE);
     let (selected, top, first) = (
@@ -627,36 +713,544 @@ async fn git_history_drops_pages_for_another_file_or_an_older_list() {
     assert!(!app.git_history.more, "the empty page ends the list");
 }
 
+/// Two commits, the second changing a line of `a.txt` (a `+` and a `-` in its stat) and adding
+/// a line to `b.txt`; the first is a root commit.
+fn two_commits(root: &Path) -> (String, String) {
+    write(root, "a.txt", "one\ntwo\nthree\n");
+    write(root, "b.txt", "b\n");
+    commit_all(root, "first");
+    let first = git(root, &["rev-parse", "HEAD"]).trim().to_string();
+    write(root, "a.txt", "one\nTWO\nthree\n");
+    write(root, "b.txt", "b\nmore\n");
+    commit_all(root, "second");
+    let second = git(root, &["rev-parse", "HEAD"]).trim().to_string();
+    (first, second)
+}
+
+/// A commit whose stat depends on the width: one long-named file, most of its lines changed
+/// (git truncates the name and shrinks the graph when the tab is narrow).
+fn wide_commit(root: &Path) -> (String, String) {
+    let name = "a_very_long_file_name_that_is_truncated_in_narrow_tabs.txt";
+    let lines: String = (0..120).map(|i| format!("line {i}\n")).collect();
+    write(root, name, &lines);
+    commit_all(root, "first");
+    let changed: String = (0..120)
+        .map(|i| {
+            if i % 2 == 0 {
+                format!("changed {i}\n")
+            } else {
+                format!("line {i}\n")
+            }
+        })
+        .collect();
+    write(root, name, &changed);
+    commit_all(root, "second");
+    let id = git(root, &["rev-parse", "HEAD"]).trim().to_string();
+    (name.to_string(), id)
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn git_history_enter_does_nothing_yet() {
+async fn git_history_enter_opens_a_commit_tab() {
     let (_d, root, state) = dirs();
     init(&root);
-    write(&root, "a.txt", "one\n");
-    commit_all(&root, "one");
-    write(&root, "a.txt", "one\ntwo\n");
-    commit_all(&root, "two");
+    let (_, second) = two_commits(&root);
     let mut app = open_file_app(&root, &state, "a.txt");
     assert!(settle_history(&mut app, &root.join("a.txt"), 2).await);
     let _term = draw(&mut app);
-    let hit = app.hits.history.unwrap();
-    app.mouse(MouseEventKind::Down(MouseButton::Left), hit.list.x + 2, hit.list.y);
-    let (tabs, active, text) = (
-        app.group().tabs.len(),
-        app.group().active,
-        app.active_buffer().unwrap().rope.to_string(),
+
+    // Enter on the selected commit opens its tab (the file's history's file named).
+    let id = enter_commit(&mut app).await;
+    assert_eq!(id, second, "the newest commit");
+    {
+        let c = commit_of(&app, app.groups.active);
+        assert_eq!(c.commit, second);
+        assert_eq!(c.title(), &second[..7]);
+        assert_eq!(c.file.as_deref(), Some("a.txt"));
+        assert_eq!(c.rows(), 0, "not drawn yet");
+    }
+    assert_eq!(app.group().tabs.len(), 2, "the file's tab and the commit's");
+    assert_eq!(app.group().active, 1);
+
+    // Drawn at the text area's width: exactly `git show --stat --format=medium`.
+    let _term = draw(&mut app);
+    let width = app.hits.group(app.groups.active).unwrap().editor.width as usize;
+    let lines = commit_lines(&mut app);
+    assert_eq!(lines.join("\n"), cli_show(&root, &second, width));
+    assert!(lines[0].starts_with("commit "), "{:?}", lines[0]);
+
+    // Back to the file's tab and Enter the same commit again: the tab is reused.
+    app.press(KeyCode::PageUp, M::CONTROL);
+    assert!(settle_history(&mut app, &root.join("a.txt"), 2).await);
+    let _term = draw(&mut app);
+    assert_eq!(enter_commit(&mut app).await, second);
+    assert_eq!(app.group().tabs.len(), 2, "no second commit tab");
+    assert_eq!(app.group().active, 1, "the commit tab activated");
+    assert_eq!(app.group().active_commit().unwrap().commit, second);
+}
+
+/// The commit tab's text at a width that makes git's stat layout depend on it, compared with
+/// `git show --stat-width`: narrow (truncated name, shrunk graph), then wide (re-rendered).
+#[tokio::test(flavor = "multi_thread")]
+async fn git_history_commit_tab_matches_git_show_at_each_width() {
+    let (_d, root, state) = dirs();
+    init(&root);
+    let (name, second) = wide_commit(&root);
+    let mut app = open_file_app(&root, &state, &name);
+    assert!(settle_history(&mut app, &root.join(&name), 2).await);
+    let _term = draw(&mut app);
+    enter_commit(&mut app).await;
+
+    let _term = draw(&mut app);
+    let narrow = app.hits.group(app.groups.active).unwrap().editor.width as usize;
+    assert!(narrow < 80, "a narrow tab: {narrow}");
+    let at_narrow = commit_lines(&mut app).join("\n");
+    assert_eq!(at_narrow, cli_show(&root, &second, narrow), "narrow width {narrow}");
+
+    // A wider tab re-renders its lines at the new width (the commit isn't read again).
+    let _term = draw_sized(&mut app, 220, 24);
+    let wide = app.hits.group(app.groups.active).unwrap().editor.width as usize;
+    assert!(wide > narrow, "{wide} > {narrow}");
+    let at_wide = commit_lines(&mut app).join("\n");
+    assert_eq!(at_wide, cli_show(&root, &second, wide), "wide width {wide}");
+    assert_ne!(at_wide, at_narrow, "the width changed the stat's layout");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn git_history_commit_tab_colours_and_file_row() {
+    let (_d, root, state) = dirs();
+    init(&root);
+    let (_, second) = two_commits(&root);
+    let mut app = open_file_app(&root, &state, "a.txt");
+    assert!(settle_history(&mut app, &root.join("a.txt"), 2).await);
+    let _term = draw(&mut app);
+    enter_commit(&mut app).await;
+    let term = draw(&mut app);
+    let group = app.groups.active;
+    let rows = app.hits.group(group).unwrap().commit.unwrap().rows;
+    let (top, a_row, b_row) = {
+        let c = app.group().active_commit().unwrap();
+        let show = c.show.as_ref().unwrap();
+        let a = show.files.iter().position(|f| f.path == "a.txt").unwrap();
+        let b = show.files.iter().position(|f| f.path == "b.txt").unwrap();
+        (c.top, c.file_row(a).unwrap(), c.file_row(b).unwrap())
+    };
+    let buf = term.backend().buffer();
+    let text_row = |row: usize| -> String {
+        (rows.x..rows.x + rows.width)
+            .map(|x| buf[(x, rows.y + (row - top) as u16)].symbol())
+            .collect()
+    };
+    // The commit line's id in git's yellow.
+    let line = text_row(0);
+    let at = line
+        .find(&second)
+        .unwrap_or_else(|| panic!("no id in {line:?} {rows:?}"));
+    assert_eq!(
+        buf[(rows.x + at as u16, rows.y)].style().fg,
+        app.theme.get("gitShow.commit").fg,
+        "{line:?}"
+    );
+    // a.txt's stat row: its `+` green and its `-` red.
+    let line = text_row(a_row);
+    let plus = line.find('+').unwrap_or_else(|| panic!("no + in {line:?}"));
+    let minus = line.find('-').unwrap_or_else(|| panic!("no - in {line:?}"));
+    let fg = |y: u16, x: usize| buf[(rows.x + x as u16, y)].style().fg;
+    // The other lines are git's default colour (the editor's): here the Author line.
+    let author = text_row(1);
+    let at = author
+        .find("Author:")
+        .unwrap_or_else(|| panic!("no author in {author:?}"));
+    assert_eq!(
+        fg(rows.y + (1 - top) as u16, at),
+        app.theme.get("editor").fg,
+        "{author:?}"
+    );
+    assert_eq!(fg(rows.y + (a_row - top) as u16, plus), app.theme.get("gitShow.add").fg);
+    assert_eq!(
+        fg(rows.y + (a_row - top) as u16, minus),
+        app.theme.get("gitShow.del").fg
+    );
+    // The tab's own file's stat row is highlighted; another file's isn't.
+    let bg = |row: usize| buf[(rows.x + 1, rows.y + (row - top) as u16)].style().bg;
+    assert_eq!(bg(a_row), app.theme.get("editor.lineHighlight").bg);
+    assert_eq!(bg(b_row), app.theme.get("editor").bg);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn git_history_stat_row_opens_a_diff_to_the_right() {
+    let (_d, root, state) = dirs();
+    init(&root);
+    let (first, second) = two_commits(&root);
+    let mut app = open_file_app(&root, &state, "a.txt");
+    assert!(settle_history(&mut app, &root.join("a.txt"), 2).await);
+    let _term = draw(&mut app);
+    enter_commit(&mut app).await;
+    let _term = draw(&mut app);
+
+    // Enter on the commit line (no stat there): a message, no diff, no split.
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(
+        app.last_command,
+        Some(Command::Commit(crate::command::CommitCommand::Open))
+    );
+    assert_eq!(app.message.as_ref().unwrap().text, "No file on this line");
+    assert_eq!(app.groups.ids().len(), 1, "no group split");
+    assert_eq!(app.group().tabs.len(), 2, "the commit tab only");
+
+    // Enter on a.txt's stat row: a diff in the group to the right.
+    let group = app.groups.active;
+    let a_row = {
+        let c = app.group().active_commit().unwrap();
+        let show = c.show.as_ref().unwrap();
+        let a = show.files.iter().position(|f| f.path == "a.txt").unwrap();
+        c.file_row(a).unwrap()
+    };
+    for _ in 0..a_row {
+        app.press(KeyCode::Down, M::NONE);
+    }
+    assert_eq!(app.group().active_commit().unwrap().cursor.row, a_row);
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(
+        app.last_command,
+        Some(Command::Commit(crate::command::CommitCommand::Open))
     );
 
-    // No commit tab yet (git_history-c): Enter is unbound, a plain char does nothing either.
-    app.press(KeyCode::Enter, M::NONE);
-    app.press(KeyCode::Char('x'), M::NONE);
-    assert_eq!(app.group().tabs.len(), tabs, "no tab opened");
-    assert_eq!(app.group().active, active);
-    assert_eq!(app.active_buffer().unwrap().rope.to_string(), text, "no text typed");
-    assert!(app.git_history.focused(), "the section kept the keys");
+    let ids = app.groups.ids();
+    assert_eq!(ids.len(), 2, "a group split to the right");
+    assert_eq!(app.groups.active, ids[1]);
+    let target = ids[1];
+    let (path, pair) = {
+        let d = app.groups.get(target).unwrap().active_diff().unwrap();
+        (d.path.clone(), d.pair)
+    };
+    let oid = git2::Oid::from_str(&second).unwrap();
+    let parent = git2::Oid::from_str(&first).unwrap();
+    assert_eq!(path, root.join("a.txt"));
+    assert_eq!(pair, Pair::commit(oid, Some(parent)));
     assert_eq!(
-        app.git_history.selected(),
-        app.git_history.rows().first().map(|c| c.id.as_str())
+        app.groups.get(target).unwrap().active_diff().unwrap().title(),
+        format!("a.txt ({})", &second[..7]),
+        "the tab names the commit"
     );
+    assert!(app.settle(|a| a.diffs_settled()).await, "the diff loaded");
+
+    // Wide enough (each group 90 columns or more), the diff is drawn side by side.
+    let _term = draw_sized(&mut app, 240, 24);
+    assert!(
+        !app.groups.get(target).unwrap().active_diff().unwrap().inline,
+        "side by side at 240 columns"
+    );
+    let _term = draw(&mut app);
+
+    // Both sides are the commit's texts; the changed lines are git diff's.
+    let (left, right, removed, added) = {
+        let d = app.groups.get(target).unwrap().active_diff().unwrap();
+        let doc = d.doc.as_ref().unwrap();
+        let join =
+            |lines: &crate::diff_view::Lines| (0..lines.len()).map(|i| lines.line(i)).collect::<Vec<_>>().join("\n");
+        let mut removed = Vec::new();
+        let mut added = Vec::new();
+        for row in &doc.aligned(false).rows {
+            if row.hunk.is_some() {
+                if let Some(l) = row.left {
+                    removed.push(doc.left.line(l).to_string());
+                }
+                if let Some(r) = row.right {
+                    added.push(doc.right.line(r).to_string());
+                }
+            }
+        }
+        (join(&doc.left), join(&doc.right), removed, added)
+    };
+    assert_eq!(
+        left,
+        git(&root, &["show", &format!("{first}:a.txt")]).trim_end_matches('\n')
+    );
+    assert_eq!(
+        right,
+        git(&root, &["show", &format!("{second}:a.txt")]).trim_end_matches('\n')
+    );
+    let (want_removed, want_added) = {
+        let out = git(
+            &root,
+            &["diff", "--no-color", "--unified=0", &first, &second, "--", "a.txt"],
+        );
+        let (mut removed, mut added) = (Vec::new(), Vec::new());
+        for line in out.lines() {
+            if line.starts_with("---") || line.starts_with("+++") {
+                continue;
+            }
+            if let Some(text) = line.strip_prefix('-') {
+                removed.push(text.to_string());
+            } else if let Some(text) = line.strip_prefix('+') {
+                added.push(text.to_string());
+            }
+        }
+        (removed, added)
+    };
+    assert_eq!((removed, added), (want_removed, want_added));
+
+    // A commit diff stages nothing: no Stage / Revert buttons.
+    let _term = draw(&mut app);
+    let hit = app.hits.group(target).unwrap().diff.as_ref().unwrap();
+    assert!(hit.buttons.is_empty() && hit.reverts.is_empty());
+
+    // A click on b.txt's stat row retargets the same diff tab to b.txt.
+    let (top, b_row) = {
+        let c = app.groups.get(group).unwrap().active_commit().unwrap();
+        let show = c.show.as_ref().unwrap();
+        let b = show.files.iter().position(|f| f.path == "b.txt").unwrap();
+        (c.top, c.file_row(b).unwrap())
+    };
+    let rows = app.hits.group(group).unwrap().commit.unwrap().rows;
+    app.mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        rows.x + 2,
+        rows.y + (b_row - top) as u16,
+    );
+    assert_eq!(app.groups.active, target, "the diff's group");
+    let g = app.groups.get(target).unwrap();
+    assert_eq!(g.tabs.len(), 1, "the commit diff tab reused");
+    let d = g.active_diff().unwrap();
+    assert_eq!(d.path, root.join("b.txt"));
+    assert_eq!(d.pair.right, Text::Commit(oid));
+}
+
+/// The files of a commit whose change is a root commit (`Empty` ↔ the commit), a deletion (the
+/// parent's text ↔ nothing) and a binary file (the diff says so), from their stat rows.
+#[tokio::test(flavor = "multi_thread")]
+async fn git_history_stat_rows_open_root_deleted_and_binary_diffs() {
+    let (_d, root, state) = dirs();
+    init(&root);
+    write(&root, "root.txt", "r\n");
+    write(&root, "gone.txt", "gone\n");
+    fs::write(root.join("bin.dat"), b"\x00binary").unwrap();
+    commit_all(&root, "root");
+    let first = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+    write(&root, "root.txt", "r\nmore\n");
+    fs::remove_file(root.join("gone.txt")).unwrap();
+    fs::write(root.join("bin.dat"), b"\x00binary changed").unwrap();
+    commit_all(&root, "second");
+    let second = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+
+    let mut app = open_file_app(&root, &state, "root.txt");
+    assert!(settle_history(&mut app, &root.join("root.txt"), 2).await);
+    let _term = draw(&mut app);
+    assert_eq!(enter_commit(&mut app).await, second);
+    let _term = draw(&mut app);
+
+    // Move the commit tab's cursor to `path`'s stat row (from the top) and open its diff.
+    let goto_row = |app: &mut App, path: &str| {
+        app.test_execute(Command::Move {
+            motion: crate::command::Motion::DocStart,
+            select: false,
+        });
+        let c = app.group().active_commit().unwrap();
+        let show = c.show.as_ref().unwrap();
+        let k = show.files.iter().position(|f| f.path == path).unwrap();
+        let row = c.file_row(k).unwrap();
+        for _ in 0..row {
+            app.press(KeyCode::Down, M::NONE);
+        }
+        app.press(KeyCode::Enter, M::NONE);
+    };
+    let texts = |doc: &crate::diff_view::Doc| {
+        let join =
+            |lines: &crate::diff_view::Lines| (0..lines.len()).map(|i| lines.line(i)).collect::<Vec<_>>().join("\n");
+        (join(&doc.left), join(&doc.right))
+    };
+
+    // gone.txt, deleted: the first parent's text against nothing.
+    goto_row(&mut app, "gone.txt");
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    let ids = app.groups.ids();
+    let target = ids[1];
+    {
+        let d = app.groups.get(target).unwrap().active_diff().unwrap();
+        assert_eq!(
+            d.pair,
+            Pair::commit(
+                git2::Oid::from_str(&second).unwrap(),
+                Some(git2::Oid::from_str(&first).unwrap())
+            )
+        );
+        let (left, right) = texts(d.doc.as_ref().unwrap());
+        assert_eq!(
+            left,
+            git(&root, &["show", &format!("{first}:gone.txt")]).trim_end_matches('\n')
+        );
+        assert_eq!(right, "", "a deletion has no new lines");
+    }
+
+    // bin.dat is binary: the diff says so.
+    app.test_execute(Command::FocusGroup(1));
+    goto_row(&mut app, "bin.dat");
+    assert!(app.settle(|a| a.diffs_settled()).await, "retargeted to bin.dat");
+    let d = app.groups.get(target).unwrap().active_diff().unwrap();
+    assert!(d.doc.as_ref().unwrap().binary, "a binary file");
+
+    // Back to the file, the root commit: its change is against the empty tree.
+    app.test_execute(Command::FocusGroup(1));
+    app.test_execute(Command::NextTab);
+    assert!(settle_history(&mut app, &root.join("root.txt"), 2).await);
+    focus_history(&mut app);
+    // The commit tab's turn cleared the section's selection: Down selects the newest, then the root.
+    app.press(KeyCode::Down, M::NONE);
+    app.press(KeyCode::Down, M::NONE);
+    assert_eq!(app.git_history.selected(), Some(first.as_str()));
+    app.press(KeyCode::Enter, M::NONE);
+    assert!(
+        app.settle(|a| a.group().active_commit().is_some_and(|c| c.loaded()))
+            .await
+    );
+    let _term = draw(&mut app);
+    goto_row(&mut app, "root.txt");
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    let d = app.groups.get(target).unwrap().active_diff().unwrap();
+    assert_eq!(d.pair, Pair::commit(git2::Oid::from_str(&first).unwrap(), None));
+    let (left, right) = texts(d.doc.as_ref().unwrap());
+    assert_eq!(left, "", "a root commit's left side is the empty tree");
+    assert_eq!(
+        right,
+        git(&root, &["show", &format!("{first}:root.txt")]).trim_end_matches('\n')
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn git_history_commit_tab_selects_and_copies() {
+    let (_d, root, state) = dirs();
+    init(&root);
+    let (_, second) = two_commits(&root);
+    let mut app = open_file_app(&root, &state, "a.txt");
+    assert!(settle_history(&mut app, &root.join("a.txt"), 2).await);
+    let _term = draw(&mut app);
+    enter_commit(&mut app).await;
+    let _term = draw(&mut app);
+    let width = app.hits.group(app.groups.active).unwrap().editor.width as usize;
+    // The expected text comes from git itself, not from the tab's rendering.
+    let shown = cli_show(&root, &second, width);
+    let lines: Vec<&str> = shown.lines().collect();
+    let cmd = if cfg!(target_os = "macos") {
+        M::SUPER
+    } else {
+        M::CONTROL
+    };
+
+    // Shift+Down twice: the first two lines selected (the second's start included).
+    app.press(KeyCode::Down, M::SHIFT);
+    app.press(KeyCode::Down, M::SHIFT);
+    app.press(KeyCode::Char('c'), cmd);
+    assert_eq!(app.clipboard.read().unwrap(), format!("{}\n{}\n", lines[0], lines[1]));
+    // Drawn: the selection covers those two lines, not the third.
+    let term = draw(&mut app);
+    let group = app.groups.active;
+    let rows = app.hits.group(group).unwrap().commit.unwrap().rows;
+    let buf = term.backend().buffer();
+    let selection = app.theme.get("editor.selection").bg;
+    let bg = |row: u16, x: u16| buf[(rows.x + x, rows.y + row)].style().bg;
+    assert_eq!(bg(0, 1), selection, "the first line is selected");
+    assert_eq!(bg(1, 1), selection, "the second line is selected");
+    assert_ne!(bg(2, 1), selection, "the cursor's line is not");
+    // An empty cursor copies its whole line.
+    app.press(KeyCode::Esc, M::NONE);
+    app.press(KeyCode::Char('c'), cmd);
+    assert_eq!(app.clipboard.read().unwrap(), format!("{}\n", lines[2]));
+    // Cut does nothing (read only): the clipboard keeps what Copy left.
+    app.press(KeyCode::Down, M::SHIFT);
+    app.press(KeyCode::Char('x'), cmd);
+    assert_eq!(app.clipboard.read().unwrap(), format!("{}\n", lines[2]));
+}
+
+/// A commit tab is not a buffer: typing, pasting, Save and file-keyed commands leave its text
+/// and the work tree alone (no buffer, so nothing is edited, saved or sent to a server).
+#[tokio::test(flavor = "multi_thread")]
+async fn git_history_a_commit_tab_is_read_only() {
+    let (_d, root, state) = dirs();
+    init(&root);
+    two_commits(&root);
+    let mut app = open_file_app(&root, &state, "a.txt");
+    assert!(settle_history(&mut app, &root.join("a.txt"), 2).await);
+    let _term = draw(&mut app);
+    enter_commit(&mut app).await;
+    let _term = draw(&mut app);
+    assert!(app.active_buffer().is_none(), "a commit tab has no buffer");
+    let before = commit_lines(&mut app);
+    let on_disk = fs::read_to_string(root.join("a.txt")).unwrap();
+
+    app.type_text("hello");
+    app.handle_test_event(Event::Paste("pasted\n".into()));
+    app.test_execute(Command::Save);
+    app.test_execute(Command::OpenChange);
+    app.test_execute(Command::ShowFileHistory);
+    let _term = draw(&mut app);
+    assert_eq!(commit_lines(&mut app), before, "the text is unchanged");
+    assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), on_disk);
+    assert!(app.active_buffer().is_none());
+    assert!(app.group().active_commit().is_some(), "still the commit tab");
+    assert!(app.group().active_commit().unwrap().loaded());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn git_history_session_restores_commit_tabs() {
+    let (_d, root, state) = dirs();
+    init(&root);
+    let (_, second) = two_commits(&root);
+    let mut app = open_state_app(&root, &state, Some("a.txt"));
+    assert!(settle_history(&mut app, &root.join("a.txt"), 2).await);
+    let _term = draw(&mut app);
+    enter_commit(&mut app).await;
+    // A stat row's diff, and the section collapsed at a dragged height.
+    let _term = draw(&mut app);
+    let a_row = app.group().active_commit().unwrap().own_file_row().unwrap();
+    for _ in 0..a_row {
+        app.press(KeyCode::Down, M::NONE);
+    }
+    app.press(KeyCode::Enter, M::NONE);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    app.git_history.set_collapsed(true);
+    app.git_history.section_height = 7;
+    quit(app).await;
+
+    // Reopened: the commit tab and its diff are back, by commit; the section's state too.
+    let mut app = open_state_app(&root, &state, None);
+    assert!(
+        app.settle(|a| !a.session.loading() && a.session.restored == 1).await,
+        "the session restored"
+    );
+    assert!(app.settle(|a| commits_loaded(a) && a.diffs_settled()).await);
+    let oid = git2::Oid::from_str(&second).unwrap();
+    let commit = app.groups.ids().into_iter().find_map(|g| {
+        Some((
+            g,
+            app.groups.get(g)?.tabs.iter().find_map(|t| t.commit())?.commit.clone(),
+        ))
+    });
+    assert_eq!(commit.map(|(_, c)| c), Some(second.clone()));
+    let pair = app
+        .groups
+        .ids()
+        .into_iter()
+        .find_map(|g| app.groups.get(g)?.tabs.iter().find_map(|t| t.diff()).map(|d| d.pair));
+    assert_eq!(pair.map(|p| p.right), Some(Text::Commit(oid)));
+    assert!(app.git_history.collapsed());
+    assert_eq!(app.git_history.section_height, 7);
+
+    // The commit pruned away (a reset and gc): its tab and its diff don't come back.
+    git(&root, &["reset", "--hard", "HEAD~1"]);
+    git(&root, &["reflog", "expire", "--expire=now", "--all"]);
+    git(&root, &["gc", "--prune=now", "--quiet"]);
+    quit(app).await;
+    let mut app = open_state_app(&root, &state, None);
+    assert!(app.settle(|a| !a.session.loading() && a.session.restored == 1).await);
+    let tabs: Vec<&Tab> = app
+        .groups
+        .ids()
+        .into_iter()
+        .flat_map(|g| app.groups.get(g).unwrap().tabs.iter())
+        .collect();
+    assert!(tabs.iter().all(|t| t.commit().is_none()), "no commit tab");
+    assert!(tabs.iter().all(|t| t.diff().is_none()), "no commit diff tab");
+    assert!(tabs.iter().any(|t| t.buffer().is_some()), "the file's tab is back");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -6,7 +6,7 @@ use ratatui::layout::Rect;
 use unicode_width::UnicodeWidthStr;
 
 use crate::buffer::Buffers;
-use crate::group::Group;
+use crate::group::{Group, Tab};
 use crate::layout::TabHit;
 use crate::theme::Theme;
 
@@ -29,18 +29,20 @@ pub fn render(
     let labels: Vec<(String, bool, bool)> = group
         .tabs
         .iter()
-        .map(|t| {
-            let Some(t) = t.text() else {
-                // A diff tab: `name (Working Tree)`.
-                return (t.diff().map(|d| d.title()).unwrap_or_default(), false, false);
-            };
-            let buf = buffers.get(t.buffer);
-            let deleted = buf.is_some_and(|b| b.deleted);
-            let mut name = buf.map(|b| b.name()).unwrap_or_default();
-            if deleted {
-                name.push_str(" (deleted)");
+        .map(|t| match t {
+            // A commit tab: its short id.
+            Tab::Commit(c) => (c.title(), false, false),
+            // A diff tab: `name (Working Tree)`.
+            Tab::Diff(d) => (d.title(), false, false),
+            Tab::Text(t) => {
+                let buf = buffers.get(t.buffer);
+                let deleted = buf.is_some_and(|b| b.deleted);
+                let mut name = buf.map(|b| b.name()).unwrap_or_default();
+                if deleted {
+                    name.push_str(" (deleted)");
+                }
+                (name, buf.is_some_and(|b| b.is_dirty()), deleted)
             }
-            (name, buf.is_some_and(|b| b.is_dirty()), deleted)
         })
         .collect();
     if labels.is_empty() {

@@ -196,6 +196,8 @@ pub enum Command {
     Scm(ScmCommand),
     /// The Explorer view's "Git History" section (`Context::GitHistory`).
     GitHistory(GitHistoryCommand),
+    /// A commit tab (`Context::Commit`): opening a stat row's diff.
+    Commit(CommitCommand),
     /// The active file's history entries in the palette; picking one compares it with the
     /// buffer (a diff tab).
     ShowFileHistory,
@@ -571,20 +573,36 @@ pub enum GitHistoryCommand {
     PageDown,
     First,
     Last,
+    /// Enter (or a click): the selected commit's tab (reusing one already showing it).
+    Open,
     /// Left / Esc: back to the tree (`focused = false`); the side panel keeps the keys.
     FocusTree,
 }
 
 impl GitHistoryCommand {
-    pub const ALL: [GitHistoryCommand; 7] = [
+    pub const ALL: [GitHistoryCommand; 8] = [
         GitHistoryCommand::Up,
         GitHistoryCommand::Down,
         GitHistoryCommand::PageUp,
         GitHistoryCommand::PageDown,
         GitHistoryCommand::First,
         GitHistoryCommand::Last,
+        GitHistoryCommand::Open,
         GitHistoryCommand::FocusTree,
     ];
+}
+
+/// A commit tab's keys (`Context::Commit`, which falls back to the editor's movement, copy and
+/// select keys): opening the file's diff at the cursor's stat row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CommitCommand {
+    /// Enter: the diff of the file whose stat line the cursor is on, in the group to the right
+    /// (splitting one when there is none). Not on a stat line: a message.
+    Open,
+}
+
+impl CommitCommand {
+    pub const ALL: [CommitCommand; 1] = [CommitCommand::Open];
 }
 
 /// The completion list (`Context::Suggest`, while it's shown).
@@ -700,6 +718,7 @@ impl Command {
         ]);
         all.extend(ScmCommand::ALL.map(Command::Scm));
         all.extend(GitHistoryCommand::ALL.map(Command::GitHistory));
+        all.extend(CommitCommand::ALL.map(Command::Commit));
         all.extend([Command::ShowFileHistory, Command::RestoreFileHistory]);
         all.extend([Command::RunTask, Command::KillTask, Command::CloseTask]);
         all.extend(TaskCommand::ALL.map(Command::Task));
@@ -951,7 +970,14 @@ impl Command {
                     GitHistoryCommand::PageDown => "pageDown",
                     GitHistoryCommand::First => "first",
                     GitHistoryCommand::Last => "last",
+                    GitHistoryCommand::Open => "open",
                     GitHistoryCommand::FocusTree => "focusTree",
+                }
+            ),
+            Command::Commit(c) => format!(
+                "commit.{}",
+                match c {
+                    CommitCommand::Open => "open",
                 }
             ),
             Command::PreviousChange => "editor.previousChange".into(),
@@ -1205,7 +1231,11 @@ impl Command {
                 GitHistoryCommand::PageDown => "Git History: Select Commit a Page Down",
                 GitHistoryCommand::First => "Git History: Select First Commit",
                 GitHistoryCommand::Last => "Git History: Select Last Commit",
+                GitHistoryCommand::Open => "Git History: Open Commit",
                 GitHistoryCommand::FocusTree => "Git History: Back to the Explorer",
+            },
+            Command::Commit(c) => match c {
+                CommitCommand::Open => "Commit: Open the File's Changes",
             },
             Command::PreviousChange => "Go to Previous Change",
             Command::RunTask => "Tasks: Run Task",
@@ -1371,9 +1401,10 @@ mod tests {
             Command::ToggleToolTrace => 92,
             Command::RestartServer => 93,
             Command::GitHistory(_) => 94,
+            Command::Commit(_) => 95,
         }
     }
-    const VARIANTS: u8 = 95;
+    const VARIANTS: u8 = 96;
 
     #[test]
     fn all_lists_every_variant() {
@@ -1394,6 +1425,7 @@ mod tests {
         assert_eq!(count(59), SuggestCommand::ALL.len());
         assert_eq!(count(76), ScmCommand::ALL.len());
         assert_eq!(count(94), GitHistoryCommand::ALL.len());
+        assert_eq!(count(95), CommitCommand::ALL.len());
         assert_eq!(count(82), TaskCommand::ALL.len());
         assert_eq!(count(91), ToolsCommand::ALL.len());
     }

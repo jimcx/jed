@@ -7,6 +7,7 @@ mod clipboard;
 mod column;
 mod command;
 mod comment;
+mod commit_view;
 mod completion;
 mod config;
 mod diagnostics;

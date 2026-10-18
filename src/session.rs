@@ -5,12 +5,14 @@
 //! root stored inside (a file naming another root is refused). It holds the editor groups and
 //! their split tree (group ids at the leaves, ratios included), each group's tabs — text tabs by
 //! path with every selection (anchor, head; the primary's index) and the scroll, diff tabs by
-//! path and [`Pair`] (task tabs live in the panel, never here) — the active tab and group, and the
-//! side and bottom panels' layout. Paths inside the root are stored relative to it.
+//! path and [`Pair`], commit tabs by id (task tabs live in the panel, never here) — the active tab
+//! and group, and the side and bottom panels' layout (the Explorer's Git History section's
+//! collapse and height too). Paths inside the root are stored relative to it.
 //!
 //! [`save`] writes atomically (temp file, fsync, rename); [`read`] loads the file and every text
-//! tab's file, dropping tabs whose file is gone or can't be opened and history diffs whose entry
-//! was trimmed, each with a log line. Both are blocking.
+//! tab's file, dropping tabs whose file is gone or can't be opened, history diffs whose entry was
+//! trimmed and commit tabs / commit diffs whose commit the repository no longer has, each with a
+//! log line. Both are blocking.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -24,7 +26,8 @@ use crate::diff_view::{Pair, Text};
 use crate::history::Snapshot;
 use crate::layout::{GroupId, SidePanel, SplitTree};
 
-/// The format's version; a file with another is ignored.
+/// The format's version; a file with another is ignored. Version 1 gained commit tabs and the
+/// history section's `SideState` fields, all serde-defaulted so older files still parse.
 pub const VERSION: u32 = 1;
 /// Under the state dir.
 pub const DIR: &str = "sessions";
@@ -47,6 +50,16 @@ pub struct SideState {
     pub visible: bool,
     pub width: u16,
     pub view: SidePanel,
+    /// The Explorer's "Git History" section collapsed (older sessions: expanded).
+    #[serde(default)]
+    pub history_collapsed: bool,
+    /// Its dragged height in rows (divider, header and commits; older sessions: the default).
+    #[serde(default = "default_history_height")]
+    pub history_height: u16,
+}
+
+fn default_history_height() -> u16 {
+    crate::git_history::DEFAULT_SECTION_HEIGHT
 }
 
 /// The bottom panel (it always comes back on Problems).
@@ -81,14 +94,10 @@ pub enum TabState {
         left: Side,
         right: Side,
     },
-}
-
-impl TabState {
-    pub fn path(&self) -> &Path {
-        match self {
-            TabState::Text { path, .. } | TabState::Diff { path, .. } => path,
-        }
-    }
+    /// A commit tab, by its full id (dropped at restore when the commit is gone).
+    Commit {
+        commit: String,
+    },
 }
 
 /// A diff side (`diff_view::Text`) as stored.
@@ -140,7 +149,7 @@ impl From<Side> for Text {
             Side::Buffer => Text::Buffer,
             Side::History { time, hash } => Text::History(Snapshot { time, hash }),
             // A file's own commit id is always valid; a corrupt one becomes the zero id, whose
-            // diff load then fails (task git_history-c drops such tabs at restore).
+            // diff load then fails (`read` drops commit diffs whose commit is gone).
             Side::Commit { id } => Text::Commit(git2::Oid::from_str(&id).unwrap_or(git2::Oid::ZERO_SHA1)),
             Side::Empty => Text::Empty,
         }
@@ -244,38 +253,38 @@ pub fn read(state_dir: &Path, root: &Path, open: &HashSet<PathBuf>) -> Result<Op
     let mut failed = HashSet::new();
     for group in &mut session.groups {
         let active = group.tabs.get(group.active).cloned();
-        group.tabs.retain(|tab| {
-            let path = resolve(root, tab.path());
-            match tab {
-                TabState::Text { .. } => {
-                    if open.contains(&path) || loaded.contains(&path) {
-                        return true;
-                    }
-                    if failed.contains(&path) {
-                        return false;
-                    }
-                    if !path.is_file() {
-                        tracing::info!(path = %path.display(), "session: file gone, tab not restored");
-                        failed.insert(path);
-                        return false;
-                    }
-                    match Buffer::open(&path) {
-                        Ok(buffer) => {
-                            loaded.insert(path.clone());
-                            buffers.push((path, buffer));
-                            true
-                        }
-                        Err(e) => {
-                            tracing::warn!(path = %path.display(), "session: tab not restored: {e}");
-                            failed.insert(path);
-                            false
-                        }
-                    }
+        group.tabs.retain(|tab| match tab {
+            TabState::Text { path, .. } => {
+                let path = resolve(root, path);
+                if open.contains(&path) || loaded.contains(&path) {
+                    return true;
                 }
-                TabState::Diff { left, right, .. } => {
-                    diff_still_there(root, &path, Side::pair(left.clone(), right.clone()))
+                if failed.contains(&path) {
+                    return false;
+                }
+                if !path.is_file() {
+                    tracing::info!(path = %path.display(), "session: file gone, tab not restored");
+                    failed.insert(path);
+                    return false;
+                }
+                match Buffer::open(&path) {
+                    Ok(buffer) => {
+                        loaded.insert(path.clone());
+                        buffers.push((path, buffer));
+                        true
+                    }
+                    Err(e) => {
+                        tracing::warn!(path = %path.display(), "session: tab not restored: {e}");
+                        failed.insert(path);
+                        false
+                    }
                 }
             }
+            TabState::Diff { path, left, right } => {
+                let path = resolve(root, path);
+                diff_still_there(root, &path, Side::pair(left.clone(), right.clone()))
+            }
+            TabState::Commit { commit } => commit_still_there(root, commit),
         });
         // The active tab stays active, else its neighbour does.
         group.active = active
@@ -286,9 +295,39 @@ pub fn read(state_dir: &Path, root: &Path, open: &HashSet<PathBuf>) -> Result<Op
     Ok(Some(Restore { session, buffers }))
 }
 
-/// Whether a diff tab can come back: a history diff while its entry is kept, a git diff always
-/// (a deleted file's changes are a diff too), the banner's Show Diff while the file exists.
+/// Whether a commit tab can come back: the commit still exists in the root's repository (a
+/// `git reset` may have dropped it).
+fn commit_still_there(root: &Path, id: &str) -> bool {
+    if commit_exists(root, id) {
+        return true;
+    }
+    tracing::info!(commit = id, "session: commit tab not restored (the commit is gone)");
+    false
+}
+
+fn commit_exists(root: &Path, id: &str) -> bool {
+    let Some(repo) = crate::git::Repo::discover(root) else {
+        return false;
+    };
+    let Ok(r) = repo.open() else { return false };
+    let Ok(oid) = git2::Oid::from_str(id) else {
+        return false;
+    };
+    r.find_commit(oid).is_ok()
+}
+
+/// Whether a diff tab can come back: a commit's change while the commit exists, a history diff
+/// while its entry is kept, a git diff always (a deleted file's changes are a diff too), the
+/// banner's Show Diff while the file exists.
 fn diff_still_there(root: &Path, path: &Path, pair: Pair) -> bool {
+    for side in [pair.left, pair.right] {
+        if let crate::diff_view::Text::Commit(id) = side
+            && !commit_exists(root, &id.to_string())
+        {
+            tracing::info!(path = %path.display(), "session: diff tab not restored (its commit is gone)");
+            return false;
+        }
+    }
     let keep = match pair.snapshot() {
         Some(snapshot) => crate::history::relative(root, path)
             .and_then(|rel| crate::history::entries(root, &rel).ok())
@@ -317,6 +356,8 @@ mod tests {
                 visible: false,
                 width: 41,
                 view: SidePanel::Search,
+                history_collapsed: false,
+                history_height: 12,
             },
             panel: PanelState {
                 visible: true,
@@ -445,6 +486,70 @@ mod tests {
         assert_eq!(stored(root, Path::new("/etc/hosts")), Path::new("/etc/hosts"));
         assert_eq!(resolve(root, Path::new("src/a.rs")), Path::new("/w/proj/src/a.rs"));
         assert_eq!(resolve(root, Path::new("/etc/hosts")), Path::new("/etc/hosts"));
+    }
+
+    /// An older session's side state (no history section fields) parses with their defaults.
+    #[test]
+    fn older_side_states_parse_with_the_history_defaults() {
+        let side: SideState = serde_json::from_str(r#"{"visible":true,"width":30,"view":"explorer"}"#).unwrap();
+        assert!(!side.history_collapsed);
+        assert_eq!(side.history_height, crate::git_history::DEFAULT_SECTION_HEIGHT);
+    }
+
+    /// Commit tabs and commit diff tabs come back while their commit exists, and are dropped
+    /// (with a log line) after the commit is gone (a reset).
+    #[test]
+    fn commit_tabs_round_trip_and_a_gone_commit_is_dropped() {
+        use crate::git::test_repo::{commit_all, git, init};
+
+        let dir = tempfile::tempdir().unwrap();
+        let (state, root) = (dir.path().join("state"), dir.path().join("proj"));
+        std::fs::create_dir_all(&root).unwrap();
+        init(&root);
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        commit_all(&root, "one");
+        let first = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let mut s = session(&root);
+        s.side.history_collapsed = true;
+        s.side.history_height = 7;
+        s.groups[0].tabs = vec![
+            TabState::Commit { commit: first.clone() },
+            TabState::Diff {
+                path: "a.txt".into(),
+                left: Side::Empty,
+                right: Side::Commit { id: first.clone() },
+            },
+        ];
+        s.groups[0].active = 1;
+        s.groups.truncate(1);
+        s.tree = SplitTree::new(0);
+        s.active_group = 0;
+        save(&state, &s).unwrap();
+        let r = read(&state, &root, &HashSet::new()).unwrap().unwrap();
+        assert_eq!(r.session.groups[0].tabs.len(), 2, "both come back");
+        assert_eq!(r.session.groups[0].active, 1);
+        assert!(r.session.side.history_collapsed);
+        assert_eq!(r.session.side.history_height, 7);
+        // The commits' text isn't loaded with the session.
+        assert!(r.buffers.is_empty());
+
+        // A commit no longer in the repository (a reset): its tab and its diff go.
+        std::fs::write(root.join("a.txt"), "two\n").unwrap();
+        commit_all(&root, "two");
+        let second = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        git(&root, &["reset", "--hard", "HEAD~1"]);
+        git(&root, &["reflog", "expire", "--expire=now", "--all"]);
+        git(&root, &["gc", "--prune=now", "--quiet"]);
+        let mut s2 = s.clone();
+        s2.groups[0].tabs[0] = TabState::Commit { commit: second.clone() };
+        s2.groups[0].tabs[1] = TabState::Diff {
+            path: "a.txt".into(),
+            left: Side::Empty,
+            right: Side::Commit { id: second },
+        };
+        save(&state, &s2).unwrap();
+        let r = read(&state, &root, &HashSet::new()).unwrap().unwrap();
+        assert!(r.session.groups[0].tabs.is_empty(), "{:?}", r.session.groups[0].tabs);
     }
 
     /// A commit diff tab's sides keep their commit id and the empty-tree side through a session.

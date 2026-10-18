@@ -10,7 +10,6 @@
 //! blob (a mode-only change) has none, which git prints as `Bin` alone. Binary here is git's
 //! NUL-in-the-first-8000-bytes rule; `.gitattributes` binary attributes and diff drivers are not
 //! consulted.
-#![allow(dead_code)] // the commit tab reads these (git_history-c)
 
 use std::path::Path;
 
@@ -26,6 +25,8 @@ pub struct Show {
     /// The parents' unique abbreviations, first parent first (the `Merge:` line uses them when
     /// there is more than one).
     pub parents: Vec<String>,
+    /// The first parent's full id (`None` for a root commit): the left side of a stat row's diff.
+    pub first_parent: Option<Oid>,
     /// The author's name and email.
     pub author: String,
     pub email: String,
@@ -115,6 +116,7 @@ pub fn read(repo: &Repo, id: &str) -> Result<Show, git2::Error> {
     let author = commit.author();
     Ok(Show {
         id: commit.id().to_string(),
+        first_parent: parent.as_ref().map(|p| p.id()),
         parents,
         author: String::from_utf8_lossy(author.name_bytes()).into_owned(),
         email: String::from_utf8_lossy(author.email_bytes()).into_owned(),
@@ -189,6 +191,7 @@ mod tests {
         let show = read(&Repo::discover(&root).unwrap(), &id).unwrap();
         assert_eq!(show.id, id);
         assert!(show.parents.is_empty());
+        assert_eq!(show.first_parent, None, "a root commit");
         assert_eq!((show.author.as_str(), show.email.as_str()), ("t", "t@example.com"));
         assert_eq!(show.message, "first\n");
         let files: Vec<_> = show
@@ -217,6 +220,7 @@ mod tests {
         let id = commit(&root, "second");
         let show = read(&Repo::discover(&root).unwrap(), &id).unwrap();
         assert_eq!(show.parents.len(), 1);
+        assert!(show.first_parent.is_some(), "the first parent's full id");
         let a = show.files.iter().find(|f| f.path == "a.txt").unwrap();
         assert_eq!(a.content, Content::Text { added: 1, deleted: 2 });
         let b = show.files.iter().find(|f| f.path == "b.txt").unwrap();
@@ -294,6 +298,13 @@ mod tests {
         let id = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
         let show = read(&Repo::discover(&root).unwrap(), &id).unwrap();
         assert_eq!(show.parents.len(), 2);
+        assert!(show.first_parent.is_some(), "the first of the two parents");
+        let first = git(&root, &["rev-parse", "HEAD^1"]).trim().to_string();
+        assert_eq!(
+            show.first_parent,
+            Some(Oid::from_str(&first).unwrap()),
+            "the diff side is the first parent, not the second or the merge itself"
+        );
         assert_eq!(show.message, "merge side\n");
         // The side branch's change shows; the first parent's doesn't.
         let paths: Vec<&str> = show.files.iter().map(|f| f.path.as_str()).collect();

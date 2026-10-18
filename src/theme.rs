@@ -117,6 +117,11 @@ impl Theme {
             ("diffEditor.insertedTextBackground", Style::new().bg(c(0x505F2F))),
             ("diffEditor.diagonalFill", Style::new().fg(c(0x404040))),
             ("diffEditor.header", fg_bg(0xBBBBBB, 0x252526)),
+            // A commit tab (`git show`'s text): git's own log colours — the commit id yellow,
+            // the stat graph's `+` green and `-` red; everything else the editor's colour.
+            ("gitShow.commit", Style::new().fg(c(0xE5E510))),
+            ("gitShow.add", Style::new().fg(c(0x81B88B))),
+            ("gitShow.del", Style::new().fg(c(0xF14C4C))),
             ("quickDiff.title", Style::new().fg(c(0xBBBBBB))),
             ("quickDiff.action", fg_bg(0xFFFFFF, 0x0E639C)),
             // The diff view's Revert button (red: Dark+'s `statusBarItem.errorBackground`).

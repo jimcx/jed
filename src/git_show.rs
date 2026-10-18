@@ -13,7 +13,6 @@
 //! Deviations: a name is not C-quoted (only names with control characters or `"`/`\` differ);
 //! the truncation of a too-long name follows git's columns-then-bytes arithmetic only for valid
 //! UTF-8 around a `/` (which is all the tests compare).
-#![allow(dead_code)] // the commit tab draws these (git_history-c)
 
 use unicode_width::UnicodeWidthStr;
 
@@ -67,12 +66,16 @@ impl Segment {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Line {
     pub segments: Vec<Segment>,
+    /// The index into [`Show::files`] of the stat line this is, if it is one (the commit tab
+    /// opens that file's change; `None` for the header, message, blank and summary lines).
+    pub file: Option<usize>,
 }
 
 impl Line {
     fn new(text: impl Into<String>, kind: Kind) -> Line {
         Line {
             segments: vec![Segment::new(text, kind)],
+            file: None,
         }
     }
 
@@ -82,6 +85,7 @@ impl Line {
     }
 
     /// The first segment's kind (`Plain` for an empty line).
+    #[cfg_attr(not(test), allow(dead_code))] // its tests read the kinds
     pub fn kind(&self) -> Kind {
         self.segments.first().map_or(Kind::Plain, |s| s.kind)
     }
@@ -95,6 +99,7 @@ pub fn render(show: &Show, width: usize) -> Vec<Line> {
             Segment::new("commit ", Kind::Plain),
             Segment::new(show.id.clone(), Kind::Commit),
         ],
+        file: None,
     }];
     if show.parents.len() > 1 {
         lines.push(Line::new(format!("Merge: {}", show.parents.join(" ")), Kind::Merge));
@@ -229,7 +234,7 @@ fn stat_lines(show: &Show, width: usize) -> Vec<Line> {
         }
     }
     let mut lines = Vec::with_capacity(show.files.len() + 1);
-    for (file, print) in show.files.iter().zip(&names) {
+    for (k, (file, print)) in show.files.iter().zip(&names).enumerate() {
         let (prefix, name) = truncate(print, name_width);
         let padding = name_width.saturating_sub(width_of(&prefix) + width_of(&name));
         let mut head = String::with_capacity(1 + prefix.len() + name.len() + padding + 3);
@@ -265,7 +270,10 @@ fn stat_lines(show: &Show, width: usize) -> Vec<Line> {
                 }
             }
         }
-        lines.push(Line { segments });
+        lines.push(Line {
+            segments,
+            file: Some(k),
+        });
     }
     let mut adds = 0;
     let mut dels = 0;
@@ -695,6 +703,30 @@ mod tests {
             "{}",
             lines.last().unwrap().text()
         );
+    }
+
+    /// Each stat line names its file's index in `Show::files`; the other lines name none.
+    #[test]
+    fn stat_lines_name_their_file() {
+        let (_d, root) = tmp();
+        write(&root, "a.txt", b"a\n");
+        write(&root, "b.txt", b"b\n");
+        commit(&root, "root");
+        write(&root, "a.txt", b"a\nmore\n");
+        write(&root, "b.txt", b"b\nmore\n");
+        let id = commit(&root, "both");
+        let show = show::read(&Repo::discover(&root).unwrap(), &id).unwrap();
+        let lines = render(&show, 80);
+        assert_eq!(lines[0].file, None, "the commit line");
+        let stat: Vec<usize> = lines.iter().filter_map(|l| l.file).collect();
+        assert_eq!(stat, (0..show.files.len()).collect::<Vec<_>>());
+        let names: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.file.is_some())
+            .map(|l| show.files[l.file.unwrap()].path.as_str())
+            .collect();
+        assert_eq!(names, ["a.txt", "b.txt"]);
+        assert_eq!(lines.last().unwrap().file, None, "the summary");
     }
 
     /// The rename forms: prefix and suffix, prefix alone, suffix alone, and neither.

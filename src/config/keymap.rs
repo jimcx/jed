@@ -10,9 +10,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
 
 use crate::command::{
-    ColumnMotion, Command, ExplorerCommand as X, FindCommand as F, GitHistoryCommand as G, LocationsCommand as L,
-    Motion, PaletteCommand as P, ProblemsCommand as Pr, ScmCommand as Sc, SearchCommand as S, SuggestCommand as Sg,
-    TaskCommand as T, ToolsCommand as Tl,
+    ColumnMotion, Command, CommitCommand as Cc, ExplorerCommand as X, FindCommand as F, GitHistoryCommand as G,
+    LocationsCommand as L, Motion, PaletteCommand as P, ProblemsCommand as Pr, ScmCommand as Sc, SearchCommand as S,
+    SuggestCommand as Sg, TaskCommand as T, ToolsCommand as Tl,
 };
 
 pub const FILE_NAME: &str = "keybindings.toml";
@@ -198,13 +198,16 @@ pub enum Context {
     Tools,
     /// The Explorer view's "Git History" section has the keys; unbound keys do nothing.
     GitHistory,
+    /// The editor has the focus and its active tab is a commit; bindings not found here come
+    /// from `Editor` (movement, copy, select all).
+    Commit,
     /// A task tab in the bottom panel has the focus: keys bound to nothing (here or globally)
     /// go to the task's terminal.
     Task,
 }
 
 impl Context {
-    const ALL: [(Context, &'static str); 15] = [
+    const ALL: [(Context, &'static str); 16] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
@@ -219,6 +222,7 @@ impl Context {
         (Context::Scm, "scm"),
         (Context::Tools, "tools"),
         (Context::GitHistory, "gitHistory"),
+        (Context::Commit, "commit"),
         (Context::Task, "task"),
     ];
 
@@ -231,7 +235,7 @@ impl Context {
         match self {
             Context::Replace => Some(Context::Find),
             Context::SearchResults => Some(Context::Search),
-            Context::Suggest | Context::Diff => Some(Context::Editor),
+            Context::Suggest | Context::Diff | Context::Commit => Some(Context::Editor),
             _ => None,
         }
     }
@@ -736,9 +740,14 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::PageDown, none, G::PageDown),
         (KeyCode::Home, none, G::First),
         (KeyCode::End, none, G::Last),
+        (KeyCode::Enter, none, G::Open),
         (KeyCode::Left, none, G::FocusTree),
         (KeyCode::Esc, none, G::FocusTree),
     ];
+
+    // A commit tab: Enter opens the cursor's stat row's diff (falls back to the editor's
+    // movement, Home / End, Cmd+C and Cmd+A).
+    let commit = [(KeyCode::Enter, none, Command::Commit(Cc::Open))];
 
     // A task tab: scrolling through its output (VS Code's terminal keys, Ctrl rather than Cmd on
     // macOS), back to the editor, close. Every other key not bound globally goes to the task.
@@ -817,6 +826,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
             .into_iter()
             .map(|(k, m, c)| bind(k, m, Some(Context::GitHistory), Command::GitHistory(c))),
     );
+    out.extend(commit.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Commit), c)));
     out.extend(task.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Task), c)));
     out
 }
