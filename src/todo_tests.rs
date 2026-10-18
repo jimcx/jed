@@ -878,7 +878,7 @@ mod scroll_bars {
     }
 }
 
-mod side_scroll_bars {
+pub(crate) mod side_scroll_bars {
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -985,17 +985,17 @@ mod side_scroll_bars {
 
     /// A list under test: its bar, its row count, its top row and what must not change
     /// (its selection, by key).
-    struct List {
-        target: ScrollTarget,
-        rows: fn(&App) -> usize,
-        top: fn(&App) -> usize,
-        selection: fn(&App) -> String,
+    pub(crate) struct List {
+        pub(crate) target: ScrollTarget,
+        pub(crate) rows: fn(&App) -> usize,
+        pub(crate) top: fn(&App) -> usize,
+        pub(crate) selection: fn(&App) -> String,
     }
 
     /// The shared checks: the drawn thumb follows the list's scroll; hover, press-and-drag
     /// (off the bar too, past the end: the wheel's end), a press on the track, the wheel over
     /// the bar; the list's selection and the focus never change.
-    fn drag_the_bar(app: &mut App, l: &List) {
+    pub(crate) fn drag_the_bar(app: &mut App, l: &List) {
         let (t, rows) = (l.target, (l.rows)(app));
         let (focus, selection) = (app.ui.focus, (l.selection)(app));
         let term = draw(app);

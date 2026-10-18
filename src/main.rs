@@ -80,6 +80,7 @@ mod theme;
 mod todo_tests;
 #[cfg(test)]
 mod tools_tests;
+mod tools_view;
 mod ui;
 mod view;
 mod watcher;

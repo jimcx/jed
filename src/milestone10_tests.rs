@@ -1797,6 +1797,9 @@ async fn milestone_10_editor_commands_on_a_diff_tab_do_nothing() {
                 | Command::RevertHunk
                 | Command::OpenUserSettings
                 | Command::OpenLogFile
+                // The Tools view's own commands: a list of its own, and Open may open a tool's
+                // log tab beside the diff (as `OpenLogFile` does a file's).
+                | Command::Tools(_)
         )
     };
     for c in Command::all().into_iter().filter(|c| !skip(c)) {

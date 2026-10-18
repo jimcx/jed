@@ -372,6 +372,8 @@ pub struct App {
     pub diffs: diff_view::DiffViews,
     /// The Source Control view: collapsed sections, scroll, selection.
     pub scm: crate::scm::ScmView,
+    /// The Tools view's list (`app/tools.rs`, drawn by `ui::tools`).
+    pub tools_view: crate::tools_view::ToolsView,
     /// Stage All waiting for these buffers' saves to end.
     stage_all_after_save: Option<HashSet<BufferId>>,
     /// Task templates from `tasks.toml` and the task runs (`app/tasks.rs`).
@@ -479,6 +481,7 @@ impl App {
             blame: Default::default(),
             diffs: Default::default(),
             scm: Default::default(),
+            tools_view: Default::default(),
             stage_all_after_save: None,
             tasks: Default::default(),
             nav: Default::default(),
@@ -731,6 +734,7 @@ impl App {
             }
             Focus::SidePanel if self.ui.side_panel == SidePanel::Search => Context::Search,
             Focus::SidePanel if self.ui.side_panel == SidePanel::SourceControl => Context::Scm,
+            Focus::SidePanel if self.ui.side_panel == SidePanel::Tools => Context::Tools,
             Focus::SidePanel => Context::Explorer,
             Focus::Find if self.find.field == Field::Replace => Context::Replace,
             Focus::Find => Context::Find,
@@ -989,6 +993,8 @@ impl App {
             Command::NavForward => self.navigate(crate::navigation::Dir::Forward),
             Command::OpenToolLog => self.show_log_picker(),
             Command::ClearToolLog => self.clear_tool_log(),
+            Command::ShowTools => self.focus_side(SidePanel::Tools),
+            Command::Tools(c) => self.tools_command(c),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
             // A diff tab: its own movement keys; other editor commands do nothing.
@@ -1073,12 +1079,23 @@ impl App {
         if panel == SidePanel::SourceControl {
             self.scm_select_first();
         }
+        if panel == SidePanel::Tools {
+            self.tools_select_first();
+        }
         if panel == SidePanel::Explorer && self.explorer.selected.is_none() {
             self.explorer.select_index(0);
         }
     }
 
     fn handle_app_event(&mut self, ev: AppEvent) {
+        // New log lines redraw only what shows them: log tabs take them in at the turn's
+        // `sync_logs`; the Tools view only when its error badges changed.
+        if let AppEvent::LogsChanged = ev {
+            if self.logs_changed() {
+                self.needs_redraw = true;
+            }
+            return;
+        }
         self.needs_redraw = true;
         // A session's restore replaces the layout: not a jump.
         let here = match ev {
@@ -1131,7 +1148,7 @@ impl App {
             AppEvent::BackupRestore(r) => self.backup_restored(*r),
             AppEvent::RecentRecorded(result) => self.recent_recorded(result),
             AppEvent::RecentListed(listed) => self.recent_listed(*listed),
-            AppEvent::LogsChanged => self.logs_changed(),
+            AppEvent::LogsChanged => {}
         }
         self.nav_end(here, false);
         self.refresh_find();
@@ -1284,6 +1301,11 @@ impl App {
         self.sync_backups();
         self.report_log_errors();
         self.sync_logs();
+    }
+
+    /// Whether something asked for a redraw since the last call (clears it, as a frame would).
+    pub fn test_take_redraw(&mut self) -> bool {
+        std::mem::take(&mut self.needs_redraw)
     }
 
     /// One turn of `run` without a terminal: waits up to `within` for an app event or the

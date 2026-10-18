@@ -12,6 +12,7 @@ use serde::Deserialize;
 use crate::command::{
     ColumnMotion, Command, ExplorerCommand as X, FindCommand as F, LocationsCommand as L, Motion, PaletteCommand as P,
     ProblemsCommand as Pr, ScmCommand as Sc, SearchCommand as S, SuggestCommand as Sg, TaskCommand as T,
+    ToolsCommand as Tl,
 };
 
 pub const FILE_NAME: &str = "keybindings.toml";
@@ -193,13 +194,15 @@ pub enum Context {
     Diff,
     /// The Source Control view's list has the focus.
     Scm,
+    /// The Tools view's list has the focus.
+    Tools,
     /// A task tab in the bottom panel has the focus: keys bound to nothing (here or globally)
     /// go to the task's terminal.
     Task,
 }
 
 impl Context {
-    const ALL: [(Context, &'static str); 13] = [
+    const ALL: [(Context, &'static str); 14] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
@@ -212,6 +215,7 @@ impl Context {
         (Context::Suggest, "suggest"),
         (Context::Diff, "diff"),
         (Context::Scm, "scm"),
+        (Context::Tools, "tools"),
         (Context::Task, "task"),
     ];
 
@@ -597,6 +601,8 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::F(4), shift, Command::Search(S::PreviousResult)),
         (KeyCode::Char('j'), cmd, Command::TogglePanel),
         (KeyCode::Char('m'), cmd | shift, Command::ToggleProblems),
+        // VS Code's Output (on Linux VS Code has Ctrl+K Ctrl+H; no chords here).
+        (KeyCode::Char('u'), cmd | shift, Command::ShowTools),
         (KeyCode::F(8), none, Command::Problems(Pr::Next)),
         (KeyCode::F(8), shift, Command::Problems(Pr::Previous)),
         // VS Code's Go Back / Go Forward: Ctrl on macOS too; Ctrl+Alt+- on Linux.
@@ -707,6 +713,17 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Esc, none, Sc::FocusEditor),
     ];
 
+    let tools = [
+        (KeyCode::Up, none, Tl::Up),
+        (KeyCode::Down, none, Tl::Down),
+        (KeyCode::PageUp, none, Tl::PageUp),
+        (KeyCode::PageDown, none, Tl::PageDown),
+        (KeyCode::Home, none, Tl::First),
+        (KeyCode::End, none, Tl::Last),
+        (KeyCode::Enter, none, Tl::Open),
+        (KeyCode::Esc, none, Tl::FocusEditor),
+    ];
+
     // A task tab: scrolling through its output (VS Code's terminal keys, Ctrl rather than Cmd on
     // macOS), back to the editor, close. Every other key not bound globally goes to the task.
     let task = [
@@ -773,6 +790,11 @@ fn defaults(platform: Platform) -> Vec<Binding> {
     out.extend(
         scm.into_iter()
             .map(|(k, m, c)| bind(k, m, Some(Context::Scm), Command::Scm(c))),
+    );
+    out.extend(
+        tools
+            .into_iter()
+            .map(|(k, m, c)| bind(k, m, Some(Context::Tools), Command::Tools(c))),
     );
     out.extend(task.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Task), c)));
     out

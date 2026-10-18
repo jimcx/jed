@@ -55,7 +55,7 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
 │ Status bar: branch · diagnostics · Ln/Col · lang · encoding │
 └─────────────────────────────────────────────────────────────┘
 ```
-- **Activity bar** (left edge): icons for Explorer, Search, Source Control
+- **Activity bar** (left edge): icons for Explorer, Search, Source Control, Tools
 - **Side panel**: switches with the activity bar; can be toggled and resized
 - **Editor area**: groups with tabs, split horizontally or vertically
 - **Bottom panel**: Problems list, task terminals
@@ -891,7 +891,12 @@ Milestones 1–13 above are done and keep their numbers. Milestones planned afte
       - The store's waker sends `AppEvent::LogsChanged` on the first push after a rearm; `Timer::Logs` rearms at most every `LOG_FRAME` (20 ms), only while a log tab is open
       - `tools.openLog` (picker: "jed" first, then each tool with a log; reuses the group's tab or the buffer) and `tools.clearLog` (the active log tab's tool; elsewhere a message); `App::test_turn(within)` runs one real loop turn (waker tests)
       - Deferred: times are UTC (no time zone database); no colour for the level word
-    - tools-c: the Tools view: activity bar icon, `SidePanel::Tools` rows (servers with state / progress / error badge, task runs, "jed"), `Scrollable`, click / Enter opens the log or focuses the task tab, "Tools: Show"
+    - ✅ tools-c: the Tools view: activity bar icon, `SidePanel::Tools` rows (servers with state / progress / error badge, task runs, "jed"), `Scrollable`, click / Enter opens the log or focuses the task tab, "Tools: Show"
+      - `tools_view.rs` (no drawing: `rows` from `Manager::servers` / `stopped`, `Tasks::runs` and `Logs::error_counts`; `RowKey` keeps the selection on its row by name / run / "jed"; the list's scroll and selection, `Scrollable`) and `ui/tools.rs` (the state mark in `tools.*`, name, dimmed languages · state (progress while running) · root when not the workspace's; a task run's `panel::task_mark` and status; "jed"; a log's error count in `tools.errorBadge`)
+      - `lsp::Manager::stopped` remembers the latest server per name that `sync` stopped or that exited cleanly (a failed one stays in `servers`), so its row and log remain; `Logs::error_counts` feeds the badges
+      - `tools.show` (Cmd+Shift+U, VS Code's Output) shows the view and gives it the keys (`Context::Tools`: arrows, PageUp / PageDown, Home / End, Enter, Esc); Enter or a click opens the selected tool's log tab (`open_tool_log`, reused), a task run's row shows and focuses its panel tab; the activity bar's `≡` opens it too, and the session restores it
+      - New log lines wake the loop while the view is shown (the store's waker is rearmed when it appears) and redraw only when an error badge changes (`tools_view.errors_drawn`); the side lists' scroll bar and wheel work on it
+      - Tests: `src/tools_tests.rs` (a stopped server as exited, the selection by key, click / Enter, the scroll bar through `todo_tests::side_scroll_bars`, the waker and redraw condition via `App::test_turn` / `test_take_redraw`, the session)
     - tools-d: "Tools: Toggle Protocol Trace" (the `lsp::wire` messages into that server's log) and "Tools: Restart Server" (stops it and lets `sync` start it again, also after a failure); the done-when tests, gaps and hand checks; marks the milestone ✅
 - **Soft wrap** (`soft_wrap`): wrap long lines at the editor's width, with movement, scrolling and the mouse on screen rows — see [Editor](#editor)
   - Needs: the editor view and drawing (`ui::editor`), its scroll bar, mouse hits, sessions (the view's top)

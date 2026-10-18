@@ -81,10 +81,11 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+p` | Quick open (go to file) | everywhere |
 | `cmd+j` | Toggle the bottom panel (Problems) | everywhere |
 | `cmd+shift+m` | Toggle Problems (show and focus the list, or hide the panel) | everywhere |
+| `cmd+shift+u` | Show the Tools view (VS Code's Output) | everywhere |
 
 **Mouse with modifiers.** Alt+Click adds or removes a cursor and Shift+Alt+drag makes a box selection. Most terminals keep Shift+drag for their own text selection while a program uses the mouse (kitty `terminal_select_modifiers`, WezTerm `bypass_mouse_reporting_modifiers`), and some use Alt or Cmd+Alt with the mouse for rectangle selection, so these may not reach jed. The keyboard box select (Cmd+Shift+Alt+arrows) always works.
 
-The palette is also on F1, go to line is Ctrl+G and the Source Control view Ctrl+Shift+G (as VS Code on macOS); none needs a terminal change. Neither do the find widget's other keys: Enter / Shift+Enter and F3 / Shift+F3 (next / previous match), Alt+Enter (select all matches), Tab (find ↔ replace) and Esc. The Search view's Esc (back to the editor) needs nothing either, nor do F8 / Shift+F8 (next / previous problem), the Problems list's arrows, Enter and Esc, and the Source Control list's arrows, Enter, Space and Esc.
+The palette is also on F1, go to line is Ctrl+G and the Source Control view Ctrl+Shift+G (as VS Code on macOS); none needs a terminal change. Neither do the find widget's other keys: Enter / Shift+Enter and F3 / Shift+F3 (next / previous match), Alt+Enter (select all matches), Tab (find ↔ replace) and Esc. The Search view's Esc (back to the editor) needs nothing either, nor do F8 / Shift+F8 (next / previous problem), the Problems list's arrows, Enter and Esc, the Source Control list's arrows, Enter, Space and Esc, and the Tools view's arrows, Enter and Esc.
 
 **Leave Cmd+V with the terminal.** jed doesn't bind it: the terminal's paste arrives in jed as a bracketed paste, which works the same locally and over SSH. Cmd+C and Cmd+X must reach jed, since the terminal's own copy takes text off the screen, not jed's selection.
 

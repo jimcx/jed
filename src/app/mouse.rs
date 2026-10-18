@@ -93,6 +93,7 @@ impl App {
                 match hit {
                     Hit::SidePanel if self.ui.side_panel == SidePanel::Search => self.search_scroll(delta),
                     Hit::SidePanel if self.ui.side_panel == SidePanel::SourceControl => self.scm_scroll(delta),
+                    Hit::SidePanel if self.ui.side_panel == SidePanel::Tools => self.tools_scroll(delta),
                     Hit::ExplorerRow(_) | Hit::SidePanel => self.explorer.scroll_by(delta),
                     Hit::Panel | Hit::PanelTab(_) | Hit::PanelTabClose(_) | Hit::PanelBorder => match self.ui.panel_tab
                     {
@@ -208,6 +209,7 @@ impl App {
             }
             Hit::SidePanel if self.ui.side_panel == SidePanel::Search => self.search_click(m, count),
             Hit::SidePanel if self.ui.side_panel == SidePanel::SourceControl => self.scm_click(m, count),
+            Hit::SidePanel if self.ui.side_panel == SidePanel::Tools => self.tools_click(m),
             Hit::ExplorerRow(_) | Hit::SidePanel => self.ui.focus = Focus::SidePanel,
             Hit::Divider(i) => self.drag = self.hits.dividers.get(i).cloned().map(Drag::Divider),
             Hit::Tab(g, i) => {

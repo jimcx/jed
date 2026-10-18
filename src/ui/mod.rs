@@ -20,6 +20,7 @@ mod splash;
 mod status;
 mod tabs;
 mod task;
+mod tools;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -46,7 +47,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     hits.icons = activity::render(f, regions.activity, app);
     if let Some(side) = regions.side {
         let side = side::render(f, side, app);
-        (hits.explorer_rows, hits.search, hits.scm) = (side.explorer_rows, side.search, side.scm);
+        (hits.explorer_rows, hits.search, hits.scm, hits.tools) =
+            (side.explorer_rows, side.search, side.scm, side.tools);
         hits.side_scrollbar = side.scrollbar;
     }
 

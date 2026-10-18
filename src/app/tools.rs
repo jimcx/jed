@@ -1,15 +1,23 @@
-//! Tool logs (`crate::logs`): where the store writes, its write errors, the flush on quit, and
-//! the read-only log tabs ("Tools: Open Log" / "Clear Log").
+//! Tool logs (`crate::logs`): where the store writes, its write errors, the flush on quit, the
+//! read-only log tabs ("Tools: Open Log" / "Clear Log"), and the Tools view (`app.tools_view`,
+//! a `tools_view::ToolsView`; drawn by `ui::tools`): its keys (`Context::Tools`), opening a
+//! row's log or focusing a task run's panel tab, the mouse, and keeping it current.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crossterm::event::MouseEvent;
+use ratatui::layout::Position;
+
 use super::{App, AppEvent, Focus, Level};
 use crate::buffer::pos::{self, ByteIdx};
 use crate::buffer::{Buffer, BufferId};
+use crate::command::ToolsCommand as C;
+use crate::layout::{PanelTab, SidePanel};
 use crate::logs::Tool;
 use crate::palette::Picker;
 use crate::selection::{Selection, Selections};
+use crate::tools_view::{self, Row};
 use crate::view::View;
 
 /// How long quitting waits for the tool logs' last lines to reach the disk.
@@ -69,19 +77,26 @@ impl App {
         self.buffers.iter().any(|(_, b)| b.log.is_some())
     }
 
+    /// Something shows the logs: a log tab (its lines), or the Tools view (its error badges).
+    fn wants_log_wakes(&self) -> bool {
+        self.has_log_tabs() || self.tools_shown()
+    }
+
     /// `AppEvent::LogsChanged`: the turn it ends reads the new lines (`sync_logs`); the store
-    /// may wake the loop again `LOG_FRAME` later. Without log tabs it stays unarmed: nothing
-    /// wakes the loop until one opens.
-    pub(super) fn logs_changed(&mut self) {
-        if self.has_log_tabs() {
+    /// may wake the loop again `LOG_FRAME` later. With neither log tabs nor the Tools view it
+    /// stays unarmed: nothing wakes the loop until one shows. Returns whether the Tools view
+    /// needs a redraw (an error badge changed); log tabs redraw from `sync_logs`.
+    pub(super) fn logs_changed(&mut self) -> bool {
+        if self.wants_log_wakes() {
             self.log_tabs.deadline.get_or_insert(Instant::now() + LOG_FRAME);
         }
+        self.tools_shown() && self.logs.error_counts() != self.tools_view.errors_drawn
     }
 
     /// `Timer::Logs`: the store may wake the loop again.
     pub(super) fn logs_tick(&mut self) {
         self.log_tabs.deadline = None;
-        if self.has_log_tabs() {
+        if self.wants_log_wakes() {
             self.logs.rearm();
         }
     }
@@ -92,6 +107,12 @@ impl App {
     /// A view whose primary cursor was on the last line follows the tail (cursor at the end,
     /// revealed); any other maps through the change and stays on its text.
     pub(super) fn sync_logs(&mut self) {
+        // The Tools view just appeared: the store may wake the loop (its badges stay current).
+        let shown = self.tools_shown();
+        if shown && !self.tools_view.was_shown && self.log_tabs.deadline.is_none() {
+            self.logs.rearm();
+        }
+        self.tools_view.was_shown = shown;
         let ids: Vec<BufferId> = self
             .buffers
             .iter()
@@ -198,5 +219,90 @@ impl App {
         };
         self.logs.clear(&tool);
         self.sync_logs();
+    }
+}
+
+impl App {
+    /// The Tools view is on screen.
+    pub(super) fn tools_shown(&self) -> bool {
+        self.ui.side_visible && self.ui.side_panel == SidePanel::Tools
+    }
+
+    /// The Tools view's rows, from the servers, task runs and logs as they are now.
+    pub fn tools_rows(&self) -> Vec<Row> {
+        tools_view::rows(
+            &self.lsp,
+            self.tasks.runs(),
+            &self.logs.error_counts(),
+            &self.workspace.root,
+        )
+    }
+
+    /// With nothing selected, selects the first row (from `focus_side`: "Tools: Show", the
+    /// activity bar icon).
+    pub(super) fn tools_select_first(&mut self) {
+        let rows = self.tools_rows();
+        if self.tools_view.selected_row(&rows).is_none() {
+            self.tools_view.select(&rows, 0);
+        }
+    }
+
+    pub(super) fn tools_command(&mut self, cmd: C) {
+        let rows = self.tools_rows();
+        let page = self.tools_view.height.max(1) as isize;
+        let view = &mut self.tools_view;
+        match cmd {
+            C::Up => view.move_selection(&rows, -1),
+            C::Down => view.move_selection(&rows, 1),
+            C::PageUp => view.move_selection(&rows, -page),
+            C::PageDown => view.move_selection(&rows, page),
+            C::First => view.select(&rows, 0),
+            C::Last => view.select(&rows, rows.len().saturating_sub(1)),
+            C::Open => self.tools_open(&rows),
+            C::FocusEditor => {
+                if !self.group().tabs.is_empty() {
+                    self.ui.focus = Focus::Editor;
+                }
+            }
+        }
+    }
+
+    /// The selected row: a tool's log tab, shown and focused (`open_tool_log`), or a task run's
+    /// panel tab, shown and focused (its output is there: no second copy).
+    fn tools_open(&mut self, rows: &[Row]) {
+        let Some(i) = self.tools_view.selected_row(rows) else {
+            return;
+        };
+        match &rows[i] {
+            Row::Task { id, .. } => self.focus_panel(PanelTab::Task(*id)),
+            row => {
+                if let Some(tool) = row.tool() {
+                    self.open_tool_log(tool);
+                }
+            }
+        }
+    }
+
+    /// A click in the view: the row under it is selected and opened.
+    pub(super) fn tools_click(&mut self, m: MouseEvent) {
+        self.ui.focus = Focus::SidePanel;
+        let Some(hit) = self.hits.tools.clone() else { return };
+        let at = Position { x: m.column, y: m.row };
+        if !hit.list.contains(at) {
+            return;
+        }
+        let Some(key) = hit.rows.get((at.y - hit.list.y) as usize) else {
+            return;
+        };
+        let rows = self.tools_rows();
+        if self.tools_view.select_key(&rows, key) {
+            self.tools_open(&rows);
+        }
+    }
+
+    /// The wheel over the view.
+    pub(super) fn tools_scroll(&mut self, delta: isize) {
+        let rows = self.tools_rows();
+        self.tools_view.scroll_by(&rows, delta);
     }
 }

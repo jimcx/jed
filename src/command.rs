@@ -226,6 +226,39 @@ pub enum Command {
     OpenToolLog,
     /// "Tools: Clear Log": empties the active log tab's tool's log.
     ClearToolLog,
+    /// "Tools: Show" (Cmd+Shift+U, VS Code's Output): shows the Tools view and gives it the keys.
+    ShowTools,
+    /// The Tools view's list (`Context::Tools`).
+    Tools(ToolsCommand),
+}
+
+/// The Tools view's list (`Context::Tools`, while it has the keys).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ToolsCommand {
+    /// The selection: a row up / down, a page, the first / last row.
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    First,
+    Last,
+    /// Enter: the selected tool's log tab (a task run: its panel tab), focused.
+    Open,
+    /// Esc: back to the editor.
+    FocusEditor,
+}
+
+impl ToolsCommand {
+    pub const ALL: [ToolsCommand; 8] = [
+        ToolsCommand::Up,
+        ToolsCommand::Down,
+        ToolsCommand::PageUp,
+        ToolsCommand::PageDown,
+        ToolsCommand::First,
+        ToolsCommand::Last,
+        ToolsCommand::Open,
+        ToolsCommand::FocusEditor,
+    ];
 }
 
 /// A task tab in the bottom panel (`Context::Task`, while it has the keys); keys bound to
@@ -638,7 +671,8 @@ impl Command {
         all.push(Command::ToggleRenderWhitespace);
         all.push(Command::ToggleBlame);
         all.extend([Command::NavBack, Command::NavForward]);
-        all.extend([Command::OpenToolLog, Command::ClearToolLog]);
+        all.extend([Command::OpenToolLog, Command::ClearToolLog, Command::ShowTools]);
+        all.extend(ToolsCommand::ALL.map(Command::Tools));
         all
     }
 
@@ -877,6 +911,20 @@ impl Command {
             Command::NavForward => "nav.forward".into(),
             Command::OpenToolLog => "tools.openLog".into(),
             Command::ClearToolLog => "tools.clearLog".into(),
+            Command::ShowTools => "tools.show".into(),
+            Command::Tools(c) => format!(
+                "toolsView.{}",
+                match c {
+                    ToolsCommand::Up => "up",
+                    ToolsCommand::Down => "down",
+                    ToolsCommand::PageUp => "pageUp",
+                    ToolsCommand::PageDown => "pageDown",
+                    ToolsCommand::First => "first",
+                    ToolsCommand::Last => "last",
+                    ToolsCommand::Open => "open",
+                    ToolsCommand::FocusEditor => "focusEditor",
+                }
+            ),
             Command::Task(c) => format!(
                 "task.{}",
                 match c {
@@ -1105,6 +1153,17 @@ impl Command {
             Command::NavForward => "Go Forward",
             Command::OpenToolLog => "Tools: Open Log",
             Command::ClearToolLog => "Tools: Clear Log",
+            Command::ShowTools => "Tools: Show",
+            Command::Tools(c) => match c {
+                ToolsCommand::Up => "Tools: Select Previous Row",
+                ToolsCommand::Down => "Tools: Select Next Row",
+                ToolsCommand::PageUp => "Tools: Select Row a Page Up",
+                ToolsCommand::PageDown => "Tools: Select Row a Page Down",
+                ToolsCommand::First => "Tools: Select First Row",
+                ToolsCommand::Last => "Tools: Select Last Row",
+                ToolsCommand::Open => "Tools: Open the Selected Tool's Log",
+                ToolsCommand::FocusEditor => "Tools: Back to Editor",
+            },
             Command::Task(c) => match c {
                 TaskCommand::ScrollUp => "Tasks: Scroll Up",
                 TaskCommand::ScrollDown => "Tasks: Scroll Down",
@@ -1240,9 +1299,11 @@ mod tests {
             Command::NavForward => 87,
             Command::OpenToolLog => 88,
             Command::ClearToolLog => 89,
+            Command::ShowTools => 90,
+            Command::Tools(_) => 91,
         }
     }
-    const VARIANTS: u8 = 90;
+    const VARIANTS: u8 = 92;
 
     #[test]
     fn all_lists_every_variant() {
@@ -1263,6 +1324,7 @@ mod tests {
         assert_eq!(count(59), SuggestCommand::ALL.len());
         assert_eq!(count(76), ScmCommand::ALL.len());
         assert_eq!(count(82), TaskCommand::ALL.len());
+        assert_eq!(count(91), ToolsCommand::ALL.len());
     }
 
     #[test]

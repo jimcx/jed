@@ -1,12 +1,12 @@
-//! Side panel: explorer tree, the Search view (`ui::search`) or the Source Control view
-//! (`ui::scm`).
+//! Side panel: explorer tree, the Search view (`ui::search`), the Source Control view
+//! (`ui::scm`) or the Tools view (`ui::tools`).
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use super::scrollbar;
 use crate::app::{App, Focus};
-use crate::layout::{ScmHit, ScrollBarHit, ScrollTarget, SearchHit, SidePanel};
+use crate::layout::{ScmHit, ScrollBarHit, ScrollTarget, SearchHit, SidePanel, ToolsHit};
 use crate::scrollbar::Scroll;
 
 /// What the side panel drew, for hit-testing.
@@ -16,6 +16,7 @@ pub struct SideHits {
     pub explorer_rows: Rect,
     pub search: Option<SearchHit>,
     pub scm: Option<ScmHit>,
+    pub tools: Option<ToolsHit>,
     /// The shown list's scroll bar (its last column).
     pub scrollbar: Option<(ScrollTarget, ScrollBarHit)>,
 }
@@ -68,6 +69,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
             return SideHits {
                 scm,
                 scrollbar: bar.map(|b| (ScrollTarget::Side(SidePanel::SourceControl), b)),
+                ..SideHits::default()
+            };
+        }
+        SidePanel::Tools => {
+            let (tools, bar) = super::tools::render(f, view, app);
+            return SideHits {
+                tools,
+                scrollbar: bar.map(|b| (ScrollTarget::Side(SidePanel::Tools), b)),
                 ..SideHits::default()
             };
         }

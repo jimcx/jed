@@ -160,6 +160,13 @@ impl Theme {
             ("scm.count", fg_bg(0xFFFFFF, 0x4D4D4D)),
             ("scm.action", Style::new().fg(c(0xFFFFFF)).add_modifier(Modifier::BOLD)),
             ("scm.deleted", Style::new().add_modifier(Modifier::CROSSED_OUT)),
+            // The Tools view: a language server's state mark, its log's error badge
+            // (`activityErrorBadge`).
+            ("tools.starting", Style::new().fg(c(0xCCA700))),
+            ("tools.running", Style::new().fg(c(0x89D185))),
+            ("tools.failed", Style::new().fg(c(0xF14C4C))),
+            ("tools.exited", Style::new().fg(c(0x858585))),
+            ("tools.errorBadge", fg_bg(0xFFFFFF, 0xF14C4C)),
             ("tabBar", Style::new().bg(c(0x252526))),
             ("tab.active", fg_bg(0xFFFFFF, 0x1E1E1E)),
             ("tab.inactive", fg_bg(0x969696, 0x2D2D2D)),

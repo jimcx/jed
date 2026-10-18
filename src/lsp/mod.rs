@@ -174,6 +174,27 @@ impl Server {
     }
 }
 
+/// A server that's gone from `Manager::servers`: stopped by `sync` (no language resolves to
+/// its config any more: a `.workspace` change, a trust decision) or exited without a crash.
+/// Failed ones stay in `servers` (`State::Failed`). Kept so the Tools view still lists it (its
+/// log remains); one per name, the latest, dropped when a server of that config starts again.
+#[derive(Debug, Clone)]
+pub struct Stopped {
+    pub config: ServerConfig,
+    pub root: PathBuf,
+    pub languages: Vec<Language>,
+}
+
+/// Remembers `s` as stopped (replacing an older one of its name).
+fn note_stopped(stopped: &mut Vec<Stopped>, s: &Server, languages: Vec<Language>) {
+    stopped.retain(|o| o.config.name != s.config.name);
+    stopped.push(Stopped {
+        config: s.config.clone(),
+        root: s.root.clone(),
+        languages,
+    });
+}
+
 /// A request `Manager::request_at` sent: its server, id, and the server's position encoding
 /// (to read positions in the answer).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,6 +220,8 @@ pub struct Manager {
     servers: Vec<Server>,
     /// Servers being shut down because their config changed; awaited on quit.
     stopping: Vec<JoinHandle<()>>,
+    /// Servers gone from `servers` (stopped or exited cleanly), for the Tools view.
+    stopped: Vec<Stopped>,
     next_server: u64,
     /// Buffers open on servers (`textDocument/didOpen` …).
     docs: Documents,
@@ -223,6 +246,7 @@ impl Manager {
             sink: None,
             servers: Vec::new(),
             stopping: Vec::new(),
+            stopped: Vec::new(),
             next_server: 0,
             docs: Documents::default(),
             diagnostics: diagnostics::Store::default(),
@@ -253,9 +277,15 @@ impl Manager {
         self.sink.is_some()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // tests; the status bar later
+    /// Every server started and not stopped: starting, running, or failed.
     pub fn servers(&self) -> &[Server] {
         &self.servers
+    }
+
+    /// Servers that stopped (by `sync`) or exited without a crash, latest per name: the Tools
+    /// view lists them as exited.
+    pub fn stopped(&self) -> &[Stopped] {
+        &self.stopped
     }
 
     /// The server for `language`, in any state.
@@ -274,11 +304,13 @@ impl Manager {
         let resolve = |l: Language| config::resolve(l, workspace, trust, &self.builtins);
         let mut kept = Vec::with_capacity(self.servers.len());
         for mut s in std::mem::take(&mut self.servers) {
+            let languages = s.languages.clone();
             s.languages
                 .retain(|&l| s.root == root && resolve(l) == Resolved::Server(s.config.clone()));
             if s.languages.is_empty() {
                 tracing::info!(server = %s.config.name, "language server no longer configured: stopping it");
                 s.stop();
+                note_stopped(&mut self.stopped, &s, languages);
                 if self.diagnostics.clear_server(s.id) {
                     self.cleared.push(s.id);
                 }
@@ -300,6 +332,7 @@ impl Manager {
                 }
                 continue;
             }
+            self.stopped.retain(|s| s.config != config);
             self.next_server += 1;
             let id = ServerId(self.next_server);
             let (tx, rx) = mpsc::unbounded_channel();
@@ -548,7 +581,9 @@ impl Manager {
                 error(format!("Language server {name} stopped ({why}); not restarted"))
             }
             Event::Exited { crashed: None, .. } => {
-                self.servers.remove(index);
+                let s = self.servers.remove(index);
+                let languages = s.languages.clone();
+                note_stopped(&mut self.stopped, &s, languages);
                 None
             }
             Event::Notification { method, params, .. } if method == "window/showMessage" => {

@@ -1,5 +1,5 @@
 //! Scroll bars (`ui::scrollbar` draws them, `scrollbar` has the maths): the editors', the side
-//! bar's list (explorer, Search results, Source Control) and the bottom panel's (Problems,
+//! bar's list (explorer, Search results, Source Control, Tools) and the bottom panel's (Problems,
 //! Locations), each named by a `ScrollTarget`. A press on the thumb grabs it; one on the track
 //! jumps the view so the thumb centres on the pointer (VS Code's default, `scrollbar.scrollByPage`
 //! off) and grabs it there. Dragging scrolls keeping the grab, the pointer anywhere, until the
@@ -56,6 +56,10 @@ impl App {
             ScrollTarget::Side(SidePanel::SourceControl) => {
                 let rows = self.scm.rows(self.git.status.as_ref()?);
                 Some(f(&mut self.scm.scrollable(&rows)))
+            }
+            ScrollTarget::Side(SidePanel::Tools) => {
+                let rows = self.tools_rows().len();
+                Some(f(&mut self.tools_view.scrollable(rows)))
             }
             ScrollTarget::Panel(tab) if !self.ui.panel_visible || self.ui.panel_tab != tab => None,
             ScrollTarget::Panel(PanelTab::Problems) => {

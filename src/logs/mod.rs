@@ -526,9 +526,18 @@ impl Logs {
     }
 
     /// Error lines in `tool`'s log since it was last cleared.
-    #[cfg_attr(not(test), allow(dead_code))] // the Tools view's badge (tools-c)
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn errors(&self, tool: &Tool) -> u64 {
         lock(&self.inner.rings).get(tool).map_or(0, Ring::errors)
+    }
+
+    /// Every tool's error lines (`errors`), sorted by tool, under one lock: the Tools view's
+    /// badges, and what it compares to see whether they changed.
+    pub fn error_counts(&self) -> Vec<(Tool, u64)> {
+        lock(&self.inner.rings)
+            .iter()
+            .map(|(t, r)| (t.clone(), r.errors()))
+            .collect()
     }
 
     /// Replaces `tool`'s ring by an empty one with these caps (tests: a ring that drops soon).

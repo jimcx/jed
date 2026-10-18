@@ -22,16 +22,24 @@ pub enum SidePanel {
     Explorer,
     Search,
     SourceControl,
+    /// Every tool jed runs (language servers, task runs, jed itself) with its state.
+    Tools,
 }
 
 impl SidePanel {
-    pub const ALL: [SidePanel; 3] = [SidePanel::Explorer, SidePanel::Search, SidePanel::SourceControl];
+    pub const ALL: [SidePanel; 4] = [
+        SidePanel::Explorer,
+        SidePanel::Search,
+        SidePanel::SourceControl,
+        SidePanel::Tools,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
             SidePanel::Explorer => "EXPLORER",
             SidePanel::Search => "SEARCH",
             SidePanel::SourceControl => "SOURCE CONTROL",
+            SidePanel::Tools => "TOOLS",
         }
     }
 }
@@ -383,6 +391,8 @@ pub struct HitMap {
     pub search: Option<SearchHit>,
     /// The Source Control view, when shown.
     pub scm: Option<ScmHit>,
+    /// The Tools view, when shown.
+    pub tools: Option<ToolsHit>,
     /// The bottom panel's tab labels.
     pub panel_tabs: Vec<(Rect, PanelTab)>,
     /// The task tabs' close buttons (`×`).
@@ -390,7 +400,7 @@ pub struct HitMap {
     /// The bottom panel's list (Problems or Locations, whichever tab is shown), when shown.
     pub panel_list: Option<ListHit>,
     /// The side bar's list's scroll bar (the explorer, the Search view's results, the Source
-    /// Control list), when drawn.
+    /// Control list, the Tools view), when drawn.
     pub side_scrollbar: Option<(ScrollTarget, ScrollBarHit)>,
     /// The bottom panel's list's scroll bar (Problems, Locations), when drawn.
     pub panel_scrollbar: Option<(ScrollTarget, ScrollBarHit)>,
@@ -450,6 +460,14 @@ pub struct ScmHit {
     pub list: Rect,
     pub rows: Vec<crate::scm::RowKey>,
     pub buttons: Vec<(Rect, crate::scm::RowKey, bool)>,
+}
+
+/// The Tools view's list as drawn: its rect and the row each line shows (`rows[i]` is at
+/// `list.y + i`, by key). Its clicks arrive as `Hit::SidePanel`.
+#[derive(Debug, Clone, Default)]
+pub struct ToolsHit {
+    pub list: Rect,
+    pub rows: Vec<crate::tools_view::RowKey>,
 }
 
 /// The find widget: its box, the replace row (if shown) and the three option toggles
@@ -820,6 +838,7 @@ mod tests {
             find: None,
             search: None,
             scm: None,
+            tools: None,
             panel_tabs: vec![
                 (Rect::new(30, 24, 10, 1), PanelTab::Problems),
                 (Rect::new(42, 24, 7, 1), PanelTab::Task(crate::tasks::RunId(3))),

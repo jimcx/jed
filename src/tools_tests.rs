@@ -11,6 +11,12 @@
 //! lines in one turn as one change, and is never restored by a session; new lines wake the loop
 //! (only while a log tab is open, a turn per frame rather than per line); file commands (git,
 //! history, diffs, Go Back) pass a log tab by, and it starts no language server.
+//!
+//! tools-c, the Tools view: Cmd+Shift+U, "Tools: Show" and the activity bar's icon show it with
+//! the keys; it lists the language server (languages, state, progress, an error badge, failed
+//! after a crash), task runs with their status and "jed"; the selection stays on its row by
+//! key; Enter / a click open a log tab, a task row focuses its panel tab; many rows get the side
+//! lists' scroll bar; error lines redraw it while shown; the session restores it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1090,4 +1096,474 @@ async fn tools_a_log_tab_starts_no_language_server() {
     assert_eq!(fake.launches(), ["clangd"]);
     assert!(app.lsp.server_for(Language::PlainText).is_none());
     app.shutdown_servers().await;
+}
+
+// ---- tools-c: the Tools view ----
+
+use crate::app::Focus;
+use crate::command::Command;
+use crate::layout::{PanelTab, ScrollTarget, SidePanel};
+use crate::tasks::RunId;
+use crate::tools_view::RowKey;
+use crossterm::event::{MouseButton, MouseEventKind};
+
+const TASKS: &str = "[tasks.ok]\ncommand = \"true\"\n\n[tasks.bad]\ncommand = \"exit 3\"\n";
+
+/// `open_app` with the user's `tasks.toml` holding `tasks` (`ok`: `true`, `bad`: `exit 3`).
+fn tools_app(dir: &Path, fake: &Arc<FakeLauncher>, state: bool) -> (App, PathBuf) {
+    let base = workspace::normalize(dir);
+    let root = base.join("proj");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("a.cpp"), "int a;\n").unwrap();
+    let config = base.join("state/config");
+    fs::create_dir_all(&config).unwrap();
+    let path = config.join(crate::tasks::templates::FILE_NAME);
+    fs::write(&path, TASKS).unwrap();
+    let trust = TrustStore::load(base.join("state/trust.toml"));
+    let mut app = App::new(Workspace::load(root.clone()), trust, None, true);
+    app.lsp.set_launcher(fake.clone());
+    app.config_dir = config;
+    app.tasks.user = crate::tasks::templates::load(&path).tasks;
+    if state {
+        app.state_dir = Some(base.join("state"));
+    }
+    app.test_start();
+    // Room for a server's row with its progress.
+    app.ui.side_width = 40;
+    (app, root)
+}
+
+/// Opens `a.cpp` and waits for the fake clangd to run.
+async fn with_clangd(app: &mut App, root: &Path) {
+    app.test_open(Buffer::open(&root.join("a.cpp")).unwrap());
+    assert!(
+        app.settle(|a| a.lsp.server_for(Language::Cpp).and_then(|s| s.encoding()).is_some())
+            .await
+    );
+}
+
+/// Runs task `name` and waits for it to end (and its end note).
+async fn run_ended(app: &mut App, name: &str) -> RunId {
+    let id = app.run_task(name).unwrap();
+    assert!(
+        app.settle(|a| {
+            let run = a.tasks.get(id).unwrap();
+            crate::tasks::end_note(&run.name, &run.status())
+                .is_some_and(|n| run.screen().screen().contents().contains(&n))
+        })
+        .await
+    );
+    id
+}
+
+fn terminal() -> Terminal<TestBackend> {
+    Terminal::new(TestBackend::new(100, 30)).unwrap()
+}
+
+/// Draws, then each drawn row of the Tools view's list (trailing blanks trimmed).
+fn tools_rows(app: &mut App, term: &mut Terminal<TestBackend>) -> Vec<String> {
+    draw(app, term);
+    let hit = app.hits.tools.clone().expect("the Tools view drawn");
+    (0..hit.rows.len() as u16)
+        .map(|i| {
+            (hit.list.x..hit.list.x + hit.list.width)
+                .map(|x| term.backend().buffer()[(x, hit.list.y + i)].symbol().to_string())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
+/// The cell where `text` starts on the drawn row showing `key`.
+fn cell_of(app: &App, term: &Terminal<TestBackend>, key: &RowKey, text: &str) -> ratatui::buffer::Cell {
+    let hit = app.hits.tools.as_ref().unwrap();
+    let i = hit.rows.iter().position(|k| k == key).expect("the row drawn");
+    let y = hit.list.y + i as u16;
+    let row: Vec<String> = (hit.list.x..hit.list.x + hit.list.width)
+        .map(|x| term.backend().buffer()[(x, y)].symbol().to_string())
+        .collect();
+    let at = (0..row.len())
+        .find(|&i| row[i..].concat().starts_with(text))
+        .unwrap_or_else(|| panic!("{text:?} in {:?}", row.concat()));
+    term.backend().buffer()[(hit.list.x + at as u16, y)].clone()
+}
+
+fn fg(app: &App, key: &str) -> ratatui::style::Color {
+    app.theme.get(key).fg.unwrap()
+}
+
+fn clangd_row() -> RowKey {
+    RowKey::Server("clangd".into())
+}
+
+/// Cmd+Shift+U shows the view with the keys: the language server (its languages and state,
+/// its progress while it has some, its log's error count in a badge, failed once it crashed),
+/// each task run with its status, and "jed" last, each mark in its state's colour.
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_view_lists_servers_tasks_and_jed_with_their_states() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let (mut app, root) = tools_app(dir.path(), &fake, false);
+    with_clangd(&mut app, &root).await;
+    let ok = run_ended(&mut app, "ok").await;
+    let bad = run_ended(&mut app, "bad").await;
+    app.press(KeyCode::Char('u'), cmd() | KeyModifiers::SHIFT);
+    assert!(app.ui.side_visible && app.ui.side_panel == SidePanel::Tools);
+    assert_eq!(app.ui.focus, Focus::SidePanel);
+    assert_eq!(
+        app.tools_view.selected_key(),
+        Some(&clangd_row()),
+        "the first row selected"
+    );
+
+    let mut term = terminal();
+    let rows = tools_rows(&mut app, &mut term);
+    assert_eq!(
+        rows,
+        [
+            " ● clangd  C++ · running",
+            " ✓ ok  task · exited 0",
+            " ✗ bad  task · exited 3",
+            " ≡ jed  jed's own log",
+        ]
+    );
+    assert_eq!(
+        app.hits.tools.as_ref().unwrap().rows[1..3],
+        [RowKey::Task(ok), RowKey::Task(bad)]
+    );
+    assert_eq!(cell_of(&app, &term, &clangd_row(), "●").fg, fg(&app, "tools.running"));
+    assert_eq!(
+        cell_of(&app, &term, &RowKey::Task(ok), "✓").fg,
+        fg(&app, "task.succeeded")
+    );
+    assert_eq!(
+        cell_of(&app, &term, &RowKey::Task(bad), "✗").fg,
+        fg(&app, "task.failed")
+    );
+    // The panel's title row: "TOOLS".
+    let side = app.hits.regions.side.unwrap();
+    let title: String = (side.x..side.x + side.width)
+        .map(|x| term.backend().buffer()[(x, side.y)].symbol().to_string())
+        .collect();
+    assert!(title.contains("TOOLS"), "{title}");
+
+    // Progress replaces the state while it lasts.
+    let notify = |app: &App, method: &str, params: serde_json::Value| {
+        app.lsp.server_for(Language::Cpp).unwrap().notify(method, params);
+    };
+    notify(
+        &app,
+        "test/progress",
+        json!({ "token": "i", "value": { "kind": "begin", "title": "Indexing", "percentage": 40 } }),
+    );
+    assert!(
+        app.settle(|a| a.lsp.server_for(Language::Cpp).unwrap().progress.latest().is_some())
+            .await
+    );
+    assert_eq!(tools_rows(&mut app, &mut term)[0], " ● clangd  C++ · Indexing 40%");
+
+    // An error line in its log: a badge at the right edge.
+    notify(&app, "test/log", json!({ "type": 1, "message": "index broken" }));
+    assert!(app.settle(|a| a.logs.errors(&clangd()) == 1).await);
+    let row = tools_rows(&mut app, &mut term)[0].clone();
+    assert!(row.ends_with(" 1"), "{row:?}");
+    let badge = cell_of(&app, &term, &clangd_row(), " 1 ");
+    assert_eq!(badge.bg, app.theme.get("tools.errorBadge").bg.unwrap());
+
+    // A crash: failed, its progress gone; its row (and its log's badge) stays.
+    notify(&app, "test/crash", serde_json::Value::Null);
+    assert!(
+        app.settle(|a| matches!(a.lsp.server_for(Language::Cpp).unwrap().state, State::Failed))
+            .await
+    );
+    let row = tools_rows(&mut app, &mut term)[0].clone();
+    assert!(row.starts_with(" ✗ clangd  C++ · failed"), "{row:?}");
+    assert!(row.ends_with(" 2"), "the crash is an error line too: {row:?}");
+    assert_eq!(cell_of(&app, &term, &clangd_row(), "✗").fg, fg(&app, "tools.failed"));
+    app.shutdown_servers().await;
+}
+
+/// A server whose language no longer resolves to it (a `.workspace` change) stops, and its row
+/// stays — as exited, in the exited colour (its log remains).
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_a_stopped_server_shows_as_exited() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = workspace::normalize(dir.path());
+    let root = base.join("proj");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("a.cpp"), "int a;\n").unwrap();
+    // A trusted `.workspace` server, so replacing it by the built-in one stops a server.
+    let text = "[lsp.cpp]\ncommand = \"clangd\"\n";
+    fs::write(root.join(".workspace"), text).unwrap();
+    let config = crate::workspace::config::WorkspaceConfig::parse(text).unwrap();
+    let mut trust = TrustStore::load(base.join("state/trust.toml"));
+    trust.record(&root, &config, true);
+    trust.write().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let mut app = App::new(
+        Workspace::load(root.clone()),
+        TrustStore::load(base.join("state/trust.toml")),
+        None,
+        true,
+    );
+    app.lsp.set_launcher(fake.clone());
+    app.ui.side_width = 40;
+    app.test_start();
+    with_clangd(&mut app, &root).await;
+    app.test_execute(Command::ShowTools);
+    let mut term = terminal();
+    assert_eq!(tools_rows(&mut app, &mut term)[0], " ● clangd  C++ · running");
+    // The only tab closes and `.workspace` no longer configures a server: the running
+    // workspace server stops and stays in the view.
+    app.test_execute(Command::CloseTab);
+    fs::write(root.join(".workspace"), "[settings]\nrender_whitespace = \"none\"\n").unwrap();
+    assert!(app.settle(|a| a.lsp.stopped().len() == 1).await);
+    let rows = tools_rows(&mut app, &mut term);
+    assert_eq!(rows, [" – clangd  C++ · exited", " ≡ jed  jed's own log"]);
+    assert_eq!(cell_of(&app, &term, &clangd_row(), "–").fg, fg(&app, "tools.exited"));
+    app.shutdown_servers().await;
+}
+
+/// The selection stays on its row by key while rows come and go; a row that leaves hands it to
+/// the row taking its place.
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_the_selection_is_kept_by_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let (mut app, root) = tools_app(dir.path(), &fake, false);
+    let ok = run_ended(&mut app, "ok").await;
+    app.test_execute(Command::ShowTools);
+    let mut term = terminal();
+    assert_eq!(tools_rows(&mut app, &mut term).len(), 2);
+    app.press(KeyCode::End, KeyModifiers::NONE);
+    assert_eq!(app.tools_view.selected_key(), Some(&RowKey::Jed));
+    // A server and a run appear before it: still on "jed".
+    with_clangd(&mut app, &root).await;
+    let bad = run_ended(&mut app, "bad").await;
+    app.test_execute(Command::ShowTools);
+    assert_eq!(tools_rows(&mut app, &mut term).len(), 4);
+    assert_eq!(app.tools_view.selected_key(), Some(&RowKey::Jed));
+    let selected = |app: &App| app.tools_view.selected_row(&app.tools_rows());
+    assert_eq!(selected(&app), Some(3));
+    // Up to `ok`, whose tab is then closed: the selection moves to `bad`, now in its place.
+    app.press(KeyCode::Up, KeyModifiers::NONE);
+    app.press(KeyCode::Up, KeyModifiers::NONE);
+    assert_eq!(app.tools_view.selected_key(), Some(&RowKey::Task(ok)));
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(app.ui.panel_tab, PanelTab::Task(ok));
+    app.test_execute(Command::CloseTask);
+    assert!(app.tasks.get(ok).is_none());
+    let rows = tools_rows(&mut app, &mut term);
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert_eq!(app.tools_view.selected_key(), Some(&RowKey::Task(bad)));
+    // Home / PageDown / PageUp.
+    app.test_execute(Command::ShowTools);
+    app.press(KeyCode::Home, KeyModifiers::NONE);
+    assert_eq!(app.tools_view.selected_key(), Some(&clangd_row()));
+    app.press(KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(app.tools_view.selected_key(), Some(&RowKey::Task(bad)));
+    app.press(KeyCode::Up, KeyModifiers::NONE);
+    assert_eq!(app.tools_view.selected_key(), Some(&clangd_row()));
+    app.press(KeyCode::PageDown, KeyModifiers::NONE);
+    assert_eq!(app.tools_view.selected_key(), Some(&RowKey::Jed));
+    app.press(KeyCode::PageUp, KeyModifiers::NONE);
+    assert_eq!(app.tools_view.selected_key(), Some(&clangd_row()));
+    // Esc: back to the editor.
+    app.press(KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(app.ui.focus, Focus::Editor);
+    app.shutdown_servers().await;
+}
+
+/// Enter on a server's row opens its log tab, focused; a click on "jed" selects it and opens
+/// jed's log.
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_enter_and_a_click_open_the_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let (mut app, root) = tools_app(dir.path(), &fake, false);
+    with_clangd(&mut app, &root).await;
+    app.test_execute(Command::ShowTools);
+    assert_eq!(app.tools_view.selected_key(), Some(&clangd_row()));
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    let buf = app.active_buffer().unwrap();
+    assert_eq!(buf.log.as_ref().map(|l| l.tool.clone()), Some(clangd()));
+    assert_eq!(buf.name(), "clangd (log)");
+    assert_eq!(app.ui.focus, Focus::Editor);
+    assert!(tab_has(&app, "fake ready"), "{:?}", tab_lines(&app));
+
+    let mut term = terminal();
+    tools_rows(&mut app, &mut term);
+    let hit = app.hits.tools.clone().unwrap();
+    let y = hit.list.y + hit.rows.iter().position(|k| *k == RowKey::Jed).unwrap() as u16;
+    app.mouse(MouseEventKind::Down(MouseButton::Left), hit.list.x + 3, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), hit.list.x + 3, y);
+    assert_eq!(app.tools_view.selected_key(), Some(&RowKey::Jed));
+    let buf = app.active_buffer().unwrap();
+    assert_eq!(buf.log.as_ref().map(|l| l.tool.clone()), Some(Tool::Jed));
+    assert_eq!(app.ui.focus, Focus::Editor);
+    // Opened again: the same tab.
+    let tabs = app.group().tabs.len();
+    app.test_execute(Command::ShowTools);
+    app.press(KeyCode::Home, KeyModifiers::NONE);
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(app.group().tabs.len(), tabs, "clangd's tab reused");
+    app.shutdown_servers().await;
+}
+
+/// A task run's row shows and focuses its panel tab (no log tab of its own).
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_a_task_row_focuses_its_panel_tab() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let (mut app, _root) = tools_app(dir.path(), &fake, false);
+    let ok = run_ended(&mut app, "ok").await;
+    let bad = run_ended(&mut app, "bad").await;
+    app.test_execute(Command::TogglePanel);
+    assert!(!app.ui.panel_visible);
+    app.test_execute(Command::ShowTools);
+    assert_eq!(
+        app.tools_view.selected_key(),
+        Some(&RowKey::Task(ok)),
+        "no server: a run first"
+    );
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.ui.panel_visible);
+    assert_eq!(app.ui.panel_tab, PanelTab::Task(ok));
+    assert_eq!(app.ui.focus, Focus::Panel);
+    assert!(app.buffers.iter().all(|(_, b)| b.log.is_none()), "no log tab");
+    // A click on the other run's row.
+    let mut term = terminal();
+    app.test_execute(Command::ShowTools);
+    tools_rows(&mut app, &mut term);
+    let hit = app.hits.tools.clone().unwrap();
+    let y = hit.list.y + hit.rows.iter().position(|k| *k == RowKey::Task(bad)).unwrap() as u16;
+    app.mouse(MouseEventKind::Down(MouseButton::Left), hit.list.x + 3, y);
+    assert_eq!(app.ui.panel_tab, PanelTab::Task(bad));
+    assert_eq!(app.ui.focus, Focus::Panel);
+}
+
+/// Many rows (tools with a log): the list's scroll bar works as the other side lists' (thumb,
+/// hover, drag, track press, wheel; the selection and focus unchanged), and the wheel over the
+/// rows scrolls them.
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_many_rows_get_a_scroll_bar() {
+    use crate::todo_tests::side_scroll_bars::{List, drag_the_bar};
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let (mut app, _root) = tools_app(dir.path(), &fake, false);
+    for i in 0..30 {
+        app.logs.push(&Tool::Server(format!("demo{i}")), Level::Info, "line");
+    }
+    app.test_execute(Command::ShowTools);
+    let list = List {
+        target: ScrollTarget::Side(SidePanel::Tools),
+        rows: |a| a.tools_rows().len(),
+        top: |a| a.tools_view.scroll(&a.tools_rows()),
+        selection: |a| format!("{:?}", a.tools_view.selected_key()),
+    };
+    drag_the_bar(&mut app, &list);
+
+    // The wheel over the rows.
+    let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    app.press(KeyCode::Home, KeyModifiers::NONE);
+    tools_rows(&mut app, &mut term);
+    let hit = app.hits.tools.clone().unwrap();
+    app.mouse(MouseEventKind::ScrollDown, hit.list.x + 2, hit.list.y + 2);
+    assert_eq!(app.tools_view.scroll(&app.tools_rows()), 3);
+    // End: the last row ("jed") scrolled into view.
+    app.press(KeyCode::End, KeyModifiers::NONE);
+    let rows = tools_rows(&mut app, &mut term);
+    assert_eq!(rows.last().unwrap(), " ≡ jed  jed's own log");
+}
+
+/// The activity bar's fourth icon shows the view (with the keys); clicked again it hides the
+/// side panel.
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_the_activity_bar_icon_shows_the_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let (mut app, _root) = tools_app(dir.path(), &fake, false);
+    let mut term = terminal();
+    draw(&mut app, &mut term);
+    let &(y, panel) = app.hits.icons.last().unwrap();
+    assert_eq!(panel, SidePanel::Tools);
+    assert_eq!(term.backend().buffer()[(1, y)].symbol(), "≡");
+    app.mouse(MouseEventKind::Down(MouseButton::Left), 1, y);
+    assert!(app.ui.side_visible && app.ui.side_panel == SidePanel::Tools);
+    assert_eq!(app.ui.focus, Focus::SidePanel);
+    assert_eq!(
+        app.tools_view.selected_key(),
+        Some(&RowKey::Jed),
+        "the first (only) row"
+    );
+    assert_eq!(tools_rows(&mut app, &mut term), [" ≡ jed  jed's own log"]);
+    assert_eq!(term.backend().buffer()[(1, y)].fg, fg(&app, "activityBar.active"));
+    app.mouse(MouseEventKind::Down(MouseButton::Left), 1, y);
+    assert!(!app.ui.side_visible);
+}
+
+/// "Tools: Show" from the palette.
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_show_from_the_palette() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let (mut app, _root) = tools_app(dir.path(), &fake, false);
+    app.ui.side_visible = false;
+    run_command(&mut app, "Tools: Show");
+    assert!(app.ui.side_visible && app.ui.side_panel == SidePanel::Tools);
+    assert_eq!(app.ui.focus, Focus::SidePanel);
+    assert_eq!(app.last_command, Some(Command::ShowTools));
+}
+
+/// With the view shown (and no log tab), new log lines wake the loop; only a changed error
+/// count asks for a redraw, and the badge shows it.
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_error_lines_redraw_the_shown_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let (mut app, _root) = tools_app(dir.path(), &fake, false);
+    push_lines(&app, &demo(), 0, 1);
+    app.test_execute(Command::ShowTools);
+    let mut term = terminal();
+    tools_rows(&mut app, &mut term);
+    quiet(&mut app).await;
+    app.test_take_redraw();
+    // Rearmed when the view appeared: an info line wakes the loop, nothing to redraw.
+    push_lines(&app, &demo(), 1, 1);
+    assert!(app.test_turn(Duration::from_secs(2)).await, "woke");
+    assert!(!app.test_take_redraw(), "no badge changed");
+    while app.log_tabs.deadline().is_some() {
+        assert!(app.test_turn(Duration::from_secs(1)).await, "the rearm timer");
+    }
+    app.test_take_redraw();
+    app.logs.push(&demo(), Level::Error, "broken");
+    assert!(app.test_turn(Duration::from_secs(2)).await, "woke");
+    assert!(app.test_take_redraw(), "the badge changed");
+    let rows = tools_rows(&mut app, &mut term);
+    let demo_row = rows
+        .iter()
+        .find(|r| r.contains("demo"))
+        .expect("a row for the server's log");
+    assert!(demo_row.ends_with(" 1"), "{rows:?}");
+}
+
+/// The side panel's view is in the session: the Tools view comes back.
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_the_session_restores_the_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let (mut app, _root) = tools_app(dir.path(), &fake, true);
+    assert!(app.settle(|a| !a.session.loading()).await);
+    app.test_execute(Command::ShowTools);
+    app.test_execute(Command::Quit);
+    assert!(app.quitting());
+    app.shutdown().await;
+    drop(app);
+    let (mut app, _root) = tools_app(dir.path(), &fake, true);
+    assert!(app.settle(|a| !a.session.loading()).await);
+    assert_eq!(app.session.restored, 1);
+    assert!(app.ui.side_visible && app.ui.side_panel == SidePanel::Tools);
+    let mut term = terminal();
+    assert_eq!(tools_rows(&mut app, &mut term), [" ≡ jed  jed's own log"]);
 }
