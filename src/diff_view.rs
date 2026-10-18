@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use git2::Oid;
 use ropey::Rope;
 
 use crate::buffer::BufferId;
@@ -52,6 +53,12 @@ pub enum Text {
     Buffer,
     /// An entry of the file's history (`.jed/history/`).
     History(Snapshot),
+    /// The file's blob in a commit's tree (a commit tab's stat row: the parent's text against
+    /// the commit's). Empty when the commit doesn't have the path.
+    Commit(Oid),
+    /// The empty tree: the left side of a root commit's diff (it has no parent to compare
+    /// against; git compares it with the empty tree).
+    Empty,
 }
 
 impl Text {
@@ -63,6 +70,8 @@ impl Text {
             Text::Disk => "On Disk".into(),
             Text::Buffer => "Yours".into(),
             Text::History(s) => format!("History: {}", history::ago(s.time, history::now_ms())),
+            Text::Commit(id) => short_commit(id),
+            Text::Empty => "Empty Tree".into(),
         }
     }
 
@@ -72,8 +81,14 @@ impl Text {
     }
 
     fn git(self) -> bool {
-        matches!(self, Text::Head | Text::Index)
+        matches!(self, Text::Head | Text::Index | Text::Commit(_) | Text::Empty)
     }
+}
+
+/// A commit id's short form (7 hex digits, as the tab titles show it).
+fn short_commit(id: Oid) -> String {
+    let id = id.to_string();
+    id[..7.min(id.len())].to_string()
 }
 
 /// The two texts a diff tab compares: `left` (old) and `right` (new).
@@ -108,6 +123,16 @@ impl Pair {
         }
     }
 
+    /// A commit's change to a file: the parent's blob against the commit's (`parent` `None` for
+    /// a root commit: the empty tree against the commit's blob).
+    #[cfg_attr(not(test), allow(dead_code))] // a stat row opens it (git_history-c)
+    pub fn commit(commit: Oid, parent: Option<Oid>) -> Pair {
+        Pair {
+            left: parent.map_or(Text::Empty, Text::Commit),
+            right: Text::Commit(commit),
+        }
+    }
+
     /// The history entry compared, if any.
     pub fn snapshot(self) -> Option<Snapshot> {
         match self.left {
@@ -137,10 +162,15 @@ impl Pair {
         self.left.git() || self.right.git()
     }
 
-    /// The tab's title for the file `name` (VS Code's: `name (Working Tree)`, `name (Index)`).
+    /// The tab's title for the file `name` (VS Code's: `name (Working Tree)`, `name (Index)`;
+    /// a commit's change: `name (abc1234)`).
     pub fn tab_title(self, name: &str) -> String {
         match self {
             Pair::UNSTAGED | Pair::STAGED => format!("{name} ({})", self.right.title()),
+            Pair {
+                right: Text::Commit(id),
+                ..
+            } => format!("{name} ({})", short_commit(id)),
             Pair {
                 left: Text::History(_),
                 right: Text::Buffer,
@@ -522,6 +552,18 @@ fn read(job: &Job, text: Text) -> Result<Vec<u8>, stage::Error> {
                 .map_err(|e| stage::Error::Io(std::io::Error::other(e)))?;
             Some(bytes)
         }
+        // The file's blob in the commit's tree; a missing path is empty (a deleted file, or a
+        // root commit's empty-tree side).
+        Text::Commit(id) => {
+            let (repo, rel) = rel()?;
+            let r = repo.open()?;
+            let tree = r.find_commit(id)?.tree()?;
+            match tree.get_path(&rel) {
+                Ok(entry) => r.find_blob(entry.id()).ok().map(|b| b.content().to_vec()),
+                Err(_) => None,
+            }
+        }
+        Text::Empty => Some(Vec::new()),
     };
     Ok(bytes.unwrap_or_default())
 }
@@ -1099,6 +1141,60 @@ mod tests {
         assert!(right.contains(&(0, "fn".into(), "keyword")), "{right:?}");
         assert!(right.contains(&(2, "three */".into(), "comment")), "{right:?}");
         assert!(right.contains(&(3, "let".into(), "keyword")), "{right:?}");
+    }
+
+    #[test]
+    fn a_commit_pair_reads_a_commits_blob() {
+        use crate::git::test_repo::{git, init};
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        init(&root);
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        std::fs::write(root.join("gone.txt"), "gone\n").unwrap();
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-q", "-m", "one"]);
+        let first = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        std::fs::write(root.join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::remove_file(root.join("gone.txt")).unwrap();
+        std::fs::write(root.join("bin.dat"), b"\x00\x01").unwrap();
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-q", "-m", "two"]);
+        let second = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let id = |s: &str| Oid::from_str(s).unwrap();
+        let repo = Repo::discover(&root).unwrap();
+        let job = |pair, path: &str| Job {
+            repo: Some(repo.clone()),
+            root: root.clone(),
+            path: root.join(path),
+            pair,
+            live: None,
+            language: None,
+            syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
+        };
+        let pair = Pair::commit(id(&second), Some(id(&first)));
+        assert_eq!(pair.staging(), None);
+        assert!(pair.needs_repo() && !pair.live());
+        assert_eq!(pair.tab_title("a.txt"), format!("a.txt ({})", &second[..7]));
+        assert_eq!(pair.left.title(), &first[..7]);
+        assert_eq!(pair.right.title(), &second[..7]);
+        let doc = load(job(pair, "a.txt")).unwrap();
+        assert_eq!((doc.left.line(0), doc.right.line(0)), ("one", "one"));
+        assert_eq!(doc.right.line(1), "two");
+        // A root commit's left side is the empty tree.
+        let root_pair = Pair::commit(id(&first), None);
+        assert_eq!(root_pair.left, Text::Empty);
+        assert_eq!(root_pair.tab_title("a.txt"), format!("a.txt ({})", &first[..7]));
+        let doc = load(job(root_pair, "a.txt")).unwrap();
+        assert_eq!((doc.left.len(), doc.right.line(0)), (0, "one"));
+        // A path the commit doesn't have is empty on both sides.
+        let doc = load(job(root_pair, "missing.txt")).unwrap();
+        assert_eq!((doc.left.len(), doc.right.len()), (0, 0));
+        // A path the commit deleted is in the parent's tree only.
+        let doc = load(job(pair, "gone.txt")).unwrap();
+        assert_eq!((doc.left.line(0), doc.right.len()), ("gone", 0));
+        // A binary blob reads raw: the diff is binary.
+        let doc = load(job(pair, "bin.dat")).unwrap();
+        assert!(doc.binary);
     }
 
     #[test]

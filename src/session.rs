@@ -92,7 +92,7 @@ impl TabState {
 }
 
 /// A diff side (`diff_view::Text`) as stored.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Side {
     Head,
@@ -100,7 +100,16 @@ pub enum Side {
     WorkTree,
     Disk,
     Buffer,
-    History { time: u64, hash: u64 },
+    History {
+        time: u64,
+        hash: u64,
+    },
+    /// A commit's tree (the commit id as hex).
+    Commit {
+        id: String,
+    },
+    /// The empty tree (a root commit's diff).
+    Empty,
 }
 
 impl From<Text> for Side {
@@ -115,6 +124,8 @@ impl From<Text> for Side {
                 time: s.time,
                 hash: s.hash,
             },
+            Text::Commit(id) => Side::Commit { id: id.to_string() },
+            Text::Empty => Side::Empty,
         }
     }
 }
@@ -128,6 +139,10 @@ impl From<Side> for Text {
             Side::Disk => Text::Disk,
             Side::Buffer => Text::Buffer,
             Side::History { time, hash } => Text::History(Snapshot { time, hash }),
+            // A file's own commit id is always valid; a corrupt one becomes the zero id, whose
+            // diff load then fails (task git_history-c drops such tabs at restore).
+            Side::Commit { id } => Text::Commit(git2::Oid::from_str(&id).unwrap_or(git2::Oid::ZERO_SHA1)),
+            Side::Empty => Text::Empty,
         }
     }
 }
@@ -257,7 +272,9 @@ pub fn read(state_dir: &Path, root: &Path, open: &HashSet<PathBuf>) -> Result<Op
                         }
                     }
                 }
-                TabState::Diff { left, right, .. } => diff_still_there(root, &path, Side::pair(*left, *right)),
+                TabState::Diff { left, right, .. } => {
+                    diff_still_there(root, &path, Side::pair(left.clone(), right.clone()))
+                }
             }
         });
         // The active tab stays active, else its neighbour does.
@@ -428,5 +445,21 @@ mod tests {
         assert_eq!(stored(root, Path::new("/etc/hosts")), Path::new("/etc/hosts"));
         assert_eq!(resolve(root, Path::new("src/a.rs")), Path::new("/w/proj/src/a.rs"));
         assert_eq!(resolve(root, Path::new("/etc/hosts")), Path::new("/etc/hosts"));
+    }
+
+    /// A commit diff tab's sides keep their commit id and the empty-tree side through a session.
+    #[test]
+    fn commit_and_empty_sides_round_trip() {
+        let commit = Text::Commit(git2::Oid::from_str(&"ab".repeat(20)).unwrap());
+        let side = Side::from(commit);
+        assert_eq!(side, Side::Commit { id: "ab".repeat(20) });
+        assert_eq!(Text::from(side), commit);
+        assert_eq!(Text::from(Side::from(Text::Empty)), Text::Empty);
+        // JSON: the variants serialize and read back.
+        let pair = Pair::commit(git2::Oid::from_str(&"cd".repeat(20)).unwrap(), None);
+        let json = serde_json::to_string(&(Side::from(pair.left), Side::from(pair.right))).unwrap();
+        assert!(json.contains("empty") && json.contains("commit"));
+        let (left, right): (Side, Side) = serde_json::from_str(&json).unwrap();
+        assert_eq!((Text::from(left), Text::from(right)), (pair.left, pair.right));
     }
 }

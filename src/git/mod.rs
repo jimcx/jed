@@ -8,8 +8,13 @@
 //!   untracked (`.gitignore`d files left out), plus the explorer's decorations
 //! - [`diff`]: hunks between two texts, applying / reverting one
 //! - [`stage`]: the texts to compare (index, HEAD, disk) and staging / unstaging a file or a hunk
+//! - [`log`]: a file's commits from HEAD, git's default history simplification, paged
+//! - [`show`]: a commit's header, message and per-file stat against its first parent
+//!   (`git_show::render` turns it into `git show --stat`'s lines)
 
 pub mod diff;
+pub mod log;
+pub mod show;
 pub mod stage;
 
 use std::collections::HashMap;
