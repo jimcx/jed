@@ -158,13 +158,12 @@ impl Server {
     }
 
     /// Turns the protocol trace (every message to its tool log) on or off ("Tools: Toggle
-    /// Protocol Trace", tools-d).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Protocol Trace").
     pub fn set_trace(&self, on: bool) {
         self.trace.store(on, Ordering::Relaxed);
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Whether the protocol trace is on.
     pub fn trace(&self) -> bool {
         self.trace.load(Ordering::Relaxed)
     }
@@ -183,6 +182,14 @@ pub struct Stopped {
     pub config: ServerConfig,
     pub root: PathBuf,
     pub languages: Vec<Language>,
+}
+
+/// A server restarted by `Manager::restart`: the instance stopped (none for a stopped server)
+/// and the new one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Restarted {
+    pub old: Option<ServerId>,
+    pub new: ServerId,
 }
 
 /// Remembers `s` as stopped (replacing an older one of its name).
@@ -289,19 +296,106 @@ impl Manager {
     }
 
     /// The server for `language`, in any state.
-    #[cfg_attr(not(test), allow(dead_code))] // tests
     pub fn server_for(&self, language: Language) -> Option<&Server> {
         self.servers.iter().find(|s| s.languages.contains(&language))
+    }
+
+    /// The live server (starting, running or failed) whose config is named `name`.
+    pub fn server_named(&self, name: &str) -> Option<&Server> {
+        self.servers.iter().find(|s| s.config.name == name)
+    }
+
+    /// Restarts the server named `name`: a live one (running or failed) is stopped and removed,
+    /// a stopped one dropped from `stopped`; then a new task starts with the same config, root
+    /// and languages. Failed servers are no longer remembered as failed, so this is the one way
+    /// back for them (`sync` never retries a failure). The old instance's diagnostics are
+    /// dropped (the new one publishes its own), its trace setting carries over, and the log ring
+    /// stays (it belongs to the name). `None` when no server by that name is known (or servers
+    /// are off).
+    pub fn restart(&mut self, name: &str) -> Option<Restarted> {
+        if self.sink.is_none() || self.launcher.is_none() {
+            return None;
+        }
+        let (config, root, languages, trace, old) =
+            if let Some(i) = self.servers.iter().position(|s| s.config.name == name) {
+                let s = self.servers.remove(i);
+                let trace = s.trace();
+                s.stop();
+                if self.diagnostics.clear_server(s.id) {
+                    self.cleared.push(s.id);
+                }
+                self.stopping.push(s.task);
+                (s.config, s.root, s.languages, trace, Some(s.id))
+            } else {
+                let i = self.stopped.iter().position(|s| s.config.name == name)?;
+                let s = self.stopped.remove(i);
+                (s.config, s.root, s.languages, false, None)
+            };
+        self.stopping.retain(|t| !t.is_finished());
+        let new = self.launch(config, root, languages, trace)?;
+        Some(Restarted { old, new })
+    }
+
+    /// Starts a server task for `config` at `root`, serving `languages`, with the protocol
+    /// trace `trace`, and records it. `None` before `start` or with servers off (no launcher).
+    fn launch(
+        &mut self,
+        config: ServerConfig,
+        root: PathBuf,
+        languages: Vec<Language>,
+        trace: bool,
+    ) -> Option<ServerId> {
+        let (Some(sink), Some(launcher)) = (self.sink.clone(), self.launcher.clone()) else {
+            return None;
+        };
+        self.stopped.retain(|s| s.config != config);
+        self.next_server += 1;
+        let id = ServerId(self.next_server);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let next_id = Arc::new(AtomicI64::new(1));
+        let trace = Arc::new(AtomicBool::new(trace));
+        let language = languages.first().map_or("…", |l| l.id());
+        tracing::info!(server = %config.name, language, "starting language server");
+        let task = tokio::spawn(
+            Task {
+                id,
+                config: config.clone(),
+                root: root.clone(),
+                launcher,
+                rx,
+                sink,
+                next_id: next_id.clone(),
+                support_dir: self.support_dir.clone(),
+                log: self.logs.tool(crate::logs::Tool::Server(config.name.clone())),
+                trace: trace.clone(),
+            }
+            .run(),
+        );
+        self.servers.push(Server {
+            id,
+            config,
+            root,
+            languages,
+            state: State::Starting,
+            progress: progress::Progress::default(),
+            tx,
+            next_id,
+            trace,
+            task,
+        });
+        Some(id)
     }
 
     /// Brings servers in line with the open files' languages and the config: starts the one
     /// each language resolves to (once: a failed one stays failed), shuts down any no language
     /// resolves to any more (a `.workspace` change, a trust decision).
     pub fn sync(&mut self, root: &Path, languages: &[Language], workspace: &WorkspaceConfig, trust: Trust) {
-        let (Some(sink), Some(launcher)) = (self.sink.clone(), self.launcher.clone()) else {
+        if self.sink.is_none() || self.launcher.is_none() {
             return;
-        };
-        let resolve = |l: Language| config::resolve(l, workspace, trust, &self.builtins);
+        }
+        // A clone, so `resolve` doesn't borrow `self` while a server starts below.
+        let builtins = self.builtins.clone();
+        let resolve = |l: Language| config::resolve(l, workspace, trust, &builtins);
         let mut kept = Vec::with_capacity(self.servers.len());
         for mut s in std::mem::take(&mut self.servers) {
             let languages = s.languages.clone();
@@ -332,40 +426,7 @@ impl Manager {
                 }
                 continue;
             }
-            self.stopped.retain(|s| s.config != config);
-            self.next_server += 1;
-            let id = ServerId(self.next_server);
-            let (tx, rx) = mpsc::unbounded_channel();
-            let next_id = Arc::new(AtomicI64::new(1));
-            let trace = Arc::new(AtomicBool::new(false));
-            tracing::info!(server = %config.name, language = language.id(), "starting language server");
-            let task = tokio::spawn(
-                Task {
-                    id,
-                    config: config.clone(),
-                    root: root.to_path_buf(),
-                    launcher: launcher.clone(),
-                    rx,
-                    sink: sink.clone(),
-                    next_id: next_id.clone(),
-                    support_dir: self.support_dir.clone(),
-                    log: self.logs.tool(crate::logs::Tool::Server(config.name.clone())),
-                    trace: trace.clone(),
-                }
-                .run(),
-            );
-            self.servers.push(Server {
-                id,
-                config,
-                root: root.to_path_buf(),
-                languages: vec![language],
-                state: State::Starting,
-                progress: progress::Progress::default(),
-                tx,
-                next_id,
-                trace,
-                task,
-            });
+            self.launch(config, root.to_path_buf(), vec![language], false);
         }
     }
 
@@ -752,6 +813,55 @@ mod tests {
         sync(&mut m, &[Language::Python, Language::Cpp, Language::C]);
         assert_eq!(fake.launches(), ["ty", "clangd"], "neither started again");
         assert!(m.servers().iter().all(|s| matches!(s.state, State::Failed)));
+        m.shutdown().await;
+    }
+
+    /// A server `sync` stopped (its `.workspace` config can't run while trust is undecided)
+    /// starts again through `launch` once it can, and its stopped row (the Tools view's
+    /// "exited") goes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stopped_server_starts_again_when_its_config_does() {
+        let fake = FakeLauncher::new(FakeOptions::default());
+        let (mut m, mut rx) = manager(&fake);
+        let ws = WorkspaceConfig::parse("[lsp.python]\ncommand = \"pyright\"").unwrap();
+        let root = Path::new("/ws");
+        m.sync(root, &[Language::Python], &ws, Trust::Trusted);
+        m.handle(next(&mut rx).await);
+        m.sync(root, &[Language::Python], &ws, Trust::Undecided);
+        assert_eq!(m.stopped().len(), 1);
+        m.sync(root, &[Language::Python], &ws, Trust::Trusted);
+        assert!(m.stopped().is_empty(), "the stopped row goes with the new instance");
+        assert_eq!(m.server_for(Language::Python).unwrap().config.name, "pyright");
+        m.shutdown().await;
+    }
+
+    /// "Tools: Restart Server": a failed server (which `sync` never retries) is started again
+    /// under a new id; a name no server has restarts nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn restarting_a_failed_server_starts_it_again() {
+        let fake = FakeLauncher::new(FakeOptions {
+            crash_after_init: true,
+            ..Default::default()
+        });
+        let (mut m, mut rx) = manager(&fake);
+        sync(&mut m, &[Language::Cpp]);
+        assert!(matches!(next(&mut rx).await, Event::Initialized { .. }));
+        let notice = m.handle(next(&mut rx).await).unwrap();
+        assert!(notice.text.contains("stopped"), "{notice:?}");
+        assert!(matches!(m.servers()[0].state, State::Failed));
+        let old = m.servers()[0].id;
+
+        assert!(m.restart("nope").is_none(), "no server by that name");
+        assert!(Manager::new(None).restart("clangd").is_none(), "servers off");
+        let restarted = m.restart("clangd").expect("a server by that name");
+        assert_eq!(restarted.old, Some(old));
+        assert_ne!(restarted.new, old, "a new instance");
+        assert!(matches!(m.servers()[0].state, State::Starting));
+        match next(&mut rx).await {
+            Event::Initialized { server, .. } => assert_eq!(server, restarted.new),
+            e => panic!("{e:?}"),
+        }
+        assert_eq!(fake.launches(), ["clangd", "clangd"]);
         m.shutdown().await;
     }
 

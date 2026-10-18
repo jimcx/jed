@@ -126,8 +126,8 @@ impl App {
     }
 
     /// Drops the marks of servers whose diagnostics the manager dropped (stopped, failed,
-    /// crashed) from every buffer.
-    fn drop_cleared_diagnostics(&mut self) {
+    /// crashed, restarted) from every buffer.
+    pub(super) fn drop_cleared_diagnostics(&mut self) {
         for server in self.lsp.take_cleared() {
             for (_, buf) in self.buffers.iter_mut() {
                 buf.diagnostics.clear(server);

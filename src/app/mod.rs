@@ -995,6 +995,8 @@ impl App {
             Command::ClearToolLog => self.clear_tool_log(),
             Command::ShowTools => self.focus_side(SidePanel::Tools),
             Command::Tools(c) => self.tools_command(c),
+            Command::ToggleToolTrace => self.toggle_tool_trace(),
+            Command::RestartServer => self.restart_server(),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
             // A diff tab: its own movement keys; other editor commands do nothing.

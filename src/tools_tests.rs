@@ -17,6 +17,12 @@
 //! after a crash), task runs with their status and "jed"; the selection stays on its row by
 //! key; Enter / a click open a log tab, a task row focuses its panel tab; many rows get the side
 //! lists' scroll bar; error lines redraw it while shown; the session restores it.
+//!
+//! tools-d, the two server commands: "Tools: Toggle Protocol Trace" turns the JSON-RPC messages
+//! into that server's log on and off; "Tools: Restart Server" starts a crashed (failed) or a
+//! stopped server again, a fresh launch with its log kept, its diagnostics dropped and its row
+//! no longer failed. Both act on the Tools view's selected server row while it's shown, else on
+//! the active file's language server.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1566,4 +1572,363 @@ async fn tools_the_session_restores_the_view() {
     assert!(app.ui.side_visible && app.ui.side_panel == SidePanel::Tools);
     let mut term = terminal();
     assert_eq!(tools_rows(&mut app, &mut term), [" ≡ jed  jed's own log"]);
+}
+
+// ---- tools-d: protocol trace and restarting a server ----
+
+/// "Tools: Toggle Protocol Trace" (the palette; unbound) without the view is the active
+/// file's language server; with the view shown, its selected server's row. Its messages go to
+/// that server's log while on and stop when off.
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_toggle_trace_uses_the_selected_or_active_file_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let (mut app, root) = tools_app(dir.path(), &fake, true);
+    assert_eq!(Command::from_name("tools.toggleTrace"), Some(Command::ToggleToolTrace));
+    assert_eq!(Command::from_name("tools.restartServer"), Some(Command::RestartServer));
+
+    // Nothing to trace or restart yet: they say what to do.
+    app.test_execute(Command::ToggleToolTrace);
+    assert!(
+        app.message.as_ref().unwrap().text.contains("open a file"),
+        "{:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    app.message = None;
+    app.test_execute(Command::RestartServer);
+    assert!(
+        app.message.as_ref().unwrap().text.contains("open a file"),
+        "{:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    app.message = None;
+
+    with_clangd(&mut app, &root).await;
+    let tool = clangd();
+    let traced = |a: &App| {
+        a.logs
+            .texts(&tool)
+            .into_iter()
+            .filter(|t| t.starts_with(['→', '←']))
+            .count()
+    };
+    assert_eq!(traced(&app), 0, "off by default");
+
+    // No view: the active file's server.
+    run_command(&mut app, "Tools: Toggle Protocol Trace");
+    assert_eq!(app.last_command, Some(Command::ToggleToolTrace));
+    assert!(app.lsp.server_for(Language::Cpp).unwrap().trace());
+    assert!(
+        app.message.as_ref().unwrap().text.contains("protocol trace on"),
+        "{:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    let id = app
+        .lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .request("test/echo", json!({ "ping": 1 }));
+    assert!(
+        app.settle(|a| a
+            .logs
+            .texts(&tool)
+            .iter()
+            .any(|t| t.starts_with("← ") && t.contains("\"ping\":1")))
+            .await
+    );
+    let texts = app.logs.texts(&tool);
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.starts_with("→ ") && t.contains("\"test/echo\"") && t.contains(&format!("\"id\":{id}"))),
+        "{texts:?}"
+    );
+
+    // Off again: a request's messages no longer reach the log.
+    app.message = None;
+    run_command(&mut app, "Tools: Toggle Protocol Trace");
+    assert!(!app.lsp.server_for(Language::Cpp).unwrap().trace());
+    assert!(
+        app.message.as_ref().unwrap().text.contains("protocol trace off"),
+        "{:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    let before = traced(&app);
+    // A definition request's answer is handled once it arrives (the fake answers at once): by
+    // then a trace would have logged both messages.
+    fake.respond("textDocument/definition", json!(null));
+    app.press(KeyCode::F(12), KeyModifiers::NONE);
+    assert!(app.settle(|a| a.pending_requests().is_empty()).await);
+    assert_eq!(traced(&app), before, "off");
+
+    // With the view shown it is its selected server's row.
+    app.test_execute(Command::ShowTools);
+    assert_eq!(app.tools_view.selected_key(), Some(&clangd_row()));
+    app.test_execute(Command::ToggleToolTrace);
+    assert!(app.lsp.server_for(Language::Cpp).unwrap().trace());
+
+    // "jed" isn't a server: both ask for a server's row, and nothing changes.
+    app.press(KeyCode::End, KeyModifiers::NONE);
+    assert_eq!(app.tools_view.selected_key(), Some(&RowKey::Jed));
+    app.message = None;
+    app.test_execute(Command::ToggleToolTrace);
+    assert!(
+        app.message.as_ref().unwrap().text.contains("language server's row"),
+        "{:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    assert!(app.lsp.server_for(Language::Cpp).unwrap().trace());
+    app.message = None;
+    app.test_execute(Command::RestartServer);
+    assert!(
+        app.message.as_ref().unwrap().text.contains("language server's row"),
+        "{:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    assert_eq!(fake.launches(), ["clangd"], "no server started");
+
+    // The traced messages reach an opened log tab too, not just the ring.
+    open_log(&mut app, "clangd");
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .request("test/echo", json!({ "ping": 3 }));
+    let tab_traced = |a: &App| {
+        a.active_buffer().is_some_and(|b| {
+            b.rope
+                .to_string()
+                .lines()
+                .any(|l| l.get(19..).is_some_and(|t| t.starts_with("→ ") || t.starts_with("← ")))
+        })
+    };
+    assert!(app.settle(tab_traced).await, "{:?}", tab_lines(&app));
+    // A protocol trace goes to the tool's file too (its ring is what the disk writes).
+    flush(&app.logs).await;
+    let file = fs::read_to_string(root.parent().unwrap().join("state/logs/tools/clangd.log")).unwrap();
+    assert!(
+        file.lines()
+            .any(|l| l.contains("TRACE → ") && l.contains("\"test/echo\"")),
+        "{file}"
+    );
+    app.shutdown_servers().await;
+}
+
+/// "Tools: Restart Server" (the palette; unbound) starts a crashed (failed) server again: a
+/// fresh launch, the same log ring with both starts in it, its old diagnostics gone, and its
+/// Tools row no longer failed.
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_restart_brings_a_failed_server_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let (mut app, root) = tools_app(dir.path(), &fake, false);
+    with_clangd(&mut app, &root).await;
+    let tool = clangd();
+    let path = root.join("a.cpp");
+    app.lsp.server_for(Language::Cpp).unwrap().notify(
+        "test/publish",
+        json!({
+            "uri": crate::lsp::uri::from_path(&path),
+            "diagnostics": [{
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 3 } },
+                "message": "old instance",
+            }],
+        }),
+    );
+    assert!(app.settle(|a| a.lsp.diagnostics.files().count() == 1).await);
+    // A restarted server keeps the trace setting.
+    app.lsp.server_for(Language::Cpp).unwrap().set_trace(true);
+    let before = app.logs.texts(&tool);
+
+    app.test_execute(Command::ShowTools);
+    assert_eq!(app.tools_view.selected_key(), Some(&clangd_row()));
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/crash", json!(null));
+    assert!(
+        app.settle(|a| matches!(a.lsp.server_for(Language::Cpp).map(|s| &s.state), Some(State::Failed)))
+            .await
+    );
+    assert_eq!(
+        app.lsp.diagnostics.files().count(),
+        0,
+        "the crashed instance's diagnostics go"
+    );
+    let mut term = terminal();
+    assert!(tools_rows(&mut app, &mut term)[0].starts_with(" ✗ clangd"), "failed");
+
+    // A failed server has no task to trace: the command says how to get one.
+    app.message = None;
+    app.test_execute(Command::ToggleToolTrace);
+    assert!(
+        app.message.as_ref().unwrap().text.contains("not running"),
+        "{:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    assert!(app.lsp.server_for(Language::Cpp).unwrap().trace(), "unchanged");
+
+    run_command(&mut app, "Tools: Restart Server");
+    assert_eq!(app.last_command, Some(Command::RestartServer));
+    assert!(
+        app.message.as_ref().unwrap().text.contains("Restarted clangd"),
+        "{:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    assert!(
+        app.settle(|a| a.lsp.server_for(Language::Cpp).and_then(|s| s.encoding()).is_some())
+            .await
+    );
+    assert_eq!(fake.launches(), ["clangd", "clangd"]);
+    assert!(app.lsp.server_for(Language::Cpp).unwrap().trace(), "trace carried over");
+    let row = tools_rows(&mut app, &mut term)[0].clone();
+    assert!(row.starts_with(" ● clangd  C++ · running"), "{row:?}");
+    // Its log kept every line, and the new instance's start is in it too.
+    let after = app.logs.texts(&tool);
+    assert!(after.starts_with(&before[..]), "{after:?}");
+    assert_eq!(after.iter().filter(|t| t.starts_with("Starting: clangd")).count(), 2);
+    app.shutdown_servers().await;
+}
+
+/// A server stopped by a `.workspace` change (the Tools view's "exited" row) starts again from
+/// its row: a fresh launch with the same (old) config, its log's lines kept.
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_restart_starts_a_stopped_server_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = workspace::normalize(dir.path());
+    let root = base.join("proj");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("a.cpp"), "int a;\n").unwrap();
+    let text = "[lsp.cpp]\ncommand = \"clangd\"\n";
+    fs::write(root.join(".workspace"), text).unwrap();
+    let config = crate::workspace::config::WorkspaceConfig::parse(text).unwrap();
+    let mut trust = TrustStore::load(base.join("state/trust.toml"));
+    trust.record(&root, &config, true);
+    trust.write().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let mut app = App::new(
+        Workspace::load(root.clone()),
+        TrustStore::load(base.join("state/trust.toml")),
+        None,
+        true,
+    );
+    app.lsp.set_launcher(fake.clone());
+    app.ui.side_width = 40;
+    app.test_start();
+    with_clangd(&mut app, &root).await;
+    app.test_execute(Command::ShowTools);
+    // Close the only tab and take the server out of `.workspace`: it stops, its row remains.
+    app.test_execute(Command::CloseTab);
+    fs::write(root.join(".workspace"), "[settings]\nrender_whitespace = \"none\"\n").unwrap();
+    assert!(
+        app.settle(|a| {
+            a.lsp.stopped().len() == 1 && a.logs.texts(&clangd()).iter().any(|t| t.starts_with("Stopped ("))
+        })
+        .await
+    );
+    let mut term = terminal();
+    assert_eq!(tools_rows(&mut app, &mut term)[0], " – clangd  C++ · exited");
+    let before = app.logs.texts(&clangd());
+    assert!(before.iter().any(|t| t.starts_with("Stopped (")));
+
+    // A stopped server has no task to trace either.
+    app.message = None;
+    app.test_execute(Command::ToggleToolTrace);
+    assert!(
+        app.message.as_ref().unwrap().text.contains("not running"),
+        "{:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+
+    // The stopped row is selected: restart it.
+    assert_eq!(app.tools_view.selected_key(), Some(&clangd_row()));
+    app.test_execute(Command::RestartServer);
+    assert!(
+        app.message.as_ref().unwrap().text.contains("Restarted clangd"),
+        "{:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    assert!(
+        app.settle(
+            |a| a.lsp.stopped().is_empty() && a.lsp.server_for(Language::Cpp).and_then(|s| s.encoding()).is_some()
+        )
+        .await
+    );
+    assert_eq!(fake.launches(), ["clangd", "clangd"]);
+    let row = tools_rows(&mut app, &mut term)[0].clone();
+    assert_eq!(row, " ● clangd  C++ · running");
+    let after = app.logs.texts(&clangd());
+    assert!(after.starts_with(&before[..]), "{after:?}");
+    assert_eq!(after.iter().filter(|t| t.starts_with("Starting: clangd")).count(), 2);
+    app.shutdown_servers().await;
+}
+
+/// Restarting a running server drops what belonged to the old instance: its published
+/// diagnostics and the requests waiting for answers it will never send. Its log keeps its
+/// lines, and the new instance is sent the open document (`didOpen` again).
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_restart_drops_the_old_instances_diagnostics_and_requests() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let (mut app, root) = tools_app(dir.path(), &fake, false);
+    with_clangd(&mut app, &root).await;
+    let tool = clangd();
+    let path = root.join("a.cpp");
+    let uri = crate::lsp::uri::from_path(&path);
+    let before = app.logs.texts(&tool);
+
+    // A diagnostic, and a request whose answer never comes (held until a `test/flush`).
+    app.lsp.server_for(Language::Cpp).unwrap().notify(
+        "test/publish",
+        json!({
+            "uri": uri,
+            "diagnostics": [{
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 3 } },
+                "message": "old instance",
+            }],
+        }),
+    );
+    assert!(app.settle(|a| a.lsp.diagnostics.files().count() == 1).await);
+    assert_eq!(
+        app.active_buffer().unwrap().diagnostics.all().len(),
+        1,
+        "in the buffer too"
+    );
+    fake.respond("textDocument/definition", json!(null));
+    fake.hold("textDocument/definition", true);
+    app.press(KeyCode::F(12), KeyModifiers::NONE);
+    assert_eq!(app.pending_requests(), [("definition", 0)]);
+
+    app.test_execute(Command::ShowTools);
+    assert_eq!(app.tools_view.selected_key(), Some(&clangd_row()));
+    app.test_execute(Command::RestartServer);
+    assert!(
+        app.message.as_ref().unwrap().text.contains("Restarted clangd"),
+        "{:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    assert!(
+        app.pending_requests().is_empty(),
+        "the old instance's request is dropped"
+    );
+    assert_eq!(app.lsp.diagnostics.files().count(), 0, "its diagnostics go");
+    assert!(
+        app.active_buffer().unwrap().diagnostics.all().is_empty(),
+        "their marks leave the buffer"
+    );
+    assert!(
+        app.settle(|a| a.lsp.server_for(Language::Cpp).and_then(|s| s.encoding()).is_some())
+            .await
+    );
+    // The new instance is sent the document again (after the first instance's `didOpen`).
+    let opens = |fake: &FakeLauncher| {
+        fake.received()
+            .iter()
+            .filter(|m| m["method"] == "textDocument/didOpen" && m["params"]["textDocument"]["uri"] == uri.as_str())
+            .count()
+    };
+    assert!(app.settle(|_| opens(&fake) == 2).await, "{}", opens(&fake));
+    let after = app.logs.texts(&tool);
+    assert!(after.starts_with(&before[..]), "the log keeps its lines: {after:?}");
+    assert_eq!(after.iter().filter(|t| t.starts_with("Starting: clangd")).count(), 2);
+    app.shutdown_servers().await;
 }

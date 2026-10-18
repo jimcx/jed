@@ -230,6 +230,12 @@ pub enum Command {
     ShowTools,
     /// The Tools view's list (`Context::Tools`).
     Tools(ToolsCommand),
+    /// "Tools: Toggle Protocol Trace": the selected (or the active file's) language server's
+    /// JSON-RPC messages into its log, or off again.
+    ToggleToolTrace,
+    /// "Tools: Restart Server": stops the selected (or the active file's) language server and
+    /// starts it again, also one that failed.
+    RestartServer,
 }
 
 /// The Tools view's list (`Context::Tools`, while it has the keys).
@@ -671,7 +677,13 @@ impl Command {
         all.push(Command::ToggleRenderWhitespace);
         all.push(Command::ToggleBlame);
         all.extend([Command::NavBack, Command::NavForward]);
-        all.extend([Command::OpenToolLog, Command::ClearToolLog, Command::ShowTools]);
+        all.extend([
+            Command::OpenToolLog,
+            Command::ClearToolLog,
+            Command::ShowTools,
+            Command::ToggleToolTrace,
+            Command::RestartServer,
+        ]);
         all.extend(ToolsCommand::ALL.map(Command::Tools));
         all
     }
@@ -912,6 +924,8 @@ impl Command {
             Command::OpenToolLog => "tools.openLog".into(),
             Command::ClearToolLog => "tools.clearLog".into(),
             Command::ShowTools => "tools.show".into(),
+            Command::ToggleToolTrace => "tools.toggleTrace".into(),
+            Command::RestartServer => "tools.restartServer".into(),
             Command::Tools(c) => format!(
                 "toolsView.{}",
                 match c {
@@ -1154,6 +1168,8 @@ impl Command {
             Command::OpenToolLog => "Tools: Open Log",
             Command::ClearToolLog => "Tools: Clear Log",
             Command::ShowTools => "Tools: Show",
+            Command::ToggleToolTrace => "Tools: Toggle Protocol Trace",
+            Command::RestartServer => "Tools: Restart Server",
             Command::Tools(c) => match c {
                 ToolsCommand::Up => "Tools: Select Previous Row",
                 ToolsCommand::Down => "Tools: Select Next Row",
@@ -1301,9 +1317,11 @@ mod tests {
             Command::ClearToolLog => 89,
             Command::ShowTools => 90,
             Command::Tools(_) => 91,
+            Command::ToggleToolTrace => 92,
+            Command::RestartServer => 93,
         }
     }
-    const VARIANTS: u8 = 92;
+    const VARIANTS: u8 = 94;
 
     #[test]
     fn all_lists_every_variant() {

@@ -220,6 +220,91 @@ impl App {
         self.logs.clear(&tool);
         self.sync_logs();
     }
+
+    /// The server "Tools: Toggle Protocol Trace" / "Tools: Restart Server" act on: the Tools
+    /// view's selected server's name while the view is shown, else the active file's language
+    /// server. `Err` says why there is none.
+    fn tools_server(&self) -> Result<String, String> {
+        if self.tools_shown() {
+            let rows = self.tools_rows();
+            return match self.tools_view.selected_row(&rows).map(|i| &rows[i]) {
+                Some(Row::Server(s)) => Ok(s.name.clone()),
+                Some(_) => Err("select a language server's row in the Tools view".into()),
+                None => Err("the Tools view lists no language servers".into()),
+            };
+        }
+        let Some(buf) = self.active_file_buffer().and_then(|id| self.buffers.get(id)) else {
+            return Err("open a file, or show the Tools view and select a server".into());
+        };
+        let language = buf.syntax.language();
+        match self.lsp.server_for(language) {
+            Some(s) => Ok(s.config.name.clone()),
+            None => Err(format!("no language server is running for {}", language.name())),
+        }
+    }
+
+    /// "Tools: Toggle Protocol Trace" (`tools.toggleTrace`): every JSON-RPC message to and from
+    /// that server also goes to its log, or stops doing so. A failure / stopped server has no
+    /// task to trace (Restart Server starts it again).
+    pub(super) fn toggle_tool_trace(&mut self) {
+        let name = match self.tools_server() {
+            Ok(name) => name,
+            Err(why) => {
+                self.notify(Level::Info, format!("Tools: Toggle Protocol Trace: {why}"));
+                return;
+            }
+        };
+        let state = self
+            .lsp
+            .server_named(&name)
+            .map(|s| (!matches!(s.state, crate::lsp::State::Failed), s.trace()));
+        let Some((running, on)) = state else {
+            self.notify(
+                Level::Info,
+                format!("{name}: not running (Tools: Restart Server starts it again)"),
+            );
+            return;
+        };
+        if !running {
+            self.notify(
+                Level::Info,
+                format!("{name}: not running (Tools: Restart Server starts it again)"),
+            );
+            return;
+        }
+        if let Some(server) = self.lsp.server_named(&name) {
+            server.set_trace(!on);
+        }
+        self.notify(
+            Level::Info,
+            format!("{name}: protocol trace {}", if on { "off" } else { "on" }),
+        );
+    }
+
+    /// "Tools: Restart Server" (`tools.restartServer`): stops the server and starts a new one
+    /// with the same config (also a failed one, which `sync` alone would never retry, and a
+    /// stopped one); its log keeps its lines.
+    pub(super) fn restart_server(&mut self) {
+        let name = match self.tools_server() {
+            Ok(name) => name,
+            Err(why) => {
+                self.notify(Level::Info, format!("Tools: Restart Server: {why}"));
+                return;
+            }
+        };
+        let Some(restarted) = self.lsp.restart(&name) else {
+            self.notify(Level::Warning, format!("No language server named '{name}'"));
+            return;
+        };
+        if let Some(old) = restarted.old {
+            // The new instance answers none of the old one's requests.
+            self.requests.retain(|(server, _), _| *server != old);
+        }
+        self.drop_cleared_diagnostics();
+        self.lsp.sync_documents(&mut self.buffers);
+        self.needs_redraw = true;
+        self.notify(Level::Info, format!("Restarted {name}"));
+    }
 }
 
 impl App {
