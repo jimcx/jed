@@ -393,6 +393,10 @@ pub struct HitMap {
     pub scm: Option<ScmHit>,
     /// The Tools view, when shown.
     pub tools: Option<ToolsHit>,
+    /// The Explorer view's "Git History" section, when shown.
+    pub history: Option<HistoryHit>,
+    /// Its list's scroll bar (its last column), when drawn.
+    pub history_scrollbar: Option<ScrollBarHit>,
     /// The bottom panel's tab labels.
     pub panel_tabs: Vec<(Rect, PanelTab)>,
     /// The task tabs' close buttons (`×`).
@@ -470,6 +474,17 @@ pub struct ToolsHit {
     pub rows: Vec<crate::tools_view::RowKey>,
 }
 
+/// The Explorer view's "Git History" section as drawn: the draggable divider, the header and
+/// the commit rows (`top`: the list row drawn first).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HistoryHit {
+    pub divider: Rect,
+    pub header: Rect,
+    /// The commit rows (`Rect::default()` while collapsed); its last column is the scroll bar.
+    pub list: Rect,
+    pub top: usize,
+}
+
 /// The find widget: its box, the replace row (if shown) and the three option toggles
 /// (case, whole word, regex).
 #[derive(Debug, Clone, Copy)]
@@ -512,6 +527,8 @@ pub enum ScrollTarget {
     Group(GroupId),
     Side(SidePanel),
     Panel(PanelTab),
+    /// The Explorer view's "Git History" commit list.
+    History,
 }
 
 /// A scroll bar as drawn: its track (one column) and the thumb on it (`None`: nothing to
@@ -555,6 +572,12 @@ pub enum Hit {
     SideBorder,
     /// Explorer row on screen (add the scroll offset for the entry).
     ExplorerRow(u16),
+    /// The Explorer view's "Git History" divider (dragging it resizes the section).
+    HistoryDivider,
+    /// Its header row (a click toggles the collapse).
+    HistoryHeader,
+    /// A commit row on screen (add `HistoryHit::top` for the list row).
+    HistoryRow(u16),
     SidePanel,
     /// Index into `HitMap::dividers`.
     Divider(usize),
@@ -616,6 +639,22 @@ impl HitMap {
                 && s.track.contains(p)
             {
                 return Hit::ScrollBar(t);
+            }
+            if let Some(s) = self.history_scrollbar
+                && s.track.contains(p)
+            {
+                return Hit::ScrollBar(ScrollTarget::History);
+            }
+            if let Some(h) = &self.history {
+                if h.divider.contains(p) {
+                    return Hit::HistoryDivider;
+                }
+                if h.header.contains(p) {
+                    return Hit::HistoryHeader;
+                }
+                if h.list.contains(p) {
+                    return Hit::HistoryRow(y - h.list.y);
+                }
             }
             if self.explorer_rows.contains(p) {
                 return Hit::ExplorerRow(y - self.explorer_rows.y);
@@ -685,6 +724,7 @@ impl HitMap {
             ScrollTarget::Group(g) => self.group(g)?.scrollbar,
             ScrollTarget::Side(_) => drawn(self.side_scrollbar),
             ScrollTarget::Panel(_) => drawn(self.panel_scrollbar),
+            ScrollTarget::History => self.history_scrollbar,
         }
     }
 }
@@ -831,7 +871,7 @@ mod tests {
             regions,
             icons: vec![(1, SidePanel::Explorer)],
             // The explorer's rows, its scroll bar in the column left of the border.
-            explorer_rows: Rect::new(3, 2, 23, 27),
+            explorer_rows: Rect::new(3, 2, 23, 20),
             groups,
             dividers,
             palette: None,
@@ -839,6 +879,17 @@ mod tests {
             search: None,
             scm: None,
             tools: None,
+            // The history section under the tree: divider, header, then rows.
+            history: Some(HistoryHit {
+                divider: Rect::new(3, 22, 24, 1),
+                header: Rect::new(3, 23, 24, 1),
+                list: Rect::new(3, 24, 23, 5),
+                top: 0,
+            }),
+            history_scrollbar: Some(ScrollBarHit {
+                track: Rect::new(26, 24, 1, 5),
+                thumb: None,
+            }),
             panel_tabs: vec![
                 (Rect::new(30, 24, 10, 1), PanelTab::Problems),
                 (Rect::new(42, 24, 7, 1), PanelTab::Task(crate::tasks::RunId(3))),
@@ -848,7 +899,7 @@ mod tests {
             side_scrollbar: Some((
                 ScrollTarget::Side(SidePanel::Explorer),
                 ScrollBarHit {
-                    track: Rect::new(26, 2, 1, 27),
+                    track: Rect::new(26, 2, 1, 20),
                     thumb: None,
                 },
             )),
@@ -914,7 +965,18 @@ mod tests {
         assert_eq!(map.hit(50, 24), Hit::PanelTabClose(crate::tasks::RunId(3)));
         assert_eq!(map.hit(50, 26), Hit::Panel);
         assert_eq!(map.hit(12, 29), Hit::StatusProblems);
-        assert_eq!(map.hit(5, 25), Hit::ExplorerRow(23), "the side panel beside it");
+        assert_eq!(map.hit(5, 20), Hit::ExplorerRow(18), "the tree above the history");
+        assert_eq!(map.hit(5, 22), Hit::HistoryDivider);
+        assert_eq!(map.hit(5, 23), Hit::HistoryHeader);
+        assert_eq!(map.hit(5, 24), Hit::HistoryRow(0));
+        assert_eq!(map.hit(5, 26), Hit::HistoryRow(2));
+        assert_eq!(
+            map.hit(26, 25),
+            Hit::ScrollBar(ScrollTarget::History),
+            "the history list's last column"
+        );
+        assert!(map.scrollbar(ScrollTarget::History).is_some());
+        assert_eq!(map.hit(26, 4), side_bar, "the tree's own bar");
         assert_eq!(map.hit(66, 0), Hit::Tab(8, 0));
         assert_eq!(map.hit(80, 10), Hit::Editor(8));
         let reload = Some(crate::disk::BannerAction::Reload);

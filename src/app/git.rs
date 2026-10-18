@@ -79,6 +79,7 @@ impl App {
 
     pub(super) fn git_refreshed(&mut self, result: Result<Refreshed, String>, elapsed: Duration) {
         self.git.running = false;
+        let head_before = self.git_head();
         if elapsed > SLOW_TASK {
             tracing::warn!(elapsed_ms = elapsed.as_millis() as u64, "slow git status");
         }
@@ -110,9 +111,21 @@ impl App {
             }
             Err(e) => tracing::warn!("git status failed: {e}"),
         }
+        // A commit, checkout, reset or another repository: the file's history is stale.
+        if self.git_head() != head_before {
+            self.git_history_head_changed();
+        }
         if let Some(changed) = self.git.queued.take() {
             self.refresh_git(changed);
         }
+    }
+
+    /// What the history section reloads on: the repository and its HEAD commit (or unborn).
+    fn git_head(&self) -> Option<(PathBuf, Option<String>)> {
+        self.git
+            .status
+            .as_ref()
+            .map(|s| (s.repo.workdir.clone(), s.head_id.clone()))
     }
 
     /// Watches the git directory when the root's watch doesn't cover it (the workspace is a

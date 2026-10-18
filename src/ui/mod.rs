@@ -50,6 +50,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
         (hits.explorer_rows, hits.search, hits.scm, hits.tools) =
             (side.explorer_rows, side.search, side.scm, side.tools);
         hits.side_scrollbar = side.scrollbar;
+        hits.history = side.history;
+        hits.history_scrollbar = side.history_scrollbar;
     }
 
     let (cells, dividers) = app.groups.tree.layout(regions.editor);

@@ -186,6 +186,9 @@ impl Decoration {
 pub struct Status {
     pub repo: Repo,
     pub head: Head,
+    /// The HEAD commit's full id (`None`: an unborn HEAD). The Git History section reloads a
+    /// file's commits when it changes.
+    pub head_id: Option<String>,
     /// Every changed path, sorted by path.
     pub entries: Vec<Entry>,
     /// Absolute path → colour, for changed files and every folder above one (inside the work
@@ -217,9 +220,18 @@ impl Status {
             entries.push(Entry { path, staged, unstaged });
         }
         entries.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(Status::new(repo.clone(), head, entries))
+        let head_id = r
+            .head()
+            .ok()
+            .and_then(|h| h.peel_to_commit().ok())
+            .map(|c| c.id().to_string());
+        let mut status = Status::new(repo.clone(), head, entries);
+        status.head_id = head_id;
+        Ok(status)
     }
 
+    /// A status with no HEAD commit id recorded (tests build statuses without a repository);
+    /// `Status::read` fills it in.
     pub fn new(repo: Repo, head: Head, entries: Vec<Entry>) -> Status {
         let mut decorations = HashMap::new();
         for e in &entries {
@@ -237,6 +249,7 @@ impl Status {
         Status {
             repo,
             head,
+            head_id: None,
             entries,
             decorations,
         }
@@ -454,6 +467,7 @@ mod tests {
         std::fs::write(root.join("debug.log"), "x").unwrap();
         let s = status(&root);
         assert_eq!(s.head, Head::Unborn("main".into()));
+        assert_eq!(s.head_id, None, "no commit to point at");
         let paths: Vec<_> = s.entries.iter().map(|e| e.path.to_str().unwrap()).collect();
         // Ignored files left out; the untracked folder listed by file.
         assert_eq!(paths, [".gitignore", "src/deep/a.rs"]);
@@ -462,6 +476,17 @@ mod tests {
         assert_eq!(s.decoration(&root.join("src/deep/a.rs")), Some(Decoration::Untracked));
         assert_eq!(s.decoration(&root.join("target")), None);
         assert_eq!(s.label(), "main*");
+    }
+
+    /// The HEAD commit's full id: what the Git History section reloads on.
+    #[test]
+    fn status_reads_the_head_commit_id() {
+        let (_d, root) = tmp();
+        init(&root);
+        std::fs::write(root.join("a"), "a\n").unwrap();
+        commit_all(&root, "one");
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        assert_eq!(status(&root).head_id, Some(head));
     }
 
     #[test]

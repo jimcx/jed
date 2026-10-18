@@ -10,6 +10,7 @@ mod files;
 mod find;
 mod format;
 mod git;
+mod git_history;
 mod history;
 mod hover;
 mod locations;
@@ -211,6 +212,13 @@ enum AppEvent {
         result: Result<crate::git::Refreshed, String>,
         elapsed: Duration,
     },
+    /// A page of the active file's commits was read (`app/git_history.rs`).
+    GitHistory {
+        path: PathBuf,
+        skip: usize,
+        generation: u64,
+        result: Result<crate::git::log::Page, String>,
+    },
     /// An open file was read to see whether it changed on disk (`app/disk.rs`).
     DiskChecked(Box<disk::Checked>),
     /// A buffer's gutter markers were computed (`app/quick_diff.rs`).
@@ -374,6 +382,9 @@ pub struct App {
     pub scm: crate::scm::ScmView,
     /// The Tools view's list (`app/tools.rs`, drawn by `ui::tools`).
     pub tools_view: crate::tools_view::ToolsView,
+    /// The Explorer view's "Git History" section: the active file's commits and the section's
+    /// state (`app/git_history.rs`).
+    pub git_history: crate::git_history::GitHistory,
     /// Stage All waiting for these buffers' saves to end.
     stage_all_after_save: Option<HashSet<BufferId>>,
     /// Task templates from `tasks.toml` and the task runs (`app/tasks.rs`).
@@ -482,6 +493,7 @@ impl App {
             diffs: Default::default(),
             scm: Default::default(),
             tools_view: Default::default(),
+            git_history: Default::default(),
             stage_all_after_save: None,
             tasks: Default::default(),
             nav: Default::default(),
@@ -544,6 +556,7 @@ impl App {
         self.sync_quick_diff();
         self.sync_blame();
         self.sync_diffs();
+        self.sync_git_history();
     }
 
     pub async fn run(&mut self, terminal: &mut Term) -> anyhow::Result<()> {
@@ -560,6 +573,7 @@ impl App {
             self.sync_quick_diff();
             self.sync_blame();
             self.sync_diffs();
+            self.sync_git_history();
             self.sync_backups();
             self.report_log_errors();
             self.sync_logs();
@@ -735,6 +749,8 @@ impl App {
             Focus::SidePanel if self.ui.side_panel == SidePanel::Search => Context::Search,
             Focus::SidePanel if self.ui.side_panel == SidePanel::SourceControl => Context::Scm,
             Focus::SidePanel if self.ui.side_panel == SidePanel::Tools => Context::Tools,
+            // The history section (in the Explorer) comes before the tree's context.
+            Focus::SidePanel if self.git_history_focused() => Context::GitHistory,
             Focus::SidePanel => Context::Explorer,
             Focus::Find if self.find.field == Field::Replace => Context::Replace,
             Focus::Find => Context::Find,
@@ -980,6 +996,7 @@ impl App {
             Command::UnstageAll => self.unstage_all(),
             Command::FocusScm => self.focus_scm(),
             Command::Scm(c) => self.scm_command(c),
+            Command::GitHistory(c) => self.git_history_command(c),
             Command::ShowFileHistory => self.show_file_history(false),
             Command::RestoreFileHistory => self.show_file_history(true),
             Command::RunTask => self.show_run_task(),
@@ -1084,8 +1101,12 @@ impl App {
         if panel == SidePanel::Tools {
             self.tools_select_first();
         }
-        if panel == SidePanel::Explorer && self.explorer.selected.is_none() {
-            self.explorer.select_index(0);
+        if panel == SidePanel::Explorer {
+            // Focusing the Explorer gives the keys to the tree, not the history section.
+            self.git_history.set_focused(false);
+            if self.explorer.selected.is_none() {
+                self.explorer.select_index(0);
+            }
         }
     }
 
@@ -1137,6 +1158,12 @@ impl App {
             AppEvent::Lsp(ev) => self.lsp_event(ev),
             AppEvent::LocationsRead { generation, files } => self.locations_read(generation, files),
             AppEvent::GitRefreshed { result, elapsed } => self.git_refreshed(result, elapsed),
+            AppEvent::GitHistory {
+                path,
+                skip,
+                generation,
+                result,
+            } => self.git_history_done(path, skip, generation, result),
             AppEvent::DiskChecked(checked) => self.disk_checked(*checked),
             AppEvent::QuickDiff { buffer, computed } => self.quick_diff_done(buffer, computed),
             AppEvent::Blame { buffer, computed } => self.blame_done(buffer, computed),
@@ -1258,6 +1285,18 @@ impl App {
         self.handle_app_event(AppEvent::LocationsRead { generation, files });
     }
 
+    /// Takes in a page of a file's commits for `path` and `generation`, as if the background
+    /// read had sent it (to test that another file's or a replaced list's pages are dropped).
+    pub fn test_git_history_page(
+        &mut self,
+        path: PathBuf,
+        skip: usize,
+        generation: u64,
+        result: Result<crate::git::log::Page, String>,
+    ) {
+        self.git_history_done(path, skip, generation, result);
+    }
+
     /// Language server requests waiting for answers: (method kind, buffer position) pairs.
     pub fn pending_requests(&self) -> Vec<(&'static str, usize)> {
         let mut v: Vec<_> = self
@@ -1300,6 +1339,7 @@ impl App {
         self.sync_quick_diff();
         self.sync_blame();
         self.sync_diffs();
+        self.sync_git_history();
         self.sync_backups();
         self.report_log_errors();
         self.sync_logs();
@@ -1342,6 +1382,7 @@ impl App {
             self.sync_quick_diff();
             self.sync_blame();
             self.sync_diffs();
+            self.sync_git_history();
             self.sync_backups();
             self.report_log_errors();
             self.sync_logs();

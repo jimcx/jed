@@ -71,6 +71,8 @@ impl App {
                 Some(f(&mut l.list.scrollable(&l.files)))
             }
             ScrollTarget::Panel(PanelTab::Task(_)) => None,
+            ScrollTarget::History if !self.ui.side_visible || self.ui.side_panel != SidePanel::Explorer => None,
+            ScrollTarget::History => Some(f(&mut self.git_history.scrollable())),
         }
     }
 

@@ -18,6 +18,9 @@ mod field;
 mod find;
 mod format;
 mod git;
+mod git_history;
+#[cfg(test)]
+mod git_history_tests;
 mod git_show;
 mod group;
 mod grouped;

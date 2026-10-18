@@ -37,6 +37,8 @@ pub enum Drag {
         target: ScrollTarget,
         grab: u16,
     },
+    /// The Explorer view's Git History divider (its row sets the section's height).
+    HistoryDivider,
 }
 
 /// Counts clicks on the same cell in quick succession (1, 2, 3).
@@ -65,6 +67,8 @@ impl App {
                 ScrollTarget::Group(g) => Hit::Editor(g),
                 ScrollTarget::Side(_) => Hit::SidePanel,
                 ScrollTarget::Panel(_) => Hit::Panel,
+                // The wheel over the history's bar scrolls its list, as over its rows.
+                ScrollTarget::History => Hit::HistoryRow(0),
             },
             hit => hit,
         };
@@ -94,6 +98,7 @@ impl App {
                     Hit::SidePanel if self.ui.side_panel == SidePanel::Search => self.search_scroll(delta),
                     Hit::SidePanel if self.ui.side_panel == SidePanel::SourceControl => self.scm_scroll(delta),
                     Hit::SidePanel if self.ui.side_panel == SidePanel::Tools => self.tools_scroll(delta),
+                    Hit::HistoryRow(_) | Hit::HistoryHeader => self.git_history.scroll_by(delta),
                     Hit::ExplorerRow(_) | Hit::SidePanel => self.explorer.scroll_by(delta),
                     Hit::Panel | Hit::PanelTab(_) | Hit::PanelTabClose(_) | Hit::PanelBorder => match self.ui.panel_tab
                     {
@@ -166,6 +171,15 @@ impl App {
                     }
                 }
                 Some(Drag::ScrollBar { target, grab }) => self.scrollbar_drag(target, m.row, grab),
+                Some(Drag::HistoryDivider) => {
+                    // The divider's row is the section's top; the section reaches the body's end
+                    // (the side panel's last row, above the status bar).
+                    if let Some(side) = self.hits.regions.side {
+                        let bottom = side.y + side.height;
+                        let body = bottom.saturating_sub(side.y + 2);
+                        self.git_history.set_section_height(bottom.saturating_sub(m.row), body);
+                    }
+                }
                 None => {}
             },
             MouseEventKind::Up(MouseButton::Left) => {
@@ -195,6 +209,7 @@ impl App {
             Hit::SideBorder => self.drag = Some(Drag::SideBorder),
             Hit::ExplorerRow(row) if self.ui.side_panel == SidePanel::Explorer => {
                 self.ui.focus = Focus::SidePanel;
+                self.git_history.set_focused(false);
                 let index = self.explorer.scroll + row as usize;
                 let rows = self.explorer.rows();
                 let Some(entry) = rows.get(index).map(|r| (r.entry.path.clone(), r.entry.is_dir)) else {
@@ -210,7 +225,25 @@ impl App {
             Hit::SidePanel if self.ui.side_panel == SidePanel::Search => self.search_click(m, count),
             Hit::SidePanel if self.ui.side_panel == SidePanel::SourceControl => self.scm_click(m, count),
             Hit::SidePanel if self.ui.side_panel == SidePanel::Tools => self.tools_click(m),
-            Hit::ExplorerRow(_) | Hit::SidePanel => self.ui.focus = Focus::SidePanel,
+            // The history's header toggles the collapse; a commit row selects it.
+            Hit::HistoryHeader => {
+                self.ui.focus = Focus::SidePanel;
+                self.git_history.set_focused(true);
+                self.git_history.toggle_collapsed();
+            }
+            Hit::HistoryRow(row) => {
+                self.ui.focus = Focus::SidePanel;
+                self.git_history.set_focused(true);
+                let top = self.hits.history.map_or(0, |h| h.top);
+                self.git_history.select_row(top + row as usize);
+            }
+            Hit::HistoryDivider => self.drag = Some(Drag::HistoryDivider),
+            Hit::ExplorerRow(_) | Hit::SidePanel => {
+                self.ui.focus = Focus::SidePanel;
+                if self.ui.side_panel == SidePanel::Explorer {
+                    self.git_history.set_focused(false);
+                }
+            }
             Hit::Divider(i) => self.drag = self.hits.dividers.get(i).cloned().map(Drag::Divider),
             Hit::Tab(g, i) => {
                 self.focus_group(g);

@@ -139,6 +139,10 @@ impl Theme {
             ),
             ("sideBar.border", Style::new().fg(c(0x3C3C3C))),
             ("sideBar.dim", Style::new().fg(c(0x858585))),
+            // The Explorer's "Git History" rows: the author, the relative date, the short id.
+            ("gitHistory.author", Style::new().fg(c(0xBBBBBB))),
+            ("gitHistory.date", Style::new().fg(c(0x858585))),
+            ("gitHistory.hash", Style::new().fg(c(0x858585))),
             ("list.active", fg_bg(0xFFFFFF, 0x04395E)),
             // Explorer entries by git status (Dark+'s `gitDecoration.*`; a folder takes its most
             // important file's).

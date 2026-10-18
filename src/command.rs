@@ -194,6 +194,8 @@ pub enum Command {
     FocusScm,
     /// The Source Control view's list (`Context::Scm`).
     Scm(ScmCommand),
+    /// The Explorer view's "Git History" section (`Context::GitHistory`).
+    GitHistory(GitHistoryCommand),
     /// The active file's history entries in the palette; picking one compares it with the
     /// buffer (a diff tab).
     ShowFileHistory,
@@ -558,6 +560,33 @@ impl ScmCommand {
     ];
 }
 
+/// The Explorer view's "Git History" section (`Context::GitHistory`, while it has the keys):
+/// moving the selection through the loaded commits, back to the tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GitHistoryCommand {
+    /// The selection: a row up / down, a page, the first / last row.
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    First,
+    Last,
+    /// Left / Esc: back to the tree (`focused = false`); the side panel keeps the keys.
+    FocusTree,
+}
+
+impl GitHistoryCommand {
+    pub const ALL: [GitHistoryCommand; 7] = [
+        GitHistoryCommand::Up,
+        GitHistoryCommand::Down,
+        GitHistoryCommand::PageUp,
+        GitHistoryCommand::PageDown,
+        GitHistoryCommand::First,
+        GitHistoryCommand::Last,
+        GitHistoryCommand::FocusTree,
+    ];
+}
+
 /// The completion list (`Context::Suggest`, while it's shown).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SuggestCommand {
@@ -670,6 +699,7 @@ impl Command {
             Command::FocusScm,
         ]);
         all.extend(ScmCommand::ALL.map(Command::Scm));
+        all.extend(GitHistoryCommand::ALL.map(Command::GitHistory));
         all.extend([Command::ShowFileHistory, Command::RestoreFileHistory]);
         all.extend([Command::RunTask, Command::KillTask, Command::CloseTask]);
         all.extend(TaskCommand::ALL.map(Command::Task));
@@ -910,6 +940,18 @@ impl Command {
                     ScmCommand::Open => "open",
                     ScmCommand::Preview => "preview",
                     ScmCommand::FocusEditor => "focusEditor",
+                }
+            ),
+            Command::GitHistory(c) => format!(
+                "gitHistory.{}",
+                match c {
+                    GitHistoryCommand::Up => "up",
+                    GitHistoryCommand::Down => "down",
+                    GitHistoryCommand::PageUp => "pageUp",
+                    GitHistoryCommand::PageDown => "pageDown",
+                    GitHistoryCommand::First => "first",
+                    GitHistoryCommand::Last => "last",
+                    GitHistoryCommand::FocusTree => "focusTree",
                 }
             ),
             Command::PreviousChange => "editor.previousChange".into(),
@@ -1156,6 +1198,15 @@ impl Command {
                 ScmCommand::Preview => "Source Control: Open Changes, Keep Focus",
                 ScmCommand::FocusEditor => "Source Control: Back to Editor",
             },
+            Command::GitHistory(c) => match c {
+                GitHistoryCommand::Up => "Git History: Select Previous Commit",
+                GitHistoryCommand::Down => "Git History: Select Next Commit",
+                GitHistoryCommand::PageUp => "Git History: Select Commit a Page Up",
+                GitHistoryCommand::PageDown => "Git History: Select Commit a Page Down",
+                GitHistoryCommand::First => "Git History: Select First Commit",
+                GitHistoryCommand::Last => "Git History: Select Last Commit",
+                GitHistoryCommand::FocusTree => "Git History: Back to the Explorer",
+            },
             Command::PreviousChange => "Go to Previous Change",
             Command::RunTask => "Tasks: Run Task",
             Command::KillTask => "Tasks: Kill Task",
@@ -1319,9 +1370,10 @@ mod tests {
             Command::Tools(_) => 91,
             Command::ToggleToolTrace => 92,
             Command::RestartServer => 93,
+            Command::GitHistory(_) => 94,
         }
     }
-    const VARIANTS: u8 = 94;
+    const VARIANTS: u8 = 95;
 
     #[test]
     fn all_lists_every_variant() {
@@ -1341,6 +1393,7 @@ mod tests {
         assert_eq!(count(57), LocationsCommand::ALL.len());
         assert_eq!(count(59), SuggestCommand::ALL.len());
         assert_eq!(count(76), ScmCommand::ALL.len());
+        assert_eq!(count(94), GitHistoryCommand::ALL.len());
         assert_eq!(count(82), TaskCommand::ALL.len());
         assert_eq!(count(91), ToolsCommand::ALL.len());
     }
