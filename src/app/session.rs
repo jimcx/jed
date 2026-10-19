@@ -136,7 +136,7 @@ impl App {
                 Group {
                     tabs,
                     active,
-                    scroll: 0,
+                    ..Group::default()
                 },
             ));
         }

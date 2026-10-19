@@ -2,11 +2,15 @@
 //! Drives the real `App` through key events; only the terminal is left out.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use crossterm::event::{KeyCode as K, KeyModifiers as M};
+use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 
 use crate::app::{App, Focus, Prompt};
+use crate::buffer::Buffer;
+use crate::command::Command;
 use crate::workspace::trust::{Trust, TrustStore};
 use crate::workspace::{self, Workspace};
 
@@ -37,6 +41,85 @@ fn rows(app: &App) -> Vec<String> {
         .iter()
         .map(|r| format!("{}{}", "  ".repeat(r.depth), r.entry.name))
         .collect()
+}
+
+fn draw(app: &mut App, term: &mut Terminal<TestBackend>) {
+    term.draw(|f| crate::ui::render(f, app)).unwrap();
+}
+
+/// Tab labels wider than a narrow bar scroll it: the active tab is revealed, the wheel and the
+/// `‹` / `›` arrows move it a tab at a time (the wheel without focusing the group), and a new
+/// active tab is revealed again.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_2_tab_bar_scrolls() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = workspace::normalize(dir.path()).join("proj");
+    let state = workspace::normalize(dir.path()).join("state");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&state).unwrap();
+    let mut app = open_app(&root, &state);
+
+    // Eight tabs, each 20 columns wide; the side panel leaves the bar about 39.
+    for i in 0..8 {
+        let mut buffer = Buffer::from_str("one\ntwo\n");
+        buffer.path = PathBuf::from(format!("/tab-number-{i}.txt"));
+        app.test_open(buffer);
+    }
+    assert_eq!(app.group().active, 7, "the last opened tab is active");
+    let mut term = Terminal::new(TestBackend::new(70, 20)).unwrap();
+    draw(&mut app, &mut term);
+
+    // The active tab is revealed: the bar scrolled towards the end.
+    let first = app.group().scroll;
+    assert!(first > 0, "the active tab is revealed");
+    assert_eq!(app.hits.groups[0].tabs.first().unwrap().index, first);
+    assert!(
+        app.hits.groups[0].tabs.iter().any(|t| t.index == 7),
+        "the active tab is drawn"
+    );
+    let bars = app.hits.groups[0].tab_arrows.expect("tabs wider than the bar: arrows");
+    let y = app.hits.groups[0].tab_bar.y;
+    let screen = term.backend().buffer();
+    assert_eq!(screen[(bars.back, y)].symbol(), "‹");
+    assert_eq!(screen[(bars.forward, y)].symbol(), "›");
+    let arrow = app.theme.get("tab.scrollArrow").fg.unwrap();
+    let disabled = app.theme.get("tab.scrollArrow.disabled").fg.unwrap();
+    assert_eq!(screen[(bars.back, y)].fg, arrow, "tabs to the left");
+    assert_eq!(screen[(bars.forward, y)].fg, disabled, "the last tab is shown");
+
+    // The wheel over the bar moves it a tab at a time, without focusing the group.
+    let focus = app.ui.focus;
+    let x = app.hits.groups[0].tab_bar.x + 3;
+    app.mouse(MouseEventKind::ScrollUp, x, y);
+    assert_eq!(app.group().scroll, first - 1);
+    assert_eq!(app.ui.focus, focus);
+    draw(&mut app, &mut term);
+    assert_eq!(app.group().scroll, first - 1);
+    app.mouse(MouseEventKind::ScrollDown, x, y);
+
+    // The arrows move it too; the end one stops at the furthest the tabs fit.
+    app.mouse(MouseEventKind::Down(MouseButton::Left), bars.back, y);
+    assert_eq!(app.group().scroll, first - 1);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), bars.forward, y);
+    draw(&mut app, &mut term);
+    assert_eq!(app.group().scroll, first);
+    for _ in 0..3 {
+        app.mouse(MouseEventKind::Down(MouseButton::Left), bars.forward, y);
+        draw(&mut app, &mut term);
+    }
+    assert_eq!(app.group().scroll, first, "no further than the last tabs fit");
+
+    // A new active tab is revealed: the first.
+    app.test_execute(Command::NextTab);
+    draw(&mut app, &mut term);
+    assert_eq!(app.group().scroll, 0);
+    assert_eq!(app.hits.groups[0].tabs.first().unwrap().index, 0);
+
+    // Wide enough for every tab: no arrows, and the bar starts at the first.
+    let mut term = Terminal::new(TestBackend::new(220, 20)).unwrap();
+    draw(&mut app, &mut term);
+    assert!(app.hits.groups[0].tab_arrows.is_none(), "all tabs fit");
+    assert_eq!(app.hits.groups[0].tabs.len(), 8);
 }
 
 #[tokio::test(flavor = "multi_thread")]

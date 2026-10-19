@@ -63,6 +63,10 @@ pub struct Group {
     pub active: usize,
     /// First tab shown in the tab bar.
     pub scroll: usize,
+    /// The active tab index and tab bar width drawing last scrolled into view: the bar reveals
+    /// the active tab only when one of them changes, so the wheel and the bar's arrows can
+    /// scroll it away from the active tab.
+    pub revealed: Option<(usize, u16)>,
 }
 
 impl Group {
@@ -135,6 +139,12 @@ impl Group {
             let n = self.tabs.len() as isize;
             self.active = (self.active as isize + delta).rem_euclid(n) as usize;
         }
+    }
+
+    /// Moves the tab bar by `delta` tabs (its arrows and the wheel). Drawing clamps it to the
+    /// furthest the tabs fit.
+    pub fn scroll_tabs(&mut self, delta: isize) {
+        self.scroll = self.scroll.saturating_add_signed(delta);
     }
 }
 

@@ -511,6 +511,8 @@ pub struct GroupHit {
     /// Text area (gutter excluded).
     pub text: Rect,
     pub tabs: Vec<TabHit>,
+    /// The tab bar's scroll arrows, while its tabs overflow it.
+    pub tab_arrows: Option<TabArrows>,
     /// The changed-on-disk banner above the editor, when shown.
     pub banner: Option<BannerHit>,
     /// The diff view, when the group shows a diff tab.
@@ -566,6 +568,13 @@ pub struct TabHit {
     pub close_x: u16,
 }
 
+/// The x of a tab bar's `‹` (scrolls towards the first tab) and `›` (towards the last).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TabArrows {
+    pub back: u16,
+    pub forward: u16,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hit {
     Icon(SidePanel),
@@ -584,6 +593,8 @@ pub enum Hit {
     Tab(GroupId, usize),
     TabClose(GroupId, usize),
     TabBar(GroupId),
+    /// A tab bar's scroll arrow: `‹` (false) or `›` (true).
+    TabArrow(GroupId, bool),
     /// The changed-on-disk banner over a group's editor, on a button or not.
     Banner(GroupId, Option<crate::disk::BannerAction>),
     Editor(GroupId),
@@ -685,6 +696,11 @@ impl HitMap {
         }
         for g in &self.groups {
             if g.tab_bar.contains(p) {
+                if let Some(a) = g.tab_arrows
+                    && (x == a.back || x == a.forward)
+                {
+                    return Hit::TabArrow(g.id, x == a.forward);
+                }
                 return match g.tabs.iter().find(|t| x >= t.x0 && x < t.x1) {
                     Some(t) if x == t.close_x => Hit::TabClose(g.id, t.index),
                     Some(t) => Hit::Tab(g.id, t.index),
@@ -839,6 +855,10 @@ mod tests {
                     ..*r
                 },
                 text: Rect::default(),
+                tab_arrows: (*id == 8).then_some(TabArrows {
+                    back: r.x,
+                    forward: r.x + r.width - 1,
+                }),
                 tabs: vec![TabHit {
                     index: 0,
                     x0: r.x,
@@ -949,6 +969,9 @@ mod tests {
         assert!(map.scrollbar(ScrollTarget::Group(7)).is_some());
         assert_eq!(map.hit(30, 0), Hit::Tab(7, 0));
         assert_eq!(map.hit(36, 0), Hit::TabClose(7, 0));
+        let arrows = map.groups.iter().find(|g| g.id == 8).unwrap().tab_arrows.unwrap();
+        assert_eq!(map.hit(arrows.back, 0), Hit::TabArrow(8, false));
+        assert_eq!(map.hit(arrows.forward, 0), Hit::TabArrow(8, true));
         assert_eq!(map.hit(50, 0), Hit::TabBar(7));
         assert_eq!(map.hit(50, 10), Hit::Editor(7));
         assert_eq!(

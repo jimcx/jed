@@ -180,6 +180,10 @@ impl Theme {
             ("tab.active", fg_bg(0xFFFFFF, 0x1E1E1E)),
             ("tab.inactive", fg_bg(0x969696, 0x2D2D2D)),
             ("tab.unfocusedActive", fg_bg(0x8F8F8F, 0x1E1E1E)),
+            // The tab bar's `‹` / `›` while its tabs overflow it (Dark+'s icon foreground, and
+            // dimmed when there's nothing more that way).
+            ("tab.scrollArrow", fg_bg(0xC5C5C5, 0x252526)),
+            ("tab.scrollArrow.disabled", fg_bg(0x5A5A5A, 0x252526)),
             ("editorGroup.border", fg_bg(0x444444, 0x1E1E1E)),
             // The splash screen in an editor group with no tabs (a quiet logo, like VS Code's
             // watermark).

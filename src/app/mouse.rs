@@ -100,6 +100,12 @@ impl App {
                     Hit::SidePanel if self.ui.side_panel == SidePanel::Tools => self.tools_scroll(delta),
                     Hit::HistoryRow(_) | Hit::HistoryHeader => self.git_history.scroll_by(delta),
                     Hit::ExplorerRow(_) | Hit::SidePanel => self.explorer.scroll_by(delta),
+                    // The wheel over the tab bar moves it a tab at a time (never focusing it).
+                    Hit::TabBar(g) | Hit::Tab(g, _) | Hit::TabClose(g, _) => {
+                        if let Some(group) = self.groups.get_mut(g) {
+                            group.scroll_tabs(delta.signum());
+                        }
+                    }
                     Hit::Panel | Hit::PanelTab(_) | Hit::PanelTabClose(_) | Hit::PanelBorder => match self.ui.panel_tab
                     {
                         PanelTab::Problems => self.problems_scroll(delta),
@@ -256,6 +262,12 @@ impl App {
             }
             Hit::TabClose(g, i) => self.close_tab(g, i),
             Hit::TabBar(g) => self.focus_group(g),
+            Hit::TabArrow(g, forward) => {
+                self.focus_group(g);
+                if let Some(group) = self.groups.get_mut(g) {
+                    group.scroll_tabs(if forward { 1 } else { -1 });
+                }
+            }
             Hit::Banner(g, action) => {
                 self.focus_group(g);
                 if let Some(a) = action {

@@ -1,5 +1,7 @@
 //! Tab bar: one tab per open editor; `●` marks unsaved changes, `×` closes; a file deleted on
-//! disk is struck through, with "(deleted)" after its name (VS Code).
+//! disk is struck through, with "(deleted)" after its name (VS Code). Tabs wider than the bar
+//! scroll: `‹` / `›` at the bar's ends (dimmed when there's nothing more that way) and the wheel
+//! move it a tab at a time; it jumps back to the active tab only when the active tab changes.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -7,8 +9,15 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::buffer::Buffers;
 use crate::group::{Group, Tab};
-use crate::layout::TabHit;
+use crate::layout::{TabArrows, TabHit};
 use crate::theme::Theme;
+
+/// What the tab bar drew: each tab shown, and the scroll arrows when the tabs overflow.
+#[derive(Debug, Default)]
+pub struct TabBarHit {
+    pub tabs: Vec<TabHit>,
+    pub arrows: Option<TabArrows>,
+}
 
 /// `active_group`: the focused group's active tab is bright; other groups' active tabs are dimmer.
 pub fn render(
@@ -18,11 +27,11 @@ pub fn render(
     buffers: &Buffers,
     theme: &Theme,
     active_group: bool,
-) -> Vec<TabHit> {
+) -> TabBarHit {
     let out = f.buffer_mut();
     out.set_style(area, theme.get("tabBar"));
     if area.width == 0 {
-        return Vec::new();
+        return TabBarHit::default();
     }
 
     // Label and width for every tab: " name ● " / " name × ".
@@ -44,26 +53,62 @@ pub fn render(
         })
         .collect();
     if labels.is_empty() {
-        return Vec::new();
+        return TabBarHit::default();
     }
     let width = |name: &str| name.width() as u16 + 4;
+    let widths: Vec<u32> = labels.iter().map(|(n, ..)| width(n) as u32).collect();
+    let total: u32 = widths.iter().sum();
 
-    // Scroll so the active tab is fully visible.
-    group.scroll = group.scroll.min(group.active);
-    loop {
-        let used: u16 = labels[group.scroll..=group.active.min(labels.len() - 1)]
-            .iter()
-            .map(|(n, ..)| width(n))
-            .sum();
-        if used <= area.width || group.scroll >= group.active {
-            break;
+    // Tabs wider than the bar: `‹` / `›` at its ends scroll it, the tabs between them.
+    let overflow = total > area.width as u32 && area.width >= 3;
+    let (left, right) = if overflow {
+        (area.x + 1, area.x + area.width - 1)
+    } else {
+        (area.x, area.x + area.width)
+    };
+    let inner = (right - left) as u32;
+    let last = labels.len() - 1;
+    // The furthest the bar scrolls: the last tabs fill it.
+    let mut max_scroll = last;
+    let mut used = 0;
+    while max_scroll > 0 && used + widths[max_scroll - 1] <= inner {
+        used += widths[max_scroll - 1];
+        max_scroll -= 1;
+    }
+
+    // Scroll so the active tab is fully visible, when it or the bar's width changed since the
+    // last reveal; otherwise the bar stays where the wheel or an arrow left it.
+    let active = group.active.min(last);
+    if group.revealed != Some((active, area.width)) {
+        group.revealed = Some((active, area.width));
+        group.scroll = group.scroll.min(active);
+        let mut used: u32 = widths[group.scroll..=active].iter().sum();
+        while group.scroll < active && used > inner {
+            used -= widths[group.scroll];
+            group.scroll += 1;
         }
-        group.scroll += 1;
+    }
+    group.scroll = group.scroll.min(max_scroll);
+
+    let mut arrows = None;
+    if overflow {
+        let arrow = |enabled: bool| {
+            theme.get(if enabled {
+                "tab.scrollArrow"
+            } else {
+                "tab.scrollArrow.disabled"
+            })
+        };
+        out.set_string(area.x, area.y, "‹", arrow(group.scroll > 0));
+        out.set_string(right, area.y, "›", arrow(group.scroll < max_scroll));
+        arrows = Some(TabArrows {
+            back: area.x,
+            forward: right,
+        });
     }
 
     let mut hits = Vec::new();
-    let mut x = area.x;
-    let right = area.x + area.width;
+    let mut x = left;
     for (i, (name, dirty, deleted)) in labels.iter().enumerate().skip(group.scroll) {
         if x >= right {
             break;
@@ -101,5 +146,5 @@ pub fn render(
         });
         x += w;
     }
-    hits
+    TabBarHit { tabs: hits, arrows }
 }

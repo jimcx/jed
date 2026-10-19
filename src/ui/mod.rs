@@ -73,6 +73,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let editor_bg = app.theme.get("editor");
         let Some(group) = app.groups.get_mut(id) else { continue };
         let tabs = tabs::render(f, tab_bar, group, &app.buffers, &app.theme, is_active);
+
         // The changed-on-disk banner takes the editor's first row (leaving it at least one); a
         // diff tab of the file shows it too.
         let mut banner = None;
@@ -177,7 +178,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
             tab_bar,
             editor: editor_area,
             text,
-            tabs,
+            tabs: tabs.tabs,
+            tab_arrows: tabs.arrows,
             banner,
             diff: diff_hit,
             scrollbar: scroll_hit,
