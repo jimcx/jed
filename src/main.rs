@@ -77,6 +77,7 @@ mod search;
 mod search_view;
 mod selection;
 mod session;
+mod shift;
 mod syntax;
 mod tasks;
 mod terminal;

@@ -64,6 +64,14 @@
 //!   `syntax_max_bytes` and for an unknown extension; `.workspace` associations pick the
 //!   language; a comment opened above a scrolled view coloured; an edit of the open buffer
 //!   re-coloured after the diff's reload.
+//! - `indent_lines`: Tab with a selection over lines (or a whole line) indents every line it
+//!   touches (empty ones skipped; one ending at a line's start doesn't take it), a cursor or
+//!   part of a line still gets a tab; Shift+Tab outdents (also at a cursor), Cmd+] / Cmd+[
+//!   (Linux Ctrl) indent / outdent whatever the selection; to the next / previous tab stop
+//!   (fewer spaces than a level outdent to none); tabs from `insert_spaces = false` or a
+//!   Makefile; selections keep their text and direction; several selections, each line once;
+//!   one undo step each, none when nothing changes; refused on a read-only buffer; the
+//!   line-command budget at 61k selections (release).
 
 mod render_whitespace {
     use std::fs;
@@ -4269,5 +4277,315 @@ mod diff_syntax {
             assert_eq!(fg(&term, at(&term, "fn h")), keyword);
             assert_ne!(keyword, editor);
         }
+    }
+}
+
+mod indent_lines {
+    use std::time::{Duration, Instant};
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::buffer::pos::ByteIdx;
+    use crate::milestone_tests::test_app;
+    use crate::pairs::tests::show;
+    use crate::selection::{Selection, Selections};
+    use crate::syntax::Language;
+
+    /// A line command at 60k selections plus a frame, as milestone 6's line commands.
+    const BUDGET: Duration = Duration::from_millis(80);
+    /// The same in debug builds: only catches going quadratic.
+    const DEBUG_BOUND: Duration = Duration::from_secs(5);
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    /// The app on `marked`'s text (`|` cursors, `«…»` selections, as `pairs::tests::setup`).
+    fn open(dir: &tempfile::TempDir, marked: &str) -> App {
+        let (mut text, mut list, mut anchor) = (String::new(), Vec::new(), None);
+        for c in marked.chars() {
+            match c {
+                '|' => list.push(Selection::cursor(ByteIdx(text.len()))),
+                '«' => anchor = Some(text.len()),
+                '»' => list.push(Selection::new(ByteIdx(anchor.take().unwrap()), ByteIdx(text.len()))),
+                c => text.push(c),
+            }
+        }
+        let mut app = test_app(dir.path(), Buffer::from_str(&text));
+        app.active_mut().unwrap().1.selections = Selections::new(list, 0);
+        app
+    }
+
+    fn shown(app: &mut App) -> String {
+        let (buf, view) = app.active_mut().unwrap();
+        show(buf, view)
+    }
+
+    fn tab(app: &mut App) {
+        app.press(K::Tab, M::NONE);
+    }
+
+    /// Shift+Tab as terminals report it.
+    fn shift_tab(app: &mut App) {
+        app.press(K::BackTab, M::SHIFT);
+    }
+
+    fn indent(app: &mut App) {
+        app.press(K::Char(']'), cmd());
+    }
+
+    fn outdent(app: &mut App) {
+        app.press(K::Char('['), cmd());
+    }
+
+    fn undo(app: &mut App) {
+        app.press(K::Char('z'), cmd());
+    }
+
+    #[test]
+    fn tab_over_lines_indents_every_touched_line_but_empty_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "fn f() {\n«a();\n\n  b();\nc»();\n}\n");
+        tab(&mut app);
+        assert_eq!(shown(&mut app), "fn f() {\n«    a();\n\n    b();\n    c»();\n}\n");
+        tab(&mut app);
+        assert_eq!(
+            shown(&mut app),
+            "fn f() {\n«        a();\n\n        b();\n        c»();\n}\n"
+        );
+        // A selection ending at a line's start doesn't take that line.
+        let mut app = open(&dir, "«a\nb\n»c\n");
+        tab(&mut app);
+        assert_eq!(shown(&mut app), "«    a\n    b\n»c\n");
+        // A whole single line is indented too (VS Code).
+        let mut app = open(&dir, "«ab»\ncd");
+        tab(&mut app);
+        assert_eq!(shown(&mut app), "«    ab»\ncd");
+    }
+
+    #[test]
+    fn tab_at_a_cursor_or_part_of_a_line_still_inserts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "ab|c\n«de»f");
+        tab(&mut app);
+        assert_eq!(shown(&mut app), "ab  |c\n    |f");
+        // Typing after it joins its undo step (an insert, as before).
+        app.type_text("x");
+        undo(&mut app);
+        assert_eq!(shown(&mut app), "ab|c\n«de»f");
+    }
+
+    #[test]
+    fn shift_tab_outdents_also_at_an_empty_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "        a|b\n");
+        shift_tab(&mut app);
+        assert_eq!(shown(&mut app), "    a|b\n");
+        shift_tab(&mut app);
+        assert_eq!(shown(&mut app), "a|b\n");
+        shift_tab(&mut app);
+        assert_eq!(shown(&mut app), "a|b\n", "nothing left to remove");
+        // That last one made no undo step: two undos are back at the start.
+        undo(&mut app);
+        undo(&mut app);
+        assert_eq!(shown(&mut app), "        a|b\n");
+        assert!(!app.active_buffer().unwrap().is_dirty());
+    }
+
+    #[test]
+    fn cmd_brackets_indent_and_outdent_regardless_of_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "x = |1\n");
+        indent(&mut app);
+        assert_eq!(shown(&mut app), "    x = |1\n");
+        indent(&mut app);
+        assert_eq!(shown(&mut app), "        x = |1\n");
+        outdent(&mut app);
+        assert_eq!(shown(&mut app), "    x = |1\n");
+        // Part of a line: its line, the selection kept.
+        let mut app = open(&dir, "a«b»c\n");
+        indent(&mut app);
+        assert_eq!(shown(&mut app), "    a«b»c\n");
+        outdent(&mut app);
+        assert_eq!(shown(&mut app), "a«b»c\n");
+        // A cursor alone on an empty line indents it.
+        let mut app = open(&dir, "a\n|\nb");
+        indent(&mut app);
+        assert_eq!(shown(&mut app), "a\n    |\nb");
+    }
+
+    #[test]
+    fn partial_levels_go_to_the_next_or_previous_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "«  a\n      b\n   c»");
+        shift_tab(&mut app);
+        assert_eq!(shown(&mut app), "«a\n    b\nc»");
+        let mut app = open(&dir, "«  a\n      b»");
+        indent(&mut app);
+        assert_eq!(shown(&mut app), "«    a\n        b»");
+    }
+
+    #[test]
+    fn tabs_when_the_settings_or_the_language_say_so() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".workspace"), "[settings]\ninsert_spaces = false\n").unwrap();
+        let mut app = open(&dir, "«a\n\tb»");
+        assert!(!app.settings.insert_spaces);
+        tab(&mut app);
+        assert_eq!(shown(&mut app), "«\ta\n\t\tb»");
+        shift_tab(&mut app);
+        shift_tab(&mut app);
+        assert_eq!(shown(&mut app), "«a\nb»");
+
+        // A Makefile indents with tabs whatever the settings.
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "«all:\ncc»");
+        assert!(app.settings.insert_spaces);
+        app.active_mut().unwrap().0.syntax.set_language(Language::Makefile);
+        indent(&mut app);
+        assert_eq!(shown(&mut app), "«\tall:\n\tcc»");
+        // Spaces there are normalised to tabs.
+        let mut app = open(&dir, "        |x");
+        app.active_mut().unwrap().0.syntax.set_language(Language::Makefile);
+        outdent(&mut app);
+        assert_eq!(shown(&mut app), "\t|x");
+    }
+
+    #[test]
+    fn selections_keep_their_text_and_direction() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "  «ab\ncd»\n");
+        tab(&mut app);
+        assert_eq!(
+            shown(&mut app),
+            "  «  ab\n    cd»\n",
+            "a start in the indentation stays put"
+        );
+        shift_tab(&mut app);
+        assert_eq!(shown(&mut app), "«ab\ncd»\n");
+        let mut app = open(&dir, "|ab\ncd\n");
+        app.active_mut().unwrap().1.selections = Selections::single(Selection::new(ByteIdx(4), ByteIdx(1)));
+        indent(&mut app);
+        let s = *app.group().active_tab().unwrap().view.selections.primary();
+        assert_eq!((s.anchor.0, s.head.0), (12, 5), "backwards, on the same text");
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "    ab\n    cd\n");
+    }
+
+    #[test]
+    fn every_selection_shifts_its_own_lines_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "a|b|\n  c\n|d\n\n«e\nf»");
+        indent(&mut app);
+        assert_eq!(shown(&mut app), "    a|b|\n  c\n    |d\n\n«    e\n    f»");
+        shift_tab(&mut app);
+        assert_eq!(shown(&mut app), "a|b|\n  c\n|d\n\n«e\nf»");
+        // Tab: lines for the selection over lines, a tab at the cursor, in one step.
+        let mut app = open(&dir, "x|y\n«a\nb»");
+        tab(&mut app);
+        assert_eq!(shown(&mut app), "x   |y\n«    a\n    b»");
+        undo(&mut app);
+        assert_eq!(shown(&mut app), "x|y\n«a\nb»");
+    }
+
+    #[test]
+    fn one_undo_step_restores_text_and_selections() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "«a\n  b»\nc|\n");
+        indent(&mut app);
+        indent(&mut app);
+        shift_tab(&mut app);
+        assert_eq!(shown(&mut app), "«    a\n    b»\n    c|\n");
+        undo(&mut app);
+        assert_eq!(shown(&mut app), "«        a\n        b»\n        c|\n");
+        undo(&mut app);
+        assert_eq!(shown(&mut app), "«    a\n    b»\n    c|\n");
+        undo(&mut app);
+        assert_eq!(shown(&mut app), "«a\n  b»\nc|\n");
+        assert!(!app.active_buffer().unwrap().is_dirty());
+        app.press(K::Char('z'), cmd() | M::SHIFT);
+        assert_eq!(shown(&mut app), "«    a\n    b»\n    c|\n");
+    }
+
+    #[test]
+    fn shift_tab_in_the_find_widget_is_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "    a|b\n");
+        app.test_execute(crate::command::Command::OpenReplace);
+        assert_eq!(app.ui.focus, crate::app::Focus::Find);
+        let field = app.find.field;
+        shift_tab(&mut app);
+        assert_ne!(app.find.field, field, "Shift+Tab switches the find widget's input");
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "    ab\n");
+    }
+
+    #[test]
+    fn a_read_only_buffer_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "«a\nb»");
+        app.active_mut().unwrap().0.read_only = Some("test".into());
+        tab(&mut app);
+        indent(&mut app);
+        outdent(&mut app);
+        shift_tab(&mut app);
+        assert_eq!(shown(&mut app), "«a\nb»");
+        assert!(!app.active_buffer().unwrap().is_dirty());
+    }
+
+    /// Indent, outdent and undo at the 1 MB file's 61k selections (31k lines), Tab and
+    /// Shift+Tab at 31k selections over lines, each with a frame, within milestone 6's line-command budget (release only).
+    #[test]
+    fn milestone_indent_lines_budget_at_61k_selections() {
+        let mut original = String::new();
+        let mut i = 0;
+        while original.len() < 1_000_000 {
+            original.push_str(&format!("let item = value_{i}; // item\n\n"));
+            i += 1;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path(), Buffer::from_str(&original));
+        app.active_mut().unwrap().1.selections = Selections::single(Selection::cursor(ByteIdx(5)));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let draw = |term: &mut Terminal<TestBackend>, app: &mut App| {
+            term.draw(|f| crate::ui::render(f, app)).unwrap();
+        };
+        draw(&mut term, &mut app);
+        app.press(K::Char('l'), cmd() | M::SHIFT);
+        let count = app.group().active_tab().unwrap().view.selections.len();
+        assert_eq!(count, 2 * i);
+        let text = |app: &App| app.active_buffer().unwrap().rope.to_string();
+        let mut timed = |app: &mut App, what: &str, f: &dyn Fn(&mut App)| {
+            let n = app.group().active_tab().unwrap().view.selections.len();
+            let t = Instant::now();
+            f(app);
+            draw(&mut term, app);
+            let took = t.elapsed();
+            println!("{what} at {n} selections: {took:?}");
+            assert!(took < DEBUG_BOUND, "{what} took {took:?}");
+            if !cfg!(debug_assertions) {
+                assert!(took < BUDGET, "{what} too slow: {took:?}");
+            }
+        };
+        timed(&mut app, "indent lines", &indent);
+        assert!(text(&app).starts_with("    let item = value_0; // item\n\n    let item = value_1;"));
+        timed(&mut app, "outdent lines", &outdent);
+        assert_eq!(text(&app), original);
+        timed(&mut app, "undo", &undo);
+        assert!(text(&app).starts_with("    let item"));
+        undo(&mut app);
+        assert_eq!(text(&app), original);
+        // Each line's selections reach down onto the blank line: Tab indents the lines.
+        app.press(K::Down, M::SHIFT);
+        timed(&mut app, "tab over lines", &tab);
+        assert!(text(&app).starts_with("    let item = value_0; // item\n\n    let item = value_1;"));
+        timed(&mut app, "shift+tab", &shift_tab);
+        assert_eq!(text(&app), original);
     }
 }

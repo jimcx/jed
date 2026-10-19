@@ -12,7 +12,7 @@ use crate::command::{Command, Motion};
 use crate::selection::{Selection, Selections};
 use crate::syntax::Language;
 use crate::view::View;
-use crate::{column, comment, indent, lines, pairs};
+use crate::{column, comment, indent, lines, pairs, shift};
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -105,7 +105,13 @@ pub fn run(cmd: Command, buf: &mut Buffer, view: &mut View, s: &Settings) -> boo
             if p == start { pos::prev_grapheme(r, p) } else { start }
         }),
         Command::InsertNewline => indent::newline(buf, view, s),
-        Command::InsertTab => insert_tab(buf, view, s),
+        Command::InsertTab => {
+            if !shift::tab(buf, view, s) {
+                insert_tab(buf, view, s);
+            }
+        }
+        Command::IndentLines => shift::indent(buf, view, s),
+        Command::OutdentLines => shift::outdent(buf, view, s),
         Command::SelectAll => {
             view.selections = Selections::single(Selection::new(ByteIdx(0), ByteIdx(buf.rope.len())));
             buf.seal_undo();
@@ -159,6 +165,8 @@ pub fn is_edit(cmd: Command) -> bool {
             | Command::CopyLinesUp
             | Command::CopyLinesDown
             | Command::CommentLine
+            | Command::IndentLines
+            | Command::OutdentLines
     )
 }
 

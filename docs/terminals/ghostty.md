@@ -23,6 +23,8 @@ keybind = cmd+shift+z=unbind
 keybind = cmd+c=unbind
 keybind = cmd+x=unbind
 keybind = cmd+slash=unbind
+keybind = cmd+]=unbind
+keybind = cmd+[=unbind
 keybind = cmd+alt+i=unbind
 keybind = cmd+d=unbind
 keybind = cmd+shift+l=unbind
@@ -80,19 +82,20 @@ macos-option-as-alt = true
 
 Don't unbind `cmd+v`: Ghostty's paste is how text gets into jed.
 
-Ghostty defaults that clash with jed (macOS): `cmd+a` select all, `cmd+c` copy, `cmd+z`/`cmd+shift+z` undo/redo, `cmd+left`/`cmd+right`/`cmd+backspace` send line-editing control codes, `cmd+up`/`cmd+down` and `cmd+shift+up`/`cmd+shift+down` jump to prompt, `cmd+q` quit, `cmd+w` close split/tab, `cmd+1..3` go to tab, `cmd+alt+arrows` move between splits (jed: Cmd+Alt+Up/Down add a cursor above/below), `cmd+shift+p` Ghostty's own command palette (recent releases), `cmd+d` new split right (jed's Cmd+D, add next match), `cmd+f` Ghostty's search (recent releases; jed's find), `cmd+alt+i` the terminal inspector (jed's show hover).
+Ghostty defaults that clash with jed (macOS): `cmd+a` select all, `cmd+c` copy, `cmd+z`/`cmd+shift+z` undo/redo, `cmd+left`/`cmd+right`/`cmd+backspace` send line-editing control codes, `cmd+up`/`cmd+down` and `cmd+shift+up`/`cmd+shift+down` jump to prompt, `cmd+q` quit, `cmd+w` close split/tab, `cmd+1..3` go to tab, `cmd+alt+arrows` move between splits (jed: Cmd+Alt+Up/Down add a cursor above/below), `cmd+shift+p` Ghostty's own command palette (recent releases), `cmd+d` new split right (jed's Cmd+D, add next match), `cmd+f` Ghostty's search (recent releases; jed's find), `cmd+alt+i` the terminal inspector (jed's show hover), `cmd+[` / `cmd+]` previous / next split (jed's outdent / indent lines).
 
 `macos-option-as-alt` already defaults to `true` on the U.S. and U.S. International layouts; setting it makes other layouts behave the same (`left`/`right` limit it to one Option key).
 
 ## What you lose
 
-Ghostty's Cmd+C (copy screen text), Cmd+W, Cmd+Q, Cmd+1..3, Cmd+A, Cmd+Z, prompt jumping, Cmd+D (new split right; Cmd+Shift+D still splits down), Cmd+Alt+arrow split navigation and the terminal inspector (Cmd+Alt+I) in every Ghostty window. Close with Cmd+Alt+W (close tab) or Cmd+Shift+W (close window). Ghostty has no per-program config, so this can't be scoped to jed.
+Ghostty's Cmd+C (copy screen text), Cmd+W, Cmd+Q, Cmd+1..3, Cmd+A, Cmd+Z, prompt jumping, Cmd+[ / Cmd+] (previous / next split), Cmd+D (new split right; Cmd+Shift+D still splits down), Cmd+Alt+arrow split navigation and the terminal inspector (Cmd+Alt+I) in every Ghostty window. Close with Cmd+Alt+W (close tab) or Cmd+Shift+W (close window). Ghostty has no per-program config, so this can't be scoped to jed.
 
 ## Checklist
 
 - [ ] Snippet added, Ghostty restarted (or config reloaded with Cmd+Shift+,)
 - [ ] Every key in the [table](README.md#cmd-bindings-jed-uses) logs with `SUPER`. **Check by hand:** the docs only promise pass-through for *printable* keys; confirm Cmd+arrows and Cmd+Backspace arrive too
 - [ ] **Check by hand:** "bindings in the main menu will trigger before any remapping"; confirm Cmd+Q and Cmd+W reach jed and don't still fire the menu items
+- [ ] **Check by hand:** `cmd+[` / `cmd+]` free Ghostty's split navigation (if Cmd+[ still switches splits, try `cmd+bracket_left` / `cmd+bracket_right`)
 - [ ] `cmd+backslash` is spelled right for your Ghostty (try `cmd+\` if Ghostty reports an invalid key)
 - [ ] **Check by hand:** Cmd+Shift+P opens jed's palette, not Ghostty's
 - [ ] **Check by hand:** Cmd+F opens jed's find widget, not Ghostty's search

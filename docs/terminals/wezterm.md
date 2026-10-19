@@ -30,7 +30,8 @@ config.send_composed_key_when_right_alt_is_pressed = false
 -- jed: send these Cmd keys to the program
 local release = {
   { 'a', 'CMD' }, { 'z', 'CMD' }, { 'z', 'CMD|SHIFT' },
-  { 'c', 'CMD' }, { 'x', 'CMD' }, { '/', 'CMD' }, { 'i', 'CMD|ALT' },
+  { 'c', 'CMD' }, { 'x', 'CMD' }, { '/', 'CMD' }, { ']', 'CMD' }, { '[', 'CMD' },
+  { 'i', 'CMD|ALT' },
   { 'd', 'CMD' }, { 'l', 'CMD|SHIFT' }, { 'd', 'CMD|ALT' }, { 'u', 'CMD' },
   { 'UpArrow', 'CMD|ALT' }, { 'DownArrow', 'CMD|ALT' },
   { 'LeftArrow', 'CMD|ALT|SHIFT' }, { 'RightArrow', 'CMD|ALT|SHIFT' },

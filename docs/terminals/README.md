@@ -32,6 +32,8 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+c` | Copy (whole line if nothing selected) | editor |
 | `cmd+x` | Cut (whole line if nothing selected) | editor |
 | `cmd+/` | Toggle line comment | editor |
+| `cmd+]` | Indent lines | editor |
+| `cmd+[` | Outdent lines (also Shift+Tab) | editor |
 | `cmd+alt+i` | Show hover (VS Code: Cmd+K Cmd+I; no chords) | editor |
 | `cmd+d` | Add selection at next match | editor |
 | `cmd+shift+l` | Select all matches | editor |
@@ -85,7 +87,7 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 
 **Mouse with modifiers.** Alt+Click adds or removes a cursor and Shift+Alt+drag makes a box selection. Most terminals keep Shift+drag for their own text selection while a program uses the mouse (kitty `terminal_select_modifiers`, WezTerm `bypass_mouse_reporting_modifiers`), and some use Alt or Cmd+Alt with the mouse for rectangle selection, so these may not reach jed. The keyboard box select (Cmd+Shift+Alt+arrows) always works.
 
-The palette is also on F1, go to line is Ctrl+G and the Source Control view Ctrl+Shift+G (as VS Code on macOS); none needs a terminal change. Neither do the find widget's other keys: Enter / Shift+Enter and F3 / Shift+F3 (next / previous match), Alt+Enter (select all matches), Tab (find ↔ replace) and Esc. The Search view's Esc (back to the editor) needs nothing either, nor do F8 / Shift+F8 (next / previous problem), the Problems list's arrows, Enter and Esc, the Source Control list's arrows, Enter, Space and Esc, and the Tools view's arrows, Enter and Esc.
+Shift+Tab (outdent lines) needs no terminal change. The palette is also on F1, go to line is Ctrl+G and the Source Control view Ctrl+Shift+G (as VS Code on macOS); none needs a terminal change. Neither do the find widget's other keys: Enter / Shift+Enter and F3 / Shift+F3 (next / previous match), Alt+Enter (select all matches), Tab (find ↔ replace) and Esc. The Search view's Esc (back to the editor) needs nothing either, nor do F8 / Shift+F8 (next / previous problem), the Problems list's arrows, Enter and Esc, the Source Control list's arrows, Enter, Space and Esc, and the Tools view's arrows, Enter and Esc.
 
 **Leave Cmd+V with the terminal.** jed doesn't bind it: the terminal's paste arrives in jed as a bracketed paste, which works the same locally and over SSH. Cmd+C and Cmd+X must reach jed, since the terminal's own copy takes text off the screen, not jed's selection.
 

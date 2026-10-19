@@ -464,6 +464,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Delete, word, Command::DeleteWordRight),
         (KeyCode::Enter, none, Command::InsertNewline),
         (KeyCode::Tab, none, Command::InsertTab),
+        (KeyCode::Tab, shift, Command::OutdentLines),
         (KeyCode::Esc, none, Command::CancelSelection),
         (KeyCode::Char('a'), cmd, Command::SelectAll),
         (KeyCode::Char('z'), cmd, Command::Undo),
@@ -509,6 +510,8 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Up, alt | shift, Command::CopyLinesUp),
         (KeyCode::Down, alt | shift, Command::CopyLinesDown),
         (KeyCode::Char('/'), cmd, Command::CommentLine),
+        (KeyCode::Char(']'), cmd, Command::IndentLines),
+        (KeyCode::Char('['), cmd, Command::OutdentLines),
         // No chords, so not VS Code's Cmd+K Cmd+I.
         (KeyCode::Char('i'), cmd | alt, Command::ShowHover),
         (KeyCode::F(12), none, Command::RevealDefinition),

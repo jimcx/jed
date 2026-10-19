@@ -98,6 +98,10 @@ pub enum Command {
     CopyLinesDown,
     /// Cmd+/: toggle the line comment on the lines of every selection.
     CommentLine,
+    /// Cmd+]: indent the lines of every selection by one level (Tab over lines does too).
+    IndentLines,
+    /// Cmd+[ / Shift+Tab: outdent the lines of every selection by one level.
+    OutdentLines,
     Undo,
     Redo,
     /// Copy / cut the selections, or the whole line when they're all empty.
@@ -664,6 +668,8 @@ impl Command {
             Command::CopyLinesUp,
             Command::CopyLinesDown,
             Command::CommentLine,
+            Command::IndentLines,
+            Command::OutdentLines,
             Command::Undo,
             Command::Redo,
             Command::Copy,
@@ -789,6 +795,8 @@ impl Command {
             Command::CopyLinesUp => "edit.copyLinesUp".into(),
             Command::CopyLinesDown => "edit.copyLinesDown".into(),
             Command::CommentLine => "edit.commentLine".into(),
+            Command::IndentLines => "edit.indentLines".into(),
+            Command::OutdentLines => "edit.outdentLines".into(),
             Command::Undo => "edit.undo".into(),
             Command::Redo => "edit.redo".into(),
             Command::Copy => "edit.copy".into(),
@@ -1076,6 +1084,8 @@ impl Command {
             Command::CopyLinesUp => "Edit: Copy Line Up",
             Command::CopyLinesDown => "Edit: Copy Line Down",
             Command::CommentLine => "Edit: Toggle Line Comment",
+            Command::IndentLines => "Edit: Indent Line",
+            Command::OutdentLines => "Edit: Outdent Line",
             Command::Undo => "Edit: Undo",
             Command::Redo => "Edit: Redo",
             Command::Copy => "Edit: Copy",
@@ -1402,9 +1412,11 @@ mod tests {
             Command::RestartServer => 93,
             Command::GitHistory(_) => 94,
             Command::Commit(_) => 95,
+            Command::IndentLines => 96,
+            Command::OutdentLines => 97,
         }
     }
-    const VARIANTS: u8 = 96;
+    const VARIANTS: u8 = 98;
 
     #[test]
     fn all_lists_every_variant() {
