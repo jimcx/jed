@@ -1,3 +1,4 @@
 # jed workspace config. Marks this folder as the workspace root.
 # See PLAN.md (Workspace) for the available sections:
 # [settings], [files], [lsp.<language>], [tasks.<name>]
+# Examples: docs/clangd.md (language servers), docs/tasks.md.
