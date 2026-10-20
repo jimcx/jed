@@ -25,7 +25,7 @@ Build one of PLAN.md's milestones with subagents, one task at a time, in sequenc
    - Build only this task. Write tests in `src/<id>_tests.rs`, named `<id>_*` (create it with a `//!` doc and register it in `main.rs` if it doesn't exist) and unit tests in modules. Tests go through real code paths.
    - Any new Cmd binding also updates `docs/terminals/`.
    - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` must pass.
-   - Update the CLAUDE.md files for what it adds (module map, conventions, test helpers, background-work patterns).
+   - Update the docs for what it adds (module map, conventions, test helpers, background-work patterns), within the budget in CLAUDE.md's "Keeping these files current": at most a line or two in the root CLAUDE.md, the detail in `docs/dev/` or the directory's nested CLAUDE.md.
    - Don't commit, and don't edit PLAN.md's Milestones section.
    - Report concisely: what it built, files changed, CLAUDE.md changes, deviations, deferrals, hand checks, and check results.
 5. **Validator** (a separate general-purpose agent, started after the implementer finishes). Its prompt says:
@@ -42,7 +42,7 @@ Build one of PLAN.md's milestones with subagents, one task at a time, in sequenc
    - Check no test binaries are left running (`pgrep -fl deps/jed-`); kill any strays.
    - Commit everything with the subject `<Milestone name> (<id>-a): <summary>`, a blank line, then `- ` bullets of behaviour and notable internals. End with the Co-Authored-By trailer.
 7. **On the milestone's last task**, in the same commit:
-   - Mark it ✅ in PLAN.md and note any "Also:", "Deferred:" and "Still to check by hand:" items.
+   - Mark it ✅ in PLAN.md with any "Also:", "Deferred:" and "Still to check by hand:" items, then move its full entry (task list included) to `docs/plan-done.md`'s Named milestones, leaving its first line in PLAN.md ending in ` — [details](docs/plan-done.md)`. Rewrite `](#` links in the moved text as `](../PLAN.md#`.
    - Fix later milestones' entries if this work changed them.
 8. Give the user a short update after each commit. Then move on to the milestone's next task. When the milestone is done, stop: don't start another one unless asked.
 

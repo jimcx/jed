@@ -30,10 +30,10 @@ Do one item from PLAN.md's `## TODO` list with subagents, as one task and one co
 5. **Implementer** (general-purpose agent, run in sequence and wait for it). Its prompt says:
    - Read `CLAUDE.md` at the repo root first, plus the nested CLAUDE.md of any directory it edits. PLAN.md is the source of truth for design.
    - Quote the TODO item in full, and read every PLAN.md section it links.
-   - Build only this item. Unit tests go in modules; end-to-end tests go in `src/todo_tests.rs` (create it with a `//!` doc and register `#[cfg(test)] mod todo_tests;` in `main.rs` if it doesn't exist), one `mod <item>` block per item, tests named after the behaviour. Tests go through real code paths (see CLAUDE.md's Tests section for driving the app headlessly).
+   - Build only this item. Unit tests go in modules; end-to-end tests go in `src/todo_tests.rs` (create it with a `//!` doc and register `#[cfg(test)] mod todo_tests;` in `main.rs` if it doesn't exist), one `mod <item>` block per item, tests named after the behaviour. Tests go through real code paths (see CLAUDE.md's Tests section for driving the app headlessly, and docs/dev/testing.md for the feature's helpers).
    - Any new Cmd binding also updates `docs/terminals/`; any new setting follows CLAUDE.md's "Settings layer per key"; any new colour goes through `Theme`.
    - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` must pass (`scripts/timeout 300 cargo test …`). If it touches editing, drawing or search hot paths, also the release `milestone` / `search` budget runs from CLAUDE.md.
-   - Update the CLAUDE.md files for what it adds (module map, conventions, test helpers, background-work patterns).
+   - Update the docs for what it adds (module map, conventions, test helpers, background-work patterns), within the budget in CLAUDE.md's "Keeping these files current": at most a line or two in the root CLAUDE.md, the detail in `docs/dev/` or the directory's nested CLAUDE.md.
    - Don't commit, and don't edit PLAN.md's TODO section.
    - Report concisely: what it built, files changed, CLAUDE.md changes, deviations, deferrals, hand checks, and check results.
 6. **Validator** (a separate general-purpose agent, started after the implementer finishes). Its prompt says:
@@ -48,7 +48,7 @@ Do one item from PLAN.md's `## TODO` list with subagents, as one task and one co
    - Re-run all three checks yourself (see CLAUDE.md's Toolchain section for how to reach cargo on this platform). A flaky test elsewhere is fixed, not ignored.
    - Make sure the diff includes the CLAUDE.md updates.
    - Check no test binaries are left running (`pgrep -fl deps/jed-`); kill any strays.
-   - In the same commit, mark the item ✅ in PLAN.md's TODO list, with short sub-bullets: what it changed (for later work), "Deferred:" and "Still to check by hand:". Fix other TODO items or plan sections if this work changed them.
+   - In the same commit, mark the item ✅ with short sub-bullets: what it changed (for later work), "Deferred:" and "Still to check by hand:" — the full entry goes to `docs/plan-done.md`'s TODO items (`](#` links rewritten as `](../PLAN.md#`), and PLAN.md's TODO list keeps one line, `- ✅ **<name>** — [details](docs/plan-done.md)`. Fix other TODO items or plan sections if this work changed them.
    - Commit everything with a short imperative subject naming the feature (e.g. `Add render whitespace`), a blank line, then `- ` bullets of behaviour and notable internals. End with the Co-Authored-By trailer.
 8. Give the user a short update: what landed, anything deferred, the hand checks. Don't start another TODO item unless asked.
 
