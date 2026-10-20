@@ -1,0 +1,52 @@
+#!/bin/sh
+# Usage: scripts/check [fmt|clippy|test] [cargo test args...]
+# The pre-commit checks with only what matters printed, so agents' context
+# isn't filled with build noise: fmt's diff, clippy's warnings, and for tests
+# the failures and the "test result" lines (progress dots and passing tests
+# dropped). With no first argument it runs all three, stopping at the first
+# failure. Extra args go to `cargo test` (e.g. `scripts/check test milestone_9`).
+# Tests run under scripts/timeout (300 s, $CHECK_TIMEOUT to change it).
+# Exits non-zero when a check fails.
+
+dir=$(cd "$(dirname "$0")" && pwd)
+cd "$dir/.." || exit 1
+
+if [ "$(uname)" = Darwin ] && ! command -v cargo >/dev/null 2>&1; then
+    channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+    PATH="$HOME/.rustup/toolchains/$channel-$(uname -m | sed 's/arm64/aarch64/')-apple-darwin/bin:$PATH"
+    export PATH
+fi
+
+out=$(mktemp)
+trap 'rm -f "$out"' EXIT
+
+fmt() {
+    cargo fmt --check >"$out" 2>&1 && { echo "fmt: ok"; return 0; }
+    head -60 "$out"
+    echo "fmt: FAILED (run cargo fmt)"
+    return 1
+}
+
+clippy() {
+    cargo clippy -q --all-targets -- -D warnings >"$out" 2>&1 && { echo "clippy: ok"; return 0; }
+    head -120 "$out"
+    echo "clippy: FAILED"
+    return 1
+}
+
+tests() {
+    "$dir/timeout" "${CHECK_TIMEOUT:-300}" cargo test -q "$@" >"$out" 2>&1
+    status=$?
+    # Compile errors, failure sections and result lines; not the progress dots.
+    grep -v -E '^[.FiE]+( [0-9]+/[0-9]+)?$|^running [0-9]+ tests?$|^$' "$out" | grep -v -E '^test .* \.\.\. ok$' | tail -150
+    if [ $status -eq 0 ]; then echo "test: ok"; else echo "test: FAILED (exit $status; 124 = timed out)"; fi
+    return $status
+}
+
+case "$1" in
+    fmt) fmt ;;
+    clippy) clippy ;;
+    test) shift; tests "$@" ;;
+    "") fmt && clippy && tests ;;
+    *) tests "$@" ;;
+esac
