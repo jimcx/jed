@@ -1073,12 +1073,10 @@ Very low priority. Don't build these yet, but don't make design choices that wou
 ## TODO
 Broad items not tied to a milestone.
 
-- **CI: Gitea Actions pipeline on Linux** (no macOS runner available)
-  - `.gitea/workflows/ci.yml`, on push and pull request
-  - Steps: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo build --release`
-  - Toolchain from `rust-toolchain.toml`; cache `~/.cargo` and `target/`
-  - Linux exercises the Ctrl keymap and inotify watcher; macOS paths (Cmd keymap, FSEvents, Trash) stay untested in CI
-    - Keep running `cargo test` locally on macOS before pushing
+- ✅ **CI** (planned as Gitea Actions on Linux; built as GitHub Actions on Linux and macOS)
+  - Done: `.github/workflows/build.yml` on push, pull request and by hand: Ubuntu 26.04 and macOS 26, toolchain from `rust-toolchain.toml` (`rustup toolchain install`), `Swatinem/rust-cache`; `cargo fmt --check`, clippy with `-D warnings`, `cargo build --release`, `cargo test` (`scripts/timeout 900`); each platform's stripped binary uploaded as `jed-<os>-<arch>.tar.gz`; a `v*` tag publishes a GitHub Release with both tarballs
+  - Both keymaps (Cmd on macOS, Ctrl on Linux) and both watchers (FSEvents, inotify) now run in CI
+  - Deferred: the release-only timing budgets (`--release milestone` / `search`), since shared runners are too noisy for them. Run those locally
 - ✅ **Terminal config snippets** (do soon: terminals grab Cmd keys, Cmd+W can close the terminal tab with unsaved work)
   - `docs/terminals/<terminal>.md` for Kitty, Ghostty, WezTerm, iTerm2, Alacritty
   - Each: pass through every Cmd binding in the default keymap; turn on Option-as-Alt
