@@ -124,8 +124,11 @@ pub struct ScmView {
     /// The top row's index (clamped by drawing).
     top: usize,
     selected: Option<RowKey>,
-    /// Rows shown in the last frame (set by drawing; page up / down).
+    /// Rows shown in the last frame (set by drawing, `set_height`; page up / down); 0 until
+    /// the first draw.
     pub height: usize,
+    /// A reveal asked for before the first draw (`height` 0), run by `set_height`.
+    reveal_pending: bool,
     /// The row under the mouse pointer (its buttons are drawn), from the last move.
     pub hover: Option<RowKey>,
 }
@@ -288,10 +291,24 @@ impl ScmView {
         self.top = self.scroll(rows);
     }
 
-    /// Scrolls the least that shows the selected row.
+    /// The drawn height (each frame); a reveal asked for before the first draw runs now.
+    pub fn set_height(&mut self, rows: &[Row], height: usize) {
+        self.height = height;
+        if self.reveal_pending && height > 0 {
+            self.reveal_pending = false;
+            self.reveal_selected(rows);
+        }
+    }
+
+    /// Scrolls the least that shows the selected row; before the first draw (no height yet),
+    /// waits for `set_height`.
     pub fn reveal_selected(&mut self, rows: &[Row]) {
+        if self.height == 0 {
+            self.reveal_pending = true;
+            return;
+        }
         let Some(row) = self.selected_row(rows) else { return };
-        let (top, height) = (self.scroll(rows), self.height.max(1));
+        let (top, height) = (self.scroll(rows), self.height);
         if row < top {
             self.top = row;
         } else if row >= top + height {
@@ -457,5 +474,29 @@ mod tests {
         v.scrollable(&rows).set_top(100);
         assert_eq!(v.top, 16, "clamped where the wheel ends");
         assert_eq!(v.selected_row(&rows), Some(2));
+    }
+
+    /// Before the first draw (no height) a reveal waits for `set_height`: the "Changes" header
+    /// above the first file stays in view; a deep selection is scrolled to the least.
+    #[test]
+    fn a_reveal_before_the_first_draw_waits_for_the_height() {
+        let entries: Vec<(String, Option<Change>, Option<Change>)> =
+            (0..20).map(|i| (format!("f{i:02}"), None, M)).collect();
+        let entries: Vec<(&str, _, _)> = entries.iter().map(|(p, a, b)| (p.as_str(), *a, *b)).collect();
+        let s = status(&entries);
+        let mut v = ScmView::default();
+        let rows = v.rows(&s);
+        v.select(&rows, 1);
+        assert_eq!(v.top, 0);
+        v.set_height(&rows, 5);
+        assert_eq!((v.scroll(&rows), v.selected_row(&rows)), (0, Some(1)));
+
+        let mut v = ScmView::default();
+        v.select(&rows, 12);
+        v.set_height(&rows, 5);
+        assert_eq!(v.scroll(&rows), 8, "the selected row at the bottom");
+        v.scroll_by(&rows, -8);
+        v.set_height(&rows, 5);
+        assert_eq!(v.scroll(&rows), 0, "only once");
     }
 }

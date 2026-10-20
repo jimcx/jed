@@ -119,7 +119,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
     let bar = scrollbar::take_column(&mut tree);
     let look = scrollbar::look(app, ScrollTarget::Side(SidePanel::Explorer));
     let explorer = &mut app.explorer;
-    explorer.height = tree.height.max(1) as usize;
+    explorer.set_height(tree.height.max(1) as usize);
     let count = explorer.row_count();
     explorer.scroll = explorer.scroll.min(count.saturating_sub(explorer.height));
     let scroll = Scroll::rows(count, explorer.height, explorer.scroll);
@@ -237,7 +237,7 @@ fn render_history(f: &mut Frame, section: Rect, app: &mut App) -> (Option<Histor
     }
     let look = scrollbar::look(app, ScrollTarget::History);
     let history = &mut app.git_history;
-    history.height = list.height as usize;
+    history.set_height(list.height as usize);
     history.clamp();
     let top = history.scroll();
     let len = history.rows().len();

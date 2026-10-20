@@ -229,8 +229,11 @@ pub struct ToolsView {
     /// The selected row's key, and its index when last seen (where the selection goes when its
     /// row leaves).
     selected: Option<(RowKey, usize)>,
-    /// Rows shown in the last frame (set by drawing; page up / down).
+    /// Rows shown in the last frame (set by drawing, `set_height`; page up / down); 0 until
+    /// the first draw.
     pub height: usize,
+    /// A reveal asked for before the first draw (`height` 0), run by `set_height`.
+    reveal_pending: bool,
     /// The error counts the last frame drew (`Logs::error_counts`): a log change redraws the
     /// view only when they differ.
     pub errors_drawn: Vec<(Tool, u64)>,
@@ -341,10 +344,24 @@ impl ToolsView {
         self.top = self.scroll(rows);
     }
 
-    /// Scrolls the least that shows the selected row.
+    /// The drawn height (each frame); a reveal asked for before the first draw runs now.
+    pub fn set_height(&mut self, rows: &[Row], height: usize) {
+        self.height = height;
+        if self.reveal_pending && height > 0 {
+            self.reveal_pending = false;
+            self.reveal_selected(rows);
+        }
+    }
+
+    /// Scrolls the least that shows the selected row; before the first draw (no height yet),
+    /// waits for `set_height`.
     pub fn reveal_selected(&mut self, rows: &[Row]) {
+        if self.height == 0 {
+            self.reveal_pending = true;
+            return;
+        }
         let Some(row) = self.selected_row(rows) else { return };
-        let (top, height) = (self.scroll(rows), self.height.max(1));
+        let (top, height) = (self.scroll(rows), self.height);
         if row < top {
             self.top = row;
         } else if row >= top + height {
@@ -494,5 +511,30 @@ mod tests {
             names,
             [("clangd", ServerState::Exited, 2), ("ty", ServerState::Exited, 0)]
         );
+    }
+
+    /// Before the first draw (no height) a reveal waits for `set_height`.
+    #[test]
+    fn a_reveal_before_the_first_draw_waits_for_the_height() {
+        let rows = vec![server("clangd"), task(1), task(2), task(3), Row::Jed { errors: 0 }];
+        let mut v = ToolsView::default();
+        v.select(&rows, 1);
+        v.set_height(&rows, 2);
+        assert_eq!((v.scroll(&rows), v.selected_row(&rows)), (0, Some(1)));
+
+        let mut v = ToolsView::default();
+        v.select(&rows, 3);
+        assert_eq!(v.top, 0);
+        v.set_height(&rows, 2);
+        assert_eq!(v.scroll(&rows), 2, "the selected row at the bottom");
+        v.top = 0;
+        v.set_height(&rows, 3);
+        assert_eq!(v.scroll(&rows), 0, "a resize doesn't reveal again");
+        // Hidden (no rows drawn) again: the next reveal waits for the next draw.
+        v.set_height(&rows, 0);
+        v.select(&rows, 4);
+        assert_eq!(v.top, 0);
+        v.set_height(&rows, 2);
+        assert_eq!(v.scroll(&rows), 3);
     }
 }

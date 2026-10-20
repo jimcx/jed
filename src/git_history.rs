@@ -36,8 +36,11 @@ pub struct GitHistory {
     pub generation: u64,
     /// HEAD (or the repository) changed: the next sync reloads the first page.
     pub stale: bool,
-    /// Rows the list drew in the last frame (page up / down, paging).
+    /// Rows the list drew in the last frame (page up / down, paging; `set_height`); 0 until
+    /// the first draw.
     pub height: usize,
+    /// A reveal asked for before the first draw (`height` 0), run by `set_height`.
+    reveal_pending: bool,
     /// The section's height (divider, header and rows) as dragged, clamped by drawing.
     pub section_height: u16,
     collapsed: bool,
@@ -60,6 +63,7 @@ impl Default for GitHistory {
             generation: 0,
             stale: false,
             height: 0,
+            reveal_pending: false,
             section_height: DEFAULT_SECTION_HEIGHT,
             collapsed: false,
             focused: false,
@@ -194,10 +198,24 @@ impl GitHistory {
         self.top = self.scroll();
     }
 
-    /// Scrolls the least that shows the selected row.
+    /// The drawn height (each frame); a reveal asked for before the first draw runs now.
+    pub fn set_height(&mut self, height: usize) {
+        self.height = height;
+        if self.reveal_pending && height > 0 {
+            self.reveal_pending = false;
+            self.reveal_selected();
+        }
+    }
+
+    /// Scrolls the least that shows the selected row; before the first draw (no height yet),
+    /// waits for `set_height`.
     pub fn reveal_selected(&mut self) {
+        if self.height == 0 {
+            self.reveal_pending = true;
+            return;
+        }
         let Some(row) = self.selected_row() else { return };
-        let (top, height) = (self.scroll(), self.height.max(1));
+        let (top, height) = (self.scroll(), self.height);
         if row < top {
             self.top = row;
         } else if row >= top + height {
@@ -361,5 +379,30 @@ mod tests {
         h.select(&format!("{:040}", 4));
         h.commits.truncate(2);
         assert_eq!(h.selected_row(), None);
+    }
+
+    /// Before the first draw (no height) a reveal waits for `set_height`.
+    #[test]
+    fn a_reveal_before_the_first_draw_waits_for_the_height() {
+        let mut h = GitHistory { height: 0, ..model(20) };
+        h.select_row(0);
+        h.move_selection(1);
+        h.set_height(5);
+        assert_eq!((h.scroll(), h.selected_row()), (0, Some(1)));
+
+        let mut h = GitHistory { height: 0, ..model(20) };
+        h.select_row(9);
+        assert_eq!(h.top, 0);
+        h.set_height(5);
+        assert_eq!(h.scroll(), 5, "the selected row at the bottom");
+        h.top = 0;
+        h.set_height(4);
+        assert_eq!(h.scroll(), 0, "a resize doesn't reveal again");
+        // Hidden (no rows drawn) again: the next reveal waits for the next draw.
+        h.set_height(0);
+        h.select_row(15);
+        assert_eq!(h.top, 0);
+        h.set_height(5);
+        assert_eq!(h.scroll(), 11);
     }
 }

@@ -201,7 +201,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> PanelHits {
     let mut list = list;
     let bar = scrollbar::take_column(&mut list);
     let view = &mut app.problems.list;
-    view.height = list.height as usize;
+    view.set_height(&files, list.height as usize);
     view.clamp(&files);
     let top = view.scroll(&files);
     let selected_row = view.selected_row(&files);
@@ -308,7 +308,7 @@ fn locations(
     let mut list = list;
     let bar = scrollbar::take_column(&mut list);
     let Locations { files, list: view, .. } = l;
-    view.height = list.height as usize;
+    view.set_height(files, list.height as usize);
     view.clamp(files);
     let top = view.scroll(files);
     let selected_row = view.selected_row(files);

@@ -28,8 +28,10 @@ pub struct Explorer {
     root: Entry,
     pub selected: Option<PathBuf>,
     pub scroll: usize,
-    /// Visible rows from the last render, for paging.
+    /// Visible rows from the last render (`set_height`), for paging; 0 until the first draw.
     pub height: usize,
+    /// A reveal asked for before the first draw (`height` 0), run by `set_height`.
+    reveal_pending: bool,
     /// Where the explorer is expanding towards, e.g. the active file.
     reveal: Option<PathBuf>,
 }
@@ -40,7 +42,7 @@ impl crate::scrollbar::Scrollable for Explorer {
     }
 
     fn set_top(&mut self, top: usize) {
-        self.scroll = top.min(self.row_count().saturating_sub(self.height));
+        self.scroll = top.min(self.row_count().saturating_sub(self.height.max(1)));
     }
 }
 
@@ -59,7 +61,8 @@ impl Explorer {
             },
             selected: None,
             scroll: 0,
-            height: 1,
+            height: 0,
+            reveal_pending: false,
             reveal: None,
         }
     }
@@ -280,11 +283,26 @@ impl Explorer {
     }
 
     pub fn scroll_by(&mut self, delta: isize) {
-        let max = self.rows().len().saturating_sub(self.height);
+        let max = self.rows().len().saturating_sub(self.height.max(1));
         self.scroll = self.scroll.saturating_add_signed(delta).min(max);
     }
 
+    /// The drawn height (each frame); a reveal asked for before the first draw runs now.
+    pub fn set_height(&mut self, height: usize) {
+        self.height = height;
+        if self.reveal_pending && height > 0 {
+            self.reveal_pending = false;
+            self.scroll_to_selected();
+        }
+    }
+
+    /// Scrolls the least that shows the selected row; before the first draw (no height yet),
+    /// waits for `set_height`.
     pub fn scroll_to_selected(&mut self) {
+        if self.height == 0 {
+            self.reveal_pending = true;
+            return;
+        }
         let rows = self.rows();
         if let Some(i) = self.selected_index(&rows) {
             if i < self.scroll {
@@ -576,5 +594,29 @@ mod tests {
         assert!(validate_name("a/b.txt", false).is_err());
         assert!(validate_name("..", true).is_err());
         assert!(validate_name("  ", true).is_err());
+    }
+
+    /// A reveal before the first draw (no height) waits for `set_height`, which scrolls the
+    /// least that shows the revealed file.
+    #[test]
+    fn a_reveal_before_the_first_draw_waits_for_the_height() {
+        let (_d, root) = tree();
+        let ex = excludes(&root, &["build/".into(), "*.o".into()]);
+        let mut x = Explorer::new(root.clone());
+        let target = root.join("src/main.rs");
+        let mut todo = vec![root.clone()];
+        todo.extend(x.reveal(&target));
+        while let Some(dir) = todo.pop() {
+            let listing = list_dir(&dir, &ex).unwrap();
+            todo.extend(x.set_children(&dir, listing));
+        }
+        let i = x.rows().iter().position(|r| r.entry.path == target).unwrap();
+        assert!(i >= 2, "{i}");
+        assert_eq!(x.scroll, 0, "nothing scrolled without a height");
+        x.set_height(2);
+        assert_eq!(x.scroll, i - 1, "the revealed row at the bottom");
+        x.scroll = 0;
+        x.set_height(2);
+        assert_eq!(x.scroll, 0, "only once");
     }
 }

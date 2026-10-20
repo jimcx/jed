@@ -81,8 +81,10 @@ pub struct ListState {
     /// The top row; `None` is the top of the list.
     top: Option<RowKey>,
     selected: Option<RowKey>,
-    /// Rows shown in the last frame (set by drawing).
+    /// Rows shown in the last frame (set by drawing, `set_height`); 0 until the first draw.
     pub height: usize,
+    /// A reveal asked for before the first draw (`height` 0), run by `set_height`.
+    reveal_pending: bool,
 }
 
 /// A grouped list's scroll bar: its state with its groups (`ListState::scrollable`).
@@ -113,6 +115,7 @@ impl ListState {
     pub fn reset(&mut self) {
         self.top = None;
         self.selected = None;
+        self.reveal_pending = false;
     }
 
     /// The row index at the top of the list.
@@ -182,10 +185,24 @@ impl ListState {
         }
     }
 
-    /// Scrolls the least that shows the selected row.
+    /// The drawn height (each frame); a reveal asked for before the first draw runs now.
+    pub fn set_height<G: Group>(&mut self, groups: &[G], height: usize) {
+        self.height = height;
+        if self.reveal_pending && height > 0 {
+            self.reveal_pending = false;
+            self.reveal_selected(groups);
+        }
+    }
+
+    /// Scrolls the least that shows the selected row; before the first draw (no height yet),
+    /// waits for `set_height`.
     pub fn reveal_selected<G: Group>(&mut self, groups: &[G]) {
+        if self.height == 0 {
+            self.reveal_pending = true;
+            return;
+        }
         let Some(row) = self.selected_row(groups) else { return };
-        let (top, height) = (self.scroll(groups), self.height.max(1));
+        let (top, height) = (self.scroll(groups), self.height);
         if row < top {
             self.set_scroll(groups, row);
         } else if row >= top + height {
@@ -292,5 +309,34 @@ pub mod tests {
         l.reset();
         assert_eq!((l.scroll(&g), l.selected_row(&g)), (0, None));
         assert!(!l.select_key(&g, &(PathBuf::from("zz"), 0)));
+    }
+
+    /// Before the first draw (no height) a reveal waits: the first `set_height` scrolls the
+    /// least that shows the selected row, once.
+    #[test]
+    fn a_reveal_before_the_first_draw_waits_for_the_height() {
+        let g = groups(&[("b", 2), ("d", 3)]);
+        let mut l = ListState::default();
+        l.select(&g, 1);
+        l.select(&g, 6);
+        assert_eq!(l.scroll(&g), 0, "nothing scrolled without a height");
+        l.set_height(&g, 3);
+        assert_eq!((l.scroll(&g), l.selected_row(&g)), (4, Some(6)));
+        l.set_scroll(&g, 0);
+        l.set_height(&g, 3);
+        assert_eq!(l.scroll(&g), 0, "only once");
+        l.set_height(&g, 2);
+        assert_eq!(l.scroll(&g), 0, "a resize doesn't reveal again");
+        // Hidden (no rows drawn) again: the next reveal waits for the next draw.
+        l.set_height(&g, 0);
+        l.select(&g, 6);
+        assert_eq!(l.scroll(&g), 0);
+        l.set_height(&g, 3);
+        assert_eq!(l.scroll(&g), 4);
+
+        let mut l = ListState::default();
+        l.select(&g, 1);
+        l.set_height(&g, 3);
+        assert_eq!(l.scroll(&g), 0, "the file's row above stays in view");
     }
 }

@@ -39,7 +39,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ToolsHit>, Op
         base.patch(theme.get("list.inactive"))
     };
     let view = &mut app.tools_view;
-    view.height = list.height as usize;
+    view.set_height(&rows, list.height as usize);
     view.settle(&rows);
     view.clamp(&rows);
     let top = view.scroll(&rows);

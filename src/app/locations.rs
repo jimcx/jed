@@ -170,8 +170,6 @@ impl App {
         }
         let unread = list.unread();
         list.list.select(&list.files, 1);
-        // Not drawn yet (no height): keep the first file's row in view above its place.
-        list.list.set_scroll(&list.files, 0);
         self.locations = Some(list);
         self.focus_panel(PanelTab::Locations);
         if unread.is_empty() || tokio::runtime::Handle::try_current().is_err() {

@@ -1639,7 +1639,7 @@ const A_CPP: &str = "int x = foo;\nint main() { return bar; }\n";
 
 /// A project with `a.cpp` open (synced with the fake) and diagnostics published for it and two
 /// files that aren't open (`c.cpp`, `sub/b.cpp`).
-async fn problems_project(dir: &Path) -> (App, Arc<FakeLauncher>, PathBuf) {
+pub(crate) async fn problems_project(dir: &Path) -> (App, Arc<FakeLauncher>, PathBuf) {
     let root = project(
         dir,
         &[
@@ -2248,7 +2248,7 @@ fn hover_text() -> String {
 }
 
 /// A project with `a.cpp` (`text`) open and synced with a fake server (UTF-8 unless `utf16`).
-async fn lsp_project(dir: &Path, files: &[(&str, &str)], utf16: bool) -> (App, Arc<FakeLauncher>, PathBuf) {
+pub(crate) async fn lsp_project(dir: &Path, files: &[(&str, &str)], utf16: bool) -> (App, Arc<FakeLauncher>, PathBuf) {
     let root = project(dir, files);
     let fake = FakeLauncher::new(FakeOptions {
         utf8: !utf16,
@@ -2826,7 +2826,7 @@ async fn milestone_9_definition_dropped_after_an_edit() {
     assert!(fake.errors().is_empty());
 }
 
-fn location(path: &Path, line: u32, from: u32, to: u32) -> Value {
+pub(crate) fn location(path: &Path, line: u32, from: u32, to: u32) -> Value {
     json!({
         "uri": uri(path),
         "range": { "start": { "line": line, "character": from }, "end": { "line": line, "character": to } },

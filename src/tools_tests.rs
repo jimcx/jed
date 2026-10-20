@@ -1120,7 +1120,7 @@ use crossterm::event::{MouseButton, MouseEventKind};
 const TASKS: &str = "[tasks.ok]\ncommand = \"true\"\n\n[tasks.bad]\ncommand = \"exit 3\"\n";
 
 /// `open_app` with the user's `tasks.toml` holding `tasks` (`ok`: `true`, `bad`: `exit 3`).
-fn tools_app(dir: &Path, fake: &Arc<FakeLauncher>, state: bool) -> (App, PathBuf) {
+pub(crate) fn tools_app(dir: &Path, fake: &Arc<FakeLauncher>, state: bool) -> (App, PathBuf) {
     let base = workspace::normalize(dir);
     let root = base.join("proj");
     fs::create_dir_all(&root).unwrap();
@@ -1153,7 +1153,7 @@ async fn with_clangd(app: &mut App, root: &Path) {
 }
 
 /// Runs task `name` and waits for it to end (and its end note).
-async fn run_ended(app: &mut App, name: &str) -> RunId {
+pub(crate) async fn run_ended(app: &mut App, name: &str) -> RunId {
     let id = app.run_task(name).unwrap();
     assert!(
         app.settle(|a| {

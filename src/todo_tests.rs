@@ -79,6 +79,11 @@
 //! - `diff_open_file`: "Git: Toggle Changes / File" switches between a file and its diff tab
 //!   (the group's own, else its changes), each landing on the other's cursor line; the diff
 //!   header's Open File button opens the file there, also when it isn't open yet.
+//! - `first_reveal`: a list's selection revealed before it was ever drawn scrolls on its first
+//!   draw, the least that shows it: Ctrl+Shift+G keeps "Changes" above the first file, the
+//!   Explorer's start file far down a long folder lands on the bottom row, and the Search
+//!   view's results, Problems, Locations (Shift+F12), the Tools view and Git History keep the
+//!   row above the selected one in view.
 
 mod render_whitespace {
     use std::fs;
@@ -4815,5 +4820,339 @@ mod diff_open_file {
         app.test_execute(Command::ToggleChanges);
         assert!(app.group().active_diff().is_none());
         assert_eq!(app.message.as_ref().unwrap().text, "b.txt has no changes");
+    }
+}
+
+mod first_reveal {
+    use std::fs;
+    use std::path::Path;
+    use std::time::Instant;
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use serde_json::json;
+
+    use crate::app::{App, Focus};
+    use crate::buffer::Buffer;
+    use crate::git::test_repo::{commit_all, init};
+    use crate::layout::SidePanel;
+    use crate::lsp::fake::FakeLauncher;
+    use crate::milestone9_tests::{location, lsp_project, problems_project};
+    use crate::milestone10_tests::{dirs, open_file_app, settle_git};
+    use crate::workspace::Workspace;
+    use crate::workspace::trust::TrustStore;
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    fn draw(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    /// The screen's row `y` from column `x`, `width` cells, trimmed.
+    fn text(term: &Terminal<TestBackend>, x: u16, y: u16, width: u16) -> String {
+        let buf = term.backend().buffer();
+        (x..x + width)
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+
+    /// The bottom panel's first list row (below its border and tab strip).
+    fn first_panel_row(app: &App, term: &Terminal<TestBackend>) -> String {
+        let panel = app.hits.regions.panel.expect("the panel drawn");
+        text(term, panel.x, panel.y + 2, panel.width)
+    }
+
+    /// The app on `root` with no file open (the trust store in `state`).
+    fn open_app(root: &Path, state: &Path) -> App {
+        let ws = Workspace::load(root.to_path_buf());
+        let mut app = App::new(ws, TrustStore::load(state.join("trust.toml")), None, true);
+        app.test_start();
+        app.test_plain_whitespace();
+        app
+    }
+
+    /// A repository with `n` committed files `f00.txt`… each modified since.
+    fn many_changes(root: &Path, n: usize) {
+        init(root);
+        for i in 0..n {
+            fs::write(root.join(format!("f{i:02}.txt")), "a\n").unwrap();
+        }
+        commit_all(root, "one");
+        for i in 0..n {
+            fs::write(root.join(format!("f{i:02}.txt")), "b\n").unwrap();
+        }
+    }
+
+    /// The first Ctrl+Shift+G on a list longer than the view selects the first file before the
+    /// view was ever drawn: the "Changes" header above it stays in view.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn source_control_keeps_the_changes_header_in_view() {
+        let (_d, root, state) = dirs();
+        many_changes(&root, 30);
+        let mut app = open_app(&root, &state);
+        assert!(settle_git(&mut app, |s| s.entries.len() == 30).await);
+        app.press(K::Char('g'), M::CONTROL | M::SHIFT);
+        let term = draw(&mut app, 100, 20);
+        let hit = app.hits.scm.clone().expect("the Source Control view drawn");
+        assert!(hit.list.height < 31, "the list doesn't fit");
+        let row = |y| text(&term, hit.list.x, hit.list.y + y, hit.list.width);
+        assert!(row(0).contains("Changes"), "{:?}", row(0));
+        assert!(row(1).contains("f00.txt"), "{:?}", row(1));
+    }
+
+    /// End before the Source Control view was ever drawn: the first draw scrolls the last file
+    /// up to the bottom row (the reveal waits for the drawn height, it isn't dropped).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn source_control_end_before_the_first_draw_shows_the_last_file() {
+        let (_d, root, state) = dirs();
+        many_changes(&root, 30);
+        let mut app = open_app(&root, &state);
+        assert!(settle_git(&mut app, |s| s.entries.len() == 30).await);
+        app.press(K::Char('g'), M::CONTROL | M::SHIFT);
+        app.press(K::End, M::NONE);
+        draw(&mut app, 100, 20);
+        let hit = app.hits.scm.clone().expect("the Source Control view drawn");
+        let rows = app.scm.rows(app.git.status.as_ref().unwrap());
+        let last = rows.len() - 1;
+        assert_eq!(app.scm.selected_row(&rows), Some(last));
+        assert!(hit.rows.len() < rows.len(), "the list doesn't fit");
+        assert_eq!(
+            hit.rows.last(),
+            Some(&rows[last].key()),
+            "the last file on the bottom row"
+        );
+    }
+
+    /// The Explorer reveals the file opened at start (far down a long folder) before the tree
+    /// was ever drawn: the first draw scrolls the least that shows it, its row at the bottom.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explorer_reveals_the_start_file_with_the_rows_above_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        for i in 0..60 {
+            fs::write(root.join(format!("f{i:02}.txt")), "x\n").unwrap();
+        }
+        let path = root.join("f30.txt");
+        let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&path).unwrap());
+        app.test_start();
+        assert!(
+            app.settle(|a| a.explorer.selected.as_deref() == Some(path.as_path()))
+                .await
+        );
+        draw(&mut app, 100, 20);
+        let height = app.explorer.height;
+        assert!(height > 1 && height < 30, "{height}");
+        assert_eq!(app.explorer.scroll, 31 - height, "f30.txt on the bottom row");
+    }
+
+    /// The Search view's results selected (Down from the query, Down again) before the list was
+    /// drawn: the file's row above its first match stays in view.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn search_results_keep_the_file_row_in_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        fs::write(root.join("a.txt"), "needle\n".repeat(40)).unwrap();
+        let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&root.join("a.txt")).unwrap());
+        app.test_start();
+        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.type_text("needle");
+        app.search_tick(Instant::now() + crate::search_view::DEBOUNCE);
+        let want = app.search_view.query();
+        assert!(
+            app.settle(|a| a.search.as_ref().is_some_and(|r| r.done && r.query == want))
+                .await
+        );
+        app.press(K::Down, M::NONE);
+        app.press(K::Down, M::NONE);
+        let term = draw(&mut app, 100, 20);
+        let hit = app.hits.search.clone().expect("the Search view drawn");
+        assert!(hit.list.height < 41, "the list doesn't fit");
+        let results = app.search.as_ref().unwrap();
+        assert_eq!(app.search_view.selected_row(results), Some(1));
+        assert_eq!(app.search_view.scroll(results), 0);
+        let row = text(&term, hit.list.x, hit.list.y, hit.list.width);
+        assert!(row.contains("a.txt"), "{row:?}");
+    }
+
+    /// Cmd+Shift+M then Down before the Problems list was drawn: its first file's row stays in
+    /// view above the selected problem.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn problems_keep_the_file_row_in_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _fake, _root) = problems_project(dir.path()).await;
+        // Four list rows for the fixture's six.
+        app.ui.panel_height = 6;
+        app.press(K::Char('m'), cmd() | M::SHIFT);
+        assert_eq!(app.ui.focus, Focus::Panel);
+        app.press(K::Down, M::NONE);
+        let term = draw(&mut app, 130, 30);
+        assert!(
+            first_panel_row(&app, &term).starts_with("a.cpp"),
+            "{:?}",
+            first_panel_row(&app, &term)
+        );
+        app.shutdown_servers().await;
+    }
+
+    /// End before the Problems list was drawn: the first draw shows the last problem on the
+    /// bottom row.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn problems_end_before_the_first_draw_shows_the_last_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _fake, _root) = problems_project(dir.path()).await;
+        app.ui.panel_height = 6;
+        app.press(K::Char('m'), cmd() | M::SHIFT);
+        app.press(K::End, M::NONE);
+        draw(&mut app, 130, 30);
+        let files = crate::problems::files(&app.lsp.diagnostics, &app.buffers);
+        let rows = crate::grouped::row_count(&files);
+        let height = app.problems.list.height;
+        assert!(height > 1 && height < rows, "{height} of {rows}");
+        assert_eq!(app.problems.list.selected_row(&files), Some(rows - 1));
+        assert_eq!(
+            app.problems.list.scroll(&files),
+            rows - height,
+            "the last row at the bottom"
+        );
+        app.shutdown_servers().await;
+    }
+
+    /// Shift+F12's answer fills the Locations list and selects its first place before the panel
+    /// was ever drawn: the file's row above it stays in view.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn locations_keep_the_file_row_in_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = "int target = 1;\n".repeat(8);
+        let (mut app, fake, root) = lsp_project(dir.path(), &[("a.cpp", &text)], true).await;
+        let a = root.join("a.cpp");
+        let places: Vec<_> = (0..8).map(|line| location(&a, line, 4, 10)).collect();
+        fake.respond("textDocument/references", json!(places));
+        app.ui.panel_height = 6;
+        app.press(K::F(12), M::SHIFT);
+        assert!(app.settle(|a| a.locations.is_some()).await);
+        assert!(app.settle(|a| a.locations.as_ref().unwrap().unread().is_empty()).await);
+        let term = draw(&mut app, 130, 30);
+        assert!(
+            first_panel_row(&app, &term).starts_with("a.cpp"),
+            "{:?}",
+            first_panel_row(&app, &term)
+        );
+        let l = app.locations.as_ref().unwrap();
+        assert_eq!(l.list.selected_row(&l.files), Some(1));
+        app.shutdown_servers().await;
+    }
+
+    /// "Tools: Show" then Down before the Tools view was drawn: the first row stays in view.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tools_view_keeps_the_first_row_in_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = FakeLauncher::new(Default::default());
+        let (mut app, _root) = crate::tools_tests::tools_app(dir.path(), &fake, false);
+        for _ in 0..6 {
+            crate::tools_tests::run_ended(&mut app, "ok").await;
+        }
+        app.press(K::Char('u'), cmd() | M::SHIFT);
+        app.press(K::Down, M::NONE);
+        let term = draw(&mut app, 100, 8);
+        let hit = app.hits.tools.clone().expect("the Tools view drawn");
+        assert!(
+            (hit.list.height as usize) < app.tools_rows().len(),
+            "the list doesn't fit"
+        );
+        let rows = app.tools_rows();
+        assert_eq!(app.tools_view.selected_row(&rows), Some(1));
+        assert_eq!(app.tools_view.scroll(&rows), 0);
+        assert_eq!(hit.rows.first(), Some(&rows[0].key()));
+        drop(term);
+    }
+
+    /// End before the Tools view was drawn: the first draw shows the last row at the bottom.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tools_view_end_before_the_first_draw_shows_the_last_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = FakeLauncher::new(Default::default());
+        let (mut app, _root) = crate::tools_tests::tools_app(dir.path(), &fake, false);
+        for _ in 0..6 {
+            crate::tools_tests::run_ended(&mut app, "ok").await;
+        }
+        app.press(K::Char('u'), cmd() | M::SHIFT);
+        app.press(K::End, M::NONE);
+        draw(&mut app, 100, 8);
+        let hit = app.hits.tools.clone().expect("the Tools view drawn");
+        let rows = app.tools_rows();
+        assert_eq!(app.tools_view.selected_row(&rows), Some(rows.len() - 1));
+        assert!(hit.rows.len() < rows.len(), "the list doesn't fit");
+        assert_eq!(hit.rows.last(), Some(&rows[rows.len() - 1].key()));
+    }
+
+    /// End in the Git History section before it was drawn: the first draw shows the last
+    /// commit on the bottom row.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn git_history_end_before_the_first_draw_shows_the_last_commit() {
+        let (_d, root, state) = dirs();
+        init(&root);
+        for i in 0..20 {
+            fs::write(root.join("a.txt"), format!("{i}\n")).unwrap();
+            commit_all(&root, &format!("c{i}"));
+        }
+        let mut app = open_file_app(&root, &state, "a.txt");
+        assert!(
+            app.settle(|a| !a.git.running() && !a.git_history.loading && a.git_history.commits.len() == 20)
+                .await
+        );
+        app.ui.focus = Focus::SidePanel;
+        app.ui.side_panel = SidePanel::Explorer;
+        app.git_history.set_focused(true);
+        app.press(K::End, M::NONE);
+        assert_eq!(app.git_history.selected_row(), Some(19));
+        draw(&mut app, 100, 30);
+        let height = app.git_history.height;
+        assert!(height > 1 && height < 20, "{height}");
+        assert_eq!(
+            app.git_history.scroll(),
+            20 - height,
+            "the last commit on the bottom row"
+        );
+    }
+
+    /// Down twice in the Git History section before it was drawn: the newest commit stays in
+    /// view above the selected one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn git_history_keeps_the_first_commit_in_view() {
+        let (_d, root, state) = dirs();
+        init(&root);
+        for i in 0..20 {
+            fs::write(root.join("a.txt"), format!("{i}\n")).unwrap();
+            commit_all(&root, &format!("c{i}"));
+        }
+        let mut app = open_file_app(&root, &state, "a.txt");
+        assert!(
+            app.settle(|a| !a.git.running() && !a.git_history.loading && a.git_history.commits.len() == 20)
+                .await
+        );
+        app.ui.focus = Focus::SidePanel;
+        app.ui.side_panel = SidePanel::Explorer;
+        app.git_history.set_focused(true);
+        app.press(K::Down, M::NONE);
+        app.press(K::Down, M::NONE);
+        draw(&mut app, 100, 30);
+        assert!(
+            app.git_history.height > 1 && app.git_history.height < 20,
+            "{}",
+            app.git_history.height
+        );
+        assert_eq!(app.git_history.selected_row(), Some(1));
+        assert_eq!(app.git_history.scroll(), 0);
     }
 }

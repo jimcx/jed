@@ -67,8 +67,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ScmHit>, Opti
         base.patch(theme.get("list.inactive"))
     };
     let view = &mut app.scm;
-    view.height = list.height as usize;
     let rows = view.rows(status);
+    view.set_height(&rows, list.height as usize);
     view.clamp(&rows);
     let top = view.scroll(&rows);
     let selected = view.selected_row(&rows);

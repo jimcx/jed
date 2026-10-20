@@ -470,3 +470,9 @@ Finished milestones and TODO items moved out of [PLAN.md](../PLAN.md) so agents 
   - The list column is always reserved; counts, git letters and the `+` / `−` buttons sit left of it; the Search query / toggles, the branch line and the panel's tab strip keep the full width; no bar on empty-state messages or task tabs; the wheel over a bar scrolls its list
   - Deferred: the hover colour can stay on after switching side views until the pointer moves
   - Still to check by hand: the slider colours over `sideBar` and `panel`; the blank column between counts / letters and the bar; dragging the explorer thumb in a large tree
+- ✅ **First reveal in a never-drawn list**: a list's first selection reveal ran while its `height` was still 0 (never drawn), scrolling the selected row to the top — e.g. the first Ctrl+Shift+G hid the Source Control "Changes" header
+  - Deferred to the first draw (not skipped, since the Explorer can reveal a start file deep in a long tree and Down / End can run before the first draw): a reveal while `height == 0` sets a private `reveal_pending`; drawing calls `set_height(…)` (never assigns `height`), which runs it once, scrolling the least that shows the row. In `grouped::ListState` (Search results, Problems, Locations), `ScmView`, `ToolsView`, `GitHistory` and `Explorer` (default height now 0; `scroll_by` / `set_top` / paging use `height.max(1)`); a resize doesn't reveal again
+  - Locations' "not drawn yet" `set_scroll(0)` workaround removed; palette, completion, diff tabs and editor views already reveal with a known height
+  - Tests: `todo_tests::first_reveal` (a header / first row kept in view and End before the first draw, per list; the Explorer's start file on the bottom row) and a unit test per list
+  - Deferred: nothing
+  - Still to check by hand: Ctrl+Shift+G at once in a repo with more changes than fit shows "Changes"; `jed <file far down a long folder>` shows the file on the Explorer's bottom row
