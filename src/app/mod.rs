@@ -1229,6 +1229,25 @@ impl App {
         self.handle_event(Event::Key(crossterm::event::KeyEvent::new(code, mods)));
     }
 
+    /// Presses the platform's file start key: Cmd+Up on macOS (VS Code's; Cmd+Home is unbound
+    /// there), Ctrl+Home on Linux.
+    pub fn press_file_start(&mut self) {
+        if cfg!(target_os = "macos") {
+            self.press(KeyCode::Up, KeyModifiers::SUPER);
+        } else {
+            self.press(KeyCode::Home, KeyModifiers::CONTROL);
+        }
+    }
+
+    /// Presses the platform's file end key: Cmd+Down on macOS, Ctrl+End on Linux.
+    pub fn press_file_end(&mut self) {
+        if cfg!(target_os = "macos") {
+            self.press(KeyCode::Down, KeyModifiers::SUPER);
+        } else {
+            self.press(KeyCode::End, KeyModifiers::CONTROL);
+        }
+    }
+
     /// Runs a command as a key bound to it would.
     pub fn test_execute(&mut self, cmd: Command) {
         let here = self.nav_begin();

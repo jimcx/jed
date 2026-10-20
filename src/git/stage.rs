@@ -984,7 +984,9 @@ mod tests {
         assert_eq!(git(&root, &["status", "--porcelain"]), "");
     }
 
-    /// A deleted executable comes back executable, as `git checkout -p` brings it back.
+    /// A deleted executable comes back executable, as `git checkout -p` brings it back. The
+    /// expected result was captured once from git 2.50.1 (`y` to its one hunk: the text back,
+    /// mode 755, a clean status), not run each time: git 2.49.0 brings it back as 644.
     #[cfg(unix)]
     #[test]
     fn revert_a_deleted_executable_brings_back_its_mode() {
@@ -993,15 +995,13 @@ mod tests {
         std::fs::set_permissions(root.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
         commit_all(&root, "exec");
         std::fs::remove_file(root.join("run.sh")).unwrap();
-        let other = copy(&root);
-        let repo = r(&other);
+        let repo = r(&root);
         let d = file_diff(&repo, Path::new("run.sh"), Side::Unstaged, GIT_CONTEXT).unwrap();
         revert_hunk(&repo, Path::new("run.sh"), &d, 0).unwrap();
-        git_with_input(&root, &["checkout", "-p", "--", "run.sh"], Some("y\n"));
-        let mode = |p: &Path| std::fs::metadata(p.join("run.sh")).unwrap().permissions().mode() & 0o111;
-        assert_eq!(mode(&root), 0o111, "git checkout -p makes it executable");
-        assert_eq!(mode(&other), mode(&root));
-        assert_eq!(git(&other, &["status", "--porcelain"]), "");
+        let file = root.join("run.sh");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), numbered(5));
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o755);
+        assert_eq!(git(&root, &["status", "--porcelain"]), "");
     }
 
     /// A symbolic link isn't reverted by change, and nothing is written through it.

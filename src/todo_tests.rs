@@ -207,7 +207,7 @@ mod render_whitespace {
         let (mut app, _, _) = open_app(&dir, "", "", TEXT);
         assert_eq!(app.settings.render_whitespace, RenderWhitespace::All, "the default");
         // The cursor away from the whitespace (cursor cells aren't dimmed).
-        app.press(K::End, cmd());
+        app.press_file_end();
         let term = draw(&mut app);
         assert_eq!(row(&app, &term, 0, 12), "→   ab··c·d·");
         let cs = cells(&app, &term, 0, 12);
@@ -219,7 +219,7 @@ mod render_whitespace {
         // Off: the same columns, blanks instead of glyphs.
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _, _) = open_app(&dir, "render_whitespace = \"none\"\n", "", TEXT);
-        app.press(K::End, cmd());
+        app.press_file_end();
         let term = draw(&mut app);
         assert_eq!(row(&app, &term, 0, 12), "    ab  c d ");
     }
@@ -228,7 +228,7 @@ mod render_whitespace {
     async fn boundary_skips_single_spaces_between_words() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _, _) = open_app(&dir, "render_whitespace = \"boundary\"\n", "", TEXT);
-        app.press(K::End, cmd());
+        app.press_file_end();
         let term = draw(&mut app);
         assert_eq!(row(&app, &term, 0, 12), "→   ab··c d·");
     }
@@ -237,7 +237,7 @@ mod render_whitespace {
     async fn trailing_draws_only_whitespace_at_line_ends() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _, _) = open_app(&dir, "render_whitespace = \"trailing\"\n", "", "\ta b  \n  \nx\n");
-        app.press(K::End, cmd());
+        app.press_file_end();
         let term = draw(&mut app);
         assert_eq!(row(&app, &term, 0, 9), "    a b··");
         assert_eq!(row(&app, &term, 1, 3), "·· ", "a blank line is all trailing");
@@ -287,7 +287,7 @@ mod render_whitespace {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _, _) = open_file(&dir, "", "", "a.py", "x = \"a b\"\n");
         assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
-        app.press(K::End, cmd());
+        app.press_file_end();
         let term = draw(&mut app);
         assert_eq!(row(&app, &term, 0, 9), "x·=·\"a·b\"");
         let cs = cells(&app, &term, 0, 9);
@@ -341,7 +341,7 @@ mod render_whitespace {
         let dir = tempfile::tempdir().unwrap();
         let user = "render_whitespace = \"boundary\"\n";
         let (mut app, root, user_file) = open_app(&dir, user, "", TEXT);
-        app.press(K::End, cmd());
+        app.press_file_end();
         assert_eq!(drawn_line0(&mut app), "→   ab··c d·");
         run_command(&mut app, "View: Toggle Render Whitespace");
         assert_eq!(app.last_command, Some(Command::ToggleRenderWhitespace));
@@ -374,7 +374,7 @@ mod render_whitespace {
     async fn toggle_turns_all_on_when_the_setting_is_none() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _, _) = open_app(&dir, "render_whitespace = \"none\"\n", "", TEXT);
-        app.press(K::End, cmd());
+        app.press_file_end();
         assert_eq!(drawn_line0(&mut app), "    ab  c d ");
         app.test_execute(Command::ToggleRenderWhitespace);
         assert_eq!(drawn_line0(&mut app), "→   ab··c·d·");
@@ -387,7 +387,7 @@ mod render_whitespace {
         let dir = tempfile::tempdir().unwrap();
         let ws = "[settings]\nrender_whitespace = \"trailing\"\n";
         let (mut app, _, _) = open_app(&dir, "render_whitespace = \"none\"\n", ws, TEXT);
-        app.press(K::End, cmd());
+        app.press_file_end();
         assert_eq!(app.settings.render_whitespace, RenderWhitespace::Trailing);
         assert_eq!(drawn_line0(&mut app), "    ab  c d·");
     }
@@ -545,7 +545,7 @@ mod scroll_bars {
         let term = draw(&mut app);
         assert!(thumb(&app, &term).unwrap().0 > 0);
         // At the end: the thumb at the end of the track.
-        app.press(K::End, cmd());
+        app.press_file_end();
         let term = draw(&mut app);
         let (start, len) = thumb(&app, &term).unwrap();
         assert!(start + len < 22, "the last line isn't at the top yet");
@@ -555,14 +555,6 @@ mod scroll_bars {
         assert_eq!(top(&app), 200, "the last line at the top");
         let term = draw(&mut app);
         assert_eq!(thumb(&app, &term), Some((20, 2)));
-    }
-
-    fn cmd() -> M {
-        if cfg!(target_os = "macos") {
-            M::SUPER
-        } else {
-            M::CONTROL
-        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1529,7 +1521,7 @@ mod inline_blame {
     }
 
     fn go_to_line(app: &mut App, line: usize) {
-        app.press(K::Home, cmd());
+        app.press_file_start();
         for _ in 0..line {
             app.press(K::Down, M::NONE);
         }
@@ -3109,7 +3101,7 @@ mod revert_hunks {
         app.press(K::F(7), M::NONE);
         assert!(app.group().active_diff().unwrap().hunk_at_cursor().is_some());
         app.press(K::PageUp, M::CONTROL);
-        app.press(K::Home, cmd());
+        app.press_file_start();
         app.type_text("x");
         app.press(K::PageDown, M::CONTROL);
         assert!(app.group().active_diff().is_some());
@@ -3123,7 +3115,7 @@ mod revert_hunks {
             app.settle(|a| a.diffs_settled() && a.group().active_diff().unwrap().doc.as_ref().unwrap().hunks.len() == 4)
                 .await
         );
-        app.press(K::Home, cmd());
+        app.press_file_start();
         app.test_execute(Command::RevertHunk);
         assert_eq!(buffer_text(&app), changed, "line 0 back");
         assert_eq!(message(&app), "Reverted the change at line 1 of f.txt (not saved)");
@@ -3587,7 +3579,11 @@ mod back_forward {
                     .is_some_and(|p| p.rows.first().is_some_and(|r| r.label == "a.txt"))
             })
             .await;
-        assert!(listed);
+        let rows = app
+            .palette
+            .as_ref()
+            .map(|p| p.rows.iter().map(|r| r.label.clone()).collect::<Vec<_>>());
+        assert!(listed, "quick open lists a.txt: {rows:?}");
         app.press(K::Enter, M::NONE);
         assert_eq!(place(&app), at("a.txt", 4));
         assert_eq!(entries(&app), [e("a.txt", 0), e("a.txt", 2)]);
@@ -3635,9 +3631,9 @@ mod back_forward {
         let root = project(dir.path(), &[("a.txt", numbered("a", 4))]);
         let mut app = open_app(&root, "a.txt");
         app.press(K::Down, M::NONE);
-        app.press(K::End, cmd());
+        app.press_file_end();
         assert_eq!(place(&app), at("a.txt", 4));
-        app.press(K::Home, cmd());
+        app.press_file_start();
         assert_eq!(entries(&app), [e("a.txt", 1), e("a.txt", 4)]);
         back(&mut app);
         assert_eq!(place(&app), at("a.txt", 4));

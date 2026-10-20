@@ -1013,14 +1013,17 @@ async fn milestone_13_ctrl_r_picks_a_recent_workspace() {
         [root.clone(), spaced.clone(), second.clone()],
         "pruned"
     );
-    // Drawn: the folder name, then its path.
+    // Drawn: the folder name, then its path (its start: a long temp path, as macOS's, is cut).
     let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
     draw(&mut app, &mut term);
     let screen: String = term.backend().buffer().content().iter().map(|c| c.symbol()).collect();
-    assert!(screen.contains(&format!("other one  {}", show(&spaced))), "{screen}");
+    let path_start: String = show(&spaced).chars().take(30).collect();
+    assert!(screen.contains(&format!("other one  {path_start}")), "{screen}");
     // Fuzzy: type to filter, Enter picks; jed stays on its workspace and says how to open it.
     app.type_text("scnd");
-    assert_eq!(app.palette.as_ref().unwrap().rows.len(), 1);
+    // The best match first ("other one" may match too, by its path: macOS's temp paths are long
+    // and random).
+    assert_eq!(app.palette.as_ref().unwrap().rows[0].label, "second");
     app.press(KeyCode::Enter, KeyModifiers::NONE);
     assert!(app.palette.is_none() && app.recent.picker.is_none());
     let message = app.message.as_ref().unwrap().text.clone();
@@ -1243,7 +1246,7 @@ async fn milestone_13_done_when_quit_and_reopen_gives_back_the_same_screen() {
     // Group 2, right: README.md near its end, "Paragraph" and its next match selected with Cmd+D.
     app.press(KeyCode::Char('\\'), cmd());
     quick_open(&mut app, "README.md").await;
-    app.press(KeyCode::End, cmd());
+    app.press_file_end();
     app.press(KeyCode::Char('g'), KeyModifiers::CONTROL);
     app.type_text("101:3");
     app.press(KeyCode::Enter, KeyModifiers::NONE);

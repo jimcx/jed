@@ -158,11 +158,18 @@ async fn milestone_10_status_bar_and_explorer_follow_the_repository() {
         row.trim_end().ends_with("b.txt"),
         "no letter on an unchanged file: {row:?}"
     );
-    // Reading the status touches nothing the watcher reports: no refresh follows by itself.
+    // Reading the status writes nothing in `.git` that would start another read. (macOS's
+    // FSEvents may still report the setup's own writes late: those refresh, rightly.)
     let until = std::time::Instant::now() + std::time::Duration::from_millis(400);
-    app.settle(|a| a.git.running() || std::time::Instant::now() > until)
-        .await;
-    assert!(!app.git.running(), "a refresh started with nothing changed");
+    app.settle(|_| std::time::Instant::now() > until).await;
+    let repo = crate::git::Repo::discover(&root).unwrap();
+    let git_dir = root.join(".git");
+    let written: Vec<_> = app
+        .fs_flushed
+        .iter()
+        .filter(|p| p.starts_with(&git_dir) && repo.affects_status(p))
+        .collect();
+    assert!(written.is_empty(), "the status read wrote {written:?}");
 
     // Edits on disk, outside jed.
     fs::write(root.join("b.txt"), "b2\n").unwrap();
@@ -697,7 +704,7 @@ fn copy_repo(root: &Path, name: &str) -> PathBuf {
 }
 
 fn place_cursor(app: &mut App, line: usize) {
-    app.press(KeyCode::Home, cmd());
+    app.press_file_start();
     for _ in 0..line {
         app.press(KeyCode::Down, M::NONE);
     }

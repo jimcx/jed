@@ -115,7 +115,7 @@ struct State {
     /// Input written while starting, sent once the writer thread exists.
     queued: Vec<u8>,
     /// The process group (= the first process's pid), kept after reaping: background processes
-    /// it started may still hold the PTY (`reader_done` false), and dropping the run kills them.
+    /// it started may still be in it (`Shared::has_leftovers`), and dropping the run kills them.
     group: Option<i32>,
     /// A kill asked for before the process existed: `Some(force)`.
     kill_when_started: Option<bool>,
@@ -275,9 +275,8 @@ impl Shared {
                         let state = lock(&shared.state);
                         match (&state.status, state.pid, state.group) {
                             (Status::Running, Some(pid), _) => signal_group(pid, true),
-                            // The leader died of the SIGHUP, but processes it started ignored it
-                            // and still hold the terminal.
-                            (Status::Exited(_), _, Some(group)) if !shared.reader_done.load(Ordering::Acquire) => {
+                            // The leader died of the SIGHUP, but processes it started ignored it.
+                            (Status::Exited(_), _, Some(group)) if shared.has_leftovers(group) => {
                                 signal_group(group, true)
                             }
                             _ => {}
@@ -285,14 +284,25 @@ impl Shared {
                     });
                 }
             }
-            // Leftovers in its group still writing to the PTY.
-            Status::Exited(_) if !self.reader_done.load(Ordering::Acquire) => {
-                if let Some(group) = state.group {
+            // Leftovers in its group.
+            Status::Exited(_) => {
+                if let Some(group) = state.group
+                    && self.has_leftovers(group)
+                {
                     signal_group(group, true);
                 }
             }
-            Status::Exited(_) | Status::Failed(_) => {}
+            Status::Failed(_) => {}
         }
+    }
+
+    /// Processes the ended leader started are still in its group `group`. On Linux they hold the
+    /// PTY open, so the reader hasn't seen its end. macOS revokes the terminal when the session
+    /// leader exits (the reader ends at once), so there they're looked for: members of the group
+    /// in the session the leader made (its id = the group's), which a reused pid can't be unless
+    /// it wrapped around and leads a session of its own.
+    fn has_leftovers(&self, group: i32) -> bool {
+        !self.reader_done.load(Ordering::Acquire) || (cfg!(target_os = "macos") && session_members(group))
     }
 
     fn fail(&self, message: String, sink: &Sink) {
@@ -321,6 +331,26 @@ fn signal_group(pid: i32, force: bool) {
     }
 }
 
+/// Some process is in the group `group` and the session of the same id.
+#[cfg(target_os = "macos")]
+fn session_members(group: i32) -> bool {
+    // <libproc.h>'s PROC_PGRP_ONLY: the pids in one process group.
+    const PROC_PGRP_ONLY: u32 = 2;
+    let mut pids = [0 as libc::pid_t; 64];
+    let size = std::mem::size_of_val(&pids) as libc::c_int;
+    // SAFETY: the buffer and its size in bytes match; getsid only reads.
+    unsafe {
+        let bytes = libc::proc_listpids(PROC_PGRP_ONLY, group as u32, pids.as_mut_ptr().cast(), size);
+        let n = (bytes.max(0) as usize / std::mem::size_of::<libc::pid_t>()).min(pids.len());
+        pids[..n].iter().any(|&pid| pid > 0 && libc::getsid(pid) == group)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn session_members(_group: i32) -> bool {
+    false
+}
+
 fn pty_size(rows: u16, cols: u16) -> PtySize {
     PtySize {
         rows,
@@ -336,6 +366,11 @@ fn spawn(shared: Arc<Shared>, spec: Spec, sink: Sink) {
         return shared.fail(format!("{}: no such folder", spec.cwd.display()), &sink);
     }
     let (rows, cols) = lock(&shared.parser).screen().size();
+    // One PTY opened and spawned at a time: macOS's `openpty` isn't thread-safe (its `ptsname`
+    // is a static buffer: concurrent starts failed), and portable-pty marks the new fds
+    // close-on-exec only after it, so another run's fork in between would inherit this slave.
+    static OPENING: Mutex<()> = Mutex::new(());
+    let opening = lock(&OPENING);
     let pair = match portable_pty::native_pty_system().openpty(pty_size(rows, cols)) {
         Ok(p) => p,
         Err(e) => return shared.fail(format!("can't open a terminal: {e}"), &sink),
@@ -360,6 +395,7 @@ fn spawn(shared: Arc<Shared>, spec: Spec, sink: Sink) {
     };
     // Our copy of the slave side must go, or the reader never sees the end of output.
     drop(pair.slave);
+    drop(opening);
     let Some(pid) = child.process_id().map(|p| p as i32) else {
         return shared.fail("no process id".into(), &sink);
     };

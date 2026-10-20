@@ -405,16 +405,18 @@ async fn milestone_8_typing_in_a_one_mb_cpp_file() {
     assert!(app.settle(parsed).await);
     assert_tree_current(&app);
 
-    // `/*` at the top comments out the whole file: too slow for the UI thread, so the re-parse
-    // stops and finishes in the background.
-    app.press(K::Home, cmd());
+    // `/*` at the top comments out the whole file: the UI thread gives up on the re-parse after
+    // `INLINE_TIME` and it finishes in the background. A fast machine lexes the one big comment
+    // within that time, so the tree may already be current: either way the key stays quick.
+    app.press_file_start();
     let t = Instant::now();
     app.type_text("/*");
     app.pump();
     term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
     let comment = t.elapsed();
-    println!("typing /* at the top: {comment:?}");
-    assert!(!parsed(&app), "re-parsing in the background");
+    let at_once = parsed(&app);
+    println!("typing /* at the top: {comment:?} (re-parsed on the UI thread: {at_once})");
+    assert!(comment < KEYSTROKE_DEBUG_BOUND, "/* took {comment:?}");
     assert!(app.settle(parsed).await);
     assert_tree_current(&app);
     app.press(K::Char('z'), cmd());
@@ -597,7 +599,7 @@ async fn milestone_8_highlighting() {
 
     // An unclosed `/*` at the top (tree-sitter's error recovery doesn't make it a comment), then
     // closed further down: the text between is a comment.
-    app.press(K::Home, cmd());
+    app.press_file_start();
     app.type_text("/*");
     app.pump();
     draw(&mut term, &mut app);
@@ -758,7 +760,7 @@ async fn milestone_8_highlighted_one_mb_cpp_file_frames() {
     );
 
     // Paging down from the top (each page a new highlight query past the margin).
-    app.press(K::Home, cmd());
+    app.press_file_start();
     app.pump();
     draw(&mut term, &mut app);
     let mut worst_page = Duration::ZERO;
@@ -1204,14 +1206,17 @@ fn bg_of(term: &Terminal<TestBackend>, needle: &str, offset: u16) -> Option<rata
     Some(term.backend().buffer()[(x + offset, y)].bg)
 }
 
-/// How many cells on screen have the bracket highlight's background.
+/// How many cells of the editors' text have the bracket highlight's background. Only the text:
+/// without truecolor a scroll bar's thumb is the same grey (the explorer's, once it lists more
+/// files than fit).
 fn bracket_cells(term: &Terminal<TestBackend>, app: &App) -> usize {
     let want = app.theme.get("editor.bracketMatch").bg.unwrap();
-    term.backend()
-        .buffer()
-        .content()
+    let buf = term.backend().buffer();
+    app.hits
+        .groups
         .iter()
-        .filter(|c| c.bg == want)
+        .flat_map(|g| g.text.positions())
+        .filter(|&p| buf[p].bg == want)
         .count()
 }
 
@@ -1267,7 +1272,7 @@ async fn milestone_8_auto_indent_cpp_and_python() {
         "def f(x):\n    if x:  # yes\n        return 1\n    y = 2\n    else:"
     );
     let (mut app, _) = open_app(&dir, "", "b.py", "def f(x):\n    if x:\n        y = 1\n");
-    app.press(K::End, cmd());
+    app.press_file_end();
     app.type_text("        else:");
     assert_eq!(text(&app), "def f(x):\n    if x:\n        y = 1\n    else:");
 }

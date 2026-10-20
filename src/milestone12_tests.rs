@@ -266,7 +266,10 @@ cwd = "missing"
         let plain = screen.cell(0, 3).unwrap();
         assert_eq!(plain.fgcolor(), vt100::Color::Default);
         assert!(!plain.bold());
-        assert_eq!(screen.cell(1, 0).unwrap().fgcolor(), vt100::Color::Rgb(255, 128, 0));
+        // The first line wraps when the temp path is long (macOS's are).
+        let (_, cols) = screen.size();
+        let rgb = screen.rows(0, cols).position(|r| r.starts_with("rgb")).unwrap() as u16;
+        assert_eq!(screen.cell(rgb, 0).unwrap().fgcolor(), vt100::Color::Rgb(255, 128, 0));
     }
 
     let id = app.run_task("nowhere").unwrap();
@@ -437,7 +440,7 @@ command = "echo serving; sleep 30"
 command = "seq 1 100"
 
 [tasks.modes]
-command = '''seq 1 50; printf '\033[?1h\033[?2004h'; echo ready; read -r a; read -r b; printf '%s|' "$a" "$b" | od -An -tx1'''
+command = '''seq 1 50; printf '\033[?1h\033[?2004h'; echo ready; read -r a; read -r b; printf '%s|' "$a" "$b" | od -An -tx1 | tr -s " "'''
 
 [tasks.winch]
 # zsh runs no WINCH trap: counted in sh.
