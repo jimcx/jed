@@ -21,8 +21,12 @@
 //! - Results go back in `Batch`es of whole files (at most every `BATCH_INTERVAL`), in no
 //!   particular order; `Results` keeps files sorted by path. The search stops at `MAX_MATCHES`
 //!   (VS Code's cap) with `truncated` set, or when its `Handle` is cancelled or dropped.
+//! - What the Search view does to its results lives in `Results` until the next search (a new
+//!   `Results`): files collapsed (`FileMatches::collapsed`), and matches and files dismissed —
+//!   taken out of `files` and `total`, and recorded in `dismissed` so a file sent again stays
+//!   without them (and Replace All, which re-searches files, can leave them alone).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io;
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
@@ -92,12 +96,31 @@ pub struct FileMatches {
     /// Relative to the workspace root.
     pub path: PathBuf,
     pub lines: Vec<LineMatch>,
+    /// The Search view shows only the file's row (its chevron, Left / Right, Collapse All).
+    pub collapsed: bool,
 }
 
 impl FileMatches {
+    pub fn new(path: PathBuf, lines: Vec<LineMatch>) -> Self {
+        Self {
+            path,
+            lines,
+            collapsed: false,
+        }
+    }
+
     pub fn count(&self) -> usize {
         self.lines.iter().map(|l| l.ranges.len()).sum()
     }
+}
+
+/// What was dismissed from one file's results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dismissed {
+    /// The whole file.
+    File,
+    /// These lines (0-based, as `LineMatch::line`), with every match on them.
+    Lines(BTreeSet<usize>),
 }
 
 /// Results streamed back from a running search.
@@ -123,6 +146,11 @@ pub struct Results {
     pub total: usize,
     pub truncated: bool,
     pub done: bool,
+    /// Files and lines dismissed (by path): out of `files` and `total`, and left out of a file
+    /// sent again.
+    pub dismissed: HashMap<PathBuf, Dismissed>,
+    /// "Collapse All" was the last of Collapse / Expand All: files arriving later come collapsed.
+    pub collapse_new: bool,
 }
 
 impl Results {
@@ -139,7 +167,18 @@ impl Results {
         if batch.generation != self.generation || self.done {
             return false;
         }
-        for f in batch.files {
+        for mut f in batch.files {
+            match self.dismissed.get(&f.path) {
+                Some(Dismissed::File) => continue,
+                Some(Dismissed::Lines(lines)) => {
+                    f.lines.retain(|l| !lines.contains(&l.line));
+                    if f.lines.is_empty() {
+                        continue;
+                    }
+                }
+                None => {}
+            }
+            f.collapsed = self.collapse_new;
             self.total += f.count();
             match self.files.binary_search_by(|g| g.path.cmp(&f.path)) {
                 Ok(i) => {
@@ -152,6 +191,55 @@ impl Results {
         self.truncated |= batch.truncated;
         self.done |= batch.done;
         true
+    }
+
+    /// The file at `path`, by binary search.
+    pub fn file_index(&self, path: &Path) -> Option<usize> {
+        self.files.binary_search_by(|f| f.path.as_path().cmp(path)).ok()
+    }
+
+    /// Dismisses the file at `path`: out of the results until the next search.
+    pub fn dismiss_file(&mut self, path: &Path) {
+        if let Some(i) = self.file_index(path) {
+            let f = self.files.remove(i);
+            self.total -= f.count();
+            self.dismissed.insert(f.path, Dismissed::File);
+        }
+    }
+
+    /// Dismisses the `index`-th matching line of the file at `path` (every match on it); the
+    /// last one dismisses the file. True when the file went with it.
+    pub fn dismiss_line(&mut self, path: &Path, index: usize) -> bool {
+        let Some(i) = self.file_index(path) else { return false };
+        let n = self.files[i].lines.len();
+        if index >= n {
+            return false;
+        }
+        if n == 1 {
+            self.dismiss_file(path);
+            return true;
+        }
+        let l = self.files[i].lines.remove(index);
+        self.total -= l.ranges.len();
+        match self
+            .dismissed
+            .entry(path.to_path_buf())
+            .or_insert_with(|| Dismissed::Lines(BTreeSet::new()))
+        {
+            Dismissed::Lines(lines) => {
+                lines.insert(l.line);
+            }
+            Dismissed::File => {}
+        }
+        false
+    }
+
+    /// Collapses or expands every file, and those arriving later.
+    pub fn collapse_all(&mut self, collapse: bool) {
+        self.collapse_new = collapse;
+        for f in &mut self.files {
+            f.collapsed = collapse;
+        }
     }
 }
 
@@ -260,7 +348,7 @@ impl Shared<'_> {
         }
         self.matched_files.fetch_add(1, Ordering::Relaxed);
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        pending.0.push(FileMatches { path, lines });
+        pending.0.push(FileMatches::new(path, lines));
         if pending.1.elapsed() >= BATCH_INTERVAL {
             pending.1 = Instant::now();
             // Sent under the lock, so batches go out in the order they were taken.
@@ -733,12 +821,95 @@ mod tests {
         assert_eq!(r.files[1].lines[0].text, "fn Foo_bar() {}");
         assert_eq!(r.total, 2);
         assert!(!r.truncated);
-        // Whole word works too (no toggle yet, but the option is the find widget's).
+        // Whole word (the Search view's `ab` toggle; the matcher's rule, shared with find).
         let ww = search::Options {
             whole_word: true,
             ..PLAIN
         };
         assert_eq!(hits(&search(&root, "foo", ww)).len(), 4);
+    }
+
+    /// Whole word means the same on every path a file can take: `grep-searcher` (LF, CRLF), the
+    /// rope (a lone CR) and an unsaved buffer's text, regex or not.
+    #[test]
+    fn whole_word_on_every_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = root_of(&dir);
+        let text = "foo foobar\nbarfoo foo_x (foo)\n";
+        write(&root, "lf.txt", text);
+        write(&root, "crlf.txt", text.replace('\n', "\r\n"));
+        write(&root, "cr.txt", text.replace('\n', "\r"));
+        write(&root, "dirty.txt", "nothing\n");
+        let dirty = vec![(PathBuf::from("dirty.txt"), Rope::from_str(text))];
+        for regex in [false, true] {
+            let ww = search::Options {
+                whole_word: true,
+                regex,
+                case_sensitive: false,
+            };
+            let (r, _) = search_with(&root, "foo", ww, &[], dirty.clone());
+            let want: Vec<String> = ["cr", "crlf", "dirty", "lf"]
+                .iter()
+                .flat_map(|f| [format!("{f}.txt:1:0-3"), format!("{f}.txt:2:14-17")])
+                .collect();
+            assert_eq!(hits(&r), want, "regex {regex}");
+        }
+    }
+
+    /// Dismissed lines and files leave `files` and `total`, and stay out of a file sent again;
+    /// the last line takes its file; Collapse All covers files arriving later.
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn dismissing_and_collapsing() {
+        let file = |path: &str, lines: &[usize]| {
+            FileMatches::new(
+                path.into(),
+                lines
+                    .iter()
+                    .map(|&n| LineMatch {
+                        line: n,
+                        ranges: vec![0..1, 2..3],
+                        text: "x x".into(),
+                        text_start: 0,
+                    })
+                    .collect(),
+            )
+        };
+        let batch = |files| Batch {
+            generation: 1,
+            files,
+            done: false,
+            truncated: false,
+        };
+        let mut r = Results::new(1, Query::default());
+        r.add(batch(vec![file("a", &[0, 4, 9]), file("b", &[1]), file("c", &[2])]));
+        assert_eq!(r.total, 10);
+        assert!(!r.dismiss_line(Path::new("a"), 1));
+        assert_eq!(r.files[0].lines.iter().map(|l| l.line).collect::<Vec<_>>(), [0, 9]);
+        assert_eq!((r.total, r.files[0].count()), (8, 4));
+        assert!(!r.dismiss_line(Path::new("a"), 5), "no such line");
+        assert!(r.dismiss_line(Path::new("b"), 0), "its only line: the file goes");
+        r.dismiss_file(Path::new("c"));
+        assert_eq!(files(&r), ["a"]);
+        assert_eq!(r.total, 4);
+        // Sent again (as a file can't be in one search, but `add` replaces): still without them.
+        r.add(batch(vec![file("a", &[0, 4, 9]), file("b", &[1]), file("c", &[2])]));
+        assert_eq!(files(&r), ["a"]);
+        assert_eq!((r.total, r.files[0].lines.len()), (4, 2));
+        assert_eq!(
+            r.dismissed.get(Path::new("a")),
+            Some(&Dismissed::Lines([4].into_iter().collect()))
+        );
+        assert_eq!(r.dismissed.get(Path::new("c")), Some(&Dismissed::File));
+
+        r.collapse_all(true);
+        assert!(r.files[0].collapsed);
+        r.add(batch(vec![file("d", &[0])]));
+        assert!(r.files[1].collapsed, "arrives collapsed");
+        r.collapse_all(false);
+        r.add(batch(vec![file("e", &[0])]));
+        assert!(r.files.iter().all(|f| !f.collapsed));
+        assert_eq!(r.file_index(Path::new("e")), Some(2));
     }
 
     #[test]
@@ -1064,6 +1235,7 @@ mod tests {
                     text: "x".into(),
                     text_start: 0,
                 }],
+                collapsed: false,
             }],
             done,
             truncated: false,

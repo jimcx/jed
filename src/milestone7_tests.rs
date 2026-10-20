@@ -467,9 +467,9 @@ mod view {
         settled(&mut app).await;
         assert_eq!(total(&app), 3);
         assert_eq!(app.ui.focus, Focus::SidePanel);
-        // Whole word isn't a Search view option (v1): its key does nothing there.
+        // Whole word is the Search view's own too (the Search and replace milestone).
         app.press(K::Char('w'), toggle());
-        assert!(!app.search_view.options.whole_word && !app.find_options.whole_word);
+        assert!(app.search_view.options.whole_word && !app.find_options.whole_word);
         assert_eq!(app.search_view.query.text, "NE..LE");
     }
 
@@ -1172,6 +1172,7 @@ mod navigate {
                     text: "needle in m".into(),
                     text_start: 0,
                 }],
+                collapsed: false,
             }],
             done: false,
             truncated: false,
@@ -1182,7 +1183,7 @@ mod navigate {
         settled(&mut app).await;
         assert_eq!(app.search.as_ref().unwrap().total, 4);
         assert_eq!(selected_row(&app), Some(3), "a.txt's rows came in above");
-        let r = app.search.as_ref().unwrap();
+        let r = app.search.as_mut().unwrap();
         let t = app.search_view.target(r).unwrap();
         assert_eq!((t.path.to_str(), t.line, t.range), (Some("m.txt"), 4, 0..6));
         draw(&mut term, &mut app);

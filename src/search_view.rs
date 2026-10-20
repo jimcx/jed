@@ -3,8 +3,8 @@
 //! regex, and the results list's scroll position. The results themselves are `App::search`
 //! (`workspace_search::Results`).
 //!
-//! - The options are the view's own (VS Code keeps the Search view's apart from the find
-//!   widget's). Only case and regex: whole word is later (PLAN.md), so it stays off.
+//! - The options (case, whole word, regex) are the view's own (VS Code keeps the Search view's
+//!   apart from the find widget's); each means what it means in find (`search::Matcher`).
 //! - Typing schedules a search `DEBOUNCE` after the last edit (`edited`); the event loop calls
 //!   `take_due` when the deadline passes. Times are passed in, so tests need no clock.
 //! - The list scrolls by rows: each file is a row followed by one row per matching line. The top
@@ -20,6 +20,13 @@
 //!   while the list doesn't; Tab / Shift+Tab go query → include → exclude → list → query
 //!   (`cycle`: hidden inputs and an empty list left out). Edits to them are debounced like the
 //!   query's.
+//! - A file row collapses / expands (`set_collapsed`, `collapse_all`, `collapse_key`: the flag
+//!   lives on the results' `FileMatches`, so a new search shows everything again); a collapsed
+//!   file is a single row, and a selection or top row inside it moves to that row. F4 /
+//!   Shift+F4 step into a collapsed file and expand it (VS Code's `selectNextMatch`).
+//!   `dismiss` takes a line or a file out of the results (`Results::dismiss_line` /
+//!   `dismiss_file`); a selection on it moves to the row that takes its place.
+//! - `hover` is the results row under the pointer (its `×` dismiss button is drawn).
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -59,7 +66,7 @@ pub struct SearchView {
     pub details: bool,
     /// The input that has the keys while the list doesn't.
     pub input: Input,
-    /// Case and regex (whole word stays off in v1).
+    /// Case, whole word and regex.
     pub options: Options,
     /// The query is an invalid regex: shown under the input, nothing runs.
     pub error: Option<SearchError>,
@@ -71,6 +78,8 @@ pub struct SearchView {
     selected_match: usize,
     /// The results list (not the query input) has the keys (context `searchResults`).
     pub list_focused: bool,
+    /// The results row under the pointer (its dismiss button shows).
+    pub hover: Option<RowKey>,
 }
 
 impl Group for FileMatches {
@@ -78,7 +87,7 @@ impl Group for FileMatches {
         &self.path
     }
     fn items(&self) -> usize {
-        self.lines.len()
+        if self.collapsed { 0 } else { self.lines.len() }
     }
 }
 
@@ -256,104 +265,145 @@ impl SearchView {
     }
 
     /// The match Enter opens: the selected line's (its match F4 is on), or a file row's first
-    /// (which becomes the selection).
-    pub fn target(&mut self, results: &Results) -> Option<Target> {
+    /// (which becomes the selection, its file expanded).
+    pub fn target(&mut self, results: &mut Results) -> Option<Target> {
         let (path, offset) = self.list.selected()?.clone();
-        let m = self.selected_match;
-        let (_, f) = grouped::group(&results.files, &path)?;
-        let at = Pos {
-            file: f,
-            line: offset.max(1).min(f.lines.len()) - 1,
-            m,
-        };
-        Some(self.go(results, at))
+        let i = results.file_index(&path)?;
+        let line = offset.max(1).min(results.files[i].lines.len()) - 1;
+        Some(self.go(results, i, line, self.selected_match))
     }
 
     /// F4 (`forward`) / Shift+F4: the match after / before the selected one, wrapping around the
-    /// list, which becomes the selection. From a file row, forward is the file's first match and
-    /// back is the previous file's last; with nothing selected, the first or the last match.
-    pub fn step(&mut self, results: &Results, forward: bool) -> Option<Target> {
+    /// list, which becomes the selection (a collapsed file stepped into is expanded). From a file
+    /// row, forward is the file's first match and back is the previous file's last; with nothing
+    /// selected, the first or the last match.
+    pub fn step(&mut self, results: &mut Results, forward: bool) -> Option<Target> {
         let files = &results.files;
         let n = files.len();
-        let first = |i: usize| Pos {
-            file: &files[i % n],
-            line: 0,
-            m: 0,
-        };
-        let last = |i: usize| {
-            let file = &files[(i + n - 1) % n];
-            let line = file.lines.len() - 1;
-            Pos {
-                file,
-                line,
-                m: file.lines[line].ranges.len() - 1,
-            }
-        };
         if n == 0 {
             return None;
         }
+        // (file, line, match) indexes.
+        let first = |i: usize| (i % n, 0, 0);
+        let last = |i: usize| {
+            let f = (i + n - 1) % n;
+            let line = files[f].lines.len() - 1;
+            (f, line, files[f].lines[line].ranges.len() - 1)
+        };
         let current = self.list.selected().and_then(|(path, offset)| {
             let (i, _) = grouped::group(files, path)?;
             Some((i, *offset, self.selected_match))
         });
-        let at = match current {
+        let (f, line, m) = match current {
             None if forward => first(0),
             None => last(0),
             Some((i, 0, _)) if forward => first(i),
             Some((i, 0, _)) => last(i),
             Some((i, offset, m)) => {
-                let file = &files[i];
-                let line = offset.min(file.lines.len()) - 1;
-                let count = file.lines[line].ranges.len();
+                let lines = &files[i].lines;
+                let line = offset.min(lines.len()) - 1;
+                let count = lines[line].ranges.len();
                 let m = m.min(count - 1);
                 if forward {
                     if m + 1 < count {
-                        Pos { file, line, m: m + 1 }
-                    } else if line + 1 < file.lines.len() {
-                        Pos {
-                            file,
-                            line: line + 1,
-                            m: 0,
-                        }
+                        (i, line, m + 1)
+                    } else if line + 1 < lines.len() {
+                        (i, line + 1, 0)
                     } else {
                         first(i + 1)
                     }
                 } else if m > 0 {
-                    Pos { file, line, m: m - 1 }
+                    (i, line, m - 1)
                 } else if line > 0 {
-                    Pos {
-                        file,
-                        line: line - 1,
-                        m: file.lines[line - 1].ranges.len() - 1,
-                    }
+                    (i, line - 1, lines[line - 1].ranges.len() - 1)
                 } else {
                     last(i)
                 }
             }
         };
-        Some(self.go(results, at))
+        Some(self.go(results, f, line, m))
     }
 
-    /// Selects the match at `at` (scrolled into view) and says where it is.
-    fn go(&mut self, results: &Results, at: Pos) -> Target {
-        let l = &at.file.lines[at.line];
-        let m = at.m.min(l.ranges.len() - 1);
-        self.list
-            .select_key(&results.files, &(at.file.path.clone(), at.line + 1));
-        self.selected_match = m;
-        Target {
-            path: at.file.path.clone(),
+    /// Selects match `m` of line `line` of file `f` (expanded, scrolled into view) and says
+    /// where it is.
+    fn go(&mut self, results: &mut Results, f: usize, line: usize, m: usize) -> Target {
+        let file = &mut results.files[f];
+        file.collapsed = false;
+        let key = (file.path.clone(), line + 1);
+        let l = &file.lines[line];
+        let m = m.min(l.ranges.len() - 1);
+        let target = Target {
+            path: file.path.clone(),
             line: l.line,
             range: l.ranges[m].clone(),
+        };
+        self.list.select_key(&results.files, &key);
+        self.selected_match = m;
+        target
+    }
+
+    /// Collapses (`collapse`) or expands the file at `path`; collapsing moves a selection or top
+    /// row inside it to its file row.
+    pub fn set_collapsed(&mut self, results: &mut Results, path: &Path, collapse: bool) {
+        let Some(i) = results.file_index(path) else { return };
+        results.files[i].collapsed = collapse;
+        if collapse && self.list.fold(Some(path)) {
+            self.selected_match = 0;
+        }
+        self.list.clamp(&results.files);
+    }
+
+    /// Collapse All / Expand All (files arriving later too).
+    pub fn collapse_all(&mut self, results: &mut Results, collapse: bool) {
+        results.collapse_all(collapse);
+        if collapse && self.list.fold(None) {
+            self.selected_match = 0;
+        }
+        self.list.clamp(&results.files);
+    }
+
+    /// Left (`collapse`) / Right in the list: on a file row, collapses / expands it, or when
+    /// it's already so, Right goes to its first line; Left on a line goes to its file's row.
+    pub fn collapse_key(&mut self, results: &mut Results, collapse: bool) {
+        let Some((path, offset)) = self.list.selected().cloned() else {
+            return;
+        };
+        let Some(i) = results.file_index(&path) else { return };
+        let collapsed = results.files[i].collapsed;
+        match (offset, collapse) {
+            (0, true) if !collapsed => self.set_collapsed(results, &path, true),
+            (0, false) if collapsed => self.set_collapsed(results, &path, false),
+            (0, false) => self.select_key(results, &(path, 1)),
+            (_, true) => self.select_key(results, &(path, 0)),
+            _ => {}
         }
     }
-}
 
-/// A match in the results: file, index into its lines, index into the line's ranges.
-struct Pos<'a> {
-    file: &'a FileMatches,
-    line: usize,
-    m: usize,
+    /// Dismisses the row `key` names: a line (every match on it; its file's last line takes the
+    /// file too) or a file (a collapsed file's every row is its file). A selection on it moves
+    /// to the row that takes its place.
+    pub fn dismiss(&mut self, results: &mut Results, key: &RowKey) {
+        let Ok(row) = grouped::index_of(&results.files, key) else {
+            return;
+        };
+        let Some(i) = results.file_index(&key.0) else { return };
+        // Clamped as `index_of` clamps it: a collapsed file's rows are its own.
+        let line = key.1.min(grouped::Group::items(&results.files[i]));
+        let file_row = row - line;
+        let path = key.0.clone();
+        let gone = if line == 0 || results.dismiss_line(&path, line - 1) {
+            if line == 0 {
+                results.dismiss_file(&path);
+            }
+            (path, 0)
+        } else {
+            (path, line)
+        };
+        let at = if gone.1 == 0 { file_row } else { row };
+        if self.list.removed(&results.files, &gone, at) {
+            self.selected_match = 0;
+        }
+    }
 }
 
 /// Up to `n` rows starting at row `from` (only those are looked at past the files skipped).
@@ -423,6 +473,7 @@ pub fn preview(m: &LineMatch, width: usize) -> Preview<'_> {
 #[allow(clippy::single_range_in_vec_init)]
 mod tests {
     use super::*;
+    use crate::workspace_search::Batch;
 
     fn line(text: &str, ranges: Vec<Range<usize>>) -> LineMatch {
         LineMatch {
@@ -444,12 +495,17 @@ mod tests {
                         ..line("x", vec![0..1])
                     })
                     .collect(),
+                collapsed: false,
             })
             .collect();
-        Results {
+        let mut r = Results::default();
+        r.add(Batch {
+            generation: 0,
             files,
-            ..Results::default()
-        }
+            done: false,
+            truncated: false,
+        });
+        r
     }
 
     fn with_height(height: usize) -> SearchView {
@@ -593,8 +649,9 @@ mod tests {
                     ..line("x", ranges)
                 })
                 .collect(),
+            collapsed: false,
         };
-        let r = Results {
+        let mut r = Results {
             files: vec![
                 file("a", vec![(3, vec![0..1, 4..6])]),
                 file("b", vec![(0, vec![2..3]), (7, vec![1..2])]),
@@ -608,36 +665,127 @@ mod tests {
         };
         let all = [t("a", 3, 0..1), t("a", 3, 4..6), t("b", 0, 2..3), t("b", 7, 1..2)];
         let mut v = with_height(10);
-        assert!(v.target(&r).is_none(), "nothing selected");
+        assert!(v.target(&mut r).is_none(), "nothing selected");
         for want in all.iter().chain(&all[..1]) {
-            assert_eq!(v.step(&r, true).as_ref(), Some(want));
+            assert_eq!(v.step(&mut r, true).as_ref(), Some(want));
         }
         assert_eq!(v.selected_row(&r), Some(1));
-        assert_eq!(v.target(&r), Some(all[0].clone()), "Enter opens the match F4 is on");
+        assert_eq!(v.target(&mut r), Some(all[0].clone()), "Enter opens the match F4 is on");
         // Selecting a row (a click) starts again from its first match.
-        assert_eq!(v.step(&r, true), Some(all[1].clone()));
+        assert_eq!(v.step(&mut r, true), Some(all[1].clone()));
         v.select_key(&r, &(PathBuf::from("a"), 1));
-        assert_eq!(v.target(&r), Some(all[0].clone()), "the line's first match again");
-        assert_eq!(v.step(&r, false), Some(all[3].clone()), "back wraps to the last");
+        assert_eq!(v.target(&mut r), Some(all[0].clone()), "the line's first match again");
+        assert_eq!(v.step(&mut r, false), Some(all[3].clone()), "back wraps to the last");
         for want in all.iter().rev().skip(1) {
-            assert_eq!(v.step(&r, false).as_ref(), Some(want));
+            assert_eq!(v.step(&mut r, false).as_ref(), Some(want));
         }
         v.started();
-        assert_eq!(v.step(&r, false), Some(all[3].clone()), "nothing selected: the last");
+        assert_eq!(
+            v.step(&mut r, false),
+            Some(all[3].clone()),
+            "nothing selected: the last"
+        );
 
         // From b's file row: forward is its first match, back the previous file's last.
         v.select(&r, 2);
-        assert_eq!(v.step(&r, true), Some(all[2].clone()));
+        assert_eq!(v.step(&mut r, true), Some(all[2].clone()));
         v.select(&r, 2);
-        assert_eq!(v.step(&r, false), Some(all[1].clone()));
+        assert_eq!(v.step(&mut r, false), Some(all[1].clone()));
         v.select(&r, 2);
-        assert_eq!(v.target(&r), Some(all[2].clone()));
+        assert_eq!(v.target(&mut r), Some(all[2].clone()));
         assert_eq!(v.selected_row(&r), Some(3), "the match row is selected");
         // Stepping keeps the selection on screen.
         v.list.height = 1;
-        v.step(&r, true);
+        v.step(&mut r, true);
         assert_eq!(v.scroll(&r), 4);
-        assert!(v.step(&Results::default(), true).is_none());
+        assert!(v.step(&mut Results::default(), true).is_none());
+    }
+
+    /// A collapsed file is one row (keys inside it fold to it); Left / Right collapse, expand
+    /// and move between a file and its lines; F4 / Shift+F4 step into a collapsed file and
+    /// expand it; Collapse All covers every file.
+    #[test]
+    fn collapsing_files() {
+        let mut r = results(&[("a", 2), ("b", 3), ("c", 1)]);
+        let mut v = with_height(20);
+        let key = |p: &str, k: usize| (PathBuf::from(p), k);
+        v.select_key(&r, &key("b", 2));
+        v.set_collapsed(&mut r, Path::new("b"), true);
+        assert_eq!(grouped::row_count(&r.files), 3 + 1 + 2);
+        assert_eq!(v.list.selected(), Some(&key("b", 0)), "folded to its row");
+        assert_eq!(v.selected_row(&r), Some(3));
+        v.collapse_key(&mut r, false);
+        assert!(!r.files[1].collapsed, "Right expands");
+        v.collapse_key(&mut r, false);
+        assert_eq!(v.list.selected(), Some(&key("b", 1)), "Right again: its first line");
+        v.collapse_key(&mut r, true);
+        assert_eq!(v.list.selected(), Some(&key("b", 0)), "Left on a line: its file");
+        v.collapse_key(&mut r, true);
+        assert!(r.files[1].collapsed, "Left collapses");
+        v.collapse_key(&mut r, true);
+        assert!(r.files[1].collapsed && v.list.selected() == Some(&key("b", 0)), "stays");
+
+        // F4 from b's row steps into it, expanding it; Shift+F4 from c into a collapsed b
+        // lands on its last match.
+        let t = v.step(&mut r, true).unwrap();
+        assert_eq!((t.path, t.line), (PathBuf::from("b"), 0));
+        assert!(!r.files[1].collapsed);
+        v.set_collapsed(&mut r, Path::new("b"), true);
+        v.select_key(&r, &key("c", 1));
+        let t = v.step(&mut r, false).unwrap();
+        assert_eq!((t.path, t.line), (PathBuf::from("b"), 2));
+        assert_eq!(v.list.selected(), Some(&key("b", 3)));
+        // Enter on a collapsed file's row opens its first match, expanding it.
+        v.set_collapsed(&mut r, Path::new("b"), true);
+        assert_eq!(v.list.selected(), Some(&key("b", 0)));
+        assert_eq!(v.target(&mut r).map(|t| t.line), Some(0));
+        assert!(!r.files[1].collapsed);
+
+        v.collapse_all(&mut r, true);
+        assert_eq!(grouped::row_count(&r.files), 3);
+        assert_eq!(v.list.selected(), Some(&key("b", 0)));
+        v.collapse_all(&mut r, false);
+        assert_eq!(grouped::row_count(&r.files), 9);
+    }
+
+    /// Dismissing a line or a file: counts drop, a selection on it moves to the row in its
+    /// place, one below it keeps what it showed, F4 never visits what's gone.
+    #[test]
+    fn dismissing_rows() {
+        let mut r = results(&[("a", 3), ("b", 1), ("c", 2)]);
+        let mut v = with_height(20);
+        let key = |p: &str, k: usize| (PathBuf::from(p), k);
+        v.select_key(&r, &key("a", 3));
+        v.dismiss(&mut r, &key("a", 1));
+        assert_eq!(r.total, 5);
+        assert_eq!(
+            v.list.selected(),
+            Some(&key("a", 2)),
+            "still on line 2 (now a's second)"
+        );
+        assert_eq!(r.files[0].lines[1].line, 2);
+        v.dismiss(&mut r, &key("a", 2));
+        assert_eq!(v.list.selected(), Some(&key("b", 0)), "the row in its place");
+        // b's only line: b goes, the selection on its row moves to c's.
+        v.select_key(&r, &key("b", 1));
+        v.dismiss(&mut r, &key("b", 1));
+        assert_eq!(r.files.len(), 2);
+        assert_eq!(v.list.selected(), Some(&key("c", 0)));
+        // A collapsed file's row dismisses the file.
+        v.set_collapsed(&mut r, Path::new("a"), true);
+        let t = v.step(&mut r, false).unwrap();
+        assert_eq!(t.path, PathBuf::from("a"), "back from c's row: a's last match");
+        v.set_collapsed(&mut r, Path::new("a"), true);
+        v.dismiss(&mut r, &key("a", 5));
+        assert_eq!(r.files.len(), 1);
+        assert_eq!(r.total, 2);
+        assert_eq!(v.selected_row(&r), Some(0), "c's row now first");
+        // F4 cycles c's two lines only.
+        let lines: Vec<usize> = (0..3).map(|_| v.step(&mut r, true).unwrap().line).collect();
+        assert_eq!(lines, [0, 1, 0]);
+        v.dismiss(&mut r, &key("c", 0));
+        assert!(r.files.is_empty() && v.list.selected().is_none());
+        assert!(v.step(&mut r, true).is_none());
     }
 
     #[test]

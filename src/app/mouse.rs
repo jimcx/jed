@@ -223,6 +223,7 @@ impl App {
             }
             MouseEventKind::Moved => {
                 self.scm_hover(&m, hit);
+                self.search_hover(&m, hit);
                 self.scrollbar_hover(&m, hit);
             }
             _ => {}

@@ -2,6 +2,9 @@
 //! group (a file, sorted by path) is a row followed by one row per item in it. Rows are named by
 //! a `RowKey` (the file's path, the row within it), so the list's top row and its selection stay
 //! on what they showed when groups arrive, go or grow above them. No drawing.
+//!
+//! A collapsed group (the Search view's) is one with no item rows (`items` 0): `fold` moves keys
+//! inside it to its own row, and `removed` keeps keys on what they showed when a row goes.
 
 use std::path::{Path, PathBuf};
 
@@ -185,6 +188,48 @@ impl ListState {
         }
     }
 
+    /// The group at `path` was collapsed (`None`: every group): the top row and the selection,
+    /// when inside it, move to its own row. True when the selection moved.
+    pub fn fold(&mut self, path: Option<&Path>) -> bool {
+        let fold = |k: &mut RowKey| {
+            let inside = k.1 > 0 && path.is_none_or(|p| k.0 == p);
+            if inside {
+                k.1 = 0;
+            }
+            inside
+        };
+        if let Some(top) = &mut self.top {
+            fold(top);
+        }
+        self.selected.as_mut().is_some_and(fold)
+    }
+
+    /// Row `(path, offset)` was taken out of `groups` (offset 0: the whole group), at index
+    /// `row` before: rows after it in its group keep their keys on what they showed, and a
+    /// selection on it moves to the row that took its place (clamped; none when the list is
+    /// empty). True when the selection moved.
+    pub fn removed<G: Group>(&mut self, groups: &[G], (path, offset): &RowKey, row: usize) -> bool {
+        let shift = |k: &mut RowKey| {
+            if *offset > 0 && k.0 == *path && k.1 > *offset {
+                k.1 -= 1;
+            }
+        };
+        if let Some(top) = &mut self.top {
+            shift(top);
+        }
+        let on_it = self
+            .selected
+            .as_ref()
+            .is_some_and(|s| s.0 == *path && (*offset == 0 || s.1 == *offset));
+        if on_it {
+            self.select(groups, row);
+        } else if let Some(s) = &mut self.selected {
+            shift(s);
+        }
+        self.clamp(groups);
+        on_it
+    }
+
     /// The drawn height (each frame); a reveal asked for before the first draw runs now.
     pub fn set_height<G: Group>(&mut self, groups: &[G], height: usize) {
         self.height = height;
@@ -309,6 +354,46 @@ pub mod tests {
         l.reset();
         assert_eq!((l.scroll(&g), l.selected_row(&g)), (0, None));
         assert!(!l.select_key(&g, &(PathBuf::from("zz"), 0)));
+    }
+
+    /// Folding a group moves keys inside it to its row; a removed row's later siblings keep
+    /// their keys on what they showed, and a selection on it goes to the row in its place.
+    #[test]
+    fn fold_and_removed_keep_keys_on_what_they_showed() {
+        let key = |p: &str, k: usize| (PathBuf::from(p), k);
+        let mut g = groups(&[("a", 3), ("b", 2), ("c", 2)]);
+        let mut l = ListState {
+            height: 10,
+            ..ListState::default()
+        };
+        l.select(&g, 6);
+        l.set_scroll(&g, 2);
+        assert!(l.fold(Some(Path::new("b"))));
+        assert_eq!(l.selected(), Some(&key("b", 0)));
+        assert!(!l.fold(Some(Path::new("b"))), "already on its row");
+        l.select_key(&g, &key("a", 3));
+        assert!(!l.fold(Some(Path::new("b"))), "another group's");
+        assert!(l.fold(None), "every group");
+        assert_eq!(l.selected(), Some(&key("a", 0)));
+
+        // a's second item goes: the selection on its third follows it up.
+        l.select_key(&g, &key("a", 3));
+        g[0].1 = 2;
+        assert!(!l.removed(&g, &key("a", 2), 2));
+        assert_eq!(l.selected(), Some(&key("a", 2)));
+        // The selected item goes: the row now in its place (b's row).
+        g[0].1 = 1;
+        assert!(l.removed(&g, &key("a", 2), 2));
+        assert_eq!(l.selected(), Some(&key("b", 0)), "b's row took its place");
+        // A whole group goes, selected: the next group's row; at the end, clamped.
+        l.select_key(&g, &key("c", 1));
+        g.remove(2);
+        assert!(l.removed(&g, &key("c", 0), 5));
+        assert_eq!(l.selected(), Some(&key("b", 2)), "the last row");
+        g.clear();
+        l.select_key(&groups(&[("z", 0)]), &key("z", 0));
+        assert!(l.removed(&g, &key("z", 0), 0));
+        assert_eq!(l.selected(), None, "empty: nothing");
     }
 
     /// Before the first draw (no height) a reveal waits: the first `set_height` scrolls the

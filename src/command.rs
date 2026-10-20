@@ -445,10 +445,20 @@ pub enum SearchCommand {
     /// results list.
     NextInput,
     PreviousInput,
+    ToggleWholeWord,
+    /// Left / Right in the list: collapse / expand the selected file (Left on a line: its file's
+    /// row; Right on an expanded file: its first line).
+    Collapse,
+    Expand,
+    /// Every file's matches hidden / shown (palette).
+    CollapseAll,
+    ExpandAll,
+    /// Delete in the list: drop the selected match line or file from the results.
+    Dismiss,
 }
 
 impl SearchCommand {
-    pub const ALL: [SearchCommand; 17] = [
+    pub const ALL: [SearchCommand; 23] = [
         SearchCommand::ToggleCase,
         SearchCommand::ToggleRegex,
         SearchCommand::Refresh,
@@ -466,6 +476,12 @@ impl SearchCommand {
         SearchCommand::ToggleDetails,
         SearchCommand::NextInput,
         SearchCommand::PreviousInput,
+        SearchCommand::ToggleWholeWord,
+        SearchCommand::Collapse,
+        SearchCommand::Expand,
+        SearchCommand::CollapseAll,
+        SearchCommand::ExpandAll,
+        SearchCommand::Dismiss,
     ];
 }
 
@@ -894,6 +910,12 @@ impl Command {
                     SearchCommand::ToggleDetails => "toggleDetails",
                     SearchCommand::NextInput => "nextInput",
                     SearchCommand::PreviousInput => "previousInput",
+                    SearchCommand::ToggleWholeWord => "toggleWholeWord",
+                    SearchCommand::Collapse => "collapse",
+                    SearchCommand::Expand => "expand",
+                    SearchCommand::CollapseAll => "collapseAll",
+                    SearchCommand::ExpandAll => "expandAll",
+                    SearchCommand::Dismiss => "dismiss",
                 }
             ),
             Command::TogglePanel => "view.togglePanel".into(),
@@ -1173,6 +1195,12 @@ impl Command {
                 SearchCommand::ToggleDetails => "Search: Toggle Search Details",
                 SearchCommand::NextInput => "Search: Focus Next Input",
                 SearchCommand::PreviousInput => "Search: Focus Previous Input",
+                SearchCommand::ToggleWholeWord => "Search: Toggle Match Whole Word",
+                SearchCommand::Collapse => "Search: Collapse File",
+                SearchCommand::Expand => "Search: Expand File",
+                SearchCommand::CollapseAll => "Search: Collapse All",
+                SearchCommand::ExpandAll => "Search: Expand All",
+                SearchCommand::Dismiss => "Search: Dismiss",
             },
             Command::TogglePanel => "View: Toggle Panel Visibility",
             Command::ToggleProblems => "View: Toggle Problems",

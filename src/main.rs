@@ -71,6 +71,8 @@ mod problems;
 mod quick_diff;
 mod recent;
 mod rename;
+#[cfg(test)]
+mod replace_tests;
 mod scm;
 mod scrollbar;
 mod search;

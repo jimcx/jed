@@ -657,9 +657,10 @@ fn defaults(platform: Platform) -> Vec<Binding> {
     find.extend(find_keys);
     let replace = [(KeyCode::Enter, none, Command::Find(F::ReplaceOne))];
 
-    // The Search view's input: the find widget's toggle keys (no whole word in v1).
+    // The Search view's input: the find widget's toggle keys.
     let search = [
         (KeyCode::Char('c'), toggle, S::ToggleCase),
+        (KeyCode::Char('w'), toggle, S::ToggleWholeWord),
         (KeyCode::Char('r'), toggle, S::ToggleRegex),
         (KeyCode::Enter, none, S::Refresh),
         (KeyCode::Esc, none, S::FocusEditor),
@@ -677,6 +678,9 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Home, none, S::First),
         (KeyCode::End, none, S::Last),
         (KeyCode::Enter, none, S::Open),
+        (KeyCode::Left, none, S::Collapse),
+        (KeyCode::Right, none, S::Expand),
+        (KeyCode::Delete, none, S::Dismiss),
     ];
 
     // The Problems list in the bottom panel.
@@ -1059,8 +1063,9 @@ mod tests {
             assert_eq!(km.lookup(&c, Context::Editor), Some(Command::Find(F::ToggleCase)));
             let r = key(KeyCode::Char('r'), toggle);
             assert_eq!(km.lookup(&r, s), Some(Command::Search(S::ToggleRegex)));
-            // No whole-word toggle in v1: the key does nothing in the input.
-            assert_eq!(km.lookup(&key(KeyCode::Char('w'), toggle), s), None);
+            let w = key(KeyCode::Char('w'), toggle);
+            assert_eq!(km.lookup(&w, s), Some(Command::Search(S::ToggleWholeWord)));
+            assert_eq!(km.lookup(&w, Context::Editor), Some(Command::Find(F::ToggleWholeWord)));
             let esc = key(KeyCode::Esc, KeyModifiers::NONE);
             assert_eq!(km.lookup(&esc, s), Some(Command::Search(S::FocusEditor)));
             // Explorer keys stay in the explorer; typing goes to the input.
@@ -1081,6 +1086,16 @@ mod tests {
             assert_eq!(km.lookup(&c, l), Some(Command::Search(S::ToggleCase)));
             assert_eq!(km.lookup(&esc, l), Some(Command::Search(S::FocusEditor)));
             assert_eq!(km.lookup(&key(KeyCode::Char('x'), none), l), None);
+            assert_eq!(km.lookup(&w, l), Some(Command::Search(S::ToggleWholeWord)));
+            let list = [
+                (KeyCode::Left, S::Collapse),
+                (KeyCode::Right, S::Expand),
+                (KeyCode::Delete, S::Dismiss),
+            ];
+            for (code, c) in list {
+                assert_eq!(km.lookup(&key(code, none), l), Some(Command::Search(c)));
+                assert_eq!(km.lookup(&key(code, none), s), None, "the query's own");
+            }
 
             // F4 / Shift+F4 from anywhere.
             let f4 = key(KeyCode::F(4), none);

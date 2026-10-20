@@ -1,9 +1,10 @@
-//! The Search view, in the side panel below its title: the query input with the case and regex
-//! toggles (`Aa .*`) and the details button (`…`), the files to include / exclude inputs under it
+//! The Search view, in the side panel below its title: the query input with the case, whole
+//! word and regex toggles (`Aa ab .*`) and the details button (`…`), the files to include / exclude inputs under it
 //! while the details show, an invalid regex's or glob's message under them, a summary ("12 results in 3 files",
 //! "Searching…", "No results found", the truncated note), then the results: a row per file
-//! (name, dimmed folder, match count) followed by its matching lines with the matches
-//! highlighted. Only the rows on screen are looked at.
+//! (chevron, name, dimmed folder, match count) followed, unless it's collapsed, by its matching
+//! lines with the matches highlighted. The hovered row shows a `×` (dismiss) at its right end.
+//! Only the rows on screen are looked at.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -20,7 +21,7 @@ use crate::scrollbar::Scrollable;
 use crate::search_view::{self, Input, Row};
 use crate::workspace_search::{FileMatches, LineMatch, MAX_MATCHES, Results};
 
-const TOGGLES: [&str; 2] = ["Aa", ".*"];
+const TOGGLES: [&str; 3] = ["Aa", "ab", ".*"];
 /// Cells a result line is indented by.
 const LINE_INDENT: u16 = 3;
 
@@ -50,8 +51,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
     };
     let mut inputs = [field, Rect::default(), Rect::default()];
     let mut cursors = [draw_field(out, field, &view.query, "Search", input, selected, dim); 3];
-    let on = [view.options.case_sensitive, view.options.regex];
-    let mut toggles = [Rect::default(); 2];
+    let on = [view.options.case_sensitive, view.options.whole_word, view.options.regex];
+    let mut toggles = [Rect::default(); 3];
     for (i, label) in TOGGLES.iter().enumerate() {
         let x = field.x + field_w + 1 + 3 * i as u16;
         let key = if on[i] { "find.option.active" } else { "find.option" };
@@ -133,6 +134,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
         inputs,
         list: Rect::default(),
         rows: Vec::new(),
+        dismiss: Vec::new(),
+        chevrons: Vec::new(),
     };
     let Some(results) = results else {
         return (Some(hit), None);
@@ -159,6 +162,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
         name: base.patch(theme.get("search.fileName")),
         count: base.patch(theme.get("search.count")),
         matched: base.patch(theme.get("search.match")),
+        action: base.patch(theme.get("search.action")),
+        chevron: base.patch(theme.get("search.chevron")),
     };
     // The selected row as the explorer draws its own: brighter while the list has the keys.
     let selection = if focused && view.list_focused {
@@ -172,26 +177,52 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
         name: styles.name.patch(bg_of(selection)),
         count: styles.count,
         matched: styles.matched,
+        action: styles.action.patch(bg_of(selection)),
+        chevron: styles.chevron.patch(bg_of(selection)),
     };
     let shown = search_view::rows(results, top, list.height as usize);
     for (i, row) in shown.iter().enumerate() {
         let y = list.y + i as u16;
-        let s = if selected_row == Some(top + i) {
+        let is_selected = selected_row == Some(top + i);
+        let s = if is_selected {
             out.set_style(Rect { y, height: 1, ..list }, on_selection.base);
             &on_selection
         } else {
             &styles
         };
+        let key = row.key();
+        // The `×` in the row's second-last cell (the last stays blank, as the count's edge).
+        let dismiss = (list.width > 12 && view.hover.as_ref() == Some(&key)).then(|| Rect {
+            x: list.x + list.width - 2,
+            y,
+            width: 1,
+            height: 1,
+        });
+        let right = if dismiss.is_some() { 2 } else { 0 };
         match row.row() {
-            Row::File(file) => draw_file(out, list.x, y, list.width, file, s),
+            Row::File(file) => {
+                out.set_stringn(list.x + 1, y, if file.collapsed { "▸" } else { "▾" }, 1, s.chevron);
+                let chevron = Rect {
+                    x: list.x,
+                    y,
+                    width: 2,
+                    height: 1,
+                };
+                hit.chevrons.push((chevron, file.path.clone()));
+                draw_file(out, list.x + 2, y, list.width.saturating_sub(2 + right), file, s);
+            }
             Row::Line(m) => draw_line(
                 out,
                 list.x + LINE_INDENT,
                 y,
-                list.width.saturating_sub(LINE_INDENT + 1),
+                list.width.saturating_sub(LINE_INDENT + 1 + right),
                 m,
                 (s.base, s.dim, s.matched),
             ),
+        }
+        if let Some(r) = dismiss {
+            out.set_stringn(r.x, r.y, "×", 1, s.action);
+            hit.dismiss.push((r, key));
         }
     }
     hit.list = list;
@@ -213,6 +244,8 @@ struct Styles {
     name: Style,
     count: Style,
     matched: Style,
+    action: Style,
+    chevron: Style,
 }
 
 /// "12 results in 3 files", "No results found", with "Searching…" while running or about to.

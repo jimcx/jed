@@ -443,18 +443,23 @@ pub struct ListHit {
     pub rows: Vec<crate::grouped::RowKey>,
 }
 
-/// The Search view: its option toggles (case, regex), and its results list with the row each
+/// The Search view: its option toggles (case, whole word, regex), and its results list with the row each
 /// line on screen shows (`rows[i]` is at `list.y + i`), by key so a click lands on what was drawn
 /// even when results streamed in since.
 #[derive(Debug, Clone)]
 pub struct SearchHit {
-    pub toggles: [Rect; 2],
+    /// Case, whole word, regex.
+    pub toggles: [Rect; 3],
     /// The `…` button (show / hide the files to include / exclude).
     pub details: Rect,
     /// The query, files to include and files to exclude inputs (the last two empty while hidden).
     pub inputs: [Rect; 3],
     pub list: Rect,
     pub rows: Vec<crate::search_view::RowKey>,
+    /// The `×` dismiss button drawn (on the hovered row), by row.
+    pub dismiss: Vec<(Rect, crate::search_view::RowKey)>,
+    /// File rows' chevrons (collapse / expand), by file.
+    pub chevrons: Vec<(Rect, std::path::PathBuf)>,
 }
 
 /// The Source Control view's list as drawn: its rect, the row each line shows (`rows[i]` is

@@ -213,6 +213,12 @@ impl Theme {
                 Style::new().fg(c(0xE7E7E7)).add_modifier(Modifier::BOLD),
             ),
             ("search.count", fg_bg(0xFFFFFF, 0x4D4D4D)),
+            // Its rows' buttons (the `×` dismiss) and file rows' chevrons.
+            (
+                "search.action",
+                Style::new().fg(c(0xFFFFFF)).add_modifier(Modifier::BOLD),
+            ),
+            ("search.chevron", Style::new().fg(c(0xC5C5C5))),
             ("search.error", Style::new().fg(c(0xF48771))),
             ("search.warning", Style::new().fg(c(0xCCA700))),
             // The bottom panel (Dark+: panel background as the editor's, a #80808059 border).

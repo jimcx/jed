@@ -46,13 +46,14 @@ impl App {
 
     pub(super) fn search_command(&mut self, cmd: S) {
         match cmd {
-            S::ToggleCase | S::ToggleRegex => {
+            S::ToggleCase | S::ToggleWholeWord | S::ToggleRegex => {
                 let o = &mut self.search_view.options;
-                if cmd == S::ToggleCase {
-                    o.case_sensitive = !o.case_sensitive;
-                } else {
-                    o.regex = !o.regex;
-                }
+                let flag = match cmd {
+                    S::ToggleCase => &mut o.case_sensitive,
+                    S::ToggleWholeWord => &mut o.whole_word,
+                    _ => &mut o.regex,
+                };
+                *flag = !*flag;
                 self.run_search();
             }
             S::Refresh => self.run_search(),
@@ -91,14 +92,14 @@ impl App {
                 self.search_view.select(results, row);
             }
             S::Open => {
-                let target = self.search.as_ref().and_then(|r| self.search_view.target(r));
+                let target = self.search.as_mut().and_then(|r| self.search_view.target(r));
                 if let Some(t) = target {
                     self.open_result(t, true);
                 }
             }
             S::NextResult | S::PreviousResult => {
                 let forward = cmd == S::NextResult;
-                let target = self.search.as_ref().and_then(|r| self.search_view.step(r, forward));
+                let target = self.search.as_mut().and_then(|r| self.search_view.step(r, forward));
                 if let Some(t) = target {
                     self.open_result(t, false);
                 }
@@ -113,6 +114,31 @@ impl App {
             S::NextInput | S::PreviousInput => {
                 self.search_view.cycle(self.search.as_ref(), cmd == S::NextInput);
             }
+            S::Collapse | S::Expand => {
+                if let Some(results) = &mut self.search {
+                    self.search_view.collapse_key(results, cmd == S::Collapse);
+                }
+            }
+            S::CollapseAll | S::ExpandAll => {
+                if let Some(results) = &mut self.search {
+                    self.search_view.collapse_all(results, cmd == S::CollapseAll);
+                }
+            }
+            S::Dismiss => {
+                if let Some(key) = self.search_view.list.selected().cloned() {
+                    self.search_dismiss(&key);
+                }
+            }
+        }
+    }
+
+    /// Dismisses a results row (Delete, or its `×`); an emptied list gives the keys back to the
+    /// query.
+    fn search_dismiss(&mut self, key: &crate::search_view::RowKey) {
+        let Some(results) = &mut self.search else { return };
+        self.search_view.dismiss(results, key);
+        if results.files.is_empty() {
+            self.search_view.list_focused = false;
         }
     }
 
@@ -204,9 +230,10 @@ impl App {
     }
 
     /// A click in the Search view: an option toggle or the `…` details button; an input (it takes
-    /// the keys); a result row (selected, and the list takes
-    /// the keys): a match opens with the focus staying in the list, a double click opens a match
-    /// or a file's first match and focuses the editor; anywhere else the query takes the keys.
+    /// the keys); a row's `×` (dismissed) or a file row's chevron (collapsed / expanded); a
+    /// result row (selected, and the list takes the keys): a match opens with the focus staying
+    /// in the list, a double click opens a match or a file's first match and focuses the editor;
+    /// anywhere else the query takes the keys.
     pub(super) fn search_click(&mut self, m: MouseEvent, count: u8) {
         self.ui.focus = Focus::SidePanel;
         let Some(hit) = self.hits.search.take() else { return };
@@ -215,10 +242,25 @@ impl App {
             .into_iter()
             .zip(hit.inputs)
             .find(|(_, r)| r.contains(at));
-        if hit.toggles[0].contains(at) {
-            self.search_command(S::ToggleCase);
-        } else if hit.toggles[1].contains(at) {
-            self.search_command(S::ToggleRegex);
+        let toggle = [S::ToggleCase, S::ToggleWholeWord, S::ToggleRegex]
+            .into_iter()
+            .zip(hit.toggles)
+            .find(|(_, r)| r.contains(at));
+        let dismiss = hit.dismiss.iter().find(|(r, _)| r.contains(at));
+        let chevron = hit.chevrons.iter().find(|(r, _)| r.contains(at));
+        if let Some((cmd, _)) = toggle {
+            self.search_command(cmd);
+        } else if let Some((_, key)) = dismiss {
+            self.search_view.list_focused = true;
+            self.search_dismiss(key);
+        } else if let Some((_, path)) = chevron
+            && let Some(results) = &mut self.search
+            && let Some(i) = results.file_index(path)
+        {
+            self.search_view.list_focused = true;
+            let collapse = !results.files[i].collapsed;
+            self.search_view.set_collapsed(results, path, collapse);
+            self.search_view.select_key(results, &(path.clone(), 0));
         } else if hit.details.contains(at) {
             self.search_command(S::ToggleDetails);
         } else if let Some((input, _)) = input {
@@ -226,7 +268,7 @@ impl App {
             self.search_view.list_focused = false;
         } else if hit.list.contains(at) {
             let row = hit.rows.get((at.y - hit.list.y) as usize);
-            if let (Some(key), Some(results)) = (row, &self.search) {
+            if let (Some(key), Some(results)) = (row, &mut self.search) {
                 self.search_view.list_focused = true;
                 self.search_view.select_key(results, key);
                 if key.1 > 0 || count >= 2 {
@@ -240,6 +282,21 @@ impl App {
             self.search_view.list_focused = false;
         }
         self.hits.search = Some(hit);
+    }
+
+    /// The pointer moved: the results row under it (its `×` is drawn), if over the view's list.
+    pub(super) fn search_hover(&mut self, m: &MouseEvent, hit: crate::layout::Hit) {
+        let at = ratatui::layout::Position { x: m.column, y: m.row };
+        let over = match (&self.hits.search, hit) {
+            (Some(h), crate::layout::Hit::SidePanel) if h.list.contains(at) => {
+                h.rows.get((m.row - h.list.y) as usize).cloned()
+            }
+            _ => None,
+        };
+        if over != self.search_view.hover {
+            self.search_view.hover = over;
+            self.needs_redraw = true;
+        }
     }
 
     /// The mouse wheel over the Search view scrolls its results.
@@ -325,6 +382,7 @@ mod tests {
                     text: "x".into(),
                     text_start: 0,
                 }],
+                collapsed: false,
             }],
             done,
             truncated: false,

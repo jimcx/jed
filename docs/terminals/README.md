@@ -59,7 +59,7 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+f` | Find (opens the find widget) | editor, find |
 | `cmd+alt+f` | Find and replace | editor, find |
 | `cmd+alt+c` | Toggle match case (find widget, Search view) | editor, find, search |
-| `cmd+alt+w` | Toggle match whole word | editor, find |
+| `cmd+alt+w` | Toggle match whole word (find widget, Search view) | editor, find, search |
 | `cmd+alt+r` | Toggle regular expression (find widget, Search view) | editor, find, search |
 | `cmd+shift+1` | Replace one (terminals report it as Cmd+`!`; jed reads both) | editor, find |
 | `cmd+alt+enter` | Replace all | editor, find |
