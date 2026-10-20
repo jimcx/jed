@@ -9,7 +9,9 @@ use super::files::Goto;
 use super::{App, AppEvent, Focus, Level};
 use crate::buffer::pos;
 use crate::command::SearchCommand as S;
+use crate::diff_view::{DiffTab, Pair};
 use crate::field::{Outcome, TextField};
+use crate::group::Tab;
 use crate::layout::SidePanel;
 use crate::path_filter;
 use crate::search::SearchError;
@@ -26,6 +28,30 @@ impl App {
     /// selection when it's non-empty and on one line (escaped when regex is on, as the find
     /// widget does; else the last query stays), selected so typing replaces it; searches now.
     pub(super) fn find_in_files(&mut self) {
+        self.seed_search();
+        self.search_view.query.select_all();
+        self.run_search();
+    }
+
+    /// Cmd+Shift+H: Find in Files with the replace input shown; it takes the keys (its text
+    /// selected) when the query has text, else the query does (VS Code).
+    fn replace_in_files(&mut self) {
+        self.seed_search();
+        let view = &mut self.search_view;
+        view.replacing = true;
+        if view.query.text.is_empty() {
+            view.input = Input::Query;
+        } else {
+            view.input = Input::Replace;
+            view.replace.select_all();
+        }
+        view.query.select_all();
+        self.run_search();
+    }
+
+    /// Shows and focuses the Search view, its query seeded with the primary selection when it's
+    /// non-empty and on one line (escaped for a regex).
+    fn seed_search(&mut self) {
         let regex = self.search_view.options.regex;
         let seed = self
             .active_buffer()
@@ -40,8 +66,7 @@ impl App {
             self.search_view.query = TextField::new(if regex { regex::escape(&text) } else { text });
         }
         self.focus_side(SidePanel::Search);
-        self.search_view.query.select_all();
-        self.run_search();
+        self.search_view.input = Input::Query;
     }
 
     pub(super) fn search_command(&mut self, cmd: S) {
@@ -94,14 +119,14 @@ impl App {
             S::Open => {
                 let target = self.search.as_mut().and_then(|r| self.search_view.target(r));
                 if let Some(t) = target {
-                    self.open_result(t, true);
+                    self.open_search_target(t, true);
                 }
             }
             S::NextResult | S::PreviousResult => {
                 let forward = cmd == S::NextResult;
                 let target = self.search.as_mut().and_then(|r| self.search_view.step(r, forward));
                 if let Some(t) = target {
-                    self.open_result(t, false);
+                    self.open_search_target(t, false);
                 }
             }
             S::ToggleDetails => {
@@ -129,6 +154,14 @@ impl App {
                     self.search_dismiss(&key);
                 }
             }
+            S::ToggleReplace => {
+                if !self.search_focused() {
+                    self.focus_side(SidePanel::Search);
+                }
+                self.search_view.toggle_replace();
+                self.refresh_replace_previews();
+            }
+            S::ReplaceInFiles => self.replace_in_files(),
         }
     }
 
@@ -140,6 +173,7 @@ impl App {
         if results.files.is_empty() {
             self.search_view.list_focused = false;
         }
+        self.refresh_replace_previews();
     }
 
     /// "Find in Folder…" (an explorer folder's right-click, `explorer.findInFolder`): the Search
@@ -168,6 +202,75 @@ impl App {
         view.input = Input::Query;
         view.query.select_all();
         self.run_search();
+    }
+
+    /// Opens a search result: its file's replace preview while the replace input has text,
+    /// else the file at the match.
+    fn open_search_target(&mut self, t: Target, focus: bool) {
+        if self.search_view.previewing() {
+            self.open_replace_preview(t, focus);
+        } else {
+            self.open_result(t, focus);
+        }
+    }
+
+    /// The replace preview of a result's file (VS Code's): a diff tab of the file as it is
+    /// against it with every shown match replaced, in the active group — the group's preview
+    /// of that file reused and brought up to date — its cursor on the result's line. `focus`
+    /// moves the keys to it, else they stay where they were.
+    fn open_replace_preview(&mut self, t: Target, focus: bool) {
+        let Some(replace) = self
+            .search
+            .as_ref()
+            .and_then(|r| r.file_replace(&t.path, &self.search_view.replace.text))
+        else {
+            return;
+        };
+        let path = self.workspace.root.join(&t.path);
+        let before = self.ui.focus;
+        if let Some((buf, _)) = self.active_mut() {
+            buf.seal_undo();
+        }
+        let existing = self
+            .group_mut()
+            .tabs
+            .iter_mut()
+            .find_map(|tab| tab.diff_mut().filter(|d| d.path == path && d.pair == Pair::REPLACE));
+        match existing {
+            Some(d) => d.set_replace(Some(replace)),
+            None => {
+                let id = self.next_diff_id();
+                let mut d = DiffTab::new(id, path.clone(), Pair::REPLACE);
+                d.set_replace(Some(replace));
+                self.group_mut().open_tab(Tab::Diff(Box::new(d)));
+            }
+        }
+        self.open_diff(path, Pair::REPLACE);
+        if let Some(d) = self.group_mut().active_diff_mut() {
+            d.go_to_line(t.line);
+        }
+        if !focus {
+            self.ui.focus = before;
+        }
+    }
+
+    /// The replace text or the results changed (a new search, a dismissal): every open replace
+    /// preview takes the new replace — nothing replaced for a file dismissed or no longer
+    /// searched — while there is one (an emptied input leaves them as they are).
+    fn refresh_replace_previews(&mut self) {
+        if !self.search_view.previewing() {
+            return;
+        }
+        let Some(results) = &self.search else { return };
+        let root = &self.workspace.root;
+        let text = &self.search_view.replace.text;
+        for (_, d) in self.groups.diff_tabs_mut() {
+            if d.pair == Pair::REPLACE
+                && let Ok(rel) = d.path.strip_prefix(root)
+            {
+                d.set_replace(results.file_replace(rel, text));
+            }
+        }
     }
 
     /// Opens a search result in the active (last focused) editor group with the match selected
@@ -199,6 +302,11 @@ impl App {
         }
     }
 
+    /// Whether the replace input has the keys (its edits re-search nothing).
+    fn replace_focused(&self) -> bool {
+        !self.search_view.list_focused && self.search_view.input == Input::Replace
+    }
+
     /// A paste goes to the focused input (from the list: the input that last had the keys).
     pub(super) fn search_paste(&mut self, text: &str) {
         self.search_view.list_focused = false;
@@ -206,7 +314,13 @@ impl App {
         self.search_edited();
     }
 
+    /// An input was edited: the replace text redraws the previews (and open replace previews
+    /// follow); the others re-search after the debounce (an emptied query at once).
     fn search_edited(&mut self) {
+        if self.replace_focused() {
+            self.refresh_replace_previews();
+            return;
+        }
         if self.search_view.query.text.is_empty() {
             self.run_search();
         } else {
@@ -227,6 +341,7 @@ impl App {
     fn run_search(&mut self) {
         self.search_view.started();
         self.search_view.error = self.start_search(self.search_view.query()).err();
+        self.refresh_replace_previews();
     }
 
     /// A click in the Search view: an option toggle or the `…` details button; an input (it takes
@@ -246,6 +361,7 @@ impl App {
             .into_iter()
             .zip(hit.toggles)
             .find(|(_, r)| r.contains(at));
+        let input = input.or_else(|| hit.replace.contains(at).then_some((Input::Replace, hit.replace)));
         let dismiss = hit.dismiss.iter().find(|(r, _)| r.contains(at));
         let chevron = hit.chevrons.iter().find(|(r, _)| r.contains(at));
         if let Some((cmd, _)) = toggle {
@@ -263,6 +379,8 @@ impl App {
             self.search_view.select_key(results, &(path.clone(), 0));
         } else if hit.details.contains(at) {
             self.search_command(S::ToggleDetails);
+        } else if hit.replace_toggle.contains(at) {
+            self.search_command(S::ToggleReplace);
         } else if let Some((input, _)) = input {
             self.search_view.input = input;
             self.search_view.list_focused = false;
@@ -274,7 +392,7 @@ impl App {
                 if key.1 > 0 || count >= 2 {
                     let target = self.search_view.target(results);
                     if let Some(t) = target {
-                        self.open_result(t, count >= 2);
+                        self.open_search_target(t, count >= 2);
                     }
                 }
             }
@@ -299,10 +417,17 @@ impl App {
         }
     }
 
-    /// The mouse wheel over the Search view scrolls its results.
-    pub(super) fn search_scroll(&mut self, delta: isize) {
-        if let Some(results) = &self.search {
-            self.search_view.scroll_by(results, delta);
+    /// The mouse wheel over the Search view scrolls its results; the hovered row becomes the
+    /// one now under the pointer (its `×` moves with it).
+    pub(super) fn search_scroll(&mut self, delta: isize, m: &MouseEvent) {
+        let Some(results) = &self.search else { return };
+        self.search_view.scroll_by(results, delta);
+        let at = ratatui::layout::Position { x: m.column, y: m.row };
+        if let Some(h) = &self.hits.search
+            && h.list.contains(at)
+        {
+            let row = self.search_view.scroll(results) + (m.row - h.list.y) as usize;
+            self.search_view.hover = crate::search_view::rows(results, row, 1).first().map(|s| s.key());
         }
     }
 
@@ -329,6 +454,7 @@ impl App {
             self.search = Some(results);
             return Ok(());
         }
+        results.matcher = Some(matcher.clone());
         let root = self.workspace.root.clone();
         let dirty = self
             .buffers

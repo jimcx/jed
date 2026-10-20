@@ -121,9 +121,12 @@ pub enum Side {
     Empty,
 }
 
-impl From<Text> for Side {
-    fn from(t: Text) -> Side {
-        match t {
+/// A replace preview's side isn't stored (its tab isn't kept: `Err`).
+impl TryFrom<Text> for Side {
+    type Error = Text;
+
+    fn try_from(t: Text) -> Result<Side, Text> {
+        Ok(match t {
             Text::Head => Side::Head,
             Text::Index => Side::Index,
             Text::WorkTree => Side::WorkTree,
@@ -135,7 +138,8 @@ impl From<Text> for Side {
             },
             Text::Commit(id) => Side::Commit { id: id.to_string() },
             Text::Empty => Side::Empty,
-        }
+            Text::Replaced => return Err(t),
+        })
     }
 }
 
@@ -556,13 +560,15 @@ mod tests {
     #[test]
     fn commit_and_empty_sides_round_trip() {
         let commit = Text::Commit(git2::Oid::from_str(&"ab".repeat(20)).unwrap());
-        let side = Side::from(commit);
+        let side = Side::try_from(commit).unwrap();
         assert_eq!(side, Side::Commit { id: "ab".repeat(20) });
         assert_eq!(Text::from(side), commit);
-        assert_eq!(Text::from(Side::from(Text::Empty)), Text::Empty);
+        assert_eq!(Text::from(Side::try_from(Text::Empty).unwrap()), Text::Empty);
+        assert_eq!(Side::try_from(Text::Replaced), Err(Text::Replaced), "never stored");
         // JSON: the variants serialize and read back.
         let pair = Pair::commit(git2::Oid::from_str(&"cd".repeat(20)).unwrap(), None);
-        let json = serde_json::to_string(&(Side::from(pair.left), Side::from(pair.right))).unwrap();
+        let sides = (Side::try_from(pair.left).unwrap(), Side::try_from(pair.right).unwrap());
+        let json = serde_json::to_string(&sides).unwrap();
         assert!(json.contains("empty") && json.contains("commit"));
         let (left, right): (Side, Side) = serde_json::from_str(&json).unwrap();
         assert_eq!((Text::from(left), Text::from(right)), (pair.left, pair.right));

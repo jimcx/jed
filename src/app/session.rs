@@ -269,11 +269,17 @@ impl App {
                                 left_col: t.view.left_col,
                             });
                         }
-                        Tab::Diff(d) => tabs.push(TabState::Diff {
-                            path: session::stored(root, &d.path),
-                            left: d.pair.left.into(),
-                            right: d.pair.right.into(),
-                        }),
+                        Tab::Diff(d) => {
+                            // A replace preview isn't kept (its replace is the Search view's).
+                            let (Ok(left), Ok(right)) = (d.pair.left.try_into(), d.pair.right.try_into()) else {
+                                continue;
+                            };
+                            tabs.push(TabState::Diff {
+                                path: session::stored(root, &d.path),
+                                left,
+                                right,
+                            });
+                        }
                     }
                 }
                 let active = active.min(tabs.len().saturating_sub(1));

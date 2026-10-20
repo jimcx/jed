@@ -599,6 +599,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         // Ctrl on macOS too, as in VS Code.
         (KeyCode::Char('g'), ctrl | shift, Command::FocusScm),
         (KeyCode::Char('f'), cmd | shift, Command::FindInFiles),
+        (KeyCode::Char('h'), cmd | shift, Command::Search(S::ReplaceInFiles)),
         (KeyCode::Char('1'), cmd, Command::FocusGroup(1)),
         (KeyCode::Char('2'), cmd, Command::FocusGroup(2)),
         (KeyCode::Char('3'), cmd, Command::FocusGroup(3)),
@@ -670,7 +671,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Tab, shift, S::PreviousInput),
     ];
     // Its results list (falls back to the input's keys: toggles, Esc).
-    let search_results = [
+    let mut search_results = vec![
         (KeyCode::Up, none, S::Up),
         (KeyCode::Down, none, S::Down),
         (KeyCode::PageUp, none, S::PageUp),
@@ -682,6 +683,10 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Right, none, S::Expand),
         (KeyCode::Delete, none, S::Dismiss),
     ];
+    if mac {
+        // VS Code's `search.action.remove` on macOS.
+        search_results.push((KeyCode::Backspace, cmd, S::Dismiss));
+    }
 
     // The Problems list in the bottom panel.
     let problems = [
@@ -1095,6 +1100,16 @@ mod tests {
             for (code, c) in list {
                 assert_eq!(km.lookup(&key(code, none), l), Some(Command::Search(c)));
                 assert_eq!(km.lookup(&key(code, none), s), None, "the query's own");
+            }
+
+            // VS Code's Cmd+Backspace dismisses on macOS (Linux has no such key).
+            let cmd_bs = key(KeyCode::Backspace, cmd);
+            let dismiss = (platform == Platform::MacOs).then_some(Command::Search(S::Dismiss));
+            assert_eq!(km.lookup(&cmd_bs, l), dismiss);
+            // Replace in Files from anywhere.
+            let h = key(KeyCode::Char('h'), cmd | KeyModifiers::SHIFT);
+            for ctx in [Context::Editor, Context::Explorer, s, l] {
+                assert_eq!(km.lookup(&h, ctx), Some(Command::Search(S::ReplaceInFiles)));
             }
 
             // F4 / Shift+F4 from anywhere.

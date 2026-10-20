@@ -455,10 +455,14 @@ pub enum SearchCommand {
     ExpandAll,
     /// Delete in the list: drop the selected match line or file from the results.
     Dismiss,
+    /// The `▸` toggle left of the query: show / hide the replace input.
+    ToggleReplace,
+    /// Cmd+Shift+H: show the Search view with the replace input, seeded as Find in Files is.
+    ReplaceInFiles,
 }
 
 impl SearchCommand {
-    pub const ALL: [SearchCommand; 23] = [
+    pub const ALL: [SearchCommand; 25] = [
         SearchCommand::ToggleCase,
         SearchCommand::ToggleRegex,
         SearchCommand::Refresh,
@@ -482,6 +486,8 @@ impl SearchCommand {
         SearchCommand::CollapseAll,
         SearchCommand::ExpandAll,
         SearchCommand::Dismiss,
+        SearchCommand::ToggleReplace,
+        SearchCommand::ReplaceInFiles,
     ];
 }
 
@@ -916,6 +922,8 @@ impl Command {
                     SearchCommand::CollapseAll => "collapseAll",
                     SearchCommand::ExpandAll => "expandAll",
                     SearchCommand::Dismiss => "dismiss",
+                    SearchCommand::ToggleReplace => "toggleReplace",
+                    SearchCommand::ReplaceInFiles => "replaceInFiles",
                 }
             ),
             Command::TogglePanel => "view.togglePanel".into(),
@@ -1201,6 +1209,8 @@ impl Command {
                 SearchCommand::CollapseAll => "Search: Collapse All",
                 SearchCommand::ExpandAll => "Search: Expand All",
                 SearchCommand::Dismiss => "Search: Dismiss",
+                SearchCommand::ToggleReplace => "Search: Toggle Replace",
+                SearchCommand::ReplaceInFiles => "Search: Replace in Files",
             },
             Command::TogglePanel => "View: Toggle Panel Visibility",
             Command::ToggleProblems => "View: Toggle Problems",

@@ -7,6 +7,15 @@
 //! into a collapsed file, expanding it; Delete in the list and the hovered row's `×` dismiss a
 //! line or a file, the counts (summary and file row) following, the selection moving to the row
 //! in its place, F4 skipping what's gone; a re-search brings everything back.
+//!
+//! replace-b: the replace input (the `▸` toggle left of the query, Cmd+Shift+H from anywhere,
+//! between the query and the list in the Tab order; editing it re-searches nothing); a regex
+//! search's result lines drawn with each match struck through and followed by its own
+//! replacement (`foo(\d)` → `bar$1`), back to plain highlights once the input is empty or hidden;
+//! a click (or Enter) on a result while it has text opens the file's replace preview diff tab
+//! (the open, unsaved buffer with every match not dismissed replaced), reused for the file's
+//! other results and following edits of the replace text, never kept in the session; the wheel
+//! moves the hovered row's `×` with the list.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -445,4 +454,391 @@ fn run_command(app: &mut App, title: &str) {
     let p = app.palette.as_ref().unwrap();
     assert_eq!(p.rows[p.selected].label, title);
     app.press(K::Enter, M::NONE);
+}
+
+/// A workspace for replacing: `a.txt` open (three lines with `foo` + digit), two more files.
+fn replace_app(root: &Path) -> App {
+    fs::create_dir_all(root.join(".git")).unwrap();
+    write(root, "a.txt", "foo1 one\nkeep\nfoo2 foo3\nfoo4\n");
+    write(root, "src/b.rs", "let x = foo5;\n");
+    write(root, "d.txt", "nothing\n");
+    test_app(root, Buffer::open(&root.join("a.txt")).unwrap())
+}
+
+/// The current search's generation (a new search, a new one).
+fn generation_of(app: &App) -> u64 {
+    app.search.as_ref().unwrap().generation
+}
+
+fn started(mut app: App) -> App {
+    app.test_start();
+    app.test_plain_whitespace();
+    app
+}
+
+/// A regex search for `foo(\d)`, run to the end (the toggle pressed in the query).
+async fn regex_search(app: &mut App) {
+    app.press(K::Char('f'), cmd() | M::SHIFT);
+    if !app.search_view.options.regex {
+        app.press(K::Char('r'), toggle());
+    }
+    app.type_text(r"foo(\d)");
+    app.press(K::Enter, M::NONE);
+    settled(app).await;
+}
+
+/// The drawn text of the results row `key` (trimmed).
+fn row_text(term: &Terminal<TestBackend>, app: &App, key: &RowKey) -> String {
+    let y = row_y(app, key);
+    let l = app.hits.search.as_ref().unwrap().list;
+    text(term, y, l.x, l.x + l.width).trim().to_string()
+}
+
+/// The cell of row `key` where `needle` starts in its drawn text.
+fn cell_of(term: &Terminal<TestBackend>, app: &App, key: &RowKey, needle: &str) -> ratatui::buffer::Cell {
+    let y = row_y(app, key);
+    let l = app.hits.search.as_ref().unwrap().list;
+    let row: Vec<String> = (l.x..l.x + l.width)
+        .map(|x| term.backend().buffer()[(x, y)].symbol().to_string())
+        .collect();
+    let at = (0..row.len())
+        .find(|&i| row[i..].concat().starts_with(needle))
+        .unwrap_or_else(|| panic!("{needle:?} not in {:?}", row.concat()));
+    term.backend().buffer()[(l.x + at as u16, y)].clone()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_input_toggle_keys_and_tab_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = crate::workspace::normalize(dir.path());
+    let mut app = started(replace_app(&root));
+    let mut term = term();
+    search_for(&mut app, "foo").await;
+    draw(&mut term, &mut app);
+    let hit = app.hits.search.clone().unwrap();
+    let toggle_at = hit.replace_toggle;
+    assert_eq!(toggle_at.y, hit.inputs[0].y, "beside the query");
+    assert_eq!(text(&term, toggle_at.y, toggle_at.x, toggle_at.x + 1), "▸");
+    assert_eq!(hit.replace, ratatui::layout::Rect::default(), "hidden");
+
+    // The toggle shows the input under the query, with the keys.
+    app.mouse(MouseEventKind::Down(MouseButton::Left), toggle_at.x, toggle_at.y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), toggle_at.x, toggle_at.y);
+    assert!(app.search_view.replacing);
+    assert_eq!(app.search_view.input, crate::search_view::Input::Replace);
+    draw(&mut term, &mut app);
+    let hit = app.hits.search.clone().unwrap();
+    assert_eq!(text(&term, toggle_at.y, toggle_at.x, toggle_at.x + 1), "▾");
+    assert_eq!(hit.replace.y, hit.inputs[0].y + 1);
+    let r = hit.replace;
+    assert!(
+        text(&term, r.y, r.x, r.x + r.width).contains("Replace"),
+        "its placeholder"
+    );
+
+    // Typing edits it and searches nothing.
+    let generation = generation_of(&app);
+    app.type_text("bar");
+    assert_eq!(app.search_view.replace.text, "bar");
+    assert_eq!(app.search_view.query.text, "foo");
+    assert_eq!(app.search_view.deadline(), None, "no search pending");
+    assert_eq!(generation_of(&app), generation);
+    draw(&mut term, &mut app);
+    assert!(text(&term, r.y, r.x, r.x + r.width).starts_with("bar"));
+
+    // Tab: replace → the list → query → replace; Shift+Tab back to the query.
+    use crate::search_view::Input;
+    let at = |app: &App| (app.search_view.list_focused, app.search_view.input);
+    app.press(K::Tab, M::NONE);
+    assert!(app.search_view.list_focused);
+    app.press(K::Tab, M::NONE);
+    assert_eq!(at(&app), (false, Input::Query));
+    app.press(K::Tab, M::NONE);
+    assert_eq!(at(&app), (false, Input::Replace));
+    app.press(K::Tab, M::SHIFT);
+    assert_eq!(at(&app), (false, Input::Query));
+    // A click on the replace input gives it the keys.
+    app.mouse(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), r.x + 1, r.y);
+    assert_eq!(at(&app), (false, Input::Replace));
+
+    // The palette's Toggle Replace hides it: the query has the keys, the text stays.
+    run_command(&mut app, "Search: Toggle Replace");
+    assert!(!app.search_view.replacing);
+    assert_eq!(at(&app), (false, Input::Query));
+    assert_eq!(app.search_view.replace.text, "bar");
+    app.press(K::Tab, M::NONE);
+    assert!(app.search_view.list_focused, "skipped while hidden");
+
+    // Cmd+Shift+H from the editor: shown again, its text selected with the keys (the query has
+    // text), and the search runs now.
+    app.press(K::Esc, M::NONE);
+    assert_eq!(app.ui.focus, Focus::Editor);
+    app.press(K::Char('h'), cmd() | M::SHIFT);
+    assert_eq!(app.ui.focus, Focus::SidePanel);
+    assert!(app.search_view.replacing && app.search_view.replace.all_selected);
+    assert_eq!(at(&app), (false, Input::Replace));
+    assert!(generation_of(&app) > generation);
+    // With an empty query the query gets the keys.
+    app.press(K::Tab, M::SHIFT);
+    app.press(K::End, M::NONE);
+    for _ in 0..3 {
+        app.press(K::Backspace, M::NONE);
+    }
+    assert_eq!(app.search_view.query.text, "");
+    app.press(K::Esc, M::NONE);
+    app.press(K::Char('h'), cmd() | M::SHIFT);
+    assert_eq!(at(&app), (false, Input::Query));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_previews_strike_through_each_match() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = crate::workspace::normalize(dir.path());
+    let mut app = started(replace_app(&root));
+    let mut term = term();
+    regex_search(&mut app).await;
+    assert_eq!(result_lines(&app), ["a.txt:1", "a.txt:3", "a.txt:4", "src/b.rs:1"]);
+    let generation = generation_of(&app);
+    app.press(K::Char('h'), cmd() | M::SHIFT);
+    settled(&mut app).await;
+    let generation = generation_of(&app).max(generation);
+    app.type_text("bar$1");
+    assert_eq!(generation_of(&app), generation, "the replace text re-searches nothing");
+    draw(&mut term, &mut app);
+
+    // Each match struck through, then its own replacement ($1 from that match).
+    let line3 = key("a.txt", 2);
+    assert_eq!(row_text(&term, &app, &line3), "foo2bar2 foo3bar3");
+    assert_eq!(row_text(&term, &app, &key("a.txt", 1)), "foo1bar1 one");
+    assert_eq!(row_text(&term, &app, &key("src/b.rs", 1)), "let x = foo5bar5;");
+    let removed = app.theme.get("search.replace.removed");
+    let inserted = app.theme.get("search.replace.inserted");
+    for needle in ["foo2", "oo2", "foo3"] {
+        let c = cell_of(&term, &app, &line3, needle);
+        assert!(c.modifier.contains(ratatui::style::Modifier::CROSSED_OUT), "{needle}");
+        assert_eq!(c.bg, removed.bg.unwrap(), "{needle}");
+    }
+    for needle in ["bar2", "2 foo3", "bar3"] {
+        let c = cell_of(&term, &app, &line3, needle);
+        assert!(!c.modifier.contains(ratatui::style::Modifier::CROSSED_OUT), "{needle}");
+        assert_eq!(c.bg, inserted.bg.unwrap(), "{needle}");
+    }
+    let plain = cell_of(&term, &app, &key("a.txt", 1), " one");
+    assert!(plain.bg != removed.bg.unwrap() && plain.bg != inserted.bg.unwrap());
+
+    // Emptied: the plain highlights again.
+    for _ in 0..5 {
+        app.press(K::Backspace, M::NONE);
+    }
+    draw(&mut term, &mut app);
+    assert_eq!(row_text(&term, &app, &line3), "foo2 foo3");
+    let matched = app.theme.get("search.match").bg.unwrap();
+    let c = cell_of(&term, &app, &line3, "foo2");
+    assert_eq!(c.bg, matched);
+    assert!(!c.modifier.contains(ratatui::style::Modifier::CROSSED_OUT));
+
+    // Hidden with text in it: no previews either.
+    app.type_text("X");
+    draw(&mut term, &mut app);
+    assert_eq!(row_text(&term, &app, &line3), "foo2X foo3X");
+    run_command(&mut app, "Search: Toggle Replace");
+    draw(&mut term, &mut app);
+    assert_eq!(row_text(&term, &app, &line3), "foo2 foo3");
+    assert_eq!(generation_of(&app), generation);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_preview_diff_tab() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = crate::workspace::normalize(dir.path());
+    let mut app = started(replace_app(&root));
+    let mut term = term();
+    // An unsaved edit: the preview shows the buffer, not the disk.
+    app.type_text("foo9 ");
+    regex_search(&mut app).await;
+    app.press(K::Char('h'), cmd() | M::SHIFT);
+    settled(&mut app).await;
+    app.type_text("bar$1");
+
+    // a.txt's first line dismissed (Delete in the list).
+    app.press(K::Tab, M::NONE);
+    app.press(K::Down, M::NONE);
+    assert_eq!(app.search_view.list.selected(), Some(&key("a.txt", 1)));
+    app.press(K::Delete, M::NONE);
+    assert_eq!(result_lines(&app), ["a.txt:3", "a.txt:4", "src/b.rs:1"]);
+
+    // A click on a.txt:3 opens the preview in the active group; the list keeps the keys.
+    draw(&mut term, &mut app);
+    let tabs = app.group().tabs.len();
+    let y = row_y(&app, &key("a.txt", 1));
+    let x = app.hits.search.as_ref().unwrap().list.x + 6;
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    assert_eq!(app.group().tabs.len(), tabs + 1);
+    assert_eq!((app.ui.focus, app.search_view.list_focused), (Focus::SidePanel, true));
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    let lines = |l: &crate::diff_view::Lines| (0..l.len()).map(|i| l.line(i).to_string()).collect::<Vec<_>>();
+    {
+        let d = app.group().active_diff().expect("a diff tab");
+        assert_eq!(d.pair, crate::diff_view::Pair::REPLACE);
+        assert_eq!(d.title(), "a.txt ↔ a.txt (Replace Preview)");
+        let doc = d.doc.as_ref().unwrap();
+        assert_eq!(lines(&doc.left), ["foo9 foo1 one", "keep", "foo2 foo3", "foo4"]);
+        assert_eq!(
+            lines(&doc.right),
+            ["foo9 foo1 one", "keep", "bar2 bar3", "bar4"],
+            "the dismissed line left alone"
+        );
+        assert_eq!(d.cursor_line(), 2, "on the clicked line");
+    }
+    draw(&mut term, &mut app);
+    let tab_bar = (0..100)
+        .map(|x| term.backend().buffer()[(x, 0)].symbol().to_string())
+        .collect::<String>();
+    assert!(tab_bar.contains("a.txt ↔ a.txt (Replace Preview)"), "{tab_bar}");
+
+    // Another result of the file: the same tab, on its line.
+    let y = row_y(&app, &key("a.txt", 2));
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    assert_eq!(app.group().tabs.len(), tabs + 1);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    assert_eq!(app.group().active_diff().unwrap().cursor_line(), 3);
+
+    // Editing the replace text brings the open preview up to date.
+    let r = app.hits.search.as_ref().unwrap().replace;
+    app.mouse(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), r.x + 1, r.y);
+    app.press(K::End, M::NONE);
+    app.type_text("x");
+    assert!(
+        app.settle(|a| a.diffs_settled()
+            && a.group()
+                .active_diff()
+                .unwrap()
+                .doc
+                .as_ref()
+                .is_some_and(|d| d.right.line(3) == "bar4x"))
+            .await
+    );
+
+    // Dismissing a line (the clicked a.txt:4) takes its replacement out of the open preview.
+    app.press(K::Tab, M::NONE);
+    assert!(app.search_view.list_focused);
+    assert_eq!(app.search_view.list.selected(), Some(&key("a.txt", 2)));
+    app.press(K::Delete, M::NONE);
+    assert_eq!(result_lines(&app), ["a.txt:3", "src/b.rs:1"]);
+    assert!(
+        app.settle(|a| a.diffs_settled()
+            && a.group()
+                .active_diff()
+                .unwrap()
+                .doc
+                .as_ref()
+                .is_some_and(|d| { d.right.line(3) == "foo4" && d.right.line(2) == "bar2x bar3x" }))
+            .await,
+        "a.txt:4 dismissed: left alone in the preview"
+    );
+
+    // Enter on another file's result: its own preview, focused.
+    app.press(K::End, M::NONE);
+    assert_eq!(app.search_view.list.selected(), Some(&key("src/b.rs", 1)));
+    app.press(K::Enter, M::NONE);
+    assert_eq!(app.ui.focus, Focus::Editor);
+    assert_eq!(app.group().tabs.len(), tabs + 2);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    let d = app.group().active_diff().unwrap();
+    assert_eq!(d.title(), "b.rs ↔ b.rs (Replace Preview)");
+    assert_eq!(lines(&d.doc.as_ref().unwrap().right), ["let x = bar5x;"]);
+    assert_eq!(
+        fs::read_to_string(root.join("src/b.rs")).unwrap(),
+        "let x = foo5;\n",
+        "nothing written"
+    );
+
+    // With the replace input empty, a click opens the file at the match as before.
+    draw(&mut term, &mut app);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), r.x + 1, r.y);
+    app.press(K::End, M::NONE);
+    for _ in 0..6 {
+        app.press(K::Backspace, M::NONE);
+    }
+    assert_eq!(app.search_view.replace.text, "");
+    let y = row_y(&app, &key("a.txt", 1));
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    assert!(app.group().active_diff().is_none());
+    let buf = app.active_buffer().unwrap();
+    assert_eq!(buf.path, root.join("a.txt"));
+    let head = app.group().active_tab().unwrap().view.selections.primary().head;
+    assert_eq!(crate::buffer::pos::line_of(&buf.rope, head), 2, "at a.txt:3's match");
+    assert_eq!(app.group().tabs.len(), tabs + 2);
+}
+
+/// A replace preview is never kept in the session; the file's own tab is.
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_previews_are_not_kept_in_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = crate::workspace::normalize(dir.path());
+    let (root, state) = (base.join("proj"), base.join("state"));
+    fs::create_dir_all(&state).unwrap();
+    fs::create_dir_all(&root).unwrap();
+    let mut app = replace_app(&root);
+    app.state_dir = Some(state.clone());
+    let mut app = started(app);
+    assert!(app.settle(|a| !a.session.loading()).await);
+    regex_search(&mut app).await;
+    app.press(K::Char('h'), cmd() | M::SHIFT);
+    settled(&mut app).await;
+    app.type_text("bar$1");
+    app.press(K::Tab, M::NONE);
+    app.press(K::Enter, M::NONE);
+    assert!(app.group().active_diff().is_some());
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    app.test_execute(crate::command::Command::Quit);
+    assert!(app.quitting());
+    app.shutdown().await;
+
+    let session = crate::session::load(&state, &root).unwrap().expect("written");
+    let tabs = &session.groups[0].tabs;
+    assert_eq!(tabs.len(), 1, "{tabs:?}");
+    assert!(matches!(&tabs[0], crate::session::TabState::Text { path, .. } if path.ends_with("a.txt")));
+    assert_eq!(session.groups[0].active, 0);
+}
+
+/// The wheel over the results moves the hovered row (and its `×`) with the list.
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_wheel_moves_the_hovered_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _root) = open_app(&dir);
+    let mut term = Terminal::new(TestBackend::new(100, 10)).unwrap();
+    search_for(&mut app, "foo").await;
+    draw(&mut term, &mut app);
+    let list = app.hits.search.as_ref().unwrap().list;
+    assert!(list.height < 10, "scrolls: {list:?}");
+    let x_at = list.x + list.width - 2;
+    app.mouse(MouseEventKind::Moved, list.x + 5, list.y);
+    assert_eq!(app.search_view.hover, Some(key("a.txt", 0)));
+    app.mouse(MouseEventKind::ScrollDown, list.x + 5, list.y);
+    assert_eq!(app.search_view.hover, Some(key("a.txt", 3)), "three rows on");
+    draw(&mut term, &mut app);
+    let hit = app.hits.search.as_ref().unwrap();
+    assert_eq!(hit.rows[0], key("a.txt", 3));
+    assert_eq!(
+        hit.dismiss,
+        vec![(
+            ratatui::layout::Rect {
+                x: x_at,
+                y: list.y,
+                width: 1,
+                height: 1
+            },
+            key("a.txt", 3)
+        )]
+    );
+    assert_eq!(text(&term, list.y, x_at, x_at + 1), "×");
+    app.mouse(MouseEventKind::ScrollUp, list.x + 5, list.y);
+    assert_eq!(app.search_view.hover, Some(key("a.txt", 0)));
 }

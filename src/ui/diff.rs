@@ -136,7 +136,7 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
         (Some(n), None) => format!(" {n} changes "),
         (None, _) => String::new(),
     };
-    let (left_title, right_title) = (d.pair.left.title(), d.pair.right.title());
+    let (left_title, right_title) = d.pair.titles();
     let half = (area.width - 1) / 2;
     if inline {
         let title = format!(" {left_title} ↔ {right_title}");

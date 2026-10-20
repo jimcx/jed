@@ -66,6 +66,7 @@ bindings = [
   { key = "B", mods = "Command", action = "ReceiveChar" },
   { key = "E", mods = "Command|Shift", action = "ReceiveChar" },
   { key = "F", mods = "Command|Shift", action = "ReceiveChar" },
+  { key = "H", mods = "Command|Shift", action = "ReceiveChar" },
   { key = "J", mods = "Command|Shift", action = "ReceiveChar" },
   { key = "1", mods = "Command", action = "ReceiveChar" },
   { key = "2", mods = "Command", action = "ReceiveChar" },

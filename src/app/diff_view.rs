@@ -242,6 +242,7 @@ impl App {
                     None => syntax::detect_path(&d.path, &self.workspace.root, &self.associations),
                 },
                 syntax_max_bytes: self.settings.syntax_max_bytes,
+                replace: d.replace.clone(),
             };
             jobs.push((d.id, generation, job));
         }

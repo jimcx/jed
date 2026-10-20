@@ -357,7 +357,7 @@ fn locations(
         let item = &file.items[offset - 1];
         let (x, width) = (list.x + INDENT, list.width.saturating_sub(INDENT + 1));
         match &item.preview {
-            Some(m) => super::search::draw_line(out, x, y, width, m, (s.base, s.dim, s.base.patch(matched))),
+            Some(m) => super::search::draw_line(out, x, y, width, m, (s.base, s.dim, s.base.patch(matched)), None),
             None => {
                 let at = format!("Ln {}, Col {}", item.start.line + 1, item.start.character + 1);
                 out.set_stringn(x, y, &at, width as usize, s.dim);

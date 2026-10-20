@@ -55,7 +55,7 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+shift+up` | Select to file start | editor |
 | `cmd+down` | File end (editor) / open (explorer) | editor, explorer |
 | `cmd+shift+down` | Select to file end | editor |
-| `cmd+backspace` | Delete to line start (editor) / delete (explorer) | editor, explorer |
+| `cmd+backspace` | Delete to line start (editor) / delete (explorer) / dismiss a result (Search view's results) | editor, explorer, searchResults |
 | `cmd+f` | Find (opens the find widget) | editor, find |
 | `cmd+alt+f` | Find and replace | editor, find |
 | `cmd+alt+c` | Toggle match case (find widget, Search view) | editor, find, search |
@@ -71,6 +71,7 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+b` | Toggle sidebar | everywhere |
 | `cmd+shift+e` | Focus explorer | everywhere |
 | `cmd+shift+f` | Search in workspace (Search view, seeded with the selection) | everywhere |
+| `cmd+shift+h` | Replace in workspace (Search view with its replace input) | everywhere |
 | `cmd+shift+j` | Toggle search details (the Search view's files to include / exclude) | search |
 | `cmd+1` | Focus group 1 | everywhere |
 | `cmd+2` | Focus group 2 | everywhere |

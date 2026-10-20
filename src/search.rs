@@ -193,6 +193,24 @@ impl Matcher {
         });
     }
 
+    /// What replaces the match at `range` of `line` (one line's text, as `each_in_line` takes
+    /// it): `with`'s text, or a template naming groups expanded from the match found again at
+    /// `range.start` (so its groups are the ones Replace uses). The Search view's previews.
+    pub fn replacement_at(&self, line: &[u8], range: Range<usize>, with: &Replacement) -> String {
+        if let Some(text) = with.literal() {
+            return text.to_string();
+        }
+        let mut out = String::new();
+        if let Some(re) = &self.regex
+            && range.start <= line.len()
+            && let Some(caps) = re.captures_at(line, range.start)
+            && caps.get(0).is_some_and(|c| c.start() == range.start)
+        {
+            with.expand(&caps, &mut out);
+        }
+        out
+    }
+
     /// Calls `f(match, regex, haystack, haystack start)` for every match overlapping `range`.
     fn each_in(&self, rope: &Rope, range: Range<ByteIdx>, mut f: impl FnMut(Match, &Regex, &[u8], usize)) {
         let Some(re) = &self.regex else {
@@ -1237,5 +1255,36 @@ mod tests {
         assert_eq!(Replacement::new("$1", false).literal(), Some("$1"));
         assert_eq!(Replacement::new("x$$", true).literal(), Some("x$"));
         assert_eq!(Replacement::new("$1", true).literal(), None);
+    }
+
+    /// A line's match expanded as `replace_in` would: groups of the match at that offset.
+    #[test]
+    fn replacement_at_expands_the_match_on_the_line() {
+        let m = Matcher::new_single_line(r"foo(\d)", opts(true, false, false)).unwrap();
+        let line = b"foo1 x foo2";
+        let with = Replacement::new("bar$1", true);
+        assert_eq!(m.replacement_at(line, 0..4, &with), "bar1");
+        assert_eq!(m.replacement_at(line, 7..11, &with), "bar2");
+        assert_eq!(m.replacement_at(line, 2..4, &with), "", "no match there");
+        assert_eq!(m.replacement_at(line, 99..100, &with), "");
+        let plain = Matcher::new_single_line("foo", Options::default()).unwrap();
+        assert_eq!(plain.replacement_at(line, 0..3, &Replacement::new("$1", false)), "$1");
+        // Case-insensitive, multibyte text before and in the match: byte offsets, each match's
+        // own group.
+        let ci = Matcher::new_single_line(r"é(\w)", opts(true, false, false)).unwrap();
+        let line = "ÉA xé€ éb".as_bytes();
+        let with = Replacement::new("<$1>", true);
+        let mut got = Vec::new();
+        ci.each_in_line(line, |s, e| {
+            got.push(ci.replacement_at(line, s..e, &with));
+            true
+        });
+        assert_eq!(got, ["<A>", "<b>"]);
+        // Whole word: the match at that offset, not a longer one around it.
+        let ww = Matcher::new_single_line(r"fo(o)", opts(true, true, true)).unwrap();
+        assert_eq!(
+            ww.replacement_at(b"xfoo foo", 5..8, &Replacement::new("$1$1", true)),
+            "oo"
+        );
     }
 }

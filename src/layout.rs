@@ -454,6 +454,10 @@ pub struct SearchHit {
     pub details: Rect,
     /// The query, files to include and files to exclude inputs (the last two empty while hidden).
     pub inputs: [Rect; 3],
+    /// The `▸` / `▾` replace toggle left of the query.
+    pub replace_toggle: Rect,
+    /// The replace input (empty while hidden).
+    pub replace: Rect,
     pub list: Rect,
     pub rows: Vec<crate::search_view::RowKey>,
     /// The `×` dismiss button drawn (on the hovered row), by row.

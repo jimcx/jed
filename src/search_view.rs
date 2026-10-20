@@ -27,6 +27,13 @@
 //!   `dismiss` takes a line or a file out of the results (`Results::dismiss_line` /
 //!   `dismiss_file`); a selection on it moves to the row that takes its place.
 //! - `hover` is the results row under the pointer (its `×` dismiss button is drawn).
+//! - Replace (VS Code's `>` toggle left of the query, Cmd+Shift+H): a second input under the
+//!   query, shown while `replacing` (`toggle_replace`), between the query and the include input
+//!   in the Tab order. Its text is a `search::Replacement` template parsed for the search's mode
+//!   (`replacement`); while it's non-empty (`previewing`) each result line draws its matches
+//!   struck through followed by their replacements, and opening a result opens the file's
+//!   replace preview diff tab instead (`workspace_search::FileReplace`). Editing it re-searches
+//!   nothing.
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -37,7 +44,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::buffer::pos::{self, DisplayCol};
 use crate::field::TextField;
 use crate::grouped::{self, Group, ListState};
-use crate::search::{Options, SearchError};
+use crate::search::{Matcher, Options, Replacement, SearchError};
 use crate::workspace_search::{FileMatches, LineMatch, Query, Results};
 
 pub use crate::grouped::RowKey;
@@ -52,6 +59,7 @@ const CONTEXT_BEFORE: usize = 12;
 pub enum Input {
     #[default]
     Query,
+    Replace,
     Include,
     Exclude,
 }
@@ -59,6 +67,10 @@ pub enum Input {
 #[derive(Debug, Default)]
 pub struct SearchView {
     pub query: TextField,
+    /// The replace input's text (a `search::Replacement` template).
+    pub replace: TextField,
+    /// The replace input is shown.
+    pub replacing: bool,
     /// Files to include / exclude: comma-separated globs (`path_filter`).
     pub include: TextField,
     pub exclude: TextField,
@@ -141,6 +153,7 @@ impl SearchView {
     pub fn input_mut(&mut self) -> &mut TextField {
         match self.input {
             Input::Query => &mut self.query,
+            Input::Replace => &mut self.replace,
             Input::Include => &mut self.include,
             Input::Exclude => &mut self.exclude,
         }
@@ -163,11 +176,38 @@ impl SearchView {
         }
     }
 
-    /// Tab (`forward`) / Shift+Tab: the next / previous of query, include, exclude (while shown)
+    /// Shows the replace input, giving it the keys, or hides it, giving the query the keys if it
+    /// had them.
+    pub fn toggle_replace(&mut self) {
+        self.replacing = !self.replacing;
+        if self.replacing {
+            self.input = Input::Replace;
+            self.list_focused = false;
+        } else if self.input == Input::Replace {
+            self.input = Input::Query;
+        }
+    }
+
+    /// The replace input is shown and non-empty: result lines preview their replacements and
+    /// opening one opens the replace preview.
+    pub fn previewing(&self) -> bool {
+        self.replacing && !self.replace.text.is_empty()
+    }
+
+    /// The replace text as a template for `results`' search (its regex mode), while previewing.
+    pub fn replacement(&self, results: &Results) -> Option<Replacement> {
+        self.previewing()
+            .then(|| Replacement::new(&self.replace.text, results.query.options.regex))
+    }
+
+    /// Tab (`forward`) / Shift+Tab: the next / previous of query, replace, include, exclude (while shown)
     /// and the results list (while it has rows: it selects its first row when none is), wrapping.
     pub fn cycle(&mut self, results: Option<&Results>, forward: bool) {
         let list = results.filter(|r| !r.files.is_empty());
         let mut stops = vec![Some(Input::Query)];
+        if self.replacing {
+            stops.push(Some(Input::Replace));
+        }
         if self.details {
             stops.extend([Some(Input::Include), Some(Input::Exclude)]);
         }
@@ -423,6 +463,8 @@ pub fn rows(results: &Results, from: usize, n: usize) -> Vec<Shown<'_>> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preview<'a> {
     pub text: &'a str,
+    /// Where `text` starts in the line's text (`LineMatch::text`).
+    pub start: usize,
     pub cut: bool,
     pub ranges: Vec<Range<usize>>,
 }
@@ -464,9 +506,19 @@ pub fn preview(m: &LineMatch, width: usize) -> Preview<'_> {
         .collect();
     Preview {
         text: &text[start..],
+        start,
         cut,
         ranges,
     }
+}
+
+/// What replaces each of a preview's matches (`p.ranges` order): `with` expanded against the
+/// match found again in the line (`Matcher::replacement_at`). Only for lines drawn.
+pub fn replacements(m: &LineMatch, p: &Preview, matcher: &Matcher, with: &Replacement) -> Vec<String> {
+    p.ranges
+        .iter()
+        .map(|r| matcher.replacement_at(m.text.as_bytes(), p.start + r.start..p.start + r.end, with))
+        .collect()
 }
 
 #[cfg(test)]
@@ -565,6 +617,75 @@ mod tests {
         assert_eq!(at(&v), Some(Input::Query), "hidden: the query gets the keys back");
         assert!(v.hidden_filter(), "still applies");
         assert_eq!(v.query().exclude, "target");
+    }
+
+    /// The replace input: shown by its toggle (taking the keys), between the query and the
+    /// include input in the Tab order; hidden, the query gets the keys back; previews only while
+    /// it has text, parsed for the search's mode.
+    #[test]
+    fn the_replace_input() {
+        let mut r = results(&[("a", 1)]);
+        let mut v = with_height(5);
+        let at = |v: &SearchView| if v.list_focused { None } else { Some(v.input) };
+        v.toggle_replace();
+        assert!(v.replacing);
+        assert_eq!(at(&v), Some(Input::Replace));
+        v.toggle_details();
+        assert_eq!(at(&v), Some(Input::Include));
+        let mut order = Vec::new();
+        for _ in 0..5 {
+            v.cycle(Some(&r), true);
+            order.push(at(&v));
+        }
+        assert_eq!(
+            order,
+            [
+                Some(Input::Exclude),
+                None,
+                Some(Input::Query),
+                Some(Input::Replace),
+                Some(Input::Include)
+            ],
+            "from the include input the details took the keys to"
+        );
+        v.cycle(Some(&r), false);
+        assert_eq!(at(&v), Some(Input::Replace));
+        v.cycle(Some(&r), false);
+        assert_eq!(at(&v), Some(Input::Query));
+        assert!(!v.previewing() && v.replacement(&r).is_none(), "empty");
+        v.replace.insert("$1");
+        assert!(v.previewing());
+        assert_eq!(v.replacement(&r).unwrap().literal(), Some("$1"), "plain text");
+        r.query.options.regex = true;
+        assert_eq!(v.replacement(&r).unwrap().literal(), None, "a group");
+        v.input = Input::Replace;
+        v.toggle_replace();
+        assert_eq!(at(&v), Some(Input::Query), "hidden: the query gets the keys");
+        assert!(!v.previewing() && v.replacement(&r).is_none());
+        v.cycle(Some(&r), true);
+        assert_eq!(at(&v), Some(Input::Include), "skipped while hidden");
+    }
+
+    /// Each drawn match's replacement, expanded against its own match on the line.
+    #[test]
+    fn replacements_per_shown_match() {
+        let o = Options {
+            regex: true,
+            ..Options::default()
+        };
+        let matcher = Matcher::new_single_line(r"foo(\d)", o).unwrap();
+        let with = Replacement::new("bar$1", true);
+        let l = line("  foo1 x foo2", vec![2..6, 9..13]);
+        let p = preview(&l, 40);
+        assert_eq!(p.start, 2);
+        assert_eq!(replacements(&l, &p, &matcher, &with), ["bar1", "bar2"]);
+        // A long line's piece: offsets into the piece.
+        let l = LineMatch {
+            text_start: 100,
+            ..line("foo7", vec![100..104])
+        };
+        let p = preview(&l, 40);
+        assert_eq!(replacements(&l, &p, &matcher, &with), ["bar7"]);
     }
 
     #[test]

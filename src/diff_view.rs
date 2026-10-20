@@ -30,6 +30,7 @@ use crate::git::stage::{self, FileDiff, Side};
 use crate::history::{self, Snapshot};
 use crate::quick_diff::Want;
 use crate::syntax::{self, Language, Span};
+use crate::workspace_search::FileReplace;
 
 /// How long after an edit of a live side's buffer the diff is taken again (the gutter's delay).
 pub const DELAY: Duration = crate::quick_diff::DELAY;
@@ -59,6 +60,10 @@ pub enum Text {
     /// The empty tree: the left side of a root commit's diff (it has no parent to compare
     /// against; git compares it with the empty tree).
     Empty,
+    /// The open buffer's text (else the file on disk) with the Search view's replace applied:
+    /// every match not dismissed replaced (`DiffTab::replace`, a `FileReplace`). The replace
+    /// preview's right side; never in sessions.
+    Replaced,
 }
 
 impl Text {
@@ -72,12 +77,13 @@ impl Text {
             Text::History(s) => format!("History: {}", history::ago(s.time, history::now_ms())),
             Text::Commit(id) => short_commit(id),
             Text::Empty => "Empty Tree".into(),
+            Text::Replaced => "Replace Preview".into(),
         }
     }
 
     /// Read from the open buffer when there is one.
     pub fn live(self) -> bool {
-        matches!(self, Text::WorkTree | Text::Buffer)
+        matches!(self, Text::WorkTree | Text::Buffer | Text::Replaced)
     }
 
     fn git(self) -> bool {
@@ -113,6 +119,12 @@ impl Pair {
     pub const SAVED: Pair = Pair {
         left: Text::Disk,
         right: Text::Buffer,
+    };
+
+    /// The Search view's replace preview: the file as it is against it with the replace done.
+    pub const REPLACE: Pair = Pair {
+        left: Text::Buffer,
+        right: Text::Replaced,
     };
 
     /// File History's Compare: an entry against the buffer.
@@ -174,7 +186,17 @@ impl Pair {
                 left: Text::History(_),
                 right: Text::Buffer,
             } => format!("{name} ({})", self.left.title()),
+            // VS Code's "a.rs ↔ a.rs (Replace Preview)".
+            Pair::REPLACE => format!("{name} ↔ {name} ({})", self.right.title()),
             _ => format!("{name} ({} ↔ {})", self.left.title(), self.right.title()),
+        }
+    }
+
+    /// The header's titles of the left and right sides.
+    pub fn titles(self) -> (String, String) {
+        match self {
+            Pair::REPLACE => ("Current".into(), self.right.title()),
+            _ => (self.left.title(), self.right.title()),
         }
     }
 
@@ -503,6 +525,8 @@ pub struct Job {
     pub language: Option<Language>,
     /// `Settings::syntax_max_bytes`: a bigger side stays plain (0: always).
     pub syntax_max_bytes: usize,
+    /// What a `Text::Replaced` side replaces (`None`: it's the text as it is).
+    pub replace: Option<Arc<FileReplace>>,
 }
 
 /// Blocking: reads both sides of `job` and diffs them.
@@ -515,6 +539,11 @@ pub fn load(job: Job) -> Result<Doc, String> {
 }
 
 fn read(job: &Job, text: Text) -> Result<Vec<u8>, stage::Error> {
+    if text == Text::Replaced {
+        let bytes = read(job, Text::Buffer)?;
+        let replaced = job.replace.as_ref().and_then(|r| r.apply(&bytes));
+        return Ok(replaced.unwrap_or(bytes));
+    }
     if text.live()
         && let Some((rope, bom)) = &job.live
     {
@@ -563,6 +592,7 @@ fn read(job: &Job, text: Text) -> Result<Vec<u8>, stage::Error> {
             }
         }
         Text::Empty => Some(Vec::new()),
+        Text::Replaced => unreachable!("read above"),
     };
     Ok(bytes.unwrap_or_default())
 }
@@ -607,6 +637,8 @@ pub struct DiffTab {
     loaded: Option<Option<(BufferId, u64)>>,
     /// The index or the file changed since the last load: load again at once.
     stale: bool,
+    /// A replace preview's replace (`Text::Replaced`); `set_replace` changes it.
+    pub replace: Option<Arc<FileReplace>>,
 }
 
 impl crate::scrollbar::Scrollable for DiffTab {
@@ -640,6 +672,7 @@ impl DiffTab {
             running: None,
             loaded: None,
             stale: false,
+            replace: None,
         }
     }
 
@@ -663,6 +696,7 @@ impl DiffTab {
             loaded: self.loaded,
             // A load in flight reports to the original only.
             stale: self.stale || self.running.is_some(),
+            replace: self.replace.clone(),
         }
     }
 
@@ -688,6 +722,13 @@ impl DiffTab {
 
     /// The index or the file may have changed: load again.
     pub fn mark_stale(&mut self) {
+        self.stale = true;
+    }
+
+    /// A replace preview's new replace (the replace text or the results changed; `None`:
+    /// nothing replaced, e.g. the file dismissed): load again.
+    pub fn set_replace(&mut self, replace: Option<FileReplace>) {
+        self.replace = replace.map(Arc::new);
         self.stale = true;
     }
 
@@ -1149,6 +1190,7 @@ mod tests {
             live: live.map(|t| (Rope::from_str(t), false)),
             language: None,
             syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
+            replace: None,
         };
         let doc = load(job(Some("new\n"))).unwrap();
         assert_eq!((doc.left.line(0), doc.right.line(0)), ("old", "new"));
@@ -1165,6 +1207,55 @@ mod tests {
             .unwrap_err()
             .contains("gone")
         );
+    }
+
+    /// The replace preview: the buffer (else the disk) against it with the replace applied;
+    /// read only, no staging, titled as VS Code's; without a replace both sides are the same.
+    #[test]
+    fn replace_preview_side() {
+        use crate::workspace_search::{Query, Results, matcher};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        std::fs::write(root.join("a.txt"), "foo1\nkeep\nfoo2\n").unwrap();
+        let pair = Pair::REPLACE;
+        assert_eq!(pair.staging(), None);
+        assert!(!pair.needs_repo() && pair.live());
+        assert_eq!(pair.tab_title("a.txt"), "a.txt ↔ a.txt (Replace Preview)");
+        assert_eq!(pair.titles(), ("Current".into(), "Replace Preview".into()));
+        let query = Query {
+            pattern: r"foo(\d)".into(),
+            options: crate::search::Options {
+                regex: true,
+                ..Default::default()
+            },
+            ..Query::default()
+        };
+        let mut results = Results::new(1, query.clone());
+        results.matcher = Some(matcher(&query).unwrap());
+        let replace = results.file_replace(Path::new("a.txt"), "bar$1").map(Arc::new);
+        let job = |live: Option<&str>, replace: Option<Arc<FileReplace>>| Job {
+            repo: None,
+            root: root.clone(),
+            path: root.join("a.txt"),
+            pair,
+            live: live.map(|t| (Rope::from_str(t), false)),
+            language: None,
+            syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
+            replace,
+        };
+        let lines = |l: &Lines| (0..l.len()).map(|i| l.line(i).to_string()).collect::<Vec<_>>();
+        let doc = load(job(None, replace.clone())).unwrap();
+        assert_eq!(lines(&doc.left), ["foo1", "keep", "foo2"]);
+        assert_eq!(lines(&doc.right), ["bar1", "keep", "bar2"]);
+        assert_eq!(doc.hunks.len(), 2);
+        let doc = load(job(Some("foo3\n"), replace)).unwrap();
+        assert_eq!(
+            (lines(&doc.left), lines(&doc.right)),
+            (vec!["foo3".into()], vec!["bar3".into()])
+        );
+        let doc = load(job(None, None)).unwrap();
+        assert!(doc.hunks.is_empty());
     }
 
     /// Each side's spans as (text, key) pairs, line by line.
@@ -1228,6 +1319,7 @@ mod tests {
             live: None,
             language: None,
             syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
+            replace: None,
         };
         let pair = Pair::commit(id(&second), Some(id(&first)));
         assert_eq!(pair.staging(), None);

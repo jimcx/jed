@@ -151,6 +151,9 @@ pub struct Results {
     pub dismissed: HashMap<PathBuf, Dismissed>,
     /// "Collapse All" was the last of Collapse / Expand All: files arriving later come collapsed.
     pub collapse_new: bool,
+    /// The search's matcher (`None` for an empty query): the replace previews find each
+    /// match's groups with it (`FileReplace`, `Matcher::replacement_at`).
+    pub matcher: Option<Matcher>,
 }
 
 impl Results {
@@ -240,6 +243,71 @@ impl Results {
         for f in &mut self.files {
             f.collapsed = collapse;
         }
+    }
+
+    /// What replacing in the file at `path` (relative) with `template` does: this search's
+    /// matcher, the template parsed for its mode, the file's dismissed lines left alone. `None`
+    /// before a search ran (an empty query) or for a dismissed file.
+    pub fn file_replace(&self, path: &Path, template: &str) -> Option<FileReplace> {
+        let skip = match self.dismissed.get(path) {
+            Some(Dismissed::File) => return None,
+            Some(Dismissed::Lines(lines)) => lines.clone(),
+            None => BTreeSet::new(),
+        };
+        Some(FileReplace {
+            matcher: self.matcher.clone()?,
+            with: search::Replacement::new(template, self.query.options.regex),
+            skip,
+        })
+    }
+}
+
+/// Replacing in one file: every match the search's `matcher` finds in its current text, except
+/// on the `skip` lines (dismissed from the results), replaced by `with` (`$1` expanded per
+/// match). The text is searched again, so the replaced spans are what's there now, not the
+/// results' (which may be stale). The Search view's preview diff tab (`diff_view::Text::Replaced`).
+#[derive(Debug, Clone)]
+pub struct FileReplace {
+    pub matcher: Matcher,
+    pub with: search::Replacement,
+    /// 0-based lines (as `LineMatch::line`) left alone.
+    pub skip: BTreeSet<usize>,
+}
+
+impl FileReplace {
+    /// Every match in `rope` not on a skipped line, with its replacement, in order.
+    pub fn edits(&self, rope: &Rope) -> Vec<(search::Match, String)> {
+        let mut out = Vec::new();
+        self.matcher
+            .replace_in(rope, ByteIdx(0)..ByteIdx(rope.len()), &self.with, |m, text| {
+                if self.skip.is_empty() || !self.skip.contains(&pos::line_of(rope, m.start)) {
+                    out.push((m, text.to_string()));
+                }
+            });
+        out
+    }
+
+    /// A file's bytes with every edit applied (a UTF-8 BOM kept); `None` when the rest isn't
+    /// UTF-8.
+    pub fn apply(&self, bytes: &[u8]) -> Option<Vec<u8>> {
+        let (bom, body) = match bytes.strip_prefix(file::BOM) {
+            Some(body) => (true, body),
+            None => (false, bytes),
+        };
+        let text = std::str::from_utf8(body).ok()?;
+        let rope = Rope::from_str(text);
+        let mut out = Vec::with_capacity(bytes.len());
+        if bom {
+            out.extend_from_slice(file::BOM);
+        }
+        let mut at = 0;
+        for (m, with) in self.edits(&rope) {
+            out.extend_from_slice(&body[at..m.start.0]);
+            out.extend_from_slice(with.as_bytes());
+            at = m.end.0;
+        }
+        out.extend_from_slice(&body[at..]);
+        Some(out)
     }
 }
 
@@ -1316,5 +1384,65 @@ mod tests {
                 assert!(took < Duration::from_secs(2), "{pattern:?} too slow: {took:?}");
             }
         }
+    }
+
+    /// A file's replace: every match found again in the given text, dismissed lines left alone,
+    /// groups expanded per match, a BOM kept; not UTF-8: nothing.
+    #[test]
+    fn file_replace_applies_to_the_current_text() {
+        let query = Query {
+            pattern: r"foo(\d)".into(),
+            options: search::Options {
+                regex: true,
+                ..Default::default()
+            },
+            ..Query::default()
+        };
+        let mut r = Results::new(1, query.clone());
+        assert!(r.file_replace(Path::new("a"), "x").is_none(), "no matcher yet");
+        r.matcher = Some(matcher(&query).unwrap());
+        r.dismissed.insert("a".into(), Dismissed::Lines(BTreeSet::from([1])));
+        r.dismissed.insert("b".into(), Dismissed::File);
+        assert!(r.file_replace(Path::new("b"), "x").is_none(), "a dismissed file");
+        let a = r.file_replace(Path::new("a"), "bar$1").unwrap();
+        assert_eq!(
+            a.apply(b"foo1 foo2\nfoo3\nfoo4").unwrap(),
+            b"bar1 bar2\nfoo3\nbar4",
+            "line 1 dismissed"
+        );
+        let mut bom = file::BOM.to_vec();
+        bom.extend_from_slice(b"foo5");
+        assert_eq!(a.apply(&bom).unwrap()[3..], *b"bar5");
+        assert!(a.apply(&bom).unwrap().starts_with(file::BOM));
+        assert!(a.apply(b"foo1\xff").is_none());
+        let c = r.file_replace(Path::new("c"), "$$").unwrap();
+        assert_eq!(c.apply(b"foo1foo").unwrap(), b"$foo");
+        // CRLF and lone CR kept, the dismissed line (1) counted as the search counts lines
+        // (lone CR included), multibyte text, case-insensitive matches.
+        assert_eq!(
+            a.apply("é FOO1\r\nfoo2\rfoo3 ü\r\n".as_bytes()).unwrap(),
+            "é bar1\r\nfoo2\rbar3 ü\r\n".as_bytes()
+        );
+        // The lines the search found are the lines `apply` skips (the same numbering).
+        let text = "x\rfoo1\r\nfoo2\nfoo3";
+        let found: Vec<usize> = search_rope(r.matcher.as_ref().unwrap(), &Rope::from_str(text), 100)
+            .iter()
+            .map(|l| l.line)
+            .collect();
+        assert_eq!(found, [1, 2, 3]);
+        let mut r2 = Results::new(2, query.clone());
+        r2.matcher = r.matcher.clone();
+        r2.dismissed.insert("a".into(), Dismissed::Lines(BTreeSet::from([2])));
+        let a2 = r2.file_replace(Path::new("a"), "bar$1").unwrap();
+        assert_eq!(a2.apply(text.as_bytes()).unwrap(), b"x\rbar1\r\nfoo2\nbar3");
+        // Plain text: `$1` is taken literally.
+        let plain = Query {
+            pattern: "foo".into(),
+            ..Query::default()
+        };
+        let mut p = Results::new(3, plain.clone());
+        p.matcher = Some(matcher(&plain).unwrap());
+        let p = p.file_replace(Path::new("a"), "$1").unwrap();
+        assert_eq!(p.apply(b"foo1 Foo").unwrap(), b"$11 $1");
     }
 }

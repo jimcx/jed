@@ -122,7 +122,7 @@ impl App {
                     WHEEL_LINES
                 };
                 match hit {
-                    Hit::SidePanel if self.ui.side_panel == SidePanel::Search => self.search_scroll(delta),
+                    Hit::SidePanel if self.ui.side_panel == SidePanel::Search => self.search_scroll(delta, &m),
                     Hit::SidePanel if self.ui.side_panel == SidePanel::SourceControl => self.scm_scroll(delta),
                     Hit::SidePanel if self.ui.side_panel == SidePanel::Tools => self.tools_scroll(delta),
                     Hit::HistoryRow(_) | Hit::HistoryHeader => self.git_history.scroll_by(delta),

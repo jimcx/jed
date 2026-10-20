@@ -4,6 +4,9 @@
 //! "Searching…", "No results found", the truncated note), then the results: a row per file
 //! (chevron, name, dimmed folder, match count) followed, unless it's collapsed, by its matching
 //! lines with the matches highlighted. The hovered row shows a `×` (dismiss) at its right end.
+//! The replace toggle (`▸` / `▾`) sits in the margin left of the query; while it's open the
+//! replace input is under the query, and while that's non-empty each drawn line shows its
+//! matches struck through, each followed by its replacement (computed for the drawn rows only).
 //! Only the rows on screen are looked at.
 
 use ratatui::Frame;
@@ -18,6 +21,7 @@ use crate::app::{App, Focus};
 use crate::buffer::pos::{self, DisplayCol};
 use crate::layout::{ScrollBarHit, ScrollTarget, SearchHit, SidePanel};
 use crate::scrollbar::Scrollable;
+use crate::search::{Matcher, Replacement};
 use crate::search_view::{self, Input, Row};
 use crate::workspace_search::{FileMatches, LineMatch, MAX_MATCHES, Results};
 
@@ -50,7 +54,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
         height: 1,
     };
     let mut inputs = [field, Rect::default(), Rect::default()];
-    let mut cursors = [draw_field(out, field, &view.query, "Search", input, selected, dim); 3];
+    let mut cursors = [draw_field(out, field, &view.query, "Search", input, selected, dim); 4];
+    // VS Code's replace toggle in the margin left of the query.
+    let replace_toggle = Rect {
+        x: area.x,
+        y: area.y,
+        width: 1,
+        height: 1,
+    };
+    let chevron = if view.replacing { "▾" } else { "▸" };
+    out.set_stringn(area.x, area.y, chevron, 1, base.patch(theme.get("search.chevron")));
     let on = [view.options.case_sensitive, view.options.whole_word, view.options.regex];
     let mut toggles = [Rect::default(); 3];
     for (i, label) in TOGGLES.iter().enumerate() {
@@ -78,6 +91,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
     };
     out.set_stringn(details.x, details.y, "…", 1, base.patch(theme.get(key)));
     let mut y = area.y + 1;
+    let mut replace = Rect::default();
+    if view.replacing && y < bottom {
+        // As wide as the query (replace-c's Replace All button goes beside it).
+        replace = Rect { y, ..field };
+        cursors[3] = draw_field(out, replace, &view.replace, "Replace", input, selected, dim);
+        y += 1;
+    }
     if view.details {
         let fields = [(&view.include, "files to include"), (&view.exclude, "files to exclude")];
         for (i, (text, placeholder)) in fields.into_iter().enumerate() {
@@ -99,6 +119,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
         Input::Query => cursors[0],
         Input::Include => cursors[1],
         Input::Exclude => cursors[2],
+        Input::Replace => cursors[3],
     };
     let text_w = area.width.saturating_sub(2) as usize;
     let line = |out: &mut ratatui::buffer::Buffer, y: &mut u16, text: &str, style: Style| {
@@ -132,6 +153,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
         toggles,
         details,
         inputs,
+        replace_toggle,
+        replace,
         list: Rect::default(),
         rows: Vec::new(),
         dismiss: Vec::new(),
@@ -165,6 +188,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
         action: base.patch(theme.get("search.action")),
         chevron: base.patch(theme.get("search.chevron")),
     };
+    let with = view.replacement(results);
+    let preview = with
+        .as_ref()
+        .zip(results.matcher.as_ref())
+        .map(|(with, matcher)| ReplacePreview {
+            matcher,
+            with,
+            removed: base.patch(theme.get("search.replace.removed")),
+            inserted: base.patch(theme.get("search.replace.inserted")),
+        });
     // The selected row as the explorer draws its own: brighter while the list has the keys.
     let selection = if focused && view.list_focused {
         theme.get("list.active")
@@ -218,6 +251,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
                 list.width.saturating_sub(LINE_INDENT + 1 + right),
                 m,
                 (s.base, s.dim, s.matched),
+                preview.as_ref(),
             ),
         }
         if let Some(r) = dismiss {
@@ -293,8 +327,18 @@ fn draw_file(out: &mut ratatui::buffer::Buffer, x: u16, y: u16, width: u16, file
     }
 }
 
-/// One matching line in `width` cells, its matches highlighted; "…" where text is cut. Also the
-/// Locations list's previews (`ui::panel`).
+/// A result line's replace preview: each match struck through (`removed`), then what replaces it
+/// (`inserted`).
+pub(super) struct ReplacePreview<'a> {
+    pub matcher: &'a Matcher,
+    pub with: &'a Replacement,
+    pub removed: Style,
+    pub inserted: Style,
+}
+
+/// One matching line in `width` cells, its matches highlighted (or, with `replace`, struck
+/// through and followed by their replacements); "…" where text is cut. Also the Locations list's
+/// previews (`ui::panel`).
 pub(super) fn draw_line(
     out: &mut ratatui::buffer::Buffer,
     x: u16,
@@ -302,6 +346,7 @@ pub(super) fn draw_line(
     width: u16,
     m: &LineMatch,
     (base, dim, matched): (Style, Style, Style),
+    replace: Option<&ReplacePreview>,
 ) {
     let width = width as usize;
     if width < 2 {
@@ -313,9 +358,30 @@ pub(super) fn draw_line(
         out.set_stringn(x, y, "…", 1, dim);
         col = 1;
     }
-    let mut ranges = p.ranges.iter().peekable();
-    let graphemes: Vec<(usize, &str)> = p.text.grapheme_indices(true).collect();
-    for (k, &(off, g)) in graphemes.iter().enumerate() {
+    let replacements = replace.map(|r| search_view::replacements(m, &p, r.matcher, r.with));
+    // The text in styled pieces: plain, a match, its replacement, ….
+    let mut pieces: Vec<(&str, Style)> = Vec::new();
+    let mut at = 0;
+    for (k, r) in p.ranges.iter().enumerate() {
+        if r.start < at {
+            continue;
+        }
+        pieces.push((&p.text[at..r.start], base));
+        match (&replacements, replace) {
+            (Some(reps), Some(look)) => {
+                pieces.push((&p.text[r.start..r.end], look.removed));
+                pieces.push((&reps[k], look.inserted));
+            }
+            _ => pieces.push((&p.text[r.start..r.end], matched)),
+        }
+        at = r.end;
+    }
+    pieces.push((&p.text[at..], base));
+    let graphemes: Vec<(&str, Style)> = pieces
+        .iter()
+        .flat_map(|&(text, style)| text.graphemes(true).map(move |g| (g, style)))
+        .collect();
+    for (k, &(g, style)) in graphemes.iter().enumerate() {
         let (shown, w) = pos::display_grapheme(g, DisplayCol(0), 1);
         let last = k + 1 == graphemes.len();
         // Keep a cell for "…" unless this is the last grapheme.
@@ -323,11 +389,6 @@ pub(super) fn draw_line(
             out.set_stringn(x + col as u16, y, "…", 1, dim);
             break;
         }
-        while ranges.peek().is_some_and(|r| r.end <= off) {
-            ranges.next();
-        }
-        let hit = ranges.peek().is_some_and(|r| r.start <= off && off < r.end);
-        let style = if hit { matched } else { base };
         out.set_stringn(x + col as u16, y, &shown, w, style);
         col += w;
     }

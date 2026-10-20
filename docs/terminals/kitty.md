@@ -61,6 +61,7 @@ map cmd+w
 map cmd+b
 map cmd+shift+e
 map cmd+shift+f
+map cmd+shift+h
 map cmd+shift+j
 map cmd+1
 map cmd+2
