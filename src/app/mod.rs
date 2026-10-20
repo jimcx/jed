@@ -104,6 +104,8 @@ enum Timer {
     Backup,
     /// Log tabs may wake the loop again (`tools::LOG_FRAME` after the last wake).
     Logs,
+    /// Quick open's matching was still running at the last tick (`FILES_POLL`).
+    Files,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,6 +299,10 @@ pub struct App {
     files: Option<FileMatcher>,
     /// A `FilesMatched` event is queued.
     files_pending: Arc<AtomicBool>,
+    /// When to tick quick open's matcher again: its last tick found matching still running,
+    /// and nucleo can miss the wake-up for that run (it checks `should_notify` before our
+    /// tick sets it), so polling is what takes in its results.
+    files_poll: Option<Instant>,
     /// Changes the log filter; `None` when logging is off (and in tests, unless set).
     pub log: Option<logging::LevelHandle>,
     pub log_dir: PathBuf,
@@ -443,6 +449,7 @@ impl App {
             palette: None,
             files: None,
             files_pending: Arc::new(AtomicBool::new(false)),
+            files_poll: None,
             log: None,
             log_dir: logging::log_dir(),
             logs: Default::default(),
@@ -664,10 +671,15 @@ impl App {
             .log_tabs
             .deadline()
             .map(|d| (tokio::time::Instant::from_std(d), Timer::Logs));
-        let next = [fs, search, hover, completion, quick_diff, diff, blame, backup, logs]
-            .into_iter()
-            .flatten()
-            .min_by_key(|(at, _)| *at);
+        let files = self
+            .files_poll
+            .map(|d| (tokio::time::Instant::from_std(d), Timer::Files));
+        let next = [
+            fs, search, hover, completion, quick_diff, diff, blame, backup, logs, files,
+        ]
+        .into_iter()
+        .flatten()
+        .min_by_key(|(at, _)| *at);
         async move {
             match next {
                 Some((at, timer)) => {
@@ -691,6 +703,7 @@ impl App {
             Timer::Blame => self.sync_blame(),
             Timer::Backup => self.backup_tick(Instant::now()),
             Timer::Logs => self.logs_tick(),
+            Timer::Files => self.files_matched(),
         }
     }
 

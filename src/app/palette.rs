@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 
@@ -18,6 +19,8 @@ use crate::paths;
 
 /// Mouse wheel steps through this many rows.
 const WHEEL_ROWS: isize = 3;
+/// How soon quick open ticks its matcher again while matching runs (nucleo suggests ~10 ms).
+const FILES_POLL: Duration = Duration::from_millis(10);
 
 impl App {
     /// Opens (or reopens) the palette with `text` in its input.
@@ -136,8 +139,9 @@ impl App {
             Mode::Files => {
                 let files = self.file_matcher();
                 files.set_query(palette::file_query(&query));
-                files.tick();
+                let running = files.tick();
                 let rows = files.rows();
+                self.files_poll = running.then(|| Instant::now() + FILES_POLL);
                 self.start_file_walk();
                 rows
             }
@@ -207,12 +211,14 @@ impl App {
     /// Matching made progress: take in the new results.
     pub(super) fn files_matched(&mut self) {
         self.files_pending.store(false, Ordering::Release);
+        self.files_poll = None;
         if self.palette.as_ref().is_none_or(|p| p.mode() != Mode::Files) {
             return;
         }
         let Some(files) = &mut self.files else { return };
-        files.tick();
+        let running = files.tick();
         let rows = files.rows();
+        self.files_poll = running.then(|| Instant::now() + FILES_POLL);
         if let Some(p) = &mut self.palette {
             // Keep the selection on the same file where possible.
             let selected = p.selected_row().map(|r| r.action.clone());
