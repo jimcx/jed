@@ -345,6 +345,7 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
   - Side by side (target terminal width > 120 columns)
   - Opens in an editor tab, so it can be split like any other tab
   - Jump to next / previous change
+  - An Open File button in its header opens the file at the cursor's line; "Git: Toggle Changes / File" (`git.toggleChanges`, unbound) switches between a file and its diff tab (the group's own, else its changes), each at the other's cursor line
 - Stage / unstage a whole file or a single hunk
   - From the diff view and from the gutter
   - Hunks always come from the file on disk, never the buffer

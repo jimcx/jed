@@ -76,6 +76,9 @@
 //!   over the side panel's edge, the bottom panel's top border and split dividers (by
 //!   direction), kept while dragging one wherever the pointer goes, back to the default
 //!   elsewhere and during a text drag.
+//! - `diff_open_file`: "Git: Toggle Changes / File" switches between a file and its diff tab
+//!   (the group's own, else its changes), each landing on the other's cursor line; the diff
+//!   header's Open File button opens the file there, also when it isn't open yet.
 
 mod render_whitespace {
     use std::fs;
@@ -4662,5 +4665,159 @@ mod resize_pointer {
         app.mouse(K::Drag(MouseButton::Left), right.x, right.y + 2);
         assert_eq!(app.pointer, Pointer::Default);
         app.mouse(K::Up(MouseButton::Left), right.x, right.y + 2);
+    }
+}
+
+mod diff_open_file {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use crossterm::event::{KeyCode as K, MouseButton, MouseEventKind};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::{App, InitialFile};
+    use crate::buffer::Buffer;
+    use crate::buffer::pos;
+    use crate::command::Command;
+    use crate::diff_view::Pair;
+    use crate::git::test_repo::{commit_all, init};
+    use crate::milestone10_tests::dirs;
+    use crate::workspace::Workspace;
+    use crate::workspace::trust::TrustStore;
+
+    /// `proj/a.txt` (20 lines) committed, then lines 5 and 15 changed on disk.
+    fn project() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let (dir, root, state) = dirs();
+        init(&root);
+        let lines: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
+        fs::write(root.join("a.txt"), lines.join("\n") + "\n").unwrap();
+        commit_all(&root, "one");
+        let mut changed = lines.clone();
+        changed[5] = "five".into();
+        changed[15] = "fifteen".into();
+        fs::write(root.join("a.txt"), changed.join("\n") + "\n").unwrap();
+        (dir, root, state)
+    }
+
+    async fn app(root: &Path, state: &Path, open: bool) -> App {
+        let ws = Workspace::load(root.to_path_buf());
+        let trust = TrustStore::load(state.join("trust.toml"));
+        let initial = open.then(|| InitialFile {
+            buffer: Buffer::open(&root.join("a.txt")).unwrap(),
+            goto: None,
+        });
+        let mut app = App::new(ws, trust, initial, true);
+        app.test_start();
+        app.test_plain_whitespace();
+        assert!(
+            app.settle(|a| !a.git.running() && a.git.status.as_ref().is_some_and(|s| !s.entries.is_empty()))
+                .await
+        );
+        app
+    }
+
+    /// The active text tab's cursor line.
+    fn file_line(app: &App) -> usize {
+        let buf = app.active_buffer().expect("a text tab");
+        pos::line_of(
+            &buf.rope,
+            app.group().active_tab().unwrap().view.selections.primary().head,
+        )
+    }
+
+    fn draw(app: &mut App) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn diff_open_file_toggles_between_a_file_and_its_diff_at_the_same_line() {
+        let (_dir, root, state) = project();
+        let mut app = app(&root, &state, true).await;
+        // The file at line 10 → its unstaged changes, on line 10 rather than the first change.
+        app.test_execute(Command::GoToLine);
+        app.type_text("11");
+        app.press(K::Enter, crossterm::event::KeyModifiers::NONE);
+        assert_eq!(file_line(&app), 10);
+        app.test_execute(Command::ToggleChanges);
+        assert!(app.settle(|a| a.diffs_settled()).await);
+        let d = app.group().active_diff().expect("the diff tab");
+        assert_eq!((d.pair, d.cursor_line()), (Pair::UNSTAGED, 10));
+        draw(&mut app);
+
+        // Down to line 12, then back to the file there.
+        app.press(K::Down, crossterm::event::KeyModifiers::NONE);
+        app.press(K::Down, crossterm::event::KeyModifiers::NONE);
+        assert_eq!(app.group().active_diff().unwrap().cursor_line(), 12);
+        app.test_execute(Command::ToggleChanges);
+        assert_eq!(file_line(&app), 12);
+        assert_eq!(app.group().tabs.len(), 2, "the file's own tab");
+
+        // And again to the same diff tab (not a new one), at line 12.
+        app.test_execute(Command::ToggleChanges);
+        assert_eq!(app.group().tabs.len(), 2);
+        assert_eq!(app.group().active_diff().unwrap().cursor_line(), 12);
+
+        // The header's Open File button: the file at the diff's line (15).
+        app.test_execute(Command::NextChange);
+        assert_eq!(app.group().active_diff().unwrap().cursor_line(), 15);
+        let term = draw(&mut app);
+        let g = app.groups.active;
+        let button = app
+            .hits
+            .group(g)
+            .unwrap()
+            .diff
+            .as_ref()
+            .unwrap()
+            .open_file
+            .expect("drawn");
+        let drawn: String = (button.x..button.x + button.width)
+            .map(|x| term.backend().buffer()[(x, button.y)].symbol().to_string())
+            .collect();
+        assert_eq!(drawn, " Open File ");
+        app.mouse(MouseEventKind::Down(MouseButton::Left), button.x + 2, button.y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), button.x + 2, button.y);
+        assert_eq!(file_line(&app), 15);
+        // The diff tab is still there for the toggle back.
+        assert_eq!(app.group().tabs.len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn diff_open_file_opens_a_file_not_yet_open_at_the_diffs_line() {
+        let (_dir, root, state) = project();
+        let mut app = app(&root, &state, false).await;
+        app.open_diff(root.join("a.txt"), Pair::UNSTAGED);
+        assert!(app.settle(|a| a.diffs_settled()).await);
+        assert_eq!(app.group().active_diff().unwrap().cursor_line(), 5, "the first change");
+        let term = draw(&mut app);
+        drop(term);
+        let g = app.groups.active;
+        let button = app.hits.group(g).unwrap().diff.as_ref().unwrap().open_file.unwrap();
+        app.mouse(MouseEventKind::Down(MouseButton::Left), button.x, button.y);
+        assert!(app.settle(|a| a.active_buffer().is_some()).await);
+        assert_eq!(app.active_buffer().unwrap().path, root.join("a.txt"));
+        assert_eq!(file_line(&app), 5);
+
+        // A file without changes: Toggle says so and stays.
+        fs::write(root.join("b.txt"), "b\n").unwrap();
+        commit_all(&root, "two");
+        assert!(app.settle(|a| !a.git.running()).await);
+        app.test_execute(Command::QuickOpen);
+        app.type_text("b.txt");
+        assert!(
+            app.settle(|a| a.palette.as_ref().is_some_and(|p| !p.rows.is_empty()))
+                .await
+        );
+        app.press(K::Enter, crossterm::event::KeyModifiers::NONE);
+        assert!(
+            app.settle(|a| a.active_buffer().is_some_and(|b| b.path.ends_with("b.txt")))
+                .await
+        );
+        app.test_execute(Command::ToggleChanges);
+        assert!(app.group().active_diff().is_none());
+        assert_eq!(app.message.as_ref().unwrap().text, "b.txt has no changes");
     }
 }

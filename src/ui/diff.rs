@@ -8,7 +8,8 @@
 //! token foregrounds under those backgrounds (VS Code), walked with one index per side over the
 //! visible rows; a side without spans is plain. Each change's first row ends
 //! with a ` Stage ` / ` Unstage ` button when the view stages, and an unstaged view's with a red
-//! ` Revert ` on the index (left) side. Only the visible rows are drawn.
+//! ` Revert ` on the index (left) side. The header ends with ` Open File ` (the file at the
+//! cursor's line) left of the number of changes. Only the visible rows are drawn.
 
 use std::ops::Range;
 
@@ -28,6 +29,8 @@ use crate::theme::Theme;
 
 /// The Revert button's label.
 const REVERT: &str = " Revert ";
+/// The header's button opening the file (`git.toggleChanges`).
+const OPEN_FILE: &str = " Open File ";
 
 /// The colours, looked up once per frame.
 struct Styles {
@@ -151,6 +154,20 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
     let sw = summary.width() as u16;
     if sw + 20 < area.width {
         out.set_stringn(area.x + area.width - sw, area.y, &summary, sw as usize, header);
+    }
+    // Open File left of the summary (VS Code's diff editor toolbar), over the right title's end.
+    let ow = OPEN_FILE.width() as u16;
+    let right_end = area.x + area.width - if sw + 20 < area.width { sw } else { 0 };
+    if right_end >= area.x + ow + 20 {
+        let rect = Rect::new(right_end - ow, area.y, ow, 1);
+        out.set_stringn(
+            rect.x,
+            rect.y,
+            OPEN_FILE,
+            ow as usize,
+            header.patch(theme.get("quickDiff.action")),
+        );
+        hit.open_file = Some(rect);
     }
 
     let message = |out: &mut Cells, text: &str| {

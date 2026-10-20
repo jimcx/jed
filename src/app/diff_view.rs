@@ -11,10 +11,12 @@ use std::time::Instant;
 
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
+use super::files::Goto;
 use super::quick_diff::StageAt;
 use super::{App, AppEvent, Focus, Level};
 use crate::buffer::BufferId;
 use crate::buffer::change::ChangeSet;
+use crate::buffer::pos;
 use crate::command::{Command, Motion};
 use crate::diff_view::{self, DiffTab, Doc, Job, Pair};
 use crate::git::stage::{self, Side};
@@ -130,6 +132,55 @@ impl App {
             }
         };
         self.open_diff(path, Pair::git(side));
+    }
+
+    /// `git.toggleChanges`: from a diff tab its file, else the active file's diff.
+    pub(super) fn toggle_changes(&mut self) {
+        if self.group().active_diff().is_some() {
+            self.open_diff_source();
+            return;
+        }
+        let Some(path) = self.active_path() else { return };
+        let Some(line) = self
+            .active_buffer()
+            .zip(self.group().active_tab())
+            .map(|(b, t)| pos::line_of(&b.rope, t.view.selections.primary().head))
+        else {
+            return;
+        };
+        // The group's diff tab of the file, if it has one; else the file's changes.
+        let pair = self
+            .group()
+            .tabs
+            .iter()
+            .find_map(|t| t.diff().filter(|d| d.path == path).map(|d| d.pair));
+        match pair {
+            Some(pair) => self.open_diff(path.clone(), pair),
+            None => self.open_changes(),
+        }
+        if let Some(d) = self.group_mut().active_diff_mut()
+            && d.path == path
+        {
+            d.go_to_line(line);
+            self.needs_redraw = true;
+        }
+    }
+
+    /// The diff header's Open File: the active diff tab's file, the cursor on the diff's line
+    /// (kept where it is when the group's tab of the file already has it on that line).
+    pub(super) fn open_diff_source(&mut self) {
+        let Some((path, line)) = self.group().active_diff().map(|d| (d.path.clone(), d.cursor_line())) else {
+            return;
+        };
+        let on_line = self.buffers.find_path(&path).is_some_and(|id| {
+            let (Some(buf), Some(i)) = (self.buffers.get(id), self.group().find(id)) else {
+                return false;
+            };
+            let view = &self.group().tabs[i].text().unwrap().view;
+            pos::line_of(&buf.rope, view.selections.primary().head) == line
+        });
+        let goto = (!on_line).then_some(Goto::Cursor(line + 1, 1));
+        self.open_file(path, true, goto);
     }
 
     /// `file.compareWithSaved` (the banner's Show Diff): the file on disk against the buffer.
@@ -496,6 +547,11 @@ impl App {
                     return true;
                 };
                 let p = ratatui::layout::Position { x: m.column, y: m.row };
+                if h.open_file.is_some_and(|r| r.contains(p)) {
+                    self.focus_group(g);
+                    self.open_diff_source();
+                    return true;
+                }
                 let button = h.buttons.iter().find(|(r, _)| r.contains(p)).map(|(_, k)| *k);
                 let revert = h.reverts.iter().find(|(r, _)| r.contains(p)).map(|(_, k)| *k);
                 if h.rows.contains(p) {

@@ -597,6 +597,9 @@ pub struct DiffTab {
     pub inline: bool,
     /// Scroll the cursor's row into view at the next draw (centred when off screen).
     pub reveal: bool,
+    /// Where the first load puts the cursor instead of the first change: the row of this line
+    /// of the right side (`go_to_line` before the diff arrived).
+    line: Option<usize>,
     generation: u64,
     running: Option<u64>,
     /// What the last load read the live side from: `Some(None)` the disk, `Some(Some(_))` that
@@ -632,6 +635,7 @@ impl DiffTab {
             height: 0,
             inline: false,
             reveal: false,
+            line: None,
             generation: 0,
             running: None,
             loaded: None,
@@ -653,6 +657,7 @@ impl DiffTab {
             height: self.height,
             inline: self.inline,
             reveal: false,
+            line: self.line,
             generation: 0,
             running: None,
             loaded: self.loaded,
@@ -713,8 +718,10 @@ impl DiffTab {
                     None => self.cursor = 0,
                 }
                 if first {
-                    // Opening goes to the first change (VS Code).
-                    if let Some(&row) = self.aligned().starts.first() {
+                    // Opening goes to the line asked for, else the first change (VS Code).
+                    if let Some(line) = self.line.take() {
+                        self.cursor = self.aligned().row_of(true, line);
+                    } else if let Some(&row) = self.aligned().starts.first() {
                         self.cursor = row;
                     }
                 }
@@ -768,6 +775,29 @@ impl DiffTab {
             self.top = self.aligned().row_of(right, line);
         }
         self.clamp();
+    }
+
+    /// The right side's line at the cursor (the file's, for Git: Toggle Changes / File): a
+    /// removed line's is the next right line, where the removal was; 0 before the first load.
+    pub fn cursor_line(&self) -> usize {
+        let rows = self.rows();
+        let after = rows.get(self.cursor..).unwrap_or_default();
+        match after.iter().find_map(|r| r.right) {
+            Some(line) => line,
+            // Removed lines at the end: below the last right line.
+            None => rows.iter().rev().find_map(|r| r.right).map_or(0, |l| l + 1),
+        }
+    }
+
+    /// The cursor to the row of the right side's line `line` (else the nearest before it),
+    /// scrolled into view; before the first load, where that load puts it.
+    pub fn go_to_line(&mut self, line: usize) {
+        if self.doc.is_none() {
+            self.line = Some(line);
+            return;
+        }
+        self.cursor = self.aligned().row_of(true, line);
+        self.reveal = true;
     }
 
     /// The hunk the current row belongs to.
@@ -1017,6 +1047,35 @@ mod tests {
         assert_eq!(changed_parts("same", "same"), (4..4, 4..4));
         assert_eq!(changed_parts("é1é", "é2é"), (2..3, 2..3));
         assert_eq!(changed_parts("ab", "b"), (0..1, 0..0));
+    }
+
+    #[test]
+    fn a_tab_maps_its_cursor_to_file_lines_and_back() {
+        // "b" removed, "d" changed, "f" removed at the end.
+        let doc = || Doc::new("a\nb\nc\nd\ne\nf\n".into(), "a\nc\nD\ne\n".into()).unwrap();
+        let mut t = DiffTab::new(1, "/r/f.txt".into(), Pair::UNSTAGED);
+        assert_eq!(t.cursor_line(), 0, "nothing loaded");
+        // Asked for before the first load: that line's row, not the first change.
+        t.go_to_line(2);
+        let g = t.begin(None);
+        assert!(t.finish(g, Ok(doc())));
+        assert_eq!(t.rows()[t.cursor].right, Some(2));
+        assert_eq!(t.cursor_line(), 2);
+        for inline in [false, true] {
+            t.set_layout(inline);
+            let rows = t.rows().to_vec();
+            let removed_b = rows
+                .iter()
+                .position(|r| r.left == Some(1) && r.right.is_none())
+                .unwrap();
+            t.cursor = removed_b;
+            assert_eq!(t.cursor_line(), 1, "a removed line: where it was, the next line");
+            t.cursor = rows.len() - 1;
+            assert_eq!(rows[t.cursor].right, None, "the removed last line");
+            assert_eq!(t.cursor_line(), 4, "below the last line");
+            t.go_to_line(3);
+            assert_eq!(rows[t.cursor].right, Some(3));
+        }
     }
 
     #[test]

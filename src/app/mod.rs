@@ -1004,6 +1004,7 @@ impl App {
             Command::PreviousChange => self.go_to_change(false),
             Command::CompareWithSaved => self.compare_with_saved(),
             Command::OpenChange => self.open_changes(),
+            Command::ToggleChanges => self.toggle_changes(),
             Command::StageFile | Command::UnstageFile if self.scm_focused() => {
                 self.scm_stage(cmd == Command::UnstageFile)
             }

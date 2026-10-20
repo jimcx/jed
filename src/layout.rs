@@ -541,8 +541,8 @@ pub struct ScrollBarHit {
     pub thumb: Option<crate::scrollbar::Thumb>,
 }
 
-/// A diff tab: the rows' rect (below its header) and each change's Stage / Unstage button
-/// (with the change's hunk index).
+/// A diff tab: the rows' rect (below its header), each change's Stage / Unstage button (with
+/// the change's hunk index) and the header's Open File button.
 #[derive(Debug, Clone, Default)]
 pub struct DiffHit {
     pub rows: Rect,
@@ -550,6 +550,8 @@ pub struct DiffHit {
     pub buttons: Vec<(Rect, usize)>,
     /// Revert (an unstaged diff only), by hunk.
     pub reverts: Vec<(Rect, usize)>,
+    /// The header's Open File button (the file at the cursor's line), when it fits.
+    pub open_file: Option<Rect>,
 }
 
 /// The changed-on-disk banner: its row and each button.

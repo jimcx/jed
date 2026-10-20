@@ -188,6 +188,10 @@ pub enum Command {
     CompareWithSaved,
     /// The diff view of the active file's unstaged changes (staged ones if it has only those).
     OpenChange,
+    /// Switches between a diff tab and its file: from a diff tab, the file at the cursor's line
+    /// (the diff header's Open File button); from a file, its diff tab in the group, else its
+    /// changes as `OpenChange`, at the cursor's line.
+    ToggleChanges,
     /// Stages / unstages the active file's changes (all of them; from disk after saving).
     StageFile,
     UnstageFile,
@@ -716,6 +720,7 @@ impl Command {
             Command::PreviousChange,
             Command::CompareWithSaved,
             Command::OpenChange,
+            Command::ToggleChanges,
             Command::StageFile,
             Command::UnstageFile,
             Command::StageAll,
@@ -948,6 +953,7 @@ impl Command {
             Command::ShowFileHistory => "fileHistory.show".into(),
             Command::RestoreFileHistory => "fileHistory.restore".into(),
             Command::OpenChange => "git.openChange".into(),
+            Command::ToggleChanges => "git.toggleChanges".into(),
             Command::StageFile => "git.stageFile".into(),
             Command::UnstageFile => "git.unstageFile".into(),
             Command::StageAll => "git.stageAll".into(),
@@ -1216,6 +1222,7 @@ impl Command {
             Command::ShowFileHistory => "File History: Show",
             Command::RestoreFileHistory => "File History: Restore",
             Command::OpenChange => "Git: Open Changes",
+            Command::ToggleChanges => "Git: Toggle Changes / File",
             Command::StageFile => "Git: Stage File",
             Command::UnstageFile => "Git: Unstage File",
             Command::StageAll => "Git: Stage All Changes",
@@ -1414,6 +1421,7 @@ mod tests {
             Command::Commit(_) => 95,
             Command::IndentLines => 96,
             Command::OutdentLines => 97,
+            Command::ToggleChanges => 98,
         }
     }
     const VARIANTS: u8 = 98;
