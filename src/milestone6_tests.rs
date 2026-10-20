@@ -288,16 +288,17 @@ fn milestone_6_draws_every_selection_and_cursor() {
     let x0 = row[..row.find("ab ab ab").unwrap()].chars().count() as u16; // one char per cell
 
     let selection_bg = app.theme.get("editor.selection").bg;
-    let reversed = app.theme.get("editor.cursor.secondary").add_modifier;
+    // Secondary cursors under the default `cursor_style = "line"`: underlined cells.
+    let marked = app.theme.get("editor.cursor.secondaryUnderline").add_modifier;
     let cell = |b: u16| &buf[(x0 + b, y)];
     for b in [0, 1, 3, 4, 6, 7] {
         assert_eq!(cell(b).bg, selection_bg.unwrap(), "byte {b} is selected");
     }
     assert_ne!(cell(2).bg, selection_bg.unwrap());
-    // Heads are at the ends: the primary's (2) is the terminal cursor, the others are reversed.
-    assert!(!cell(2).modifier.contains(reversed));
-    assert!(cell(5).modifier.contains(reversed));
-    assert!(cell(8).modifier.contains(reversed), "a cursor at the line end");
+    // Heads are at the ends: the primary's (2) is the terminal cursor, the others underlined.
+    assert!(!cell(2).modifier.contains(marked));
+    assert!(cell(5).modifier.contains(marked));
+    assert!(cell(8).modifier.contains(marked), "a cursor at the line end");
     term.backend_mut().assert_cursor_position((x0 + 2, y));
     assert!(row_text(11).contains("3 selections"), "status: {}", row_text(11));
     assert!(!row_text(11).contains("Ln "));
@@ -338,10 +339,7 @@ fn milestone_6_draws_every_selection_and_cursor() {
         assert_eq!(buf[(x0, y)].bg, selection_bg.unwrap(), "row {y} selected");
         assert_eq!(buf[(x0 + 1, y)].bg, selection_bg.unwrap(), "row {y} selected");
         assert_ne!(buf[(x0 + 3, y)].bg, selection_bg.unwrap(), "row {y}: cd isn't");
-        assert!(
-            buf[(x0 + 2, y)].modifier.contains(reversed),
-            "row {y}: secondary cursor"
-        );
+        assert!(buf[(x0 + 2, y)].modifier.contains(marked), "row {y}: secondary cursor");
     }
 }
 

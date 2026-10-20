@@ -37,6 +37,23 @@ pub struct Settings {
     /// `[settings] render_whitespace`. "View: Toggle Render Whitespace" overrides it for the
     /// session (`App::render_whitespace`).
     pub render_whitespace: RenderWhitespace,
+    /// The terminal cursor's shape (DECSCUSR, sent by `terminal::enter` and again when it
+    /// changes) and secondary cursors' look (`ui::editor`): `[settings] cursor_style`.
+    pub cursor_style: CursorStyle,
+    /// The terminal cursor blinks: `[settings] cursor_blinking`.
+    pub cursor_blinking: bool,
+}
+
+/// VS Code's `editor.cursorStyle`, the shapes a terminal can draw: a bar before the char, a
+/// block over it, a line under it. Secondary cursors (drawn by jed) are an underlined cell for
+/// `line` / `underline`, a reversed one for `block`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CursorStyle {
+    #[default]
+    Line,
+    Block,
+    Underline,
 }
 
 /// VS Code's `editor.renderWhitespace`: which whitespace the editor draws visibly. Only U+0020
@@ -70,6 +87,8 @@ impl Default for Settings {
             match_brackets: true,
             quick_suggestions: true,
             render_whitespace: RenderWhitespace::All,
+            cursor_style: CursorStyle::Line,
+            cursor_blinking: true,
         }
     }
 }

@@ -73,7 +73,10 @@ impl Theme {
             ("editor", fg_bg(0xD4D4D4, 0x1E1E1E)),
             ("editor.lineHighlight", Style::new().bg(c(0x2A2D2E))),
             ("editor.selection", Style::new().bg(c(0x264F78))),
+            // Secondary cursors: `cursor_style = "block"` reverses the cell, `line` / `underline`
+            // underline it in Dark+'s `editorCursor.foreground`.
             ("editor.cursor.secondary", Style::new().add_modifier(Modifier::REVERSED)),
+            ("editor.cursor.secondaryUnderline", squiggle(c(0xAEAFAD))),
             // Dark Modern's current match; Dark+'s other matches (#EA5C0055) blended over the editor.
             ("editor.findMatch", Style::new().bg(c(0x9E6A03))),
             ("editor.findMatchHighlight", Style::new().bg(c(0x613214))),

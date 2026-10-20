@@ -207,7 +207,8 @@ fn main() -> ExitCode {
     panic::install();
     let kitty = terminal::kitty_supported();
     tracing::info!(kitty, "keyboard protocol");
-    let result = terminal::enter(kitty)
+    let cursor = terminal::CursorShape::of(&workspace.settings());
+    let result = terminal::enter(kitty, cursor)
         .map_err(anyhow::Error::from)
         .and_then(|mut term| {
             runtime.block_on(async {

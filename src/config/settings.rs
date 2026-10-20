@@ -11,6 +11,8 @@
 //! | `match_brackets`   | bool | true      | Highlight the bracket next to the cursor and its partner       |
 //! | `quick_suggestions`| bool | true      | Typing a word asks the language server for completions         |
 //! | `render_whitespace`| str  | `"all"`   | Draw spaces `·` / tabs `→`: `none` `boundary` `selection` `trailing` `all` |
+//! | `cursor_style`     | str  | `"line"`  | The cursor's shape: `line` (a bar), `block` or `underline`     |
+//! | `cursor_blinking`  | bool | true      | The cursor blinks                                              |
 //!
 //! Precedence, per key: defaults ← `settings.toml` ← `.workspace` (`layer`).
 //!
@@ -27,7 +29,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::edit::{RenderWhitespace, Settings};
+use crate::edit::{CursorStyle, RenderWhitespace, Settings};
 
 pub const FILE_NAME: &str = "settings.toml";
 
@@ -50,6 +52,10 @@ pub struct SettingsOverrides {
     pub quick_suggestions: Option<bool>,
     /// Which whitespace is drawn as `·` / `→` (VS Code's `editor.renderWhitespace`).
     pub render_whitespace: Option<RenderWhitespace>,
+    /// The cursor's shape (VS Code's `editor.cursorStyle`; `line` is its default bar).
+    pub cursor_style: Option<CursorStyle>,
+    /// The cursor blinks (VS Code's `editor.cursorBlinking`, here only on or off).
+    pub cursor_blinking: Option<bool>,
 }
 
 impl SettingsOverrides {
@@ -78,6 +84,12 @@ impl SettingsOverrides {
         }
         if let Some(mode) = self.render_whitespace {
             s.render_whitespace = mode;
+        }
+        if let Some(style) = self.cursor_style {
+            s.cursor_style = style;
+        }
+        if let Some(on) = self.cursor_blinking {
+            s.cursor_blinking = on;
         }
     }
 }
@@ -193,6 +205,8 @@ pub const TEMPLATE: &str = "\
 # match_brackets = true
 # quick_suggestions = true
 # render_whitespace = \"all\"  # none, boundary, selection, trailing or all
+# cursor_style = \"line\"  # line, block or underline
+# cursor_blinking = true
 ";
 
 #[cfg(test)]
@@ -209,7 +223,8 @@ mod tests {
     fn parses_every_key() {
         let o = set(
             "[settings]\ntab_width = 2\ninsert_spaces = false\nsyntax_max_bytes = 10\nauto_close_pairs = false\n\
-             auto_indent = false\nmatch_brackets = false\nquick_suggestions = false\nrender_whitespace = \"trailing\"\n",
+             auto_indent = false\nmatch_brackets = false\nquick_suggestions = false\nrender_whitespace = \"trailing\"\n\
+             cursor_style = \"block\"\ncursor_blinking = false\n",
         );
         assert_eq!(
             o,
@@ -222,6 +237,8 @@ mod tests {
                 match_brackets: Some(false),
                 quick_suggestions: Some(false),
                 render_whitespace: Some(RenderWhitespace::Trailing),
+                cursor_style: Some(CursorStyle::Block),
+                cursor_blinking: Some(false),
             }
         );
     }
@@ -245,6 +262,29 @@ mod tests {
         assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
         assert!(u.errors[0].contains("`render_whitespace`"), "{:?}", u.errors);
         assert_eq!(parse("[settings]\nrender_whitespace = true\n").errors.len(), 1);
+    }
+
+    #[test]
+    fn cursor_style_parses_each_shape_and_reports_a_bad_value() {
+        for (text, style) in [
+            ("line", CursorStyle::Line),
+            ("block", CursorStyle::Block),
+            ("underline", CursorStyle::Underline),
+        ] {
+            let o = set(&format!("[settings]\ncursor_style = \"{text}\"\n"));
+            assert_eq!(o.cursor_style, Some(style));
+        }
+        let d = Settings::default();
+        assert_eq!(
+            (d.cursor_style, d.cursor_blinking),
+            (CursorStyle::Line, true),
+            "VS Code's"
+        );
+        let u = parse("[settings]\ncursor_style = \"bar\"\ncursor_blinking = false\n");
+        assert_eq!(u.overrides.cursor_style, None);
+        assert_eq!(u.overrides.cursor_blinking, Some(false), "the other key still applies");
+        assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+        assert!(u.errors[0].contains("`cursor_style`"), "{:?}", u.errors);
     }
 
     #[test]
@@ -383,6 +423,8 @@ mod tests {
             match_brackets: Some(true),
             quick_suggestions: Some(true),
             render_whitespace: Some(RenderWhitespace::All),
+            cursor_style: Some(CursorStyle::Line),
+            cursor_blinking: Some(true),
         };
         let fields = toml::Table::try_from(&every).unwrap();
         assert_eq!(
@@ -402,13 +444,17 @@ mod tests {
                 s.auto_indent,
                 s.match_brackets,
                 s.quick_suggestions,
-                s.render_whitespace
+                s.render_whitespace,
+                s.cursor_style,
+                s.cursor_blinking
             ),
             (
                 d.auto_indent,
                 d.match_brackets,
                 d.quick_suggestions,
-                d.render_whitespace
+                d.render_whitespace,
+                d.cursor_style,
+                d.cursor_blinking
             )
         );
         assert!(parse(TEMPLATE).errors.is_empty());

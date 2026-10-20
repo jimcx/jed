@@ -729,10 +729,7 @@ Broad items not tied to a milestone.
   - **Feature test files: tools** — M9–M13 and the rest of `todo_tests` into `lsp`, `problems`, `completion`, `git`, `diff_view`, `file_history`, `tasks`, `sessions`, `backups`, `recent`, …; then CLAUDE.md, `.claude/commands/milestones.md` and `todo.md` say new tests go in the feature's file (a named milestone's too, instead of `src/<id>_tests.rs`)
 - ✅ **Rust language server** — [details](docs/plan-done.md)
 - ✅ **Inline git blame** — [details](docs/plan-done.md)
-- **Cursor style setting**: `cursor_style` (`line` / `block` / `underline`, default `line` as VS Code) and `cursor_blinking` (bool, default true) settings (CLAUDE.md's "Settings layer per key"); the terminal cursor's shape set with DECSCUSR (crossterm `SetCursorStyle`: `BlinkingBar` / `SteadyBar`, …) when entering raw mode in `terminal.rs`, reset to the terminal's default (`CSI 0 q`, `SetCursorStyle::DefaultUserShape`) in `restore` (exit) and the panic hook, and re-sent when the setting changes (a `.workspace` reload)
-  - Secondary cursors (drawn by jed as reversed cells, `editor.cursor.secondary`) follow the style: `line` / `underline` as an underlined cell (the char stays readable; a theme key with an underline colour), `block` as now
-  - Task tabs: a task's own cursor shape requests (DECSCUSR in its output) aren't forwarded; jed's style stays
-  - Tests: the bytes written on enter / restore (a test writer), each style's secondary cursor cells; hand check in kitty, Ghostty, WezTerm, iTerm2, Alacritty, tmux (needs `terminal-overrides` `Ss` / `Se` on older tmux)
+- ✅ **Cursor style setting** — [details](docs/plan-done.md)
 - ✅ **Syntax highlighting in the diff view** — [details](docs/plan-done.md)
 - ✅ **Indent / outdent lines** — [details](docs/plan-done.md)
 - **New untitled file, Save As, Save All**: now the [Untitled files and Save As](#named-milestones) milestone

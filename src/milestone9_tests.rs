@@ -784,10 +784,12 @@ async fn milestone_9_open_save_close_and_sync_kinds() {
                 .await
         );
         idle(&mut app).await;
+        // Sync notifications only: under load the save's `settle` can outlast the typed `x`'s
+        // quick-suggestion delay, which sends a `textDocument/completion` request.
         let sent: Vec<String> = fake
             .methods()
             .into_iter()
-            .filter(|m| m.starts_with("textDocument/"))
+            .filter(|m| m.starts_with("textDocument/did"))
             .collect();
         assert_eq!(sent, want);
         app.shutdown_servers().await;

@@ -50,7 +50,7 @@ use crate::workspace::{self, Workspace};
 
 /// The app on `root` with the trust store in `state`, the user's `tasks.toml` loaded (and its
 /// errors reported) as `main` does.
-fn open_app(root: &Path, state: &Path, tasks_toml: Option<&str>) -> App {
+pub(crate) fn open_app(root: &Path, state: &Path, tasks_toml: Option<&str>) -> App {
     let config_dir = state.join("config");
     fs::create_dir_all(&config_dir).unwrap();
     let path = config_dir.join(tasks::templates::FILE_NAME);
@@ -69,7 +69,7 @@ fn open_app(root: &Path, state: &Path, tasks_toml: Option<&str>) -> App {
 }
 
 /// `proj/` (the workspace root) and `state/` (trust store, config) in a tempdir.
-fn dirs(dir: &tempfile::TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
+pub(crate) fn dirs(dir: &tempfile::TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
     let base = workspace::normalize(dir.path());
     let (root, state) = (base.join("proj"), base.join("state"));
     fs::create_dir_all(&root).unwrap();
@@ -96,7 +96,7 @@ fn group_alive(pgid: u32) -> bool {
 
 /// Settles until run `id` ended and the app wrote its end note below its output (it handled
 /// the run's `Ended`).
-async fn settle_ended(app: &mut App, id: RunId) -> bool {
+pub(crate) async fn settle_ended(app: &mut App, id: RunId) -> bool {
     app.settle(|a| {
         let run = a.tasks.get(id).unwrap();
         let status = run.status();

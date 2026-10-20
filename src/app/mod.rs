@@ -341,6 +341,9 @@ pub struct App {
     drag: Option<mouse::Drag>,
     /// The mouse pointer's shape wanted (`run` sends it when it changes).
     pub pointer: crate::terminal::Pointer,
+    /// The cursor shape the terminal has (`terminal::enter` sent the settings'; `run` sends a
+    /// new one through `sync_cursor_shape` when a `.workspace` reload changes it).
+    cursor_shape: crate::terminal::CursorShape,
     /// The find widget's options (case, whole word, regex), which Cmd+D also uses for selected
     /// text (VS Code's `selectedTextMatchMode: findOptions`; it ignores `regex`).
     pub find_options: search::Options,
@@ -418,10 +421,12 @@ impl App {
     pub fn new(workspace: Workspace, trust_store: TrustStore, initial: Option<InitialFile>, kitty: bool) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let root = workspace.root.clone();
+        let settings = workspace.settings();
         let mut app = Self {
             trust: trust_store.evaluate(&root, &workspace.config),
             trust_store,
-            settings: workspace.settings(),
+            cursor_shape: crate::terminal::CursorShape::of(&settings),
+            settings,
             excludes: explorer::excludes(&root, &workspace.config.files.exclude),
             explorer: Explorer::new(root),
             workspace,
@@ -608,6 +613,7 @@ impl App {
                 pointer = self.pointer;
                 crate::terminal::set_pointer(terminal.backend_mut(), pointer)?;
             }
+            self.sync_cursor_shape(terminal.backend_mut())?;
             let timer = self.next_timer();
             tokio::select! {
                 ev = events.next() => match ev {
@@ -748,6 +754,16 @@ impl App {
         let tab = self.groups.active_group_mut().active_tab_mut()?;
         let buf = self.buffers.get_mut(tab.buffer)?;
         Some((buf, &mut tab.view))
+    }
+
+    /// Sends the settings' cursor shape (DECSCUSR) to `out` when it isn't the one sent last.
+    pub fn sync_cursor_shape(&mut self, out: &mut impl std::io::Write) -> std::io::Result<()> {
+        let shape = crate::terminal::CursorShape::of(&self.settings);
+        if shape != self.cursor_shape {
+            crate::terminal::set_cursor_shape(out, shape)?;
+            self.cursor_shape = shape;
+        }
+        Ok(())
     }
 
     /// The whitespace the editor draws: the `render_whitespace` setting, or — after "View: Toggle

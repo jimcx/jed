@@ -13,7 +13,7 @@ use crate::blame;
 use crate::buffer::Buffer;
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::diagnostics::{self, Severity};
-use crate::edit::{RenderWhitespace, Settings};
+use crate::edit::{CursorStyle, RenderWhitespace, Settings};
 use crate::find::FindWidget;
 use crate::search::Match;
 use crate::theme::Theme;
@@ -131,7 +131,12 @@ pub fn render(
     let base = theme.get("editor");
     let current_line_style = base.patch(theme.get("editor.lineHighlight"));
     let selection = theme.get("editor.selection");
-    let secondary_cursor = theme.get("editor.cursor.secondary");
+    // Secondary cursors as the terminal draws the primary: a block reversed, a bar or an
+    // underline as an underlined cell (the char stays readable).
+    let secondary_cursor = theme.get(match s.cursor_style {
+        CursorStyle::Block => "editor.cursor.secondary",
+        CursorStyle::Line | CursorStyle::Underline => "editor.cursor.secondaryUnderline",
+    });
     let find_match = theme.get("editor.findMatch");
     let find_highlight = theme.get("editor.findMatchHighlight");
     let control = theme.get("editor.whitespace.control");

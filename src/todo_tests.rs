@@ -84,6 +84,11 @@
 //!   Explorer's start file far down a long folder lands on the bottom row, and the Search
 //!   view's results, Problems, Locations (Shift+F12), the Tools view and Git History keep the
 //!   row above the selected one in view.
+//! - `cursor_style`: `cursor_style` (`line` default / `block` / `underline`) and
+//!   `cursor_blinking` (default true): secondary cursors drawn underlined (in
+//!   `editor.cursor.secondaryUnderline`) for `line` / `underline`, reversed for `block`, mid-line
+//!   and at a line's end; a `.workspace` reload sends the new DECSCUSR once (the bytes enter /
+//!   restore write: `terminal`'s unit tests); a task's own DECSCUSR stays in its terminal.
 
 mod render_whitespace {
     use std::fs;
@@ -326,9 +331,10 @@ mod render_whitespace {
         );
         let primary = &cells(&app, &term, line, 2)[1];
         assert_ne!(primary.fg, dim(&app), "the primary's cell isn't dimmed");
-        // The secondary: a reversed cell, not in the dim colour (it would be its background).
+        // The secondary: an underlined cell (`cursor_style = "line"`), not in the dim colour
+        // (under `block` it's reversed: the dim colour would be its background).
         let secondary = &cells(&app, &term, other, 2)[1];
-        assert!(secondary.modifier.contains(Modifier::REVERSED));
+        assert!(secondary.modifier.contains(Modifier::UNDERLINED));
         assert_ne!(secondary.fg, dim(&app), "the secondary cursor isn't dimmed");
         assert_eq!(secondary.sym, "·");
 
@@ -337,7 +343,7 @@ mod render_whitespace {
         let term = draw(&mut app);
         assert_eq!(cells(&app, &term, line, 2)[1].fg, dim(&app));
         let secondary = &cells(&app, &term, other, 2)[1];
-        assert!(secondary.modifier.contains(Modifier::REVERSED));
+        assert!(secondary.modifier.contains(Modifier::UNDERLINED));
         assert_ne!(secondary.fg, dim(&app));
     }
 
@@ -5154,5 +5160,152 @@ mod first_reveal {
         );
         assert_eq!(app.git_history.selected_row(), Some(1));
         assert_eq!(app.git_history.scroll(), 0);
+    }
+}
+
+mod cursor_style {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Modifier;
+
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::command::Command;
+    use crate::config::settings;
+    use crate::edit::CursorStyle;
+
+    /// An app on `<dir>/ws` whose `.workspace` holds `workspace`, the user's `settings.toml`
+    /// `[settings]` + `user`, with `a.txt` (two lines `ab`) open and a cursor after each `a`
+    /// (the primary on line 0).
+    fn open_app(dir: &tempfile::TempDir, user: &str, workspace: &str) -> (App, PathBuf) {
+        let base = crate::workspace::normalize(dir.path());
+        let user_file = base.join("config").join(settings::FILE_NAME);
+        fs::create_dir_all(user_file.parent().unwrap()).unwrap();
+        fs::write(&user_file, format!("[settings]\n{user}")).unwrap();
+        let root = base.join("ws");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(".workspace"), workspace).unwrap();
+        let path = root.join("a.txt");
+        fs::write(&path, "ab\nab\n").unwrap();
+        let loaded = settings::load(&user_file);
+        assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+        let ws = crate::workspace::Workspace::load(root.clone()).with_user_settings(loaded.overrides);
+        let trust = crate::workspace::trust::TrustStore::load(base.join("trust.toml"));
+        let initial = crate::app::InitialFile {
+            buffer: Buffer::open(&path).unwrap(),
+            goto: None,
+        };
+        let mut app = App::new(ws, trust, Some(initial), true);
+        app.test_plain_whitespace();
+        app.test_start();
+        app.press(K::Right, M::NONE);
+        app.test_execute(Command::AddCursorBelow);
+        (app, root)
+    }
+
+    /// Line `line`'s second cell (the cursor's, on `b`) as drawn: symbol, modifiers, underline
+    /// colour.
+    fn cursor_cell(app: &mut App, line: u16) -> (String, Modifier, Option<ratatui::style::Color>) {
+        let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        let text = app.hits.groups[0].text;
+        let c = &term.backend().buffer()[(text.x + 1, text.y + line)];
+        (c.symbol().to_string(), c.modifier, Some(c.underline_color))
+    }
+
+    /// What `sync_cursor_shape` sends (as `run` does each turn).
+    fn sent(app: &mut App) -> String {
+        let mut out = Vec::new();
+        app.sync_cursor_shape(&mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn line_by_default_draws_secondary_cursors_underlined() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, "", "");
+        assert_eq!(
+            (app.settings.cursor_style, app.settings.cursor_blinking),
+            (CursorStyle::Line, true)
+        );
+        let colour = app.theme.get("editor.cursor.secondaryUnderline").underline_color;
+        assert!(colour.is_some());
+        let (sym, modifier, underline) = cursor_cell(&mut app, 1);
+        assert_eq!(sym, "b", "the char stays readable");
+        assert!(modifier.contains(Modifier::UNDERLINED) && !modifier.contains(Modifier::REVERSED));
+        assert_eq!(underline, colour);
+        let (_, primary, _) = cursor_cell(&mut app, 0);
+        assert!(
+            !primary.contains(Modifier::UNDERLINED),
+            "the terminal cursor marks the primary"
+        );
+        assert_eq!(sent(&mut app), "", "enter already sent the shape");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_style_draws_its_secondary_cursor() {
+        for (style, reversed) in [("line", false), ("underline", false), ("block", true)] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut app, _) = open_app(&dir, &format!("cursor_style = \"{style}\"\n"), "");
+            let (sym, modifier, _) = cursor_cell(&mut app, 1);
+            assert_eq!(sym, "b", "{style}");
+            assert_eq!(modifier.contains(Modifier::REVERSED), reversed, "{style}");
+            assert_eq!(modifier.contains(Modifier::UNDERLINED), !reversed, "{style}");
+            // At a line's end too (an empty cell).
+            app.press(K::End, M::NONE);
+            let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
+            term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+            let text = app.hits.groups[0].text;
+            let end = term.backend().buffer()[(text.x + 2, text.y + 1)].modifier;
+            assert_eq!(end.contains(Modifier::REVERSED), reversed, "{style} at the end");
+            assert_eq!(end.contains(Modifier::UNDERLINED), !reversed, "{style} at the end");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_workspace_reload_resends_the_cursor_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, root) = open_app(&dir, "cursor_blinking = false\n", "");
+        assert_eq!(sent(&mut app), "");
+        // A reload that changes another setting sends nothing.
+        fs::write(root.join(".workspace"), "[settings]\ntab_width = 2\n").unwrap();
+        assert!(app.settle(|a| a.settings.tab_width == 2).await);
+        assert_eq!(sent(&mut app), "", "the shape didn't change");
+        fs::write(root.join(".workspace"), "[settings]\ncursor_style = \"block\"\n").unwrap();
+        assert!(app.settle(|a| a.settings.cursor_style == CursorStyle::Block).await);
+        assert_eq!(sent(&mut app), "\x1b[2 q", "a steady block: the user's blinking kept");
+        assert_eq!(sent(&mut app), "", "once");
+        assert!(cursor_cell(&mut app, 1).1.contains(Modifier::REVERSED));
+
+        fs::write(
+            root.join(".workspace"),
+            "[settings]\ncursor_style = \"underline\"\ncursor_blinking = true\n",
+        )
+        .unwrap();
+        assert!(app.settle(|a| a.settings.cursor_style == CursorStyle::Underline).await);
+        assert_eq!(sent(&mut app), "\x1b[3 q");
+        // Reloaded with neither key: the user's settings again.
+        fs::write(root.join(".workspace"), "").unwrap();
+        assert!(app.settle(|a| a.settings.cursor_style == CursorStyle::Line).await);
+        assert_eq!(sent(&mut app), "\x1b[6 q");
+    }
+
+    /// A task's DECSCUSR is taken by its own terminal (`vt100`): nothing of it shows, and jed's
+    /// shape is left alone (task output never reaches the real terminal).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_tasks_cursor_shape_request_is_not_forwarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, state) = crate::milestone12_tests::dirs(&dir);
+        let tasks = "[tasks.shape]\ncommand = \"printf 'a\\\\033[2 qb\\\\n'\"\n";
+        let mut app = crate::milestone12_tests::open_app(&root, &state, Some(tasks));
+        let id = app.run_task("shape").unwrap();
+        assert!(crate::milestone12_tests::settle_ended(&mut app, id).await);
+        let contents = app.tasks.get(id).unwrap().screen().screen().contents();
+        assert!(contents.starts_with("ab\n"), "{contents:?}");
+        assert_eq!(sent(&mut app), "", "jed's shape kept");
     }
 }
