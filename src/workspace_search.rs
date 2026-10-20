@@ -254,10 +254,16 @@ impl Results {
             Some(Dismissed::Lines(lines)) => lines.clone(),
             None => BTreeSet::new(),
         };
+        let mut seen = skip.clone();
+        if let Some(i) = self.file_index(path) {
+            seen.extend(self.files[i].lines.iter().map(|l| l.line));
+        }
         Some(FileReplace {
             matcher: self.matcher.clone()?,
             with: search::Replacement::new(template, self.query.options.regex),
             skip,
+            only: None,
+            seen,
         })
     }
 }
@@ -265,50 +271,162 @@ impl Results {
 /// Replacing in one file: every match the search's `matcher` finds in its current text, except
 /// on the `skip` lines (dismissed from the results), replaced by `with` (`$1` expanded per
 /// match). The text is searched again, so the replaced spans are what's there now, not the
-/// results' (which may be stale). The Search view's preview diff tab (`diff_view::Text::Replaced`).
+/// results' (which may be stale). The Search view's preview diff tab (`diff_view::Text::Replaced`)
+/// and its Replace (`replace` / `rewrite`).
+///
+/// Lines are named by number, as the search found them; when the text has changed so that its
+/// matches no longer sit on exactly the lines the search found (`seen`), those numbers may name
+/// other lines now, so a replace that has to pick lines (dismissed ones to leave alone, or the
+/// one line of a line row) refuses it (`Refused::Moved`) rather than guess. Without dismissed
+/// lines a file's replace just takes every match there is now.
 #[derive(Debug, Clone)]
 pub struct FileReplace {
     pub matcher: Matcher,
     pub with: search::Replacement,
     /// 0-based lines (as `LineMatch::line`) left alone.
     pub skip: BTreeSet<usize>,
+    /// Only this line's matches (a line row's Replace); else every line's.
+    pub only: Option<usize>,
+    /// The lines the search found matches on (shown and dismissed).
+    pub seen: BTreeSet<usize>,
+}
+
+/// Why a replace left a file alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refused {
+    /// Its matches moved to other lines since the search (see `FileReplace`).
+    Moved,
+    /// It has become binary (a NUL in its first 8000 bytes).
+    Binary,
+    /// It isn't UTF-8 (any more).
+    NotUtf8,
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Refused::Moved => "changed since the search",
+            Refused::Binary => "binary",
+            Refused::NotUtf8 => "not UTF-8",
+        })
+    }
+}
+
+/// A replace worked out for one text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Replaced {
+    /// Each match to replace with its replacement, in order.
+    pub edits: Vec<(search::Match, String)>,
+    /// The dismissed lines' numbers in the text after the edits (a replacement with line breaks
+    /// moves the lines below it), so they stay dismissed in the search that follows.
+    pub skip: BTreeSet<usize>,
 }
 
 impl FileReplace {
-    /// Every match in `rope` not on a skipped line, with its replacement, in order.
+    /// Every match in `rope` not on a skipped line (only on `only`, when set), with its
+    /// replacement, in order. No check that lines moved (the preview's).
     pub fn edits(&self, rope: &Rope) -> Vec<(search::Match, String)> {
+        let picks = !self.skip.is_empty() || self.only.is_some();
         let mut out = Vec::new();
         self.matcher
             .replace_in(rope, ByteIdx(0)..ByteIdx(rope.len()), &self.with, |m, text| {
-                if self.skip.is_empty() || !self.skip.contains(&pos::line_of(rope, m.start)) {
+                if !picks || self.wanted(pos::line_of(rope, m.start)) {
                     out.push((m, text.to_string()));
                 }
             });
         out
     }
 
+    fn wanted(&self, line: usize) -> bool {
+        !self.skip.contains(&line) && self.only.is_none_or(|only| only == line)
+    }
+
+    /// What Replace does to `rope`: its edits (as `edits`), refused when it has to pick lines
+    /// and the matches aren't on the lines the search found any more.
+    pub fn replace(&self, rope: &Rope) -> Result<Replaced, Refused> {
+        let picks = !self.skip.is_empty() || self.only.is_some();
+        let mut all = Vec::new();
+        self.matcher
+            .replace_in(rope, ByteIdx(0)..ByteIdx(rope.len()), &self.with, |m, text| {
+                let line = if picks { pos::line_of(rope, m.start) } else { 0 };
+                all.push((m, text.to_string(), line));
+            });
+        if picks {
+            let found: BTreeSet<usize> = all.iter().map(|e| e.2).collect();
+            if found != self.seen {
+                return Err(Refused::Moved);
+            }
+        }
+        // Matches stay within a line (`Matcher::new_single_line`): only replacements add or
+        // remove line breaks. A skipped line moves by those of the edits above it.
+        let mut skip = BTreeSet::new();
+        let mut edits = Vec::with_capacity(all.len());
+        let mut moved = 0isize;
+        let mut lines = self.skip.iter().copied().peekable();
+        for (m, text, line) in all {
+            if picks && !self.wanted(line) {
+                continue;
+            }
+            while let Some(l) = lines.next_if(|&l| l < line) {
+                skip.insert(l.saturating_add_signed(moved));
+            }
+            moved += line_breaks(&text) as isize;
+            edits.push((m, text));
+        }
+        skip.extend(lines.map(|l| l.saturating_add_signed(moved)));
+        Ok(Replaced { edits, skip })
+    }
+
     /// A file's bytes with every edit applied (a UTF-8 BOM kept); `None` when the rest isn't
     /// UTF-8.
     pub fn apply(&self, bytes: &[u8]) -> Option<Vec<u8>> {
-        let (bom, body) = match bytes.strip_prefix(file::BOM) {
-            Some(body) => (true, body),
-            None => (false, bytes),
-        };
+        let (bom, body) = split_bom(bytes);
         let text = std::str::from_utf8(body).ok()?;
-        let rope = Rope::from_str(text);
-        let mut out = Vec::with_capacity(bytes.len());
-        if bom {
-            out.extend_from_slice(file::BOM);
-        }
-        let mut at = 0;
-        for (m, with) in self.edits(&rope) {
-            out.extend_from_slice(&body[at..m.start.0]);
-            out.extend_from_slice(with.as_bytes());
-            at = m.end.0;
-        }
-        out.extend_from_slice(&body[at..]);
-        Some(out)
+        Some(splice(bom, body, &self.edits(&Rope::from_str(text))))
     }
+
+    /// What Replace writes for a file holding `bytes` (read again just now): refused when it
+    /// has become binary or isn't UTF-8, or its lines moved (`replace`). A BOM is kept.
+    pub fn rewrite(&self, bytes: &[u8]) -> Result<(Vec<u8>, Replaced), Refused> {
+        if file::looks_binary(bytes) {
+            return Err(Refused::Binary);
+        }
+        let (bom, body) = split_bom(bytes);
+        let text = std::str::from_utf8(body).map_err(|_| Refused::NotUtf8)?;
+        let replaced = self.replace(&Rope::from_str(text))?;
+        Ok((splice(bom, body, &replaced.edits), replaced))
+    }
+}
+
+fn split_bom(bytes: &[u8]) -> (bool, &[u8]) {
+    match bytes.strip_prefix(file::BOM) {
+        Some(body) => (true, body),
+        None => (false, bytes),
+    }
+}
+
+/// `body` (after a BOM, if `bom`) with each match replaced.
+fn splice(bom: bool, body: &[u8], edits: &[(search::Match, String)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(body.len() + file::BOM.len());
+    if bom {
+        out.extend_from_slice(file::BOM);
+    }
+    let mut at = 0;
+    for (m, with) in edits {
+        out.extend_from_slice(&body[at..m.start.0]);
+        out.extend_from_slice(with.as_bytes());
+        at = m.end.0;
+    }
+    out.extend_from_slice(&body[at..]);
+    out
+}
+
+/// Line breaks in `text` as the buffer counts them: LF, CRLF and a lone CR.
+fn line_breaks(text: &str) -> usize {
+    let b = text.as_bytes();
+    (0..b.len())
+        .filter(|&i| b[i] == b'\n' || (b[i] == b'\r' && b.get(i + 1) != Some(&b'\n')))
+        .count()
 }
 
 /// The matcher for `query`: `Err` for an invalid regex (shown under the input; nothing runs).
@@ -1444,5 +1562,56 @@ mod tests {
         p.matcher = Some(matcher(&plain).unwrap());
         let p = p.file_replace(Path::new("a"), "$1").unwrap();
         assert_eq!(p.apply(b"foo1 Foo").unwrap(), b"$11 $1");
+    }
+
+    /// Replace (not the preview): picks lines only while the matches are on the lines the search
+    /// found; one line's matches (`only`); dismissed lines renumbered past replacements that add
+    /// line breaks; files become binary or not UTF-8 refused.
+    #[test]
+    fn file_replace_checks_lines_before_picking_them() {
+        let query = Query {
+            pattern: r"foo(\d)".into(),
+            options: search::Options {
+                regex: true,
+                ..Default::default()
+            },
+            ..Query::default()
+        };
+        let mut r = Results::new(1, query.clone());
+        r.matcher = Some(matcher(&query).unwrap());
+        let found = |lines: &[usize]| {
+            lines
+                .iter()
+                .map(|&l| line_match(l, "foo1", vec![0..4]))
+                .collect::<Vec<_>>()
+        };
+        r.files.push(FileMatches::new("a".into(), found(&[0, 2, 3])));
+        r.dismissed.insert("a".into(), Dismissed::Lines(BTreeSet::from([1])));
+        let text = "foo1\nfoo2\nfoo3 foo4\nfoo5\n";
+        let a = r.file_replace(Path::new("a"), "x\\n$1").unwrap();
+        assert_eq!(a.seen, BTreeSet::from([0, 1, 2, 3]));
+        let (out, done) = a.rewrite(text.as_bytes()).unwrap();
+        assert_eq!(out, b"x\n1\nfoo2\nx\n3 x\n4\nx\n5\n");
+        assert_eq!(done.edits.len(), 4);
+        assert_eq!(done.skip, BTreeSet::from([2]), "one line break added above it");
+        // Lines moved: refused, as is a file with a match on a line the search didn't see.
+        let moved = Rope::from_str(&format!("new\n{text}"));
+        assert_eq!(a.replace(&moved), Err(Refused::Moved));
+        assert_eq!(
+            a.replace(&Rope::from_str("foo1\nfoo2\nfoo3\nfoo5\nfoo6\n")),
+            Err(Refused::Moved)
+        );
+        // One line only.
+        let mut one = r.file_replace(Path::new("a"), "y").unwrap();
+        one.only = Some(2);
+        let (out, done) = one.rewrite(text.as_bytes()).unwrap();
+        assert_eq!(out, b"foo1\nfoo2\ny y\nfoo5\n");
+        assert_eq!(done.skip, BTreeSet::from([1]));
+        // Nothing dismissed or picked: every match there is now, wherever it is.
+        let b = r.file_replace(Path::new("b"), "y").unwrap();
+        assert_eq!(b.rewrite(b"new\nfoo1\n").unwrap().0, b"new\ny\n");
+        assert_eq!(b.rewrite(b"foo1\0").unwrap_err(), Refused::Binary);
+        assert_eq!(b.rewrite(b"foo1 \xff").unwrap_err(), Refused::NotUtf8);
+        assert_eq!(Refused::Moved.to_string(), "changed since the search");
     }
 }

@@ -669,6 +669,8 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Char('j'), cmd | shift, S::ToggleDetails),
         (KeyCode::Tab, none, S::NextInput),
         (KeyCode::Tab, shift, S::PreviousInput),
+        // VS Code's `search.action.replaceAll` (the list falls back to these keys).
+        (KeyCode::Enter, cmd | alt, S::ReplaceAll),
     ];
     // Its results list (falls back to the input's keys: toggles, Esc).
     let mut search_results = vec![
@@ -682,6 +684,8 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Left, none, S::Collapse),
         (KeyCode::Right, none, S::Expand),
         (KeyCode::Delete, none, S::Dismiss),
+        // VS Code's `search.action.replace` / `replaceAllInFile`: Cmd+`!` as terminals send it.
+        (KeyCode::Char('1'), cmd | shift, S::ReplaceOne),
     ];
     if mac {
         // VS Code's `search.action.remove` on macOS.

@@ -16,6 +16,22 @@
 //! (the open, unsaved buffer with every match not dismissed replaced), reused for the file's
 //! other results and following edits of the replace text, never kept in the session; the wheel
 //! moves the hovered row's `×` with the list.
+//!
+//! replace-c (the milestone's done-when): in a workspace of 20 files, two open (one with an
+//! unsaved edit), a case-sensitive regex search for `foo(\d)` replaced with `bar$1` previews
+//! every line struck through; one file dismissed; Replace All (Cmd+Alt+Enter, confirmed in the
+//! "Replace N occurrences across 19 files?" dialog) rewrites the closed files exactly as real
+//! `sed -E 's/foo([0-9])/bar\1/g'` does (CRLF, a BOM, multibyte text; the recorded expectations
+//! alone without `sed`), with file history entries before and after; the open buffers are left
+//! dirty, one Cmd+Z each restoring them; the dismissed file is untouched and stays dismissed in
+//! the search that follows. Files changed on disk between the search and the replace are
+//! searched again (new matches replaced where they are now), while one whose dismissed line
+//! moved, one become binary, one not UTF-8 and one deleted are left alone and named in the
+//! message. One line (Cmd+Shift+1, sent as Cmd+`!`), one file (its row's `⇄`) and the rest (the
+//! `⇄ All` button: one file, no question); whole word on `foo` leaves `foobar` alone; nothing
+//! is replaced while the replace input is hidden or when the question is cancelled. Left alone
+//! and named: an open buffer whose dismissed line moved with an edit, a read-only one, and a
+//! closed file whose text before can't be recorded in file history.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -841,4 +857,417 @@ async fn replace_wheel_moves_the_hovered_row() {
     assert_eq!(text(&term, list.y, x_at, x_at + 1), "×");
     app.mouse(MouseEventKind::ScrollUp, list.x + 5, list.y);
     assert_eq!(app.search_view.hover, Some(key("a.txt", 0)));
+}
+
+/// A file's text before and after `s/foo([0-9])/bar\1/g` (as `sed -E` gives it).
+const TEMPLATES: [(&str, &str); 4] = [
+    ("foo1 one\nkeep foo\nfoo2 foo3\n", "bar1 one\nkeep foo\nbar2 bar3\n"),
+    (
+        "let x = foo5;\nFOO6 stays\nfoobar7 afoo8b\n",
+        "let x = bar5;\nFOO6 stays\nfoobar7 abar8b\n",
+    ),
+    ("é foo9\r\nfoo10\r\n", "é bar9\r\nbar10\r\n"),
+    ("\u{feff}foo4 x\n", "\u{feff}bar4 x\n"),
+];
+
+/// The 20 files of the done-when workspace: relative path, text, and its text after the replace.
+fn twenty_files() -> Vec<(String, String, String)> {
+    (0..20)
+        .map(|i| {
+            let rel = if i < 18 {
+                format!("f{i:02}.txt")
+            } else {
+                format!("src/g{i}.rs")
+            };
+            let (before, after) = TEMPLATES[i % TEMPLATES.len()];
+            let head = format!("file {i}\n");
+            let (before, after) = if before.starts_with('\u{feff}') {
+                (format!("{before}{head}"), format!("{after}{head}"))
+            } else {
+                (format!("{head}{before}"), format!("{head}{after}"))
+            };
+            (rel, before, after)
+        })
+        .collect()
+}
+
+/// What `sed -E 's/foo([0-9])/bar\1/g'` makes of `text`, or `None` without `sed`.
+fn sed(dir: &Path, text: &str) -> Option<String> {
+    let input = dir.join("sed-input");
+    fs::write(&input, text).unwrap();
+    let out = std::process::Command::new("sed")
+        .args(["-E", r"s/foo([0-9])/bar\1/g"])
+        .arg(&input)
+        .output()
+        .ok()?;
+    assert!(out.status.success());
+    Some(String::from_utf8(out.stdout).unwrap())
+}
+
+/// Hovers the results row `key` and clicks its button: the `×` (dismiss) or the `⇄` (replace).
+fn click_row_button(term: &mut Terminal<TestBackend>, app: &mut App, key: &RowKey, replace: bool) {
+    draw(term, app);
+    let y = row_y(app, key);
+    let l = app.hits.search.as_ref().unwrap().list;
+    app.mouse(MouseEventKind::Moved, l.x + 3, y);
+    draw(term, app);
+    let hit = app.hits.search.as_ref().unwrap();
+    let buttons = if replace { &hit.replace_row } else { &hit.dismiss };
+    let (r, k) = buttons.first().cloned().expect("drawn on the hovered row");
+    assert_eq!(&k, key);
+    click(app, r.x, r.y);
+}
+
+fn click(app: &mut App, x: u16, y: u16) {
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+}
+
+/// Waits for the `n`th replace to finish and the search after it.
+async fn replaced(app: &mut App, n: u64) {
+    assert!(
+        app.settle(|a| a.replace.done == n && !a.replace.running() && a.search.as_ref().is_some_and(|r| r.done))
+            .await
+    );
+}
+
+fn message(app: &App) -> String {
+    app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
+}
+
+/// The milestone's done-when: ~20 files, two open (one dirty); a case-sensitive regex search
+/// for `foo(\d)` replaced with `bar$1` previews every line struck through; one file dismissed;
+/// Replace All (Cmd+Alt+Enter, confirmed) rewrites the closed files as `sed` does, leaves the
+/// open ones dirty with one undo step each, records history (before and after) per rewritten
+/// file, leaves the dismissed file alone, says the totals, and searches again (the dismissal
+/// kept).
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_all_across_the_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = crate::workspace::normalize(dir.path());
+    let scratch = tempfile::tempdir().unwrap();
+    fs::create_dir_all(root.join(".git")).unwrap();
+    let files = twenty_files();
+    for (rel, before, _) in &files {
+        write(&root, rel, before);
+    }
+    let mut app = started(test_app(&root, Buffer::open(&root.join("f00.txt")).unwrap()));
+    // f01.txt open too, with an unsaved edit adding a match.
+    app.test_open(Buffer::open(&root.join("f01.txt")).unwrap());
+    app.type_text("foo9 ");
+    let mut term = Terminal::new(TestBackend::new(120, 90)).unwrap();
+
+    app.press(K::Char('h'), cmd() | M::SHIFT);
+    app.press(K::Char('r'), toggle());
+    app.press(K::Char('c'), toggle());
+    app.type_text(r"foo(\d)");
+    app.press(K::Enter, M::NONE);
+    settled(&mut app).await;
+    app.press(K::Tab, M::NONE);
+    app.type_text("bar$1");
+    assert_eq!(app.search.as_ref().unwrap().files.len(), 20);
+
+    // Every result line is drawn struck through, followed by its replacement.
+    draw(&mut term, &mut app);
+    let hit = app.hits.search.clone().unwrap();
+    let lines: Vec<&RowKey> = hit.rows.iter().filter(|k| k.1 > 0).collect();
+    assert_eq!(lines.len(), result_lines(&app).len(), "all on screen");
+    for k in lines {
+        let row = row_text(&term, &app, k);
+        assert!(row.contains("bar"), "{k:?}: {row}");
+        let y = row_y(&app, k);
+        let struck = (hit.list.x..hit.list.x + hit.list.width).any(|x| {
+            term.backend().buffer()[(x, y)]
+                .modifier
+                .contains(ratatui::style::Modifier::CROSSED_OUT)
+        });
+        assert!(struck, "{k:?}: {row}");
+    }
+    assert_eq!(row_text(&term, &app, &key("f01.txt", 1)), "foo9bar9 file 1");
+
+    // f05.txt dismissed by its row's `×`.
+    click_row_button(&mut term, &mut app, &key("f05.txt", 0), false);
+    let total = total(&app);
+    assert_eq!(app.search.as_ref().unwrap().files.len(), 19);
+
+    // Replace All asks first, with the counts.
+    app.press(K::Enter, cmd() | M::ALT);
+    assert!(matches!(
+        &app.prompt,
+        Some(crate::app::Prompt::ConfirmReplace { occurrences, files: 19, with }) if *occurrences == total && with == "bar$1"
+    ));
+    draw(&mut term, &mut app);
+    let screen: String = (0..90).map(|y| text(&term, y, 0, 120)).collect();
+    assert!(screen.contains(&format!("Replace {total} occurrences across 19 files?")));
+    app.press(K::Enter, M::NONE);
+    assert!(app.prompt.is_none());
+    replaced(&mut app, 1).await;
+    assert_eq!(
+        message(&app),
+        format!("Replaced {total} occurrences across 19 files with 'bar$1'")
+    );
+
+    // The closed files as `sed` makes them (and as recorded), history before and after.
+    let have_sed = sed(scratch.path(), "foo1").is_some();
+    if !have_sed {
+        eprintln!("note: no sed; comparing with the recorded expectations only");
+    }
+    for (rel, before, after) in &files[2..] {
+        let now = fs::read_to_string(root.join(rel)).unwrap();
+        if rel == "f05.txt" {
+            assert_eq!(&now, before, "dismissed: untouched");
+            assert!(crate::history::entries(&root, Path::new(rel)).unwrap().is_empty());
+            continue;
+        }
+        assert_eq!(&now, after, "{rel}");
+        if have_sed {
+            assert_eq!(now, sed(scratch.path(), before).unwrap(), "{rel}");
+        }
+        let entries = crate::history::entries(&root, Path::new(rel)).unwrap();
+        assert_eq!(entries.len(), 2, "{rel}: before and after");
+        let read = |i: usize| crate::history::read(&root, Path::new(rel), &entries[i].id).unwrap();
+        assert_eq!(read(0), after.as_bytes(), "{rel}: newest");
+        assert_eq!(read(1), before.as_bytes(), "{rel}: the text before");
+    }
+
+    // The open ones: replaced in the buffer, unsaved, the disk as it was; one undo each.
+    let buf = |app: &App, rel: &str| {
+        let id = app.buffers.find_path(&root.join(rel)).unwrap();
+        let b = app.buffers.get(id).unwrap();
+        (b.rope.to_string(), b.is_dirty())
+    };
+    assert_eq!(buf(&app, "f00.txt"), (files[0].2.clone(), true));
+    assert_eq!(buf(&app, "f01.txt"), (format!("bar9 {}", files[1].2), true));
+    for (rel, before, _) in &files[..2] {
+        assert_eq!(&fs::read_to_string(root.join(rel)).unwrap(), before);
+        assert!(crate::history::entries(&root, Path::new(rel)).unwrap().is_empty());
+    }
+    app.press(K::Esc, M::NONE);
+    assert_eq!(app.ui.focus, Focus::Editor);
+    app.press(K::Char('z'), cmd());
+    assert_eq!(buf(&app, "f01.txt"), (format!("foo9 {}", files[1].1), true));
+    app.press(K::PageUp, M::CONTROL);
+    app.press(K::Char('z'), cmd());
+    assert_eq!(buf(&app, "f00.txt"), (files[0].1.clone(), false));
+
+    // Searched again: nothing left but the dismissed file, which stays dismissed.
+    let r = app.search.as_ref().unwrap();
+    assert_eq!(r.total, 0);
+    assert!(r.dismissed.contains_key(Path::new("f05.txt")));
+}
+
+/// Files changed on disk since the search are searched again, not corrupted: new matches
+/// replaced where they are now; a file with a dismissed line whose matches moved, one become
+/// binary, one not UTF-8 and one deleted are left alone, named in the message.
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_rereads_files_changed_since_the_search() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = crate::workspace::normalize(dir.path());
+    fs::create_dir_all(root.join(".git")).unwrap();
+    write(&root, "open.txt", "nothing\n");
+    for f in ["a", "b", "c", "d", "e"] {
+        write(&root, &format!("{f}.txt"), "foo1\nfoo2\nfoo3\n");
+    }
+    write(&root, "f.txt", "foo1\nfoo2\n");
+    let mut app = started(test_app(&root, Buffer::open(&root.join("open.txt")).unwrap()));
+    let mut term = Terminal::new(TestBackend::new(100, 60)).unwrap();
+    regex_search(&mut app).await;
+    run_command(&mut app, "Search: Toggle Replace");
+    assert!(app.search_view.replacing);
+    app.type_text("bar$1");
+    // Dismissed: b.txt's second line, f.txt's first.
+    click_row_button(&mut term, &mut app, &key("b.txt", 2), false);
+    click_row_button(&mut term, &mut app, &key("f.txt", 1), false);
+
+    write(&root, "a.txt", "new\nfoo3 foo4\nfoo5\n");
+    write(&root, "b.txt", "top\nfoo1\nfoo2\nfoo3\n");
+    fs::write(root.join("c.txt"), b"foo1\0\n").unwrap();
+    fs::write(root.join("d.txt"), b"foo1 \xff\n").unwrap();
+    fs::remove_file(root.join("e.txt")).unwrap();
+
+    app.press(K::Enter, cmd() | M::ALT);
+    assert!(app.prompt.is_some());
+    app.press(K::Char('r'), M::NONE);
+    replaced(&mut app, 1).await;
+    assert_eq!(
+        fs::read_to_string(root.join("a.txt")).unwrap(),
+        "new\nbar3 bar4\nbar5\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("b.txt")).unwrap(),
+        "top\nfoo1\nfoo2\nfoo3\n"
+    );
+    assert_eq!(fs::read(root.join("c.txt")).unwrap(), b"foo1\0\n");
+    assert_eq!(fs::read(root.join("d.txt")).unwrap(), b"foo1 \xff\n");
+    assert!(!root.join("e.txt").exists());
+    assert_eq!(fs::read_to_string(root.join("f.txt")).unwrap(), "foo1\nbar2\n");
+    assert_eq!(
+        message(&app),
+        "Replaced 4 occurrences across 2 files with 'bar$1'; skipped 4 files: b.txt (changed since \
+         the search), c.txt (binary), d.txt (not UTF-8) and 1 more"
+    );
+    assert_eq!(app.message.as_ref().unwrap().level, crate::app::Level::Warning);
+    for rel in ["b.txt", "c.txt", "d.txt"] {
+        assert!(
+            crate::history::entries(&root, Path::new(rel)).unwrap().is_empty(),
+            "{rel}"
+        );
+    }
+    // Searched again: f.txt's dismissed line stays out; b.txt (its lines moved) is back in full,
+    // d.txt searched as ever (lossily).
+    assert_eq!(result_lines(&app), ["b.txt:2", "b.txt:3", "b.txt:4", "d.txt:1"]);
+}
+
+/// Replacing one line (Cmd+Shift+1, as terminals send it: Cmd+`!`) and one file (its row's `⇄`),
+/// then the rest by the `⇄ All` button (one file: no question); whole word leaves `foobar`
+/// alone; nothing happens while the replace input is hidden, or when the question is
+/// cancelled.
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_one_line_one_file_and_the_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = crate::workspace::normalize(dir.path());
+    fs::create_dir_all(root.join(".git")).unwrap();
+    write(&root, "open.txt", "nothing\n");
+    write(&root, "a.txt", "foo one\nfoobar two\nthe foo three\n");
+    write(&root, "b.txt", "foo\nfoo\n");
+    let mut app = started(test_app(&root, Buffer::open(&root.join("open.txt")).unwrap()));
+    let mut term = term();
+    app.press(K::Char('f'), cmd() | M::SHIFT);
+    app.press(K::Char('w'), toggle());
+    app.type_text("foo");
+    app.press(K::Enter, M::NONE);
+    settled(&mut app).await;
+    assert_eq!(result_lines(&app), ["a.txt:1", "a.txt:3", "b.txt:1", "b.txt:2"]);
+
+    // The replace input hidden: Cmd+Shift+1 in the list replaces nothing.
+    app.press(K::Down, M::NONE);
+    app.press(K::Down, M::NONE);
+    assert_eq!(app.search_view.list.selected(), Some(&key("a.txt", 1)));
+    app.press(K::Char('1'), cmd() | M::SHIFT);
+    assert!(message(&app).starts_with("Show the replace input"));
+    assert_eq!(app.replace.done, 0);
+
+    // Shown with "X": Cmd+`!` on the line row replaces that line only, the selection staying
+    // on the row in its place (the next line).
+    run_command(&mut app, "Search: Toggle Replace");
+    app.type_text("X");
+    app.press(K::Down, M::NONE);
+    assert_eq!(app.search_view.list.selected(), Some(&key("a.txt", 1)));
+    app.press(K::Char('!'), cmd());
+    replaced(&mut app, 1).await;
+    assert_eq!(
+        fs::read_to_string(root.join("a.txt")).unwrap(),
+        "X one\nfoobar two\nthe foo three\n"
+    );
+    assert_eq!(message(&app), "Replaced 1 occurrence across 1 file with 'X'");
+    assert_eq!(result_lines(&app), ["a.txt:3", "b.txt:1", "b.txt:2"]);
+    assert_eq!(app.search_view.selected_row(app.search.as_ref().unwrap()), Some(1));
+    assert!(app.search_view.list_focused);
+    assert_eq!(crate::history::entries(&root, Path::new("a.txt")).unwrap().len(), 2);
+
+    // b.txt's row `⇄`: the whole file.
+    click_row_button(&mut term, &mut app, &key("b.txt", 0), true);
+    replaced(&mut app, 2).await;
+    assert_eq!(fs::read_to_string(root.join("b.txt")).unwrap(), "X\nX\n");
+    assert_eq!(message(&app), "Replaced 2 occurrences across 1 file with 'X'");
+
+    // A question only for more than one file: two more files, Esc cancels it.
+    write(&root, "c.txt", "foo\n");
+    write(&root, "d.txt", "foo\n");
+    app.press(K::Tab, M::SHIFT);
+    app.press(K::Enter, M::NONE);
+    settled(&mut app).await;
+    assert_eq!(result_lines(&app), ["a.txt:3", "c.txt:1", "d.txt:1"]);
+    app.press(K::Enter, cmd() | M::ALT);
+    assert!(app.prompt.is_some());
+    app.press(K::Esc, M::NONE);
+    assert!(app.prompt.is_none());
+    assert_eq!(app.replace.done, 2);
+    assert_eq!(fs::read_to_string(root.join("c.txt")).unwrap(), "foo\n");
+
+    // c.txt and d.txt dismissed; the `⇄ All` button then replaces a.txt's last line, no question.
+    click_row_button(&mut term, &mut app, &key("c.txt", 0), false);
+    click_row_button(&mut term, &mut app, &key("d.txt", 0), false);
+    draw(&mut term, &mut app);
+    let all = app.hits.search.as_ref().unwrap().replace_all;
+    assert_eq!(text(&term, all.y, all.x, all.x + all.width), "⇄ All");
+    click(&mut app, all.x, all.y);
+    assert!(app.prompt.is_none());
+    replaced(&mut app, 3).await;
+    assert_eq!(
+        fs::read_to_string(root.join("a.txt")).unwrap(),
+        "X one\nfoobar two\nthe X three\n",
+        "whole word: foobar stays"
+    );
+    assert_eq!(fs::read_to_string(root.join("c.txt")).unwrap(), "foo\n");
+    assert_eq!(app.search.as_ref().unwrap().total, 0);
+    assert!(!app.search_view.list_focused, "an emptied list gives the keys back");
+}
+
+/// What's left alone, and why: an open buffer edited since the search so that its dismissed
+/// line moved (refused, not a wrong line replaced), a read-only one (not UTF-8), and a closed
+/// file whose text before can't be recorded in file history (not written). Then a line row's
+/// `⇄` in the dirty buffer replaces that line only, as one undo step, the disk untouched.
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_leaves_alone_what_it_cant_do_safely() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = crate::workspace::normalize(dir.path());
+    fs::create_dir_all(root.join(".git")).unwrap();
+    fs::write(root.join("bad.txt"), b"foo1 \xff\n").unwrap();
+    write(&root, "h.txt", "foo1\n");
+    write(&root, "open.txt", "foo1\nfoo2\nfoo3\n");
+    // File history can't be recorded: its folder is a file.
+    fs::create_dir_all(root.join(".jed")).unwrap();
+    fs::write(root.join(".jed/history"), "in the way").unwrap();
+    let mut app = started(test_app(&root, Buffer::open(&root.join("bad.txt")).unwrap()));
+    assert!(app.active_buffer().unwrap().read_only.is_some());
+    app.test_open(Buffer::open(&root.join("open.txt")).unwrap());
+    let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
+    regex_search(&mut app).await;
+    run_command(&mut app, "Search: Toggle Replace");
+    app.type_text("bar$1");
+    assert_eq!(
+        result_lines(&app),
+        ["bad.txt:1", "h.txt:1", "open.txt:1", "open.txt:2", "open.txt:3"]
+    );
+    click_row_button(&mut term, &mut app, &key("open.txt", 2), false);
+
+    // A line added at the top of open.txt: its dismissed line (foo2) is line 3 now.
+    app.press(K::Esc, M::NONE);
+    assert_eq!(app.ui.focus, Focus::Editor);
+    app.press_file_start();
+    app.type_text("x");
+    app.press(K::Enter, M::NONE);
+    let buf_text = |app: &App| app.active_buffer().unwrap().rope.to_string();
+    assert_eq!(buf_text(&app), "x\nfoo1\nfoo2\nfoo3\n");
+
+    // From the editor (the palette): Cmd+Shift+F would search again.
+    run_command(&mut app, "Search: Replace All");
+    assert!(app.prompt.is_some(), "{}", message(&app));
+    app.press(K::Char('r'), M::NONE);
+    replaced(&mut app, 1).await;
+    assert_eq!(
+        message(&app),
+        "Nothing replaced; skipped 3 files: bad.txt (not valid UTF-8), open.txt (changed since the \
+         search), h.txt (its file history couldn't be saved)"
+    );
+    assert_eq!(buf_text(&app), "x\nfoo1\nfoo2\nfoo3\n");
+    assert_eq!(fs::read_to_string(root.join("h.txt")).unwrap(), "foo1\n");
+    assert_eq!(fs::read(root.join("bad.txt")).unwrap(), b"foo1 \xff\n");
+    assert_eq!(fs::read_to_string(root.join("open.txt")).unwrap(), "foo1\nfoo2\nfoo3\n");
+
+    // Searched again from the buffer's text, open.txt in full (its dismissal named another line
+    // now); its foo2 row's `⇄` replaces that line only.
+    assert_eq!(
+        result_lines(&app),
+        ["bad.txt:1", "h.txt:1", "open.txt:2", "open.txt:3", "open.txt:4"]
+    );
+    click_row_button(&mut term, &mut app, &key("open.txt", 2), true);
+    replaced(&mut app, 2).await;
+    assert_eq!(message(&app), "Replaced 1 occurrence across 1 file with 'bar$1'");
+    assert_eq!(buf_text(&app), "x\nfoo1\nbar2\nfoo3\n");
+    assert_eq!(fs::read_to_string(root.join("open.txt")).unwrap(), "foo1\nfoo2\nfoo3\n");
+    app.press(K::Esc, M::NONE);
+    app.press(K::Char('z'), cmd());
+    assert_eq!(buf_text(&app), "x\nfoo1\nfoo2\nfoo3\n", "one undo step");
 }

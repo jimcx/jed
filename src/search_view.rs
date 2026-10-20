@@ -33,7 +33,8 @@
 //!   (`replacement`); while it's non-empty (`previewing`) each result line draws its matches
 //!   struck through followed by their replacements, and opening a result opens the file's
 //!   replace preview diff tab instead (`workspace_search::FileReplace`). Editing it re-searches
-//!   nothing.
+//!   nothing. Replacing (`app/replace.rs`) searches again with `restarted`, keeping the list's
+//!   place.
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -258,6 +259,13 @@ impl SearchView {
     pub fn started(&mut self) {
         self.deadline = None;
         self.list.reset();
+        self.selected_match = 0;
+    }
+
+    /// The search is starting again after a Replace: nothing pending, the list's scroll and
+    /// selection kept by key (the row after a replaced line takes its place).
+    pub fn restarted(&mut self) {
+        self.deadline = None;
         self.selected_match = 0;
     }
 

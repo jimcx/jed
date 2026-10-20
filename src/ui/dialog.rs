@@ -122,6 +122,23 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) {
             lines.push(Line::raw(""));
             lines.push(buttons(&[("R", "estore"), ("D", "iscard"), ("L", "ater")]));
         }
+        Prompt::ConfirmReplace {
+            occurrences,
+            files,
+            with,
+        } => {
+            lines.push(Line::raw(format!(
+                " Replace {occurrences} occurrences across {files} files?"
+            )));
+            let with = if with.is_empty() {
+                "nothing".to_string()
+            } else {
+                format!("'{with}'")
+            };
+            lines.push(Line::raw(format!(" With {with}; open files are left unsaved.")));
+            lines.push(Line::raw(""));
+            lines.push(buttons(&[("R", "eplace"), ("C", "ancel")]));
+        }
         Prompt::ConfirmDelete { path, is_dir } => {
             let what = if *is_dir { "folder" } else { "file" };
             lines.push(Line::raw(format!(" Move {what} {} to the Trash?", rel(path))));

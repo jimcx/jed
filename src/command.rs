@@ -459,10 +459,16 @@ pub enum SearchCommand {
     ToggleReplace,
     /// Cmd+Shift+H: show the Search view with the replace input, seeded as Find in Files is.
     ReplaceInFiles,
+    /// Cmd+Shift+1 in the list (or a row's replace button): replace the selected line's matches,
+    /// or a file row's every match (while the replace input shows).
+    ReplaceOne,
+    /// Cmd+Alt+Enter (or the button beside the replace input): replace every result not
+    /// dismissed, asking first when it touches more than one file.
+    ReplaceAll,
 }
 
 impl SearchCommand {
-    pub const ALL: [SearchCommand; 25] = [
+    pub const ALL: [SearchCommand; 27] = [
         SearchCommand::ToggleCase,
         SearchCommand::ToggleRegex,
         SearchCommand::Refresh,
@@ -488,6 +494,8 @@ impl SearchCommand {
         SearchCommand::Dismiss,
         SearchCommand::ToggleReplace,
         SearchCommand::ReplaceInFiles,
+        SearchCommand::ReplaceOne,
+        SearchCommand::ReplaceAll,
     ];
 }
 
@@ -924,6 +932,8 @@ impl Command {
                     SearchCommand::Dismiss => "dismiss",
                     SearchCommand::ToggleReplace => "toggleReplace",
                     SearchCommand::ReplaceInFiles => "replaceInFiles",
+                    SearchCommand::ReplaceOne => "replace",
+                    SearchCommand::ReplaceAll => "replaceAll",
                 }
             ),
             Command::TogglePanel => "view.togglePanel".into(),
@@ -1211,6 +1221,8 @@ impl Command {
                 SearchCommand::Dismiss => "Search: Dismiss",
                 SearchCommand::ToggleReplace => "Search: Toggle Replace",
                 SearchCommand::ReplaceInFiles => "Search: Replace in Files",
+                SearchCommand::ReplaceOne => "Search: Replace Selected Result",
+                SearchCommand::ReplaceAll => "Search: Replace All",
             },
             Command::TogglePanel => "View: Toggle Panel Visibility",
             Command::ToggleProblems => "View: Toggle Problems",

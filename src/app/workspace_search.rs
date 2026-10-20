@@ -162,6 +162,13 @@ impl App {
                 self.refresh_replace_previews();
             }
             S::ReplaceInFiles => self.replace_in_files(),
+            S::ReplaceOne => {
+                let scope = self.search_view.list.selected().and_then(|key| self.replace_scope(key));
+                if let Some(scope) = scope {
+                    self.search_replace(scope);
+                }
+            }
+            S::ReplaceAll => self.search_replace(super::replace::Scope::All),
         }
     }
 
@@ -257,7 +264,7 @@ impl App {
     /// The replace text or the results changed (a new search, a dismissal): every open replace
     /// preview takes the new replace — nothing replaced for a file dismissed or no longer
     /// searched — while there is one (an emptied input leaves them as they are).
-    fn refresh_replace_previews(&mut self) {
+    pub(super) fn refresh_replace_previews(&mut self) {
         if !self.search_view.previewing() {
             return;
         }
@@ -363,9 +370,20 @@ impl App {
             .find(|(_, r)| r.contains(at));
         let input = input.or_else(|| hit.replace.contains(at).then_some((Input::Replace, hit.replace)));
         let dismiss = hit.dismiss.iter().find(|(r, _)| r.contains(at));
+        let replace_row = hit.replace_row.iter().find(|(r, _)| r.contains(at));
         let chevron = hit.chevrons.iter().find(|(r, _)| r.contains(at));
         if let Some((cmd, _)) = toggle {
             self.search_command(cmd);
+        } else if hit.replace_all.contains(at) {
+            self.search_command(S::ReplaceAll);
+        } else if let Some((_, key)) = replace_row {
+            self.search_view.list_focused = true;
+            if let Some(results) = &self.search {
+                self.search_view.select_key(results, key);
+            }
+            if let Some(scope) = self.replace_scope(key) {
+                self.search_replace(scope);
+            }
         } else if let Some((_, key)) = dismiss {
             self.search_view.list_focused = true;
             self.search_dismiss(key);
@@ -483,6 +501,10 @@ impl App {
         let Some(results) = &mut self.search else { return };
         if results.add(batch) && results.done {
             self.search_task = None;
+            // Nothing left (all replaced): the keys go back to the query.
+            if results.files.is_empty() {
+                self.search_view.list_focused = false;
+            }
         }
     }
 }

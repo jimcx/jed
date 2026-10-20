@@ -3,9 +3,12 @@
 //! while the details show, an invalid regex's or glob's message under them, a summary ("12 results in 3 files",
 //! "Searching…", "No results found", the truncated note), then the results: a row per file
 //! (chevron, name, dimmed folder, match count) followed, unless it's collapsed, by its matching
-//! lines with the matches highlighted. The hovered row shows a `×` (dismiss) at its right end.
+//! lines with the matches highlighted. The hovered row shows a `×` (dismiss) at its right end,
+//! and while the replace input shows a replace button (`⇄`: that line's matches, or the file's)
+//! before it.
 //! The replace toggle (`▸` / `▾`) sits in the margin left of the query; while it's open the
-//! replace input is under the query, and while that's non-empty each drawn line shows its
+//! replace input is under the query with a Replace All button (`⇄ All`) beside it, and while
+//! that's non-empty each drawn line shows its
 //! matches struck through, each followed by its replacement (computed for the drawn rows only).
 //! Only the rows on screen are looked at.
 
@@ -26,6 +29,9 @@ use crate::search_view::{self, Input, Row};
 use crate::workspace_search::{FileMatches, LineMatch, MAX_MATCHES, Results};
 
 const TOGGLES: [&str; 3] = ["Aa", "ab", ".*"];
+/// The Replace All button beside the replace input, and a hovered row's replace button.
+const REPLACE_ALL: &str = "⇄ All";
+const REPLACE_ROW: &str = "⇄";
 /// Cells a result line is indented by.
 const LINE_INDENT: u16 = 3;
 
@@ -92,10 +98,22 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
     out.set_stringn(details.x, details.y, "…", 1, base.patch(theme.get(key)));
     let mut y = area.y + 1;
     let mut replace = Rect::default();
+    let mut replace_all = Rect::default();
     if view.replacing && y < bottom {
-        // As wide as the query (replace-c's Replace All button goes beside it).
+        // As wide as the query; Replace All where the query's toggles are.
         replace = Rect { y, ..field };
         cursors[3] = draw_field(out, replace, &view.replace, "Replace", input, selected, dim);
+        let x = field.x + field_w + 1;
+        let w = (area.x + area.width)
+            .saturating_sub(x + 1)
+            .min(REPLACE_ALL.width() as u16);
+        replace_all = Rect {
+            x,
+            y,
+            width: w,
+            height: 1,
+        };
+        out.set_stringn(x, y, REPLACE_ALL, w as usize, base.patch(theme.get("search.action")));
         y += 1;
     }
     if view.details {
@@ -159,6 +177,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
         rows: Vec::new(),
         dismiss: Vec::new(),
         chevrons: Vec::new(),
+        replace_row: Vec::new(),
+        replace_all,
     };
     let Some(results) = results else {
         return (Some(hit), None);
@@ -231,7 +251,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
             width: 1,
             height: 1,
         });
-        let right = if dismiss.is_some() { 2 } else { 0 };
+        // While the replace input shows, a replace button two cells left of it.
+        let replace_row = dismiss.filter(|_| view.replacing).map(|r| Rect { x: r.x - 2, ..r });
+        let right = match (dismiss, replace_row) {
+            (_, Some(_)) => 4,
+            (Some(_), None) => 2,
+            _ => 0,
+        };
         match row.row() {
             Row::File(file) => {
                 out.set_stringn(list.x + 1, y, if file.collapsed { "▸" } else { "▾" }, 1, s.chevron);
@@ -253,6 +279,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
                 (s.base, s.dim, s.matched),
                 preview.as_ref(),
             ),
+        }
+        if let Some(r) = replace_row {
+            out.set_stringn(r.x, r.y, REPLACE_ROW, 1, s.action);
+            hit.replace_row.push((r, key.clone()));
         }
         if let Some(r) = dismiss {
             out.set_stringn(r.x, r.y, "×", 1, s.action);

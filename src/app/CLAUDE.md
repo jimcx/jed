@@ -6,13 +6,14 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 
 - `mod.rs` — the `App` struct, `new` / `start` / `run`, `handle_event`, `execute`, `sync_views`, copy / paste, `handle_app_event`, `render_whitespace()`, and the `#[cfg(test)]` driving helpers (`test_start`, `press`, `type_text`, `mouse`, `settle`, `pump`, `test_execute`, the `test_*_tick`s, …: listed in docs/dev/app.md)
 - `files.rs` — opening (off-thread, `opening` map of `OpenRequest`s, `open_file(path, focus, goto)`), saving, closing tabs, `add_buffer`
-- `prompt.rs` — `Prompt`, the modal dialogs (save before close / quit / stage, trust, input, confirm delete, restore backups)
+- `prompt.rs` — `Prompt`, the modal dialogs (save before close / quit / stage, trust, input, confirm delete / replace, restore backups)
 - `side.rs` — explorer commands, directory listings, file ops, fs-change batching (`flush_fs_changes`), the side panel
 - `navigation.rs` — back / forward (`app.nav`): `nav_begin` / `nav_end`, `nav_jump`, Go Back / Forward
 - `palette.rs` — opening, keys and accepting the command palette and its pickers
 - `cursors.rs` — Cmd+D / Cmd+Shift+L / Cmd+Alt+D sessions, Cmd+U (`cursor_undo`), `track_selections`
 - `find.rs` — the find / replace widget (`app.find`): open, incremental search, next / previous, replace (all)
 - `workspace_search.rs` — the Search view (`app.search_view`): focus, debounce, starting searches, results, opening matches
+- `replace.rs` — the Search view's Replace (`app.replace`): a line / file / all, the confirm, open buffers edited, other files rewritten off-thread with history, the message and the search again
 - `syntax.rs` — buffers' language detection and `sync_syntax` (incremental / background parses)
 - `lsp.rs` — `sync_servers`, trust gating, `send_request` / `Pending` / `answer`, diagnostics into buffers, server notices
 - `problems.rs` — the bottom panel and its Problems list (Cmd+J, F8 / Shift+F8)

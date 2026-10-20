@@ -462,6 +462,10 @@ pub struct SearchHit {
     pub rows: Vec<crate::search_view::RowKey>,
     /// The `×` dismiss button drawn (on the hovered row), by row.
     pub dismiss: Vec<(Rect, crate::search_view::RowKey)>,
+    /// The replace button drawn beside it while the replace input shows, by row.
+    pub replace_row: Vec<(Rect, crate::search_view::RowKey)>,
+    /// The Replace All button beside the replace input (empty while hidden).
+    pub replace_all: Rect,
     /// File rows' chevrons (collapse / expand), by file.
     pub chevrons: Vec<(Rect, std::path::PathBuf)>,
 }

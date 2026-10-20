@@ -24,6 +24,7 @@ mod prompt;
 mod quick_diff;
 mod recent;
 mod rename;
+mod replace;
 mod scm;
 mod scrollbar;
 mod session;
@@ -198,6 +199,8 @@ enum AppEvent {
     UserSettingsReady(Result<PathBuf, String>),
     /// Workspace search results; any generation (stale ones are dropped).
     SearchResults(crate::workspace_search::Batch),
+    /// The Search view's Replace rewrote the files that aren't open (`app/replace.rs`).
+    Replaced(Box<replace::FilesDone>),
     /// A background parse finished (`Syntax::parsed` drops a superseded one).
     Parsed {
         buffer: BufferId,
@@ -389,6 +392,8 @@ pub struct App {
     pub disk: disk::DiskChecks,
     /// File history tasks (snapshots after saves, moves after renames).
     pub file_history: history::HistoryTasks,
+    /// The Search view's Replace (`app/replace.rs`): files being rewritten off-thread.
+    pub replace: replace::ReplaceState,
     /// The gutter markers' schedule, the peek, stages waiting for a save.
     pub quick_diff: quick_diff::QuickDiffState,
     /// Inline blame's toggle and its recompute delay.
@@ -509,6 +514,7 @@ impl App {
             git: Default::default(),
             disk: Default::default(),
             file_history: Default::default(),
+            replace: Default::default(),
             quick_diff: Default::default(),
             blame: Default::default(),
             diffs: Default::default(),
@@ -1202,6 +1208,7 @@ impl App {
                 Err(e) => self.notify(Level::Error, e),
             },
             AppEvent::SearchResults(batch) => self.search_results(batch),
+            AppEvent::Replaced(done) => self.files_replaced(*done),
             AppEvent::Parsed { buffer, parsed } => self.parsed(buffer, parsed),
             AppEvent::Lsp(ev) => self.lsp_event(ev),
             AppEvent::LocationsRead { generation, files } => self.locations_read(generation, files),

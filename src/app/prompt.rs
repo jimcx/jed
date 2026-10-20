@@ -41,6 +41,13 @@ pub enum Prompt {
     },
     /// Crash backups found at start (`app.backups.offered`): Restore / Discard / Later (Esc).
     RestoreBackups,
+    /// The Search view's Replace All over more than one file: Replace / Cancel.
+    ConfirmReplace {
+        occurrences: usize,
+        files: usize,
+        /// The replace text.
+        with: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,6 +195,24 @@ impl App {
                     self.keep_backups();
                 }
                 _ => self.prompt = Some(Prompt::RestoreBackups),
+            },
+            Prompt::ConfirmReplace {
+                occurrences,
+                files,
+                with,
+            } => match ch {
+                _ if enter || ch == Some('r') => {
+                    self.close_prompt();
+                    self.replace_now(super::replace::Scope::All);
+                }
+                _ if esc || ch == Some('c') => self.close_prompt(),
+                _ => {
+                    self.prompt = Some(Prompt::ConfirmReplace {
+                        occurrences,
+                        files,
+                        with,
+                    })
+                }
             },
             Prompt::ConfirmDelete { path, is_dir } => match ch {
                 _ if enter || ch == Some('t') => {
