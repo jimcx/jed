@@ -72,6 +72,10 @@
 //!   Makefile; selections keep their text and direction; several selections, each line once;
 //!   one undo step each, none when nothing changes; refused on a read-only buffer; the
 //!   line-command budget at 61k selections (release).
+//! - `resize_pointer`: the mouse pointer is a resize arrow (OSC 22: `ew-resize` / `ns-resize`)
+//!   over the side panel's edge, the bottom panel's top border and split dividers (by
+//!   direction), kept while dragging one wherever the pointer goes, back to the default
+//!   elsewhere and during a text drag.
 
 mod render_whitespace {
     use std::fs;
@@ -4587,5 +4591,76 @@ mod indent_lines {
         assert!(text(&app).starts_with("    let item = value_0; // item\n\n    let item = value_1;"));
         timed(&mut app, "shift+tab", &shift_tab);
         assert_eq!(text(&app), original);
+    }
+}
+
+mod resize_pointer {
+    use crossterm::event::{MouseButton, MouseEventKind as K};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::command::Command;
+    use crate::layout::{Divider, SplitDir};
+    use crate::milestone_tests::test_app;
+    use crate::terminal::Pointer;
+
+    fn draw(app: &mut App, term: &mut Terminal<TestBackend>) {
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+    }
+
+    fn divider(app: &App, dir: SplitDir) -> Divider {
+        app.hits.dividers.iter().find(|d| d.dir == dir).unwrap().clone()
+    }
+
+    #[test]
+    fn resize_pointer_over_borders_and_while_dragging() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path(), Buffer::from_str("hello\n"));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        app.ui.side_visible = true;
+        app.ui.panel_visible = true;
+        app.test_execute(Command::SplitRight);
+        app.test_execute(Command::SplitDown);
+        draw(&mut app, &mut term);
+
+        let side = app.hits.regions.side.unwrap();
+        let panel = app.hits.regions.panel.unwrap();
+        let right = divider(&app, SplitDir::Right).rect;
+        let down = divider(&app, SplitDir::Down).rect;
+        let border = side.x + side.width - 1;
+        for (x, y, want) in [
+            (border, side.y + 3, Pointer::ColResize),
+            (panel.x + 10, panel.y, Pointer::RowResize),
+            (right.x, right.y + 2, Pointer::ColResize),
+            (down.x + 2, down.y, Pointer::RowResize),
+            (panel.x + 10, panel.y + 2, Pointer::Default),
+            (right.x + 5, down.y + 3, Pointer::Default),
+        ] {
+            app.mouse(K::Moved, x, y);
+            assert_eq!(app.pointer, want, "at ({x}, {y})");
+        }
+
+        // A drag keeps its arrow wherever the pointer goes, and drops it on release away from
+        // the border.
+        app.mouse(K::Down(MouseButton::Left), border, side.y + 3);
+        app.mouse(K::Drag(MouseButton::Left), border + 15, side.y + 10);
+        assert_eq!(app.pointer, Pointer::ColResize);
+        app.mouse(K::Up(MouseButton::Left), border + 15, side.y + 10);
+        draw(&mut app, &mut term);
+        assert_eq!(app.hits.regions.side.unwrap().width, side.width + 15);
+        app.mouse(K::Moved, border + 15, side.y + 10);
+        assert_eq!(app.pointer, Pointer::ColResize, "the border followed the pointer");
+        app.mouse(K::Moved, border + 20, side.y + 10);
+        assert_eq!(app.pointer, Pointer::Default);
+
+        // A text drag in the editor never shows one, even crossing a divider.
+        let text = app.hits.group(app.groups.active).unwrap().text;
+        let right = divider(&app, SplitDir::Right).rect;
+        app.mouse(K::Down(MouseButton::Left), text.x + 1, text.y);
+        app.mouse(K::Drag(MouseButton::Left), right.x, right.y + 2);
+        assert_eq!(app.pointer, Pointer::Default);
+        app.mouse(K::Up(MouseButton::Left), right.x, right.y + 2);
     }
 }

@@ -8,8 +8,9 @@ use super::{App, Focus};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::column::{self, Cell};
 use crate::command::{Command, ExplorerCommand};
-use crate::layout::{Divider, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, PanelTab, ScrollTarget, SidePanel};
+use crate::layout::{Divider, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, PanelTab, ScrollTarget, SidePanel, SplitDir};
 use crate::selection::{Selection, Selections};
+use crate::terminal::Pointer;
 use crate::view::View;
 
 const MULTI_CLICK: Duration = Duration::from_millis(500);
@@ -61,6 +62,32 @@ impl ClickTracker {
 
 impl App {
     pub(super) fn handle_mouse(&mut self, m: MouseEvent) {
+        self.mouse_event(m);
+        self.pointer = self.pointer_at(m.column, m.row);
+    }
+
+    /// The pointer's shape: a resize arrow over a border that drags (and while dragging one,
+    /// wherever the pointer is), else the terminal's own.
+    fn pointer_at(&self, x: u16, y: u16) -> Pointer {
+        let divider = |d: &Divider| match d.dir {
+            SplitDir::Right => Pointer::ColResize,
+            SplitDir::Down => Pointer::RowResize,
+        };
+        match &self.drag {
+            Some(Drag::SideBorder) => Pointer::ColResize,
+            Some(Drag::PanelBorder | Drag::HistoryDivider) => Pointer::RowResize,
+            Some(Drag::Divider(d)) => divider(d),
+            Some(_) => Pointer::Default,
+            None => match self.hits.hit(x, y) {
+                Hit::SideBorder => Pointer::ColResize,
+                Hit::PanelBorder | Hit::HistoryDivider => Pointer::RowResize,
+                Hit::Divider(i) => self.hits.dividers.get(i).map_or(Pointer::Default, divider),
+                _ => Pointer::Default,
+            },
+        }
+    }
+
+    fn mouse_event(&mut self, m: MouseEvent) {
         let hit = match self.hits.hit(m.column, m.row) {
             // The wheel over a scroll bar scrolls what it scrolls, as the wheel over that.
             Hit::ScrollBar(t) if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) => match t {

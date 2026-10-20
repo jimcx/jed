@@ -333,6 +333,8 @@ pub struct App {
     opening: HashMap<PathBuf, files::OpenRequest>,
     clicks: ClickTracker,
     drag: Option<mouse::Drag>,
+    /// The mouse pointer's shape wanted (`run` sends it when it changes).
+    pub pointer: crate::terminal::Pointer,
     /// The find widget's options (case, whole word, regex), which Cmd+D also uses for selected
     /// text (VS Code's `selectedTextMatchMode: findOptions`; it ignores `regex`).
     pub find_options: search::Options,
@@ -467,6 +469,7 @@ impl App {
             opening: HashMap::new(),
             clicks: ClickTracker::default(),
             drag: None,
+            pointer: crate::terminal::Pointer::Default,
             find_options: search::Options::default(),
             find: FindWidget::default(),
             match_session: None,
@@ -569,6 +572,7 @@ impl App {
     pub async fn run(&mut self, terminal: &mut Term) -> anyhow::Result<()> {
         self.start();
         let mut events = EventStream::new();
+        let mut pointer = crate::terminal::Pointer::Default;
         loop {
             if self.should_quit {
                 self.shutdown().await;
@@ -592,6 +596,10 @@ impl App {
                     tracing::warn!(elapsed_ms = t.elapsed().as_millis() as u64, "slow frame");
                 }
                 self.needs_redraw = false;
+            }
+            if self.pointer != pointer {
+                pointer = self.pointer;
+                crate::terminal::set_pointer(terminal.backend_mut(), pointer)?;
             }
             let timer = self.next_timer();
             tokio::select! {

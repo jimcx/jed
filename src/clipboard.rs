@@ -112,12 +112,7 @@ impl Clipboard {
 /// Sets the terminal's clipboard. Wrapped for tmux so it reaches the outer terminal
 /// (needs `set -g allow-passthrough on`, or tmux's own `set-clipboard on` handles the plain form).
 fn osc52(text: &str) {
-    let seq = format!("\x1b]52;c;{}\x07", base64(text.as_bytes()));
-    let seq = if std::env::var_os("TMUX").is_some() {
-        format!("\x1bPtmux;{}\x1b\\", seq.replace('\x1b', "\x1b\x1b"))
-    } else {
-        seq
-    };
+    let seq = crate::terminal::passthrough(&format!("\x1b]52;c;{}\x07", base64(text.as_bytes())));
     let mut out = std::io::stdout();
     if let Err(e) = out.write_all(seq.as_bytes()).and_then(|()| out.flush()) {
         tracing::warn!("OSC 52 write failed: {e}");
