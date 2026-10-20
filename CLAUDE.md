@@ -8,7 +8,7 @@ guessing: Features (one subsection per area), [Keybindings](PLAN.md#keybindings-
 [Milestones](PLAN.md#milestones) (each has "Needs", "Deferred" and a "Done when" to test against).
 Milestones 1–13 are done and keep their numbers; later ones have names and short ids, not numbers, and no order ([Named milestones](PLAN.md#named-milestones): those marked ✅ are done), each built task by task (`tools-a`, `tools-b`, …), one commit per task, via `/milestones <name>`. Further work is PLAN.md's TODO list, one item per commit via `/todo` (an item too big becomes smaller items or a new named milestone). Finished milestones and TODO items keep one line in PLAN.md; their full entries (what was built, "Deferred", hand checks, notes for later work) are in [docs/plan-done.md](docs/plan-done.md) — grep it when something refers back to one.
 
-**This file is the summary; details are read on demand**: [docs/dev/modules.md](docs/dev/modules.md) (every module in full, the data flow step by step), [docs/dev/conventions.md](docs/dev/conventions.md) (feature-specific rules), [docs/dev/testing.md](docs/dev/testing.md) (test helpers per feature), and the nested `CLAUDE.md` files in `src/app`, `src/buffer`, `src/lsp`, `src/syntax`, `src/ui`, `docs/terminals`.
+**This file is the summary; details are read on demand**: [docs/dev/modules.md](docs/dev/modules.md) (every module in full, the data flow step by step), [docs/dev/conventions.md](docs/dev/conventions.md) (feature-specific rules), [docs/dev/testing.md](docs/dev/testing.md) (test helpers per feature), [docs/dev/app.md](docs/dev/app.md) (every `src/app/` submodule in full), and the nested `CLAUDE.md` files in `src/app`, `src/buffer`, `src/lsp`, `src/syntax`, `src/ui`, `docs/terminals`.
 
 ## Toolchain and checks
 
@@ -32,7 +32,7 @@ All three must pass before a commit. Cap test runs with `scripts/timeout 300 car
 One line each; [docs/dev/modules.md](docs/dev/modules.md) has every module's types, functions and rules — read the entries for what you touch. "Model" modules hold no app state and draw nothing: `app/<area>.rs` drives them, `ui/<area>.rs` draws them.
 
 - `main.rs` — args (`jed [<folder> | <file>[:line[:col]]]`, `--log-level`); loads the first file, `.workspace`, `settings.toml`, `tasks.toml`, `keybindings.toml` before raw mode; builds the runtime, runs `App`
-- `app/` — `App`: all state, the event loop, `execute(Command)`, prompts, mouse, background results (see `src/app/CLAUDE.md`)
+- `app/` — `App`: all state, the event loop, `execute(Command)`, prompts, mouse, background results (see `src/app/CLAUDE.md` + [docs/dev/app.md](docs/dev/app.md))
 - `command.rs` — `Command` and sub-enums; `all()`, `name()` (`edit.copy`), `from_name`, `title()`
 - `config/keymap.rs` — `Keymap` (`(KeyCombo, Option<Context>) -> Command`), `Context`s and their parents, defaults per `Platform`, `keybindings.toml`
 - `config/settings.rs` — `SettingsOverrides` (`settings.toml` / `.workspace` `[settings]`), `layer`, lenient `load`, `TEMPLATE`
