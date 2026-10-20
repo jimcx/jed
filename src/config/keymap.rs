@@ -548,6 +548,19 @@ fn defaults(platform: Platform) -> Vec<Binding> {
     editor.extend(find_keys);
     if mac {
         editor.push((KeyCode::Backspace, cmd, Command::DeleteToLineStart));
+        // macOS's Emacs-style keys, as VS Code binds them on macOS (after Home / End / arrows /
+        // Backspace / Delete, so the palette shows those).
+        let mv = |motion| Command::Move { motion, select: false };
+        editor.extend([
+            (KeyCode::Char('a'), ctrl, mv(Motion::LineStart)),
+            (KeyCode::Char('e'), ctrl, mv(Motion::LineEnd)),
+            (KeyCode::Char('b'), ctrl, mv(Motion::Left)),
+            (KeyCode::Char('f'), ctrl, mv(Motion::Right)),
+            (KeyCode::Char('p'), ctrl, mv(Motion::Up)),
+            (KeyCode::Char('n'), ctrl, mv(Motion::Down)),
+            (KeyCode::Char('h'), ctrl, Command::DeleteLeft),
+            (KeyCode::Char('d'), ctrl, Command::DeleteRight),
+        ]);
     } else {
         editor.push((KeyCode::Char('y'), ctrl, Command::Redo));
         // macOS leaves Cmd+V to the terminal: it arrives as a bracketed paste.
@@ -691,7 +704,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
     ];
 
     // The completion list, while shown (falls back to the editor's keys).
-    let suggest = [
+    let mut suggest = vec![
         (KeyCode::Up, none, Sg::Up),
         (KeyCode::Down, none, Sg::Down),
         (KeyCode::PageUp, none, Sg::PageUp),
@@ -700,6 +713,11 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Tab, none, Sg::Accept),
         (KeyCode::Esc, none, Sg::Close),
     ];
+    if mac {
+        // VS Code's: the list's selection, not the editor's Ctrl+P / Ctrl+N cursor moves.
+        suggest.push((KeyCode::Char('p'), ctrl, Sg::Up));
+        suggest.push((KeyCode::Char('n'), ctrl, Sg::Down));
+    }
 
     // A diff tab (falls back to the editor's keys): VS Code's diff editor's next / previous
     // difference.
@@ -1203,6 +1221,58 @@ mod tests {
     /// NUL: Ctrl+@, maybe with Shift); the list's keys apply only in its context, the editor's
     /// otherwise.
     #[test]
+    fn macos_emacs_keys_in_the_editor() {
+        let ctrl = KeyModifiers::CONTROL;
+        let mac = Keymap::default_for(Platform::MacOs);
+        let linux = Keymap::default_for(Platform::Linux);
+        let ed = Context::Editor;
+        let mv = |motion| Command::Move { motion, select: false };
+        for (c, cmd) in [
+            ('a', mv(Motion::LineStart)),
+            ('e', mv(Motion::LineEnd)),
+            ('b', mv(Motion::Left)),
+            ('f', mv(Motion::Right)),
+            ('p', mv(Motion::Up)),
+            ('n', mv(Motion::Down)),
+            ('h', Command::DeleteLeft),
+            ('d', Command::DeleteRight),
+        ] {
+            assert_eq!(mac.lookup(&key(KeyCode::Char(c), ctrl), ed), Some(cmd), "Ctrl+{c}");
+        }
+        // The palette still shows the usual keys.
+        assert_eq!(
+            mac.binding_for(Command::DeleteRight).map(|k| k.label()).as_deref(),
+            Some("Delete")
+        );
+        assert_eq!(
+            mac.binding_for(mv(Motion::LineStart)).map(|k| k.label()).as_deref(),
+            Some("Home")
+        );
+        let s = Context::Suggest;
+        assert_eq!(
+            mac.lookup(&key(KeyCode::Char('p'), ctrl), s),
+            Some(Command::Suggest(Sg::Up))
+        );
+        assert_eq!(
+            mac.lookup(&key(KeyCode::Char('n'), ctrl), s),
+            Some(Command::Suggest(Sg::Down))
+        );
+        // Linux keeps VS Code's Linux keys.
+        assert_eq!(
+            linux.lookup(&key(KeyCode::Char('d'), ctrl), ed),
+            Some(Command::AddNextMatch)
+        );
+        assert_eq!(
+            linux.lookup(&key(KeyCode::Char('h'), ctrl), ed),
+            Some(Command::OpenReplace)
+        );
+        assert_eq!(
+            linux.lookup(&key(KeyCode::Char('a'), ctrl), ed),
+            Some(Command::SelectAll)
+        );
+    }
+
+    #[test]
     fn ctrl_space_and_the_suggest_context() {
         for platform in [Platform::MacOs, Platform::Linux] {
             let km = Keymap::default_for(platform);
@@ -1314,7 +1384,15 @@ mod tests {
         // A find-context binding: Ctrl+N goes to the next match; Enter and F3 no longer do.
         let ctrl_n = key(KeyCode::Char('n'), KeyModifiers::CONTROL);
         assert_eq!(km.lookup(&ctrl_n, Context::Find), Some(Command::Find(F::Next)));
-        assert_eq!(km.lookup(&ctrl_n, Context::Editor), None);
+        let down = Command::Move {
+            motion: Motion::Down,
+            select: false,
+        };
+        assert_eq!(
+            km.lookup(&ctrl_n, Context::Editor),
+            Some(down),
+            "the editor's own Ctrl+N"
+        );
         assert_eq!(km.lookup(&key(KeyCode::Enter, KeyModifiers::NONE), Context::Find), None);
 
         let (_, errors) = parse_user("[[binding]]\nkey = 1\n");

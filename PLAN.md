@@ -459,6 +459,7 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
 | Add next match / all matches | Cmd+D, Cmd+Shift+L | Ctrl+D, Ctrl+Shift+L |
 | Toggle panel | Cmd+J | Ctrl+J |
 | Go back / go forward | Ctrl+- / Ctrl+Shift+- | Ctrl+Alt+- / Ctrl+Shift+- |
+| Emacs-style keys in the editor (macOS's text keys): line start / end, left / right, up / down (in the completion list: its selection), delete left / right | Ctrl+A / E, Ctrl+B / F, Ctrl+P / N, Ctrl+H / D | — (Ctrl+D, Ctrl+H, … are VS Code's Linux commands) |
 
 - Configurable through `keybindings.toml`
 - Single key combos only — no chords
