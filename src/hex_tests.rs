@@ -12,8 +12,12 @@
 //! an invalid hex query, highlights in both columns (across a row break too), next / previous
 //! wrapping, selecting and scrolling, the off-thread count against a naive one, its cap, stale
 //! counts dropped, seeding from a selection, no replace / select all / Cmd+D / whole word /
-//! regex there, and the text tab's widget as it was. (Disk changes, sessions and navigation
-//! entries are hex-d.)
+//! regex there, and the text tab's widget as it was. Disk changes, sessions and navigation
+//! (hex-d): the file rewritten re-read into every hex tab of it (cursor and top clamped, find's
+//! count again), deleted and back, grown past `HEX_MAX_BYTES`; a hex tab kept by the session
+//! (a missing file dropped, a file now text still hex, the command line's file merged); back /
+//! forward to a hex tab, shown or reopened. `hex_done_when` walks the milestone's "Done when" in
+//! order on one app.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -523,7 +527,7 @@ async fn hex_editor_commands_leave_the_bytes_alone() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn hex_splits_share_the_bytes_and_one_tab_per_path() {
-    let (_d, root, mut app) = hex_app().await;
+    let (_d, _root, mut app) = hex_app().await;
     quick_open(&mut app, "notes.txt").await;
     open_bin(&mut app).await;
     app.press(KeyCode::Right, M::NONE);
@@ -559,11 +563,14 @@ async fn hex_splits_share_the_bytes_and_one_tab_per_path() {
     app.test_execute(Command::SplitDown);
     let third = app.groups.active;
     assert!(app.active_buffer().is_some_and(|b| b.name() == "notes.txt"));
-    fs::write(root.join("bin.dat"), b"\0changed").unwrap();
     quick_open(&mut app, "bin.dat").await;
     assert_eq!(app.groups.active, third);
     assert_eq!(hex(&app).doc.bytes(), data(), "the open tab's bytes");
-    assert_eq!(shared(&app, third), shared(&app, second));
+    assert_eq!(
+        shared(&app, third),
+        shared(&app, second),
+        "the same bytes, not read again"
+    );
     assert_eq!(hex(&app).cursor, 0, "a new tab");
 }
 
@@ -1538,4 +1545,363 @@ async fn as_hex(app: &mut App, name: &str, bytes: &[u8]) {
             .await
     );
     assert_eq!(hex(app).len(), bytes.len());
+}
+
+// Disk changes, sessions and navigation (hex-d).
+
+/// An app on `root` with sessions in `state` (as `main`'s), the side bar hidden, the session's
+/// restore waited for.
+async fn state_app(root: &Path, state: &Path) -> App {
+    let mut app = App::new(
+        Workspace::load(root.to_path_buf()),
+        TrustStore::load(state.join("trust.toml")),
+        None,
+        true,
+    );
+    app.state_dir = Some(state.to_path_buf());
+    app.test_start();
+    assert!(app.settle(|a| !a.session.loading()).await, "the session is read");
+    app.ui.side_visible = false;
+    app.ui.focus = Focus::Editor;
+    app
+}
+
+/// Quits as `run` does: the command, then `shutdown` (which writes the session).
+async fn quit(mut app: App) {
+    app.test_execute(Command::Quit);
+    assert!(app.quitting());
+    app.shutdown().await;
+}
+
+fn go_to_offset(app: &mut App, offset: &str) {
+    app.press(KeyCode::Char('g'), M::CONTROL);
+    app.type_text(offset);
+    app.press(KeyCode::Enter, M::NONE);
+}
+
+/// The milestone's "Done when", in order on one app: hexdump's rows at a width fitting 16 bytes
+/// but not 32, widening and narrowing through powers of two, Go to Offset and the status bar,
+/// find in ASCII and hex (the toggle converting, a match across a row break highlighted in both
+/// columns of both rows, the count a naive one), Cmd+C's hex pairs, the file rewritten on disk,
+/// quit and reopen at the same offset.
+#[tokio::test(flavor = "multi_thread")]
+async fn hex_done_when() {
+    let (_d, root, state) = dirs();
+    let path = root.join("bin.dat");
+    let bytes = data();
+    fs::write(&path, &bytes).unwrap();
+    let mut app = state_app(&root, &state).await;
+    open_bin(&mut app).await;
+
+    // `hexdump -C` row for row at 100 columns (96 for the rows: 16 bytes fit, 32 don't).
+    let dump = hexdump(&path);
+    let term = draw(&mut app, 100, 30);
+    let rect = rows_rect(&app);
+    assert_eq!(hex(&app).layout.bytes_per_row(), 16);
+    let start = drawn_rows(&term, rect);
+    assert_eq!(start.len(), rect.height as usize);
+    app.press_file_end();
+    let term = draw(&mut app, 100, 30);
+    let end = drawn_rows(&term, rect);
+    assert_eq!(
+        end.last().unwrap(),
+        &format!("{:08x}", bytes.len()),
+        "the closing offset row"
+    );
+    // Every row the tab would draw, scrolled through: the first and last pages as drawn.
+    let h = hex(&app);
+    let all: Vec<String> = (0..h.rows())
+        .map(|r| hex::row(&h.doc, &h.layout, h.layout.row_offset(r, h.len())))
+        .collect();
+    assert_eq!(all[..start.len()], start[..]);
+    assert_eq!(all[all.len() - end.len()..], end[..]);
+    if let Some(dump) = &dump {
+        assert_eq!(&all, dump, "every row, as hexdump -C prints them");
+    }
+
+    // Widening: 32 bytes per row; narrowing: 8, then 4; the cursor's byte shown each time.
+    go_to_offset(&mut app, "0x150");
+    for (width, per_row) in [(160, 32), (70, 8), (45, 4), (100, 16)] {
+        let term = draw(&mut app, width, 12);
+        assert_eq!(hex(&app).layout.bytes_per_row(), per_row, "{width} columns");
+        assert_eq!(hex(&app).cursor, 0x150);
+        assert_cursor_shown(&app, &term);
+    }
+
+    // Ctrl+G `0x100`: the cursor there, and the status bar says so.
+    go_to_offset(&mut app, "0x100");
+    assert_eq!(hex(&app).cursor, 0x100);
+    let term = draw(&mut app, 100, 30);
+    assert_cursor_shown(&app, &term);
+    let status = status_bar(&term);
+    assert!(status.contains("Offset 0x100 (256)   0xf8 248"), "{status}");
+
+    // Cmd+F `ELF` (ASCII) and `45 4c 46` (hex) find the same match; the toggle converts.
+    app.press_file_start();
+    find(&mut app, "ELF");
+    assert!(!app.find_options.hex);
+    assert_eq!(hex(&app).selection(), Some(1..4));
+    settle_count(&mut app).await;
+    assert_eq!(
+        app.find.hex.count().unwrap().found(),
+        naive_count(&bytes, b"ELF", false)
+    );
+    app.press(KeyCode::Char('x'), toggle());
+    assert_eq!(app.find.query.text, "45 4c 46");
+    assert_eq!(hex(&app).selection(), Some(1..4));
+    settle_count(&mut app).await;
+    assert_eq!(app.find.hex.count().unwrap().found(), naive_count(&bytes, b"ELF", true));
+    app.press(KeyCode::Char('x'), toggle());
+    assert_eq!(app.find.query.text, "ELF");
+
+    // `07 08` runs over a row break three times (15, 271, 527): with the third current, the
+    // second is highlighted in both columns of both its rows; the count is the naive one.
+    app.press(KeyCode::Char('x'), toggle());
+    find(&mut app, "07 08");
+    assert_eq!(hex(&app).selection(), Some(15..17));
+    settle_count(&mut app).await;
+    assert_eq!(
+        app.find.hex.count().unwrap().found(),
+        naive_count(&bytes, &[7, 8], true)
+    );
+    assert_eq!(naive_count(&bytes, &[7, 8], true), 3);
+    app.press(KeyCode::Enter, M::NONE);
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(hex(&app).selection(), Some(527..529));
+    let term = draw(&mut app, 100, 30);
+    let (current, other) = (bg(&app, "editor.findMatch"), bg(&app, "editor.findMatchHighlight"));
+    assert_eq!((271 % 16, 272 % 16), (15, 0), "across a row break");
+    for at in [271, 272] {
+        assert_eq!(byte_bgs(&app, &term, at), (other, other), "byte {at}");
+    }
+    assert_eq!(byte_bgs(&app, &term, 527), (current, current));
+    assert!(
+        widget_rows(&app, &term)[0].ends_with("3 of 3"),
+        "{:?}",
+        widget_rows(&app, &term)
+    );
+
+    // Cmd+C on a selection: its hex pairs.
+    app.press(KeyCode::Esc, M::NONE);
+    assert!(!app.find.visible);
+    assert_eq!(app.ui.focus, Focus::Editor);
+    app.press(KeyCode::Right, M::SHIFT);
+    app.press(KeyCode::Right, M::SHIFT);
+    assert_eq!(hex(&app).selection(), Some(527..531));
+    app.press(KeyCode::Char('c'), cmd());
+    assert_eq!(app.clipboard.read().unwrap(), "07 08 09 0a");
+
+    // The file rewritten on disk updates the tab: new bytes, the cursor clamped into them, the
+    // find widget's count counted again over them.
+    find(&mut app, "07 08");
+    settle_count(&mut app).await;
+    assert_eq!(app.find.hex.count().unwrap().found(), 3);
+    let mut new = bytes[..300].to_vec();
+    new.extend_from_slice(b"the end");
+    fs::write(&path, &new).unwrap();
+    let updated = app
+        .settle(|a| hex(a).doc.bytes() == new && a.find.hex.count().is_some_and(|c| c.found() == 2))
+        .await;
+    assert!(updated, "re-read and counted again");
+    assert_eq!(hex(&app).cursor, new.len() - 1, "clamped to the last byte");
+    app.press(KeyCode::Esc, M::NONE);
+    let term = draw(&mut app, 100, 30);
+    assert_cursor_shown(&app, &term);
+    let rows = drawn_rows(&term, rows_rect(&app));
+    assert_eq!(rows.last().unwrap(), &format!("{:08x}", new.len()));
+
+    // Quit and reopen: the hex tab at the same offset, column and scroll.
+    go_to_offset(&mut app, "0x123");
+    app.press(KeyCode::Tab, M::NONE);
+    let term = draw(&mut app, 100, 8);
+    let before = drawn_rows(&term, rows_rect(&app));
+    let h = hex(&app);
+    let (cursor, column, top) = (h.cursor, h.column, h.top);
+    assert!(top > 0);
+    quit(app).await;
+    let mut app = state_app(&root, &state).await;
+    assert_eq!(app.session.restored, 1);
+    let h = hex(&app);
+    assert_eq!(
+        (h.path.as_path(), h.cursor, h.column, h.top),
+        (path.as_path(), cursor, column, top)
+    );
+    assert_eq!((cursor, column), (0x123, Column::Ascii));
+    let term = draw(&mut app, 100, 8);
+    assert_eq!(drawn_rows(&term, rows_rect(&app)), before);
+}
+
+/// Every hex tab of `path` (any group).
+fn tabs_of<'a>(app: &'a App, path: &'a Path) -> Vec<&'a HexTab> {
+    app.groups.hex_tabs().filter(|h| h.path == path).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hex_disk_changes_reach_every_tab_of_the_file() {
+    let (_d, root, mut app) = hex_app().await;
+    let path = root.join("bin.dat");
+    open_bin(&mut app).await;
+    app.test_execute(Command::SplitRight);
+    app.press_file_end();
+    draw(&mut app, 200, 12);
+    assert_eq!(tabs_of(&app, &path).len(), 2);
+
+    // Rewritten: both tabs take the same new bytes; the cursor at the end is clamped.
+    // (One check for both: `app::disk`'s `one_hex_check_per_file_for_all_its_tabs`.)
+    fs::write(&path, b"\0short").unwrap();
+    assert!(
+        app.settle(|a| tabs_of(a, &path).iter().all(|h| h.doc.bytes() == b"\0short"))
+            .await
+    );
+    let tabs = tabs_of(&app, &path);
+    assert_eq!(tabs[0].doc.bytes().as_ptr(), tabs[1].doc.bytes().as_ptr(), "shared");
+    assert_eq!(hex(&app).cursor, 5);
+    let term = draw(&mut app, 200, 12);
+    assert_cursor_shown(&app, &term);
+
+    // Deleted: `(deleted)`; back with the same bytes: cleared.
+    fs::remove_file(&path).unwrap();
+    assert!(app.settle(|a| tabs_of(a, &path).iter().all(|h| h.deleted)).await);
+    let term = draw(&mut app, 200, 12);
+    assert!(line(&term, 0, 0, 200).contains("bin.dat (deleted)"));
+    fs::write(&path, b"\0short").unwrap();
+    assert!(app.settle(|a| tabs_of(a, &path).iter().all(|h| !h.deleted)).await);
+    assert_eq!(hex(&app).doc.bytes(), b"\0short");
+
+    // Text now: still a hex tab (it was asked for), showing the text's bytes.
+    fs::write(&path, "plain text\n").unwrap();
+    assert!(app.settle(|a| hex(a).doc.bytes() == b"plain text\n").await);
+    assert!(app.buffers.find_path(&path).is_none(), "no text buffer");
+
+    // Grown past `HEX_MAX_BYTES` (sparse: never read): a message, the bytes kept.
+    let f = fs::File::options().write(true).open(&path).unwrap();
+    f.set_len(hex::HEX_MAX_BYTES as u64 + 1).unwrap();
+    drop(f);
+    let said = app
+        .settle(|a| {
+            a.message
+                .as_ref()
+                .is_some_and(|m| m.text.contains("too big for the hex view") && m.text.contains("not reloaded"))
+        })
+        .await;
+    assert!(said, "{:?}", app.message.as_ref().map(|m| &m.text));
+    assert!(
+        tabs_of(&app, &path)
+            .iter()
+            .all(|h| h.doc.bytes() == b"plain text\n" && !h.deleted)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hex_sessions_keep_hex_tabs() {
+    let (_d, root, state) = dirs();
+    for name in ["a.bin", "b.bin"] {
+        fs::write(root.join(name), data()).unwrap();
+    }
+    let mut app = state_app(&root, &state).await;
+    quick_open(&mut app, "a.bin").await;
+    go_to_offset(&mut app, "0x300");
+    quick_open(&mut app, "b.bin").await;
+    as_hex(&mut app, "notes.txt", b"hello\n").await;
+    app.press(KeyCode::Right, M::NONE);
+    quit(app).await;
+    let text = fs::read_to_string(crate::session::file(&state, &root)).unwrap();
+    assert_eq!(text.matches("\"kind\": \"hex\"").count(), 3, "{text}");
+
+    // b.bin gone: its tab dropped; a.bin text now: a hex tab still, its cursor clamped.
+    fs::remove_file(root.join("b.bin")).unwrap();
+    fs::write(root.join("a.bin"), "now text\n").unwrap();
+    let app = state_app(&root, &state).await;
+    let names: Vec<String> = app.group().tabs.iter().filter_map(|t| Some(t.hex()?.name())).collect();
+    assert_eq!(names, ["a.bin", "notes.txt"]);
+    assert_eq!(app.group().tabs.len(), 2);
+    assert_eq!((hex(&app).name(), hex(&app).cursor), ("notes.txt".to_string(), 1));
+    let a = app.group().tabs[0].hex().unwrap();
+    assert_eq!((a.doc.bytes(), a.cursor), (&b"now text\n"[..], 8));
+    quit(app).await;
+
+    // The command line's binary file, which the session has a hex tab of: one tab, the
+    // session's, active.
+    fs::write(root.join("a.bin"), data()).unwrap();
+    let mut app = App::new(
+        Workspace::load(root.clone()),
+        TrustStore::load(state.join("trust.toml")),
+        None,
+        true,
+    );
+    app.state_dir = Some(state.clone());
+    app.open_initial_hex(root.join("a.bin"), HexDoc::new(data()));
+    app.test_start();
+    assert!(app.settle(|a| a.session.restored == 1).await);
+    let names: Vec<String> = app.group().tabs.iter().filter_map(|t| Some(t.hex()?.name())).collect();
+    assert_eq!(names, ["a.bin", "notes.txt"]);
+    assert_eq!(hex(&app).name(), "a.bin");
+    assert_eq!(hex(&app).cursor, 8, "the session's place (clamped then)");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hex_back_and_forward_to_a_hex_tab() {
+    let (_d, root, mut app) = hex_app().await;
+    let path = root.join("bin.dat");
+    quick_open(&mut app, "notes.txt").await;
+    open_bin(&mut app).await;
+    go_to_offset(&mut app, "0x40");
+    quick_open(&mut app, "notes.txt").await;
+    let entries = app.nav.history.entries();
+    let last = entries.last().unwrap();
+    assert_eq!((last.path.as_path(), last.pos), (path.as_path(), None), "path only");
+
+    // Back: the hex tab shown, as it was; forward: the text again.
+    app.test_execute(Command::NavBack);
+    assert_eq!(hex(&app).path, path);
+    assert_eq!(hex(&app).cursor, 0x40);
+    app.test_execute(Command::NavForward);
+    assert!(app.active_buffer().is_some_and(|b| b.name() == "notes.txt"));
+
+    // Closed, back reopens it (read again, as hex).
+    app.test_execute(Command::NavBack);
+    app.test_execute(Command::CloseTab);
+    assert!(app.groups.hex_tabs().next().is_none());
+    app.test_execute(Command::NavBack);
+    assert!(app.settle(|a| a.active_hex().is_some()).await, "reopened");
+    assert_eq!(hex(&app).path, path);
+    assert_eq!(hex(&app).doc.bytes(), data());
+    app.test_execute(Command::NavForward);
+    assert!(app.active_buffer().is_some_and(|b| b.name() == "notes.txt"));
+}
+
+/// Hex tabs in two groups, the active group's active tab a hex one: each comes back in its group
+/// with its own place, the bytes read once and shared, the same group and tab active.
+#[tokio::test(flavor = "multi_thread")]
+async fn hex_sessions_restore_hex_tabs_in_splits() {
+    let (_d, root, state) = dirs();
+    fs::write(root.join("a.bin"), data()).unwrap();
+    fs::write(root.join("notes.txt"), "hello\n").unwrap();
+    let mut app = state_app(&root, &state).await;
+    quick_open(&mut app, "a.bin").await;
+    go_to_offset(&mut app, "0x10");
+    quick_open(&mut app, "notes.txt").await;
+    app.test_execute(Command::SplitRight);
+    quick_open(&mut app, "a.bin").await;
+    go_to_offset(&mut app, "0x200");
+    app.press(KeyCode::Tab, M::NONE);
+    assert_eq!(app.groups.len(), 2);
+    quit(app).await;
+
+    let app = state_app(&root, &state).await;
+    assert_eq!(app.session.restored, 1);
+    assert_eq!(app.groups.len(), 2);
+    let h = hex(&app);
+    assert_eq!(
+        (h.cursor, h.column),
+        (0x200, Column::Ascii),
+        "the active group's hex tab"
+    );
+    let other = app.groups.ids().into_iter().find(|&g| g != app.groups.active).unwrap();
+    let g = app.groups.get(other).unwrap();
+    assert!(g.active_hex().is_none(), "notes.txt stays active there");
+    let first = g.tabs[g.find_hex(&root.join("a.bin")).unwrap()].hex().unwrap();
+    assert_eq!((first.cursor, first.column), (0x10, Column::Hex));
+    assert_eq!(first.doc.bytes(), data());
+    assert_eq!(first.doc.bytes().as_ptr(), h.doc.bytes().as_ptr(), "read once, shared");
 }

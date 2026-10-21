@@ -10,7 +10,8 @@
 //! only, when the primary cursor moved `MIN_LINES` lines or more without an edit. Go Back /
 //! Go Forward themselves (and the arrival of a file they reopened) record nothing
 //! (`nav.navigating`). Entries follow edits: `follow_edits` and `apply_reload` map them through
-//! each buffer's applied change sets (`History::map`); positions are clamped when used.
+//! each buffer's applied change sets (`History::map`); positions are clamped when used. Diff and
+//! hex tabs are places without a position (their file only).
 
 use std::path::PathBuf;
 
@@ -76,8 +77,15 @@ impl App {
                 },
                 revision: 0,
             }),
-            // Not recorded yet (hex-d: path only, as a diff tab).
-            Tab::Hex(_) => None,
+            // Path only, as a diff tab.
+            Tab::Hex(h) => Some(Here {
+                entry: Entry {
+                    group: self.groups.active,
+                    path: h.path.clone(),
+                    pos: None,
+                },
+                revision: 0,
+            }),
         }
     }
 
@@ -159,16 +167,20 @@ impl App {
                 .tabs
                 .iter()
                 .position(|t| t.diff().is_some_and(|d| d.path == entry.path));
-            // A diff tab counts as its file.
+            let hex = g.find_hex(&entry.path);
+            // A diff or hex tab counts as its file.
             if entry.pos.is_some() {
-                text.or(diff)
+                text.or(hex).or(diff)
             } else {
-                diff.or(text)
+                diff.or(hex).or(text)
             }
         };
+        let open = self.buffers.find_path(&entry.path);
         if let Some(i) = found {
             self.activate_tab(i);
-        } else if let Some(id) = self.buffers.find_path(&entry.path) {
+        } else if open.is_none() && self.show_hex(&entry.path, true) {
+            // Another group's hex tab of it: its bytes in a new tab here.
+        } else if let Some(id) = open {
             self.group_mut().open(id, View::new());
             self.reveal_active();
         } else {

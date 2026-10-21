@@ -5,12 +5,14 @@
 //! root stored inside (a file naming another root is refused). It holds the editor groups and
 //! their split tree (group ids at the leaves, ratios included), each group's tabs — text tabs by
 //! path with every selection (anchor, head; the primary's index) and the scroll, diff tabs by
-//! path and [`Pair`], commit tabs by id (task tabs live in the panel, never here) — the active tab
+//! path and [`Pair`], commit tabs by id, hex tabs by path with the cursor's offset and column and
+//! the top row's offset (task tabs live in the panel, never here) — the active tab
 //! and group, and the side and bottom panels' layout (the Explorer's Git History section's
 //! collapse and height too). Paths inside the root are stored relative to it.
 //!
-//! [`save`] writes atomically (temp file, fsync, rename); [`read`] loads the file and every text
-//! tab's file, dropping tabs whose file is gone or can't be opened, history diffs whose entry was
+//! [`save`] writes atomically (temp file, fsync, rename); [`read`] loads the file, every text
+//! tab's file and every hex tab's bytes (a hex tab stays one even if its file is text now),
+//! dropping tabs whose file is gone or can't be opened, history diffs whose entry was
 //! trimmed and commit tabs / commit diffs whose commit the repository no longer has, each with a
 //! log line. Both are blocking.
 
@@ -23,11 +25,13 @@ use sha2::{Digest, Sha256};
 
 use crate::buffer::Buffer;
 use crate::diff_view::{Pair, Text};
+use crate::hex::{self, Column, HexDoc};
 use crate::history::Snapshot;
 use crate::layout::{GroupId, SidePanel, SplitTree};
 
-/// The format's version; a file with another is ignored. Version 1 gained commit tabs and the
-/// history section's `SideState` fields, all serde-defaulted so older files still parse.
+/// The format's version; a file with another is ignored. Version 1 gained commit tabs, hex tabs
+/// and the history section's `SideState` fields, all serde-defaulted or new variants so older
+/// files still parse.
 pub const VERSION: u32 = 1;
 /// Under the state dir.
 pub const DIR: &str = "sessions";
@@ -97,6 +101,16 @@ pub enum TabState {
     /// A commit tab, by its full id (dropped at restore when the commit is gone).
     Commit {
         commit: String,
+    },
+    /// A hex tab (dropped at restore when its file is gone).
+    Hex {
+        /// Relative to the root when inside it.
+        path: PathBuf,
+        /// The cursor's offset and column (clamped at restore: the file may have changed).
+        cursor: usize,
+        column: Column,
+        /// The top row's first byte.
+        top: usize,
     },
 }
 
@@ -242,16 +256,26 @@ pub struct Restore {
     pub session: Session,
     /// Each text tab's file (absolute path), once.
     pub buffers: Vec<(PathBuf, Buffer)>,
+    /// Each hex tab's bytes (absolute path), once.
+    pub hex: Vec<(PathBuf, HexDoc)>,
 }
 
 /// Reads the session of `root` and opens its text tabs' files, except those in `open` (already
-/// open in the app). Tabs of missing or unopenable files and history diffs of trimmed entries
-/// are dropped with a log line. `Ok(None)`: no session.
+/// open in the app), and reads its hex tabs' bytes, except those in `open_hex` (shown in a hex
+/// tab already). Tabs of missing or unopenable files and history diffs of trimmed entries are
+/// dropped with a log line. `Ok(None)`: no session.
 /// Blocking: call from spawn_blocking.
-pub fn read(state_dir: &Path, root: &Path, open: &HashSet<PathBuf>) -> Result<Option<Restore>, String> {
+pub fn read(
+    state_dir: &Path,
+    root: &Path,
+    open: &HashSet<PathBuf>,
+    open_hex: &HashSet<PathBuf>,
+) -> Result<Option<Restore>, String> {
     let Some(mut session) = load(state_dir, root)? else {
         return Ok(None);
     };
+    let mut hex_docs: Vec<(PathBuf, HexDoc)> = Vec::new();
+    let mut hex_failed = HashSet::new();
     let mut buffers = Vec::new();
     let mut loaded = HashSet::new();
     let mut failed = HashSet::new();
@@ -289,6 +313,31 @@ pub fn read(state_dir: &Path, root: &Path, open: &HashSet<PathBuf>) -> Result<Op
                 diff_still_there(root, &path, Side::pair(left.clone(), right.clone()))
             }
             TabState::Commit { commit } => commit_still_there(root, commit),
+            TabState::Hex { path, .. } => {
+                let path = resolve(root, path);
+                if open_hex.contains(&path) || hex_docs.iter().any(|(p, _)| *p == path) {
+                    return true;
+                }
+                if hex_failed.contains(&path) {
+                    return false;
+                }
+                match hex::read(&path) {
+                    Ok(Some(doc)) => {
+                        hex_docs.push((path, doc));
+                        true
+                    }
+                    Ok(None) => {
+                        tracing::info!(path = %path.display(), "session: file gone, hex tab not restored");
+                        hex_failed.insert(path);
+                        false
+                    }
+                    Err(e) => {
+                        tracing::warn!(path = %path.display(), "session: hex tab not restored: {e}");
+                        hex_failed.insert(path);
+                        false
+                    }
+                }
+            }
         });
         // The active tab stays active, else its neighbour does.
         group.active = active
@@ -296,7 +345,11 @@ pub fn read(state_dir: &Path, root: &Path, open: &HashSet<PathBuf>) -> Result<Op
             .unwrap_or(group.active)
             .min(group.tabs.len().saturating_sub(1));
     }
-    Ok(Some(Restore { session, buffers }))
+    Ok(Some(Restore {
+        session,
+        buffers,
+        hex: hex_docs,
+    }))
 }
 
 /// Whether a commit tab can come back: the commit still exists in the root's repository (a
@@ -462,7 +515,7 @@ mod tests {
         let mut s = session(&root);
         // The history entry doesn't exist: that diff tab goes; b.txt is missing.
         save(&state, &s).unwrap();
-        let r = read(&state, &root, &HashSet::new()).unwrap().unwrap();
+        let r = read(&state, &root, &HashSet::new(), &HashSet::new()).unwrap().unwrap();
         assert_eq!(r.session.groups[0].tabs.len(), 1);
         assert_eq!(r.session.groups[0].active, 0);
         assert!(r.session.groups[1].tabs.is_empty());
@@ -477,7 +530,7 @@ mod tests {
         }];
         save(&state, &s).unwrap();
         let open = HashSet::from([root.join("a.txt")]);
-        let r = read(&state, &root, &open).unwrap().unwrap();
+        let r = read(&state, &root, &open, &HashSet::new()).unwrap().unwrap();
         assert!(r.buffers.is_empty());
         assert_eq!(r.session.groups[0].tabs.len(), 1);
         assert_eq!(r.session.groups[1].tabs.len(), 1);
@@ -498,6 +551,72 @@ mod tests {
         let side: SideState = serde_json::from_str(r#"{"visible":true,"width":30,"view":"explorer"}"#).unwrap();
         assert!(!side.history_collapsed);
         assert_eq!(side.history_height, crate::git_history::DEFAULT_SECTION_HEIGHT);
+    }
+
+    /// A hex tab's stored form is fixed (a session file written by this version reads back the
+    /// same way), and a text tab as older versions wrote it still parses beside it.
+    #[test]
+    fn hex_tab_states_parse_from_their_stored_form() {
+        let tabs: Vec<TabState> = serde_json::from_str(
+            r#"[{"kind":"hex","path":"a.bin","cursor":5,"column":"hex","top":32},
+                {"kind":"text","path":"a.txt","selections":[[1,2]],"primary":0,"top_line":0,"left_col":0}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            tabs[0],
+            TabState::Hex {
+                path: "a.bin".into(),
+                cursor: 5,
+                column: Column::Hex,
+                top: 32
+            }
+        );
+        assert!(matches!(tabs[1], TabState::Text { .. }));
+        let bad = r#"{"kind":"hex","path":"a.bin","cursor":5,"column":"middle","top":0}"#;
+        assert!(serde_json::from_str::<TabState>(bad).is_err(), "an unknown column");
+    }
+
+    #[test]
+    fn hex_tabs_round_trip_and_a_missing_file_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, root) = (dir.path().join("state"), dir.path().join("proj"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.bin"), b"\0ab").unwrap();
+        std::fs::write(root.join("t.txt"), "text\n").unwrap();
+        let hex = |path: &str, cursor| TabState::Hex {
+            path: path.into(),
+            cursor,
+            column: Column::Ascii,
+            top: 16,
+        };
+        let mut s = session(&root);
+        s.groups[0].tabs = vec![hex("a.bin", 2), hex("gone.bin", 0), hex("t.txt", 1)];
+        s.groups[0].active = 2;
+        s.groups[1].tabs = vec![hex("a.bin", 0)];
+        save(&state, &s).unwrap();
+        assert_eq!(load(&state, &root), Ok(Some(s.clone())), "round trip");
+        let json = std::fs::read_to_string(file(&state, &root)).unwrap();
+        assert!(json.contains(r#""kind": "hex""#) && json.contains(r#""column": "ascii""#));
+
+        let r = read(&state, &root, &HashSet::new(), &HashSet::new()).unwrap().unwrap();
+        assert_eq!(r.session.groups[0].tabs, [hex("a.bin", 2), hex("t.txt", 1)]);
+        assert_eq!(r.session.groups[0].active, 1, "still the text file's tab");
+        assert_eq!(r.session.groups[1].tabs.len(), 1);
+        let docs: Vec<_> = r.hex.iter().map(|(p, d)| (p.clone(), d.bytes().to_vec())).collect();
+        assert_eq!(
+            docs,
+            [
+                (root.join("a.bin"), b"\0ab".to_vec()),
+                (root.join("t.txt"), b"text\n".to_vec())
+            ],
+            "each file read once, a text file as bytes"
+        );
+        assert!(r.buffers.is_empty());
+        // Shown in a hex tab already: not read again.
+        let open = HashSet::from([root.join("a.bin")]);
+        let r = read(&state, &root, &HashSet::new(), &open).unwrap().unwrap();
+        assert_eq!(r.hex.len(), 1);
+        assert_eq!(r.session.groups[1].tabs.len(), 1);
     }
 
     /// Commit tabs and commit diff tabs come back while their commit exists, and are dropped
@@ -529,7 +648,7 @@ mod tests {
         s.tree = SplitTree::new(0);
         s.active_group = 0;
         save(&state, &s).unwrap();
-        let r = read(&state, &root, &HashSet::new()).unwrap().unwrap();
+        let r = read(&state, &root, &HashSet::new(), &HashSet::new()).unwrap().unwrap();
         assert_eq!(r.session.groups[0].tabs.len(), 2, "both come back");
         assert_eq!(r.session.groups[0].active, 1);
         assert!(r.session.side.history_collapsed);
@@ -552,7 +671,7 @@ mod tests {
             right: Side::Commit { id: second },
         };
         save(&state, &s2).unwrap();
-        let r = read(&state, &root, &HashSet::new()).unwrap().unwrap();
+        let r = read(&state, &root, &HashSet::new(), &HashSet::new()).unwrap().unwrap();
         assert!(r.session.groups[0].tabs.is_empty(), "{:?}", r.session.groups[0].tabs);
     }
 

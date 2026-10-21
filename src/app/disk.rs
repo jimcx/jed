@@ -4,6 +4,9 @@
 //! change at once as an undoable edit (cursors and scroll kept); a dirty one gets the banner
 //! (reload / keep mine); a missing file marks the buffer deleted. One check per buffer at a
 //! time, none while it's being saved: a request then waits for the running one or the save.
+//! Hex tabs are checked by path the same way (`hex::check` against their bytes' stamp): changed
+//! bytes go to every hex tab of the file at once (`HexTab::set_doc`), a missing file marks them
+//! deleted, a file grown past `HEX_MAX_BYTES` keeps the old bytes with a message.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -12,6 +15,7 @@ use super::{App, AppEvent, Level};
 use crate::buffer::BufferId;
 use crate::buffer::pos::ByteIdx;
 use crate::disk::{self, Check, OnDisk, Reload};
+use crate::hex;
 use crate::layout::GroupId;
 use crate::selection::{Selection, Selections};
 
@@ -22,6 +26,9 @@ pub struct DiskChecks {
     /// Buffers to check again once their running check or save ends; `true` = forced
     /// ("Reload from Disk").
     again: HashMap<BufferId, bool>,
+    /// Hex tabs' files being checked, and to check again once that ends.
+    hex_running: HashSet<PathBuf>,
+    hex_again: HashSet<PathBuf>,
     /// Checks finished, and reloads made (tests wait on these).
     pub checked: u64,
     pub reloads: u64,
@@ -62,6 +69,77 @@ impl App {
             .collect();
         for id in ids {
             self.check_disk(id, false);
+        }
+        let mut hex: Vec<PathBuf> = Vec::new();
+        for h in self.groups.hex_tabs() {
+            if h.path.ancestors().any(|a| changed.contains(a)) && !hex.contains(&h.path) {
+                hex.push(h.path.clone());
+            }
+        }
+        for path in hex {
+            self.check_hex(path);
+        }
+    }
+
+    /// Reads a hex tab's file off the UI thread (`hex::check`, against the tabs' bytes) →
+    /// `AppEvent::HexChecked` → `hex_checked`. Waits for a check of it already running.
+    pub(super) fn check_hex(&mut self, path: PathBuf) {
+        let mut stamps = self.groups.hex_tabs().filter(|h| h.path == path).map(|h| h.doc.stamp());
+        let Some(first) = stamps.next() else { return };
+        // Tabs read at different times: any bytes are news to one of them.
+        let known = stamps.all(|s| s == first).then_some(first);
+        if !self.disk.hex_running.insert(path.clone()) {
+            self.disk.hex_again.insert(path);
+            return;
+        }
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = hex::check(&path, known);
+            let _ = tx.send(AppEvent::HexChecked { path, result });
+        });
+    }
+
+    pub(super) fn hex_checked(&mut self, path: PathBuf, result: std::io::Result<hex::OnDisk>) {
+        self.disk.hex_running.remove(&path);
+        self.disk.checked += 1;
+        let gone = self.groups.hex_tabs().any(|h| h.path == path && !h.deleted);
+        let mut message = None;
+        {
+            let tabs = self.groups.hex_tabs_mut().filter(|h| h.path == path);
+            match result {
+                Err(e) => tracing::warn!(path = %path.display(), "can't check the file on disk: {e}"),
+                Ok(hex::OnDisk::Missing) => {
+                    if gone {
+                        tracing::info!(path = %path.display(), "deleted on disk");
+                    }
+                    tabs.for_each(|h| h.deleted = true);
+                }
+                Ok(hex::OnDisk::Unchanged) => tabs.for_each(|h| h.deleted = false),
+                Ok(hex::OnDisk::Changed(doc)) => {
+                    tracing::info!(path = %path.display(), len = doc.len(), "reloaded from disk (hex)");
+                    for h in tabs {
+                        if h.doc.stamp() == doc.stamp() {
+                            h.deleted = false;
+                        } else {
+                            h.set_doc(doc.clone());
+                        }
+                    }
+                    self.disk.reloads += 1;
+                }
+                Ok(hex::OnDisk::TooBig(why)) => {
+                    for h in tabs {
+                        h.deleted = false;
+                        message = Some(format!("{} changed on disk and is {why}: not reloaded", h.name()));
+                    }
+                }
+            }
+        }
+        if let Some(text) = message {
+            self.notify(Level::Warning, text);
+        }
+        self.needs_redraw = true;
+        if self.disk.hex_again.remove(&path) {
+            self.check_hex(path);
         }
     }
 
@@ -366,5 +444,69 @@ mod tests {
         fs::remove_file(&path).unwrap();
         app.check_disk(id2, false);
         assert!(app.settle(|a| a.active_buffer().unwrap().deleted).await, "now deleted");
+    }
+
+    /// A hex tab of `a.bin` holding `bytes` (read from disk), the app not started (no watcher).
+    fn hex_setup(bytes: &[u8]) -> (tempfile::TempDir, PathBuf, App) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = workspace::normalize(dir.path());
+        let path = root.join("a.bin");
+        fs::write(&path, bytes).unwrap();
+        let mut app = App::new(
+            Workspace::load(root.clone()),
+            TrustStore::load(root.join("trust.toml")),
+            None,
+            true,
+        );
+        app.open_initial_hex(path.clone(), hex::read(&path).unwrap().unwrap());
+        (dir, path, app)
+    }
+
+    /// A change arriving while a hex check runs is checked again once it ends (not dropped,
+    /// not run beside it); the tab ends with the last bytes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_hex_check_requested_while_one_runs_runs_after_it() {
+        let (_d, path, mut app) = hex_setup(b"\0one");
+        fs::write(&path, b"\0two").unwrap();
+        app.check_hex(path.clone());
+        app.check_hex(path.clone());
+        assert!(app.disk.hex_running.contains(&path) && app.disk.hex_again.contains(&path));
+        assert!(app.settle(|a| a.disk.checked == 2).await, "checked twice");
+        assert!(app.settle(|a| !a.disk.hex_running.contains(&path)).await);
+        assert!(app.disk.hex_again.is_empty());
+        assert_eq!(app.disk.checked, 2);
+        assert_eq!(app.active_hex().unwrap().doc.bytes(), b"\0two");
+        assert_eq!(app.disk.reloads, 1, "the second check found the bytes it has");
+    }
+
+    /// A hex tab closed while its check runs: the result finds no tab and is dropped, and the
+    /// file can be checked again later (nothing left running).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_hex_check_for_a_closed_tab_is_dropped() {
+        let (_d, path, mut app) = hex_setup(b"\0one");
+        fs::write(&path, b"\0two").unwrap();
+        app.check_hex(path.clone());
+        app.check_hex(path.clone());
+        app.group_mut().tabs.clear();
+        assert!(app.settle(|a| a.disk.checked == 1).await);
+        assert!(app.disk.hex_running.is_empty() && app.disk.hex_again.is_empty());
+        assert!(app.groups.hex_tabs().next().is_none());
+    }
+
+    /// A change to a file shown in two hex tabs (a split) and to its folder starts one check of
+    /// it, not one per tab or path; a file no hex tab shows starts none.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn one_hex_check_per_file_for_all_its_tabs() {
+        let (_d, path, mut app) = hex_setup(b"\0one");
+        app.test_execute(crate::command::Command::SplitRight);
+        assert_eq!(app.groups.hex_tabs().count(), 2);
+        let dir = path.parent().unwrap().to_path_buf();
+        app.disk_paths_changed(&[dir.join("other.bin")]);
+        assert!(app.disk.hex_running.is_empty(), "not its file");
+        app.disk_paths_changed(&[path.clone(), dir]);
+        assert!(app.disk.hex_running.contains(&path));
+        assert!(app.disk.hex_again.is_empty(), "one check");
+        assert!(app.settle(|a| a.disk.hex_running.is_empty()).await);
+        assert_eq!(app.disk.checked, 1);
     }
 }

@@ -237,6 +237,11 @@ enum AppEvent {
     },
     /// An open file was read to see whether it changed on disk (`app/disk.rs`).
     DiskChecked(Box<disk::Checked>),
+    /// A hex tab's file was read to see whether it changed on disk (`app/disk.rs`).
+    HexChecked {
+        path: PathBuf,
+        result: std::io::Result<crate::hex::OnDisk>,
+    },
     /// A buffer's gutter markers were computed (`app/quick_diff.rs`).
     QuickDiff {
         buffer: BufferId,
@@ -1254,6 +1259,7 @@ impl App {
                 result,
             } => self.git_history_done(path, skip, generation, result),
             AppEvent::DiskChecked(checked) => self.disk_checked(*checked),
+            AppEvent::HexChecked { path, result } => self.hex_checked(path, result),
             AppEvent::QuickDiff { buffer, computed } => self.quick_diff_done(buffer, computed),
             AppEvent::Blame { buffer, computed } => self.blame_done(buffer, computed),
             AppEvent::Staged { at, unstage, result } => self.staged(at, unstage, result),

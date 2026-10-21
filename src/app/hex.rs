@@ -42,10 +42,8 @@ pub(super) fn load(path: &Path, raw: bool) -> Result<Loaded, LoadError> {
             Err(e) => Err(e),
         };
     }
-    let size = std::fs::metadata(path).map_err(LoadError::Io)?.len();
-    hex::check_size(size).map_err(too_big)?;
-    match file::read(path).map_err(LoadError::Io)? {
-        Some(bytes) => binary(bytes),
+    match hex::read(path).map_err(LoadError::Io)? {
+        Some(doc) => Ok(Loaded::Binary(doc)),
         None => Err(LoadError::Io(std::io::ErrorKind::NotFound.into())),
     }
 }

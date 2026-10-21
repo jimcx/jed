@@ -19,13 +19,14 @@
 
 use std::borrow::Cow;
 use std::fmt::{self, Write as _};
+use std::io;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use memchr::memmem;
 
-use crate::buffer::file::Stamp;
+use crate::buffer::file::{self, Stamp};
 use crate::command::Motion;
 
 /// Files bigger than this aren't opened in a hex tab (paged reads are a TODO).
@@ -53,7 +54,6 @@ pub fn check_size(len: u64) -> Result<(), String> {
 #[derive(Debug, Clone)]
 pub struct HexDoc {
     bytes: Arc<[u8]>,
-    #[cfg_attr(not(test), allow(dead_code))] // Used by disk checks (hex-d).
     stamp: Stamp,
 }
 
@@ -66,7 +66,6 @@ impl HexDoc {
         Self { bytes, stamp }
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // Used by disk checks (hex-d).
     pub fn with_stamp(bytes: impl Into<Arc<[u8]>>, stamp: Stamp) -> Self {
         Self {
             bytes: bytes.into(),
@@ -82,19 +81,75 @@ impl HexDoc {
         self.bytes.len()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // Used by disk checks (hex-d).
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // Used by disk checks (hex-d).
     pub fn stamp(&self) -> Stamp {
         self.stamp
     }
 }
 
+/// Reads `path`'s bytes for a hex tab, whatever they are: `Ok(None)` when it's missing, an
+/// error when it's over `HEX_MAX_BYTES` (checked before reading it).
+/// Blocking: call from spawn_blocking.
+pub fn read(path: &Path) -> io::Result<Option<HexDoc>> {
+    match std::fs::metadata(path) {
+        Ok(meta) => check_size(meta.len()).map_err(io::Error::other)?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    }
+    let Some(bytes) = file::read(path)? else {
+        return Ok(None);
+    };
+    // Grown between the size check and the read.
+    check_size(bytes.len() as u64).map_err(io::Error::other)?;
+    Ok(Some(HexDoc::new(bytes)))
+}
+
+/// What a hex tab's file holds now, against the `Stamp` its bytes were read with (`check`).
+#[derive(Debug)]
+pub enum OnDisk {
+    /// No file there (deleted, or renamed away).
+    Missing,
+    /// The bytes the tab shows.
+    Unchanged,
+    /// Other bytes, read.
+    Changed(HexDoc),
+    /// Other bytes, now over `HEX_MAX_BYTES`: not read (why, as `check_size` says it).
+    TooBig(String),
+}
+
+/// Reads `path` and compares it with `known` (its hex tabs' `HexDoc::stamp`; `None`: they
+/// differ, so any bytes are `Changed`), for the changed-on-disk check; a file grown over
+/// `HEX_MAX_BYTES` isn't read.
+/// Blocking: call from spawn_blocking.
+pub fn check(path: &Path, known: Option<Stamp>) -> io::Result<OnDisk> {
+    match std::fs::metadata(path) {
+        Ok(meta) => {
+            if let Err(e) = check_size(meta.len()) {
+                return Ok(OnDisk::TooBig(e));
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(OnDisk::Missing),
+        Err(e) => return Err(e),
+    }
+    let Some(bytes) = file::read(path)? else {
+        return Ok(OnDisk::Missing);
+    };
+    let stamp = Stamp::of(&bytes);
+    Ok(if Some(stamp) == known {
+        OnDisk::Unchanged
+    } else if let Err(e) = check_size(bytes.len() as u64) {
+        OnDisk::TooBig(e)
+    } else {
+        OnDisk::Changed(HexDoc::with_stamp(bytes, stamp))
+    })
+}
+
 /// Which column a byte is shown (or the cursor is) in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Column {
     Hex,
     Ascii,
@@ -638,6 +693,32 @@ impl HexTab {
             reveal: false,
             deleted: false,
         }
+    }
+
+    /// The file's new bytes (changed on disk): the cursor keeps its offset and the selection
+    /// its anchor, both clamped to the last byte (dropped in an empty file), the top stays at
+    /// its row clamped to the rows; the next frame fits the layout (the offset digits may have
+    /// changed) and reveals the cursor.
+    pub fn set_doc(&mut self, doc: HexDoc) {
+        let empty = doc.is_empty();
+        self.doc = doc;
+        self.deleted = false;
+        let last = self.last();
+        self.cursor = self.cursor.min(last);
+        self.anchor = self.anchor.filter(|_| !empty).map(|a| a.min(last));
+        self.set_top_row(self.top_row());
+        self.reveal = true;
+    }
+
+    /// Puts the cursor and the top where a session left them (clamped: the file may have
+    /// changed), the cursor in `column`, not revealed (the scroll is as it was).
+    pub fn place(&mut self, cursor: usize, column: Column, top: usize) {
+        self.cursor = cursor.min(self.last());
+        self.column = column;
+        self.anchor = None;
+        self.top = top.min(self.len());
+        self.set_top_row(self.top_row());
+        self.reveal = false;
     }
 
     /// The tab's title: the file's name.
@@ -1408,5 +1489,56 @@ mod tests {
         assert_eq!(find_in(b"aaaa", &q("aa", true), 3..4), vec![2..4], "reaches back");
         // Non-ASCII text is matched by its bytes, folding only ASCII letters.
         assert_eq!(find_next("xÉé".as_bytes(), &q("é", false), 0), Some(3..5));
+    }
+
+    #[test]
+    fn check_compares_the_stamp_and_reads_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.bin");
+        let known = Some(Stamp::of(b"\0ab"));
+        assert!(matches!(check(&path, known).unwrap(), OnDisk::Missing));
+        assert!(read(&path).unwrap().is_none());
+        std::fs::write(&path, b"\0ab").unwrap();
+        assert!(matches!(check(&path, known).unwrap(), OnDisk::Unchanged));
+        assert_eq!(Some(read(&path).unwrap().unwrap().stamp()), known);
+        assert!(matches!(check(&path, None).unwrap(), OnDisk::Changed(_)));
+        std::fs::write(&path, b"\0abc").unwrap();
+        match check(&path, known).unwrap() {
+            OnDisk::Changed(doc) => {
+                assert_eq!(doc.bytes(), b"\0abc");
+                assert_eq!(doc.stamp(), Stamp::of(b"\0abc"));
+            }
+            other => panic!("{other:?}"),
+        }
+        // Grown past the limit: not read (a sparse file, so nothing is written).
+        let f = std::fs::File::options().write(true).open(&path).unwrap();
+        f.set_len(HEX_MAX_BYTES as u64 + 1).unwrap();
+        match check(&path, known).unwrap() {
+            OnDisk::TooBig(why) => assert!(why.contains("too big"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(read(&path).is_err());
+    }
+
+    #[test]
+    fn set_doc_clamps_the_cursor_selection_and_top() {
+        let mut tab = HexTab::new("a.bin".into(), HexDoc::new(vec![0u8; 1000]));
+        tab.fit(row_width(16, 8), 10, 16);
+        tab.anchor = Some(900);
+        tab.move_to(990, true);
+        tab.fit(row_width(16, 8), 10, 16);
+        assert!(tab.top > 0);
+        tab.set_doc(HexDoc::new(vec![1u8; 400]));
+        assert_eq!((tab.cursor, tab.anchor), (399, Some(399)));
+        tab.fit(row_width(16, 8), 10, 16);
+        assert_eq!(tab.top_row(), tab.rows() - 10, "the last page");
+        assert!(tab.top_row() <= tab.layout.row_of(tab.cursor));
+        tab.deleted = true;
+        tab.set_doc(HexDoc::new(Vec::new()));
+        assert_eq!((tab.cursor, tab.anchor, tab.top, tab.deleted), (0, None, 0, false));
+        // Grown: the cursor stays where it was.
+        tab.cursor = 0;
+        tab.set_doc(HexDoc::new(vec![0u8; 5000]));
+        assert_eq!(tab.cursor, 0);
     }
 }

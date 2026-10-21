@@ -277,6 +277,11 @@ impl Groups {
     }
 
     /// Every hex tab, in any group.
+    pub fn hex_tabs(&self) -> impl Iterator<Item = &HexTab> {
+        self.map.values().flat_map(|g| g.tabs.iter().filter_map(Tab::hex))
+    }
+
+    /// Every hex tab, in any group.
     pub fn hex_tabs_mut(&mut self) -> impl Iterator<Item = &mut HexTab> {
         self.map
             .values_mut()

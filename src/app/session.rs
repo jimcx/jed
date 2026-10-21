@@ -8,6 +8,7 @@ use crate::buffer::pos::ByteIdx;
 use crate::buffer::{Buffer, BufferId};
 use crate::diff_view::DiffTab;
 use crate::group::{self, Group, Groups, Tab, TextTab};
+use crate::hex::{HexDoc, HexTab};
 use crate::layout::{MIN_SIDE_WIDTH, PanelTab};
 use crate::selection::{Selection, Selections};
 use crate::session::{self, GroupState, PanelState, Restore, Session, Side, SideState, TabState};
@@ -40,10 +41,11 @@ impl App {
         let Some(dir) = self.state_dir.clone() else { return };
         let root = self.workspace.root.clone();
         let open: HashSet<PathBuf> = self.buffers.iter().map(|(_, b)| b.path.clone()).collect();
+        let open_hex: HashSet<PathBuf> = self.groups.hex_tabs().map(|h| h.path.clone()).collect();
         self.session.loading = true;
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
-            let result = session::read(&dir, &root, &open);
+            let result = session::read(&dir, &root, &open, &open_hex);
             let _ = tx.send(AppEvent::SessionRead(Box::new(result)));
         });
     }
@@ -59,7 +61,7 @@ impl App {
 
     fn apply_session(&mut self, result: Result<Option<Restore>, String>) {
         self.session.loading = false;
-        let Restore { session, buffers } = match result {
+        let Restore { session, buffers, hex } = match result {
             Ok(Some(r)) => r,
             Ok(None) => return,
             Err(e) => {
@@ -91,6 +93,11 @@ impl App {
         }
         let kept = tree.groups();
         let mut loaded: HashMap<PathBuf, Buffer> = buffers.into_iter().collect();
+        // Hex tabs' bytes: read for the restore, else those of a hex tab open before it.
+        let mut hex: HashMap<PathBuf, HexDoc> = hex.into_iter().collect();
+        for h in self.groups.hex_tabs() {
+            hex.entry(h.path.clone()).or_insert_with(|| h.doc.clone());
+        }
         let root = self.workspace.root.clone();
         let mut restored = Vec::new();
         for g in groups.into_iter().filter(|g| kept.contains(&g.id)) {
@@ -127,6 +134,18 @@ impl App {
                             buffer: id,
                             view: View::new(),
                         }));
+                    }
+                    TabState::Hex {
+                        path,
+                        cursor,
+                        column,
+                        top,
+                    } => {
+                        let path = session::resolve(&root, &path);
+                        let Some(doc) = hex.get(&path) else { continue };
+                        let mut tab = HexTab::new(path, doc.clone());
+                        tab.place(cursor, column, top);
+                        tabs.push(Tab::Hex(Box::new(tab)));
                     }
                 }
             }
@@ -217,6 +236,13 @@ impl App {
     fn carry_tab(&mut self, tab: Tab) {
         let goto = self.session.initial_goto;
         let group = self.group_mut();
+        // The command line's binary file: the group's hex tab of it, as the session left it.
+        if let Some(h) = tab.hex()
+            && let Some(i) = group.find_hex(&h.path)
+        {
+            group.active = i;
+            return;
+        }
         if let Some(buffer) = tab.buffer()
             && let Some(i) = group.find(buffer)
         {
@@ -230,7 +256,7 @@ impl App {
     }
 
     /// What `session::save` writes: the groups in reading order with their tabs (text tabs of
-    /// files with a path, diff tabs), the active ones, the panels.
+    /// files with a path, diff, commit and hex tabs), the active ones, the panels.
     fn session_snapshot(&self) -> Session {
         let root = &self.workspace.root;
         let groups = self
@@ -269,8 +295,17 @@ impl App {
                                 left_col: t.view.left_col,
                             });
                         }
-                        // Not kept yet (hex-d).
-                        Tab::Hex(_) => continue,
+                        Tab::Hex(h) => {
+                            if !h.path.is_absolute() {
+                                continue;
+                            }
+                            tabs.push(TabState::Hex {
+                                path: session::stored(root, &h.path),
+                                cursor: h.cursor,
+                                column: h.column,
+                                top: h.top,
+                            });
+                        }
                         Tab::Diff(d) => {
                             // A replace preview isn't kept (its replace is the Search view's).
                             let (Ok(left), Ok(right)) = (d.pair.left.try_into(), d.pair.right.try_into()) else {
@@ -431,7 +466,7 @@ mod tests {
         app.test_start();
         // The open's load is in flight; the restore's read (made before it) lands first.
         app.open_file(root.join("a.txt"), true, None);
-        let restore = session::read(&state, &root, &HashSet::new());
+        let restore = session::read(&state, &root, &HashSet::new(), &HashSet::new());
         app.session_read(restore);
         assert_eq!(app.session.restored, 1);
         assert!(app.settle(|a| a.opening.is_empty()).await, "the open ends");

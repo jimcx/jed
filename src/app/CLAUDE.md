@@ -25,7 +25,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `format.rs` — format document
 - `git.rs` — the git status (`app.git`): `refresh_git` off-thread, one at a time, queued and merged; what follows a new status
 - `git_history.rs` — the Explorer's "Git History" section: following the active file, pages, keys, opening commits
-- `disk.rs` — open files changed on disk (`app.disk`): checks, reloads, the banner's actions
+- `disk.rs` — open files changed on disk (`app.disk`): checks, reloads, the banner's actions; hex tabs' re-reads
 - `quick_diff.rs` — gutter markers (`sync_quick_diff`), their peek, staging / unstaging from the gutter
 - `blame.rs` — inline blame (`app.blame`): toggle, `sync_blame`
 - `diff_view.rs` — diff tabs (`app.diffs`): `open_diff(path, Pair)`, `sync_diffs`, `diff_command`, stage / revert hunks
