@@ -117,7 +117,7 @@ fn parse_args() -> Result<Args, String> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Err(USAGE.into()),
-            "-V" | "--version" => return Err(format!("jed {}", env!("CARGO_PKG_VERSION"))),
+            "-V" | "--version" => return Err(format!("jed {}", env!("JED_VERSION"))),
             "--log-level" => log_level = Some(args.next().ok_or("--log-level needs a value")?),
             a if a.starts_with('-') => return Err(format!("unknown option {a}\n{USAGE}")),
             a if target.is_none() => target = Some(a.to_string()),
@@ -178,7 +178,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), root = %root.display(), "starting");
+    tracing::info!(version = env!("JED_VERSION"), root = %root.display(), "starting");
 
     // Load before taking over the terminal, so errors print normally.
     let initial = match file {
