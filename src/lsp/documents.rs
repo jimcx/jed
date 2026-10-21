@@ -235,6 +235,12 @@ impl Documents {
         self.open.get(&buffer).map(|d| (d.server, &d.uri, d.version))
     }
 
+    /// The text of `version` of `buffer`'s document as sent, while it's kept (nothing dropped).
+    pub fn text_at(&self, buffer: BufferId, version: i32) -> Option<&Rope> {
+        let doc = self.open.get(&buffer)?;
+        doc.versions.iter().find(|v| v.version == version).map(|v| &v.text)
+    }
+
     /// For diagnostics `server` published for `version` of `buffer`'s document: the text of that
     /// version and the change sets applied since, in order (`sync` first, so the newest version
     /// is the buffer's text). Versions before it are dropped (a server publishes in order).

@@ -455,6 +455,13 @@ impl Manager {
         self.docs.version(buffer)
     }
 
+    /// The text of `version` of `buffer`'s document as sent, while it's kept: an edit computed
+    /// for an older version still applies when the text is the same now (clangd labels its fixes
+    /// with the version it last published for, and publishes nothing for an edit undone).
+    pub fn text_at(&self, buffer: BufferId, version: i32) -> Option<&ropey::Rope> {
+        self.docs.text_at(buffer, version)
+    }
+
     /// Sends `method` about position `at` of `buffer` (`textDocument` + `position`, plus the
     /// fields of `extra` if it's an object) to the server that has the buffer's document open,
     /// once this turn's changes went out (`sync_documents` first, so the position is in the text

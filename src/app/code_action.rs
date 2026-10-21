@@ -533,7 +533,9 @@ impl App {
     fn add_quick_fix_row(&mut self) {
         let Some(h) = &self.code_actions.hover else { return };
         let Some(p) = &mut self.hover.popup else { return };
+        // Only while the popup shows the diagnostics they're for (not after a publish took them).
         if (p.group, p.buffer, p.revision) != (h.group, h.buffer, h.revision)
+            || p.diagnostics != Some(h.range)
             || p.lines.iter().any(|l| l.kind == crate::hover::Kind::Link)
         {
             return;

@@ -196,7 +196,7 @@ pub(crate) async fn idle(app: &mut App) {
     app.pump();
 }
 
-fn which(name: &str) -> Option<PathBuf> {
+pub(crate) fn which(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|d| d.join(name))
         .find(|p| p.is_file())
@@ -1444,7 +1444,7 @@ async fn milestone_9_diagnostics_go_when_the_server_is_stopped() {
 }
 
 /// Waits up to `secs` for `done` (real servers can take a while).
-async fn settle_for(app: &mut App, secs: u64, done: impl Fn(&App) -> bool) -> bool {
+pub(crate) async fn settle_for(app: &mut App, secs: u64, done: impl Fn(&App) -> bool) -> bool {
     let t = Instant::now();
     while t.elapsed() < Duration::from_secs(secs) {
         if app.settle(&done).await {

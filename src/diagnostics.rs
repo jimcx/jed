@@ -200,12 +200,22 @@ pub fn map_marks(marks: &mut [Mark], changes: &ChangeSet) {
 }
 
 /// Where a mark's squiggle is drawn: its range, or for an empty one the char there, the one
-/// before at a line end, or the cell past an empty line's end (`start..start + 1`).
+/// before at a line end, or the cell past an empty line's end (`start..start + 1`). A range over
+/// a line break alone (ty's "Expected an expression" after `y = 1 +`) is drawn as an empty one at
+/// its start: a line break has no cell of its own.
 pub fn extent(rope: &Rope, peek: &mut Peek, m: &Mark) -> (ByteIdx, ByteIdx) {
-    if m.start < m.end {
-        return (m.start, m.end);
-    }
     let line_break = |c: Option<char>| matches!(c, None | Some('\n' | '\r'));
+    if m.start < m.end {
+        let len = m.end.0 - m.start.0;
+        let only_break = match peek.after(m.start) {
+            Some('\n') => len == 1,
+            Some('\r') => len == 1 || (len == 2 && peek.after(ByteIdx(m.start.0 + 1)) == Some('\n')),
+            _ => false,
+        };
+        if !only_break {
+            return (m.start, m.end);
+        }
+    }
     match (line_break(peek.after(m.start)), line_break(peek.before(m.start))) {
         (false, _) => (m.start, pos::next_grapheme(rope, m.start)),
         (true, false) => (pos::prev_grapheme(rope, m.start), m.start),
@@ -292,15 +302,17 @@ pub mod tests {
     /// (its extent, both ends included); most severe first.
     #[test]
     fn marks_drawn_at_and_touching() {
-        let rope = Rope::from_str("ab cd\n\nxy\n");
+        let rope = Rope::from_str("ab cd\n\nxy\nuv\nst\r\n");
         let mut marks = Marks::default();
         marks.replace(
             ServerId::test(1),
             vec![
                 mark(0, 2, 1, Severity::Info),
-                mark(2, 3, 1, Severity::Warning), // the space
-                mark(5, 5, 1, Severity::Error),   // "ab cd"'s end: drawn under the d
-                mark(6, 6, 1, Severity::Hint),    // the empty line: the cell past its end
+                mark(2, 3, 1, Severity::Warning),   // the space
+                mark(5, 5, 1, Severity::Error),     // "ab cd"'s end: drawn under the d
+                mark(6, 6, 1, Severity::Hint),      // the empty line: the cell past its end
+                mark(12, 13, 1, Severity::Warning), // "uv"'s line break alone: under the v
+                mark(15, 17, 1, Severity::Info),    // "st"'s CRLF alone: under the t
             ],
         );
         let at = |found: Vec<&Mark>| found.iter().map(|m| m.diag.severity).collect::<Vec<_>>();
@@ -311,6 +323,11 @@ pub mod tests {
         assert_eq!(at(marks.drawn_at(&rope, ByteIdx(5))), []);
         assert_eq!(at(marks.drawn_at(&rope, ByteIdx(6))), [Severity::Hint]);
         assert_eq!(at(marks.drawn_at(&rope, ByteIdx(7))), []);
+        assert_eq!(at(marks.drawn_at(&rope, ByteIdx(11))), [Severity::Warning]);
+        assert_eq!(at(marks.drawn_at(&rope, ByteIdx(12))), []);
+        assert_eq!(at(marks.touching(&rope, ByteIdx(12))), [Severity::Warning]);
+        assert_eq!(at(marks.drawn_at(&rope, ByteIdx(14))), [Severity::Info]);
+        assert_eq!(at(marks.drawn_at(&rope, ByteIdx(15))), []);
         assert_eq!(
             at(marks.touching(&rope, ByteIdx(2))),
             [Severity::Warning, Severity::Info]

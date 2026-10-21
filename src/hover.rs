@@ -443,6 +443,9 @@ pub struct Popup {
     pub lines: Vec<Line>,
     /// Where the diagnostics section ends in `lines` (the "Quick Fix…" row goes there).
     pub fixes_at: usize,
+    /// The union of the shown diagnostics' drawn ranges (`None`: none shown): fixes that come
+    /// later get their row only while they're for these.
+    pub diagnostics: Option<(ByteIdx, ByteIdx)>,
     /// The screen row the "Quick Fix…" row was drawn on (set by drawing).
     pub link_row: Option<u16>,
     /// Opened by the mouse resting on text (moving off closes it), else by the command.

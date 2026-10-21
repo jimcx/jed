@@ -20,7 +20,14 @@
 //! and is answered `applied` (or not, with why). The lightbulb `💡` shows in the gutter on the
 //! cursor line after a rest when actions exist, cached by revision, and a click on it opens the
 //! list. The hover's diagnostics get a "Quick Fix…" row when the server has quick fixes there;
-//! clicking it opens the list of those fixes.
+//! clicking it opens the list of those fixes. An edit for an older document version applies
+//! while that version's text is the buffer's.
+//!
+//! fixes-c, the done when against real servers (each skipped with a note when absent):
+//! rust-analyzer on a crate with an unused import and a misspelled type, clangd on C / C++ files
+//! (an include, a `;`, a tweak run as a command whose `workspace/applyEdit` edits the buffer) and
+//! ty (a squiggle over a line break alone, drawn and hovered at the line's end); each server
+//! stopped clears its squiggles and the hover shows none.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -834,6 +841,45 @@ async fn fixes_hover_quick_fix_row() {
     app.shutdown_servers().await;
 }
 
+/// Quick fixes that come after a publish took the hover's diagnostics away (rust-analyzer's
+/// check republishing), and after the server's hover rebuilt the popup without them, get no
+/// "Quick Fix…" row: it would head the server's hover, about nothing shown.
+#[tokio::test(flavor = "multi_thread")]
+async fn fixes_hover_quick_fix_row_not_without_its_diagnostics() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, fake, path) = actions_app(dir.path(), FakeOptions::default()).await;
+    fake.respond("textDocument/hover", json!({ "contents": "about `value`" }));
+    fake.hold("textDocument/hover", true);
+    let edit = workspace_edit(&path, &[(5, 8, 13, "valve")]);
+    fake.respond(
+        "textDocument/codeAction",
+        json!([{ "title": "Change to 'valve'", "kind": "quickfix", "edit": edit }]),
+    );
+    fake.hold("textDocument/codeAction", true);
+    let mut term = terminal();
+    draw(&mut term, &mut app);
+    let (vx, vy) = find_cells(&term, "value;").unwrap();
+    assert!(rest(&mut app, &mut term, (vx + 1, vy)));
+    assert_eq!(rows(&mut term, &mut app), diagnostics_rows());
+    assert!(
+        app.settle(|a| a.pending_requests().len() == 2).await,
+        "the fixes and the hover asked"
+    );
+    publish(&app, Language::Cpp, &path, None, json!([]));
+    assert!(
+        app.settle(|a| a.active_buffer().unwrap().diagnostics.all().is_empty())
+            .await
+    );
+    // The hover's answer first (held answers come newest first), then the fixes.
+    app.lsp
+        .server_for(Language::Cpp)
+        .unwrap()
+        .notify("test/flush", Value::Null);
+    assert!(app.settle(|a| a.pending_requests().is_empty()).await);
+    assert_eq!(rows(&mut term, &mut app), ["about value"]);
+    app.shutdown_servers().await;
+}
+
 /// Only the buffer's server's diagnostics go to it, at their place now (after an edit before
 /// them): another server's on the same file stay out.
 #[tokio::test(flavor = "multi_thread")]
@@ -1068,5 +1114,641 @@ async fn fixes_resolve_answer_after_an_edit_dropped() {
         .notify("test/flush", Value::Null);
     idle(&mut app).await;
     assert_eq!(text_of(&app), TEXT.replace("value;", "qvalue;"), "only the typing");
+    app.shutdown_servers().await;
+}
+
+/// An edit labelled with an older document version applies while that version's text is the
+/// buffer's (clangd's fixes after an edit is undone); one for a version whose text differs is
+/// refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn fixes_code_action_edit_for_an_older_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, fake, path) = actions_app(dir.path(), FakeOptions::default()).await;
+    put_cursor(&mut app, at("int x"));
+    app.handle_test_event(crossterm::event::Event::Paste("ab".into()));
+    app.pump();
+    app.press(K::Char('z'), cmd());
+    app.pump();
+    let id = buffer_id(&app, &path);
+    assert_eq!(app.lsp.version(id), Some(3), "the paste and its undo sent");
+    let edit = |version: i32| {
+        json!({ "documentChanges": [{
+            "textDocument": { "uri": uri(&path), "version": version },
+            "edits": [{ "range": range(5, 8, 13), "newText": "valve" }],
+        }] })
+    };
+    fake.respond(
+        "textDocument/codeAction",
+        json!([{ "title": "Change to 'valve'", "kind": "quickfix", "edit": edit(1) }]),
+    );
+    put_cursor(&mut app, at("value;"));
+    quick_fix(&mut app);
+    assert!(app.settle(|a| a.code_actions.popup.is_some()).await);
+    app.press(K::Enter, M::NONE);
+    assert_eq!(
+        text_of(&app),
+        TEXT.replace("value;", "valve;"),
+        "version 1's text is the buffer's"
+    );
+    app.press(K::Char('z'), cmd());
+    app.pump();
+
+    fake.respond(
+        "textDocument/codeAction",
+        json!([{ "title": "Change to 'valve'", "kind": "quickfix", "edit": edit(2) }]),
+    );
+    put_cursor(&mut app, at("value;"));
+    quick_fix(&mut app);
+    assert!(app.settle(|a| a.code_actions.popup.is_some()).await);
+    app.press(K::Enter, M::NONE);
+    assert_eq!(text_of(&app), TEXT, "version 2 had the paste");
+    assert_eq!(
+        app.message.as_ref().unwrap().text,
+        "Code action failed: a.cpp changed since it was asked"
+    );
+    app.shutdown_servers().await;
+}
+
+// ---- fixes-c: the done when, against real servers ----
+
+use std::time::{Duration, Instant};
+
+use crate::diagnostics::Severity;
+use crate::hover::Kind;
+use crate::lsp::{ProcessLauncher, ServerConfig};
+use crate::milestone9_tests::{REAL_SERVERS, children_named, settle_for, squiggle, which};
+
+/// The hover popup's first 12 lines: (kind, text trimmed; a diagnostic's has its icon).
+fn hover_lines(app: &App) -> Vec<(Kind, String)> {
+    app.hover
+        .popup
+        .as_ref()
+        .map(|p| {
+            p.lines
+                .iter()
+                .take(12)
+                .map(|l| (l.kind, l.text.trim().to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The buffer at `path`'s diagnostics: (the text under it, code, severity).
+fn marks_of(app: &App, path: &Path) -> Vec<(String, Option<String>, Severity)> {
+    let Some(id) = app.buffers.find_path(path) else {
+        return Vec::new();
+    };
+    let buf = app.buffers.get(id).unwrap();
+    let text = buf.rope.to_string();
+    buf.diagnostics
+        .all()
+        .iter()
+        .map(|m| {
+            (
+                text[m.start.0..m.end.0].to_string(),
+                m.diag.code.clone(),
+                m.diag.severity,
+            )
+        })
+        .collect()
+}
+
+fn has_code(app: &App, path: &Path, code: &str) -> bool {
+    marks_of(app, path).iter().any(|m| m.1.as_deref() == Some(code))
+}
+
+/// A `.workspace` naming a server that doesn't exist for `languages`, recorded as trusted in
+/// `root`'s trust store (before the app loads it): writing it stops the running server there,
+/// as a user's switching servers would, without a trust prompt in the way.
+fn stopping_workspace(root: &Path, languages: &[&str]) -> String {
+    let text: String = languages
+        .iter()
+        .map(|l| format!("[lsp.{l}]\ncommand = \"jed-test-no-such-language-server\"\n"))
+        .collect();
+    let config = crate::workspace::config::WorkspaceConfig::parse(&text).unwrap();
+    let mut trust = crate::workspace::trust::TrustStore::load(root.parent().unwrap().join("state/trust.toml"));
+    trust.record(root, &config, true);
+    trust.write().unwrap();
+    text
+}
+
+/// Stops `language`'s server (writing `workspace`, from `stopping_workspace`): its squiggles go
+/// from every buffer and the store.
+async fn stop_server(app: &mut App, root: &Path, workspace: &str, language: Language) {
+    let old = app.lsp.server_for(language).unwrap().id;
+    std::fs::write(root.join(".workspace"), workspace).unwrap();
+    assert!(
+        settle_for(app, 30, |a| a.lsp.server_for(language).is_none_or(|s| s.id != old)).await,
+        "the server stopped"
+    );
+    for (_, buf) in app.buffers.iter() {
+        assert!(buf.diagnostics.all().is_empty(), "squiggles gone");
+    }
+    assert_eq!(app.lsp.diagnostics.counts(), Default::default());
+}
+
+/// Moves Down until the list's selected action is `title`.
+fn select(app: &mut App, title: &str) {
+    for _ in 0..20 {
+        let p = app.code_actions.popup.as_ref().expect("the list");
+        if p.actions[p.selected].title == title {
+            return;
+        }
+        app.press(K::Down, M::NONE);
+    }
+    let titles: Vec<String> = app
+        .code_actions
+        .popup
+        .as_ref()
+        .unwrap()
+        .actions
+        .iter()
+        .map(|a| a.title.clone())
+        .collect();
+    panic!("{title:?} not in {titles:?}");
+}
+
+async fn save(app: &mut App) {
+    app.press(K::Char('s'), cmd());
+    assert!(
+        app.settle(|a| a.message.as_ref().is_some_and(|m| m.text.starts_with("Saved")))
+            .await,
+        "saved: {:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+}
+
+/// Cmd+. at `at`, asked again (for up to `secs`) while the server has nothing yet (still
+/// loading): the list.
+async fn list_at(app: &mut App, at: usize, secs: u64) {
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(secs) {
+        put_cursor(app, at);
+        quick_fix(app);
+        if settle_for(app, 5, |a| a.code_actions.popup.is_some()).await {
+            return;
+        }
+    }
+    panic!(
+        "no code action list; message {:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+}
+
+/// Rests the mouse on the first drawn `needle` (`offset` chars in) until the popup has a line
+/// `want` takes (asked again while the server is loading).
+async fn rest_until(
+    app: &mut App,
+    term: &mut Terminal<TestBackend>,
+    needle: &str,
+    offset: u16,
+    want: impl Fn(&[(Kind, String)]) -> bool,
+) {
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(60) {
+        draw(term, app);
+        let (x, y) = find_cells(term, needle).unwrap_or_else(|| panic!("{needle:?} drawn"));
+        // Off it first, so the rest starts again.
+        app.mouse(E::Moved, 0, 0);
+        assert!(rest(app, term, (x + offset, y)), "{needle:?} is hovered");
+        if settle_for(app, 5, |a| want(&hover_lines(a))).await {
+            return;
+        }
+    }
+    panic!("hover on {needle:?}: {:?}", hover_lines(app));
+}
+
+/// Clicks the hover's "Quick Fix…" row (drawn).
+fn click_quick_fix_row(app: &mut App, term: &mut Terminal<TestBackend>) {
+    draw(term, app);
+    let (x, y) = find_cells(term, "Quick Fix").expect("the Quick Fix… row drawn");
+    app.mouse(E::Down(crossterm::event::MouseButton::Left), x, y);
+    assert!(app.hover.popup.is_none());
+}
+
+const RA_FIXES_MAIN: &str =
+    "use std::collections::HashMap;\n\nfn main() {\n    let v: Vec<Strin> = Vec::new();\n    let _ = v;\n}\n";
+
+/// The done when against real rust-analyzer, on a crate with an unused import and a misspelled
+/// type (its `cargo check` reports both): resting on each squiggle shows the icon, message and
+/// `rustc(code)` first, the server's hover below, and a "Quick Fix…" row that opens the fixes;
+/// Cmd+. on the import lists rustc's "remove the whole `use` item" (preferred: ★, selected) and
+/// rust-analyzer's own "Remove all unused imports" (resolved by `codeAction/resolve` with its
+/// `data`); Enter applies one as one undo step, and after a save the warning goes with the next
+/// publish. On `Strin` rustc's "a struct with a similar name exists: `String`" is listed and
+/// applied (rust-analyzer doesn't mark it preferred, and runs no commands: it has no
+/// `executeCommandProvider` — clangd's tweaks cover that). Stopping the server clears its
+/// squiggles, and the hover then shows none. Skipped with a note without rust-analyzer.
+#[tokio::test(flavor = "multi_thread")]
+async fn fixes_done_when_rust_analyzer() {
+    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let toolchain = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("rust-toolchain.toml")).unwrap();
+    let root = project(
+        dir.path(),
+        &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"tiny\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+            ),
+            ("rust-toolchain.toml", &toolchain),
+        ],
+    );
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let main = root.join("src/main.rs");
+    std::fs::write(&main, RA_FIXES_MAIN).unwrap();
+    let runs = std::process::Command::new("rust-analyzer")
+        .arg("--version")
+        .current_dir(&root)
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !runs {
+        eprintln!(
+            "fixes_done_when_rust_analyzer: skipped, rust-analyzer doesn't run (`rustup component add rust-analyzer`)"
+        );
+        return;
+    }
+    let started = Instant::now();
+    let stopping = stopping_workspace(&root, &["rust"]);
+    let mut app = open_app(&root, Arc::new(ProcessLauncher));
+    // Its own target directory: its `cargo check` never waits on another build.
+    let target = crate::workspace::normalize(dir.path()).join("target");
+    app.lsp.builtins.rust_analyzer.init_options = Some(json!({ "cargo": { "targetDir": target } }));
+    app.test_open(crate::buffer::Buffer::open(&main).unwrap());
+    let both = |a: &App| has_code(a, &main, "unused_imports") && has_code(a, &main, "E0425");
+    assert!(
+        settle_for(&mut app, 180, both).await,
+        "cargo check's warning and error: {:?}; message {:?}",
+        marks_of(&app, &main),
+        app.message.as_ref().map(|m| &m.text)
+    );
+    eprintln!(
+        "fixes_done_when_rust_analyzer: diagnostics after {:?}",
+        started.elapsed()
+    );
+    let mut term = terminal();
+
+    // The hover on the import: the warning (and rustc's hint on the whole item) first, the
+    // Quick Fix… row, then rust-analyzer's hover below a rule.
+    let answered = |l: &[(Kind, String)]| l.iter().any(|(_, t)| t.contains("pub struct HashMap"));
+    // (Asked again while a publish has taken the warning: its check can republish.)
+    let with_row = |l: &[(Kind, String)]| {
+        l.first()
+            .is_some_and(|(k, _)| *k == Kind::Diagnostic(Severity::Warning))
+            && answered(l)
+            && l.iter().any(|(k, _)| *k == Kind::Link)
+    };
+    rest_until(&mut app, &mut term, "HashMap", 1, with_row).await;
+    let lines = hover_lines(&app);
+    assert_eq!(lines[0].0, Kind::Diagnostic(Severity::Warning), "{lines:?}");
+    assert!(
+        lines[0].1.starts_with("⚠ unused import: `std::collections::HashMap`"),
+        "{lines:?}"
+    );
+    let source = lines.iter().position(|(k, _)| *k == Kind::Source).unwrap();
+    assert_eq!(lines[source].1, "rustc(unused_imports)");
+    let link = lines.iter().position(|(k, _)| *k == Kind::Link).unwrap();
+    assert_eq!(lines[link].1, "Quick Fix…");
+    let answer = lines
+        .iter()
+        .position(|(_, t)| t.contains("pub struct HashMap"))
+        .unwrap();
+    assert!(
+        source < link && link < answer,
+        "diagnostics, the row, then the answer: {lines:?}"
+    );
+    assert_eq!(lines[link + 1].0, Kind::Rule, "{lines:?}");
+    let drawn = rows(&mut term, &mut app);
+    assert!(
+        drawn[0].starts_with("⚠ unused import: `std::collections::HashMap`"),
+        "{drawn:?}"
+    );
+
+    // Its Quick Fix… row: the fixes there.
+    click_quick_fix_row(&mut app, &mut term);
+    let listed = list_rows(&mut term, &mut app);
+    assert!(
+        listed.iter().any(|r| r == "★ remove the whole `use` item"),
+        "{listed:?}"
+    );
+    assert!(listed.iter().any(|r| r == "Remove all unused imports"), "{listed:?}");
+    app.press(K::Esc, M::NONE);
+    assert!(app.code_actions.popup.is_none());
+
+    // Cmd+. on it: the preferred first and selected; rust-analyzer's own is resolved, applied
+    // as one undo step.
+    let on_import = RA_FIXES_MAIN.find("HashMap").unwrap() + 1;
+    list_at(&mut app, on_import, 60).await;
+    let listed = list_rows(&mut term, &mut app);
+    assert_eq!(listed[0], "★ remove the whole `use` item", "{listed:?}");
+    assert_eq!(app.code_actions.popup.as_ref().unwrap().selected, 0);
+    select(&mut app, "Remove all unused imports");
+    app.press(K::Enter, M::NONE);
+    let without = RA_FIXES_MAIN.replace("use std::collections::HashMap;\n", "");
+    assert!(
+        settle_for(&mut app, 30, |a| text_of(a) == without).await,
+        "resolved and applied: {:?}; message {:?}",
+        text_of(&app),
+        app.message.as_ref().map(|m| &m.text)
+    );
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text_of(&app), RA_FIXES_MAIN, "one undo step");
+
+    // The preferred one (an edit of its own), then a save: the warning goes with the next publish.
+    list_at(&mut app, on_import, 30).await;
+    assert!(app.code_actions.popup.as_ref().unwrap().actions[0].preferred);
+    app.press(K::Enter, M::NONE);
+    assert_eq!(text_of(&app), without);
+    save(&mut app).await;
+    assert!(
+        settle_for(&mut app, 120, |a| !has_code(a, &main, "unused_imports")
+            && has_code(a, &main, "E0425"))
+        .await,
+        "the warning gone after the check: {:?}",
+        marks_of(&app, &main)
+    );
+
+    // The misspelled type: its error on hover, then its fix listed and applied.
+    let on_type = without.find("Strin").unwrap() + 1;
+    let error = |l: &[(Kind, String)]| {
+        l.first().is_some_and(|(k, t)| {
+            *k == Kind::Diagnostic(Severity::Error) && t == "⊗ cannot find type `Strin` in this scope"
+        })
+    };
+    rest_until(&mut app, &mut term, "Strin", 1, error).await;
+    assert!(
+        hover_lines(&app).iter().any(|(_, t)| t == "rustc(E0425)"),
+        "{:?}",
+        hover_lines(&app)
+    );
+    app.mouse(E::Moved, 0, 0);
+    let fix = "a struct with a similar name exists: `String`";
+    list_at(&mut app, on_type, 30).await;
+    let listed = list_rows(&mut term, &mut app);
+    assert!(listed.iter().any(|r| r == fix), "listed, not preferred: {listed:?}");
+    select(&mut app, fix);
+    app.press(K::Enter, M::NONE);
+    assert_eq!(text_of(&app), without.replace("Strin", "String"));
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text_of(&app), without, "one undo step");
+    // Whether E0425 is still marked now depends on when rust-analyzer republishes (sometimes
+    // before the next save's check), so it isn't asserted.
+
+    // Stopped: no squiggles, and the hover there shows none of its diagnostics.
+    app.mouse(E::Moved, 0, 0);
+    stop_server(&mut app, &root, &stopping, Language::Rust).await;
+    draw(&mut term, &mut app);
+    let (x, y) = find_cells(&term, "Strin").unwrap();
+    rest(&mut app, &mut term, (x + 1, y));
+    idle(&mut app).await;
+    assert!(app.hover.popup.is_none(), "{:?}", hover_lines(&app));
+    app.shutdown_servers().await;
+    if let Some(n) = children_named("rust-analyzer") {
+        assert_eq!(n, 0, "no rust-analyzer left");
+    }
+    eprintln!("fixes_done_when_rust_analyzer: took {:?}", started.elapsed());
+}
+
+const CLANGD_C: &str = "int main(void) {\n  printf(\"hi\\n\");\n  int x = 1\n  return x;\n}\n";
+const CLANGD_CPP: &str = "int f() {\n  auto x = 1;\n  std::string s;\n  return x;\n}\n";
+
+/// The done when against real clangd: resting on `printf` (called without its include) shows
+/// the error's icon, message and `clang(code)`, the Quick Fix… row (which lists "Include
+/// <stdio.h> for symbol printf") and clangd's hover below; Cmd+. lists that fix preferred,
+/// Enter applies it as one undo step and the next publish drops the error; the missing `;`'s
+/// "insert ';'" applies too (clangd finds both by the diagnostics sent back). A tweak (C++'s
+/// "Replace with deduced type" on `auto`) is a command: `workspace/executeCommand`, whose
+/// `workspace/applyEdit` edits the buffer, one undo step. Stopping clangd clears its squiggles
+/// in both files, and the hover shows none. Skipped with a note without clangd.
+#[tokio::test(flavor = "multi_thread")]
+async fn fixes_done_when_clangd() {
+    if which("clangd").is_none() {
+        eprintln!("fixes_done_when_clangd: skipped, clangd isn't on PATH");
+        return;
+    }
+    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[("a.c", CLANGD_C), ("b.cpp", CLANGD_CPP)]);
+    let (c, cpp) = (root.join("a.c"), root.join("b.cpp"));
+    let stopping = stopping_workspace(&root, &["c", "cpp"]);
+    let mut app = open_app(&root, Arc::new(ProcessLauncher));
+    app.test_open(crate::buffer::Buffer::open(&c).unwrap());
+    let both =
+        |a: &App| has_code(a, &c, "-Wimplicit-function-declaration") && has_code(a, &c, "expected_semi_declaration");
+    assert!(
+        settle_for(&mut app, 60, both).await,
+        "clangd's errors: {:?}; message {:?}",
+        marks_of(&app, &c),
+        app.message.as_ref().map(|m| &m.text)
+    );
+    let mut term = terminal();
+
+    // The hover on `printf`: the error, the row, clangd's hover.
+    let answered = |l: &[(Kind, String)]| {
+        l.iter()
+            .position(|(k, _)| *k == Kind::Link)
+            .is_some_and(|link| l.len() > link + 2 && l[link + 1].0 == Kind::Rule)
+    };
+    rest_until(&mut app, &mut term, "printf", 1, answered).await;
+    let lines = hover_lines(&app);
+    assert_eq!(lines[0].0, Kind::Diagnostic(Severity::Error), "{lines:?}");
+    assert!(
+        lines[0].1.starts_with("⊗ Call to undeclared library function 'printf'"),
+        "{lines:?}"
+    );
+    assert_eq!(
+        lines[1],
+        (Kind::Source, "clang(-Wimplicit-function-declaration)".into())
+    );
+    assert_eq!(lines[2], (Kind::Link, "Quick Fix…".into()));
+    click_quick_fix_row(&mut app, &mut term);
+    let include = "Include <stdio.h> for symbol printf";
+    assert_eq!(list_rows(&mut term, &mut app), [format!("★ {include}")]);
+    app.press(K::Esc, M::NONE);
+
+    // Cmd+. on it: preferred; one undo step; the error goes with the next publish.
+    let on_printf = CLANGD_C.find("printf").unwrap() + 1;
+    list_at(&mut app, on_printf, 30).await;
+    assert_eq!(list_rows(&mut term, &mut app)[0], format!("★ {include}"));
+    app.press(K::Enter, M::NONE);
+    let included = format!("#include <stdio.h>\n{CLANGD_C}");
+    assert_eq!(
+        text_of(&app),
+        included,
+        "message {:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text_of(&app), CLANGD_C, "one undo step");
+    // clangd labels this fix with version 1 still (it publishes nothing for the undone edit):
+    // applied, as that version's text is the buffer's.
+    list_at(&mut app, on_printf, 30).await;
+    app.press(K::Enter, M::NONE);
+    assert_eq!(
+        text_of(&app),
+        included,
+        "message {:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    assert!(
+        settle_for(&mut app, 30, |a| !has_code(a, &c, "-Wimplicit-function-declaration")).await,
+        "{:?}",
+        marks_of(&app, &c)
+    );
+
+    // The missing `;` (reported on the next line's `return`).
+    assert!(has_code(&app, &c, "expected_semi_declaration"));
+    list_at(&mut app, included.find("return").unwrap() + 1, 30).await;
+    assert_eq!(list_rows(&mut term, &mut app)[0], "★ insert ';'");
+    app.press(K::Enter, M::NONE);
+    let fixed = included.replace("int x = 1\n", "int x = 1;\n");
+    assert_eq!(text_of(&app), fixed);
+    assert!(
+        settle_for(&mut app, 30, |a| marks_of(a, &c).is_empty()).await,
+        "{:?}",
+        marks_of(&app, &c)
+    );
+
+    // A tweak: a command, whose applyEdit edits the buffer.
+    app.test_open(crate::buffer::Buffer::open(&cpp).unwrap());
+    assert!(
+        settle_for(&mut app, 30, |a| has_code(a, &cpp, "undeclared_var_use")).await,
+        "{:?}",
+        marks_of(&app, &cpp)
+    );
+    list_at(&mut app, CLANGD_CPP.find("auto").unwrap() + 1, 30).await;
+    select(&mut app, "Replace with deduced type");
+    // A command and no edit (clangd has no codeAction/resolve): the text can only change through
+    // the server's workspace/applyEdit.
+    let p = app.code_actions.popup.as_ref().unwrap();
+    let tweak = &p.actions[p.selected];
+    assert!(tweak.edit.is_none() && tweak.command.is_some(), "{:?}", tweak.raw);
+    let resolves = app.lsp.server_of(buffer_id(&app, &cpp)).map(|(_, _, caps)| {
+        serde_json::to_value(&caps.code_action_provider).unwrap()["resolveProvider"] == json!(true)
+    });
+    assert_eq!(resolves, Some(false), "clangd resolves nothing");
+    app.press(K::Enter, M::NONE);
+    let deduced = CLANGD_CPP.replace("auto x", "int x");
+    assert!(
+        settle_for(&mut app, 30, |a| text_of(a) == deduced).await,
+        "applied: {:?}; message {:?}",
+        text_of(&app),
+        app.message.as_ref().map(|m| &m.text)
+    );
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text_of(&app), CLANGD_CPP, "one undo step");
+
+    // Stopped: no squiggles in either file, and the hover on `std` shows none.
+    let undeclared = |l: &[(Kind, String)]| {
+        l.first()
+            .is_some_and(|(_, t)| t == "⊗ Use of undeclared identifier 'std'")
+    };
+    rest_until(&mut app, &mut term, "std", 1, undeclared).await;
+    app.mouse(E::Moved, 0, 0);
+    stop_server(&mut app, &root, &stopping, Language::Cpp).await;
+    draw(&mut term, &mut app);
+    let (x, y) = find_cells(&term, "std").unwrap();
+    rest(&mut app, &mut term, (x + 1, y));
+    idle(&mut app).await;
+    assert!(app.hover.popup.is_none(), "{:?}", hover_lines(&app));
+    app.shutdown_servers().await;
+    if let Some(n) = children_named("clangd") {
+        assert_eq!(n, 0, "no clangd left");
+    }
+}
+
+const TY_PY: &str = "import os\nx = undefined_name\ny = 1 +\nz = 2\n";
+
+/// The done when against real ty: resting on an unresolved name shows the error's icon, message
+/// and `ty(code)`, then the Quick Fix… row (ty's "Ignore '…' for this line", which applies); its
+/// "Expected an expression" after `y = 1 +` covers only the line break and is drawn under the
+/// `+` and hovered there, and Show Hover at the line's end finds it. Stopping ty clears its
+/// squiggles and the hover shows none. Skipped with a note without ty.
+#[tokio::test(flavor = "multi_thread")]
+async fn fixes_done_when_ty() {
+    let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv/bin/ty");
+    let Some(ty) = which("ty").or_else(|| venv.is_file().then_some(venv)) else {
+        eprintln!("fixes_done_when_ty: skipped, ty isn't on PATH or in .venv/bin");
+        return;
+    };
+    let _one_at_a_time = REAL_SERVERS.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[("a.py", TY_PY)]);
+    let path = root.join("a.py");
+    let stopping = stopping_workspace(&root, &["python"]);
+    let mut app = open_app(&root, Arc::new(ProcessLauncher));
+    app.lsp.builtins.ty = ServerConfig::new(ty.to_str().unwrap(), &["server"]);
+    app.test_open(crate::buffer::Buffer::open(&path).unwrap());
+    let both = |a: &App| has_code(a, &path, "unresolved-reference") && has_code(a, &path, "invalid-syntax");
+    assert!(
+        settle_for(&mut app, 60, both).await,
+        "ty's errors: {:?}; message {:?}",
+        marks_of(&app, &path),
+        app.message.as_ref().map(|m| &m.text)
+    );
+    let mut term = terminal();
+
+    let with_row = |l: &[(Kind, String)]| l.iter().any(|(k, _)| *k == Kind::Link);
+    rest_until(&mut app, &mut term, "undefined_name", 1, with_row).await;
+    let lines = hover_lines(&app);
+    assert_eq!(
+        lines[..3],
+        [
+            (
+                Kind::Diagnostic(Severity::Error),
+                "⊗ Name `undefined_name` used when not defined".into()
+            ),
+            (Kind::Source, "ty(unresolved-reference)".into()),
+            (Kind::Link, "Quick Fix…".into()),
+        ],
+        "{lines:?}"
+    );
+    click_quick_fix_row(&mut app, &mut term);
+    let ignore = "Ignore 'unresolved-reference' for this line";
+    assert_eq!(list_rows(&mut term, &mut app), [ignore]);
+    app.press(K::Enter, M::NONE);
+    let ignored = TY_PY.replace(
+        "undefined_name\n",
+        "undefined_name  # ty: ignore[unresolved-reference]\n",
+    );
+    assert_eq!(text_of(&app), ignored);
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text_of(&app), TY_PY);
+    assert!(
+        settle_for(&mut app, 30, |a| has_code(a, &path, "unresolved-reference")).await,
+        "{:?}",
+        marks_of(&app, &path)
+    );
+
+    // The line break after `y = 1 +`: drawn under the `+`, hovered there.
+    let syntax = [
+        (
+            Kind::Diagnostic(Severity::Error),
+            "⊗ Expected an expression".to_string(),
+        ),
+        (Kind::Source, "ty(invalid-syntax)".to_string()),
+    ];
+    draw(&mut term, &mut app);
+    let (px, py) = find_cells(&term, "1 +").map(|(x, y)| (x + 2, y)).unwrap();
+    assert!(squiggle(&term, px, py).is_some(), "under the +");
+    assert!(squiggle(&term, px - 1, py).is_none(), "only there");
+    rest_until(&mut app, &mut term, "1 +", 2, |l| l.len() >= 2 && l[..2] == syntax).await;
+    assert!(settle_for(&mut app, 5, |a| a.pending_requests().is_empty()).await);
+    let lines = hover_lines(&app);
+    assert_eq!(lines[..2], syntax, "{lines:?}");
+    app.mouse(E::Moved, 0, 0);
+    put_cursor(&mut app, TY_PY.find("+\n").unwrap() + 1);
+    show_hover(&mut app);
+    let lines = hover_lines(&app);
+    assert_eq!(lines[..2], syntax, "the cursor at the line's end: {lines:?}");
+    app.press(K::Esc, M::NONE);
+
+    // Stopped: no squiggles, and the hover on the name shows none.
+    stop_server(&mut app, &root, &stopping, Language::Python).await;
+    draw(&mut term, &mut app);
+    let (x, y) = find_cells(&term, "undefined_name").unwrap();
+    rest(&mut app, &mut term, (x + 1, y));
+    idle(&mut app).await;
+    assert!(app.hover.popup.is_none(), "{:?}", hover_lines(&app));
     app.shutdown_servers().await;
 }

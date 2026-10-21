@@ -199,7 +199,11 @@ impl App {
             if let Some(reason) = &buf.read_only {
                 return Err(format!("{} is read-only ({reason})", buf.name()));
             }
-            if f.version.is_some() && f.version != self.lsp.version(id) {
+            // An older version is fine while its text is the buffer's (an edit undone since).
+            if let Some(v) = f.version
+                && Some(v) != self.lsp.version(id)
+                && self.lsp.text_at(id, v).is_none_or(|text| *text != buf.rope)
+            {
                 return Err(format!("{} changed since it was asked", buf.name()));
             }
             match rename::changes(&buf.rope, &f.edits, encoding) {

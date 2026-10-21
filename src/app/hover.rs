@@ -153,6 +153,7 @@ impl App {
         let diags: Vec<&Diagnostic> = marks.iter().map(|m| &*m.diag).collect();
         let mut lines = hover::diagnostic_lines(&diags);
         let owned: Vec<diagnostics::Mark> = marks.iter().map(|m| (*m).clone()).collect();
+        let diag_range = super::code_action::marks_range(rope, &owned);
         if !owned.is_empty() && self.hover_fixes_for(group, buffer, buf.revision(), &owned) {
             lines.push(hover::Line::link(crate::code_action::QUICK_FIX_ROW));
         }
@@ -192,6 +193,7 @@ impl App {
             range,
             lines,
             fixes_at,
+            diagnostics: diag_range,
             link_row: None,
             mouse,
             top,
