@@ -175,6 +175,13 @@ enum AppEvent {
         path: PathBuf,
         result: Result<files::Loaded, LoadError>,
     },
+    /// Find's whole-file count on a hex tab (`HexTab::id`) for one query generation
+    /// (`find::HexFind`); an older generation's is dropped.
+    HexCount {
+        tab: u64,
+        generation: u64,
+        count: crate::hex::Count,
+    },
     Listed {
         dir: PathBuf,
         result: std::io::Result<Vec<explorer::Entry>>,
@@ -1219,6 +1226,7 @@ impl App {
                 self.save_done(buffer, state, result, elapsed)
             }
             AppEvent::Opened { path, result } => self.opened(path, result),
+            AppEvent::HexCount { tab, generation, count } => self.hex_counted(tab, generation, count),
             AppEvent::Listed { dir, result } => self.listed(dir, result),
             AppEvent::FsChanged(paths) => self.fs_changed(paths),
             AppEvent::HistoryDone(result) => self.history_done(result),
@@ -1443,6 +1451,12 @@ impl App {
     /// `sync_servers` (as when a key and the event arrive in one loop turn).
     pub fn test_lsp_event(&mut self, event: crate::lsp::Event) {
         self.handle_app_event(AppEvent::Lsp(event));
+    }
+
+    /// Takes in a hex find count as if it had come through the channel (`AppEvent::HexCount`):
+    /// for tests of stale counts.
+    pub fn test_hex_count(&mut self, tab: u64, generation: u64, count: crate::hex::Count) {
+        self.handle_app_event(AppEvent::HexCount { tab, generation, count });
     }
 
     /// Handles every background result already queued, without waiting (as the event loop

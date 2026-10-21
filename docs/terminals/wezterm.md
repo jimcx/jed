@@ -43,7 +43,7 @@ local release = {
   { 'DownArrow', 'CMD' }, { 'DownArrow', 'CMD|SHIFT' },
   { 'Backspace', 'CMD' },
   { 'f', 'CMD' }, { 'f', 'CMD|ALT' },
-  { 'c', 'CMD|ALT' }, { 'w', 'CMD|ALT' }, { 'r', 'CMD|ALT' },
+  { 'c', 'CMD|ALT' }, { 'w', 'CMD|ALT' }, { 'r', 'CMD|ALT' }, { 'x', 'CMD|ALT' },
   { '1', 'CMD|SHIFT' }, { 'Enter', 'CMD|ALT' },
   { 'n', 'CMD|ALT' }, { 'n', 'CMD|ALT|SHIFT' },
   { 's', 'CMD' }, { 'q', 'CMD' }, { 'w', 'CMD' }, { 'b', 'CMD' },

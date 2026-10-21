@@ -76,6 +76,7 @@ fn query(pattern: &str, regex: bool, case_sensitive: bool) -> Query {
             regex,
             case_sensitive,
             whole_word: false,
+            hex: false,
         },
         ..Query::default()
     }
@@ -1260,6 +1261,7 @@ mod done_when {
             regex,
             case_sensitive,
             whole_word: false,
+            hex: false,
         };
         let cases = [
             // Plain text, case-insensitive (the default): `rg -F -i`.

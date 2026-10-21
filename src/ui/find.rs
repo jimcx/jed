@@ -1,6 +1,8 @@
 //! The find / replace widget, at the top right of the active editor as in VS Code:
 //! the find input, the option toggles (case, whole word, regex) and "3 of 41"; the replace input
-//! below it when shown; an invalid regex's message on a last row.
+//! below it when shown; an invalid regex's message on a last row. Over a hex tab: a fourth toggle,
+//! `0x` (hex pairs or ASCII text), whole word and regex drawn disabled, no replace row, the byte
+//! search's count ("…" while it runs) and an invalid hex query's message as the error.
 
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
@@ -17,13 +19,16 @@ use crate::layout::FindHit;
 const MAX_WIDTH: u16 = 64;
 /// Room for the count ("12345 of 12345").
 const COUNT_WIDTH: u16 = 14;
-const TOGGLES: [&str; 3] = ["Aa", "ab", ".*"];
+/// On a hex tab ("99999 of 100000+").
+const HEX_COUNT_WIDTH: u16 = 17;
+const TOGGLES: [&str; 4] = ["Aa", "ab", ".*", "0x"];
 
 /// Draws the widget over `area` (the active group's editor) if it's open; returns where it is.
 pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
     let find = &app.find;
-    let sel = *app.group().active_tab()?.view.selections.primary();
-    if !find.visible || area.width < 24 || area.height < 3 {
+    let hex = app.active_hex();
+    let sel = app.group().active_tab().map(|t| *t.view.selections.primary());
+    if (hex.is_none() && sel.is_none()) || !find.visible || area.width < 24 || area.height < 3 {
         return None;
     }
     let theme = &app.theme;
@@ -31,9 +36,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
     let input = base.patch(theme.get("dialog.input"));
     let dim = base.patch(theme.get("palette.detail"));
     let selected = input.patch(theme.get("editor.selection"));
-    let error = find.error().map(|e| e.to_string());
+    let error = match hex {
+        Some(_) => find.hex.error().map(|e| e.to_string()),
+        None => find.error().map(|e| e.to_string()),
+    };
+    // A hex tab has no replace.
+    let replace_visible = find.replace_visible && hex.is_none();
 
-    let rows = 1 + u16::from(find.replace_visible) + u16::from(error.is_some());
+    let rows = 1 + u16::from(replace_visible) + u16::from(error.is_some());
     let width = area.width.min(MAX_WIDTH);
     let rect = Rect {
         x: area.x + area.width - width,
@@ -44,9 +54,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
     f.render_widget(Clear, rect);
     f.buffer_mut().set_style(rect, base);
 
-    // " [field] Aa ab .* count "
-    let toggles_w = 3 * TOGGLES.len() as u16;
-    let field_w = width.saturating_sub(1 + toggles_w + 1 + COUNT_WIDTH + 1).max(4);
+    // " [field] Aa ab .* count ", with 0x after .* on a hex tab.
+    let shown = if hex.is_some() { 4 } else { 3 };
+    let count_width = if hex.is_some() { HEX_COUNT_WIDTH } else { COUNT_WIDTH };
+    let toggles_w = 3 * shown as u16;
+    let field_w = width.saturating_sub(1 + toggles_w + 1 + count_width + 1).max(4);
     let field_x = rect.x + 1;
     let find_rect = Rect {
         x: field_x,
@@ -58,11 +70,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
     let mut cursor = draw_field(out, find_rect, &find.query, "Find", input, selected, dim);
 
     let options = app.find_options;
-    let on = [options.case_sensitive, options.whole_word, options.regex];
-    let mut toggles = [Rect::default(); 3];
-    for (i, label) in TOGGLES.iter().enumerate() {
+    let on = [options.case_sensitive, options.whole_word, options.regex, options.hex];
+    let mut toggles = [Rect::default(); 4];
+    for (i, label) in TOGGLES.iter().enumerate().take(shown) {
         let x = field_x + field_w + 1 + 3 * i as u16;
-        let style = if on[i] {
+        // Whole word and regex don't apply to bytes.
+        let style = if hex.is_some() && (i == 1 || i == 2) {
+            base.patch(theme.get("find.option.disabled"))
+        } else if on[i] {
             base.patch(theme.get("find.option.active"))
         } else {
             base.patch(theme.get("find.option"))
@@ -75,12 +90,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
             height: 1,
         };
     }
-    let count = find.count_label((sel.start(), sel.end()));
+    let count = match (hex, sel) {
+        (Some(h), _) => find.hex.count_label(h.selection()),
+        (None, Some(sel)) => find.count_label((sel.start(), sel.end())),
+        (None, None) => String::new(),
+    };
     let count_x = field_x + field_w + toggles_w + 1;
-    out.set_stringn(count_x, rect.y, &count, COUNT_WIDTH as usize, dim);
+    out.set_stringn(count_x, rect.y, &count, count_width as usize, dim);
 
     let mut replace = None;
-    if find.replace_visible {
+    if replace_visible {
         let r = Rect {
             y: rect.y + 1,
             ..find_rect

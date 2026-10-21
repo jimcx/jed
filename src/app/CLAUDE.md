@@ -11,7 +11,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `navigation.rs` — back / forward (`app.nav`): `nav_begin` / `nav_end`, `nav_jump`, Go Back / Forward
 - `palette.rs` — opening, keys and accepting the command palette and its pickers
 - `cursors.rs` — Cmd+D / Cmd+Shift+L / Cmd+Alt+D sessions, Cmd+U (`cursor_undo`), `track_selections`
-- `find.rs` — the find / replace widget (`app.find`): open, incremental search, next / previous, replace (all)
+- `find.rs` — the find / replace widget (`app.find`): open, incremental search, next / previous, replace (all); on a hex tab byte search (`find.hex`, the count off-thread via `AppEvent::HexCount`)
 - `workspace_search.rs` — the Search view (`app.search_view`): focus, debounce, starting searches, results, opening matches
 - `replace.rs` — the Search view's Replace (`app.replace`): a line / file / all, the confirm, open buffers edited, other files rewritten off-thread with history, the message and the search again
 - `syntax.rs` — buffers' language detection and `sync_syntax` (incremental / background parses)
@@ -54,7 +54,7 @@ Things to know before editing:
 - Leaving a tab/group (`activate_tab`, `cycle_tab`, `focus_group`, `split`, editor click) calls `buf.seal_undo()` first.
 - Closing: the save prompt appears only when the tab is the last one (in any group) showing a dirty buffer (`groups.tabs_showing`); a diff tab closes without asking. `discard_tab` drops the buffer when no tab shows it and closes an empty group (never the last). `AfterSave::{Quit, Close}` continues a close/quit once saves finish.
 - `sync_views` runs after every input event: the editing tab only re-anchors its viewport; every other view on the buffer runs `View::map_through`. Then `track_selections`: if the active view's buffer changed its Cmd+U history is reset, else a selection change pushes the previous list; any selection change not made by a match command (`session_changed`), or focus leaving the editor (palette, prompt, side panel, find widget), ends the Cmd+D session (VS Code's rule; word mode resets with it). Only input events are tracked, so selections set by background results are recorded at the next key.
-- `find_options` (`search::Options`: case / whole word / regex) belongs to the find widget's toggles and is what Cmd+D uses for selected text (case and whole word only); toggling ends a Cmd+D session that uses them (not word mode).
+- `find_options` (`search::Options`: case / whole word / regex, and `hex`: the byte search's mode on a hex tab) belongs to the find widget's toggles and is what Cmd+D uses for selected text (case and whole word only); toggling ends a Cmd+D session that uses them (not word mode).
 - The bottom panel: `ui.panel_visible`, `ui.panel_height` (`PANEL_HEIGHT` = 10 until dragged; border and tab strip included), `ui.panel_tab` (`PanelTab::Problems` / `Locations` / `Task(id)` — a closed run's tab is never left there: `close_task`; `focus_panel(tab)` selects the tab's first row when nothing is). Cmd+B only moves the focus to the editor when the side panel had it.
 - `update_crash_snapshot` (`app/backup.rs`) runs every loop turn so the panic hook can back up dirty buffers (into `state_dir`; nothing without one).
 - Messages: `notify(Level, text)` sets the status-bar message and logs it; any key press clears it.

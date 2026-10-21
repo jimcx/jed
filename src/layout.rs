@@ -500,13 +500,14 @@ pub struct HistoryHit {
     pub top: usize,
 }
 
-/// The find widget: its box, the replace row (if shown) and the three option toggles
-/// (case, whole word, regex).
+/// The find widget: its box, the replace row (if shown) and the option toggles (case, whole
+/// word, regex, and hex on a hex tab).
 #[derive(Debug, Clone, Copy)]
 pub struct FindHit {
     pub area: Rect,
     pub replace: Option<Rect>,
-    pub toggles: [Rect; 3],
+    /// Aa, ab, .*, then 0x (an empty rect unless the widget is over a hex tab).
+    pub toggles: [Rect; 4],
 }
 
 /// The palette box, and its list area: row `i` on screen is row `scroll + i`.

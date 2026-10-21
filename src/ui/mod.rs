@@ -136,7 +136,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let mut hex_drawn = false;
         if let Some(h) = group.active_hex_mut() {
             hex_drawn = true;
-            text = hex::render(f, editor_area, h, &app.theme, app.settings.hex_bytes_per_line, focused);
+            // Find highlights in the active group, when the widget's query is for this tab.
+            let find = (is_active && app.find.visible && app.find.hex.tab() == Some(h.id))
+                .then(|| app.find.hex.query())
+                .flatten();
+            let overlay = hex::Overlay { focused, find };
+            text = hex::render(f, editor_area, h, &app.theme, app.settings.hex_bytes_per_line, overlay);
             if let Some(bar) = bar {
                 scroll_hit = Some(scrollbar::render(
                     f.buffer_mut(),

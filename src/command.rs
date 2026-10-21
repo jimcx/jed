@@ -405,6 +405,8 @@ pub enum FindCommand {
     ToggleCase,
     ToggleWholeWord,
     ToggleRegex,
+    /// The byte search's mode on a hex tab: hex digit pairs or ASCII text (inert on a text tab).
+    ToggleHex,
     /// Alt+Enter: a selection at every match.
     SelectAllMatches,
     /// Replace the selected match and go to the next one.
@@ -418,12 +420,13 @@ pub enum FindCommand {
 }
 
 impl FindCommand {
-    pub const ALL: [FindCommand; 10] = [
+    pub const ALL: [FindCommand; 11] = [
         FindCommand::Next,
         FindCommand::Previous,
         FindCommand::ToggleCase,
         FindCommand::ToggleWholeWord,
         FindCommand::ToggleRegex,
+        FindCommand::ToggleHex,
         FindCommand::SelectAllMatches,
         FindCommand::ReplaceOne,
         FindCommand::ReplaceAll,
@@ -948,6 +951,7 @@ impl Command {
                     FindCommand::ToggleCase => "toggleCase",
                     FindCommand::ToggleWholeWord => "toggleWholeWord",
                     FindCommand::ToggleRegex => "toggleRegex",
+                    FindCommand::ToggleHex => "toggleHex",
                     FindCommand::SelectAllMatches => "selectAllMatches",
                     FindCommand::ReplaceOne => "replace",
                     FindCommand::ReplaceAll => "replaceAll",
@@ -1256,6 +1260,7 @@ impl Command {
                 FindCommand::ToggleCase => "Find: Toggle Match Case",
                 FindCommand::ToggleWholeWord => "Find: Toggle Match Whole Word",
                 FindCommand::ToggleRegex => "Find: Toggle Use Regular Expression",
+                FindCommand::ToggleHex => "Find: Toggle Hex",
                 FindCommand::SelectAllMatches => "Find: Select Every Match",
                 FindCommand::ReplaceOne => "Find: Replace One",
                 FindCommand::ReplaceAll => "Find: Replace All",

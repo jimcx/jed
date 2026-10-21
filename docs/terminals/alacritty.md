@@ -57,6 +57,7 @@ bindings = [
   { key = "C", mods = "Command|Alt", action = "ReceiveChar" },
   { key = "W", mods = "Command|Alt", action = "ReceiveChar" },
   { key = "R", mods = "Command|Alt", action = "ReceiveChar" },
+  { key = "X", mods = "Command|Alt", action = "ReceiveChar" },
   { key = "1", mods = "Command|Shift", action = "ReceiveChar" },
   { key = "Enter", mods = "Command|Alt", action = "ReceiveChar" },
   { key = "N", mods = "Command|Alt", action = "ReceiveChar" },

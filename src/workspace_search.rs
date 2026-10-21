@@ -906,6 +906,7 @@ mod tests {
             regex,
             case_sensitive,
             whole_word: false,
+            hex: false,
         }
     }
 
@@ -913,6 +914,7 @@ mod tests {
         regex: false,
         case_sensitive: false,
         whole_word: false,
+        hex: false,
     };
 
     fn root_of(dir: &tempfile::TempDir) -> PathBuf {
@@ -1032,6 +1034,7 @@ mod tests {
                 whole_word: true,
                 regex,
                 case_sensitive: false,
+                hex: false,
             };
             let (r, _) = search_with(&root, "foo", ww, &[], dirty.clone());
             let want: Vec<String> = ["cr", "crlf", "dirty", "lf"]

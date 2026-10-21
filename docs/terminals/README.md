@@ -62,6 +62,7 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+alt+c` | Toggle match case (find widget, Search view) | editor, find, search |
 | `cmd+alt+w` | Toggle match whole word (find widget, Search view) | editor, find, search |
 | `cmd+alt+r` | Toggle regular expression (find widget, Search view) | editor, find, search |
+| `cmd+alt+x` | Toggle hex / ASCII bytes (find widget on a hex tab) | editor, find |
 | `cmd+shift+1` | Replace one (find widget) / replace the selected result's line or file (Search view's results); terminals report it as Cmd+`!`, jed reads both | editor, find, searchResults |
 | `cmd+alt+enter` | Replace all (find widget, Search view) | editor, find, search, searchResults |
 | `cmd+alt+n` | New file | explorer |

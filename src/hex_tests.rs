@@ -7,8 +7,13 @@
 //! too), splits sharing the bytes, one tab per path, Reopen as Hex / Text, the `(deleted)` mark
 //! and files too big for the view; the explorer opening it, its rename followed, the tab moved to
 //! another group, closed and quit without a prompt; an empty file and rows narrowed to 1 byte
-//! and cut. (Find on a hex tab is hex-c; disk changes, sessions and
-//! navigation entries hex-d.)
+//! and cut. Find on a hex tab (hex-c): ASCII and hex queries finding the same match, the `0x`
+//! toggle (Alt+X / Cmd+Alt+X, or a click) converting the query both ways, case, the errors of
+//! an invalid hex query, highlights in both columns (across a row break too), next / previous
+//! wrapping, selecting and scrolling, the off-thread count against a naive one, its cap, stale
+//! counts dropped, seeding from a selection, no replace / select all / Cmd+D / whole word /
+//! regex there, and the text tab's widget as it was. (Disk changes, sessions and navigation
+//! entries are hex-d.)
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -833,4 +838,704 @@ async fn hex_empty_file_and_narrow_rows() {
     app.mouse(MouseEventKind::Down(MouseButton::Left), x, rect.y + 2);
     app.mouse(MouseEventKind::Up(MouseButton::Left), x, rect.y + 2);
     assert_eq!((hex(&app).cursor, hex(&app).column), (top + 2, Column::Ascii));
+}
+
+// Find on a hex tab (hex-c).
+
+/// The find widget's toggle keys: Cmd+Alt on macOS, Alt elsewhere.
+fn toggle() -> M {
+    if cfg!(target_os = "macos") {
+        M::SUPER | M::ALT
+    } else {
+        M::ALT
+    }
+}
+
+/// Bytes with `ELF` in every case at known places, one across a 16-byte row break (and none on
+/// the first two rows, which the find widget covers at the right):
+/// `ELF` at 32 (row 2), `elf` at 46 (rows 2 and 3), `Elf` at 64, `ELF` at 80.
+fn find_data() -> Vec<u8> {
+    let mut b = b"\x7f\x00\x01\x02\x03\x04\x05\x06".to_vec();
+    b.extend([0u8; 24]);
+    b.extend(b"ELF");
+    b.extend([0xffu8; 11]);
+    b.extend(b"elf");
+    b.extend([0u8; 15]);
+    b.extend(b"Elf");
+    b.extend([1u8; 13]);
+    b.extend(b"ELF");
+    b.extend(b" tail");
+    b
+}
+
+/// An app with `find.bin` (`bytes`) open in a hex tab, and `notes.txt`.
+async fn find_app(bytes: &[u8]) -> (tempfile::TempDir, App) {
+    let (dir, root, state) = dirs();
+    fs::write(root.join("find.bin"), bytes).unwrap();
+    fs::write(root.join("notes.txt"), "hello\nworld\n").unwrap();
+    let mut app = App::new(
+        Workspace::load(root.clone()),
+        TrustStore::load(state.join("trust.toml")),
+        None,
+        true,
+    );
+    app.test_start();
+    app.ui.side_visible = false;
+    app.ui.focus = Focus::Editor;
+    quick_open(&mut app, "find.bin").await;
+    assert!(app.active_hex().is_some());
+    (dir, app)
+}
+
+/// Cmd+F, then `query` typed over the seeded one.
+fn find(app: &mut App, query: &str) {
+    app.press(KeyCode::Char('f'), cmd());
+    assert_eq!(app.ui.focus, Focus::Find);
+    app.press(KeyCode::Backspace, M::NONE);
+    app.type_text(query);
+}
+
+/// Waits for the current query's count.
+async fn settle_count(app: &mut App) {
+    assert!(app.settle(|a| a.find.hex.count().is_some()).await, "the count arrives");
+}
+
+/// The find widget's rows as drawn.
+fn widget_rows(app: &App, term: &Terminal<TestBackend>) -> Vec<String> {
+    let hit = app.hits.find.expect("the find widget is drawn");
+    (0..hit.area.height)
+        .map(|i| {
+            line(term, hit.area.x, hit.area.y + i, hit.area.width)
+                .trim_start()
+                .to_string()
+        })
+        .collect()
+}
+
+/// The background of byte `at`'s hex digits and of its ASCII char, as drawn (on screen).
+fn byte_bgs(app: &App, term: &Terminal<TestBackend>, at: usize) -> (ratatui::style::Color, ratatui::style::Color) {
+    let h = hex(app);
+    let rect = rows_rect(app);
+    let n = h.layout.bytes_per_row();
+    let y = rect.y + (at / n - h.top_row()) as u16;
+    let buf = term.backend().buffer();
+    let x = |col: usize| rect.x + col as u16;
+    (
+        buf[(x(h.layout.hex_col(at % n)), y)].bg,
+        buf[(x(h.layout.ascii_col(at % n)), y)].bg,
+    )
+}
+
+fn bg(app: &App, key: &str) -> ratatui::style::Color {
+    app.theme.get(key).bg.expect(key)
+}
+
+/// Overlapping matches of `needle` in `bytes`, ASCII letters folded unless `case_sensitive`.
+fn naive_count(bytes: &[u8], needle: &[u8], case_sensitive: bool) -> usize {
+    bytes
+        .windows(needle.len())
+        .filter(|w| {
+            if case_sensitive {
+                *w == needle
+            } else {
+                w.eq_ignore_ascii_case(needle)
+            }
+        })
+        .count()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hex_find_ascii_and_hex_find_the_same_match_and_the_toggle_converts() {
+    let (_d, mut app) = find_app(&find_data()).await;
+    draw(&mut app, 100, 20);
+    find(&mut app, "ELF");
+    assert!(!app.find_options.hex && !app.find_options.case_sensitive);
+    assert_eq!(
+        hex(&app).selection(),
+        Some(32..35),
+        "incremental: the first match from the cursor"
+    );
+    settle_count(&mut app).await;
+    let term = draw(&mut app, 100, 20);
+    let rows = widget_rows(&app, &term);
+    assert_eq!(rows.len(), 1, "no replace row, no error: {rows:#?}");
+    assert!(
+        rows[0].contains("Aa ab .* 0x") && rows[0].ends_with("1 of 4"),
+        "{rows:#?}"
+    );
+
+    // Alt+X: the same bytes as hex pairs, the same match; and back.
+    app.press(KeyCode::Char('x'), toggle());
+    assert!(app.find_options.hex);
+    assert_eq!(app.find.query.text, "45 4c 46");
+    assert_eq!(hex(&app).selection(), Some(32..35));
+    settle_count(&mut app).await;
+    let term = draw(&mut app, 100, 20);
+    assert!(widget_rows(&app, &term)[0].ends_with("1 of 2"), "hex is exact");
+    app.press(KeyCode::Char('x'), toggle());
+    assert!(!app.find_options.hex);
+    assert_eq!(app.find.query.text, "ELF");
+
+    // A hex query typed (spaces ignored, either case) finds what the ASCII one does.
+    app.press(KeyCode::Char('x'), toggle());
+    find(&mut app, "454C46");
+    assert_eq!(app.find.query.text, "454C46");
+    assert_eq!(hex(&app).selection(), Some(32..35));
+    // Bytes that aren't all printable stay as they are when going to ASCII (re-read as text).
+    find(&mut app, "00 ff");
+    app.press(KeyCode::Char('x'), toggle());
+    assert!(!app.find_options.hex);
+    assert_eq!(app.find.query.text, "00 ff", "kept, read as text");
+    assert!(app.find.hex.error().is_none());
+
+    // ASCII text always converts to hex: its bytes.
+    app.press(KeyCode::Char('x'), toggle());
+    assert_eq!(app.find.query.text, "30 30 20 66 66");
+
+    // The mode is kept for the session: closing and reopening the widget keeps it (seeded
+    // from the selection as pairs: the NUL byte `00` selected while typing `00 ff`).
+    app.press(KeyCode::Esc, M::NONE);
+    assert!(!app.find.visible);
+    app.press(KeyCode::Char('f'), cmd());
+    assert!(app.find_options.hex);
+    assert_eq!(app.find.query.text, "00");
+    // From the editor (widget closed) the toggle still flips the mode and converts the query
+    // when it can (a NUL isn't printable: kept).
+    app.press(KeyCode::Esc, M::NONE);
+    find(&mut app, "45 4c 46");
+    app.press(KeyCode::Esc, M::NONE);
+    app.press(KeyCode::Char('x'), toggle());
+    assert!(!app.find_options.hex && !app.find.visible);
+    assert_eq!(app.find.query.text, "ELF");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hex_find_case_sensitivity_and_errors() {
+    let data = find_data();
+    let (_d, mut app) = find_app(&data).await;
+    draw(&mut app, 100, 20);
+    find(&mut app, "elf");
+    settle_count(&mut app).await;
+    assert_eq!(app.find.hex.count().unwrap().found(), naive_count(&data, b"elf", false));
+    assert_eq!(hex(&app).selection(), Some(32..35), "`ELF` matches `elf` without Aa");
+
+    // Aa: ASCII letters must match exactly.
+    app.press(KeyCode::Char('c'), toggle());
+    assert!(app.find_options.case_sensitive);
+    assert_eq!(hex(&app).selection(), Some(46..49), "researched from the selection");
+    settle_count(&mut app).await;
+    assert_eq!(app.find.hex.count().unwrap().found(), 1);
+    let term = draw(&mut app, 100, 20);
+    assert!(widget_rows(&app, &term)[0].ends_with("1 of 1"));
+    app.press(KeyCode::Char('c'), toggle());
+
+    // Hex mode: an odd count of digits, or a non-hex char, is the widget's error.
+    app.press(KeyCode::Char('x'), toggle());
+    find(&mut app, "45 4");
+    let term = draw(&mut app, 100, 20);
+    let rows = widget_rows(&app, &term);
+    assert_eq!(rows.len(), 2, "{rows:#?}");
+    assert_eq!(rows[1], "hex bytes come in pairs");
+    assert!(
+        !rows[0].contains(" of ") && !rows[0].contains("No results"),
+        "no count: {rows:#?}"
+    );
+    // Drawn in the error style, as an invalid regex is.
+    let hit = app.hits.find.unwrap();
+    let cell = &term.backend().buffer()[(hit.area.x + 1, hit.area.y + 1)];
+    assert_eq!(Some(cell.fg), app.theme.get("dialog.error").fg);
+    find(&mut app, "4g");
+    let term = draw(&mut app, 100, 20);
+    assert_eq!(widget_rows(&app, &term)[1], "not a hex digit: g");
+    let before = hex(&app).selection();
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(hex(&app).selection(), before, "an invalid query finds nothing");
+    // Fixed: the error goes; a query with no match says so.
+    find(&mut app, "aa bb");
+    settle_count(&mut app).await;
+    let term = draw(&mut app, 100, 20);
+    let rows = widget_rows(&app, &term);
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].ends_with("No results"), "{rows:#?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hex_find_highlights_both_columns_across_a_row_break() {
+    let (_d, mut app) = find_app(&find_data()).await;
+    draw(&mut app, 100, 20);
+    find(&mut app, "elf");
+    assert_eq!(hex(&app).selection(), Some(32..35));
+    let term = draw(&mut app, 100, 20);
+    assert_eq!(hex(&app).layout.bytes_per_row(), 16);
+    let current = bg(&app, "editor.findMatch");
+    let other = bg(&app, "editor.findMatchHighlight");
+    // The selected match (its last byte has the cursor: not checked).
+    for at in [32, 33] {
+        assert_eq!(byte_bgs(&app, &term, at), (current, current), "byte {at}");
+    }
+    // The others, in both columns; 46..49 runs over the break between rows 2 and 3.
+    for at in [46, 47, 48, 64, 65, 66, 80, 82] {
+        assert_eq!(byte_bgs(&app, &term, at), (other, other), "byte {at}");
+    }
+    for at in [31, 35, 45, 49, 63, 67] {
+        let (h, a) = byte_bgs(&app, &term, at);
+        assert!(
+            ![current, other].contains(&h) && ![current, other].contains(&a),
+            "byte {at}"
+        );
+    }
+
+    // Enter: the next one is current, the first one isn't any more.
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(hex(&app).selection(), Some(46..49));
+    let term = draw(&mut app, 100, 20);
+    assert_eq!(byte_bgs(&app, &term, 46), (current, current));
+    assert_eq!(byte_bgs(&app, &term, 32), (other, other));
+
+    // Closed, nothing is highlighted.
+    app.press(KeyCode::Esc, M::NONE);
+    app.press(KeyCode::Esc, M::NONE);
+    let term = draw(&mut app, 100, 20);
+    for at in [32, 48, 64] {
+        let (h, a) = byte_bgs(&app, &term, at);
+        assert!(
+            ![current, other].contains(&h) && ![current, other].contains(&a),
+            "byte {at}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hex_find_next_and_previous_wrap_select_and_scroll() {
+    // `ELF` at 32 and near the end of a file of 4096 rows.
+    let mut data = find_data();
+    data.resize(0x10000, 0);
+    data.extend(b"ELF");
+    data.extend([0u8; 20]);
+    let (_d, mut app) = find_app(&data).await;
+    draw(&mut app, 100, 20);
+    find(&mut app, "ELF");
+    app.press(KeyCode::Char('c'), toggle());
+    assert_eq!(hex(&app).selection(), Some(32..35));
+    let sel = |app: &App| (hex(app).selection(), hex(app).cursor);
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(sel(&app), (Some(80..83), 82), "the cursor on the match's last byte");
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(sel(&app), (Some(0x10000..0x10003), 0x10002));
+    let term = draw(&mut app, 100, 20);
+    let h = hex(&app);
+    assert!(h.top_row() > 0, "scrolled to the match");
+    assert!((h.top_row()..h.top_row() + h.height).contains(&h.layout.row_of(0x10000)));
+    assert_eq!(byte_bgs(&app, &term, 0x10000).0, bg(&app, "editor.findMatch"));
+    settle_count(&mut app).await;
+    let term = draw(&mut app, 100, 20);
+    assert!(widget_rows(&app, &term)[0].ends_with("3 of 3"));
+    // Wrapping forward, and back.
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(sel(&app).0, Some(32..35));
+    draw(&mut app, 100, 20);
+    assert_eq!(hex(&app).top_row(), 2, "scrolled back up to the match's row");
+    app.press(KeyCode::Enter, M::SHIFT);
+    assert_eq!(sel(&app).0, Some(0x10000..0x10003), "Shift+Enter wraps back");
+    app.press(KeyCode::Enter, M::SHIFT);
+    assert_eq!(sel(&app).0, Some(80..83));
+
+    // F3 / Shift+F3 from the editor (the widget closed: F3 shows it, keeping the focus).
+    app.press(KeyCode::Esc, M::NONE);
+    assert_eq!(app.ui.focus, Focus::Editor);
+    app.press(KeyCode::F(3), M::NONE);
+    assert!(app.find.visible && app.ui.focus == Focus::Editor);
+    assert_eq!(sel(&app).0, Some(0x10000..0x10003));
+    app.press(KeyCode::F(3), M::SHIFT);
+    assert_eq!(sel(&app).0, Some(80..83));
+
+    // Without a selection, next starts at the cursor's byte.
+    app.press(KeyCode::Esc, M::NONE);
+    app.press(KeyCode::Esc, M::NONE);
+    assert_eq!(hex(&app).selection(), None);
+    app.press(KeyCode::Char('g'), M::CONTROL);
+    app.type_text("32");
+    app.press(KeyCode::Enter, M::NONE);
+    app.press(KeyCode::F(3), M::NONE);
+    assert_eq!(sel(&app).0, Some(32..35));
+    // Overlapping matches are each a step.
+    app.press(KeyCode::Char('x'), toggle());
+    find(&mut app, "00 00");
+    let start = hex(&app).selection().unwrap().start;
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(hex(&app).selection(), Some(start + 1..start + 3));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hex_find_count_is_naive_and_off_thread_and_stale_counts_are_dropped() {
+    // A few hundred KB of a small alphabet: many matches, many overlapping, mixed case.
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut data = vec![0u8];
+    data.extend((0..300_000).map(|_| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        b"aAb\x00"[(seed % 4) as usize]
+    }));
+    let (_d, mut app) = find_app(&data).await;
+    draw(&mut app, 100, 20);
+    find(&mut app, "ab");
+    // "…" until the count arrives (it runs off the UI thread and comes back as an event, which
+    // nothing has handled yet).
+    let term = draw(&mut app, 100, 20);
+    assert!(widget_rows(&app, &term)[0].ends_with('…'));
+    settle_count(&mut app).await;
+    let want = naive_count(&data, b"ab", false);
+    assert!(want > 1000 && want < hex::HEX_MAX_COUNT);
+    assert_eq!(app.find.hex.count().unwrap().found(), want);
+    let term = draw(&mut app, 100, 20);
+    assert!(widget_rows(&app, &term)[0].ends_with(&format!("1 of {want}")));
+    app.press(KeyCode::Enter, M::NONE);
+    app.press(KeyCode::Enter, M::NONE);
+    let term = draw(&mut app, 100, 20);
+    assert!(widget_rows(&app, &term)[0].ends_with(&format!("3 of {want}")));
+    app.press(KeyCode::Char('c'), toggle());
+    settle_count(&mut app).await;
+    assert_eq!(app.find.hex.count().unwrap().found(), naive_count(&data, b"ab", true));
+    app.press(KeyCode::Char('x'), toggle());
+    assert_eq!(app.find.query.text, "61 62");
+    settle_count(&mut app).await;
+    assert_eq!(app.find.hex.count().unwrap().found(), naive_count(&data, b"ab", true));
+
+    // A count for an older query, or another tab, is dropped.
+    let tab = hex(&app).id;
+    let generation = app.find.hex.generation();
+    let fake = || hex::Count {
+        starts: vec![1, 2, 3],
+        capped: false,
+    };
+    app.test_hex_count(tab, generation - 1, fake());
+    app.test_hex_count(tab + 1000, generation, fake());
+    let want = naive_count(&data, b"ab", true);
+    assert_eq!(app.find.hex.count().unwrap().found(), want, "stale counts dropped");
+    let term = draw(&mut app, 100, 20);
+    assert!(widget_rows(&app, &term)[0].ends_with(&format!(" of {want}")));
+    // Typing on starts a new generation: "…" again until its own count arrives.
+    app.type_text(" 41");
+    assert!(app.find.hex.generation() > generation);
+    app.test_hex_count(tab, generation, fake());
+    let term = draw(&mut app, 100, 20);
+    assert!(
+        widget_rows(&app, &term)[0].ends_with('…'),
+        "the older count isn't shown"
+    );
+    settle_count(&mut app).await;
+    assert_eq!(app.find.hex.count().unwrap().found(), naive_count(&data, b"abA", true));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hex_find_count_is_capped() {
+    let mut data = vec![0u8];
+    data.extend(std::iter::repeat_n(b'a', hex::HEX_MAX_COUNT + 20_000));
+    let (_d, mut app) = find_app(&data).await;
+    draw(&mut app, 100, 20);
+    find(&mut app, "a");
+    assert_eq!(hex(&app).selection(), Some(1..2));
+    settle_count(&mut app).await;
+    let c = app.find.hex.count().unwrap();
+    assert!(c.capped && c.found() == hex::HEX_MAX_COUNT);
+    let term = draw(&mut app, 100, 20);
+    assert!(widget_rows(&app, &term)[0].ends_with("1 of 100000+"));
+    // Past the cap the index isn't known.
+    app.press(KeyCode::Enter, M::SHIFT);
+    assert_eq!(
+        hex(&app).selection(),
+        Some(data.len() - 1..data.len()),
+        "wrapped to the last"
+    );
+    let term = draw(&mut app, 100, 20);
+    assert!(
+        widget_rows(&app, &term)[0].ends_with("? of 100000+"),
+        "{:?}",
+        widget_rows(&app, &term)
+    );
+    assert_cursor_shown_unfocused(&app);
+}
+
+/// The cursor's row is on screen (the terminal cursor is in the find input).
+fn assert_cursor_shown_unfocused(app: &App) {
+    let h = hex(app);
+    let row = h.layout.row_of(h.cursor);
+    assert!((h.top_row()..h.top_row() + h.height).contains(&row));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hex_find_seeds_from_the_selection() {
+    let (_d, mut app) = find_app(&find_data()).await;
+    draw(&mut app, 100, 20);
+    let go = |app: &mut App, offset: &str| {
+        app.press(KeyCode::Char('g'), M::CONTROL);
+        app.type_text(offset);
+        app.press(KeyCode::Enter, M::NONE);
+    };
+    go(&mut app, "32");
+    app.press(KeyCode::Right, M::SHIFT);
+    app.press(KeyCode::Right, M::SHIFT);
+    assert_eq!(hex(&app).selection(), Some(32..35));
+    // ASCII mode: the text.
+    app.press(KeyCode::Char('f'), cmd());
+    assert_eq!(app.find.query.text, "ELF");
+    assert!(app.find.query.all_selected, "selected: typing replaces it");
+    assert_eq!(hex(&app).selection(), Some(32..35), "the selection is the match");
+    app.press(KeyCode::Esc, M::NONE);
+    // Hex mode: the pairs.
+    app.press(KeyCode::Char('x'), toggle());
+    app.press(KeyCode::Char('f'), cmd());
+    assert_eq!(app.find.query.text, "45 4c 46");
+    app.press(KeyCode::Esc, M::NONE);
+    go(&mut app, "0");
+    app.press(KeyCode::Right, M::SHIFT);
+    app.press(KeyCode::Char('f'), cmd());
+    assert_eq!(app.find.query.text, "7f 00");
+    app.press(KeyCode::Esc, M::NONE);
+    // ASCII mode, bytes that aren't printable: the last query stays.
+    app.press(KeyCode::Char('x'), toggle());
+    assert_eq!(app.find.query.text, "7f 00", "not printable: kept");
+    find(&mut app, "tail");
+    app.press(KeyCode::Esc, M::NONE);
+    go(&mut app, "0");
+    app.press(KeyCode::Right, M::SHIFT);
+    app.press(KeyCode::Char('f'), cmd());
+    assert_eq!(app.find.query.text, "tail");
+    // No selection: the last query too.
+    app.press(KeyCode::Esc, M::NONE);
+    app.press(KeyCode::Left, M::NONE);
+    app.press(KeyCode::Char('f'), cmd());
+    assert_eq!(app.find.query.text, "tail");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hex_find_has_no_replace_select_all_or_word_options() {
+    let (_d, mut app) = find_app(&find_data()).await;
+    draw(&mut app, 100, 20);
+    // Cmd+Alt+F / Ctrl+H: the find input only.
+    let open_replace = if cfg!(target_os = "macos") {
+        (KeyCode::Char('f'), M::SUPER | M::ALT)
+    } else {
+        (KeyCode::Char('h'), M::CONTROL)
+    };
+    app.press(open_replace.0, open_replace.1);
+    assert!(app.find.visible);
+    app.type_text("ELF");
+    let sel = hex(&app).selection();
+    assert_eq!(sel, Some(32..35));
+    let term = draw(&mut app, 100, 20);
+    assert_eq!(widget_rows(&app, &term).len(), 1, "no replace row");
+    // Tab doesn't go to a replace input; replace keys, Alt+Enter, Cmd+D do nothing.
+    app.press(KeyCode::Tab, M::NONE);
+    assert_eq!(app.find.field, crate::find::Field::Find);
+    app.press(KeyCode::Char('1'), cmd() | M::SHIFT);
+    app.press(KeyCode::Enter, cmd() | M::ALT);
+    app.press(KeyCode::Enter, M::ALT);
+    assert_eq!(app.ui.focus, Focus::Find);
+    app.press(KeyCode::Esc, M::NONE);
+    app.press(KeyCode::Char('d'), cmd());
+    app.press(KeyCode::Char('l'), cmd() | M::SHIFT);
+    assert_eq!(hex(&app).selection(), sel);
+    assert_eq!(hex(&app).doc.bytes(), find_data().as_slice());
+    // Whole word and regex are drawn disabled and their keys and clicks do nothing here.
+    app.press(KeyCode::Char('f'), cmd());
+    let options = app.find_options;
+    app.press(KeyCode::Char('w'), toggle());
+    app.press(KeyCode::Char('r'), toggle());
+    let term = draw(&mut app, 100, 20);
+    let hit = app.hits.find.unwrap();
+    for r in &hit.toggles[1..3] {
+        app.mouse(MouseEventKind::Down(MouseButton::Left), r.x, r.y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), r.x, r.y);
+    }
+    assert_eq!(app.find_options, options);
+    let disabled = app.theme.get("find.option.disabled").fg;
+    let buf = term.backend().buffer();
+    for r in &hit.toggles[1..3] {
+        assert_eq!(Some(buf[(r.x, r.y)].fg), disabled);
+    }
+    // A click on 0x toggles the mode.
+    let x = hit.toggles[3];
+    assert_eq!(line(&term, x.x, x.y, 2), "0x");
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x.x, x.y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x.x, x.y);
+    assert!(app.find_options.hex);
+    assert_eq!(app.find.query.text, "45 4c 46");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hex_find_leaves_the_text_tabs_find_as_it_was() {
+    let (_d, mut app) = find_app(&find_data()).await;
+    quick_open(&mut app, "notes.txt").await;
+    app.test_plain_whitespace();
+    draw(&mut app, 100, 20);
+    app.press(KeyCode::Char('f'), cmd());
+    app.type_text("world");
+    let sel = |app: &App| {
+        let s = *app.group().active_tab().unwrap().view.selections.primary();
+        (s.start().0, s.end().0)
+    };
+    assert_eq!(sel(&app), (6, 11));
+    let term = draw(&mut app, 100, 20);
+    let rows = widget_rows(&app, &term);
+    assert!(rows[0].contains("Aa ab .*") && !rows[0].contains("0x"), "{rows:#?}");
+    assert!(rows[0].ends_with("1 of 1"));
+    assert_eq!(app.hits.find.unwrap().toggles[3].width, 0, "no 0x toggle");
+    // Alt+X does nothing on a text tab.
+    app.press(KeyCode::Char('x'), toggle());
+    assert!(!app.find_options.hex);
+    assert_eq!(app.find.query.text, "world");
+    // Replace still shows there.
+    let open_replace = if cfg!(target_os = "macos") {
+        (KeyCode::Char('f'), M::SUPER | M::ALT)
+    } else {
+        (KeyCode::Char('h'), M::CONTROL)
+    };
+    app.press(open_replace.0, open_replace.1);
+    let term = draw(&mut app, 100, 20);
+    assert_eq!(widget_rows(&app, &term).len(), 2, "the replace row");
+
+    // Back on the hex tab (Ctrl+PageUp): the same query, searched as bytes; no replace row.
+    app.press(KeyCode::Esc, M::NONE);
+    app.press(KeyCode::PageUp, M::CONTROL);
+    assert!(app.active_hex().is_some());
+    app.press(KeyCode::Char('f'), cmd());
+    app.type_text("tail");
+    assert_eq!(hex(&app).selection(), Some(84..88));
+    let term = draw(&mut app, 100, 20);
+    assert_eq!(widget_rows(&app, &term).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hex_find_switching_tabs_with_the_widget_open() {
+    let (_d, mut app) = find_app(&find_data()).await;
+    quick_open(&mut app, "notes.txt").await;
+    app.test_plain_whitespace();
+    app.press(KeyCode::PageUp, M::CONTROL);
+    assert!(app.active_hex().is_some());
+    draw(&mut app, 100, 20);
+    // Hex mode on the hex tab, the widget left open.
+    app.press(KeyCode::Char('x'), toggle());
+    find(&mut app, "6c");
+    assert_eq!(hex(&app).selection(), Some(47..48));
+    let hex_tab = hex(&app).id;
+
+    // To the text tab, the widget still open: a text search there (the hex mode doesn't apply),
+    // and its replace row is back.
+    app.press(KeyCode::PageDown, M::CONTROL);
+    assert!(app.active_hex().is_none() && app.find.visible && app.find_options.hex);
+    app.press(KeyCode::Char('f'), cmd());
+    app.type_text("world");
+    let s = *app.group().active_tab().unwrap().view.selections.primary();
+    assert_eq!((s.start().0, s.end().0), (6, 11));
+    let term = draw(&mut app, 100, 20);
+    let rows = widget_rows(&app, &term);
+    assert!(rows[0].ends_with("1 of 1") && !rows[0].contains("0x"), "{rows:#?}");
+    app.find.replace_visible = true;
+    let term = draw(&mut app, 100, 20);
+    assert_eq!(widget_rows(&app, &term).len(), 2, "the replace row");
+    // A count for the hex tab arriving now changes nothing drawn here.
+    app.test_hex_count(hex_tab, app.find.hex.generation(), hex::Count::default());
+    let term = draw(&mut app, 100, 20);
+    assert!(widget_rows(&app, &term)[0].ends_with("1 of 1"));
+
+    // Back to the hex tab with the widget open: the query read as hex pairs ("world" isn't
+    // hex: the error), no replace row; a valid one counts afresh.
+    app.press(KeyCode::PageUp, M::CONTROL);
+    assert!(app.active_hex().is_some());
+    let term = draw(&mut app, 100, 20);
+    let rows = widget_rows(&app, &term);
+    assert_eq!(rows.len(), 2, "{rows:#?}");
+    assert!(rows[0].starts_with("world"), "{rows:#?}");
+    assert_eq!(rows[1], "not a hex digit: w");
+    find(&mut app, "4c");
+    settle_count(&mut app).await;
+    let term = draw(&mut app, 100, 20);
+    let rows = widget_rows(&app, &term);
+    assert_eq!(rows.len(), 1, "{rows:#?}");
+    assert!(rows[0].ends_with(" of 2"), "{rows:#?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hex_find_empty_file_end_of_file_and_one_byte_rows() {
+    // An empty file (reopened as hex): nothing found, nothing breaks.
+    let (_d, mut app) = find_app(&find_data()).await;
+    as_hex(&mut app, "empty", b"").await;
+    draw(&mut app, 100, 20);
+    find(&mut app, "a");
+    app.press(KeyCode::Enter, M::NONE);
+    app.press(KeyCode::Enter, M::SHIFT);
+    assert_eq!(hex(&app).selection(), None);
+    settle_count(&mut app).await;
+    let term = draw(&mut app, 100, 20);
+    assert!(widget_rows(&app, &term)[0].ends_with("No results"));
+
+    // A query longer than the file finds nothing either.
+    as_hex(&mut app, "short", b"ab").await;
+    app.ui.focus = Focus::Editor;
+    draw(&mut app, 100, 20);
+    find(&mut app, "abc");
+    assert_eq!(hex(&app).selection(), Some(0..2), "kept from `ab`, as typed");
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(hex(&app).selection(), Some(0..2));
+    settle_count(&mut app).await;
+    let term = draw(&mut app, 100, 20);
+    assert!(widget_rows(&app, &term)[0].ends_with("No results"));
+
+    // `l` matches at 33, 47, 65, 81 and 87, the file's last byte: highlighted at every width,
+    // down to one byte per row (where the widget no longer fits but the highlights stay).
+    let (_d, mut app) = find_app(&find_data()).await;
+    let last = find_data().len() - 1;
+    assert_eq!(last, 87);
+    draw(&mut app, 100, 20);
+    find(&mut app, "l");
+    assert_eq!(hex(&app).selection(), Some(33..34));
+    app.ui.focus = Focus::Editor;
+    app.press(KeyCode::Char('g'), M::CONTROL);
+    app.type_text("80");
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(hex(&app).cursor, 80);
+    assert!(app.find.visible);
+    app.ui.side_visible = true;
+    app.ui.side_width = crate::layout::MIN_SIDE_WIDTH;
+    let other = bg(&app, "editor.findMatchHighlight");
+    let mut one_per_row = false;
+    for width in (30..100).rev() {
+        let term = draw(&mut app, width, 14);
+        let h = hex(&app);
+        let rect = rows_rect(&app);
+        one_per_row |= h.layout.bytes_per_row() == 1;
+        for at in [81, last] {
+            let n = h.layout.bytes_per_row();
+            let row = at / n;
+            if !(h.top_row()..h.top_row() + h.height).contains(&row)
+                || h.layout.ascii_col(at % n) >= rect.width as usize
+            {
+                continue;
+            }
+            assert_eq!(byte_bgs(&app, &term, at), (other, other), "width {width}, byte {at}");
+        }
+        for at in [80, 82, 86] {
+            let n = h.layout.bytes_per_row();
+            if (h.top_row()..h.top_row() + h.height).contains(&(at / n))
+                && h.layout.ascii_col(at % n) < rect.width as usize
+            {
+                assert_ne!(byte_bgs(&app, &term, at).1, other, "width {width}, byte {at}");
+            }
+        }
+    }
+    assert!(one_per_row, "some width fits one byte per row");
+}
+
+/// Writes `name` (`bytes`, text to `detect`) and opens it in a hex tab (Reopen as Hex).
+async fn as_hex(app: &mut App, name: &str, bytes: &[u8]) {
+    fs::write(app.workspace.root.join(name), bytes).unwrap();
+    quick_open(app, name).await;
+    app.test_execute(Command::ReopenAsHex);
+    assert!(
+        app.settle(|a| a.active_hex().is_some_and(|h| h.path.ends_with(name)))
+            .await
+    );
+    assert_eq!(hex(app).len(), bytes.len());
 }

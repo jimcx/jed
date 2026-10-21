@@ -46,6 +46,7 @@ impl Session {
             regex: false,
             case_sensitive: word_mode || find.case_sensitive,
             whole_word: word_mode || find.whole_word,
+            hex: false,
         };
         // Plain text always compiles.
         let matcher = Matcher::new(&text, opts).ok()?;

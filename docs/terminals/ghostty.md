@@ -53,6 +53,7 @@ keybind = cmd+alt+f=unbind
 keybind = cmd+alt+c=unbind
 keybind = cmd+alt+w=unbind
 keybind = cmd+alt+r=unbind
+keybind = cmd+alt+x=unbind
 keybind = cmd+shift+1=unbind
 keybind = cmd+alt+enter=unbind
 keybind = cmd+alt+n=unbind

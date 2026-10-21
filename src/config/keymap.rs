@@ -552,6 +552,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Char('c'), toggle, Command::Find(F::ToggleCase)),
         (KeyCode::Char('w'), toggle, Command::Find(F::ToggleWholeWord)),
         (KeyCode::Char('r'), toggle, Command::Find(F::ToggleRegex)),
+        (KeyCode::Char('x'), toggle, Command::Find(F::ToggleHex)),
         (KeyCode::Char('1'), cmd | shift, Command::Find(F::ReplaceOne)),
         (KeyCode::Enter, cmd | alt, Command::Find(F::ReplaceAll)),
         (KeyCode::Enter, alt, Command::Find(F::SelectAllMatches)),

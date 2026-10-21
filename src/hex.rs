@@ -31,7 +31,6 @@ use crate::command::Motion;
 /// Files bigger than this aren't opened in a hex tab (paged reads are a TODO).
 pub const HEX_MAX_BYTES: usize = 256 << 20;
 /// `count` stops here: the find widget then says "100000+".
-#[allow(dead_code)] // Used by find (hex-c).
 pub const HEX_MAX_COUNT: usize = 100_000;
 /// The largest `hex_bytes_per_line` (the setting is a power of two from 1 to this).
 pub const MAX_BYTES_PER_ROW: usize = 64;
@@ -293,7 +292,6 @@ pub fn ascii_text(bytes: &[u8]) -> String {
 }
 
 /// The bytes as text when every one is printable ASCII.
-#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub fn printable_text(bytes: &[u8]) -> Option<String> {
     bytes
         .iter()
@@ -320,7 +318,6 @@ pub fn parse_offset(text: &str) -> Option<usize> {
 
 /// The find widget's mode on a hex tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub enum Mode {
     Ascii,
     Hex,
@@ -328,7 +325,6 @@ pub enum Mode {
 
 /// Why a hex query doesn't parse; `Display` is the widget's error text.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub enum HexError {
     /// An odd number of hex digits.
     Odd,
@@ -346,7 +342,6 @@ impl fmt::Display for HexError {
 }
 
 /// Hex digit pairs, whitespace ignored anywhere (`7f454c46`, `7f 45 4c 46`, `7F 45`).
-#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub fn parse_hex(text: &str) -> Result<Vec<u8>, HexError> {
     let mut digits = Vec::with_capacity(text.len());
     for c in text.chars().filter(|c| !c.is_whitespace()) {
@@ -364,7 +359,6 @@ pub fn parse_hex(text: &str) -> Result<Vec<u8>, HexError> {
 /// The query text after switching the widget to `to`: ASCII → its UTF-8 bytes as hex pairs;
 /// hex → the text when it parses and every byte is printable ASCII. `None`: keep the text as is
 /// (it's re-read in the new mode).
-#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub fn convert(text: &str, to: Mode) -> Option<String> {
     match to {
         Mode::Hex => Some(hex_pairs(text.as_bytes())),
@@ -374,7 +368,6 @@ pub fn convert(text: &str, to: Mode) -> Option<String> {
 
 /// A byte search: always a fixed number of bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub enum Query {
     /// The text's UTF-8 bytes; not case-sensitive: ASCII letters match either case.
     Ascii {
@@ -384,7 +377,6 @@ pub enum Query {
     Hex(Vec<u8>),
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 impl Query {
     /// The widget's text read in `mode` (`case_sensitive` only matters for ASCII).
     pub fn parse(text: &str, mode: Mode, case_sensitive: bool) -> Result<Query, HexError> {
@@ -431,13 +423,11 @@ impl Query {
 }
 
 /// Bytes folded per chunk for a case-insensitive search (a copy this size at a time).
-#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 const FOLD_CHUNK: usize = 1 << 16;
 
 /// Finds a query's matches by their starts. A case-insensitive one folds the needle once and the
 /// haystack a chunk at a time (with the needle's length − 1 of overlap), so memmem does the work
 /// either way.
-#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 struct Searcher {
     forward: memmem::Finder<'static>,
     reverse: memmem::FinderRev<'static>,
@@ -445,7 +435,6 @@ struct Searcher {
     fold: bool,
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 impl Searcher {
     fn new(q: &Query) -> Self {
         let needle = if q.folds() {
@@ -532,7 +521,6 @@ impl Searcher {
 }
 
 /// The first match starting at or after `from`, else (wrapping) the first one before it.
-#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub fn find_next(bytes: &[u8], q: &Query, from: usize) -> Option<Range<usize>> {
     let s = q.searcher()?;
     let from = from.min(bytes.len());
@@ -541,7 +529,6 @@ pub fn find_next(bytes: &[u8], q: &Query, from: usize) -> Option<Range<usize>> {
 }
 
 /// The last match starting before `before`, else (wrapping) the last one at or after it.
-#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub fn find_prev(bytes: &[u8], q: &Query, before: usize) -> Option<Range<usize>> {
     let s = q.searcher()?;
     let before = before.min(bytes.len());
@@ -553,7 +540,6 @@ pub fn find_prev(bytes: &[u8], q: &Query, before: usize) -> Option<Range<usize>>
 
 /// Every match overlapping `range` (a frame's visible bytes), in order: only `range` and the
 /// query's length − 1 bytes each side are read.
-#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub fn find_in(bytes: &[u8], q: &Query, range: Range<usize>) -> Vec<Range<usize>> {
     let mut found = Vec::new();
     let Some(s) = q.searcher() else { return found };
@@ -566,30 +552,37 @@ pub fn find_in(bytes: &[u8], q: &Query, range: Range<usize>) -> Vec<Range<usize>
     found
 }
 
-/// What `count` found: `found` matches, stopping at the limit (`capped`: there may be more).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
+/// What `count` found: every match's start in order, stopping at the limit (`capped`: there
+/// may be more). The starts give the "3 of 41" index of a selected match (`index_of`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Count {
-    pub found: usize,
+    pub starts: Vec<usize>,
     pub capped: bool,
 }
 
-/// Counts the matches in the whole file, up to `limit` (`HEX_MAX_COUNT` for the widget).
-/// Blocking: call from spawn_blocking (a whole-file scan).
-#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
+impl Count {
+    pub fn found(&self) -> usize {
+        self.starts.len()
+    }
+
+    /// The 0-based index of the match starting at `start`, when it's one of those counted.
+    pub fn index_of(&self, start: usize) -> Option<usize> {
+        self.starts.binary_search(&start).ok()
+    }
+}
+
+/// Counts the matches in the whole file, up to `limit` (`HEX_MAX_COUNT` for the widget),
+/// keeping their starts. Blocking: call from spawn_blocking (a whole-file scan).
 pub fn count(bytes: &[u8], q: &Query, limit: usize) -> Count {
-    let mut c = Count {
-        found: 0,
-        capped: false,
-    };
+    let mut c = Count::default();
     let Some(s) = q.searcher() else { return c };
     if limit == 0 {
         c.capped = s.first(bytes, 0..bytes.len()).is_some();
         return c;
     }
-    s.each(bytes, 0..bytes.len(), |_| {
-        c.found += 1;
-        if c.found == limit {
+    s.each(bytes, 0..bytes.len(), |m| {
+        c.starts.push(m);
+        if c.starts.len() == limit {
             c.capped = true;
             return false;
         }
@@ -604,6 +597,9 @@ pub fn count(bytes: &[u8], q: &Query, limit: usize) -> Count {
 /// commands and mouse. A split copies it (`Clone`: the bytes are shared).
 #[derive(Debug, Clone)]
 pub struct HexTab {
+    /// Unique per tab opened (a process-wide counter; a split's copy keeps it: same bytes), for results
+    /// computed off the UI thread (find's count, `AppEvent::HexCount`).
+    pub id: u64,
     pub path: PathBuf,
     pub doc: HexDoc,
     /// The cursor's byte (0 in an empty file, which has none).
@@ -628,7 +624,9 @@ pub struct HexTab {
 impl HexTab {
     pub fn new(path: PathBuf, doc: HexDoc) -> Self {
         let layout = Layout::fit(row_width(16, 8), 16, doc.len());
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             path,
             doc,
             cursor: 0,
@@ -744,6 +742,21 @@ impl HexTab {
             }
         };
         self.move_to(to, select);
+    }
+
+    /// Selects `range` (a find match: not empty), the cursor on its last byte, and scrolls it
+    /// into view at the next frame: its first row too when the whole of it fits.
+    pub fn select(&mut self, range: Range<usize>) {
+        if range.is_empty() || range.end > self.len() {
+            return;
+        }
+        self.anchor = Some(range.start);
+        self.cursor = range.end - 1;
+        self.reveal = true;
+        let first = self.layout.row_of(range.start);
+        if first < self.top_row() {
+            self.set_top_row(first);
+        }
     }
 
     /// Cmd+A: every byte.
@@ -1322,17 +1335,20 @@ mod tests {
             assert_eq!(
                 c,
                 Count {
-                    found: want.len(),
+                    starts: want.clone(),
                     capped: false
                 },
                 "{ctx}"
             );
+            if let Some(&m) = want.get(1) {
+                assert_eq!(c.index_of(m), Some(1), "{ctx}");
+            }
             if want.len() > 2 {
                 let c = count(&bytes, &q, want.len() - 1);
                 assert_eq!(
                     c,
                     Count {
-                        found: want.len() - 1,
+                        starts: want[..want.len() - 1].to_vec(),
                         capped: true
                     },
                     "{ctx}"
@@ -1380,11 +1396,11 @@ mod tests {
         assert_eq!(find_next(bytes, &q("elf", true), 6), Some(5..8), "wraps");
         assert_eq!(find_prev(bytes, &q("elf", false), 1), Some(9..12), "wraps");
         assert_eq!(find_next(bytes, &Query::Hex(vec![0x45, 0x4c, 0x46]), 0), Some(1..4));
-        assert_eq!(count(bytes, &q("ELF", false), 100).found, 3);
+        assert_eq!(count(bytes, &q("ELF", false), 100).found(), 3);
         // Empty queries and haystacks match nothing.
         assert_eq!(find_next(bytes, &q("", false), 0), None);
         assert!(find_in(bytes, &Query::Hex(vec![]), 0..12).is_empty());
-        assert_eq!(count(bytes, &q("", true), 10).found, 0);
+        assert_eq!(count(bytes, &q("", true), 10).found(), 0);
         assert_eq!(find_prev(b"", &q("a", true), 0), None);
         assert_eq!(find_next(b"ab", &q("abc", true), 0), None);
         // Overlapping matches.

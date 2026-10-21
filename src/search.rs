@@ -31,6 +31,9 @@ pub struct Options {
     pub case_sensitive: bool,
     /// Only matches that start and end at a word boundary (VS Code's rule, see `is_whole_word`).
     pub whole_word: bool,
+    /// The find widget's byte search mode on a hex tab (hex digit pairs, else ASCII text; see
+    /// `hex::Query`). Only the find widget sets it (`App::find_options`); text searches ignore it.
+    pub hex: bool,
 }
 
 /// One match: `start..end` in the buffer. Empty only for regexes that can match nothing (`^`, `a*`).
@@ -613,6 +616,7 @@ mod tests {
             regex,
             case_sensitive,
             whole_word,
+            hex: false,
         }
     }
 
@@ -620,6 +624,7 @@ mod tests {
         regex: false,
         case_sensitive: false,
         whole_word: false,
+        hex: false,
     };
 
     /// `(start, end)` pairs of every match.

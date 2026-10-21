@@ -211,6 +211,7 @@ impl Theme {
             ("palette.detail", Style::new().fg(c(0x8C8C8C))),
             ("find.option", Style::new().fg(c(0x8C8C8C))),
             ("find.option.active", fg_bg(0xFFFFFF, 0x1F6FB0)),
+            ("find.option.disabled", Style::new().fg(c(0x4D4D4D))),
             // Search view: Dark+'s find highlight (#EA5C0055) blended over the side bar.
             ("search.match", Style::new().bg(c(0x663719))),
             (

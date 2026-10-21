@@ -2,6 +2,11 @@
 //! and the matches of the query in the active buffer, cached per (buffer, revision, query,
 //! options) so the count and the highlights cost one `find_all` per change, not per frame.
 //! The options themselves live on the app (`App::find_options`), which Cmd+D borrows.
+//!
+//! On a hex tab the same inputs search bytes instead (`HexFind`): the query read as a
+//! `hex::Query` (ASCII text or hex pairs, by `Options::hex`), and the whole file's count, which
+//! the app computes off the UI thread per query generation. Highlights and next / previous search
+//! from the bytes directly (`hex::find_in`, `find_next`), so nothing else is cached.
 
 use std::ops::Range;
 
@@ -10,6 +15,7 @@ use ropey::Rope;
 use crate::buffer::BufferId;
 use crate::buffer::pos::ByteIdx;
 use crate::field::TextField;
+use crate::hex::{self, HexError, Mode};
 use crate::search::{Match, Matcher, Options, Replacement, SearchError};
 
 /// Which input has the cursor.
@@ -30,6 +36,125 @@ pub struct FindWidget {
     pub replace_visible: bool,
     pub field: Field,
     cache: Option<Cache>,
+    /// The byte search's state while the active tab is a hex view.
+    pub hex: HexFind,
+}
+
+/// Find on a hex tab: the query as read last and the whole file's count for it.
+#[derive(Debug, Default)]
+pub struct HexFind {
+    key: Option<HexKey>,
+    query: Option<Result<hex::Query, HexError>>,
+    /// Bumped by every new key: a count computed for an older one is dropped.
+    generation: u64,
+    /// `None` while the count runs ("…").
+    count: Option<hex::Count>,
+}
+
+/// What a `HexFind` was computed for: the tab, its bytes (a re-read is new bytes), the query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HexKey {
+    tab: u64,
+    bytes: (usize, usize),
+    text: String,
+    mode: Mode,
+    case_sensitive: bool,
+}
+
+/// A count to compute off the UI thread: the generation it's for, and the query.
+#[derive(Debug)]
+pub struct CountJob {
+    pub generation: u64,
+    pub query: hex::Query,
+}
+
+impl HexFind {
+    /// Reads `text` again when the tab (`tab`, `bytes`), the text or the options changed since
+    /// last time: a new generation, its count unknown. Returns the count to start, if the new
+    /// query is valid and not empty.
+    pub fn refresh(&mut self, tab: u64, bytes: &[u8], text: &str, options: Options) -> Option<CountJob> {
+        let key = HexKey {
+            tab,
+            bytes: (bytes.as_ptr() as usize, bytes.len()),
+            text: text.to_string(),
+            mode: if options.hex { Mode::Hex } else { Mode::Ascii },
+            case_sensitive: options.case_sensitive,
+        };
+        if self.key.as_ref() == Some(&key) {
+            return None;
+        }
+        let query = hex::Query::parse(&key.text, key.mode, key.case_sensitive);
+        self.generation += 1;
+        self.count = None;
+        self.key = Some(key);
+        let job = match &query {
+            Ok(q) if !q.is_empty() => Some(CountJob {
+                generation: self.generation,
+                query: q.clone(),
+            }),
+            _ => None,
+        };
+        self.query = Some(query);
+        job
+    }
+
+    /// The current query's generation (what its count must carry).
+    #[cfg(test)]
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The tab the state is for.
+    pub fn tab(&self) -> Option<u64> {
+        self.key.as_ref().map(|k| k.tab)
+    }
+
+    /// A count arrived: kept when it's for the current tab and generation, else dropped (false).
+    pub fn counted(&mut self, tab: u64, generation: u64, count: hex::Count) -> bool {
+        if self.tab() != Some(tab) || generation != self.generation {
+            return false;
+        }
+        self.count = Some(count);
+        true
+    }
+
+    /// The query, unless it's empty or invalid.
+    pub fn query(&self) -> Option<&hex::Query> {
+        self.query.as_ref()?.as_ref().ok().filter(|q| !q.is_empty())
+    }
+
+    pub fn error(&self) -> Option<&HexError> {
+        self.query.as_ref()?.as_ref().err()
+    }
+
+    /// The count, once it arrived.
+    #[cfg(test)]
+    pub fn count(&self) -> Option<&hex::Count> {
+        self.count.as_ref()
+    }
+
+    /// "3 of 41" when the selection `sel` is a match (counted), "? of 41" when it isn't (or lies
+    /// past the cap: "? of 100000+"), "…" while counting, "No results", or nothing without a
+    /// valid query.
+    pub fn count_label(&self, sel: Option<Range<usize>>) -> String {
+        let Some(q) = self.query() else {
+            return String::new();
+        };
+        let Some(c) = &self.count else {
+            return "…".into();
+        };
+        let total = if c.capped {
+            format!("{}+", c.found())
+        } else {
+            c.found().to_string()
+        };
+        let index = sel.filter(|s| s.len() == q.len()).and_then(|s| c.index_of(s.start));
+        match (c.found(), index) {
+            (0, _) if !c.capped => "No results".into(),
+            (_, Some(i)) => format!("{} of {total}", i + 1),
+            _ => format!("? of {total}"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -208,6 +333,36 @@ mod tests {
         assert!(w.error().is_some());
         assert!(w.matches().is_empty());
         assert_eq!(w.count_label((ByteIdx(0), ByteIdx(0))), "");
+    }
+
+    #[test]
+    fn hex_find_reads_counts_and_drops_stale_counts() {
+        let bytes = b"\x00ELF elf";
+        let mut h = HexFind::default();
+        let mut opts = Options::default();
+        let job = h.refresh(7, bytes, "elf", opts).expect("a count to start");
+        assert_eq!(job.query.len(), 3);
+        assert_eq!(h.count_label(Some(1..4)), "…");
+        assert!(h.refresh(7, bytes, "elf", opts).is_none(), "unchanged: no new count");
+        let count = hex::count(bytes, &job.query, hex::HEX_MAX_COUNT);
+        assert!(!h.counted(8, job.generation, count.clone()), "another tab");
+        assert!(!h.counted(7, job.generation - 1, count.clone()), "an older query");
+        assert!(h.counted(7, job.generation, count));
+        assert_eq!(h.count_label(Some(5..8)), "2 of 2");
+        assert_eq!(h.count_label(Some(5..7)), "? of 2", "not a whole match");
+        assert_eq!(h.count_label(None), "? of 2");
+
+        opts.hex = true;
+        assert!(h.refresh(7, bytes, "4", opts).is_none(), "invalid: nothing to count");
+        assert_eq!(h.error(), Some(&HexError::Odd));
+        assert_eq!(h.count_label(None), "");
+        let job = h.refresh(7, bytes, "aa", opts).unwrap();
+        assert!(h.counted(7, job.generation, hex::count(bytes, &job.query, 10)));
+        assert_eq!(h.count_label(None), "No results");
+        let job = h.refresh(7, b"aaaa", "61", opts).unwrap();
+        assert!(h.counted(7, job.generation, hex::count(b"aaaa", &job.query, 2)));
+        assert_eq!(h.count_label(Some(1..2)), "2 of 2+");
+        assert_eq!(h.count_label(Some(3..4)), "? of 2+", "past the cap");
     }
 
     #[test]
