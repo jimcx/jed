@@ -1,5 +1,6 @@
 //! The splash screen: what an editor group with no tabs shows. The "Jed" logo (a large J, then a
-//! smaller "ed" by its top) with "Jim's Editor" under the "ed", centred.
+//! smaller "ed" by its top) with "Jim's Editor" under the "ed", centred, and the version (`build.rs`)
+//! centred under that.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -25,6 +26,21 @@ const SUBTITLE_ROW: u16 = 5;
 
 const SUBTITLE: &str = "Jim's Editor";
 
+/// `version` fitted to `width` columns: as is, or cut with `…`.
+fn fit(version: &str, width: usize) -> String {
+    if version.width() <= width {
+        return version.to_string();
+    }
+    let mut out = String::new();
+    for ch in version.chars() {
+        if out.width() + ch.to_string().width() + 1 > width {
+            break;
+        }
+        out.push(ch);
+    }
+    out + "…"
+}
+
 /// Draws the splash in `area` (the editor area, already filled with `editor`): the logo with the
 /// subtitle under its "ed" when it fits, else just the subtitle, else nothing.
 pub fn render(f: &mut Frame, area: Rect, theme: &Theme) {
@@ -47,6 +63,9 @@ pub fn render(f: &mut Frame, area: Rect, theme: &Theme) {
             SUBTITLE,
             subtitle,
         );
+        let version = fit(env!("JED_VERSION"), ED_WIDTH as usize);
+        let pad = (ED_WIDTH - version.width() as u16) / 2;
+        out.set_string(x + ED_COL + pad, top + SUBTITLE_ROW + 1, version, subtitle);
     } else if area.width >= sub_width && area.height > 0 {
         let x = area.x + (area.width - sub_width) / 2;
         out.set_string(x, area.y + area.height / 2, SUBTITLE, subtitle);
@@ -80,10 +99,18 @@ mod tests {
         let rows = draw(40, 13);
         // 7 rows in 13: three above; 6 columns left; the subtitle 3 in from the "ed".
         assert_eq!(rows[3], format!("      {}", LOGO[0]));
+        assert!(rows[4 + SUBTITLE_ROW as usize].contains(&fit(env!("JED_VERSION"), ED_WIDTH as usize)));
         let row = &rows[3 + SUBTITLE_ROW as usize];
         let at = row.find(SUBTITLE).expect("subtitle drawn");
         let col = row[..at].chars().count();
         assert_eq!(col, 6 + ED_COL as usize + 3);
+    }
+
+    #[test]
+    fn long_versions_are_cut_to_the_ed() {
+        assert_eq!(fit("v1.2.0", 18), "v1.2.0");
+        assert_eq!(fit("a-long-branch (8d91187)", 18), "a-long-branch (8d…");
+        assert_eq!(fit("a-long-branch (8d91187)", 18).width(), 18);
     }
 
     #[test]
