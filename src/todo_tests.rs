@@ -5382,6 +5382,7 @@ mod move_tabs {
         let name = |t: &Tab| match t {
             Tab::Text(t) => app.buffers.get(t.buffer).unwrap().name(),
             Tab::Diff(d) => format!("diff:{}", d.path.file_name().unwrap().to_string_lossy()),
+            Tab::Hex(h) => format!("hex:{}", h.name()),
         };
         app.groups
             .ids()

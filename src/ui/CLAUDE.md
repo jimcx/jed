@@ -23,6 +23,7 @@ One line per widget or editor layer; [docs/dev/ui.md](../../docs/dev/ui.md) has 
 - `popup.rs` — placing popups at a buffer position (`cell_of`, `place`): shared by hover and completion
 - `hover.rs`, `completion.rs`, `code_action.rs` — the hover popup, the completion list, the code action list (the lightbulb is drawn in `mod.rs`)
 - `quick_diff.rs` — the gutter's peek (removed lines, Stage, `×` close)
+- `hex.rs` — a hex tab: fitted (`HexTab::fit`), the visible rows as `hex::row` with the `hexEditor.*` keys, selection and cursor in both columns
 - `diff.rs` — a diff tab: header, side by side or inline rows, Stage / Revert buttons, syntax colours
 - `panel.rs` — the bottom panel: border, tab strip with badges, Problems / Locations lists
 - `task.rs` — a task tab's terminal (`tui-term`, the theme's `terminal_cell`), resizing PTYs to it (render-time state)

@@ -67,7 +67,21 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
         })
     };
     let mut counts = None;
-    if let (Some(buf), Some(tab)) = (app.active_buffer(), app.group().active_tab()) {
+    if let Some(h) = app.active_hex() {
+        let flag = if h.deleted { " [deleted]" } else { " [read-only]" };
+        let name = format!(" {}{flag}  ", h.name());
+        let left = format!("{name}{problems}");
+        let right = format!("{} ", hex_status(h).join("   "));
+        let right_w = right.width().min(width);
+        right_x = area.x + (width - right_w) as u16;
+        out.set_stringn(right_x, area.y, &right, right_w, style);
+        let room = right_x.saturating_sub(x) as usize;
+        let start = x;
+        x = out.set_stringn(x, area.y, &left, room, style).0;
+        if !problems.is_empty() {
+            counts = counts_at(start + name.width() as u16, x);
+        }
+    } else if let (Some(buf), Some(tab)) = (app.active_buffer(), app.group().active_tab()) {
         if message.is_none() {
             let head = tab.view.selections.primary().head;
             let line = pos::line_of(&buf.rope, head);
@@ -137,4 +151,21 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
         out.set_stringn(x, area.y, format!(" {text} "), room, msg_style);
     }
     counts
+}
+
+/// A hex tab's part of the status bar: the cursor's offset in hex and decimal and its byte's
+/// value (none in an empty file), the selection's length, the file's size.
+fn hex_status(h: &crate::hex::HexTab) -> Vec<String> {
+    let mut parts = Vec::new();
+    if let Some(&b) = h.doc.bytes().get(h.cursor) {
+        let c = h.cursor;
+        parts.push(format!("Offset 0x{c:x} ({c})"));
+        parts.push(format!("0x{b:02x} {b}"));
+    }
+    if let Some(sel) = h.selection() {
+        let n = sel.len();
+        parts.push(format!("{n} byte{} selected", if n == 1 { "" } else { "s" }));
+    }
+    parts.push(format!("{} bytes", h.len()));
+    parts
 }

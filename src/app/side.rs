@@ -156,13 +156,22 @@ impl App {
                 self.reveal_path(&path);
             }
             FileOp::Rename { from, to } => {
+                let moved = |path: &Path| {
+                    let rest = path.strip_prefix(&from).ok()?;
+                    Some(if rest.as_os_str().is_empty() {
+                        to.clone()
+                    } else {
+                        to.join(rest)
+                    })
+                };
                 for (_, buf) in self.buffers.iter_mut() {
-                    if let Ok(rest) = buf.path.strip_prefix(&from) {
-                        buf.path = if rest.as_os_str().is_empty() {
-                            to.clone()
-                        } else {
-                            to.join(rest)
-                        };
+                    if let Some(path) = moved(&buf.path) {
+                        buf.path = path;
+                    }
+                }
+                for h in self.groups.hex_tabs_mut() {
+                    if let Some(path) = moved(&h.path) {
+                        h.path = path;
                     }
                 }
                 self.redetect_languages();
@@ -174,6 +183,11 @@ impl App {
                 for (_, buf) in self.buffers.iter_mut() {
                     if buf.path.starts_with(&path) {
                         buf.deleted = true;
+                    }
+                }
+                for h in self.groups.hex_tabs_mut() {
+                    if h.path.starts_with(&path) {
+                        h.deleted = true;
                     }
                 }
                 refresh(self, &path);

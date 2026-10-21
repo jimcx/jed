@@ -18,8 +18,8 @@ use ropey::Rope;
 
 use super::App;
 use super::files::Goto;
+use crate::buffer::file::LoadError;
 use crate::buffer::pos::{self, ByteIdx};
-use crate::buffer::{Buffer, file::LoadError};
 use crate::group::Tab;
 use crate::navigation::{Dir, Entry, History, MIN_LINES, Pos};
 use crate::selection::{Selection, Selections};
@@ -76,6 +76,8 @@ impl App {
                 },
                 revision: 0,
             }),
+            // Not recorded yet (hex-d: path only, as a diff tab).
+            Tab::Hex(_) => None,
         }
     }
 
@@ -185,13 +187,18 @@ impl App {
     /// From `opened`: a file Go Back / Go Forward reopened arrived. Its arrival isn't recorded;
     /// if it's gone from disk (or failed to load) it's skipped — true: the caller drops it — and
     /// navigation goes on the same way.
-    pub(super) fn nav_opened(&mut self, path: &std::path::Path, result: &Result<Box<Buffer>, LoadError>) -> bool {
+    pub(super) fn nav_opened(
+        &mut self,
+        path: &std::path::Path,
+        result: &Result<super::files::Loaded, LoadError>,
+    ) -> bool {
         let Some((pending, dir, index)) = self.nav.pending.take_if(|(p, ..)| p.as_path() == path) else {
             return false;
         };
         self.nav.navigating = true;
         let gone = match result {
-            Ok(buf) => buf.disk().is_none(),
+            Ok(super::files::Loaded::Text(buf)) => buf.disk().is_none(),
+            Ok(super::files::Loaded::Binary(_)) => false,
             Err(_) => true,
         };
         // Only when nothing else wanted the file meanwhile (a rename's edits, a restore).

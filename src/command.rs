@@ -238,6 +238,11 @@ pub enum Command {
     /// "View: Toggle Render Whitespace": whitespace drawn as `·` / `→` off, or back to the
     /// `render_whitespace` setting (`all` when that is `none`); for the session only.
     ToggleRenderWhitespace,
+    /// "View: Reopen as Hex": the active file's bytes on disk in a hex tab, read only, in place
+    /// of its text tab (refused while the buffer has unsaved edits).
+    ReopenAsHex,
+    /// "View: Reopen as Text": a hex tab's file in a text tab in its place, unless it's binary.
+    ReopenAsText,
     /// "Git: Toggle Inline Blame": the primary cursor line's blame after its text (off at
     /// start; for the session only).
     ToggleBlame,
@@ -807,6 +812,7 @@ impl Command {
         all.extend(TaskCommand::ALL.map(Command::Task));
         all.push(Command::OpenRecentWorkspace);
         all.push(Command::ToggleRenderWhitespace);
+        all.extend([Command::ReopenAsHex, Command::ReopenAsText]);
         all.push(Command::ToggleBlame);
         all.extend([Command::NavBack, Command::NavForward]);
         all.extend([
@@ -1096,6 +1102,8 @@ impl Command {
             Command::CloseTask => "task.close".into(),
             Command::OpenRecentWorkspace => "workspace.openRecent".into(),
             Command::ToggleRenderWhitespace => "view.toggleRenderWhitespace".into(),
+            Command::ReopenAsHex => "view.reopenAsHex".into(),
+            Command::ReopenAsText => "view.reopenAsText".into(),
             Command::ToggleBlame => "git.toggleBlame".into(),
             Command::NavBack => "nav.back".into(),
             Command::NavForward => "nav.forward".into(),
@@ -1377,6 +1385,8 @@ impl Command {
             Command::CloseTask => "Tasks: Close Task Tab",
             Command::OpenRecentWorkspace => "Workspaces: Open Recent Workspace",
             Command::ToggleRenderWhitespace => "View: Toggle Render Whitespace",
+            Command::ReopenAsHex => "View: Reopen as Hex",
+            Command::ReopenAsText => "View: Reopen as Text",
             Command::ToggleBlame => "Git: Toggle Inline Blame",
             Command::NavBack => "Go Back",
             Command::NavForward => "Go Forward",
@@ -1545,9 +1555,11 @@ mod tests {
             Command::MoveTabRight => 102,
             Command::QuickFix => 103,
             Command::CodeActions(_) => 104,
+            Command::ReopenAsHex => 105,
+            Command::ReopenAsText => 106,
         }
     }
-    const VARIANTS: u8 = 105;
+    const VARIANTS: u8 = 107;
 
     #[test]
     fn all_lists_every_variant() {

@@ -29,6 +29,8 @@ mod git_show;
 mod group;
 mod grouped;
 mod hex;
+#[cfg(test)]
+mod hex_tests;
 mod history;
 mod hover;
 mod indent;
@@ -184,10 +186,20 @@ fn main() -> ExitCode {
     };
     tracing::info!(version = env!("JED_VERSION"), root = %root.display(), "starting");
 
-    // Load before taking over the terminal, so errors print normally.
+    // Load before taking over the terminal, so errors print normally. A binary file opens in a
+    // hex tab.
+    let mut initial_hex = None;
     let initial = match file {
         Some((path, goto)) => match Buffer::open(&path) {
             Ok(buffer) => Some(app::InitialFile { buffer, goto }),
+            Err(buffer::file::LoadError::Binary(bytes)) => {
+                if let Err(e) = hex::check_size(bytes.len() as u64) {
+                    eprintln!("jed: {}: {e}", path.display());
+                    return ExitCode::FAILURE;
+                }
+                initial_hex = Some((path, hex::HexDoc::new(bytes)));
+                None
+            }
             Err(e) => {
                 eprintln!("jed: {}: {e}", path.display());
                 return ExitCode::FAILURE;
@@ -219,6 +231,9 @@ fn main() -> ExitCode {
         .and_then(|mut term| {
             runtime.block_on(async {
                 let mut app = app::App::new(workspace, trust_store, initial, kitty);
+                if let Some((path, doc)) = initial_hex {
+                    app.open_initial_hex(path, doc);
+                }
                 app.tasks.user = user_tasks.tasks;
                 let mut errors = user_settings.errors;
                 errors.extend(user_tasks.errors);

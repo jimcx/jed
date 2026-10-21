@@ -214,7 +214,7 @@ mod tests {
         assert!(matches!(
             check(Some(stamp), Some("one\n"), false).run(),
             OnDisk::Changed {
-                reload: Some(Err(LoadError::Binary)),
+                reload: Some(Err(LoadError::Binary(_))),
                 ..
             }
         ));

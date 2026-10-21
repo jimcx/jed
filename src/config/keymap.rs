@@ -207,10 +207,13 @@ pub enum Context {
     /// A task tab in the bottom panel has the focus: keys bound to nothing (here or globally)
     /// go to the task's terminal.
     Task,
+    /// The editor has the focus and its active tab is a hex view; bindings not found here come
+    /// from `Editor` (movement, selection, copy, Tab).
+    Hex,
 }
 
 impl Context {
-    const ALL: [(Context, &'static str); 17] = [
+    const ALL: [(Context, &'static str); 18] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
@@ -228,6 +231,7 @@ impl Context {
         (Context::GitHistory, "gitHistory"),
         (Context::Commit, "commit"),
         (Context::Task, "task"),
+        (Context::Hex, "hex"),
     ];
 
     fn parse(name: &str) -> Option<Context> {
@@ -239,7 +243,9 @@ impl Context {
         match self {
             Context::Replace => Some(Context::Find),
             Context::SearchResults => Some(Context::Search),
-            Context::Suggest | Context::CodeActions | Context::Diff | Context::Commit => Some(Context::Editor),
+            Context::Suggest | Context::CodeActions | Context::Diff | Context::Commit | Context::Hex => {
+                Some(Context::Editor)
+            }
             _ => None,
         }
     }

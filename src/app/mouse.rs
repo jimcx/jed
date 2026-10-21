@@ -40,6 +40,8 @@ pub enum Drag {
     },
     /// The Explorer view's Git History divider (its row sets the section's height).
     HistoryDivider,
+    /// Selecting bytes in a group's hex tab (`app/hex.rs`).
+    Hex(crate::layout::GroupId),
 }
 
 /// Counts clicks on the same cell in quick succession (1, 2, 3).
@@ -114,7 +116,7 @@ impl App {
         if self.find_mouse(m) {
             return;
         }
-        if self.diff_mouse(&m, hit) {
+        if self.diff_mouse(&m, hit) || self.hex_mouse(&m, hit) {
             return;
         }
         match m.kind {
@@ -207,6 +209,8 @@ impl App {
                     }
                 }
                 Some(Drag::ScrollBar { target, grab }) => self.scrollbar_drag(target, m.row, grab),
+                // Taken by `hex_mouse`.
+                Some(Drag::Hex(_)) => {}
                 Some(Drag::HistoryDivider) => {
                     // The divider's row is the section's top; the section reaches the body's end
                     // (the side panel's last row, above the status bar).

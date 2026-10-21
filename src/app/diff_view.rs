@@ -77,11 +77,14 @@ impl App {
         self.sync_diffs();
     }
 
-    /// The file the active tab is about: a text tab's buffer's, or a diff tab's (`None` for a
-    /// log tab: no file).
+    /// The file the active tab is about: a text tab's buffer's, a diff or hex tab's (`None` for
+    /// a log tab: no file).
     pub(super) fn active_path(&self) -> Option<PathBuf> {
         if let Some(d) = self.group().active_diff() {
             return Some(d.path.clone());
+        }
+        if let Some(h) = self.group().active_hex() {
+            return Some(h.path.clone());
         }
         self.active_buffer().filter(|b| b.has_file()).map(|b| b.path.clone())
     }
@@ -92,7 +95,8 @@ impl App {
     }
 
     /// The buffer the active tab is about: a text tab's, or the open buffer of a diff tab's file
-    /// (what Save, Reload and Keep Mine act on); `None` for a log tab (no file).
+    /// (what Save, Reload and Keep Mine act on); `None` for a log tab (no file) and a hex tab
+    /// (no buffer).
     pub(super) fn active_file_buffer(&self) -> Option<BufferId> {
         match self.group().active_diff() {
             Some(d) => self.buffer_of(&d.path),

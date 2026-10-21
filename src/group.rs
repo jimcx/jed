@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crate::buffer::BufferId;
 use crate::diff_view::DiffTab;
+use crate::hex::HexTab;
 use crate::layout::{GroupId, SplitDir, SplitTree};
 use crate::view::View;
 
@@ -13,55 +14,72 @@ pub struct TextTab {
     pub view: View,
 }
 
-/// What a tab shows: a buffer in a text editor (a log's or a commit's too, read only), or a diff
-/// view (two texts side by side, read only). Commands that only make sense in a text editor find
-/// no `active_tab` on a diff tab. The diff is boxed; text tabs, most of them, stay inline.
+/// What a tab shows: a buffer in a text editor (a log's or a commit's too, read only), a diff
+/// view (two texts side by side, read only), or a file's bytes in a hex view (read only).
+/// Commands that only make sense in a text editor find no `active_tab` on a diff or hex tab. The
+/// diff and hex tabs are boxed; text tabs, most of them, stay inline.
 #[allow(clippy::large_enum_variant)]
 pub enum Tab {
     Text(TextTab),
     Diff(Box<DiffTab>),
+    Hex(Box<HexTab>),
 }
 
 impl Tab {
     pub fn text(&self) -> Option<&TextTab> {
         match self {
             Tab::Text(t) => Some(t),
-            Tab::Diff(_) => None,
+            _ => None,
         }
     }
 
     pub fn text_mut(&mut self) -> Option<&mut TextTab> {
         match self {
             Tab::Text(t) => Some(t),
-            Tab::Diff(_) => None,
+            _ => None,
         }
     }
 
     pub fn diff(&self) -> Option<&DiffTab> {
         match self {
             Tab::Diff(d) => Some(d),
-            Tab::Text(_) => None,
+            _ => None,
         }
     }
 
     pub fn diff_mut(&mut self) -> Option<&mut DiffTab> {
         match self {
             Tab::Diff(d) => Some(d),
-            Tab::Text(_) => None,
+            _ => None,
         }
     }
 
-    /// The buffer a text tab shows (`None` for a diff tab).
+    pub fn hex(&self) -> Option<&HexTab> {
+        match self {
+            Tab::Hex(h) => Some(h),
+            _ => None,
+        }
+    }
+
+    pub fn hex_mut(&mut self) -> Option<&mut HexTab> {
+        match self {
+            Tab::Hex(h) => Some(h),
+            _ => None,
+        }
+    }
+
+    /// The buffer a text tab shows (`None` for a diff or hex tab).
     pub fn buffer(&self) -> Option<BufferId> {
         self.text().map(|t| t.buffer)
     }
 
-    /// Shows the same thing as `other`: the same buffer, or a diff of the same file and sides.
-    /// A group never has two such tabs (opening one shows the other).
+    /// Shows the same thing as `other`: the same buffer, a diff of the same file and sides, or
+    /// the same file's bytes. A group never has two such tabs (opening one shows the other).
     pub fn same_as(&self, other: &Tab) -> bool {
         match (self, other) {
             (Tab::Text(a), Tab::Text(b)) => a.buffer == b.buffer,
             (Tab::Diff(a), Tab::Diff(b)) => a.path == b.path && a.pair == b.pair,
+            (Tab::Hex(a), Tab::Hex(b)) => a.path == b.path,
             _ => false,
         }
     }
@@ -96,6 +114,20 @@ impl Group {
 
     pub fn active_diff_mut(&mut self) -> Option<&mut DiffTab> {
         self.tabs.get_mut(self.active).and_then(Tab::diff_mut)
+    }
+
+    /// The active tab, when it's a hex view.
+    pub fn active_hex(&self) -> Option<&HexTab> {
+        self.tabs.get(self.active).and_then(Tab::hex)
+    }
+
+    pub fn active_hex_mut(&mut self) -> Option<&mut HexTab> {
+        self.tabs.get_mut(self.active).and_then(Tab::hex_mut)
+    }
+
+    /// The hex tab of `path`.
+    pub fn find_hex(&self, path: &std::path::Path) -> Option<usize> {
+        self.tabs.iter().position(|t| t.hex().is_some_and(|h| h.path == path))
     }
 
     /// The text tab showing `buffer`.
@@ -244,6 +276,13 @@ impl Groups {
             .count()
     }
 
+    /// Every hex tab, in any group.
+    pub fn hex_tabs_mut(&mut self) -> impl Iterator<Item = &mut HexTab> {
+        self.map
+            .values_mut()
+            .flat_map(|g| g.tabs.iter_mut().filter_map(Tab::hex_mut))
+    }
+
     /// Every diff tab, in any group.
     pub fn diff_tabs_mut(&mut self) -> impl Iterator<Item = (GroupId, &mut DiffTab)> {
         self.map
@@ -290,7 +329,8 @@ impl Groups {
     }
 
     /// Splits the active group. The new group shows the active tab's buffer (same cursor and
-    /// scroll), or a copy of its diff view (`diff_id`: the copy's id), and becomes active.
+    /// scroll), or a copy of its diff view (`diff_id`: the copy's id) or hex view (the bytes
+    /// shared), and becomes active.
     pub fn split(&mut self, dir: SplitDir, diff_id: u64) -> GroupId {
         let tab = match self.active_group().tabs.get(self.active_group().active) {
             Some(Tab::Text(tab)) => Some(Tab::Text(TextTab {
@@ -298,6 +338,7 @@ impl Groups {
                 view: tab.view.clone(),
             })),
             Some(Tab::Diff(d)) => Some(Tab::Diff(Box::new(d.copy(diff_id)))),
+            Some(Tab::Hex(h)) => Some(Tab::Hex(h.clone())),
             None => None,
         };
         let id = self.split_empty(dir);

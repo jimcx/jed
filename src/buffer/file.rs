@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 pub const BOM: &[u8] = b"\xEF\xBB\xBF";
 /// Same heuristic as git: a NUL in the first 8000 bytes means binary.
-const BINARY_SNIFF_LEN: usize = 8000;
+pub const BINARY_SNIFF_LEN: usize = 8000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Eol {
@@ -104,16 +104,26 @@ pub struct DiskMeta {
     pub read_only: Option<String>,
 }
 
-#[derive(Debug)]
 pub enum LoadError {
-    Binary,
+    /// The bytes read (a NUL in the first 8000: `looks_binary`), handed back so a hex tab can
+    /// show them without reading the file again.
+    Binary(Vec<u8>),
     Io(io::Error),
+}
+
+impl std::fmt::Debug for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoadError::Binary(bytes) => write!(f, "Binary({} bytes)", bytes.len()),
+            LoadError::Io(e) => write!(f, "Io({e:?})"),
+        }
+    }
 }
 
 impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LoadError::Binary => write!(f, "binary file, not opened"),
+            LoadError::Binary(_) => write!(f, "binary file, not opened"),
             LoadError::Io(e) => write!(f, "{e}"),
         }
     }
@@ -147,7 +157,7 @@ pub fn looks_binary(bytes: &[u8]) -> bool {
 
 pub fn decode(mut bytes: Vec<u8>) -> Result<Loaded, LoadError> {
     if looks_binary(&bytes) {
-        return Err(LoadError::Binary);
+        return Err(LoadError::Binary(bytes));
     }
     let stamp = Some(Stamp::of(&bytes));
     let bom = bytes.starts_with(BOM);
@@ -246,7 +256,7 @@ mod tests {
 
     #[test]
     fn detects_binary_bom_and_eol() {
-        assert!(matches!(decode(b"ab\0c".to_vec()), Err(LoadError::Binary)));
+        assert!(matches!(decode(b"ab\0c".to_vec()), Err(LoadError::Binary(b)) if b == b"ab\0c"));
 
         let l = decode(b"\xEF\xBB\xBFa\r\nb\r\nc\n".to_vec()).unwrap();
         assert!(l.bom);

@@ -103,6 +103,11 @@ impl Theme {
             ("editorInfo.foreground", squiggle(c(0x3794FF))),
             ("editorHint.foreground", squiggle(c(0xB0B0B0))),
             ("gutter", fg_bg(0x858585, 0x1E1E1E)),
+            // Hex tabs: offsets dim as line numbers, the `.` stand-ins (and their bytes' hex)
+            // dimmed a little, the ASCII column's `|`s.
+            ("hexEditor.offset", Style::new().fg(c(0x858585))),
+            ("hexEditor.nonPrintable", Style::new().fg(c(0x8C8C8C))),
+            ("hexEditor.border", Style::new().fg(c(0x5A5A5A))),
             ("gutter.active", Style::new().fg(c(0xC6C6C6))),
             // Quick diff's gutter markers (Dark+'s `editorGutter.*Background`; a bar or a line in
             // the colour, so the foreground here). Deleted is Dark+'s error foreground.

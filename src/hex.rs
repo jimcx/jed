@@ -17,30 +17,44 @@
 //! `aaaa`): that makes the matches in a window independent of where the window starts, so a frame
 //! can search only its visible bytes and agree with `count` over the whole file.
 
-// Unused until the hex tab (hex-b) and its find (hex-c) use it; remove then.
-#![allow(dead_code)]
-
 use std::borrow::Cow;
 use std::fmt::{self, Write as _};
 use std::ops::Range;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use memchr::memmem;
 
 use crate::buffer::file::Stamp;
+use crate::command::Motion;
 
 /// Files bigger than this aren't opened in a hex tab (paged reads are a TODO).
 pub const HEX_MAX_BYTES: usize = 256 << 20;
 /// `count` stops here: the find widget then says "100000+".
+#[allow(dead_code)] // Used by find (hex-c).
 pub const HEX_MAX_COUNT: usize = 100_000;
 /// The largest `hex_bytes_per_line` (the setting is a power of two from 1 to this).
 pub const MAX_BYTES_PER_ROW: usize = 64;
+
+/// Whether a file of `len` bytes opens in a hex tab; else why not (the message's end).
+pub fn check_size(len: u64) -> Result<(), String> {
+    if len > HEX_MAX_BYTES as u64 {
+        Err(format!(
+            "too big for the hex view ({} MB, at most {} MB)",
+            len >> 20,
+            HEX_MAX_BYTES >> 20
+        ))
+    } else {
+        Ok(())
+    }
+}
 
 /// A file's bytes as read, shared (cloning is an `Arc` clone: a tab and its splits share one),
 /// and the `Stamp` they were read with, for the changed-on-disk check.
 #[derive(Debug, Clone)]
 pub struct HexDoc {
     bytes: Arc<[u8]>,
+    #[cfg_attr(not(test), allow(dead_code))] // Used by disk checks (hex-d).
     stamp: Stamp,
 }
 
@@ -53,6 +67,7 @@ impl HexDoc {
         Self { bytes, stamp }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // Used by disk checks (hex-d).
     pub fn with_stamp(bytes: impl Into<Arc<[u8]>>, stamp: Stamp) -> Self {
         Self {
             bytes: bytes.into(),
@@ -68,10 +83,12 @@ impl HexDoc {
         self.bytes.len()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // Used by disk checks (hex-d).
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // Used by disk checks (hex-d).
     pub fn stamp(&self) -> Stamp {
         self.stamp
     }
@@ -121,6 +138,7 @@ impl Layout {
         self.bytes_per_row
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn offset_digits(&self) -> usize {
         self.offset_digits
     }
@@ -275,6 +293,7 @@ pub fn ascii_text(bytes: &[u8]) -> String {
 }
 
 /// The bytes as text when every one is printable ASCII.
+#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub fn printable_text(bytes: &[u8]) -> Option<String> {
     bytes
         .iter()
@@ -301,6 +320,7 @@ pub fn parse_offset(text: &str) -> Option<usize> {
 
 /// The find widget's mode on a hex tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub enum Mode {
     Ascii,
     Hex,
@@ -308,6 +328,7 @@ pub enum Mode {
 
 /// Why a hex query doesn't parse; `Display` is the widget's error text.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub enum HexError {
     /// An odd number of hex digits.
     Odd,
@@ -325,6 +346,7 @@ impl fmt::Display for HexError {
 }
 
 /// Hex digit pairs, whitespace ignored anywhere (`7f454c46`, `7f 45 4c 46`, `7F 45`).
+#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub fn parse_hex(text: &str) -> Result<Vec<u8>, HexError> {
     let mut digits = Vec::with_capacity(text.len());
     for c in text.chars().filter(|c| !c.is_whitespace()) {
@@ -342,6 +364,7 @@ pub fn parse_hex(text: &str) -> Result<Vec<u8>, HexError> {
 /// The query text after switching the widget to `to`: ASCII → its UTF-8 bytes as hex pairs;
 /// hex → the text when it parses and every byte is printable ASCII. `None`: keep the text as is
 /// (it's re-read in the new mode).
+#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub fn convert(text: &str, to: Mode) -> Option<String> {
     match to {
         Mode::Hex => Some(hex_pairs(text.as_bytes())),
@@ -351,6 +374,7 @@ pub fn convert(text: &str, to: Mode) -> Option<String> {
 
 /// A byte search: always a fixed number of bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub enum Query {
     /// The text's UTF-8 bytes; not case-sensitive: ASCII letters match either case.
     Ascii {
@@ -360,6 +384,7 @@ pub enum Query {
     Hex(Vec<u8>),
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 impl Query {
     /// The widget's text read in `mode` (`case_sensitive` only matters for ASCII).
     pub fn parse(text: &str, mode: Mode, case_sensitive: bool) -> Result<Query, HexError> {
@@ -406,11 +431,13 @@ impl Query {
 }
 
 /// Bytes folded per chunk for a case-insensitive search (a copy this size at a time).
+#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 const FOLD_CHUNK: usize = 1 << 16;
 
 /// Finds a query's matches by their starts. A case-insensitive one folds the needle once and the
 /// haystack a chunk at a time (with the needle's length − 1 of overlap), so memmem does the work
 /// either way.
+#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 struct Searcher {
     forward: memmem::Finder<'static>,
     reverse: memmem::FinderRev<'static>,
@@ -418,6 +445,7 @@ struct Searcher {
     fold: bool,
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 impl Searcher {
     fn new(q: &Query) -> Self {
         let needle = if q.folds() {
@@ -504,6 +532,7 @@ impl Searcher {
 }
 
 /// The first match starting at or after `from`, else (wrapping) the first one before it.
+#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub fn find_next(bytes: &[u8], q: &Query, from: usize) -> Option<Range<usize>> {
     let s = q.searcher()?;
     let from = from.min(bytes.len());
@@ -512,6 +541,7 @@ pub fn find_next(bytes: &[u8], q: &Query, from: usize) -> Option<Range<usize>> {
 }
 
 /// The last match starting before `before`, else (wrapping) the last one at or after it.
+#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub fn find_prev(bytes: &[u8], q: &Query, before: usize) -> Option<Range<usize>> {
     let s = q.searcher()?;
     let before = before.min(bytes.len());
@@ -523,6 +553,7 @@ pub fn find_prev(bytes: &[u8], q: &Query, before: usize) -> Option<Range<usize>>
 
 /// Every match overlapping `range` (a frame's visible bytes), in order: only `range` and the
 /// query's length − 1 bytes each side are read.
+#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub fn find_in(bytes: &[u8], q: &Query, range: Range<usize>) -> Vec<Range<usize>> {
     let mut found = Vec::new();
     let Some(s) = q.searcher() else { return found };
@@ -537,6 +568,7 @@ pub fn find_in(bytes: &[u8], q: &Query, range: Range<usize>) -> Vec<Range<usize>
 
 /// What `count` found: `found` matches, stopping at the limit (`capped`: there may be more).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub struct Count {
     pub found: usize,
     pub capped: bool,
@@ -544,6 +576,7 @@ pub struct Count {
 
 /// Counts the matches in the whole file, up to `limit` (`HEX_MAX_COUNT` for the widget).
 /// Blocking: call from spawn_blocking (a whole-file scan).
+#[cfg_attr(not(test), allow(dead_code))] // Used by find (hex-c).
 pub fn count(bytes: &[u8], q: &Query, limit: usize) -> Count {
     let mut c = Count {
         found: 0,
@@ -565,9 +598,228 @@ pub fn count(bytes: &[u8], q: &Query, limit: usize) -> Count {
     c
 }
 
+/// A hex tab (`group::Tab::Hex`): a file's bytes, a byte cursor and selection, which column the
+/// cursor is in, and the scroll. Read only. `ui::hex` fits it to the area drawn each frame
+/// (`fit`), which also scrolls a moved cursor into view (`reveal`); `app/hex.rs` runs its
+/// commands and mouse. A split copies it (`Clone`: the bytes are shared).
+#[derive(Debug, Clone)]
+pub struct HexTab {
+    pub path: PathBuf,
+    pub doc: HexDoc,
+    /// The cursor's byte (0 in an empty file, which has none).
+    pub cursor: usize,
+    /// Where a selection started (Shift + movement, a drag, Cmd+A): the selection is every byte
+    /// from it to the cursor, both included. `None`: no selection.
+    pub anchor: Option<usize>,
+    /// The column the cursor is in: what Cmd+C copies, where a click put it.
+    pub column: Column,
+    /// The top row's first byte (a multiple of the layout's bytes per row).
+    pub top: usize,
+    /// The layout drawn last (16 bytes per row until the first frame).
+    pub layout: Layout,
+    /// Rows on screen, as drawn last.
+    pub height: usize,
+    /// The next frame scrolls the cursor into view.
+    pub reveal: bool,
+    /// The file is gone from disk (the explorer deleted it): `(deleted)` in the tab bar.
+    pub deleted: bool,
+}
+
+impl HexTab {
+    pub fn new(path: PathBuf, doc: HexDoc) -> Self {
+        let layout = Layout::fit(row_width(16, 8), 16, doc.len());
+        Self {
+            path,
+            doc,
+            cursor: 0,
+            anchor: None,
+            column: Column::Hex,
+            top: 0,
+            layout,
+            height: 1,
+            reveal: false,
+            deleted: false,
+        }
+    }
+
+    /// The tab's title: the file's name.
+    pub fn name(&self) -> String {
+        self.path
+            .file_name()
+            .map_or_else(|| self.path.display().to_string(), |n| n.to_string_lossy().into_owned())
+    }
+
+    pub fn len(&self) -> usize {
+        self.doc.len()
+    }
+
+    /// The last byte's offset (0 in an empty file).
+    fn last(&self) -> usize {
+        self.len().saturating_sub(1)
+    }
+
+    /// Rows at the current layout, the end offset's row included.
+    pub fn rows(&self) -> usize {
+        self.layout.rows(self.len())
+    }
+
+    pub fn top_row(&self) -> usize {
+        self.top / self.layout.bytes_per_row()
+    }
+
+    /// Puts row `row` at the top, clamped so the last page stays full.
+    fn set_top_row(&mut self, row: usize) {
+        let max = self.rows().saturating_sub(self.height);
+        self.top = row.min(max) * self.layout.bytes_per_row();
+    }
+
+    /// Scrolls by `rows` (the wheel), the cursor staying where it is.
+    pub fn scroll_by(&mut self, rows: isize) {
+        self.set_top_row(self.top_row().saturating_add_signed(rows));
+    }
+
+    /// Fits the tab to the area drawn (`max`: the `hex_bytes_per_line` setting): a new layout
+    /// snaps the top down to its row's start, so the top row's first byte stays in view, and
+    /// reveals the cursor; the top is clamped to the rows; a pending `reveal` is done.
+    pub fn fit(&mut self, width: usize, height: usize, max: usize) {
+        self.height = height.max(1);
+        let layout = Layout::fit(width, max, self.len());
+        if layout != self.layout {
+            self.layout = layout;
+            self.top -= self.top % layout.bytes_per_row();
+            self.reveal = true;
+        }
+        self.set_top_row(self.top_row());
+        if std::mem::take(&mut self.reveal) {
+            let row = self.layout.row_of(self.cursor);
+            // On the last bytes' row, the end offset's row below it comes into view too.
+            let bottom = if row + 2 == self.rows() { row + 1 } else { row };
+            let top = self.top_row();
+            if row < top {
+                self.set_top_row(row);
+            } else if bottom >= top + self.height {
+                self.set_top_row(bottom + 1 - self.height);
+            }
+        }
+    }
+
+    /// Moves the cursor to `offset` (clamped to the last byte), extending the selection when
+    /// `select` (else dropping it), and scrolls it into view at the next frame.
+    pub fn move_to(&mut self, offset: usize, select: bool) {
+        if select {
+            self.anchor.get_or_insert(self.cursor);
+        } else {
+            self.anchor = None;
+        }
+        self.cursor = offset.min(self.last());
+        self.reveal = true;
+    }
+
+    /// The editor's movement keys: Left / Right a byte, Up / Down a row, Home / End the row's
+    /// first / last byte, Alt (Ctrl) + Left / Right to the previous / next 8-byte group, page up
+    /// / down (scrolling the view a page too), the file start / end.
+    pub fn motion(&mut self, motion: Motion, select: bool) {
+        let n = self.layout.bytes_per_row();
+        let c = self.cursor;
+        let page = self.height.saturating_sub(1).max(1);
+        let to = match motion {
+            Motion::Left => c.saturating_sub(1),
+            Motion::Right => c + 1,
+            Motion::Up => c.saturating_sub(n),
+            Motion::Down => c + n,
+            Motion::LineStart => c - c % n,
+            Motion::LineEnd => c - c % n + n - 1,
+            Motion::WordLeft if !c.is_multiple_of(8) => c - c % 8,
+            Motion::WordLeft => c.saturating_sub(8),
+            Motion::WordRight => c - c % 8 + 8,
+            Motion::DocStart => 0,
+            Motion::DocEnd => self.last(),
+            Motion::PageUp => {
+                self.scroll_by(-(page as isize));
+                c.saturating_sub(page * n)
+            }
+            Motion::PageDown => {
+                self.scroll_by(page as isize);
+                c + page * n
+            }
+        };
+        self.move_to(to, select);
+    }
+
+    /// Cmd+A: every byte.
+    pub fn select_all(&mut self) {
+        if self.len() > 0 {
+            self.anchor = Some(0);
+            self.cursor = self.last();
+            self.reveal = true;
+        }
+    }
+
+    /// Tab: the cursor to the other column.
+    pub fn toggle_column(&mut self) {
+        self.column = match self.column {
+            Column::Hex => Column::Ascii,
+            Column::Ascii => Column::Hex,
+        };
+    }
+
+    /// The selected bytes; `None` without a selection (or bytes).
+    pub fn selection(&self) -> Option<Range<usize>> {
+        let a = self.anchor.filter(|_| self.len() > 0)?;
+        Some(a.min(self.cursor)..a.max(self.cursor) + 1)
+    }
+
+    /// What Cmd+C copies: the selection, else the cursor's byte, as the cursor's column shows
+    /// them (hex pairs, or the ASCII text with `.`s); `None` in an empty file.
+    pub fn copy_text(&self) -> Option<String> {
+        let range = self
+            .selection()
+            .or((self.len() > 0).then(|| self.cursor..self.cursor + 1))?;
+        let bytes = &self.doc.bytes()[range];
+        Some(match self.column {
+            Column::Hex => hex_pairs(bytes),
+            Column::Ascii => ascii_text(bytes),
+        })
+    }
+
+    /// The byte (and column) at screen row `row` (from the first drawn) and column `col` (from
+    /// the rows' left edge), as a click picks it: a column that isn't a byte's (the offset, the
+    /// `|`s, past the row) is `None`, unless `near`: then it's the row's first byte left of the
+    /// bytes and its last one right of them, in the cursor's column (a drag past the edges).
+    /// A row past the bytes (a short last row's empty cells, the end row, below it) gives the
+    /// last byte. `None` in an empty file.
+    pub fn offset_at(&self, row: usize, col: usize, near: bool) -> Option<(usize, Column)> {
+        if self.len() == 0 {
+            return None;
+        }
+        let l = &self.layout;
+        let hit = l.hit(col).or_else(|| {
+            near.then(|| Hit {
+                index: if col < l.hex_col(0) { 0 } else { l.bytes_per_row() - 1 },
+                column: self.column,
+            })
+        })?;
+        let offset = (self.top_row() + row) * l.bytes_per_row() + hit.index;
+        Some((offset.min(self.last()), hit.column))
+    }
+}
+
+impl crate::scrollbar::Scrollable for HexTab {
+    fn scroll(&self) -> crate::scrollbar::Scroll {
+        crate::scrollbar::Scroll::rows(self.rows(), self.height, self.top_row())
+    }
+
+    /// The pointer decides where the view is: no reveal of the cursor's row.
+    fn set_top(&mut self, top: usize) {
+        self.set_top_row(top);
+        self.reveal = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scrollbar::Scrollable;
 
     fn dump(doc: &HexDoc, layout: &Layout) -> String {
         let mut out = String::new();
@@ -884,6 +1136,127 @@ mod tests {
         assert_eq!(doc.stamp(), Stamp::of(b"abc"));
         assert_eq!((doc.len(), doc.is_empty()), (3, false));
         assert!(HexDoc::with_stamp(Vec::new(), Stamp::of(b"")).is_empty());
+    }
+
+    // --- The tab ---
+
+    fn tab(len: usize) -> HexTab {
+        let mut t = HexTab::new(
+            PathBuf::from("/bin.dat"),
+            HexDoc::new((0..len).map(|i| i as u8).collect::<Vec<_>>()),
+        );
+        t.fit(78, 4, 32);
+        t
+    }
+
+    #[test]
+    fn tab_moves_and_selects() {
+        let mut t = tab(100);
+        assert_eq!((t.layout.bytes_per_row(), t.rows(), t.height), (16, 8, 4));
+        t.motion(Motion::Right, false);
+        t.motion(Motion::Down, false);
+        assert_eq!(t.cursor, 17);
+        t.motion(Motion::LineEnd, false);
+        assert_eq!(t.cursor, 31);
+        t.motion(Motion::LineStart, false);
+        assert_eq!(t.cursor, 16);
+        t.motion(Motion::WordRight, true);
+        assert_eq!((t.cursor, t.selection()), (24, Some(16..25)));
+        t.motion(Motion::WordLeft, true);
+        t.motion(Motion::WordLeft, true);
+        assert_eq!((t.cursor, t.selection()), (8, Some(8..17)), "back past the anchor");
+        t.motion(Motion::Left, false);
+        assert_eq!((t.cursor, t.anchor), (7, None));
+        t.motion(Motion::Up, false);
+        assert_eq!(t.cursor, 0, "the first row: to the start");
+        t.motion(Motion::DocEnd, false);
+        assert_eq!(t.cursor, 99);
+        t.motion(Motion::Right, false);
+        t.motion(Motion::Down, false);
+        t.motion(Motion::LineEnd, false);
+        assert_eq!(t.cursor, 99, "never past the last byte");
+        // Its reveal scrolls the last byte's row in, and the end row below it: rows 4..8.
+        t.fit(78, 4, 32);
+        assert_eq!(t.top_row(), 4);
+        t.motion(Motion::PageUp, false);
+        assert_eq!((t.cursor, t.top_row()), (99 - 3 * 16, 1));
+        t.motion(Motion::PageDown, true);
+        assert_eq!((t.cursor, t.top_row()), (99, 4));
+        t.motion(Motion::DocStart, false);
+        t.select_all();
+        assert_eq!(t.selection(), Some(0..100));
+        assert_eq!(t.copy_text().unwrap().len(), 100 * 3 - 1);
+    }
+
+    #[test]
+    fn tab_copies_its_column() {
+        let mut t = HexTab::new(PathBuf::from("/x"), HexDoc::new(b"\x7fELF\x00".to_vec()));
+        assert_eq!(t.copy_text().as_deref(), Some("7f"), "the cursor's byte");
+        t.move_to(1, false);
+        t.move_to(3, true);
+        assert_eq!(t.copy_text().as_deref(), Some("45 4c 46"));
+        t.toggle_column();
+        assert_eq!(t.copy_text().as_deref(), Some("ELF"));
+        t.select_all();
+        assert_eq!(t.copy_text().as_deref(), Some(".ELF."));
+        let mut empty = HexTab::new(PathBuf::from("/e"), HexDoc::new(Vec::new()));
+        empty.select_all();
+        empty.motion(Motion::Right, true);
+        assert_eq!((empty.cursor, empty.selection(), empty.copy_text()), (0, None, None));
+        assert_eq!(empty.offset_at(0, 12, true), None);
+    }
+
+    #[test]
+    fn resizing_keeps_the_top_byte_and_the_cursor_in_view() {
+        let mut t = tab(1000);
+        t.set_top(10);
+        assert_eq!(t.top, 160);
+        t.move_to(200, false);
+        t.reveal = false;
+        // 32 per row: the top snaps down to 160 (row 5), the cursor's row 6 is shown.
+        t.fit(144, 4, 32);
+        assert_eq!((t.layout.bytes_per_row(), t.top), (32, 160));
+        // 8 per row: row 20 at the top (byte 160); the cursor's byte 200 is row 25, revealed.
+        t.fit(60, 4, 32);
+        assert_eq!(t.layout.bytes_per_row(), 8);
+        assert_eq!(t.top_row(), 22);
+        assert!((t.top..t.top + 4 * 8).contains(&200));
+        // The wheel doesn't follow the cursor; clamped to the last full page.
+        t.scroll_by(1000);
+        assert_eq!(t.top_row(), t.rows() - 4);
+        t.fit(60, 4, 32);
+        assert_eq!(t.top_row(), t.rows() - 4, "no reveal without a move");
+    }
+
+    #[test]
+    fn clicks_map_to_bytes() {
+        let mut t = tab(40);
+        t.fit(78, 2, 32);
+        t.set_top(1);
+        let l = t.layout;
+        assert_eq!(t.offset_at(0, l.hex_col(3), false), Some((19, Column::Hex)));
+        assert_eq!(t.offset_at(1, l.ascii_col(2), false), Some((34, Column::Ascii)));
+        assert_eq!(
+            t.offset_at(1, l.ascii_col(12), false),
+            Some((39, Column::Ascii)),
+            "a short row's end: the last byte"
+        );
+        assert_eq!(
+            t.offset_at(5, l.hex_col(0), false),
+            Some((39, Column::Hex)),
+            "below the bytes"
+        );
+        assert_eq!(t.offset_at(0, 2, false), None, "the offset");
+        assert_eq!(
+            t.offset_at(0, 2, true),
+            Some((16, Column::Hex)),
+            "a drag: the row's start"
+        );
+        assert_eq!(
+            t.offset_at(0, 200, true),
+            Some((31, Column::Hex)),
+            "a drag: the row's end"
+        );
     }
 
     // --- Search, against a naive reference ---

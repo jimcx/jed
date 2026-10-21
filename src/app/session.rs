@@ -269,6 +269,8 @@ impl App {
                                 left_col: t.view.left_col,
                             });
                         }
+                        // Not kept yet (hex-d).
+                        Tab::Hex(_) => continue,
                         Tab::Diff(d) => {
                             // A replace preview isn't kept (its replace is the Search view's).
                             let (Ok(left), Ok(right)) = (d.pair.left.try_into(), d.pair.right.try_into()) else {

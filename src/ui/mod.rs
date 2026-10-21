@@ -8,6 +8,7 @@ mod dialog;
 mod diff;
 mod editor;
 mod find;
+mod hex;
 mod hover;
 mod palette;
 mod panel;
@@ -84,7 +85,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let file = match group.tabs.get(group.active) {
             Some(Tab::Text(t)) => app.buffers.get(t.buffer),
             Some(Tab::Diff(d)) => app.buffers.iter().find(|(_, b)| b.path == d.path).map(|(_, b)| b),
-            None => None,
+            Some(Tab::Hex(_)) | None => None,
         };
         if let Some(buf) = file
             && buf.disk_conflict.is_some()
@@ -99,7 +100,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             editor_area.height -= 1;
         }
 
-        // A text or diff tab keeps the editor's last column for its scroll bar.
+        // A text, diff or hex tab keeps the editor's last column for its scroll bar.
         let bar = if group.tabs.is_empty() {
             None
         } else {
@@ -130,6 +131,21 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     ..bar
                 };
                 scroll_hit = Some(scrollbar::render(out, track, d.scroll(), look, editor_bg, &app.theme));
+            }
+        }
+        let mut hex_drawn = false;
+        if let Some(h) = group.active_hex_mut() {
+            hex_drawn = true;
+            text = hex::render(f, editor_area, h, &app.theme, app.settings.hex_bytes_per_line, focused);
+            if let Some(bar) = bar {
+                scroll_hit = Some(scrollbar::render(
+                    f.buffer_mut(),
+                    bar,
+                    h.scroll(),
+                    look,
+                    editor_bg,
+                    &app.theme,
+                ));
             }
         }
         match group
@@ -189,7 +205,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     ));
                 }
             }
-            None if diff_hit.is_some() => {}
+            None if diff_hit.is_some() || hex_drawn => {}
             None => {
                 f.buffer_mut().set_style(editor_area, app.theme.get("editor"));
                 splash::render(f, editor_area, &app.theme);

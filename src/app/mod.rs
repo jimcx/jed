@@ -13,6 +13,7 @@ mod find;
 mod format;
 mod git;
 mod git_history;
+mod hex;
 mod history;
 mod hover;
 mod locations;
@@ -172,8 +173,7 @@ enum AppEvent {
     },
     Opened {
         path: PathBuf,
-        /// Boxed: a `Buffer` is several times bigger than any other event.
-        result: Result<Box<Buffer>, LoadError>,
+        result: Result<files::Loaded, LoadError>,
     },
     Listed {
         dir: PathBuf,
@@ -805,6 +805,7 @@ impl App {
             Focus::Editor if self.code_actions_shown() => Context::CodeActions,
             Focus::Editor if self.completion_shown() => Context::Suggest,
             Focus::Editor if self.group().active_diff().is_some() => Context::Diff,
+            Focus::Editor if self.group().active_hex().is_some() => Context::Hex,
             Focus::Editor if self.active_commit().is_some() => Context::Commit,
             Focus::Editor => Context::Editor,
             Focus::SidePanel if self.ui.side_panel == SidePanel::Search && self.search_view.list_focused => {
@@ -1075,6 +1076,8 @@ impl App {
             Command::RunTask => self.show_run_task(),
             Command::OpenRecentWorkspace => self.show_recent(),
             Command::ToggleRenderWhitespace => self.ui.whitespace_toggled = !self.ui.whitespace_toggled,
+            Command::ReopenAsHex => self.reopen_as_hex(),
+            Command::ReopenAsText => self.reopen_as_text(),
             Command::ToggleBlame => self.toggle_blame(),
             Command::KillTask => self.kill_task(),
             Command::CloseTask => self.close_shown_task(),
@@ -1089,8 +1092,9 @@ impl App {
             Command::RestartServer => self.restart_server(),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
-            // A diff tab: its own movement keys; other editor commands do nothing.
+            // A diff or hex tab: its own movement keys; other editor commands do nothing.
             _ if self.diff_command(cmd) => {}
+            _ if self.hex_command(cmd) => {}
             _ => {
                 if edit::is_edit(cmd) && !self.active_writable() {
                     return;
@@ -1106,6 +1110,9 @@ impl App {
 
     /// Copies (or cuts) the active view's selections to the clipboard.
     fn copy(&mut self, cut: bool) {
+        if !cut && self.hex_copy() {
+            return;
+        }
         if cut && !self.active_writable() {
             return;
         }

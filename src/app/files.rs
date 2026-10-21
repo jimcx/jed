@@ -31,6 +31,14 @@ pub(super) enum Goto {
     Place(crate::navigation::Pos),
 }
 
+/// What an open read: a text file's buffer, or a binary file's bytes for a hex tab (the bytes
+/// the load read: no second read).
+pub(super) enum Loaded {
+    /// Boxed: a `Buffer` is several times bigger than any other event.
+    Text(Box<Buffer>),
+    Binary(crate::hex::HexDoc),
+}
+
 /// An open in flight: what to do once the buffer arrives. A later request for the same file
 /// replaces its `goto` (the last F4 wins) and can only add focus.
 #[derive(Debug, Default)]
@@ -47,6 +55,11 @@ pub(super) struct OpenRequest {
     pub restore: Option<crate::history::Snapshot>,
     /// A crash backup to restore into the buffer once it's loaded (`App::restore_backup`).
     pub backup: Option<Box<crate::backup::Backup>>,
+    /// Read the file's bytes as they are, for a hex tab ("View: Reopen as Hex").
+    pub raw: bool,
+    /// "View: Reopen as Hex / Text": the tab arriving replaces the active group's other tab of
+    /// the file (`App::add_hex_tab`, `App::replace_hex_with_text`).
+    pub reopen: bool,
 }
 
 impl App {
@@ -56,6 +69,14 @@ impl App {
     pub(super) fn open_file(&mut self, path: PathBuf, focus: bool, goto: Option<Goto>) {
         // A jump: the place before it is recorded for Go Back (`app/navigation.rs`).
         self.nav_jump();
+        // The group's hex tab of it (unless it has a text tab of it too); with no buffer open
+        // on it, another group's hex tab's bytes in a new tab.
+        let open = self.buffers.find_path(&path);
+        let text_here = open.is_some_and(|id| self.group().find(id).is_some());
+        let hex_here = self.group().find_hex(&path).is_some();
+        if ((hex_here && !text_here) || open.is_none()) && self.show_hex(&path, focus) {
+            return;
+        }
         if let Some(id) = self.buffers.find_path(&path) {
             match self.group().find(id) {
                 Some(i) => self.activate_tab(i),
@@ -84,22 +105,17 @@ impl App {
             }
             return;
         }
-        self.opening.insert(
-            path.clone(),
+        self.start_open(
+            path,
             OpenRequest {
                 focus,
                 goto,
                 ..Default::default()
             },
         );
-        let tx = self.tx.clone();
-        tokio::task::spawn_blocking(move || {
-            let result = Buffer::open(&path).map(Box::new);
-            let _ = tx.send(AppEvent::Opened { path, result });
-        });
     }
 
-    pub(super) fn opened(&mut self, path: PathBuf, result: Result<Box<Buffer>, LoadError>) {
+    pub(super) fn opened(&mut self, path: PathBuf, result: Result<Loaded, LoadError>) {
         if self.nav_opened(&path, &result) {
             return;
         }
@@ -110,14 +126,31 @@ impl App {
             edits,
             restore,
             mut backup,
+            raw: _,
+            reopen,
         } = self.opening.remove(&path).unwrap_or_default();
         // Said after the load error's own message, which it would otherwise hide.
         let unopened = match &result {
             Err(e) => backup.take().map(|b| (b, e.to_string())),
-            Ok(_) => None,
+            Ok(Loaded::Binary(_)) => backup.take().map(|b| (b, "binary file".to_string())),
+            Ok(Loaded::Text(_)) => None,
         };
         match result {
-            Ok(buffer) => {
+            Ok(Loaded::Binary(_)) if !edits.is_empty() => {
+                let what = edits[0].what;
+                self.notify(
+                    Level::Error,
+                    format!("{what} not applied to {}: binary file", path.display()),
+                )
+            }
+            Ok(Loaded::Binary(doc)) => {
+                if restore.is_some() {
+                    let text = format!("{}: binary file, its history entry not restored", path.display());
+                    self.notify(Level::Error, text);
+                }
+                self.add_hex_tab(path, doc, focus, reopen);
+            }
+            Ok(Loaded::Text(buffer)) => {
                 if let Some(reason) = &buffer.read_only
                     && edits.is_empty()
                 {
@@ -132,6 +165,12 @@ impl App {
                 } else if background {
                     let (id, view) = self.register_buffer(*buffer, None);
                     self.group_mut().open_background(id, view);
+                } else if reopen && self.group().find_hex(&path).is_some() {
+                    let (id, _) = self.register_buffer(*buffer, None);
+                    self.replace_hex_with_text(&path, id);
+                    if focus {
+                        self.ui.focus = Focus::Editor;
+                    }
                 } else {
                     self.add_buffer(*buffer, goto, focus);
                     self.reveal_active();
@@ -152,7 +191,6 @@ impl App {
                 let what = edits[0].what;
                 self.notify(Level::Error, format!("{what} not applied to {}: {e}", path.display()))
             }
-            Err(LoadError::Binary) => self.notify(Level::Error, format!("{}: binary file, not opened", path.display())),
             Err(e) => self.notify(Level::Error, format!("{}: {e}", path.display())),
         }
         if let Some((b, e)) = unopened {
@@ -203,9 +241,13 @@ impl App {
         self.reveal_active();
     }
 
-    /// Shows the active file in the explorer.
+    /// Shows the active file in the explorer (a text or hex tab's: not a diff's or a log's).
     pub(super) fn reveal_active(&mut self) {
-        let Some(path) = self.active_buffer().filter(|b| b.has_file()).map(|b| b.path.clone()) else {
+        let path = match self.active_hex() {
+            Some(h) => Some(h.path.clone()),
+            None => self.active_buffer().filter(|b| b.has_file()).map(|b| b.path.clone()),
+        };
+        let Some(path) = path else {
             return;
         };
         for dir in self.explorer.reveal(&path) {

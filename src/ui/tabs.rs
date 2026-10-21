@@ -41,6 +41,14 @@ pub fn render(
         .map(|t| match t {
             // A diff tab: `name (Working Tree)`.
             Tab::Diff(d) => (d.title(), false, false),
+            // A hex tab: its file's name, never dirty.
+            Tab::Hex(h) => {
+                let mut name = h.name();
+                if h.deleted {
+                    name.push_str(" (deleted)");
+                }
+                (name, false, h.deleted)
+            }
             Tab::Text(t) => {
                 let buf = buffers.get(t.buffer);
                 let deleted = buf.is_some_and(|b| b.deleted);

@@ -13,6 +13,7 @@ use crate::buffer::pos;
 use crate::command::{Command, PaletteCommand as P};
 use crate::explorer;
 use crate::field::Outcome;
+use crate::hex;
 use crate::logging;
 use crate::palette::{self, Action, FileMatcher, Mode, Palette, Picker};
 use crate::paths;
@@ -154,6 +155,10 @@ impl App {
     }
 
     fn line_hint(&self, query: &str) -> String {
+        // A hex tab: Go to Offset.
+        if let Some(h) = self.active_hex() {
+            return self.offset_hint(h, query);
+        }
         let Some((buf, tab)) = self.active_buffer().zip(self.group().active_tab()) else {
             return "Open a file first to go to a line".into();
         };
@@ -262,6 +267,12 @@ impl App {
         let (mode, query) = (p.mode(), p.query().to_string());
         let action = p.selected_row().map(|r| r.action.clone());
         match (mode, action) {
+            (Mode::GoToLine, _) if self.active_hex().is_some() => {
+                if hex::parse_offset(&query).is_some() {
+                    self.close_palette();
+                    self.go_to_offset(&query);
+                }
+            }
             (Mode::GoToLine, _) => {
                 let Some((line, col)) = palette::parse_line(&query) else {
                     return;

@@ -294,7 +294,7 @@ impl App {
             let result = history::read_snapshot(&root, &rel, snapshot).and_then(|bytes| {
                 // Decoded as loading the file would: BOM dropped, line endings kept.
                 match file::decode(bytes) {
-                    Err(LoadError::Binary) => Err("the entry is a binary file".to_string()),
+                    Err(LoadError::Binary(_)) => Err("the entry is a binary file".to_string()),
                     Err(LoadError::Io(e)) => Err(e.to_string()),
                     Ok(loaded) if loaded.read_only.is_some() => Err("the entry isn't valid UTF-8".to_string()),
                     Ok(loaded) => Ok(crate::disk::changes(&rope, &loaded.rope)),
