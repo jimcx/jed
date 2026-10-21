@@ -80,6 +80,10 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+alt+backslash` | Split down | everywhere |
 | `cmd+alt+right` | Next tab | everywhere |
 | `cmd+alt+left` | Previous tab | everywhere |
+| `cmd+ctrl+right` | Move the tab into the next group (a new split right if none) | everywhere |
+| `cmd+ctrl+left` | Move the tab into the previous group | everywhere |
+| `cmd+shift+pageup` | Move the tab left in its group | everywhere |
+| `cmd+shift+pagedown` | Move the tab right in its group | everywhere |
 | `cmd+shift+p` | Command palette | everywhere |
 | `cmd+p` | Quick open (go to file) | everywhere |
 | `cmd+j` | Toggle the bottom panel (Problems) | everywhere |

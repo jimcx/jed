@@ -68,9 +68,9 @@ pub fn render(
     };
     let inner = (right - left) as u32;
     let last = labels.len() - 1;
-    // The furthest the bar scrolls: the last tabs fill it.
+    // The furthest the bar scrolls: the last tabs fill it (the last one whole).
     let mut max_scroll = last;
-    let mut used = 0;
+    let mut used = widths[last];
     while max_scroll > 0 && used + widths[max_scroll - 1] <= inner {
         used += widths[max_scroll - 1];
         max_scroll -= 1;

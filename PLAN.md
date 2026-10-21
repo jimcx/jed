@@ -486,6 +486,8 @@ Everything else (commit, branch, push, pull, …) is done from the command line.
 | Search in workspace | Cmd+Shift+F | Ctrl+Shift+F |
 | Split editor right / down | Cmd+\ / Cmd+Alt+\ | Ctrl+\ / Ctrl+Alt+\ |
 | Focus group 1/2/3 | Cmd+1/2/3 | Ctrl+1/2/3 |
+| Move editor into next / previous group | Ctrl+Cmd+Right / Left | Ctrl+Alt+Right / Left |
+| Move editor left / right (in its group) | Cmd+Shift+PageUp / PageDown | Ctrl+Shift+PageUp / PageDown |
 | Find / replace | Cmd+F / Cmd+Alt+F | Ctrl+F / Ctrl+H |
 | Toggle case / whole word / regex (find, search) | Cmd+Alt+C / W / R | Alt+C / W / R |
 | Toggle hex / ASCII find (hex view) | Cmd+Alt+X | Alt+X |
@@ -697,7 +699,7 @@ Broad items not tied to a milestone.
 - ✅ **Terminal config snippets** — [details](docs/plan-done.md)
 - **Live reload of settings**: `settings.toml`, `.workspace` overrides and `keybindings.toml` reloaded when they change (the files themselves load at startup since M8, 8d)
 - **Soft wrap**: now the [Soft wrap](#named-milestones) milestone
-- **Move tabs** (owed from M3; the first of three items replacing "Tab and split management"): "View: Move Editor into Next / Previous Group" (VS Code: Ctrl+Cmd+Right / Left on macOS, Ctrl+Alt+Right / Left on Linux; into a new split to the right when there's no next group, as VS Code) and "View: Move Editor Left / Right" within its group (Cmd+Shift+PageUp / PageDown on macOS, Ctrl+Shift+PageUp / PageDown on Linux); the tab keeps its view (selections, scroll), a group left empty closes; diff tabs move too; Cmd bindings update `docs/terminals/`
+- ✅ **Move tabs** — [details](docs/plan-done.md)
 - **Drag-and-drop tabs** (after Move tabs): drag a tab along its bar to reorder, onto another group's tab bar to move it there, or onto an editor's edge / centre to split / move into it (the drop zone shaded, a theme key); a drag that never leaves its tab is a click; Esc or a release outside cancels
 - **Keyboard resize of splits** (owed from M3): "View: Increase / Decrease Editor Width" and "… Height" (VS Code's, unbound; in the palette) move the active group's nearest divider in that direction by a step (a few cells, clamped like a mouse drag); the ratios are the session's as after a drag
 - **Side panel resizing, finished**: the side panel already resizes by dragging its border (its last column: `Hit::SideBorder` → `Drag::SideBorder`, width in `ui.side_width`, kept in sessions), but it's undiscoverable and rough. Make it VS Code's sash:

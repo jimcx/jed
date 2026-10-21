@@ -89,6 +89,14 @@
 //!   `editor.cursor.secondaryUnderline`) for `line` / `underline`, reversed for `block`, mid-line
 //!   and at a line's end; a `.workspace` reload sends the new DECSCUSR once (the bytes enter /
 //!   restore write: `terminal`'s unit tests); a task's own DECSCUSR stays in its terminal.
+//! - `move_tabs`: "View: Move Editor into Next / Previous Group" (Ctrl+Cmd+Right / Left; Linux
+//!   Ctrl+Alt+Right / Left) moves the active tab, its selections and scroll kept, into the
+//!   neighbouring group in reading order (right of its active tab), which gets the focus (also
+//!   from the explorer); with no next group into a new split to the right, a group's only tab
+//!   with none stays put, no previous group does nothing; a group left empty closes; into a group showing the same buffer the tab there takes the
+//!   moved view (no duplicate); diff tabs move too. "View: Move Editor Left / Right"
+//!   (Cmd+Shift+PageUp / PageDown; Linux Ctrl) swaps it with its neighbour, no wrap, still
+//!   active and shown in a full tab bar.
 
 mod render_whitespace {
     use std::fs;
@@ -5307,5 +5315,278 @@ mod cursor_style {
         let contents = app.tasks.get(id).unwrap().screen().screen().contents();
         assert!(contents.starts_with("ab\n"), "{contents:?}");
         assert_eq!(sent(&mut app), "", "jed's shape kept");
+    }
+}
+
+mod move_tabs {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::{App, Focus, InitialFile};
+    use crate::buffer::Buffer;
+    use crate::diff_view::Pair;
+    use crate::group::Tab;
+    use crate::workspace::trust::TrustStore;
+    use crate::workspace::{self, Workspace};
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    /// Ctrl+Cmd on macOS, Ctrl+Alt on Linux.
+    fn group_mods() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER | M::CONTROL
+        } else {
+            M::CONTROL | M::ALT
+        }
+    }
+
+    fn to_next(app: &mut App) {
+        app.press(K::Right, group_mods());
+    }
+
+    fn to_previous(app: &mut App) {
+        app.press(K::Left, group_mods());
+    }
+
+    /// A workspace with `names` (40 numbered lines each), the first open, the others opened
+    /// after it in the same group (the last active).
+    fn open_app(dir: &tempfile::TempDir, names: &[&str]) -> (App, PathBuf) {
+        let root = workspace::normalize(dir.path());
+        for name in names {
+            let text: String = (1..=40).map(|i| format!("{name} {i}\n")).collect();
+            fs::write(root.join(name), text).unwrap();
+        }
+        let buffer = Buffer::open(&root.join(names[0])).unwrap();
+        let ws = Workspace::load(root.clone());
+        let trust = TrustStore::load(root.join("trust.toml"));
+        let mut app = App::new(ws, trust, Some(InitialFile { buffer, goto: None }), true);
+        app.test_start();
+        for name in &names[1..] {
+            app.test_open(Buffer::open(&root.join(name)).unwrap());
+        }
+        (app, root)
+    }
+
+    /// Each group's tabs (file names, `diff:` + name for a diff tab) in reading order.
+    fn layout(app: &App) -> Vec<Vec<String>> {
+        let name = |t: &Tab| match t {
+            Tab::Text(t) => app.buffers.get(t.buffer).unwrap().name(),
+            Tab::Diff(d) => format!("diff:{}", d.path.file_name().unwrap().to_string_lossy()),
+        };
+        app.groups
+            .ids()
+            .into_iter()
+            .map(|g| app.groups.get(g).unwrap().tabs.iter().map(name).collect())
+            .collect()
+    }
+
+    fn active_name(app: &App) -> String {
+        app.active_buffer().unwrap().name()
+    }
+
+    /// The active view's primary head (byte), top line and left column.
+    fn view_state(app: &App) -> (usize, usize, usize) {
+        let v = &app.group().active_tab().unwrap().view;
+        (v.selections.primary().head.0, v.top_line(), v.left_col)
+    }
+
+    fn draw(app: &mut App, w: u16) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(w, 20)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn into_the_next_group_splits_right_keeping_the_view_and_back_closes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, &["a.txt", "b.txt"]);
+        draw(&mut app, 80);
+        // A place in b.txt: line 30 (scrolled), a selection.
+        for _ in 0..29 {
+            app.press(K::Down, M::NONE);
+        }
+        app.press(K::Right, M::SHIFT);
+        draw(&mut app, 80);
+        let before = view_state(&app);
+        assert!(before.1 > 0, "scrolled");
+        let first = app.groups.active;
+
+        to_next(&mut app);
+        assert_eq!(layout(&app), [vec!["a.txt"], vec!["b.txt"]]);
+        assert_ne!(app.groups.active, first, "the new group has the focus");
+        assert_eq!(app.groups.ids()[1], app.groups.active, "split to the right");
+        assert_eq!((active_name(&app), view_state(&app)), ("b.txt".into(), before));
+        let sel = app.group().active_tab().unwrap().view.selections.primary();
+        assert_ne!(sel.anchor, sel.head, "the selection kept");
+        assert_eq!(app.ui.focus, Focus::Editor);
+
+        // Its group's only tab with no group to the right: nothing.
+        to_next(&mut app);
+        assert_eq!(layout(&app), [vec!["a.txt"], vec!["b.txt"]]);
+
+        // Back into the first group, right of its active tab; the emptied group closes.
+        to_previous(&mut app);
+        assert_eq!(layout(&app), [vec!["a.txt", "b.txt"]]);
+        assert_eq!((app.groups.active, active_name(&app)), (first, "b.txt".into()));
+        assert_eq!(view_state(&app), before);
+        // No previous group: nothing.
+        to_previous(&mut app);
+        assert_eq!(layout(&app), [vec!["a.txt", "b.txt"]]);
+        // Undo still works on the moved tab's buffer.
+        app.type_text("x");
+        app.press(K::Char('z'), cmd());
+        assert!(!app.active_buffer().unwrap().is_dirty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn groups_in_reading_order_landing_right_of_the_active_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, &["a", "b", "c", "d", "e"]);
+        // From the explorer: the tab moves and the editor gets the focus.
+        app.press(K::Char('e'), cmd() | M::SHIFT);
+        assert_eq!(app.ui.focus, Focus::SidePanel);
+        to_next(&mut app);
+        assert_eq!(app.ui.focus, Focus::Editor);
+        assert_eq!(layout(&app), [vec!["a", "b", "c", "d"], vec!["e"]]);
+        app.press(K::Char('1'), cmd());
+        to_next(&mut app);
+        assert_eq!(layout(&app), [vec!["a", "b", "c"], vec!["e", "d"]]);
+
+        // Into the second group with its first tab active: right of it, not at the end.
+        app.press(K::PageUp, M::CONTROL);
+        assert_eq!(active_name(&app), "e");
+        app.press(K::Char('1'), cmd());
+        to_next(&mut app);
+        assert_eq!(layout(&app), [vec!["a", "b"], vec!["e", "c", "d"]]);
+        assert_eq!(active_name(&app), "c");
+
+        // The second group's next is a new third one; the third's previous is the second.
+        to_next(&mut app);
+        assert_eq!(layout(&app), [vec!["a", "b"], vec!["e", "d"], vec!["c"]]);
+        to_previous(&mut app);
+        assert_eq!(layout(&app), [vec!["a", "b"], vec!["e", "d", "c"]]);
+        assert_eq!(
+            (app.groups.ids()[1], active_name(&app)),
+            (app.groups.active, "c".into())
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_only_tab_of_the_only_group_stays_put() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, &["a.txt"]);
+        to_next(&mut app);
+        to_previous(&mut app);
+        assert_eq!(layout(&app), [vec!["a.txt"]]);
+        assert_eq!(app.groups.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn into_a_group_showing_the_buffer_that_tab_takes_the_moved_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, &["a.txt", "b.txt"]);
+        // Split: the second group shows b.txt too; back in the first, b.txt's cursor moves
+        // elsewhere and it moves right.
+        app.press(K::Char('\\'), cmd());
+        let second = app.groups.active;
+        app.press(K::Char('1'), cmd());
+        let first = app.groups.active;
+        app.press(K::Down, M::NONE);
+        app.press(K::Down, M::NONE);
+        let moved = view_state(&app);
+
+        to_next(&mut app);
+        assert_eq!(layout(&app), [vec!["a.txt"], vec!["b.txt"]]);
+        assert_eq!(app.groups.active, second);
+        assert_eq!(view_state(&app), moved, "the moved view, not the one that was there");
+        assert_eq!(app.groups.tabs_showing(app.group().active_tab().unwrap().buffer), 1);
+
+        // a.txt, the first group's last tab: its group closes.
+        app.press(K::Char('1'), cmd());
+        assert_eq!(app.groups.active, first);
+        to_next(&mut app);
+        assert_eq!(layout(&app), [vec!["b.txt", "a.txt"]]);
+        assert_eq!((app.groups.active, active_name(&app)), (second, "a.txt".into()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn diff_tabs_move_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, root) = open_app(&dir, &["a.txt", "b.txt"]);
+        app.open_diff(root.join("a.txt"), Pair::SAVED);
+        let diff = |app: &App| app.group().active_diff().map(|d| (d.id, d.path.clone(), d.pair));
+        let before = diff(&app).expect("a diff tab");
+        app.group_mut().active_diff_mut().unwrap().left_col = 3;
+
+        to_next(&mut app);
+        assert_eq!(layout(&app), [vec!["a.txt", "b.txt"], vec!["diff:a.txt"]]);
+        assert_eq!(diff(&app), Some(before), "the same tab");
+        assert_eq!(app.group().active_diff().unwrap().left_col, 3);
+        assert!(
+            app.settle(|a| a.group().active_diff().unwrap().doc.is_some()).await,
+            "it loads"
+        );
+        to_previous(&mut app);
+        assert_eq!(layout(&app), [vec!["a.txt", "b.txt", "diff:a.txt"]]);
+        assert!(app.group().active_diff().is_some());
+    }
+
+    fn move_left(app: &mut App) {
+        app.press(K::PageUp, cmd() | M::SHIFT);
+    }
+
+    fn move_right(app: &mut App) {
+        app.press(K::PageDown, cmd() | M::SHIFT);
+    }
+
+    /// The tab bar's row as drawn.
+    fn tab_bar(term: &Terminal<TestBackend>) -> String {
+        let buf = term.backend().buffer();
+        (0..buf.area.width).map(|x| buf[(x, 0)].symbol()).collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn left_and_right_swap_with_a_neighbour_without_wrapping() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = ["one.txt", "two.txt", "three.txt", "four.txt", "five.txt", "six.txt"];
+        let (mut app, _) = open_app(&dir, &names);
+        app.press(K::Down, M::NONE);
+        let view = view_state(&app);
+        // six.txt is last: right does nothing.
+        move_right(&mut app);
+        assert_eq!(layout(&app)[0], names);
+        move_left(&mut app);
+        move_left(&mut app);
+        assert_eq!(
+            layout(&app)[0],
+            ["one.txt", "two.txt", "three.txt", "six.txt", "four.txt", "five.txt"]
+        );
+        assert_eq!((app.group().active, active_name(&app)), (3, "six.txt".into()));
+        assert_eq!(view_state(&app), view);
+        for _ in 0..5 {
+            move_left(&mut app);
+        }
+        assert_eq!(layout(&app)[0][0], "six.txt", "stops at the start");
+        assert_eq!(app.group().active, 0);
+
+        // In a tab bar too narrow for all of them, the moved tab stays in view.
+        let term = draw(&mut app, 40);
+        assert!(tab_bar(&term).contains("six.txt"), "{}", tab_bar(&term));
+        for _ in 0..5 {
+            move_right(&mut app);
+        }
+        assert_eq!(layout(&app)[0][5], "six.txt");
+        let term = draw(&mut app, 40);
+        assert!(tab_bar(&term).contains("six.txt"), "{}", tab_bar(&term));
     }
 }

@@ -120,6 +120,13 @@ pub enum Command {
     FocusGroup(u8),
     SplitRight,
     SplitDown,
+    /// Move the active tab into the next group in reading order (a new group split right when
+    /// there's none) or the previous one; a group left empty closes.
+    MoveTabToNextGroup,
+    MoveTabToPreviousGroup,
+    /// Move the active tab one place left / right in its group (no wrap).
+    MoveTabLeft,
+    MoveTabRight,
     Explorer(ExplorerCommand),
     /// Command palette: every command, with its binding.
     ShowCommands,
@@ -718,7 +725,14 @@ impl Command {
             Command::FocusExplorer,
         ]);
         all.extend((1..=PALETTE_GROUPS).map(Command::FocusGroup));
-        all.extend([Command::SplitRight, Command::SplitDown]);
+        all.extend([
+            Command::SplitRight,
+            Command::SplitDown,
+            Command::MoveTabToNextGroup,
+            Command::MoveTabToPreviousGroup,
+            Command::MoveTabLeft,
+            Command::MoveTabRight,
+        ]);
         all.extend(ExplorerCommand::ALL.map(Command::Explorer));
         all.extend([
             Command::ShowCommands,
@@ -847,6 +861,10 @@ impl Command {
             Command::FocusGroup(n) => format!("view.focusGroup{n}"),
             Command::SplitRight => "view.splitRight".into(),
             Command::SplitDown => "view.splitDown".into(),
+            Command::MoveTabToNextGroup => "view.moveEditorToNextGroup".into(),
+            Command::MoveTabToPreviousGroup => "view.moveEditorToPreviousGroup".into(),
+            Command::MoveTabLeft => "view.moveEditorLeft".into(),
+            Command::MoveTabRight => "view.moveEditorRight".into(),
             Command::Explorer(c) => format!(
                 "explorer.{}",
                 match c {
@@ -1147,6 +1165,10 @@ impl Command {
             Command::FocusGroup(n) => return format!("View: Focus Editor Group {n}"),
             Command::SplitRight => "View: Split Editor Right",
             Command::SplitDown => "View: Split Editor Down",
+            Command::MoveTabToNextGroup => "View: Move Editor into Next Group",
+            Command::MoveTabToPreviousGroup => "View: Move Editor into Previous Group",
+            Command::MoveTabLeft => "View: Move Editor Left",
+            Command::MoveTabRight => "View: Move Editor Right",
             Command::Explorer(c) => match c {
                 X::Up => "Explorer: Select Previous",
                 X::Down => "Explorer: Select Next",
@@ -1472,9 +1494,13 @@ mod tests {
             Command::IndentLines => 96,
             Command::OutdentLines => 97,
             Command::ToggleChanges => 98,
+            Command::MoveTabToNextGroup => 99,
+            Command::MoveTabToPreviousGroup => 100,
+            Command::MoveTabLeft => 101,
+            Command::MoveTabRight => 102,
         }
     }
-    const VARIANTS: u8 = 98;
+    const VARIANTS: u8 = 103;
 
     #[test]
     fn all_lists_every_variant() {

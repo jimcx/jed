@@ -236,6 +236,23 @@ impl App {
         self.ui.focus = Focus::Editor;
     }
 
+    /// "Move Editor into Next / Previous Group": the active tab, its view as it is, into the
+    /// neighbouring group (`Groups::move_active_tab`), which gets the focus.
+    pub(super) fn move_tab_to_group(&mut self, forward: bool) {
+        if let Some((buf, _)) = self.active_mut() {
+            buf.seal_undo();
+        }
+        if self.groups.move_active_tab(forward) {
+            self.ui.focus = Focus::Editor;
+            self.reveal_active();
+        }
+    }
+
+    /// "Move Editor Left / Right": the active tab one place along its group's tab bar.
+    pub(super) fn move_tab(&mut self, delta: isize) {
+        self.group_mut().move_active(delta);
+    }
+
     /// Closes a tab; asks first if it's the last tab (in any group) showing an unsaved buffer.
     pub(super) fn close_tab(&mut self, group: GroupId, index: usize) {
         let Some(tab) = self.groups.get(group).and_then(|g| g.tabs.get(index)) else {

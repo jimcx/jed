@@ -613,6 +613,14 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         global.push((KeyCode::Right, cmd | alt, Command::NextTab));
         global.push((KeyCode::Left, cmd | alt, Command::PrevTab));
     }
+    // VS Code's: Ctrl+Cmd+Right / Left on macOS, Ctrl+Alt+Right / Left on Linux.
+    let group_move = if mac { cmd | ctrl } else { ctrl | alt };
+    global.extend([
+        (KeyCode::Right, group_move, Command::MoveTabToNextGroup),
+        (KeyCode::Left, group_move, Command::MoveTabToPreviousGroup),
+        (KeyCode::PageUp, cmd | shift, Command::MoveTabLeft),
+        (KeyCode::PageDown, cmd | shift, Command::MoveTabRight),
+    ]);
     global.extend([
         (KeyCode::Char('p'), cmd | shift, Command::ShowCommands),
         (KeyCode::F(1), none, Command::ShowCommands),

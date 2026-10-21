@@ -1018,6 +1018,11 @@ async fn tools_every_command_on_a_log_tab_leaves_it_alone() {
                 | Command::CloseTab
                 | Command::NextTab
                 | Command::PrevTab
+                // They move the tab itself (`todo_tests::move_tabs`).
+                | Command::MoveTabToNextGroup
+                | Command::MoveTabToPreviousGroup
+                | Command::MoveTabLeft
+                | Command::MoveTabRight
                 | Command::OpenUserSettings
                 | Command::OpenLogFile
                 | Command::ClearToolLog

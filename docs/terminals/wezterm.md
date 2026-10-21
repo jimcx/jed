@@ -54,6 +54,8 @@ local release = {
   { '1', 'CMD' }, { '2', 'CMD' }, { '3', 'CMD' },
   { '\\', 'CMD' }, { '\\', 'CMD|ALT' },
   { 'RightArrow', 'CMD|ALT' }, { 'LeftArrow', 'CMD|ALT' },
+  { 'RightArrow', 'CMD|CTRL' }, { 'LeftArrow', 'CMD|CTRL' },
+  { 'PageUp', 'CMD|SHIFT' }, { 'PageDown', 'CMD|SHIFT' },
   { 'p', 'CMD|SHIFT' }, { 'p', 'CMD' },
   { 'j', 'CMD' }, { 'm', 'CMD|SHIFT' },
   { 'u', 'CMD|SHIFT' },

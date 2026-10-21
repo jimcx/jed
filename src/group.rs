@@ -55,6 +55,16 @@ impl Tab {
     pub fn buffer(&self) -> Option<BufferId> {
         self.text().map(|t| t.buffer)
     }
+
+    /// Shows the same thing as `other`: the same buffer, or a diff of the same file and sides.
+    /// A group never has two such tabs (opening one shows the other).
+    pub fn same_as(&self, other: &Tab) -> bool {
+        match (self, other) {
+            (Tab::Text(a), Tab::Text(b)) => a.buffer == b.buffer,
+            (Tab::Diff(a), Tab::Diff(b)) => a.path == b.path && a.pair == b.pair,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -134,6 +144,34 @@ impl Group {
         tab
     }
 
+    /// Takes in a tab moved from another group and activates it: it replaces a tab showing the
+    /// same thing (`Tab::same_as`; VS Code shows the one already there, with the moved view),
+    /// else it opens to the right of the active one.
+    pub fn take(&mut self, tab: Tab) -> usize {
+        match self.tabs.iter().position(|t| t.same_as(&tab)) {
+            Some(i) => {
+                self.tabs[i] = tab;
+                self.active = i;
+                i
+            }
+            None => self.open_tab(tab),
+        }
+    }
+
+    /// Swaps the active tab with its neighbour `delta` (±1) places along; it stays active.
+    /// Nothing at either end (no wrap, as VS Code). False when nothing moved.
+    pub fn move_active(&mut self, delta: isize) -> bool {
+        let Some(to) = self.active.checked_add_signed(delta).filter(|&to| to < self.tabs.len()) else {
+            return false;
+        };
+        if self.active >= self.tabs.len() {
+            return false;
+        }
+        self.tabs.swap(self.active, to);
+        self.active = to;
+        true
+    }
+
     pub fn cycle(&mut self, delta: isize) {
         if !self.tabs.is_empty() {
             let n = self.tabs.len() as isize;
@@ -211,6 +249,44 @@ impl Groups {
         self.map
             .iter_mut()
             .flat_map(|(id, g)| g.tabs.iter_mut().filter_map(move |t| Some((*id, t.diff_mut()?))))
+    }
+
+    /// Moves the active group's active tab (its view as it is) into the next group in reading
+    /// order (`forward`) or the previous one, which becomes active; a group left without tabs
+    /// closes. With no next group it goes into a new group split to the right (VS Code), unless
+    /// it's its group's only tab: that would end as it began, so nothing happens. With no
+    /// previous group nothing happens. False when nothing moved.
+    pub fn move_active_tab(&mut self, forward: bool) -> bool {
+        let from = self.active;
+        let source = self.active_group();
+        if source.active >= source.tabs.len() {
+            return false;
+        }
+        let only = source.tabs.len() == 1;
+        let ids = self.ids();
+        let Some(here) = ids.iter().position(|&g| g == from) else {
+            return false;
+        };
+        let next = if forward {
+            ids.get(here + 1).copied()
+        } else {
+            here.checked_sub(1).map(|i| ids[i])
+        };
+        let to = match next {
+            Some(to) => to,
+            None if forward && !only => self.split_empty(SplitDir::Right),
+            None => return false,
+        };
+        let source = self.map.get_mut(&from).expect("source group exists");
+        let index = source.active;
+        let tab = source.close(index);
+        let empty = source.tabs.is_empty();
+        self.map.get_mut(&to).expect("target group exists").take(tab);
+        self.active = to;
+        if empty {
+            self.remove(from);
+        }
+        true
     }
 
     /// Splits the active group. The new group shows the active tab's buffer (same cursor and
@@ -402,5 +478,77 @@ mod tests {
         assert_eq!(gs.active, first);
         assert!(!gs.remove(first), "the last group stays");
         assert_eq!(gs.len(), 1);
+    }
+
+    fn buffers(g: &Group) -> Vec<BufferId> {
+        g.tabs.iter().filter_map(Tab::buffer).collect()
+    }
+
+    #[test]
+    fn move_active_swaps_with_a_neighbour_without_wrapping() {
+        let mut g = group(3);
+        g.active = 0;
+        assert!(!g.move_active(-1), "no wrap at the start");
+        assert!(g.move_active(1));
+        assert_eq!((buffers(&g), g.active), (vec![1, 0, 2], 1));
+        assert!(g.move_active(1));
+        assert!(!g.move_active(1), "no wrap at the end");
+        assert_eq!((buffers(&g), g.active), (vec![1, 2, 0], 2));
+        assert!(!Group::default().move_active(1));
+    }
+
+    #[test]
+    fn take_opens_right_of_active_or_replaces_the_same_buffer() {
+        let mut g = group(3);
+        g.active = 0;
+        assert_eq!(
+            g.take(Tab::Text(TextTab {
+                buffer: 7,
+                view: View::new()
+            })),
+            1
+        );
+        assert_eq!(buffers(&g), [0, 7, 1, 2]);
+        let mut view = View::new();
+        view.left_col = 4;
+        assert_eq!(g.take(Tab::Text(TextTab { buffer: 2, view })), 3);
+        assert_eq!((buffers(&g), g.active), (vec![0, 7, 1, 2], 3));
+        assert_eq!(g.active_tab().unwrap().view.left_col, 4, "the moved view");
+    }
+
+    #[test]
+    fn moving_a_tab_between_groups() {
+        let mut gs = Groups::default();
+        assert!(!gs.move_active_tab(true), "no tab");
+        gs.active_group_mut().open(1, View::new());
+        assert!(!gs.move_active_tab(true), "the only tab of the only group: nothing");
+        assert!(!gs.move_active_tab(false));
+        gs.active_group_mut().open(2, View::new());
+        let first = gs.active;
+
+        assert!(gs.move_active_tab(true), "no next group: splits right");
+        let second = gs.active;
+        assert_ne!(second, first);
+        assert_eq!(gs.ids(), [first, second]);
+        assert_eq!(buffers(gs.get(first).unwrap()), [1]);
+        assert_eq!(buffers(gs.active_group()), [2]);
+        assert!(
+            !gs.move_active_tab(true),
+            "the new group's only tab, nothing to the right"
+        );
+
+        assert!(gs.move_active_tab(false), "back to the first group");
+        assert_eq!((gs.active, gs.len()), (first, 1), "the empty group closed");
+        assert_eq!((buffers(gs.active_group()), gs.active_group().active), (vec![1, 2], 1));
+        assert!(!gs.move_active_tab(false), "no previous group");
+
+        // Into a group already showing the buffer: that tab is replaced, not duplicated.
+        let third = gs.split(SplitDir::Right, 0);
+        assert_eq!(buffers(gs.active_group()), [2]);
+        gs.active = first;
+        assert!(gs.move_active_tab(true));
+        assert_eq!(gs.active, third);
+        assert_eq!(buffers(gs.active_group()), [2]);
+        assert_eq!(buffers(gs.get(first).unwrap()), [1]);
     }
 }

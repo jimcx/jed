@@ -996,6 +996,10 @@ impl App {
             }
             Command::SplitRight => self.split(SplitDir::Right),
             Command::SplitDown => self.split(SplitDir::Down),
+            Command::MoveTabToNextGroup => self.move_tab_to_group(true),
+            Command::MoveTabToPreviousGroup => self.move_tab_to_group(false),
+            Command::MoveTabLeft => self.move_tab(-1),
+            Command::MoveTabRight => self.move_tab(1),
             Command::Explorer(c) => self.explorer_command(c),
             Command::Copy => self.copy(false),
             Command::Cut => self.copy(true),

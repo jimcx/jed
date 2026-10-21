@@ -1797,6 +1797,11 @@ async fn milestone_10_editor_commands_on_a_diff_tab_do_nothing() {
                 | Command::CloseTab
                 | Command::NextTab
                 | Command::PrevTab
+                // They move the tab itself (`todo_tests::move_tabs`).
+                | Command::MoveTabToNextGroup
+                | Command::MoveTabToPreviousGroup
+                | Command::MoveTabLeft
+                | Command::MoveTabRight
                 | Command::StageFile
                 | Command::UnstageFile
                 | Command::StageHunk

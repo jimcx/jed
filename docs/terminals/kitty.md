@@ -70,6 +70,10 @@ map cmd+backslash
 map cmd+alt+backslash
 map cmd+alt+right
 map cmd+alt+left
+map cmd+ctrl+right
+map cmd+ctrl+left
+map cmd+shift+page_up
+map cmd+shift+page_down
 map cmd+shift+p
 map cmd+p
 map cmd+j
