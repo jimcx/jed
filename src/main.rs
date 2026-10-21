@@ -28,6 +28,7 @@ mod git_history_tests;
 mod git_show;
 mod group;
 mod grouped;
+mod hex;
 mod history;
 mod hover;
 mod indent;

@@ -13,10 +13,12 @@
 //! | `render_whitespace`| str  | `"all"`   | Draw spaces `·` / tabs `→`: `none` `boundary` `selection` `trailing` `all` |
 //! | `cursor_style`     | str  | `"line"`  | The cursor's shape: `line` (a bar), `block` or `underline`     |
 //! | `cursor_blinking`  | bool | true      | The cursor blinks                                              |
+//! | `hex_bytes_per_line` | int | 32       | A hex tab's widest row: a power of two from 1 to 64            |
 //!
 //! Precedence, per key: defaults ← `settings.toml` ← `.workspace` (`layer`).
 //!
-//! Errors: in `settings.toml` an unknown key or a value of the wrong type is reported and skipped,
+//! Errors: in `settings.toml` an unknown key or a value of the wrong type (or out of range, as a
+//! `hex_bytes_per_line` that isn't a power of two from 1 to 64) is reported and skipped,
 //! the other keys still apply (VS Code warns about unknown settings and ignores them); a TOML syntax
 //! error keeps the defaults. `.workspace` is stricter (`deny_unknown_fields`): any error rejects the
 //! whole file and keeps its last good version, since it also holds the commands trust covers.
@@ -56,6 +58,21 @@ pub struct SettingsOverrides {
     pub cursor_style: Option<CursorStyle>,
     /// The cursor blinks (VS Code's `editor.cursorBlinking`, here only on or off).
     pub cursor_blinking: Option<bool>,
+    /// A hex tab's widest row in bytes; anything but a power of two from 1 to 64 is an error.
+    #[serde(deserialize_with = "hex_bytes_per_line")]
+    pub hex_bytes_per_line: Option<usize>,
+}
+
+fn hex_bytes_per_line<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
+    let n = usize::deserialize(d)?;
+    if n.is_power_of_two() && n <= crate::hex::MAX_BYTES_PER_ROW {
+        Ok(Some(n))
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "must be a power of two from 1 to {}, not {n}",
+            crate::hex::MAX_BYTES_PER_ROW
+        )))
+    }
 }
 
 impl SettingsOverrides {
@@ -90,6 +107,9 @@ impl SettingsOverrides {
         }
         if let Some(on) = self.cursor_blinking {
             s.cursor_blinking = on;
+        }
+        if let Some(n) = self.hex_bytes_per_line {
+            s.hex_bytes_per_line = n;
         }
     }
 }
@@ -207,6 +227,7 @@ pub const TEMPLATE: &str = "\
 # render_whitespace = \"all\"  # none, boundary, selection, trailing or all
 # cursor_style = \"line\"  # line, block or underline
 # cursor_blinking = true
+# hex_bytes_per_line = 32  # a hex tab's widest row: 1, 2, 4, 8, 16, 32 or 64 bytes
 ";
 
 #[cfg(test)]
@@ -224,7 +245,7 @@ mod tests {
         let o = set(
             "[settings]\ntab_width = 2\ninsert_spaces = false\nsyntax_max_bytes = 10\nauto_close_pairs = false\n\
              auto_indent = false\nmatch_brackets = false\nquick_suggestions = false\nrender_whitespace = \"trailing\"\n\
-             cursor_style = \"block\"\ncursor_blinking = false\n",
+             cursor_style = \"block\"\ncursor_blinking = false\nhex_bytes_per_line = 16\n",
         );
         assert_eq!(
             o,
@@ -239,6 +260,7 @@ mod tests {
                 render_whitespace: Some(RenderWhitespace::Trailing),
                 cursor_style: Some(CursorStyle::Block),
                 cursor_blinking: Some(false),
+                hex_bytes_per_line: Some(16),
             }
         );
     }
@@ -285,6 +307,43 @@ mod tests {
         assert_eq!(u.overrides.cursor_blinking, Some(false), "the other key still applies");
         assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
         assert!(u.errors[0].contains("`cursor_style`"), "{:?}", u.errors);
+    }
+
+    #[test]
+    fn hex_bytes_per_line_must_be_a_power_of_two_up_to_64() {
+        assert_eq!(Settings::default().hex_bytes_per_line, 32);
+        for n in [1, 2, 4, 8, 16, 32, 64] {
+            let o = set(&format!("[settings]\nhex_bytes_per_line = {n}\n"));
+            assert_eq!(layer(&o, &SettingsOverrides::default()).hex_bytes_per_line, n);
+        }
+        for bad in ["0", "3", "48", "128", "-16", "\"16\""] {
+            let u = parse(&format!("[settings]\nhex_bytes_per_line = {bad}\ntab_width = 2\n"));
+            assert_eq!(u.overrides.hex_bytes_per_line, None, "{bad}");
+            assert_eq!(u.overrides.tab_width, Some(2), "the other key still applies");
+            assert_eq!(u.errors.len(), 1, "{bad}: {:?}", u.errors);
+            assert!(u.errors[0].contains("`hex_bytes_per_line`"), "{:?}", u.errors);
+            assert_eq!(
+                layer(&u.overrides, &SettingsOverrides::default()).hex_bytes_per_line,
+                32
+            );
+        }
+        let u = parse("[settings]\nhex_bytes_per_line = 24\n");
+        assert!(
+            u.errors[0].contains("power of two from 1 to 64, not 24"),
+            "{:?}",
+            u.errors
+        );
+        // Through the file, as `main` loads it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        std::fs::write(&path, "[settings]\nhex_bytes_per_line = 8\n").unwrap();
+        assert_eq!(load(&path).overrides.hex_bytes_per_line, Some(8));
+        // `.workspace` rejects the whole file, as for any badly typed value.
+        use crate::workspace::config::WorkspaceConfig;
+        let ws = WorkspaceConfig::parse("[settings]\nhex_bytes_per_line = 16\n").unwrap();
+        assert_eq!(ws.settings.hex_bytes_per_line, Some(16));
+        let err = WorkspaceConfig::parse("[settings]\nhex_bytes_per_line = 12\n").unwrap_err();
+        assert!(err.contains("power of two"), "{err}");
     }
 
     #[test]
@@ -425,6 +484,7 @@ mod tests {
             render_whitespace: Some(RenderWhitespace::All),
             cursor_style: Some(CursorStyle::Line),
             cursor_blinking: Some(true),
+            hex_bytes_per_line: Some(1),
         };
         let fields = toml::Table::try_from(&every).unwrap();
         assert_eq!(
@@ -446,7 +506,8 @@ mod tests {
                 s.quick_suggestions,
                 s.render_whitespace,
                 s.cursor_style,
-                s.cursor_blinking
+                s.cursor_blinking,
+                s.hex_bytes_per_line
             ),
             (
                 d.auto_indent,
@@ -454,7 +515,8 @@ mod tests {
                 d.quick_suggestions,
                 d.render_whitespace,
                 d.cursor_style,
-                d.cursor_blinking
+                d.cursor_blinking,
+                d.hex_bytes_per_line
             )
         );
         assert!(parse(TEMPLATE).errors.is_empty());

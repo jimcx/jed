@@ -60,6 +60,7 @@ One line each; [docs/dev/modules.md](docs/dev/modules.md) has every module's typ
 - `palette.rs` — palette model: `Picker`s, `Mode`s, row builders, `FileMatcher`
 - `field.rs` — `TextField`, the one-line input
 - `find.rs` — `FindWidget`, the find / replace widget's model + match cache
+- `hex.rs` — the hex view's model: `HexDoc`, `Layout` (rows as `hexdump -C`), byte `Query` find / count
 - `search.rs` — the one matcher (`Matcher`, `Replacement`) for find, Cmd+D and workspace search
 - `workspace_search.rs` — workspace search job, `Results`; `#[cfg(test)] reference`
 - `path_filter.rs` — files to include / exclude (`PathFilter`)

@@ -42,6 +42,9 @@ pub struct Settings {
     pub cursor_style: CursorStyle,
     /// The terminal cursor blinks: `[settings] cursor_blinking`.
     pub cursor_blinking: bool,
+    /// A hex tab's widest row, in bytes (a power of two from 1 to 64: `hex::Layout::fit` takes
+    /// the largest power of two up to this that fits): `[settings] hex_bytes_per_line`.
+    pub hex_bytes_per_line: usize,
 }
 
 /// VS Code's `editor.cursorStyle`, the shapes a terminal can draw: a bar before the char, a
@@ -89,6 +92,7 @@ impl Default for Settings {
             render_whitespace: RenderWhitespace::All,
             cursor_style: CursorStyle::Line,
             cursor_blinking: true,
+            hex_bytes_per_line: 32,
         }
     }
 }
