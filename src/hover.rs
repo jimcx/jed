@@ -11,6 +11,11 @@
 //!   dropped, links show their text, backslash escapes and the common HTML entities are
 //!   unescaped, list markers become "•", a quote's `>` is dropped; blank lines are collapsed
 //!   and trimmed around rules and at the ends. Single `*` / `_` stay (`*args`, `snake_case`).
+//! - `diagnostic_lines` puts the diagnostics under the pointer / cursor in the popup before the
+//!   server's answer (VS Code's): per diagnostic, most severe first, a `Kind::Diagnostic` line
+//!   (the severity icon, then the message's first line), the message's other lines (plain text,
+//!   kept) and a `Kind::Source` line (`source(code)`, drawn dimmed), each indented past the icon;
+//!   several separated by a rule.
 //! - `wrap` breaks lines to a width (text at spaces, else anywhere; code anywhere) into `Row`s
 //!   that point into the lines.
 
@@ -23,6 +28,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::buffer::BufferId;
 use crate::buffer::pos::{ByteIdx, LspPos};
+use crate::diagnostics::{Diagnostic, Severity};
 use crate::layout::GroupId;
 
 /// How long the mouse rests on text before its hover is asked for (VS Code's `hover.delay`).
@@ -39,6 +45,10 @@ pub enum Kind {
     Heading,
     Code,
     Rule,
+    /// A diagnostic's first line: its severity's icon (drawn in that colour), then its message.
+    Diagnostic(Severity),
+    /// Who reports a diagnostic, `source(code)` (drawn dimmed).
+    Source,
 }
 
 /// One line of hover content.
@@ -57,6 +67,11 @@ impl Line {
             kind,
             code: Vec::new(),
         }
+    }
+
+    /// A rule between sections.
+    pub fn rule() -> Self {
+        Self::new(Kind::Rule, String::new())
     }
 
     fn is_blank(&self) -> bool {
@@ -265,6 +280,43 @@ fn entity(s: &str) -> Option<(char, usize)> {
     None
 }
 
+/// The hover's diagnostics section (see the module doc); empty for none.
+pub fn diagnostic_lines(diags: &[&Diagnostic]) -> Vec<Line> {
+    let mut sorted = diags.to_vec();
+    sorted.sort_by_key(|d| d.severity);
+    let mut out = Vec::new();
+    for (i, d) in sorted.iter().enumerate() {
+        if i > 0 {
+            out.push(Line::new(Kind::Rule, String::new()));
+        }
+        let icon = d.severity.icon();
+        let indent = " ".repeat(icon.width() + 1);
+        let message = d.message.trim_end();
+        let mut lines = message.lines();
+        let first = lines.next().unwrap_or("");
+        let first = format!("{icon} {}", clean(first.trim_end()));
+        out.push(Line::new(Kind::Diagnostic(d.severity), first.trim_end().to_string()));
+        out.extend(lines.map(|l| {
+            let text = if l.trim().is_empty() {
+                String::new()
+            } else {
+                format!("{indent}{}", clean(l.trim_end()))
+            };
+            Line::new(Kind::Text, text)
+        }));
+        let source = match (&d.source, &d.code) {
+            (Some(s), Some(c)) => Some(format!("{s}({c})")),
+            (Some(s), None) => Some(s.clone()),
+            (None, Some(c)) => Some(c.clone()),
+            (None, None) => None,
+        };
+        if let Some(source) = source {
+            out.push(Line::new(Kind::Source, format!("{indent}{}", clean(&source))));
+        }
+    }
+    out
+}
+
 /// Control characters as spaces.
 fn clean(s: &str) -> String {
     s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
@@ -376,7 +428,10 @@ pub struct Popup {
     pub revision: u64,
     /// The view's scroll when it opened (top line, left column): scrolling closes it.
     pub scroll: (usize, usize),
-    /// What it's about: anchored at its start; the mouse may move within it.
+    /// Where it's drawn from: the start of the server's range, else of the word.
+    pub anchor: ByteIdx,
+    /// What it's about (the server's range or the word, and the diagnostics' squiggles): the
+    /// mouse may move within it.
     pub range: (ByteIdx, ByteIdx),
     pub lines: Vec<Line>,
     /// Opened by the mouse resting on text (moving off closes it), else by the command.
@@ -436,6 +491,8 @@ mod tests {
                 Kind::Code => format!("code:{}", l.text),
                 Kind::Heading => format!("h:{}", l.text),
                 Kind::Text => l.text.clone(),
+                Kind::Diagnostic(s) => format!("{s:?}:{}", l.text),
+                Kind::Source => format!("src:{}", l.text),
             })
             .collect()
     }
@@ -501,6 +558,60 @@ mod tests {
         // Rules: one between sections however many (and blank lines) there are; none at the ends.
         let h = parse(&json!({ "contents": ["a\n---\n", "\n***\n\nb\n\n\n", "---\n"] })).unwrap();
         assert_eq!(texts(&h.lines), ["a", "---", "b"]);
+    }
+
+    fn diagnostic(severity: Severity, message: &str, source: Option<&str>, code: Option<&str>) -> Diagnostic {
+        Diagnostic {
+            severity,
+            message: message.into(),
+            source: source.map(Into::into),
+            code: code.map(Into::into),
+        }
+    }
+
+    /// Most severe first (stable among equals), the icon before the message, its other lines
+    /// kept and indented past the icon, then `source(code)`; a rule between diagnostics.
+    #[test]
+    fn diagnostic_lines_show_icon_message_and_source() {
+        let warn = diagnostic(Severity::Warning, "unused import\n\nremove it  \n", Some("rustc"), None);
+        let err = diagnostic(
+            Severity::Error,
+            "Name `x` used\twhen not defined",
+            Some("ty"),
+            Some("unresolved-reference"),
+        );
+        let hint = diagnostic(Severity::Hint, "", None, Some("E0425"));
+        let info = diagnostic(Severity::Info, "first info", None, None);
+        let info2 = diagnostic(Severity::Info, "second info", None, None);
+        let lines = diagnostic_lines(&[&warn, &info, &hint, &err, &info2]);
+        assert_eq!(
+            texts(&lines),
+            [
+                "Error:⊗ Name `x` used when not defined",
+                "src:  ty(unresolved-reference)",
+                "---",
+                "Warning:⚠ unused import",
+                "",
+                "  remove it",
+                "src:  rustc",
+                "---",
+                "Info:ⓘ first info",
+                "---",
+                "Info:ⓘ second info",
+                "---",
+                "Hint:…",
+                "src:  E0425",
+            ]
+        );
+        assert!(lines.iter().all(|l| l.code.is_empty()), "plain text, not markdown");
+        assert!(diagnostic_lines(&[]).is_empty());
+        // Wrapped as text lines are (at spaces).
+        let long = diagnostic(Severity::Error, "aaa bbb ccc", None, None);
+        let lines = diagnostic_lines(&[&long]);
+        let rows = wrap(&lines, 6);
+        let shown: Vec<&str> = rows.iter().map(|r| &lines[r.line].text[r.range.clone()]).collect();
+        assert_eq!(shown, ["⊗ aaa", "bbb", "ccc"]);
+        assert_eq!(width(&lines), 13);
     }
 
     #[test]

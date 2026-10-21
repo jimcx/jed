@@ -161,7 +161,7 @@ fn cmd() -> M {
 }
 
 /// A workspace `<dir>/proj` with `files`, its trust store in `<dir>/state`.
-fn project(dir: &Path, files: &[(&str, &str)]) -> PathBuf {
+pub(crate) fn project(dir: &Path, files: &[(&str, &str)]) -> PathBuf {
     let root = workspace::normalize(dir).join("proj");
     fs::create_dir_all(&root).unwrap();
     for (name, text) in files {
@@ -171,7 +171,7 @@ fn project(dir: &Path, files: &[(&str, &str)]) -> PathBuf {
 }
 
 /// The app on `root` with servers started by `launcher`, no file open yet.
-fn open_app(root: &Path, launcher: Arc<dyn Launcher>) -> App {
+pub(crate) fn open_app(root: &Path, launcher: Arc<dyn Launcher>) -> App {
     let trust = TrustStore::load(root.parent().unwrap().join("state/trust.toml"));
     let mut app = App::new(Workspace::load(root.to_path_buf()), trust, None, true);
     app.lsp.set_launcher(launcher);
@@ -190,7 +190,7 @@ fn encoding(app: &App, language: Language) -> Option<PosEncoding> {
 
 /// Runs a loop turn (`sync_servers` included), lets background work run for a while, then
 /// takes in its events (for "nothing happens" checks).
-async fn idle(app: &mut App) {
+pub(crate) async fn idle(app: &mut App) {
     app.pump();
     tokio::time::sleep(Duration::from_millis(200)).await;
     app.pump();
@@ -530,11 +530,11 @@ async fn milestone_9_real_ty() {
 
 // ---- 9b: document sync ----
 
-fn uri(path: &Path) -> String {
+pub(crate) fn uri(path: &Path) -> String {
     crate::lsp::uri::from_path(path).as_str().to_string()
 }
 
-fn buffer_id(app: &App, path: &Path) -> crate::buffer::BufferId {
+pub(crate) fn buffer_id(app: &App, path: &Path) -> crate::buffer::BufferId {
     app.buffers.find_path(path).expect("buffer open")
 }
 
@@ -579,7 +579,7 @@ fn full_text_changes(fake: &FakeLauncher) -> usize {
 }
 
 /// Opens `path` against `fake` and waits for its `didOpen`.
-async fn open_synced(app: &mut App, fake: &FakeLauncher, path: &Path) {
+pub(crate) async fn open_synced(app: &mut App, fake: &FakeLauncher, path: &Path) {
     open(app, path);
     in_sync(app, fake, path, "didOpen").await;
 }
@@ -1012,7 +1012,7 @@ async fn milestone_9_typing_at_many_cursors_stays_fast() {
 // ---- 9c: diagnostics ----
 
 /// Makes the fake server for `language` publish `diagnostics` for `path` (at `version`, if any).
-fn publish(app: &App, language: Language, path: &Path, version: Option<i32>, diagnostics: Value) {
+pub(crate) fn publish(app: &App, language: Language, path: &Path, version: Option<i32>, diagnostics: Value) {
     let mut params = json!({ "uri": uri(path), "diagnostics": diagnostics });
     if let Some(v) = version {
         params["version"] = json!(v);
@@ -1021,7 +1021,7 @@ fn publish(app: &App, language: Language, path: &Path, version: Option<i32>, dia
 }
 
 /// An LSP diagnostic on one line (`severity`: 1 error … 4 hint).
-fn diag(line: u32, from: u32, to: u32, severity: u8, message: &str) -> Value {
+pub(crate) fn diag(line: u32, from: u32, to: u32, severity: u8, message: &str) -> Value {
     json!({
         "range": { "start": { "line": line, "character": from }, "end": { "line": line, "character": to } },
         "severity": severity,
@@ -1050,16 +1050,16 @@ fn mark(text: &str, severity: Severity, message: &str) -> (String, Severity, Str
     (text.into(), severity, message.into())
 }
 
-fn terminal() -> ratatui::Terminal<ratatui::backend::TestBackend> {
+pub(crate) fn terminal() -> ratatui::Terminal<ratatui::backend::TestBackend> {
     ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 16)).unwrap()
 }
 
-fn draw(term: &mut ratatui::Terminal<ratatui::backend::TestBackend>, app: &mut App) {
+pub(crate) fn draw(term: &mut ratatui::Terminal<ratatui::backend::TestBackend>, app: &mut App) {
     term.draw(|f| crate::ui::render(f, app)).unwrap();
 }
 
 /// The first cell where `needle` is drawn, one char per cell.
-fn find_cells(term: &ratatui::Terminal<ratatui::backend::TestBackend>, needle: &str) -> Option<(u16, u16)> {
+pub(crate) fn find_cells(term: &ratatui::Terminal<ratatui::backend::TestBackend>, needle: &str) -> Option<(u16, u16)> {
     let buf = term.backend().buffer();
     let chars: Vec<String> = needle.chars().map(String::from).collect();
     for y in 0..buf.area.height {
@@ -1077,7 +1077,11 @@ fn find_cells(term: &ratatui::Terminal<ratatui::backend::TestBackend>, needle: &
 }
 
 /// The squiggle colour of a cell (`None`: not underlined).
-fn squiggle(term: &ratatui::Terminal<ratatui::backend::TestBackend>, x: u16, y: u16) -> Option<ratatui::style::Color> {
+pub(crate) fn squiggle(
+    term: &ratatui::Terminal<ratatui::backend::TestBackend>,
+    x: u16,
+    y: u16,
+) -> Option<ratatui::style::Color> {
     let cell = &term.backend().buffer()[(x, y)];
     cell.modifier
         .contains(ratatui::style::Modifier::UNDERLINED)
@@ -2261,19 +2265,19 @@ pub(crate) async fn lsp_project(dir: &Path, files: &[(&str, &str)], utf16: bool)
     (app, fake, root)
 }
 
-fn put_cursor(app: &mut App, at: usize) {
+pub(crate) fn put_cursor(app: &mut App, at: usize) {
     use crate::buffer::pos::ByteIdx;
     use crate::selection::{Selection, Selections};
     let (_, view) = app.active_mut().unwrap();
     view.selections = Selections::single(Selection::cursor(ByteIdx(at)));
 }
 
-fn show_hover(app: &mut App) {
+pub(crate) fn show_hover(app: &mut App) {
     app.press(K::Char('i'), cmd() | M::ALT);
 }
 
 /// The popup's inside as drawn: one string per row (padding and trailing spaces trimmed).
-fn popup_rows(term: &ratatui::Terminal<ratatui::backend::TestBackend>, app: &App) -> Vec<String> {
+pub(crate) fn popup_rows(term: &ratatui::Terminal<ratatui::backend::TestBackend>, app: &App) -> Vec<String> {
     let r = app.hits.hover.expect("popup drawn");
     let buf = term.backend().buffer();
     (r.y + 1..r.y + r.height - 1)

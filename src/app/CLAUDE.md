@@ -17,7 +17,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `syntax.rs` — buffers' language detection and `sync_syntax` (incremental / background parses)
 - `lsp.rs` — `sync_servers`, trust gating, `send_request` / `Pending` / `answer`, diagnostics into buffers, server notices
 - `problems.rs` — the bottom panel and its Problems list (Cmd+J, F8 / Shift+F8)
-- `hover.rs` — hover popup (command and mouse rest), its answers and closing
+- `hover.rs` — hover popup (command and mouse rest): the diagnostics there at once, the server's answer appended, closing
 - `completion.rs` — completion: trigger / quick suggestions, answers, the list's keys, accepting
 - `locations.rs` — go to definition and references, the Locations list
 - `rename.rs` — rename symbol (F2): prepare, prompt, applying the `WorkspaceEdit` across files

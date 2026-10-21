@@ -20,8 +20,7 @@
 //! `test/flush` (out of order, as `test/later`). A `$/cancelRequest` for a held request answers
 //! it at once with RequestCancelled (-32800), as servers do. `fail(method, code, message)` makes
 //! it answer every `method` request with that error instead (e.g. ContentModified, -32801). It
-//! advertises `hoverProvider`,
-//! `definitionProvider`, `completionProvider` (trigger characters `.` and `>`, resolve),
+//! advertises `hoverProvider` (unless `FakeOptions::no_hover`), `definitionProvider`, `completionProvider` (trigger characters `.` and `>`, resolve),
 //! `referencesProvider`, `renameProvider` (with `prepareProvider` unless
 //! `FakeOptions::no_prepare_rename`) and `documentFormattingProvider` (unless
 //! `FakeOptions::no_formatting`); an unscripted `completionItem/resolve` answers with the
@@ -65,6 +64,8 @@ pub struct FakeOptions {
     pub no_prepare_rename: bool,
     /// Don't advertise `documentFormattingProvider`.
     pub no_formatting: bool,
+    /// Don't advertise `hoverProvider`.
+    pub no_hover: bool,
 }
 
 /// The fake's copy of an open document.
@@ -276,7 +277,7 @@ async fn serve(
                         ));
                         let mut caps = json!({
                             "textDocumentSync": options.sync.clone().unwrap_or(json!(2)),
-                            "hoverProvider": true,
+                            "hoverProvider": !options.no_hover,
                             "definitionProvider": true,
                             "completionProvider": {
                                 "triggerCharacters": [".", ">"],

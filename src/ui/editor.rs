@@ -240,17 +240,7 @@ pub fn render(
     let squiggles = Severity::ALL.map(|s| theme.get(s.theme_key()));
     let mut peek = pos::Peek::new(rope);
     let marks = buf.diagnostics.overlapping(view_range.start, view_range.end);
-    let runs = diagnostics::runs(marks, |m| {
-        if m.start < m.end {
-            return (m.start, m.end);
-        }
-        let line_break = |c: Option<char>| matches!(c, None | Some('\n' | '\r'));
-        match (line_break(peek.after(m.start)), line_break(peek.before(m.start))) {
-            (false, _) => (m.start, pos::next_grapheme(rope, m.start)),
-            (true, false) => (pos::prev_grapheme(rope, m.start), m.start),
-            (true, true) => (m.start, ByteIdx(m.start.0 + 1)),
-        }
-    });
+    let runs = diagnostics::runs(marks, |m| diagnostics::extent(rope, &mut peek, m));
     let mut ri = 0;
     let mut squiggle_at = |b: ByteIdx| {
         while ri < runs.len() && runs[ri].end <= b {

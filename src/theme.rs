@@ -275,6 +275,8 @@ impl Theme {
             ("editorHoverWidget.foreground", Style::new().fg(c(0xCCCCCC))),
             ("editorHoverWidget.border", Style::new().fg(c(0x454545))),
             ("editorHoverWidget.heading", Style::new().add_modifier(Modifier::BOLD)),
+            // A diagnostic's `source(code)` in the hover, dimmed (VS Code's descriptionForeground).
+            ("editorHoverWidget.source", Style::new().fg(c(0x9D9D9D))),
             ("textPreformat.foreground", Style::new().fg(c(0xD7BA7D))),
             // The completion list (Dark+'s suggest widget); the detail is Dark+'s
             // `descriptionForeground` (#CCCCCCB3) blended over the widget.

@@ -17,6 +17,8 @@ mod edit;
 mod explorer;
 mod field;
 mod find;
+#[cfg(test)]
+mod fixes_tests;
 mod format;
 mod git;
 mod git_history;

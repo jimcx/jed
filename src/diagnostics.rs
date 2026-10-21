@@ -5,8 +5,10 @@
 
 use std::sync::Arc;
 
+use ropey::Rope;
+
 use crate::buffer::change::{Assoc, ChangeSet};
-use crate::buffer::pos::ByteIdx;
+use crate::buffer::pos::{self, ByteIdx, Peek};
 use crate::lsp::ServerId;
 
 /// Most severe first (`Ord`: `Error` is the least).
@@ -148,6 +150,32 @@ impl Marks {
             .min_by_key(|m| (m.diag.severity, !(m.start <= head && head <= m.end), m.start))
     }
 
+    /// The marks whose squiggle is drawn on the cell of the char at `at` (`extent`; at an empty
+    /// line's end, the cell past it), most severe first: what the mouse resting there hovers.
+    pub fn drawn_at(&self, rope: &Rope, at: ByteIdx) -> Vec<&Mark> {
+        self.around(rope, at, |(s, e)| s <= at && at < e)
+    }
+
+    /// The marks a cursor at `at` touches (`extent` from its start to its end, both included:
+    /// a range ending at the cursor too), most severe first: what Show Hover shows there.
+    pub fn touching(&self, rope: &Rope, at: ByteIdx) -> Vec<&Mark> {
+        self.around(rope, at, |(s, e)| s <= at && at <= e)
+    }
+
+    /// The marks near `at` (an empty one's extent reaches a grapheme away) whose extent `keep`
+    /// takes, sorted by severity (then position).
+    fn around(&self, rope: &Rope, at: ByteIdx, keep: impl Fn((ByteIdx, ByteIdx)) -> bool) -> Vec<&Mark> {
+        let mut peek = Peek::new(rope);
+        let from = pos::prev_grapheme(rope, at);
+        let to = pos::next_grapheme(rope, at);
+        let mut found: Vec<&Mark> = self
+            .overlapping(from, to)
+            .filter(|m| keep(extent(rope, &mut peek, m)))
+            .collect();
+        found.sort_by_key(|m| m.diag.severity);
+        found
+    }
+
     fn index(&mut self) {
         self.max_end.clear();
         let mut max = ByteIdx(0);
@@ -164,6 +192,20 @@ pub fn map_marks(marks: &mut [Mark], changes: &ChangeSet) {
     for mark in marks {
         mark.start = m.map(mark.start, Assoc::After);
         mark.end = m.map(mark.end, Assoc::Before).max(mark.start);
+    }
+}
+
+/// Where a mark's squiggle is drawn: its range, or for an empty one the char there, the one
+/// before at a line end, or the cell past an empty line's end (`start..start + 1`).
+pub fn extent(rope: &Rope, peek: &mut Peek, m: &Mark) -> (ByteIdx, ByteIdx) {
+    if m.start < m.end {
+        return (m.start, m.end);
+    }
+    let line_break = |c: Option<char>| matches!(c, None | Some('\n' | '\r'));
+    match (line_break(peek.after(m.start)), line_break(peek.before(m.start))) {
+        (false, _) => (m.start, pos::next_grapheme(rope, m.start)),
+        (true, false) => (pos::prev_grapheme(rope, m.start), m.start),
+        (true, true) => (m.start, ByteIdx(m.start.0 + 1)),
     }
 }
 
@@ -239,6 +281,38 @@ pub mod tests {
 
     fn spans(marks: &Marks) -> Vec<(usize, usize)> {
         marks.all().iter().map(|m| (m.start.0, m.end.0)).collect()
+    }
+
+    /// Where the mouse finds a mark (the cell its squiggle is drawn on) and where the cursor does
+    /// (its extent, both ends included); most severe first.
+    #[test]
+    fn marks_drawn_at_and_touching() {
+        let rope = Rope::from_str("ab cd\n\nxy\n");
+        let mut marks = Marks::default();
+        marks.replace(
+            ServerId::test(1),
+            vec![
+                mark(0, 2, 1, Severity::Info),
+                mark(2, 3, 1, Severity::Warning), // the space
+                mark(5, 5, 1, Severity::Error),   // "ab cd"'s end: drawn under the d
+                mark(6, 6, 1, Severity::Hint),    // the empty line: the cell past its end
+            ],
+        );
+        let at = |found: Vec<&Mark>| found.iter().map(|m| m.diag.severity).collect::<Vec<_>>();
+        assert_eq!(at(marks.drawn_at(&rope, ByteIdx(0))), [Severity::Info]);
+        assert_eq!(at(marks.drawn_at(&rope, ByteIdx(2))), [Severity::Warning]);
+        assert_eq!(at(marks.drawn_at(&rope, ByteIdx(3))), []);
+        assert_eq!(at(marks.drawn_at(&rope, ByteIdx(4))), [Severity::Error]);
+        assert_eq!(at(marks.drawn_at(&rope, ByteIdx(5))), []);
+        assert_eq!(at(marks.drawn_at(&rope, ByteIdx(6))), [Severity::Hint]);
+        assert_eq!(at(marks.drawn_at(&rope, ByteIdx(7))), []);
+        assert_eq!(
+            at(marks.touching(&rope, ByteIdx(2))),
+            [Severity::Warning, Severity::Info]
+        );
+        assert_eq!(at(marks.touching(&rope, ByteIdx(3))), [Severity::Warning]);
+        assert_eq!(at(marks.touching(&rope, ByteIdx(5))), [Severity::Error]);
+        assert_eq!(at(marks.touching(&rope, ByteIdx(8))), []);
     }
 
     #[test]

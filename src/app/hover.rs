@@ -2,6 +2,11 @@
 //! position), the mouse resting on text (`hover::DELAY`, through `next_timer`), the answer
 //! becoming the popup, and what closes it.
 //!
+//! - The popup shows the diagnostics under the pointer (or at the cursor) as soon as the rest
+//!   ends (or the command runs), without waiting for the server; the hover request still goes
+//!   out and its answer rebuilds the popup with the server's content after them. No server, no
+//!   `hoverProvider`, a null or failed answer leave the diagnostics alone; "No hover
+//!   information" only when neither exists.
 //! - A key press closes the popup (and drops a pending hover); Esc in the editor only closes it.
 //!   Clicks, the wheel and drags outside the popup close it too; over it, the wheel scrolls a
 //!   long one and other mouse events stop there.
@@ -20,8 +25,12 @@ use super::App;
 use super::lsp::{Pending, Request};
 use crate::buffer::BufferId;
 use crate::buffer::pos::{self, ByteIdx};
+use crate::diagnostics::{self, Diagnostic};
 use crate::hover::{self, Popup, Rest};
 use crate::layout::{GroupId, Hit};
+
+/// A server's hover, read: its lines and the range it's about (if it said).
+type Answer = (Vec<hover::Line>, Option<(ByteIdx, ByteIdx)>);
 
 /// Wheel rows per notch inside the popup.
 const POPUP_WHEEL: isize = 3;
@@ -33,13 +42,15 @@ fn supports_hover(caps: &ServerCapabilities) -> bool {
 }
 
 impl App {
-    /// The command: the hover for the active view's cursor.
+    /// The command: the hover for the active view's cursor. The diagnostics there show at once;
+    /// the server's answer is appended when it comes.
     pub(super) fn show_hover(&mut self) {
         let group = self.groups.active;
         let Some(tab) = self.group().active_tab() else { return };
         let (buffer, at) = (tab.buffer, tab.view.selections.primary().head);
         self.close_hover();
-        if !self.request_hover(group, buffer, at, None) {
+        let shown = self.hover_popup(group, buffer, at, None, None);
+        if !self.request_hover(group, buffer, at, None) && !shown {
             self.notify(super::Level::Info, "No hover information".into());
         }
     }
@@ -61,49 +72,102 @@ impl App {
         )
     }
 
-    /// A hover answer (current: `answer` checked): the popup, anchored at the range the server
-    /// named, else at the run the mouse rests on / the word at the cursor.
+    /// A hover answer (current: `answer` checked): the popup again, with the server's content
+    /// after the diagnostics.
     pub(super) fn hover_answer(&mut self, p: &Pending, word: Option<(ByteIdx, ByteIdx)>, value: &Value) {
-        let Some(h) = hover::parse(value) else {
-            if word.is_none() {
-                self.notify(super::Level::Info, "No hover information".into());
-            }
-            return;
-        };
-        let Some(buf) = self.buffers.get(p.buffer) else { return };
-        let Some(view) = self
-            .groups
-            .get(p.group)
-            .and_then(|g| g.active_tab())
-            .filter(|t| t.buffer == p.buffer)
-            .map(|t| &t.view)
-        else {
-            return;
-        };
-        let rope = &buf.rope;
-        let range = h
-            .range
-            .map(|(s, e)| {
+        let answer = hover::parse(value).and_then(|h| {
+            let rope = &self.buffers.get(p.buffer)?.rope;
+            let range = h.range.map(|(s, e)| {
                 (
                     pos::from_lsp_pos(rope, s, p.encoding),
                     pos::from_lsp_pos(rope, e, p.encoding),
                 )
-            })
+            });
+            Some((h.lines, range))
+        });
+        if !self.hover_popup(p.group, p.buffer, p.at, word, answer) && word.is_none() {
+            self.notify(super::Level::Info, "No hover information".into());
+        }
+    }
+
+    /// Shows the popup for `at` in `buffer` (shown by `group`'s active tab): the diagnostics
+    /// there (drawn on that cell for the mouse resting on `word`, else touching the cursor),
+    /// then a rule and `answer` (the server's lines and range), if any. It's anchored at the
+    /// server's range, else at the run the mouse rests on / the word at the cursor, and is
+    /// about that and the diagnostics' squiggles. False (and nothing changed) when there's
+    /// nothing to show.
+    fn hover_popup(
+        &mut self,
+        group: GroupId,
+        buffer: BufferId,
+        at: ByteIdx,
+        word: Option<(ByteIdx, ByteIdx)>,
+        answer: Option<Answer>,
+    ) -> bool {
+        let Some(buf) = self.buffers.get(buffer) else {
+            return false;
+        };
+        let Some(view) = self
+            .groups
+            .get(group)
+            .and_then(|g| g.active_tab())
+            .filter(|t| t.buffer == buffer)
+            .map(|t| &t.view)
+        else {
+            return false;
+        };
+        let rope = &buf.rope;
+        let marks = if word.is_some() {
+            buf.diagnostics.drawn_at(rope, at)
+        } else {
+            buf.diagnostics.touching(rope, at)
+        };
+        if marks.is_empty() && answer.is_none() {
+            return false;
+        }
+        let diags: Vec<&Diagnostic> = marks.iter().map(|m| &*m.diag).collect();
+        let mut lines = hover::diagnostic_lines(&diags);
+        let mut server_range = None;
+        if let Some((answer, range)) = answer {
+            if !lines.is_empty() {
+                lines.push(hover::Line::rule());
+            }
+            lines.extend(answer);
+            server_range = range;
+        }
+        let about = server_range
             .or(word)
-            .or_else(|| pos::word_at(rope, p.at))
-            .unwrap_or((p.at, p.at));
+            .or_else(|| pos::word_at(rope, at))
+            .unwrap_or((at, at));
+        let mut peek = pos::Peek::new(rope);
+        let range = marks.iter().fold(about, |(s, e), m| {
+            let (ms, me) = diagnostics::extent(rope, &mut peek, m);
+            (s.min(ms), e.max(me))
+        });
+        let mouse = word.is_some();
+        let revision = buf.revision();
+        // The answer after the diagnostics keeps where the wheel scrolled them.
+        let top = self
+            .hover
+            .popup
+            .as_ref()
+            .filter(|p| p.group == group && p.buffer == buffer && p.revision == revision && p.mouse == mouse)
+            .map_or(0, |p| p.top);
         self.hover.popup = Some(Popup {
-            group: p.group,
-            buffer: p.buffer,
-            revision: buf.revision(),
+            group,
+            buffer,
+            revision,
             scroll: (view.top_line(), view.left_col),
+            anchor: about.0,
             range,
-            lines: h.lines,
-            mouse: word.is_some(),
-            top: 0,
+            lines,
+            mouse,
+            top,
             rows: 0,
             shown: 0,
         });
+        self.needs_redraw = true;
+        true
     }
 
     /// Closes the popup, stops the resting timer and drops a pending hover.
@@ -177,7 +241,9 @@ impl App {
     }
 
     /// The text under a screen cell, in any group: its group, buffer, position, and the run of
-    /// same-class characters there. `None` past a line's end, on blank space or off the text.
+    /// same-class characters there. `None` past a line's end, on blank space or off the text,
+    /// unless a squiggle is drawn on that cell (a diagnostic on whitespace, at a line end, or the
+    /// cell past an empty line).
     fn hover_target(&self, x: u16, y: u16) -> Option<(GroupId, BufferId, ByteIdx, (ByteIdx, ByteIdx))> {
         let Hit::Editor(g) = self.hits.hit(x, y) else {
             return None;
@@ -187,7 +253,8 @@ impl App {
             return None;
         }
         let tab = self.groups.get(g)?.active_tab()?;
-        let rope = &self.buffers.get(tab.buffer)?.rope;
+        let buf = self.buffers.get(tab.buffer)?;
+        let rope = &buf.rope;
         let line = tab.view.top_line() + (y - text.y) as usize;
         if line >= pos::line_count(rope) {
             return None;
@@ -195,13 +262,19 @@ impl App {
         let tab_width = self.settings.tab_width;
         let l = pos::Line::new(rope, line);
         let col = pos::DisplayCol(tab.view.left_col + (x - text.x) as usize);
-        if col >= l.col(l.end(), tab_width) {
+        let end_col = l.col(l.end(), tab_width);
+        let squiggled = |at| !buf.diagnostics.drawn_at(rope, at).is_empty();
+        let at = if col < end_col {
+            let at = l.byte_at_col(col, tab_width);
+            if pos::Peek::new(rope).after(at).is_none_or(char::is_whitespace) && !squiggled(at) {
+                return None;
+            }
+            at
+        } else if col == end_col && l.start() == l.end() && squiggled(l.end()) {
+            l.end()
+        } else {
             return None;
-        }
-        let at = l.byte_at_col(col, tab_width);
-        if pos::Peek::new(rope).after(at).is_none_or(char::is_whitespace) {
-            return None;
-        }
+        };
         Some((g, tab.buffer, at, pos::word_range(rope, at)))
     }
 
@@ -218,6 +291,8 @@ impl App {
             .and_then(|g| g.active_tab())
             .is_some_and(|t| t.buffer == r.buffer);
         if shows {
+            // The diagnostics there at once; the server's answer follows.
+            self.hover_popup(r.group, r.buffer, r.at, Some(r.word), None);
             self.request_hover(r.group, r.buffer, r.at, Some(r.word));
         }
     }

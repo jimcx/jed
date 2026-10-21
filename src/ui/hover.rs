@@ -1,10 +1,12 @@
-//! The hover popup (`app.hover.popup`): over its group's editor, anchored at the start of what
-//! it's about (above that row when it fits, else below; `ui::popup`), as wide as its widest line
-//! up to `hover::MAX_WIDTH` and the editor, as tall as its wrapped rows up to `hover::MAX_HEIGHT`
-//! and the room there. A border (`editorHoverWidget.border`) with one column of padding inside;
+//! The hover popup (`app.hover.popup`): over its group's editor, anchored at `popup.anchor` (the
+//! start of the server's range or the word; above that row when it fits, else below;
+//! `ui::popup`), as wide as its widest line up to `hover::MAX_WIDTH` and the editor, as tall as
+//! its wrapped rows up to `hover::MAX_HEIGHT` and the room there. A border (`editorHoverWidget.border`) with one column of padding inside;
 //! text in `editorHoverWidget.foreground` on `.background`, headings bold, code (blocks and inline)
-//! in `textPreformat.foreground`, rules as a line in the border's colour. A longer one shows "…"
-//! in its bottom (more below) / top (more above) border and scrolls with the wheel.
+//! in `textPreformat.foreground`, rules as a line in the border's colour; a diagnostic's icon in
+//! its severity's `problems*Icon.foreground`, its `source(code)` in `editorHoverWidget.source`.
+//! A longer one shows "…" in its bottom (more below) / top (more above) border and scrolls with
+//! the wheel.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -25,7 +27,7 @@ pub fn render(f: &mut Frame, app: &mut App, groups: &[GroupHit]) -> Option<Rect>
         return None;
     }
     let buf = app.buffers.get(popup.buffer)?;
-    let anchor = popup::cell_of(&buf.rope, &tab.view, hit.text, popup.range.0, app.settings.tab_width)?;
+    let anchor = popup::cell_of(&buf.rope, &tab.view, hit.text, popup.anchor, app.settings.tab_width)?;
     let area = hit.editor;
     // Border and a column of padding on each side.
     let width = hover::width(&popup.lines)
@@ -45,6 +47,7 @@ pub fn render(f: &mut Frame, app: &mut App, groups: &[GroupHit]) -> Option<Rect>
     let border = base.patch(theme.get("editorHoverWidget.border"));
     let code = base.patch(theme.get("textPreformat.foreground"));
     let heading = base.patch(theme.get("editorHoverWidget.heading"));
+    let source = base.patch(theme.get("editorHoverWidget.source"));
     let out = f.buffer_mut();
     let inner = popup::frame(out, rect, base, border);
     let shown = inner.height as usize;
@@ -75,6 +78,8 @@ pub fn render(f: &mut Frame, app: &mut App, groups: &[GroupHit]) -> Option<Rect>
             }
             let style = match line.kind {
                 Kind::Code => code,
+                Kind::Diagnostic(severity) if at == 0 => base.patch(theme.get(severity.icon_key())),
+                Kind::Source => source,
                 _ if spans.peek().is_some_and(|s| s.start <= at) => code,
                 Kind::Heading => heading,
                 _ => base,
