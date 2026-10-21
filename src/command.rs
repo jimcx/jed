@@ -166,6 +166,11 @@ pub enum Command {
     TriggerSuggest,
     /// The completion list's keys (only while it's shown).
     Suggest(SuggestCommand),
+    /// Cmd+. (Ctrl+. on Linux): the code actions (quick fixes first) for the cursor / selection,
+    /// in a list at the cursor.
+    QuickFix,
+    /// The code action list's keys (only while it's shown).
+    CodeActions(CodeActionCommand),
     /// Shift+F12: the references to the symbol at the cursor, in the Locations list.
     GoToReferences,
     /// F2 in the editor: rename the symbol at the cursor across the workspace (a prompt).
@@ -675,6 +680,27 @@ impl SuggestCommand {
     ];
 }
 
+/// The code action list (`Context::CodeActions`, while it's shown).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CodeActionCommand {
+    /// Up / Down: the previous / next action, wrapping round.
+    Up,
+    Down,
+    /// Enter: apply the selected action (a disabled one says why not).
+    Accept,
+    /// Esc: close the list.
+    Close,
+}
+
+impl CodeActionCommand {
+    pub const ALL: [CodeActionCommand; 4] = [
+        CodeActionCommand::Up,
+        CodeActionCommand::Down,
+        CodeActionCommand::Accept,
+        CodeActionCommand::Close,
+    ];
+}
+
 impl Command {
     /// Every command, in a stable order: what the palette lists and keybindings can name.
     pub fn all() -> Vec<Command> {
@@ -754,6 +780,8 @@ impl Command {
         all.extend(LocationsCommand::ALL.map(Command::Locations));
         all.push(Command::TriggerSuggest);
         all.extend(SuggestCommand::ALL.map(Command::Suggest));
+        all.push(Command::QuickFix);
+        all.extend(CodeActionCommand::ALL.map(Command::CodeActions));
         all.extend([Command::GoToReferences, Command::RenameSymbol, Command::FormatDocument]);
         all.extend([Command::ReloadFromDisk, Command::KeepMine]);
         all.extend([
@@ -996,6 +1024,16 @@ impl Command {
                     SuggestCommand::PageDown => "pageDown",
                     SuggestCommand::Accept => "accept",
                     SuggestCommand::Close => "close",
+                }
+            ),
+            Command::QuickFix => "editor.action.quickFix".into(),
+            Command::CodeActions(c) => format!(
+                "codeActions.{}",
+                match c {
+                    CodeActionCommand::Up => "up",
+                    CodeActionCommand::Down => "down",
+                    CodeActionCommand::Accept => "accept",
+                    CodeActionCommand::Close => "close",
                 }
             ),
             Command::GoToReferences => "editor.goToReferences".into(),
@@ -1273,6 +1311,13 @@ impl Command {
                 LocationsCommand::FocusEditor => "Locations: Back to Editor",
             },
             Command::TriggerSuggest => "Trigger Suggest",
+            Command::QuickFix => "Quick Fix…",
+            Command::CodeActions(c) => match c {
+                CodeActionCommand::Up => "Code Actions: Select Previous",
+                CodeActionCommand::Down => "Code Actions: Select Next",
+                CodeActionCommand::Accept => "Code Actions: Apply Selected",
+                CodeActionCommand::Close => "Code Actions: Hide",
+            },
             Command::Suggest(c) => match c {
                 SuggestCommand::Up => "Suggest: Select Previous Suggestion",
                 SuggestCommand::Down => "Suggest: Select Next Suggestion",
@@ -1498,9 +1543,11 @@ mod tests {
             Command::MoveTabToPreviousGroup => 100,
             Command::MoveTabLeft => 101,
             Command::MoveTabRight => 102,
+            Command::QuickFix => 103,
+            Command::CodeActions(_) => 104,
         }
     }
-    const VARIANTS: u8 = 103;
+    const VARIANTS: u8 = 105;
 
     #[test]
     fn all_lists_every_variant() {
@@ -1519,6 +1566,7 @@ mod tests {
         assert_eq!(count(54), ProblemsCommand::ALL.len());
         assert_eq!(count(57), LocationsCommand::ALL.len());
         assert_eq!(count(59), SuggestCommand::ALL.len());
+        assert_eq!(count(104), CodeActionCommand::ALL.len());
         assert_eq!(count(76), ScmCommand::ALL.len());
         assert_eq!(count(94), GitHistoryCommand::ALL.len());
         assert_eq!(count(95), CommitCommand::ALL.len());

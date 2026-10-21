@@ -149,7 +149,8 @@ impl App {
                 }
             }
             Err(e) if !edits.is_empty() => {
-                self.notify(Level::Error, format!("Rename not applied to {}: {e}", path.display()))
+                let what = edits[0].what;
+                self.notify(Level::Error, format!("{what} not applied to {}: {e}", path.display()))
             }
             Err(LoadError::Binary) => self.notify(Level::Error, format!("{}: binary file, not opened", path.display())),
             Err(e) => self.notify(Level::Error, format!("{}: {e}", path.display())),

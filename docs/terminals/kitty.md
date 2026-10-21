@@ -25,6 +25,7 @@ map cmd+slash
 map cmd+]
 map cmd+[
 map cmd+alt+i
+map cmd+period
 map cmd+d
 map cmd+shift+l
 map cmd+alt+d

@@ -24,11 +24,13 @@ use crate::selection::{Selection, Selections};
 /// VS Code's message when there's nothing to rename at the cursor.
 pub(super) const CANT_RENAME: &str = "The element can't be renamed.";
 
-/// A rename's edits waiting for their file to load (`OpenRequest::edits`).
+/// A `WorkspaceEdit`'s edits waiting for their file to load (`OpenRequest::edits`).
 #[derive(Debug)]
 pub(super) struct PendingEdit {
     pub edits: Vec<TextEdit>,
     pub encoding: PosEncoding,
+    /// What made them, for a failure's message ("Rename", "Code action", …).
+    pub what: &'static str,
 }
 
 fn supports_rename(caps: &ServerCapabilities) -> bool {
@@ -168,6 +170,24 @@ impl App {
         }
         let edits: usize = files.iter().map(|f| f.edits.len()).sum();
         let count = files.len();
+        if let Err(why) = self.apply_workspace_edit(files, p.encoding, "Rename") {
+            self.notify(Level::Error, format!("Rename failed: {why}"));
+            return;
+        }
+        let (edits, files) = (plural(edits, "edit"), plural(count, "file"));
+        self.notify(Level::Info, format!("Renamed '{old}' to '{new}': {edits} in {files}"));
+    }
+
+    /// Applies a `WorkspaceEdit`'s `files` (positions in `encoding`), checked whole first: a
+    /// read-only or changed open buffer, or overlapping edits, refuse it all (`Err`: why). Open
+    /// buffers are edited now (one undo step each), files not open once loaded into tabs beside
+    /// the active one (`what` names the edit if one of them fails then); other views follow.
+    pub(super) fn apply_workspace_edit(
+        &mut self,
+        files: Vec<FileEdit>,
+        encoding: PosEncoding,
+        what: &'static str,
+    ) -> Result<(), String> {
         let mut ready: Vec<(BufferId, ChangeSet)> = Vec::new();
         let mut unopened: Vec<FileEdit> = Vec::new();
         for f in files {
@@ -176,22 +196,15 @@ impl App {
                 continue;
             };
             let buf = self.buffers.get(id).expect("found");
-            let refused = if let Some(reason) = &buf.read_only {
-                Some(format!("{} is read-only ({reason})", buf.name()))
-            } else if f.version.is_some() && f.version != self.lsp.version(id) {
-                Some(format!("{} changed since it was asked", buf.name()))
-            } else {
-                match rename::changes(&buf.rope, &f.edits, p.encoding) {
-                    Ok(set) => {
-                        ready.push((id, set));
-                        None
-                    }
-                    Err(e) => Some(format!("{}: {e}", buf.name())),
-                }
-            };
-            if let Some(why) = refused {
-                self.notify(Level::Error, format!("Rename failed: {why}"));
-                return;
+            if let Some(reason) = &buf.read_only {
+                return Err(format!("{} is read-only ({reason})", buf.name()));
+            }
+            if f.version.is_some() && f.version != self.lsp.version(id) {
+                return Err(format!("{} changed since it was asked", buf.name()));
+            }
+            match rename::changes(&buf.rope, &f.edits, encoding) {
+                Ok(set) => ready.push((id, set)),
+                Err(e) => return Err(format!("{}: {e}", buf.name())),
             }
         }
         for (id, set) in ready {
@@ -202,13 +215,13 @@ impl App {
                 f.path,
                 PendingEdit {
                     edits: f.edits,
-                    encoding: p.encoding,
+                    encoding,
+                    what,
                 },
             );
         }
         self.follow_edits();
-        let (edits, files) = (plural(edits, "edit"), plural(count, "file"));
-        self.notify(Level::Info, format!("Renamed '{old}' to '{new}': {edits} in {files}"));
+        Ok(())
     }
 
     /// Edits `buffer` by `changes` as one undo step: the active editor's view (if it shows the
@@ -268,7 +281,7 @@ impl App {
         });
     }
 
-    /// A file loaded for a rename (`opened`): its edits, each one undo step.
+    /// A file loaded for a `WorkspaceEdit` (`opened`): its edits, each one undo step.
     pub(super) fn apply_pending_edits(&mut self, path: &std::path::Path, edits: Vec<PendingEdit>) {
         let Some(id) = self.buffers.find_path(path) else { return };
         for edit in edits {
@@ -280,7 +293,7 @@ impl App {
             match set {
                 Ok(set) => self.apply_changes(id, set),
                 Err(e) => {
-                    let text = format!("Rename not applied to {}: {e}", path.display());
+                    let text = format!("{} not applied to {}: {e}", edit.what, path.display());
                     self.notify(Level::Error, text);
                 }
             }

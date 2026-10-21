@@ -49,6 +49,8 @@ pub enum Kind {
     Diagnostic(Severity),
     /// Who reports a diagnostic, `source(code)` (drawn dimmed).
     Source,
+    /// A clickable row (the diagnostics' "Quick Fix…", in the link colour).
+    Link,
 }
 
 /// One line of hover content.
@@ -72,6 +74,11 @@ impl Line {
     /// A rule between sections.
     pub fn rule() -> Self {
         Self::new(Kind::Rule, String::new())
+    }
+
+    /// A clickable row.
+    pub fn link(text: &str) -> Self {
+        Self::new(Kind::Link, text.to_string())
     }
 
     fn is_blank(&self) -> bool {
@@ -434,6 +441,10 @@ pub struct Popup {
     /// mouse may move within it.
     pub range: (ByteIdx, ByteIdx),
     pub lines: Vec<Line>,
+    /// Where the diagnostics section ends in `lines` (the "Quick Fix…" row goes there).
+    pub fixes_at: usize,
+    /// The screen row the "Quick Fix…" row was drawn on (set by drawing).
+    pub link_row: Option<u16>,
     /// Opened by the mouse resting on text (moving off closes it), else by the command.
     pub mouse: bool,
     /// The first row shown (the wheel scrolls a long one).
@@ -493,6 +504,7 @@ mod tests {
                 Kind::Text => l.text.clone(),
                 Kind::Diagnostic(s) => format!("{s:?}:{}", l.text),
                 Kind::Source => format!("src:{}", l.text),
+                Kind::Link => format!("link:{}", l.text),
             })
             .collect()
     }
@@ -566,6 +578,7 @@ mod tests {
             message: message.into(),
             source: source.map(Into::into),
             code: code.map(Into::into),
+            raw: Value::Null,
         }
     }
 

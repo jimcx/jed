@@ -4,7 +4,8 @@
 //! its wrapped rows up to `hover::MAX_HEIGHT` and the room there. A border (`editorHoverWidget.border`) with one column of padding inside;
 //! text in `editorHoverWidget.foreground` on `.background`, headings bold, code (blocks and inline)
 //! in `textPreformat.foreground`, rules as a line in the border's colour; a diagnostic's icon in
-//! its severity's `problems*Icon.foreground`, its `source(code)` in `editorHoverWidget.source`.
+//! its severity's `problems*Icon.foreground`, its `source(code)` in `editorHoverWidget.source`,
+//! the "Quick Fix…" row in `textLink.foreground` (its screen row kept in `popup.link_row`).
 //! A longer one shows "…" in its bottom (more below) / top (more above) border and scrolls with
 //! the wheel.
 
@@ -48,12 +49,14 @@ pub fn render(f: &mut Frame, app: &mut App, groups: &[GroupHit]) -> Option<Rect>
     let code = base.patch(theme.get("textPreformat.foreground"));
     let heading = base.patch(theme.get("editorHoverWidget.heading"));
     let source = base.patch(theme.get("editorHoverWidget.source"));
+    let link = base.patch(theme.get("textLink.foreground"));
     let out = f.buffer_mut();
     let inner = popup::frame(out, rect, base, border);
     let shown = inner.height as usize;
     popup.rows = rows.len();
     popup.shown = shown;
     popup.top = popup.top.min(rows.len().saturating_sub(shown));
+    popup.link_row = None;
     let x0 = inner.x + 1;
     for (r, row) in rows.iter().skip(popup.top).take(shown).enumerate() {
         let y = inner.y + r as u16;
@@ -63,6 +66,9 @@ pub fn render(f: &mut Frame, app: &mut App, groups: &[GroupHit]) -> Option<Rect>
                 out.set_stringn(x, y, "─", 1, border);
             }
             continue;
+        }
+        if line.kind == Kind::Link {
+            popup.link_row = Some(y);
         }
         let mut x = x0;
         let end = x0 + width as u16;
@@ -80,6 +86,7 @@ pub fn render(f: &mut Frame, app: &mut App, groups: &[GroupHit]) -> Option<Rect>
                 Kind::Code => code,
                 Kind::Diagnostic(severity) if at == 0 => base.patch(theme.get(severity.icon_key())),
                 Kind::Source => source,
+                Kind::Link => link,
                 _ if spans.peek().is_some_and(|s| s.start <= at) => code,
                 Kind::Heading => heading,
                 _ => base,

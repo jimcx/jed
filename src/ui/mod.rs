@@ -2,6 +2,7 @@
 
 mod activity;
 mod banner;
+mod code_action;
 mod completion;
 mod dialog;
 mod diff;
@@ -58,6 +59,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     fit_commit_tabs(app, &cells);
     let mut active_editor = None;
     let whitespace = app.render_whitespace();
+    // The lightbulb: the active group's cursor line, when code actions exist there.
+    let bulb = app.bulb_line();
+    app.code_actions.bulb_hit = None;
     for (id, rect) in cells {
         let tab_bar = Rect {
             height: rect.height.min(1),
@@ -148,6 +152,27 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     blame: app.blame.on,
                 };
                 text = editor::render(f, editor_area, buf, &mut tab.view, &app.theme, &app.settings, overlay);
+                if let Some((g, line)) = bulb
+                    && g == id
+                    && let Some(row) = line.checked_sub(tab.view.top_line())
+                    && row < text.height as usize
+                    && text.x >= editor_area.x + 2
+                {
+                    // Over the gutter's first two cells (a space and the widest numbers' first digit).
+                    let at = Rect {
+                        x: editor_area.x,
+                        y: text.y + row as u16,
+                        width: 2,
+                        height: 1,
+                    };
+                    let style = app
+                        .theme
+                        .get("gutter")
+                        .patch(app.theme.get("editorLightBulb.foreground"));
+                    f.buffer_mut()
+                        .set_stringn(at.x, at.y, crate::code_action::BULB, 2, style);
+                    app.code_actions.bulb_hit = Some((id, at));
+                }
                 if let Some(bar) = bar {
                     let scroll = TextScroll {
                         view: &mut tab.view,
@@ -212,6 +237,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     hits.quick_diff = quick_diff::render(f, app, &hits.groups);
     hits.hover = hover::render(f, app, &hits.groups);
     hits.completion = completion::render(f, app, &hits.groups);
+    hits.code_actions = code_action::render(f, app, &hits.groups);
     hits.palette = palette::render(f, area, app);
     if let Some(prompt) = &app.prompt {
         dialog::render(f, area, app, prompt);

@@ -1,6 +1,6 @@
 //! Key combos to commands. Keymaps are data; commands never look at keys.
 //! A binding applies in one context (editor, explorer, palette, find, replace, search,
-//! searchResults, problems, locations, suggest, diff, scm, gitHistory, task) or everywhere.
+//! searchResults, problems, locations, suggest, codeActions, diff, scm, gitHistory, task) or everywhere.
 //! The defaults are VS Code's; `keybindings.toml` replaces bindings command by command.
 
 use std::collections::{HashMap, HashSet};
@@ -10,9 +10,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
 
 use crate::command::{
-    ColumnMotion, Command, CommitCommand as Cc, ExplorerCommand as X, FindCommand as F, GitHistoryCommand as G,
-    LocationsCommand as L, Motion, PaletteCommand as P, ProblemsCommand as Pr, ScmCommand as Sc, SearchCommand as S,
-    SuggestCommand as Sg, TaskCommand as T, ToolsCommand as Tl,
+    CodeActionCommand as Ca, ColumnMotion, Command, CommitCommand as Cc, ExplorerCommand as X, FindCommand as F,
+    GitHistoryCommand as G, LocationsCommand as L, Motion, PaletteCommand as P, ProblemsCommand as Pr,
+    ScmCommand as Sc, SearchCommand as S, SuggestCommand as Sg, TaskCommand as T, ToolsCommand as Tl,
 };
 
 pub const FILE_NAME: &str = "keybindings.toml";
@@ -189,6 +189,9 @@ pub enum Context {
     /// The editor has the focus and the completion list is shown; bindings not found here come
     /// from `Editor`.
     Suggest,
+    /// The editor has the focus and the code action list (Cmd+.) is shown; bindings not found
+    /// here come from `Editor` (anything else they do closes the list).
+    CodeActions,
     /// The editor has the focus and its active tab is a diff view; bindings not found here come
     /// from `Editor`.
     Diff,
@@ -207,7 +210,7 @@ pub enum Context {
 }
 
 impl Context {
-    const ALL: [(Context, &'static str); 16] = [
+    const ALL: [(Context, &'static str); 17] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
@@ -218,6 +221,7 @@ impl Context {
         (Context::Problems, "problems"),
         (Context::Locations, "locations"),
         (Context::Suggest, "suggest"),
+        (Context::CodeActions, "codeActions"),
         (Context::Diff, "diff"),
         (Context::Scm, "scm"),
         (Context::Tools, "tools"),
@@ -235,7 +239,7 @@ impl Context {
         match self {
             Context::Replace => Some(Context::Find),
             Context::SearchResults => Some(Context::Search),
-            Context::Suggest | Context::Diff | Context::Commit => Some(Context::Editor),
+            Context::Suggest | Context::CodeActions | Context::Diff | Context::Commit => Some(Context::Editor),
             _ => None,
         }
     }
@@ -521,6 +525,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (format_document.0, format_document.1, Command::FormatDocument),
         // Ctrl on macOS too, as in VS Code.
         (KeyCode::Char(' '), ctrl, Command::TriggerSuggest),
+        (KeyCode::Char('.'), cmd, Command::QuickFix),
         // VS Code's `workbench.action.editor.nextChange` / `previousChange`.
         (KeyCode::F(5), alt, Command::NextChange),
         (KeyCode::F(5), alt | shift, Command::PreviousChange),
@@ -734,6 +739,12 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Tab, none, Sg::Accept),
         (KeyCode::Esc, none, Sg::Close),
     ];
+    let code_actions = vec![
+        (KeyCode::Up, none, Ca::Up),
+        (KeyCode::Down, none, Ca::Down),
+        (KeyCode::Enter, none, Ca::Accept),
+        (KeyCode::Esc, none, Ca::Close),
+    ];
     if mac {
         // VS Code's: the list's selection, not the editor's Ctrl+P / Ctrl+N cursor moves.
         suggest.push((KeyCode::Char('p'), ctrl, Sg::Up));
@@ -852,6 +863,11 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         suggest
             .into_iter()
             .map(|(k, m, c)| bind(k, m, Some(Context::Suggest), Command::Suggest(c))),
+    );
+    out.extend(
+        code_actions
+            .into_iter()
+            .map(|(k, m, c)| bind(k, m, Some(Context::CodeActions), Command::CodeActions(c))),
     );
     out.extend(diff.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Diff), c)));
     out.extend(

@@ -4,6 +4,7 @@ mod blame;
 mod brackets;
 mod buffer;
 mod clipboard;
+mod code_action;
 mod column;
 mod command;
 mod comment;

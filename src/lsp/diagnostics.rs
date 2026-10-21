@@ -42,33 +42,39 @@ pub struct Published {
 
 /// Reads `publishDiagnostics` params; `Err` for something that isn't one, or a URI that isn't
 /// a local file.
-pub fn parse(params: Value) -> Result<Published, String> {
+pub fn parse(mut params: Value) -> Result<Published, String> {
+    use serde::Deserialize;
+    // Each diagnostic is kept as sent too (`Diagnostic::raw`), so they're read one by one.
+    let raw = match params.get_mut("diagnostics").map(Value::take) {
+        Some(Value::Array(raw)) => raw,
+        _ => return Err("no diagnostics list".into()),
+    };
+    params["diagnostics"] = Value::Array(Vec::new());
     let p: PublishDiagnosticsParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
     let path = uri::to_path(&p.uri).ok_or_else(|| format!("not a file URI: {}", p.uri.as_str()))?;
     let pos = |p: lsp_types::Position| LspPos {
         line: p.line,
         character: p.character,
     };
-    let mut items: Vec<Item> = p
-        .diagnostics
-        .into_iter()
-        .map(|d| {
-            let (start, end) = (pos(d.range.start), pos(d.range.end));
-            Item {
-                start,
-                end: end.max(start),
-                diag: Arc::new(Diagnostic {
-                    severity: Severity::from_lsp(d.severity),
-                    message: d.message,
-                    source: d.source,
-                    code: d.code.map(|c| match c {
-                        NumberOrString::Number(n) => n.to_string(),
-                        NumberOrString::String(s) => s,
-                    }),
+    let mut items: Vec<Item> = Vec::with_capacity(raw.len());
+    for raw in raw {
+        let d = lsp_types::Diagnostic::deserialize(&raw).map_err(|e| e.to_string())?;
+        let (start, end) = (pos(d.range.start), pos(d.range.end));
+        items.push(Item {
+            start,
+            end: end.max(start),
+            diag: Arc::new(Diagnostic {
+                severity: Severity::from_lsp(d.severity),
+                message: d.message,
+                source: d.source,
+                code: d.code.map(|c| match c {
+                    NumberOrString::Number(n) => n.to_string(),
+                    NumberOrString::String(s) => s,
                 }),
-            }
-        })
-        .collect();
+                raw,
+            }),
+        });
+    }
     items.sort_by_key(|i| i.start);
     Ok(Published {
         path,
@@ -243,7 +249,10 @@ mod tests {
             (first.diag.source.as_deref(), first.diag.code.as_deref()),
             (Some("clang"), Some("42"))
         );
+        assert_eq!(first.diag.raw["code"], 42, "kept as sent");
+        assert_eq!(first.diag.raw["range"]["start"]["character"], 4);
         assert_eq!(p.items[1].diag.severity, Severity::Warning);
+        assert_eq!(p.items[1].diag.raw["message"], "later");
         assert!(parse(json!({ "uri": "untitled:1", "diagnostics": [] })).is_err());
         assert!(parse(json!({ "diagnostics": [] })).is_err());
     }

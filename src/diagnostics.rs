@@ -74,6 +74,10 @@ pub struct Diagnostic {
     /// Who says so (`clang`, `ty`, …).
     pub source: Option<String>,
     pub code: Option<String>,
+    /// The diagnostic as its server published it (range, `code`, `data`, …): code action
+    /// requests send it back in `context.diagnostics` (with the range where it is now), as
+    /// rust-analyzer and clangd find their fixes by it. `Null` when it didn't come from a server.
+    pub raw: serde_json::Value,
 }
 
 /// A diagnostic placed in a buffer's text. `start == end` is an empty range (drawn under the
@@ -267,6 +271,7 @@ pub mod tests {
             message: message.into(),
             source: None,
             code: None,
+            raw: serde_json::Value::Null,
         })
     }
 

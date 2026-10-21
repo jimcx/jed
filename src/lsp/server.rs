@@ -10,12 +10,14 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use lsp_types::{
-    ClientCapabilities, ClientInfo, CompletionClientCapabilities, CompletionItemCapability,
+    ClientCapabilities, ClientInfo, CodeActionCapabilityResolveSupport, CodeActionClientCapabilities,
+    CodeActionKindLiteralSupport, CodeActionLiteralSupport, CompletionClientCapabilities, CompletionItemCapability,
     CompletionItemCapabilityResolveSupport, CompletionListCapability, DocumentFormattingClientCapabilities,
-    GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, InitializeParams, MarkupKind,
-    PositionEncodingKind, PrepareSupportDefaultBehavior, PublishDiagnosticsClientCapabilities,
-    ReferenceClientCapabilities, RenameClientCapabilities, ServerCapabilities, TextDocumentClientCapabilities,
-    WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceEditClientCapabilities, WorkspaceFolder,
+    DynamicRegistrationClientCapabilities, GeneralClientCapabilities, GotoCapability, HoverClientCapabilities,
+    InitializeParams, MarkupKind, PositionEncodingKind, PrepareSupportDefaultBehavior,
+    PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities, RenameClientCapabilities, ServerCapabilities,
+    TextDocumentClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities,
+    WorkspaceEditClientCapabilities, WorkspaceFolder,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -106,6 +108,11 @@ pub enum ToServer {
     Notify {
         method: String,
         params: Value,
+    },
+    /// The app's answer to a request the server sent (`Event::ServerRequest`).
+    Respond {
+        id: Id,
+        result: Result<Value, RpcError>,
     },
     /// `shutdown`, then `exit`; killed after `SHUTDOWN_TIMEOUT`.
     Shutdown,
@@ -463,6 +470,15 @@ impl Conn {
                     None => tracing::warn!(server = %self.name, ?id, "response to no request"),
                 }
             }
+            // The app applies it and answers (`ToServer::Respond`).
+            Message::Request { id, method, params } if method == "workspace/applyEdit" => {
+                (self.sink)(Event::ServerRequest {
+                    server: self.id,
+                    id,
+                    method,
+                    params,
+                });
+            }
             Message::Request { id, method, params } => {
                 let result = self.answer(&method, &params);
                 self.send(&Message::Response { id, result });
@@ -528,7 +544,6 @@ impl Conn {
             | "workspace/semanticTokens/refresh"
             | "workspace/inlayHint/refresh"
             | "workspace/codeLens/refresh" => Ok(Value::Null),
-            "workspace/applyEdit" => Ok(json!({ "applied": false, "failureReason": "not supported yet" })),
             _ => {
                 tracing::debug!(server = %self.name, method, "unhandled server request");
                 Err(RpcError {
@@ -606,6 +621,7 @@ impl Conn {
                 self.send(&Message::request(id, &method, params));
             }
             ToServer::Notify { method, params } => self.send(&Message::notification(&method, params)),
+            ToServer::Respond { id, result } => self.send(&Message::Response { id, result }),
             ToServer::Shutdown => {
                 self.shutting_down = true;
                 if !self.initialized {
@@ -634,8 +650,8 @@ impl Conn {
 /// must support), work-done progress, pushed diagnostics (with the document version they're
 /// for, so jed can map them through the edits made since; no pull diagnostics: ty and clangd
 /// push when the client doesn't declare `textDocument.diagnostic`), hover (markdown first),
-/// go to definition (`LocationLink`s welcome), completion, references and rename (with
-/// `prepareRename` and versioned `WorkspaceEdit`s).
+/// go to definition (`LocationLink`s welcome), completion, references, rename (with
+/// `prepareRename` and versioned `WorkspaceEdit`s), code actions and `workspace/applyEdit`.
 fn client_capabilities() -> ClientCapabilities {
     ClientCapabilities {
         general: Some(GeneralClientCapabilities {
@@ -645,6 +661,8 @@ fn client_capabilities() -> ClientCapabilities {
         text_document: Some(TextDocumentClientCapabilities {
             publish_diagnostics: Some(PublishDiagnosticsClientCapabilities {
                 version_support: Some(true),
+                // Kept and sent back with code action requests (`Diagnostic::raw`).
+                data_support: Some(true),
                 ..Default::default()
             }),
             hover: Some(HoverClientCapabilities {
@@ -656,6 +674,34 @@ fn client_capabilities() -> ClientCapabilities {
                 link_support: Some(true),
             }),
             references: Some(ReferenceClientCapabilities::default()),
+            // Code actions (Cmd+.): literals of every kind, preferred / disabled / data, and the
+            // edit resolved later (`codeAction/resolve`) when the server leaves it out.
+            code_action: Some(CodeActionClientCapabilities {
+                code_action_literal_support: Some(CodeActionLiteralSupport {
+                    code_action_kind: CodeActionKindLiteralSupport {
+                        value_set: [
+                            "",
+                            "quickfix",
+                            "refactor",
+                            "refactor.extract",
+                            "refactor.inline",
+                            "refactor.rewrite",
+                            "source",
+                            "source.organizeImports",
+                            "source.fixAll",
+                        ]
+                        .map(String::from)
+                        .to_vec(),
+                    },
+                }),
+                is_preferred_support: Some(true),
+                disabled_support: Some(true),
+                data_support: Some(true),
+                resolve_support: Some(CodeActionCapabilityResolveSupport {
+                    properties: vec!["edit".into()],
+                }),
+                ..Default::default()
+            }),
             // Format document (no range / on-type formatting).
             formatting: Some(DocumentFormattingClientCapabilities::default()),
             // `prepareRename` (its range or placeholder fills the prompt; `defaultBehavior`: the
@@ -696,9 +742,12 @@ fn client_capabilities() -> ClientCapabilities {
             work_done_progress: Some(true),
             ..Default::default()
         }),
-        // Rename's `WorkspaceEdit`s: versioned `documentChanges` welcome; no file operations
-        // (create / rename / delete), which jed refuses.
+        // `WorkspaceEdit`s (rename, code actions, server-sent `workspace/applyEdit`): versioned
+        // `documentChanges` welcome; no file operations (create / rename / delete), which jed
+        // refuses.
         workspace: Some(WorkspaceClientCapabilities {
+            apply_edit: Some(true),
+            execute_command: Some(DynamicRegistrationClientCapabilities::default()),
             workspace_edit: Some(WorkspaceEditClientCapabilities {
                 document_changes: Some(true),
                 resource_operations: Some(Vec::new()),

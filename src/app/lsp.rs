@@ -15,6 +15,7 @@ use serde_json::Value;
 use super::App;
 use crate::buffer::BufferId;
 use crate::buffer::pos::{ByteIdx, PosEncoding};
+use crate::code_action::Purpose;
 use crate::layout::GroupId;
 use crate::lsp::rpc::RpcError;
 use crate::lsp::{Event, Sent, ServerId};
@@ -49,11 +50,25 @@ pub(super) enum Request {
     /// `textDocument/formatting` of the whole document: current like hover / definition (VS Code
     /// cancels formatting when the text or the cursor changes).
     Format,
+    /// `textDocument/codeAction` for `range`, for the list (Cmd+.), the lightbulb or the hover
+    /// (current while its popup is): each purpose its own kind.
+    CodeActions {
+        purpose: Purpose,
+        range: (ByteIdx, ByteIdx),
+    },
+    /// `codeAction/resolve` of the action accepted (`code_actions.resolving`).
+    ResolveAction,
+    /// `workspace/executeCommand` of an applied action's command (`title`, for a failure's
+    /// message): always current (its edits come as the server's `workspace/applyEdit`).
+    ExecuteCommand { title: String },
 }
 
 impl Request {
     fn same_kind(&self, other: &Request) -> bool {
-        std::mem::discriminant(self) == std::mem::discriminant(other)
+        match (self, other) {
+            (Request::CodeActions { purpose: a, .. }, Request::CodeActions { purpose: b, .. }) => a == b,
+            _ => std::mem::discriminant(self) == std::mem::discriminant(other),
+        }
     }
 }
 
@@ -61,6 +76,8 @@ impl Request {
 #[derive(Debug, Clone)]
 pub(super) struct Pending {
     pub request: Request,
+    /// The server it went to.
+    pub server: ServerId,
     pub group: GroupId,
     pub buffer: BufferId,
     /// The buffer's revision when sent: an edit since makes the answer stale.
@@ -104,10 +121,20 @@ impl App {
     pub(super) fn lsp_event(&mut self, event: Event) {
         match event {
             Event::Diagnostics { server, published } => {
+                let buffer = self.buffers.find_path(&published.path);
                 if self.lsp.publish(server, *published, &mut self.buffers) {
                     self.needs_redraw = true;
+                    if let Some(id) = buffer {
+                        self.diagnostics_changed(id);
+                    }
                 }
             }
+            Event::ServerRequest {
+                server,
+                id,
+                method,
+                params,
+            } => self.server_request(server, id, &method, &params),
             Event::Response { server, id, result } => match self.requests.remove(&(server, id)) {
                 Some(p) => self.answer(p, result),
                 None => tracing::debug!(id, "answer to a request nobody waits for (cancelled or replaced)"),
@@ -208,6 +235,7 @@ impl App {
             (sent.server, sent.id),
             Pending {
                 request,
+                server: sent.server,
                 group,
                 buffer,
                 revision,
@@ -239,6 +267,7 @@ impl App {
             (server, id),
             Pending {
                 request,
+                server,
                 group,
                 buffer,
                 revision,
@@ -297,6 +326,17 @@ impl App {
                 accepted: Some(revision),
                 ..
             } => return self.buffers.get(p.buffer).is_some_and(|b| b.revision() == *revision),
+            Request::ExecuteCommand { .. } => return true,
+            Request::CodeActions {
+                purpose: Purpose::Hover,
+                ..
+            } => {
+                return self
+                    .hover
+                    .popup
+                    .as_ref()
+                    .is_some_and(|h| (h.group, h.buffer, h.revision) == (p.group, p.buffer, p.revision));
+            }
             _ => {}
         }
         if self.buffers.get(p.buffer).is_none_or(|b| b.revision() != p.revision) {
@@ -330,6 +370,12 @@ impl App {
                     if let Request::Completion { generation } = p.request {
                         self.completion.ask.take_if(|a| a.generation == generation);
                     }
+                    if let Request::CodeActions {
+                        purpose: Purpose::Bulb, ..
+                    } = p.request
+                    {
+                        self.code_actions.asking = None;
+                    }
                     return;
                 }
                 match &p.request {
@@ -357,6 +403,16 @@ impl App {
                     Request::Format => {
                         self.notify(super::Level::Error, format!("Format Document failed: {}", e.message));
                     }
+                    Request::CodeActions { purpose, range } => {
+                        self.code_actions_failed(&p, *purpose, *range, &e.message)
+                    }
+                    Request::ResolveAction => {
+                        self.code_actions.resolving = None;
+                        self.notify(super::Level::Error, format!("Code action failed: {}", e.message));
+                    }
+                    Request::ExecuteCommand { title } => {
+                        self.notify(super::Level::Error, format!("'{title}' failed: {}", e.message));
+                    }
                     _ => {}
                 }
                 return;
@@ -376,6 +432,9 @@ impl App {
             Request::PrepareRename { word } => self.prepare_rename_answer(&p, &word, &value),
             Request::Rename { old, new } => self.rename_answer(&p, &old, &new, &value),
             Request::Format => self.format_answer(&p, &value),
+            Request::CodeActions { purpose, range } => self.code_actions_answer(&p, purpose, range, &value),
+            Request::ResolveAction => self.resolve_action_answer(&p, &value),
+            Request::ExecuteCommand { .. } => {}
         }
     }
 

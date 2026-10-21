@@ -23,8 +23,11 @@
 //! advertises `hoverProvider` (unless `FakeOptions::no_hover`), `definitionProvider`, `completionProvider` (trigger characters `.` and `>`, resolve),
 //! `referencesProvider`, `renameProvider` (with `prepareProvider` unless
 //! `FakeOptions::no_prepare_rename`) and `documentFormattingProvider` (unless
-//! `FakeOptions::no_formatting`); an unscripted `completionItem/resolve` answers with the
-//! item it got, any other unscripted request with MethodNotFound.
+//! `FakeOptions::no_formatting`) and `codeActionProvider` (with `resolveProvider`, unless
+//! `FakeOptions::no_code_actions`); an unscripted `completionItem/resolve` or
+//! `codeAction/resolve` answers with the item it got, any other unscripted request with
+//! MethodNotFound. `apply_edit_on(method, params)` makes it send `workspace/applyEdit` with
+//! `params` before answering each `method` request (a command's edit, as servers send it).
 //!
 //! Documents: it keeps its own copy of every document opened (`didOpen`), applies each
 //! `didChange` to it (ranges in the negotiated encoding, converted here independently of
@@ -66,6 +69,8 @@ pub struct FakeOptions {
     pub no_formatting: bool,
     /// Don't advertise `hoverProvider`.
     pub no_hover: bool,
+    /// Don't advertise `codeActionProvider`.
+    pub no_code_actions: bool,
 }
 
 /// The fake's copy of an open document.
@@ -96,6 +101,8 @@ struct Shared {
     holding: std::collections::HashSet<String>,
     /// Scripted errors by request method (before `scripts`).
     failures: HashMap<String, RpcError>,
+    /// `workspace/applyEdit` params to send (before answering) on a request with this method.
+    apply_on: HashMap<String, Value>,
 }
 
 pub struct FakeLauncher {
@@ -176,6 +183,13 @@ impl FakeLauncher {
         }
     }
 
+    /// From now on, every `method` request (e.g. `workspace/executeCommand`) first makes it send
+    /// `workspace/applyEdit` with `params` (ids `"apply1"`, `"apply2"`, …; the client's answers in
+    /// `answers()`), then answers as it would.
+    pub fn apply_edit_on(&self, method: &str, params: Value) {
+        self.shared.lock().unwrap().apply_on.insert(method.into(), params);
+    }
+
     /// The `params` of every request received with `method`, in order.
     pub fn requests(&self, method: &str) -> Vec<Value> {
         self.received()
@@ -240,6 +254,7 @@ async fn serve(
     let mut framer = Framer::default();
     let mut buf = vec![0u8; 8192];
     let mut held: Vec<(Id, Value)> = Vec::new();
+    let mut applies = 0;
     loop {
         let n = match input.read(&mut buf).await {
             Ok(0) | Err(_) => return,
@@ -250,6 +265,17 @@ async fn serve(
             let value: Value = serde_json::from_slice(&body).unwrap();
             shared.lock().unwrap().received.push(value.clone());
             let mut out = Vec::new();
+            if let Some(Message::Request { method, .. }) = Message::from_value(value.clone()) {
+                let apply = shared.lock().unwrap().apply_on.get(&method).cloned();
+                if let Some(params) = apply {
+                    applies += 1;
+                    out.push(Message::Request {
+                        id: Id::Str(format!("apply{applies}")),
+                        method: "workspace/applyEdit".into(),
+                        params,
+                    });
+                }
+            }
             match Message::from_value(value).unwrap() {
                 Message::Request { id, method, params } => match method.as_str() {
                     "initialize" if options.init_error => out.push(Message::Response {
@@ -291,6 +317,12 @@ async fn serve(
                             },
                             "documentFormattingProvider": !options.no_formatting,
                         });
+                        if !options.no_code_actions {
+                            caps["codeActionProvider"] = json!({
+                                "codeActionKinds": ["quickfix", "refactor", "source"],
+                                "resolveProvider": true,
+                            });
+                        }
                         if options.utf8 {
                             caps["positionEncoding"] = json!("utf-8");
                         }
@@ -322,7 +354,9 @@ async fn serve(
                         }
                     }
                     // Unscripted, a resolve answers with the item as it came.
-                    "completionItem/resolve" => out.push(Message::Response { id, result: Ok(params) }),
+                    "completionItem/resolve" | "codeAction/resolve" => {
+                        out.push(Message::Response { id, result: Ok(params) })
+                    }
                     _ => out.push(Message::Response {
                         id,
                         result: Err(RpcError {

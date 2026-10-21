@@ -414,6 +414,8 @@ pub struct HitMap {
     pub hover: Option<Rect>,
     /// The completion list, when shown: on top of everything (the hover too).
     pub completion: Option<CompletionHit>,
+    /// The code action list, when shown: on top of everything (the completion list too).
+    pub code_actions: Option<CompletionHit>,
     /// The gutter's peek, when shown.
     pub quick_diff: Option<QuickDiffHit>,
 }
@@ -426,8 +428,8 @@ pub struct QuickDiffHit {
     pub close: Rect,
 }
 
-/// The completion list as drawn: its box, the rows' area and the list row at its top (row
-/// `rows.y + i` shows the list's row `top + i`).
+/// The completion list (or the code action list) as drawn: its box, the rows' area and the
+/// list row at its top (row `rows.y + i` shows the list's row `top + i`).
 #[derive(Debug, Clone, Copy)]
 pub struct CompletionHit {
     pub rect: Rect,
@@ -630,6 +632,8 @@ pub enum Hit {
     Hover,
     /// The completion list (over an editor).
     Completion,
+    /// The code action list (over an editor).
+    CodeActions,
     /// The gutter's peek (over an editor).
     QuickDiff,
     Nothing,
@@ -639,6 +643,9 @@ impl HitMap {
     pub fn hit(&self, x: u16, y: u16) -> Hit {
         let p = Position { x, y };
         let r = &self.regions;
+        if self.code_actions.is_some_and(|c| c.rect.contains(p)) {
+            return Hit::CodeActions;
+        }
         if self.completion.is_some_and(|c| c.rect.contains(p)) {
             return Hit::Completion;
         }
@@ -948,6 +955,7 @@ mod tests {
             )),
             status_problems: Some(Rect::new(10, 29, 8, 1)),
             hover: Some(Rect::new(40, 5, 10, 4)),
+            code_actions: None,
             completion: Some(CompletionHit {
                 rect: Rect::new(44, 7, 5, 3),
                 rows: Rect::new(45, 8, 3, 1),

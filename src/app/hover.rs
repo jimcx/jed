@@ -50,8 +50,33 @@ impl App {
         let (buffer, at) = (tab.buffer, tab.view.selections.primary().head);
         self.close_hover();
         let shown = self.hover_popup(group, buffer, at, None, None);
+        if shown {
+            self.request_hover_fixes_at(group, buffer, at, false);
+        }
         if !self.request_hover(group, buffer, at, None) && !shown {
             self.notify(super::Level::Info, "No hover information".into());
+        }
+    }
+
+    /// The diagnostics the popup shows at `at` (drawn on that cell for the mouse, else touching
+    /// the cursor).
+    fn hover_marks(&self, buffer: BufferId, at: ByteIdx, mouse: bool) -> Vec<diagnostics::Mark> {
+        let Some(buf) = self.buffers.get(buffer) else {
+            return Vec::new();
+        };
+        let marks = if mouse {
+            buf.diagnostics.drawn_at(&buf.rope, at)
+        } else {
+            buf.diagnostics.touching(&buf.rope, at)
+        };
+        marks.into_iter().cloned().collect()
+    }
+
+    /// Asks for the quick fixes of the diagnostics the popup shows (its "Quick Fix…" row).
+    fn request_hover_fixes_at(&mut self, group: GroupId, buffer: BufferId, at: ByteIdx, mouse: bool) {
+        let marks = self.hover_marks(buffer, at, mouse);
+        if !marks.is_empty() {
+            self.request_hover_fixes(group, buffer, &marks);
         }
     }
 
@@ -127,6 +152,11 @@ impl App {
         }
         let diags: Vec<&Diagnostic> = marks.iter().map(|m| &*m.diag).collect();
         let mut lines = hover::diagnostic_lines(&diags);
+        let owned: Vec<diagnostics::Mark> = marks.iter().map(|m| (*m).clone()).collect();
+        if !owned.is_empty() && self.hover_fixes_for(group, buffer, buf.revision(), &owned) {
+            lines.push(hover::Line::link(crate::code_action::QUICK_FIX_ROW));
+        }
+        let fixes_at = lines.len();
         let mut server_range = None;
         if let Some((answer, range)) = answer {
             if !lines.is_empty() {
@@ -161,6 +191,8 @@ impl App {
             anchor: about.0,
             range,
             lines,
+            fixes_at,
+            link_row: None,
             mouse,
             top,
             rows: 0,
@@ -220,6 +252,12 @@ impl App {
                     None => None,
                 };
                 false
+            }
+            MouseEventKind::Down(crossterm::event::MouseButton::Left)
+                if over && self.hover.popup.as_ref().is_some_and(|p| p.link_row == Some(m.row)) =>
+            {
+                self.open_hover_fixes();
+                true
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if over => {
                 let delta = if m.kind == MouseEventKind::ScrollUp {
@@ -292,7 +330,9 @@ impl App {
             .is_some_and(|t| t.buffer == r.buffer);
         if shows {
             // The diagnostics there at once; the server's answer follows.
-            self.hover_popup(r.group, r.buffer, r.at, Some(r.word), None);
+            if self.hover_popup(r.group, r.buffer, r.at, Some(r.word), None) {
+                self.request_hover_fixes_at(r.group, r.buffer, r.at, true);
+            }
             self.request_hover(r.group, r.buffer, r.at, Some(r.word));
         }
     }

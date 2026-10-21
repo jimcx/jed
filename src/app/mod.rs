@@ -2,6 +2,7 @@
 
 mod backup;
 mod blame;
+mod code_action;
 mod commit_tabs;
 mod completion;
 mod cursors;
@@ -95,6 +96,8 @@ enum Timer {
     Hover,
     /// A word char was typed `completion::QUICK_DELAY` ago.
     Completion,
+    /// The cursor rested `code_action::BULB_DELAY`: the lightbulb's request.
+    Bulb,
     /// Edited buffers' gutter markers are due (`quick_diff::DELAY`).
     QuickDiff,
     /// Diff tabs of edited buffers are due (`diff_view::DELAY`).
@@ -382,6 +385,8 @@ pub struct App {
     pub hover: crate::hover::HoverState,
     /// The completion list, its pending request and the quick-suggestion timer.
     pub completion: crate::completion::Completion,
+    /// The code action list, the lightbulb's rest and cache, the hover's quick fixes.
+    pub code_actions: crate::code_action::CodeActions,
     /// The Locations list (go to definition's places), while there is one.
     pub locations: Option<crate::locations::Locations>,
     /// Numbers Locations lists, so file reads for a replaced one are dropped.
@@ -509,6 +514,7 @@ impl App {
             requests: HashMap::new(),
             hover: Default::default(),
             completion: Default::default(),
+            code_actions: Default::default(),
             locations: None,
             locations_generation: 0,
             git: Default::default(),
@@ -663,6 +669,10 @@ impl App {
             .completion
             .deadline()
             .map(|d| (tokio::time::Instant::from_std(d), Timer::Completion));
+        let bulb = self
+            .code_actions
+            .deadline()
+            .map(|d| (tokio::time::Instant::from_std(d), Timer::Bulb));
         let quick_diff = self
             .quick_diff
             .deadline()
@@ -687,7 +697,7 @@ impl App {
             .files_poll
             .map(|d| (tokio::time::Instant::from_std(d), Timer::Files));
         let next = [
-            fs, search, hover, completion, quick_diff, diff, blame, backup, logs, files,
+            fs, search, hover, completion, bulb, quick_diff, diff, blame, backup, logs, files,
         ]
         .into_iter()
         .flatten()
@@ -710,6 +720,7 @@ impl App {
             Timer::SearchDebounce => self.search_tick(Instant::now()),
             Timer::Hover => self.hover_tick(Instant::now()),
             Timer::Completion => self.completion_tick(Instant::now()),
+            Timer::Bulb => self.bulb_tick(Instant::now()),
             Timer::QuickDiff => self.sync_quick_diff(),
             Timer::Diff => self.sync_diffs(),
             Timer::Blame => self.sync_blame(),
@@ -791,6 +802,7 @@ impl App {
             return Context::Palette;
         }
         match self.ui.focus {
+            Focus::Editor if self.code_actions_shown() => Context::CodeActions,
             Focus::Editor if self.completion_shown() => Context::Suggest,
             Focus::Editor if self.group().active_diff().is_some() => Context::Diff,
             Focus::Editor if self.active_commit().is_some() => Context::Commit,
@@ -898,6 +910,7 @@ impl App {
         self.check_completion();
         self.check_requests();
         self.check_hover();
+        self.check_code_actions();
         self.check_peek();
     }
 
@@ -1027,6 +1040,8 @@ impl App {
             Command::Locations(c) => self.locations_command(c),
             Command::TriggerSuggest => self.trigger_suggest(),
             Command::Suggest(c) => self.suggest_command(c),
+            Command::QuickFix => self.quick_fix(),
+            Command::CodeActions(c) => self.code_action_command(c),
             Command::GoToReferences => self.go_to_references(),
             Command::RenameSymbol => self.rename_symbol(),
             Command::FormatDocument => self.format_document(),
@@ -1243,6 +1258,7 @@ impl App {
         self.refresh_find();
         self.check_completion();
         self.check_hover();
+        self.check_code_actions();
         self.check_peek();
     }
 }
@@ -1298,6 +1314,7 @@ impl App {
         self.check_completion();
         self.check_requests();
         self.check_hover();
+        self.check_code_actions();
         self.check_peek();
     }
 
@@ -1393,6 +1410,20 @@ impl App {
                     lsp::Request::PrepareRename { .. } => "prepare rename",
                     lsp::Request::Rename { .. } => "rename",
                     lsp::Request::Format => "format",
+                    lsp::Request::CodeActions {
+                        purpose: crate::code_action::Purpose::List,
+                        ..
+                    } => "code actions",
+                    lsp::Request::CodeActions {
+                        purpose: crate::code_action::Purpose::Bulb,
+                        ..
+                    } => "lightbulb",
+                    lsp::Request::CodeActions {
+                        purpose: crate::code_action::Purpose::Hover,
+                        ..
+                    } => "hover fixes",
+                    lsp::Request::ResolveAction => "resolve action",
+                    lsp::Request::ExecuteCommand { .. } => "execute command",
                 };
                 (kind, p.at.0)
             })

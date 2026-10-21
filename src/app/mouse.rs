@@ -99,6 +99,9 @@ impl App {
             },
             hit => hit,
         };
+        if self.code_actions_mouse(&m, hit) {
+            return;
+        }
         if self.completion_mouse(&m, hit) {
             return;
         }
@@ -302,6 +305,7 @@ impl App {
                     self.execute(a.command());
                 }
             }
+            Hit::Editor(_) if m.modifiers.is_empty() && self.bulb_click(&m) => {}
             Hit::Editor(_) if m.modifiers.is_empty() && self.gutter_click(&m) => {}
             Hit::Editor(g) => {
                 self.focus_group(g);
@@ -318,7 +322,7 @@ impl App {
                 PanelTab::Task(_) => self.task_click(m),
             },
             Hit::StatusProblems => self.problem_counts_clicked(),
-            Hit::Status | Hit::Hover | Hit::Completion | Hit::QuickDiff | Hit::Nothing => {}
+            Hit::Status | Hit::Hover | Hit::Completion | Hit::CodeActions | Hit::QuickDiff | Hit::Nothing => {}
         }
     }
 

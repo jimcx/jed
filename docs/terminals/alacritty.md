@@ -30,6 +30,7 @@ bindings = [
   { key = "]", mods = "Command", action = "ReceiveChar" },
   { key = "[", mods = "Command", action = "ReceiveChar" },
   { key = "I", mods = "Command|Alt", action = "ReceiveChar" },
+  { key = "Period", mods = "Command", action = "ReceiveChar" },
   { key = "D", mods = "Command", action = "ReceiveChar" },
   { key = "L", mods = "Command|Shift", action = "ReceiveChar" },
   { key = "D", mods = "Command|Alt", action = "ReceiveChar" },

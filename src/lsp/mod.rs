@@ -91,6 +91,14 @@ pub enum Event {
         method: String,
         params: Value,
     },
+    /// A request from the server the app answers (`workspace/applyEdit`), with
+    /// `Manager::respond`.
+    ServerRequest {
+        server: ServerId,
+        id: rpc::Id,
+        method: String,
+        params: Value,
+    },
     /// The answer to `Server::request`'s request `id`.
     Response {
         server: ServerId,
@@ -537,6 +545,18 @@ impl Manager {
         Some(id)
     }
 
+    /// Answers the server's request `id` (`Event::ServerRequest`), if it's still there.
+    pub fn respond(&self, server: ServerId, id: rpc::Id, result: Result<Value, rpc::RpcError>) {
+        if let Some(s) = self.servers.iter().find(|s| s.id == server) {
+            let _ = s.tx.send(ToServer::Respond { id, result });
+        }
+    }
+
+    /// The server's position encoding, while it runs.
+    pub fn encoding_of(&self, server: ServerId) -> Option<PosEncoding> {
+        self.servers.iter().find(|s| s.id == server).and_then(Server::encoding)
+    }
+
     /// Tells a server the app no longer waits for request `id` (`$/cancelRequest`); its answer,
     /// if one still comes, is dropped as nobody's.
     pub fn cancel(&self, server: ServerId, id: i64) {
@@ -596,6 +616,7 @@ impl Manager {
             | Event::Exited { server, .. }
             | Event::Notification { server, .. }
             | Event::Diagnostics { server, .. }
+            | Event::ServerRequest { server, .. }
             | Event::Response { server, .. } => *server,
         };
         let Some(index) = self.servers.iter().position(|s| s.id == id) else {
@@ -673,6 +694,8 @@ impl Manager {
             }
             // The app hands these to `publish` (it needs the buffers).
             Event::Diagnostics { .. } => None,
+            // The app answers these (`respond`).
+            Event::ServerRequest { .. } => None,
         }
     }
 

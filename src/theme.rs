@@ -289,6 +289,17 @@ impl Theme {
                 Style::new().fg(c(0x2AAAFF)).add_modifier(Modifier::BOLD),
             ),
             ("editorSuggestWidget.detail", Style::new().fg(c(0x9D9D9D))),
+            // The code action list (Dark+'s `editorActionList.*`, `disabledForeground`), the
+            // preferred action's mark, the hover's "Quick Fix…" row (`textLink.foreground`), the
+            // gutter's lightbulb (`editorLightBulb.foreground`; the emoji keeps its own colour).
+            ("editorActionList.background", Style::new().bg(c(0x252526))),
+            ("editorActionList.foreground", Style::new().fg(c(0xCCCCCC))),
+            ("editorActionList.border", Style::new().fg(c(0x454545))),
+            ("editorActionList.focusBackground", fg_bg(0xFFFFFF, 0x04395E)),
+            ("editorActionList.disabledForeground", Style::new().fg(c(0x7F7F7F))),
+            ("editorActionList.preferred", Style::new().fg(c(0xFFCC00))),
+            ("textLink.foreground", Style::new().fg(c(0x3794FF))),
+            ("editorLightBulb.foreground", Style::new().fg(c(0xFFCC00))),
             // Completion kind icons: Dark+'s `symbolIcon.*Foreground` groups.
             ("symbolIcon.functionForeground", Style::new().fg(c(0xB180D7))),
             ("symbolIcon.variableForeground", Style::new().fg(c(0x75BEFF))),

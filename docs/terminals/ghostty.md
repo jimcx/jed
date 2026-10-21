@@ -26,6 +26,7 @@ keybind = cmd+slash=unbind
 keybind = cmd+]=unbind
 keybind = cmd+[=unbind
 keybind = cmd+alt+i=unbind
+keybind = cmd+period=unbind
 keybind = cmd+d=unbind
 keybind = cmd+shift+l=unbind
 keybind = cmd+alt+d=unbind
@@ -101,6 +102,7 @@ Ghostty's Cmd+C (copy screen text), Cmd+W, Cmd+Q, Cmd+1..3, Cmd+A, Cmd+Z, prompt
 - [ ] Every key in the [table](README.md#cmd-bindings-jed-uses) logs with `SUPER`. **Check by hand:** the docs only promise pass-through for *printable* keys; confirm Cmd+arrows and Cmd+Backspace arrive too
 - [ ] **Check by hand:** "bindings in the main menu will trigger before any remapping"; confirm Cmd+Q and Cmd+W reach jed and don't still fire the menu items
 - [ ] **Check by hand:** `cmd+[` / `cmd+]` free Ghostty's split navigation (if Cmd+[ still switches splits, try `cmd+bracket_left` / `cmd+bracket_right`)
+- [ ] **Check by hand:** `cmd+period` (Cmd+., quick fix) is spelled right for your Ghostty (try `cmd+.` if Ghostty reports an invalid key)
 - [ ] `cmd+backslash` is spelled right for your Ghostty (try `cmd+\` if Ghostty reports an invalid key)
 - [ ] **Check by hand:** Cmd+Shift+P opens jed's palette, not Ghostty's
 - [ ] **Check by hand:** Cmd+F opens jed's find widget, not Ghostty's search
