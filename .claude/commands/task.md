@@ -59,11 +59,11 @@ A task is either **single** (one implementer, one validator and its mutation run
    - Don't edit tests or code except to apply and undo the planned mutations. Before the first, save `git diff | shasum` and copy each file it will mutate to the scratchpad.
    - For each mutation in order: apply it exactly (if the text isn't found, record "not applied" and go on), run its `scripts/check test <filter>`, record caught (a test failed) or survived (all passed; note a compile error as "caught by the compiler"), then restore the file from the copy. After the last, check `git diff | shasum` matches the saved one.
    - Then run `scripts/check` 3 times to catch flakiness (it already caps runs with `scripts/timeout`; never background loops or `alarm` + `exec` wrappers, which leave the test binary running). Check `pgrep -fl deps/jed-` is empty.
-   - Report only a table (id, caught / survived / not applied, the failing test) and the three runs' result lines, plus the output of any failing test.
+   - Report only a table (id, caught / survived / not applied, the failing test) and the three runs' result lines, plus the output of any failing test, and say if any output contains `FLAKE`.
 
-   Then (you, not in the runner's prompt): if mutations survived or a run was flaky, send the table to the validator (`SendMessage`, so it keeps its context) to strengthen the tests or fix the flake, then have the runner (`SendMessage`) re-run just those mutations and the 3 runs. A second round that still leaves survivors goes to the user.
+   Then (you, not in the runner's prompt): if mutations survived, or a test related to this task (one it added or changed, or one covering code it touched) was flaky, send the table to the validator (`SendMessage`, so it keeps its context) to strengthen the tests or fix the flake then and there, then have the runner (`SendMessage`) re-run just those mutations and the 3 runs. A second round that still leaves survivors goes to the user. A flaky test unrelated to the task goes through [Flaky tests](#flaky-tests) instead.
 8. **Check and commit (you):**
-   - Run `scripts/check` once yourself; don't re-read files the agents already reported on. A flaky test elsewhere is fixed, not ignored.
+   - Run `scripts/check` once yourself; don't re-read files the agents already reported on. A flaky test elsewhere follows [Flaky tests](#flaky-tests): never ignored, never silently retried until it passes.
    - Make sure the diff includes the doc updates (CLAUDE.md files, `docs/dev/`).
    - Check no test binaries are left running (`pgrep -fl deps/jed-`); kill any strays.
    - Update PLAN.md in the same commit:
@@ -73,9 +73,18 @@ A task is either **single** (one implementer, one validator and its mutation run
    - Commit everything. Subject: a single task's is a short imperative naming the feature (e.g. `Add render whitespace`); a subtask's is `<Task name> (<id>-a): <summary>`. Then a blank line and `- ` bullets of behaviour and notable internals. End with the Co-Authored-By trailer.
 9. Give the user a short update after each commit: what landed, anything deferred, the hand checks. For a task with subtasks, move on to the next subtask. When the task is done, stop: don't start another unless asked.
 
+## Flaky tests
+
+A flaky test related to the task (one it added or changed, or one covering code it touched) is always fixed then and there by the validator (step 7). The rest of this section is for a test unrelated to the task that fails and then passes on a re-run with no code change (in any agent's run or your own):
+
+- **First time (no `FLAKE` in its output):** don't try to fix it. Have the agent that saw it (or do it yourself) add debugging to that test, tagged with the keyword `FLAKE` so it's easy to grep: a `// FLAKE: <date>, <how it failed>` comment above the test, and assertion messages / an `eprintln!("FLAKE <test name>: …")` on the failing path that dump the state needed to diagnose it next time (the values compared, timings, events seen, the settle condition's inputs). The debugging must not change what the test checks or add sleeps or retries. Confirm `scripts/check test <its name>` passes, then move on with the task. The debugging goes in the task's commit, with a bullet saying which test flaked and how; tell the user in the post-commit update.
+- **Seen again (a failure whose output contains `FLAKE`):** stop and report to the user: the test, the `FLAKE` output, and what it suggests is wrong. Don't fix it until they confirm. Their answer decides whether the fix goes in this task's commit, its own commit, or waits.
+- Tell every agent's prompt (implementer, validator, runner) this rule in one line: a flaky test unrelated to the task gets `FLAKE` debugging and no fix (one related to it is fixed), and any `FLAKE` output it sees is reported back to you, not acted on.
+
 ## Stop and ask the user when
 
 - The task is too big or not ready (step 4).
 - A subtask needs something the agents can't get, such as tools to install or credentials.
 - A design decision isn't settled by PLAN.md and would be costly to reverse.
 - Checks still fail after an agent says it's done, and a second attempt doesn't fix them.
+- A test fails with `FLAKE` in its output (see [Flaky tests](#flaky-tests)).
