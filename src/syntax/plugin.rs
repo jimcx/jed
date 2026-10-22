@@ -154,7 +154,7 @@ impl Plugin {
 
     /// The query source: `queries/highlights.scm` (none = no colours) then `queries/jed.scm`, so
     /// jed's additions win for the same node; with each file's path and first row in it.
-    fn query_source(&self) -> Result<(String, Vec<(PathBuf, usize)>), String> {
+    pub(super) fn query_source(&self) -> Result<(String, Vec<(PathBuf, usize)>), String> {
         let mut source = String::new();
         let mut files = Vec::new();
         for name in ["highlights.scm", "jed.scm"] {
@@ -443,7 +443,7 @@ pub fn parse(text: &str, file: &str) -> (Option<Manifest>, Vec<String>) {
     (Some(m), p.errors)
 }
 
-fn valid_id(s: &str) -> bool {
+pub(super) fn valid_id(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))

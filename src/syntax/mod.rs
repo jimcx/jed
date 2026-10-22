@@ -9,6 +9,7 @@
 //! `spans(rope, lines)` gives the highlight spans for any lines, from a cache that is only
 //! re-queried when the tree changes (see `highlight`).
 
+pub mod authoring;
 pub mod build;
 mod config;
 mod highlight;

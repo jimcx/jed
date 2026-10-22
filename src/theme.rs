@@ -38,12 +38,42 @@ pub const ANSI_KEYS: [&str; 16] = [
     "terminal.ansiBrightWhite",
 ];
 
+/// Ends what `Theme::ansi` started.
+pub const ANSI_RESET: &str = "\x1b[0m";
+
 impl Theme {
     pub fn get(&self, key: &str) -> Style {
         self.styles.get(key).copied().unwrap_or_else(|| {
             tracing::warn!(key, "missing theme key");
             Style::default()
         })
+    }
+
+    /// The ANSI escape that starts `key`'s style on a terminal (truecolor, or 256 colours as the
+    /// theme was built), for text printed outside the UI (`--check-language --sample`); end it
+    /// with `ANSI_RESET`.
+    pub fn ansi(&self, key: &str) -> String {
+        let style = self.get(key);
+        let mut codes = Vec::new();
+        for (modifier, code) in [
+            (Modifier::BOLD, "1"),
+            (Modifier::ITALIC, "3"),
+            (Modifier::UNDERLINED, "4"),
+        ] {
+            if style.add_modifier.contains(modifier) {
+                codes.push(code.to_string());
+            }
+        }
+        match style.fg {
+            Some(Color::Rgb(r, g, b)) => codes.push(format!("38;2;{r};{g};{b}")),
+            Some(Color::Indexed(i)) => codes.push(format!("38;5;{i}")),
+            _ => {}
+        }
+        if codes.is_empty() {
+            String::new()
+        } else {
+            format!("\x1b[{}m", codes.join(";"))
+        }
     }
 
     /// Maps a task terminal's cell as `tui-term` drew it from the `vt100` screen (`Reset` for

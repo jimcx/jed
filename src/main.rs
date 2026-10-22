@@ -118,7 +118,16 @@ use workspace::Workspace;
 use workspace::trust::TrustStore;
 
 const USAGE: &str = "usage: jed [--log-level <filter>] [<folder> | <file>[:<line>[:<col>]]]\n       \
-                     jed [--log-level <filter>] -s | --single <file>[:<line>[:<col>]]   (single file mode)";
+                     jed [--log-level <filter>] -s | --single <file>[:<line>[:<col>]]   (single file mode)\n       \
+                     jed --new-language <id>   (start a syntax plugin in ~/.config/jed/languages/<id>)\n       \
+                     jed --check-language <id> [--sample <file>]   (build, load and check a syntax plugin)";
+
+/// A syntax plugin authoring command (`syntax::authoring`): prints and exits.
+#[derive(Debug, PartialEq)]
+enum Authoring {
+    New(String),
+    Check { id: String, sample: Option<PathBuf> },
+}
 
 #[derive(Debug, PartialEq)]
 struct Args {
@@ -126,6 +135,8 @@ struct Args {
     log_level: Option<String>,
     /// `-s` / `--single`: single file mode (`app::Mode::SingleFile`).
     single: bool,
+    /// `--new-language` / `--check-language`: run instead of the editor.
+    authoring: Option<Authoring>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -136,6 +147,8 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
     let mut target = None;
     let mut log_level = None;
     let mut single = false;
+    let mut authoring = None;
+    let mut sample = None;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -143,10 +156,27 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "-V" | "--version" => return Err(format!("jed {}", env!("JED_VERSION"))),
             "--log-level" => log_level = Some(args.next().ok_or("--log-level needs a value")?),
             "-s" | "--single" => single = true,
+            "--new-language" => authoring = Some(Authoring::New(args.next().ok_or("--new-language needs an id")?)),
+            "--check-language" => {
+                let id = args.next().ok_or("--check-language needs an id")?;
+                authoring = Some(Authoring::Check { id, sample: None });
+            }
+            "--sample" => sample = Some(PathBuf::from(args.next().ok_or("--sample needs a file")?)),
             a if a.starts_with('-') => return Err(format!("unknown option {a}\n{USAGE}")),
             a if target.is_none() => target = Some(a.to_string()),
             _ => return Err(format!("only one file or folder can be opened\n{USAGE}")),
         }
+    }
+    if let Some(Authoring::Check { sample: slot, .. }) = &mut authoring {
+        *slot = sample.take();
+    }
+    if sample.is_some() {
+        return Err(format!("--sample only goes with --check-language\n{USAGE}"));
+    }
+    if authoring.is_some() && (target.is_some() || single) {
+        return Err(format!(
+            "--new-language and --check-language take no file or folder\n{USAGE}"
+        ));
     }
     if single && target.is_none() {
         return Err(format!("single file mode needs a file\n{USAGE}"));
@@ -155,6 +185,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
         target,
         log_level,
         single,
+        authoring,
     })
 }
 
@@ -214,6 +245,30 @@ fn resolve_single(target: &str) -> Result<(PathBuf, FileArg), String> {
     Ok((workspace::root_for_file(&path), (path, goto)))
 }
 
+/// Runs a plugin authoring command before the UI (or logging) exists: prints its text, then the
+/// exit status says whether it worked.
+fn run_authoring(command: Authoring) -> ExitCode {
+    let dir = paths::config_dir().join("languages");
+    match command {
+        Authoring::New(id) => match syntax::authoring::new_language(&dir, &id) {
+            Ok(text) => {
+                print!("{text}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("jed: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Authoring::Check { id, sample } => {
+            let tools = syntax::build::Toolchain::from_env();
+            let (text, ok) = syntax::authoring::check_language(&dir, &id, sample.as_deref(), &tools);
+            print!("{text}");
+            if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let args = match parse_args() {
         Ok(a) => a,
@@ -222,6 +277,9 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if let Some(command) = args.authoring {
+        return run_authoring(command);
+    }
     let tool_logs = logs::Logs::default();
     let log = match logging::init(args.log_level.as_deref(), tool_logs.clone()) {
         Ok(handle) => Some(handle),
@@ -365,6 +423,49 @@ mod tests {
         }
         assert!(!parse(&["a.rs"]).unwrap().single);
         assert!(parse(&["-s"]).is_err());
+    }
+
+    #[test]
+    fn authoring_flags() {
+        assert_eq!(
+            parse(&["--new-language", "lua"]).unwrap().authoring,
+            Some(Authoring::New("lua".into()))
+        );
+        let check = |sample: Option<&str>| {
+            Some(Authoring::Check {
+                id: "lua".into(),
+                sample: sample.map(PathBuf::from),
+            })
+        };
+        assert_eq!(parse(&["--check-language", "lua"]).unwrap().authoring, check(None));
+        assert_eq!(
+            parse(&["--check-language", "lua", "--sample", "a.lua"])
+                .unwrap()
+                .authoring,
+            check(Some("a.lua"))
+        );
+        assert_eq!(
+            parse(&["--sample", "a.lua", "--check-language", "lua"])
+                .unwrap()
+                .authoring,
+            check(Some("a.lua"))
+        );
+        assert!(parse(&["a.rs"]).unwrap().authoring.is_none());
+    }
+
+    #[test]
+    fn authoring_flags_are_refused_when_misused() {
+        assert!(parse(&["--new-language"]).is_err());
+        assert!(parse(&["--check-language"]).is_err());
+        assert!(parse(&["--check-language", "lua", "--sample"]).is_err());
+        assert!(
+            parse(&["--sample", "a.lua"])
+                .unwrap_err()
+                .contains("only goes with --check-language")
+        );
+        assert!(parse(&["--new-language", "lua", "--sample", "a"]).is_err());
+        assert!(parse(&["--new-language", "lua", "file.rs"]).is_err());
+        assert!(parse(&["--check-language", "lua", "-s"]).is_err());
     }
 
     #[test]

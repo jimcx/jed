@@ -60,7 +60,7 @@ pub const KEYS: &[&str] = &[
 
 /// Capture names the grammars' own queries use for what a key in `KEYS` colours (Neovim's older
 /// and newer names): capture (or prefix) → key.
-const ALIASES: &[(&str, &str)] = &[
+pub(super) const ALIASES: &[(&str, &str)] = &[
     ("boolean", "constant.builtin"),
     ("string.special.key", "property"),
     ("string.escape", "escape"),
