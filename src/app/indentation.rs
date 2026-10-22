@@ -1,5 +1,6 @@
 //! The active buffer's indentation: the status bar item's picker, "Indent Using Spaces / Tabs",
-//! "Change Tab Display Size" (their sizes picker) and "Detect Indentation from Content". What
+//! "Change Tab Display Size" (their sizes picker), "Detect Indentation from Content" and
+//! "Convert Indentation to Spaces / Tabs" (`convert_indentation`). What
 //! they set lives on the `Buffer` (`indentation`, `tab_display`, the guess), so every view of
 //! it follows; `edit::Settings::for_buffer` resolves it. A diff or hex tab has no buffer here:
 //! the commands do nothing there.
@@ -94,6 +95,28 @@ impl App {
         }
         tracing::debug!(buffer, ?guess, "indentation detected");
         self.reveal_after_indentation(buffer);
+    }
+
+    /// "Convert Indentation to Spaces / Tabs": the active buffer's leading whitespace rewritten
+    /// at its tab width (`indentation::convert`: one undo step, the active view's selections
+    /// mapped; `sync_views` maps the others), then the buffer indents that way, keeping its
+    /// size: spaces of its indent size, or tabs of its tab width (VS Code sets `insertSpaces`).
+    /// A tab display size chosen before stays. Nothing on a read-only buffer (a log or commit
+    /// tab: `active_writable` says why) or a diff / hex tab.
+    pub(super) fn convert_indentation(&mut self, spaces: bool) {
+        let Some(s) = self.active_buffer().map(|b| self.settings.for_buffer(b)) else {
+            return;
+        };
+        if !self.active_writable() {
+            return;
+        }
+        let size = if spaces { s.indent_size() } else { s.tab_width };
+        let Some((buf, view)) = self.active_mut() else {
+            return;
+        };
+        let changed = indentation::convert(buf, view, spaces, s.tab_width);
+        buf.indentation = Some(Indentation { spaces, size });
+        tracing::debug!(spaces, size, changed, "indentation converted");
     }
 
     /// Tabs may now be drawn wider or narrower: the active view keeps its cursor in sight.

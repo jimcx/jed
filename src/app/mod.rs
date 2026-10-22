@@ -1093,6 +1093,8 @@ impl App {
             | Command::IndentUsingTabs
             | Command::ChangeTabDisplaySize
             | Command::DetectIndentation => self.indentation_command(cmd),
+            Command::ConvertIndentationToSpaces => self.convert_indentation(true),
+            Command::ConvertIndentationToTabs => self.convert_indentation(false),
             Command::ReopenAsHex => self.reopen_as_hex(),
             Command::ReopenAsText => self.reopen_as_text(),
             Command::ToggleBlame => self.toggle_blame(),

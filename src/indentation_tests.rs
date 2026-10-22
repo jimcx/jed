@@ -8,7 +8,22 @@
 //! opens the actions), "Indent Using Spaces / Tabs" and "Change Tab Display Size" through the
 //! palette's sizes picker (current one marked, Esc changes nothing, only the active buffer, every
 //! split of it), "Detect Indentation from Content", a reload dropping what was chosen, and
-//! nothing on a hex tab.
+//! nothing on a hex tab. indentation-c: "Convert Indentation to Spaces / Tabs" (selections in
+//! every split mapped, one undo step, CRLF, whitespace-only lines, read-only buffers left) and
+//! their 1 MB budget (`milestone_indentation_budget_convert_1mb`, release).
+//!
+//! Together these cover the milestone's done-when, clause by clause: the user's
+//! `insert_spaces = true, tab_width = 4` with a tab-indented C file
+//! (`indentation_a_tab_indented_c_file_gets_tabs`) and a 2-space Python file
+//! (`indentation_a_two_space_python_file_gets_two_spaces`); Format Document on each
+//! (`indentation_done_when_format_document_sends_each_files_guess`); no indented lines and
+//! `detect_indentation = false` (`indentation_a_files_without_a_guess_follow_the_settings`,
+//! `indentation_a_detect_indentation_off_keeps_the_settings`); the Makefile
+//! (`indentation_a_makefile_indented_with_spaces_still_gets_tabs`); "Indent Using Tabs" → 8 in
+//! both splits (`indentation_b_indent_using_tabs_from_the_palette_in_both_splits`, and again in
+//! `indentation_done_when_convert_to_tabs_then_one_undo`, which converts with one undo); the
+//! reload (`indentation_a_a_clean_buffer_is_guessed_again_on_reload`); the 10 MB detection
+//! (`milestone_indentation_budget_detect_10mb`).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,7 +40,7 @@ use crate::buffer::pos::ByteIdx;
 use crate::command::Command;
 use crate::config::settings;
 use crate::indentation::{self, Guess, Indentation};
-use crate::palette::Mode;
+use crate::palette::{self, Mode};
 use crate::workspace::trust::TrustStore;
 use crate::workspace::{self, Workspace};
 
@@ -46,6 +61,16 @@ fn write(root: &Path, rel: &str, text: &str) -> PathBuf {
 /// An app on a workspace holding `files`, the first open as `main` opens it (guessed with the
 /// layered settings), with `user` as the user's `settings.toml`.
 fn open_app(dir: &tempfile::TempDir, user: &str, files: &[(&str, &str)]) -> (App, PathBuf) {
+    open_app_with(dir, user, files, None)
+}
+
+/// `open_app`, with language servers started by `launcher`.
+fn open_app_with(
+    dir: &tempfile::TempDir,
+    user: &str,
+    files: &[(&str, &str)],
+    launcher: Option<std::sync::Arc<crate::lsp::fake::FakeLauncher>>,
+) -> (App, PathBuf) {
     let base = workspace::normalize(dir.path());
     let config_dir = base.join("config");
     let root = base.join("ws");
@@ -62,6 +87,9 @@ fn open_app(dir: &tempfile::TempDir, user: &str, files: &[(&str, &str)]) -> (App
     let trust = TrustStore::load(base.join("trust.toml"));
     let mut app = App::new(ws, trust, Some(InitialFile { buffer, goto: None }), true);
     app.config_dir = config_dir;
+    if let Some(launcher) = launcher {
+        app.lsp.set_launcher(launcher);
+    }
     app.test_start();
     app.test_plain_whitespace();
     (app, root)
@@ -428,7 +456,9 @@ async fn indentation_b_status_bar_click_opens_the_actions() {
             "Indent Using Spaces",
             "Indent Using Tabs",
             "Change Tab Display Size",
-            "Detect Indentation from Content"
+            "Detect Indentation from Content",
+            "Convert Indentation to Spaces",
+            "Convert Indentation to Tabs"
         ]
     );
     // Enter on the first: the spaces picker, the tab file's size current.
@@ -600,12 +630,7 @@ async fn indentation_b_nothing_on_a_hex_tab() {
     );
     app.press(KeyCode::Enter, M::NONE);
     assert!(app.settle(|a| a.active_hex().is_some()).await, "a hex tab");
-    for c in [
-        Command::IndentUsingSpaces,
-        Command::IndentUsingTabs,
-        Command::ChangeTabDisplaySize,
-        Command::DetectIndentation,
-    ] {
+    for c in palette::INDENTATION_ACTIONS {
         app.test_execute(c);
         assert!(app.palette.is_none(), "{c:?}");
     }
@@ -669,4 +694,254 @@ async fn indentation_b_the_status_item_is_clipped_on_a_narrow_bar() {
             None => assert!(!line.contains("Tab"), "{width}: drawn but no hit: {line:?}"),
         }
     }
+}
+
+// ---- indentation-c: the converts, and the milestone's done-when ----
+
+/// Every drawn row of the active group's text, from its first column.
+fn rows(app: &mut App, rows: u16) -> Vec<String> {
+    let mut term = Terminal::new(TestBackend::new(120, 12)).unwrap();
+    term.draw(|f| crate::ui::render(f, app)).unwrap();
+    let t = app.hits.group(app.groups.active).unwrap().text;
+    let cells = term.backend().buffer();
+    (t.y..t.y + rows)
+        .map(|y| (t.x..t.x + 20).map(|x| cells[(x, y)].symbol()).collect::<String>())
+        .collect()
+}
+
+/// Done when: "Convert Indentation to Tabs" rewrites every line's leading spaces and one undo
+/// restores them; then "Indent Using Tabs" → 8 makes Tab insert a tab drawn 8 wide in both
+/// splits of the Python file.
+#[tokio::test(flavor = "multi_thread")]
+async fn indentation_done_when_convert_to_tabs_then_one_undo() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = open_app(&dir, USER, &[("b.py", PY_2)]);
+    app.test_execute(Command::SplitRight);
+    let ids: Vec<_> = app.groups.iter_mut().map(|(id, _)| id).collect();
+    assert_eq!(ids.len(), 2);
+    // A cursor at `y()`'s start in the new split, and in the first at `return`'s.
+    let second = app.groups.active;
+    crate::milestone9_tests::put_cursor(&mut app, 21);
+    app.test_execute(Command::FocusGroup(1));
+    assert_ne!(app.groups.active, second);
+    crate::milestone9_tests::put_cursor(&mut app, 27);
+    assert_eq!(resolved(&app), (true, 2, 2));
+
+    run_from_palette(&mut app, "Convert Indentation to Tabs");
+    let tabs = "def f():\n\tif x:\n\t\ty()\n\treturn 1\n";
+    assert_eq!(text(&app), tabs, "every line's leading spaces, at the size of 2");
+    assert_eq!(resolved(&app), (false, 2, 2), "the buffer now indents with tabs");
+    assert!(status_line(&mut app).contains("Tab Size: 2"));
+    assert_eq!(head(&app), ByteIdx(23), "still at `return`");
+    let other = app.groups.get(second).unwrap().active_tab().unwrap();
+    assert_eq!(
+        other.view.selections.primary().head,
+        ByteIdx(18),
+        "the other split still at `y()`"
+    );
+    app.press(KeyCode::Char('z'), cmd());
+    assert_eq!(text(&app), PY_2, "one undo restores them");
+    assert!(!app.active_buffer().unwrap().is_dirty());
+    assert_eq!(head(&app), ByteIdx(27));
+    app.press(KeyCode::Char('z'), cmd());
+    assert_eq!(text(&app), PY_2, "nothing more to undo");
+
+    // Converting the spaces at 8 leaves levels of two: they're less than a tab (VS Code too).
+    run_from_palette(&mut app, "Indent Using Tabs");
+    app.type_text("8");
+    app.press(KeyCode::Enter, M::NONE);
+    run_from_palette(&mut app, "Convert Indentation to Tabs");
+    assert_eq!(text(&app), PY_2);
+    assert!(!app.active_buffer().unwrap().is_dirty(), "no undo step");
+    assert_eq!(resolved(&app), (false, 8, 8));
+    crate::milestone9_tests::put_cursor(&mut app, 25);
+    app.press(KeyCode::Tab, M::NONE);
+    assert!(text(&app).ends_with("\n\t  return 1\n"), "{:?}", text(&app));
+    let mut term = Terminal::new(TestBackend::new(120, 12)).unwrap();
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    let cells = term.backend().buffer();
+    for &id in &ids {
+        let t = app.hits.group(id).unwrap().text;
+        assert_eq!(
+            cells[(t.x + 10, t.y + 3)].symbol(),
+            "r",
+            "the tab drawn 8 wide in {id:?}"
+        );
+    }
+}
+
+/// "Convert Indentation to Spaces" on the tab-indented C file: tabs to their stops, then the
+/// buffer indents with spaces of the same size; whitespace-only lines too, CRLF kept, the
+/// selection mapped; the status item's picker lists both converts after Detect.
+#[tokio::test(flavor = "multi_thread")]
+async fn indentation_c_convert_to_spaces_from_the_status_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = "int main() {\r\n\tif (x) {\r\n\t\ty();\r\n\t\r\n  \tz();\r\n\t}\r\n}\r\n";
+    let (mut app, _) = open_app(&dir, USER, &[("a.c", c)]);
+    assert_eq!(resolved(&app), (false, 4, 4));
+    // Select `y();`.
+    app.press(KeyCode::Down, M::NONE);
+    app.press(KeyCode::Down, M::NONE);
+    app.press(KeyCode::End, M::NONE);
+    for _ in 0..4 {
+        app.press(KeyCode::Left, M::SHIFT);
+    }
+    let sel = |app: &App| {
+        let s = app.group().active_tab().unwrap().view.selections.primary();
+        (s.anchor.0, s.head.0)
+    };
+    assert_eq!(sel(&app), (31, 27));
+    status_line(&mut app);
+    let at = app.hits.status_indentation.unwrap();
+    app.mouse(MouseEventKind::Down(MouseButton::Left), at.x, at.y);
+    let titles: Vec<String> = picker(&app).0.into_iter().map(|(l, _)| l).collect();
+    assert_eq!(
+        titles[3..],
+        [
+            "Detect Indentation from Content",
+            "Convert Indentation to Spaces",
+            "Convert Indentation to Tabs"
+        ]
+    );
+    app.type_text("to spaces");
+    app.press(KeyCode::Enter, M::NONE);
+    assert!(app.palette.is_none());
+    let spaces = "int main() {\r\n    if (x) {\r\n        y();\r\n    \r\n    z();\r\n    }\r\n}\r\n";
+    assert_eq!(text(&app), spaces);
+    assert_eq!(sel(&app), (40, 36), "`y();` still selected");
+    assert_eq!(resolved(&app), (true, 4, 4));
+    assert!(status_line(&mut app).contains("Spaces: 4"));
+    assert_eq!(rows(&mut app, 3)[2].trim_end(), "        y();");
+    // At the end of the whitespace-only line.
+    crate::milestone9_tests::put_cursor(&mut app, 46);
+    app.press(KeyCode::Tab, M::NONE);
+    assert!(
+        text(&app).contains("\r\n        \r\n    z"),
+        "Tab now indents with spaces: {:?}",
+        text(&app)
+    );
+    // Back to tabs (the spaces line too); two undos, the Tab's and the convert's.
+    run_from_palette(&mut app, "Convert Indentation to Tabs");
+    assert_eq!(
+        text(&app),
+        "int main() {\r\n\tif (x) {\r\n\t\ty();\r\n\t\t\r\n\tz();\r\n\t}\r\n}\r\n"
+    );
+    assert_eq!(resolved(&app), (false, 4, 4));
+    app.press(KeyCode::Char('z'), cmd());
+    app.press(KeyCode::Char('z'), cmd());
+    app.press(KeyCode::Char('z'), cmd());
+    assert_eq!(text(&app), c);
+}
+
+/// The converts do nothing on a read-only buffer (`tools_every_command_on_a_log_tab_leaves_it_alone`
+/// runs them on a log tab, `milestone_10_editor_commands_on_a_diff_tab_do_nothing` on a diff
+/// tab, `indentation_b_nothing_on_a_hex_tab` on a hex tab).
+#[tokio::test(flavor = "multi_thread")]
+async fn indentation_c_converts_leave_a_read_only_buffer() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = open_app(&dir, USER, &[("b.py", PY_2)]);
+    let mut buf = Buffer::from_str("\tx\n");
+    buf.read_only = Some("a test".into());
+    app.test_open(buf);
+    for c in [Command::ConvertIndentationToSpaces, Command::ConvertIndentationToTabs] {
+        app.message = None;
+        app.test_execute(c);
+        let b = app.active_buffer().unwrap();
+        assert_eq!((b.rope.to_string().as_str(), b.indentation), ("\tx\n", None), "{c:?}");
+        assert!(!b.is_dirty(), "{c:?}");
+        assert_eq!(app.message.as_ref().unwrap().text, "Read-only: a test", "{c:?}");
+    }
+    // The file's own buffer behind it is untouched too.
+    app.test_execute(Command::PrevTab);
+    assert_eq!(text(&app), PY_2);
+}
+
+/// Done when: Format Document on each file sends its detected `tabSize` / `insertSpaces`,
+/// with the user's `insert_spaces = true, tab_width = 4` (each through its fake server).
+#[tokio::test(flavor = "multi_thread")]
+async fn indentation_done_when_format_document_sends_each_files_guess() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = crate::lsp::fake::FakeLauncher::new(crate::lsp::fake::FakeOptions::default());
+    let (mut app, root) = open_app_with(&dir, USER, &[("a.c", C_TABS), ("b.py", PY_2)], Some(fake.clone()));
+    let format = |app: &mut App| {
+        if cfg!(target_os = "macos") {
+            app.press(KeyCode::Char('f'), M::SHIFT | M::ALT);
+        } else {
+            app.press(KeyCode::Char('i'), M::CONTROL | M::SHIFT);
+        }
+    };
+    let expect = [
+        ("a.c", serde_json::json!({ "tabSize": 4, "insertSpaces": false })),
+        ("b.py", serde_json::json!({ "tabSize": 2, "insertSpaces": true })),
+    ];
+    for (n, (name, options)) in expect.into_iter().enumerate() {
+        if n > 0 {
+            quick_open(&mut app, name).await;
+        }
+        let u = crate::milestone9_tests::uri(&root.join(name));
+        assert!(
+            app.settle(|_| fake.document(&u).is_some()).await,
+            "{name} opened on its server"
+        );
+        format(&mut app);
+        assert!(
+            app.settle(|_| fake.requests("textDocument/formatting").len() == n + 1)
+                .await,
+            "{name}: sent"
+        );
+        let params = fake.requests("textDocument/formatting").pop().unwrap();
+        assert_eq!(params["textDocument"]["uri"], u.as_str());
+        assert_eq!(params["options"], options, "{name}");
+    }
+    app.shutdown_servers().await;
+}
+
+/// The converts at the line-command budget (M6's `LINE_COMMAND_BUDGET`, a frame included) on a
+/// 1 MB file with Cmd+Shift+L's ~46k selections, every line changed; the undo too.
+#[test]
+fn milestone_indentation_budget_convert_1mb() {
+    let mut original = String::new();
+    let mut i = 0;
+    while original.len() < 1_000_000 {
+        original.push_str(&format!("    let item = value_{i};\n        item();\n"));
+        i += 1;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = crate::milestone_tests::test_app(dir.path(), Buffer::from_str(&original));
+    crate::milestone9_tests::put_cursor(&mut app, 8);
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    app.press(KeyCode::Char('l'), cmd() | M::SHIFT);
+    let count = app.group().active_tab().unwrap().view.selections.len();
+    assert_eq!(count, 2 * i);
+    let budget = Duration::from_millis(80);
+    let debug_bound = Duration::from_secs(5);
+    let mut timed = |app: &mut App, what: &str, f: &dyn Fn(&mut App)| {
+        let t = Instant::now();
+        f(app);
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        let took = t.elapsed();
+        println!("{what} at {count} selections on 1 MB: {took:?}");
+        assert!(took < debug_bound, "{what} took {took:?}");
+        if !cfg!(debug_assertions) {
+            assert!(took < budget, "{what} too slow: {took:?}");
+        }
+    };
+    timed(&mut app, "convert indentation to tabs", &|app| {
+        app.test_execute(Command::ConvertIndentationToTabs)
+    });
+    assert!(text(&app).starts_with("\tlet item = value_0;\n\t\titem();\n\tlet"));
+    assert_eq!(app.group().active_tab().unwrap().view.selections.len(), count);
+    assert_eq!(head(&app), ByteIdx(9), "on the first `item`'s end, after the tab");
+    timed(&mut app, "undo", &|app| app.press(KeyCode::Char('z'), cmd()));
+    assert_eq!(text(&app), original);
+    timed(&mut app, "convert indentation to spaces", &|app| {
+        app.test_execute(Command::ConvertIndentationToSpaces)
+    });
+    assert_eq!(text(&app), original, "already spaces: nothing");
+    app.test_execute(Command::ConvertIndentationToTabs);
+    timed(&mut app, "convert back to spaces", &|app| {
+        app.test_execute(Command::ConvertIndentationToSpaces)
+    });
+    assert_eq!(text(&app), original);
 }

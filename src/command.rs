@@ -250,6 +250,13 @@ pub enum Command {
     /// "Detect Indentation from Content": guesses the active buffer's indentation from its text
     /// as it is now, dropping any chosen one.
     DetectIndentation,
+    /// "Convert Indentation to Spaces": every line's leading whitespace in the active buffer
+    /// rewritten as spaces at its tab width (`indentation::convert`, one undo step); the buffer
+    /// then indents with spaces of its indent size.
+    ConvertIndentationToSpaces,
+    /// "Convert Indentation to Tabs": the same as tabs (and the spaces left over); the buffer
+    /// then indents with tabs.
+    ConvertIndentationToTabs,
     /// "View: Reopen as Hex": the active file's bytes on disk in a hex tab, read only, in place
     /// of its text tab (refused while the buffer has unsaved edits).
     ReopenAsHex,
@@ -832,6 +839,8 @@ impl Command {
             Command::IndentUsingTabs,
             Command::ChangeTabDisplaySize,
             Command::DetectIndentation,
+            Command::ConvertIndentationToSpaces,
+            Command::ConvertIndentationToTabs,
         ]);
         all.extend([Command::ReopenAsHex, Command::ReopenAsText]);
         all.push(Command::ToggleBlame);
@@ -1128,6 +1137,8 @@ impl Command {
             Command::IndentUsingTabs => "editor.indentUsingTabs".into(),
             Command::ChangeTabDisplaySize => "editor.changeTabDisplaySize".into(),
             Command::DetectIndentation => "editor.detectIndentation".into(),
+            Command::ConvertIndentationToSpaces => "editor.indentationToSpaces".into(),
+            Command::ConvertIndentationToTabs => "editor.indentationToTabs".into(),
             Command::ReopenAsHex => "view.reopenAsHex".into(),
             Command::ReopenAsText => "view.reopenAsText".into(),
             Command::ToggleBlame => "git.toggleBlame".into(),
@@ -1416,6 +1427,8 @@ impl Command {
             Command::IndentUsingTabs => "Indent Using Tabs",
             Command::ChangeTabDisplaySize => "Change Tab Display Size",
             Command::DetectIndentation => "Detect Indentation from Content",
+            Command::ConvertIndentationToSpaces => "Convert Indentation to Spaces",
+            Command::ConvertIndentationToTabs => "Convert Indentation to Tabs",
             Command::ReopenAsHex => "View: Reopen as Hex",
             Command::ReopenAsText => "View: Reopen as Text",
             Command::ToggleBlame => "Git: Toggle Inline Blame",
@@ -1592,9 +1605,11 @@ mod tests {
             Command::IndentUsingTabs => 108,
             Command::ChangeTabDisplaySize => 109,
             Command::DetectIndentation => 110,
+            Command::ConvertIndentationToSpaces => 111,
+            Command::ConvertIndentationToTabs => 112,
         }
     }
-    const VARIANTS: u8 = 111;
+    const VARIANTS: u8 = 113;
 
     #[test]
     fn all_lists_every_variant() {

@@ -16,12 +16,29 @@
 //! the rest in from the settings, as VS Code's result does. It runs where the file is read (load
 //! and disk reload, off the UI thread) and the result is kept on the `Buffer`
 //! (`Buffer::guess`); `edit::Settings::for_buffer` applies it.
+//!
+//! "Convert Indentation to Spaces / Tabs" (`changes`, `convert`) rewrite every line's leading
+//! whitespace (spaces and tabs; a whitespace-only line is all leading whitespace) at the
+//! buffer's tab width — the drawn width of a tab, which with tabs is also the indent size:
+//! - The leading whitespace is measured in columns, each tab going to the next tab stop.
+//! - To spaces: that many spaces. To tabs: `cols / tab_width` tabs and `cols % tab_width`
+//!   spaces.
+//!
+//! VS Code (`getIndentationEditOperations`, at the model's `tabSize`) replaces each tab with
+//! `tabSize` spaces and each run of `tabSize` spaces with a tab, as strings. That's the same
+//! for indentation that is tabs followed by spaces; for spaces before a tab (`"  \t"`) it
+//! changes the drawn width, measuring columns doesn't (`"  \t"` at 4 is 4 spaces, not 6).
 
 use std::ops::ControlFlow;
 
 use ropey::Rope;
 
-use crate::buffer::pos;
+use crate::buffer::Buffer;
+use crate::buffer::change::{Assoc, ChangeSet};
+use crate::buffer::pos::{self, ByteIdx};
+use crate::buffer::undo::EditKind;
+use crate::selection::Selection;
+use crate::view::View;
 
 /// Lines looked at (VS Code's).
 pub const MAX_LINES: usize = 10_000;
@@ -207,6 +224,82 @@ fn spaces_diff(a: &Prev, b: &[u8], b_indent: usize, out: &mut Diff) {
     if spaces_diff % tabs_diff == 0 {
         out.spaces = spaces_diff / tabs_diff;
     }
+}
+
+/// "Convert Indentation to Spaces / Tabs" (see the module doc): the changes to `rope`, one per
+/// line whose leading whitespace changes, in one pass over the lines (no allocation per line).
+/// Nothing to change: an empty set.
+pub fn changes(rope: &Rope, spaces: bool, tab_width: usize) -> ChangeSet {
+    let width = tab_width.max(1);
+    let mut changes = ChangeSet::default();
+    let mut new = String::new();
+    pos::each_line(rope, 0, false, |start, text| {
+        let bytes = text.as_bytes();
+        let len = bytes
+            .iter()
+            .position(|&c| c != b' ' && c != b'\t')
+            .unwrap_or(bytes.len());
+        let indent = &bytes[..len];
+        let mut cols = 0;
+        for &c in indent {
+            cols = if c == b'\t' {
+                (cols / width + 1) * width
+            } else {
+                cols + 1
+            };
+        }
+        let (tabs, rest) = if spaces {
+            (0, cols)
+        } else {
+            (cols / width, cols % width)
+        };
+        let same = indent.len() == tabs + rest
+            && indent[..tabs].iter().all(|&c| c == b'\t')
+            && indent[tabs..].iter().all(|&c| c == b' ');
+        if !same {
+            new.clear();
+            new.extend(std::iter::repeat_n('\t', tabs));
+            new.extend(std::iter::repeat_n(' ', rest));
+            changes.push(start, ByteIdx(start.0 + len), &new);
+        }
+        ControlFlow::<()>::Continue(())
+    });
+    changes
+}
+
+/// Converts `buf`'s indentation (`changes`) as one `EditKind::Other` undo step, `view`'s
+/// selections mapped through it (one inside the rewritten whitespace goes to the line start,
+/// one at its end stays at the end). Returns whether anything changed (if not, no undo step).
+pub fn convert(buf: &mut Buffer, view: &mut View, spaces: bool, tab_width: usize) -> bool {
+    let changes = changes(&buf.rope, spaces, tab_width);
+    if changes.is_empty() {
+        buf.seal_undo();
+        return false;
+    }
+    let before = view.selections.clone();
+    let mut after = before.clone();
+    {
+        let m = changes.mapper();
+        // In order (start before end), so each lookup steps on from the last.
+        after.transform(|s| {
+            let start = m.map(s.start(), Assoc::Before);
+            let end = if s.is_empty() {
+                start
+            } else {
+                m.map(s.end(), Assoc::Before)
+            };
+            let (anchor, head) = if s.head < s.anchor { (end, start) } else { (start, end) };
+            Selection {
+                anchor,
+                head,
+                goal: None,
+            }
+        });
+    }
+    buf.edit(changes, before, after.clone(), EditKind::Other);
+    view.selections = after;
+    view.reveal_cursor = true;
+    true
 }
 
 #[cfg(test)]
@@ -542,5 +635,83 @@ mod tests {
         };
         assert_eq!(g.apply(DEFAULT), Indentation { spaces: true, size: 2 });
         assert_eq!(Guess::default().apply(DEFAULT), DEFAULT);
+    }
+
+    fn converted(text: &str, spaces: bool, width: usize) -> String {
+        let mut rope = Rope::from_str(text);
+        changes(&rope, spaces, width).apply(&mut rope);
+        rope.to_string()
+    }
+
+    #[test]
+    fn to_spaces_expands_tabs_to_their_stops() {
+        assert_eq!(converted("\ta\n\t\tb\n", true, 4), "    a\n        b\n");
+        // Partial stops: "  \t" is one stop, "\t  \t" two.
+        assert_eq!(converted("  \ta\n\t  \tb\n", true, 4), "    a\n        b\n");
+        assert_eq!(converted(" \t x\n", true, 3), "    x\n");
+        // Tabs past the text's start are kept.
+        assert_eq!(converted("\ta\tb\n", true, 4), "    a\tb\n");
+    }
+
+    #[test]
+    fn to_tabs_makes_tabs_then_the_remaining_spaces() {
+        assert_eq!(
+            converted("    a\n        b\n      c\n", false, 4),
+            "\ta\n\t\tb\n\t  c\n"
+        );
+        // Measured in columns, spaces before a tab included.
+        assert_eq!(converted("  \ta\n \t  b\n", false, 4), "\ta\n\t  b\n");
+        // Less than a tab's worth stays.
+        assert_eq!(converted("  a\n", false, 4), "  a\n");
+        // Spaces inside the line are kept.
+        assert_eq!(converted("    a    b\n", false, 4), "\ta    b\n");
+    }
+
+    #[test]
+    fn blank_whitespace_only_and_crlf_lines() {
+        // Empty lines are left; whitespace-only lines are all leading whitespace.
+        assert_eq!(converted("\n    \n\t\n", false, 4), "\n\t\n\t\n");
+        assert_eq!(converted("\n    \n\t\n", true, 2), "\n    \n  \n");
+        // CRLF and lone CR line breaks are kept, the last line needs none.
+        assert_eq!(converted("    a\r\n    b\r    c", false, 4), "\ta\r\n\tb\r\tc");
+        assert_eq!(converted("", true, 4), "");
+    }
+
+    #[test]
+    fn only_changed_lines_get_a_change() {
+        let rope = Rope::from_str("\ta\n  b\nc\n\t\td\n");
+        let set = changes(&rope, false, 4);
+        assert!(set.is_empty(), "already tabs (and less than a tab of spaces)");
+        let set = changes(&rope, true, 4);
+        let got: Vec<_> = set.changes().map(|(s, e, t)| (s.0, e.0, t.to_string())).collect();
+        assert_eq!(got, [(0, 1, "    ".into()), (9, 11, "        ".into())]);
+        assert!(changes(&Rope::from_str("    a\n  b\n"), true, 4).is_empty());
+    }
+
+    #[test]
+    fn convert_is_one_undo_step_and_maps_every_selection() {
+        use crate::selection::Selections;
+        let text = "    a\n        bc\n  d\n";
+        let mut buf = Buffer::from_str(text);
+        let mut view = View::new();
+        let sel = |a: usize, h: usize| Selection::new(ByteIdx(a), ByteIdx(h));
+        // At line 1's text, inside line 2's indentation, a selection over "bc" (reversed), on "d".
+        let mut list = vec![sel(4, 4), sel(8, 8), sel(16, 14), sel(19, 20)];
+        list[1].goal = Some(crate::buffer::pos::DisplayCol(9));
+        let before = Selections::new(list, 2);
+        view.selections = before.clone();
+        assert!(convert(&mut buf, &mut view, false, 4));
+        assert_eq!(buf.rope.to_string(), "\ta\n\t\tbc\n  d\n");
+        let got: Vec<_> = view.selections.iter().map(|s| (s.anchor.0, s.head.0)).collect();
+        assert_eq!(got, [(1, 1), (3, 3), (7, 5), (10, 11)]);
+        assert_eq!(view.selections.primary_index(), 2);
+        assert!(view.selections.iter().all(|s| s.goal.is_none()), "goal columns dropped");
+        assert!(buf.is_dirty());
+        assert_eq!(buf.undo(), Some(before));
+        assert_eq!(buf.rope.to_string(), text);
+        assert!(!buf.is_dirty());
+        // Nothing to change: no undo step.
+        assert!(!convert(&mut buf, &mut view, true, 4));
+        assert!(buf.undo().is_none());
     }
 }

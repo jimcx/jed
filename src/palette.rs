@@ -55,11 +55,13 @@ pub enum SizeKind {
 }
 
 /// The status bar indentation item's picker, in this order (VS Code's).
-pub const INDENTATION_ACTIONS: [Command; 4] = [
+pub const INDENTATION_ACTIONS: [Command; 6] = [
     Command::IndentUsingSpaces,
     Command::IndentUsingTabs,
     Command::ChangeTabDisplaySize,
     Command::DetectIndentation,
+    Command::ConvertIndentationToSpaces,
+    Command::ConvertIndentationToTabs,
 ];
 
 /// Indent sizes offered (VS Code's).
