@@ -51,16 +51,16 @@ const fn pair(open: char, close: char, not_in_string: bool, not_in_comment: bool
     }
 }
 
-const BRACKETS: [AutoPair; 3] = [
+pub(super) const BRACKETS: [AutoPair; 3] = [
     pair('{', '}', false, false),
     pair('[', ']', false, false),
     pair('(', ')', false, false),
 ];
 
 /// `{}` `[]` `()`: most languages' `brackets`.
-const BRACKET_PAIRS: &[(char, char)] = &[('{', '}'), ('[', ']'), ('(', ')')];
+pub(super) const BRACKET_PAIRS: &[(char, char)] = &[('{', '}'), ('[', ']'), ('(', ')')];
 /// Brackets and both quotes: most languages' `surroundingPairs`.
-const SURROUND: &[(char, char)] = &[('{', '}'), ('[', ']'), ('(', ')'), ('"', '"'), ('\'', '\'')];
+pub(super) const SURROUND: &[(char, char)] = &[('{', '}'), ('[', ']'), ('(', ')'), ('"', '"'), ('\'', '\'')];
 
 /// VS Code's `DEFAULT_AUTOCLOSE_BEFORE_LANGUAGE_DEFINED_QUOTES` / `_BRACKETS`.
 const DEFAULT_BEFORE_QUOTES: &str = ";:.,=}])> \n\t";
@@ -130,7 +130,7 @@ static PYTHON: LanguageConfig = LanguageConfig {
 
 /// A configuration with VS Code's default `autoCloseBefore`, no string prefixes, the parse
 /// tree's tokens and the user's indentation.
-const fn config(
+pub(super) const fn config(
     line_comment: Option<&'static str>,
     pairs: &'static [AutoPair],
     brackets: &'static [(char, char)],
@@ -314,6 +314,7 @@ impl Language {
             Language::CMake => &CMAKE,
             Language::Makefile => &MAKEFILE,
             Language::Dockerfile => &DOCKERFILE,
+            Language::Plugin(p) => &p.get().config,
         }
     }
 }
@@ -387,7 +388,7 @@ mod tests {
             [('{', '}'), ('[', ']'), ('(', ')')],
             "`<` auto-closes but isn't one"
         );
-        for l in Language::ALL {
+        for l in Language::BUILT_IN {
             let c = l.config();
             // Every bracket's opener is typed through the pairs path (auto-close or wrap).
             assert!(c.brackets().all(|(o, _)| c.is_pair_char(o)), "{l:?}");

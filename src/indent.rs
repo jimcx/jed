@@ -48,7 +48,7 @@ use crate::buffer::Buffer;
 use crate::buffer::pos::{self, ByteIdx, LineWalker};
 use crate::buffer::undo::EditKind;
 use crate::edit::{Land, Settings, replace_each, replace_each_landing};
-use crate::syntax::{Language, Scope, Tokens, scope_of};
+use crate::syntax::{Language, Scope, Tokens};
 use crate::view::View;
 
 /// How many lines up a Python `else:` looks for its `if`.
@@ -120,6 +120,7 @@ fn without_comment<'a>(
     start: usize,
     comments: Option<&mut Tokens>,
     line_comment: Option<&str>,
+    language: Language,
 ) -> &'a str {
     let Some(last) = content.len().checked_sub(1) else {
         return content;
@@ -127,7 +128,7 @@ fn without_comment<'a>(
     let cut = match comments {
         Some(tokens) => tokens
             .node_at(start + last)
-            .filter(|n| scope_of(n.kind()) == Some(Scope::Comment) && n.start_byte() >= start)
+            .filter(|n| language.scope_of(n.kind()) == Some(Scope::Comment) && n.start_byte() >= start)
             .map(|n| n.start_byte() - start),
         None => line_comment
             .and_then(|token| content.find(token))
@@ -223,7 +224,7 @@ fn enter_edits(buf: &Buffer, view: &View, s: &Settings, eol: &str) -> (Vec<Enter
         let indent = leading_ws(before);
         let content = before.trim_end_matches([' ', '\t']);
         let code = if comment_start(content) {
-            without_comment(content, line_start, tokens.as_mut(), config.line_comment)
+            without_comment(content, line_start, tokens.as_mut(), config.line_comment, language)
         } else {
             content
         };
@@ -349,6 +350,7 @@ fn reindents(
     tab_width: usize,
 ) -> Option<Vec<Option<(ByteIdx, String)>>> {
     let rope = &buf.rope;
+    let language = buf.syntax.language();
     let mut tokens = buf.syntax.tokens();
     let mut openers = open.map(|o| Openers::new(rope, &buf.syntax, o, c));
     let mut walk = LineWalker::new(rope);
@@ -374,7 +376,7 @@ fn reindents(
                 && tokens
                     .as_mut()
                     .and_then(|t| t.node_at(start.0 - 1))
-                    .is_some_and(|n| matches!(scope_of(n.kind()), Some(Scope::String | Scope::Comment)));
+                    .is_some_and(|n| matches!(language.scope_of(n.kind()), Some(Scope::String | Scope::Comment)));
             let opener = if in_text { None } else { openers.before(start) };
             opener.and_then(|o| {
                 if last_opener.as_ref().is_none_or(|(p, _)| *p != o) {

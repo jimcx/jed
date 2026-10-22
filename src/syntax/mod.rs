@@ -12,6 +12,7 @@
 mod config;
 mod highlight;
 mod language;
+pub mod plugin;
 mod tokens;
 
 use std::sync::Arc;
@@ -188,7 +189,7 @@ impl Syntax {
         }
         let mut node = tree.root_node().descendant_for_byte_range(pos.0 - 1, pos.0);
         while let Some(n) = node {
-            match scope_of(n.kind()) {
+            match self.language.scope_of(n.kind()) {
                 Some(scope) => return Some(scope),
                 None => node = n.parent(),
             }

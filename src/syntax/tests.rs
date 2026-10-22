@@ -79,7 +79,7 @@ fn change(start: usize, end: usize, text: &str) -> Change {
 
 #[test]
 fn grammars_load_and_queries_compile() {
-    for l in Language::ALL {
+    for l in Language::BUILT_IN {
         let Some(grammar) = l.grammar() else {
             assert!(l.highlight_queries().is_empty());
             continue;

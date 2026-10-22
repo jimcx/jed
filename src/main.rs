@@ -247,6 +247,8 @@ fn main() -> ExitCode {
     tracing::info!(version = env!("JED_VERSION"), root = %root.display(), single = args.single, "starting");
 
     let user_settings = config::settings::load(&paths::config_dir().join(config::settings::FILE_NAME));
+    // Syntax plugins: only the user's own directory, never the workspace's.
+    let plugin_errors = syntax::plugin::load_and_register(&paths::config_dir().join("languages"));
     let user_tasks = tasks::templates::load(&paths::config_dir().join(tasks::templates::FILE_NAME));
     let workspace = Workspace::load(root).with_user_settings(user_settings.overrides);
     // Load before taking over the terminal, so errors print normally. A binary file opens in a
@@ -309,6 +311,7 @@ fn main() -> ExitCode {
                 app.tasks.user = user_tasks.tasks;
                 let mut errors = user_settings.errors;
                 errors.extend(user_tasks.errors);
+                errors.extend(plugin_errors);
                 errors.extend(keymap_errors);
                 app.set_keymap(keymap, errors);
                 app.log = log;

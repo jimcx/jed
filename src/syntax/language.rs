@@ -5,6 +5,9 @@ use std::path::Path;
 
 use globset::{Glob, GlobMatcher};
 
+use super::Scope;
+use super::plugin::PluginId;
+
 /// A buffer's language mode. `id()` is the LSP `languageId` (VS Code's ids).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Language {
@@ -27,10 +30,13 @@ pub enum Language {
     CMake,
     Makefile,
     Dockerfile,
+    /// A syntax plugin's language (`plugin.rs`): its names and rules are in the registry.
+    Plugin(PluginId),
 }
 
 impl Language {
-    pub const ALL: [Language; 15] = [
+    /// The languages compiled in (plugins are in the registry: `all()`).
+    pub const BUILT_IN: [Language; 15] = [
         Language::PlainText,
         Language::C,
         Language::Cpp,
@@ -47,6 +53,25 @@ impl Language {
         Language::Makefile,
         Language::Dockerfile,
     ];
+
+    /// The built-in languages, then the registered plugins'.
+    #[allow(dead_code)] // The language picker and plugin lists (later subtasks) use it.
+    pub fn all() -> Vec<Language> {
+        let mut all = Self::BUILT_IN.to_vec();
+        all.extend(PluginId::all().into_iter().map(Language::Plugin));
+        all
+    }
+
+    /// `scope_of` for a node of this language: a plugin's `comment_kinds` / `string_kinds` /
+    /// `code_kinds` first, then the name rule.
+    pub fn scope_of(self, kind: &str) -> Option<Scope> {
+        if let Language::Plugin(p) = self
+            && let Some(scope) = p.scope_of(kind)
+        {
+            return Some(scope);
+        }
+        super::scope_of(kind)
+    }
 
     /// VS Code's language id (also LSP's `languageId`, and the value `.workspace` associations name).
     pub fn id(self) -> &'static str {
@@ -66,6 +91,7 @@ impl Language {
             Language::CMake => "cmake",
             Language::Makefile => "makefile",
             Language::Dockerfile => "dockerfile",
+            Language::Plugin(p) => p.get().id,
         }
     }
 
@@ -87,17 +113,21 @@ impl Language {
             Language::CMake => "CMake",
             Language::Makefile => "Makefile",
             Language::Dockerfile => "Dockerfile",
+            Language::Plugin(p) => p.get().name,
         }
     }
 
     pub fn from_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|l| l.id() == id)
+        Self::BUILT_IN
+            .into_iter()
+            .find(|l| l.id() == id)
+            .or_else(|| PluginId::find(id).map(Language::Plugin))
     }
 
-    /// The tree-sitter grammar, if the language has one.
+    /// The tree-sitter grammar, if the language has one (a plugin's is installed later: none yet).
     pub fn grammar(self) -> Option<tree_sitter::Language> {
         Some(match self {
-            Language::PlainText => return None,
+            Language::PlainText | Language::Plugin(_) => return None,
             Language::C => tree_sitter_c::LANGUAGE.into(),
             Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
             Language::Python => tree_sitter_python::LANGUAGE.into(),
@@ -137,7 +167,7 @@ impl Language {
         const MAKE: &str = include_str!("queries/make.scm");
         const DOCKER: &str = include_str!("queries/dockerfile.scm");
         match self {
-            Language::PlainText => &[],
+            Language::PlainText | Language::Plugin(_) => &[],
             Language::C => &[tree_sitter_c::HIGHLIGHT_QUERY, C],
             Language::Cpp => &[tree_sitter_c::HIGHLIGHT_QUERY, tree_sitter_cpp::HIGHLIGHT_QUERY, C, CPP],
             Language::Python => &[tree_sitter_python::HIGHLIGHTS_QUERY, PYTHON],
@@ -364,7 +394,7 @@ mod tests {
 
     #[test]
     fn ids_round_trip() {
-        for l in Language::ALL {
+        for l in Language::BUILT_IN {
             assert_eq!(Language::from_id(l.id()), Some(l));
         }
         assert_eq!(Language::Cpp.name(), "C++");
@@ -372,7 +402,7 @@ mod tests {
         assert_eq!(Language::from_id("shellscript"), Some(Language::ShellScript));
         assert_eq!(Language::from_id("bash"), None);
         // Every language but plain text has a grammar and a query.
-        for l in Language::ALL {
+        for l in Language::BUILT_IN {
             assert_eq!(l.grammar().is_some(), l != Language::PlainText, "{l:?}");
             assert_eq!(l.highlight_queries().is_empty(), l == Language::PlainText, "{l:?}");
         }

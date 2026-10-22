@@ -138,9 +138,9 @@ struct HighlightQuery {
 
 /// The language's compiled highlight query (compiled once, on first use, shared by all buffers).
 fn query(language: Language) -> Option<&'static HighlightQuery> {
-    static QUERIES: [OnceLock<Option<HighlightQuery>>; Language::ALL.len()] =
-        [const { OnceLock::new() }; Language::ALL.len()];
-    let i = Language::ALL.iter().position(|l| *l == language)?;
+    static QUERIES: [OnceLock<Option<HighlightQuery>>; Language::BUILT_IN.len()] =
+        [const { OnceLock::new() }; Language::BUILT_IN.len()];
+    let i = Language::BUILT_IN.iter().position(|l| *l == language)?;
     QUERIES[i]
         .get_or_init(|| {
             let grammar = language.grammar()?;
@@ -439,7 +439,7 @@ mod tests {
         assert_eq!(key("keyword.conditional.ternary"), Some("keyword.control"));
         assert_eq!(key("text.title"), Some("markup.heading"));
         assert_eq!(key("text"), None);
-        for l in Language::ALL {
+        for l in Language::BUILT_IN {
             assert_eq!(query(l).is_some(), l.grammar().is_some(), "{l:?}");
         }
     }
@@ -462,7 +462,7 @@ mod tests {
             "text.warning",
             "text.danger",
         ];
-        for l in Language::ALL {
+        for l in Language::BUILT_IN {
             let Some(grammar) = l.grammar() else { continue };
             let q = Query::new(&grammar, &l.highlight_queries().join("\n")).unwrap_or_else(|e| panic!("{l:?}: {e}"));
             let unmapped: Vec<_> = q
