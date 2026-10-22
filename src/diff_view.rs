@@ -624,6 +624,10 @@ pub struct DiffTab {
     pub left_col: usize,
     /// Written by drawing: the rows that fit, and whether it drew one column.
     pub height: usize,
+    /// Written by drawing: the columns of text one side shows (the narrower side, side by side:
+    /// they share `left_col`), and the widest line drawn so far (either side; reset by a load).
+    pub text_width: usize,
+    pub scroll_width: crate::scrollbar::ScrollWidth,
     pub inline: bool,
     /// Scroll the cursor's row into view at the next draw (centred when off screen).
     pub reveal: bool,
@@ -665,6 +669,8 @@ impl DiffTab {
             cursor: 0,
             left_col: 0,
             height: 0,
+            text_width: 0,
+            scroll_width: Default::default(),
             inline: false,
             reveal: false,
             line: None,
@@ -688,6 +694,8 @@ impl DiffTab {
             cursor: self.cursor,
             left_col: self.left_col,
             height: self.height,
+            text_width: self.text_width,
+            scroll_width: self.scroll_width,
             inline: self.inline,
             reveal: false,
             line: self.line,
@@ -754,6 +762,7 @@ impl DiffTab {
                 let first = self.doc.is_none();
                 self.doc = Some(Arc::new(doc));
                 self.error = None;
+                self.scroll_width.reset();
                 match at {
                     Some((right, line)) => self.cursor = self.aligned().row_of(right, line),
                     None => self.cursor = 0,
@@ -875,9 +884,10 @@ impl DiffTab {
         self.top = self.top.saturating_add_signed(delta).min(max);
     }
 
-    /// Scrolls sideways by `delta` columns.
+    /// Scrolls sideways by `delta` columns, stopping when the widest line drawn so far ends in
+    /// view (one blank column after it).
     pub fn scroll_columns(&mut self, delta: isize) {
-        self.left_col = self.left_col.saturating_add_signed(delta);
+        self.left_col = self.scroll_width.scroll(self.left_col, delta, self.text_width);
     }
 
     /// The scroll for `height` rows on screen: the cursor's row shown if asked (centred when it

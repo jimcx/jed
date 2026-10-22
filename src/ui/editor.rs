@@ -260,6 +260,8 @@ pub fn render(
     let out = f.buffer_mut();
     out.set_style(area, base);
     let right = text.x + text.width;
+    // The widest line drawn, for sideways scrolling (`View::scroll_width`).
+    let mut widest = 0;
     for row in 0..area.height {
         let line = view.top_line() + row as usize;
         if line >= total {
@@ -296,6 +298,8 @@ pub fn render(
         let content = pos::line_text(rope, line);
         let bounds = whitespace_bounds(whitespace, &content);
         let mut col = 0usize;
+        // Where the line ran past the right edge: the rest is only measured (`widest`).
+        let mut cut = None;
         for (off, g) in content.grapheme_indices(true) {
             let b = ByteIdx(start.0 + off);
             let (mut shown, w) = pos::display_grapheme(g, DisplayCol(col), tab);
@@ -305,6 +309,7 @@ pub fn render(
                 continue;
             }
             if col >= view.left_col + view.width {
+                cut = Some(off);
                 break;
             }
             let mut style = row_style;
@@ -360,6 +365,10 @@ pub fn render(
             }
             col += w;
         }
+        widest = widest.max(match cut {
+            Some(off) => pos::col_after(&content[off..], DisplayCol(col), tab).0,
+            None => col,
+        });
 
         // End of line: selection running over the line break, or a secondary cursor here.
         let end = ByteIdx(start.0 + content.len());
@@ -399,6 +408,8 @@ pub fn render(
             }
         }
     }
+
+    view.scroll_width.measure(widest);
 
     // The terminal's own cursor goes on the primary selection.
     if focused && cursor_line >= view.top_line() && cursor_line < view.top_line() + view.height {

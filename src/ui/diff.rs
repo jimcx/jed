@@ -208,13 +208,22 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
     let mut next_start = starts.partition_point(|&r| r < top);
     let mut cursor_cell = None;
     let (mut left_walk, mut right_walk) = (Walk::new(&doc.left), Walk::new(&doc.right));
+    // The text's columns (as `draw_inline` / `draw_half` lay them out; side by side the narrower
+    // side) and the widest line drawn, for sideways scrolling.
+    d.text_width = if inline {
+        body.width.saturating_sub(2 * digits as u16 + 4)
+    } else {
+        let room = |w: u16| w.saturating_sub(digits as u16 + 2);
+        room(half).min(room(body.width - half - 1))
+    } as usize;
+    let mut widest = 0;
     for (i, row) in shown.iter().enumerate() {
         let index = top + i;
         let y = body.y + i as u16;
         let current = index == d.cursor;
         let parts = (row.kind() == Kind::Changed)
             .then(|| diff_view::changed_parts(doc.left.line(row.left.unwrap()), doc.right.line(row.right.unwrap())));
-        let cell = if inline {
+        let (cell, w) = if inline {
             let line = match row.kind() {
                 Kind::Removed => left_walk.line(row.left.unwrap_or_default()),
                 _ => right_walk.line(row.right.unwrap_or_default()),
@@ -241,8 +250,10 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
             let at_left = draw_half(out, &l, row, lr, lp, &st);
             let at_right = draw_half(out, &r, row, rr, rp, &st);
             out.set_stringn(body.x + half, y, "│", 1, theme.get("editorGroup.border"));
-            if row.right.is_some() { at_right } else { at_left }
+            let cell = if row.right.is_some() { at_right.0 } else { at_left.0 };
+            (cell, at_left.1.max(at_right.1))
         };
+        widest = widest.max(w);
         if current {
             cursor_cell = Some(cell);
         }
@@ -272,6 +283,7 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
             }
         }
     }
+    d.scroll_width.measure(widest);
     if focused && let Some((x, y)) = cursor_cell {
         f.set_cursor_position(Position { x, y });
     }
@@ -290,7 +302,7 @@ struct Half<'a> {
 }
 
 /// Draws one side of a row (its number, then its text; filler when it has no line). Returns
-/// where its text starts.
+/// where its text starts and the line's width (0 for filler).
 fn draw_half(
     out: &mut Cells,
     h: &Half,
@@ -298,12 +310,12 @@ fn draw_half(
     removed: bool,
     part: Option<Range<usize>>,
     st: &Styles,
-) -> (u16, u16) {
+) -> ((u16, u16), usize) {
     let Rect { x, y, width, .. } = h.rect;
     let text_x = x + (h.digits as u16 + 2).min(width);
     let Some((line, text)) = &h.line else {
         out.set_stringn(x, y, "╱".repeat(width as usize), width as usize, st.fill);
-        return (text_x, y);
+        return ((text_x, y), 0);
     };
     let bg = match row.kind() {
         Kind::Same if h.current => st.current,
@@ -317,12 +329,12 @@ fn draw_half(
     out.set_stringn(x, y, format!("{:>w$} ", line + 1, w = h.digits), width as usize, number);
     let highlight = part.map(|p| (p, if removed { st.removed_text } else { st.inserted_text }));
     let room = width.saturating_sub(text_x - x);
-    draw_text(out, (text_x, y, room), text, h.left_col, h.tab_width, bg, highlight, st);
-    (text_x, y)
+    let w = draw_text(out, (text_x, y, room), text, h.left_col, h.tab_width, bg, highlight, st);
+    ((text_x, y), w)
 }
 
 /// Draws a row of the one-column layout: both line numbers, `-` / `+`, the text. Returns where
-/// its text starts.
+/// its text starts and the line's width.
 #[allow(clippy::too_many_arguments)]
 fn draw_inline(
     out: &mut Cells,
@@ -335,7 +347,7 @@ fn draw_inline(
     tab_width: usize,
     st: &Styles,
     current: bool,
-) -> (u16, u16) {
+) -> ((u16, u16), usize) {
     let (bg, sign) = match row.kind() {
         Kind::Removed => (st.removed, "-"),
         Kind::Added | Kind::Changed => (st.inserted, "+"),
@@ -357,13 +369,14 @@ fn draw_inline(
         bg,
     );
     let room = body.width.saturating_sub(sx - body.x);
-    draw_text(out, (sx, y, room), &line, left_col, tab_width, bg, None, st);
-    (sx, y)
+    let w = draw_text(out, (sx, y, room), &line, left_col, tab_width, bg, None, st);
+    ((sx, y), w)
 }
 
 /// A line's text from display column `left_col`, `width` cells at most, through
 /// `pos::display_grapheme` (tabs, control characters) as the editor draws it: the token colours
-/// of its spans over `style`, then `highlight`'s background over a byte range.
+/// of its spans over `style`, then `highlight`'s background over a byte range. Returns the line's
+/// whole width (the part past the edge only measured).
 #[allow(clippy::too_many_arguments)]
 fn draw_text(
     out: &mut Cells,
@@ -374,7 +387,7 @@ fn draw_text(
     style: Style,
     highlight: Option<(Range<usize>, Style)>,
     st: &Styles,
-) {
+) -> usize {
     let width = width as usize;
     let mut col = 0usize;
     let mut k = 0;
@@ -385,7 +398,7 @@ fn draw_text(
             continue;
         }
         if col + w > left_col + width {
-            break;
+            return pos::col_after(&line.text[off..], DisplayCol(col), tab_width).0;
         }
         let mut s = style;
         let at = line.start + off;
@@ -408,4 +421,5 @@ fn draw_text(
         out.set_stringn(x + (col - left_col) as u16, y, &shown, w, s);
         col += w;
     }
+    col
 }

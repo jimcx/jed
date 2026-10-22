@@ -2,7 +2,8 @@
 //! (no drawing: `ui::scrollbar`; `app/scrollbar.rs` drives the mouse): where the thumb goes on a
 //! track for a scroll position, and back. Plain cells, no sub-cell glyphs. Everything is O(1):
 //! the caller gives the line or row count. Anything scrolled gets a bar by implementing
-//! [`Scrollable`] (on its state, or a borrow of it with what it needs).
+//! [`Scrollable`] (on its state, or a borrow of it with what it needs). Sideways scrolling's
+//! extent is a [`ScrollWidth`] (text and diff views).
 
 /// Something a scroll bar scrolls: a text view, a diff, a list. Implemented next to each list's
 /// model; `App::with_scrollable` (`app/scrollbar.rs`) picks the one a `ScrollTarget` names, and
@@ -126,8 +127,74 @@ impl Scroll {
     }
 }
 
+/// A view's scroll width for sideways scrolling: the widest line drawn in it so far (display
+/// columns). Drawing measures the visible lines only (never the whole text) and it only grows,
+/// as VS Code's does, so it doesn't shrink as the view scrolls vertically past a long line;
+/// `reset` when the view's text is reloaded. Not saved in sessions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScrollWidth {
+    widest: usize,
+}
+
+impl ScrollWidth {
+    /// A drawn line `width` columns wide.
+    pub fn measure(&mut self, width: usize) {
+        self.widest = self.widest.max(width);
+    }
+
+    pub fn reset(&mut self) {
+        self.widest = 0;
+    }
+
+    /// The widest line drawn so far.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the horizontal scroll bar (hscroll-b) will read it")
+    )]
+    pub fn widest(&self) -> usize {
+        self.widest
+    }
+
+    /// The largest first column scrolling right reaches in a view `width` columns wide: the
+    /// widest line's end in view with one blank column after it (as the vertical last page).
+    pub fn max_left(&self, width: usize) -> usize {
+        (self.widest + 1).saturating_sub(width.max(1))
+    }
+
+    /// `left_col` scrolled by `delta` columns: never below 0, and scrolling right stops at
+    /// `max_left` (a view already past it, after a reveal, stays put).
+    pub fn scroll(&self, left_col: usize, delta: isize, width: usize) -> usize {
+        let col = left_col.saturating_add_signed(delta);
+        if delta > 0 {
+            col.min(self.max_left(width).max(left_col))
+        } else {
+            col
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scroll_width_grows_and_clamps() {
+        let mut w = super::ScrollWidth::default();
+        w.measure(100);
+        w.measure(30);
+        assert_eq!(w.widest(), 100, "only grows");
+        assert_eq!(w.max_left(80), 21, "one blank column after the widest line's end");
+        assert_eq!(w.scroll(0, 4, 80), 4);
+        assert_eq!(w.scroll(20, 4, 80), 21);
+        assert_eq!(w.scroll(30, 4, 80), 30, "past the end (a reveal): stays put");
+        assert_eq!(w.scroll(30, -4, 80), 26);
+        assert_eq!(w.scroll(2, -4, 80), 0);
+        w.reset();
+        assert_eq!(
+            (w.widest(), w.max_left(80), w.scroll(0, 4, 80)),
+            (0, 0, 0),
+            "fits: no sideways scroll"
+        );
+    }
+
     use super::*;
 
     fn thumb(s: Scroll, track: u16) -> (u16, u16) {

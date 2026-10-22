@@ -290,6 +290,8 @@ impl App {
         for (gid, i, sels) in follows {
             if let Some(tab) = self.groups.get_mut(gid).and_then(|g| g.tabs.get_mut(i)?.text_mut()) {
                 tab.view.map_through(&changes, &buf.rope);
+                // The new text's lines are measured afresh as they're drawn.
+                tab.view.scroll_width.reset();
                 tab.view.cursor_history.reset(&sels);
                 tab.view.selections = sels;
             }

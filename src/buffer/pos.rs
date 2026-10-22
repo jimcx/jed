@@ -587,6 +587,40 @@ fn is_plain(text: &str) -> bool {
     text.bytes().all(|b| (0x20..0x7f).contains(&b))
 }
 
+/// The screen column after `text` drawn from column `col` (the rest of a line past the screen's
+/// edge, for its width). Runs of printable ASCII count their bytes; only the stretches around
+/// anything else go through graphemes (a 1 MB line costs about a byte scan, not a segmentation).
+pub fn col_after(text: &str, col: DisplayCol, tab_width: usize) -> DisplayCol {
+    let bytes = text.as_bytes();
+    let plain = |b: u8| (0x20..0x7f).contains(&b);
+    let mut col = col.0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let Some(n) = bytes[i..].iter().position(|&b| !plain(b)) else {
+            return DisplayCol(col + bytes.len() - i);
+        };
+        // Two printable ASCII chars always have a grapheme break between them, but the run's
+        // last one may start a cluster with what follows (a combining mark).
+        let j = i + n;
+        if j > i {
+            col += j - 1 - i;
+            i = j - 1;
+        }
+        // Clusters up to the first boundary followed by printable ASCII (or the end): a
+        // prepended mark can take the ASCII char after it into its cluster.
+        let mut end = i;
+        for g in text[i..].graphemes(true) {
+            col += display_grapheme(g, DisplayCol(col), tab_width).1;
+            end += g.len();
+            if end > j && bytes.get(end).is_none_or(|&b| plain(b)) {
+                break;
+            }
+        }
+        i = end;
+    }
+    DisplayCol(col)
+}
+
 /// Screen column at byte `off` of a line's `text`.
 fn col_in(text: &str, off: usize, tab_width: usize) -> DisplayCol {
     let text = &text[..off];
@@ -833,6 +867,62 @@ pub fn word_range(rope: &Rope, pos: ByteIdx) -> (ByteIdx, ByteIdx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn col_after_measures_the_rest_of_a_line() {
+        assert_eq!(col_after("abc", DisplayCol(5), 4), DisplayCol(8));
+        assert_eq!(col_after("\tx", DisplayCol(5), 4), DisplayCol(9), "the tab stops at 8");
+        assert_eq!(col_after("日本", DisplayCol(0), 4), DisplayCol(4));
+        // Agrees with the grapheme walk drawing does, around ASCII runs and clusters across them.
+        for text in [
+            "ab\tc日本 x",
+            "e\u{301}x",
+            "ae\u{301}\u{302}bc",
+            "\u{600}1a",
+            "x\u{1}y",
+            "👩\u{200d}💻 ok",
+            "\u{301}",
+            "日",
+            "",
+            "abc\t",
+        ] {
+            for start in [0, 3] {
+                let mut col = DisplayCol(start);
+                for g in text.graphemes(true) {
+                    col.0 += display_grapheme(g, col, 4).1;
+                }
+                assert_eq!(col_after(text, DisplayCol(start), 4), col, "{text:?} from {start}");
+            }
+        }
+    }
+
+    /// Every string of up to four characters from ones that join, break or widen clusters
+    /// (extend, prepend, ZWJ, emoji, regional indicators, wide, controls, tabs, CR) next to
+    /// ASCII, measured from even and odd columns: `col_after` matches the grapheme walk.
+    #[test]
+    fn col_after_matches_the_grapheme_walk_exhaustively() {
+        let alphabet = [
+            'a', ' ', '\t', '\u{301}', '\u{600}', '\u{200d}', '👩', '🇦', '日', '\u{1}', '\r',
+        ];
+        let mut texts = vec![String::new()];
+        let mut level = vec![String::new()];
+        for _ in 0..4 {
+            level = level
+                .iter()
+                .flat_map(|t| alphabet.iter().map(move |&c| format!("{t}{c}")))
+                .collect();
+            texts.extend(level.iter().cloned());
+        }
+        for text in &texts {
+            for start in [0, 1] {
+                let mut col = DisplayCol(start);
+                for g in text.graphemes(true) {
+                    col.0 += display_grapheme(g, col, 4).1;
+                }
+                assert_eq!(col_after(text, DisplayCol(start), 4), col, "{text:?} from {start}");
+            }
+        }
+    }
 
     fn rope(s: &str) -> Rope {
         Rope::from_str(s)

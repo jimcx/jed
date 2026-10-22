@@ -12,6 +12,7 @@ use std::time::Instant;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 use super::files::Goto;
+use super::mouse::{SIDE_STEP, wheel_columns};
 use super::quick_diff::StageAt;
 use super::{App, AppEvent, Focus, Level};
 use crate::buffer::BufferId;
@@ -26,8 +27,6 @@ use crate::layout::Hit;
 use crate::quick_diff::Want;
 use crate::syntax;
 
-/// Columns the view scrolls sideways per Left / Right.
-const SIDE_STEP: isize = 4;
 const WHEEL_ROWS: isize = 3;
 
 /// The app's side of diff tabs.
@@ -542,11 +541,13 @@ impl App {
         let Some(d) = self.groups.get_mut(g).and_then(|g| g.active_diff_mut()) else {
             return false;
         };
+        if let Some(delta) = wheel_columns(m) {
+            d.scroll_columns(delta);
+            return true;
+        }
         match m.kind {
             MouseEventKind::ScrollUp => d.scroll_by(-WHEEL_ROWS),
             MouseEventKind::ScrollDown => d.scroll_by(WHEEL_ROWS),
-            MouseEventKind::ScrollLeft => d.scroll_columns(-SIDE_STEP),
-            MouseEventKind::ScrollRight => d.scroll_columns(SIDE_STEP),
             MouseEventKind::Down(MouseButton::Left) => {
                 let Some(h) = self.hits.group(g).and_then(|h| h.diff.clone()) else {
                     return true;

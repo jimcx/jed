@@ -34,6 +34,8 @@ mod hex;
 mod hex_tests;
 mod history;
 mod hover;
+#[cfg(test)]
+mod hscroll_tests;
 mod indent;
 mod indentation;
 #[cfg(test)]

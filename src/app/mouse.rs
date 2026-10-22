@@ -15,6 +15,21 @@ use crate::view::View;
 
 const MULTI_CLICK: Duration = Duration::from_millis(500);
 pub(super) const WHEEL_LINES: isize = 3;
+/// Columns text and diff views scroll sideways per wheel step (and a diff's Left / Right).
+pub(super) const SIDE_STEP: isize = 4;
+
+/// A sideways wheel step in columns: `ScrollLeft` / `ScrollRight`, or the vertical wheel with
+/// Shift (VS Code); `None` for anything else.
+pub(super) fn wheel_columns(m: &MouseEvent) -> Option<isize> {
+    let shift = m.modifiers.contains(KeyModifiers::SHIFT);
+    match m.kind {
+        MouseEventKind::ScrollLeft => Some(-SIDE_STEP),
+        MouseEventKind::ScrollRight => Some(SIDE_STEP),
+        MouseEventKind::ScrollUp if shift => Some(-SIDE_STEP),
+        MouseEventKind::ScrollDown if shift => Some(SIDE_STEP),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Drag {
@@ -92,15 +107,25 @@ impl App {
     fn mouse_event(&mut self, m: MouseEvent) {
         let hit = match self.hits.hit(m.column, m.row) {
             // The wheel over a scroll bar scrolls what it scrolls, as the wheel over that.
-            Hit::ScrollBar(t) if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) => match t {
-                ScrollTarget::Group(g) => Hit::Editor(g),
-                ScrollTarget::Side(_) => Hit::SidePanel,
-                ScrollTarget::Panel(_) => Hit::Panel,
-                // The wheel over the history's bar scrolls its list, as over its rows.
-                ScrollTarget::History => Hit::HistoryRow(0),
-                // Taken by `cheat_sheet_mouse` while it's open.
-                ScrollTarget::CheatSheet => Hit::Nothing,
-            },
+            Hit::ScrollBar(t)
+                if matches!(
+                    m.kind,
+                    MouseEventKind::ScrollUp
+                        | MouseEventKind::ScrollDown
+                        | MouseEventKind::ScrollLeft
+                        | MouseEventKind::ScrollRight
+                ) =>
+            {
+                match t {
+                    ScrollTarget::Group(g) => Hit::Editor(g),
+                    ScrollTarget::Side(_) => Hit::SidePanel,
+                    ScrollTarget::Panel(_) => Hit::Panel,
+                    // The wheel over the history's bar scrolls its list, as over its rows.
+                    ScrollTarget::History => Hit::HistoryRow(0),
+                    // Taken by `cheat_sheet_mouse` while it's open.
+                    ScrollTarget::CheatSheet => Hit::Nothing,
+                }
+            }
             hit => hit,
         };
         if self.code_actions_mouse(&m, hit) {
@@ -119,6 +144,15 @@ impl App {
             return;
         }
         if self.diff_mouse(&m, hit) || self.hex_mouse(&m, hit) {
+            return;
+        }
+        // Sideways: the text tab under the mouse, without focusing it or moving its cursor.
+        if let Some(delta) = wheel_columns(&m)
+            && let Hit::Editor(g) = hit
+        {
+            if let Some(tab) = self.groups.get_mut(g).and_then(|g| g.active_tab_mut()) {
+                tab.view.scroll_columns(delta);
+            }
             return;
         }
         match m.kind {

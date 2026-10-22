@@ -17,6 +17,8 @@ pub struct View {
     /// Start of `top_line`, so the viewport can follow edits made in other views.
     top_byte: ByteIdx,
     pub left_col: usize,
+    /// The widest line drawn so far, written by drawing: how far sideways scrolling goes.
+    pub scroll_width: crate::scrollbar::ScrollWidth,
     /// Text area size from the last render, used by page movement.
     pub height: usize,
     pub width: usize,
@@ -143,6 +145,7 @@ impl View {
             top_line: 0,
             top_byte: ByteIdx(0),
             left_col: 0,
+            scroll_width: Default::default(),
             height: 1,
             width: 1,
             reveal_cursor: true,
@@ -170,6 +173,13 @@ impl View {
 
     pub fn scroll_lines(&mut self, rope: &Rope, delta: isize) {
         self.set_top_line(rope, self.top_line.saturating_add_signed(delta));
+    }
+
+    /// Scrolls sideways by `delta` columns (the wheel), stopping when the widest line drawn so
+    /// far ends in view; the selections stay put and nothing is revealed (the next reveal
+    /// scrolls back).
+    pub fn scroll_columns(&mut self, delta: isize) {
+        self.left_col = self.scroll_width.scroll(self.left_col, delta, self.width);
     }
 
     /// Scrolls just enough to show the primary cursor.
@@ -393,5 +403,27 @@ mod tests {
         v.reveal_in_center(&rope, at(50, 5), at(50, 40), 4);
         assert_eq!(v.left_col, 5);
         assert_eq!(v.top_line(), 45, "same line: no vertical scroll");
+    }
+
+    /// The wheel's sideways scroll: the selections untouched, stopping one column past the
+    /// widest line drawn so far.
+    #[test]
+    fn scroll_columns_stops_at_the_widest_line() {
+        let mut v = View::new();
+        v.width = 20;
+        v.scroll_columns(4);
+        assert_eq!(v.left_col, 0, "nothing wider than the view drawn yet");
+        v.scroll_width.measure(30);
+        for _ in 0..5 {
+            v.scroll_columns(4);
+        }
+        assert_eq!(
+            v.left_col, 11,
+            "the widest line's end in view, one blank column after it"
+        );
+        v.scroll_columns(-4);
+        assert_eq!(v.left_col, 7);
+        assert_eq!(v.selections.primary().head, ByteIdx(0));
+        assert!(v.reveal_cursor, "scrolling sideways doesn't touch the reveal");
     }
 }
