@@ -745,6 +745,64 @@ mod tests {
         }
     }
 
+    /// The template's query is jed's own CMake query, so the two cannot drift apart.
+    #[test]
+    fn syntax_plugins_template_query_is_built_in() {
+        assert_eq!(
+            include_str!("../../examples/languages/cmake/queries/highlights.scm"),
+            include_str!("queries/cmake.scm")
+        );
+    }
+
+    /// Built from the template itself (its manifest minus `[files]`, so it claims nothing, and its
+    /// queries), the grammar colours CMake exactly as the built-in does.
+    #[test]
+    fn syntax_plugins_template_spans_match_built_in_cmake() {
+        let Some(lib) = test_lib::library(false) else { return };
+        let tpl = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/languages/cmake");
+        let text = std::fs::read_to_string(tpl.join(MANIFEST)).unwrap();
+        let (head, _) = text.split_once("\n[files]").unwrap();
+        assert!(head.contains("symbol = \"tree_sitter_cmake\""));
+        let id = unique("cmake_tpl_d");
+        let head = head.replacen("id = \"cmake\"", &format!("id = \"{id}\""), 1);
+        assert!(head.contains(&id));
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(&id);
+        std::fs::create_dir_all(dir.join("queries")).unwrap();
+        std::fs::write(dir.join(MANIFEST), head).unwrap();
+        std::fs::copy(tpl.join("queries/highlights.scm"), dir.join("queries/highlights.scm")).unwrap();
+        std::fs::copy(lib, dir.join(LIBRARY)).unwrap();
+        let pid = test_lib::register_dir(tmp.path(), &id);
+        pid.load().unwrap();
+        let basic = "# c\ncmake_minimum_required(VERSION 3.20)\nset(x \"a ${Y}\" ON)\nif(NOT x)\n  message(STATUS \"x\")\nendif()\nfunction(f a)\n  return()\nendfunction()\n";
+        let big = "#[[ bracket\ncomment ]]\ncmake_minimum_required(VERSION 3.20)\nproject(P LANGUAGES C CXX)\n\
+            set(A [[raw ${not} text]] TRUE FALSE 42 3.14)\nset(B \"esc \\\" \\n \\\\ ${A} $ENV{HOME} $CACHE{X}\")\n\
+            message(STATUS $ENV{HOME} $CACHE{Y} ${A}/${B})\n\
+            target_compile_definitions(t PRIVATE $<$<CONFIG:Debug>:DEBUG=1> $<TARGET_FILE:t>)\n\
+            foreach(i IN LISTS A)\n  if(i STREQUAL \"x\" AND NOT i EQUAL 3)\n    message(\"${i}\")\n  elseif(DEFINED i)\n  else()\n  endif()\nendforeach()\n\
+            while(OFF)\n  break()\nendwhile()\nmacro(m a)\n  continue()\nendmacro()\nfunction(f a)\n  return()\nendfunction()\n\
+            block(SCOPE_FOR VARIABLES)\nendblock()\n";
+        for text in [basic, big] {
+            let want = crate::syntax::highlight_text(Language::CMake, text);
+            assert!(want.len() > 8);
+            assert_eq!(crate::syntax::highlight_text(Language::Plugin(pid), text), want);
+        }
+        // The big sample uses every capture of the query, so a pattern the plugin got wrong shows.
+        let used: Vec<_> = crate::syntax::highlight_text(Language::CMake, big)
+            .iter()
+            .map(|s| s.highlight)
+            .collect();
+        let query = include_str!("queries/cmake.scm");
+        for capture in query
+            .split('@')
+            .skip(1)
+            .filter_map(|s| s.split(|c: char| !(c.is_alphanumeric() || c == '.')).next())
+        {
+            let h = highlight::highlight_for(capture).unwrap_or_else(|| panic!("@{capture} has no key"));
+            assert!(used.contains(&h), "the sample has no @{capture}");
+        }
+    }
+
     #[test]
     fn defaults() {
         let m = ok("id = \"lua\"");
