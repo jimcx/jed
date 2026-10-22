@@ -1,0 +1,66 @@
+# A jed syntax plugin: jed's built-in CMake support, redone as a plugin. Copy this directory to
+# ~/.config/jed/languages/<id>/ (the directory name must equal `id`) and change what you need;
+# `jed --new-language <id>` starts a fresh one. Every key below is optional except `id`.
+#
+# Besides this file a plugin has a `src/` with the tree-sitter grammar (parser.c, optionally
+# scanner.c) and `queries/highlights.scm`. Editing rules (comments, brackets, auto-closing pairs)
+# are the same data as VS Code's `language-configuration.json`; the matching field is named below.
+
+# The language id: what `.workspace` `[files] associations` and `[lsp.<id>]` call it, and the
+# LSP `languageId`. Lowercase letters, digits, `-` and `_`. It can't be a built-in id.
+id = "cmake"
+
+# The name in the status bar and the language picker.
+name = "CMake"
+
+# The C symbol the grammar's `parser.c` exports. Default: `tree_sitter_<id>` (`-` and `.` as `_`).
+symbol = "tree_sitter_cmake"
+
+# What Comment Line (Cmd+/) inserts. VS Code: `comments.lineComment`. Leave it out for a
+# language with block comments only.
+line_comment = "#"
+
+# Bracket pairs, for matching, jumping and auto-indent. VS Code: `brackets`. Single characters.
+brackets = ["{}", "[]", "()"]
+
+# Pairs that close themselves when the opener is typed (and are typed over and deleted together).
+# VS Code: `autoClosingPairs`. `not_in` lists where the opener doesn't auto-close (VS Code's
+# `notIn`): "string" and / or "comment". Needs the grammar's tree, so it is ignored until the
+# grammar is loaded. Default when left out: `{}` `[]` `()`.
+pairs = [
+    { open = "{", close = "}" },
+    { open = "[", close = "]" },
+    { open = "(", close = ")" },
+    { open = "\"", close = "\"", not_in = ["string"] },
+]
+
+# What typing an opener around a selection wraps it in. VS Code: `surroundingPairs`.
+# Default when left out: `{}` `[]` `()` and the quotes `""` `''` and backticks.
+surround = ["{}", "[]", "()", "\"\""]
+
+# Whether the language indents with spaces (true) or tabs (false) whatever the user's setting says
+# (VS Code's `[language]` override of `editor.insertSpaces`). Left out here: the user's setting.
+# insert_spaces = false
+
+# Whether the grammar's leaves are the language's tokens, so a bracket counts only as a token
+# of its own (not inside a string or comment). True for nearly every grammar.
+tree_tokens = true
+
+# Node kinds of the grammar that are comments, strings, or code again inside a string (like an
+# interpolation). They tell auto-close's `not_in` and auto-indent where the cursor is. A kind
+# whose name contains "comment" or "string" is recognised without being listed.
+comment_kinds = ["bracket_comment", "line_comment"]
+string_kinds = ["quoted_argument", "bracket_argument"]
+code_kinds = ["variable_ref"]
+
+[files]
+# File extensions (no dot, case-insensitive; `tar.gz` style multi-dot ones work). A plugin's
+# extension beats a built-in one. VS Code: `extensions` in `contributes.languages`.
+extensions = ["cmake"]
+
+# Exact file names. VS Code: `filenames`.
+filenames = ["CMakeLists.txt"]
+
+# Program names in a `#!` first line (`#!/usr/bin/env foo`), version digits allowed (`foo3`).
+# VS Code: `firstLine`, simplified. Built-in shells, Python and make are tried first.
+shebangs = []

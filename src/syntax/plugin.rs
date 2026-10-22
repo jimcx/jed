@@ -41,7 +41,7 @@ pub struct Manifest {
 /// A registered plugin (leaked). The file patterns and `symbol` are read by detection and loading
 /// (later subtasks).
 #[derive(Debug)]
-#[allow(dead_code)]
+#[allow(dead_code)] // `symbol` is read by loading (a later subtask).
 pub struct Plugin {
     pub id: &'static str,
     pub name: &'static str,
@@ -453,6 +453,58 @@ mod tests {
         let (m, errors) = parse(text, "f");
         assert!(errors.is_empty(), "{errors:?}");
         m.unwrap()
+    }
+
+    /// The template is jed's built-in CMake: same editing rules, same detection.
+    #[test]
+    fn syntax_plugins_template_matches_built_in_cmake() {
+        let text = include_str!("../../examples/languages/cmake/language.toml");
+        let m = ok(text);
+        assert_eq!((m.id.as_str(), m.name.as_str()), ("cmake", "CMake"));
+        let want = Language::CMake.config();
+        assert_eq!(m.line_comment.as_deref(), want.line_comment);
+        assert_eq!(m.pairs, want.pairs);
+        assert_eq!(m.brackets, want.brackets);
+        assert_eq!(m.surround, want.surround);
+        assert_eq!((m.insert_spaces, m.tree_tokens), (want.insert_spaces, want.tree_tokens));
+        // Register a copy under another id with nothing claimed, to compare the whole config.
+        let mut copy = m.clone();
+        copy.id = unique("template");
+        copy.extensions.clear();
+        copy.filenames.clear();
+        let c = &register(copy).unwrap().get().config;
+        assert_eq!(c, want);
+        // Detection: the same names and extensions (checked against the built-in).
+        let root = Path::new("/ws");
+        let none = super::super::language::Associations::default();
+        for path in ["/ws/CMakeLists.txt", "/ws/a/Foo.cmake", "/ws/x.CMAKE"] {
+            assert_eq!(
+                super::super::language::detect(Path::new(path), root, "", &none),
+                Language::CMake
+            );
+            let file = Path::new(path).file_name().unwrap().to_str().unwrap();
+            let lower = file.to_ascii_lowercase();
+            assert!(
+                m.filenames.iter().any(|f| f == file) || m.extensions.iter().any(|e| lower.ends_with(&format!(".{e}"))),
+                "{path}"
+            );
+        }
+        assert_eq!(
+            (m.filenames.clone(), m.extensions.clone()),
+            (vec!["CMakeLists.txt".into()], vec!["cmake".into()])
+        );
+        assert!(m.shebangs.is_empty());
+        // The kind lists say what the built-in table says of CMake's node kinds.
+        for (kinds, scope) in [
+            (&m.comment_kinds, Scope::Comment),
+            (&m.string_kinds, Scope::String),
+            (&m.code_kinds, Scope::Code),
+        ] {
+            assert!(!kinds.is_empty());
+            for k in kinds {
+                assert_eq!(super::super::scope_of(k), Some(scope), "{k}");
+            }
+        }
     }
 
     #[test]

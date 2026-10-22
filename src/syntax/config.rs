@@ -15,7 +15,7 @@ pub struct AutoPair {
     pub not_in_comment: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct LanguageConfig {
     /// Comment line's token (`//`, `#`); `None`: comment line does nothing.
     pub line_comment: Option<&'static str>,

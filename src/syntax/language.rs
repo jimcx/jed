@@ -248,8 +248,25 @@ pub fn detect_shebang(first_line: &str) -> Language {
 /// patterns (`Dockerfile.*`, `tsconfig.*.json`, `.vscode/*.json`), then the extension (a
 /// dotfile's name isn't one: `.c` is plain text), multi-dot ones (`.js.map`) included.
 fn by_name(path: &Path) -> Option<Language> {
-    use Language::*;
     let name = path.file_name()?.to_str()?;
+    if let Some(l) = built_in_named(path, name) {
+        return Some(l);
+    }
+    let lower = name.to_ascii_lowercase();
+    // Plugins: their file names, then their extensions (a plugin claiming `h` wins over C++).
+    let plugins = PluginId::all();
+    let claims = |ext: &String| lower.len() > ext.len() + 1 && lower.ends_with(&format!(".{ext}"));
+    plugins
+        .iter()
+        .find(|p| p.get().filenames.iter().any(|f| f == name))
+        .or_else(|| plugins.iter().find(|p| p.get().extensions.iter().any(claims)))
+        .map(|&p| Language::Plugin(p))
+        .or_else(|| built_in_extension(path, &lower))
+}
+
+/// The built-in exact names and name patterns of `by_name`.
+fn built_in_named(path: &Path, name: &str) -> Option<Language> {
+    use Language::*;
     let exact = match name {
         "SConstruct" | "SConscript" | "Sconstruct" | "sconstruct" => Some(Python),
         "Makefile" | "makefile" | "GNUmakefile" | "OCamlMakefile" => Some(Makefile),
@@ -306,6 +323,12 @@ fn by_name(path: &Path) -> Option<Language> {
     if config_json || (in_vscode && lower.ends_with(".json")) {
         return Some(Jsonc);
     }
+    None
+}
+
+/// The built-in multi-dot suffixes and extensions of `by_name` (`lower` is the lowercased name).
+fn built_in_extension(path: &Path, lower: &str) -> Option<Language> {
+    use Language::*;
     // Multi-dot extensions VS Code lists (`.js.map`, `.csproj.user`).
     const SUFFIXES: &[(&str, Language)] = &[
         (".js.map", Json),
@@ -351,7 +374,8 @@ fn by_name(path: &Path) -> Option<Language> {
 }
 
 /// The interpreter a shebang names: `#!/usr/bin/python3`, `#!/usr/bin/env python`,
-/// `#!/usr/bin/env -S python3 -u`, `#!/bin/sh`, `#!/usr/bin/make -f`, …
+/// `#!/usr/bin/env -S python3 -u`, `#!/bin/sh`, `#!/usr/bin/make -f`, …; the built-in programs
+/// first, then the plugins' `shebangs`.
 fn by_shebang(first_line: &str) -> Option<Language> {
     let rest = first_line.strip_prefix("#!")?;
     let mut words = rest.split_whitespace();
@@ -376,7 +400,10 @@ fn by_shebang(first_line: &str) -> Option<Language> {
     } else if is("make") || is("gmake") {
         Some(Language::Makefile)
     } else {
-        None
+        PluginId::all()
+            .into_iter()
+            .find(|p| p.get().shebangs.iter().any(|s| is(s)))
+            .map(Language::Plugin)
     }
 }
 

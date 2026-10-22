@@ -93,6 +93,8 @@ mod selection;
 mod session;
 mod shift;
 mod syntax;
+#[cfg(test)]
+mod syntax_plugins_tests;
 mod tasks;
 mod terminal;
 mod theme;
@@ -249,6 +251,8 @@ fn main() -> ExitCode {
     let user_settings = config::settings::load(&paths::config_dir().join(config::settings::FILE_NAME));
     // Syntax plugins: only the user's own directory, never the workspace's.
     let plugin_errors = syntax::plugin::load_and_register(&paths::config_dir().join("languages"));
+    // Needs the plugins: `[lsp.<id>]` may name one.
+    let (user_servers, server_errors) = lsp::config::user_servers(&user_settings.lsp);
     let user_tasks = tasks::templates::load(&paths::config_dir().join(tasks::templates::FILE_NAME));
     let workspace = Workspace::load(root).with_user_settings(user_settings.overrides);
     // Load before taking over the terminal, so errors print normally. A binary file opens in a
@@ -309,7 +313,9 @@ fn main() -> ExitCode {
                     app.open_initial_hex(path, doc);
                 }
                 app.tasks.user = user_tasks.tasks;
+                app.lsp.builtins.user = user_servers;
                 let mut errors = user_settings.errors;
+                errors.extend(server_errors);
                 errors.extend(user_tasks.errors);
                 errors.extend(plugin_errors);
                 errors.extend(keymap_errors);

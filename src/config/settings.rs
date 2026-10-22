@@ -28,11 +28,13 @@
 //! `apply`, a row in the table above, a line in `TEMPLATE` and the field in
 //! `template_lists_every_key_at_its_default`'s literal (it won't compile until then).
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::edit::{CursorStyle, RenderWhitespace, Settings};
+use crate::workspace::config::LspServer;
 
 pub const FILE_NAME: &str = "settings.toml";
 
@@ -133,6 +135,9 @@ pub fn layer(user: &SettingsOverrides, workspace: &SettingsOverrides) -> Setting
 #[derive(Debug, Default, Clone)]
 pub struct UserSettings {
     pub overrides: SettingsOverrides,
+    /// `[lsp.<language id>]`: the user's language servers (the ids are checked by `main`, once the
+    /// syntax plugins are registered: see `lsp::config::user_servers`).
+    pub lsp: BTreeMap<String, LspServer>,
     pub errors: Vec<String>,
 }
 
@@ -144,6 +149,7 @@ pub fn load(path: &Path) -> UserSettings {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => UserSettings::default(),
         Err(e) => UserSettings {
             overrides: SettingsOverrides::default(),
+            lsp: BTreeMap::new(),
             errors: vec![format!("{FILE_NAME}: {e}")],
         },
     }
@@ -173,6 +179,7 @@ pub fn parse(text: &str) -> UserSettings {
         Err(e) => {
             return UserSettings {
                 overrides: SettingsOverrides::default(),
+                lsp: BTreeMap::new(),
                 errors: vec![match e.span() {
                     Some(at) => {
                         let line = text[..at.start.min(text.len())].matches('\n').count() + 1;
@@ -184,10 +191,23 @@ pub fn parse(text: &str) -> UserSettings {
         }
     };
     let mut settings = toml::Table::new();
+    let mut lsp = BTreeMap::new();
     for (key, value) in table {
         match (key.as_str(), value) {
             ("settings", toml::Value::Table(t)) => settings = t,
             ("settings", _) => errors.push(format!("{FILE_NAME}: `settings` must be a table")),
+            // Each server on its own, so one bad entry doesn't lose the others.
+            ("lsp", toml::Value::Table(t)) => {
+                for (id, entry) in t {
+                    match entry.try_into::<LspServer>() {
+                        Ok(server) => {
+                            lsp.insert(id, server);
+                        }
+                        Err(e) => errors.push(format!("{FILE_NAME}: [lsp.{id}]: {}", e.message().trim_end())),
+                    }
+                }
+            }
+            ("lsp", _) => errors.push(format!("{FILE_NAME}: `lsp` must be a table of [lsp.<language id>]")),
             (_, toml::Value::Table(_)) => errors.push(format!("{FILE_NAME}: unknown table [{key}]")),
             _ => errors.push(format!("{FILE_NAME}: `{key}` belongs under [settings]")),
         }
@@ -213,7 +233,7 @@ pub fn parse(text: &str) -> UserSettings {
             errors.push(format!("{FILE_NAME}: {}", e.message().trim_end()));
             SettingsOverrides::default()
         });
-    UserSettings { overrides, errors }
+    UserSettings { overrides, lsp, errors }
 }
 
 /// What "Preferences: Open User Settings" writes when there's no `settings.toml` yet: every key,
@@ -236,6 +256,14 @@ pub const TEMPLATE: &str = "\
 # cursor_style = \"line\"  # line, block or underline
 # cursor_blinking = true
 # hex_bytes_per_line = 32  # a hex tab's widest row: 1, 2, 4, 8, 16, 32 or 64 bytes
+
+# The language server for a language id (a built-in one's, such as python, or a syntax plugin's),
+# in every workspace. A trusted .workspace [lsp.<id>] wins over this; this wins over the built-in
+# clangd, ty and rust-analyzer. command: a name on PATH; args and init_options are optional.
+# [lsp.lua]
+# command = \"lua-language-server\"
+# args = []
+# init_options = { }
 ";
 
 #[cfg(test)]
@@ -246,6 +274,32 @@ mod tests {
         let u = parse(text);
         assert_eq!(u.errors, Vec::<String>::new());
         u.overrides
+    }
+
+    #[test]
+    fn lsp_entries_are_read_each_on_its_own() {
+        let u = parse(
+            "[lsp.lua]\ncommand = \"lua-language-server\"\nargs = [\"-v\"]\ninit_options = { a = 1 }\n\
+             [lsp.bad]\nargs = []\n[lsp.python]\ncommand = \"pyright\"\nnope = 1\n[settings]\ntab_width = 2\n",
+        );
+        assert_eq!(u.lsp.keys().collect::<Vec<_>>(), ["lua"]);
+        assert_eq!(u.lsp["lua"].args, ["-v"]);
+        assert!(u.lsp["lua"].init_options.is_some());
+        assert_eq!(u.overrides.tab_width, Some(2));
+        assert_eq!(u.errors.len(), 2, "{:?}", u.errors);
+        assert!(
+            u.errors
+                .iter()
+                .any(|e| e.contains("[lsp.bad]") && e.contains("command"))
+        );
+        assert!(u.errors.iter().any(|e| e.contains("[lsp.python]")));
+        assert!(parse("lsp = 1").errors[0].contains("`lsp` must be a table"));
+        // The template's example parses once uncommented.
+        assert!(
+            parse(&TEMPLATE.replace("# [lsp", "[lsp").replace("# command", "command"))
+                .lsp
+                .contains_key("lua")
+        );
     }
 
     #[test]
@@ -475,7 +529,11 @@ mod tests {
     /// The template, uncommented, sets every key, to its default.
     #[test]
     fn template_lists_every_key_at_its_default() {
+        // The `[lsp.<id>]` example is checked by `lsp_entries_are_read_each_on_its_own`.
         let uncommented: String = TEMPLATE
+            .split("\n# The language server")
+            .next()
+            .unwrap()
             .lines()
             .map(|l| l.strip_prefix("# ").filter(|l| l.contains(" = ")).unwrap_or(l))
             .collect::<Vec<_>>()
