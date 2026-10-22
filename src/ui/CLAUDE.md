@@ -32,4 +32,4 @@ One line per widget or editor layer; [docs/dev/ui.md](../../docs/dev/ui.md) has 
 - `banner.rs` — the changed-on-disk banner and its buttons
 - `dialog.rs` — the prompts
 - `splash.rs` — a group with no tabs
-- `scrollbar.rs` — `take_column`, `look`, `render`: every scrolled area's one-column bar
+- `scrollbar.rs` — `take_column`, `look`, `render`: every scrolled area's one-column bar (+ `take_row`, `render_row`: the editors' horizontal bar)

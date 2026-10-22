@@ -13,7 +13,7 @@ use super::mouse::Drag;
 use crate::group::Tab;
 use crate::layout::{Hit, PanelTab, ScrollTarget, SidePanel};
 use crate::problems;
-use crate::scrollbar::{Scroll, Scrollable};
+use crate::scrollbar::{Columns, Scroll, Scrollable};
 use crate::view::TextScroll;
 
 impl App {
@@ -46,6 +46,22 @@ impl App {
                     }
                     Tab::Diff(d) => Some(f(d.as_mut())),
                     Tab::Hex(h) => Some(f(h.as_mut())),
+                }
+            }
+            ScrollTarget::Columns(g) => {
+                let group = self.groups.get_mut(g)?;
+                match group.tabs.get_mut(group.active)? {
+                    Tab::Text(t) => Some(f(&mut Columns {
+                        scroll_width: t.view.scroll_width,
+                        width: t.view.width,
+                        left_col: &mut t.view.left_col,
+                    })),
+                    Tab::Diff(d) => Some(f(&mut Columns {
+                        scroll_width: d.scroll_width,
+                        width: d.text_width,
+                        left_col: &mut d.left_col,
+                    })),
+                    Tab::Hex(_) => None,
                 }
             }
             ScrollTarget::Side(panel) if !self.ui.side_visible || self.ui.side_panel != panel => None,
@@ -86,33 +102,46 @@ impl App {
         self.with_scrollable(target, |s| s.set_top(top));
     }
 
-    /// A left press on `target`'s scroll bar at row `y`.
-    pub(super) fn scrollbar_click(&mut self, target: ScrollTarget, y: u16) {
+    /// The pointer's cell along `target`'s track (a column of cells, or a row for the horizontal
+    /// bar) and the track's length.
+    fn along(target: ScrollTarget, track: ratatui::layout::Rect, x: u16, y: u16) -> (u16, u16) {
+        match target {
+            ScrollTarget::Columns(_) => (x.saturating_sub(track.x), track.width),
+            _ => (y.saturating_sub(track.y), track.height),
+        }
+    }
+
+    /// A left press on `target`'s scroll bar at (`x`, `y`).
+    pub(super) fn scrollbar_click(&mut self, target: ScrollTarget, x: u16, y: u16) {
         let Some(hit) = self.hits.scrollbar(target) else { return };
         let Some(thumb) = hit.thumb else { return };
         let Some(scroll) = self.target_scroll(target) else {
             return;
         };
-        let cell = y.saturating_sub(hit.track.y);
+        let (cell, len) = Self::along(target, hit.track, x, y);
         let grab = if thumb.contains(cell) {
             cell - thumb.start
         } else {
             let grab = thumb.len / 2;
-            let top = scroll.top_at(hit.track.height, i32::from(cell) - i32::from(grab));
+            let top = scroll.top_at(len, i32::from(cell) - i32::from(grab));
             self.set_target_top(target, top);
             grab
         };
         self.drag = Some(Drag::ScrollBar { target, grab });
     }
 
-    /// The pointer at row `y` while dragging `target`'s thumb by its cell `grab`.
-    pub(super) fn scrollbar_drag(&mut self, target: ScrollTarget, y: u16, grab: u16) {
+    /// The pointer at (`x`, `y`) while dragging `target`'s thumb by its cell `grab`.
+    pub(super) fn scrollbar_drag(&mut self, target: ScrollTarget, x: u16, y: u16, grab: u16) {
         let Some(hit) = self.hits.scrollbar(target) else { return };
         let Some(scroll) = self.target_scroll(target) else {
             return;
         };
-        let start = i32::from(y) - i32::from(hit.track.y) - i32::from(grab);
-        self.set_target_top(target, scroll.top_at(hit.track.height, start));
+        let start = match target {
+            ScrollTarget::Columns(_) => i32::from(x) - i32::from(hit.track.x),
+            _ => i32::from(y) - i32::from(hit.track.y),
+        } - i32::from(grab);
+        let len = Self::along(target, hit.track, x, y).1;
+        self.set_target_top(target, scroll.top_at(len, start));
     }
 
     /// Every pointer move: which thumb (if any) it is over.
@@ -121,7 +150,10 @@ impl App {
             Hit::ScrollBar(t) => self
                 .hits
                 .scrollbar(t)
-                .filter(|s| s.thumb.is_some_and(|th| th.contains(m.row.saturating_sub(s.track.y))))
+                .filter(|s| {
+                    s.thumb
+                        .is_some_and(|th| th.contains(Self::along(t, s.track, m.column, m.row).0))
+                })
                 .map(|_| t),
             _ => None,
         };

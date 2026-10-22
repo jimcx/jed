@@ -628,6 +628,8 @@ pub struct DiffTab {
     /// they share `left_col`), and the widest line drawn so far (either side; reset by a load).
     pub text_width: usize,
     pub scroll_width: crate::scrollbar::ScrollWidth,
+    /// The running load only follows the live buffer's edits: `scroll_width` is kept.
+    keep_width: bool,
     pub inline: bool,
     /// Scroll the cursor's row into view at the next draw (centred when off screen).
     pub reveal: bool,
@@ -671,6 +673,7 @@ impl DiffTab {
             height: 0,
             text_width: 0,
             scroll_width: Default::default(),
+            keep_width: false,
             inline: false,
             reveal: false,
             line: None,
@@ -696,6 +699,7 @@ impl DiffTab {
             height: self.height,
             text_width: self.text_width,
             scroll_width: self.scroll_width,
+            keep_width: false,
             inline: self.inline,
             reveal: false,
             line: self.line,
@@ -744,6 +748,12 @@ impl DiffTab {
     pub fn begin(&mut self, live: Option<(BufferId, u64)>) -> u64 {
         self.generation += 1;
         self.running = Some(self.generation);
+        // Only the live buffer's text changed (an edit): the lines drawn so far still count for
+        // the scroll width, so the bar doesn't shrink after each edit.
+        let live_edit = !self.stale
+            && self.pair.live()
+            && matches!((self.loaded, live), (Some(Some((was, _))), Some((now, _))) if was == now);
+        self.keep_width = live_edit;
         self.stale = false;
         self.loaded = Some(if self.pair.live() { live } else { None });
         self.generation
@@ -762,7 +772,9 @@ impl DiffTab {
                 let first = self.doc.is_none();
                 self.doc = Some(Arc::new(doc));
                 self.error = None;
-                self.scroll_width.reset();
+                if !std::mem::take(&mut self.keep_width) {
+                    self.scroll_width.reset();
+                }
                 match at {
                     Some((right, line)) => self.cursor = self.aligned().row_of(right, line),
                     None => self.cursor = 0,

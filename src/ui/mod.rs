@@ -102,11 +102,33 @@ pub fn render(f: &mut Frame, app: &mut App) {
         }
 
         // A text, diff or hex tab keeps the editor's last column for its scroll bar.
-        let bar = if group.tabs.is_empty() {
+        let mut bar = if group.tabs.is_empty() {
             None
         } else {
             scrollbar::take_column(&mut editor_area)
         };
+        // A text or diff tab whose widest line drawn so far is wider than it (or that is
+        // scrolled sideways) keeps the last row for the horizontal bar, from the last frame's
+        // sizes; below, a frame that finds that changed asks for another.
+        let reserve = bar.is_some()
+            && (group
+                .active_tab_mut()
+                .is_some_and(|t| t.view.scroll_width.wants_bar(t.view.width, t.view.left_col))
+                || group
+                    .active_diff_mut()
+                    .is_some_and(|d| d.scroll_width.wants_bar(d.text_width, d.left_col)));
+        let hrow = if reserve {
+            scrollbar::take_row(&mut editor_area)
+        } else {
+            None
+        };
+        if hrow.is_some()
+            && let Some(b) = &mut bar
+        {
+            b.height -= 1;
+        }
+        // The sideways scroll's state as drawn, and the cells its bar may take.
+        let mut hscroll = None;
         let mut text = Rect::default();
         let mut diff_hit = None;
         let mut scroll_hit = None;
@@ -125,6 +147,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 app.settings.tab_width,
                 focused,
             ));
+            // As drawn: `diff::render` sets `text_width` and measures the rows it drew.
+            hscroll = Some((d.scroll_width, d.text_width, d.left_col, None));
             if let Some(bar) = bar {
                 // The header row's cell, then the rows' track.
                 let out = f.buffer_mut();
@@ -199,6 +223,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
                         .set_stringn(at.x, at.y, crate::code_action::BULB, 2, style);
                     app.code_actions.bulb_hit = Some((id, at));
                 }
+                hscroll = Some((
+                    tab.view.scroll_width,
+                    tab.view.width,
+                    tab.view.left_col,
+                    (text.width > 0).then_some(text),
+                ));
                 if let Some(bar) = bar {
                     let scroll = TextScroll {
                         view: &mut tab.view,
@@ -221,6 +251,31 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 splash::render(f, editor_area, &app.theme);
             }
         }
+        // A diff's `text_width` and a text tab's measured lines are known only now: the bar's row
+        // appearing or going asks for another frame.
+        let mut hscroll_hit = None;
+        let wanted = hscroll.is_some_and(|(w, width, left, _)| w.wants_bar(width, left));
+        // (Against the decision, not the row: an editor too short for it would ask every frame.)
+        if wanted != reserve {
+            app.needs_redraw = true;
+        }
+        if let (Some(row), Some((w, width, left, span))) = (hrow, hscroll) {
+            let out = f.buffer_mut();
+            // The corner where the bars meet (and a text tab's gutter) stays blank.
+            let all = Rect {
+                width: row.width + u16::from(bar.is_some()),
+                ..row
+            };
+            out.set_style(all, editor_bg);
+            let track = span.map_or(row, |t| Rect {
+                x: t.x,
+                width: t.width,
+                ..row
+            });
+            let hlook = scrollbar::look(app, ScrollTarget::Columns(id));
+            let scroll = crate::scrollbar::Scroll::columns(&w, width, left);
+            hscroll_hit = Some(scrollbar::render_row(out, track, scroll, hlook, editor_bg, &app.theme));
+        }
         if is_active {
             active_editor = Some(editor_area);
         }
@@ -234,6 +289,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             banner,
             diff: diff_hit,
             scrollbar: scroll_hit,
+            hscrollbar: hscroll_hit,
         });
     }
     let border = app.theme.get("editorGroup.border");

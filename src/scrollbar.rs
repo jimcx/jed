@@ -68,6 +68,20 @@ impl Scroll {
         }
     }
 
+    /// The columns of a view `width` wide (`left_col` its first) with `scroll_width` for its
+    /// extent: the horizontal bar. Shown while the widest line drawn is wider than the view (or
+    /// the view is scrolled, so it can be dragged back); a view past the end after a reveal
+    /// keeps its `left_col` as the largest.
+    pub fn columns(scroll_width: &ScrollWidth, width: usize, left_col: usize) -> Self {
+        let width = width.max(1);
+        Self {
+            top: left_col,
+            height: width,
+            max_top: scroll_width.max_left(width).max(left_col),
+            shown: scroll_width.wants_bar(width, left_col),
+        }
+    }
+
     /// The thumb on a track of `track` cells; `None` when not shown.
     pub fn thumb(&self, track: u16) -> Option<Thumb> {
         if !self.shown || track == 0 {
@@ -147,12 +161,14 @@ impl ScrollWidth {
     }
 
     /// The widest line drawn so far.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the horizontal scroll bar (hscroll-b) will read it")
-    )]
     pub fn widest(&self) -> usize {
         self.widest
+    }
+
+    /// Whether the horizontal bar's row is kept: a line wider than the view has been drawn, or
+    /// the view is scrolled.
+    pub fn wants_bar(&self, width: usize, left_col: usize) -> bool {
+        self.widest() > width || left_col > 0
     }
 
     /// The largest first column scrolling right reaches in a view `width` columns wide: the
@@ -173,8 +189,54 @@ impl ScrollWidth {
     }
 }
 
+/// The columns of a text or diff view as a [`Scrollable`] (the horizontal bar): the view's
+/// `left_col` and `scroll_width`, `width` columns wide.
+pub struct Columns<'a> {
+    pub left_col: &'a mut usize,
+    pub scroll_width: ScrollWidth,
+    pub width: usize,
+}
+
+impl Scrollable for Columns<'_> {
+    fn scroll(&self) -> Scroll {
+        Scroll::columns(&self.scroll_width, self.width, *self.left_col)
+    }
+
+    /// Never past the widest line's end (a view already past it, after a reveal, may be dragged
+    /// back but not further).
+    fn set_top(&mut self, top: usize) {
+        *self.left_col = top.min(self.scroll_width.max_left(self.width).max(*self.left_col));
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn columns_scroll_and_clamp() {
+        let mut w = super::ScrollWidth::default();
+        w.measure(100);
+        let s = super::Scroll::columns(&w, 80, 0);
+        assert!(s.shown && s.max_top == 21 && s.height == 80);
+        let mut left = 5;
+        let mut c = super::Columns {
+            left_col: &mut left,
+            scroll_width: w,
+            width: 80,
+        };
+        super::Scrollable::set_top(&mut c, 500);
+        assert_eq!(left, 21);
+        assert!(!super::Scroll::columns(&w, 100, 0).shown, "fits: no bar");
+        assert!(
+            super::Scroll::columns(&w, 100, 3).shown,
+            "scrolled: can be dragged back"
+        );
+        assert_eq!(
+            super::Scroll::columns(&w, 80, 40).max_top,
+            40,
+            "past the end stays reachable"
+        );
+    }
+
     #[test]
     fn scroll_width_grows_and_clamps() {
         let mut w = super::ScrollWidth::default();

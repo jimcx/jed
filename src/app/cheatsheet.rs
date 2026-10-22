@@ -68,10 +68,10 @@ impl App {
                 }
             }
             MouseEventKind::Down(_) if !hit.rect.contains(p) => self.cheat_sheet = None,
-            MouseEventKind::Down(MouseButton::Left) if on_bar => self.scrollbar_click(target, m.row),
+            MouseEventKind::Down(MouseButton::Left) if on_bar => self.scrollbar_click(target, m.column, m.row),
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(Drag::ScrollBar { target, grab }) = self.drag {
-                    self.scrollbar_drag(target, m.row, grab);
+                    self.scrollbar_drag(target, m.column, m.row, grab);
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => self.drag = None,

@@ -117,7 +117,7 @@ impl App {
                 ) =>
             {
                 match t {
-                    ScrollTarget::Group(g) => Hit::Editor(g),
+                    ScrollTarget::Group(g) | ScrollTarget::Columns(g) => Hit::Editor(g),
                     ScrollTarget::Side(_) => Hit::SidePanel,
                     ScrollTarget::Panel(_) => Hit::Panel,
                     // The wheel over the history's bar scrolls its list, as over its rows.
@@ -244,7 +244,7 @@ impl App {
                         self.column_select_to(to);
                     }
                 }
-                Some(Drag::ScrollBar { target, grab }) => self.scrollbar_drag(target, m.row, grab),
+                Some(Drag::ScrollBar { target, grab }) => self.scrollbar_drag(target, m.column, m.row, grab),
                 // Taken by `hex_mouse`.
                 Some(Drag::Hex(_)) => {}
                 Some(Drag::HistoryDivider) => {
@@ -353,7 +353,7 @@ impl App {
                 self.editor_click(m, count);
             }
             // Scrolls without focusing anything or moving a cursor or a list's selection.
-            Hit::ScrollBar(t) => self.scrollbar_click(t, m.row),
+            Hit::ScrollBar(t) => self.scrollbar_click(t, m.column, m.row),
             Hit::PanelBorder => self.drag = Some(Drag::PanelBorder),
             Hit::PanelTab(tab) => self.focus_panel(tab),
             Hit::PanelTabClose(id) => self.close_task(id),

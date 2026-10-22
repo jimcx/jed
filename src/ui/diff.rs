@@ -223,12 +223,14 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
         let current = index == d.cursor;
         let parts = (row.kind() == Kind::Changed)
             .then(|| diff_view::changed_parts(doc.left.line(row.left.unwrap()), doc.right.line(row.right.unwrap())));
-        let (cell, w) = if inline {
+        // The row's width and the widths of the lines under the Stage and the Revert buttons.
+        let (cell, w, under) = if inline {
             let line = match row.kind() {
                 Kind::Removed => left_walk.line(row.left.unwrap_or_default()),
                 _ => right_walk.line(row.right.unwrap_or_default()),
             };
-            draw_inline(out, body, y, row, line, digits, d.left_col, tab_width, &st, current)
+            let (cell, w) = draw_inline(out, body, y, row, line, digits, d.left_col, tab_width, &st, current);
+            (cell, w, (w, w))
         } else {
             let left = Rect::new(body.x, y, half, 1);
             let right = Rect::new(body.x + half + 1, y, body.width - half - 1, 1);
@@ -251,7 +253,7 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
             let at_right = draw_half(out, &r, row, rr, rp, &st);
             out.set_stringn(body.x + half, y, "│", 1, theme.get("editorGroup.border"));
             let cell = if row.right.is_some() { at_right.0 } else { at_left.0 };
-            (cell, at_left.1.max(at_right.1))
+            (cell, at_left.1.max(at_right.1), (at_right.1, at_left.1))
         };
         widest = widest.max(w);
         if current {
@@ -270,6 +272,9 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
                 let rect = Rect::new(body.x + body.width - w, y, w, 1);
                 out.set_stringn(rect.x, y, label, w as usize, theme.get("quickDiff.action"));
                 hit.buttons.push((rect, k));
+                // The button covers the line's last columns (the right side's): scrolling
+                // reaches past them.
+                widest = widest.max(under.0 + w as usize);
             }
             let revert = match (revertible, inline) {
                 (false, _) => None,
@@ -280,6 +285,9 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
             if let Some(rect) = revert {
                 out.set_stringn(rect.x, y, REVERT, rw as usize, theme.get("diffEditor.revertAction"));
                 hit.reverts.push((rect, k));
+                // Side by side over the left side's end; inline left of Stage, over both.
+                let over = if inline { w + rw + 1 } else { rw };
+                widest = widest.max(under.1 + over as usize);
             }
         }
     }

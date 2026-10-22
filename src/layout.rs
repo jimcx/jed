@@ -539,6 +539,9 @@ pub struct GroupHit {
     pub diff: Option<DiffHit>,
     /// The vertical scroll bar at the editor's right edge (a text or diff tab).
     pub scrollbar: Option<ScrollBarHit>,
+    /// The horizontal scroll bar on the editor's last row, while the view's lines are wider
+    /// than it (its track is one row; `ScrollTarget::Columns`).
+    pub hscrollbar: Option<ScrollBarHit>,
 }
 
 /// What a scroll bar scrolls: a group's active tab, the side bar's list (by the view showing
@@ -547,6 +550,8 @@ pub struct GroupHit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollTarget {
     Group(GroupId),
+    /// A group's active text or diff tab sideways (the horizontal bar).
+    Columns(GroupId),
     Side(SidePanel),
     Panel(PanelTab),
     /// The Explorer view's "Git History" commit list.
@@ -562,8 +567,8 @@ pub struct CheatSheetHit {
     pub scrollbar: Option<ScrollBarHit>,
 }
 
-/// A scroll bar as drawn: its track (one column) and the thumb on it (`None`: nothing to
-/// scroll), in cells from the track's top.
+/// A scroll bar as drawn: its track (one column, or one row for `ScrollTarget::Columns`) and the thumb on it (`None`: nothing to
+/// scroll), in cells from the track's start.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ScrollBarHit {
     pub track: Rect,
@@ -754,6 +759,9 @@ impl HitMap {
             if g.scrollbar.is_some_and(|s| s.track.contains(p)) {
                 return Hit::ScrollBar(ScrollTarget::Group(g.id));
             }
+            if g.hscrollbar.is_some_and(|s| s.track.contains(p)) {
+                return Hit::ScrollBar(ScrollTarget::Columns(g.id));
+            }
             if g.editor.contains(p) {
                 return Hit::Editor(g.id);
             }
@@ -779,6 +787,7 @@ impl HitMap {
         let drawn = |bar: Option<(ScrollTarget, ScrollBarHit)>| bar.filter(|(t, _)| *t == target).map(|(_, s)| s);
         match target {
             ScrollTarget::Group(g) => self.group(g)?.scrollbar,
+            ScrollTarget::Columns(g) => self.group(g)?.hscrollbar,
             ScrollTarget::Side(_) => drawn(self.side_scrollbar),
             ScrollTarget::Panel(_) => drawn(self.panel_scrollbar),
             ScrollTarget::History => self.history_scrollbar,
@@ -927,6 +936,7 @@ mod tests {
                     },
                     thumb: None,
                 }),
+                hscrollbar: None,
             })
             .collect();
         let map = HitMap {

@@ -357,7 +357,8 @@ pub struct App {
     /// A trust decision is needed but another prompt is open.
     trust_pending: bool,
     should_quit: bool,
-    needs_redraw: bool,
+    /// Also set by drawing itself (the horizontal bar's row appeared or went: draw again).
+    pub(crate) needs_redraw: bool,
     tx: mpsc::UnboundedSender<AppEvent>,
     rx: mpsc::UnboundedReceiver<AppEvent>,
     watcher: Option<Watcher>,
@@ -654,6 +655,21 @@ impl App {
         self.sync_syntax();
     }
 
+    /// Draws a frame when one was asked for. A frame can ask for one more (a horizontal bar's
+    /// row appeared or went, `ui::render`): that one is drawn now, not at the next event.
+    pub(crate) fn redraw<B: ratatui::backend::Backend>(
+        &mut self,
+        terminal: &mut ratatui::Terminal<B>,
+    ) -> Result<(), B::Error> {
+        for _ in 0..2 {
+            if !std::mem::take(&mut self.needs_redraw) {
+                break;
+            }
+            terminal.draw(|f| ui::render(f, self))?;
+        }
+        Ok(())
+    }
+
     pub async fn run(&mut self, terminal: &mut Term) -> anyhow::Result<()> {
         self.start();
         let mut events = EventStream::new();
@@ -676,11 +692,10 @@ impl App {
             self.sync_logs();
             if self.needs_redraw {
                 let t = Instant::now();
-                terminal.draw(|f| ui::render(f, self))?;
+                self.redraw(terminal)?;
                 if t.elapsed() > SLOW_FRAME {
                     tracing::warn!(elapsed_ms = t.elapsed().as_millis() as u64, "slow frame");
                 }
-                self.needs_redraw = false;
             }
             if self.pointer != pointer {
                 pointer = self.pointer;
