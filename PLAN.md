@@ -364,7 +364,7 @@ More languages without rebuilding jed (the [Syntax plugins](#tasks) task). A plu
   - SCons injects globals (`Environment`, `Import`, …) that the server flags as undefined; ship a `__builtins__.pyi` with them if ty treats its names as built-ins (pyright does)
   - _Verify early: ty analyzes files without a `.py` extension when opened with `languageId: python`_
   - Best effort: if ty can't do either, SCons files get what ty gives them and it's noted as deferred
-- Server per language set in config / `.workspace`
+- Server per language set in config / `.workspace`: `[lsp.<id>]` (`command`, `args`, `init_options`) in `.workspace` (when trusted) or in the user's `settings.toml` (always trusted: the user's own file); a trusted `.workspace` entry wins, then `settings.toml`'s, then the built-ins (`clangd`, `ty`, `rust-analyzer`). An id that is neither built-in nor a syntax plugin's is reported
 - Incremental text sync (`didChange` with ranges), never full text per keystroke
 - Request `positionEncoding: utf-8`; fall back to UTF-16 — see [Text positions](#text-positions)
 - v1 features:
