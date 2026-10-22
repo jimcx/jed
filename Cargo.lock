@@ -926,6 +926,7 @@ dependencies = [
  "grep-searcher",
  "ignore",
  "libc",
+ "libloading",
  "lsp-types",
  "memchr",
  "notify",
@@ -951,6 +952,7 @@ dependencies = [
  "tree-sitter-containerfile",
  "tree-sitter-cpp",
  "tree-sitter-json",
+ "tree-sitter-language",
  "tree-sitter-make",
  "tree-sitter-md",
  "tree-sitter-python",
@@ -1044,6 +1046,16 @@ dependencies = [
  "libc",
  "libz-sys",
  "pkg-config",
+]
+
+[[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
+dependencies = [
+ "cfg-if",
+ "windows-link",
 ]
 
 [[package]]

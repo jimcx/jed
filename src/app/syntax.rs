@@ -1,6 +1,7 @@
 //! Language detection for open buffers and their background parses.
 
 use crate::buffer::{Buffer, BufferId};
+use crate::syntax::plugin::PluginId;
 use crate::syntax::{self, Associations, Language, Parsed};
 
 use super::{App, AppEvent, Level};
@@ -62,6 +63,48 @@ impl App {
                     });
                 });
             }
+        }
+    }
+
+    /// Loads the grammar of each of `self.syntax_plugins` that has a prebuilt library, in one
+    /// background task, one `AppEvent::Grammar` each (an installed grammar answers `Ok` at once;
+    /// a failure is reported to this app and tried again by the next load). `main` sets the list
+    /// to the registry, which only holds plugins from the user's own config directory (never a
+    /// `.workspace`'s).
+    pub(super) fn load_grammars(&mut self) {
+        let plugins: Vec<PluginId> = self
+            .syntax_plugins
+            .iter()
+            .copied()
+            .filter(|p| p.get().loadable())
+            .collect();
+        if plugins.is_empty() {
+            return;
+        }
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            for p in plugins {
+                let _ = tx.send(AppEvent::Grammar {
+                    language: Language::Plugin(p),
+                    result: p.load(),
+                });
+            }
+        });
+    }
+
+    /// A plugin's grammar is there: its buffers that were uncoloured get parsed. A failure is
+    /// reported and the language stays without a grammar.
+    pub(super) fn grammar_loaded(&mut self, language: Language, result: Result<(), String>) {
+        match result {
+            Ok(()) => {
+                for (_, buf) in self.buffers.iter_mut() {
+                    if buf.syntax.language() == language {
+                        buf.syntax.grammar_installed();
+                    }
+                }
+                self.needs_redraw = true;
+            }
+            Err(e) => self.notify(Level::Error, format!("Syntax plugin {}: {e}", language.id())),
         }
     }
 

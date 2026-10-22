@@ -1,9 +1,11 @@
-//! Syntax plugins (syntax_plugins-b) end to end, without native code: files detected as a plugin
+//! Syntax plugins end to end. syntax_plugins-b, without native code: files detected as a plugin
 //! language open as it but uncoloured; its `line_comment` and `pairs` drive Comment Line and
 //! auto-close; `.workspace` associations and `[lsp.<id>]` (and the user's `settings.toml`
 //! `[lsp.<id>]`) name plugin ids; detection order (filenames, extensions beating built-ins,
-//! shebangs after built-ins). Every test registers a plugin under its own id and claims only
-//! extensions, names and shebangs of its own: the registry is process-global.
+//! shebangs after built-ins). syntax_plugins-c: a prebuilt grammar loaded at start colours its
+//! files (open before and after it arrives), a broken one is reported and leaves them uncoloured,
+//! an app loads only its own `syntax_plugins`. Every test registers a plugin under its own id and
+//! claims only extensions, names and shebangs of its own: the registry is process-global.
 
 use std::path::Path;
 
@@ -286,4 +288,122 @@ fn syntax_plugins_user_lsp_ids_are_checked_against_the_plugins() {
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(errors[0].contains("ptb_missing"));
     assert!(PluginId::find("ptb_userlsp").is_some());
+}
+
+/// Opens file `a.<ext>` holding `text` in an app started with only the plugin `id` (from a built
+/// library in its own directory) in `app.syntax_plugins`; the temp dirs (plugin, workspace).
+fn app_with_built_plugin(
+    id: &str,
+    ext: &str,
+    abi12: bool,
+    symbol: &str,
+    text: &str,
+) -> Option<(tempfile::TempDir, tempfile::TempDir, App, PluginId)> {
+    use plugin::test_lib;
+    let lib = test_lib::library(abi12)?;
+    let plugins = tempfile::tempdir().unwrap();
+    let query = include_str!("syntax/queries/cmake.scm");
+    test_lib::plugin_dir(plugins.path(), id, ext, symbol, lib, query);
+    let pid = test_lib::register_dir(plugins.path(), id);
+    let dir = tempfile::tempdir().unwrap();
+    let root = root_of(&dir);
+    std::fs::write(root.join(format!("a.{ext}")), text).unwrap();
+    let mut app = app_on(&root, Some(&format!("a.{ext}")));
+    app.syntax_plugins = vec![pid];
+    app.test_start();
+    Some((plugins, dir, app, pid))
+}
+
+/// The grammar is loaded in the background after start: a file open before it arrives is
+/// coloured once it does, and so is one opened after (and a text no buffer holds, as a diff
+/// tab's sides).
+#[tokio::test(flavor = "multi_thread")]
+async fn syntax_plugins_loaded_grammar_colours_its_files() {
+    let text = "project(demo)\nset(NAME \"x\") # note\n";
+    let Some((_plugins, dir, mut app, pid)) =
+        app_with_built_plugin("ptc_good", "ptcgood", false, "tree_sitter_cmake", text)
+    else {
+        return;
+    };
+    let lang = Language::Plugin(pid);
+    assert_eq!(app.active_buffer().unwrap().syntax.language(), lang);
+    assert!(
+        app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await,
+        "no parse"
+    );
+    let spans = |app: &mut App| {
+        let (buf, _) = app.active_mut().unwrap();
+        let rope = buf.rope.clone();
+        buf.syntax.spans(&rope, 0..2).to_vec()
+    };
+    let first = spans(&mut app);
+    assert!(first.len() >= 3, "{first:?}");
+    assert!(app.message.is_none(), "{:?}", app.message.as_ref().map(|m| &m.text));
+
+    // Opened after the load.
+    let b = root_of(&dir).join("b.ptcgood");
+    std::fs::write(&b, text).unwrap();
+    app.test_open(Buffer::open(&b).unwrap());
+    assert_eq!(app.active_buffer().unwrap().syntax.language(), lang);
+    assert!(
+        app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await,
+        "no parse of the file opened later"
+    );
+    assert_eq!(spans(&mut app), first);
+    let sides = crate::syntax::highlight_text(lang, text);
+    assert_eq!(sides, first);
+}
+
+/// A plugin registered but not in `app.syntax_plugins` (another app's) is never loaded by it.
+#[tokio::test(flavor = "multi_thread")]
+async fn syntax_plugins_an_app_loads_only_its_own_plugins() {
+    let Some(lib) = plugin::test_lib::library(false) else {
+        return;
+    };
+    let plugins = tempfile::tempdir().unwrap();
+    let query = include_str!("syntax/queries/cmake.scm");
+    plugin::test_lib::plugin_dir(plugins.path(), "ptc_other", "ptcother", "tree_sitter_cmake", lib, query);
+    let pid = plugin::test_lib::register_dir(plugins.path(), "ptc_other");
+    let dir = tempfile::tempdir().unwrap();
+    let root = root_of(&dir);
+    std::fs::write(root.join("a.ptcother"), "project(x)\n").unwrap();
+    let mut app = app_on(&root, Some("a.ptcother"));
+    app.test_start();
+    // Long enough for a load (a few ms) to have finished and been handled.
+    let started = std::time::Instant::now();
+    assert!(
+        app.settle(|_| started.elapsed() > std::time::Duration::from_millis(300))
+            .await
+    );
+    assert!(Language::Plugin(pid).grammar().is_none());
+    assert!(app.active_buffer().unwrap().syntax.tree().is_none());
+}
+
+/// A library of ABI 12, a missing symbol: reported, the file stays uncoloured, jed keeps working.
+#[tokio::test(flavor = "multi_thread")]
+async fn syntax_plugins_broken_grammars_are_reported_and_leave_the_file_uncoloured() {
+    for (id, abi12, symbol, want) in [
+        ("ptc_abi12", true, "tree_sitter_cmake", "ABI version 12"),
+        ("ptc_nosym", false, "tree_sitter_absent", "tree_sitter_absent"),
+    ] {
+        let Some((_plugins, _dir, mut app, pid)) = app_with_built_plugin(id, id, abi12, symbol, "project(x)\n") else {
+            return;
+        };
+        assert!(app.settle(|a| a.message.is_some()).await, "{id}: no message");
+        let m = app.message.as_ref().unwrap();
+        assert!(
+            m.text.starts_with(&format!("Syntax plugin {id}: ")) && m.text.contains(want),
+            "{}",
+            m.text
+        );
+        assert_eq!(m.level, crate::app::Level::Error);
+        assert!(Language::Plugin(pid).grammar().is_none());
+        app.type_text("hi");
+        assert!(app.settle(|_| true).await);
+        let (buf, _) = app.active_mut().unwrap();
+        assert!(buf.syntax.tree().is_none());
+        let rope = buf.rope.clone();
+        assert!(buf.syntax.spans(&rope, 0..1).is_empty());
+        assert!(rope.to_string().starts_with("hiproject"));
+    }
 }

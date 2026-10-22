@@ -222,6 +222,11 @@ enum AppEvent {
         buffer: BufferId,
         parsed: crate::syntax::Parsed,
     },
+    /// A syntax plugin's grammar was loaded (or why not) by `load_grammars`.
+    Grammar {
+        language: crate::syntax::Language,
+        result: Result<(), String>,
+    },
     /// From a language server's task.
     Lsp(crate::lsp::Event),
     /// Files read for the Locations list's previews (`generation`: the list they're for).
@@ -440,6 +445,9 @@ pub struct App {
     stage_all_after_save: Option<HashSet<BufferId>>,
     /// Task templates from `tasks.toml` and the task runs (`app/tasks.rs`).
     pub tasks: crate::tasks::Tasks,
+    /// The syntax plugins whose grammars `start` loads (`app/syntax.rs`): `main` sets every
+    /// registered one; tests name their own (the registry is global). Empty by default.
+    pub syntax_plugins: Vec<crate::syntax::plugin::PluginId>,
     /// Back / forward navigation's history (`app/navigation.rs`).
     pub nav: navigation::NavState,
     /// The last command `execute` ran, for tests.
@@ -568,6 +576,7 @@ impl App {
             git_history: Default::default(),
             stage_all_after_save: None,
             tasks: Default::default(),
+            syntax_plugins: Vec::new(),
             nav: Default::default(),
             #[cfg(test)]
             last_command: None,
@@ -603,6 +612,7 @@ impl App {
     /// language servers.
     fn start(&mut self) {
         self.start_tool_logs();
+        self.load_grammars();
         if self.mode.is_single() {
             self.start_single();
             return;
@@ -1339,6 +1349,7 @@ impl App {
             AppEvent::SearchResults(batch) => self.search_results(batch),
             AppEvent::Replaced(done) => self.files_replaced(*done),
             AppEvent::Parsed { buffer, parsed } => self.parsed(buffer, parsed),
+            AppEvent::Grammar { language, result } => self.grammar_loaded(language, result),
             AppEvent::Lsp(ev) => self.lsp_event(ev),
             AppEvent::LocationsRead { generation, files } => self.locations_read(generation, files),
             AppEvent::GitRefreshed { result, elapsed } => self.git_refreshed(result, elapsed),

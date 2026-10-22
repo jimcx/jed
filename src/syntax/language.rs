@@ -124,10 +124,11 @@ impl Language {
             .or_else(|| PluginId::find(id).map(Language::Plugin))
     }
 
-    /// The tree-sitter grammar, if the language has one (a plugin's is installed later: none yet).
+    /// The tree-sitter grammar, if the language has one (a plugin's is installed by `plugin::load`: none until then).
     pub fn grammar(self) -> Option<tree_sitter::Language> {
         Some(match self {
-            Language::PlainText | Language::Plugin(_) => return None,
+            Language::PlainText => return None,
+            Language::Plugin(p) => return p.get().grammar.get().cloned(),
             Language::C => tree_sitter_c::LANGUAGE.into(),
             Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
             Language::Python => tree_sitter_python::LANGUAGE.into(),

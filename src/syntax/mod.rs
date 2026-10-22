@@ -161,6 +161,14 @@ impl Syntax {
         };
     }
 
+    /// A plugin's grammar was installed (`plugin::load`): a buffer left `Off` for want of it is
+    /// now `Wanted`.
+    pub fn grammar_installed(&mut self) {
+        if matches!(self.state, State::Off) && self.language.grammar().is_some() {
+            self.state = State::Wanted;
+        }
+    }
+
     /// The parse tree, only while it matches the text exactly.
     pub fn tree(&self) -> Option<&Tree> {
         current(&self.state)

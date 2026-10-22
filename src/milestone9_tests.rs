@@ -2674,8 +2674,27 @@ async fn milestone_9_hover_on_mouse_rest() {
             .await
     );
     let first = *request_ids(&fake, "textDocument/hover").last().unwrap();
+    let pending_before = app.pending_requests();
+    let popup_before = app.hover.popup.is_some();
     app.mouse(E::Moved, vx, vy);
-    assert!(app.pending_requests().is_empty(), "cancelled when the pointer moved on");
+    // FLAKE: 2026-10-23, in a full parallel run this saw a pending request left after the move
+    // (passed alone). Dumps the state around the move for next time.
+    let pending = app.pending_requests();
+    if !pending.is_empty() {
+        eprintln!(
+            "FLAKE milestone_9_hover_on_mouse_rest: pending after the move {pending:?}; before it \
+             {pending_before:?} (popup {popup_before}); now popup {} rest {}; hover request ids {:?}, \
+             cancelled {:?}; moved from ({ix}, {iy}) to ({vx}, {vy})",
+            app.hover.popup.is_some(),
+            app.hover.rest.is_some(),
+            request_ids(&fake, "textDocument/hover"),
+            fake.cancelled(),
+        );
+    }
+    assert!(
+        pending.is_empty(),
+        "FLAKE: cancelled when the pointer moved on: {pending:?}"
+    );
     app.test_hover_tick(Instant::now() + crate::hover::DELAY);
     assert_eq!(app.pending_requests().len(), 1);
     app.pump();

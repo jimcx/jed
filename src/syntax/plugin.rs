@@ -4,11 +4,14 @@
 //! (`load_dir` + `register`); entries are leaked, so a `Language::Plugin(PluginId)` stays `Copy`
 //! and its id, name and `LanguageConfig` are `'static`. Grammars come later; here a plugin only
 //! has its names, file patterns, editing rules and the node kinds `Language::scope_of` consults.
+//! `load` (blocking) then takes the grammar from the plugin's prebuilt `parser.so` / `parser.dylib`
+//! and compiles its queries; both are installed once in the `Plugin` and never removed.
 
-use std::path::Path;
-use std::sync::RwLock;
+use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
 
 use super::config::{self, AutoPair, LanguageConfig};
+use super::highlight::HighlightQuery;
 use super::{Language, Scope};
 
 /// The manifest's file name inside a plugin's directory.
@@ -21,6 +24,8 @@ pub struct PluginId(u32);
 /// A parsed `language.toml`: owned, with the defaults filled in.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Manifest {
+    /// The plugin's directory (empty for a manifest not read from disk: it can't be loaded).
+    pub dir: PathBuf,
     pub id: String,
     pub name: String,
     pub symbol: String,
@@ -38,11 +43,11 @@ pub struct Manifest {
     pub code_kinds: Vec<String>,
 }
 
-/// A registered plugin (leaked). The file patterns and `symbol` are read by detection and loading
-/// (later subtasks).
+/// A registered plugin (leaked). The file patterns are read by detection, `dir` and `symbol` by
+/// `load`, which fills `grammar` and `query` (never replaced).
 #[derive(Debug)]
-#[allow(dead_code)] // `symbol` is read by loading (a later subtask).
 pub struct Plugin {
+    pub dir: PathBuf,
     pub id: &'static str,
     pub name: &'static str,
     pub symbol: &'static str,
@@ -53,6 +58,10 @@ pub struct Plugin {
     pub comment_kinds: Vec<String>,
     pub string_kinds: Vec<String>,
     pub code_kinds: Vec<String>,
+    /// Installed by `load`; `Language::grammar()` reads it.
+    pub(super) grammar: OnceLock<tree_sitter::Language>,
+    /// Installed by `load` before the grammar; `highlight::query` reads it.
+    pub(super) query: OnceLock<HighlightQuery>,
 }
 
 static REGISTRY: RwLock<Vec<&'static Plugin>> = RwLock::new(Vec::new());
@@ -85,6 +94,7 @@ pub fn register(m: Manifest) -> Result<PluginId, String> {
         ..config::config(None, &[], &[], &[])
     };
     let plugin: &'static Plugin = Box::leak(Box::new(Plugin {
+        dir: m.dir,
         id: leak_str(&m.id),
         name: leak_str(&m.name),
         symbol: leak_str(&m.symbol),
@@ -95,12 +105,126 @@ pub fn register(m: Manifest) -> Result<PluginId, String> {
         comment_kinds: m.comment_kinds,
         string_kinds: m.string_kinds,
         code_kinds: m.code_kinds,
+        grammar: OnceLock::new(),
+        query: OnceLock::new(),
     }));
     registry.push(plugin);
     Ok(PluginId(registry.len() as u32 - 1))
 }
 
+/// The prebuilt library's file name in a plugin's directory.
+pub const LIBRARY: &str = if cfg!(target_os = "macos") {
+    "parser.dylib"
+} else {
+    "parser.so"
+};
+
+/// The highest grammar ABI version tree-sitter accepts is `tree_sitter::LANGUAGE_VERSION`, the
+/// lowest `MIN_COMPATIBLE_LANGUAGE_VERSION`.
+fn check_abi(abi: usize) -> Result<(), String> {
+    let (min, max) = (
+        tree_sitter::MIN_COMPATIBLE_LANGUAGE_VERSION,
+        tree_sitter::LANGUAGE_VERSION,
+    );
+    if (min..=max).contains(&abi) {
+        Ok(())
+    } else {
+        Err(format!(
+            "grammar ABI version {abi} is not supported (jed accepts {min} to {max}); regenerate it with a newer tree-sitter"
+        ))
+    }
+}
+
+impl Plugin {
+    /// The prebuilt library, if the plugin has one (its directory is known and holds `LIBRARY`).
+    pub fn prebuilt(&self) -> Option<PathBuf> {
+        let path = self.dir.join(LIBRARY);
+        (!self.dir.as_os_str().is_empty() && path.is_file()).then_some(path)
+    }
+
+    /// Has a prebuilt library: what the app loads at start.
+    pub fn loadable(&self) -> bool {
+        self.prebuilt().is_some()
+    }
+
+    /// The query source: `queries/highlights.scm` (none = no colours) then `queries/jed.scm`, so
+    /// jed's additions win for the same node; with each file's path and first row in it.
+    fn query_source(&self) -> Result<(String, Vec<(PathBuf, usize)>), String> {
+        let mut source = String::new();
+        let mut files = Vec::new();
+        for name in ["highlights.scm", "jed.scm"] {
+            let path = self.dir.join("queries").join(name);
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    files.push((path, source.matches('\n').count()));
+                    source.push_str(&text);
+                    source.push('\n');
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("{}: {e}", path.display())),
+            }
+        }
+        Ok((source, files))
+    }
+}
+
 impl PluginId {
+    /// Loads the plugin's grammar from its prebuilt library and compiles its queries, installing
+    /// both; a no-op when already installed. The library is never unloaded (trees, queries and
+    /// parsers point into it). Every failure (no library, missing symbol, ABI outside tree-sitter's
+    /// range, a query that doesn't compile: with its file, row and column) is an error string and
+    /// leaves the language without a grammar; only a success is kept, so a failed plugin is tried
+    /// again by the next call (after a rebuild), and its library is closed again.
+    /// Blocking: call from `spawn_blocking`.
+    pub fn load(self) -> Result<(), String> {
+        let plugin = self.get();
+        if plugin.grammar.get().is_some() {
+            return Ok(());
+        }
+        let path = plugin
+            .prebuilt()
+            .ok_or_else(|| format!("{}: no {LIBRARY}", plugin.dir.display()))?;
+        let label = path.display();
+        // SAFETY: loading a library runs its initialisers; a plugin is native code the user put in
+        // their own config directory (documented: a bad grammar can crash jed).
+        let lib = unsafe { libloading::Library::new(&path) }.map_err(|e| format!("{label}: {e}"))?;
+        // SAFETY: a tree-sitter grammar exports `const TSLanguage *<symbol>(void)`.
+        let func: unsafe extern "C" fn() -> *const () = unsafe {
+            *lib.get::<unsafe extern "C" fn() -> *const ()>(plugin.symbol.as_bytes())
+                .map_err(|e| format!("{label}: no symbol `{}` ({e})", plugin.symbol))?
+        };
+        // Declared after `lib`, so a failure below drops it (nothing else uses it yet) before
+        // closing the library.
+        // SAFETY: `func` returns a pointer to a static `TSLanguage` (the grammar's contract).
+        let grammar = tree_sitter::Language::from(unsafe { tree_sitter_language::LanguageFn::from_raw(func) });
+        check_abi(grammar.abi_version()).map_err(|e| format!("{label}: {e}"))?;
+        let (source, files) = plugin.query_source()?;
+        let query = HighlightQuery::compile(plugin.id, &grammar, &source).map_err(|e| {
+            // The file holding the error's row, and the row within it.
+            let (file, first) = files
+                .iter()
+                .rev()
+                .find(|(_, first)| *first <= e.row)
+                .map_or((plugin.dir.join("queries"), 0), |(p, first)| (p.clone(), *first));
+            format!(
+                "{}: highlight query, line {} column {}: {}",
+                file.display(),
+                e.row - first + 1,
+                e.column + 1,
+                e.message
+            )
+        })?;
+        // The query first: a visible grammar always has its query. Two loads at once (two apps in
+        // tests) open the same library, so whichever query and grammar win the `set`s match.
+        let _ = plugin.query.set(query);
+        let _ = plugin.grammar.set(grammar);
+        // The grammar's tables live in the library: never unloaded from here on (trees, queries
+        // and parsers point into it).
+        std::mem::forget(lib);
+        tracing::info!(plugin = plugin.id, "grammar loaded");
+        Ok(())
+    }
+
     pub fn get(self) -> &'static Plugin {
         REGISTRY.read().unwrap_or_else(|e| e.into_inner())[self.0 as usize]
     }
@@ -182,7 +306,10 @@ pub fn load_dir(dir: &Path) -> (Vec<Manifest>, Vec<String>) {
             ));
             continue;
         }
-        manifests.push(manifest);
+        manifests.push(Manifest {
+            dir: dir.join(&name),
+            ..manifest
+        });
     }
     (manifests, errors)
 }
@@ -212,6 +339,7 @@ pub fn parse(text: &str, file: &str) -> (Option<Manifest>, Vec<String>) {
     let mut name = None;
     let mut symbol = None;
     let mut m = Manifest {
+        dir: PathBuf::new(),
         id: String::new(),
         name: String::new(),
         symbol: String::new(),
@@ -438,9 +566,119 @@ impl Parser<'_> {
     }
 }
 
+/// Test support: a real grammar (the vendored CMake one in `examples/languages/cmake/`) built with
+/// the system C compiler into a prebuilt library, once per test process, and plugin directories
+/// made from it.
+#[cfg(test)]
+pub(crate) mod test_lib {
+    use super::*;
+    use std::process::Command;
+
+    /// The CMake grammar's sources.
+    fn source_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/languages/cmake/src")
+    }
+
+    fn compile(src: &Path, out: &Path) -> bool {
+        let cc = std::env::var("CC")
+            .ok()
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| "cc".into());
+        let shared = if cfg!(target_os = "macos") {
+            "-dynamiclib"
+        } else {
+            "-shared"
+        };
+        let run = Command::new(&cc)
+            .args([shared, "-fPIC", "-O1", "-I"])
+            .arg(src)
+            .arg(src.join("parser.c"))
+            .arg(src.join("scanner.c"))
+            .arg("-o")
+            .arg(out)
+            .output();
+        match run {
+            Ok(o) if o.status.success() => true,
+            Ok(o) => panic!("{cc} failed: {}", String::from_utf8_lossy(&o.stderr)),
+            Err(e) => {
+                eprintln!("note: no C compiler ({cc}: {e}); the grammar-loading test is skipped");
+                false
+            }
+        }
+    }
+
+    /// The built CMake grammar (`None`, with a note, without a C compiler). With `abi12` the same
+    /// sources claim ABI version 12.
+    pub(crate) fn library(abi12: bool) -> Option<&'static Path> {
+        static GOOD: OnceLock<Option<PathBuf>> = OnceLock::new();
+        static OLD: OnceLock<Option<PathBuf>> = OnceLock::new();
+        let slot = if abi12 { &OLD } else { &GOOD };
+        slot.get_or_init(|| {
+            let dir = tempfile::tempdir().unwrap().keep();
+            let mut src = source_dir();
+            if abi12 {
+                let copy = dir.join("src");
+                std::fs::create_dir_all(copy.join("tree_sitter")).unwrap();
+                for f in [
+                    "parser.c",
+                    "scanner.c",
+                    "tree_sitter/alloc.h",
+                    "tree_sitter/array.h",
+                    "tree_sitter/parser.h",
+                ] {
+                    std::fs::copy(src.join(f), copy.join(f)).unwrap();
+                }
+                let parser = std::fs::read_to_string(copy.join("parser.c")).unwrap();
+                assert!(parser.contains("#define LANGUAGE_VERSION 14"));
+                std::fs::write(
+                    copy.join("parser.c"),
+                    parser.replace("#define LANGUAGE_VERSION 14", "#define LANGUAGE_VERSION 12"),
+                )
+                .unwrap();
+                src = copy;
+            }
+            let out = dir.join(LIBRARY);
+            compile(&src, &out).then_some(out)
+        })
+        .as_deref()
+    }
+
+    /// Writes `<parent>/<id>/` with `language.toml` (extension `ext`, the CMake grammar's symbol
+    /// unless `symbol` is given), a copy of `lib` as the prebuilt library and `highlights` as
+    /// `queries/highlights.scm`; returns the directory.
+    pub(crate) fn plugin_dir(
+        parent: &Path,
+        id: &str,
+        ext: &str,
+        symbol: &str,
+        lib: &Path,
+        highlights: &str,
+    ) -> PathBuf {
+        let dir = parent.join(id);
+        std::fs::create_dir_all(dir.join("queries")).unwrap();
+        std::fs::write(
+            dir.join(MANIFEST),
+            format!("id = \"{id}\"\nname = \"{id}\"\nsymbol = \"{symbol}\"\n[files]\nextensions = [\"{ext}\"]\n"),
+        )
+        .unwrap();
+        std::fs::copy(lib, dir.join(LIBRARY)).unwrap();
+        std::fs::write(dir.join("queries/highlights.scm"), highlights).unwrap();
+        dir
+    }
+
+    /// Registers the plugin in `<parent>/<id>`.
+    pub(crate) fn register_dir(parent: &Path, id: &str) -> PluginId {
+        let (manifests, errors) = load_dir(parent);
+        assert!(errors.is_empty(), "{errors:?}");
+        let m = manifests.into_iter().find(|m| m.id == id).unwrap();
+        register(m).unwrap()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::syntax::highlight;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// A registry id no other test uses.
@@ -801,5 +1039,167 @@ shebang = []
         assert!(errs.is_empty(), "{errs:?}");
         let root = Path::new("/w");
         assert_eq!(super::super::detect(&root.join("a.zz"), root, "", &assoc), l);
+    }
+
+    const CMAKE_QUERY: &str = include_str!("queries/cmake.scm");
+
+    /// Registers a CMake-grammar plugin made in a fresh temp dir; `None` without a C compiler.
+    fn cmake_plugin(abi12: bool, symbol: &str, highlights: &str) -> Option<(tempfile::TempDir, PluginId)> {
+        let lib = test_lib::library(abi12)?;
+        let id = unique("loadt");
+        let tmp = tempfile::tempdir().unwrap();
+        test_lib::plugin_dir(tmp.path(), &id, &format!("{id}x"), symbol, lib, highlights);
+        let pid = test_lib::register_dir(tmp.path(), &id);
+        Some((tmp, pid))
+    }
+
+    #[test]
+    fn syntax_plugins_load_installs_grammar_and_query() {
+        let Some((_tmp, pid)) = cmake_plugin(false, "tree_sitter_cmake", CMAKE_QUERY) else {
+            return;
+        };
+        let l = Language::Plugin(pid);
+        let text = "project(x)\nset(A b)\n";
+        assert!(l.grammar().is_none());
+        assert!(highlight::query(l).is_none());
+        assert!(crate::syntax::highlight_text(l, text).is_empty());
+        pid.load().unwrap();
+        assert!(highlight::query(l).is_some());
+        assert!(!crate::syntax::highlight_text(l, text).is_empty());
+        pid.load().unwrap(); // idempotent
+        let grammar = l.grammar().unwrap();
+        assert!((13..=15).contains(&grammar.abi_version()));
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&grammar).unwrap();
+        let tree = parser.parse("project(x)\nset(A b)\n", None).unwrap();
+        assert!(!tree.root_node().has_error());
+        let rope = ropey::Rope::from_str("project(x)\nset(A b)\n");
+        let spans = crate::syntax::highlight::compute(
+            l,
+            &tree,
+            &rope,
+            crate::syntax::ByteIdx(0),
+            crate::syntax::ByteIdx(rope.len()),
+        );
+        assert!(!spans.is_empty());
+    }
+
+    #[test]
+    fn syntax_plugins_load_missing_symbol_is_named() {
+        let Some((_tmp, pid)) = cmake_plugin(false, "tree_sitter_nothere", CMAKE_QUERY) else {
+            return;
+        };
+        let e = pid.load().unwrap_err();
+        assert!(e.contains("tree_sitter_nothere") && e.contains(LIBRARY), "{e}");
+        assert!(Language::Plugin(pid).grammar().is_none());
+    }
+
+    #[test]
+    fn syntax_plugins_load_rejects_abi_12() {
+        // A query that doesn't compile either: the ABI is checked first.
+        let Some((_tmp, pid)) = cmake_plugin(true, "tree_sitter_cmake", "(no_such_node) @y\n") else {
+            return;
+        };
+        let e = pid.load().unwrap_err();
+        assert!(e.contains("ABI version 12") && e.contains("13 to 15"), "{e}");
+        assert!(!e.contains("query"), "{e}");
+        assert!(highlight::query(Language::Plugin(pid)).is_none());
+        assert!(Language::Plugin(pid).grammar().is_none());
+    }
+
+    #[test]
+    fn syntax_plugins_load_reports_a_broken_query_with_its_position() {
+        let Some((_tmp, pid)) = cmake_plugin(false, "tree_sitter_cmake", "(source_file) @x\n(no_such_node) @y\n")
+        else {
+            return;
+        };
+        let e = pid.load().unwrap_err();
+        assert!(e.contains("highlights.scm: highlight query, line 2 column 2:"), "{e}");
+        let l = Language::Plugin(pid);
+        assert!(l.grammar().is_none() && highlight::query(l).is_none());
+
+        // In jed.scm: that file and its own line.
+        std::fs::write(pid.get().dir.join("queries/highlights.scm"), "(source_file) @x\n").unwrap();
+        std::fs::write(pid.get().dir.join("queries/jed.scm"), "\n\n  (nope) @y\n").unwrap();
+        let e = pid.load().unwrap_err();
+        assert!(e.contains("jed.scm: highlight query, line 3 column 4:"), "{e}");
+
+        // Fixed: the next load succeeds (a failure isn't remembered).
+        std::fs::write(pid.get().dir.join("queries/jed.scm"), "(identifier) @variable\n").unwrap();
+        pid.load().unwrap();
+        assert!(l.grammar().is_some() && highlight::query(l).is_some());
+    }
+
+    /// Two loads at once (two apps): both succeed and leave one grammar with its query.
+    #[test]
+    fn syntax_plugins_concurrent_loads_agree() {
+        let Some((_tmp, pid)) = cmake_plugin(false, "tree_sitter_cmake", CMAKE_QUERY) else {
+            return;
+        };
+        let l = Language::Plugin(pid);
+        let results: Vec<_> = std::thread::scope(|s| {
+            // Watches for the grammar: the query must already be there when it appears.
+            s.spawn(move || {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while l.grammar().is_none() && std::time::Instant::now() < deadline {
+                    std::hint::spin_loop();
+                }
+                assert!(highlight::query(l).is_some(), "a grammar without its query");
+            });
+            let threads: Vec<_> = (0..4)
+                .map(|_| {
+                    s.spawn(move || {
+                        let r = pid.load();
+                        // Whoever sees the grammar sees its query.
+                        assert!(l.grammar().is_none() || highlight::query(l).is_some());
+                        r
+                    })
+                })
+                .collect();
+            threads.into_iter().map(|t| t.join().unwrap()).collect()
+        });
+        assert!(results.iter().all(|r| r.is_ok()), "{results:?}");
+        assert!(!crate::syntax::highlight_text(l, "project(x)\n").is_empty());
+    }
+
+    #[test]
+    fn syntax_plugins_jed_scm_is_appended_after_highlights() {
+        let Some((tmp, pid)) = cmake_plugin(false, "tree_sitter_cmake", "(identifier) @variable\n") else {
+            return;
+        };
+        std::fs::write(pid.get().dir.join("queries/jed.scm"), "(identifier) @keyword\n").unwrap();
+        let _ = &tmp;
+        pid.load().unwrap();
+        let l = Language::Plugin(pid);
+        let text = "foo(a)\n";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&l.grammar().unwrap()).unwrap();
+        let tree = parser.parse(text, None).unwrap();
+        let rope = ropey::Rope::from_str(text);
+        let spans = highlight::compute(
+            l,
+            &tree,
+            &rope,
+            crate::syntax::ByteIdx(0),
+            crate::syntax::ByteIdx(rope.len()),
+        );
+        assert!(!spans.is_empty());
+        let keyword = highlight::KEYS.iter().position(|k| *k == "keyword").unwrap();
+        assert!(spans.iter().all(|s| s.highlight.index() == keyword), "{spans:?}");
+    }
+
+    #[test]
+    fn syntax_plugins_load_without_a_library_is_an_error() {
+        let id = unique("nolib");
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(&id)).unwrap();
+        std::fs::write(
+            tmp.path().join(&id).join(MANIFEST),
+            format!("id = \"{id}\"\nname = \"N\"\n"),
+        )
+        .unwrap();
+        let pid = test_lib::register_dir(tmp.path(), &id);
+        assert!(pid.get().prebuilt().is_none());
+        assert!(pid.load().unwrap_err().contains(LIBRARY));
     }
 }

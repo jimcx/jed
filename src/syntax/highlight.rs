@@ -130,26 +130,49 @@ pub struct Span {
     pub highlight: Highlight,
 }
 
-struct HighlightQuery {
+#[derive(Debug)]
+pub(super) struct HighlightQuery {
     query: Query,
     /// Per capture index.
     highlights: Vec<Option<Highlight>>,
 }
 
-/// The language's compiled highlight query (compiled once, on first use, shared by all buffers).
-fn query(language: Language) -> Option<&'static HighlightQuery> {
+impl HighlightQuery {
+    /// Compiles `source` for `grammar` and maps its captures to theme keys; captures that colour
+    /// nothing are logged once, at debug (`language` labels the log). The error carries its row
+    /// and column (tree-sitter's `QueryError`).
+    /// Blocking: a few ms for a big query; call off the UI thread.
+    pub(super) fn compile(
+        language: &str,
+        grammar: &tree_sitter::Language,
+        source: &str,
+    ) -> Result<Self, tree_sitter::QueryError> {
+        let query = Query::new(grammar, source)?;
+        let highlights: Vec<Option<Highlight>> = query.capture_names().iter().map(|n| highlight_for(n)).collect();
+        for (name, h) in query.capture_names().iter().zip(&highlights) {
+            if h.is_none() && !name.starts_with('_') {
+                tracing::debug!(language, capture = *name, "capture colours nothing");
+            }
+        }
+        Ok(Self { query, highlights })
+    }
+}
+
+/// The language's compiled highlight query (a built-in's is compiled once, on first use, shared by
+/// all buffers; a plugin's is compiled by `plugin::load`, off the UI thread, so none until then).
+pub(super) fn query(language: Language) -> Option<&'static HighlightQuery> {
     static QUERIES: [OnceLock<Option<HighlightQuery>>; Language::BUILT_IN.len()] =
         [const { OnceLock::new() }; Language::BUILT_IN.len()];
+    if let Language::Plugin(p) = language {
+        return p.get().query.get();
+    }
     let i = Language::BUILT_IN.iter().position(|l| *l == language)?;
     QUERIES[i]
         .get_or_init(|| {
             let grammar = language.grammar()?;
             let source = language.highlight_queries().join("\n");
-            match Query::new(&grammar, &source) {
-                Ok(query) => {
-                    let highlights = query.capture_names().iter().map(|n| highlight_for(n)).collect();
-                    Some(HighlightQuery { query, highlights })
-                }
+            match HighlightQuery::compile(language.id(), &grammar, &source) {
+                Ok(q) => Some(q),
                 Err(e) => {
                     tracing::error!(language = language.id(), %e, "bad highlight query");
                     None

@@ -314,6 +314,7 @@ fn main() -> ExitCode {
                 }
                 app.tasks.user = user_tasks.tasks;
                 app.lsp.builtins.user = user_servers;
+                app.syntax_plugins = syntax::plugin::PluginId::all();
                 let mut errors = user_settings.errors;
                 errors.extend(server_errors);
                 errors.extend(user_tasks.errors);
