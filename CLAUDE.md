@@ -88,7 +88,7 @@ One line each; [docs/dev/modules.md](docs/dev/modules.md) has every module's typ
 - `recent.rs` — recent workspaces' model and file
 - `tasks/` — task templates, PTY runs (`Run`), key encoding, `Tasks`
 - `watcher.rs` — `notify` watcher → app channel
-- `terminal.rs` — raw mode, alt screen, mouse, kitty flags, pointer and cursor shapes (DECSCUSR), tmux passthrough
+- `terminal.rs` — raw mode, alt screen, mouse, kitty flags, pointer and cursor shapes (DECSCUSR), tmux passthrough; the window's `Identity` (title, user vars, OSC 7)
 - `backup.rs` — crash backups' model and files
 - `panic.rs` — panic hook (backs up dirty buffers, restores the terminal)
 - `logs/` — tool logs: `Logs` rings, disk files, log tabs' model, the `tracing` layer

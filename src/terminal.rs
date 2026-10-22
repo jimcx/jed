@@ -1,7 +1,8 @@
-//! Entering and leaving the full-screen terminal mode, and the terminal's cursor and pointer
-//! shapes.
+//! Entering and leaving the full-screen terminal mode, the terminal's cursor and pointer
+//! shapes, and the window's identity (title, user vars, OSC 7).
 
 use std::io::{self, Stdout, Write, stdout};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::cursor::{SetCursorStyle, Show};
@@ -22,6 +23,96 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 static KITTY_PUSHED: AtomicBool = AtomicBool::new(false);
 /// A pointer shape other than the default was set (`restore` puts it back).
 static POINTER_SET: AtomicBool = AtomicBool::new(false);
+/// `start` sent an `Identity` (`restore` pops the title and clears the user vars).
+static IDENTITY_SET: AtomicBool = AtomicBool::new(false);
+
+/// What the terminal is told about jed's window: its title (`jed <workspace root>`, or `jed
+/// <file>` in single file mode, `~` for home), the user vars `jed` (always) and `jed_workspace`
+/// (the root, workspace mode only; kitty's `--when-focus-on var:jed` scopes mappings to jed,
+/// `kitten @ ls` finds the window by `jed_workspace`) and OSC 7's current directory (the root,
+/// workspace mode only: kitty starts new windows opened from jed's in it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    title: String,
+    workspace: Option<PathBuf>,
+    host: String,
+}
+
+impl Identity {
+    /// `single`: single file mode's file (the title shows it; no workspace var or OSC 7).
+    pub fn new(root: &Path, single: Option<&Path>, home: &Path) -> Self {
+        Self {
+            title: format!("jed {}", crate::recent::display(single.unwrap_or(root), home)),
+            workspace: single.is_none().then(|| root.to_path_buf()),
+            host: hostname(),
+        }
+    }
+
+    /// The sequences `start` sends: push the title stack (`CSI 22;0 t`) and set the title
+    /// (OSC 2, control characters dropped; not wrapped: tmux takes titles itself), the user vars
+    /// (OSC 1337 `SetUserVar`, base64 values, wrapped for tmux) and OSC 7.
+    fn start(&self) -> String {
+        let title: String = self.title.chars().filter(|c| !c.is_control()).collect();
+        let mut out = format!("\x1b[22;0t\x1b]2;{title}\x1b\\");
+        out.push_str(&passthrough(&set_user_var("jed", Some(b"1"))));
+        if let Some(root) = &self.workspace {
+            use std::os::unix::ffi::OsStrExt;
+            out.push_str(&passthrough(&set_user_var(
+                "jed_workspace",
+                Some(root.as_os_str().as_bytes()),
+            )));
+            out.push_str(&format!("\x1b]7;file://{}{}\x1b\\", self.host, percent_encode(root)));
+        }
+        out
+    }
+}
+
+/// What `finish` sends after an `Identity`: the user vars cleared and the title popped. OSC 7
+/// needs nothing: the shell sends its own at its next prompt.
+fn identity_finish() -> String {
+    let mut out = passthrough(&set_user_var("jed", None));
+    out.push_str(&passthrough(&set_user_var("jed_workspace", None)));
+    out.push_str("\x1b[23;0t");
+    out
+}
+
+/// OSC 1337 `SetUserVar` (iTerm2's; kitty and WezTerm read it too, others ignore it): `None`
+/// clears the var. The value's raw bytes are encoded (a non-UTF-8 root stays exact).
+fn set_user_var(name: &str, value: Option<&[u8]>) -> String {
+    match value {
+        Some(v) => format!("\x1b]1337;SetUserVar={name}={}\x07", crate::clipboard::base64(v)),
+        None => format!("\x1b]1337;SetUserVar={name}\x07"),
+    }
+}
+
+/// `path`'s bytes for a `file://` URL: unreserved characters and `/` as they are, the rest `%XX`.
+fn percent_encode(path: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    let mut out = String::new();
+    for &b in path.as_os_str().as_bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// This machine's host name for OSC 7 (empty if it can't be read: `file:///path`).
+fn hostname() -> String {
+    let mut buf = [0u8; 256];
+    // SAFETY: `buf` is valid for `buf.len()` bytes; the name is NUL-terminated within it, or
+    // truncated, which the scan below handles.
+    if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
+        return String::new();
+    }
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..len])
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || "-.".contains(*c))
+        .collect()
+}
 
 /// The mouse pointer's shape over jed's window (OSC 22, CSS names: kitty, foot, WezTerm,
 /// Ghostty; other terminals ignore it).
@@ -102,19 +193,24 @@ pub fn kitty_supported() -> bool {
 
 /// Raw mode, then `start`'s sequences on stdout. `cursor`: the settings' shape (`App::run`
 /// sends it again when a `.workspace` reload changes it).
-pub fn enter(kitty: bool, cursor: CursorShape) -> io::Result<Term> {
+pub fn enter(kitty: bool, cursor: CursorShape, identity: &Identity) -> io::Result<Term> {
     enable_raw_mode()?;
     ACTIVE.store(true, Ordering::SeqCst);
     let mut out = stdout();
-    start(&mut out, kitty, cursor)?;
+    IDENTITY_SET.store(true, Ordering::SeqCst);
+    start(&mut out, kitty, cursor, Some(identity))?;
     KITTY_PUSHED.store(kitty, Ordering::SeqCst);
     Terminal::new(CrosstermBackend::new(out))
 }
 
-/// What `enter` writes: the alternate screen, mouse capture, bracketed paste, the kitty keyboard
-/// flags (when `kitty`) and the cursor's shape.
-fn start(out: &mut impl Write, kitty: bool, cursor: CursorShape) -> io::Result<()> {
-    execute!(out, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
+/// What `enter` writes: the alternate screen, the window's `identity`, mouse capture, bracketed
+/// paste, the kitty keyboard flags (when `kitty`) and the cursor's shape.
+fn start(out: &mut impl Write, kitty: bool, cursor: CursorShape, identity: Option<&Identity>) -> io::Result<()> {
+    execute!(out, EnterAlternateScreen)?;
+    if let Some(identity) = identity {
+        out.write_all(identity.start().as_bytes())?;
+    }
+    execute!(out, EnableMouseCapture, EnableBracketedPaste)?;
     if kitty {
         execute!(
             out,
@@ -132,13 +228,15 @@ pub fn restore() {
         return;
     }
     let kitty = KITTY_PUSHED.swap(false, Ordering::SeqCst);
-    let _ = finish(&mut stdout(), kitty, POINTER_SET.load(Ordering::SeqCst));
+    let identity = IDENTITY_SET.swap(false, Ordering::SeqCst);
+    let _ = finish(&mut stdout(), kitty, POINTER_SET.load(Ordering::SeqCst), identity);
     let _ = disable_raw_mode();
 }
 
 /// What `restore` writes: undoes `start` (the kitty flags when `kitty` pushed them, the pointer
-/// when `pointer` was set), the cursor back to the user's shape (`CSI 0 q`) and shown.
-fn finish(out: &mut impl Write, kitty: bool, pointer: bool) -> io::Result<()> {
+/// when `pointer` was set, the title and user vars when `identity` was sent), the cursor back to
+/// the user's shape (`CSI 0 q`) and shown.
+fn finish(out: &mut impl Write, kitty: bool, pointer: bool, identity: bool) -> io::Result<()> {
     if kitty {
         execute!(out, PopKeyboardEnhancementFlags)?;
     }
@@ -152,7 +250,12 @@ fn finish(out: &mut impl Write, kitty: bool, pointer: bool) -> io::Result<()> {
         DisableMouseCapture,
         LeaveAlternateScreen,
         Show
-    )
+    )?;
+    if identity {
+        out.write_all(identity_finish().as_bytes())?;
+        out.flush()?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -186,7 +289,7 @@ mod tests {
             style: CursorStyle::Line,
             blinking: true,
         };
-        let entered = written(|o| start(o, false, line));
+        let entered = written(|o| start(o, false, line, None));
         assert!(
             entered.starts_with("\x1b[?1049h"),
             "the alternate screen first: {entered:?}"
@@ -196,17 +299,17 @@ mod tests {
             style: CursorStyle::Block,
             blinking: false,
         };
-        let entered = written(|o| start(o, true, block));
+        let entered = written(|o| start(o, true, block, None));
         assert!(
             entered.ends_with("\x1b[>5u\x1b[2 q"),
             "after the kitty flags: {entered:?}"
         );
 
-        let restored = written(|o| finish(o, false, false));
+        let restored = written(|o| finish(o, false, false, false));
         assert!(restored.starts_with("\x1b[0 q"), "the user's shape: {restored:?}");
         assert!(restored.contains("\x1b[?1049l"), "{restored:?}");
         assert_eq!(restored.matches(" q").count(), 1, "{restored:?}");
-        let restored = written(|o| finish(o, true, false));
+        let restored = written(|o| finish(o, true, false, false));
         assert!(restored.starts_with("\x1b[<1u\x1b[0 q"), "{restored:?}");
     }
 
@@ -223,5 +326,87 @@ mod tests {
             String::from_utf8(out).unwrap(),
             "\x1b]22;ew-resize\x1b\\\x1b]22;ns-resize\x1b\\\x1b]22;default\x1b\\"
         );
+    }
+
+    fn identity(root: &str, single: Option<&str>) -> Identity {
+        Identity {
+            host: "box.local".into(),
+            ..Identity::new(Path::new(root), single.map(Path::new), Path::new("/Users/me"))
+        }
+    }
+
+    fn cursor() -> CursorShape {
+        CursorShape {
+            style: CursorStyle::Line,
+            blinking: true,
+        }
+    }
+
+    #[test]
+    fn start_names_the_window_and_finish_clears_it() {
+        let id = identity("/Users/me/my 100%/é", None);
+        let entered = written(|o| start(o, false, cursor(), Some(&id)));
+        assert!(
+            entered.starts_with("\x1b[?1049h\x1b[22;0t"),
+            "the title pushed: {entered:?}"
+        );
+        assert!(entered.contains("\x1b]2;jed ~/my 100%/é\x1b\\"), "{entered:?}");
+        let jed = passthrough("\x1b]1337;SetUserVar=jed=MQ==\x07");
+        let root = passthrough("\x1b]1337;SetUserVar=jed_workspace=L1VzZXJzL21lL215IDEwMCUvw6k=\x07");
+        assert!(entered.contains(&format!("{jed}{root}")), "both user vars: {entered:?}");
+        assert!(
+            entered.contains("\x1b]7;file://box.local/Users/me/my%20100%25/%C3%A9\x1b\\"),
+            "OSC 7, percent-encoded: {entered:?}"
+        );
+        assert!(
+            entered.ends_with("\x1b[5 q"),
+            "the cursor shape still last: {entered:?}"
+        );
+
+        let restored = written(|o| finish(o, false, false, true));
+        let cleared = format!(
+            "{}{}\x1b[23;0t",
+            passthrough("\x1b]1337;SetUserVar=jed\x07"),
+            passthrough("\x1b]1337;SetUserVar=jed_workspace\x07")
+        );
+        assert!(restored.ends_with(&cleared), "vars cleared, title popped: {restored:?}");
+        let plain = written(|o| finish(o, false, false, false));
+        assert!(!plain.contains("1337") && !plain.contains("\x1b[23;0t"), "{plain:?}");
+    }
+
+    #[test]
+    fn a_non_utf8_root_is_sent_as_its_bytes() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let root = Path::new(OsStr::from_bytes(b"/tmp/a\xffb"));
+        let id = Identity {
+            host: String::new(),
+            ..Identity::new(root, None, Path::new("/Users/me"))
+        };
+        let entered = id.start();
+        // base64 of the bytes `/tmp/a\xffb`, not of a lossy U+FFFD.
+        assert!(
+            entered.contains(&passthrough("\x1b]1337;SetUserVar=jed_workspace=L3RtcC9h/2I=\x07")),
+            "{entered:?}"
+        );
+        assert!(entered.contains("\x1b]7;file:///tmp/a%FFb\x1b\\"), "{entered:?}");
+        assert!(entered.contains("\x1b]2;jed /tmp/a\u{fffd}b\x1b\\"), "{entered:?}");
+    }
+
+    #[test]
+    fn single_file_mode_titles_the_file_without_a_workspace() {
+        let id = identity("/Users/me/proj", Some("/Users/me/proj/notes.txt"));
+        let entered = written(|o| start(o, false, cursor(), Some(&id)));
+        assert!(entered.contains("\x1b]2;jed ~/proj/notes.txt\x1b\\"), "{entered:?}");
+        assert!(entered.contains(&passthrough("\x1b]1337;SetUserVar=jed=MQ==\x07")));
+        assert!(!entered.contains("jed_workspace"), "{entered:?}");
+        assert!(!entered.contains("\x1b]7;"), "{entered:?}");
+    }
+
+    #[test]
+    fn the_title_drops_control_characters() {
+        let id = identity("/tmp/a\x1b]2;evil\x07b\u{9b}c\x7f", None);
+        let title = id.start();
+        assert!(title.contains("\x1b]2;jed /tmp/a]2;evilbc\x1b\\"), "{title:?}");
     }
 }

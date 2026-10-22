@@ -250,6 +250,11 @@ fn main() -> ExitCode {
     // Load before taking over the terminal, so errors print normally. A binary file opens in a
     // hex tab.
     let mut initial_hex = None;
+    let single_file = file
+        .as_ref()
+        .filter(|_| mode.is_single())
+        .map(|(path, _)| path.as_path());
+    let identity = terminal::Identity::new(&workspace.root, single_file, &paths::home());
     let initial = match file {
         Some((path, goto)) => match Buffer::open_with(&path, workspace.settings().indentation()) {
             Ok(buffer) => Some(app::InitialFile { buffer, goto }),
@@ -291,7 +296,7 @@ fn main() -> ExitCode {
     let kitty = terminal::kitty_supported();
     tracing::info!(kitty, "keyboard protocol");
     let cursor = terminal::CursorShape::of(&workspace.settings());
-    let result = terminal::enter(kitty, cursor)
+    let result = terminal::enter(kitty, cursor, &identity)
         .map_err(anyhow::Error::from)
         .and_then(|mut term| {
             runtime.block_on(async {
