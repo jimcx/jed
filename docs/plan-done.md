@@ -1,6 +1,6 @@
 # PLAN.md: finished work
 
-Finished milestones and TODO items moved out of [PLAN.md](../PLAN.md) so agents reading the plan don't load them. Each keeps its full entry here: what was built, "Deferred", "Still to check by hand" and notes for later work. Grep here when a plan entry or the code refers back to one. Links point into PLAN.md.
+Finished milestones and tasks moved out of [PLAN.md](../PLAN.md) so agents reading the plan don't load them. Each keeps its full entry here: what was built, "Deferred", "Still to check by hand" and notes for later work. Grep here when a plan entry or the code refers back to one. Links point into PLAN.md.
 
 ## Milestones 1–13
 
@@ -333,7 +333,9 @@ Finished milestones and TODO items moved out of [PLAN.md](../PLAN.md) so agents 
     - Deferred: kitty integration (TODO list); diff tabs' own cursor / scroll, expanded explorer folders, the Search query, the shown panel tab, focus and the Source Control selection aren't in the session; no untitled buffers to back up; old-format panic backups ignored; Ctrl+R is global, so a task tab never gets it (no reverse-i-search)
     - Still to check by hand: quit / reopen in a real terminal (groups, ratios, tabs, cursors, scroll, panels, diff tabs reload); `jed <file>:<line>` on a workspace with a session; edit, wait > 30 s, edit, `kill -9`, reopen and Restore (then Cmd+Z, save removes the backup); closing the terminal window with dirty buffers; a forced panic's backups offered next start; restore after another program changed the file (banner, save conflicts until Keep Mine); Later then a clean quit offers again, Discard removes; Ctrl+R in two workspaces (each lists the other, deleted folders vanish, spaced paths quoted); files land in `~/.local/state/jed/sessions/`, `backup/`, `recent.toml`, and a corrupt session file is ignored and replaced
 
-## Named milestones
+## Tasks
+
+Finished [tasks](../PLAN.md#tasks), single ones and ones with subtasks (the latter were called named milestones, the former TODO items, until the two lists were merged).
 
 - ✅ **Tools view and logs** (`tools`): a side panel view of every tool jed runs, each with its log in a read-only editor tab — see [Tools and logs](../PLAN.md#tools-and-logs)
   - Needs: language servers (M9), tasks (M12), side panel lists and their scroll bars
@@ -455,9 +457,6 @@ Finished milestones and TODO items moved out of [PLAN.md](../PLAN.md) so agents 
   - Also: converting measures leading whitespace in columns at the tab width (to tabs: `cols / width` tabs + the remaining spaces), not VS Code's string replace, so `"  \t"` keeps its drawn width; after a convert the buffer indents with spaces of its indent size / tabs of its tab width; converting at a chosen tab display size uses the drawn width (VS Code's `tabSize`); the converts set the buffer's indentation even when nothing changed (as VS Code); a reload or Detect drops every choice; Detect with `detect_indentation = false` still applies the guess, on a Makefile it does nothing
   - Deferred: a cursor inside rewritten indentation goes to the line start rather than keeping its column; the converts don't skip lines inside multi-line strings or comments (nor does VS Code); diff tabs and the Problems list still use the settings' `tab_width`; a `.workspace` settings change doesn't re-guess open files
   - Still to check by hand: a 2-space and a tab-indented file with the defaults (Tab / Enter / Cmd+] / Cmd+[, the status bar); clicking `Spaces: N` on a real terminal, incl. a narrow one; Change Tab Display Size on a space-indented file that also has tabs; a clean open file rewritten with tabs outside jed is re-guessed; convert a mixed file both ways from the status item and check quick-diff markers and syntax colours follow; convert while a language server has the file open, then Format Document; convert in one split while the other is scrolled far down; undo / redo of a convert on a large file, the cursors coming back
-
-## TODO items
-
 - ✅ **CI** (planned as Gitea Actions on Linux; built as GitHub Actions on Linux and macOS)
   - Done: `.github/workflows/build.yml` on push, pull request and by hand: Ubuntu 26.04 and macOS 26, toolchain from `rust-toolchain.toml` (`rustup toolchain install`), `Swatinem/rust-cache`; `cargo fmt --check`, clippy with `-D warnings`, `cargo build --release`, `cargo test` (`scripts/timeout 900`); each platform's stripped binary uploaded as `jed-<os>-<arch>.tar.gz`; a `v*` tag publishes a GitHub Release with both tarballs
   - Both keymaps (Cmd on macOS, Ctrl on Linux) and both watchers (FSEvents, inotify) now run in CI
