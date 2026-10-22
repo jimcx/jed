@@ -96,7 +96,7 @@ impl App {
     /// The history snapshot job for a save of `path`, if it gets one.
     pub(super) fn history_job(&self, path: &Path) -> Option<Job> {
         let limits = self.workspace.config.history.clone();
-        if !limits.enabled {
+        if !limits.enabled || self.mode.is_single() {
             return None;
         }
         let root = self.workspace.root.clone();

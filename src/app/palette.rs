@@ -78,7 +78,10 @@ impl App {
         let mut hint = None;
         let rows = match mode {
             Mode::Commands => {
-                let commands: Vec<Command> = Command::all().into_iter().filter(Command::in_palette).collect();
+                let commands: Vec<Command> = Command::all()
+                    .into_iter()
+                    .filter(|c| c.in_palette() && self.mode.allows(*c))
+                    .collect();
                 let rows = palette::command_rows(&query, &commands, |c| self.keymap.binding_for(c).map(|k| k.label()));
                 if rows.is_empty() {
                     hint = Some("No matching commands".into());
@@ -165,6 +168,10 @@ impl App {
                 let (rows, text) = self.indent_size_rows(&query);
                 hint = Some(text);
                 rows
+            }
+            Mode::Files if !self.mode.allows(Command::QuickOpen) => {
+                hint = Some(super::mode::UNAVAILABLE.into());
+                Vec::new()
             }
             Mode::Files => {
                 let files = self.file_matcher();

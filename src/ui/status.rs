@@ -27,13 +27,17 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> StatusHit {
     let width = area.width as usize;
     let mut x = area.x;
 
-    if app.trust == Trust::Restricted {
+    // Single file mode runs nothing to trust: no badge.
+    if app.trust == Trust::Restricted && !app.mode.is_single() {
         let (nx, _) = out.set_stringn(x, area.y, " Restricted ", width, app.theme.get("statusBar.restricted"));
         x = nx;
     }
     // The git branch (or detached commit), `*` / `+` / `!` for unstaged / staged / conflicted
     // changes, as VS Code.
-    if let Some(git) = &app.git.status {
+    if app.mode.is_single() {
+        let room = width.saturating_sub((x - area.x) as usize);
+        x = out.set_stringn(x, area.y, " Single file ", room, style).0;
+    } else if let Some(git) = &app.git.status {
         let room = width.saturating_sub((x - area.x) as usize);
         x = out
             .set_stringn(x, area.y, format!(" ⎇ {} ", git.label()), room, style)

@@ -241,6 +241,7 @@ impl App {
 
     fn left_click(&mut self, hit: Hit, m: MouseEvent, count: u8) {
         match hit {
+            Hit::Icon(panel) if !self.mode.allows_view(panel) => {}
             Hit::Icon(panel) => {
                 if self.ui.side_visible && self.ui.side_panel == panel {
                     self.ui.side_visible = false;
@@ -327,7 +328,8 @@ impl App {
                 PanelTab::Locations => self.locations_click(m, count),
                 PanelTab::Task(_) => self.task_click(m),
             },
-            Hit::StatusProblems => self.problem_counts_clicked(),
+            Hit::StatusProblems if self.mode.allows(Command::ToggleProblems) => self.problem_counts_clicked(),
+            Hit::StatusProblems => {}
             Hit::StatusIndentation => self.indentation_clicked(),
             Hit::Status | Hit::Hover | Hit::Completion | Hit::CodeActions | Hit::QuickDiff | Hit::Nothing => {}
         }

@@ -6237,3 +6237,300 @@ mod cheat_sheet {
         assert_eq!(app.active_buffer().unwrap().rope.to_string(), "abc\n");
     }
 }
+
+/// Single file mode (`jed -s <file>`): the file's `.workspace` settings and colours, but no trust
+/// dialog, server, listing, session or recent entry; every side view and the bottom panel greyed
+/// out / refused with the notice; typing, Cmd+S and Cmd+W save and quit; a change on disk still
+/// reloads or shows the banner.
+mod single_file {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind as Mouse};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::{App, InitialFile, Mode};
+    use crate::buffer::Buffer;
+    use crate::command::Command;
+    use crate::lsp::fake::{FakeLauncher, FakeOptions};
+    use crate::workspace::Workspace;
+    use crate::workspace::trust::TrustStore;
+
+    const NOTICE: &str = "Not available in single file mode";
+    const WORKSPACE: &str = "[settings]\ntab_width = 3\n\n[tasks.build]\ncommand = \"echo build\"\n";
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    /// A repo-like root with a `.workspace` (settings, a task: trust undecided) and `a.cpp`; the
+    /// state dir beside it.
+    fn dirs(dir: &tempfile::TempDir) -> (PathBuf, PathBuf) {
+        let base = crate::workspace::normalize(dir.path());
+        let (root, state) = (base.join("proj"), base.join("state"));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        fs::write(root.join(".workspace"), WORKSPACE).unwrap();
+        fs::write(root.join("src/a.cpp"), "int main() { return 0; }\n").unwrap();
+        fs::write(root.join("src/b.cpp"), "int b;\n").unwrap();
+        (root, state)
+    }
+
+    /// `main`'s single file start: the root from the file, a missing file empty, a fake C++
+    /// server plugged in (which workspace mode would start), the state dir set (which workspace
+    /// mode would write the session and the recent entry into).
+    fn open_single(path: &Path, state: &Path) -> (App, std::sync::Arc<FakeLauncher>) {
+        open_in(Mode::SingleFile, path, state)
+    }
+
+    fn open_in(mode: Mode, path: &Path, state: &Path) -> (App, std::sync::Arc<FakeLauncher>) {
+        let ws = Workspace::load(crate::workspace::root_for_file(path));
+        let buffer = Buffer::open_with(path, ws.settings().indentation()).unwrap_or_else(|_| Buffer::new_file(path));
+        let initial = Some(InitialFile { buffer, goto: None });
+        let mut app = App::new_in(mode, ws, TrustStore::load(state.join("trust.toml")), initial, true);
+        app.state_dir = Some(state.to_path_buf());
+        let fake = FakeLauncher::new(FakeOptions::default());
+        app.lsp.set_launcher(fake.clone());
+        app.test_start();
+        app.test_plain_whitespace();
+        (app, fake)
+    }
+
+    fn draw(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    fn row(term: &Terminal<TestBackend>, y: u16) -> String {
+        let buf = term.backend().buffer();
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn single_file_mode_opens_just_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, state) = dirs(&dir);
+        let session = crate::session::file(&state, &root);
+        fs::create_dir_all(session.parent().unwrap()).unwrap();
+        fs::write(&session, "not touched").unwrap();
+        let (mut app, fake) = open_single(&root.join("src/a.cpp"), &state);
+
+        assert_eq!(app.workspace.root, root, "the root walks up to the .workspace");
+        assert!(app.prompt.is_none(), "no trust dialog");
+        assert_eq!(app.settings.tab_width, 3, "the .workspace's settings apply");
+        assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
+        app.pump();
+        assert!(fake.launches().is_empty(), "no language server: {:?}", fake.launches());
+        assert!(!app.ui.side_visible && !app.explorer.is_loaded(&root), "nothing listed");
+        assert!(app.git.status.is_none());
+
+        // Even a restricted workspace shows no badge: single file mode runs nothing to trust.
+        app.trust = crate::workspace::trust::Trust::Restricted;
+        let term = draw(&mut app, 80, 10);
+        let status = row(&term, 9);
+        assert!(status.starts_with(" Single file "), "{status:?}");
+        assert!(!status.contains("Restricted"), "{status:?}");
+
+        app.test_execute(Command::Quit);
+        assert!(app.quitting());
+        app.shutdown().await;
+        assert_eq!(
+            fs::read_to_string(&session).unwrap(),
+            "not touched",
+            "the session file untouched"
+        );
+        assert!(!crate::recent::file(&state).exists(), "no recent-workspace entry");
+    }
+
+    /// The same start in workspace mode does what single file mode leaves out: so the checks
+    /// above can fail.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn single_file_workspace_mode_does_what_single_mode_leaves_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, state) = dirs(&dir);
+        let session = crate::session::file(&state, &root);
+        fs::create_dir_all(session.parent().unwrap()).unwrap();
+        fs::write(&session, "not touched").unwrap();
+        let (mut app, fake) = open_in(Mode::Workspace, &root.join("src/a.cpp"), &state);
+        assert!(app.prompt.is_some(), "the trust dialog");
+        app.press(K::Esc, M::NONE);
+        assert!(app.ui.side_visible);
+        assert!(app.settle(|_| !fake.launches().is_empty()).await, "a language server");
+        assert!(app.settle(|a| a.explorer.is_loaded(&root)).await, "the root listed");
+        assert!(
+            app.settle(|_| crate::recent::file(&state).exists()).await,
+            "a recent entry"
+        );
+        app.message = None;
+        app.press(K::Char('b'), cmd());
+        assert!(!app.ui.side_visible && app.message.is_none(), "Cmd+B works");
+
+        // Closing the last tab leaves jed open.
+        app.press(K::Char('w'), cmd());
+        assert!(app.group().tabs.is_empty());
+        assert!(!app.quitting(), "workspace mode stays open with no tab");
+
+        app.test_execute(Command::Quit);
+        assert!(app.quitting());
+        app.shutdown().await;
+        assert_ne!(
+            fs::read_to_string(&session).unwrap(),
+            "not touched",
+            "the session written"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn single_file_mode_refuses_the_side_and_bottom_panels() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, state) = dirs(&dir);
+        let (mut app, _fake) = open_single(&root.join("src/a.cpp"), &state);
+        let keys = [
+            (K::Char('b'), cmd()),
+            (K::Char('e'), cmd() | M::SHIFT),
+            (K::Char('f'), cmd() | M::SHIFT),
+            (K::Char('g'), M::CONTROL | M::SHIFT),
+            (K::Char('j'), cmd()),
+            (K::Char('p'), cmd()),
+        ];
+        for (code, mods) in keys {
+            app.message = None;
+            app.press(code, mods);
+            assert!(!app.ui.side_visible && !app.ui.panel_visible, "{code:?} {mods:?}");
+            assert!(app.palette.is_none(), "{code:?} {mods:?}: no quick open");
+            assert_eq!(
+                app.message.as_ref().map(|m| m.text.as_str()),
+                Some(NOTICE),
+                "{code:?} {mods:?}"
+            );
+        }
+
+        // The icons do nothing when clicked.
+        draw(&mut app, 80, 20);
+        let icons = app.hits.icons.clone();
+        assert_eq!(icons.len(), 4);
+        for (y, _) in icons {
+            app.mouse(Mouse::Down(MouseButton::Left), 0, y);
+            app.mouse(Mouse::Up(MouseButton::Left), 0, y);
+            assert!(!app.ui.side_visible, "icon at row {y}");
+        }
+
+        // The palette leaves them out, and its file mode finds nothing.
+        app.test_execute(Command::ShowCommands);
+        let titles: Vec<String> = app
+            .palette
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| r.label.clone())
+            .collect();
+        assert!(!titles.is_empty());
+        for gone in [
+            Command::ToggleSidebar,
+            Command::FindInFiles,
+            Command::TogglePanel,
+            Command::RunTask,
+        ] {
+            assert!(!titles.contains(&gone.title().to_string()), "{} listed", gone.title());
+        }
+        assert!(titles.contains(&Command::Save.title().to_string()));
+        app.press(K::Backspace, M::NONE);
+        assert!(app.palette.as_ref().unwrap().rows.is_empty());
+        assert_eq!(app.palette.as_ref().unwrap().hint.as_deref(), Some(NOTICE));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn single_file_mode_greys_out_the_activity_bar() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, state) = dirs(&dir);
+        let (mut app, _fake) = open_single(&root.join("src/a.cpp"), &state);
+        let term = draw(&mut app, 80, 20);
+        let disabled = app
+            .theme
+            .get("activityBar")
+            .patch(app.theme.get("activityBar.disabled"));
+        assert_ne!(disabled.fg, app.theme.get("activityBar").fg);
+        let buf = term.backend().buffer();
+        assert_eq!(app.hits.icons.len(), 4);
+        for (y, panel) in app.hits.icons.clone() {
+            let cell = &buf[(1, y)];
+            assert_ne!(cell.symbol(), " ", "{panel:?}'s icon drawn");
+            assert_eq!(cell.fg, disabled.fg.unwrap(), "{panel:?}'s icon greyed");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn single_file_mode_creates_a_new_file_and_quits_on_the_last_close() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, state) = dirs(&dir);
+        let path = root.join(".newrc");
+        let (mut app, _fake) = open_single(&path, &state);
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "");
+        app.type_text("x = 1");
+        app.press(K::Char('s'), cmd());
+        assert!(app.settle(|a| !a.active_buffer().unwrap().is_dirty()).await);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "x = 1");
+        app.press(K::Char('w'), cmd());
+        assert!(app.quitting(), "closing the last tab quits");
+    }
+
+    /// Closing a tab while another is left (a diff against disk) doesn't quit.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn single_file_mode_closing_a_diff_tab_keeps_the_file_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, state) = dirs(&dir);
+        let (mut app, _fake) = open_single(&root.join("src/a.cpp"), &state);
+        app.type_text("// ");
+        app.test_execute(Command::CompareWithSaved);
+        assert!(app.settle(|a| a.active_buffer().is_none()).await, "a diff tab active");
+        app.press(K::Char('w'), cmd());
+        assert!(!app.quitting() && app.prompt.is_none());
+        assert!(app.active_buffer().is_some(), "back on the file");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn single_file_mode_asks_before_closing_unsaved_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, state) = dirs(&dir);
+        let path = root.join("src/a.cpp");
+        let (mut app, _fake) = open_single(&path, &state);
+        app.type_text("// ");
+        app.press(K::Char('w'), cmd());
+        assert!(app.prompt.is_some() && !app.quitting(), "the save prompt first");
+        app.press(K::Char('s'), M::NONE);
+        assert!(app.settle(|a| a.quitting()).await, "saved, then closed and quit");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "// int main() { return 0; }\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn single_file_mode_follows_changes_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, state) = dirs(&dir);
+        let path = root.join("src/a.cpp");
+        let (mut app, _fake) = open_single(&path, &state);
+        // A clean buffer reloads.
+        fs::write(&path, "int main() { return 1; }\n").unwrap();
+        assert!(
+            app.settle(|a| a.active_buffer().unwrap().rope == "int main() { return 1; }\n")
+                .await
+        );
+        // Another file in its folder isn't watched.
+        fs::write(root.join("src/b.cpp"), "int c;\n").unwrap();
+        // An edited one gets the banner.
+        app.type_text("x");
+        fs::write(&path, "int main() { return 2; }\n").unwrap();
+        assert!(app.settle(|a| a.active_buffer().unwrap().disk_conflict.is_some()).await);
+        assert!(
+            !app.fs_flushed.contains(&root.join("src/b.cpp")),
+            "{:?}",
+            app.fs_flushed
+        );
+    }
+}

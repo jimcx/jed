@@ -1,4 +1,5 @@
-//! Activity bar: one icon per side panel.
+//! Activity bar: one icon per side panel, greyed out (`activityBar.disabled`) when its view isn't
+//! available (`Mode::allows_view`: single file mode).
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -19,6 +20,7 @@ fn icon(panel: SidePanel) -> &'static str {
 pub fn render(f: &mut Frame, area: Rect, app: &App) -> Vec<(u16, SidePanel)> {
     let base = app.theme.get("activityBar");
     let active = base.patch(app.theme.get("activityBar.active"));
+    let disabled = base.patch(app.theme.get("activityBar.disabled"));
     let out = f.buffer_mut();
     out.set_style(area, base);
     let mut rows = Vec::new();
@@ -28,7 +30,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Vec<(u16, SidePanel)> {
             break;
         }
         let is_active = app.ui.side_visible && app.ui.side_panel == panel;
-        let style = if is_active { active } else { base };
+        // Greyed out when the view isn't available (single file mode); a click does nothing.
+        let style = if !app.mode.allows_view(panel) {
+            disabled
+        } else if is_active {
+            active
+        } else {
+            base
+        };
         if is_active {
             out.set_stringn(area.x, y, "▎", 1, style);
         }

@@ -75,7 +75,8 @@ impl App {
     }
 
     pub(super) fn request_listing(&mut self, dir: PathBuf) {
-        if !self.listing.insert(dir.clone()) {
+        // Single file mode lists nothing (no explorer).
+        if self.mode.is_single() || !self.listing.insert(dir.clone()) {
             return;
         }
         let excludes = self.excludes.clone();
@@ -216,7 +217,8 @@ impl App {
         self.disk_paths_changed(&paths);
         self.diffs_paths_changed(&paths);
         for p in paths {
-            reload |= p == config;
+            // Single file mode watches only its file: no live `.workspace` reload (deferred).
+            reload |= p == config && !self.mode.is_single();
             for d in [Some(p.as_path()), p.parent()].into_iter().flatten() {
                 if self.explorer.is_loaded(d) && !dirs.iter().any(|x| x == d) {
                     dirs.push(d.to_path_buf());

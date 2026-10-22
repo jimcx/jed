@@ -132,6 +132,15 @@ impl Buffer {
         Ok(buf)
     }
 
+    /// An empty buffer for `path`, a file not on disk yet (`jed -s` on a new file): the first
+    /// save creates it.
+    pub fn new_file(path: &Path) -> Self {
+        let loaded = file::decode(Vec::new()).expect("empty text decodes");
+        let mut buf = Self::from_loaded(loaded, path.to_path_buf());
+        buf.disk = None;
+        buf
+    }
+
     /// `open_with` the default settings' indentation.
     #[cfg(test)]
     pub fn open(path: &Path) -> Result<Self, LoadError> {

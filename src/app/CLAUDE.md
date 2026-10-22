@@ -43,6 +43,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `recent.rs` — recent workspaces (`app.recent`): record at start, Ctrl+R's picker
 - `scrollbar.rs` — scroll bars: `with_scrollable(target, f)`, clicks, drags, hover
 - `mouse.rs` — clicks, drags and the wheel via the last frame's `HitMap`; `ClickTracker`, `Drag`
+- `mode.rs` — `Mode::{Workspace, SingleFile}` (`app.mode`, `jed -s`): `allows(cmd)` / `allows_view(panel)`, the one availability check (`execute`, palette, activity bar, icon clicks)
 
 Things to know before editing:
 

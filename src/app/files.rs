@@ -252,7 +252,7 @@ impl App {
             Some(h) => Some(h.path.clone()),
             None => self.active_buffer().filter(|b| b.has_file()).map(|b| b.path.clone()),
         };
-        let Some(path) = path else {
+        let Some(path) = path.filter(|_| !self.mode.is_single()) else {
             return;
         };
         for dir in self.explorer.reveal(&path) {
@@ -341,8 +341,13 @@ impl App {
         if now_empty {
             self.close_group(group);
         }
-        if self.groups.len() == 1 && self.group().tabs.is_empty() && self.ui.side_visible {
-            self.ui.focus = Focus::SidePanel;
+        if self.groups.len() == 1 && self.group().tabs.is_empty() {
+            if self.mode.is_single() {
+                // Single file mode: closing the last tab quits.
+                self.request_quit();
+            } else if self.ui.side_visible {
+                self.ui.focus = Focus::SidePanel;
+            }
         }
         self.reveal_active();
     }

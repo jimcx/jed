@@ -93,6 +93,11 @@ impl App {
     /// Offers the backups found once the session is restored (its tabs exist).
     pub(super) fn backups_found(&mut self, found: Vec<Backup>) {
         self.backups.scanning = false;
+        let mut found = found;
+        // Single file mode offers only its own file's backup; the workspace's others stay.
+        if self.mode.is_single() {
+            found.retain(|b| self.buffers.iter().any(|(_, buf)| buf.path == b.path));
+        }
         tracing::info!(count = found.len(), "backups found");
         self.backups.offered = found;
         if !self.session.loading() {

@@ -347,6 +347,9 @@ impl App {
     /// Writes the session off-thread (`shutdown` awaits it). Nothing without a state dir, or
     /// while the restore is still reading (the old session stays).
     pub(super) fn save_session(&self) -> Option<tokio::task::JoinHandle<()>> {
+        if self.mode.is_single() {
+            return None;
+        }
         let dir = self.state_dir.clone()?;
         if self.session.loading {
             tracing::info!("session not saved: its restore hadn't finished");

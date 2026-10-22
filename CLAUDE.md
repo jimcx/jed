@@ -31,8 +31,8 @@ All three must pass before a commit. Cap test runs with `scripts/timeout 300 car
 
 One line each; [docs/dev/modules.md](docs/dev/modules.md) has every module's types, functions and rules — read the entries for what you touch. "Model" modules hold no app state and draw nothing: `app/<area>.rs` drives them, `ui/<area>.rs` draws them.
 
-- `main.rs` — args (`jed [<folder> | <file>[:line[:col]]]`, `--log-level`); loads the first file, `.workspace`, `settings.toml`, `tasks.toml`, `keybindings.toml` before raw mode; builds the runtime, runs `App`
-- `app/` — `App`: all state, the event loop, `execute(Command)`, prompts, mouse, background results (see `src/app/CLAUDE.md` + [docs/dev/app.md](docs/dev/app.md))
+- `main.rs` — args (`jed [<folder> | <file>[:line[:col]]]`, `-s` / `--single <file>` = single file mode: `app::Mode`, `app/mode.rs`, `--log-level`); loads the first file, `.workspace`, `settings.toml`, `tasks.toml`, `keybindings.toml` before raw mode; builds the runtime, runs `App`
+- `app/` — `App`: all state (`app.mode`: `Mode::{Workspace, SingleFile}`; `mode.allows(cmd)` / `allows_view(panel)` is the one availability check), the event loop, `execute(Command)`, prompts, mouse, background results (see `src/app/CLAUDE.md` + [docs/dev/app.md](docs/dev/app.md))
 - `command.rs` — `Command` and sub-enums; `all()`, `name()` (`edit.copy`), `from_name`, `title()`
 - `config/keymap.rs` — `Keymap` (`(KeyCombo, Option<Context>) -> Command`), `Context`s and their parents, defaults per `Platform`, `keybindings.toml`
 - `config/settings.rs` — `SettingsOverrides` (`settings.toml` / `.workspace` `[settings]`), `layer`, lenient `load`, `TEMPLATE`

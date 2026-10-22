@@ -113,28 +113,45 @@ use config::keymap::{self, Keymap, Platform};
 use workspace::Workspace;
 use workspace::trust::TrustStore;
 
-const USAGE: &str = "usage: jed [--log-level <filter>] [<folder> | <file>[:<line>[:<col>]]]";
+const USAGE: &str = "usage: jed [--log-level <filter>] [<folder> | <file>[:<line>[:<col>]]]\n       \
+                     jed [--log-level <filter>] -s | --single <file>[:<line>[:<col>]]   (single file mode)";
 
+#[derive(Debug, PartialEq)]
 struct Args {
     target: Option<String>,
     log_level: Option<String>,
+    /// `-s` / `--single`: single file mode (`app::Mode::SingleFile`).
+    single: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
     let mut target = None;
     let mut log_level = None;
-    let mut args = std::env::args().skip(1);
+    let mut single = false;
+    let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Err(USAGE.into()),
             "-V" | "--version" => return Err(format!("jed {}", env!("JED_VERSION"))),
             "--log-level" => log_level = Some(args.next().ok_or("--log-level needs a value")?),
+            "-s" | "--single" => single = true,
             a if a.starts_with('-') => return Err(format!("unknown option {a}\n{USAGE}")),
             a if target.is_none() => target = Some(a.to_string()),
             _ => return Err(format!("only one file or folder can be opened\n{USAGE}")),
         }
     }
-    Ok(Args { target, log_level })
+    if single && target.is_none() {
+        return Err(format!("single file mode needs a file\n{USAGE}"));
+    }
+    Ok(Args {
+        target,
+        log_level,
+        single,
+    })
 }
 
 /// `file:12:5` → (`file`, Some((12, 5))), unless a file with the full name exists.
@@ -165,6 +182,34 @@ fn resolve_target(target: Option<&str>) -> Result<(PathBuf, Option<FileArg>), St
     Ok((workspace::root_for_file(&path), Some((path, goto))))
 }
 
+/// Single file mode's root and file: the file must not be a folder; a missing one (its folder
+/// existing) opens empty and is created on save.
+fn resolve_single(target: &str) -> Result<(PathBuf, FileArg), String> {
+    let (path, goto) = split_position(target);
+    let path = if path.exists() {
+        workspace::normalize(&path)
+    } else {
+        let dir = path
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let Some(name) = path.file_name() else {
+            return Err(format!("{}: not a file", path.display()));
+        };
+        if !dir.is_dir() {
+            return Err(format!("{}: no such folder", dir.display()));
+        }
+        workspace::normalize(dir).join(name)
+    };
+    if path.is_dir() {
+        return Err(format!(
+            "{}: single file mode opens a file, not a folder",
+            path.display()
+        ));
+    }
+    Ok((workspace::root_for_file(&path), (path, goto)))
+}
+
 fn main() -> ExitCode {
     let args = match parse_args() {
         Ok(a) => a,
@@ -181,14 +226,23 @@ fn main() -> ExitCode {
             None
         }
     };
-    let (root, file) = match resolve_target(args.target.as_deref()) {
+    let mode = if args.single {
+        app::Mode::SingleFile
+    } else {
+        app::Mode::Workspace
+    };
+    let resolved = match args.target.as_deref() {
+        Some(target) if args.single => resolve_single(target).map(|(root, file)| (root, Some(file))),
+        target => resolve_target(target),
+    };
+    let (root, file) = match resolved {
         Ok(r) => r,
         Err(e) => {
             eprintln!("jed: {e}");
             return ExitCode::FAILURE;
         }
     };
-    tracing::info!(version = env!("JED_VERSION"), root = %root.display(), "starting");
+    tracing::info!(version = env!("JED_VERSION"), root = %root.display(), single = args.single, "starting");
 
     let user_settings = config::settings::load(&paths::config_dir().join(config::settings::FILE_NAME));
     let user_tasks = tasks::templates::load(&paths::config_dir().join(tasks::templates::FILE_NAME));
@@ -199,6 +253,13 @@ fn main() -> ExitCode {
     let initial = match file {
         Some((path, goto)) => match Buffer::open_with(&path, workspace.settings().indentation()) {
             Ok(buffer) => Some(app::InitialFile { buffer, goto }),
+            // Single file mode: a new file, created on save.
+            Err(buffer::file::LoadError::Io(e)) if mode.is_single() && e.kind() == std::io::ErrorKind::NotFound => {
+                Some(app::InitialFile {
+                    buffer: Buffer::new_file(&path),
+                    goto,
+                })
+            }
             Err(buffer::file::LoadError::Binary(bytes)) => {
                 if let Err(e) = hex::check_size(bytes.len() as u64) {
                     eprintln!("jed: {}: {e}", path.display());
@@ -234,7 +295,7 @@ fn main() -> ExitCode {
         .map_err(anyhow::Error::from)
         .and_then(|mut term| {
             runtime.block_on(async {
-                let mut app = app::App::new(workspace, trust_store, initial, kitty);
+                let mut app = app::App::new_in(mode, workspace, trust_store, initial, kitty);
                 if let Some((path, doc)) = initial_hex {
                     app.open_initial_hex(path, doc);
                 }
@@ -272,5 +333,34 @@ mod tests {
         assert_eq!(split_position("a:b.rs:3"), ("a:b.rs".into(), Some((3, 1))));
         assert_eq!(split_position("a.rs:x"), ("a.rs:x".into(), None));
         assert_eq!(split_position(":3"), (":3".into(), None));
+    }
+
+    fn parse(args: &[&str]) -> Result<Args, String> {
+        parse_args_from(args.iter().map(|a| a.to_string()))
+    }
+
+    #[test]
+    fn single_file_flag() {
+        for flag in ["-s", "--single"] {
+            let args = parse(&[flag, "msg.txt:3"]).unwrap();
+            assert!(args.single);
+            assert_eq!(args.target.as_deref(), Some("msg.txt:3"));
+        }
+        assert!(!parse(&["a.rs"]).unwrap().single);
+        assert!(parse(&["-s"]).is_err());
+    }
+
+    #[test]
+    fn single_file_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = workspace::normalize(dir.path());
+        std::fs::write(root.join(workspace::FILE_NAME), "").unwrap();
+        std::fs::create_dir(root.join("sub")).unwrap();
+        // A new file: its root is still the nearest `.workspace`.
+        let new = root.join("sub/.new");
+        let (r, (path, goto)) = resolve_single(&format!("{}:2", new.display())).unwrap();
+        assert_eq!((r, path, goto), (root.clone(), new, Some((2, 1))));
+        assert!(resolve_single(root.join("sub").to_str().unwrap()).is_err());
+        assert!(resolve_single(root.join("nowhere/x").to_str().unwrap()).is_err());
     }
 }

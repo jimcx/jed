@@ -149,6 +149,7 @@ impl Theme {
             ),
             ("activityBar", fg_bg(0x858585, 0x333333)),
             ("activityBar.active", Style::new().fg(c(0xFFFFFF))),
+            ("activityBar.disabled", Style::new().fg(c(0x4E4E4E))),
             ("sideBar", fg_bg(0xCCCCCC, 0x252526)),
             ("sideBar.title", Style::new().fg(c(0xBBBBBB))),
             (

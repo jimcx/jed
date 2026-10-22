@@ -21,6 +21,7 @@ mod hover;
 mod indentation;
 mod locations;
 mod lsp;
+mod mode;
 mod mouse;
 mod navigation;
 mod palette;
@@ -38,6 +39,8 @@ mod syntax;
 mod tasks;
 mod tools;
 mod workspace_search;
+
+pub use mode::Mode;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -299,6 +302,8 @@ pub struct InitialFile {
 }
 
 pub struct App {
+    /// Workspace or single file mode (`main`'s `-s`); `mode.allows(cmd)` gates commands and views.
+    pub mode: Mode,
     pub workspace: Workspace,
     pub trust: Trust,
     trust_store: TrustStore,
@@ -445,12 +450,26 @@ pub struct App {
 }
 
 impl App {
-    /// Must not start background work: it may run before the runtime is entered. `start` does that.
+    /// `new_in` workspace mode (tests; `main` passes its mode).
+    #[cfg(test)]
     pub fn new(workspace: Workspace, trust_store: TrustStore, initial: Option<InitialFile>, kitty: bool) -> Self {
+        Self::new_in(Mode::Workspace, workspace, trust_store, initial, kitty)
+    }
+
+    /// Must not start background work: it may run before the runtime is entered. `start` does that.
+    /// Single file mode starts with the side panel hidden and asks no trust.
+    pub fn new_in(
+        mode: Mode,
+        workspace: Workspace,
+        trust_store: TrustStore,
+        initial: Option<InitialFile>,
+        kitty: bool,
+    ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let root = workspace.root.clone();
         let settings = workspace.settings();
         let mut app = Self {
+            mode,
             trust: trust_store.evaluate(&root, &workspace.config),
             trust_store,
             cursor_shape: crate::terminal::CursorShape::of(&settings),
@@ -461,7 +480,7 @@ impl App {
             buffers: Buffers::default(),
             groups: Groups::default(),
             ui: UiState {
-                side_visible: true,
+                side_visible: !mode.is_single(),
                 side_width: 30,
                 side_panel: SidePanel::Explorer,
                 focus: Focus::Editor,
@@ -560,7 +579,8 @@ impl App {
                 app.session.initial_goto = f.goto.is_some();
                 app.add_buffer(f.buffer, f.goto.map(|(l, c)| files::Goto::Cursor(l, c)), true)
             }
-            None => app.ui.focus = Focus::SidePanel,
+            None if !mode.is_single() => app.ui.focus = Focus::SidePanel,
+            None => {}
         }
         if !kitty {
             app.notify(
@@ -571,7 +591,8 @@ impl App {
         if let Some(e) = app.workspace.config_error.clone() {
             app.notify(Level::Error, e);
         }
-        if app.trust == Trust::Undecided {
+        // Single file mode runs no servers or tasks: nothing to trust.
+        if app.trust == Trust::Undecided && !mode.is_single() {
             app.ask_trust();
         }
         app
@@ -581,6 +602,10 @@ impl App {
     /// language servers.
     fn start(&mut self) {
         self.start_tool_logs();
+        if self.mode.is_single() {
+            self.start_single();
+            return;
+        }
         let tx = self.tx.clone();
         self.lsp.start(Arc::new(move |ev| {
             let _ = tx.send(AppEvent::Lsp(ev));
@@ -610,6 +635,23 @@ impl App {
         self.sync_diffs();
         self.sync_commit_tabs();
         self.sync_git_history();
+    }
+
+    /// `start` in single file mode: only the file is watched (for disk changes) and crash
+    /// backups scanned; no servers, tasks, git, session, recent entry or listing.
+    fn start_single(&mut self) {
+        if let Some(path) = self.active_path() {
+            let tx = self.tx.clone();
+            match watcher::start_file(&path, move |paths| {
+                let _ = tx.send(AppEvent::FsChanged(paths));
+            }) {
+                Ok(w) => self.watcher = Some(w),
+                Err(e) => self.notify(Level::Warning, format!("Not watching for file changes: {e}")),
+            }
+        }
+        self.scan_backups();
+        self.reveal_active();
+        self.sync_syntax();
     }
 
     pub async fn run(&mut self, terminal: &mut Term) -> anyhow::Result<()> {
@@ -989,6 +1031,10 @@ impl App {
         #[cfg(test)]
         {
             self.last_command = Some(cmd);
+        }
+        if !self.mode.allows(cmd) {
+            self.notify(Level::Info, mode::UNAVAILABLE.into());
+            return;
         }
         // Anything but the palette's own keys (and reopening it) closes it first, as losing focus does in VS Code.
         if self.palette.is_some()

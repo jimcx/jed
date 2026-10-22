@@ -37,6 +37,10 @@ impl App {
     /// can change it (not `.gitignore`d, not git's objects / logs / locks). Coalesced with a
     /// running refresh.
     pub(super) fn refresh_git(&mut self, changed: Option<Vec<PathBuf>>) {
+        // Single file mode reads no git status (no branch, gutter markers or blame).
+        if self.mode.is_single() {
+            return;
+        }
         if self.git.running {
             self.git.queued = Some(match (self.git.queued.take(), changed) {
                 (None, c) => c,
