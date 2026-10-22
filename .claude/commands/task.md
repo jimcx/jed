@@ -34,7 +34,7 @@ A task is either **single** (one implementer, one validator and its mutation run
 
 ## Each task or subtask
 
-5. **Implementer** (general-purpose agent on the session's model (Opus), run in sequence and wait for it). Its prompt says:
+5. **Implementer** (general-purpose agent with `model: "sonnet"`, run in sequence and wait for it). Its prompt says:
    - Read `CLAUDE.md` at the repo root first, plus the nested CLAUDE.md of any directory it edits. PLAN.md is the source of truth for design.
    - The plan text pasted into the prompt (you, the orchestrator, paste it): the task in full and every PLAN.md section it links. For a subtask: every subtask, which one is its own, and what's already done. It doesn't re-read PLAN.md.
    - Start from the brief at `<scratchpad>/brief.md` (give the path) rather than a fresh tour of the codebase.
@@ -55,7 +55,7 @@ A task is either **single** (one implementer, one validator and its mutation run
    - Run `scripts/check` once (all three checks) after its own changes. Random or property-style tests cap their iterations and output sizes, so a bug fails them quickly instead of eating CPU and RAM.
    - Update the docs if it changes helpers or conventions (CLAUDE.md's budget applies). Don't commit.
    - Report: verdict, test changes, bugs fixed, the mutation plan's path, check results.
-7. **Mutation runner** (general-purpose agent with `model: "sonnet"`: the mechanical half; started after the validator). Its prompt gives the plan's path and says:
+7. **Mutation runner** (general-purpose agent with `model: "haiku"`: the mechanical half; started after the validator). Its prompt gives the plan's path and says:
    - Don't edit tests or code except to apply and undo the planned mutations. Before the first, save `git diff | shasum` and copy each file it will mutate to the scratchpad.
    - For each mutation in order: apply it exactly (if the text isn't found, record "not applied" and go on), run its `scripts/check test <filter>`, record caught (a test failed) or survived (all passed; note a compile error as "caught by the compiler"), then restore the file from the copy. After the last, check `git diff | shasum` matches the saved one.
    - Then run `scripts/check` 3 times to catch flakiness (it already caps runs with `scripts/timeout`; never background loops or `alarm` + `exec` wrappers, which leave the test binary running). Check `pgrep -fl deps/jed-` is empty.
