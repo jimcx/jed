@@ -122,7 +122,10 @@ impl App {
 
     /// Keys the keymap doesn't bind in the widget edit the focused input.
     pub(super) fn find_key(&mut self, key: KeyEvent) {
-        if self.find.field_mut().key(key) == Outcome::Edited {
+        let mut field = std::mem::take(self.find.field_mut());
+        let outcome = self.field_key(&mut field, Some(self.context()), key);
+        *self.find.field_mut() = field;
+        if outcome == Outcome::Edited {
             self.find_edited();
         }
     }
@@ -468,7 +471,7 @@ impl App {
         }
         let on = flip(&mut self.find_options.hex);
         if let Some(text) = hex::convert(&self.find.query.text, mode(on)) {
-            let all = self.find.query.all_selected;
+            let all = self.find.query.selection() == Some(0..self.find.query.text.len());
             self.find.query = TextField::new(text);
             if all {
                 self.find.query.select_all();

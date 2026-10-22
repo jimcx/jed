@@ -1,24 +1,85 @@
-//! A one-line text field, used by the prompts, the palette and the find widget.
+//! A one-line text field, used by the prompts, the palette, the find widget and the Search
+//! view's inputs: a cursor and an optional selection, edited as the editor edits one line.
+//! Offsets are bytes into `text`, on grapheme boundaries (word and grapheme stops come from
+//! `buffer::pos`'s `*_in` helpers, the editor's rules). The keys are the editor's: `App::field_key`
+//! looks unbound keys up in the editor context and runs `FieldCommand::from_command`'s here.
+
+use std::ops::Range;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::buffer::pos;
+use crate::command::{Command, Motion};
 
 /// What a key did to a field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// Not a field key.
+    /// Not a field key (or it changed nothing).
     Ignored,
     Moved,
     Edited,
 }
 
+/// Where a field move goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldMotion {
+    Left,
+    Right,
+    WordLeft,
+    WordRight,
+    Start,
+    End,
+}
+
+/// What a field does (an editor command's meaning on one line: `from_command`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldCommand {
+    Move { motion: FieldMotion, select: bool },
+    DeleteLeft,
+    DeleteRight,
+    DeleteWordLeft,
+    DeleteWordRight,
+    DeleteToStart,
+    SelectAll,
+}
+
+impl FieldCommand {
+    /// The field meaning of an editor command: moves along the line (line / document start and
+    /// end are the field's ends; up / down / page moves have none), deletes and select all.
+    /// Copy / cut / paste need the clipboard: `App::field_key` handles them.
+    pub fn from_command(cmd: Command) -> Option<Self> {
+        Some(match cmd {
+            Command::Move { motion, select } => {
+                let motion = match motion {
+                    Motion::Left => FieldMotion::Left,
+                    Motion::Right => FieldMotion::Right,
+                    Motion::WordLeft => FieldMotion::WordLeft,
+                    Motion::WordRight => FieldMotion::WordRight,
+                    Motion::LineStart | Motion::DocStart => FieldMotion::Start,
+                    Motion::LineEnd | Motion::DocEnd => FieldMotion::End,
+                    Motion::Up | Motion::Down | Motion::PageUp | Motion::PageDown => return None,
+                };
+                FieldCommand::Move { motion, select }
+            }
+            Command::DeleteLeft => FieldCommand::DeleteLeft,
+            Command::DeleteRight => FieldCommand::DeleteRight,
+            Command::DeleteWordLeft => FieldCommand::DeleteWordLeft,
+            Command::DeleteWordRight => FieldCommand::DeleteWordRight,
+            Command::DeleteToLineStart => FieldCommand::DeleteToStart,
+            Command::SelectAll => FieldCommand::SelectAll,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TextField {
     pub text: String,
-    /// Byte offset, on a char boundary.
+    /// Byte offset, on a grapheme boundary.
     pub cursor: usize,
-    /// All the text is selected (the find widget on opening): typing or pasting replaces it,
-    /// Backspace / Delete clear it, any other key drops the selection.
-    pub all_selected: bool,
+    /// The selection's other end (`selection()`): typing, pasting and deletes replace the
+    /// selected text. `None` (or equal to `cursor`) is no selection.
+    pub anchor: Option<usize>,
 }
 
 impl TextField {
@@ -27,79 +88,119 @@ impl TextField {
         Self {
             cursor: text.len(),
             text,
-            all_selected: false,
+            anchor: None,
         }
     }
 
-    /// Selects all the text, with the cursor at its end.
+    /// Selects all the text, with the cursor at its end (the find widget on opening: typing
+    /// replaces the query).
     pub fn select_all(&mut self) {
         self.cursor = self.text.len();
-        self.all_selected = !self.text.is_empty();
+        self.anchor = (!self.text.is_empty()).then_some(0);
     }
 
+    /// The selected byte range, if any text is selected.
+    pub fn selection(&self) -> Option<Range<usize>> {
+        let a = self.anchor.filter(|&a| a != self.cursor)?;
+        Some(a.min(self.cursor)..a.max(self.cursor))
+    }
+
+    /// Inserts `s` at the cursor, replacing the selection.
     pub fn insert(&mut self, s: &str) {
-        self.clear_selected();
+        self.delete_selection();
         self.text.insert_str(self.cursor, s);
         self.cursor += s.len();
     }
 
+    /// Types a plain character (Shift allowed); every other key is `Ignored` (the editor
+    /// context's commands do the rest, through `run`).
     pub fn key(&mut self, key: KeyEvent) -> Outcome {
-        let prev = |s: &str, i: usize| s[..i].char_indices().last().map_or(0, |(j, _)| j);
-        let next = |s: &str, i: usize| s[i..].chars().next().map_or(i, |c| i + c.len_utf8());
-        if self.all_selected && matches!(key.code, KeyCode::Backspace | KeyCode::Delete) {
-            self.clear_selected();
-            return Outcome::Edited;
-        }
-        if self.all_selected && matches!(key.code, KeyCode::Left | KeyCode::Home) {
-            self.all_selected = false;
-            self.cursor = 0;
-            return Outcome::Moved;
-        }
-        if !matches!(key.code, KeyCode::Char(_)) {
-            self.all_selected = false;
-        }
         match key.code {
             KeyCode::Char(c) if (key.modifiers - KeyModifiers::SHIFT).is_empty() => {
-                self.insert(&c.to_string());
+                self.insert(c.encode_utf8(&mut [0; 4]));
                 Outcome::Edited
-            }
-            KeyCode::Backspace if self.cursor > 0 => {
-                let p = prev(&self.text, self.cursor);
-                self.text.replace_range(p..self.cursor, "");
-                self.cursor = p;
-                Outcome::Edited
-            }
-            KeyCode::Delete if self.cursor < self.text.len() => {
-                let n = next(&self.text, self.cursor);
-                self.text.replace_range(self.cursor..n, "");
-                Outcome::Edited
-            }
-            KeyCode::Left => {
-                self.cursor = prev(&self.text, self.cursor);
-                Outcome::Moved
-            }
-            KeyCode::Right => {
-                self.cursor = next(&self.text, self.cursor);
-                Outcome::Moved
-            }
-            KeyCode::Home => {
-                self.cursor = 0;
-                Outcome::Moved
-            }
-            KeyCode::End => {
-                self.cursor = self.text.len();
-                Outcome::Moved
             }
             _ => Outcome::Ignored,
         }
     }
 
-    /// Removes the selected text, if any.
-    fn clear_selected(&mut self) {
-        if std::mem::take(&mut self.all_selected) {
-            self.text.clear();
-            self.cursor = 0;
+    /// Runs a command with the editor's rules: a move without `select` collapses a selection
+    /// (Left to its start, Right to its end; the others move from the cursor), with `select`
+    /// extends it from the anchor; a delete with a selection deletes just that.
+    pub fn run(&mut self, cmd: FieldCommand) -> Outcome {
+        let (text, at) = (self.text.as_str(), self.cursor);
+        match cmd {
+            FieldCommand::Move { motion, select } => {
+                let sel = self.selection();
+                let to = match (motion, &sel) {
+                    (FieldMotion::Left, Some(r)) if !select => r.start,
+                    (FieldMotion::Right, Some(r)) if !select => r.end,
+                    (FieldMotion::Left, _) => pos::prev_grapheme_in(text, at),
+                    (FieldMotion::Right, _) => pos::next_grapheme_in(text, at),
+                    (FieldMotion::WordLeft, _) => pos::word_left_in(text, at),
+                    (FieldMotion::WordRight, _) => pos::word_right_in(text, at),
+                    (FieldMotion::Start, _) => 0,
+                    (FieldMotion::End, _) => text.len(),
+                };
+                self.anchor = if select { Some(self.anchor.unwrap_or(at)) } else { None };
+                self.cursor = to;
+                if self.anchor == Some(to) {
+                    self.anchor = None;
+                }
+                Outcome::Moved
+            }
+            FieldCommand::SelectAll => {
+                self.select_all();
+                Outcome::Moved
+            }
+            FieldCommand::DeleteLeft
+            | FieldCommand::DeleteRight
+            | FieldCommand::DeleteWordLeft
+            | FieldCommand::DeleteWordRight
+            | FieldCommand::DeleteToStart => {
+                if self.delete_selection() {
+                    return Outcome::Edited;
+                }
+                let text = self.text.as_str();
+                let to = match cmd {
+                    FieldCommand::DeleteLeft => pos::prev_grapheme_in(text, at),
+                    FieldCommand::DeleteRight => pos::next_grapheme_in(text, at),
+                    FieldCommand::DeleteWordLeft => pos::word_left_in(text, at),
+                    FieldCommand::DeleteWordRight => pos::word_right_in(text, at),
+                    _ => 0,
+                };
+                if to == at {
+                    return Outcome::Ignored;
+                }
+                self.text.replace_range(to.min(at)..to.max(at), "");
+                self.cursor = to.min(at);
+                Outcome::Edited
+            }
         }
+    }
+
+    /// The selected text (`None` without a selection: unlike the editor, never the whole line).
+    pub fn copy(&self) -> Option<String> {
+        self.selection().map(|r| self.text[r].to_string())
+    }
+
+    /// The selected text, removed.
+    pub fn cut(&mut self) -> Option<String> {
+        let copied = self.copy()?;
+        self.delete_selection();
+        Some(copied)
+    }
+
+    /// Removes the selected text, if any; the cursor lands at its start. False without one.
+    fn delete_selection(&mut self) -> bool {
+        let Some(r) = self.selection() else {
+            self.anchor = None;
+            return false;
+        };
+        self.text.replace_range(r.clone(), "");
+        self.cursor = r.start;
+        self.anchor = None;
+        true
     }
 }
 
@@ -111,48 +212,183 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    #[test]
-    fn editing() {
-        let mut f = TextField::new("ab".into());
-        assert_eq!(f.key(key(KeyCode::Left)), Outcome::Moved);
-        assert_eq!(f.key(key(KeyCode::Char('é'))), Outcome::Edited);
-        assert_eq!((f.text.as_str(), f.cursor), ("aéb", 3));
-        f.key(key(KeyCode::Backspace));
-        f.key(key(KeyCode::Delete));
-        assert_eq!((f.text.as_str(), f.cursor), ("a", 1));
-        f.key(key(KeyCode::Home));
-        f.key(key(KeyCode::Char('x')));
-        assert_eq!(f.text, "xa");
-        assert_eq!(f.key(key(KeyCode::Up)), Outcome::Ignored);
-        assert_eq!(
-            f.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
-            Outcome::Ignored
-        );
+    fn mv(motion: FieldMotion) -> FieldCommand {
+        FieldCommand::Move { motion, select: false }
+    }
+
+    fn sel(motion: FieldMotion) -> FieldCommand {
+        FieldCommand::Move { motion, select: true }
+    }
+
+    /// A field with `|` marking the cursor and `[` the anchor.
+    fn field(marked: &str) -> TextField {
+        let anchor = marked.find('[');
+        let plain: String = marked.replace('[', "");
+        let cursor = plain.find('|').unwrap();
+        let text = plain.replace('|', "");
+        let anchor = anchor.map(|a| if a > cursor { a - 1 } else { a });
+        TextField { text, cursor, anchor }
+    }
+
+    /// The field marked as `field` takes it (`[` only when something is selected).
+    fn show(f: &TextField) -> String {
+        let mut out = f.text.clone();
+        let a = f.selection().map(|_| f.anchor.unwrap());
+        let (c, a) = (f.cursor, a);
+        match a {
+            Some(a) if a > c => {
+                out.insert(a, '[');
+                out.insert(c, '|');
+            }
+            Some(a) => {
+                out.insert(c, '|');
+                out.insert(a, '[');
+            }
+            None => out.insert(c, '|'),
+        }
+        out
+    }
+
+    fn run(marked: &str, cmd: FieldCommand) -> (String, Outcome) {
+        let mut f = field(marked);
+        let out = f.run(cmd);
+        (show(&f), out)
     }
 
     #[test]
-    fn selected_text_is_replaced_or_cleared() {
-        let mut f = TextField::new("abc".into());
-        f.select_all();
-        assert_eq!(f.key(key(KeyCode::Char('x'))), Outcome::Edited);
-        assert_eq!((f.text.as_str(), f.cursor, f.all_selected), ("x", 1, false));
+    fn typing_and_other_keys() {
+        let mut f = TextField::new("ab".into());
+        f.cursor = 1;
+        assert_eq!(f.key(key(KeyCode::Char('é'))), Outcome::Edited);
+        assert_eq!(
+            f.key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT)),
+            Outcome::Edited
+        );
+        assert_eq!(show(&f), "aéX|b");
+        for k in [KeyCode::Left, KeyCode::Home, KeyCode::Backspace, KeyCode::Up] {
+            assert_eq!(f.key(key(k)), Outcome::Ignored, "{k:?}: the editor context's");
+        }
+        let ctrl = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(f.key(ctrl), Outcome::Ignored);
+        assert_eq!(show(&f), "aéX|b");
+    }
 
-        f.select_all();
-        assert_eq!(f.key(key(KeyCode::Backspace)), Outcome::Edited);
-        assert_eq!(f.text, "");
+    #[test]
+    fn moves_by_grapheme_and_to_the_ends() {
+        use FieldMotion::*;
+        assert_eq!(run("aé|b", mv(Left)).0, "a|éb");
+        assert_eq!(run("a|éb", mv(Right)).0, "aé|b");
+        // A combining accent stays with its letter.
+        assert_eq!(run("xe\u{301}|", mv(Left)).0, "x|e\u{301}");
+        assert_eq!(run("|ab", mv(Left)), ("|ab".into(), Outcome::Moved));
+        assert_eq!(run("ab|", mv(Right)).0, "ab|");
+        assert_eq!(run("aé|b", mv(Start)).0, "|aéb");
+        assert_eq!(run("a|éb", mv(End)).0, "aéb|");
+    }
 
-        let mut f = TextField::new("abc".into());
-        f.select_all();
-        assert_eq!(f.key(key(KeyCode::Left)), Outcome::Moved);
-        assert_eq!((f.cursor, f.all_selected), (0, false));
-        f.select_all();
-        assert_eq!(f.key(key(KeyCode::End)), Outcome::Moved);
-        assert!(!f.all_selected);
-        f.select_all();
-        f.insert("yz");
-        assert_eq!(f.text, "yz");
+    #[test]
+    fn word_moves_use_the_editors_stops() {
+        use FieldMotion::*;
+        assert_eq!(run("foo.bär  baz|", mv(WordLeft)).0, "foo.bär  |baz");
+        assert_eq!(run("foo.bär  |baz", mv(WordLeft)).0, "foo.|bär  baz");
+        assert_eq!(run("foo.|bär  baz", mv(WordLeft)).0, "foo|.bär  baz");
+        assert_eq!(run("|foo.bär", mv(WordLeft)).0, "|foo.bär");
+        assert_eq!(run("|foo.bär  baz", mv(WordRight)).0, "foo|.bär  baz");
+        assert_eq!(run("foo.bär|  baz", mv(WordRight)).0, "foo.bär  baz|");
+        assert_eq!(run("foo|", mv(WordRight)).0, "foo|");
+    }
+
+    #[test]
+    fn a_move_collapses_the_selection_to_its_side() {
+        use FieldMotion::*;
+        assert_eq!(run("a[bé|c", mv(Left)).0, "a|béc");
+        assert_eq!(run("a|bé[c", mv(Right)).0, "abé|c");
+        assert_eq!(run("a[bé|c", mv(Start)).0, "|abéc");
+        assert_eq!(run("a|bé[c", mv(End)).0, "abéc|");
+        // Word moves go from the cursor.
+        assert_eq!(run("ab [cd|", mv(WordLeft)).0, "ab |cd");
+    }
+
+    #[test]
+    fn shift_moves_extend_from_the_anchor() {
+        use FieldMotion::*;
+        assert_eq!(run("ab|é", sel(Left)).0, "a|b[é");
+        assert_eq!(run("a|b[é", sel(Left)).0, "|ab[é");
+        assert_eq!(run("a|b[é", sel(Right)).0, "ab|é", "back to the anchor");
+        assert_eq!(run("ab|é", sel(Start)).0, "|ab[é");
+        assert_eq!(run("a[b|é", sel(End)).0, "a[bé|");
+        assert_eq!(run("é[b|", sel(WordLeft)).0, "|é[b");
+        // Back to the anchor: no selection.
+        let mut f = field("a[b|");
+        f.run(sel(Left));
+        assert_eq!((f.selection(), show(&f)), (None, "a|b".into()));
+    }
+
+    #[test]
+    fn deletes_without_a_selection() {
+        use FieldCommand::*;
+        assert_eq!(run("aé|b", DeleteLeft), ("a|b".into(), Outcome::Edited));
+        assert_eq!(run("a|éb", DeleteRight), ("a|b".into(), Outcome::Edited));
+        assert_eq!(run("|ab", DeleteLeft), ("|ab".into(), Outcome::Ignored));
+        assert_eq!(run("ab|", DeleteRight), ("ab|".into(), Outcome::Ignored));
+        assert_eq!(run("foo bär|", DeleteWordLeft).0, "foo |");
+        assert_eq!(run("foo| bär", DeleteWordRight).0, "foo|");
+        assert_eq!(run("fé o|x", DeleteToStart).0, "|x");
+    }
+
+    #[test]
+    fn deletes_and_typing_replace_the_selection() {
+        use FieldCommand::*;
+        for cmd in [DeleteLeft, DeleteRight, DeleteWordLeft, DeleteWordRight, DeleteToStart] {
+            assert_eq!(run("a[bé|c", cmd), ("a|c".into(), Outcome::Edited), "{cmd:?}");
+        }
+        let mut f = field("a|bé[c");
+        f.insert("xy");
+        assert_eq!(show(&f), "axy|c");
+        let mut f = field("a|bé[c");
+        assert_eq!(f.key(key(KeyCode::Char('ü'))), Outcome::Edited);
+        assert_eq!(show(&f), "aü|c");
+    }
+
+    #[test]
+    fn select_all_copy_and_cut() {
+        let mut f = TextField::new("héllo".into());
+        assert_eq!(f.copy(), None, "nothing selected: nothing copied");
+        assert_eq!(f.run(FieldCommand::SelectAll), Outcome::Moved);
+        assert_eq!((f.selection(), f.cursor), (Some(0..6), 6));
+        assert_eq!(f.copy().as_deref(), Some("héllo"));
+        (f.anchor, f.cursor) = (Some(0), 1);
+        assert_eq!(f.cut().as_deref(), Some("h"));
+        assert_eq!(show(&f), "|éllo");
+        assert_eq!(f.cut(), None);
         let mut empty = TextField::default();
         empty.select_all();
-        assert!(!empty.all_selected);
+        assert_eq!(empty.selection(), None);
+    }
+
+    #[test]
+    fn editor_commands_with_a_field_meaning() {
+        let m = |motion, select| Command::Move { motion, select };
+        let f = |motion, select| Some(FieldCommand::Move { motion, select });
+        assert_eq!(
+            FieldCommand::from_command(m(Motion::LineStart, true)),
+            f(FieldMotion::Start, true)
+        );
+        assert_eq!(
+            FieldCommand::from_command(m(Motion::DocEnd, false)),
+            f(FieldMotion::End, false)
+        );
+        assert_eq!(
+            FieldCommand::from_command(m(Motion::WordLeft, false)),
+            f(FieldMotion::WordLeft, false)
+        );
+        assert_eq!(FieldCommand::from_command(m(Motion::Up, false)), None);
+        assert_eq!(FieldCommand::from_command(m(Motion::PageDown, true)), None);
+        assert_eq!(
+            FieldCommand::from_command(Command::DeleteToLineStart),
+            Some(FieldCommand::DeleteToStart)
+        );
+        assert_eq!(FieldCommand::from_command(Command::Undo), None);
+        assert_eq!(FieldCommand::from_command(Command::InsertNewline), None);
     }
 }

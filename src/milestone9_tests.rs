@@ -4204,7 +4204,7 @@ fn message(app: &App) -> Option<String> {
 /// The open rename prompt's kind and text.
 fn rename_prompt(app: &App) -> Option<(crate::app::InputKind, String, bool)> {
     match &app.prompt {
-        Some(Prompt::Input(i)) => Some((i.kind.clone(), i.field.text.clone(), i.field.all_selected)),
+        Some(Prompt::Input(i)) => Some((i.kind.clone(), i.field.text.clone(), i.field.selection().is_some())),
         _ => None,
     }
 }

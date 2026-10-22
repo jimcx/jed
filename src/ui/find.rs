@@ -126,8 +126,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
     })
 }
 
-/// One input, scrolled sideways to keep the cursor in view (a placeholder when empty); returns
-/// where its cursor is.
+/// One input, scrolled sideways to keep the cursor in view (all of it from column 0 when it
+/// fits; a placeholder when empty), its selected text in `selected`; returns where its cursor is.
 pub(super) fn draw_field(
     out: &mut ratatui::buffer::Buffer,
     r: Rect,
@@ -145,12 +145,13 @@ pub(super) fn draw_field(
     let width = r.width as usize;
     let cursor_col: usize = field.text[..field.cursor].chars().map(|c| c.width().unwrap_or(0)).sum();
     let scroll = (cursor_col + 1).saturating_sub(width);
-    let text_style = if field.all_selected { selected } else { style };
+    let sel = field.selection().unwrap_or_default();
     let mut col = 0;
-    for c in field.text.chars() {
+    for (i, c) in field.text.char_indices() {
         let w = c.width().unwrap_or(0);
         if col >= scroll && col + w - scroll <= width {
-            out.set_stringn(r.x + (col - scroll) as u16, r.y, c.to_string(), w, text_style);
+            let s = if sel.contains(&i) { selected } else { style };
+            out.set_stringn(r.x + (col - scroll) as u16, r.y, c.to_string(), w, s);
         }
         col += w;
     }

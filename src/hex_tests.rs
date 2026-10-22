@@ -1287,7 +1287,7 @@ async fn hex_find_seeds_from_the_selection() {
     // ASCII mode: the text.
     app.press(KeyCode::Char('f'), cmd());
     assert_eq!(app.find.query.text, "ELF");
-    assert!(app.find.query.all_selected, "selected: typing replaces it");
+    assert!(app.find.query.selection().is_some(), "selected: typing replaces it");
     assert_eq!(hex(&app).selection(), Some(32..35), "the selection is the match");
     app.press(KeyCode::Esc, M::NONE);
     // Hex mode: the pairs.

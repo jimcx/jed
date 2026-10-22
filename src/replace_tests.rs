@@ -592,7 +592,7 @@ async fn replace_input_toggle_keys_and_tab_order() {
     assert_eq!(app.ui.focus, Focus::Editor);
     app.press(K::Char('h'), cmd() | M::SHIFT);
     assert_eq!(app.ui.focus, Focus::SidePanel);
-    assert!(app.search_view.replacing && app.search_view.replace.all_selected);
+    assert!(app.search_view.replacing && app.search_view.replace.selection().is_some());
     assert_eq!(at(&app), (false, Input::Replace));
     assert!(generation_of(&app) > generation);
     // With an empty query the query gets the keys.

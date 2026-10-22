@@ -710,14 +710,7 @@ pub fn word_right(rope: &Rope, pos: ByteIdx) -> ByteIdx {
         return next_grapheme(rope, pos);
     }
     let text = line_text(rope, line);
-    let off = pos.0 - start;
-    let mut gs = text.grapheme_indices(true).skip_while(|&(i, _)| i < off).peekable();
-    while gs.next_if(|&(_, g)| class_of(g) == CharClass::Space).is_some() {}
-    if let Some(&(_, g)) = gs.peek() {
-        let class = class_of(g);
-        while gs.next_if(|&(_, g)| class_of(g) == class).is_some() {}
-    }
-    ByteIdx(start + gs.peek().map_or(text.len(), |&(i, _)| i))
+    ByteIdx(start + word_right_in(&text, pos.0 - start))
 }
 
 /// VS Code word-left: skip spaces backwards, then one run of word or punctuation chars.
@@ -729,7 +722,24 @@ pub fn word_left(rope: &Rope, pos: ByteIdx) -> ByteIdx {
         return prev_grapheme(rope, pos);
     }
     let text = line_text(rope, line);
-    let off = (pos.0 - start).min(text.len());
+    ByteIdx(start + word_left_in(&text, pos.0 - start))
+}
+
+/// `word_right` within one line of text (no line break), from byte offset `off` (a grapheme
+/// boundary): the text fields' word moves. The end of `text` stays there.
+pub fn word_right_in(text: &str, off: usize) -> usize {
+    let mut gs = text.grapheme_indices(true).skip_while(|&(i, _)| i < off).peekable();
+    while gs.next_if(|&(_, g)| class_of(g) == CharClass::Space).is_some() {}
+    if let Some(&(_, g)) = gs.peek() {
+        let class = class_of(g);
+        while gs.next_if(|&(_, g)| class_of(g) == class).is_some() {}
+    }
+    gs.peek().map_or(text.len(), |&(i, _)| i)
+}
+
+/// `word_left` within one line of text (no line break), from byte offset `off`: 0 stays there.
+pub fn word_left_in(text: &str, off: usize) -> usize {
+    let off = off.min(text.len());
     let mut gs = text
         .grapheme_indices(true)
         .rev()
@@ -743,7 +753,17 @@ pub fn word_left(rope: &Rope, pos: ByteIdx) -> ByteIdx {
             result = i;
         }
     }
-    ByteIdx(start + result)
+    result
+}
+
+/// The grapheme boundary after byte offset `off` in `text` (`text.len()` at the end).
+pub fn next_grapheme_in(text: &str, off: usize) -> usize {
+    text[off..].graphemes(true).next().map_or(off, |g| off + g.len())
+}
+
+/// The grapheme boundary before byte offset `off` in `text` (0 at the start).
+pub fn prev_grapheme_in(text: &str, off: usize) -> usize {
+    text[..off].graphemes(true).next_back().map_or(0, |g| off - g.len())
 }
 
 /// First non-whitespace position on the line (line end if the line is blank).

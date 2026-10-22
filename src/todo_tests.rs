@@ -97,6 +97,14 @@
 //!   moved view (no duplicate); diff tabs move too. "View: Move Editor Left / Right"
 //!   (Cmd+Shift+PageUp / PageDown; Linux Ctrl) swaps it with its neighbour, no wrap, still
 //!   active and shown in a full tab bar.
+//! - `text_field_keys`: text fields take the editor's keys — Shift+Home then typing replaces the
+//!   find query (matches follow), line start / end keys (Home / End; Cmd+Left / Right, Ctrl+A / E
+//!   on macOS; Ctrl+Home / End on Linux), word deletes and Home / End in the Search view's query,
+//!   Cmd+A / C / X in the find widget (`app.clipboard`; nothing copied without a selection; Linux
+//!   Ctrl+V pastes), global and find-context `keybindings.toml` rebinds applying in the field (not
+//!   the editor), global non-field commands still running from a field (Cmd+B, Cmd+Shift+P), the
+//!   palette and a rename prompt's field, the selected range drawn selected (find widget and
+//!   prompt), a long query scrolled to the cursor and a short one drawn from the input's start.
 
 mod render_whitespace {
     use std::fs;
@@ -2234,7 +2242,7 @@ mod folder_filter {
         assert_eq!(app.search_view.include.text, "./src");
         assert!(app.search_view.details && !app.search_view.list_focused);
         assert_eq!(app.search_view.input, Input::Query);
-        assert!(app.search_view.query.all_selected, "typing replaces the query");
+        assert!(app.search_view.query.selection().is_some(), "typing replaces the query");
         assert!(app.search_view.deadline().is_none(), "searched at once");
         let want = app.search_view.query();
         assert!(
@@ -5589,5 +5597,398 @@ mod move_tabs {
         assert_eq!(layout(&app)[0][5], "six.txt");
         let term = draw(&mut app, 40);
         assert!(tab_bar(&term).contains("six.txt"), "{}", tab_bar(&term));
+    }
+}
+
+mod text_field_keys {
+    use std::path::PathBuf;
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::{App, InputKind, Prompt};
+    use crate::buffer::Buffer;
+    use crate::config::keymap::{self, Keymap, Platform};
+
+    const MAC: bool = cfg!(target_os = "macos");
+
+    fn cmd() -> M {
+        if MAC { M::SUPER } else { M::CONTROL }
+    }
+
+    /// Word moves and deletes: Alt on macOS, Ctrl on Linux.
+    fn word() -> M {
+        if MAC { M::ALT } else { M::CONTROL }
+    }
+
+    /// An app on `<dir>/ws` with `a.txt` (`text`) open, the cursor at its start.
+    fn open_app(dir: &tempfile::TempDir, text: &str) -> (App, PathBuf) {
+        let root = crate::workspace::normalize(dir.path()).join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("a.txt");
+        std::fs::write(&path, text).unwrap();
+        let ws = crate::workspace::Workspace::load(root.clone());
+        let trust = crate::workspace::trust::TrustStore::load(dir.path().join("trust.toml"));
+        let initial = crate::app::InitialFile {
+            buffer: Buffer::open(&path).unwrap(),
+            goto: None,
+        };
+        let mut app = App::new(ws, trust, Some(initial), true);
+        app.test_start();
+        app.test_plain_whitespace();
+        (app, root)
+    }
+
+    fn query(app: &App) -> (&str, usize) {
+        (app.find.query.text.as_str(), app.find.query.cursor)
+    }
+
+    fn match_count(app: &App) -> usize {
+        app.find.matches().len()
+    }
+
+    /// Each key that moves a field's cursor to its start / end on this platform, as the editor's
+    /// line start / end (Home / End everywhere; Cmd+Left / Right and Ctrl+A / E on macOS,
+    /// Ctrl+Home / End on Linux).
+    fn start_keys() -> Vec<(K, M)> {
+        let mut keys = vec![(K::Home, M::NONE)];
+        if MAC {
+            keys.extend([(K::Left, M::SUPER), (K::Char('a'), M::CONTROL)]);
+        } else {
+            keys.push((K::Home, M::CONTROL));
+        }
+        keys
+    }
+
+    fn end_keys() -> Vec<(K, M)> {
+        let mut keys = vec![(K::End, M::NONE)];
+        if MAC {
+            keys.extend([(K::Right, M::SUPER), (K::Char('e'), M::CONTROL)]);
+        } else {
+            keys.push((K::End, M::CONTROL));
+        }
+        keys
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_field_keys_shift_home_then_typing_replaces_the_find_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, "foo bar foo baz\n");
+        app.press(K::Char('f'), cmd());
+        assert_eq!(
+            (query(&app), match_count(&app)),
+            (("foo", 3), 2),
+            "seeded from the word"
+        );
+        app.press(K::End, M::NONE);
+        assert_eq!(app.find.query.selection(), None, "End collapses the opening selection");
+        app.press(K::Home, M::SHIFT);
+        assert_eq!(app.find.query.selection(), Some(0..3));
+        app.type_text("ba");
+        assert_eq!((query(&app), match_count(&app)), (("ba", 2), 2), "bar and baz");
+        app.press(K::Left, M::SHIFT);
+        app.type_text("r");
+        assert_eq!((query(&app), match_count(&app)), (("br", 2), 0));
+        // Shift+Left twice then Right: collapsed to the selection's end.
+        app.press(K::Left, M::SHIFT);
+        app.press(K::Left, M::SHIFT);
+        app.press(K::Right, M::NONE);
+        assert_eq!((query(&app), app.find.query.selection()), (("br", 2), None));
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "foo bar foo baz\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_field_keys_line_start_and_end_keys_in_the_find_widget() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, "x\n");
+        app.press(K::Char('f'), cmd());
+        app.type_text("ab");
+        for (code, mods) in start_keys() {
+            app.press(K::End, M::NONE);
+            app.press(code, mods);
+            assert_eq!(query(&app), ("ab", 0), "{code:?} {mods:?}");
+            app.press(code, mods | M::SHIFT);
+            assert_eq!(app.find.query.selection(), None, "{code:?} {mods:?}: already there");
+        }
+        for (code, mods) in end_keys() {
+            app.press(K::Home, M::NONE);
+            app.press(code, mods | M::SHIFT);
+            assert_eq!(
+                (query(&app), app.find.query.selection()),
+                (("ab", 2), Some(0..2)),
+                "{code:?}"
+            );
+            app.press(code, mods);
+            assert_eq!((query(&app), app.find.query.selection()), (("ab", 2), None), "{code:?}");
+        }
+        assert_eq!(
+            app.active_buffer().unwrap().rope.to_string(),
+            "x\n",
+            "the editor untouched"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_field_keys_home_end_and_word_delete_in_the_search_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, "x\n");
+        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.type_text("foo.bar baz");
+        app.press(K::Backspace, word());
+        assert_eq!(app.search_view.query.text, "foo.bar ");
+        app.press(K::Backspace, word());
+        assert_eq!(app.search_view.query.text, "foo.");
+        app.press(K::Home, M::NONE);
+        app.type_text("<");
+        app.press(K::End, M::NONE);
+        app.type_text(">");
+        assert_eq!(app.search_view.query.text, "<foo.>");
+        app.press(K::Left, word());
+        app.press(K::Delete, word());
+        assert_eq!(
+            app.search_view.query.text, "<foo",
+            "the punctuation run `.>` after the cursor"
+        );
+        assert!(app.search_view.deadline().is_some(), "an edit re-searches");
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "x\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_field_keys_select_all_copy_cut_in_the_find_widget() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, "needle hay\n");
+        app.press(K::Char('f'), cmd());
+        app.press(K::End, M::NONE);
+        // Nothing selected: Cmd+C copies nothing (not the editor's whole line).
+        app.press(K::Char('c'), cmd());
+        assert_eq!(app.clipboard.read().unwrap(), "");
+        app.press(K::Char('a'), cmd());
+        app.press(K::Char('c'), cmd());
+        assert_eq!(app.clipboard.read().unwrap(), "needle");
+        assert_eq!(query(&app), ("needle", 6));
+        app.press(K::Left, word());
+        app.press(K::Right, M::SHIFT);
+        app.press(K::Char('x'), cmd());
+        assert_eq!(app.clipboard.read().unwrap(), "n");
+        assert_eq!(query(&app), ("eedle", 0));
+        assert_eq!(match_count(&app), 1);
+        if !MAC {
+            // Linux Ctrl+V pastes the clipboard into the field (macOS's Cmd+V is the terminal's).
+            app.press(K::End, M::NONE);
+            app.press(K::Char('v'), M::CONTROL);
+            assert_eq!(query(&app), ("eedlen", 6));
+        }
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "needle hay\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_field_keys_keybindings_toml_rebinds_apply_in_a_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, "xyz\n");
+        let config = dir.path().join(keymap::FILE_NAME);
+        // A global binding of the editor's line start, and line end bound in the find context.
+        let toml = "[[binding]]\nkey = \"ctrl+j\"\ncommand = \"cursor.home\"\n\n\
+                    [[binding]]\nkey = \"ctrl+k\"\ncommand = \"cursor.end\"\ncontext = \"find\"\n";
+        std::fs::write(&config, toml).unwrap();
+        let (km, errors) = Keymap::load(&config, Platform::current());
+        assert!(errors.is_empty(), "{errors:?}");
+        app.set_keymap(km, errors);
+        // The editor's cursor at its line's end, so a line start run on it would show.
+        app.press(K::End, M::NONE);
+        app.press(K::Char('j'), M::CONTROL);
+        let head = app.group().active_tab().unwrap().view.selections.primary().head;
+        assert_eq!(head.0, 0, "ctrl+j is the editor's line start too");
+        // (End lost cursor.end, rebound in the find context: Right moves the editor back.)
+        for _ in 0..3 {
+            app.press(K::Right, M::NONE);
+        }
+        app.press(K::Char('f'), cmd());
+        let head = app.group().active_tab().unwrap().view.selections.primary().head;
+        assert_eq!(head.0, 3);
+        app.type_text("ab");
+        app.press(K::Home, M::NONE);
+        assert_eq!(query(&app), ("ab", 2), "Home lost the command");
+        app.press(K::Char('j'), M::CONTROL);
+        assert_eq!(query(&app), ("ab", 0));
+        app.press(K::Char('k'), M::CONTROL);
+        assert_eq!(query(&app), ("ab", 2));
+        let after = app.group().active_tab().unwrap().view.selections.primary().head;
+        assert_eq!(after, head, "the editor's cursor stayed");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_field_keys_in_the_palette_and_a_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, "x\n");
+        app.press(K::Char('p'), cmd());
+        app.type_text("src main");
+        app.press(K::Backspace, word());
+        assert_eq!(app.palette.as_ref().unwrap().field.text, "src ");
+        app.press(K::Home, M::SHIFT);
+        app.type_text("lib");
+        assert_eq!(app.palette.as_ref().unwrap().field.text, "lib");
+        app.press(K::Esc, M::NONE);
+
+        // A prompt's field: the explorer's Rename (F2 on the open file's row), its name prefilled.
+        app.press(K::Char('e'), cmd() | M::SHIFT);
+        assert!(app.settle(|a| !a.explorer.rows().is_empty()).await);
+        app.press(K::Home, M::NONE);
+        app.press(K::F(2), M::NONE);
+        assert!(matches!(&app.prompt, Some(Prompt::Input(i)) if matches!(i.kind, InputKind::Rename { .. })));
+        app.press(K::Home, M::NONE);
+        app.press(K::Right, M::SHIFT);
+        app.type_text("b");
+        app.press(K::Right, word());
+        app.press(K::Right, word());
+        app.press(K::End, M::SHIFT);
+        assert!(
+            matches!(&app.prompt, Some(Prompt::Input(i)) if i.field.text == "b.txt" && i.field.selection().is_none())
+        );
+        app.press(K::Left, word());
+        app.press(K::End, M::SHIFT);
+        app.press(K::Backspace, M::NONE);
+        assert!(
+            matches!(&app.prompt, Some(Prompt::Input(i)) if i.field.text == "b."),
+            "{}",
+            prompt_text(&app)
+        );
+    }
+
+    fn prompt_text(app: &App) -> String {
+        match &app.prompt {
+            Some(Prompt::Input(i)) => i.field.text.clone(),
+            _ => "no input prompt".into(),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_field_keys_the_selected_range_is_drawn_selected() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, "x\n");
+        app.press(K::Char('f'), cmd());
+        app.type_text("qwerty");
+        app.press(K::Left, M::NONE);
+        app.press(K::Left, M::SHIFT);
+        app.press(K::Left, M::SHIFT);
+        let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+        let (x, y) = (0..buf.area.height)
+            .find_map(|y| {
+                let row: Vec<&str> = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+                let at = row.windows(6).position(|w| w.concat() == "qwerty")?;
+                Some((at as u16, y))
+            })
+            .expect("the query drawn");
+        let selection = app.theme.get("editor.selection").bg;
+        let selected: Vec<bool> = (0..6).map(|i| buf[(x + i, y)].bg == selection.unwrap()).collect();
+        assert_eq!(selected, [false, false, false, true, true, false], "\"rt\" selected");
+    }
+
+    /// The terminal's rows as text.
+    fn rows(term: &Terminal<TestBackend>) -> Vec<String> {
+        let buf = term.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_field_keys_a_long_query_scrolls_to_the_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, "x\n");
+        app.press(K::Char('f'), cmd());
+        let long: String = ('a'..='z').chain('A'..='Z').collect();
+        app.type_text(&long);
+        let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let y = rows(&term)
+            .iter()
+            .position(|r| r.contains("XYZ"))
+            .expect("the query's end drawn");
+        let top = rows(&term)[y].clone();
+        assert!(!top.contains("abc"), "scrolled to the end: {top}");
+        app.press(K::Home, M::NONE);
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let top = rows(&term)[y].clone();
+        assert!(top.contains("abcdef") && !top.contains("XYZ"), "from the start: {top}");
+        let first = top.find("abcdef").unwrap();
+        // A short query fits: all of it from the input's first column, whatever the cursor.
+        app.press(K::Char('a'), cmd());
+        app.type_text("short");
+        app.press(K::Left, M::NONE);
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let top = rows(&term)[y].clone();
+        let at = top.find("short").expect("the query drawn");
+        assert_eq!(at, first, "at the input's first column: {top}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_field_keys_global_commands_still_run_in_a_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, "xyz\n");
+        app.press(K::End, M::NONE);
+        app.press(K::Char('f'), cmd());
+        app.type_text("ab");
+        app.press(K::Left, M::NONE);
+        let before = app.group().active_tab().unwrap().view.selections.clone();
+        // Select all, and Shift+End, are the field's: the editor's selections stay.
+        app.press(K::Char('a'), cmd());
+        assert_eq!(app.find.query.selection(), Some(0..2));
+        app.press(K::Left, M::NONE);
+        app.press(K::End, M::SHIFT);
+        assert_eq!(app.find.query.selection(), Some(0..2));
+        assert_eq!(
+            app.group().active_tab().unwrap().view.selections,
+            before,
+            "the editor's selections untouched"
+        );
+        // A global binding without a field meaning still runs (Cmd+B: the sidebar).
+        let side = app.ui.side_visible;
+        app.press(K::Char('b'), cmd());
+        assert_ne!(app.ui.side_visible, side, "Cmd+B ran");
+        assert_eq!(app.ui.focus, crate::app::Focus::Find, "the field keeps the keys");
+        // Cmd+Shift+P opens the palette over it; its field then has the keys.
+        app.press(K::Char('p'), cmd() | M::SHIFT);
+        assert!(app.palette.is_some());
+        app.type_text("zz");
+        app.press(K::Left, M::SHIFT);
+        app.press(K::Backspace, M::NONE);
+        assert_eq!(
+            app.palette.as_ref().unwrap().field.text,
+            ">z",
+            "the palette's field, not the query"
+        );
+        assert_eq!(query(&app), ("ab", 2));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_field_keys_a_prompts_selection_is_drawn_selected() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, "x\n");
+        app.press(K::Char('e'), cmd() | M::SHIFT);
+        assert!(app.settle(|a| !a.explorer.rows().is_empty()).await);
+        app.press(K::Home, M::NONE);
+        app.press(K::F(2), M::NONE);
+        app.press(K::Home, M::NONE);
+        app.press(K::Right, M::SHIFT);
+        let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+        // The dialog's input: two rows below its title (other rows show `a.txt` too).
+        let title = rows(&term)
+            .iter()
+            .position(|r| r.contains("Rename ws/a.txt"))
+            .expect("the prompt");
+        let y = title as u16 + 2;
+        let row: Vec<&str> = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+        let x = row
+            .windows(5)
+            .position(|w| w.concat() == "a.txt")
+            .expect("the prompt's field drawn") as u16;
+        let selection = app.theme.get("editor.selection").bg.unwrap();
+        let selected: Vec<bool> = (0..5).map(|i| buf[(x + i, y)].bg == selection).collect();
+        assert_eq!(selected, [true, false, false, false, false], "\"a\" selected");
     }
 }

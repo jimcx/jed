@@ -304,7 +304,10 @@ impl App {
             }
             self.search_view.list_focused = false;
         }
-        if self.search_view.input_mut().key(key) == Outcome::Edited {
+        let mut field = std::mem::take(self.search_view.input_mut());
+        let outcome = self.field_key(&mut field, Some(self.context()), key);
+        *self.search_view.input_mut() = field;
+        if outcome == Outcome::Edited {
             self.search_edited();
         }
     }
@@ -629,7 +632,7 @@ mod tests {
         app.search_view.options.regex = true;
         app.find_in_files();
         assert_eq!(app.search_view.query.text, r"a\.b");
-        assert!(app.search_view.query.all_selected);
+        assert!(app.search_view.query.selection().is_some());
         assert!(app.search_focused());
         assert_eq!(app.search.as_ref().unwrap().query.pattern, r"a\.b");
 

@@ -92,12 +92,6 @@ impl Input {
         self.field.insert(s);
         self.error = None;
     }
-
-    fn key(&mut self, key: KeyEvent) {
-        if self.field.key(key) == Outcome::Edited {
-            self.error = None;
-        }
-    }
 }
 
 impl App {
@@ -228,7 +222,9 @@ impl App {
                 } else if enter {
                     self.submit_input(input);
                 } else {
-                    input.key(key);
+                    if self.field_key(&mut input.field, None, key) == Outcome::Edited {
+                        input.error = None;
+                    }
                     self.prompt = Some(Prompt::Input(input));
                 }
             }

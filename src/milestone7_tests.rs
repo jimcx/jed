@@ -310,7 +310,10 @@ mod view {
         find_in_files(&mut app);
         assert_eq!((app.ui.focus, app.ui.side_panel), (Focus::SidePanel, SidePanel::Search));
         assert_eq!(app.search_view.query.text, "needle");
-        assert!(app.search_view.query.all_selected, "selected, so typing replaces it");
+        assert!(
+            app.search_view.query.selection().is_some(),
+            "selected, so typing replaces it"
+        );
         assert!(app.search.is_some(), "searching at once, no debounce");
         settled(&mut app).await;
         draw(&mut term, &mut app);

@@ -8,6 +8,7 @@ mod completion;
 mod cursors;
 mod diff_view;
 mod disk;
+mod field;
 mod files;
 mod find;
 mod format;
@@ -810,7 +811,7 @@ impl App {
         self.buffers.get(self.group().active_tab()?.buffer)
     }
 
-    fn context(&self) -> Context {
+    pub(super) fn context(&self) -> Context {
         if self.palette.is_some() {
             return Context::Palette;
         }
@@ -874,7 +875,9 @@ impl App {
                     } else {
                         self.close_peek();
                     }
-                } else if let Some(cmd) = self.keymap.lookup(&key, self.context()) {
+                } else if let Some(cmd) = self.keymap.lookup(&key, self.context())
+                    && !(self.field_focused() && field::has_field_meaning(cmd))
+                {
                     self.execute(cmd);
                 } else if self.palette.is_some() {
                     self.palette_key(key);
@@ -1146,8 +1149,15 @@ impl App {
     }
 
     fn paste_clipboard(&mut self) {
+        if let Some(text) = self.read_clipboard() {
+            self.paste(&text);
+        }
+    }
+
+    /// The system clipboard's text; `None` with a message when it can't be read.
+    fn read_clipboard(&mut self) -> Option<String> {
         match self.clipboard.read() {
-            Ok(text) => self.paste(&text),
+            Ok(text) => return Some(text),
             Err(clipboard::ReadError::Unavailable) => {
                 let key = match Platform::current() {
                     Platform::MacOs => "Cmd+V",
@@ -1160,6 +1170,7 @@ impl App {
             }
             Err(clipboard::ReadError::Failed(e)) => self.notify(Level::Error, format!("Clipboard read failed: {e}")),
         }
+        None
     }
 
     /// Pastes into the active view: a whole-line copy goes above the cursor's line, and jed's

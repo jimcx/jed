@@ -55,7 +55,12 @@ impl App {
     /// Keys the keymap doesn't bind in the palette edit its input.
     pub(super) fn palette_key(&mut self, key: KeyEvent) {
         let Some(p) = &mut self.palette else { return };
-        if p.field.key(key) == Outcome::Edited {
+        let mut field = std::mem::take(&mut p.field);
+        let outcome = self.field_key(&mut field, Some(crate::config::keymap::Context::Palette), key);
+        if let Some(p) = &mut self.palette {
+            p.field = field;
+        }
+        if outcome == Outcome::Edited {
             self.refresh_palette();
         }
     }
