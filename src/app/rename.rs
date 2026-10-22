@@ -274,10 +274,11 @@ impl App {
             },
         );
         let tx = self.tx.clone();
+        let indentation = self.settings.indentation();
         tokio::task::spawn_blocking(move || {
             // A missing file would load empty: the edits were made for text that isn't there.
             let result = if path.exists() {
-                Buffer::open(&path).map(|b| super::files::Loaded::Text(Box::new(b)))
+                Buffer::open_with(&path, indentation).map(|b| super::files::Loaded::Text(Box::new(b)))
             } else {
                 Err(crate::buffer::file::LoadError::Io(std::io::ErrorKind::NotFound.into()))
             };

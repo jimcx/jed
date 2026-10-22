@@ -421,9 +421,10 @@ impl App {
     /// Box-selects in the active view from its current box corner (or its primary selection's
     /// anchor) to `to`.
     fn column_select_to(&mut self, to: Cell) {
-        let tab_width = self.settings.tab_width;
+        let settings = self.settings.clone();
         if let Some((buf, view)) = self.active_mut() {
             buf.seal_undo();
+            let tab_width = settings.for_buffer(buf).tab_width;
             let (from, _) = column::current(&buf.rope, view, tab_width);
             column::select(&buf.rope, view, from, to, tab_width);
         }
@@ -455,7 +456,12 @@ impl App {
     fn text_position(&self, x: u16, y: u16, clamp: bool) -> Option<ByteIdx> {
         let (line, col) = self.text_cell(x, y, clamp)?;
         let buf = self.buffers.get(self.group().active_tab()?.buffer)?;
-        Some(pos::byte_at_col(&buf.rope, line, col, self.settings.tab_width))
+        Some(pos::byte_at_col(
+            &buf.rope,
+            line,
+            col,
+            self.settings.for_buffer(buf).tab_width,
+        ))
     }
 }
 

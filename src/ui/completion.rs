@@ -33,7 +33,13 @@ pub fn render(f: &mut Frame, app: &mut App, groups: &[GroupHit]) -> Option<Compl
     let buf = app.buffers.get(popup.anchor.buffer)?;
     let rope = &buf.rope;
     let head = tab.view.selections.primary().head;
-    let (ax, ay) = popup::cell_of(rope, &tab.view, hit.text, popup.anchor.start, app.settings.tab_width)?;
+    let (ax, ay) = popup::cell_of(
+        rope,
+        &tab.view,
+        hit.text,
+        popup.anchor.start,
+        app.settings.for_buffer(buf).tab_width,
+    )?;
     let area = hit.editor;
 
     let label_w = popup

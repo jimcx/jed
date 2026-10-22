@@ -17,6 +17,7 @@ use crate::clipboard::Copied;
 use crate::command::Command;
 use crate::group::{Tab, TextTab};
 use crate::hex::{self, HexDoc, HexTab};
+use crate::indentation::Indentation;
 use crate::layout::Hit;
 use crate::view::View;
 
@@ -26,7 +27,7 @@ const WHEEL_ROWS: isize = 3;
 /// Reads `path` for a tab: a text file as a buffer, a binary one (or any file, `raw`: Reopen as
 /// Hex) as its bytes for a hex tab; one over `HEX_MAX_BYTES` is an error.
 /// Blocking: call from spawn_blocking.
-pub(super) fn load(path: &Path, raw: bool) -> Result<Loaded, LoadError> {
+pub(super) fn load(path: &Path, raw: bool, indentation: Indentation) -> Result<Loaded, LoadError> {
     let too_big = |e: String| LoadError::Io(std::io::Error::other(e));
     if !raw {
         // A binary file too big for a hex tab is refused before it's read whole.
@@ -36,7 +37,7 @@ pub(super) fn load(path: &Path, raw: bool) -> Result<Loaded, LoadError> {
         {
             return Err(too_big(e));
         }
-        return match Buffer::open(path) {
+        return match Buffer::open_with(path, indentation) {
             Ok(buffer) => Ok(Loaded::Text(Box::new(buffer))),
             Err(LoadError::Binary(bytes)) => binary(bytes),
             Err(e) => Err(e),
@@ -83,8 +84,9 @@ impl App {
         let raw = request.raw;
         self.opening.insert(path.clone(), request);
         let tx = self.tx.clone();
+        let indentation = self.settings.indentation();
         tokio::task::spawn_blocking(move || {
-            let result = load(&path, raw);
+            let result = load(&path, raw, indentation);
             let _ = tx.send(AppEvent::Opened { path, result });
         });
     }

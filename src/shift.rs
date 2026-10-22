@@ -2,8 +2,9 @@
 //! (`outdent`) and Tab over lines (`tab`), VS Code's `ShiftCommand` (with `useTabStops`).
 //!
 //! - Each touched line's indentation (its leading spaces and tabs) becomes the next (indent) or
-//!   previous (outdent) multiple of the tab width, written as the language's indentation
-//!   (`Settings::for_language`: spaces, or tabs for a Makefile / `insert_spaces = false`). So a
+//!   previous (outdent) multiple of the tab width, written as the buffer's indentation
+//!   (`Settings::for_buffer`: spaces, or tabs for a Makefile, a file guessed tab-indented or
+//!   `insert_spaces = false`). So a
 //!   line with fewer spaces than a level outdents to column 0, and mixed indentation comes out
 //!   normalised (as VS Code). Only the part of the indentation that differs is replaced: a line
 //!   indented with spaces gets the new spaces at its indentation's end.

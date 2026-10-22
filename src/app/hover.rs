@@ -299,7 +299,7 @@ impl App {
         if line >= pos::line_count(rope) {
             return None;
         }
-        let tab_width = self.settings.tab_width;
+        let tab_width = self.settings.for_buffer(buf).tab_width;
         let l = pos::Line::new(rope, line);
         let col = pos::DisplayCol(tab.view.left_col + (x - text.x) as usize);
         let end_col = l.col(l.end(), tab_width);

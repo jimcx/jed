@@ -157,6 +157,7 @@ impl App {
             known: buf.disk(),
             base: (force || !buf.has_edits()).then(|| buf.rope.clone()),
             force,
+            defaults: self.settings.indentation(),
         };
         let (revision, epoch) = (buf.revision(), buf.save_epoch());
         let tx = self.tx.clone();
@@ -280,7 +281,7 @@ impl App {
         let after = crate::rename::follow(&before, &r.changes);
         let Some(buf) = self.buffers.get_mut(id) else { return };
         tracing::info!(path = %buf.path.display(), changes = r.changes.len(), "reloaded from disk");
-        buf.reload(r.changes, before, after, r.meta);
+        buf.reload(r.changes, before, after, r.meta, r.guess);
         // Not `follow_edits`: it keeps the active view's top line by number, and the file's
         // change didn't come from that view, so its viewport follows the text like the others.
         let changes = buf.take_applied();
@@ -407,6 +408,7 @@ mod tests {
         let stale = Reload {
             changes: disk::changes(&Rope::from_str("xone\n"), &loaded.rope),
             meta: loaded.meta().unwrap(),
+            guess: Default::default(),
         };
         app.type_text("y");
         app.disk_checked(Checked {

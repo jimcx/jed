@@ -34,6 +34,9 @@ mod hex_tests;
 mod history;
 mod hover;
 mod indent;
+mod indentation;
+#[cfg(test)]
+mod indentation_tests;
 mod layout;
 mod lines;
 mod locations;
@@ -186,11 +189,14 @@ fn main() -> ExitCode {
     };
     tracing::info!(version = env!("JED_VERSION"), root = %root.display(), "starting");
 
+    let user_settings = config::settings::load(&paths::config_dir().join(config::settings::FILE_NAME));
+    let user_tasks = tasks::templates::load(&paths::config_dir().join(tasks::templates::FILE_NAME));
+    let workspace = Workspace::load(root).with_user_settings(user_settings.overrides);
     // Load before taking over the terminal, so errors print normally. A binary file opens in a
     // hex tab.
     let mut initial_hex = None;
     let initial = match file {
-        Some((path, goto)) => match Buffer::open(&path) {
+        Some((path, goto)) => match Buffer::open_with(&path, workspace.settings().indentation()) {
             Ok(buffer) => Some(app::InitialFile { buffer, goto }),
             Err(buffer::file::LoadError::Binary(bytes)) => {
                 if let Err(e) = hex::check_size(bytes.len() as u64) {
@@ -207,9 +213,6 @@ fn main() -> ExitCode {
         },
         None => None,
     };
-    let user_settings = config::settings::load(&paths::config_dir().join(config::settings::FILE_NAME));
-    let user_tasks = tasks::templates::load(&paths::config_dir().join(tasks::templates::FILE_NAME));
-    let workspace = Workspace::load(root).with_user_settings(user_settings.overrides);
     let trust_store = TrustStore::load(TrustStore::default_path());
     let platform = Platform::current();
     let (keymap, keymap_errors) = Keymap::load(&paths::config_dir().join(keymap::FILE_NAME), platform);

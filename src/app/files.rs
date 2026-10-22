@@ -85,12 +85,12 @@ impl App {
                     self.reveal_active();
                 }
             }
-            let tab_width = self.settings.tab_width;
+            let settings = self.settings.clone();
             if let Some(goto) = &goto
                 && let Some((buf, view)) = self.active_mut()
             {
                 buf.seal_undo();
-                apply_goto(view, &buf.rope, goto, tab_width);
+                apply_goto(view, &buf.rope, goto, settings.for_buffer(buf).tab_width);
             }
             if focus {
                 self.ui.focus = Focus::Editor;
@@ -215,7 +215,12 @@ impl App {
         self.lsp.load_diagnostics(&mut buffer);
         let mut view = View::new();
         if let Some(goto) = &goto {
-            apply_goto(&mut view, &buffer.rope, goto, self.settings.tab_width);
+            apply_goto(
+                &mut view,
+                &buffer.rope,
+                goto,
+                self.settings.for_buffer(&buffer).tab_width,
+            );
             view.cursor_history.reset(&view.selections);
         }
         let id = self.buffers.insert(buffer);

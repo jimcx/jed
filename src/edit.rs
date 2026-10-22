@@ -9,6 +9,7 @@ use crate::buffer::pos::{self, ByteIdx};
 use crate::buffer::undo::EditKind;
 use crate::clipboard::Copied;
 use crate::command::{Command, Motion};
+use crate::indentation::Indentation;
 use crate::selection::{Selection, Selections};
 use crate::syntax::Language;
 use crate::view::View;
@@ -18,6 +19,9 @@ use crate::{column, comment, indent, lines, pairs, shift};
 pub struct Settings {
     pub tab_width: usize,
     pub insert_spaces: bool,
+    /// A buffer's guessed indentation (`indentation::guess`, kept on the `Buffer`) overrides
+    /// `insert_spaces` / `tab_width` (`for_buffer`): `[settings] detect_indentation`.
+    pub detect_indentation: bool,
     /// Buffers bigger than this get no parse tree (no highlighting): `[settings] syntax_max_bytes`.
     pub syntax_max_bytes: usize,
     /// Auto-close pairs, type over their closers, delete them in pairs and wrap selections
@@ -84,6 +88,7 @@ impl Default for Settings {
         Self {
             tab_width: 4,
             insert_spaces: true,
+            detect_indentation: true,
             syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
             auto_close_pairs: true,
             auto_indent: true,
@@ -100,19 +105,46 @@ impl Default for Settings {
 impl Settings {
     /// The settings for a buffer in `language`: its `LanguageConfig::insert_spaces` (VS Code's
     /// language-specific default, which wins over the user's general setting) applied.
-    pub fn for_language(&self, language: Language) -> Settings {
+    fn for_language(&self, language: Language) -> Settings {
         let mut s = self.clone();
         if let Some(spaces) = language.config().insert_spaces {
             s.insert_spaces = spaces;
         }
         s
     }
+
+    /// The settings for `buf`, what everything reading `insert_spaces` / `tab_width` for a
+    /// buffer's text uses: the language's (`for_language`), then the buffer's own indentation —
+    /// the one chosen for it (`Buffer::indentation`), else, with `detect_indentation`, the
+    /// guess from its text (`Buffer::guess`; not for a language that fixes `insert_spaces`, as
+    /// a Makefile's tabs).
+    pub fn for_buffer(&self, buf: &Buffer) -> Settings {
+        let language = buf.syntax.language();
+        let mut s = self.for_language(language);
+        let chosen = buf.indentation.or_else(|| {
+            (s.detect_indentation && language.config().insert_spaces.is_none())
+                .then(|| buf.guess().apply(s.indentation()))
+        });
+        if let Some(i) = chosen {
+            s.insert_spaces = i.spaces;
+            s.tab_width = i.size.max(1);
+        }
+        s
+    }
+
+    /// The indentation these settings give: what a guess falls back to.
+    pub fn indentation(&self) -> Indentation {
+        Indentation {
+            spaces: self.insert_spaces,
+            size: self.tab_width,
+        }
+    }
 }
 
 /// Runs a movement or editing command. Returns false if `cmd` isn't one.
 /// The caller checks the buffer is writable before calling with an edit.
 pub fn run(cmd: Command, buf: &mut Buffer, view: &mut View, s: &Settings) -> bool {
-    let s = &s.for_language(buf.syntax.language());
+    let s = &s.for_buffer(buf);
     match cmd {
         Command::Move { motion, select } => move_cursors(buf, view, motion, select, s),
         Command::DeleteLeft => {
@@ -197,7 +229,7 @@ pub fn is_edit(cmd: Command) -> bool {
 /// bracket first on a line re-indents it (`indent::type_char`); with `auto_close_pairs`, a
 /// bracket or quote may close, wrap or type over instead (`pairs::type_char`).
 pub fn insert_char(buf: &mut Buffer, view: &mut View, c: char, s: &Settings) {
-    let s = &s.for_language(buf.syntax.language());
+    let s = &s.for_buffer(buf);
     if s.auto_indent && indent::type_char(buf, view, c, s) {
         return;
     }

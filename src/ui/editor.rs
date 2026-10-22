@@ -102,6 +102,7 @@ pub fn render(
     overlay: Overlay,
 ) -> Rect {
     let focused = overlay.focused;
+    let s = &s.for_buffer(buf);
     let tab = s.tab_width;
     let rope = &buf.rope;
     let total = pos::line_count(rope);

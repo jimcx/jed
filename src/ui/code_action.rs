@@ -35,7 +35,13 @@ pub fn render(f: &mut Frame, app: &mut App, groups: &[GroupHit]) -> Option<Compl
         return None;
     }
     let buf = app.buffers.get(popup.buffer)?;
-    let (ax, ay) = popup::cell_of(&buf.rope, &tab.view, hit.text, popup.anchor, app.settings.tab_width)?;
+    let (ax, ay) = popup::cell_of(
+        &buf.rope,
+        &tab.view,
+        hit.text,
+        popup.anchor,
+        app.settings.for_buffer(buf).tab_width,
+    )?;
     let area = hit.editor;
     let labels: Vec<String> = popup.actions.iter().map(label).collect();
     let widest = labels.iter().map(|l| l.width()).max().unwrap_or(0);

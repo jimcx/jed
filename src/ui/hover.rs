@@ -28,7 +28,13 @@ pub fn render(f: &mut Frame, app: &mut App, groups: &[GroupHit]) -> Option<Rect>
         return None;
     }
     let buf = app.buffers.get(popup.buffer)?;
-    let anchor = popup::cell_of(&buf.rope, &tab.view, hit.text, popup.anchor, app.settings.tab_width)?;
+    let anchor = popup::cell_of(
+        &buf.rope,
+        &tab.view,
+        hit.text,
+        popup.anchor,
+        app.settings.for_buffer(buf).tab_width,
+    )?;
     let area = hit.editor;
     // Border and a column of padding on each side.
     let width = hover::width(&popup.lines)

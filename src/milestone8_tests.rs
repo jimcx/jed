@@ -1346,7 +1346,8 @@ async fn milestone_8_auto_indent_and_match_brackets_settings() {
     draw(&mut term, &mut app);
     assert_eq!(bracket_cells(&term, &app), 2);
     app.press(K::Enter, M::NONE);
-    assert_eq!(text(&app), "  f() {\n      \n  }\n");
+    // A level of the file's own indentation (two spaces, guessed on load).
+    assert_eq!(text(&app), "  f() {\n    \n  }\n");
 }
 
 /// Enter between `{}` at every cursor of a 1 MB C++ file (~80k cursors, with a current tree),

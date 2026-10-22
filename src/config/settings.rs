@@ -5,6 +5,7 @@
 //! |--------------------|------|-----------|----------------------------------------------------------------|
 //! | `tab_width`        | int  | 4         | Columns per tab stop (0 is ignored)                            |
 //! | `insert_spaces`    | bool | true      | Tab inserts spaces                                             |
+//! | `detect_indentation` | bool | true    | A file's own indentation (spaces / tabs, size) overrides the two above |
 //! | `syntax_max_bytes` | int  | 8388608   | No parse tree (no highlighting) past this size; 0: never parse |
 //! | `auto_close_pairs` | bool | true      | Brackets/quotes auto-close, type over, delete in pairs, wrap   |
 //! | `auto_indent`      | bool | true      | Enter indents; a closing bracket first on a line outdents it    |
@@ -41,6 +42,9 @@ pub const FILE_NAME: &str = "settings.toml";
 pub struct SettingsOverrides {
     pub tab_width: Option<usize>,
     pub insert_spaces: Option<bool>,
+    /// Guess spaces / tabs and the indent size from a file's text on load (VS Code's
+    /// `editor.detectIndentation`).
+    pub detect_indentation: Option<bool>,
     /// No parse tree (so no highlighting) for buffers bigger than this; 0 turns parsing off.
     pub syntax_max_bytes: Option<usize>,
     /// Brackets and quotes auto-close, type over and delete in pairs, and wrap a selection.
@@ -83,6 +87,9 @@ impl SettingsOverrides {
         }
         if let Some(sp) = self.insert_spaces {
             s.insert_spaces = sp;
+        }
+        if let Some(on) = self.detect_indentation {
+            s.detect_indentation = on;
         }
         if let Some(max) = self.syntax_max_bytes {
             s.syntax_max_bytes = max;
@@ -219,6 +226,7 @@ pub const TEMPLATE: &str = "\
 [settings]
 # tab_width = 4
 # insert_spaces = true
+# detect_indentation = true  # a file's own indentation overrides the two above
 # syntax_max_bytes = 8388608
 # auto_close_pairs = true
 # auto_indent = true
@@ -244,7 +252,8 @@ mod tests {
     fn parses_every_key() {
         let o = set(
             "[settings]\ntab_width = 2\ninsert_spaces = false\nsyntax_max_bytes = 10\nauto_close_pairs = false\n\
-             auto_indent = false\nmatch_brackets = false\nquick_suggestions = false\nrender_whitespace = \"trailing\"\n\
+             detect_indentation = false\nauto_indent = false\nmatch_brackets = false\nquick_suggestions = false\n\
+             render_whitespace = \"trailing\"\n\
              cursor_style = \"block\"\ncursor_blinking = false\nhex_bytes_per_line = 16\n",
         );
         assert_eq!(
@@ -252,6 +261,7 @@ mod tests {
             SettingsOverrides {
                 tab_width: Some(2),
                 insert_spaces: Some(false),
+                detect_indentation: Some(false),
                 syntax_max_bytes: Some(10),
                 auto_close_pairs: Some(false),
                 auto_indent: Some(false),
@@ -476,6 +486,7 @@ mod tests {
         let every = SettingsOverrides {
             tab_width: Some(1),
             insert_spaces: Some(true),
+            detect_indentation: Some(true),
             syntax_max_bytes: Some(1),
             auto_close_pairs: Some(true),
             auto_indent: Some(true),
@@ -507,7 +518,8 @@ mod tests {
                 s.render_whitespace,
                 s.cursor_style,
                 s.cursor_blinking,
-                s.hex_bytes_per_line
+                s.hex_bytes_per_line,
+                s.detect_indentation
             ),
             (
                 d.auto_indent,
@@ -516,7 +528,8 @@ mod tests {
                 d.render_whitespace,
                 d.cursor_style,
                 d.cursor_blinking,
-                d.hex_bytes_per_line
+                d.hex_bytes_per_line,
+                d.detect_indentation
             )
         );
         assert!(parse(TEMPLATE).errors.is_empty());

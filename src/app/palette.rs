@@ -171,7 +171,7 @@ impl App {
                 format!(
                     "Current line: {}, column: {}. Type a line number between 1 and {lines} (line:column for a column)",
                     pos::line_of(&buf.rope, head) + 1,
-                    pos::display_col(&buf.rope, head, self.settings.tab_width).0 + 1,
+                    pos::display_col(&buf.rope, head, self.settings.for_buffer(buf).tab_width).0 + 1,
                 )
             }
         }
@@ -351,9 +351,10 @@ impl App {
     /// Puts the cursor on a 1-based line and column of the active view.
     fn go_to_line(&mut self, line: usize, col: usize) {
         self.nav_jump();
-        let tab_width = self.settings.tab_width;
+        let settings = self.settings.clone();
         if let Some((buf, view)) = self.active_mut() {
             buf.seal_undo();
+            let tab_width = settings.for_buffer(buf).tab_width;
             super::files::place_cursor(view, &buf.rope, (line, col), tab_width);
             self.ui.focus = Focus::Editor;
         }

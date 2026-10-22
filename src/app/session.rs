@@ -44,8 +44,9 @@ impl App {
         let open_hex: HashSet<PathBuf> = self.groups.hex_tabs().map(|h| h.path.clone()).collect();
         self.session.loading = true;
         let tx = self.tx.clone();
+        let indentation = self.settings.indentation();
         tokio::task::spawn_blocking(move || {
-            let result = session::read(&dir, &root, &open, &open_hex);
+            let result = session::read(&dir, &root, &open, &open_hex, indentation);
             let _ = tx.send(AppEvent::SessionRead(Box::new(result)));
         });
     }
@@ -466,7 +467,13 @@ mod tests {
         app.test_start();
         // The open's load is in flight; the restore's read (made before it) lands first.
         app.open_file(root.join("a.txt"), true, None);
-        let restore = session::read(&state, &root, &HashSet::new(), &HashSet::new());
+        let restore = session::read(
+            &state,
+            &root,
+            &HashSet::new(),
+            &HashSet::new(),
+            app.settings.indentation(),
+        );
         app.session_read(restore);
         assert_eq!(app.session.restored, 1);
         assert!(app.settle(|a| a.opening.is_empty()).await, "the open ends");

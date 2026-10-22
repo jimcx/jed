@@ -27,6 +27,7 @@ use crate::buffer::Buffer;
 use crate::diff_view::{Pair, Text};
 use crate::hex::{self, Column, HexDoc};
 use crate::history::Snapshot;
+use crate::indentation::Indentation;
 use crate::layout::{GroupId, SidePanel, SplitTree};
 
 /// The format's version; a file with another is ignored. Version 1 gained commit tabs, hex tabs
@@ -263,13 +264,15 @@ pub struct Restore {
 /// Reads the session of `root` and opens its text tabs' files, except those in `open` (already
 /// open in the app), and reads its hex tabs' bytes, except those in `open_hex` (shown in a hex
 /// tab already). Tabs of missing or unopenable files and history diffs of trimmed entries are
-/// dropped with a log line. `Ok(None)`: no session.
+/// dropped with a log line. `Ok(None)`: no session. `indentation` is the settings', for guessing
+/// the files' (`Buffer::open_with`).
 /// Blocking: call from spawn_blocking.
 pub fn read(
     state_dir: &Path,
     root: &Path,
     open: &HashSet<PathBuf>,
     open_hex: &HashSet<PathBuf>,
+    indentation: Indentation,
 ) -> Result<Option<Restore>, String> {
     let Some(mut session) = load(state_dir, root)? else {
         return Ok(None);
@@ -295,7 +298,7 @@ pub fn read(
                     failed.insert(path);
                     return false;
                 }
-                match Buffer::open(&path) {
+                match Buffer::open_with(&path, indentation) {
                     Ok(buffer) => {
                         loaded.insert(path.clone());
                         buffers.push((path, buffer));
@@ -402,6 +405,7 @@ fn diff_still_there(root: &Path, path: &Path, pair: Pair) -> bool {
 mod tests {
     use super::*;
     use crate::layout::SplitDir;
+    const DEFAULT_INDENT: Indentation = Indentation { spaces: true, size: 4 };
 
     fn session(root: &Path) -> Session {
         let mut tree = SplitTree::new(0);
@@ -511,16 +515,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (state, root) = (dir.path().join("state"), dir.path().join("proj"));
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("a.txt"), "alpha\n").unwrap();
+        std::fs::write(root.join("a.txt"), "alpha\n\tbeta\n").unwrap();
         let mut s = session(&root);
         // The history entry doesn't exist: that diff tab goes; b.txt is missing.
         save(&state, &s).unwrap();
-        let r = read(&state, &root, &HashSet::new(), &HashSet::new()).unwrap().unwrap();
+        let r = read(&state, &root, &HashSet::new(), &HashSet::new(), DEFAULT_INDENT)
+            .unwrap()
+            .unwrap();
         assert_eq!(r.session.groups[0].tabs.len(), 1);
         assert_eq!(r.session.groups[0].active, 0);
         assert!(r.session.groups[1].tabs.is_empty());
         assert_eq!(r.buffers.len(), 1);
         assert_eq!(r.buffers[0].0, root.join("a.txt"));
+        assert_eq!(r.buffers[0].1.guess().spaces, Some(false), "restored files are guessed");
 
         // A file already open isn't loaded again; a git diff stays without its file.
         s.groups[1].tabs = vec![TabState::Diff {
@@ -530,7 +537,9 @@ mod tests {
         }];
         save(&state, &s).unwrap();
         let open = HashSet::from([root.join("a.txt")]);
-        let r = read(&state, &root, &open, &HashSet::new()).unwrap().unwrap();
+        let r = read(&state, &root, &open, &HashSet::new(), DEFAULT_INDENT)
+            .unwrap()
+            .unwrap();
         assert!(r.buffers.is_empty());
         assert_eq!(r.session.groups[0].tabs.len(), 1);
         assert_eq!(r.session.groups[1].tabs.len(), 1);
@@ -598,7 +607,9 @@ mod tests {
         let json = std::fs::read_to_string(file(&state, &root)).unwrap();
         assert!(json.contains(r#""kind": "hex""#) && json.contains(r#""column": "ascii""#));
 
-        let r = read(&state, &root, &HashSet::new(), &HashSet::new()).unwrap().unwrap();
+        let r = read(&state, &root, &HashSet::new(), &HashSet::new(), DEFAULT_INDENT)
+            .unwrap()
+            .unwrap();
         assert_eq!(r.session.groups[0].tabs, [hex("a.bin", 2), hex("t.txt", 1)]);
         assert_eq!(r.session.groups[0].active, 1, "still the text file's tab");
         assert_eq!(r.session.groups[1].tabs.len(), 1);
@@ -614,7 +625,9 @@ mod tests {
         assert!(r.buffers.is_empty());
         // Shown in a hex tab already: not read again.
         let open = HashSet::from([root.join("a.bin")]);
-        let r = read(&state, &root, &HashSet::new(), &open).unwrap().unwrap();
+        let r = read(&state, &root, &HashSet::new(), &open, DEFAULT_INDENT)
+            .unwrap()
+            .unwrap();
         assert_eq!(r.hex.len(), 1);
         assert_eq!(r.session.groups[1].tabs.len(), 1);
     }
@@ -648,7 +661,9 @@ mod tests {
         s.tree = SplitTree::new(0);
         s.active_group = 0;
         save(&state, &s).unwrap();
-        let r = read(&state, &root, &HashSet::new(), &HashSet::new()).unwrap().unwrap();
+        let r = read(&state, &root, &HashSet::new(), &HashSet::new(), DEFAULT_INDENT)
+            .unwrap()
+            .unwrap();
         assert_eq!(r.session.groups[0].tabs.len(), 2, "both come back");
         assert_eq!(r.session.groups[0].active, 1);
         assert!(r.session.side.history_collapsed);
@@ -671,7 +686,9 @@ mod tests {
             right: Side::Commit { id: second },
         };
         save(&state, &s2).unwrap();
-        let r = read(&state, &root, &HashSet::new(), &HashSet::new()).unwrap().unwrap();
+        let r = read(&state, &root, &HashSet::new(), &HashSet::new(), DEFAULT_INDENT)
+            .unwrap()
+            .unwrap();
         assert!(r.session.groups[0].tabs.is_empty(), "{:?}", r.session.groups[0].tabs);
     }
 

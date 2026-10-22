@@ -14,6 +14,7 @@ use crate::buffer::file::{self, DiskMeta, LoadError, Stamp};
 use crate::buffer::pos::ByteIdx;
 use crate::command::Command;
 use crate::git::diff;
+use crate::indentation::{self, Guess, Indentation};
 
 /// One check of an open file, as `check` needs it.
 pub struct Check {
@@ -25,6 +26,8 @@ pub struct Check {
     pub base: Option<Rope>,
     /// "Reload from disk": read and diff the file even if it holds what the buffer knew.
     pub force: bool,
+    /// The settings' indentation, for guessing the file's (`indentation::guess`).
+    pub defaults: Indentation,
 }
 
 /// What `check` found.
@@ -48,6 +51,8 @@ pub enum OnDisk {
 pub struct Reload {
     pub changes: ChangeSet,
     pub meta: DiskMeta,
+    /// The new text's indentation.
+    pub guess: Guess,
 }
 
 /// Blocking: call from `spawn_blocking`. Reads the file, compares and (with a base) decodes it as
@@ -66,6 +71,7 @@ pub fn check(c: &Check) -> io::Result<OnDisk> {
         Ok(Reload {
             changes: changes(base, &loaded.rope),
             meta,
+            guess: indentation::guess(&loaded.rope, c.defaults),
         })
     });
     Ok(OnDisk::Changed { stamp, reload })
@@ -191,6 +197,7 @@ mod tests {
             known,
             base: base.map(Rope::from_str),
             force,
+            defaults: crate::edit::Settings::default().indentation(),
         };
         assert!(matches!(check(None, None, false).run(), OnDisk::Missing));
         std::fs::write(&path, "one\n").unwrap();

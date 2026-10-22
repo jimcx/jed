@@ -19,6 +19,7 @@ use undo::{EditKind, History};
 use crate::blame::Blame;
 use crate::commit_view::CommitDoc;
 use crate::diagnostics::Marks;
+use crate::indentation::{Guess, Indentation};
 use crate::logs::Tool;
 use crate::logs::tab::LogTab;
 use crate::quick_diff::QuickDiff;
@@ -82,6 +83,12 @@ pub struct Buffer {
     /// A commit tab's text (`Buffer::commit`): no file either, read-only, changed only by
     /// `append`; what the text was rendered from.
     pub commit: Option<CommitDoc>,
+    /// What the text said about its indentation when it was read (load, disk reload):
+    /// `edit::Settings::for_buffer` applies it unless `detect_indentation` is off.
+    guess: Guess,
+    /// Indentation chosen for this buffer (by a command), over the language's, the settings'
+    /// and the guess; a disk reload drops it (the file is guessed again). Session-only.
+    pub indentation: Option<Indentation>,
 }
 
 /// A change set as a language server needs it: positions are in `before`'s coordinates.
@@ -111,10 +118,20 @@ pub enum SaveError {
 }
 
 impl Buffer {
-    /// Blocking: reads the file.
-    pub fn open(path: &Path) -> Result<Self, LoadError> {
+    /// Blocking: reads the file and guesses its indentation (`indentation::guess`, `defaults`
+    /// being the settings' `edit::Settings::indentation`).
+    pub fn open_with(path: &Path, defaults: Indentation) -> Result<Self, LoadError> {
         let loaded = file::load(path)?;
-        Ok(Self::from_loaded(loaded, path.to_path_buf()))
+        let guess = crate::indentation::guess(&loaded.rope, defaults);
+        let mut buf = Self::from_loaded(loaded, path.to_path_buf());
+        buf.guess = guess;
+        Ok(buf)
+    }
+
+    /// `open_with` the default settings' indentation.
+    #[cfg(test)]
+    pub fn open(path: &Path) -> Result<Self, LoadError> {
+        Self::open_with(path, crate::edit::Settings::default().indentation())
     }
 
     fn from_loaded(loaded: file::Loaded, path: PathBuf) -> Self {
@@ -141,6 +158,8 @@ impl Buffer {
             blame: Blame::default(),
             log: None,
             commit: None,
+            guess: Guess::default(),
+            indentation: None,
         }
     }
 
@@ -238,8 +257,9 @@ impl Buffer {
 
     /// Takes in the file as it is now on disk: `changes` (from the current text to the file's)
     /// as one undo step of its own (undo brings the text from before back, dirty), then the
-    /// buffer is clean at the new text, with the file's BOM, line ending and read-only state.
-    pub fn reload(&mut self, changes: ChangeSet, before: Selections, after: Selections, meta: DiskMeta) {
+    /// buffer is clean at the new text, with the file's BOM, line ending and read-only state, and
+    /// `guess` as its indentation (a chosen one is dropped).
+    pub fn reload(&mut self, changes: ChangeSet, before: Selections, after: Selections, meta: DiskMeta, guess: Guess) {
         self.history.seal();
         self.edit(changes, before, after, EditKind::Other);
         self.history.seal();
@@ -250,6 +270,19 @@ impl Buffer {
         self.bom = meta.bom;
         self.eol = meta.eol;
         self.read_only = meta.read_only;
+        self.guess = guess;
+        self.indentation = None;
+    }
+
+    /// What the text said about its indentation when last read (`indentation::guess`).
+    pub fn guess(&self) -> Guess {
+        self.guess
+    }
+
+    /// Takes a new guess (from the text as it is now: "Detect Indentation from Content").
+    #[allow(dead_code)] // indentation-b's command
+    pub fn set_guess(&mut self, guess: Guess) {
+        self.guess = guess;
     }
 
     pub fn save_in_flight(&self) -> bool {
@@ -543,7 +576,7 @@ mod tests {
             eol: Eol::Lf,
             read_only: None,
         };
-        buf.reload(insert(4, "two\n"), cursor(0), cursor(0), meta.clone());
+        buf.reload(insert(4, "two\n"), cursor(0), cursor(0), meta.clone(), Guess::default());
         assert_eq!(buf.rope.to_string(), "one\ntwo\n");
         assert!(!buf.is_dirty() && buf.bom && !buf.deleted);
         assert_eq!(buf.disk(), Some(meta.stamp));

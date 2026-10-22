@@ -109,14 +109,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
         } else {
             let head = tab.view.selections.primary().head;
             let line = pos::line_of(&buf.rope, head) + 1;
-            let col = pos::display_col(&buf.rope, head, app.settings.tab_width).0 + 1;
+            let col = pos::display_col(&buf.rope, head, app.settings.for_buffer(buf).tab_width).0 + 1;
             format!("Ln {line}, Col {col}")
         };
-        let settings = app.settings.for_language(buf.syntax.language());
+        let settings = app.settings.for_buffer(buf);
         let indent = if settings.insert_spaces {
-            format!("Spaces: {}", app.settings.tab_width)
+            format!("Spaces: {}", settings.tab_width)
         } else {
-            format!("Tab Size: {}", app.settings.tab_width)
+            format!("Tab Size: {}", settings.tab_width)
         };
         let encoding = if buf.bom { "UTF-8 with BOM" } else { "UTF-8" };
         let right = format!(

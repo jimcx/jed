@@ -31,7 +31,7 @@ impl App {
         };
         buf.seal_undo();
         let language = buf.syntax.language();
-        let options = format::options(&self.settings.for_language(language));
+        let options = format::options(&self.settings.for_buffer(buf));
         let extra = json!({ "options": options });
         if !self.send_doc_request(
             (group, buffer, at),

@@ -35,7 +35,7 @@ pub fn render(f: &mut Frame, app: &App, groups: &[GroupHit]) -> Option<QuickDiff
         &tab.view,
         hit.text,
         pos::line_start(rope, last),
-        app.settings.tab_width,
+        app.settings.for_buffer(buf).tab_width,
     )?;
 
     // `-` lines from the index, `+` lines from the buffer (not for a deletion).
