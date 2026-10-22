@@ -116,7 +116,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
         out.set_stringn(field_x, y, e, (width - 2) as usize, style);
     }
 
-    if app.ui.focus == Focus::Find && app.prompt.is_none() && app.palette.is_none() {
+    if app.ui.focus == Focus::Find && app.prompt.is_none() && app.palette.is_none() && app.cheat_sheet.is_none() {
         f.set_cursor_position(cursor);
     }
     Some(FindHit {

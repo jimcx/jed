@@ -3,6 +3,7 @@ mod backup;
 mod blame;
 mod brackets;
 mod buffer;
+mod cheatsheet;
 mod clipboard;
 mod code_action;
 mod column;

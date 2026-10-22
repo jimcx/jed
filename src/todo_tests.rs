@@ -5992,3 +5992,248 @@ mod text_field_keys {
         assert_eq!(selected, [true, false, false, false, false], "\"a\" selected");
     }
 }
+
+/// Keyboard cheat sheet overlay: Shift+F1 opens it over the editor area, built from the live
+/// keymap (a rebound command shows its new key, an unbound one is absent), the context it opens
+/// from first; it scrolls; Esc, Shift+F1 or a click outside close it; other keys are swallowed.
+mod cheat_sheet {
+    use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind as Mouse};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::command::Command;
+    use crate::config::keymap::{self, Context, Keymap, Platform};
+
+    fn open_app(dir: &tempfile::TempDir) -> App {
+        open_with(dir, "abc\n")
+    }
+
+    fn open_with(dir: &tempfile::TempDir, text: &str) -> App {
+        let root = crate::workspace::normalize(dir.path());
+        let path = root.join("a.txt");
+        std::fs::write(&path, text).unwrap();
+        let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&path).unwrap());
+        app.test_start();
+        app
+    }
+
+    /// The screen's rows as text.
+    fn draw(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        let buf = term.backend().buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect()
+    }
+
+    fn line_with<'a>(screen: &'a [String], text: &str) -> Option<&'a String> {
+        screen.iter().find(|l| l.contains(text))
+    }
+
+    fn shift_f1(app: &mut App) {
+        app.press(K::F(1), M::SHIFT);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cheat_sheet_shows_the_live_keymap() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(&dir);
+        // Quick open moved to Ctrl+G, which takes it from Go to Line (now bound to nothing).
+        let config = dir.path().join(keymap::FILE_NAME);
+        std::fs::write(
+            &config,
+            "[[binding]]\nkey = \"ctrl+g\"\ncommand = \"palette.quickOpen\"\n",
+        )
+        .unwrap();
+        let (km, errors) = Keymap::load(&config, Platform::current());
+        assert!(errors.is_empty(), "{errors:?}");
+        app.set_keymap(km, errors);
+
+        assert!(line_with(&draw(&mut app, 200, 50), "Keyboard Cheat Sheet").is_none());
+        shift_f1(&mut app);
+        assert!(app.cheat_sheet.is_some());
+        let screen = draw(&mut app, 200, 50);
+        assert!(line_with(&screen, "Keyboard Cheat Sheet").is_some(), "{screen:#?}");
+        let quick_open = line_with(&screen, &Command::QuickOpen.title()).expect("quick open listed");
+        let at = quick_open.find(&Command::QuickOpen.title()).unwrap();
+        assert!(quick_open[..at].trim_end().ends_with("Ctrl+G"), "{quick_open}");
+        assert!(line_with(&screen, &Command::GoToLine.title()).is_none(), "{screen:#?}");
+        assert!(line_with(&screen, "Shift+F1").is_some(), "{screen:#?}");
+        for heading in [
+            "Cursor Movement",
+            "Selection",
+            "Going Places",
+            "Tabs and Groups",
+            "Panels",
+        ] {
+            assert!(line_with(&screen, heading).is_some(), "{heading}");
+        }
+        // Wide enough for several columns: two headings share a row.
+        assert!(
+            screen
+                .iter()
+                .any(|l| l.contains("Cursor Movement") && l.contains("Going Places")),
+            "{screen:#?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cheat_sheet_swallows_keys_and_closes_with_esc_or_shift_f1() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(&dir);
+        shift_f1(&mut app);
+        app.type_text("x");
+        app.press(K::Enter, M::NONE);
+        app.press(
+            K::Char('p'),
+            if cfg!(target_os = "macos") {
+                M::SUPER
+            } else {
+                M::CONTROL
+            },
+        );
+        app.handle_test_event(crossterm::event::Event::Paste("pasted".into()));
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "abc\n");
+        assert!(app.palette.is_none());
+        assert!(app.cheat_sheet.is_some());
+        app.press(K::Esc, M::NONE);
+        assert!(app.cheat_sheet.is_none());
+        shift_f1(&mut app);
+        assert!(app.cheat_sheet.is_some());
+        shift_f1(&mut app);
+        assert!(app.cheat_sheet.is_none());
+        assert!(line_with(&draw(&mut app, 120, 40), "Keyboard Cheat Sheet").is_none());
+        // Typing works again.
+        app.type_text("x");
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "xabc\n");
+        // From the palette too.
+        app.test_execute(Command::ShowCommands);
+        app.test_execute(Command::CheatSheet);
+        assert!(app.palette.is_none());
+        assert!(app.cheat_sheet.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cheat_sheet_closes_on_a_click_outside() {
+        let dir = tempfile::tempdir().unwrap();
+        // Long lines everywhere, so any click in the editor lands on text and moves the cursor.
+        let text: String = (0..60).map(|i| format!("{i:02} {}\n", "x".repeat(200))).collect();
+        let mut app = open_with(&dir, &text);
+        app.test_plain_whitespace();
+        shift_f1(&mut app);
+        draw(&mut app, 120, 40);
+        let rect = app.hits.cheat_sheet.unwrap().rect;
+        let primary = |app: &App| *app.group().active_tab().unwrap().view.selections.primary();
+        let start = primary(&app);
+        // Inside (over the editor's text underneath): nothing happens.
+        app.mouse(Mouse::Down(MouseButton::Left), rect.x + 2, rect.y + 2);
+        app.mouse(Mouse::Up(MouseButton::Left), rect.x + 2, rect.y + 2);
+        assert!(app.cheat_sheet.is_some());
+        assert_eq!(primary(&app), start, "a click inside reached the editor");
+        // The wheel scrolls the sheet, never the editor under it.
+        app.mouse(Mouse::ScrollDown, rect.x.saturating_sub(1), rect.y + 1);
+        assert_eq!(app.group().active_tab().unwrap().view.top_line(), 0);
+        // Outside (on the editor's text): closes it and moves no cursor.
+        let (x, y) = (rect.x.saturating_sub(1), rect.y + 1);
+        app.mouse(Mouse::Down(MouseButton::Left), x, y);
+        app.mouse(Mouse::Up(MouseButton::Left), x, y);
+        assert!(app.cheat_sheet.is_none());
+        assert_eq!(primary(&app), start, "the closing click reached the editor");
+        // Control: the same click with the sheet closed does move the cursor.
+        draw(&mut app, 120, 40);
+        app.mouse(Mouse::Down(MouseButton::Left), x, y);
+        app.mouse(Mouse::Up(MouseButton::Left), x, y);
+        assert_ne!(primary(&app), start, "the click spot isn't on the editor's text");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cheat_sheet_from_the_find_widget_shows_finds_keys_and_esc_closes_only_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(&dir);
+        app.test_execute(Command::OpenFind);
+        assert_eq!(app.ui.focus, crate::app::Focus::Find);
+        let query = app.find.query.text.clone();
+        shift_f1(&mut app);
+        assert_eq!(app.cheat_sheet.as_ref().unwrap().context, Context::Find);
+        let screen = draw(&mut app, 160, 50);
+        let rect = app.hits.cheat_sheet.unwrap().rect;
+        let first: String = screen[rect.y as usize + 1]
+            .chars()
+            .skip(rect.x as usize + 2)
+            .take(4)
+            .collect();
+        assert_eq!(first, "Find", "{screen:#?}");
+        // Typed text and a paste reach neither the find input nor the buffer.
+        app.type_text("zz");
+        app.handle_test_event(crossterm::event::Event::Paste("pasted".into()));
+        assert_eq!(app.find.query.text, query, "keys reached the find input");
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "abc\n");
+        // Esc closes the sheet only: the find widget stays, focused.
+        app.press(K::Esc, M::NONE);
+        assert!(app.cheat_sheet.is_none());
+        assert!(app.find.visible);
+        assert_eq!(app.ui.focus, crate::app::Focus::Find);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cheat_sheet_opens_with_the_explorers_keys_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(&dir);
+        app.test_execute(Command::FocusExplorer);
+        shift_f1(&mut app);
+        assert_eq!(app.cheat_sheet.as_ref().unwrap().context, Context::Explorer);
+        let screen = draw(&mut app, 160, 50);
+        let rect = app.hits.cheat_sheet.unwrap().rect;
+        let first = &screen[rect.y as usize + 1];
+        let col: String = first.chars().skip(rect.x as usize + 2).take(8).collect();
+        assert_eq!(col, "Explorer", "{screen:#?}");
+        // Closing leaves the focus where it was.
+        app.press(K::Esc, M::NONE);
+        assert!(app.cheat_sheet.is_none());
+        assert_eq!(app.ui.focus, crate::app::Focus::SidePanel);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cheat_sheet_scrolls_in_one_column_on_a_narrow_terminal() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(&dir);
+        shift_f1(&mut app);
+        let screen = draw(&mut app, 60, 20);
+        let sheet = app.cheat_sheet.as_ref().unwrap();
+        assert!(sheet.rows > sheet.height, "taller than the screen");
+        let bar = app.hits.cheat_sheet.unwrap().scrollbar.expect("a scroll bar");
+        assert!(bar.thumb.is_some_and(|t| t.start == 0));
+        assert!(
+            !screen
+                .iter()
+                .any(|l| l.contains("Cursor Movement") && l.contains("Selection"))
+        );
+        // The wheel scrolls it.
+        app.mouse(Mouse::ScrollDown, bar.track.x - 3, bar.track.y + 1);
+        assert_eq!(app.cheat_sheet.as_ref().unwrap().top, 3);
+        // Keys do too.
+        app.press(K::Down, M::NONE);
+        assert_eq!(app.cheat_sheet.as_ref().unwrap().top, 4);
+        app.press(K::End, M::NONE);
+        draw(&mut app, 60, 20);
+        let sheet = app.cheat_sheet.as_ref().unwrap();
+        assert_eq!(sheet.top, sheet.rows - sheet.height);
+        let thumb = app.hits.cheat_sheet.unwrap().scrollbar.unwrap().thumb.unwrap();
+        assert_eq!(thumb.start + thumb.len, bar.track.height);
+        // Dragging the thumb to the top scrolls back.
+        let y = bar.track.y + thumb.start;
+        app.mouse(Mouse::Down(MouseButton::Left), bar.track.x, y);
+        app.mouse(
+            Mouse::Drag(MouseButton::Left),
+            bar.track.x,
+            bar.track.y.saturating_sub(5),
+        );
+        app.mouse(Mouse::Up(MouseButton::Left), bar.track.x, bar.track.y);
+        assert_eq!(app.cheat_sheet.as_ref().unwrap().top, 0);
+        assert!(app.cheat_sheet.is_some());
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "abc\n");
+    }
+}

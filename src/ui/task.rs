@@ -70,7 +70,8 @@ pub fn render(f: &mut Frame, panel: Rect, info: Rect, app: &mut App, id: RunId) 
         }
     }
     let Some(run) = app.tasks.get(id) else { return };
-    let focused = app.ui.focus == Focus::Panel && app.prompt.is_none() && app.palette.is_none();
+    let focused =
+        app.ui.focus == Focus::Panel && app.prompt.is_none() && app.palette.is_none() && app.cheat_sheet.is_none();
     let running = run.status().is_running();
     let theme = &app.theme;
     let base = theme.get("panel");

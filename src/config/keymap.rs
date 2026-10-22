@@ -239,7 +239,7 @@ impl Context {
     }
 
     /// The context looked at next, before the global bindings.
-    fn parent(self) -> Option<Context> {
+    pub fn parent(self) -> Option<Context> {
         match self {
             Context::Replace => Some(Context::Find),
             Context::SearchResults => Some(Context::Search),
@@ -323,6 +323,29 @@ impl Keymap {
     /// The key shown next to a command in the palette.
     pub fn binding_for(&self, cmd: Command) -> Option<KeyCombo> {
         self.shown.get(&cmd).copied()
+    }
+
+    /// The commands bound in `context` itself (not its parents or globally), each with its
+    /// palette key when that's one of them, else its first by label; sorted by command title.
+    pub fn context_bindings(&self, context: Context) -> Vec<(KeyCombo, Command)> {
+        let mut by_cmd: HashMap<Command, KeyCombo> = HashMap::new();
+        for ((combo, ctx), cmd) in &self.bindings {
+            if *ctx != Some(context) {
+                continue;
+            }
+            let shown = self.shown.get(cmd) == Some(combo);
+            by_cmd
+                .entry(*cmd)
+                .and_modify(|c| {
+                    if shown || (self.shown.get(cmd) != Some(c) && combo.label() < c.label()) {
+                        *c = *combo;
+                    }
+                })
+                .or_insert(*combo);
+        }
+        let mut rows: Vec<(KeyCombo, Command)> = by_cmd.into_iter().map(|(cmd, combo)| (combo, cmd)).collect();
+        rows.sort_by_cached_key(|(combo, cmd)| (cmd.title(), combo.label()));
+        rows
     }
 
     /// Later bindings win on the same key and context.
@@ -636,6 +659,8 @@ fn defaults(platform: Platform) -> Vec<Binding> {
     global.extend([
         (KeyCode::Char('p'), cmd | shift, Command::ShowCommands),
         (KeyCode::F(1), none, Command::ShowCommands),
+        // F1 is the palette, so Shift+F1 on both platforms (no Cmd: docs/terminals/ unchanged).
+        (KeyCode::F(1), shift, Command::CheatSheet),
         (KeyCode::Char('p'), cmd, Command::QuickOpen),
         // Ctrl on macOS too, as in VS Code.
         (KeyCode::Char('g'), ctrl, Command::GoToLine),

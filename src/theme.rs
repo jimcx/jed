@@ -142,6 +142,11 @@ impl Theme {
             ("dialog.key", Style::new().fg(c(0x3794FF)).add_modifier(Modifier::BOLD)),
             ("dialog.input", fg_bg(0xCCCCCC, 0x3C3C3C)),
             ("dialog.error", Style::new().fg(c(0xF48771))),
+            // The keyboard cheat sheet's section headings (keys are `dialog.key`, titles `dialog`).
+            (
+                "cheatSheet.heading",
+                Style::new().fg(c(0xE7E7E7)).add_modifier(Modifier::BOLD),
+            ),
             ("activityBar", fg_bg(0x858585, 0x333333)),
             ("activityBar.active", Style::new().fg(c(0xFFFFFF))),
             ("sideBar", fg_bg(0xCCCCCC, 0x252526)),

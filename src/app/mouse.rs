@@ -14,7 +14,7 @@ use crate::terminal::Pointer;
 use crate::view::View;
 
 const MULTI_CLICK: Duration = Duration::from_millis(500);
-const WHEEL_LINES: isize = 3;
+pub(super) const WHEEL_LINES: isize = 3;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Drag {
@@ -98,6 +98,8 @@ impl App {
                 ScrollTarget::Panel(_) => Hit::Panel,
                 // The wheel over the history's bar scrolls its list, as over its rows.
                 ScrollTarget::History => Hit::HistoryRow(0),
+                // Taken by `cheat_sheet_mouse` while it's open.
+                ScrollTarget::CheatSheet => Hit::Nothing,
             },
             hit => hit,
         };

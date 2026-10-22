@@ -130,6 +130,8 @@ pub enum Command {
     Explorer(ExplorerCommand),
     /// Command palette: every command, with its binding.
     ShowCommands,
+    /// The keyboard cheat sheet overlay (`cheatsheet.rs`).
+    CheatSheet,
     /// Quick open a file (fuzzy).
     QuickOpen,
     GoToLine,
@@ -789,6 +791,7 @@ impl Command {
         all.extend(ExplorerCommand::ALL.map(Command::Explorer));
         all.extend([
             Command::ShowCommands,
+            Command::CheatSheet,
             Command::QuickOpen,
             Command::GoToLine,
             Command::ManageWorkspaceTrust,
@@ -951,6 +954,7 @@ impl Command {
                 }
             ),
             Command::ShowCommands => "palette.showCommands".into(),
+            Command::CheatSheet => "help.cheatSheet".into(),
             Command::QuickOpen => "palette.quickOpen".into(),
             Command::GoToLine => "palette.goToLine".into(),
             Command::ManageWorkspaceTrust => "workspace.manageTrust".into(),
@@ -1271,6 +1275,7 @@ impl Command {
                 X::FindInFolder => "Explorer: Find in Folder…",
             },
             Command::ShowCommands => "Show All Commands",
+            Command::CheatSheet => "Help: Keyboard Cheat Sheet",
             Command::QuickOpen => "Go to File…",
             Command::GoToLine => "Go to Line…",
             Command::ManageWorkspaceTrust => "Workspaces: Manage Workspace Trust",
@@ -1520,6 +1525,7 @@ mod tests {
             Command::SplitDown => 24,
             Command::Explorer(_) => 25,
             Command::ShowCommands => 26,
+            Command::CheatSheet => 113,
             Command::QuickOpen => 27,
             Command::GoToLine => 28,
             Command::ManageWorkspaceTrust => 29,

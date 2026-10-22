@@ -59,6 +59,7 @@ One line each; [docs/dev/modules.md](docs/dev/modules.md) has every module's typ
 - `diagnostics.rs` — `Severity`, `Diagnostic`, `Marks` (on every buffer, mapped through edits), `runs`
 - `explorer.rs` — explorer tree model; `walker` (shared by quick open and workspace search), blocking `ops`
 - `palette.rs` — palette model: `Picker`s, `Mode`s, row builders, `FileMatcher`
+- `cheatsheet.rs` — the keyboard cheat sheet's model (Shift+F1): fixed command groups built from the live `Keymap`, the opening context's keys first, `layout` in columns
 - `field.rs` — `TextField`, the one-line input (cursor + anchor), `FieldCommand`
 - `find.rs` — `FindWidget`, the find / replace widget's model + match cache
 - `hex.rs` — the hex view's model: `HexDoc`, `Layout` (rows as `hexdump -C`), `HexTab` (a `Tab::Hex`), byte `Query` find / count
