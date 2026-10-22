@@ -16,6 +16,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `replace.rs` — the Search view's Replace (`app.replace`): a line / file / all, the confirm, open buffers edited, other files rewritten off-thread with history, the message and the search again
 - `syntax.rs` — buffers' language detection and `sync_syntax` (incremental / background parses)
 - `lsp.rs` — `sync_servers`, trust gating, `send_request` / `Pending` / `answer`, diagnostics into buffers, server notices
+- `indentation.rs` — the status bar's indentation item, Indent Using Spaces / Tabs, Change Tab Display Size (`Picker::IndentSize`), Detect Indentation from Content
 - `problems.rs` — the bottom panel and its Problems list (Cmd+J, F8 / Shift+F8)
 - `hover.rs` — hover popup (command and mouse rest): the diagnostics there at once, the server's answer appended, closing
 - `completion.rs` — completion: trigger / quick suggestions, answers, the list's keys, accepting

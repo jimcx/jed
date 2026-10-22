@@ -17,7 +17,13 @@ use crate::{column, comment, indent, lines, pairs, shift};
 
 #[derive(Debug, Clone)]
 pub struct Settings {
+    /// Columns per tab stop: how wide a tab is drawn and counts in column maths (and, unless
+    /// `indent_size` says otherwise, the indent size).
     pub tab_width: usize,
+    /// Spaces per indent level when it differs from `tab_width` (not a user setting:
+    /// `for_buffer` sets it when "Change Tab Display Size" changed a space-indented buffer's
+    /// drawn tab width only, VS Code's `indentSize`). Read it through `indent_size()`.
+    pub indent_size: Option<usize>,
     pub insert_spaces: bool,
     /// A buffer's guessed indentation (`indentation::guess`, kept on the `Buffer`) overrides
     /// `insert_spaces` / `tab_width` (`for_buffer`): `[settings] detect_indentation`.
@@ -87,6 +93,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             tab_width: 4,
+            indent_size: None,
             insert_spaces: true,
             detect_indentation: true,
             syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
@@ -117,7 +124,8 @@ impl Settings {
     /// buffer's text uses: the language's (`for_language`), then the buffer's own indentation —
     /// the one chosen for it (`Buffer::indentation`), else, with `detect_indentation`, the
     /// guess from its text (`Buffer::guess`; not for a language that fixes `insert_spaces`, as
-    /// a Makefile's tabs).
+    /// a Makefile's tabs) — and last its tab display size (`Buffer::tab_display`: the drawn
+    /// width of a tab; with spaces the indent size stays as it was, in `indent_size`).
     pub fn for_buffer(&self, buf: &Buffer) -> Settings {
         let language = buf.syntax.language();
         let mut s = self.for_language(language);
@@ -128,15 +136,32 @@ impl Settings {
         if let Some(i) = chosen {
             s.insert_spaces = i.spaces;
             s.tab_width = i.size.max(1);
+            s.indent_size = None;
+        }
+        if let Some(width) = buf.tab_display {
+            if s.insert_spaces {
+                s.indent_size = Some(s.indent_size());
+            }
+            s.tab_width = width.max(1);
         }
         s
     }
 
-    /// The indentation these settings give: what a guess falls back to.
+    /// Spaces per indent level (with `insert_spaces`; with tabs a level is one tab).
+    pub fn indent_size(&self) -> usize {
+        self.indent_size.unwrap_or(self.tab_width).max(1)
+    }
+
+    /// The indentation these settings give: what a guess falls back to (the indent size with
+    /// spaces, the tab width with tabs).
     pub fn indentation(&self) -> Indentation {
         Indentation {
             spaces: self.insert_spaces,
-            size: self.tab_width,
+            size: if self.insert_spaces {
+                self.indent_size()
+            } else {
+                self.tab_width
+            },
         }
     }
 }
@@ -428,8 +453,8 @@ fn delete(buf: &mut Buffer, view: &mut View, to: impl Fn(&Rope, ByteIdx) -> Byte
 fn insert_tab(buf: &mut Buffer, view: &mut View, s: &Settings) {
     replace_each(buf, view, EditKind::Insert, |rope, sel| {
         let text = if s.insert_spaces {
-            let col = pos::display_col(rope, sel.start(), s.tab_width).0;
-            " ".repeat(s.tab_width - col % s.tab_width)
+            let (col, size) = (pos::display_col(rope, sel.start(), s.tab_width).0, s.indent_size());
+            " ".repeat(size - col % size)
         } else {
             "\t".to_string()
         };
@@ -528,6 +553,45 @@ mod tests {
 
     fn mv(motion: Motion) -> Command {
         C::Move { motion, select: false }
+    }
+
+    #[test]
+    fn a_buffers_tab_display_size_changes_only_the_drawn_width_with_spaces() {
+        let mut b = Buffer::from_str("a\n");
+        let s = Settings::default();
+        let get = |b: &Buffer| {
+            let r = s.for_buffer(b);
+            (r.insert_spaces, r.indent_size(), r.tab_width, r.indentation())
+        };
+        let spaces = |size| Indentation { spaces: true, size };
+        assert_eq!(get(&b), (true, 4, 4, spaces(4)));
+        b.tab_display = Some(8);
+        assert_eq!(get(&b), (true, 4, 8, spaces(4)), "spaces: the indent size stays");
+        b.choose_indentation(spaces(2));
+        assert_eq!(get(&b), (true, 2, 2, spaces(2)), "choosing drops the display size");
+        b.tab_display = Some(6);
+        assert_eq!(get(&b), (true, 2, 6, spaces(2)));
+        let tabs = Indentation { spaces: false, size: 4 };
+        b.choose_indentation(tabs);
+        b.tab_display = Some(3);
+        assert_eq!(
+            get(&b),
+            (false, 3, 3, Indentation { spaces: false, size: 3 }),
+            "tabs: it is the tab size"
+        );
+        b.redetect(crate::indentation::Guess::default());
+        assert_eq!((b.indentation, b.tab_display), (None, None));
+        assert_eq!(get(&b), (true, 4, 4, spaces(4)));
+    }
+
+    #[test]
+    fn tab_with_spaces_goes_to_the_next_indent_stop() {
+        let (mut b, mut v, mut s) = setup("\tx", 1);
+        s.tab_width = 8;
+        s.indent_size = Some(3);
+        s.detect_indentation = false; // else the (empty) guess resolves both from the settings
+        run(C::InsertTab, &mut b, &mut v, &s);
+        assert_eq!(b.rope.to_string(), "\t x", "the tab reaches column 8: one space to 9");
     }
 
     #[test]

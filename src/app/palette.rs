@@ -137,6 +137,30 @@ impl App {
                 }
                 rows
             }
+            Mode::Indentation => {
+                let mut rows = palette::command_rows(&query, &palette::INDENTATION_ACTIONS, |c| {
+                    self.keymap.binding_for(c).map(|k| k.label())
+                });
+                if query.trim().is_empty() {
+                    // Their own order, not alphabetical.
+                    rows.sort_by_key(|r| {
+                        palette::INDENTATION_ACTIONS
+                            .iter()
+                            .position(|c| r.action == Action::Run(*c))
+                    });
+                }
+                hint = Some(if rows.is_empty() {
+                    "No matching commands".into()
+                } else {
+                    "Select Action".into()
+                });
+                rows
+            }
+            Mode::IndentSize => {
+                let (rows, text) = self.indent_size_rows(&query);
+                hint = Some(text);
+                rows
+            }
             Mode::Files => {
                 let files = self.file_matcher();
                 files.set_query(palette::file_query(&query));
@@ -150,6 +174,12 @@ impl App {
         if let Some(p) = &mut self.palette {
             p.set_rows(rows);
             p.hint = hint;
+            // A size picker starts on the current size (VS Code).
+            if mode == Mode::IndentSize
+                && let Some(i) = p.rows.iter().position(|r| r.detail.starts_with("current"))
+            {
+                p.select(i);
+            }
         }
         self.update_files_hint();
     }
@@ -315,6 +345,13 @@ impl App {
             (_, Some(Action::OpenLog(tool))) => {
                 self.close_palette();
                 self.open_tool_log(tool);
+            }
+            (_, Some(Action::IndentSize(size))) => {
+                let picker = p.picker;
+                self.close_palette();
+                if let Picker::IndentSize { buffer, kind } = picker {
+                    self.indent_size_picked(buffer, kind, size);
+                }
             }
             (_, Some(Action::Open(rel))) => {
                 let goto = paths::strip_position(&query).map(|(_, (l, c))| super::files::Goto::Cursor(l, c));

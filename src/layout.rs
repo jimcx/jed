@@ -410,6 +410,8 @@ pub struct HitMap {
     pub panel_scrollbar: Option<(ScrollTarget, ScrollBarHit)>,
     /// The status bar's problem counts (a click toggles the Problems panel).
     pub status_problems: Option<Rect>,
+    /// The status bar's `Spaces: N` / `Tab Size: N` (a click opens the indentation picker).
+    pub status_indentation: Option<Rect>,
     /// The hover popup, when shown: on top of everything under it.
     pub hover: Option<Rect>,
     /// The completion list, when shown: on top of everything (the hover too).
@@ -629,6 +631,8 @@ pub enum Hit {
     Status,
     /// The status bar's problem counts.
     StatusProblems,
+    /// The status bar's indentation item.
+    StatusIndentation,
     /// The hover popup (over an editor).
     Hover,
     /// The completion list (over an editor).
@@ -746,6 +750,9 @@ impl HitMap {
         if r.status.contains(p) {
             if self.status_problems.is_some_and(|c| c.contains(p)) {
                 return Hit::StatusProblems;
+            }
+            if self.status_indentation.is_some_and(|c| c.contains(p)) {
+                return Hit::StatusIndentation;
             }
             return Hit::Status;
         }
@@ -955,6 +962,7 @@ mod tests {
                 },
             )),
             status_problems: Some(Rect::new(10, 29, 8, 1)),
+            status_indentation: Some(Rect::new(70, 29, 9, 1)),
             hover: Some(Rect::new(40, 5, 10, 4)),
             code_actions: None,
             completion: Some(CompletionHit {
@@ -1012,6 +1020,8 @@ mod tests {
         assert_eq!(map.hit(50, 24), Hit::PanelTabClose(crate::tasks::RunId(3)));
         assert_eq!(map.hit(50, 26), Hit::Panel);
         assert_eq!(map.hit(12, 29), Hit::StatusProblems);
+        assert_eq!(map.hit(70, 29), Hit::StatusIndentation);
+        assert_eq!(map.hit(79, 29), Hit::Status);
         assert_eq!(map.hit(5, 20), Hit::ExplorerRow(18), "the tree above the history");
         assert_eq!(map.hit(5, 22), Hit::HistoryDivider);
         assert_eq!(map.hit(5, 23), Hit::HistoryHeader);

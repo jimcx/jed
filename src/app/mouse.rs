@@ -326,6 +326,7 @@ impl App {
                 PanelTab::Task(_) => self.task_click(m),
             },
             Hit::StatusProblems => self.problem_counts_clicked(),
+            Hit::StatusIndentation => self.indentation_clicked(),
             Hit::Status | Hit::Hover | Hit::Completion | Hit::CodeActions | Hit::QuickDiff | Hit::Nothing => {}
         }
     }

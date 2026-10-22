@@ -89,6 +89,10 @@ pub struct Buffer {
     /// Indentation chosen for this buffer (by a command), over the language's, the settings'
     /// and the guess; a disk reload drops it (the file is guessed again). Session-only.
     pub indentation: Option<Indentation>,
+    /// A tab's drawn width chosen for this buffer ("Change Tab Display Size"), over the
+    /// indentation's size; with spaces the indent size stays (`edit::Settings::indent_size`).
+    /// Choosing an indentation, re-detecting or a disk reload drops it. Session-only.
+    pub tab_display: Option<usize>,
 }
 
 /// A change set as a language server needs it: positions are in `before`'s coordinates.
@@ -160,6 +164,7 @@ impl Buffer {
             commit: None,
             guess: Guess::default(),
             indentation: None,
+            tab_display: None,
         }
     }
 
@@ -270,8 +275,7 @@ impl Buffer {
         self.bom = meta.bom;
         self.eol = meta.eol;
         self.read_only = meta.read_only;
-        self.guess = guess;
-        self.indentation = None;
+        self.redetect(guess);
     }
 
     /// What the text said about its indentation when last read (`indentation::guess`).
@@ -279,10 +283,19 @@ impl Buffer {
         self.guess
     }
 
-    /// Takes a new guess (from the text as it is now: "Detect Indentation from Content").
-    #[allow(dead_code)] // indentation-b's command
-    pub fn set_guess(&mut self, guess: Guess) {
+    /// Takes a new guess (a reload's, or from the text as it is now: "Detect Indentation from
+    /// Content") and drops the chosen indentation and tab display size.
+    pub fn redetect(&mut self, guess: Guess) {
         self.guess = guess;
+        self.indentation = None;
+        self.tab_display = None;
+    }
+
+    /// Chooses an indentation ("Indent Using Spaces / Tabs"): its size is the tab width too, so
+    /// a tab display size chosen before is dropped (VS Code sets both).
+    pub fn choose_indentation(&mut self, indentation: Indentation) {
+        self.indentation = Some(indentation);
+        self.tab_display = None;
     }
 
     pub fn save_in_flight(&self) -> bool {

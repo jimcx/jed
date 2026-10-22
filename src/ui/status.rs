@@ -10,9 +10,17 @@ use crate::buffer::pos;
 use crate::diagnostics::Severity;
 use crate::workspace::trust::Trust;
 
-/// Draws the status bar; returns where the problem counts are (a click toggles the Problems
-/// list).
-pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
+/// What the status bar drew that a click acts on.
+#[derive(Debug, Default)]
+pub struct StatusHit {
+    /// The problem counts (a click toggles the Problems list).
+    pub problems: Option<Rect>,
+    /// A text tab's `Spaces: N` / `Tab Size: N` (a click opens the indentation picker).
+    pub indentation: Option<Rect>,
+}
+
+/// Draws the status bar; returns where its clickable items are.
+pub fn render(f: &mut Frame, area: Rect, app: &App) -> StatusHit {
     let style = app.theme.get("statusBar");
     let out = f.buffer_mut();
     out.set_style(area, style);
@@ -67,6 +75,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
         })
     };
     let mut counts = None;
+    let mut indentation = None;
     if let Some(h) = app.active_hex() {
         let flag = if h.deleted { " [deleted]" } else { " [read-only]" };
         let name = format!(" {}{flag}  ", h.name());
@@ -114,7 +123,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
         };
         let settings = app.settings.for_buffer(buf);
         let indent = if settings.insert_spaces {
-            format!("Spaces: {}", settings.tab_width)
+            format!("Spaces: {}", settings.indent_size())
         } else {
             format!("Tab Size: {}", settings.tab_width)
         };
@@ -128,6 +137,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
         let right_w = right.width().min(width);
         right_x = area.x + (width - right_w) as u16;
         out.set_stringn(right_x, area.y, &right, right_w, style);
+        // The indent label's cells, as far as they're drawn (a narrow bar cuts `right`'s end).
+        let end = area.x + area.width;
+        let indent_x = (right_x as usize + position.width() + 3).min(end as usize) as u16;
+        let indent_w = (indent.width() as u16).min(end - indent_x);
+        indentation = (indent_w > 0).then_some(Rect::new(indent_x, area.y, indent_w, 1));
         let room = right_x.saturating_sub(x) as usize;
         let start = x;
         x = out.set_stringn(x, area.y, &left, room, style).0;
@@ -150,7 +164,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<Rect> {
         let room = right_x.saturating_sub(x + 1) as usize;
         out.set_stringn(x, area.y, format!(" {text} "), room, msg_style);
     }
-    counts
+    StatusHit {
+        problems: counts,
+        indentation,
+    }
 }
 
 /// A hex tab's part of the status bar: the cursor's offset in hex and decimal and its byte's

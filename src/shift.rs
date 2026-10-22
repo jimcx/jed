@@ -2,7 +2,8 @@
 //! (`outdent`) and Tab over lines (`tab`), VS Code's `ShiftCommand` (with `useTabStops`).
 //!
 //! - Each touched line's indentation (its leading spaces and tabs) becomes the next (indent) or
-//!   previous (outdent) multiple of the tab width, written as the buffer's indentation
+//!   previous (outdent) multiple of the indent size (`Settings::indent_size`; tabs measured
+//!   `tab_width` wide, which differs only after "Change Tab Display Size"), written as the buffer's indentation
 //!   (`Settings::for_buffer`: spaces, or tabs for a Makefile, a file guessed tab-indented or
 //!   `insert_spaces = false`). So a
 //!   line with fewer spaces than a level outdents to column 0, and mixed indentation comes out
@@ -28,8 +29,7 @@
 //!   `LineWalker` and the edit is one `ChangeSet` built in order, so it stays fast at 60k
 //!   selections.
 //!
-//! Not done (VS Code differences): no indentation detection (the tab width is the indent
-//! size); lines aligned past a level by an `onEnterRules` continuation (doc comments) aren't
+//! Not done (VS Code differences): lines aligned past a level by an `onEnterRules` continuation (doc comments) aren't
 //! kept aligned; Tab at a cursor on a whitespace-only line doesn't jump to the line's expected
 //! indentation.
 
@@ -103,7 +103,7 @@ fn reindent(
     line: &Line,
     mode: Mode,
     spaces: bool,
-    tab_width: usize,
+    (tab_width, size): (usize, usize),
     new: &mut String,
 ) -> Option<(usize, usize, usize)> {
     let text = line.text();
@@ -113,14 +113,14 @@ fn reindent(
     }
     let col = indent_col(&text[..len], tab_width);
     let level = if mode == Mode::Outdent {
-        (col - 1) / tab_width
+        (col - 1) / size
     } else {
-        col / tab_width + 1
+        col / size + 1
     };
     new.clear();
     for _ in 0..level {
         if spaces {
-            (0..tab_width).for_each(|_| new.push(' '));
+            (0..size).for_each(|_| new.push(' '));
         } else {
             new.push('\t');
         }
@@ -152,7 +152,7 @@ fn indent_col(indent: &str, tab_width: usize) -> usize {
 }
 
 fn shift(buf: &mut Buffer, view: &mut View, s: &Settings, mode: Mode) {
-    let tab_width = s.tab_width.max(1);
+    let (tab_width, size) = (s.tab_width.max(1), s.indent_size());
     let rope = &buf.rope;
     let before = view.selections.clone();
     let mut walk = LineWalker::new(rope);
@@ -163,7 +163,7 @@ fn shift(buf: &mut Buffer, view: &mut View, s: &Settings, mode: Mode) {
     let mut prev_last: Option<usize> = None;
     let mut prev_end = 0;
     let mut new_indent = String::new();
-    let spaces = " ".repeat(tab_width);
+    let spaces = " ".repeat(size);
     for sel in before.iter() {
         let line = walk.line_at(sel.start());
         let (first, line_start) = (line.index, line.start().0);
@@ -174,7 +174,7 @@ fn shift(buf: &mut Buffer, view: &mut View, s: &Settings, mode: Mode) {
             }
             let text = if s.insert_spaces {
                 let col = line.col(sel.start(), tab_width).0;
-                &spaces[..tab_width - col % tab_width]
+                &spaces[..size - col % size]
             } else {
                 "\t"
             };
@@ -197,7 +197,7 @@ fn shift(buf: &mut Buffer, view: &mut View, s: &Settings, mode: Mode) {
             let text = line.text();
             let skip = i < from || (text.is_empty() && (mode == Mode::Outdent || !single));
             if !skip
-                && let Some((at, end, kept)) = reindent(line, mode, s.insert_spaces, tab_width, &mut new_indent)
+                && let Some((at, end, kept)) = reindent(line, mode, s.insert_spaces, (tab_width, size), &mut new_indent)
                 && at >= prev_end
             {
                 changes.push(ByteIdx(at), ByteIdx(end), &new_indent[kept..]);
@@ -322,6 +322,26 @@ mod tests {
         assert_eq!(outdented("\t\ta|"), "    a|", "spaces: tabs normalised");
         assert_eq!(outdented("   \n|"), "   \n|", "another line's indentation untouched");
         assert_eq!(outdented("  |"), "|", "a whitespace-only line");
+    }
+
+    #[test]
+    fn indent_size_apart_from_the_tab_width() {
+        // Tabs drawn 8 wide, indented by 2 ("Change Tab Display Size" on a 2-space file).
+        let s = Settings {
+            tab_width: 8,
+            indent_size: Some(2),
+            detect_indentation: false,
+            ..Settings::default()
+        };
+        assert_eq!(run(Command::IndentLines, "a|", &s), "  a|");
+        assert_eq!(
+            run(Command::IndentLines, "\t|a", &s),
+            "          |a",
+            "a tab measures 8"
+        );
+        assert_eq!(run(Command::OutdentLines, "   a|", &s), "  a|");
+        assert_eq!(run(Command::OutdentLines, "\ta|", &s), "      a|");
+        assert_eq!(run(Command::InsertTab, " |a", &s), "  |a");
     }
 
     #[test]

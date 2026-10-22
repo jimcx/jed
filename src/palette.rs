@@ -35,7 +35,35 @@ pub enum Picker {
     Recent,
     /// "Tools: Open Log": a tool with a log (`App::log_tools`); accepting opens its log tab.
     Logs,
+    /// The status bar's indentation item: the indentation commands (`INDENTATION_ACTIONS`).
+    Indentation,
+    /// "Indent Using Spaces / Tabs", "Change Tab Display Size": sizes 1–8 for `buffer`
+    /// (`size_rows`); accepting sets it.
+    IndentSize {
+        buffer: crate::buffer::BufferId,
+        kind: SizeKind,
+    },
 }
+
+/// What an indent size picked sets (`Picker::IndentSize`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SizeKind {
+    Spaces,
+    Tabs,
+    /// Only how wide tabs are drawn.
+    TabDisplay,
+}
+
+/// The status bar indentation item's picker, in this order (VS Code's).
+pub const INDENTATION_ACTIONS: [Command; 4] = [
+    Command::IndentUsingSpaces,
+    Command::IndentUsingTabs,
+    Command::ChangeTabDisplaySize,
+    Command::DetectIndentation,
+];
+
+/// Indent sizes offered (VS Code's).
+pub const INDENT_SIZES: std::ops::RangeInclusive<usize> = 1..=8;
 
 /// What the rows are, from the picker and the input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +76,8 @@ pub enum Mode {
     Tasks,
     Recent,
     Logs,
+    Indentation,
+    IndentSize,
 }
 
 pub const COMMANDS_PREFIX: char = '>';
@@ -68,6 +98,8 @@ pub enum Action {
     OpenWorkspace(PathBuf),
     /// A tool's log.
     OpenLog(Tool),
+    /// An indent size (`Picker::IndentSize`).
+    IndentSize(usize),
 }
 
 /// One line in the list. Hits are char indices to highlight.
@@ -124,6 +156,8 @@ impl Palette {
             Picker::Tasks => Mode::Tasks,
             Picker::Recent => Mode::Recent,
             Picker::Logs => Mode::Logs,
+            Picker::Indentation => Mode::Indentation,
+            Picker::IndentSize { .. } => Mode::IndentSize,
             Picker::QuickOpen => match self.field.text.chars().next() {
                 Some(COMMANDS_PREFIX) => Mode::Commands,
                 Some(LINE_PREFIX) => Mode::GoToLine,
@@ -136,7 +170,14 @@ impl Palette {
     pub fn query(&self) -> &str {
         match self.mode() {
             Mode::Commands | Mode::GoToLine => &self.field.text[1..],
-            Mode::Files | Mode::LogLevel | Mode::History | Mode::Tasks | Mode::Recent | Mode::Logs => &self.field.text,
+            Mode::Files
+            | Mode::LogLevel
+            | Mode::History
+            | Mode::Tasks
+            | Mode::Recent
+            | Mode::Logs
+            | Mode::Indentation
+            | Mode::IndentSize => &self.field.text,
         }
     }
 
@@ -213,6 +254,37 @@ pub fn command_rows(query: &str, commands: &[Command], keys: impl Fn(Command) ->
         .collect();
     scored.sort_by(|(sa, a), (sb, b)| sb.cmp(sa).then_with(|| a.label.cmp(&b.label)));
     scored.into_iter().map(|(_, r)| r).collect()
+}
+
+/// Rows for an indent size picker: the `INDENT_SIZES` matching `query`, in order, `current`
+/// marked "current" and the settings' size (`configured`) "configured" (VS Code's
+/// "Configured Tab Size").
+pub fn size_rows(query: &str, current: usize, configured: usize) -> Vec<Row> {
+    let query = query.trim();
+    INDENT_SIZES
+        .filter_map(|n| {
+            let label = n.to_string();
+            let hit = !query.is_empty() && label.starts_with(query);
+            if !query.is_empty() && !hit {
+                return None;
+            }
+            let mut marks = Vec::new();
+            if n == current {
+                marks.push("current");
+            }
+            if n == configured {
+                marks.push("configured");
+            }
+            Some(Row {
+                label,
+                label_hits: if hit { vec![0] } else { Vec::new() },
+                detail: marks.join(", "),
+                detail_hits: Vec::new(),
+                keys: None,
+                action: Action::IndentSize(n),
+            })
+        })
+        .collect()
 }
 
 /// Rows for "Set Log Level", `current` marked.
@@ -642,6 +714,12 @@ mod tests {
         assert!(rows[0].label_hits.is_empty() && rows[0].detail_hits == [1, 2, 3]);
         assert_eq!(Palette::new(Picker::Recent, ">x").mode(), Mode::Recent);
         assert_eq!(Palette::new(Picker::Logs, ">x").mode(), Mode::Logs);
+        assert_eq!(Palette::new(Picker::Indentation, ">x").mode(), Mode::Indentation);
+        let sizes = Picker::IndentSize {
+            buffer: 0,
+            kind: SizeKind::Spaces,
+        };
+        assert_eq!(Palette::new(sizes, ">x").query(), ">x");
     }
 
     #[test]
@@ -727,5 +805,20 @@ mod tests {
         let rows = history_rows("12:03", &entries, now);
         assert_eq!(rows.len(), 1);
         assert!(!rows[0].detail_hits.is_empty());
+    }
+
+    #[test]
+    fn size_rows_mark_the_current_and_configured_sizes() {
+        let rows = size_rows("", 2, 4);
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["1", "2", "3", "4", "5", "6", "7", "8"]);
+        assert_eq!(rows[1].detail, "current");
+        assert_eq!(rows[3].detail, "configured");
+        assert_eq!(size_rows("", 4, 4)[3].detail, "current, configured");
+        assert_eq!(rows[7].action, Action::IndentSize(8));
+        let typed = size_rows(" 6", 2, 4);
+        assert_eq!(typed.len(), 1);
+        assert_eq!((typed[0].label.as_str(), typed[0].label_hits.clone()), ("6", vec![0]));
+        assert!(size_rows("9", 2, 4).is_empty());
     }
 }

@@ -16,6 +16,7 @@ mod git_history;
 mod hex;
 mod history;
 mod hover;
+mod indentation;
 mod locations;
 mod lsp;
 mod mouse;
@@ -1088,6 +1089,10 @@ impl App {
             Command::RunTask => self.show_run_task(),
             Command::OpenRecentWorkspace => self.show_recent(),
             Command::ToggleRenderWhitespace => self.ui.whitespace_toggled = !self.ui.whitespace_toggled,
+            Command::IndentUsingSpaces
+            | Command::IndentUsingTabs
+            | Command::ChangeTabDisplaySize
+            | Command::DetectIndentation => self.indentation_command(cmd),
             Command::ReopenAsHex => self.reopen_as_hex(),
             Command::ReopenAsText => self.reopen_as_text(),
             Command::ToggleBlame => self.toggle_blame(),

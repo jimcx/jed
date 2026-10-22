@@ -253,7 +253,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
         hits.panel_scrollbar = panel.scrollbar;
     }
 
-    hits.status_problems = status::render(f, regions.status, app);
+    let status = status::render(f, regions.status, app);
+    (hits.status_problems, hits.status_indentation) = (status.problems, status.indentation);
     hits.find = active_editor.and_then(|area| find::render(f, area, app));
     hits.quick_diff = quick_diff::render(f, app, &hits.groups);
     hits.hover = hover::render(f, app, &hits.groups);

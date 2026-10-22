@@ -62,24 +62,24 @@ const DEDENT_KEYWORDS: &[&str] = &["return", "pass", "break", "continue", "raise
 /// One indentation level.
 pub fn unit(s: &Settings) -> String {
     if s.insert_spaces {
-        " ".repeat(s.tab_width.max(1))
+        " ".repeat(s.indent_size())
     } else {
         "\t".to_string()
     }
 }
 
 /// `indent` (whitespace) one level less: a trailing tab, or trailing spaces back to the previous
-/// tab stop (VS Code's `unshiftIndent`).
-fn unindent(indent: &str, tab_width: usize) -> &str {
+/// indent stop (VS Code's `unshiftIndent`): tabs measured `tab_width` wide, levels `size` apart.
+fn unindent(indent: &str, tab_width: usize, size: usize) -> &str {
     if let Some(rest) = indent.strip_suffix('\t') {
         return rest;
     }
-    let tab_width = tab_width.max(1);
+    let (tab_width, size) = (tab_width.max(1), size.max(1));
     let cols = width(indent, tab_width);
     if cols == 0 {
         return indent;
     }
-    let target = (cols - 1) / tab_width * tab_width;
+    let target = (cols - 1) / size * size;
     let spaces = indent.len() - indent.trim_end_matches(' ').len();
     &indent[..indent.len() - spaces.min(cols - target)]
 }
@@ -294,7 +294,7 @@ fn enter_edits(buf: &Buffer, view: &View, s: &Settings, eol: &str) -> (Vec<Enter
             Action::Indent => out.push_str(&unit),
             Action::Outdent => {
                 let indent = &out[from + eol.len()..];
-                let keep = unindent(indent, s.tab_width).len();
+                let keep = unindent(indent, s.tab_width, s.indent_size()).len();
                 out.truncate(from + eol.len() + keep);
             }
             Action::IndentOutdent => {
@@ -733,10 +733,11 @@ mod tests {
 
     #[test]
     fn unindent_to_the_previous_stop() {
-        assert_eq!(unindent("        ", 4), "    ");
-        assert_eq!(unindent("      ", 4), "    ");
-        assert_eq!(unindent("\t\t", 4), "\t");
-        assert_eq!(unindent("\t  ", 4), "\t");
-        assert_eq!(unindent("", 4), "");
+        assert_eq!(unindent("        ", 4, 4), "    ");
+        assert_eq!(unindent("      ", 4, 4), "    ");
+        assert_eq!(unindent("\t\t", 4, 4), "\t");
+        assert_eq!(unindent("\t  ", 4, 4), "\t");
+        assert_eq!(unindent("", 4, 4), "");
+        assert_eq!(unindent("\t   ", 8, 2), "\t  ", "a tab measures 8, levels 2 apart");
     }
 }

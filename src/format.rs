@@ -20,7 +20,7 @@ use crate::rename::{self, TextEdit};
 
 /// `FormattingOptions` for a buffer whose language's settings are `s`.
 pub fn options(s: &Settings) -> Value {
-    json!({ "tabSize": s.tab_width, "insertSpaces": s.insert_spaces })
+    json!({ "tabSize": if s.insert_spaces { s.indent_size() } else { s.tab_width }, "insertSpaces": s.insert_spaces })
 }
 
 /// A formatting answer's edits (`null`: none). `Err` holds why it can't be read.

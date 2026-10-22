@@ -238,6 +238,18 @@ pub enum Command {
     /// "View: Toggle Render Whitespace": whitespace drawn as `·` / `→` off, or back to the
     /// `render_whitespace` setting (`all` when that is `none`); for the session only.
     ToggleRenderWhitespace,
+    /// "Indent Using Spaces": a picker of sizes 1–8 (the current one marked); picking one makes
+    /// the active buffer indent with that many spaces (`Buffer::indentation`, every view of it).
+    IndentUsingSpaces,
+    /// "Indent Using Tabs": the same picker; picking one makes the active buffer indent with
+    /// tabs drawn that wide.
+    IndentUsingTabs,
+    /// "Change Tab Display Size": the same picker; picking one changes only how wide the active
+    /// buffer's tabs are drawn (`Buffer::tab_display`; with spaces the indent size stays).
+    ChangeTabDisplaySize,
+    /// "Detect Indentation from Content": guesses the active buffer's indentation from its text
+    /// as it is now, dropping any chosen one.
+    DetectIndentation,
     /// "View: Reopen as Hex": the active file's bytes on disk in a hex tab, read only, in place
     /// of its text tab (refused while the buffer has unsaved edits).
     ReopenAsHex,
@@ -815,6 +827,12 @@ impl Command {
         all.extend(TaskCommand::ALL.map(Command::Task));
         all.push(Command::OpenRecentWorkspace);
         all.push(Command::ToggleRenderWhitespace);
+        all.extend([
+            Command::IndentUsingSpaces,
+            Command::IndentUsingTabs,
+            Command::ChangeTabDisplaySize,
+            Command::DetectIndentation,
+        ]);
         all.extend([Command::ReopenAsHex, Command::ReopenAsText]);
         all.push(Command::ToggleBlame);
         all.extend([Command::NavBack, Command::NavForward]);
@@ -1106,6 +1124,10 @@ impl Command {
             Command::CloseTask => "task.close".into(),
             Command::OpenRecentWorkspace => "workspace.openRecent".into(),
             Command::ToggleRenderWhitespace => "view.toggleRenderWhitespace".into(),
+            Command::IndentUsingSpaces => "editor.indentUsingSpaces".into(),
+            Command::IndentUsingTabs => "editor.indentUsingTabs".into(),
+            Command::ChangeTabDisplaySize => "editor.changeTabDisplaySize".into(),
+            Command::DetectIndentation => "editor.detectIndentation".into(),
             Command::ReopenAsHex => "view.reopenAsHex".into(),
             Command::ReopenAsText => "view.reopenAsText".into(),
             Command::ToggleBlame => "git.toggleBlame".into(),
@@ -1390,6 +1412,10 @@ impl Command {
             Command::CloseTask => "Tasks: Close Task Tab",
             Command::OpenRecentWorkspace => "Workspaces: Open Recent Workspace",
             Command::ToggleRenderWhitespace => "View: Toggle Render Whitespace",
+            Command::IndentUsingSpaces => "Indent Using Spaces",
+            Command::IndentUsingTabs => "Indent Using Tabs",
+            Command::ChangeTabDisplaySize => "Change Tab Display Size",
+            Command::DetectIndentation => "Detect Indentation from Content",
             Command::ReopenAsHex => "View: Reopen as Hex",
             Command::ReopenAsText => "View: Reopen as Text",
             Command::ToggleBlame => "Git: Toggle Inline Blame",
@@ -1562,9 +1588,13 @@ mod tests {
             Command::CodeActions(_) => 104,
             Command::ReopenAsHex => 105,
             Command::ReopenAsText => 106,
+            Command::IndentUsingSpaces => 107,
+            Command::IndentUsingTabs => 108,
+            Command::ChangeTabDisplaySize => 109,
+            Command::DetectIndentation => 110,
         }
     }
-    const VARIANTS: u8 = 107;
+    const VARIANTS: u8 = 111;
 
     #[test]
     fn all_lists_every_variant() {
