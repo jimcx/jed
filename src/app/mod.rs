@@ -225,8 +225,15 @@ enum AppEvent {
     /// A syntax plugin's grammar was loaded (or why not) by `load_grammars`.
     Grammar {
         language: crate::syntax::Language,
+        /// What building did (none: nothing to build, or the plugin was only loaded).
+        build: Option<crate::syntax::build::Build>,
+        /// A forced rebuild of a grammar this process already uses: the new library is used from
+        /// the next start.
+        replaced_in_use: bool,
         result: Result<(), String>,
     },
+    /// `load_grammars` starts on this plugin: its build is running.
+    GrammarBuilding(crate::syntax::plugin::PluginId),
     /// From a language server's task.
     Lsp(crate::lsp::Event),
     /// Files read for the Locations list's previews (`generation`: the list they're for).
@@ -448,6 +455,9 @@ pub struct App {
     /// The syntax plugins whose grammars `start` loads (`app/syntax.rs`): `main` sets every
     /// registered one; tests name their own (the registry is global). Empty by default.
     pub syntax_plugins: Vec<crate::syntax::plugin::PluginId>,
+    /// Each syntax plugin's grammar as the Tools view shows it (`app/syntax.rs`); empty until
+    /// `load_grammars` queues them.
+    pub grammars: Vec<(String, crate::tools_view::GrammarState)>,
     /// Back / forward navigation's history (`app/navigation.rs`).
     pub nav: navigation::NavState,
     /// The last command `execute` ran, for tests.
@@ -577,6 +587,7 @@ impl App {
             stage_all_after_save: None,
             tasks: Default::default(),
             syntax_plugins: Vec::new(),
+            grammars: Vec::new(),
             nav: Default::default(),
             #[cfg(test)]
             last_command: None,
@@ -1194,6 +1205,7 @@ impl App {
             Command::Tools(c) => self.tools_command(c),
             Command::ToggleToolTrace => self.toggle_tool_trace(),
             Command::RestartServer => self.restart_server(),
+            Command::RebuildSyntaxPlugins => self.rebuild_grammars(),
             // Esc in the editor closes the find widget before it drops cursors (VS Code).
             Command::CancelSelection if self.find.visible && self.ui.focus == Focus::Editor => self.close_find(),
             // A diff or hex tab: its own movement keys; other editor commands do nothing.
@@ -1349,7 +1361,13 @@ impl App {
             AppEvent::SearchResults(batch) => self.search_results(batch),
             AppEvent::Replaced(done) => self.files_replaced(*done),
             AppEvent::Parsed { buffer, parsed } => self.parsed(buffer, parsed),
-            AppEvent::Grammar { language, result } => self.grammar_loaded(language, result),
+            AppEvent::Grammar {
+                language,
+                build,
+                replaced_in_use,
+                result,
+            } => self.grammar_loaded(language, build, replaced_in_use, result),
+            AppEvent::GrammarBuilding(p) => self.grammar_building(p),
             AppEvent::Lsp(ev) => self.lsp_event(ev),
             AppEvent::LocationsRead { generation, files } => self.locations_read(generation, files),
             AppEvent::GitRefreshed { result, elapsed } => self.git_refreshed(result, elapsed),

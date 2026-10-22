@@ -24,7 +24,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ToolsHit>, Op
     }
     let look = scrollbar::look(app, ScrollTarget::Side(SidePanel::Tools));
     let errors = app.logs.error_counts();
-    let rows = tools_view::rows(&app.lsp, app.tasks.runs(), &errors, &app.workspace.root);
+    let rows = tools_view::rows(&app.lsp, app.tasks.runs(), &app.grammars, &errors, &app.workspace.root);
     app.tools_view.errors_drawn = errors;
 
     let theme = &app.theme;
@@ -88,6 +88,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ToolsHit>, Op
                     format!("task · {}", tools_view::task_label(status)),
                 )
             }
+            Row::Grammar { id, state, .. } => (
+                state.glyph().to_string(),
+                state.theme_key(),
+                id.as_str(),
+                format!("syntax plugin · {}", state.label()),
+            ),
             Row::Jed { .. } => ("≡".to_string(), "sideBar.dim", "jed", "jed's own log".to_string()),
         };
         // The error badge at the right edge.

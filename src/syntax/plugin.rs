@@ -147,6 +147,11 @@ impl Plugin {
         self.prebuilt().is_some()
     }
 
+    /// Has `src/parser.c` to build the library from.
+    pub fn buildable(&self) -> bool {
+        !self.dir.as_os_str().is_empty() && self.dir.join("src/parser.c").is_file()
+    }
+
     /// The query source: `queries/highlights.scm` (none = no colours) then `queries/jed.scm`, so
     /// jed's additions win for the same node; with each file's path and first row in it.
     fn query_source(&self) -> Result<(String, Vec<(PathBuf, usize)>), String> {
@@ -223,6 +228,11 @@ impl PluginId {
         std::mem::forget(lib);
         tracing::info!(plugin = plugin.id, "grammar loaded");
         Ok(())
+    }
+
+    /// Whether the grammar is installed (a library is never swapped once loaded).
+    pub fn loaded(self) -> bool {
+        self.get().grammar.get().is_some()
     }
 
     pub fn get(self) -> &'static Plugin {
@@ -572,62 +582,32 @@ impl Parser<'_> {
 #[cfg(test)]
 pub(crate) mod test_lib {
     use super::*;
-    use std::process::Command;
-
     /// The CMake grammar's sources.
     fn source_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/languages/cmake/src")
     }
 
-    fn compile(src: &Path, out: &Path) -> bool {
-        let cc = std::env::var("CC")
-            .ok()
-            .filter(|c| !c.is_empty())
-            .unwrap_or_else(|| "cc".into());
-        let shared = if cfg!(target_os = "macos") {
-            "-dynamiclib"
-        } else {
-            "-shared"
-        };
-        let run = Command::new(&cc)
-            .args([shared, "-fPIC", "-O1", "-I"])
-            .arg(src)
-            .arg(src.join("parser.c"))
-            .arg(src.join("scanner.c"))
-            .arg("-o")
-            .arg(out)
-            .output();
-        match run {
-            Ok(o) if o.status.success() => true,
-            Ok(o) => panic!("{cc} failed: {}", String::from_utf8_lossy(&o.stderr)),
-            Err(e) => {
-                eprintln!("note: no C compiler ({cc}: {e}); the grammar-loading test is skipped");
-                false
-            }
-        }
-    }
-
     /// The built CMake grammar (`None`, with a note, without a C compiler). With `abi12` the same
-    /// sources claim ABI version 12.
+    /// sources claim ABI version 12. Built by `build::build`, once per process.
     pub(crate) fn library(abi12: bool) -> Option<&'static Path> {
         static GOOD: OnceLock<Option<PathBuf>> = OnceLock::new();
         static OLD: OnceLock<Option<PathBuf>> = OnceLock::new();
         let slot = if abi12 { &OLD } else { &GOOD };
         slot.get_or_init(|| {
             let dir = tempfile::tempdir().unwrap().keep();
-            let mut src = source_dir();
+            let src = source_dir();
+            let copy = dir.join("src");
+            std::fs::create_dir_all(copy.join("tree_sitter")).unwrap();
+            for f in [
+                "parser.c",
+                "scanner.c",
+                "tree_sitter/alloc.h",
+                "tree_sitter/array.h",
+                "tree_sitter/parser.h",
+            ] {
+                std::fs::copy(src.join(f), copy.join(f)).unwrap();
+            }
             if abi12 {
-                let copy = dir.join("src");
-                std::fs::create_dir_all(copy.join("tree_sitter")).unwrap();
-                for f in [
-                    "parser.c",
-                    "scanner.c",
-                    "tree_sitter/alloc.h",
-                    "tree_sitter/array.h",
-                    "tree_sitter/parser.h",
-                ] {
-                    std::fs::copy(src.join(f), copy.join(f)).unwrap();
-                }
                 let parser = std::fs::read_to_string(copy.join("parser.c")).unwrap();
                 assert!(parser.contains("#define LANGUAGE_VERSION 14"));
                 std::fs::write(
@@ -635,10 +615,16 @@ pub(crate) mod test_lib {
                     parser.replace("#define LANGUAGE_VERSION 14", "#define LANGUAGE_VERSION 12"),
                 )
                 .unwrap();
-                src = copy;
             }
-            let out = dir.join(LIBRARY);
-            compile(&src, &out).then_some(out)
+            let b = super::super::build::build(&dir, &super::super::build::Toolchain::from_env(), false);
+            match b.outcome {
+                super::super::build::Outcome::Built => Some(dir.join(LIBRARY)),
+                super::super::build::Outcome::Failed(e) if e.starts_with("cannot run") => {
+                    eprintln!("note: no C compiler ({e}); the grammar-loading test is skipped");
+                    None
+                }
+                other => panic!("{other:?}: {:?}", b.log),
+            }
         })
         .as_deref()
     }

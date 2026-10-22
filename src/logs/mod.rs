@@ -44,6 +44,8 @@ pub enum Tool {
     Jed,
     /// A language server, by `ServerConfig::name` (shared by its restarts).
     Server(String),
+    /// A syntax plugin's grammar build, by the plugin's id.
+    Grammar(String),
 }
 
 impl Tool {
@@ -51,6 +53,7 @@ impl Tool {
         match self {
             Tool::Jed => "jed",
             Tool::Server(name) => name,
+            Tool::Grammar(id) => id,
         }
     }
 
@@ -60,6 +63,7 @@ impl Tool {
         match self {
             Tool::Jed => None,
             Tool::Server(name) => Some(disk::file_stem(name)),
+            Tool::Grammar(id) => Some(format!("grammar-{}", disk::file_stem(id))),
         }
     }
 }

@@ -286,6 +286,9 @@ pub enum Command {
     /// "Tools: Restart Server": stops the selected (or the active file's) language server and
     /// starts it again, also one that failed.
     RestartServer,
+    /// "Languages: Rebuild Syntax Plugins": rebuilds every syntax plugin's grammar from its
+    /// `src/`, one after the other in the background.
+    RebuildSyntaxPlugins,
 }
 
 /// The Tools view's list (`Context::Tools`, while it has the keys).
@@ -854,6 +857,7 @@ impl Command {
             Command::ShowTools,
             Command::ToggleToolTrace,
             Command::RestartServer,
+            Command::RebuildSyntaxPlugins,
         ]);
         all.extend(ToolsCommand::ALL.map(Command::Tools));
         all
@@ -1153,6 +1157,7 @@ impl Command {
             Command::ShowTools => "tools.show".into(),
             Command::ToggleToolTrace => "tools.toggleTrace".into(),
             Command::RestartServer => "tools.restartServer".into(),
+            Command::RebuildSyntaxPlugins => "languages.rebuildSyntaxPlugins".into(),
             Command::Tools(c) => format!(
                 "toolsView.{}",
                 match c {
@@ -1444,6 +1449,7 @@ impl Command {
             Command::ShowTools => "Tools: Show",
             Command::ToggleToolTrace => "Tools: Toggle Protocol Trace",
             Command::RestartServer => "Tools: Restart Server",
+            Command::RebuildSyntaxPlugins => "Languages: Rebuild Syntax Plugins",
             Command::Tools(c) => match c {
                 ToolsCommand::Up => "Tools: Select Previous Row",
                 ToolsCommand::Down => "Tools: Select Next Row",
@@ -1594,6 +1600,7 @@ mod tests {
             Command::Tools(_) => 91,
             Command::ToggleToolTrace => 92,
             Command::RestartServer => 93,
+            Command::RebuildSyntaxPlugins => 113,
             Command::GitHistory(_) => 94,
             Command::Commit(_) => 95,
             Command::IndentLines => 96,
@@ -1615,7 +1622,7 @@ mod tests {
             Command::ConvertIndentationToTabs => 112,
         }
     }
-    const VARIANTS: u8 = 113;
+    const VARIANTS: u8 = 114;
 
     #[test]
     fn all_lists_every_variant() {

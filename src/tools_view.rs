@@ -1,6 +1,6 @@
 //! The Tools view's model (no drawing; `app/tools.rs` drives it, `ui/tools.rs` draws it): one
 //! row per tool jed runs — each language server (live, failed, or stopped since: its log
-//! remains), each task run with a panel tab, then "jed" (jed's own log) — and the list's
+//! remains), each task run with a panel tab, each syntax plugin's grammar build, then "jed" (jed's own log) — and the list's
 //! selection and scroll. Rows are rebuilt from the app's state whenever they're needed (a few
 //! servers and runs); the selection is kept by `RowKey`, so rows coming or going don't move it.
 
@@ -16,7 +16,47 @@ pub enum RowKey {
     /// A language server by its name (`ServerConfig::name`: its log's, shared by restarts).
     Server(String),
     Task(RunId),
+    /// A syntax plugin's grammar by its id.
+    Grammar(String),
     Jed,
+}
+
+/// A syntax plugin's grammar as the view shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrammarState {
+    /// Queued behind another build.
+    Waiting,
+    Building,
+    Ready,
+    /// Built or loaded unsuccessfully: the language stays uncoloured.
+    Failed,
+}
+
+impl GrammarState {
+    pub fn label(self) -> &'static str {
+        match self {
+            GrammarState::Waiting => "waiting",
+            GrammarState::Building => "building",
+            GrammarState::Ready => "ready",
+            GrammarState::Failed => "failed",
+        }
+    }
+
+    pub fn glyph(self) -> &'static str {
+        match self {
+            GrammarState::Waiting | GrammarState::Building => ServerState::Starting.glyph(),
+            GrammarState::Ready => ServerState::Running.glyph(),
+            GrammarState::Failed => ServerState::Failed.glyph(),
+        }
+    }
+
+    pub fn theme_key(self) -> &'static str {
+        match self {
+            GrammarState::Waiting | GrammarState::Building => ServerState::Starting.theme_key(),
+            GrammarState::Ready => ServerState::Running.theme_key(),
+            GrammarState::Failed => ServerState::Failed.theme_key(),
+        }
+    }
 }
 
 /// A language server's state as the view shows it.
@@ -77,8 +117,19 @@ pub struct ServerRow {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Row {
     Server(ServerRow),
-    Task { id: RunId, name: String, status: Status },
-    Jed { errors: u64 },
+    Task {
+        id: RunId,
+        name: String,
+        status: Status,
+    },
+    Grammar {
+        id: String,
+        state: GrammarState,
+        errors: u64,
+    },
+    Jed {
+        errors: u64,
+    },
 }
 
 impl Row {
@@ -86,6 +137,7 @@ impl Row {
         match self {
             Row::Server(s) => RowKey::Server(s.name.clone()),
             Row::Task { id, .. } => RowKey::Task(*id),
+            Row::Grammar { id, .. } => RowKey::Grammar(id.clone()),
             Row::Jed { .. } => RowKey::Jed,
         }
     }
@@ -95,6 +147,7 @@ impl Row {
         match (self, key) {
             (Row::Server(s), RowKey::Server(name)) => s.name == *name,
             (Row::Task { id, .. }, RowKey::Task(k)) => id == k,
+            (Row::Grammar { id, .. }, RowKey::Grammar(k)) => id == k,
             (Row::Jed { .. }, RowKey::Jed) => true,
             _ => false,
         }
@@ -105,6 +158,7 @@ impl Row {
         match self {
             Row::Server(s) => Some(Tool::Server(s.name.clone())),
             Row::Task { .. } => None,
+            Row::Grammar { id, .. } => Some(Tool::Grammar(id.clone())),
             Row::Jed { .. } => Some(Tool::Jed),
         }
     }
@@ -114,6 +168,7 @@ impl Row {
         match self {
             Row::Server(s) => s.errors,
             Row::Task { .. } => 0,
+            Row::Grammar { errors, .. } => *errors,
             Row::Jed { errors } => *errors,
         }
     }
@@ -204,6 +259,7 @@ pub fn server_rows(manager: &lsp::Manager, errors: &[(Tool, u64)], workspace_roo
 pub fn rows(
     manager: &lsp::Manager,
     runs: &[crate::tasks::Run],
+    grammars: &[(String, GrammarState)],
     errors: &[(Tool, u64)],
     workspace_root: &Path,
 ) -> Vec<Row> {
@@ -215,6 +271,16 @@ pub fn rows(
         id: r.id,
         name: r.name.clone(),
         status: r.status(),
+    }));
+    rows.extend(grammars.iter().map(|(id, state)| {
+        Row::Grammar {
+            id: id.clone(),
+            state: *state,
+            errors: errors
+                .iter()
+                .find(|(t, _)| matches!(t, Tool::Grammar(n) if n == id))
+                .map_or(0, |(_, n)| *n),
+        }
     }));
     let jed = errors.iter().find(|(t, _)| *t == Tool::Jed).map_or(0, |(_, n)| *n);
     rows.push(Row::Jed { errors: jed });

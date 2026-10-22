@@ -407,3 +407,195 @@ async fn syntax_plugins_broken_grammars_are_reported_and_leave_the_file_uncolour
         assert!(rope.to_string().starts_with("hiproject"));
     }
 }
+
+// syntax_plugins-e: building a grammar from `src/` in the background, its Tools row and log,
+// failures, and "Languages: Rebuild Syntax Plugins".
+
+/// A plugin directory `<parent>/<id>` with the template's `src/` and query and no library
+/// (`None`, with a note, without a C compiler).
+fn source_plugin(parent: &Path, id: &str, ext: &str) -> Option<PluginId> {
+    plugin::test_lib::library(false)?;
+    let dir = parent.join(id);
+    let from = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/languages/cmake/src");
+    std::fs::create_dir_all(dir.join("src/tree_sitter")).unwrap();
+    std::fs::create_dir_all(dir.join("queries")).unwrap();
+    for f in [
+        "parser.c",
+        "scanner.c",
+        "tree_sitter/alloc.h",
+        "tree_sitter/array.h",
+        "tree_sitter/parser.h",
+    ] {
+        std::fs::copy(from.join(f), dir.join("src").join(f)).unwrap();
+    }
+    std::fs::write(
+        dir.join("language.toml"),
+        format!("id = \"{id}\"\nname = \"{id}\"\nsymbol = \"tree_sitter_cmake\"\n[files]\nextensions = [\"{ext}\"]\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("queries/highlights.scm"),
+        include_str!("syntax/queries/cmake.scm"),
+    )
+    .unwrap();
+    Some(plugin::test_lib::register_dir(parent, id))
+}
+
+/// A started app with file `a.<ext>` open and only `pid` in `syntax_plugins`.
+fn app_for_source_plugin(dir: &tempfile::TempDir, pid: PluginId, ext: &str) -> App {
+    let root = root_of(dir);
+    std::fs::write(root.join(format!("a.{ext}")), "project(demo)\nset(NAME \"x\") # note\n").unwrap();
+    let mut app = app_on(&root, Some(&format!("a.{ext}")));
+    app.syntax_plugins = vec![pid];
+    app.test_start();
+    app
+}
+
+fn grammar_row(app: &App, id: &str) -> crate::tools_view::Row {
+    app.tools_rows()
+        .into_iter()
+        .find(|r| matches!(r, crate::tools_view::Row::Grammar { id: i, .. } if i == id))
+        .expect("the grammar's row")
+}
+
+fn grammar_state(app: &App, id: &str) -> crate::tools_view::GrammarState {
+    match grammar_row(app, id) {
+        crate::tools_view::Row::Grammar { state, .. } => state,
+        _ => unreachable!(),
+    }
+}
+
+fn coloured(app: &mut App) -> bool {
+    let (buf, _) = app.active_mut().unwrap();
+    let rope = buf.rope.clone();
+    buf.syntax.tree().is_some() && buf.syntax.spans(&rope, 0..2).len() >= 3
+}
+
+fn rebuild_through_palette(app: &mut App) {
+    let title = "Languages: Rebuild Syntax Plugins";
+    app.press(K::Char('p'), cmd() | M::SHIFT);
+    app.type_text(title);
+    let p = app.palette.as_ref().unwrap();
+    assert_eq!(p.rows[p.selected].label, title);
+    app.press(K::Enter, M::NONE);
+}
+
+/// First start: the row is queued at once, the build runs off the UI thread and its command line
+/// and compiler output land in the grammar's log; the file is coloured when it finishes. The next
+/// start finds the stamp current: nothing is compiled.
+#[tokio::test(flavor = "multi_thread")]
+async fn syntax_plugins_build_at_start_then_up_to_date() {
+    use crate::tools_view::GrammarState as G;
+    let plugins = tempfile::tempdir().unwrap();
+    let Some(pid) = source_plugin(plugins.path(), "pte_first", "ptefirst") else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_for_source_plugin(&dir, pid, "ptefirst");
+    assert_ne!(grammar_state(&app, "pte_first"), G::Ready, "not built yet");
+    assert!(!coloured(&mut app));
+    // While the start's job runs, the rebuild command refuses to start a second one.
+    rebuild_through_palette(&mut app);
+    let m = app.message.take().expect("a message");
+    assert!(m.text.contains("already building"), "{}", m.text);
+    assert!(app.settle(|a| grammar_state(a, "pte_first") == G::Ready).await);
+    assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
+    assert!(coloured(&mut app));
+    let tool = crate::logs::Tool::Grammar("pte_first".into());
+    let log = app.logs.texts(&tool);
+    assert!(
+        log[0].starts_with("$ ") && log[0].contains("-O2 -I src src/parser.c"),
+        "{log:?}"
+    );
+    assert_eq!(log.last().unwrap(), "grammar loaded");
+    assert_eq!(
+        log.iter().filter(|l| l.starts_with("$ ")).count(),
+        1,
+        "one build: {log:?}"
+    );
+    assert!(plugins.path().join("pte_first/build.toml").is_file());
+    assert!(app.message.is_none());
+
+    // The Tools row opens the log.
+    assert_eq!(grammar_row(&app, "pte_first").tool(), Some(tool.clone()));
+
+    // A second app on the same directory: stamp current, nothing compiled.
+    let dir2 = tempfile::tempdir().unwrap();
+    let mut app2 = app_for_source_plugin(&dir2, pid, "ptefirst");
+    assert!(app2.settle(|a| grammar_state(a, "pte_first") == G::Ready).await);
+    assert_eq!(app2.logs.texts(&tool), ["up to date", "grammar loaded"]);
+    assert!(
+        app2.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some())
+            .await
+    );
+    assert!(coloured(&mut app2));
+}
+
+/// A compile error: one message, the row failed with an error badge and the compiler's output in
+/// its log, the file uncoloured and editable. Fixing the source and running the rebuild command
+/// loads the grammar and colours the file; a second rebuild of the loaded grammar says the new
+/// build is used from the next start.
+#[tokio::test(flavor = "multi_thread")]
+async fn syntax_plugins_build_failure_is_reported_and_rebuild_recovers() {
+    use crate::tools_view::GrammarState as G;
+    let plugins = tempfile::tempdir().unwrap();
+    let Some(pid) = source_plugin(plugins.path(), "pte_broken", "ptebroken") else {
+        return;
+    };
+    let parser = plugins.path().join("pte_broken/src/parser.c");
+    let good = std::fs::read_to_string(&parser).unwrap();
+    std::fs::write(&parser, format!("{good}\nthis is not C;\n")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_for_source_plugin(&dir, pid, "ptebroken");
+    assert!(app.settle(|a| grammar_state(a, "pte_broken") == G::Failed).await);
+    assert!(app.settle(|a| a.message.is_some()).await);
+    let m = app.message.as_ref().unwrap();
+    assert_eq!(m.level, crate::app::Level::Error);
+    assert!(
+        m.text.starts_with("Syntax plugin pte_broken: ") && m.text.contains("error"),
+        "{}",
+        m.text
+    );
+    assert!(grammar_row(&app, "pte_broken").errors() > 0);
+    let tool = crate::logs::Tool::Grammar("pte_broken".into());
+    let log = app.logs.texts(&tool);
+    assert!(log[0].starts_with("$ ") && log.len() > 2, "{log:?}");
+    assert!(!plugins.path().join("pte_broken").join(plugin::LIBRARY).exists());
+    app.type_text("hi");
+    assert!(app.settle(|_| true).await);
+    assert!(!coloured(&mut app));
+    assert!(app.active_buffer().unwrap().rope.to_string().starts_with("hiproject"));
+
+    // Fixed; the command rebuilds and loads it.
+    std::fs::write(&parser, good).unwrap();
+    rebuild_through_palette(&mut app);
+    assert!(app.settle(|a| grammar_state(a, "pte_broken") == G::Ready).await);
+    assert_eq!(grammar_row(&app, "pte_broken").errors(), 0, "the log starts afresh");
+    assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
+    assert!(Language::Plugin(pid).grammar().is_some());
+
+    // Loaded already: rebuilt on disk, used from the next start.
+    app.message = None;
+    rebuild_through_palette(&mut app);
+    assert!(app.settle(|a| a.message.is_some()).await);
+    let text = &app.message.as_ref().unwrap().text;
+    assert!(text.contains("rebuilt") && text.contains("next start"), "{text}");
+    assert_eq!(grammar_state(&app, "pte_broken"), G::Ready);
+
+    // A failed rebuild of a grammar in use: the file stays coloured and the row ready, but the
+    // failure is still reported and badged.
+    let good = std::fs::read_to_string(&parser).unwrap();
+    std::fs::write(&parser, format!("{good}\nthis is not C;\n")).unwrap();
+    app.message = None;
+    rebuild_through_palette(&mut app);
+    assert!(app.settle(|a| a.message.is_some()).await);
+    let m = app.message.as_ref().unwrap();
+    assert!(
+        m.level == crate::app::Level::Error && m.text.contains("error"),
+        "{}",
+        m.text
+    );
+    assert_eq!(grammar_state(&app, "pte_broken"), G::Ready);
+    assert!(grammar_row(&app, "pte_broken").errors() > 0);
+    assert!(coloured(&mut app));
+}

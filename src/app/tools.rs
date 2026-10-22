@@ -310,6 +310,7 @@ impl App {
         tools_view::rows(
             &self.lsp,
             self.tasks.runs(),
+            &self.grammars,
             &self.logs.error_counts(),
             &self.workspace.root,
         )
