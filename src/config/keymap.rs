@@ -585,14 +585,19 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         editor.push((KeyCode::Backspace, cmd, Command::DeleteToLineStart));
         // macOS's Emacs-style keys, as VS Code binds them on macOS (after Home / End / arrows /
         // Backspace / Delete, so the palette shows those).
-        let mv = |motion| Command::Move { motion, select: false };
+        // Shift selects, as VS Code's Ctrl+Shift+A / E / B / F / P / N.
+        for (c, motion) in [
+            ('a', Motion::LineStart),
+            ('e', Motion::LineEnd),
+            ('b', Motion::Left),
+            ('f', Motion::Right),
+            ('p', Motion::Up),
+            ('n', Motion::Down),
+        ] {
+            editor.push((KeyCode::Char(c), ctrl, Command::Move { motion, select: false }));
+            editor.push((KeyCode::Char(c), ctrl | shift, Command::Move { motion, select: true }));
+        }
         editor.extend([
-            (KeyCode::Char('a'), ctrl, mv(Motion::LineStart)),
-            (KeyCode::Char('e'), ctrl, mv(Motion::LineEnd)),
-            (KeyCode::Char('b'), ctrl, mv(Motion::Left)),
-            (KeyCode::Char('f'), ctrl, mv(Motion::Right)),
-            (KeyCode::Char('p'), ctrl, mv(Motion::Up)),
-            (KeyCode::Char('n'), ctrl, mv(Motion::Down)),
             (KeyCode::Char('h'), ctrl, Command::DeleteLeft),
             (KeyCode::Char('d'), ctrl, Command::DeleteRight),
         ]);
@@ -1328,6 +1333,11 @@ mod tests {
             ('d', Command::DeleteRight),
         ] {
             assert_eq!(mac.lookup(&key(KeyCode::Char(c), ctrl), ed), Some(cmd), "Ctrl+{c}");
+            if let Command::Move { motion, .. } = cmd {
+                let select = Command::Move { motion, select: true };
+                let shifted = key(KeyCode::Char(c), ctrl | KeyModifiers::SHIFT);
+                assert_eq!(mac.lookup(&shifted, ed), Some(select), "Ctrl+Shift+{c}");
+            }
         }
         // The palette still shows the usual keys.
         assert_eq!(
