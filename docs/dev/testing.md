@@ -1,6 +1,22 @@
 # Test helpers by feature (detail)
 
-How to drive and inspect each feature in end-to-end tests, moved out of the root `CLAUDE.md` (which keeps the general harness: building the app, input, `settle` / `pump`, rendering). Read the ones for the area you test; add new helpers here, not to the root file.
+How to drive the app in end-to-end tests and inspect each feature, moved out of the root `CLAUDE.md` (which keeps the test file layout). Read the general harness first, then the ones for the area you test; add new helpers here, not to the root file.
+
+## Driving the app headlessly
+
+Helpers are `#[cfg(test)] impl App` in `app/mod.rs`.
+
+- Build: `App::new(Workspace::load(root), TrustStore::load(dir.join("trust.toml")), Some(InitialFile { buffer, goto: None }), true)`, then `app.test_start()` (watcher + first listing). See `open_app` in each milestone file and `milestone_tests::test_app`. With user settings: `Workspace::load(root).with_user_settings(config::settings::load(path).overrides)`, set `app.config_dir`, and `app.report_errors(errors)` as `main` does (`milestone8_tests::user_app`); never set `XDG_CONFIG_HOME` (tests run in parallel).
+- Use `tempfile::tempdir()` and `workspace::normalize(dir.path())` for the root (macOS temp paths are symlinks). Keep the trust store inside the tempdir.
+- `app.test_open(buffer)` opens a second buffer in a new active tab (no file I/O).
+- Input: `press(KeyCode, KeyModifiers)`, `press_file_start()` / `press_file_end()` (the platform's file start / end key: Cmd+Up / Down on macOS — Cmd+Home / End are unbound there, as in VS Code — Ctrl+Home / End on Linux), `type_text(&str)`, `mouse(kind, x, y)`, `mouse_with(kind, x, y, mods)` (Alt+Click, Shift+Alt+drag), `handle_test_event(Event)` (e.g. `Event::Paste`). Two clicks on one cell within 500 ms are a double click. Use a local `cmd()` helper (SUPER on macOS, CONTROL elsewhere).
+- Background work: `app.settle(|a| cond).await` pumps `AppEvent`s (and fires the Search view's debounce) until `cond` (false after 5 s) — always `assert!` it. `app.pump()` handles what's already queued without waiting (for timing a frame). Both run `sync_syntax` as the event loop's turn does, so after typing, `pump` re-parses and `settle(|a| a.active_buffer().unwrap().syntax.tree().is_some())` waits for a background parse (`sync_syntax` does nothing outside a tokio runtime). `app.search_tick(Instant::now() + search_view::DEBOUNCE)` fires a pending Search view debounce without sleeping; `app.test_completion_tick(now)` the quick-suggestion timer (`settle` fires it too). Tests that spawn use `#[tokio::test(flavor = "multi_thread")]`.
+- Rendering/mouse: `Terminal::new(TestBackend::new(w, h))`, `term.draw(|f| crate::ui::render(f, &mut app))`; draw before mouse events (hit map comes from the last frame); read cells via `term.backend().buffer()`.
+- Render whitespace (default `all`) draws spaces as `·`: tests that read drawn text with spaces in it call `app.test_plain_whitespace()` after building the app (the session toggle, so it survives `.workspace` reloads); the earlier milestones' builders that draw do. `todo_tests::render_whitespace` reads the glyphs.
+- Under `cfg(test)` the app uses `Clipboard::memory()` — read it with `app.clipboard.read()`.
+- Feature-specific helpers: [below](#by-feature).
+
+## By feature
 
 - Single file mode (`todo_tests::single_file`): `App::new_in(Mode::SingleFile, ws, trust, Some(InitialFile { buffer, goto }), true)` with `ws = Workspace::load(workspace::root_for_file(path))` and `Buffer::open_with` (or `Buffer::new_file(path)` for a missing file), as `main` does (`open_single`, which also plugs in a fake server to check none starts); `app.hits.icons` for the greyed activity bar; `app.fs_flushed` shows only the file's events arrive.
 - Files changed on disk: write / remove / rename the file with `std::fs` and `settle` on the buffer (`rope`, `deleted`, `disk_conflict`, `is_dirty()`); `app.disk.checked` / `app.disk.reloads` count finished checks and reloads, `app.disk.busy(id)` (a check running or wanted) — e.g. wait for `checked` to grow after a save to see its own events found nothing. The banner's buttons: `app.hits.groups[i].banner` after a draw (`milestone10_tests`).
