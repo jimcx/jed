@@ -71,6 +71,7 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
   - `jed <file>` / `jed <file>:<line>[:<col>]`: walk up from the file to the nearest `.workspace`; else use the file's directory
   - `jed` with no args: current directory
   - `jed <git message file>` (`.git/COMMIT_EDITMSG`, …) or `jed --wait <file>`: editor mode, one file, no session — see [Git editor](#git-editor-commit-messages)
+  - `jed -s <file>` / `--single`: single file mode — one file, no side panel (its activity icons greyed), nothing per-workspace — see the [Single file mode](#tasks) task
 - `.workspace` contents:
   - Settings overrides (tab size, wrap, …) on top of `~/.config/jed/`
   - LSP servers per language (command, args, init options)
@@ -439,7 +440,7 @@ jed as git's editor (the [Git editor](#tasks) task): `git config --global core.e
   - `core.commentChar` other than `#` (or `auto`): deferred; the grammar assumes `#`
 - **Rulers:** a `rulers` setting (column list, default `[]`, VS Code's `editor.rulers`) drawn as a thin vertical line (`editorRuler.foreground`) behind the text; `git-commit`'s `LanguageConfig` defaults it to `[72]` (the body's wrap column; the subject's 50 is the overflow colour)
 - **Editor mode:** `jed <file>` where the file is one of git's message files inside a git directory (`.git/`, `.git/worktrees/<name>/`, a bare repo, `$GIT_DIR`: the parent holds `HEAD`), or `--wait` on any file, starts jed lean, for one file:
-  - The root is the repository's work tree (so `.workspace` settings and associations apply), but nothing per-workspace happens: no session restored or written, no recent-workspace entry, no trust dialog, no language servers or tasks, no file history (paths under `.git/` never get any); the side and bottom panels start hidden (they can still be opened)
+  - The root is the repository's work tree (so `.workspace` settings and associations apply), but nothing per-workspace happens: no session restored or written, no recent-workspace entry, no trust dialog, no language servers or tasks, no file history (paths under `.git/` never get any); the side and bottom panels stay closed (this is [single file mode](#tasks) with the git bits below)
   - The cursor starts at line 1, column 1 (git leaves the message empty above its comments); the status bar hint: "Save and close to commit · an empty message aborts"
   - Closing the file's last tab quits jed (Cmd+W), as does Cmd+Q; unsaved changes prompt as usual; the exit status is 0 — git aborts on an empty message itself, so "abort" is: delete the text, save, close (or quit without saving a message git left empty)
   - Crash backups still run (the message is the one thing worth keeping)
@@ -868,6 +869,13 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
   - Subtasks (one agent and one commit each):
     - vhdl-a: the language: `Language::Vhdl`, detection, the grammar crate, highlight queries (+ `queries/vhdl.scm`), `scope_of` kinds, `LanguageConfig`; unit tests; docs (`src/syntax/CLAUDE.md`'s language lists)
     - vhdl-b: the server: the `vhdl_ls` built-in, the fake-server test, the real-server test (skipped without the binary), a `vhdl_ls.toml` note in the server docs; hand checks; marks the task ✅
+- **Single file mode** (`jed -s <file>` / `--single`; [Workspace](#workspace)): a lean one-file editor for quick edits — git's messages, a dotfile, `/etc/…`, a project's config — that starts at once and doesn't touch the workspace around the file
+  - Started by `-s` / `--single` (with `<file>[:line[:col]]`; a missing file opens empty and is created on save — `jed <file>` refuses one today, but a new dotfile is a common case here); the [Git editor](#tasks) task's editor mode (`--wait`, git message files) is this mode plus its git bits (cursor at 1:1, the hint, `--wait`), so whichever is built first adds the shared mode and the other builds on it
+  - The root: walk up from the file to the nearest `.workspace` (settings and associations apply), else the file's directory, but nothing per-workspace runs: no explorer listing, quick open walk or tree watcher (only the file is watched, for disk changes), no session read / written, no recent-workspace entry, no trust dialog, no language servers, tasks or file history; crash backups still run
+  - The activity bar is drawn with every icon greyed out (a new `activityBar.disabled` theme key) and the side panel stays closed: clicks on the icons do nothing, and the commands that open a side view (`view.toggleSidebar`, `view.focusExplorer`, `view.focusSourceControl`, Search, Tools, …) and the bottom panel's (problems, tasks) notify "Not available in single file mode" instead; they are left out of the palette there. Quick open and workspace search are off the same way; splits, find / replace, multi-cursor, the diff against disk and every editor command work as usual
+  - The status bar shows "Single file" on its left (where the branch goes); closing the last tab (Cmd+W) quits, unsaved changes prompting as usual
+  - Mode as an `App` field (`Mode::{Workspace, SingleFile}`) set by `main` before `start`; one place answers "is this side view / command available" so the activity bar, mouse hits, `execute` and the palette agree. No new Cmd bindings, so `docs/terminals/` is untouched
+  - Done when: `jed -s` on a file in a repo with a `.workspace` (servers, tasks) and a saved session opens just that file with its settings and colours, asks no trust, starts no server, lists nothing and leaves the session file untouched; the activity bar's icons are all greyed, clicking them and Cmd+B / Cmd+Shift+E / Cmd+Shift+F / Ctrl+Shift+G / Cmd+J keep the side and bottom panels closed with the notice; typing, Cmd+S and Cmd+W save and quit; a change on disk still reloads or shows the banner; e2e tests in `todo_tests.rs` (`mod single_file`) drive an `App` in that mode, plus a render test of the greyed icons
 
 ## Stretch goals
 Very low priority. Don't build these yet, but don't make design choices that would block them.
