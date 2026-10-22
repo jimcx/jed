@@ -9,7 +9,7 @@ A task is either **single** (one implementer, one validator and its mutation run
 
 ## Find where we are
 
-1. `git log --oneline -15`, `git status`, and the `## Tasks` section of PLAN.md. Tasks have **no order**; ✅ marks finished ones (and finished subtasks).
+1. `git log --oneline -15`, `git status`, and the task list without its bodies: `awk '/^## Tasks/,/^## Stretch/' PLAN.md | grep -n '^- ' | cut -c1-110` (the section is ~50 KB; don't read it whole). Then read only the chosen task's entry. Tasks have **no order**; ✅ marks finished ones (and finished subtasks).
 2. The task: the one named in the arguments (by name or id); else one with some subtasks ✅ but not all (work in progress); else list the open tasks (not ✅) in a few lines, those with subtasks marked, and ask the user which. Stop until they answer.
    - Subtask commits are named `<Task name> (<id>-a): …`; the last one shows the last finished subtask.
 3. If the tree has uncommitted changes, earlier work was interrupted:
@@ -21,9 +21,11 @@ A task is either **single** (one implementer, one validator and its mutation run
 
 4. Skip this for a task that already has a subtask list: follow it. Otherwise check whether the task is one commit's work:
    - Read the task, every PLAN.md section it links, and enough of the code it touches (CLAUDE.md's module map says where) to judge the work.
-   - It's too big when it touches many unrelated areas, needs a groundwork refactor before the feature, has parts that are each a feature on their own, or would leave fmt, clippy or tests red partway through. Example: soft wrap (the view's one-row-per-line assumption, up / down, mouse hits, scroll).
+   - It's too big when it would touch more than ~6 files or 2 subsystems (an agent's cost grows with the square of its turns: two 50-call subtasks cost far less than one 100-call one), touches many unrelated areas, needs a groundwork refactor before the feature, has parts that are each a feature on their own, or would leave fmt, clippy or tests red partway through. Example: soft wrap (the view's one-row-per-line assumption, up / down, mouse hits, scroll).
    - It's not ready when the plan leaves a design decision open that would be costly to reverse, or it needs something the agents can't get (tools to install, credentials, a terminal that isn't on this machine). Stop and report that to the user, with the open question.
    - If it fits, tell the user in a line or two what the task will cover, then go on to step 5.
+   - For a task with a subtask list, still read enough of the code its current subtask touches to write the brief below.
+   - Write a **brief** to `<scratchpad>/brief.md` (≤ ~60 lines) so the implementer doesn't re-explore: the files and functions to change (`path:line`), existing helpers to reuse, similar code to copy from, the test helpers (from docs/dev/testing.md) and the test file. Use the ranges you've already read for this; don't read more just for it.
    - If it's too big, **stop and report to the user** why, and offer both ways forward, saying which you'd pick:
      - **Subtasks** — better when the parts build on each other towards one feature with a clear "Done when" (e.g. soft wrap). Draft: a short id, "Needs", the feature bullets (from the task and the code you read), "Done when", and 3–5 subtasks, each leaving fmt, clippy and tests green, the last one doing the done-when tests, gaps and hand checks and marking the task ✅.
      - **Separate tasks** — better when the parts are independent: 2–5 smaller single tasks that each leave the checks green.
@@ -34,15 +36,18 @@ A task is either **single** (one implementer, one validator and its mutation run
 
 5. **Implementer** (general-purpose agent on the session's model (Opus), run in sequence and wait for it). Its prompt says:
    - Read `CLAUDE.md` at the repo root first, plus the nested CLAUDE.md of any directory it edits. PLAN.md is the source of truth for design.
-   - Quote the task in full and read every PLAN.md section it links. For a subtask: list every subtask, mark which one is its own, and say what's already done.
+   - The plan text pasted into the prompt (you, the orchestrator, paste it): the task in full and every PLAN.md section it links. For a subtask: every subtask, which one is its own, and what's already done. It doesn't re-read PLAN.md.
+   - Start from the brief at `<scratchpad>/brief.md` (give the path) rather than a fresh tour of the codebase.
+   - **Read narrowly** (every tool result stays in its context and is paid for again on each later call): find code with `grep -n` or the LSP tool (definition, references), then read ranges of ≤ 150 lines. Never `cat` a file over ~300 lines or read big ranges of `src/app/mod.rs`; grep the module's entry in `docs/dev/app.md` / `modules.md` instead. Make independent reads and greps in one message.
    - Build only this task (or subtask). Unit tests go in modules. End-to-end tests: a single task's go in `src/todo_tests.rs` (one `mod <task>` block, tests named after the behaviour); a task with subtasks' go in `src/<id>_tests.rs`, named `<id>_*` (create the file with a `//!` doc and register it in `main.rs` if it doesn't exist). Tests go through real code paths (see CLAUDE.md's Tests section for driving the app headlessly, and docs/dev/testing.md for the feature's helpers).
    - Any new Cmd binding also updates `docs/terminals/`; any new setting follows CLAUDE.md's "Settings layer per key"; any new colour goes through `Theme`.
-   - `scripts/check` must pass (fmt, clippy, tests, with quiet output; `scripts/check test <filter>` while iterating). If it touches editing, drawing or search hot paths, also the release `milestone` / `search` budget runs from CLAUDE.md (through `tail -40`).
+   - `scripts/check` must pass (fmt, clippy, tests, with quiet output). Iterate with `scripts/check test <filter>` (or `scripts/check clippy`) and run the full `scripts/check` once at the end, not after each change. If it touches editing, drawing or search hot paths, also the release `milestone` / `search` budget runs from CLAUDE.md (through `tail -40`).
    - Update the docs for what it adds (module map, conventions, test helpers, background-work patterns), within the budget in CLAUDE.md's "Keeping these files current": at most a line or two in the root CLAUDE.md, the detail in `docs/dev/` or the directory's nested CLAUDE.md.
    - Don't commit, and don't edit PLAN.md's Tasks section.
-   - Report concisely: what it built, files changed, CLAUDE.md changes, deviations, deferrals, hand checks, and check results.
+   - Report concisely: what it built, files changed with the key entry points (`path:line` of the main new functions and tests, for the validator), CLAUDE.md changes, deviations, deferrals, hand checks, and check results.
 6. **Validator** (a separate general-purpose agent with `model: "opus"`, started after the implementer finishes: the judgement half). Its prompt includes the implementer's report verbatim and says:
-   - Read CLAUDE.md, then the task (or subtask) in PLAN.md. Start from `git status` / `git diff --stat` and the report; read the changed code and its tests, not a fresh tour of the codebase.
+   - Read CLAUDE.md. The task (or subtask) text is pasted into the prompt, as for the implementer; it doesn't re-read PLAN.md. Start from `git status` / `git diff --stat` and the report's entry points; read the changed code and its tests, not a fresh tour of the codebase.
+   - Read narrowly, as the implementer does: diff one file or hunk at a time (`git diff <file>`, never a whole multi-file diff), ranges of ≤ 150 lines, no `cat` of files over ~300 lines; independent reads in one message.
    - Judge whether the tests are useful and actually test the code. Look for tautologies, assertions that can't fail, checks against test-only hooks instead of real effects, missing negative cases, and flakiness.
    - Check coverage against every part of the task — for a subtask, its line in the subtask list, and the task's "Done when" on the last subtask.
    - Add or strengthen weak tests and rewrite worthless ones. Fix real bugs minimally and report them.
