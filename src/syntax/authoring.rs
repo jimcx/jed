@@ -184,7 +184,7 @@ pub fn check_language(languages_dir: &Path, id: &str, sample: Option<&Path>, too
         Ok(t) => t,
         Err(e) => {
             fail!("{file}: {e} (`jed --new-language {id}` creates it)");
-            return (out, false);
+            return finish(out, false);
         }
     };
     let (manifest, errors) = plugin::parse(&text, &file);
@@ -192,10 +192,12 @@ pub fn check_language(languages_dir: &Path, id: &str, sample: Option<&Path>, too
     for e in &errors {
         fail!("{}", with_line(e, &file, &text));
     }
-    let Some(manifest) = manifest else { return (out, false) };
+    let Some(manifest) = manifest else {
+        return finish(out, false);
+    };
     if manifest.id != id {
         fail!("{file}: `id` is \"{}\" but the directory is \"{id}\"", manifest.id);
-        return (out, false);
+        return finish(out, false);
     }
     let m = Manifest {
         dir: dir.clone(),
@@ -206,7 +208,7 @@ pub fn check_language(languages_dir: &Path, id: &str, sample: Option<&Path>, too
         Ok(p) => p,
         Err(e) => {
             fail!("{file}: {e}");
-            return (out, false);
+            return finish(out, false);
         }
     };
     if errors.is_empty() {
@@ -221,7 +223,7 @@ pub fn check_language(languages_dir: &Path, id: &str, sample: Option<&Path>, too
         Outcome::NoSources if plugin.get().loadable() => pass!("no src/parser.c: using the prebuilt {LIBRARY}"),
         Outcome::NoSources => {
             fail!("no src/parser.c and no prebuilt {LIBRARY} in {}", dir.display());
-            return (out, false);
+            return finish(out, false);
         }
         Outcome::Fresh => pass!("{LIBRARY} is up to date"),
         Outcome::Built => {
@@ -231,7 +233,7 @@ pub fn check_language(languages_dir: &Path, id: &str, sample: Option<&Path>, too
         Outcome::Failed(why) => {
             fail!("build failed: {why}");
             indent(&mut out, &log);
-            return (out, false);
+            return finish(out, false);
         }
     }
 
@@ -245,7 +247,7 @@ pub fn check_language(languages_dir: &Path, id: &str, sample: Option<&Path>, too
         } else {
             fail!("{e}");
         }
-        return (out, false);
+        return finish(out, false);
     }
     let grammar = plugin.get().grammar.get().expect("loaded").clone();
     pass!("loaded {LIBRARY} (grammar ABI {})", grammar.abi_version());
@@ -330,6 +332,11 @@ pub fn check_language(languages_dir: &Path, id: &str, sample: Option<&Path>, too
             }
         }
     }
+    finish(out, ok)
+}
+
+/// The report's last line: `OK`, or `FAILED` whichever step failed.
+fn finish(mut out: String, ok: bool) -> (String, bool) {
     let _ = writeln!(out, "{}", if ok { "OK" } else { "FAILED" });
     (out, ok)
 }
@@ -403,6 +410,11 @@ mod tests {
 
     fn check(parent: &Path, id: &str) -> (String, bool) {
         check_language(parent, id, None, &Toolchain::from_env())
+    }
+
+    /// The report ends `FAILED` (and has no `OK` line), whichever step failed.
+    fn failed(out: &str) -> bool {
+        out.trim_end().ends_with("\nFAILED") && !out.lines().any(|l| l == "OK")
     }
 
     #[test]
@@ -586,12 +598,12 @@ mod tests {
             t.replacen(&format!("id = \"{id}\""), "id = \"other\"", 1)
         });
         let (out, ok) = check(tmp.path(), &id);
-        assert!(!ok && out.contains("the directory is"), "{out}");
+        assert!(!ok && out.contains("the directory is") && failed(&out), "{out}");
         let dir = tmp.path().join("rust");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(MANIFEST), "id = \"rust\"\n").unwrap();
         let (out, ok) = check(tmp.path(), "rust");
-        assert!(!ok && out.contains("built-in"), "{out}");
+        assert!(!ok && out.contains("built-in") && failed(&out), "{out}");
     }
 
     #[test]
@@ -600,7 +612,10 @@ mod tests {
         let id = unique("authoring_empty");
         new_language(tmp.path(), &id).unwrap();
         let (out, ok) = check(tmp.path(), &id);
-        assert!(!ok && out.contains("no src/parser.c and no prebuilt"), "{out}");
+        assert!(
+            !ok && out.contains("no src/parser.c and no prebuilt") && failed(&out),
+            "{out}"
+        );
     }
 
     #[test]
@@ -645,7 +660,7 @@ mod tests {
         let id = unique("authoring_good");
         made(tmp.path(), &id).unwrap();
         let (out, ok) = check_language(tmp.path(), &id, Some(&tmp.path().join("nope")), &Toolchain::from_env());
-        assert!(!ok && out.contains("nope"), "{out}");
+        assert!(!ok && out.contains("nope") && failed(&out), "{out}");
     }
 
     #[test]
@@ -658,7 +673,7 @@ mod tests {
         std::fs::write(&parser, format!("{text}\nint broken( {{ nonsense;\n")).unwrap();
         let (out, ok) = check(tmp.path(), &id);
         assert!(!ok, "{out}");
-        assert!(out.contains("build failed"), "{out}");
+        assert!(out.contains("build failed") && failed(&out), "{out}");
         assert!(
             out.contains("parser.c") && out.contains("error"),
             "the compiler's output: {out}"
@@ -672,7 +687,10 @@ mod tests {
         let Some(dir) = made(tmp.path(), &id) else { return };
         edit_manifest(&dir, |t| t.replace("tree_sitter_cmake", "tree_sitter_nothing"));
         let (out, ok) = check(tmp.path(), &id);
-        assert!(!ok && out.contains("no symbol `tree_sitter_nothing`"), "{out}");
+        assert!(
+            !ok && out.contains("no symbol `tree_sitter_nothing`") && failed(&out),
+            "{out}"
+        );
     }
 
     #[test]
@@ -693,7 +711,10 @@ mod tests {
             tree_sitter::MIN_COMPATIBLE_LANGUAGE_VERSION,
             tree_sitter::LANGUAGE_VERSION
         );
-        assert!(out.contains(&range) && out.contains("regenerate"), "{out}");
+        assert!(
+            out.contains(&range) && out.contains("regenerate") && failed(&out),
+            "{out}"
+        );
     }
 
     #[test]
@@ -708,6 +729,6 @@ mod tests {
         let (out, ok) = check(tmp.path(), &id);
         assert!(!ok, "{out}");
         assert!(out.contains("highlights.scm: highlight query, line"), "{out}");
-        assert!(out.contains(&format!("line {row} column 2")), "{out}");
+        assert!(out.contains(&format!("line {row} column 2")) && failed(&out), "{out}");
     }
 }

@@ -6,6 +6,23 @@
 //! files (open before and after it arrives), a broken one is reported and leaves them uncoloured,
 //! an app loads only its own `syntax_plugins`. Every test registers a plugin under its own id and
 //! claims only extensions, names and shebangs of its own: the registry is process-global.
+//!
+//! syntax_plugins-g, the "Done when" end to end. With a C compiler: the CMake template copied in
+//! as `cmake2` colours a `CMakeLists.txt` as the built-in does (`..._template_copied_as_cmake2_...`;
+//! the template's own claims leave that file the built-in's, same test); a first start builds in
+//! the background and frames stay in budget meanwhile (`..._frames_stay_in_budget_...`); a
+//! `.workspace` can't add a plugin (`..._workspace_cannot_add_a_plugin`); a broken query is
+//! reported in the status bar and the grammar's log (`..._broken_query_...`, the other broken
+//! cases in `..._broken_grammars_...`). With a tree-sitter-lua checkout named by
+//! `JED_TEST_LUA_GRAMMAR` (else those tests print a note and pass): `--new-language lua` + the
+//! checkout's `src/` and `highlights.scm` + the edited manifest passes `--check-language`
+//! (`..._lua_check_passes`); a `.lua` file opens as "Lua", is coloured, comments with `--`, closes
+//! quotes, takes a `.workspace` association and `[lsp.lua]` (`..._lua_files_...`,
+//! `..._lua_lsp`); first start builds, the next one doesn't, a changed `scanner.c` rebuilds
+//! (`..._lua_build_cycle`); a compile error, a missing symbol, ABI 12 and a broken query each fail
+//! `--check-language` and are reported by the app with the file left uncoloured
+//! (`..._lua_broken_*`). Built-in-grammar versions of the broken cases are in
+//! `syntax/authoring.rs`'s tests (`--check-language`) and above (the app).
 
 use std::path::Path;
 
@@ -397,6 +414,8 @@ async fn syntax_plugins_broken_grammars_are_reported_and_leave_the_file_uncolour
             m.text
         );
         assert_eq!(m.level, crate::app::Level::Error);
+        let log = app.logs.texts(&crate::logs::Tool::Grammar(id.into()));
+        assert!(log.last().is_some_and(|l| l.contains(want)), "{id}: {log:?}");
         assert!(Language::Plugin(pid).grammar().is_none());
         app.type_text("hi");
         assert!(app.settle(|_| true).await);
@@ -598,4 +617,577 @@ async fn syntax_plugins_build_failure_is_reported_and_rebuild_recovers() {
     assert_eq!(grammar_state(&app, "pte_broken"), G::Ready);
     assert!(grammar_row(&app, "pte_broken").errors() > 0);
     assert!(coloured(&mut app));
+}
+
+// syntax_plugins-g
+
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
+use crate::syntax::build::Toolchain;
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let target = to.join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            copy_dir(&e.path(), &target);
+        } else {
+            std::fs::copy(e.path(), target).unwrap();
+        }
+    }
+}
+
+/// Replaces the manifest line starting with `prefix`.
+fn set_line(text: &str, prefix: &str, new: &str) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        out.push_str(if line.starts_with(prefix) { new } else { line });
+        out.push('\n');
+    }
+    out
+}
+
+fn edit_manifest(dir: &Path, f: impl FnOnce(&str) -> String) {
+    let file = dir.join("language.toml");
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, f(&text)).unwrap();
+}
+
+/// A tree-sitter-lua checkout from `JED_TEST_LUA_GRAMMAR`; `None` with a note without the
+/// variable or a C compiler.
+fn lua_checkout() -> Option<&'static Path> {
+    static CHECKOUT: OnceLock<Option<PathBuf>> = OnceLock::new();
+    CHECKOUT
+        .get_or_init(|| {
+            let Some(dir) = std::env::var_os("JED_TEST_LUA_GRAMMAR") else {
+                eprintln!("note: JED_TEST_LUA_GRAMMAR is not set; the Lua tests are skipped");
+                return None;
+            };
+            plugin::test_lib::library(false)?;
+            let dir = PathBuf::from(dir);
+            assert!(
+                dir.join("src/parser.c").is_file(),
+                "{} is no tree-sitter-lua",
+                dir.display()
+            );
+            Some(dir)
+        })
+        .as_deref()
+}
+
+/// What the guide says: `new_language`, the checkout's `src/` and `highlights.scm` copied in, the
+/// manifest edited (`extensions`, `line_comment`, `brackets`, `pairs`). `ext` is the extension.
+fn lua_plugin(parent: &Path, id: &str, ext: &str, checkout: &Path) -> PathBuf {
+    crate::syntax::authoring::new_language(parent, id).unwrap();
+    let dir = parent.join(id);
+    std::fs::copy(checkout.join("src/parser.c"), dir.join("src/parser.c")).unwrap();
+    std::fs::copy(checkout.join("src/scanner.c"), dir.join("src/scanner.c")).unwrap();
+    copy_dir(&checkout.join("src/tree_sitter"), &dir.join("src/tree_sitter"));
+    std::fs::copy(
+        checkout.join("queries/highlights.scm"),
+        dir.join("queries/highlights.scm"),
+    )
+    .unwrap();
+    edit_manifest(&dir, |t| {
+        let t = set_line(t, "# line_comment = ", "line_comment = \"--\"");
+        let t = set_line(&t, "extensions = ", &format!("extensions = [\"{ext}\"]"));
+        let t = set_line(&t, "symbol = ", "symbol = \"tree_sitter_lua\"");
+        let t = set_line(&t, "brackets = ", "brackets = [\"()\", \"[]\", \"{}\"]");
+        t.replace(
+            "    { open = \"\\\"\", close = \"\\\"\", not_in = [\"string\"] },",
+            "    { open = \"\\\"\", close = \"\\\"\", not_in = [\"string\"] },\n    { open = \"'\", close = \"'\", not_in = [\"string\", \"comment\"] },",
+        )
+    });
+    dir
+}
+
+const LUA_SAMPLE: &str = "local function f(x)\n  return x .. \"s\" -- note\nend\n";
+
+struct LuaFixture {
+    pid: PluginId,
+    report: String,
+    ok: bool,
+}
+
+/// The done-when flow once per process (`check_language` registers the plugin): id `lua`, the
+/// extension `lua`.
+fn lua() -> Option<&'static LuaFixture> {
+    static LUA: OnceLock<Option<LuaFixture>> = OnceLock::new();
+    LUA.get_or_init(|| {
+        let checkout = lua_checkout()?;
+        let languages = tempfile::tempdir().unwrap().keep();
+        lua_plugin(&languages, "lua", "lua", checkout);
+        let sample = languages.join("sample.lua");
+        std::fs::write(&sample, LUA_SAMPLE).unwrap();
+        let (report, ok) =
+            crate::syntax::authoring::check_language(&languages, "lua", Some(&sample), &Toolchain::from_env());
+        let pid = PluginId::find("lua").expect("check_language registers the plugin");
+        Some(LuaFixture { pid, report, ok })
+    })
+    .as_ref()
+}
+
+#[test]
+fn syntax_plugins_lua_check_passes() {
+    let Some(l) = lua() else { return };
+    assert!(l.ok, "{}", l.report);
+    assert!(!l.report.contains('✗'), "{}", l.report);
+    assert!(l.report.trim_end().ends_with("OK"), "{}", l.report);
+    let config = &l.pid.get().config;
+    assert_eq!(config.line_comment, Some("--"));
+    assert_eq!(l.pid.get().name, "Lua");
+    // The sample is coloured: some escape sequence appears around its text.
+    assert!(l.report.contains("\x1b["), "{}", l.report);
+}
+
+/// A workspace with `a.lua`, `x.rockspec` (a `.workspace` association) and the Lua plugin loaded.
+fn lua_app(dir: &tempfile::TempDir, pid: PluginId) -> App {
+    let root = root_of(dir);
+    std::fs::write(root.join("a.lua"), "local function f() end\nx = \n").unwrap();
+    std::fs::write(root.join("x.rockspec"), "package = \"x\"\n").unwrap();
+    std::fs::write(
+        root.join(".workspace"),
+        "[files.associations]\n\"*.rockspec\" = \"lua\"\n",
+    )
+    .unwrap();
+    let mut app = app_on(&root, Some("a.lua"));
+    app.syntax_plugins = vec![pid];
+    app.test_start();
+    app
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn syntax_plugins_lua_files_open_coloured_and_edit_by_the_manifest() {
+    let Some(l) = lua() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = lua_app(&dir, l.pid);
+    let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    assert!(
+        app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await,
+        "no parse"
+    );
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    assert!(status_bar(&term).contains("Lua"), "{}", status_bar(&term));
+    let keys = {
+        let (buf, _) = app.active_mut().unwrap();
+        let rope = buf.rope.clone();
+        let spans = buf.syntax.spans(&rope, 0..1).to_vec();
+        spans
+            .iter()
+            .map(|s| crate::syntax::KEYS[s.highlight.index()])
+            .collect::<Vec<_>>()
+    };
+    assert!(keys.iter().any(|k| k.starts_with("keyword")), "{keys:?}");
+    assert!(keys.iter().any(|k| k.starts_with("function")), "{keys:?}");
+
+    // Comment Line.
+    app.press(K::Char('/'), cmd());
+    assert_eq!(
+        app.active_buffer().unwrap().rope.to_string(),
+        "-- local function f() end\nx = \n"
+    );
+    assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
+    // Auto-close per `pairs`.
+    app.press(K::Down, M::NONE);
+    app.press(K::End, M::NONE);
+    app.type_text("\"");
+    assert_eq!(
+        app.active_buffer().unwrap().rope.to_string(),
+        "-- local function f() end\nx = \"\"\n"
+    );
+
+    // The association.
+    let x = root_of(&dir).join("x.rockspec");
+    app.test_open(Buffer::open(&x).unwrap());
+    assert_eq!(app.active_buffer().unwrap().syntax.language(), Language::Plugin(l.pid));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn syntax_plugins_lua_lsp() {
+    let Some(l) = lua() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = crate::milestone12_tests::dirs(&dir);
+    std::fs::write(root.join("a.lua"), "x = 1\n").unwrap();
+    let user = crate::config::settings::parse("[lsp.lua]\ncommand = \"lua-language-server\"\n");
+    assert!(user.errors.is_empty(), "{:?}", user.errors);
+    let (servers, errors) = crate::lsp::config::user_servers(&user.lsp);
+    assert!(errors.is_empty(), "{errors:?}");
+    let initial = InitialFile {
+        buffer: Buffer::open(&root.join("a.lua")).unwrap(),
+        goto: None,
+    };
+    let store = TrustStore::load(state.join("trust.toml"));
+    let mut app = App::new(Workspace::load(root.clone()), store, Some(initial), true);
+    app.syntax_plugins = vec![l.pid];
+    app.lsp.builtins.user = servers;
+    let fake = FakeLauncher::new(FakeOptions::default());
+    app.lsp.set_launcher(fake.clone());
+    app.test_start();
+    app.press(K::Char('r'), M::NONE);
+    let u = crate::milestone9_tests::uri(&root.join("a.lua"));
+    assert!(
+        app.settle(|_| fake.document(&u).is_some()).await,
+        "{:?}",
+        fake.launches()
+    );
+    assert_eq!(fake.launches(), ["lua-language-server"]);
+    assert_eq!(fake.document(&u).unwrap().language, "lua");
+    app.shutdown_servers().await;
+}
+
+/// First start builds (the command line is in the log), the next start finds it current, a changed
+/// `scanner.c` rebuilds on the start after.
+#[tokio::test(flavor = "multi_thread")]
+async fn syntax_plugins_lua_build_cycle() {
+    use crate::tools_view::GrammarState as G;
+    let Some(checkout) = lua_checkout() else { return };
+    let languages = tempfile::tempdir().unwrap();
+    lua_plugin(languages.path(), "lua_cycle", "luacycle", checkout);
+    let pid = {
+        let (manifests, errors) = plugin::load_dir(languages.path());
+        assert!(errors.is_empty(), "{errors:?}");
+        plugin::register(manifests.into_iter().find(|m| m.id == "lua_cycle").unwrap()).unwrap()
+    };
+    let tool = crate::logs::Tool::Grammar("lua_cycle".into());
+    let start = |dir: &tempfile::TempDir| {
+        let root = root_of(dir);
+        std::fs::write(root.join("a.luacycle"), "local function f() end\n").unwrap();
+        let mut app = app_on(&root, Some("a.luacycle"));
+        app.syntax_plugins = vec![pid];
+        app.test_start();
+        app
+    };
+    let commands = |app: &App| app.logs.texts(&tool).iter().filter(|l| l.starts_with("$ ")).count();
+
+    let d1 = tempfile::tempdir().unwrap();
+    let mut app = start(&d1);
+    assert!(!coloured_lines(&mut app, 1), "not before the build");
+    assert!(app.settle(|a| grammar_state(a, "lua_cycle") == G::Ready).await);
+    assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
+    assert!(coloured_lines(&mut app, 1));
+    assert_eq!(commands(&app), 1, "{:?}", app.logs.texts(&tool));
+    assert!(app.logs.texts(&tool)[0].contains("scanner.c"));
+
+    let d2 = tempfile::tempdir().unwrap();
+    let mut app = start(&d2);
+    assert!(app.settle(|a| grammar_state(a, "lua_cycle") == G::Ready).await);
+    assert_eq!(app.logs.texts(&tool), ["up to date", "grammar loaded"]);
+    assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
+    assert!(coloured_lines(&mut app, 1));
+
+    let scanner = languages.path().join("lua_cycle/src/scanner.c");
+    let mut text = std::fs::read_to_string(&scanner).unwrap();
+    text.push_str("\n// changed\n");
+    std::fs::write(&scanner, text).unwrap();
+    let d3 = tempfile::tempdir().unwrap();
+    let mut app = start(&d3);
+    assert!(app.settle(|a| grammar_state(a, "lua_cycle") == G::Ready).await);
+    let log = app.logs.texts(&tool);
+    assert_eq!(commands(&app), 1, "{log:?}");
+    assert!(log[0].starts_with("$ ") && log[0].contains("scanner.c"), "{log:?}");
+    assert_eq!(log.last().map(String::as_str), Some("grammar loaded"), "{log:?}");
+    assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
+    assert!(coloured_lines(&mut app, 1));
+}
+
+fn coloured_lines(app: &mut App, lines: usize) -> bool {
+    let (buf, _) = app.active_mut().unwrap();
+    let rope = buf.rope.clone();
+    buf.syntax.tree().is_some() && !buf.syntax.spans(&rope, 0..lines).is_empty()
+}
+
+/// One broken Lua plugin `id`: `--check-language` fails with `check_want`; an app reports
+/// `Syntax plugin <id>: …` containing `app_want` (status bar and the grammar's log), leaves the
+/// file uncoloured and keeps taking input.
+async fn lua_broken(id: &str, break_it: impl FnOnce(&Path), check_want: &[&str], app_want: &[&str]) {
+    let Some(checkout) = lua_checkout() else { return };
+    let languages = tempfile::tempdir().unwrap();
+    let dir = lua_plugin(languages.path(), id, id, checkout);
+    break_it(&dir);
+    let (out, ok) = crate::syntax::authoring::check_language(languages.path(), id, None, &Toolchain::from_env());
+    assert!(!ok, "{out}");
+    assert!(
+        out.trim_end().ends_with("\nFAILED") && !out.lines().any(|l| l == "OK"),
+        "the report ends FAILED: {out}"
+    );
+    for w in check_want {
+        assert!(out.contains(w), "{w}: {out}");
+    }
+    let pid = PluginId::find(id).unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let root = root_of(&work);
+    std::fs::write(root.join(format!("a.{id}")), "local x = 1\n").unwrap();
+    let mut app = app_on(&root, Some(&format!("a.{id}")));
+    app.syntax_plugins = vec![pid];
+    app.test_start();
+    assert!(app.settle(|a| a.message.is_some()).await, "{id}: no message");
+    let m = app.message.as_ref().unwrap();
+    assert_eq!(m.level, crate::app::Level::Error);
+    assert!(m.text.starts_with(&format!("Syntax plugin {id}: ")), "{}", m.text);
+    let log = app.logs.texts(&crate::logs::Tool::Grammar(id.into())).join("\n");
+    for w in app_want {
+        assert!(m.text.contains(w), "{w}: {}", m.text);
+        assert!(log.contains(w), "{w}: {log}");
+    }
+    assert!(pid.get().id == id && Language::Plugin(pid).grammar().is_none());
+    app.type_text("hi");
+    assert!(app.settle(|_| true).await);
+    assert!(!coloured_lines(&mut app, 1));
+    assert!(app.active_buffer().unwrap().rope.to_string().starts_with("hilocal"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn syntax_plugins_lua_broken_compile_error() {
+    lua_broken(
+        "lua_cc",
+        |d| {
+            let p = d.join("src/scanner.c");
+            let t = std::fs::read_to_string(&p).unwrap();
+            std::fs::write(&p, format!("{t}\nint broken( {{ nonsense;\n")).unwrap();
+        },
+        &["build failed", "scanner.c"],
+        &["error"],
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn syntax_plugins_lua_broken_missing_symbol() {
+    lua_broken(
+        "lua_sym",
+        |d| edit_manifest(d, |t| set_line(t, "symbol = ", "symbol = \"tree_sitter_nothing\"")),
+        &["no symbol `tree_sitter_nothing`"],
+        &["tree_sitter_nothing"],
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn syntax_plugins_lua_broken_abi_12() {
+    lua_broken(
+        "lua_abi",
+        |d| {
+            let p = d.join("src/parser.c");
+            let t = std::fs::read_to_string(&p).unwrap();
+            assert!(t.contains("#define LANGUAGE_VERSION 15"));
+            std::fs::write(
+                &p,
+                t.replace("#define LANGUAGE_VERSION 15", "#define LANGUAGE_VERSION 12"),
+            )
+            .unwrap();
+        },
+        &["ABI version 12 is not supported", "regenerate"],
+        &["ABI version 12"],
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn syntax_plugins_lua_broken_query() {
+    lua_broken(
+        "lua_query",
+        |d| {
+            let p = d.join("queries/highlights.scm");
+            let t = std::fs::read_to_string(&p).unwrap();
+            std::fs::write(&p, format!("{t}\n(no_such_node) @keyword\n")).unwrap();
+        },
+        &["highlights.scm: highlight query, line"],
+        &["highlights.scm", "line", "column"],
+    )
+    .await;
+}
+
+/// A query that doesn't compile, through the CMake grammar (no Lua checkout needed): the message
+/// has the file, line and column, the log too.
+#[tokio::test(flavor = "multi_thread")]
+async fn syntax_plugins_broken_query_is_reported_in_the_app() {
+    let Some(lib) = plugin::test_lib::library(false) else {
+        return;
+    };
+    let plugins = tempfile::tempdir().unwrap();
+    plugin::test_lib::plugin_dir(
+        plugins.path(),
+        "ptg_query",
+        "ptgquery",
+        "tree_sitter_cmake",
+        lib,
+        "(no_such_node) @keyword\n",
+    );
+    let pid = plugin::test_lib::register_dir(plugins.path(), "ptg_query");
+    let dir = tempfile::tempdir().unwrap();
+    let root = root_of(&dir);
+    std::fs::write(root.join("a.ptgquery"), "project(x)\n").unwrap();
+    let mut app = app_on(&root, Some("a.ptgquery"));
+    app.syntax_plugins = vec![pid];
+    app.test_start();
+    assert!(app.settle(|a| a.message.is_some()).await);
+    let m = app.message.as_ref().unwrap();
+    assert!(
+        m.text.starts_with("Syntax plugin ptg_query: ")
+            && m.text.contains("highlights.scm")
+            && m.text.contains("line 1 column"),
+        "{}",
+        m.text
+    );
+    let log = app.logs.texts(&crate::logs::Tool::Grammar("ptg_query".into()));
+    assert!(log.last().unwrap().contains("highlights.scm"), "{log:?}");
+    assert!(Language::Plugin(pid).grammar().is_none());
+    app.type_text("hi");
+    assert!(app.settle(|_| true).await);
+    assert!(!coloured_lines(&mut app, 1));
+}
+
+/// "Copying `examples/languages/cmake/` in under the id `cmake2` colours a `CMakeLists.txt`
+/// exactly as the built-in CMake does." The copy's file claims are dropped (the registry is
+/// process-global, and a plugin claiming `.cmake` would take every other test's files) and the
+/// file is reached through a `.workspace` association. With its claims the template would not
+/// even be chosen for `CMakeLists.txt`: built-in exact names beat plugin file names.
+#[tokio::test(flavor = "multi_thread")]
+async fn syntax_plugins_template_copied_as_cmake2_colours_like_built_in() {
+    // The claims, and the rule that leaves the file the built-in's.
+    let template = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/languages/cmake");
+    let (m, errors) = plugin::parse(&std::fs::read_to_string(template.join("language.toml")).unwrap(), "t");
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(m.unwrap().filenames, ["CMakeLists.txt"]);
+    assert_eq!(
+        detect(
+            Path::new("/ws/CMakeLists.txt"),
+            Path::new("/ws"),
+            "",
+            &Associations::default()
+        ),
+        Language::CMake
+    );
+
+    if plugin::test_lib::library(false).is_none() {
+        return;
+    }
+    let plugins = tempfile::tempdir().unwrap();
+    let copy = plugins.path().join("cmake2");
+    copy_dir(&template, &copy);
+    edit_manifest(&copy, |t| {
+        let t = set_line(t, "id = ", "id = \"cmake2\"");
+        let t = set_line(&t, "name = ", "name = \"CMake Two\"");
+        let t = set_line(&t, "extensions = ", "extensions = []");
+        set_line(&t, "filenames = ", "filenames = []")
+    });
+    let pid = plugin::test_lib::register_dir(plugins.path(), "cmake2");
+    assert_eq!(pid.get().name, "CMake Two");
+
+    let text = "cmake_minimum_required(VERSION 3.20)\nproject(demo)\nif(WIN32)\n  set(NAME \"x\") # note\nendif()\n";
+    let dir = tempfile::tempdir().unwrap();
+    let root = root_of(&dir);
+    std::fs::write(root.join("CMakeLists.txt"), text).unwrap();
+    std::fs::write(
+        root.join(".workspace"),
+        "[files.associations]\n\"CMakeLists.txt\" = \"cmake2\"\n",
+    )
+    .unwrap();
+    let mut app = app_on(&root, Some("CMakeLists.txt"));
+    app.syntax_plugins = vec![pid];
+    app.test_start();
+    assert!(
+        app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await,
+        "no parse: {:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+    let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    assert!(status_bar(&term).contains("CMake Two"), "{}", status_bar(&term));
+    let (buf, _) = app.active_mut().unwrap();
+    assert_eq!(buf.syntax.language(), Language::Plugin(pid));
+    let rope = buf.rope.clone();
+    let spans = buf.syntax.spans(&rope, 0..5).to_vec();
+    let built_in = crate::syntax::highlight_text(Language::CMake, text);
+    assert!(built_in.len() > 5);
+    assert_eq!(spans, built_in);
+}
+
+/// First start: the build runs off the UI thread, so frames drawn meanwhile stay in budget.
+#[tokio::test(flavor = "multi_thread")]
+async fn syntax_plugins_frames_stay_in_budget_while_a_grammar_builds() {
+    use crate::tools_view::GrammarState as G;
+    use std::time::{Duration, Instant};
+    let plugins = tempfile::tempdir().unwrap();
+    let Some(pid) = source_plugin(plugins.path(), "ptg_stall", "ptgstall") else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_for_source_plugin(&dir, pid, "ptgstall");
+    let budget = if cfg!(debug_assertions) {
+        Duration::from_millis(200)
+    } else {
+        Duration::from_millis(16)
+    };
+    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    // Every frame counts toward the worst, the one that sees the build finish too (a build run
+    // inside a frame would show there); at least 3 must be drawn while it is still building (a
+    // build run before the first frame, or in one, leaves none).
+    let started = Instant::now();
+    let (mut building, mut frames, mut worst) = (0, 0, Duration::ZERO);
+    while grammar_state(&app, "ptg_stall") != G::Ready {
+        assert!(started.elapsed() < Duration::from_secs(120), "never built");
+        let t = Instant::now();
+        app.pump();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        worst = worst.max(t.elapsed());
+        frames += 1;
+        if grammar_state(&app, "ptg_stall") != G::Ready {
+            building += 1;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    let total = started.elapsed();
+    assert!(building >= 3, "only {building} frames ran during a {total:?} build");
+    assert!(worst < budget, "worst frame {worst:?} of {frames}");
+}
+
+/// A `.workspace` can neither add, build nor point at a plugin: it is rejected as a whole
+/// (`[languages]` is unknown), a plugin directory inside the workspace is never read, and the
+/// only loader call in `main` takes the user's config directory.
+#[tokio::test(flavor = "multi_thread")]
+async fn syntax_plugins_workspace_cannot_add_a_plugin() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = root_of(&dir);
+    for base in ["languages", ".jed/languages"] {
+        let p = root.join(base).join("ptg_ws");
+        std::fs::create_dir_all(p.join("src")).unwrap();
+        std::fs::write(
+            p.join("language.toml"),
+            "id = \"ptg_ws\"\n[files]\nextensions = [\"ptgws\"]\n",
+        )
+        .unwrap();
+        std::fs::write(p.join("src/parser.c"), "this is not C;\n").unwrap();
+    }
+    std::fs::write(root.join("a.ptgws"), "x\n").unwrap();
+    std::fs::write(
+        root.join(".workspace"),
+        "[languages]\nptg_ws = \"languages/ptg_ws\"\n[files.associations]\n\"*.ptgws\" = \"ptg_ws\"\n",
+    )
+    .unwrap();
+    let mut app = app_on(&root, Some("a.ptgws"));
+    app.test_start();
+    assert!(app.workspace.config_error.is_some());
+    assert!(PluginId::find("ptg_ws").is_none());
+    assert_eq!(app.active_buffer().unwrap().syntax.language(), Language::PlainText);
+    let started = std::time::Instant::now();
+    assert!(
+        app.settle(|_| started.elapsed() > std::time::Duration::from_millis(200))
+            .await
+    );
+    assert!(app.grammars.is_empty());
+    assert!(PluginId::find("ptg_ws").is_none());
+    fn any_build_toml(dir: &Path) -> bool {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name() == "build.toml" || (e.file_type().unwrap().is_dir() && any_build_toml(&e.path())))
+    }
+    assert!(!any_build_toml(&root));
+    // The one place plugins are loaded from (whitespace dropped, so formatting can't matter).
+    let main: String = include_str!("main.rs").split_whitespace().collect();
+    assert_eq!(main.matches("load_and_register(").count(), 1);
+    assert!(main.contains("plugin::load_and_register(&paths::config_dir().join(\"languages\"))"));
 }

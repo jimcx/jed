@@ -69,6 +69,7 @@ uses.
 | `~/.config/jed/settings.toml` | Editor settings (tab width, whitespace, cursor, …). "Preferences: Open User Settings" creates it with every key at its default | [src/config/settings.rs](src/config/settings.rs) (table at the top) |
 | `~/.config/jed/keybindings.toml` | Your own key bindings (`[[binding]]` with `key`, `command`, optional `context`); command names are shown in the palette | [PLAN.md — Keybindings](PLAN.md#keybindings-vs-code-defaults) |
 | `~/.config/jed/tasks.toml` | Task templates for every workspace | [docs/tasks.md](docs/tasks.md) |
+| `~/.config/jed/languages/<id>/` | Syntax plugins: more languages from tree-sitter grammars, no rebuild | [docs/syntax-plugins.md](docs/syntax-plugins.md) |
 | `<project>/.workspace` | Per-project settings, language servers, tasks, excludes, file associations, history limits. Meant to be committed; jed asks before trusting the commands in it | [PLAN.md — Workspace](PLAN.md#workspace) |
 
 Language servers:
@@ -87,6 +88,7 @@ For users:
 
 - [docs/terminals/](docs/terminals/README.md) — terminal setup (start here)
 - [docs/tasks.md](docs/tasks.md) — configuring tasks
+- [docs/syntax-plugins.md](docs/syntax-plugins.md) — adding languages with tree-sitter grammars
 - [docs/clangd.md](docs/clangd.md), [docs/ty.md](docs/ty.md) — language servers
 
 For contributors:
