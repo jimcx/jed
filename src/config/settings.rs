@@ -15,6 +15,7 @@
 //! | `cursor_style`     | str  | `"line"`  | The cursor's shape: `line` (a bar), `block` or `underline`     |
 //! | `cursor_blinking`  | bool | true      | The cursor blinks                                              |
 //! | `hex_bytes_per_line` | int | 32       | A hex tab's widest row: a power of two from 1 to 64            |
+//! | `rulers`           | int list | unset | Columns drawn as a thin vertical line behind the text; unset, `git-commit` has `[72]` (`[]` turns it off) |
 //!
 //! Precedence, per key: defaults ← `settings.toml` ← `.workspace` (`layer`).
 //!
@@ -67,6 +68,9 @@ pub struct SettingsOverrides {
     /// A hex tab's widest row in bytes; anything but a power of two from 1 to 64 is an error.
     #[serde(deserialize_with = "hex_bytes_per_line")]
     pub hex_bytes_per_line: Option<usize>,
+    /// Columns that get a vertical ruler line (VS Code's `editor.rulers`); set, even to `[]`, it
+    /// replaces a language's own default (`git-commit`: 72).
+    pub rulers: Option<Vec<usize>>,
 }
 
 fn hex_bytes_per_line<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
@@ -116,6 +120,9 @@ impl SettingsOverrides {
         }
         if let Some(on) = self.cursor_blinking {
             s.cursor_blinking = on;
+        }
+        if let Some(r) = &self.rulers {
+            s.rulers = Some(r.clone());
         }
         if let Some(n) = self.hex_bytes_per_line {
             s.hex_bytes_per_line = n;
@@ -255,6 +262,7 @@ pub const TEMPLATE: &str = "\
 # render_whitespace = \"all\"  # none, boundary, selection, trailing or all
 # cursor_style = \"line\"  # line, block or underline
 # cursor_blinking = true
+# rulers = []  # columns that get a vertical line, e.g. [80, 120]; unset, git commit messages get 72 (set, even [], replaces it)
 # hex_bytes_per_line = 32  # a hex tab's widest row: 1, 2, 4, 8, 16, 32 or 64 bytes
 
 # The language server for a language id (a built-in one's, such as python, or a syntax plugin's),
@@ -308,7 +316,7 @@ mod tests {
             "[settings]\ntab_width = 2\ninsert_spaces = false\nsyntax_max_bytes = 10\nauto_close_pairs = false\n\
              detect_indentation = false\nauto_indent = false\nmatch_brackets = false\nquick_suggestions = false\n\
              render_whitespace = \"trailing\"\n\
-             cursor_style = \"block\"\ncursor_blinking = false\nhex_bytes_per_line = 16\n",
+             cursor_style = \"block\"\ncursor_blinking = false\nhex_bytes_per_line = 16\nrulers = [80, 100]\n",
         );
         assert_eq!(
             o,
@@ -325,6 +333,7 @@ mod tests {
                 cursor_style: Some(CursorStyle::Block),
                 cursor_blinking: Some(false),
                 hex_bytes_per_line: Some(16),
+                rulers: Some(vec![80, 100]),
             }
         );
     }
@@ -554,6 +563,7 @@ mod tests {
             cursor_style: Some(CursorStyle::Line),
             cursor_blinking: Some(true),
             hex_bytes_per_line: Some(1),
+            rulers: Some(Vec::new()),
         };
         let fields = toml::Table::try_from(&every).unwrap();
         assert_eq!(
@@ -577,7 +587,9 @@ mod tests {
                 s.cursor_style,
                 s.cursor_blinking,
                 s.hex_bytes_per_line,
-                s.detect_indentation
+                s.detect_indentation,
+                // Unset differs from `[]` only for a language's own default (git-commit's 72).
+                s.rulers.clone().unwrap_or_default()
             ),
             (
                 d.auto_indent,
@@ -587,7 +599,8 @@ mod tests {
                 d.cursor_style,
                 d.cursor_blinking,
                 d.hex_bytes_per_line,
-                d.detect_indentation
+                d.detect_indentation,
+                d.rulers.clone().unwrap_or_default()
             )
         );
         assert!(parse(TEMPLATE).errors.is_empty());

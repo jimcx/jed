@@ -32,8 +32,13 @@ pub const KEYS: &[&str] = &[
     "constant",
     "constant.builtin",
     "constructor",
+    "diff.deleted",
+    "diff.header",
+    "diff.hunk",
+    "diff.inserted",
     "escape",
     "function",
+    "invalid",
     "keyword",
     "keyword.control",
     "label",
@@ -44,6 +49,7 @@ pub const KEYS: &[&str] = &[
     "markup.raw",
     "number",
     "operator",
+    "overflow",
     "property",
     "punctuation",
     "punctuation.special",
@@ -226,6 +232,9 @@ pub fn compute(language: Language, tree: &Tree, rope: &Rope, start: ByteIdx, end
     for (s, e, _, h) in captures {
         paint[s.max(start.0) - start.0..e.min(end.0) - start.0].fill(h.0);
     }
+    if language == Language::GitCommit {
+        git_commit_lines(tree, rope, start, end, &mut paint);
+    }
     let mut spans = Vec::new();
     let mut i = 0;
     while i < paint.len() {
@@ -241,6 +250,103 @@ pub fn compute(language: Language, tree: &Tree, rope: &Rope, start: ByteIdx, end
         i += run;
     }
     spans
+}
+
+/// The subject's length (in graphemes) past which `overflow` colours it.
+const SUBJECT_WIDTH: usize = 50;
+
+/// The line pass for a git commit message, painted over the query's colours in `paint` (one
+/// highlight per byte of `start..end`): the subject's text past column 50 (`overflow`), text on
+/// line 2 (`invalid`: git wants it blank) and, below the scissors line of `git commit -v`, the diff
+/// by line kinds (the grammar has one `diff` node there; jed has no injections). O(the range).
+fn git_commit_lines(tree: &Tree, rope: &Rope, start: ByteIdx, end: ByteIdx, paint: &mut [u8]) {
+    let key = |k: &str| highlight_for(k).expect("key in KEYS").0;
+    let mut put = |from: usize, to: usize, h: u8| {
+        let (from, to) = (from.max(start.0), to.min(end.0));
+        if from < to {
+            paint[from - start.0..to - start.0].fill(h);
+        }
+    };
+    let head = |from: ByteIdx, to: ByteIdx, max: usize| {
+        let to = floor(rope, to.0.min(from.0 + max));
+        rope.slice(from.0..to.0).to_string()
+    };
+    let lines = pos::line_count(rope);
+    let (l0, e0, _) = pos::line_bounds(rope, 0);
+    let subject = head(l0, e0, 512);
+    if !subject.starts_with('#') {
+        let mut off = 0;
+        for _ in 0..SUBJECT_WIDTH {
+            off = pos::next_grapheme_in(&subject, off);
+        }
+        if l0.0 + off < e0.0 {
+            put(l0.0 + off, e0.0, key("overflow"));
+        }
+    }
+    if lines > 1 {
+        let (l1, e1, _) = pos::line_bounds(rope, 1);
+        let text = head(l1, e1, 512);
+        if !text.starts_with('#') && !text.trim().is_empty() {
+            put(l1.0, e1.0, key("invalid"));
+        }
+    }
+    // Below the scissors line.
+    let mut cur = tree.root_node().walk();
+    let from = tree
+        .root_node()
+        .children(&mut cur)
+        .find(|n| n.kind() == "scissor")
+        .map(|n| n.end_byte());
+    let Some(from) = from.filter(|&f| f < end.0) else {
+        return;
+    };
+    let (hdr, hunk, ins, del) = (
+        key("diff.header"),
+        key("diff.hunk"),
+        key("diff.inserted"),
+        key("diff.deleted"),
+    );
+    const HEADERS: &[&str] = &[
+        "--- a/",
+        "+++ b/",
+        "--- /dev/null",
+        "+++ /dev/null",
+        "diff --git",
+        "index ",
+        "new file mode",
+        "deleted file mode",
+        "old mode",
+        "new mode",
+        "similarity index",
+        "rename ",
+        "Binary files",
+    ];
+    let mut line = pos::line_of(rope, ByteIdx(from.max(start.0)));
+    if pos::line_start(rope, line).0 < from {
+        line += 1;
+    }
+    while line < lines {
+        let (ls, le, _) = pos::line_bounds(rope, line);
+        if ls >= end {
+            break;
+        }
+        let t = head(ls, le, 24);
+        let kind = if t.starts_with("@@") {
+            Some(hunk)
+        } else if HEADERS.iter().any(|p| t.starts_with(p)) {
+            Some(hdr)
+        } else if t.starts_with('+') {
+            Some(ins)
+        } else if t.starts_with('-') {
+            Some(del)
+        } else {
+            None
+        };
+        if let Some(h) = kind {
+            put(ls.0, le.0, h);
+        }
+        line += 1;
+    }
 }
 
 fn floor(rope: &Rope, at: usize) -> ByteIdx {
@@ -820,6 +926,108 @@ mod tests {
                 ("BREAKING CHANGE: ", "keyword"),
             ],
         );
+    }
+
+    /// The key of every byte of `text` in `lo..hi` (computed over just that range), as runs of
+    /// (text, key).
+    fn git_range(text: &str, lo: usize, hi: usize) -> Vec<(String, &'static str)> {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&Language::GitCommit.grammar().unwrap()).unwrap();
+        let tree = parser.parse(text, None).unwrap();
+        let rope = Rope::from_str(text);
+        let spans = compute(Language::GitCommit, &tree, &rope, ByteIdx(lo), ByteIdx(hi));
+        check_sorted(&spans);
+        spans
+            .iter()
+            .map(|s| (text[s.start.0..s.end.0].to_string(), s.highlight.key()))
+            .collect()
+    }
+
+    #[test]
+    fn git_commit_subject_overflow_and_line_two() {
+        let ok = "a".repeat(50);
+        assert!(all(Language::GitCommit, &ok).iter().all(|(_, k)| *k != "overflow"));
+        let long = format!("{}{}", ok, "b".repeat(10));
+        let spans = all(Language::GitCommit, &long);
+        assert_eq!(spans.last().unwrap(), &("b".repeat(10), "overflow"), "{spans:?}");
+        assert_eq!(spans.first().unwrap(), &(ok.clone(), "markup.heading"), "{spans:?}");
+        // Graphemes, not bytes: 50 two-byte chars fit.
+        let wide = "é".repeat(50);
+        assert!(all(Language::GitCommit, &wide).iter().all(|(_, k)| *k != "overflow"));
+        // Wide chars count one each (graphemes, as VS Code's subject length check counts chars).
+        let cjk = "字".repeat(51);
+        assert_eq!(
+            all(Language::GitCommit, &cjk).last().unwrap(),
+            &("字".into(), "overflow")
+        );
+        // A comment first line is no subject.
+        let c = format!("# {}\n", "c".repeat(60));
+        assert!(all(Language::GitCommit, &c).iter().all(|(_, k)| *k != "overflow"));
+
+        let invalid = |t: &str| all(Language::GitCommit, t).iter().any(|(_, k)| *k == "invalid");
+        assert!(
+            all(Language::GitCommit, "subject\nbody right away\n").contains(&("body right away".into(), "invalid"))
+        );
+        assert!(!invalid("subject\n\nbody\n"));
+        assert!(!invalid("subject\n# comment\n"));
+        assert!(!invalid("subject\n   \nbody\n"));
+        // Only line 2: text on line 3 or later is fine.
+        assert!(!invalid("subject\n\nbody\nmore body\n"));
+        assert!(!invalid("subject"));
+    }
+
+    const SCISSORS: &str = "msg
+
+- body dash
++ body plus
+# ------------------------ >8 ------------------------
+# Do not modify or remove the line above.
+# Everything below it will be ignored.
+diff --git a/x b/x
+index 1..2 100644
+--- a/x
++++ b/x
+@@ -1,3 +1,3 @@
+ ctx
+-old
++new
+";
+
+    #[test]
+    fn git_commit_scissors_diff_lines() {
+        let spans = all(Language::GitCommit, SCISSORS);
+        let has = |t: &str, k: &str| assert!(spans.iter().any(|(s, key)| s == t && *key == k), "{t:?} {k}: {spans:?}");
+        has("diff --git a/x b/x", "diff.header");
+        has("index 1..2 100644", "diff.header");
+        has("--- a/x", "diff.header");
+        has("+++ b/x", "diff.header");
+        has("@@ -1,3 +1,3 @@", "diff.hunk");
+        has("-old", "diff.deleted");
+        has("+new", "diff.inserted");
+        // Above the scissors line and context lines are not diff lines.
+        assert!(
+            !spans
+                .iter()
+                .any(|(t, _)| t.contains("body") || t == " ctx" || t == "ctx"),
+            "{spans:?}"
+        );
+        assert_eq!(spans.iter().filter(|(_, k)| k.starts_with("diff.")).count(), 7);
+    }
+
+    #[test]
+    fn git_commit_diff_lines_in_a_sub_range() {
+        // A range that starts inside the diff (after the scissors) still colours its lines.
+        let lo = SCISSORS.find("@@").unwrap();
+        let spans = git_range(SCISSORS, lo, SCISSORS.len());
+        assert_eq!(
+            spans.iter().map(|(_, k)| *k).collect::<Vec<_>>(),
+            ["diff.hunk", "diff.deleted", "diff.inserted"],
+            "{spans:?}"
+        );
+        // And one cut mid-line colours the part inside.
+        let lo = SCISSORS.find("-old").unwrap() + 2;
+        let spans = git_range(SCISSORS, lo, SCISSORS.len());
+        assert_eq!(spans[0], ("ld".to_string(), "diff.deleted"), "{spans:?}");
     }
 
     #[test]

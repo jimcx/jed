@@ -30,6 +30,9 @@ pub struct LanguageConfig {
     /// VS Code's language-specific `editor.insertSpaces` default, over the user's setting
     /// (Makefiles indent recipes with tabs).
     pub insert_spaces: Option<bool>,
+    /// A language's default `rulers` (VS Code's language-specific `editor.rulers`), replacing the
+    /// user's setting (a commit message wraps at 72).
+    pub rulers: Option<&'static [usize]>,
     /// What typing an opening char wraps a selection in (VS Code's `surroundingPairs`).
     pub surround: &'static [(char, char)],
     /// A pair auto-closes only before one of these, the end of the line, or a closing char of a
@@ -74,6 +77,7 @@ static PLAIN_TEXT: LanguageConfig = LanguageConfig {
     brackets: BRACKET_PAIRS,
     tree_tokens: true,
     insert_spaces: None,
+    rulers: None,
     surround: &[
         ('{', '}'),
         ('[', ']'),
@@ -101,6 +105,7 @@ static C_LIKE: LanguageConfig = LanguageConfig {
     brackets: BRACKET_PAIRS,
     tree_tokens: true,
     insert_spaces: None,
+    rulers: None,
     surround: &[('{', '}'), ('[', ']'), ('(', ')'), ('"', '"'), ('\'', '\''), ('<', '>')],
     close_before_quotes: DEFAULT_BEFORE_QUOTES,
     close_before_brackets: DEFAULT_BEFORE_BRACKETS,
@@ -122,6 +127,7 @@ static PYTHON: LanguageConfig = LanguageConfig {
     brackets: BRACKET_PAIRS,
     tree_tokens: true,
     insert_spaces: None,
+    rulers: None,
     surround: &[('{', '}'), ('[', ']'), ('(', ')'), ('"', '"'), ('\'', '\''), ('`', '`')],
     close_before_quotes: DEFAULT_BEFORE_QUOTES,
     close_before_brackets: DEFAULT_BEFORE_BRACKETS,
@@ -142,6 +148,7 @@ pub(super) const fn config(
         brackets,
         tree_tokens: true,
         insert_spaces: None,
+        rulers: None,
         surround,
         close_before_quotes: DEFAULT_BEFORE_QUOTES,
         close_before_brackets: DEFAULT_BEFORE_BRACKETS,
@@ -298,12 +305,15 @@ static DOCKERFILE: LanguageConfig = config(
 );
 
 /// `git-commit`: `#` comments, brackets `[` `(` auto-close, no quotes (apostrophes in prose).
-static GIT_COMMIT: LanguageConfig = config(
-    Some("#"),
-    &[BRACKETS[1], BRACKETS[2]],
-    &[('[', ']'), ('(', ')')],
-    SURROUND,
-);
+static GIT_COMMIT: LanguageConfig = LanguageConfig {
+    rulers: Some(&[72]),
+    ..config(
+        Some("#"),
+        &[BRACKETS[1], BRACKETS[2]],
+        &[('[', ']'), ('(', ')')],
+        SURROUND,
+    )
+};
 
 /// `git-rebase-todo`: `#` comments only.
 static GIT_REBASE: LanguageConfig = config(Some("#"), &[], &[], SURROUND);

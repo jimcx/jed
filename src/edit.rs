@@ -55,6 +55,11 @@ pub struct Settings {
     /// A hex tab's widest row, in bytes (a power of two from 1 to 64: `hex::Layout::fit` takes
     /// the largest power of two up to this that fits): `[settings] hex_bytes_per_line`.
     pub hex_bytes_per_line: usize,
+    /// Columns drawn as a thin vertical line behind the text (VS Code's `editor.rulers`):
+    /// `[settings] rulers`. `None` (not set) takes the language's `LanguageConfig::rulers`
+    /// (`for_buffer`; `git-commit`: 72); a set list, even `[]`, wins over it: jed has no
+    /// language-specific user settings, so this is the only way to change or drop that 72.
+    pub rulers: Option<Vec<usize>>,
 }
 
 /// VS Code's `editor.cursorStyle`, the shapes a terminal can draw: a bar before the char, a
@@ -105,17 +110,22 @@ impl Default for Settings {
             cursor_style: CursorStyle::Line,
             cursor_blinking: true,
             hex_bytes_per_line: 32,
+            rulers: None,
         }
     }
 }
 
 impl Settings {
     /// The settings for a buffer in `language`: its `LanguageConfig::insert_spaces` (VS Code's
-    /// language-specific default, which wins over the user's general setting) applied.
+    /// language-specific default, which wins over the user's general setting) and, when the user
+    /// set none, its `rulers`.
     fn for_language(&self, language: Language) -> Settings {
         let mut s = self.clone();
         if let Some(spaces) = language.config().insert_spaces {
             s.insert_spaces = spaces;
+        }
+        if s.rulers.is_none() {
+            s.rulers = language.config().rulers.map(<[usize]>::to_vec);
         }
         s
     }
@@ -539,6 +549,25 @@ pub(crate) fn replace_each_landing<S: AsRef<str>>(
 mod tests {
     use super::*;
     use crate::command::Command as C;
+
+    #[test]
+    fn a_language_default_for_rulers_applies_unless_the_user_set_some() {
+        let d = Settings::default();
+        assert_eq!(d.rulers, None);
+        assert_eq!(d.for_language(Language::Rust).rulers, None);
+        assert_eq!(d.for_language(Language::GitCommit).rulers, Some(vec![72]));
+        let user = |r: Vec<usize>| Settings {
+            rulers: Some(r),
+            ..Settings::default()
+        };
+        assert_eq!(
+            user(vec![80, 100]).for_language(Language::Rust).rulers,
+            Some(vec![80, 100])
+        );
+        assert_eq!(user(vec![80]).for_language(Language::GitCommit).rulers, Some(vec![80]));
+        // An explicit empty list turns git-commit's ruler off.
+        assert_eq!(user(vec![]).for_language(Language::GitCommit).rulers, Some(vec![]));
+    }
 
     fn setup(text: &str, cursor: usize) -> (Buffer, View, Settings) {
         let buf = Buffer::from_str(text);

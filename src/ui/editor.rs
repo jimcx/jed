@@ -409,6 +409,26 @@ pub fn render(
         }
     }
 
+    // Rulers: a thin line in each visible ruler column, only in cells that show no text (behind
+    // the text); a cell with a modifier (a secondary cursor) keeps its look.
+    let rulers = s.rulers.as_deref().unwrap_or_default();
+    if !rulers.is_empty() {
+        let style = theme.get("editorRuler.foreground");
+        for &col in rulers
+            .iter()
+            .filter(|&&c| c >= view.left_col && c < view.left_col + view.width)
+        {
+            let x = text.x + (col - view.left_col) as u16;
+            for y in text.y..text.y + text.height {
+                let cell = &mut out[(x, y)];
+                if cell.symbol() == " " && cell.modifier.is_empty() {
+                    cell.set_char('\u{2502}');
+                    cell.fg = style.fg.unwrap_or_default();
+                }
+            }
+        }
+    }
+
     view.scroll_width.measure(widest);
 
     // The terminal's own cursor goes on the primary selection.

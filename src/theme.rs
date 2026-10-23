@@ -138,6 +138,7 @@ impl Theme {
             ("hexEditor.offset", Style::new().fg(c(0x858585))),
             ("hexEditor.nonPrintable", Style::new().fg(c(0x8C8C8C))),
             ("hexEditor.border", Style::new().fg(c(0x5A5A5A))),
+            ("editorRuler.foreground", Style::new().fg(c(0x5A5A5A))),
             ("gutter.active", Style::new().fg(c(0xC6C6C6))),
             // Quick diff's gutter markers (Dark+'s `editorGutter.*Background`; a bar or a line in
             // the colour, so the foreground here). Deleted is Dark+'s error foreground.
@@ -352,6 +353,15 @@ impl Theme {
             ("constant", Style::new().fg(c(0x4FC1FF))),
             ("constant.builtin", Style::new().fg(c(0x569CD6))),
             ("constructor", Style::new().fg(c(0x4EC9B0))),
+            // The git commit message editor's line pass: the diff below the scissors line (the
+            // diff view's colours as foregrounds: git's own green / red, the header's grey),
+            // the subject's overflow (the warning yellow) and text on line 2 (the error red).
+            ("diff.inserted", Style::new().fg(c(0x89D185))),
+            ("diff.deleted", Style::new().fg(c(0xF14C4C))),
+            ("diff.header", Style::new().fg(c(0xBBBBBB)).add_modifier(Modifier::BOLD)),
+            ("diff.hunk", Style::new().fg(c(0x4EC9B0))),
+            ("overflow", Style::new().fg(c(0xCCA700))),
+            ("invalid", Style::new().fg(c(0xF44747))),
             ("escape", Style::new().fg(c(0xD7BA7D))),
             ("function", Style::new().fg(c(0xDCDCAA))),
             ("keyword", Style::new().fg(c(0x569CD6))),
