@@ -372,6 +372,8 @@ impl App {
                                 right,
                             });
                         }
+                        // Shells are never saved: a restart shows none.
+                        Tab::Shell(_) => continue,
                     }
                 }
                 let active = active.min(tabs.len().saturating_sub(1));
@@ -539,5 +541,30 @@ mod tests {
         let view = &app.group().active_tab().unwrap().view;
         assert_eq!(view.selections.primary().head, ByteIdx(7), "the session's cursor");
         assert_eq!(app.ui.focus, Focus::Editor);
+    }
+
+    /// A shell tab is never saved, and it doesn't shift the saved tabs' active index.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_shell_tab_is_not_in_the_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let (root, state) = (base.join("proj"), base.join("state"));
+        fs::create_dir_all(&root).unwrap();
+        let mut app = App::new(
+            Workspace::load(root.clone()),
+            TrustStore::load(state.join("trust.toml")),
+            None,
+            true,
+        );
+        app.test_start();
+        app.tasks.shell = "/bin/sh".into();
+        app.test_open(Buffer::new_file(&root.join("a.txt")));
+        app.test_execute(crate::command::Command::NewShell);
+
+        let snapshot = app.session_snapshot();
+        assert_eq!(snapshot.groups.len(), 1);
+        assert_eq!(snapshot.groups[0].tabs.len(), 1, "only the text tab is saved");
+        assert!(matches!(snapshot.groups[0].tabs[0], TabState::Text { .. }));
+        assert_eq!(snapshot.groups[0].active, 0, "the shell's tab index is dropped");
     }
 }

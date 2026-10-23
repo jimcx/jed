@@ -33,6 +33,9 @@ pub struct Tasks {
     pub shell: PathBuf,
     /// New runs' (rows, cols).
     pub size: (u16, u16),
+    /// Lines kept above the screen for new runs: the `scrollback` setting, set before each run
+    /// (the `vt100` parser's capacity is fixed at creation).
+    pub scrollback: usize,
     /// Every run, oldest first, until closed (dropping one kills it).
     runs: Vec<Run>,
     next_id: u64,
@@ -48,6 +51,7 @@ impl Default for Tasks {
             user: BTreeMap::new(),
             shell: templates::default_shell(),
             size: DEFAULT_SIZE,
+            scrollback: run::SCROLLBACK,
             runs: Vec::new(),
             next_id: 1,
             sink: None,
@@ -84,8 +88,7 @@ impl Tasks {
     /// Starts `template` (cwd relative to `root`) at `self.size`; spawning happens off-thread, so
     /// it starts as `Status::Starting`.
     pub fn run(&mut self, template: &Template, root: &Path) -> RunId {
-        let id = RunId(self.next_id);
-        self.next_id += 1;
+        let id = self.new_run_id();
         let mut spec = template.resolve(root, &self.shell);
         if let Some(socket) = &self.ipc {
             spec.env.retain(|(k, _)| k != crate::ipc::ENV);
@@ -94,7 +97,14 @@ impl Tasks {
         }
         let sink = self.sink.clone().unwrap_or_else(|| Arc::new(|_| {}));
         let (rows, cols) = self.size;
-        self.runs.push(Run::start(id, spec, rows, cols, sink));
+        self.runs.push(Run::start(id, spec, rows, cols, sink, self.scrollback));
+        id
+    }
+
+    /// A new run's id, for a run this `Tasks` doesn't own (a shell tab's).
+    pub fn new_run_id(&mut self) -> RunId {
+        let id = RunId(self.next_id);
+        self.next_id += 1;
         id
     }
 

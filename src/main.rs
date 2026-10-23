@@ -95,6 +95,9 @@ mod search;
 mod search_view;
 mod selection;
 mod session;
+mod shell;
+#[cfg(test)]
+mod shell_tests;
 mod shift;
 mod syntax;
 #[cfg(test)]

@@ -12,7 +12,7 @@ Drawing only — but `render` is not pure: it takes `&mut App` and writes back s
 One line per widget or editor layer; [docs/dev/ui.md](../../docs/dev/ui.md) has each in full (keys, layout, hits, render-time state) — read the entries for what you touch, and add detail there, not here.
 
 - `activity.rs` — the activity bar's icons (greyed, `activityBar.disabled`, when `Mode::allows_view` says no: single file mode)
-- `tabs.rs` — tab bars: overflow scrolling with `‹` / `›`, revealing the active tab, deleted / diff / dirty titles
+- `tabs.rs` — tab bars: overflow scrolling with `‹` / `›`, revealing the active tab, deleted / diff / shell / dirty titles
 - `editor.rs` — the editor (takes an `Overlay { focused, find, whitespace, blame }`), layered per grapheme in one pass, each walked with one index over sorted on-screen data: syntax spans (`buf.syntax.spans`), matched brackets, diagnostics' squiggles, rendered whitespace, find matches, selections, inline blame on the primary's line, gutter quick-diff markers
 - `find.rs` — the find / replace widget (top right of the active editor), `draw_field` (shared one-line input drawing)
 - `side.rs` — the side panel: explorer rows with git colours, the Explorer's split with the "Git History" section (divider, header, commit rows)

@@ -35,6 +35,7 @@ mod replace;
 mod scm;
 mod scrollbar;
 mod session;
+mod shell;
 mod side;
 mod syntax;
 mod tasks;
@@ -298,6 +299,8 @@ enum AppEvent {
     },
     /// A task run started, has new output (throttled) or ended (`app/tasks.rs`).
     Task(crate::tasks::Event),
+    /// A shell tab's run started, has new output (throttled) or ended (`app/shell.rs`).
+    Shell(crate::tasks::Event),
     /// The workspace's session was read, with its text tabs' files (`app/session.rs`).
     SessionRead(Box<Result<Option<crate::session::Restore>, String>>),
     /// The workspace's crash backups were looked for at start (`app/backup.rs`).
@@ -1210,6 +1213,7 @@ impl App {
             Command::ShowFileHistory => self.show_file_history(false),
             Command::RestoreFileHistory => self.show_file_history(true),
             Command::RunTask => self.show_run_task(),
+            Command::NewShell => self.new_shell(),
             Command::OpenRecentWorkspace => self.show_recent(),
             Command::ToggleRenderWhitespace => self.ui.whitespace_toggled = !self.ui.whitespace_toggled,
             Command::IndentUsingSpaces
@@ -1416,6 +1420,7 @@ impl App {
             AppEvent::DiffStaged(message) => self.diff_staged(message),
             AppEvent::CommitLoaded { commit, result } => self.commit_loaded(commit, result),
             AppEvent::Task(ev) => self.task_event(ev),
+            AppEvent::Shell(ev) => self.shell_event(ev),
             AppEvent::Ipc(request, responder) => self.ipc_request(request, responder),
             AppEvent::IpcStarted(result) => self.ipc_started(result),
             AppEvent::SessionRead(result) => self.session_read(*result),

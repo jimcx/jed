@@ -16,6 +16,7 @@
 //! | `cursor_blinking`  | bool | true      | The cursor blinks                                              |
 //! | `hex_bytes_per_line` | int | 32       | A hex tab's widest row: a power of two from 1 to 64            |
 //! | `rulers`           | int list | unset | Columns drawn as a thin vertical line behind the text; unset, `git-commit` has `[72]` (`[]` turns it off) |
+//! | `scrollback`       | int  | 5000      | Lines kept above the screen, for shell and task tabs            |
 //!
 //! Precedence, per key: defaults ← `settings.toml` ← `.workspace` (`layer`).
 //!
@@ -71,6 +72,9 @@ pub struct SettingsOverrides {
     /// Columns that get a vertical ruler line (VS Code's `editor.rulers`); set, even to `[]`, it
     /// replaces a language's own default (`git-commit`: 72).
     pub rulers: Option<Vec<usize>>,
+    /// Lines kept above the screen for a shell tab or a task run (VS Code's
+    /// `terminal.integrated.scrollback`), read when the run is created.
+    pub scrollback: Option<usize>,
 }
 
 fn hex_bytes_per_line<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
@@ -126,6 +130,9 @@ impl SettingsOverrides {
         }
         if let Some(n) = self.hex_bytes_per_line {
             s.hex_bytes_per_line = n;
+        }
+        if let Some(n) = self.scrollback {
+            s.scrollback = n;
         }
     }
 }
@@ -264,6 +271,7 @@ pub const TEMPLATE: &str = "\
 # cursor_blinking = true
 # rulers = []  # columns that get a vertical line, e.g. [80, 120]; unset, git commit messages get 72 (set, even [], replaces it)
 # hex_bytes_per_line = 32  # a hex tab's widest row: 1, 2, 4, 8, 16, 32 or 64 bytes
+# scrollback = 5000  # lines kept above the screen, for shell and task tabs
 
 # The language server for a language id (a built-in one's, such as python, or a syntax plugin's),
 # in every workspace. A trusted .workspace [lsp.<id>] wins over this; this wins over the built-in
@@ -316,7 +324,8 @@ mod tests {
             "[settings]\ntab_width = 2\ninsert_spaces = false\nsyntax_max_bytes = 10\nauto_close_pairs = false\n\
              detect_indentation = false\nauto_indent = false\nmatch_brackets = false\nquick_suggestions = false\n\
              render_whitespace = \"trailing\"\n\
-             cursor_style = \"block\"\ncursor_blinking = false\nhex_bytes_per_line = 16\nrulers = [80, 100]\n",
+             cursor_style = \"block\"\ncursor_blinking = false\nhex_bytes_per_line = 16\nrulers = [80, 100]\n\
+             scrollback = 50\n",
         );
         assert_eq!(
             o,
@@ -334,6 +343,7 @@ mod tests {
                 cursor_blinking: Some(false),
                 hex_bytes_per_line: Some(16),
                 rulers: Some(vec![80, 100]),
+                scrollback: Some(50),
             }
         );
     }
@@ -380,6 +390,13 @@ mod tests {
         assert_eq!(u.overrides.cursor_blinking, Some(false), "the other key still applies");
         assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
         assert!(u.errors[0].contains("`cursor_style`"), "{:?}", u.errors);
+    }
+
+    #[test]
+    fn scrollback_defaults_to_5000_lines() {
+        assert_eq!(Settings::default().scrollback, 5_000);
+        let o = set("[settings]\nscrollback = 100\n");
+        assert_eq!(layer(&o, &SettingsOverrides::default()).scrollback, 100);
     }
 
     #[test]
@@ -564,6 +581,7 @@ mod tests {
             cursor_blinking: Some(true),
             hex_bytes_per_line: Some(1),
             rulers: Some(Vec::new()),
+            scrollback: Some(5_000),
         };
         let fields = toml::Table::try_from(&every).unwrap();
         assert_eq!(

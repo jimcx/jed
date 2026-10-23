@@ -26,7 +26,7 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 
 use super::templates::Spec;
 
-/// Lines of output kept above the screen.
+/// Lines of output kept above the screen unless the `scrollback` setting says otherwise.
 pub const SCROLLBACK: usize = 5_000;
 /// At most one `Event::Output` per run this often.
 pub const FRAME: Duration = Duration::from_millis(20);
@@ -129,12 +129,13 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Run {
     /// Starts `spec` in a `rows` × `cols` PTY, off the UI thread (needs a tokio runtime; without
-    /// one the run fails at once). `sink` hears about it from other threads.
-    pub fn start(id: RunId, spec: Spec, rows: u16, cols: u16, sink: Sink) -> Run {
+    /// one the run fails at once). `sink` hears about it from other threads; `scrollback` is the
+    /// lines kept above the screen (the `scrollback` setting, read when the run is created).
+    pub fn start(id: RunId, spec: Spec, rows: u16, cols: u16, sink: Sink, scrollback: usize) -> Run {
         let (rows, cols) = (rows.max(1), cols.max(1));
         let shared = Arc::new(Shared {
             id,
-            parser: Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK)),
+            parser: Mutex::new(vt100::Parser::new(rows, cols, scrollback)),
             state: Mutex::new(State {
                 status: Status::Starting,
                 pid: None,

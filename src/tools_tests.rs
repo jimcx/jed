@@ -1025,6 +1025,8 @@ async fn tools_every_command_on_a_log_tab_leaves_it_alone() {
                 | Command::MoveTabLeft
                 | Command::MoveTabRight
                 | Command::OpenUserSettings
+                // It opens a tab of its own (a shell), as OpenUserSettings does.
+                | Command::NewShell
                 | Command::OpenLogFile
                 | Command::ClearToolLog
         )

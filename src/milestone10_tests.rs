@@ -1808,6 +1808,8 @@ async fn milestone_10_editor_commands_on_a_diff_tab_do_nothing() {
                 | Command::UnstageHunk
                 | Command::RevertHunk
                 | Command::OpenUserSettings
+                // It opens a tab of its own (a shell), as OpenUserSettings does.
+                | Command::NewShell
                 | Command::OpenLogFile
                 // The Tools view's own commands: a list of its own, and Open may open a tool's
                 // log tab beside the diff (as `OpenLogFile` does a file's).

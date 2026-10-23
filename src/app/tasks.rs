@@ -89,6 +89,7 @@ impl App {
                 self.tasks.size = (area.height, area.width);
             }
         }
+        self.tasks.scrollback = self.settings.scrollback;
         self.tasks.run(template, &self.workspace.root)
     }
 

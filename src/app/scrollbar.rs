@@ -46,6 +46,7 @@ impl App {
                     }
                     Tab::Diff(d) => Some(f(d.as_mut())),
                     Tab::Hex(h) => Some(f(h.as_mut())),
+                    Tab::Shell(_) => None,
                 }
             }
             ScrollTarget::Columns(g) => {
@@ -62,6 +63,7 @@ impl App {
                         left_col: &mut d.left_col,
                     })),
                     Tab::Hex(_) => None,
+                    Tab::Shell(_) => None,
                 }
             }
             ScrollTarget::Side(panel) if !self.ui.side_visible || self.ui.side_panel != panel => None,

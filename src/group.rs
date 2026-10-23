@@ -6,6 +6,7 @@ use crate::buffer::BufferId;
 use crate::diff_view::DiffTab;
 use crate::hex::HexTab;
 use crate::layout::{GroupId, SplitDir, SplitTree};
+use crate::shell::ShellTab;
 use crate::view::View;
 
 /// A text editor tab: a buffer and this tab's view of it.
@@ -15,14 +16,16 @@ pub struct TextTab {
 }
 
 /// What a tab shows: a buffer in a text editor (a log's or a commit's too, read only), a diff
-/// view (two texts side by side, read only), or a file's bytes in a hex view (read only).
-/// Commands that only make sense in a text editor find no `active_tab` on a diff or hex tab. The
-/// diff and hex tabs are boxed; text tabs, most of them, stay inline.
+/// view (two texts side by side, read only), a file's bytes in a hex view (read only), or the
+/// user's shell in a terminal (`ShellTab`, never dirty, never in a session). Commands that only
+/// make sense in a text editor find no `active_tab` on a diff, hex or shell tab. The diff, hex
+/// and shell tabs are boxed; text tabs, most of them, stay inline.
 #[allow(clippy::large_enum_variant)]
 pub enum Tab {
     Text(TextTab),
     Diff(Box<DiffTab>),
     Hex(Box<HexTab>),
+    Shell(Box<ShellTab>),
 }
 
 impl Tab {
@@ -68,13 +71,30 @@ impl Tab {
         }
     }
 
-    /// The buffer a text tab shows (`None` for a diff or hex tab).
+    pub fn shell(&self) -> Option<&ShellTab> {
+        match self {
+            Tab::Shell(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// shell-b's drawing and resizing take the active shell mutably.
+    #[allow(dead_code)]
+    pub fn shell_mut(&mut self) -> Option<&mut ShellTab> {
+        match self {
+            Tab::Shell(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The buffer a text tab shows (`None` for a diff, hex or shell tab).
     pub fn buffer(&self) -> Option<BufferId> {
         self.text().map(|t| t.buffer)
     }
 
     /// Shows the same thing as `other`: the same buffer, a diff of the same file and sides, or
     /// the same file's bytes. A group never has two such tabs (opening one shows the other).
+    /// Each shell is its own tab (it can't be in two groups).
     pub fn same_as(&self, other: &Tab) -> bool {
         match (self, other) {
             (Tab::Text(a), Tab::Text(b)) => a.buffer == b.buffer,
@@ -123,6 +143,17 @@ impl Group {
 
     pub fn active_hex_mut(&mut self) -> Option<&mut HexTab> {
         self.tabs.get_mut(self.active).and_then(Tab::hex_mut)
+    }
+
+    /// The active tab, when it's a shell.
+    pub fn active_shell(&self) -> Option<&ShellTab> {
+        self.tabs.get(self.active).and_then(Tab::shell)
+    }
+
+    /// shell-b's drawing and resizing take the active shell mutably.
+    #[allow(dead_code)]
+    pub fn active_shell_mut(&mut self) -> Option<&mut ShellTab> {
+        self.tabs.get_mut(self.active).and_then(Tab::shell_mut)
     }
 
     /// The hex tab of `path`.
@@ -288,6 +319,11 @@ impl Groups {
             .flat_map(|g| g.tabs.iter_mut().filter_map(Tab::hex_mut))
     }
 
+    /// Every shell tab, in any group (numbering a new shell's title).
+    pub fn shell_tabs(&self) -> impl Iterator<Item = &ShellTab> {
+        self.map.values().flat_map(|g| g.tabs.iter().filter_map(Tab::shell))
+    }
+
     /// Every diff tab, in any group.
     pub fn diff_tabs_mut(&mut self) -> impl Iterator<Item = (GroupId, &mut DiffTab)> {
         self.map
@@ -344,6 +380,8 @@ impl Groups {
             })),
             Some(Tab::Diff(d)) => Some(Tab::Diff(Box::new(d.copy(diff_id)))),
             Some(Tab::Hex(h)) => Some(Tab::Hex(h.clone())),
+            // A shell can't be in two groups: the new one is left empty.
+            Some(Tab::Shell(_)) => None,
             None => None,
         };
         let id = self.split_empty(dir);

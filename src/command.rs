@@ -232,6 +232,8 @@ pub enum Command {
     RestoreFileHistory,
     /// "Run Task": a picker of the task templates; picking one runs it in a new panel tab.
     RunTask,
+    /// "Terminal: New Shell": the user's `$SHELL` in a new tab of the active group.
+    NewShell,
     /// Kills the shown task tab's run (else the newest running one).
     KillTask,
     /// Closes the shown task tab, killing its run if it still runs.
@@ -848,7 +850,12 @@ impl Command {
         all.extend(GitHistoryCommand::ALL.map(Command::GitHistory));
         all.extend(CommitCommand::ALL.map(Command::Commit));
         all.extend([Command::ShowFileHistory, Command::RestoreFileHistory]);
-        all.extend([Command::RunTask, Command::KillTask, Command::CloseTask]);
+        all.extend([
+            Command::RunTask,
+            Command::NewShell,
+            Command::KillTask,
+            Command::CloseTask,
+        ]);
         all.extend(TaskCommand::ALL.map(Command::Task));
         all.push(Command::OpenRecentWorkspace);
         all.push(Command::ToggleRenderWhitespace);
@@ -1152,6 +1159,7 @@ impl Command {
             ),
             Command::PreviousChange => "editor.previousChange".into(),
             Command::RunTask => "task.run".into(),
+            Command::NewShell => "terminal.newShell".into(),
             Command::KillTask => "task.kill".into(),
             Command::CloseTask => "task.close".into(),
             Command::OpenRecentWorkspace => "workspace.openRecent".into(),
@@ -1448,6 +1456,7 @@ impl Command {
             },
             Command::PreviousChange => "Go to Previous Change",
             Command::RunTask => "Tasks: Run Task",
+            Command::NewShell => "Terminal: New Shell",
             Command::KillTask => "Tasks: Kill Task",
             Command::CloseTask => "Tasks: Close Task Tab",
             Command::OpenRecentWorkspace => "Workspaces: Open Recent Workspace",
@@ -1609,6 +1618,7 @@ mod tests {
             Command::ShowFileHistory => 77,
             Command::RestoreFileHistory => 78,
             Command::RunTask => 79,
+            Command::NewShell => 119,
             Command::KillTask => 80,
             Command::CloseTask => 81,
             Command::Task(_) => 82,
@@ -1647,7 +1657,7 @@ mod tests {
             Command::ConvertIndentationToTabs => 112,
         }
     }
-    const VARIANTS: u8 = 119;
+    const VARIANTS: u8 = 120;
 
     #[test]
     fn all_lists_every_variant() {

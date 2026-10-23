@@ -37,6 +37,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `scm.rs` — the Source Control view (`app.scm`): focus, keys, stage / unstage, opening diffs
 - `history.rs` — file history (`app.file_history`): recording after saves, moving on renames, Show / Restore / Compare
 - `tasks.rs` — tasks (`app.tasks`): templates, running, task tabs, keys / paste to a task, events
+- `shell.rs` — shell tabs (`Tab::Shell`): "Terminal: New Shell" opening `$SHELL` in the active group with `JED_IPC`, its title and its run's events (shell-b draws it)
 - `session.rs` — sessions (`app.session`): restore at start, `save_session` on quit
 - `backup.rs` — crash backups (`app.backups`): `sync_backups`, `backup_tick`, the offer and restores, `update_crash_snapshot`
 - `tools.rs` — tool logs and log tabs (`app.logs`, `app.log_tabs`), the Tools view, trace / restart commands

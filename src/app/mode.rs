@@ -48,6 +48,7 @@ impl Mode {
                     | Command::ManageWorkspaceTrust
                     | Command::OpenRecentWorkspace
                     | Command::RunTask
+                    | Command::NewShell
                     | Command::KillTask
                     | Command::CloseTask
                     | Command::Task(_)
@@ -116,6 +117,7 @@ mod tests {
             Command::FindInFiles,
             Command::TogglePanel,
             Command::RunTask,
+            Command::NewShell,
             Command::NewUntitledFile,
             Command::SaveAs,
         ] {

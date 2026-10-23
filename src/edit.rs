@@ -60,6 +60,9 @@ pub struct Settings {
     /// (`for_buffer`; `git-commit`: 72); a set list, even `[]`, wins over it: jed has no
     /// language-specific user settings, so this is the only way to change or drop that 72.
     pub rulers: Option<Vec<usize>>,
+    /// Lines kept above the screen for a shell tab or a task run (VS Code's
+    /// `terminal.integrated.scrollback`), read when the run is created: `[settings] scrollback`.
+    pub scrollback: usize,
 }
 
 /// VS Code's `editor.cursorStyle`, the shapes a terminal can draw: a bar before the char, a
@@ -111,6 +114,7 @@ impl Default for Settings {
             cursor_blinking: true,
             hex_bytes_per_line: 32,
             rulers: None,
+            scrollback: crate::tasks::run::SCROLLBACK,
         }
     }
 }

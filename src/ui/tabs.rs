@@ -49,6 +49,8 @@ pub fn render(
                 }
                 (name, false, h.deleted)
             }
+            // A shell tab: its title, never dirty.
+            Tab::Shell(s) => (s.title.clone(), false, false),
             Tab::Text(t) => {
                 let buf = buffers.get(t.buffer);
                 let deleted = buf.is_some_and(|b| b.deleted);

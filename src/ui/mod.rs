@@ -86,7 +86,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let file = match group.tabs.get(group.active) {
             Some(Tab::Text(t)) => app.buffers.get(t.buffer),
             Some(Tab::Diff(d)) => app.buffers.iter().find(|(_, b)| b.path == d.path).map(|(_, b)| b),
-            Some(Tab::Hex(_)) | None => None,
+            Some(Tab::Hex(_)) | Some(Tab::Shell(_)) | None => None,
         };
         if let Some(buf) = file
             && buf.disk_conflict.is_some()
@@ -163,6 +163,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             }
         }
         let mut hex_drawn = false;
+        let shell_drawn = group.active_shell().is_some();
         if let Some(h) = group.active_hex_mut() {
             hex_drawn = true;
             // Find highlights in the active group, when the widget's query is for this tab.
@@ -245,7 +246,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     ));
                 }
             }
-            None if diff_hit.is_some() || hex_drawn => {}
+            None if diff_hit.is_some() || hex_drawn || shell_drawn => {}
             None => {
                 f.buffer_mut().set_style(editor_area, app.theme.get("editor"));
                 splash::render(f, editor_area, &app.theme);
