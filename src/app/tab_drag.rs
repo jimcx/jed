@@ -1,12 +1,13 @@
 //! Dragging a tab by the mouse. A press on a tab starts a drag (the tab activates, so a drag
 //! that never leaves it is just a click); every `Drag` event records where the pointer would
-//! drop it, and the release applies the drop. `drag_tabs-a` reorders within one group's tab
-//! bar; the other groups' bars and the editors' centres / edges are later subtasks.
+//! drop it, and the release applies the drop. A tab drops back into its own bar at a gap, onto
+//! another group's bar at the gap there, or onto another group's editor (into that group, right
+//! of its active tab). `drag_tabs-c` adds drops on an editor's edges that split it.
 
 use ratatui::layout::Position;
 
-use super::App;
 use super::mouse::Drag;
+use super::{App, Focus};
 use crate::layout::{GroupId, TabHit};
 
 /// An in-flight tab drag: the tab's group and index where it started, and where it would land
@@ -22,7 +23,15 @@ pub struct TabDrag {
 /// that index would come after the dropped one (`tabs.len()` is the bar's end).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabDrop {
-    TabBar { group: GroupId, index: usize },
+    TabBar {
+        group: GroupId,
+        index: usize,
+    },
+    /// The centre of a group's editor: the tab moves into that group, right of its active tab
+    /// (`drag_tabs-c` adds the edges that split it).
+    Editor {
+        group: GroupId,
+    },
 }
 
 /// The gap in `tabs` at `x`: the tabs whose midpoint is left of the pointer. The index is in
@@ -33,30 +42,29 @@ pub(super) fn gap_at(tabs: &[TabHit], x: u16) -> usize {
 }
 
 impl App {
-    /// Where a tab dropped at (`x`, `y`) would land: a gap in the tab bar under the pointer.
-    /// Anywhere else (the editor, a divider, the side panel) there is no target.
+    /// Where a tab dropped at (`x`, `y`) would land: a gap in the tab bar under the pointer, or
+    /// the centre of a group's editor. Anywhere else (a divider, the side panel, the status bar)
+    /// there is no target.
     pub(super) fn tab_drop_at(&self, x: u16, y: u16) -> Option<TabDrop> {
-        let group = self
-            .hits
-            .groups
-            .iter()
-            .find(|g| g.tab_bar.contains(Position { x, y }))?;
-        Some(TabDrop::TabBar {
-            group: group.id,
-            index: gap_at(&group.tabs, x),
-        })
+        if let Some(group) = self.hits.groups.iter().find(|g| g.tab_bar.contains(Position { x, y })) {
+            return Some(TabDrop::TabBar {
+                group: group.id,
+                index: gap_at(&group.tabs, x),
+            });
+        }
+        let group = self.hits.groups.iter().find(|g| g.editor.contains(Position { x, y }))?;
+        Some(TabDrop::Editor { group: group.id })
     }
 
     /// The gap a drop in `group` would land in, while a tab is being dragged: the drop marker's
-    /// cell for that group (`ui::tabs::render`). Only the dragged tab's own bar marks a gap: a
-    /// drop on another group's bar moves nothing until `drag_tabs-b`, so it shows no marker.
+    /// cell for that group (`ui::tabs::render`). Any group's bar can take the tab; an editor
+    /// target shows no marker (`drag_tabs-c` shades the zone there instead).
     pub(crate) fn tab_drop_in(&self, group: GroupId) -> Option<usize> {
         match &self.drag {
             Some(Drag::Tab(TabDrag {
-                from,
                 target: Some(TabDrop::TabBar { group: g, index }),
                 ..
-            })) if *g == group && *from == group => Some(*index),
+            })) if *g == group => Some(*index),
             _ => None,
         }
     }
@@ -69,26 +77,39 @@ impl App {
         }
     }
 
-    /// Ends a tab drag at (`x`, `y`): reorders the bar when the drop is on the dragged tab's own
-    /// bar (another group's bar and the editors are later subtasks), and clears the drag either
-    /// way. A drop with no target moves nothing.
+    /// Ends a tab drag at (`x`, `y`): reorders the tab within its own bar, moves it to another
+    /// group's bar at the gap there, or moves it into the group whose editor it is over. A drop
+    /// on its own group's editor, with no target, or after Esc moves nothing. The drag is
+    /// cleared either way.
     pub(super) fn finish_tab_drag(&mut self, x: u16, y: u16) {
         let Some(Drag::Tab(drag)) = self.drag.take() else {
             return;
         };
-        let Some(TabDrop::TabBar { group, index }) = self.tab_drop_at(x, y) else {
+        let Some(target) = self.tab_drop_at(x, y) else {
             return;
         };
-        if group != drag.from {
-            return;
+        let (group, at) = match target {
+            TabDrop::TabBar { group, index } if group == drag.from => {
+                let Some(g) = self.groups.get_mut(group) else {
+                    return;
+                };
+                // `index` counts the dragged tab too, while it is still where it started: a gap
+                // after it is one place further once it is taken out.
+                let to = if index > drag.index { index - 1 } else { index };
+                g.move_tab(drag.index, to);
+                return;
+            }
+            TabDrop::TabBar { group, index } => (group, Some(index)),
+            TabDrop::Editor { group } if group == drag.from => return,
+            TabDrop::Editor { group } => (group, None),
+        };
+        if let Some((buf, _)) = self.active_mut() {
+            buf.seal_undo();
         }
-        let Some(g) = self.groups.get_mut(group) else {
-            return;
-        };
-        // `index` counts the dragged tab too, while it is still where it started: a gap after
-        // it is one place further once it is taken out.
-        let to = if index > drag.index { index - 1 } else { index };
-        g.move_tab(drag.index, to);
+        if self.groups.move_tab_between(drag.from, drag.index, group, at) {
+            self.ui.focus = Focus::Editor;
+            self.reveal_active();
+        }
     }
 }
 

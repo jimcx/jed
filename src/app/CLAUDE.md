@@ -43,7 +43,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `tools.rs` — tool logs and log tabs (`app.logs`, `app.log_tabs`), the Tools view, trace / restart commands
 - `recent.rs` — recent workspaces (`app.recent`): record at start, Ctrl+R's picker
 - `scrollbar.rs` — scroll bars: `with_scrollable(target, f)`, clicks, drags, hover
-- `tab_drag.rs` — dragging a tab along its bar (`Drag::Tab`): the target gap under the pointer (the drop marker's position), reordering on release, Esc / a release outside cancelling; cross-group and editor drops come in `drag_tabs-b`/`-c`
+- `tab_drag.rs` — dragging a tab along its bar (`Drag::Tab`): the target gap in any group's bar under the pointer (the drop marker's position) or another group's editor, reordering on release, moving the tab to another group (`Groups::move_tab_between`, an empty source closing) / into its editor (activated), Esc / a release outside cancelling; edge drops and snapping come in `drag_tabs-c`
 - `mouse.rs` — clicks, drags and the wheel via the last frame's `HitMap`; `ClickTracker`, `Drag`
 - `mode.rs` — `Mode::{Workspace, SingleFile}` (`app.mode`, `jed -s`): `allows(cmd)` / `allows_view(panel)`, the one availability check (`execute`, palette, activity bar, icon clicks)
 

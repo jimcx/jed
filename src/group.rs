@@ -211,13 +211,25 @@ impl Group {
     /// same thing (`Tab::same_as`; VS Code shows the one already there, with the moved view),
     /// else it opens to the right of the active one.
     pub fn take(&mut self, tab: Tab) -> usize {
+        let at = if self.tabs.is_empty() { 0 } else { self.active + 1 };
+        self.insert(tab, at)
+    }
+
+    /// Takes in a tab moved from another group at `at` (past the end too) and activates it: it
+    /// replaces a tab showing the same thing (`Tab::same_as`), as `take` does.
+    pub fn insert(&mut self, tab: Tab, at: usize) -> usize {
         match self.tabs.iter().position(|t| t.same_as(&tab)) {
             Some(i) => {
                 self.tabs[i] = tab;
                 self.active = i;
                 i
             }
-            None => self.open_tab(tab),
+            None => {
+                let at = at.min(self.tabs.len());
+                self.tabs.insert(at, tab);
+                self.active = at;
+                at
+            }
         }
     }
 
@@ -376,6 +388,36 @@ impl Groups {
         let tab = source.close(index);
         let empty = source.tabs.is_empty();
         self.map.get_mut(&to).expect("target group exists").take(tab);
+        self.active = to;
+        if empty {
+            self.remove(from);
+        }
+        true
+    }
+
+    /// Moves the tab at `index` in `from` into `to` — at `at` among its tabs, or at `None` to
+    /// the right of its active tab — keeping its view and kind; it is activated, and `to`
+    /// becomes the active group. A source group left without tabs closes. False and nothing
+    /// changes for an unknown group or a bad `index`.
+    pub fn move_tab_between(&mut self, from: GroupId, index: usize, to: GroupId, at: Option<usize>) -> bool {
+        if from == to || !self.map.contains_key(&from) || !self.map.contains_key(&to) {
+            return false;
+        }
+        let source = self.map.get_mut(&from).expect("checked");
+        if index >= source.tabs.len() {
+            return false;
+        }
+        let tab = source.close(index);
+        let empty = source.tabs.is_empty();
+        let target = self.map.get_mut(&to).expect("checked");
+        match at {
+            Some(at) => {
+                target.insert(tab, at);
+            }
+            None => {
+                target.take(tab);
+            }
+        }
         self.active = to;
         if empty {
             self.remove(from);
@@ -631,6 +673,44 @@ mod tests {
     }
 
     #[test]
+    fn insert_places_the_tab_at_a_gap_and_activates_it() {
+        let mut g = group(3);
+        g.active = 0;
+        let mut view = View::new();
+        view.left_col = 4;
+        assert_eq!(
+            g.insert(
+                Tab::Text(TextTab {
+                    buffer: 7,
+                    view: view.clone()
+                }),
+                0
+            ),
+            0
+        );
+        assert_eq!((buffers(&g), g.active), (vec![7, 0, 1, 2], 0));
+        assert_eq!(
+            g.insert(
+                Tab::Text(TextTab {
+                    buffer: 9,
+                    view: View::new()
+                }),
+                99
+            ),
+            4,
+            "past the end: the last gap"
+        );
+        assert_eq!((buffers(&g), g.active), (vec![7, 0, 1, 2, 9], 4));
+        assert_eq!(
+            g.insert(Tab::Text(TextTab { buffer: 1, view }), 0),
+            2,
+            "a tab of the same buffer is replaced, not duplicated"
+        );
+        assert_eq!((buffers(&g), g.active), (vec![7, 0, 1, 2, 9], 2));
+        assert_eq!(g.active_tab().unwrap().view.left_col, 4, "the moved view");
+    }
+
+    #[test]
     fn moving_a_tab_between_groups() {
         let mut gs = Groups::default();
         assert!(!gs.move_active_tab(true), "no tab");
@@ -664,5 +744,72 @@ mod tests {
         assert_eq!(gs.active, third);
         assert_eq!(buffers(gs.active_group()), [2]);
         assert_eq!(buffers(gs.get(first).unwrap()), [1]);
+    }
+
+    #[test]
+    fn move_tab_between_groups_at_a_gap_or_right_of_the_active_tab() {
+        let mut gs = Groups::default();
+        gs.active_group_mut().open(1, View::new());
+        gs.active_group_mut().open(2, View::new());
+        if let Some(tab) = gs.active_group_mut().tabs[0].text_mut() {
+            tab.view.left_col = 4;
+        }
+        let first = gs.active;
+        let second = gs.split(SplitDir::Right, 0);
+        gs.active_group_mut().open(3, View::new());
+        assert_eq!((gs.active, buffers(gs.active_group())), (second, vec![2, 3]));
+
+        // At a gap: the moved tab goes there and is active.
+        assert!(gs.move_tab_between(first, 0, second, Some(0)));
+        assert_eq!((gs.active, buffers(gs.get(second).unwrap())), (second, vec![1, 2, 3]));
+        assert_eq!(gs.active_group().active, 0);
+        assert_eq!(gs.active_group().active_tab().unwrap().view.left_col, 4, "its view");
+        assert_eq!(buffers(gs.get(first).unwrap()), [2]);
+        assert_eq!(gs.get(first).unwrap().active, 0, "the source's remaining tab is active");
+
+        // With no gap: to the right of the target's active tab.
+        assert!(gs.move_tab_between(second, 0, first, None));
+        assert_eq!((gs.active, buffers(gs.get(first).unwrap())), (first, vec![2, 1]));
+        assert_eq!(gs.active_group().active, 1);
+        assert_eq!(
+            gs.get(second).unwrap().active,
+            0,
+            "the source moved to its right neighbour"
+        );
+
+        // Bad arguments change nothing.
+        assert!(!gs.move_tab_between(first, 0, first, Some(0)), "same group");
+        assert!(!gs.move_tab_between(first, 9, second, None), "no such index");
+        assert!(!gs.move_tab_between(99, 0, second, None), "no such source");
+        assert!(!gs.move_tab_between(first, 0, 99, None), "no such target");
+        assert_eq!(
+            (buffers(gs.get(first).unwrap()), buffers(gs.get(second).unwrap())),
+            (vec![2, 1], vec![2, 3])
+        );
+
+        // The last tab leaving a group closes it.
+        assert!(gs.move_tab_between(second, 1, first, Some(0)));
+        assert!(gs.move_tab_between(second, 0, first, Some(99)));
+        assert_eq!((gs.active, gs.len(), gs.ids()), (first, 1, vec![first]));
+        assert_eq!(buffers(gs.active_group()), [3, 2, 1]);
+        assert_eq!(gs.active_group().active, 1, "the replaced tab is active");
+    }
+
+    #[test]
+    fn move_tab_between_keeps_the_sources_active_tab() {
+        let mut gs = Groups::default();
+        gs.active_group_mut().open(1, View::new());
+        gs.active_group_mut().open(2, View::new());
+        gs.active_group_mut().open(3, View::new());
+        gs.active_group_mut().active = 2;
+        let first = gs.active;
+        let second = gs.split_empty(SplitDir::Right);
+
+        // A tab left of the source's active one leaves: the active tab stays 3.
+        assert!(gs.move_tab_between(first, 0, second, None));
+        assert_eq!(buffers(gs.get(first).unwrap()), [2, 3]);
+        assert_eq!(gs.get(first).unwrap().active, 1, "still on 3");
+        assert_eq!(buffers(gs.get(second).unwrap()), [1]);
+        assert_eq!(gs.active, second, "the target is active");
     }
 }
