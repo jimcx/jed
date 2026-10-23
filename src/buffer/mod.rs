@@ -518,7 +518,10 @@ impl Buffers {
     }
 
     pub fn find_path(&self, path: &Path) -> Option<BufferId> {
-        self.map.iter().find(|(_, b)| b.path == path).map(|(id, _)| *id)
+        self.map
+            .iter()
+            .find(|(_, b)| b.has_file() && b.path == path)
+            .map(|(id, _)| *id)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (BufferId, &Buffer)> {
@@ -689,5 +692,15 @@ mod tests {
         assert_eq!(buffers.free_untitled_number(), 3);
         buffers.remove(one);
         assert_eq!(buffers.free_untitled_number(), 1);
+    }
+
+    #[test]
+    fn find_path_never_matches_a_buffer_without_a_file() {
+        let mut buffers = Buffers::default();
+        buffers.insert(Buffer::untitled(1));
+        assert_eq!(buffers.find_path(Path::new("")), None);
+        let file = buffers.insert(Buffer::new_file(Path::new("/x/a.txt")));
+        assert_eq!(buffers.find_path(Path::new("/x/a.txt")), Some(file));
+        assert_eq!(buffers.find_path(Path::new("")), None);
     }
 }

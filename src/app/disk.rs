@@ -146,7 +146,9 @@ impl App {
     /// Reads `id`'s file off the UI thread (`disk::check`) → `disk_checked`. Waits for a check
     /// already running or a save in flight. `force`: reload even with unsaved edits.
     pub(super) fn check_disk(&mut self, id: BufferId, force: bool) {
-        let Some(buf) = self.buffers.get(id) else { return };
+        let Some(buf) = self.buffers.get(id).filter(|b| b.has_file()) else {
+            return;
+        };
         if buf.save_in_flight() || self.disk.running.contains(&id) {
             self.disk.want(id, force);
             return;
@@ -448,6 +450,23 @@ mod tests {
         fs::remove_file(&path).unwrap();
         app.check_disk(id2, false);
         assert!(app.settle(|a| a.active_buffer().unwrap().deleted).await, "now deleted");
+    }
+
+    /// An untitled buffer has no file: a check of it (from any caller) starts nothing, so a
+    /// forced one can't report "Untitled-1 doesn't exist on disk".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_untitled_buffer_is_never_checked() {
+        let (_d, _path, mut app, id) = setup("one\n");
+        app.test_open(Buffer::untitled(1));
+        let u = app.group().active_tab().unwrap().buffer;
+        assert_ne!(id, u);
+        app.check_disk(u, true);
+        assert!(!app.disk.busy(u), "nothing started");
+        app.check_disk(id, true);
+        assert!(app.disk.busy(id), "a file's buffer is checked");
+        assert!(app.settle(|a| !a.disk.busy(id)).await);
+        assert_eq!(app.disk.checked, 1, "only a.txt's check ran");
+        assert!(app.message.is_none(), "{:?}", app.message.as_ref().map(|m| &m.text));
     }
 
     /// A hex tab of `a.bin` holding `bytes` (read from disk), the app not started (no watcher).

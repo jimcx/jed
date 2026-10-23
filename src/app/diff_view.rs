@@ -90,7 +90,10 @@ impl App {
 
     /// The buffer open on `path`.
     pub(super) fn buffer_of(&self, path: &Path) -> Option<BufferId> {
-        self.buffers.iter().find(|(_, b)| b.path == path).map(|(id, _)| id)
+        self.buffers
+            .iter()
+            .find(|(_, b)| b.has_file() && b.path == path)
+            .map(|(id, _)| id)
     }
 
     /// The buffer the active tab is about: a text tab's, or the open buffer of a diff tab's file

@@ -20,7 +20,7 @@ Rules for one area or feature, moved out of the root `CLAUDE.md` (which keeps th
 
 ## Untitled buffers
 
-`Buffer::untitled(n)` has no path: `has_file()` is false, so every path-keyed feature (disk checks, watcher, history, git, LSP, sessions, crash backups for now) skips it by that check; use `is_untitled()` only where it should act like an editable text (whitespace glyphs, dirty-ness: it is dirty while it has text). A picked language lives in `Buffer::language_override`.
+`Buffer::untitled(n)` has no path: `has_file()` is false, so every path-keyed feature (disk checks, watcher, history, git, LSP, sessions, crash backups for now) skips it by that check; use `is_untitled()` only where it should act like an editable text (whitespace glyphs, dirty-ness: it is dirty while it has text). A picked language lives in `Buffer::language_override`. Path-keyed entry points check `has_file()` (`check_disk` too); `Buffers::find_path` and `App::buffer_of` skip such buffers, so an empty path never matches one (a workspace edit or fs event can't land in it). `untitled_tests.rs` has one test per feature (disk / fs events, history and git commands, blame, sessions).
 
 ## Keymaps
 

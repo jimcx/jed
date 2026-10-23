@@ -706,10 +706,11 @@ async fn tools_a_log_tab_is_read_only_and_never_dirty() {
     app.pump();
     assert!(!app.active_buffer().unwrap().save_in_flight());
     assert_eq!(files(&root), before);
-    assert!(
-        app.buffers
-            .find_path(Path::new(""))
-            .is_some_and(|id| app.buffers.get(id).unwrap().log.is_some())
+    assert!(app.buffers.iter().any(|(_, b)| b.log.is_some()));
+    assert_eq!(
+        app.buffers.find_path(Path::new("")),
+        None,
+        "an empty path finds no buffer"
     );
 }
 

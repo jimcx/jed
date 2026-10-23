@@ -5,6 +5,9 @@
 //! ask, a closing or quitting one with text does; Save on one writes nothing yet (Save As is
 //! untitled-c, and a quit's Save stops there); path-keyed features (language servers, crash
 //! backups) skip it.
+//!
+//! Subtask untitled-b: every path-keyed feature skips an untitled buffer: disk checks and
+//! file system events, file history, git (quick diff, stage, compare), blame and sessions.
 
 use std::fs;
 use std::path::PathBuf;
@@ -376,4 +379,165 @@ async fn untitled_commands_on_one_leave_files_alone() {
     }
     let after: Vec<_> = fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name()).collect();
     assert_eq!(before.len(), after.len());
+}
+
+/// A git repo with a modified `f.txt` open, plus an untitled tab holding text.
+async fn git_app() -> (tempfile::TempDir, App, PathBuf, PathBuf) {
+    use crate::milestone10_tests::{dirs, open_file_app, settle_git};
+    let (d, root, state) = dirs();
+    crate::git::test_repo::init(&root);
+    fs::write(root.join("f.txt"), "one\n").unwrap();
+    crate::git::test_repo::commit_all(&root, "one");
+    fs::write(root.join("f.txt"), "two\n").unwrap();
+    let mut app = open_file_app(&root, &state, "f.txt");
+    app.state_dir = Some(state.clone());
+    assert!(settle_git(&mut app, |s| !s.entries.is_empty()).await);
+    new_untitled(&mut app);
+    app.type_text("scratch\n");
+    (d, app, root, state)
+}
+
+fn assert_untitled_intact(app: &App, what: &str) {
+    let b = app.active_buffer().unwrap();
+    assert!(b.is_untitled(), "{what}");
+    assert_eq!(b.rope.to_string(), "scratch\n", "{what}");
+    assert!(!b.deleted, "{what}: not marked deleted");
+}
+
+/// Disk checks (Reload, Keep Mine) and file system events (the open file deleted, renamed) leave
+/// an untitled buffer untitled, not deleted, with its text and no banner.
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_disk_checks_and_file_events_leave_it_alone() {
+    let (_d, mut app, root, _state) = git_app().await;
+    let (u, checked) = (app.group().active_tab().unwrap().buffer, app.disk.checked);
+    app.test_execute(Command::ReloadFromDisk);
+    app.test_execute(Command::KeepMine);
+    assert!(
+        !app.disk.busy(u) && app.disk.checked == checked,
+        "no disk check of an untitled buffer"
+    );
+    assert_untitled_intact(&app, "reload / keep mine");
+    fs::rename(root.join("f.txt"), root.join("g.txt")).unwrap();
+    let f = app
+        .buffers
+        .iter()
+        .find(|(_, b)| b.has_file())
+        .map(|(id, _)| id)
+        .unwrap();
+    assert!(
+        app.settle(|a| a.buffers.get(f).is_some_and(|b| b.deleted)).await,
+        "f.txt seen gone"
+    );
+    fs::remove_dir_all(&root).unwrap();
+    app.test_execute(Command::ReloadFromDisk);
+    assert!(!app.disk.busy(u));
+    assert_untitled_intact(&app, "after the folder is gone");
+    assert!(
+        app.message.as_ref().is_none_or(|m| !m.text.contains("Untitled")),
+        "no message about the untitled buffer: {:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+}
+
+/// File history, git and compare commands on an untitled tab: no picker, no diff tab, nothing
+/// staged, no history on disk, no message about a nameless file.
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_file_history_and_git_commands_do_nothing() {
+    use crate::milestone10_tests::settle_git;
+    let (_d, mut app, root, _state) = git_app().await;
+    for c in [
+        Command::ShowFileHistory,
+        Command::RestoreFileHistory,
+        Command::StageHunk,
+        Command::UnstageHunk,
+        Command::RevertHunk,
+        Command::CompareWithSaved,
+        Command::StageFile,
+    ] {
+        app.message = None;
+        app.test_execute(c);
+        assert!(app.palette.is_none(), "{c:?}: no picker");
+        assert!(
+            app.group().tabs.iter().all(|t| t.diff().is_none()),
+            "{c:?}: no diff tab"
+        );
+        assert_untitled_intact(&app, &format!("{c:?}"));
+        // Only a command's own hint (Revert Hunk's "from its diff"), nothing about this buffer.
+        if let Some(m) = &app.message {
+            let t = &m.text;
+            assert!(!t.contains("Untitled") && !t.contains("git repository"), "{c:?}: {t}");
+        }
+    }
+    assert!(!root.join(".jed").exists(), "no file history");
+    assert!(
+        settle_git(&mut app, |s| s
+            .entry(std::path::Path::new("f.txt"))
+            .is_some_and(|e| e.staged.is_none()))
+        .await,
+        "nothing staged"
+    );
+    let b = app.active_buffer().unwrap();
+    assert!(b.quick_diff.marks().is_empty(), "no gutter markers");
+    // Control: on f.txt's tab the same setup does mark and stage.
+    app.test_execute(Command::PrevTab);
+    assert!(app.active_buffer().unwrap().has_file());
+    assert!(
+        app.settle(|a| !a.active_buffer().unwrap().quick_diff.marks().is_empty())
+            .await,
+        "f.txt has markers"
+    );
+    app.test_execute(Command::StageFile);
+    assert!(
+        settle_git(&mut app, |s| s
+            .entry(std::path::Path::new("f.txt"))
+            .is_some_and(|e| e.staged.is_some()))
+        .await,
+        "f.txt staged"
+    );
+}
+
+/// Inline blame on, an untitled tab shown: nothing is blamed or started.
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_buffer_is_not_blamed() {
+    let (_d, mut app, _root, _state) = git_app().await;
+    app.test_execute(Command::ToggleBlame);
+    assert!(app.blame.on);
+    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    // `sync_blame` (run by every pump) would start a job at once for a blamable buffer.
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    assert!(app.settle(|a| !a.git.running()).await);
+    app.pump();
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    app.pump();
+    let b = app.active_buffer().unwrap();
+    assert!(!b.blame.running() && b.blame.hunks().is_empty());
+    assert_untitled_intact(&app, "blame");
+    // Control: f.txt's tab shown is blamed.
+    app.test_execute(Command::PrevTab);
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    assert!(
+        app.settle(|a| !a.active_buffer().unwrap().blame.hunks().is_empty())
+            .await,
+        "f.txt blamed"
+    );
+}
+
+/// An untitled tab is not saved in the session (until untitled-e): the session restores with
+/// the file's tab only, no tab with an empty path.
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_tabs_are_left_out_of_the_session() {
+    let (_d, mut app, root, state) = git_app().await;
+    assert!(app.settle(|a| !a.session.loading()).await, "restore done");
+    app.test_execute(Command::Quit);
+    // The unsaved untitled buffer asks first; discard it.
+    if app.prompt.is_some() {
+        app.press(KeyCode::Char('n'), M::NONE);
+        app.press(KeyCode::Char('d'), M::NONE);
+    }
+    app.test_execute(Command::Quit);
+    app.shutdown().await;
+    let file = crate::session::file(&state, &root);
+    let text = fs::read_to_string(&file).unwrap_or_default();
+    assert!(text.contains("f.txt"), "the file's tab saved: {text}");
+    assert!(!text.contains("Untitled") && !text.contains("\"path\": \"\""), "{text}");
 }
