@@ -15,6 +15,24 @@ struct Dirty {
     snapshots: Vec<Snapshot>,
 }
 
+/// The task socket's path while jed listens on it; the hook removes the file.
+static IPC_SOCKET: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Records (or with `None`, forgets) the socket file to remove if jed panics.
+pub fn set_ipc_socket(path: Option<PathBuf>) {
+    if let Ok(mut p) = IPC_SOCKET.lock() {
+        *p = path;
+    }
+}
+
+fn remove_ipc_socket() {
+    if let Ok(p) = IPC_SOCKET.try_lock()
+        && let Some(path) = p.as_ref()
+    {
+        crate::ipc::remove_socket(path);
+    }
+}
+
 static DIRTY: Mutex<Option<Dirty>> = Mutex::new(None);
 
 /// The dirty buffers to back up if jed panics, into `state_dir`'s backups of the workspace at
@@ -34,6 +52,7 @@ pub fn install() {
     std::panic::set_hook(Box::new(|info| {
         let backtrace = Backtrace::force_capture();
         let backups = back_up_dirty();
+        remove_ipc_socket();
         terminal::restore();
         tracing::error!(target: "panic", "{info}\n{backtrace}");
         eprintln!("jed crashed: {info}\n\n{backtrace}");

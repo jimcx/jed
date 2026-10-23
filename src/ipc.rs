@@ -13,9 +13,6 @@
 //! The socket is `<socket_dir>/<pid>.sock` in a `0700` directory ([`prepare_dir`]); [`Server`]
 //! removes it on drop and [`remove_socket`] does the same from the panic hook.
 
-// The server half is wired into `App` by git_editor-f; until then only tests use it.
-#![allow(dead_code)]
-
 use std::ffi::OsStr;
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};

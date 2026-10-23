@@ -26,6 +26,17 @@ directory (the folder holds `HEAD`) get it even without the flag. Git waits for 
 - Cmd+W on the file's tab (or Cmd+Q) quits jed. Unsaved changes ask first. The exit status is 0.
 - Crash backups still run.
 
+## From a task terminal
+
+`git commit` run in one of jed's tasks opens its message as a tab in that jed rather than starting a
+second one in the task's terminal. jed listens on a Unix socket (`$XDG_RUNTIME_DIR/jed/<pid>.sock`, else
+`$TMPDIR/jed-<uid>/<pid>.sock`, removed on quit) and gives only task processes `JED_IPC=<socket>`; `jed` in
+an ordinary shell never sees it. With `JED_IPC` set, `jed [--wait] <file>[:line[:col]]` sends the request
+to the running jed and exits: the file opens in the active group (a missing one as a new file), and with
+`--wait` the command finishes once the file's last tab (any group) is closed, so the task waits for you
+to save and close the message. Quitting jed while it waits makes the command exit 1 (git aborts). A dead
+or refused socket is logged and jed starts normally. Workspace mode only (editor mode has no tasks).
+
 ## Aborting
 
 Git aborts itself when the message is empty (only comments). Delete the text, save, close; or close

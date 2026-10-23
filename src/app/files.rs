@@ -196,6 +196,7 @@ impl App {
         if let Some((b, e)) = unopened {
             self.backup_not_opened(*b, e);
         }
+        self.ipc_sweep();
     }
 
     /// Puts a loaded buffer in a new tab and activates it, with the selection at `goto`.
@@ -338,6 +339,7 @@ impl App {
         {
             self.buffers.remove(buffer);
         }
+        self.ipc_sweep();
         if now_empty {
             self.close_group(group);
         }

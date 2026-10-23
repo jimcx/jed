@@ -19,6 +19,7 @@ mod hex;
 mod history;
 mod hover;
 mod indentation;
+mod ipc;
 mod locations;
 mod lsp;
 mod mode;
@@ -206,6 +207,10 @@ enum AppEvent {
     },
     /// Quick open's matcher has new results (sent at most once until handled).
     FilesMatched,
+    /// A client of the task socket asks to open a file (`app/ipc.rs`).
+    Ipc(crate::ipc::Request, crate::ipc::Responder),
+    /// The task socket is listening, or why not.
+    IpcStarted(Result<crate::ipc::Server, String>),
     /// Quick open's walk finished.
     FilesWalked {
         generation: u64,
@@ -360,6 +365,11 @@ pub struct App {
     /// Where the session file goes (`paths::state_dir()`); `None` turns sessions off (tests,
     /// unless set before `test_start`).
     pub state_dir: Option<PathBuf>,
+    /// Where the task socket goes (`ipc::default_socket_dir()`); `None` (tests unless set) means
+    /// no socket. `start` listens there.
+    pub ipc_dir: Option<PathBuf>,
+    /// The task socket and the clients waiting on files (`app/ipc.rs`).
+    ipc: ipc::Ipc,
     /// The session's restore at start and save at quit.
     pub session: session::SessionState,
     /// Crash backups: the periodic writes, removals, the start's offer.
@@ -534,6 +544,8 @@ impl App {
             state_dir: Some(crate::paths::state_dir()),
             #[cfg(test)]
             state_dir: None,
+            ipc_dir: (!cfg!(test)).then(crate::ipc::default_socket_dir),
+            ipc: Default::default(),
             session: Default::default(),
             backups: Default::default(),
             recent: Default::default(),
@@ -646,6 +658,7 @@ impl App {
             Ok(w) => self.watcher = Some(w),
             Err(e) => self.notify(Level::Warning, format!("Not watching for file changes: {e}")),
         }
+        self.start_ipc();
         self.refresh_git(None);
         self.restore_session();
         self.scan_backups();
@@ -1389,6 +1402,8 @@ impl App {
             AppEvent::DiffStaged(message) => self.diff_staged(message),
             AppEvent::CommitLoaded { commit, result } => self.commit_loaded(commit, result),
             AppEvent::Task(ev) => self.task_event(ev),
+            AppEvent::Ipc(request, responder) => self.ipc_request(request, responder),
+            AppEvent::IpcStarted(result) => self.ipc_started(result),
             AppEvent::SessionRead(result) => self.session_read(*result),
             AppEvent::BackupsFound(found) => self.backups_found(found),
             AppEvent::BackupDone(done) => self.backup_done(done),

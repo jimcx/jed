@@ -38,6 +38,8 @@ pub struct Tasks {
     next_id: u64,
     /// Set by `App::start`; runs started before then report nowhere.
     sink: Option<Sink>,
+    /// The socket path every run gets as `JED_IPC` (set once `App` listens).
+    pub ipc: Option<PathBuf>,
 }
 
 impl Default for Tasks {
@@ -49,6 +51,7 @@ impl Default for Tasks {
             runs: Vec::new(),
             next_id: 1,
             sink: None,
+            ipc: None,
         }
     }
 }
@@ -83,7 +86,12 @@ impl Tasks {
     pub fn run(&mut self, template: &Template, root: &Path) -> RunId {
         let id = RunId(self.next_id);
         self.next_id += 1;
-        let spec = template.resolve(root, &self.shell);
+        let mut spec = template.resolve(root, &self.shell);
+        if let Some(socket) = &self.ipc {
+            spec.env.retain(|(k, _)| k != crate::ipc::ENV);
+            spec.env
+                .push((crate::ipc::ENV.into(), socket.to_string_lossy().into_owned()));
+        }
         let sink = self.sink.clone().unwrap_or_else(|| Arc::new(|_| {}));
         let (rows, cols) = self.size;
         self.runs.push(Run::start(id, spec, rows, cols, sink));
