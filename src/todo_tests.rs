@@ -6351,8 +6351,6 @@ mod single_file {
     /// The same start in workspace mode does what single file mode leaves out: so the checks
     /// above can fail.
     #[tokio::test(flavor = "multi_thread")]
-    // FLAKE: 2026-10-23, failed once in a full parallel run on a loaded machine (passed alone); which
-    // assertion wasn't captured, so the ones that can race now dump their state.
     async fn single_file_workspace_mode_does_what_single_mode_leaves_out() {
         let dir = tempfile::tempdir().unwrap();
         let (root, state) = dirs(&dir);
@@ -6373,7 +6371,7 @@ mod single_file {
         app.press(K::Char('b'), cmd());
         assert!(
             !app.ui.side_visible && app.message.is_none(),
-            "FLAKE: Cmd+B works: side {} message {:?}",
+            "Cmd+B works: side {} message {:?}",
             app.ui.side_visible,
             app.message.as_ref().map(|m| &m.text)
         );
@@ -6382,20 +6380,22 @@ mod single_file {
         app.press(K::Char('w'), cmd());
         assert!(
             app.group().tabs.is_empty(),
-            "FLAKE: tabs {} prompt {} message {:?}",
+            "tabs {} prompt {} message {:?}",
             app.group().tabs.len(),
             app.prompt.is_some(),
             app.message.as_ref().map(|m| &m.text)
         );
         assert!(!app.quitting(), "workspace mode stays open with no tab");
 
+        // A quit while the session's restore runs saves none (`save_session`): wait for it.
+        assert!(app.settle(|a| !a.session.loading()).await, "the session restore done");
         app.test_execute(Command::Quit);
         assert!(app.quitting());
         app.shutdown().await;
         assert_ne!(
             fs::read_to_string(&session).unwrap(),
             "not touched",
-            "FLAKE: the session written"
+            "the session written"
         );
     }
 
