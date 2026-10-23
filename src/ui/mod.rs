@@ -301,6 +301,21 @@ pub fn render(f: &mut Frame, app: &mut App) {
             hscrollbar: hscroll_hit,
         });
     }
+    // The zone a dragged tab would snap to, over what was drawn: the target editor, or the half
+    // of it the drop's edge band would split off. `set_style` replaces the cells' own style, so
+    // the key sets both colours.
+    let shade = app.theme.get("editor.dropBackground");
+    let shades: Vec<Rect> = hits
+        .groups
+        .iter()
+        .filter_map(|g| app.tab_drop_shade(g.id, g.editor))
+        .collect();
+    if !shades.is_empty() {
+        let out = f.buffer_mut();
+        for rect in shades {
+            out.set_style(rect, shade);
+        }
+    }
     let border = app.theme.get("editorGroup.border");
     for d in &dividers {
         let (glyph, cells) = match d.dir {

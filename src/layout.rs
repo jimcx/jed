@@ -160,6 +160,17 @@ pub enum SplitDir {
     Down,
 }
 
+/// An editor's edge, for a tab dropped there: the group splits on that side and the new group
+/// takes the space there. A drop on an edge of `Right` or `Down` puts the new group second in
+/// the tree; `Left` / `Up` put it first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropSide {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Node {
@@ -237,6 +248,12 @@ impl SplitTree {
 
     /// Splits `target` in two; `new` goes right of or below it. False if `target` isn't in the tree.
     pub fn split(&mut self, target: GroupId, dir: SplitDir, new: GroupId) -> bool {
+        self.split_with(target, dir, new, false)
+    }
+
+    /// Splits `target` in two; with `new_first` the new group takes the first half (left of or
+    /// above `target`). False if `target` isn't in the tree.
+    pub fn split_with(&mut self, target: GroupId, dir: SplitDir, new: GroupId, new_first: bool) -> bool {
         fn find(n: &mut Node, target: GroupId) -> Option<&mut Node> {
             match n {
                 Node::Leaf(g) if *g == target => Some(n),
@@ -247,11 +264,12 @@ impl SplitTree {
         let Some(leaf) = find(&mut self.root, target) else {
             return false;
         };
+        let (a, b) = if new_first { (new, target) } else { (target, new) };
         *leaf = Node::Split {
             dir,
             ratio: 0.5,
-            a: Box::new(Node::Leaf(target)),
-            b: Box::new(Node::Leaf(new)),
+            a: Box::new(Node::Leaf(a)),
+            b: Box::new(Node::Leaf(b)),
         };
         true
     }
@@ -865,6 +883,26 @@ mod tests {
         );
         assert_eq!(divs[0].rect, Rect::new(40, 0, 1, 21));
         assert_eq!(divs[1].rect, Rect::new(41, 10, 40, 1));
+    }
+
+    #[test]
+    fn split_with_puts_the_new_group_first_for_left_and_up() {
+        let mut t = SplitTree::new(0);
+        assert!(t.split_with(0, SplitDir::Right, 1, true));
+        assert_eq!(t.groups(), vec![1, 0], "the new group is on the left");
+        assert!(t.split_with(0, SplitDir::Down, 2, true));
+        assert_eq!(t.groups(), vec![1, 2, 0], "and above the target");
+        let cells = t.layout(Rect::new(0, 0, 81, 21)).0;
+        assert_eq!(
+            cells,
+            vec![
+                (1, Rect::new(0, 0, 40, 21)),
+                (2, Rect::new(41, 0, 40, 10)),
+                (0, Rect::new(41, 11, 40, 10)),
+            ]
+        );
+        assert!(!t.split_with(9, SplitDir::Right, 3, true), "no such target");
+        assert_eq!(t.groups(), vec![1, 2, 0], "unchanged");
     }
 
     #[test]

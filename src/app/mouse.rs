@@ -347,6 +347,7 @@ impl App {
                 self.drag = Some(Drag::Tab(TabDrag {
                     from: g,
                     index: i,
+                    len: self.groups.get(g).map_or(0, |group| group.tabs.len()),
                     target: None,
                 }));
             }

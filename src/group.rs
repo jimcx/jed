@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::buffer::BufferId;
 use crate::diff_view::DiffTab;
 use crate::hex::HexTab;
-use crate::layout::{GroupId, SplitDir, SplitTree};
+use crate::layout::{DropSide, GroupId, SplitDir, SplitTree};
 use crate::shell::ShellTab;
 use crate::view::View;
 
@@ -457,6 +457,26 @@ impl Groups {
         id
     }
 
+    /// Splits `target` into a new group with no tabs on `side`, which becomes active: a left or
+    /// upper side puts the new group first in the tree, the target keeping the other half.
+    /// `None` (and nothing changes) if `target` isn't in the tree.
+    pub fn split_empty_of(&mut self, target: GroupId, side: DropSide) -> Option<GroupId> {
+        let (dir, new_first) = match side {
+            DropSide::Left => (SplitDir::Right, true),
+            DropSide::Right => (SplitDir::Right, false),
+            DropSide::Up => (SplitDir::Down, true),
+            DropSide::Down => (SplitDir::Down, false),
+        };
+        let id = self.next;
+        if !self.tree.split_with(target, dir, id, new_first) {
+            return None;
+        }
+        self.next += 1;
+        self.map.insert(id, Group::default());
+        self.active = id;
+        Some(id)
+    }
+
     /// Groups restored from a session: `tree`'s leaves must be exactly `groups`' ids (each
     /// once), and `active` one of them, else `Err` and nothing changes. Group ids after the
     /// largest are given to new groups.
@@ -601,6 +621,30 @@ mod tests {
         assert_eq!(fresh.tree, tree);
         let new = fresh.split(SplitDir::Right, 0);
         assert!(!ids.contains(&new), "new groups get new ids");
+    }
+
+    #[test]
+    fn split_empty_of_puts_the_new_group_on_the_named_side() {
+        let mut gs = Groups::default();
+        gs.active_group_mut().open(1, View::new());
+        let first = gs.active;
+        let left = gs.split_empty_of(first, DropSide::Left).expect("in the tree");
+        assert_eq!((gs.ids(), gs.active), (vec![left, first], left), "left: first in order");
+        assert!(gs.get(left).unwrap().tabs.is_empty());
+
+        let up = gs.split_empty_of(first, DropSide::Up).expect("in the tree");
+        assert_eq!(gs.ids(), vec![left, up, first], "up: above the target");
+        assert_eq!(gs.active, up);
+
+        let right = gs.split_empty_of(first, DropSide::Right).expect("in the tree");
+        assert_eq!(gs.ids(), vec![left, up, first, right], "right: second in its split");
+        let down = gs.split_empty_of(first, DropSide::Down).expect("in the tree");
+        assert_eq!(gs.ids(), vec![left, up, first, down, right], "down: below the target");
+        assert_eq!(gs.active, down);
+
+        assert_eq!(gs.split_empty_of(99, DropSide::Left), None, "no such target");
+        assert_eq!(gs.len(), 5, "and no group was made");
+        assert_eq!(gs.active, down, "nothing changed");
     }
 
     #[test]

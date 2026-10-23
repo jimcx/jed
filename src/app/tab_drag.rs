@@ -1,14 +1,15 @@
 //! Dragging a tab by the mouse. A press on a tab starts a drag (the tab activates, so a drag
 //! that never leaves it is just a click); every `Drag` event records where the pointer would
 //! drop it, and the release applies the drop. A tab drops back into its own bar at a gap, onto
-//! another group's bar at the gap there, or onto another group's editor (into that group, right
-//! of its active tab). `drag_tabs-c` adds drops on an editor's edges that split it.
+//! another group's bar at the gap there, into a group whose editor it is over, or on an editor's
+//! edge: the nearer quarter of an editor is its band, and a drop there splits the group on that
+//! side, the new split taking the tab (`ui` shades the band while dragging).
 
-use ratatui::layout::Position;
+use ratatui::layout::{Position, Rect};
 
 use super::mouse::Drag;
 use super::{App, Focus};
-use crate::layout::{GroupId, TabHit};
+use crate::layout::{DropSide, GroupId, MIN_GROUP_HEIGHT, MIN_GROUP_WIDTH, TabHit};
 
 /// An in-flight tab drag: the tab's group and index where it started, and where it would land
 /// (`None` while the pointer is not over a target).
@@ -16,6 +17,10 @@ use crate::layout::{GroupId, TabHit};
 pub struct TabDrag {
     pub from: GroupId,
     pub index: usize,
+    /// The source group's tab count when the drag started. A key can close (or open) a tab while
+    /// a drag is in flight, after which `index` may no longer be the dragged tab: the release
+    /// moves nothing.
+    pub len: usize,
     pub target: Option<TabDrop>,
 }
 
@@ -27,10 +32,11 @@ pub enum TabDrop {
         group: GroupId,
         index: usize,
     },
-    /// The centre of a group's editor: the tab moves into that group, right of its active tab
-    /// (`drag_tabs-c` adds the edges that split it).
+    /// A group's editor: `side` is the edge band the pointer is in, which the group splits on,
+    /// or `None` for the centre (the tab moves into the group, right of its active tab).
     Editor {
         group: GroupId,
+        side: Option<DropSide>,
     },
 }
 
@@ -41,10 +47,36 @@ pub(super) fn gap_at(tabs: &[TabHit], x: u16) -> usize {
     first + tabs.iter().filter(|t| t.x0 + (t.x1 - t.x0) / 2 < x).count()
 }
 
+/// Which edge of `rect` the point (`x`, `y`) is near enough to snap to, or `None` for its
+/// centre (or outside it). Each edge's band is a quarter of that dimension, and the nearest
+/// edge within its band wins (ties in the order Left, Right, Up, Down). An edge whose dimension
+/// can't hold a split of two minimum groups is no edge at all.
+pub fn snap_side(rect: Rect, x: u16, y: u16) -> Option<DropSide> {
+    if !rect.contains(Position { x, y }) {
+        return None;
+    }
+    let horizontal = rect.width > 2 * MIN_GROUP_WIDTH;
+    let vertical = rect.height > 2 * MIN_GROUP_HEIGHT;
+    let (band_w, band_h) = (rect.width / 4, rect.height / 4);
+    let (right, bottom) = (rect.x + rect.width - 1, rect.y + rect.height - 1);
+    // In tie order; `min` keeps the first of equal distances.
+    let candidates = [
+        (DropSide::Left, x - rect.x, horizontal, band_w),
+        (DropSide::Right, right - x, horizontal, band_w),
+        (DropSide::Up, y - rect.y, vertical, band_h),
+        (DropSide::Down, bottom - y, vertical, band_h),
+    ];
+    candidates
+        .into_iter()
+        .filter(|&(_, distance, fits, band)| fits && distance <= band)
+        .min_by_key(|&(_, distance, ..)| distance)
+        .map(|(side, ..)| side)
+}
+
 impl App {
     /// Where a tab dropped at (`x`, `y`) would land: a gap in the tab bar under the pointer, or
-    /// the centre of a group's editor. Anywhere else (a divider, the side panel, the status bar)
-    /// there is no target.
+    /// a group's editor (on an edge band, or its centre). Anywhere else (a divider, the side
+    /// panel, the status bar) there is no target.
     pub(super) fn tab_drop_at(&self, x: u16, y: u16) -> Option<TabDrop> {
         if let Some(group) = self.hits.groups.iter().find(|g| g.tab_bar.contains(Position { x, y })) {
             return Some(TabDrop::TabBar {
@@ -53,12 +85,15 @@ impl App {
             });
         }
         let group = self.hits.groups.iter().find(|g| g.editor.contains(Position { x, y }))?;
-        Some(TabDrop::Editor { group: group.id })
+        Some(TabDrop::Editor {
+            group: group.id,
+            side: snap_side(group.editor, x, y),
+        })
     }
 
     /// The gap a drop in `group` would land in, while a tab is being dragged: the drop marker's
     /// cell for that group (`ui::tabs::render`). Any group's bar can take the tab; an editor
-    /// target shows no marker (`drag_tabs-c` shades the zone there instead).
+    /// target shows no marker (the shade marks the zone there instead).
     pub(crate) fn tab_drop_in(&self, group: GroupId) -> Option<usize> {
         match &self.drag {
             Some(Drag::Tab(TabDrag {
@@ -67,6 +102,44 @@ impl App {
             })) if *g == group => Some(*index),
             _ => None,
         }
+    }
+
+    /// The zone to shade while a tab drag would drop in `group`'s editor: all of it for the
+    /// centre, or the half the pointer's edge band would split off. `None` for another group,
+    /// a bar target, or no drag.
+    pub(crate) fn tab_drop_shade(&self, group: GroupId, editor: Rect) -> Option<Rect> {
+        let Some(Drag::Tab(TabDrag {
+            target: Some(TabDrop::Editor { group: g, side }),
+            ..
+        })) = &self.drag
+        else {
+            return None;
+        };
+        if *g != group {
+            return None;
+        }
+        let (half_w, half_h) = (editor.width / 2, editor.height / 2);
+        Some(match side {
+            None => editor,
+            Some(DropSide::Left) => Rect {
+                width: half_w,
+                ..editor
+            },
+            Some(DropSide::Right) => Rect {
+                x: editor.x + half_w,
+                width: editor.width - half_w,
+                ..editor
+            },
+            Some(DropSide::Up) => Rect {
+                height: half_h,
+                ..editor
+            },
+            Some(DropSide::Down) => Rect {
+                y: editor.y + half_h,
+                height: editor.height - half_h,
+                ..editor
+            },
+        })
     }
 
     /// Follows the pointer during a tab drag: records the target for the drop marker.
@@ -78,13 +151,23 @@ impl App {
     }
 
     /// Ends a tab drag at (`x`, `y`): reorders the tab within its own bar, moves it to another
-    /// group's bar at the gap there, or moves it into the group whose editor it is over. A drop
-    /// on its own group's editor, with no target, or after Esc moves nothing. The drag is
-    /// cleared either way.
+    /// group's bar at the gap there, into the editor it is over, or splits that editor's group
+    /// on the side its pointer is in and moves it into the new split. A drop on its own group's
+    /// editor's centre, with no target, or after Esc moves nothing. The drag is cleared either way.
     pub(super) fn finish_tab_drag(&mut self, x: u16, y: u16) {
         let Some(Drag::Tab(drag)) = self.drag.take() else {
             return;
         };
+        // A key can close a tab while a drag is in flight (only Esc ends a drag): if the source
+        // group's tab list changed, the tab the drag started on is not at `index` any more (the
+        // next one may be), so the release moves nothing.
+        if !self
+            .groups
+            .get(drag.from)
+            .is_some_and(|g| g.tabs.len() == drag.len && drag.index < g.tabs.len())
+        {
+            return;
+        }
         let Some(target) = self.tab_drop_at(x, y) else {
             return;
         };
@@ -100,8 +183,27 @@ impl App {
                 return;
             }
             TabDrop::TabBar { group, index } => (group, Some(index)),
-            TabDrop::Editor { group } if group == drag.from => return,
-            TabDrop::Editor { group } => (group, None),
+            TabDrop::Editor {
+                group,
+                side: Some(side),
+            } => {
+                if let Some((buf, _)) = self.active_mut() {
+                    buf.seal_undo();
+                }
+                let Some(new) = self.groups.split_empty_of(group, side) else {
+                    return;
+                };
+                if self.groups.move_tab_between(drag.from, drag.index, new, None) {
+                    self.ui.focus = Focus::Editor;
+                    self.reveal_active();
+                } else {
+                    // Nothing moved: don't leave the empty split behind.
+                    self.groups.remove(new);
+                }
+                return;
+            }
+            TabDrop::Editor { group, side: None } if group == drag.from => return,
+            TabDrop::Editor { group, side: None } => (group, None),
         };
         if let Some((buf, _)) = self.active_mut() {
             buf.seal_undo();
@@ -115,8 +217,9 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::gap_at;
-    use crate::layout::TabHit;
+    use super::{gap_at, snap_side};
+    use crate::layout::{DropSide, TabHit};
+    use ratatui::layout::Rect;
 
     fn tab(index: usize, x0: u16, x1: u16) -> TabHit {
         TabHit {
@@ -148,5 +251,86 @@ mod tests {
         assert_eq!(gap_at(&tabs, 6), 5);
         assert_eq!(gap_at(&tabs, 26), 6);
         assert_eq!(gap_at(&[], 8), 0, "an empty bar: the only gap");
+    }
+
+    /// A 40×20 editor: each band is the nearer quarter (10 columns, 5 rows).
+    #[test]
+    fn the_nearer_quarter_is_a_side_and_the_middle_is_the_centre() {
+        let r = Rect::new(0, 0, 40, 20);
+        assert_eq!(snap_side(r, 0, 10), Some(DropSide::Left));
+        assert_eq!(snap_side(r, 10, 10), Some(DropSide::Left), "exactly a quarter in");
+        assert_eq!(snap_side(r, 11, 10), None, "past the band: the centre");
+        assert_eq!(snap_side(r, 29, 10), Some(DropSide::Right));
+        assert_eq!(snap_side(r, 39, 10), Some(DropSide::Right), "the last column");
+        assert_eq!(snap_side(r, 28, 10), None);
+        assert_eq!(snap_side(r, 20, 0), Some(DropSide::Up));
+        assert_eq!(snap_side(r, 20, 5), Some(DropSide::Up), "exactly a quarter down");
+        assert_eq!(snap_side(r, 20, 6), None);
+        assert_eq!(snap_side(r, 20, 14), Some(DropSide::Down));
+        assert_eq!(snap_side(r, 20, 19), Some(DropSide::Down), "the last row");
+        assert_eq!(snap_side(r, 20, 13), None);
+        assert_eq!(snap_side(r, 20, 10), None, "the centre");
+        assert_eq!(snap_side(r, 40, 10), None, "outside");
+        assert_eq!(snap_side(r, 20, 20), None);
+    }
+
+    #[test]
+    fn the_nearest_edge_wins_with_left_right_up_down_ties() {
+        let r = Rect::new(0, 0, 40, 20);
+        assert_eq!(snap_side(r, 2, 2), Some(DropSide::Left), "left and up tie: left first");
+        assert_eq!(
+            snap_side(r, 37, 2),
+            Some(DropSide::Right),
+            "right and up tie: right first"
+        );
+        assert_eq!(
+            snap_side(r, 2, 17),
+            Some(DropSide::Left),
+            "left and down tie: left first"
+        );
+        assert_eq!(
+            snap_side(r, 37, 17),
+            Some(DropSide::Right),
+            "right and down tie: right first"
+        );
+        assert_eq!(snap_side(r, 20, 2), Some(DropSide::Up), "the top half");
+        assert_eq!(
+            snap_side(r, 5, 4),
+            Some(DropSide::Up),
+            "the nearer edge wins, not the first"
+        );
+        assert_eq!(snap_side(r, 4, 5), Some(DropSide::Left));
+    }
+
+    #[test]
+    fn snap_side_works_on_a_rect_away_from_the_origin() {
+        let r = Rect::new(40, 7, 40, 20);
+        assert_eq!(snap_side(r, 40, 17), Some(DropSide::Left));
+        assert_eq!(snap_side(r, 50, 17), Some(DropSide::Left), "exactly a quarter in");
+        assert_eq!(snap_side(r, 51, 17), None);
+        assert_eq!(snap_side(r, 79, 17), Some(DropSide::Right), "the last column");
+        assert_eq!(snap_side(r, 60, 7), Some(DropSide::Up));
+        assert_eq!(snap_side(r, 60, 26), Some(DropSide::Down), "the last row");
+        assert_eq!(snap_side(r, 39, 17), None, "outside on the left");
+        assert_eq!(snap_side(r, 80, 17), None, "outside on the right");
+        assert_eq!(snap_side(r, 60, 6), None, "outside above");
+        assert_eq!(snap_side(r, 60, 27), None, "outside below");
+    }
+
+    #[test]
+    fn an_edge_that_cannot_hold_a_split_is_no_edge() {
+        // 25 is the narrowest width that can hold two minimum groups (12 + a divider + 12).
+        let narrow = Rect::new(0, 0, 24, 20);
+        assert_eq!(snap_side(narrow, 0, 10), None, "too narrow to split sideways");
+        let just = Rect::new(0, 0, 25, 20);
+        assert_eq!(snap_side(just, 0, 10), Some(DropSide::Left), "25 fits a split");
+        assert_eq!(snap_side(just, 24, 10), Some(DropSide::Right));
+
+        // 9 is the shortest height that can hold two minimum groups (4 + a divider + 4).
+        let short = Rect::new(0, 0, 40, 8);
+        assert_eq!(snap_side(short, 20, 0), None, "too short to split lengthways");
+        let just = Rect::new(0, 0, 40, 9);
+        assert_eq!(snap_side(just, 20, 0), Some(DropSide::Up), "9 fits a split");
+        assert_eq!(snap_side(just, 20, 8), Some(DropSide::Down));
     }
 }
