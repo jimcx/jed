@@ -458,7 +458,7 @@ jed as git's editor (the [Git editor](#tasks) task): `git config --global core.e
 - Runs in a PTY, so tools keep their colours and progress bars
 - On exit: show the exit code and keep the output until the tab is closed
 - Kill a running task
-- Out of scope: a general-purpose interactive shell
+- Out of scope for tasks: a general-purpose interactive shell — the [Integrated shell](#tasks) task adds one as its own editor tab
 - Later: parse compiler errors into the Problems list (`file:line:col`)
 
 ### Tools and logs
@@ -843,6 +843,18 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
     - vhdl-b: the server: the `vhdl_ls` built-in, the fake-server test, the real-server test (skipped without the binary), a `vhdl_ls.toml` note in the server docs; hand checks; marks the task ✅
 - ✅ **Single file mode**: a lean one-file editor (`jed -s <file>`) — [details](docs/plan-done.md)
 - ✅ **Terminal window identity**: the window title, kitty user vars and OSC 7 — [details](docs/plan-done.md)
+- **Integrated shell** (`shell`): a new kind of editor tab hosting the user's own interactive shell, with jed's socket exported in it and the user's regular init run
+  - Needs: task runs' PTY stack (`tasks::run`: `portable-pty`, the `vt100` screen and scrollback; `tasks::keys` for key and paste bytes), the tab model (`group::Tab` and its accessors, `same_as`, `split`, `take`), the socket (`ipc`, `App::start_ipc`, the `JED_IPC` task PTYs already get), settings (`edit::Settings`, `config::settings`'s `SettingsOverrides` / `TEMPLATE`), focus and contexts (`app::Focus`, `config::keymap::Context`), `ui::task`'s drawing, the editor area's drawing and hits, and the close / quit / session paths (`app::files`, `app::session`)
+  - "Terminal: New Shell" (palette, unbound) opens a tab in the active group: `$SHELL` (else `/bin/sh`) started as a terminal emulator starts it — interactive on a PTY in the workspace root, no `-c` and no rc-skipping flags (`--norc` / `--noprofile`), so the user's regular init (`.zshrc` / `.bashrc` / `config.fish`) runs — with `JED_IPC` exported when it opens (once the socket listens; none in tests or with IPC off), so `git commit` and `jed <file>` from inside it open in this jed (see [Git editor](#git-editor-commit-messages))
+  - A tab type as diff and hex are: `Tab::Shell`, `active_buffer()` / `active_mut()` are `None` there, so editor commands need no checks; each shell is its own tab (`same_as` matches nothing; splitting on one leaves the new group empty, since a shell can't be in two groups); never dirty, so closing it never prompts; not in sessions and nothing to back up; its title is the shell's file name (`zsh`, `zsh (2)`)
+  - Keys: a new `Context::Shell` with no parent — jed's global bindings still work (Cmd+W closes the tab and kills the shell, Ctrl+Q quits, the palette) — plus scrollback bindings (Shift+PageUp / PageDown, Ctrl+Shift+Up / Down, Ctrl+Home / End) and paste; every other key (typing, Enter, arrows, Esc, Ctrl+C) goes to the shell through `tasks::keys`; the PTY is resized to the tab's area each frame; the wheel scrolls its scrollback; on exit its output and status stay until the tab is closed (as a task run); quitting jed hangs up every shell (as tasks)
+  - Scrollback: a `scrollback` setting (lines, VS Code's `terminal.integrated.scrollback`; default 5,000, `tasks::run::SCROLLBACK` becoming the default) read when a run is created, for shell tabs and task runs alike — the `vt100` parser's capacity is fixed at creation, so a changed `.workspace` setting applies to the next shell / run
+  - Deferred: selecting and copying text in the shell's screen, and clicking links
+  - Done when: "Terminal: New Shell" shows a live `$SHELL` prompt; a function defined in the user's `.zshrc` / `.bashrc` exists in it (the regular init; hand check); `echo $JED_IPC` prints the socket path, `git commit` from it opens `COMMIT_EDITMSG` in jed and `jed <file>` opens that file in this jed, not a second one; typing, Enter, arrows, Esc, Ctrl+C and paste reach the shell; resizing the tab, its split and the window follow (`stty size`), the wheel and the scroll keys go back, a `.workspace` `scrollback = 50` leaves a new shell (and a new task run) exactly the newest 50 lines to scroll back through, closing the tab kills the shell, and a restart restores none
+  - Subtasks (one agent and one commit each):
+    - shell-a: the tab and its process: a `shell` model reusing `tasks::run`'s `Run` (`vt100` screen, resize), the `scrollback` setting in `Run` (and `Settings` / `SettingsOverrides` / `TEMPLATE`, default 5,000) for both shell tabs and task runs, `Tab::Shell` (its accessors, `same_as`, `split`, close), "Terminal: New Shell" opening it in the active group with `JED_IPC`, its title and numbering; unit tests
+    - shell-b: drawing and keys: the screen in the editor area as `ui::task` draws a panel run, `Context::Shell`'s keys, paste and scrollback, the exit status kept, close killing it, sessions skipping it
+    - shell-c: the done-when tests (a fake shell script recording `JED_IPC`; `git commit` and `jed <file>` through the real socket; the real init as a hand check), gaps and hand checks; marks the task ✅
 
 ## Stretch goals
 Very low priority. Don't build these yet, but don't make design choices that would block them.
