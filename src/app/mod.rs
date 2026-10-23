@@ -38,6 +38,7 @@ mod session;
 mod shell;
 mod side;
 mod syntax;
+mod tab_drag;
 mod tasks;
 mod tools;
 mod workspace_search;
@@ -973,7 +974,10 @@ impl App {
                 if !peek && !matches!(key.code, KeyCode::Modifier(_)) {
                     self.close_peek();
                 }
-                if self.prompt.is_some() {
+                if esc && matches!(self.drag, Some(mouse::Drag::Tab(_))) {
+                    // A drag in flight: Esc cancels it (the mouse release then moves nothing).
+                    self.drag = None;
+                } else if self.prompt.is_some() {
                     self.handle_prompt_key(key);
                 } else if self.cheat_sheet.is_some() {
                     self.cheat_sheet_key(key);

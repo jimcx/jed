@@ -229,6 +229,8 @@ impl Theme {
             // dimmed when there's nothing more that way).
             ("tab.scrollArrow", fg_bg(0xC5C5C5, 0x252526)),
             ("tab.scrollArrow.disabled", fg_bg(0x5A5A5A, 0x252526)),
+            // Where a dragged tab would land on a tab bar (VS Code's `tab.dropBorder`).
+            ("tab.dropMarker", fg_bg(0xFFFFFF, 0x007ACC)),
             ("editorGroup.border", fg_bg(0x444444, 0x1E1E1E)),
             // The splash screen in an editor group with no tabs (a quiet logo, like VS Code's
             // watermark).

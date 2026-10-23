@@ -235,6 +235,20 @@ impl Group {
         true
     }
 
+    /// Moves the tab at `from` to `to`, its index in the list afterwards; it stays active.
+    /// False when either index is out of range or it wouldn't move.
+    pub fn move_tab(&mut self, from: usize, to: usize) -> bool {
+        let len = self.tabs.len();
+        if from >= len || to >= len || from == to {
+            return false;
+        }
+        let tab = self.tabs.remove(from);
+        // `to` < `len`, so it is a valid insertion index in the shorter list (the last one too).
+        self.tabs.insert(to, tab);
+        self.active = to;
+        true
+    }
+
     pub fn cycle(&mut self, delta: isize) {
         if !self.tabs.is_empty() {
             let n = self.tabs.len() as isize;
@@ -579,6 +593,22 @@ mod tests {
         assert!(!g.move_active(1), "no wrap at the end");
         assert_eq!((buffers(&g), g.active), (vec![1, 2, 0], 2));
         assert!(!Group::default().move_active(1));
+    }
+
+    #[test]
+    fn move_tab_takes_it_to_its_final_position_and_activates_it() {
+        let mut g = group(3);
+        g.active = 0;
+        assert!(g.move_tab(0, 2));
+        assert_eq!((buffers(&g), g.active), (vec![1, 2, 0], 2), "to the end");
+        assert!(g.move_tab(2, 0));
+        assert_eq!((buffers(&g), g.active), (vec![0, 1, 2], 0), "to the start");
+        assert!(g.move_tab(1, 2));
+        assert_eq!((buffers(&g), g.active), (vec![0, 2, 1], 2));
+        assert!(!g.move_tab(1, 1), "same place");
+        assert!(!g.move_tab(3, 0), "from out of range");
+        assert!(!g.move_tab(0, 3), "to out of range");
+        assert!(!Group::default().move_tab(0, 0), "no tabs");
     }
 
     #[test]

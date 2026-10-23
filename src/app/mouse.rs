@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
+use super::tab_drag::TabDrag;
 use super::{App, Focus};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::column::{self, Cell};
@@ -57,6 +58,8 @@ pub enum Drag {
     HistoryDivider,
     /// Selecting bytes in a group's hex tab (`app/hex.rs`).
     Hex(crate::layout::GroupId),
+    /// Dragging a tab along a tab bar, or onto another group or editor (`app/tab_drag.rs`).
+    Tab(TabDrag),
 }
 
 /// Counts clicks on the same cell in quick succession (1, 2, 3).
@@ -250,6 +253,7 @@ impl App {
                     }
                 }
                 Some(Drag::ScrollBar { target, grab }) => self.scrollbar_drag(target, m.column, m.row, grab),
+                Some(Drag::Tab(_)) => self.tab_drag_to(m.column, m.row),
                 // Taken by `hex_mouse`.
                 Some(Drag::Hex(_)) => {}
                 Some(Drag::HistoryDivider) => {
@@ -264,6 +268,9 @@ impl App {
                 None => {}
             },
             MouseEventKind::Up(MouseButton::Left) => {
+                if matches!(self.drag, Some(Drag::Tab(_))) {
+                    self.finish_tab_drag(m.column, m.row);
+                }
                 self.drag = None;
                 // No moves arrive during a drag: the thumb released away from the pointer
                 // mustn't keep the hover colour from before the press.
@@ -336,6 +343,12 @@ impl App {
             Hit::Tab(g, i) => {
                 self.focus_group(g);
                 self.activate_tab(i);
+                // A drag that never leaves the tab is just a click: it stays active.
+                self.drag = Some(Drag::Tab(TabDrag {
+                    from: g,
+                    index: i,
+                    target: None,
+                }));
             }
             Hit::TabClose(g, i) => self.close_tab(g, i),
             Hit::TabBar(g) => self.focus_group(g),

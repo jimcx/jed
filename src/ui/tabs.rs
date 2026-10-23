@@ -2,6 +2,7 @@
 //! disk is struck through, with "(deleted)" after its name (VS Code). Tabs wider than the bar
 //! scroll: `‹` / `›` at the bar's ends (dimmed when there's nothing more that way) and the wheel
 //! move it a tab at a time; it jumps back to the active tab only when the active tab changes.
+//! While a tab is dragged, `drop` marks the gap it would land in (`tab.dropMarker`).
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -20,6 +21,7 @@ pub struct TabBarHit {
 }
 
 /// `active_group`: the focused group's active tab is bright; other groups' active tabs are dimmer.
+/// `drop`: the gap a dragged tab would land in, drawn as one marker cell.
 pub fn render(
     f: &mut Frame,
     area: Rect,
@@ -27,6 +29,7 @@ pub fn render(
     buffers: &Buffers,
     theme: &Theme,
     active_group: bool,
+    drop: Option<usize>,
 ) -> TabBarHit {
     let out = f.buffer_mut();
     out.set_style(area, theme.get("tabBar"));
@@ -155,6 +158,28 @@ pub fn render(
             close_x,
         });
         x += w;
+    }
+    if let Some(index) = drop {
+        // The gap before tab `index`, or after the last tab drawn at the bar's end; kept inside
+        // the drawn area (between the arrows, while they are there). On a scrolled bar a gap
+        // can name a tab that isn't drawn: it is the one just after the last drawn tab.
+        let x = match hits.iter().find(|t| t.index == index).map(|t| t.x0) {
+            Some(x) => x,
+            None => match hits.last() {
+                Some(t) if index > t.index => t.x1,
+                _ => left,
+            },
+        };
+        let x = x.clamp(left, right.saturating_sub(1));
+        out.set_style(
+            Rect {
+                x,
+                y: area.y,
+                width: 1,
+                height: 1,
+            },
+            theme.get("tab.dropMarker"),
+        );
     }
     TabBarHit { tabs: hits, arrows }
 }

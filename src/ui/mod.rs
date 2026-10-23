@@ -77,8 +77,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let is_active = id == app.groups.active;
         let look = scrollbar::look(app, ScrollTarget::Group(id));
         let editor_bg = app.theme.get("editor");
+        let drop = app.tab_drop_in(id);
         let Some(group) = app.groups.get_mut(id) else { continue };
-        let tabs = tabs::render(f, tab_bar, group, &app.buffers, &app.theme, is_active);
+        let tabs = tabs::render(f, tab_bar, group, &app.buffers, &app.theme, is_active, drop);
 
         // The changed-on-disk banner takes the editor's first row (leaving it at least one); a
         // diff tab of the file shows it too.

@@ -15,6 +15,8 @@ mod config;
 mod diagnostics;
 mod diff_view;
 mod disk;
+#[cfg(test)]
+mod drag_tabs_tests;
 mod edit;
 mod explorer;
 mod field;
