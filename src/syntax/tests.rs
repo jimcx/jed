@@ -528,6 +528,7 @@ fn scopes_in_every_language() {
         (CMake, "set(a [[b|]] \"${c|}\")\n", &[String, Code]),
         (Makefile, "a = b|\n# c|\n", &[Code, Comment]),
         (Dockerfile, "# c|\nENV A=\"b|\" C=d|\n", &[Comment, String, Code]),
+        (GitCommit, "subj|\n\n# c|\n", &[Code, Comment]),
         (Xml, "<a x=\"y|\">t|</a><!-- c| -->", &[String, Code, Comment]),
         (Markdown, "# a|\n", &[Code]),
         (Cpp, "f(\"a|\"); // b|\n", &[String, Comment]),

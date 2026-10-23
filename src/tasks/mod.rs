@@ -333,7 +333,20 @@ mod tests {
             crossterm::event::KeyModifiers::CONTROL,
         );
         assert!(run.write(&keys::encode(&ctrl_c, false).unwrap()));
-        wait_until("exit", || !run.status().is_running()).await;
+        // FLAKE: 2026-10-23, in a full parallel run on a loaded machine the run never exited
+        // within 5 s after Ctrl+C (passed alone). Dumps the run's state for next time.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while run.status().is_running() {
+            if Instant::now() >= deadline {
+                let screen = run.screen().screen().contents();
+                eprintln!(
+                    "FLAKE ctrl_c_interrupts_the_foreground_process: still {:?} 5 s after Ctrl+C; screen {screen:?}",
+                    run.status()
+                );
+                panic!("FLAKE: timed out waiting for exit after Ctrl+C");
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         let e = exit(run);
         assert!(!e.success() && !e.killed, "{e:?}");
     }

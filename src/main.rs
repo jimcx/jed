@@ -23,6 +23,8 @@ mod find;
 mod fixes_tests;
 mod format;
 mod git;
+#[cfg(test)]
+mod git_editor_tests;
 mod git_history;
 #[cfg(test)]
 mod git_history_tests;

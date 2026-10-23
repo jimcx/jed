@@ -297,6 +297,17 @@ static DOCKERFILE: LanguageConfig = config(
     SURROUND,
 );
 
+/// `git-commit`: `#` comments, brackets `[` `(` auto-close, no quotes (apostrophes in prose).
+static GIT_COMMIT: LanguageConfig = config(
+    Some("#"),
+    &[BRACKETS[1], BRACKETS[2]],
+    &[('[', ']'), ('(', ')')],
+    SURROUND,
+);
+
+/// `git-rebase-todo`: `#` comments only.
+static GIT_REBASE: LanguageConfig = config(Some("#"), &[], &[], SURROUND);
+
 impl Language {
     pub fn config(self) -> &'static LanguageConfig {
         match self {
@@ -314,6 +325,8 @@ impl Language {
             Language::CMake => &CMAKE,
             Language::Makefile => &MAKEFILE,
             Language::Dockerfile => &DOCKERFILE,
+            Language::GitCommit => &GIT_COMMIT,
+            Language::GitRebase => &GIT_REBASE,
             Language::Plugin(p) => &p.get().config,
         }
     }
@@ -374,7 +387,17 @@ mod tests {
         let comment = |l: Language| l.config().line_comment;
         assert_eq!(comment(Rust), Some("//"));
         assert_eq!(comment(Jsonc), Some("//"));
-        for l in [Python, Yaml, Toml, ShellScript, CMake, Makefile, Dockerfile] {
+        for l in [
+            Python,
+            Yaml,
+            Toml,
+            ShellScript,
+            CMake,
+            Makefile,
+            Dockerfile,
+            GitCommit,
+            GitRebase,
+        ] {
             assert_eq!(comment(l), Some("#"), "{l:?}");
         }
         for l in [PlainText, Json, Markdown, Xml] {

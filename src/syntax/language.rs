@@ -30,13 +30,17 @@ pub enum Language {
     CMake,
     Makefile,
     Dockerfile,
+    /// `COMMIT_EDITMSG`, `MERGE_MSG`, … (VS Code's `git-commit`): tree-sitter-gitcommit.
+    GitCommit,
+    /// `git-rebase-todo`: `#` comments, no grammar (tree-sitter-git-rebase isn't on crates.io).
+    GitRebase,
     /// A syntax plugin's language (`plugin.rs`): its names and rules are in the registry.
     Plugin(PluginId),
 }
 
 impl Language {
     /// The languages compiled in (plugins are in the registry: `all()`).
-    pub const BUILT_IN: [Language; 15] = [
+    pub const BUILT_IN: [Language; 17] = [
         Language::PlainText,
         Language::C,
         Language::Cpp,
@@ -52,6 +56,8 @@ impl Language {
         Language::CMake,
         Language::Makefile,
         Language::Dockerfile,
+        Language::GitCommit,
+        Language::GitRebase,
     ];
 
     /// The built-in languages, then the registered plugins'.
@@ -91,6 +97,8 @@ impl Language {
             Language::CMake => "cmake",
             Language::Makefile => "makefile",
             Language::Dockerfile => "dockerfile",
+            Language::GitCommit => "git-commit",
+            Language::GitRebase => "git-rebase",
             Language::Plugin(p) => p.get().id,
         }
     }
@@ -113,6 +121,8 @@ impl Language {
             Language::CMake => "CMake",
             Language::Makefile => "Makefile",
             Language::Dockerfile => "Dockerfile",
+            Language::GitCommit => "Git Commit Message",
+            Language::GitRebase => "Git Rebase Message",
             Language::Plugin(p) => p.get().name,
         }
     }
@@ -127,7 +137,7 @@ impl Language {
     /// The tree-sitter grammar, if the language has one (a plugin's is installed by `plugin::load`: none until then).
     pub fn grammar(self) -> Option<tree_sitter::Language> {
         Some(match self {
-            Language::PlainText => return None,
+            Language::PlainText | Language::GitRebase => return None,
             Language::Plugin(p) => return p.get().grammar.get().cloned(),
             Language::C => tree_sitter_c::LANGUAGE.into(),
             Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
@@ -143,6 +153,7 @@ impl Language {
             Language::CMake => tree_sitter_cmake::LANGUAGE.into(),
             Language::Makefile => tree_sitter_make::LANGUAGE.into(),
             Language::Dockerfile => tree_sitter_containerfile::LANGUAGE.into(),
+            Language::GitCommit => tree_sitter_gitcommit::LANGUAGE.into(),
         })
     }
 
@@ -167,8 +178,9 @@ impl Language {
         const CMAKE: &str = include_str!("queries/cmake.scm");
         const MAKE: &str = include_str!("queries/make.scm");
         const DOCKER: &str = include_str!("queries/dockerfile.scm");
+        const GIT_COMMIT: &str = include_str!("queries/git-commit.scm");
         match self {
-            Language::PlainText | Language::Plugin(_) => &[],
+            Language::PlainText | Language::GitRebase | Language::Plugin(_) => &[],
             Language::C => &[tree_sitter_c::HIGHLIGHT_QUERY, C],
             Language::Cpp => &[tree_sitter_c::HIGHLIGHT_QUERY, tree_sitter_cpp::HIGHLIGHT_QUERY, C, CPP],
             Language::Python => &[tree_sitter_python::HIGHLIGHTS_QUERY, PYTHON],
@@ -182,6 +194,7 @@ impl Language {
             Language::CMake => &[CMAKE],
             Language::Makefile => &[tree_sitter_make::HIGHLIGHTS_QUERY, MAKE],
             Language::Dockerfile => &[tree_sitter_containerfile::HIGHLIGHTS_QUERY, DOCKER],
+            Language::GitCommit => &[tree_sitter_gitcommit::HIGHLIGHTS_QUERY, GIT_COMMIT],
         }
     }
 }
@@ -273,6 +286,10 @@ fn built_in_named(path: &Path, name: &str) -> Option<Language> {
         "Makefile" | "makefile" | "GNUmakefile" | "OCamlMakefile" => Some(Makefile),
         "CMakeLists.txt" => Some(CMake),
         "Dockerfile" | "Containerfile" => Some(Dockerfile),
+        "COMMIT_EDITMSG" | "MERGE_MSG" | "SQUASH_MSG" | "TAG_EDITMSG" | "EDIT_DESCRIPTION" | "NOTES_EDITMSG" => {
+            Some(GitCommit)
+        }
+        "git-rebase-todo" => Some(GitRebase),
         "Cargo.lock" | "Pipfile" | "poetry.lock" | "uv.lock" | ".workspace" => Some(Toml),
         "composer.lock" | ".watchmanconfig" => Some(Json),
         "tsconfig.json" | "jsconfig.json" | "babel.config.json" | ".babelrc" | ".babelrc.json" | ".eslintrc"
@@ -429,10 +446,11 @@ mod tests {
         assert_eq!(Language::from_id("rust"), Some(Language::Rust));
         assert_eq!(Language::from_id("shellscript"), Some(Language::ShellScript));
         assert_eq!(Language::from_id("bash"), None);
-        // Every language but plain text has a grammar and a query.
+        // Every language but plain text and git-rebase has a grammar and a query.
         for l in Language::BUILT_IN {
-            assert_eq!(l.grammar().is_some(), l != Language::PlainText, "{l:?}");
-            assert_eq!(l.highlight_queries().is_empty(), l == Language::PlainText, "{l:?}");
+            let none = matches!(l, Language::PlainText | Language::GitRebase);
+            assert_eq!(l.grammar().is_some(), !none, "{l:?}");
+            assert_eq!(l.highlight_queries().is_empty(), none, "{l:?}");
         }
     }
 
@@ -459,6 +477,13 @@ mod tests {
         use Language::*;
         let table = [
             ("main.rs", Rust),
+            ("COMMIT_EDITMSG", GitCommit),
+            ("MERGE_MSG", GitCommit),
+            ("SQUASH_MSG", GitCommit),
+            ("TAG_EDITMSG", GitCommit),
+            ("EDIT_DESCRIPTION", GitCommit),
+            ("NOTES_EDITMSG", GitCommit),
+            ("git-rebase-todo", GitRebase),
             ("README.md", Markdown),
             ("notes.markdown", Markdown),
             ("ci.yml", Yaml),
@@ -506,6 +531,14 @@ mod tests {
         assert_eq!(detect_plain("/ws/vscode/settings.json", ""), Json);
         // Exact names are case-sensitive (as VS Code's `filenames`); extensions aren't.
         assert_eq!(detect_plain("/ws/cmakelists.txt", ""), PlainText);
+        for name in [
+            "commit_editmsg",
+            "COMMIT_EDITMSG.bak",
+            "MERGE_MSG~",
+            "git-rebase-todo.backup",
+        ] {
+            assert_eq!(detect_plain(&format!("/ws/.git/{name}"), ""), PlainText, "{name}");
+        }
         assert_eq!(detect_plain("/ws/A.RS", ""), Rust);
     }
 

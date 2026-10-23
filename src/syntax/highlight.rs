@@ -770,6 +770,58 @@ mod tests {
         );
     }
 
+    const GIT_PLAIN: &str = "feat(ui): add a thing\n\nBody text.\n\nSigned-off-by: A <a@b.c>\n\n# Please enter the commit message for your changes. Lines starting\n# with '#' will be ignored, and an empty message aborts the commit.\n#\n# On branch main\n# Changes to be committed:\n#\tmodified:   src/a.rs\n#\tnew file:   b.txt\n#\n";
+
+    #[test]
+    fn git_commit_spans() {
+        assert_has(
+            Language::GitCommit,
+            GIT_PLAIN,
+            &[
+                ("feat", "keyword"),
+                ("ui", "variable.parameter"),
+                (" add a thing", "markup.heading"),
+                ("Signed-off-by: ", "label"),
+                (
+                    "# Please enter the commit message for your changes. Lines starting",
+                    "comment",
+                ),
+                ("# On branch ", "comment"),
+                ("main", "markup.link"),
+                ("Changes to be committed:", "markup.heading"),
+                ("modified:", "keyword"),
+                ("src/a.rs", "string"),
+                ("new file:", "keyword"),
+                ("b.txt", "string"),
+            ],
+        );
+    }
+
+    #[test]
+    fn git_commit_spans_merge_and_trailers() {
+        let merge = "Merge branch 'x' into main\n\n# Conflicts:\n#\tsrc/a.rs\n";
+        assert_has(
+            Language::GitCommit,
+            merge,
+            &[
+                ("Merge branch 'x' into main", "markup.heading"),
+                // A comment ending in `:` stays a comment (jed's query), not the grammar's heading.
+                ("# Conflicts:\n#\tsrc/a.rs\n", "comment"),
+            ],
+        );
+        let trailers = "Fix it\n\nSigned-off-by: A <a@b>\nCo-Authored-By: B <b@c>\nBREAKING CHANGE: gone\n";
+        assert_has(
+            Language::GitCommit,
+            trailers,
+            &[
+                ("Fix it", "markup.heading"),
+                ("Signed-off-by: ", "label"),
+                ("Co-Authored-By: ", "label"),
+                ("BREAKING CHANGE: ", "keyword"),
+            ],
+        );
+    }
+
     #[test]
     fn c_spans() {
         let text = "#include <stdio.h>\nint main(void) {\n  /* hi */\n  return printf(\"x\\n\", 42) + 'c';\n}\n";

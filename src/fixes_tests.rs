@@ -1304,8 +1304,12 @@ async fn rest_until(
     offset: u16,
     want: impl Fn(&[(Kind, String)]) -> bool,
 ) {
+    // FLAKE: `fixes_done_when_rust_analyzer` once ran out of the 60 s here in a full parallel run on a
+    // loaded machine (the HashMap hover never gained its diagnostic row; passes alone in ~6 s).
     let t = Instant::now();
+    let mut tries = 0;
     while t.elapsed() < Duration::from_secs(60) {
+        tries += 1;
         draw(term, app);
         let (x, y) = find_cells(term, needle).unwrap_or_else(|| panic!("{needle:?} drawn"));
         // Off it first, so the rest starts again.
@@ -1315,7 +1319,11 @@ async fn rest_until(
             return;
         }
     }
-    panic!("hover on {needle:?}: {:?}", hover_lines(app));
+    panic!(
+        "FLAKE: hover on {needle:?} after {tries} rests in {:?}: {:?}",
+        t.elapsed(),
+        hover_lines(app)
+    );
 }
 
 /// Clicks the hover's "Quick Fix…" row (drawn).
