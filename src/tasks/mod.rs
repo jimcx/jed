@@ -336,23 +336,31 @@ mod tests {
         let id = t.run(&template("echo ready; sleep 30"), dir.path());
         let run = t.get(id).unwrap();
         wait_until("ready", || run.screen().screen().contents().contains("ready")).await;
+        // A Ctrl+C between the shell's `echo` and its start of `sleep` can be lost (seen with
+        // dash, and under load): wait until `sleep` runs in the task's process group.
+        let group = run.pid().expect("running").to_string();
+        let sleeping = || {
+            std::process::Command::new("pgrep")
+                .args(["-g", &group, "-x", "sleep"])
+                .output()
+                .is_ok_and(|o| o.status.success())
+        };
+        wait_until("sleep running", sleeping).await;
         let ctrl_c = crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('c'),
             crossterm::event::KeyModifiers::CONTROL,
         );
         assert!(run.write(&keys::encode(&ctrl_c, false).unwrap()));
-        // FLAKE: 2026-10-23, in a full parallel run on a loaded machine the run never exited
-        // within 5 s after Ctrl+C (passed alone). Dumps the run's state for next time.
+        let screen = || run.screen().screen().contents();
         let deadline = Instant::now() + Duration::from_secs(5);
         while run.status().is_running() {
-            if Instant::now() >= deadline {
-                let screen = run.screen().screen().contents();
-                eprintln!(
-                    "FLAKE ctrl_c_interrupts_the_foreground_process: still {:?} 5 s after Ctrl+C; screen {screen:?}",
-                    run.status()
-                );
-                panic!("FLAKE: timed out waiting for exit after Ctrl+C");
-            }
+            assert!(
+                Instant::now() < deadline,
+                "still {:?} 5 s after Ctrl+C; screen {:?}; sleep still running {}",
+                run.status(),
+                screen(),
+                sleeping()
+            );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         let e = exit(run);
