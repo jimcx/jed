@@ -414,6 +414,8 @@ pub struct HitMap {
     pub status_problems: Option<Rect>,
     /// The status bar's `Spaces: N` / `Tab Size: N` (a click opens the indentation picker).
     pub status_indentation: Option<Rect>,
+    /// The status bar's language name (a click opens Change Language Mode).
+    pub status_language: Option<Rect>,
     /// The hover popup, when shown: on top of everything under it.
     pub hover: Option<Rect>,
     /// The completion list, when shown: on top of everything (the hover too).
@@ -649,6 +651,7 @@ pub enum Hit {
     StatusProblems,
     /// The status bar's indentation item.
     StatusIndentation,
+    StatusLanguage,
     /// The hover popup (over an editor).
     Hover,
     /// The completion list (over an editor).
@@ -772,6 +775,9 @@ impl HitMap {
             }
             if self.status_indentation.is_some_and(|c| c.contains(p)) {
                 return Hit::StatusIndentation;
+            }
+            if self.status_language.is_some_and(|c| c.contains(p)) {
+                return Hit::StatusLanguage;
             }
             return Hit::Status;
         }
@@ -986,6 +992,7 @@ mod tests {
             )),
             status_problems: Some(Rect::new(10, 29, 8, 1)),
             status_indentation: Some(Rect::new(70, 29, 9, 1)),
+            status_language: None,
             hover: Some(Rect::new(40, 5, 10, 4)),
             code_actions: None,
             completion: Some(CompletionHit {

@@ -99,6 +99,16 @@ pub enum TabState {
         left: Side,
         right: Side,
     },
+    /// A non-empty untitled buffer, by the id of its crash backup (`backup::Key::Untitled`):
+    /// its text comes back from that file (dropped at restore when it is gone or unreadable).
+    /// Only written when the terminal goes away; a clean quit asks about the buffer instead.
+    Untitled {
+        id: String,
+        selections: Vec<(usize, usize)>,
+        primary: usize,
+        top_line: usize,
+        left_col: usize,
+    },
     /// A commit tab, by its full id (dropped at restore when the commit is gone).
     Commit {
         commit: String,
@@ -259,6 +269,8 @@ pub struct Restore {
     pub buffers: Vec<(PathBuf, Buffer)>,
     /// Each hex tab's bytes (absolute path), once.
     pub hex: Vec<(PathBuf, HexDoc)>,
+    /// Each untitled tab's crash backup, once (by its `untitled` id).
+    pub untitled: Vec<crate::backup::Backup>,
 }
 
 /// Reads the session of `root` and opens its text tabs' files, except those in `open` (already
@@ -280,6 +292,8 @@ pub fn read(
     let mut hex_docs: Vec<(PathBuf, HexDoc)> = Vec::new();
     let mut hex_failed = HashSet::new();
     let mut buffers = Vec::new();
+    let mut untitled: Vec<crate::backup::Backup> = Vec::new();
+    let mut untitled_gone = HashSet::new();
     let mut loaded = HashSet::new();
     let mut failed = HashSet::new();
     for group in &mut session.groups {
@@ -314,6 +328,26 @@ pub fn read(
             TabState::Diff { path, left, right } => {
                 let path = resolve(root, path);
                 diff_still_there(root, &path, Side::pair(left.clone(), right.clone()))
+            }
+            TabState::Untitled { id, .. } => {
+                if untitled.iter().any(|b| b.untitled.as_ref() == Some(id)) {
+                    return true;
+                }
+                if untitled_gone.contains(id) {
+                    return false;
+                }
+                let at = crate::backup::key_file(state_dir, root, &crate::backup::Key::Untitled(id.clone()));
+                match crate::backup::read(state_dir, root, &at) {
+                    Ok(b) => {
+                        untitled.push(b);
+                        true
+                    }
+                    Err(e) => {
+                        tracing::info!(id, "session: untitled tab not restored: {e}");
+                        untitled_gone.insert(id.clone());
+                        false
+                    }
+                }
             }
             TabState::Commit { commit } => commit_still_there(root, commit),
             TabState::Hex { path, .. } => {
@@ -352,6 +386,7 @@ pub fn read(
         session,
         buffers,
         hex: hex_docs,
+        untitled,
     }))
 }
 
@@ -517,6 +552,14 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("a.txt"), "alpha\n\tbeta\n").unwrap();
         let mut s = session(&root);
+        // An untitled tab whose crash backup is gone goes too.
+        s.groups[0].tabs.push(TabState::Untitled {
+            id: "gone".into(),
+            selections: vec![(0, 0)],
+            primary: 0,
+            top_line: 0,
+            left_col: 0,
+        });
         // The history entry doesn't exist: that diff tab goes; b.txt is missing.
         save(&state, &s).unwrap();
         let r = read(&state, &root, &HashSet::new(), &HashSet::new(), DEFAULT_INDENT)
@@ -526,6 +569,7 @@ mod tests {
         assert_eq!(r.session.groups[0].active, 0);
         assert!(r.session.groups[1].tabs.is_empty());
         assert_eq!(r.buffers.len(), 1);
+        assert!(r.untitled.is_empty(), "no backup of the untitled tab");
         assert_eq!(r.buffers[0].0, root.join("a.txt"));
         assert_eq!(r.buffers[0].1.guess().spaces, Some(false), "restored files are guessed");
 

@@ -1696,4 +1696,38 @@ impl App {
         }
         true
     }
+
+    /// Handles the start's session read and crash backup scan in the order asked (the other is
+    /// held back until the first is handled; other events as they come). False after 5 s.
+    pub async fn test_start_reads_in_order(&mut self, session_first: bool) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let (mut first_done, mut held) = (false, None);
+        loop {
+            let msg = tokio::select! {
+                Some(msg) = self.rx.recv() => msg,
+                _ = tokio::time::sleep_until(deadline) => return false,
+            };
+            let (is_session, is_scan) = (
+                matches!(msg, AppEvent::SessionRead(_)),
+                matches!(msg, AppEvent::BackupsFound(_)),
+            );
+            let is_first = if session_first { is_session } else { is_scan };
+            if (is_session || is_scan) && !is_first {
+                if first_done {
+                    self.handle_app_event(msg);
+                    return true;
+                }
+                held = Some(msg);
+                continue;
+            }
+            self.handle_app_event(msg);
+            if is_first {
+                first_done = true;
+                if let Some(second) = held.take() {
+                    self.handle_app_event(second);
+                    return true;
+                }
+            }
+        }
+    }
 }

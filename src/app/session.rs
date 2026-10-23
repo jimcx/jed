@@ -57,12 +57,18 @@ impl App {
     /// Then offers the crash backups found meanwhile (their tabs now exist).
     pub(super) fn session_read(&mut self, result: Result<Option<Restore>, String>) {
         self.apply_session(result);
+        self.drop_open_untitled_offers();
         self.offer_backups();
     }
 
     fn apply_session(&mut self, result: Result<Option<Restore>, String>) {
         self.session.loading = false;
-        let Restore { session, buffers, hex } = match result {
+        let Restore {
+            session,
+            buffers,
+            hex,
+            untitled,
+        } = match result {
             Ok(Some(r)) => r,
             Ok(None) => return,
             Err(e) => {
@@ -100,6 +106,10 @@ impl App {
             hex.entry(h.path.clone()).or_insert_with(|| h.doc.clone());
         }
         let root = self.workspace.root.clone();
+        let mut untitled: HashMap<String, crate::backup::Backup> = untitled
+            .into_iter()
+            .filter_map(|b| Some((b.untitled.clone()?, b)))
+            .collect();
         let mut restored = Vec::new();
         for g in groups.into_iter().filter(|g| kept.contains(&g.id)) {
             let mut tabs = Vec::new();
@@ -119,6 +129,35 @@ impl App {
                                 Some(buffer) => self.register_buffer(buffer, None).0,
                                 None => continue,
                             },
+                        };
+                        let rope = &self.buffers.get(id).expect("just found").rope;
+                        let view = restored_view(rope, &selections, primary, top_line, left_col);
+                        tabs.push(Tab::Text(TextTab { buffer: id, view }));
+                    }
+                    TabState::Untitled {
+                        id: uid,
+                        selections,
+                        primary,
+                        top_line,
+                        left_col,
+                    } => {
+                        // The buffer a split's other tab already restored, else from the backup.
+                        let existing = self
+                            .buffers
+                            .iter()
+                            .find(|(_, b)| b.untitled_id() == Some(&uid))
+                            .map(|(i, _)| i);
+                        let id = match (existing, untitled.remove(&uid)) {
+                            (Some(id), _) => id,
+                            (None, Some(b)) => {
+                                let n = self.buffers.free_untitled_number();
+                                let buffer = Buffer::untitled_restored(n, uid.clone(), b.text, b.bom);
+                                let id = self.register_buffer(buffer, None).0;
+                                let rev = self.buffers.get(id).map_or(0, |b| b.revision());
+                                self.backups.mark_written(id, crate::backup::Key::Untitled(uid), rev);
+                                id
+                            }
+                            (None, None) => continue,
                         };
                         let rope = &self.buffers.get(id).expect("just found").rope;
                         let view = restored_view(rope, &selections, primary, top_line, left_col);
@@ -281,6 +320,21 @@ impl App {
                                 tabs.push(TabState::Commit {
                                     commit: c.commit.clone(),
                                 });
+                                continue;
+                            }
+                            // Untitled buffers with text come back from their crash backup, unless
+                            // the quit was clean: the user saved or discarded them.
+                            if let Some(uid) = buf.untitled_id() {
+                                if buf.is_dirty() && !self.should_quit {
+                                    let sels = &t.view.selections;
+                                    tabs.push(TabState::Untitled {
+                                        id: uid.to_string(),
+                                        selections: sels.iter().map(|s| (s.anchor.0, s.head.0)).collect(),
+                                        primary: sels.primary_index(),
+                                        top_line: t.view.top_line(),
+                                        left_col: t.view.left_col,
+                                    });
+                                }
                                 continue;
                             }
                             // Log tabs are never saved: a restart shows none.

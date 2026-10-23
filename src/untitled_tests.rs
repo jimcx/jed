@@ -2,8 +2,8 @@
 //! `Untitled-N` (the lowest free number) as an empty, writable Plain Text tab; its name shows in
 //! the tab bar and the status bar; typing works; "Change Language Mode" picks a language that
 //! survives re-detection (and overrides a file's); closing an emptied untitled buffer doesn't
-//! ask, a closing or quitting one with text does; path-keyed features (language servers, crash
-//! backups) skip it.
+//! ask, a closing or quitting one with text does; path-keyed features (language servers)
+//! skip it.
 //!
 //! Subtask untitled-c: Save on an untitled buffer and Save As ask for a path (errors stay in the
 //! prompt, an existing file asks to overwrite, Esc cancels a close / quit / Save All too); the
@@ -16,8 +16,16 @@
 //! markers, blame, Source Control, file history and the Explorer follow the new path; the old
 //! file and its history stay.
 //!
+//! Subtask untitled-e: crash backups cover untitled buffers (`untitled-<id>.bak`, written by the
+//! timer and the panic hook, removed when emptied, saved or closed); a killed jed's next start
+//! offers the text back and Restore opens an untitled buffer; the terminal going away keeps
+//! non-empty untitled tabs in the session, restored from their backup with no prompt; a clean
+//! quit leaves neither. Together with the other subtasks that is the task's done-when: Cmd+N,
+//! typing and Cmd+S write the file and the tab becomes it (language, server, titles in every
+//! split); Save As leaves the old file; Save All; quitting asks first; kill and restart.
+//!
 //! Subtask untitled-b: every path-keyed feature skips an untitled buffer: disk checks and
-//! file system events, file history, git (quick diff, stage, compare), blame and sessions.
+//! file system events, file history, git (quick diff, stage, compare) and blame.
 
 use std::fs;
 use std::path::PathBuf;
@@ -281,6 +289,7 @@ async fn untitled_save_asks_for_a_path_and_the_tab_becomes_the_file() {
     new_untitled(&mut app);
     app.test_execute(Command::SplitRight);
     app.type_text("fn main() {}\n");
+    assert!(!keyword_drawn(&mut app), "plain text while untitled");
     app.press(KeyCode::Char('s'), cmd());
     assert_eq!(save_as_text(&app).as_deref(), Some("Untitled-1"));
     assert!(draw(&mut app).iter().any(|r| r.contains("Save Untitled-1 as")));
@@ -324,6 +333,26 @@ async fn untitled_save_asks_for_a_path_and_the_tab_becomes_the_file() {
         rows[0]
     );
     assert!(rows.last().unwrap().contains("Rust"), "{:?}", rows.last());
+    // Its highlighting: once parsed, `fn` is drawn in the keyword colour.
+    assert!(
+        app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await,
+        "the new file is parsed"
+    );
+    assert!(keyword_drawn(&mut app), "`fn` drawn as a keyword");
+}
+
+/// Whether the drawn screen shows `fn` in the theme's keyword colour.
+fn keyword_drawn(app: &mut App) -> bool {
+    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    term.draw(|f| crate::ui::render(f, app)).unwrap();
+    let keyword = app.theme.get("keyword").fg.expect("a keyword colour");
+    let buf = term.backend().buffer();
+    (0..buf.area.height).any(|y| {
+        (0..buf.area.width - 1).any(|x| {
+            let (f, n) = (&buf[(x, y)], &buf[(x + 1, y)]);
+            f.symbol() == "f" && n.symbol() == "n" && f.fg == keyword && n.fg == keyword
+        })
+    })
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -572,36 +601,304 @@ async fn untitled_close_save_asks_for_a_path_then_closes_the_tab() {
     assert_eq!(fs::read_to_string(root.join("c.txt")).unwrap(), "closing");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn untitled_gets_no_crash_backup() {
-    let dir = tempfile::tempdir().unwrap();
-    let (mut app, root) = open_app(&dir, None);
-    let state = workspace::normalize(dir.path()).join("state");
+/// The backup files of `root`'s workspace, sorted.
+fn backup_files(state: &std::path::Path, root: &std::path::Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = fs::read_dir(crate::backup::dir(state, root))
+        .map(|d| d.map(|e| e.unwrap().path()).collect())
+        .unwrap_or_default();
+    found.sort();
+    found
+}
+
+fn untitled_file(state: &std::path::Path, root: &std::path::Path, app: &App) -> PathBuf {
+    let id = app.active_buffer().unwrap().untitled_id().unwrap().to_string();
+    crate::backup::key_file(state, root, &crate::backup::Key::Untitled(id))
+}
+
+/// A workspace in `<dir>/proj` with `a.txt`, and a state dir.
+fn dirs(dir: &tempfile::TempDir) -> (PathBuf, PathBuf) {
+    let base = workspace::normalize(dir.path());
+    let (root, state) = (base.join("proj"), base.join("state"));
+    fs::create_dir_all(&root).unwrap();
     fs::create_dir_all(&state).unwrap();
-    app.state_dir = Some(state.clone());
-    app.type_text("// a\n");
-    new_untitled(&mut app);
-    app.type_text("unsaved");
-    let backups = |state: &std::path::Path| -> Vec<PathBuf> {
-        let folder = crate::backup::dir(state, &root);
-        let mut found: Vec<PathBuf> = fs::read_dir(folder)
-            .map(|d| d.map(|e| e.unwrap().path()).collect())
-            .unwrap_or_default();
-        found.sort();
-        found
-    };
-    let a_c = crate::backup::file(&state, &root, &root.join("a.c"));
-    // The timer's backup.
+    fs::write(root.join("a.txt"), "a\n").unwrap();
+    (root, state)
+}
+
+/// The app on `root` with sessions and backups in `state`, the session read.
+async fn reopen(root: &std::path::Path, state: &std::path::Path) -> App {
+    let ws = Workspace::load(root.to_path_buf());
+    let trust = TrustStore::load(state.join("trust.toml"));
+    let mut app = App::new(ws, trust, None, true);
+    app.state_dir = Some(state.to_path_buf());
+    app.test_start();
+    app.test_plain_whitespace();
+    assert!(app.settle(|a| !a.session.loading()).await, "the session is read");
+    app
+}
+
+async fn back_up(app: &mut App) {
     app.test_backup_tick(crate::backup::INTERVAL);
     assert!(app.settle(|a| !a.backups.busy()).await, "the backup job ends");
-    assert_eq!(
-        backups(&state),
-        std::slice::from_ref(&a_c),
-        "only the file is backed up"
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_gets_a_crash_backup_until_empty_saved_or_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    let mut app = reopen(&root, &state).await;
+    new_untitled(&mut app);
+    // Empty: nothing to back up.
+    back_up(&mut app).await;
+    assert!(backup_files(&state, &root).is_empty());
+    app.type_text("unsaved");
+    let file = untitled_file(&state, &root, &app);
+    back_up(&mut app).await;
+    assert_eq!(backup_files(&state, &root), std::slice::from_ref(&file));
+    let b = crate::backup::read(&state, &root, &file).unwrap();
+    assert_eq!(b.text.to_string(), "unsaved");
+    assert_eq!(b.untitled.as_deref(), app.active_buffer().unwrap().untitled_id());
+
+    // Emptied again: its backup goes.
+    app.press(KeyCode::Char('a'), cmd());
+    app.press(KeyCode::Backspace, M::NONE);
+    assert!(app.settle(|_| !file.exists()).await, "an emptied buffer needs none");
+
+    // Save As: the backup (keyed by the id) goes, the file has the text.
+    app.type_text("saved text");
+    back_up(&mut app).await;
+    assert!(file.exists());
+    app.press(KeyCode::Char('s'), cmd());
+    app.type_text("s.txt");
+    app.press(KeyCode::Enter, M::NONE);
+    wait_saved(&mut app).await;
+    assert!(
+        app.settle(|_| !file.exists()).await,
+        "saved as a file: no untitled backup"
     );
-    // The terminal going away: backups brought up to date.
+    assert_eq!(fs::read_to_string(root.join("s.txt")).unwrap(), "saved text");
+    assert!(app.settle(|a| !a.backups.busy()).await);
+    assert!(backup_files(&state, &root).is_empty());
+
+    // Closing a dirty untitled buffer (Don't Save) removes its backup too.
+    new_untitled(&mut app);
+    app.type_text("temp");
+    let file = untitled_file(&state, &root, &app);
+    back_up(&mut app).await;
+    assert!(file.exists());
+    app.test_execute(Command::CloseTab);
+    app.press(KeyCode::Char('d'), M::NONE);
+    assert!(app.settle(|_| !file.exists()).await, "closed: backup removed");
+}
+
+/// Killing jed (no shutdown) after the timer's backup: the next start offers the text back and
+/// Restore opens it as an untitled buffer, dirty, numbered afresh; Discard removes it.
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_killed_jed_offers_its_text_back_as_an_untitled_buffer() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    let mut app = reopen(&root, &state).await;
+    new_untitled(&mut app);
+    new_untitled(&mut app);
+    app.type_text("second\nline");
+    let (id, file) = (
+        app.active_buffer().unwrap().untitled_id().unwrap().to_string(),
+        untitled_file(&state, &root, &app),
+    );
+    back_up(&mut app).await;
+    app.type_text(" lost");
+    drop(app);
+
+    let mut app = reopen(&root, &state).await;
+    assert!(app.settle(|a| matches!(a.prompt, Some(Prompt::RestoreBackups))).await);
+    assert_eq!(app.backups.offered.len(), 1);
+    let rows = draw(&mut app);
+    assert!(
+        rows.iter().any(|r| r.contains("untitled text \"second\"")),
+        "named in the prompt: {rows:?}"
+    );
+    assert!(names(&app).is_empty(), "no tab before restoring");
+    app.press(KeyCode::Char('r'), M::NONE);
+    assert!(
+        app.settle(|a| a.backups.restoring() == 0 && !a.group().tabs.is_empty())
+            .await
+    );
+    let buf = app.active_buffer().unwrap();
+    assert_eq!(buf.rope.to_string(), "second\nline");
+    assert!(buf.is_untitled() && buf.is_dirty() && !buf.has_file());
+    assert_eq!(buf.name(), "Untitled-1");
+    assert_eq!(buf.untitled_id(), Some(id.as_str()));
+    assert!(file.exists(), "its backup stays until it is saved or closed");
+    back_up(&mut app).await;
+    assert_eq!(
+        backup_files(&state, &root),
+        std::slice::from_ref(&file),
+        "not duplicated"
+    );
+
+    // Discard instead: removed, nothing opens.
+    drop(app);
+    let mut app = reopen(&root, &state).await;
+    assert!(app.settle(|a| matches!(a.prompt, Some(Prompt::RestoreBackups))).await);
+    app.press(KeyCode::Char('d'), M::NONE);
+    assert!(app.settle(|_| !file.exists()).await);
+    assert!(names(&app).is_empty());
+}
+
+/// The terminal going away (shutdown without Quit): the session keeps the non-empty untitled tab
+/// and its backup is written; the next start restores it from the backup, no prompt, with its
+/// cursor; an empty untitled tab is not kept.
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_tabs_with_text_come_back_with_the_session_without_a_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    let mut app = reopen(&root, &state).await;
+    new_untitled(&mut app);
+    app.type_text("notes\nmore");
+    app.test_execute(Command::SplitRight);
+    new_untitled(&mut app);
     app.shutdown().await;
-    assert_eq!(backups(&state), [a_c]);
+    let session = fs::read_to_string(crate::session::file(&state, &root)).unwrap();
+    // The split shows the one buffer in two groups; the empty Untitled-2 is left out.
+    assert_eq!(session.matches("\"untitled\"").count(), 2, "{session}");
+    assert_eq!(backup_files(&state, &root).len(), 1);
+
+    let mut app = reopen(&root, &state).await;
+    assert!(app.settle(|a| !a.backups.busy()).await);
+    assert!(app.prompt.is_none(), "restored by the session: not offered");
+    assert!(app.backups.offered.is_empty());
+    let texts: Vec<String> = app.buffers.iter().map(|(_, b)| b.rope.to_string()).collect();
+    assert_eq!(texts, ["notes\nmore"], "one untitled buffer, nothing else");
+    assert_eq!(
+        app.groups.ids().len(),
+        2,
+        "the split is back, both tabs on the one buffer"
+    );
+    let buf = app.active_buffer().unwrap();
+    assert!(buf.is_untitled() && buf.is_dirty());
+    assert_eq!(buf.name(), "Untitled-1");
+    assert_eq!(
+        app.active_mut().unwrap().1.selections.primary().head.0,
+        "notes\nmore".len(),
+        "the cursor is where it was"
+    );
+    // The restored buffer is backed up by the file already there: still one, and a Save As
+    // removes it.
+    back_up(&mut app).await;
+    let file = untitled_file(&state, &root, &app);
+    assert_eq!(backup_files(&state, &root), std::slice::from_ref(&file));
+    app.press(KeyCode::Char('s'), cmd());
+    app.type_text("n.txt");
+    app.press(KeyCode::Enter, M::NONE);
+    wait_saved(&mut app).await;
+    assert!(app.settle(|_| !file.exists()).await);
+}
+
+/// The start's session read and crash backup scan find the same untitled backup: whichever is
+/// handled first, the session restores the one untitled buffer from it (text and cursor), and the
+/// backup offer is dropped, not prompted.
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_session_and_its_backup_restore_in_either_start_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    let mut setup = reopen(&root, &state).await;
+    new_untitled(&mut setup);
+    setup.type_text("notes\nmore");
+    let id = setup.active_buffer().unwrap().untitled_id().unwrap().to_string();
+    let file = untitled_file(&state, &root, &setup);
+    setup.shutdown().await;
+    drop(setup);
+    assert!(file.exists(), "the terminal going away writes its backup");
+    assert!(
+        fs::read_to_string(crate::session::file(&state, &root))
+            .unwrap()
+            .contains("untitled"),
+        "the session keeps the tab"
+    );
+
+    for session_first in [true, false] {
+        let order = if session_first { "session first" } else { "scan first" };
+        let ws = Workspace::load(root.clone());
+        let trust = TrustStore::load(state.join("trust.toml"));
+        let mut app = App::new(ws, trust, None, true);
+        app.state_dir = Some(state.clone());
+        app.test_start();
+        assert!(
+            app.test_start_reads_in_order(session_first).await,
+            "{order}: the session read and backup scan are handled"
+        );
+        assert!(!app.session.loading(), "{order}: the session is read");
+        assert!(app.prompt.is_none(), "{order}: restored by the session, not offered");
+        assert!(app.backups.offered.is_empty(), "{order}: the offer is dropped");
+        let buffers: Vec<(String, Option<String>)> = app
+            .buffers
+            .iter()
+            .map(|(_, b)| (b.rope.to_string(), b.untitled_id().map(str::to_string)))
+            .collect();
+        assert_eq!(buffers, [("notes\nmore".to_string(), Some(id.clone()))], "{order}");
+        assert_eq!(names(&app), ["Untitled-1"], "{order}");
+        assert_eq!(
+            app.active_mut().unwrap().1.selections.primary().head.0,
+            "notes\nmore".len(),
+            "{order}: the cursor is where it was"
+        );
+        assert!(file.exists(), "{order}: its backup stays until it is saved or closed");
+        // A kill: the state stays as it was for the other order.
+        drop(app);
+    }
+}
+
+/// A clean quit asks about an untitled buffer first, so what it leaves is neither a session tab
+/// nor a backup.
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_discarded_at_a_clean_quit_leaves_no_session_tab_or_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    let mut app = reopen(&root, &state).await;
+    new_untitled(&mut app);
+    app.type_text("gone");
+    back_up(&mut app).await;
+    assert_eq!(backup_files(&state, &root).len(), 1);
+    app.test_execute(Command::Quit);
+    assert!(app.prompt.is_some(), "asks first");
+    app.press(KeyCode::Char('d'), M::NONE);
+    assert!(app.quitting());
+    app.shutdown().await;
+    let session = fs::read_to_string(crate::session::file(&state, &root)).unwrap_or_default();
+    assert!(!session.contains("untitled"), "{session}");
+    assert!(backup_files(&state, &root).is_empty());
+    let mut app = reopen(&root, &state).await;
+    assert!(app.settle(|a| !a.backups.busy()).await);
+    assert!(app.prompt.is_none() && app.buffers.iter().count() == 0);
+}
+
+/// A click on the status bar's language opens Change Language Mode; Cmd+S while the Save As is
+/// writing doesn't open a second prompt.
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_status_bar_language_click_and_save_while_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, root) = open_app(&dir, None);
+    new_untitled(&mut app);
+    app.type_text("x");
+    draw(&mut app);
+    let r = app.hits.status_language.expect("the language is clickable");
+    app.mouse(
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        r.x,
+        r.y,
+    );
+    let p = app.palette.as_ref().expect("the language picker opens");
+    assert!(p.rows.iter().any(|row| row.label == "Rust"), "languages listed");
+    app.press(KeyCode::Esc, M::NONE);
+
+    app.press(KeyCode::Char('s'), cmd());
+    app.type_text("w.txt");
+    app.press(KeyCode::Enter, M::NONE);
+    assert!(app.active_buffer().unwrap().save_in_flight(), "writing");
+    app.press(KeyCode::Char('s'), cmd());
+    assert!(app.prompt.is_none(), "no second prompt while it writes");
+    wait_saved(&mut app).await;
+    assert_eq!(fs::read_to_string(root.join("w.txt")).unwrap(), "x");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -821,10 +1118,10 @@ async fn untitled_buffer_is_not_blamed() {
     );
 }
 
-/// An untitled tab is not saved in the session (until untitled-e): the session restores with
-/// the file's tab only, no tab with an empty path.
+/// A clean quit leaves an untitled tab out of the session: the session restores with the file's
+/// tab only, no tab with an empty path.
 #[tokio::test(flavor = "multi_thread")]
-async fn untitled_tabs_are_left_out_of_the_session() {
+async fn untitled_clean_quit_leaves_it_out_of_the_session() {
     let (_d, mut app, root, state) = git_app().await;
     assert!(app.settle(|a| !a.session.loading()).await, "restore done");
     app.test_execute(Command::Quit);

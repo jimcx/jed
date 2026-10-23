@@ -365,6 +365,7 @@ impl App {
             Hit::StatusProblems if self.mode.allows(Command::ToggleProblems) => self.problem_counts_clicked(),
             Hit::StatusProblems => {}
             Hit::StatusIndentation => self.indentation_clicked(),
+            Hit::StatusLanguage => self.change_language_mode(),
             Hit::Status | Hit::Hover | Hit::Completion | Hit::CodeActions | Hit::QuickDiff | Hit::Nothing => {}
         }
     }

@@ -100,7 +100,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) {
         Prompt::RestoreBackups => {
             let offered = &app.backups.offered;
             let q = match offered.as_slice() {
-                [one] => format!(" Unsaved changes to {} were backed up", rel(&one.path)),
+                [one] => format!(
+                    " Unsaved changes to {} were backed up",
+                    one.label().unwrap_or_else(|| rel(&one.path))
+                ),
                 many => format!(" Unsaved changes to {} files were backed up", many.len()),
             };
             lines.push(Line::raw(q));
@@ -109,7 +112,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) {
             for b in offered.iter().take(MAX_TRUST_LINES) {
                 let ago = crate::history::ago(b.time, now);
                 lines.push(Line::from(vec![
-                    Span::styled(format!("   {}", rel(&b.path)), key),
+                    Span::styled(format!("   {}", b.label().unwrap_or_else(|| rel(&b.path))), key),
                     Span::styled(format!("  {ago}"), style),
                 ]));
             }

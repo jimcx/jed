@@ -4,7 +4,10 @@
 //!
 //! One folder per workspace, `<state dir>/backup/<32 hex of the root's SHA-256>/`, one file per
 //! buffer, `<32 hex of the file path's SHA-256>.bak`, rewritten in place (atomically: a temp
-//! file beside it, fsynced, renamed). A file is three parts:
+//! file beside it, fsynced, renamed). An untitled buffer has no path: its file is
+//! `untitled-<id>.bak` (`Key::Untitled`; the id is the buffer's own, `Buffer::untitled_id`, kept
+//! when it is restored) and its header has `"untitled":"<id>"` and an empty path. A file is
+//! three parts:
 //!
 //! ```text
 //! jed-backup 1\n
@@ -37,11 +40,30 @@ const MAGIC: &str = "jed-backup";
 const VERSION: u32 = 1;
 const EXT: &str = "bak";
 
+/// What a backup is of: a file, or an untitled buffer (by its id).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Key {
+    File(PathBuf),
+    Untitled(String),
+}
+
+impl Key {
+    /// A file name (`Untitled-2`'s backups are named by id; the app shows `Untitled-N` itself).
+    pub fn describe(&self) -> String {
+        match self {
+            Key::File(p) => p.display().to_string(),
+            Key::Untitled(id) => format!("untitled text {id}"),
+        }
+    }
+}
+
 /// A dirty buffer's text to back up (rope clones are cheap).
 #[derive(Debug, Clone)]
 pub struct Snapshot {
-    /// Absolute.
+    /// Absolute; empty for an untitled buffer.
     pub path: PathBuf,
+    /// `Some(id)`: an untitled buffer's (`path` is empty).
+    pub untitled: Option<String>,
     pub rope: Rope,
     pub bom: bool,
     /// The file as the buffer's edits know it (`Buffer::disk`; `None`: no file).
@@ -51,7 +73,9 @@ pub struct Snapshot {
 /// A backup read back.
 #[derive(Debug, Clone)]
 pub struct Backup {
+    /// Empty for an untitled buffer's.
     pub path: PathBuf,
+    pub untitled: Option<String>,
     pub text: Rope,
     pub bom: bool,
     /// The file the text's edits were based on.
@@ -63,7 +87,10 @@ pub struct Backup {
 #[derive(Debug, Serialize, Deserialize)]
 struct Header {
     root: PathBuf,
+    #[serde(default)]
     path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    untitled: Option<String>,
     bom: bool,
     disk: Option<String>,
     time: u64,
@@ -78,6 +105,44 @@ fn name_hash(path: &Path) -> String {
     hex(&Sha256::digest(path.as_os_str().as_encoded_bytes())[..16])
 }
 
+impl Snapshot {
+    pub fn key(&self) -> Key {
+        key_of(&self.path, &self.untitled)
+    }
+}
+
+impl Backup {
+    /// For the offer prompt: an untitled buffer's is "untitled text" and its first line.
+    pub fn label(&self) -> Option<String> {
+        self.untitled.as_ref()?;
+        let start = self.text.chunks().next().unwrap_or("");
+        let line: String = start
+            .trim_start()
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(30)
+            .collect();
+        Some(if line.is_empty() {
+            "untitled text".to_string()
+        } else {
+            format!("untitled text \"{line}\"")
+        })
+    }
+
+    pub fn key(&self) -> Key {
+        key_of(&self.path, &self.untitled)
+    }
+}
+
+fn key_of(path: &Path, untitled: &Option<String>) -> Key {
+    match untitled {
+        Some(id) => Key::Untitled(id.clone()),
+        None => Key::File(path.to_path_buf()),
+    }
+}
+
 /// The folder holding the workspace at `root`'s backups.
 pub fn dir(state_dir: &Path, root: &Path) -> PathBuf {
     state_dir.join(DIR).join(name_hash(root))
@@ -88,15 +153,24 @@ pub fn file(state_dir: &Path, root: &Path, path: &Path) -> PathBuf {
     dir(state_dir, root).join(format!("{}.{EXT}", name_hash(path)))
 }
 
+/// The backup file of `key`.
+pub fn key_file(state_dir: &Path, root: &Path, key: &Key) -> PathBuf {
+    match key {
+        Key::File(path) => file(state_dir, root, path),
+        Key::Untitled(id) => dir(state_dir, root).join(format!("untitled-{id}.{EXT}")),
+    }
+}
+
 /// Writes (replaces) `snap`'s backup, atomically; returns the file written.
 /// Blocking: call from spawn_blocking (the panic hook calls it directly).
 pub fn write(state_dir: &Path, root: &Path, snap: &Snapshot, time: u64) -> std::io::Result<PathBuf> {
-    let dest = file(state_dir, root, &snap.path);
+    let dest = key_file(state_dir, root, &snap.key());
     let folder = dest.parent().expect("backups are in a folder");
     std::fs::create_dir_all(folder)?;
     let header = Header {
         root: root.to_path_buf(),
         path: snap.path.clone(),
+        untitled: snap.untitled.clone(),
         bom: snap.bom,
         disk: snap.disk.map(|s| s.encode()),
         time,
@@ -124,26 +198,26 @@ pub fn write(state_dir: &Path, root: &Path, snap: &Snapshot, time: u64) -> std::
     result.map(|()| dest)
 }
 
-/// Removes `path`'s backup (none is fine).
+/// Removes `key`'s backup (none is fine).
 /// Blocking: call from spawn_blocking.
-pub fn remove(state_dir: &Path, root: &Path, path: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(file(state_dir, root, path)) {
+pub fn remove(state_dir: &Path, root: &Path, key: &Key) -> std::io::Result<()> {
+    match std::fs::remove_file(key_file(state_dir, root, key)) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
         _ => Ok(()),
     }
 }
 
 /// Removes every backup of the workspace (corrupt ones and leftover temp files too) except
-/// those of the files in `keep`; the folder too when it's left empty. Returns how many went.
+/// those of the keys in `keep`; the folder too when it's left empty. Returns how many went.
 /// Blocking: call from spawn_blocking.
-pub fn remove_all(state_dir: &Path, root: &Path, keep: &HashSet<PathBuf>) -> std::io::Result<usize> {
+pub fn remove_all(state_dir: &Path, root: &Path, keep: &HashSet<Key>) -> std::io::Result<usize> {
     let folder = dir(state_dir, root);
     let entries = match std::fs::read_dir(&folder) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(e) => return Err(e),
     };
-    let kept: HashSet<PathBuf> = keep.iter().map(|p| file(state_dir, root, p)).collect();
+    let kept: HashSet<PathBuf> = keep.iter().map(|k| key_file(state_dir, root, k)).collect();
     let mut removed = 0;
     for entry in entries {
         let path = entry?.path();
@@ -177,7 +251,7 @@ fn parse(bytes: &[u8], state_dir: &Path, root: &Path, at: &Path) -> Result<Backu
     if header.root != root {
         return Err(format!("a backup of {}", header.root.display()));
     }
-    if file(state_dir, root, &header.path) != at {
+    if key_file(state_dir, root, &key_of(&header.path, &header.untitled)) != at {
         return Err(format!("named for another file than {}", header.path.display()));
     }
     if text.len() as u64 != header.len {
@@ -190,6 +264,7 @@ fn parse(bytes: &[u8], state_dir: &Path, root: &Path, at: &Path) -> Result<Backu
     };
     Ok(Backup {
         path: header.path,
+        untitled: header.untitled,
         text: Rope::from_str(text),
         bom: header.bom,
         disk,
@@ -219,7 +294,11 @@ pub fn list(state_dir: &Path, root: &Path) -> Vec<Backup> {
                 continue;
             }
         };
-        let on_disk = file::read(&backup.path).ok().flatten();
+        let on_disk = if backup.untitled.is_some() {
+            None
+        } else {
+            file::read(&backup.path).ok().flatten()
+        };
         if on_disk.is_some_and(|bytes| bytes == file::encode(&backup.text, backup.bom)) {
             tracing::info!("backup of {} dropped: the file holds its text", backup.path.display());
             let _ = std::fs::remove_file(&at);
@@ -227,7 +306,7 @@ pub fn list(state_dir: &Path, root: &Path) -> Vec<Backup> {
         }
         found.push(backup);
     }
-    found.sort_by(|a, b| a.path.cmp(&b.path));
+    found.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.untitled.cmp(&b.untitled)));
     found
 }
 
@@ -238,6 +317,7 @@ mod tests {
     fn snap(path: &Path, text: &str) -> Snapshot {
         Snapshot {
             path: path.to_path_buf(),
+            untitled: None,
             rope: Rope::from_str(text),
             bom: true,
             disk: Some(Stamp::of(b"base")),
@@ -271,8 +351,8 @@ mod tests {
         std::fs::copy(&at, &copied).unwrap();
         assert!(read(&state, &other, &copied).unwrap_err().contains("a backup of"));
         assert!(list(&state, &other).is_empty());
-        remove(&state, &root, &path).unwrap();
-        remove(&state, &root, &path).unwrap();
+        remove(&state, &root, &Key::File(path.clone())).unwrap();
+        remove(&state, &root, &Key::File(path.clone())).unwrap();
         assert!(list(&state, &root).is_empty());
     }
 
@@ -303,11 +383,35 @@ mod tests {
         assert_eq!(listed.len(), 1, "only the good one");
         assert_eq!(listed[0].path, root.join("good"));
         // A clean quit removes them all, except what it's told to keep.
-        let keep = HashSet::from([root.join("good")]);
+        let keep = HashSet::from([Key::File(root.join("good"))]);
         assert_eq!(remove_all(&state, &root, &keep).unwrap(), 5);
         assert_eq!(list(&state, &root).len(), 1);
         assert_eq!(remove_all(&state, &root, &HashSet::new()).unwrap(), 1);
         assert!(!super::dir(&state, &root).exists());
+    }
+
+    #[test]
+    fn untitled_backups_are_keyed_by_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, root) = (dir.path().join("state"), dir.path().join("proj"));
+        let mut s = snap(Path::new(""), "scratch");
+        s.untitled = Some("ab12".into());
+        let at = write(&state, &root, &s, 5).unwrap();
+        assert_eq!(at.file_name().unwrap(), "untitled-ab12.bak");
+        let b = read(&state, &root, &at).unwrap();
+        assert_eq!(b.key(), Key::Untitled("ab12".into()));
+        assert_eq!(b.text.to_string(), "scratch");
+        assert_eq!(list(&state, &root).len(), 1, "no file on disk to compare with");
+        // Under another id's name it is corrupt.
+        let wrong = key_file(&state, &root, &Key::Untitled("cd34".into()));
+        std::fs::copy(&at, &wrong).unwrap();
+        assert!(read(&state, &root, &wrong).is_err());
+        std::fs::remove_file(&wrong).unwrap();
+        // Kept or removed by key.
+        let keep = HashSet::from([Key::Untitled("ab12".into())]);
+        assert_eq!(remove_all(&state, &root, &keep).unwrap(), 0);
+        remove(&state, &root, &Key::Untitled("ab12".into())).unwrap();
+        assert!(list(&state, &root).is_empty());
     }
 
     #[test]

@@ -17,6 +17,8 @@ pub struct StatusHit {
     pub problems: Option<Rect>,
     /// A text tab's `Spaces: N` / `Tab Size: N` (a click opens the indentation picker).
     pub indentation: Option<Rect>,
+    /// The language name (a click opens Change Language Mode).
+    pub language: Option<Rect>,
 }
 
 /// Draws the status bar; returns where its clickable items are.
@@ -82,6 +84,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> StatusHit {
     };
     let mut counts = None;
     let mut indentation = None;
+    let mut language = None;
     if let Some(h) = app.active_hex() {
         let flag = if h.deleted { " [deleted]" } else { " [read-only]" };
         let name = format!(" {}{flag}  ", h.name());
@@ -169,6 +172,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> StatusHit {
             0
         };
         indentation = (indent_w > 0).then_some(Rect::new(indent_x, area.y, indent_w, 1));
+        if shown[3] {
+            let before: usize = items
+                .iter()
+                .zip(shown)
+                .take(3)
+                .filter(|(_, on)| *on)
+                .map(|(i, _)| 3 + i.width())
+                .sum();
+            let x0 = (right_x as usize + position.width() + before + 3).min(end as usize) as u16;
+            let w = (items[3].width() as u16).min(end - x0);
+            language = (w > 0).then_some(Rect::new(x0, area.y, w, 1));
+        }
         // Editor mode: the file's name whole or not at all, never a stub of it after the hint.
         let room = match right_x.saturating_sub(x) as usize {
             room if app.editor_hint.is_some() && room < name.trim_end().width() => 0,
@@ -198,6 +213,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> StatusHit {
     StatusHit {
         problems: counts,
         indentation,
+        language,
     }
 }
 

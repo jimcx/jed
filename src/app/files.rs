@@ -441,6 +441,10 @@ impl App {
     /// Opens the Save As prompt for `id`, prefilled with its path (an untitled buffer: its name).
     pub(super) fn open_save_as(&mut self, id: BufferId) {
         let Some(buf) = self.buffers.get(id) else { return };
+        // Its Save As is writing already (the prompt closed when the write began).
+        if buf.save_in_flight() {
+            return;
+        }
         if !self.mode.allows(Command::SaveAs) {
             self.cancel_save_as();
             self.notify(Level::Info, "Save As isn't available in single file mode".into());

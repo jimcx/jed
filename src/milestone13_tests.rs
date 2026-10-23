@@ -694,6 +694,7 @@ async fn milestone_13_corrupt_and_other_workspaces_backups_are_not_offered() {
     fs::write(root.join("a.txt"), "a\n").unwrap();
     let snap = |path: PathBuf, text: &str| backup::Snapshot {
         path,
+        untitled: None,
         rope: ropey::Rope::from_str(text),
         bom: false,
         disk: None,
@@ -777,6 +778,7 @@ async fn milestone_13_the_backup_offer_waits_for_the_trust_dialog() {
     fs::write(root.join(".workspace"), "[tasks.build]\ncommand = \"make\"\n").unwrap();
     let snap = backup::Snapshot {
         path: root.join("a.txt"),
+        untitled: None,
         rope: ropey::Rope::from_str("mine\n"),
         bom: false,
         disk: None,
@@ -792,6 +794,7 @@ async fn milestone_13_the_backup_offer_waits_for_the_trust_dialog() {
 fn snap(path: PathBuf, text: &str) -> backup::Snapshot {
     backup::Snapshot {
         path,
+        untitled: None,
         rope: ropey::Rope::from_str(text),
         bom: false,
         disk: None,
@@ -848,17 +851,28 @@ async fn milestone_13_a_panic_backs_up_what_the_next_start_offers() {
     open(&mut app, &root, "b.txt");
     app.type_text("Q");
     open(&mut app, &root, "c.txt");
+    // An untitled buffer with text is backed up too (by its id).
+    app.test_execute(Command::NewUntitledFile);
+    app.type_text("scratch");
+    let uid = app.active_buffer().unwrap().untitled_id().unwrap().to_string();
     // No periodic backup has run: the hook writes them itself, clean buffers left out.
     assert!(!backup::dir(&state, &root).exists());
     let mut written = app.test_panic_backup();
     written.sort();
-    let mut expected = vec![backup_file(&state, &root, "a.txt"), backup_file(&state, &root, "b.txt")];
+    let mut expected = vec![
+        backup_file(&state, &root, "a.txt"),
+        backup_file(&state, &root, "b.txt"),
+        backup::key_file(&state, &root, &backup::Key::Untitled(uid.clone())),
+    ];
     expected.sort();
     assert_eq!(written, expected);
     drop(app);
 
     let mut app = reopen(&root, &state, None).await;
-    assert_eq!(offered(&mut app).await, [root.join("a.txt"), root.join("b.txt")]);
+    assert_eq!(
+        offered(&mut app).await,
+        [PathBuf::new(), root.join("a.txt"), root.join("b.txt")]
+    );
     app.press(KeyCode::Char('r'), KeyModifiers::NONE);
     let restored = app
         .settle(|a| a.backups.restoring() == 0 && buf_of(a, &root, "b.txt").is_some_and(|b| b.is_dirty()))
@@ -866,6 +880,12 @@ async fn milestone_13_a_panic_backs_up_what_the_next_start_offers() {
     assert!(restored);
     assert_eq!(text_of(&app, &root, "a.txt"), "Pa\n");
     assert_eq!(text_of(&app, &root, "b.txt"), "Qb\n");
+    assert!(
+        app.buffers
+            .iter()
+            .any(|(_, b)| b.untitled_id() == Some(&uid) && b.rope == "scratch"),
+        "the untitled text came back as an untitled buffer"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

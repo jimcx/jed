@@ -3,13 +3,12 @@
 //! quit; the ones a killed or crashed jed left are offered at the next start.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::time::Instant;
 
 use super::{App, AppEvent, Level, Prompt};
-use crate::backup::{self, Backup, Snapshot};
-use crate::buffer::BufferId;
+use crate::backup::{self, Backup, Key, Snapshot};
 use crate::buffer::change::ChangeSet;
+use crate::buffer::{Buffer, BufferId};
 
 /// The backups' schedule, writes in flight and the start's offer (`app.backups`).
 #[derive(Debug, Default)]
@@ -18,9 +17,9 @@ pub struct BackupState {
     /// backup, not pushed back by more edits.
     deadline: Option<Instant>,
     /// What each backed-up buffer's backup file holds: its path and revision then.
-    written: HashMap<BufferId, (PathBuf, u64)>,
+    written: HashMap<BufferId, (Key, u64)>,
     /// Backup files to remove (buffers saved, reverted to clean, closed; discarded offers).
-    remove: HashSet<PathBuf>,
+    remove: HashSet<Key>,
     /// The running job (removals, then writes): one at a time, so a removal never overtakes the
     /// write it undoes. `shutdown` awaits it.
     task: Option<tokio::task::JoinHandle<()>>,
@@ -35,7 +34,7 @@ pub struct BackupState {
     offer_pending: bool,
     /// Put off with "Later": left on disk by a clean quit, offered again next start (unless this
     /// session backs up the same file, replacing them).
-    kept: HashSet<PathBuf>,
+    kept: HashSet<Key>,
     /// Restores in flight (a file opening, a diff off-thread), and their outcome so far.
     restoring: usize,
     restored: Vec<String>,
@@ -55,6 +54,11 @@ impl BackupState {
     /// A job or the start's scan is running.
     pub fn busy(&self) -> bool {
         self.task.is_some() || self.scanning
+    }
+
+    /// A buffer restored from the very backup file: it holds this text at `revision`.
+    pub(super) fn mark_written(&mut self, id: BufferId, key: Key, revision: u64) {
+        self.written.insert(id, (key, revision));
     }
 
     pub fn restoring(&self) -> usize {
@@ -96,16 +100,26 @@ impl App {
         let mut found = found;
         // Single file mode offers only its own file's backup; the workspace's others stay.
         if self.mode.is_single() {
-            found.retain(|b| self.buffers.iter().any(|(_, buf)| buf.path == b.path));
+            found.retain(|b| b.untitled.is_none() && self.buffers.iter().any(|(_, buf)| buf.path == b.path));
         }
         tracing::info!(count = found.len(), "backups found");
         self.backups.offered = found;
+        self.drop_open_untitled_offers();
         if !self.session.loading() {
             self.offer_backups();
         }
         if std::mem::take(&mut self.backups.overdue) {
             self.start_backup_job(true);
         }
+    }
+
+    /// Untitled backups whose buffer is open (the session restored it from the very file) aren't
+    /// offered again.
+    pub(super) fn drop_open_untitled_offers(&mut self) {
+        let open: HashSet<&str> = self.buffers.iter().filter_map(|(_, b)| b.untitled_id()).collect();
+        self.backups
+            .offered
+            .retain(|b| b.untitled.as_deref().is_none_or(|id| !open.contains(id)));
     }
 
     /// The restore prompt, when there are backups to offer and no other prompt is open (else
@@ -138,7 +152,7 @@ impl App {
     pub(super) fn discard_backups(&mut self) {
         let n = self.backups.offered.len();
         for b in std::mem::take(&mut self.backups.offered) {
-            self.backups.remove.insert(b.path);
+            self.backups.remove.insert(b.key());
         }
         self.sync_backups();
         self.notify(Level::Info, format!("Discarded {}", files(n, "backup")));
@@ -148,7 +162,7 @@ impl App {
     pub(super) fn keep_backups(&mut self) {
         let n = self.backups.offered.len();
         for b in std::mem::take(&mut self.backups.offered) {
-            self.backups.kept.insert(b.path);
+            self.backups.kept.insert(b.key());
         }
         self.notify(
             Level::Info,
@@ -162,6 +176,9 @@ impl App {
     /// Diffs `b` against its buffer off-thread (→ `AppEvent::BackupRestore`); a file not open
     /// is opened first (`OpenRequest::backup`, restored once `opened`).
     pub(super) fn restore_backup(&mut self, b: Backup) {
+        if let Some(uid) = b.untitled.clone() {
+            return self.restore_untitled_backup(b, uid);
+        }
         let Some(id) = self.buffers.find_path(&b.path) else {
             let path = b.path.clone();
             self.open_file(path.clone(), false, None);
@@ -170,7 +187,7 @@ impl App {
                 // `open_file` always queues a file that isn't loaded.
                 None => {
                     tracing::warn!("backup of {} not restored: its file isn't opening", path.display());
-                    self.backups.kept.insert(path);
+                    self.backups.kept.insert(Key::File(path));
                     self.backup_restore_ended();
                 }
             }
@@ -179,7 +196,7 @@ impl App {
         let buf = self.buffers.get(id).expect("just found");
         if let Some(reason) = buf.read_only.clone() {
             let text = format!("Backup of {} not restored: read-only, {reason}", buf.name());
-            self.backups.kept.insert(b.path);
+            self.backups.kept.insert(b.key());
             self.notify(Level::Error, text);
             self.backup_restore_ended();
             return;
@@ -198,10 +215,29 @@ impl App {
         });
     }
 
+    /// An untitled buffer's backup: a new "Untitled-N" tab with its text, left dirty, keeping the
+    /// backup's id (the file is the buffer's backup until it is clean). Already open: nothing.
+    fn restore_untitled_backup(&mut self, b: Backup, uid: String) {
+        if self.buffers.iter().any(|(_, buf)| buf.untitled_id() == Some(&uid)) {
+            return self.backup_restore_ended();
+        }
+        let n = self.buffers.free_untitled_number();
+        let buffer = Buffer::untitled_restored(n, uid, b.text, b.bom);
+        let name = buffer.name();
+        let (id, view) = self.register_buffer(buffer, None);
+        self.group_mut().open(id, view);
+        let rev = self.buffers.get(id).map_or(0, |b| b.revision());
+        self.backups
+            .written
+            .insert(id, (Key::Untitled(b.untitled.expect("untitled")), rev));
+        self.backups.restored.push(name);
+        self.backup_restore_ended();
+    }
+
     /// A backup's file couldn't be opened: the backup stays for a later start.
     pub(super) fn backup_not_opened(&mut self, b: Backup, error: String) {
         let text = format!("Backup of {} not restored: {error}", b.path.display());
-        self.backups.kept.insert(b.path);
+        self.backups.kept.insert(b.key());
         self.notify(Level::Error, text);
         self.backup_restore_ended();
     }
@@ -232,7 +268,9 @@ impl App {
         }
         let buf = self.buffers.get_mut(buffer).expect("checked above");
         // The backup file holds this text now: removed once the buffer is clean.
-        self.backups.written.insert(buffer, (backup.path, buf.revision()));
+        self.backups
+            .written
+            .insert(buffer, (Key::File(backup.path), buf.revision()));
         if buf.has_edits() && buf.disk() != backup.disk {
             buf.set_disk_base(backup.disk);
             self.backups.changed_on_disk.push(name.clone());
@@ -271,10 +309,12 @@ impl App {
         }
         let buffers = &self.buffers;
         let remove = &mut self.backups.remove;
-        self.backups.written.retain(|&id, (path, _)| {
-            let keep = buffers.get(id).is_some_and(|b| b.is_dirty() && b.path == *path);
+        self.backups.written.retain(|&id, (key, _)| {
+            let keep = buffers
+                .get(id)
+                .is_some_and(|b| b.is_dirty() && buffer_key(b).as_ref() == Some(key));
             if !keep {
-                remove.insert(path.clone());
+                remove.insert(key.clone());
             }
             keep
         });
@@ -292,15 +332,14 @@ impl App {
     /// Dirty and different from its backup (if it has one), and not a file whose backup is
     /// still being offered.
     fn backup_due(&self, id: BufferId, b: &crate::buffer::Buffer) -> bool {
-        // An untitled buffer has no path to key a backup by (until untitled-e).
-        b.has_file()
-            && b.is_dirty()
+        let Some(key) = buffer_key(b) else { return false };
+        b.is_dirty()
             && self
                 .backups
                 .written
                 .get(&id)
-                .is_none_or(|(path, rev)| *rev != b.revision() || *path != b.path)
-            && !self.backups.offered.iter().any(|o| o.path == b.path)
+                .is_none_or(|(k, rev)| *rev != b.revision() || *k != key)
+            && !self.backups.offered.iter().any(|o| o.key() == key)
     }
 
     /// The backup deadline (`Timer::Backup`, `test_backup_tick`): writes every buffer due,
@@ -331,12 +370,12 @@ impl App {
         }
         for (id, s) in &writes {
             let rev = self.buffers.get(*id).map_or(0, |b| b.revision());
-            self.backups.written.insert(*id, (s.path.clone(), rev));
-            self.backups.kept.remove(&s.path);
+            self.backups.written.insert(*id, (s.key(), rev));
+            self.backups.kept.remove(&s.key());
             // Replaced by the write.
-            self.backups.remove.remove(&s.path);
+            self.backups.remove.remove(&s.key());
         }
-        let removes: Vec<PathBuf> = self.backups.remove.drain().collect();
+        let removes: Vec<Key> = self.backups.remove.drain().collect();
         if writes.is_empty() && removes.is_empty() {
             return;
         }
@@ -347,19 +386,19 @@ impl App {
                 failed: Vec::new(),
                 errors: Vec::new(),
             };
-            for path in removes {
-                if let Err(e) = backup::remove(&dir, &root, &path) {
+            for key in removes {
+                if let Err(e) = backup::remove(&dir, &root, &key) {
                     done.errors
-                        .push(format!("removing the backup of {}: {e}", path.display()));
+                        .push(format!("removing the backup of {}: {e}", key.describe()));
                 }
             }
             let time = crate::history::now_ms();
             for (id, s) in writes {
                 match backup::write(&dir, &root, &s, time) {
-                    Ok(at) => tracing::debug!("backed up {} to {}", s.path.display(), at.display()),
+                    Ok(at) => tracing::debug!("backed up {} to {}", s.key().describe(), at.display()),
                     Err(e) => {
                         done.failed.push(id);
-                        done.errors.push(format!("{}: {e}", s.path.display()));
+                        done.errors.push(format!("{}: {e}", s.key().describe()));
                     }
                 }
             }
@@ -406,7 +445,7 @@ impl App {
         let root = self.workspace.root.clone();
         let result = if self.should_quit {
             let mut keep = self.backups.kept.clone();
-            keep.extend(self.backups.offered.iter().map(|b| b.path.clone()));
+            keep.extend(self.backups.offered.iter().map(|b| b.key()));
             tokio::task::spawn_blocking(move || {
                 backup::remove_all(&dir, &root, &keep)
                     .map(|n| tracing::debug!("{n} backups removed"))
@@ -414,21 +453,21 @@ impl App {
             })
             .await
         } else {
-            let offered: HashSet<&PathBuf> = self.backups.offered.iter().map(|b| &b.path).collect();
+            let offered: HashSet<Key> = self.backups.offered.iter().map(|b| b.key()).collect();
             let snaps: Vec<Snapshot> = self
                 .buffers
                 .iter()
-                .filter(|(_, b)| b.has_file() && b.is_dirty() && !offered.contains(&b.path))
+                .filter(|(_, b)| b.is_dirty() && buffer_key(b).is_some_and(|k| !offered.contains(&k)))
                 .map(|(_, b)| snapshot(b))
                 .collect();
             tokio::task::spawn_blocking(move || {
                 let time = crate::history::now_ms();
                 for s in &snaps {
-                    if scanning && backup::file(&dir, &root, &s.path).exists() {
-                        tracing::info!("backup of {} not replaced: not offered yet", s.path.display());
+                    if scanning && backup::key_file(&dir, &root, &s.key()).exists() {
+                        tracing::info!("backup of {} not replaced: not offered yet", s.key().describe());
                         continue;
                     }
-                    backup::write(&dir, &root, s, time).map_err(|e| format!("{}: {e}", s.path.display()))?;
+                    backup::write(&dir, &root, s, time).map_err(|e| format!("{}: {e}", s.key().describe()))?;
                 }
                 Ok(())
             })
@@ -447,16 +486,26 @@ impl App {
         let snapshots = self
             .buffers
             .iter()
-            .filter(|(_, b)| b.has_file() && b.is_dirty())
+            .filter(|(_, b)| b.is_dirty() && buffer_key(b).is_some())
             .map(|(_, b)| snapshot(b))
             .collect();
         crate::panic::set_dirty(dir, self.workspace.root.clone(), snapshots);
     }
 }
 
-fn snapshot(b: &crate::buffer::Buffer) -> Snapshot {
+/// What `b`'s backup is keyed by: its path, or an untitled buffer's id (`None`: a log, a commit).
+fn buffer_key(b: &Buffer) -> Option<Key> {
+    if b.has_file() {
+        Some(Key::File(b.path.clone()))
+    } else {
+        b.untitled_id().map(|id| Key::Untitled(id.to_string()))
+    }
+}
+
+fn snapshot(b: &Buffer) -> Snapshot {
     Snapshot {
         path: b.path.clone(),
+        untitled: b.untitled_id().map(str::to_string),
         rope: b.rope.clone(),
         bom: b.bom,
         disk: b.disk(),

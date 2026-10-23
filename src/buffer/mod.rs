@@ -95,6 +95,8 @@ pub struct Buffer {
     pub tab_display: Option<usize>,
     /// `Some(n)`: an untitled buffer ("Untitled-n"): no path yet, writable, never on disk.
     untitled: Option<u32>,
+    /// An untitled buffer's stable id, the key of its crash backup (kept when it is restored).
+    untitled_id: Option<String>,
     /// The language picked for this buffer ("Change Language Mode"), over detection until the
     /// buffer closes. Session-only.
     pub language_override: Option<Language>,
@@ -130,6 +132,20 @@ pub enum SaveError {
     /// A Save As target that exists (and may not be overwritten): nothing written.
     Exists,
     Failed(String),
+}
+
+/// A fresh id for an untitled buffer: time, process and a counter, as 20 hex digits.
+fn new_untitled_id() -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNT: AtomicU32 = AtomicU32::new(0);
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    format!(
+        "{ms:012x}{:04x}{:04x}",
+        std::process::id() & 0xffff,
+        COUNT.fetch_add(1, Ordering::Relaxed) & 0xffff
+    )
 }
 
 impl Buffer {
@@ -186,6 +202,7 @@ impl Buffer {
             indentation: None,
             tab_display: None,
             untitled: None,
+            untitled_id: None,
             language_override: None,
         }
     }
@@ -197,7 +214,22 @@ impl Buffer {
         let mut buf = Self::without_file("");
         buf.read_only = None;
         buf.untitled = Some(n);
+        buf.untitled_id = Some(new_untitled_id());
         buf
+    }
+
+    /// An untitled buffer "Untitled-`n`" restored from its crash backup (`id`, `text`, `bom`).
+    pub fn untitled_restored(n: u32, id: String, text: Rope, bom: bool) -> Self {
+        let mut buf = Self::untitled(n);
+        buf.untitled_id = Some(id);
+        buf.rope = text;
+        buf.bom = bom;
+        buf
+    }
+
+    /// An untitled buffer's id (its crash backup's name).
+    pub fn untitled_id(&self) -> Option<&str> {
+        self.untitled_id.as_deref()
     }
 
     /// An empty log buffer for `tool` (`app/tools.rs` fills it with `append`).
@@ -481,6 +513,7 @@ impl Buffer {
     pub fn finish_save_as(&mut self, state: u64, stamp: Stamp, path: PathBuf) {
         self.path = path;
         self.untitled = None;
+        self.untitled_id = None;
         self.finish_save(state, Some(stamp));
     }
 
