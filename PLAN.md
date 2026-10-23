@@ -321,6 +321,8 @@ The VS Code behaviour, especially Cmd+D and Cmd+Shift+L, is a must-have.
   - Click in a group's tab bar or text focuses it; mouse wheel scrolls the group under the mouse without focusing
 - Resize splits by dragging dividers
   - Minimum group size 12 cols × 4 rows
+- Drag tabs with the mouse: along the bar to reorder, onto another group's bar or editor to move it there (an empty group closes), onto an editor within a quarter of its width or height of an edge to split that group on that side and move it into the new split
+  - The drop target is shaded while dragging (a theme key); a press that never leaves its tab is a click; Esc or a release outside any target cancels
 - Same buffer open in several views
   - Edits (incl. undo/redo) map every other view's selections and viewport through the changes
   - Cursors at an insertion point in other views stay before the inserted text
@@ -726,7 +728,14 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - ✅ **Terminal config snippets** — [details](docs/plan-done.md)
 - **Live reload of settings**: `settings.toml`, `.workspace` overrides and `keybindings.toml` reloaded when they change (the files themselves load at startup since M8, 8d)
 - ✅ **Move tabs** — [details](docs/plan-done.md)
-- **Drag-and-drop tabs** (after Move tabs): drag a tab along its bar to reorder, onto another group's tab bar to move it there, or onto an editor's edge / centre to split / move into it (the drop zone shaded, a theme key); a drag that never leaves its tab is a click; Esc or a release outside cancels
+- **Drag-and-drop tabs** (`drag_tabs`; after Move tabs): drag a tab along its bar to reorder, onto another group's tab bar to move it there, or onto an editor's edge / centre to split / move into it (the drop zone shaded, a theme key); a drag that never leaves its tab is a click; Esc or a release outside cancels
+  - Snapping: a drop within a quarter of an editor's width or height of one of its edges splits that group on that side and the tab lands in the new split; the rest of the editor moves the tab into that group, activated
+  - Needs: Move tabs ✅ (moving a tab keeps its view; a group left empty closes)
+  - Done when: dragging a tab along its bar reorders it, its drop marker following the pointer; dropping it on another group's tab bar moves it there at the marker (the source group closes when that was its last tab) with its selections and scroll kept; dropping it on an editor's centre moves it into that group, activated; dropping it within the snap band of an editor's left / right / top / bottom edge splits that group on that side and the tab lands in the new split, the band shaded while dragging; a drag that never leaves its tab is just a click; Esc or a release outside any target leaves every group as it was
+  - Subtasks (one agent and one commit each):
+    - `drag_tabs-a`: the drag state and tab-bar drags: a press on a tab starts a drag (the tab still activates, so a drag that never leaves it is a click), a drop marker in the bar, reordering on release, Esc clears the drag
+    - `drag_tabs-b`: cross-group drops: onto another group's tab bar (moved to the drop position there; an empty source group closes) and onto an editor's centre (moved into that group, activated); a shell tab moves rather than copies
+    - `drag_tabs-c`: edge drops and snapping: splitting the target group on the side the pointer is near, the shaded drop zone (a theme key), the done-when tests, hand checks and gaps, marks the task ✅
 - **Search ignored files toggle** ([Workspace search](#workspace-search)): a toggle button beside the "files to exclude" input (VS Code's "Use Exclude Settings and Ignore Files"), on by default; off, the search also walks files `.gitignore` (and `.git/info/exclude`, `.ignore`) leaves out. `.git/`, `.jed/` and binary files are always skipped, `.workspace` excludes still apply, dirty buffers filtered the same way. Search view state like the other toggles (not in sessions); toggling re-searches; lit while the details are hidden, as `…` is. Tests: a file under a gitignored `target/` found only with the toggle off
 - **Keyboard resize of splits** (owed from M3): "View: Increase / Decrease Editor Width" and "… Height" (VS Code's, unbound; in the palette) move the active group's nearest divider in that direction by a step (a few cells, clamped like a mouse drag); the ratios are the session's as after a drag
 - **Side panel resizing, finished**: the side panel already resizes by dragging its border (its last column: `Hit::SideBorder` → `Drag::SideBorder`, width in `ui.side_width`, kept in sessions), but it's undiscoverable and rough. Make it VS Code's sash:
