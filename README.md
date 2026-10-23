@@ -88,6 +88,7 @@ For users:
 
 - [docs/terminals/](docs/terminals/README.md) — terminal setup (start here)
 - [docs/tasks.md](docs/tasks.md) — configuring tasks
+- [docs/git-editor.md](docs/git-editor.md) — jed as git's `core.editor`
 - [docs/syntax-plugins.md](docs/syntax-plugins.md) — adding languages with tree-sitter grammars
 - [docs/clangd.md](docs/clangd.md), [docs/ty.md](docs/ty.md) — language servers
 

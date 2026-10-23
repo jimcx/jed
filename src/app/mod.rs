@@ -316,6 +316,8 @@ pub struct InitialFile {
 pub struct App {
     /// Workspace or single file mode (`main`'s `-s`); `mode.allows(cmd)` gates commands and views.
     pub mode: Mode,
+    /// Editor mode on a git message file (`main`): the status bar text in place of " Single file ".
+    pub editor_hint: Option<&'static str>,
     pub workspace: Workspace,
     pub trust: Trust,
     trust_store: TrustStore,
@@ -489,6 +491,7 @@ impl App {
         let settings = workspace.settings();
         let mut app = Self {
             mode,
+            editor_hint: None,
             trust: trust_store.evaluate(&root, &workspace.config),
             trust_store,
             cursor_shape: crate::terminal::CursorShape::of(&settings),

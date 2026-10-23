@@ -23,6 +23,7 @@ mod find;
 mod fixes_tests;
 mod format;
 mod git;
+mod git_editor;
 #[cfg(test)]
 mod git_editor_tests;
 mod git_history;
@@ -120,7 +121,7 @@ use workspace::Workspace;
 use workspace::trust::TrustStore;
 
 const USAGE: &str = "usage: jed [--log-level <filter>] [<folder> | <file>[:<line>[:<col>]]]\n       \
-                     jed [--log-level <filter>] -s | --single <file>[:<line>[:<col>]]   (single file mode)\n       \
+                     jed [--log-level <filter>] -s | --single | --wait <file>[:<line>[:<col>]]   (single file mode)\n       \
                      jed --new-language <id>   (start a syntax plugin in ~/.config/jed/languages/<id>)\n       \
                      jed --check-language <id> [--sample <file>]   (build, load and check a syntax plugin)";
 
@@ -137,6 +138,9 @@ struct Args {
     log_level: Option<String>,
     /// `-s` / `--single`: single file mode (`app::Mode::SingleFile`).
     single: bool,
+    /// `--wait`: editor mode on any file (git's `core.editor = "jed --wait"`); IPC will make it
+    /// wait for a running jed.
+    wait: bool,
     /// `--new-language` / `--check-language`: run instead of the editor.
     authoring: Option<Authoring>,
 }
@@ -149,6 +153,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
     let mut target = None;
     let mut log_level = None;
     let mut single = false;
+    let mut wait = false;
     let mut authoring = None;
     let mut sample = None;
     let mut args = args.into_iter();
@@ -158,6 +163,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "-V" | "--version" => return Err(format!("jed {}", env!("JED_VERSION"))),
             "--log-level" => log_level = Some(args.next().ok_or("--log-level needs a value")?),
             "-s" | "--single" => single = true,
+            "--wait" => wait = true,
             "--new-language" => authoring = Some(Authoring::New(args.next().ok_or("--new-language needs an id")?)),
             "--check-language" => {
                 let id = args.next().ok_or("--check-language needs an id")?;
@@ -175,18 +181,19 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
     if sample.is_some() {
         return Err(format!("--sample only goes with --check-language\n{USAGE}"));
     }
-    if authoring.is_some() && (target.is_some() || single) {
+    if authoring.is_some() && (target.is_some() || single || wait) {
         return Err(format!(
             "--new-language and --check-language take no file or folder\n{USAGE}"
         ));
     }
-    if single && target.is_none() {
+    if (single || wait) && target.is_none() {
         return Err(format!("single file mode needs a file\n{USAGE}"));
     }
     Ok(Args {
         target,
         log_level,
         single,
+        wait,
         authoring,
     })
 }
@@ -271,6 +278,45 @@ fn run_authoring(command: Authoring) -> ExitCode {
     }
 }
 
+/// How jed starts: from the arguments, before anything is loaded.
+struct Start {
+    mode: app::Mode,
+    root: PathBuf,
+    file: Option<FileArg>,
+    /// Editor mode on a git message file: the status bar text (`App::editor_hint`).
+    hint: Option<&'static str>,
+}
+
+/// The mode, root and file for `args`. Editor mode (`--wait`, or a git message file without
+/// any flag) is single file mode with the repository's work tree as the root.
+///
+/// Blocking (`git2`): call before the runtime and raw mode.
+fn start_of(args: &Args) -> Result<Start, String> {
+    let message = args
+        .target
+        .as_deref()
+        .and_then(|t| git_editor::kind(&workspace::normalize(&split_position(t).0)));
+    let single = args.single || args.wait || message.is_some();
+    let mode = if single {
+        app::Mode::SingleFile
+    } else {
+        app::Mode::Workspace
+    };
+    let (root, file) = match args.target.as_deref() {
+        Some(target) if single => {
+            let (root, file) = resolve_single(target)?;
+            (git_editor::root(&file.0).unwrap_or(root), Some(file))
+        }
+        target => resolve_target(target)?,
+    };
+    Ok(Start {
+        mode,
+        root,
+        file,
+        hint: message.map(git_editor::Kind::hint),
+    })
+}
+
 fn main() -> ExitCode {
     let args = match parse_args() {
         Ok(a) => a,
@@ -290,23 +336,15 @@ fn main() -> ExitCode {
             None
         }
     };
-    let mode = if args.single {
-        app::Mode::SingleFile
-    } else {
-        app::Mode::Workspace
-    };
-    let resolved = match args.target.as_deref() {
-        Some(target) if args.single => resolve_single(target).map(|(root, file)| (root, Some(file))),
-        target => resolve_target(target),
-    };
-    let (root, file) = match resolved {
-        Ok(r) => r,
+    let Start { mode, root, file, hint } = match start_of(&args) {
+        Ok(start) => start,
         Err(e) => {
             eprintln!("jed: {e}");
             return ExitCode::FAILURE;
         }
     };
-    tracing::info!(version = env!("JED_VERSION"), root = %root.display(), single = args.single, "starting");
+    let single = mode.is_single();
+    tracing::info!(version = env!("JED_VERSION"), root = %root.display(), single, "starting");
 
     let user_settings = config::settings::load(&paths::config_dir().join(config::settings::FILE_NAME));
     // Syntax plugins: only the user's own directory, never the workspace's.
@@ -369,6 +407,7 @@ fn main() -> ExitCode {
         .and_then(|mut term| {
             runtime.block_on(async {
                 let mut app = app::App::new_in(mode, workspace, trust_store, initial, kitty);
+                app.editor_hint = hint;
                 if let Some((path, doc)) = initial_hex {
                     app.open_initial_hex(path, doc);
                 }
@@ -425,6 +464,15 @@ mod tests {
         }
         assert!(!parse(&["a.rs"]).unwrap().single);
         assert!(parse(&["-s"]).is_err());
+    }
+
+    #[test]
+    fn wait_flag() {
+        let args = parse(&["--wait", "msg.txt"]).unwrap();
+        assert!(args.wait && !args.single);
+        assert_eq!(args.target.as_deref(), Some("msg.txt"));
+        assert!(!parse(&["a.rs"]).unwrap().wait);
+        assert!(parse(&["--wait"]).is_err());
     }
 
     #[test]

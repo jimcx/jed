@@ -36,7 +36,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> StatusHit {
     // changes, as VS Code.
     if app.mode.is_single() {
         let room = width.saturating_sub((x - area.x) as usize);
-        x = out.set_stringn(x, area.y, " Single file ", room, style).0;
+        x = out
+            .set_stringn(x, area.y, app.editor_hint.unwrap_or(" Single file "), room, style)
+            .0;
     } else if let Some(git) = &app.git.status {
         let room = width.saturating_sub((x - area.x) as usize);
         x = out
@@ -132,11 +134,28 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> StatusHit {
             format!("Tab Size: {}", settings.tab_width)
         };
         let encoding = if buf.bom { "UTF-8 with BOM" } else { "UTF-8" };
-        let right = format!(
-            "{position}   {indent}   {encoding}   {}   {} ",
-            buf.eol.label(),
-            buf.syntax.language().name()
-        );
+        // Indentation, encoding, line ending, language: all shown, but in editor mode the hint
+        // wins: the position stays, then each of the language, the indentation, the line ending
+        // and the encoding while it fits beside the hint.
+        let items = [indent.as_str(), encoding, buf.eol.label(), buf.syntax.language().name()];
+        let mut shown = [true; 4];
+        if app.editor_hint.is_some() {
+            let budget = width.saturating_sub((x - area.x) as usize);
+            let mut used = position.width() + 1;
+            shown = [false; 4];
+            for i in [3, 0, 2, 1] {
+                if used + 3 + items[i].width() <= budget {
+                    used += 3 + items[i].width();
+                    shown[i] = true;
+                }
+            }
+        }
+        let mut right = position.clone();
+        for (item, _) in items.iter().zip(shown).filter(|(_, on)| *on) {
+            right.push_str("   ");
+            right.push_str(item);
+        }
+        right.push(' ');
 
         let right_w = right.width().min(width);
         right_x = area.x + (width - right_w) as u16;
@@ -144,9 +163,17 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> StatusHit {
         // The indent label's cells, as far as they're drawn (a narrow bar cuts `right`'s end).
         let end = area.x + area.width;
         let indent_x = (right_x as usize + position.width() + 3).min(end as usize) as u16;
-        let indent_w = (indent.width() as u16).min(end - indent_x);
+        let indent_w = if shown[0] {
+            (indent.width() as u16).min(end - indent_x)
+        } else {
+            0
+        };
         indentation = (indent_w > 0).then_some(Rect::new(indent_x, area.y, indent_w, 1));
-        let room = right_x.saturating_sub(x) as usize;
+        // Editor mode: the file's name whole or not at all, never a stub of it after the hint.
+        let room = match right_x.saturating_sub(x) as usize {
+            room if app.editor_hint.is_some() && room < name.trim_end().width() => 0,
+            room => room,
+        };
         let start = x;
         x = out.set_stringn(x, area.y, &left, room, style).0;
         if !problems.is_empty() {
