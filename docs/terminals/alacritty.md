@@ -64,6 +64,8 @@ bindings = [
   { key = "N", mods = "Command|Alt|Shift", action = "ReceiveChar" },
   { key = "N", mods = "Command", action = "ReceiveChar" },
   { key = "S", mods = "Command", action = "ReceiveChar" },
+  { key = "S", mods = "Command|Shift", action = "ReceiveChar" },
+  { key = "S", mods = "Command|Alt", action = "ReceiveChar" },
   { key = "Q", mods = "Command", action = "ReceiveChar" },
   { key = "W", mods = "Command", action = "ReceiveChar" },
   { key = "B", mods = "Command", action = "ReceiveChar" },

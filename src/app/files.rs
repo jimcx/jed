@@ -6,10 +6,12 @@ use std::time::{Duration, Instant};
 
 use ropey::Rope;
 
+use super::prompt::{Input, InputKind};
 use super::{AfterSave, App, AppEvent, Focus, Level, Prompt, SLOW_TASK};
 use crate::buffer::file::{LoadError, Stamp};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
-use crate::buffer::{Buffer, BufferId, SaveError};
+use crate::buffer::{Buffer, BufferId, SaveError, SaveJob};
+use crate::command::Command;
 use crate::layout::{GroupId, SplitDir};
 use crate::problems::Place;
 use crate::selection::{Selection, Selections};
@@ -369,16 +371,19 @@ impl App {
         }
     }
 
+    /// The buffer Save / Save As act on: the active file buffer (a diff tab's file) or the
+    /// active tab's untitled one.
+    pub(super) fn active_savable_buffer(&self) -> Option<BufferId> {
+        self.active_file_buffer().or_else(|| {
+            let id = self.group().active_tab()?.buffer;
+            self.buffers.get(id).filter(|b| b.is_untitled()).map(|_| id)
+        })
+    }
+
     pub(super) fn save(&mut self, id: BufferId) {
         let Some(buf) = self.buffers.get_mut(id) else { return };
         if buf.is_untitled() {
-            // Save As (a later change) gives it a path.
-            self.after_save = None;
-            let name = buf.name();
-            self.notify(
-                Level::Info,
-                format!("{name} has no file yet: Save As comes in a later change"),
-            );
+            self.open_save_as(id);
             return;
         }
         if let Some(reason) = buf.read_only.clone() {
@@ -391,6 +396,11 @@ impl App {
             return;
         }
         let job = buf.begin_save();
+        self.spawn_save(id, job, None);
+    }
+
+    /// Runs `job` off the UI thread and reports `AppEvent::SaveDone` (`to`: a Save As's path).
+    fn spawn_save(&mut self, id: BufferId, job: SaveJob, to: Option<PathBuf>) {
         let state = job.state;
         let history = self.history_job(&job.path);
         let tx = self.tx.clone();
@@ -409,6 +419,7 @@ impl App {
                 result,
                 elapsed: t.elapsed(),
                 history: history.is_some(),
+                to,
             });
             if let Some((history, bytes)) = history {
                 let result = tokio::task::spawn_blocking(move || history.record(&bytes))
@@ -419,13 +430,130 @@ impl App {
         });
     }
 
-    pub(super) fn save_done(&mut self, id: BufferId, state: u64, result: Result<Stamp, SaveError>, elapsed: Duration) {
+    /// The path as the Save As prompt shows it: relative to the root when inside it.
+    fn save_as_label(&self, path: &std::path::Path) -> String {
+        path.strip_prefix(&self.workspace.root)
+            .unwrap_or(path)
+            .display()
+            .to_string()
+    }
+
+    /// Opens the Save As prompt for `id`, prefilled with its path (an untitled buffer: its name).
+    pub(super) fn open_save_as(&mut self, id: BufferId) {
+        let Some(buf) = self.buffers.get(id) else { return };
+        if !self.mode.allows(Command::SaveAs) {
+            self.cancel_save_as();
+            self.notify(Level::Info, "Save As isn't available in single file mode".into());
+            return;
+        }
+        let text = if buf.has_file() {
+            self.save_as_label(&buf.path)
+        } else {
+            buf.name()
+        };
+        self.prompt = Some(Prompt::Input(save_as_input(id, text)));
+    }
+
+    /// Opens the Save As prompt of the next queued untitled buffer, if any.
+    pub(super) fn next_save_as(&mut self) {
+        while let Some(id) = self.save_as_queue.pop_front() {
+            if self.buffers.get(id).is_some_and(Buffer::is_untitled) {
+                self.open_save_as(id);
+                return;
+            }
+        }
+    }
+
+    /// The Save As flow was abandoned: a pending close / quit and the rest of Save All stop.
+    pub(super) fn cancel_save_as(&mut self) {
+        self.after_save = None;
+        self.save_as_queue.clear();
+    }
+
+    /// Whether a Save As prompt (or its overwrite question) is open.
+    fn save_as_pending(&self) -> bool {
+        match &self.prompt {
+            Some(Prompt::ConfirmOverwrite { .. }) => true,
+            Some(Prompt::Input(i)) => matches!(i.kind, InputKind::SaveAs { .. }),
+            _ => false,
+        }
+    }
+
+    /// The absolute path a Save As prompt's `text` names for `buffer`, or why it can't be.
+    /// Nothing is read from disk here: the write job reports existing files and folders.
+    pub(super) fn save_as_target(&self, buffer: BufferId, text: &str) -> Result<PathBuf, &'static str> {
+        if text.is_empty() {
+            return Err("Enter a file name");
+        }
+        if text.ends_with('/') {
+            return Err("That is a folder: add a file name");
+        }
+        // `.` and `..` resolved lexically (no disk access), so `sub/../a.c` is `a.c`.
+        let mut path = PathBuf::new();
+        for part in self.workspace.root.join(text).components() {
+            match part {
+                std::path::Component::ParentDir => {
+                    path.pop();
+                }
+                std::path::Component::CurDir => {}
+                part => path.push(part),
+            }
+        }
+        if self.buffers.find_path(&path).is_some_and(|other| other != buffer) {
+            return Err("That file is open in another tab");
+        }
+        Ok(path)
+    }
+
+    /// Saves `buffer` to `path` and makes it the buffer's file (a Save As). To its own path it's
+    /// a plain save.
+    pub(super) fn save_as_to(&mut self, buffer: BufferId, path: PathBuf, overwrite: bool) {
+        let Some(buf) = self.buffers.get_mut(buffer) else {
+            return;
+        };
+        if buf.has_file() && buf.path == path {
+            self.save(buffer);
+            return;
+        }
+        if let Some(reason) = buf.read_only.clone() {
+            self.cancel_save_as();
+            self.notify(Level::Error, format!("Can't save, read-only: {reason}"));
+            return;
+        }
+        if buf.save_in_flight() {
+            self.notify(Level::Info, "Save already in progress".into());
+            return;
+        }
+        let job = buf.begin_save_as(path.clone(), overwrite);
+        self.spawn_save(buffer, job, Some(path));
+    }
+
+    pub(super) fn save_done(
+        &mut self,
+        id: BufferId,
+        state: u64,
+        result: Result<Stamp, SaveError>,
+        elapsed: Duration,
+        to: Option<PathBuf>,
+    ) {
         if elapsed > SLOW_TASK {
             tracing::warn!(elapsed_ms = elapsed.as_millis() as u64, "slow save");
         }
         let Some(buf) = self.buffers.get_mut(id) else { return };
-        buf.finish_save(state, result.as_ref().ok().copied());
-        let path = buf.path.display().to_string();
+        match (&result, &to) {
+            (Ok(stamp), Some(to)) => {
+                buf.finish_save_as(state, *stamp, to.clone());
+                // The path decides the language (unless one was picked).
+                let lang = self.detect_language(self.buffers.get(id).expect("just used"));
+                if let Some(buf) = self.buffers.get_mut(id) {
+                    buf.syntax.set_language(lang);
+                }
+                self.servers_dirty = true;
+            }
+            _ => buf.finish_save(state, result.as_ref().ok().copied()),
+        }
+        let Some(buf) = self.buffers.get(id) else { return };
+        let path = to.clone().unwrap_or_else(|| buf.path.clone()).display().to_string();
         let name = buf.name();
         // A stage waiting for this save goes ahead (or is dropped if it failed).
         self.stage_save_done(id, result.is_ok());
@@ -435,6 +563,9 @@ impl App {
                 self.disk_save_done(id);
                 self.lsp.saved(&mut self.buffers, id);
                 self.notify(Level::Info, format!("Saved {path}"));
+                if to.is_some() {
+                    self.next_save_as();
+                }
             }
             Err(SaveError::Conflict) => {
                 self.after_save = None;
@@ -445,10 +576,25 @@ impl App {
                 self.notify(Level::Error, text);
                 return;
             }
+            Err(SaveError::Exists) => {
+                self.disk_save_done(id);
+                let Some(to) = to else { return };
+                self.prompt = Some(Prompt::ConfirmOverwrite { buffer: id, path: to });
+                return;
+            }
             Err(SaveError::Failed(e)) => {
-                self.after_save = None;
                 self.disk_save_done(id);
                 self.notify(Level::Error, format!("Save failed: {path}: {e}"));
+                match to {
+                    // Back to the prompt to pick another path.
+                    Some(to) => {
+                        let text = self.save_as_label(&to);
+                        let mut input = save_as_input(id, text);
+                        input.error = Some("Can't save there (see the message below)");
+                        self.prompt = Some(Prompt::Input(input));
+                    }
+                    None => self.after_save = None,
+                }
                 return;
             }
         }
@@ -459,7 +605,9 @@ impl App {
                     self.close_tab(group, i);
                 }
             }
-            Some(AfterSave::Quit) if !self.buffers.any_saving() => {
+            Some(AfterSave::Quit)
+                if !self.buffers.any_saving() && self.save_as_queue.is_empty() && !self.save_as_pending() =>
+            {
                 self.after_save = None;
                 self.request_quit();
             }
@@ -483,14 +631,33 @@ impl App {
 
     pub(super) fn save_all_then_quit(&mut self, ids: Vec<BufferId>) {
         self.after_save = Some(AfterSave::Quit);
+        self.save_batch(ids, true);
+    }
+
+    /// Saves `ids`: files at once, untitled buffers one Save As prompt after another. With
+    /// `quit`, a refused save (read-only) stops the lot.
+    pub(super) fn save_batch(&mut self, ids: Vec<BufferId>, quit: bool) {
+        self.save_as_queue.clear();
         for id in ids {
+            if self.buffers.get(id).is_some_and(Buffer::is_untitled) {
+                self.save_as_queue.push_back(id);
+                continue;
+            }
             self.save(id);
-            if self.after_save.is_none() {
-                // A save was refused (read-only): stop.
+            if quit && self.after_save.is_none() {
+                self.save_as_queue.clear();
                 return;
             }
         }
+        self.next_save_as();
     }
+}
+
+/// The Save As prompt's input: `text` selected, so typing replaces it.
+fn save_as_input(buffer: BufferId, text: String) -> Input {
+    let mut input = Input::new(InputKind::SaveAs { buffer }, text);
+    input.field.select_all();
+    input
 }
 
 pub(super) fn apply_goto(view: &mut View, rope: &Rope, goto: &Goto, tab_width: usize) {

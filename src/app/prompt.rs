@@ -41,6 +41,11 @@ pub enum Prompt {
     },
     /// Crash backups found at start (`app.backups.offered`): Restore / Discard / Later (Esc).
     RestoreBackups,
+    /// A Save As onto an existing file: Overwrite / Cancel.
+    ConfirmOverwrite {
+        buffer: BufferId,
+        path: PathBuf,
+    },
     /// The Search view's Replace All over more than one file: Replace / Cancel.
     ConfirmReplace {
         occurrences: usize,
@@ -60,6 +65,11 @@ pub enum InputKind {
     },
     Rename {
         from: PathBuf,
+    },
+    /// Save As (and Save on an untitled buffer): the path for `buffer`, relative to the root or
+    /// absolute.
+    SaveAs {
+        buffer: BufferId,
     },
     /// Rename symbol (F2 in the editor): the new name for `old`, at `at` in `buffer` (shown in
     /// `group`) as it was at `revision`.
@@ -208,6 +218,17 @@ impl App {
                     })
                 }
             },
+            Prompt::ConfirmOverwrite { buffer, path } => match ch {
+                _ if enter || ch == Some('o') => {
+                    self.close_prompt();
+                    self.save_as_to(buffer, path, true);
+                }
+                _ if esc || ch == Some('c') => {
+                    self.close_prompt();
+                    self.cancel_save_as();
+                }
+                _ => self.prompt = Some(Prompt::ConfirmOverwrite { buffer, path }),
+            },
             Prompt::ConfirmDelete { path, is_dir } => match ch {
                 _ if enter || ch == Some('t') => {
                     self.close_prompt();
@@ -219,6 +240,9 @@ impl App {
             Prompt::Input(mut input) => {
                 if esc {
                     self.close_prompt();
+                    if matches!(input.kind, InputKind::SaveAs { .. }) {
+                        self.cancel_save_as();
+                    }
                 } else if enter {
                     self.submit_input(input);
                 } else {
@@ -248,6 +272,19 @@ impl App {
             }
             return;
         }
+        if let InputKind::SaveAs { buffer } = input.kind {
+            match self.save_as_target(buffer, input.field.text.trim()) {
+                Ok(path) => {
+                    self.close_prompt();
+                    self.save_as_to(buffer, path, false);
+                }
+                Err(e) => {
+                    input.error = Some(e);
+                    self.prompt = Some(Prompt::Input(input));
+                }
+            }
+            return;
+        }
         let name = input.field.text.trim().to_string();
         let nested = !matches!(input.kind, InputKind::Rename { .. });
         if let Err(e) = explorer::validate_name(&name, nested) {
@@ -259,7 +296,7 @@ impl App {
         let op = match input.kind {
             InputKind::NewFile { dir } => FileOp::NewFile(dir.join(&name)),
             InputKind::NewFolder { dir } => FileOp::NewFolder(dir.join(&name)),
-            InputKind::RenameSymbol { .. } => return,
+            InputKind::RenameSymbol { .. } | InputKind::SaveAs { .. } => return,
             InputKind::Rename { from } => {
                 let to = from.with_file_name(&name);
                 if to == from {

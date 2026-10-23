@@ -177,6 +177,8 @@ enum AppEvent {
         elapsed: Duration,
         /// A file history snapshot of it is being recorded: `HistoryDone` follows.
         history: bool,
+        /// A Save As: the path the buffer takes when it succeeds.
+        to: Option<PathBuf>,
     },
     Opened {
         path: PathBuf,
@@ -378,6 +380,8 @@ pub struct App {
     pub recent: recent::RecentState,
     pub message: Option<Message>,
     after_save: Option<AfterSave>,
+    /// Untitled buffers still waiting for their Save As prompt (Save All, Save in the quit prompt).
+    save_as_queue: std::collections::VecDeque<BufferId>,
     /// A trust decision is needed but another prompt is open.
     trust_pending: bool,
     should_quit: bool,
@@ -551,6 +555,7 @@ impl App {
             recent: Default::default(),
             message: None,
             after_save: None,
+            save_as_queue: Default::default(),
             trust_pending: false,
             should_quit: false,
             needs_redraw: true,
@@ -1109,10 +1114,16 @@ impl App {
         match cmd {
             Command::Save => {
                 // A diff tab saves its file's buffer.
-                if let Some(id) = self.active_file_buffer() {
+                if let Some(id) = self.active_savable_buffer() {
                     self.save(id);
                 }
             }
+            Command::SaveAs => {
+                if let Some(id) = self.active_savable_buffer() {
+                    self.open_save_as(id);
+                }
+            }
+            Command::SaveAll => self.save_batch(self.buffers.dirty(), false),
             Command::Quit => self.request_quit(),
             Command::CloseTab => self.close_tab(self.groups.active, self.group().active),
             Command::NextTab => self.cycle_tab(1),
@@ -1354,11 +1365,12 @@ impl App {
                 result,
                 elapsed,
                 history,
+                to,
             } => {
                 if history {
                     self.history_started();
                 }
-                self.save_done(buffer, state, result, elapsed)
+                self.save_done(buffer, state, result, elapsed, to)
             }
             AppEvent::Opened { path, result } => self.opened(path, result),
             AppEvent::HexCount { tab, generation, count } => self.hex_counted(tab, generation, count),

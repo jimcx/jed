@@ -139,6 +139,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) {
             lines.push(Line::raw(""));
             lines.push(buttons(&[("R", "eplace"), ("C", "ancel")]));
         }
+        Prompt::ConfirmOverwrite { path, .. } => {
+            lines.push(Line::raw(format!(" {} already exists. Overwrite it?", rel(path))));
+            lines.push(Line::raw(""));
+            lines.push(buttons(&[("O", "verwrite"), ("C", "ancel")]));
+        }
         Prompt::ConfirmDelete { path, is_dir } => {
             let what = if *is_dir { "folder" } else { "file" };
             lines.push(Line::raw(format!(" Move {what} {} to the Trash?", rel(path))));
@@ -150,6 +155,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) {
                 InputKind::NewFile { dir } => format!(" New file in {}/", rel(dir)),
                 InputKind::NewFolder { dir } => format!(" New folder in {}/", rel(dir)),
                 InputKind::Rename { from } => format!(" Rename {}", rel(from)),
+                InputKind::SaveAs { buffer } => format!(" Save {} as", name_of(*buffer)),
                 InputKind::RenameSymbol { old, .. } => format!(" Rename '{old}' to"),
             };
             lines.push(Line::raw(title));

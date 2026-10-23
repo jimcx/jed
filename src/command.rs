@@ -110,6 +110,10 @@ pub enum Command {
     /// Paste from the system clipboard. On macOS Cmd+V stays with the terminal (bracketed paste).
     Paste,
     Save,
+    /// "File: Save As…": prompts for a path and moves the buffer to it (not in single file mode).
+    SaveAs,
+    /// "File: Save All": every dirty buffer; untitled ones ask for a path one at a time.
+    SaveAll,
     Quit,
     CloseTab,
     NextTab,
@@ -781,6 +785,8 @@ impl Command {
             Command::Cut,
             Command::Paste,
             Command::Save,
+            Command::SaveAs,
+            Command::SaveAll,
             Command::Quit,
             Command::CloseTab,
             Command::NextTab,
@@ -930,6 +936,8 @@ impl Command {
             Command::Cut => "edit.cut".into(),
             Command::Paste => "edit.paste".into(),
             Command::Save => "file.save".into(),
+            Command::SaveAs => "file.saveAs".into(),
+            Command::SaveAll => "file.saveAll".into(),
             Command::Quit => "app.quit".into(),
             Command::CloseTab => "tab.close".into(),
             Command::NextTab => "tab.next".into(),
@@ -1257,6 +1265,8 @@ impl Command {
             Command::Cut => "Edit: Cut",
             Command::Paste => "Edit: Paste",
             Command::Save => "File: Save",
+            Command::SaveAs => "File: Save As…",
+            Command::SaveAll => "File: Save All",
             Command::Quit => "File: Quit",
             Command::CloseTab => "View: Close Editor",
             Command::NextTab => "View: Open Next Editor",
@@ -1531,6 +1541,8 @@ mod tests {
             Command::Cut => 13,
             Command::Paste => 14,
             Command::Save => 15,
+            Command::SaveAs => 117,
+            Command::SaveAll => 118,
             Command::Quit => 16,
             Command::CloseTab => 17,
             Command::NextTab => 18,
@@ -1635,7 +1647,7 @@ mod tests {
             Command::ConvertIndentationToTabs => 112,
         }
     }
-    const VARIANTS: u8 = 117;
+    const VARIANTS: u8 = 119;
 
     #[test]
     fn all_lists_every_variant() {

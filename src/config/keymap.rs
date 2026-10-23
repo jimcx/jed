@@ -631,6 +631,8 @@ fn defaults(platform: Platform) -> Vec<Binding> {
     let mut global = vec![
         (KeyCode::Char('n'), cmd, Command::NewUntitledFile),
         (KeyCode::Char('s'), cmd, Command::Save),
+        (KeyCode::Char('s'), cmd | shift, Command::SaveAs),
+        (KeyCode::Char('s'), cmd | alt, Command::SaveAll),
         (KeyCode::Char('q'), cmd, Command::Quit),
         // Works in any terminal, even without the kitty protocol.
         (KeyCode::Char('q'), ctrl, Command::Quit),

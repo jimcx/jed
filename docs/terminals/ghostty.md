@@ -60,6 +60,8 @@ keybind = cmd+alt+n=unbind
 keybind = cmd+alt+shift+n=unbind
 keybind = cmd+n=unbind
 keybind = cmd+s=unbind
+keybind = cmd+shift+s=unbind
+keybind = cmd+alt+s=unbind
 keybind = cmd+q=unbind
 keybind = cmd+w=unbind
 keybind = cmd+b=unbind

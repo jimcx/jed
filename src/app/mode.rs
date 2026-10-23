@@ -54,6 +54,7 @@ impl Mode {
                     | Command::ToggleToolTrace
                     | Command::RestartServer
                     | Command::NewUntitledFile
+                    | Command::SaveAs
                     | Command::ShowFileHistory
                     | Command::RestoreFileHistory
                     // Git.
@@ -105,6 +106,7 @@ mod tests {
             Command::CompareWithSaved,
             Command::ReloadFromDisk,
             Command::ChangeLanguageMode,
+            Command::SaveAll,
         ] {
             assert!(single.allows(c), "{}", c.name());
         }
@@ -115,6 +117,7 @@ mod tests {
             Command::TogglePanel,
             Command::RunTask,
             Command::NewUntitledFile,
+            Command::SaveAs,
         ] {
             assert!(!single.allows(c), "{}", c.name());
         }

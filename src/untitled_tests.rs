@@ -2,9 +2,14 @@
 //! `Untitled-N` (the lowest free number) as an empty, writable Plain Text tab; its name shows in
 //! the tab bar and the status bar; typing works; "Change Language Mode" picks a language that
 //! survives re-detection (and overrides a file's); closing an emptied untitled buffer doesn't
-//! ask, a closing or quitting one with text does; Save on one writes nothing yet (Save As is
-//! untitled-c, and a quit's Save stops there); path-keyed features (language servers, crash
+//! ask, a closing or quitting one with text does; path-keyed features (language servers, crash
 //! backups) skip it.
+//!
+//! Subtask untitled-c: Save on an untitled buffer and Save As ask for a path (errors stay in the
+//! prompt, an existing file asks to overwrite, Esc cancels a close / quit / Save All too); the
+//! tab becomes the file (path, language unless picked, titles in every split, disk stamp, clean)
+//! and a Save As leaves the old file alone; Save All saves files and prompts per untitled buffer;
+//! a close's or quit's Save goes through the prompt and then closes / quits.
 //!
 //! Subtask untitled-b: every path-keyed feature skips an untitled buffer: disk checks and
 //! file system events, file history, git (quick diff, stage, compare), blame and sessions.
@@ -16,7 +21,7 @@ use crossterm::event::{KeyCode, KeyModifiers as M};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-use crate::app::{App, InitialFile, Prompt};
+use crate::app::{App, InitialFile, InputKind, Prompt};
 use crate::buffer::Buffer;
 use crate::command::Command;
 use crate::syntax::Language;
@@ -243,34 +248,323 @@ async fn untitled_change_language_mode_survives_redetection_and_overrides_files(
     assert!(app.palette.is_none());
 }
 
+/// The Save As prompt's text, if that prompt is open.
+fn save_as_text(app: &App) -> Option<String> {
+    match &app.prompt {
+        Some(Prompt::Input(i)) if matches!(i.kind, InputKind::SaveAs { .. }) => Some(i.field.text.clone()),
+        _ => None,
+    }
+}
+
+fn save_as_error(app: &App) -> Option<&'static str> {
+    match &app.prompt {
+        Some(Prompt::Input(i)) => i.error,
+        _ => None,
+    }
+}
+
+async fn wait_saved(app: &mut App) {
+    assert!(app.settle(|a| !a.buffers.any_saving()).await, "the save ends");
+    app.pump();
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn untitled_save_writes_nothing_and_keeps_the_text() {
+async fn untitled_save_asks_for_a_path_and_the_tab_becomes_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, root) = open_app(&dir, None);
+    fs::create_dir(root.join("sub")).unwrap();
+    new_untitled(&mut app);
+    app.test_execute(Command::SplitRight);
+    app.type_text("fn main() {}\n");
+    app.press(KeyCode::Char('s'), cmd());
+    assert_eq!(save_as_text(&app).as_deref(), Some("Untitled-1"));
+    assert!(draw(&mut app).iter().any(|r| r.contains("Save Untitled-1 as")));
+    // Errors stay in the prompt.
+    app.type_text("   ");
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(save_as_error(&app), Some("Enter a file name"));
+    app.type_text("d/");
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(save_as_error(&app), Some("That is a folder: add a file name"));
+    app.press(KeyCode::Char('a'), cmd());
+    app.type_text("a.c");
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(save_as_error(&app), Some("That file is open in another tab"));
+    app.press(KeyCode::Char('a'), cmd());
+    app.type_text("sub/.././a.c");
+    app.press(KeyCode::Enter, M::NONE);
+    assert_eq!(
+        save_as_error(&app),
+        Some("That file is open in another tab"),
+        "`.` and `..` are resolved"
+    );
+    app.press(KeyCode::Char('a'), cmd());
+    app.type_text("sub/x.rs");
+    app.press(KeyCode::Enter, M::NONE);
+    wait_saved(&mut app).await;
+
+    assert!(app.prompt.is_none());
+    assert_eq!(fs::read_to_string(root.join("sub/x.rs")).unwrap(), "fn main() {}\n");
+    let buf = app.active_buffer().unwrap();
+    assert!(buf.has_file() && !buf.is_untitled() && !buf.is_dirty());
+    assert_eq!(buf.path, root.join("sub/x.rs"));
+    assert!(buf.disk().is_some(), "the disk stamp is set");
+    assert_eq!(active_language(&app), Language::Rust);
+    let rows = draw(&mut app);
+    assert!(!rows[0].contains("Untitled-1"), "{:?}", rows[0]);
+    assert_eq!(
+        rows[0].matches("x.rs").count(),
+        2,
+        "both splits show the new title: {:?}",
+        rows[0]
+    );
+    assert!(rows.last().unwrap().contains("Rust"), "{:?}", rows.last());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_save_as_errors_keep_the_prompt_and_esc_cancels() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, root) = open_app(&dir, None);
+    fs::create_dir(root.join("sub")).unwrap();
+    new_untitled(&mut app);
+    app.type_text("keep me");
+    app.press(KeyCode::Char('s'), cmd());
+    for (bad, why) in [("sub", "a folder"), ("nope/y.txt", "a missing folder")] {
+        app.type_text(bad);
+        app.press(KeyCode::Enter, M::NONE);
+        assert!(app.settle(|a| !a.buffers.any_saving()).await, "{why}");
+        app.pump();
+        assert_eq!(
+            save_as_error(&app),
+            Some("Can't save there (see the message below)"),
+            "{why}"
+        );
+        assert_eq!(save_as_text(&app).as_deref(), Some(bad), "{why}");
+        assert!(app.active_buffer().unwrap().is_untitled(), "{why}");
+    }
+    assert!(!root.join("nope").exists());
+    app.press(KeyCode::Esc, M::NONE);
+    assert!(app.prompt.is_none());
+    let buf = app.active_buffer().unwrap();
+    assert!(buf.is_untitled() && buf.is_dirty() && buf.rope == "keep me");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_save_as_leaves_the_old_file_and_moves_the_buffer() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, root) = open_app(&dir, None);
+    app.type_text("z");
+    app.press(KeyCode::Char('s'), cmd() | M::SHIFT);
+    assert_eq!(save_as_text(&app).as_deref(), Some("a.c"));
+    app.type_text("b.c");
+    app.press(KeyCode::Enter, M::NONE);
+    wait_saved(&mut app).await;
+    assert_eq!(
+        fs::read_to_string(root.join("a.c")).unwrap(),
+        "int x;\n",
+        "a.c is untouched"
+    );
+    assert_eq!(fs::read_to_string(root.join("b.c")).unwrap(), "zint x;\n");
+    let buf = app.active_buffer().unwrap();
+    assert_eq!(buf.path, root.join("b.c"));
+    assert!(!buf.is_dirty());
+    assert_eq!(names(&app), ["b.c"]);
+
+    // The old file is no longer the buffer's: changing it leaves the buffer alone.
+    app.fs_flushed.clear();
+    fs::write(root.join("a.c"), "changed\n").unwrap();
+    assert!(
+        app.settle(|a| a.fs_flushed.iter().any(|p| p.ends_with("a.c"))).await,
+        "the watcher saw a.c change"
+    );
+    app.pump();
+    let buf = app.active_buffer().unwrap();
+    assert!(buf.rope == "zint x;\n" && !buf.is_dirty() && buf.disk_conflict.is_none());
+    // The new one is: a change to it reloads the clean buffer.
+    fs::write(root.join("b.c"), "theirs\n").unwrap();
+    assert!(app.settle(|a| a.active_buffer().unwrap().rope == "theirs\n").await);
+    assert!(!app.active_buffer().unwrap().is_dirty());
+}
+
+/// An edit typed while the Save As write runs isn't in the file and leaves the buffer dirty;
+/// the disk stamp is the written file's, so the next Save goes through without a conflict.
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_save_as_keeps_edits_made_during_the_write_dirty() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, root) = open_app(&dir, None);
     new_untitled(&mut app);
-    app.type_text("keep me");
-    let before: Vec<_> = fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name()).collect();
+    app.type_text("one");
     app.press(KeyCode::Char('s'), cmd());
-    app.pump();
-    let after: Vec<_> = fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name()).collect();
-    assert_eq!(before, after, "no file, and nothing written for the empty path");
-    assert!(!root.join("").is_file());
+    app.type_text("x.txt");
+    app.press(KeyCode::Enter, M::NONE);
+    assert!(app.buffers.any_saving(), "the write runs off the UI thread");
+    // `press` doesn't take app events: the SaveDone can't be handled before this edit.
+    app.type_text("!");
+    wait_saved(&mut app).await;
+    assert_eq!(fs::read_to_string(root.join("x.txt")).unwrap(), "one");
     let buf = app.active_buffer().unwrap();
-    assert!(buf.is_dirty() && buf.rope == "keep me");
-    assert!(!app.buffers.any_saving());
+    assert_eq!(buf.path, root.join("x.txt"));
+    assert!(buf.rope == "one!" && buf.is_dirty() && !buf.is_untitled());
 
-    // Quit's "Save" saves the file, stops at the untitled buffer and doesn't go on to quit
-    // (or ask again) once the file's save is done.
+    app.press(KeyCode::Char('s'), cmd());
+    assert!(save_as_text(&app).is_none(), "a plain save now");
+    wait_saved(&mut app).await;
+    assert_eq!(fs::read_to_string(root.join("x.txt")).unwrap(), "one!");
+    let buf = app.active_buffer().unwrap();
+    assert!(!buf.is_dirty() && buf.disk_conflict.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_save_as_onto_an_existing_file_asks_to_overwrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, root) = open_app(&dir, None);
+    fs::write(root.join("b.c"), "other\n").unwrap();
+    new_untitled(&mut app);
+    app.type_text("mine");
+    app.press(KeyCode::Char('s'), cmd());
+    app.type_text("b.c");
+    app.press(KeyCode::Enter, M::NONE);
+    assert!(
+        app.settle(|a| matches!(a.prompt, Some(Prompt::ConfirmOverwrite { .. })))
+            .await
+    );
+    assert!(draw(&mut app).iter().any(|r| r.contains("already exists")));
+    assert_eq!(fs::read_to_string(root.join("b.c")).unwrap(), "other\n");
+    app.press(KeyCode::Esc, M::NONE);
+    assert!(app.prompt.is_none());
+    assert_eq!(fs::read_to_string(root.join("b.c")).unwrap(), "other\n");
+    assert!(app.active_buffer().unwrap().is_untitled());
+
+    app.press(KeyCode::Char('s'), cmd());
+    app.type_text("b.c");
+    app.press(KeyCode::Enter, M::NONE);
+    assert!(
+        app.settle(|a| matches!(a.prompt, Some(Prompt::ConfirmOverwrite { .. })))
+            .await
+    );
+    app.press(KeyCode::Char('o'), M::NONE);
+    wait_saved(&mut app).await;
+    assert_eq!(fs::read_to_string(root.join("b.c")).unwrap(), "mine");
+    assert_eq!(app.active_buffer().unwrap().path, root.join("b.c"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_save_as_redetects_the_language_unless_one_was_picked() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, root) = open_app(&dir, None);
+    new_untitled(&mut app);
+    app.type_text("x");
+    app.press(KeyCode::Char('s'), cmd());
+    app.type_text("one.rs");
+    app.press(KeyCode::Enter, M::NONE);
+    wait_saved(&mut app).await;
+    assert_eq!(active_language(&app), Language::Rust);
+
+    new_untitled(&mut app);
+    app.type_text("x");
+    pick_language(&mut app, "Python");
+    let picked = active_language(&app);
+    assert_ne!(picked, Language::PlainText);
+    app.press(KeyCode::Char('s'), cmd());
+    app.type_text("two.rs");
+    app.press(KeyCode::Enter, M::NONE);
+    wait_saved(&mut app).await;
+    assert!(root.join("two.rs").is_file());
+    assert_eq!(active_language(&app), picked, "the picked language wins");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_save_all_saves_files_and_prompts_for_each_untitled_buffer() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, root) = open_app(&dir, None);
+    app.type_text("y");
+    new_untitled(&mut app);
+    app.type_text("one");
+    new_untitled(&mut app);
+    app.type_text("two");
+    app.press(KeyCode::Char('s'), cmd() | M::ALT);
+    assert!(app.settle(|a| !a.buffers.any_saving()).await);
+    assert_eq!(fs::read_to_string(root.join("a.c")).unwrap(), "yint x;\n");
+    assert_eq!(save_as_text(&app).as_deref(), Some("Untitled-1"));
+    app.type_text("1.txt");
+    app.press(KeyCode::Enter, M::NONE);
+    assert!(app.settle(|a| save_as_text(a).as_deref() == Some("Untitled-2")).await);
+    app.press(KeyCode::Esc, M::NONE);
+    wait_saved(&mut app).await;
+    assert!(app.prompt.is_none());
+    assert_eq!(fs::read_to_string(root.join("1.txt")).unwrap(), "one");
+    assert_eq!(names(&app), ["a.c", "1.txt", "Untitled-2"]);
+    assert!(
+        app.active_buffer().unwrap().is_untitled(),
+        "the cancelled one is still untitled"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_quit_save_asks_for_a_path_then_quits() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, root) = open_app(&dir, None);
+    new_untitled(&mut app);
+    app.type_text("bye");
     app.test_activate_tab(0);
     app.type_text("y");
     app.test_execute(Command::Quit);
     assert!(matches!(&app.prompt, Some(Prompt::SaveAllBeforeQuit { buffers }) if buffers.len() == 2));
     app.press(KeyCode::Char('s'), M::NONE);
-    assert!(app.settle(|a| !a.buffers.any_saving()).await, "a.c's save ends");
-    assert_eq!(fs::read_to_string(root.join("a.c")).unwrap(), "yint x;\n");
+    assert!(
+        app.settle(|a| save_as_text(a).is_some() && !a.buffers.any_saving())
+            .await
+    );
     app.pump();
-    assert!(!app.quitting(), "the untitled buffer still holds text");
-    assert!(app.prompt.is_none(), "the quit stopped: not asked again");
+    assert!(!app.quitting(), "waits for the path");
+    assert_eq!(fs::read_to_string(root.join("a.c")).unwrap(), "yint x;\n");
+    app.type_text("bye.txt");
+    app.press(KeyCode::Enter, M::NONE);
+    assert!(app.settle(|a| a.quitting()).await);
+    assert_eq!(fs::read_to_string(root.join("bye.txt")).unwrap(), "bye");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_quit_save_stops_when_the_path_prompt_is_cancelled() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, root) = open_app(&dir, None);
+    new_untitled(&mut app);
+    app.type_text("bye");
+    new_untitled(&mut app);
+    app.type_text("bye too");
+    app.test_execute(Command::Quit);
+    app.press(KeyCode::Char('s'), M::NONE);
+    assert_eq!(save_as_text(&app).as_deref(), Some("Untitled-1"));
+    app.press(KeyCode::Esc, M::NONE);
+    app.pump();
+    assert!(!app.quitting());
+    assert!(app.prompt.is_none());
+    // The quit and the rest of its queue are forgotten: a later Save As neither quits nor asks
+    // for Untitled-2.
+    app.test_activate_tab(1);
+    app.press(KeyCode::Char('s'), cmd());
+    assert_eq!(save_as_text(&app).as_deref(), Some("Untitled-1"));
+    app.type_text("one.txt");
+    app.press(KeyCode::Enter, M::NONE);
+    wait_saved(&mut app).await;
+    assert_eq!(fs::read_to_string(root.join("one.txt")).unwrap(), "bye");
+    assert!(!app.quitting(), "the quit was dropped");
+    assert!(app.prompt.is_none(), "Untitled-2 left the queue");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_close_save_asks_for_a_path_then_closes_the_tab() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, root) = open_app(&dir, None);
+    new_untitled(&mut app);
+    app.type_text("closing");
+    app.test_execute(Command::CloseTab);
+    assert!(matches!(app.prompt, Some(Prompt::SaveBeforeClose { .. })));
+    app.press(KeyCode::Char('s'), M::NONE);
+    app.type_text("c.txt");
+    app.press(KeyCode::Enter, M::NONE);
+    assert!(app.settle(|a| names(a) == ["a.c"]).await);
+    assert_eq!(fs::read_to_string(root.join("c.txt")).unwrap(), "closing");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -69,6 +69,8 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+alt+shift+n` | New folder | explorer |
 | `cmd+n` | New untitled file | everywhere |
 | `cmd+s` | Save | everywhere |
+| `cmd+shift+s` | Save As (prompts for a path; not in single file mode) | everywhere |
+| `cmd+alt+s` | Save All (untitled files ask for a path one at a time) | everywhere |
 | `cmd+q` | Quit | everywhere |
 | `cmd+w` | Close tab (a task tab in the panel: closes it, killing its task) | everywhere, task |
 | `cmd+b` | Toggle sidebar | everywhere |

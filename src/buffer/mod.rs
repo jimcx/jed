@@ -117,12 +117,18 @@ pub struct SaveJob {
     /// What the file must still hold for the save to go ahead (`None`: no file); anything
     /// else (but what we're writing) is a `SaveError::Conflict`.
     pub expected: Option<Stamp>,
+    /// A Save As: `path` is the new target, nothing is expected there, and an existing file is
+    /// refused (`SaveError::Exists`) unless `overwrite`.
+    pub save_as: bool,
+    pub overwrite: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SaveError {
     /// The file changed on disk since the buffer last knew it: nothing written.
     Conflict,
+    /// A Save As target that exists (and may not be overwritten): nothing written.
+    Exists,
     Failed(String),
 }
 
@@ -454,7 +460,28 @@ impl Buffer {
             rope: self.rope.clone(),
             bom: self.bom,
             expected: self.disk,
+            save_as: false,
+            overwrite: false,
         }
+    }
+
+    /// Like `begin_save`, but to `path` (a Save As; `overwrite`: replace an existing file).
+    /// The buffer's own path and disk stamp stay as they are until `finish_save_as`.
+    pub fn begin_save_as(&mut self, path: PathBuf, overwrite: bool) -> SaveJob {
+        let mut job = self.begin_save();
+        job.path = path;
+        job.expected = None;
+        job.save_as = true;
+        job.overwrite = overwrite;
+        job
+    }
+
+    /// A Save As succeeded: the buffer is the file at `path` (untitled no more), clean as of
+    /// `state` with `stamp` on disk. Everything keyed by path follows elsewhere.
+    pub fn finish_save_as(&mut self, state: u64, stamp: Stamp, path: PathBuf) {
+        self.path = path;
+        self.untitled = None;
+        self.finish_save(state, Some(stamp));
     }
 
     /// A save ended: `written` holds what it wrote (`None`: it failed or was refused).
@@ -478,8 +505,21 @@ impl SaveJob {
     pub fn write(&self) -> Result<(Stamp, Vec<u8>), SaveError> {
         let bytes = file::encode(&self.rope, self.bom);
         let stamp = Stamp::of(&bytes);
+        if self.save_as {
+            match std::fs::symlink_metadata(&self.path) {
+                Ok(m) if m.is_dir() => return Err(SaveError::Failed("it is a folder".into())),
+                Ok(_) if !self.overwrite => return Err(SaveError::Exists),
+                _ => {}
+            }
+            if !self
+                .path
+                .parent()
+                .is_none_or(|d| d.as_os_str().is_empty() || d.is_dir())
+            {
+                return Err(SaveError::Failed("its folder doesn't exist".into()));
+            }
         // An unreadable file can't be compared: written as before.
-        if let Ok(Some(current)) = file::read(&self.path) {
+        } else if let Ok(Some(current)) = file::read(&self.path) {
             let current = Stamp::of(&current);
             if Some(current) != self.expected && current != stamp {
                 return Err(SaveError::Conflict);
@@ -586,6 +626,42 @@ mod tests {
         assert_eq!(buf.rope.to_string(), "a\nb\n");
         buf.append(ChangeSet::default());
         assert_eq!(buf.revision(), revision + 2, "an empty set changes nothing");
+    }
+
+    /// A Save As refuses an existing file unless told to overwrite it, a folder and a missing
+    /// parent folder always; it writes the new path and leaves the old file alone.
+    #[test]
+    fn save_as_refuses_existing_files_and_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("a.txt");
+        std::fs::write(&old, "one\n").unwrap();
+        let mut buf = Buffer::open(&old).unwrap();
+        buf.edit(insert(0, "x"), cursor(0), cursor(1), EditKind::Insert);
+        let taken = dir.path().join("b.txt");
+        std::fs::write(&taken, "other").unwrap();
+        let job = buf.begin_save_as(taken.clone(), false);
+        assert_eq!(job.write(), Err(SaveError::Exists));
+        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "other");
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        for bad in [dir.path().join("sub"), dir.path().join("nope/c.txt")] {
+            let job = buf.begin_save_as(bad, true);
+            assert!(matches!(job.write(), Err(SaveError::Failed(_))));
+        }
+        let job = buf.begin_save_as(taken.clone(), true);
+        let (stamp, _) = job.write().unwrap();
+        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "xone\n");
+        buf.finish_save_as(job.state, stamp, taken.clone());
+        assert_eq!(buf.path, taken);
+        assert!(!buf.is_dirty() && !buf.is_untitled());
+        assert_eq!(
+            std::fs::read_to_string(&old).unwrap(),
+            "one\n",
+            "the old file is untouched"
+        );
+        let fresh = dir.path().join("new.txt");
+        let job = buf.begin_save_as(fresh.clone(), false);
+        job.write().unwrap();
+        assert!(fresh.exists());
     }
 
     /// A save refuses to overwrite a file changed since it was loaded; "keep mine" lets the

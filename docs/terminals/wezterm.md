@@ -46,7 +46,7 @@ local release = {
   { 'c', 'CMD|ALT' }, { 'w', 'CMD|ALT' }, { 'r', 'CMD|ALT' }, { 'x', 'CMD|ALT' },
   { '1', 'CMD|SHIFT' }, { 'Enter', 'CMD|ALT' },
   { 'n', 'CMD|ALT' }, { 'n', 'CMD|ALT|SHIFT' },
-  { 'n', 'CMD' }, { 's', 'CMD' }, { 'q', 'CMD' }, { 'w', 'CMD' }, { 'b', 'CMD' },
+  { 'n', 'CMD' }, { 's', 'CMD' }, { 's', 'CMD|SHIFT' }, { 's', 'CMD|ALT' }, { 'q', 'CMD' }, { 'w', 'CMD' }, { 'b', 'CMD' },
   { 'e', 'CMD|SHIFT' },
   { 'f', 'CMD|SHIFT' },
   { 'h', 'CMD|SHIFT' },
