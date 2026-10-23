@@ -21,7 +21,7 @@ Version on this machine when written: iTerm2 3.6.10 (settings below not yet trie
 iTerm2's Cmd shortcuts (Close Cmd+W, Quit Cmd+Q, Select All Cmd+A, tab selection Cmd+1..9, …) are app menu items, not terminal key bindings, so there's no "unbind" setting for them.
 
 What can be done:
-- **Menu items:** System Settings → Keyboard → Keyboard Shortcuts → App Shortcuts → `+`, application iTerm2, enter the exact menu item title (e.g. `Close`, `Quit iTerm2`, `Select All`) and give it a different shortcut (e.g. Cmd+Ctrl+Alt+W). That frees the original Cmd key from the menu.
+- **Menu items:** System Settings → Keyboard → Keyboard Shortcuts → App Shortcuts → `+`, application iTerm2, enter the exact menu item title (e.g. `Close`, `New Window`, `Quit iTerm2`, `Select All`) and give it a different shortcut (e.g. Cmd+Ctrl+Alt+W). That frees the original Cmd key from the menu.
 - **iTerm2's own key bindings** (Settings → Keys → Key Bindings, and per profile): remove any default entries that use jed's Cmd keys (e.g. Cmd+Left/Right or Cmd+Alt+arrows for tab/pane navigation, if present in your version).
 
 Leave `Paste` on Cmd+V: iTerm2's paste is how text gets into jed.
@@ -36,6 +36,6 @@ Whatever menu items you remap move to the new shortcuts in every iTerm2 window. 
 
 - [ ] "Apps can change how keys are reported" on; jed's start-up warning about the kitty protocol is gone
 - [ ] Left/Right Option set to Esc+; Alt+Left logs `ALT`
-- [ ] Menu items for every jed Cmd key you need remapped (start with `Close`, `Quit iTerm2`, `Select All`, `Copy`, `Cut`, `Undo`, `Save`, tab selection 1–3, `Split Vertically with Current Profile` (Cmd+D, jed's add next match), `Use Transparency` (Cmd+U, jed's cursor undo; check your version's View menu), the split-pane selection items on Cmd+Alt+Up/Down (jed's add cursor above/below), whatever holds Cmd+P / Cmd+Shift+P, e.g. `Print`, `Find…` (Cmd+F, jed's find widget), `Find Cursor` (Cmd+/, jed's comment line), `Select Previous Pane` / `Select Next Pane` (Cmd+[ / Cmd+], jed's outdent / indent lines), `Jump to Selection` (Cmd+J, jed's toggle panel), `Set Mark` (Cmd+Shift+M, jed's toggle Problems), `Jump to Mark` (Cmd+Shift+J, jed's toggle search details) and `Paste History…` (Cmd+Shift+H, jed's replace in files))
+- [ ] Menu items for every jed Cmd key you need remapped (start with `Close`, `New Window`, `Quit iTerm2`, `Select All`, `Copy`, `Cut`, `Undo`, `Save`, tab selection 1–3, `Split Vertically with Current Profile` (Cmd+D, jed's add next match), `Use Transparency` (Cmd+U, jed's cursor undo; check your version's View menu), the split-pane selection items on Cmd+Alt+Up/Down (jed's add cursor above/below), whatever holds Cmd+P / Cmd+Shift+P, e.g. `Print`, `Find…` (Cmd+F, jed's find widget), `Find Cursor` (Cmd+/, jed's comment line), `Select Previous Pane` / `Select Next Pane` (Cmd+[ / Cmd+], jed's outdent / indent lines), `Jump to Selection` (Cmd+J, jed's toggle panel), `Set Mark` (Cmd+Shift+M, jed's toggle Problems), `Jump to Mark` (Cmd+Shift+J, jed's toggle search details) and `Paste History…` (Cmd+Shift+H, jed's replace in files))
 - [ ] **Check by hand:** each key in the [table](README.md#cmd-bindings-jed-uses) logs with `SUPER`; note which ones iTerm2 still keeps
 - [ ] Until verified, close jed's tabs with the mouse (×) and quit with Ctrl+Q

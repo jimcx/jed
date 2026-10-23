@@ -61,7 +61,6 @@ impl Language {
     ];
 
     /// The built-in languages, then the registered plugins'.
-    #[allow(dead_code)] // The language picker and plugin lists (later subtasks) use it.
     pub fn all() -> Vec<Language> {
         let mut all = Self::BUILT_IN.to_vec();
         all.extend(PluginId::all().into_iter().map(Language::Plugin));

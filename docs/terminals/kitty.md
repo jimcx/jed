@@ -61,6 +61,7 @@ map --when-focus-on var:jed cmd+shift+1
 map --when-focus-on var:jed cmd+alt+enter
 map --when-focus-on var:jed cmd+alt+n
 map --when-focus-on var:jed cmd+alt+shift+n
+map --when-focus-on var:jed cmd+n
 map --when-focus-on var:jed cmd+s
 map --when-focus-on var:jed cmd+q
 map --when-focus-on var:jed cmd+w
@@ -92,11 +93,11 @@ macos_option_as_alt both
 
 Don't add `cmd+v`: kitty's paste is how text gets into jed.
 
-Only some of these are kitty defaults (`cmd+c` copy, `cmd+up`/`cmd+down` scroll, `cmd+1..3` switch window, `cmd+w` close tab, `cmd+q` quit); the rest are listed so the snippet stays a copy of jed's table.
+Only some of these are kitty defaults (`cmd+c` copy, `cmd+n` new OS window, `cmd+up`/`cmd+down` scroll, `cmd+1..3` switch window, `cmd+w` close tab, `cmd+q` quit); the rest are listed so the snippet stays a copy of jed's table.
 
 ## What you lose
 
-While a jed window has focus: kitty's own Cmd+C (copy screen text; use the mouse selection, which kitty can copy on select), Cmd+W (close tab), Cmd+Q (quit), Cmd+1..3 (switch window) and Cmd+Up/Down (scroll). Other kitty windows keep them. Close jed's tab with Cmd+Shift+W (close OS window) or the menu.
+While a jed window has focus: kitty's own Cmd+C (copy screen text; use the mouse selection, which kitty can copy on select), Cmd+N (new OS window), Cmd+W (close tab), Cmd+Q (quit), Cmd+1..3 (switch window) and Cmd+Up/Down (scroll). Other kitty windows keep them. Close jed's tab with Cmd+Shift+W (close OS window) or the menu.
 
 ## Checklist
 

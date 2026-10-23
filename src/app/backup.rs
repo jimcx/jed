@@ -292,7 +292,9 @@ impl App {
     /// Dirty and different from its backup (if it has one), and not a file whose backup is
     /// still being offered.
     fn backup_due(&self, id: BufferId, b: &crate::buffer::Buffer) -> bool {
-        b.is_dirty()
+        // An untitled buffer has no path to key a backup by (until untitled-e).
+        b.has_file()
+            && b.is_dirty()
             && self
                 .backups
                 .written
@@ -416,7 +418,7 @@ impl App {
             let snaps: Vec<Snapshot> = self
                 .buffers
                 .iter()
-                .filter(|(_, b)| b.is_dirty() && !offered.contains(&b.path))
+                .filter(|(_, b)| b.has_file() && b.is_dirty() && !offered.contains(&b.path))
                 .map(|(_, b)| snapshot(b))
                 .collect();
             tokio::task::spawn_blocking(move || {
@@ -445,7 +447,7 @@ impl App {
         let snapshots = self
             .buffers
             .iter()
-            .filter(|(_, b)| b.is_dirty())
+            .filter(|(_, b)| b.has_file() && b.is_dirty())
             .map(|(_, b)| snapshot(b))
             .collect();
         crate::panic::set_dirty(dir, self.workspace.root.clone(), snapshots);

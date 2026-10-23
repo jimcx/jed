@@ -264,6 +264,12 @@ pub enum Command {
     ReopenAsHex,
     /// "View: Reopen as Text": a hex tab's file in a text tab in its place, unless it's binary.
     ReopenAsText,
+    /// "File: New Untitled File": a new empty tab "Untitled-N" (the lowest free N) with no
+    /// path, Plain Text.
+    NewUntitledFile,
+    /// "Change Language Mode": a picker of every language for the active buffer; picking one
+    /// overrides detection until the buffer closes.
+    ChangeLanguageMode,
     /// "Git: Toggle Inline Blame": the primary cursor line's blame after its text (off at
     /// start; for the session only).
     ToggleBlame,
@@ -849,6 +855,7 @@ impl Command {
             Command::ConvertIndentationToTabs,
         ]);
         all.extend([Command::ReopenAsHex, Command::ReopenAsText]);
+        all.extend([Command::NewUntitledFile, Command::ChangeLanguageMode]);
         all.push(Command::ToggleBlame);
         all.extend([Command::NavBack, Command::NavForward]);
         all.extend([
@@ -1149,6 +1156,8 @@ impl Command {
             Command::ConvertIndentationToTabs => "editor.indentationToTabs".into(),
             Command::ReopenAsHex => "view.reopenAsHex".into(),
             Command::ReopenAsText => "view.reopenAsText".into(),
+            Command::NewUntitledFile => "file.newUntitled".into(),
+            Command::ChangeLanguageMode => "editor.changeLanguageMode".into(),
             Command::ToggleBlame => "git.toggleBlame".into(),
             Command::NavBack => "nav.back".into(),
             Command::NavForward => "nav.forward".into(),
@@ -1441,6 +1450,8 @@ impl Command {
             Command::ConvertIndentationToTabs => "Convert Indentation to Tabs",
             Command::ReopenAsHex => "View: Reopen as Hex",
             Command::ReopenAsText => "View: Reopen as Text",
+            Command::NewUntitledFile => "File: New Untitled File",
+            Command::ChangeLanguageMode => "Change Language Mode",
             Command::ToggleBlame => "Git: Toggle Inline Blame",
             Command::NavBack => "Go Back",
             Command::NavForward => "Go Forward",
@@ -1600,7 +1611,7 @@ mod tests {
             Command::Tools(_) => 91,
             Command::ToggleToolTrace => 92,
             Command::RestartServer => 93,
-            Command::RebuildSyntaxPlugins => 113,
+            Command::RebuildSyntaxPlugins => 114,
             Command::GitHistory(_) => 94,
             Command::Commit(_) => 95,
             Command::IndentLines => 96,
@@ -1614,6 +1625,8 @@ mod tests {
             Command::CodeActions(_) => 104,
             Command::ReopenAsHex => 105,
             Command::ReopenAsText => 106,
+            Command::NewUntitledFile => 115,
+            Command::ChangeLanguageMode => 116,
             Command::IndentUsingSpaces => 107,
             Command::IndentUsingTabs => 108,
             Command::ChangeTabDisplaySize => 109,
@@ -1622,7 +1635,7 @@ mod tests {
             Command::ConvertIndentationToTabs => 112,
         }
     }
-    const VARIANTS: u8 = 114;
+    const VARIANTS: u8 = 117;
 
     #[test]
     fn all_lists_every_variant() {

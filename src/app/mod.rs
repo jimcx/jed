@@ -1209,6 +1209,8 @@ impl App {
             Command::ConvertIndentationToTabs => self.convert_indentation(false),
             Command::ReopenAsHex => self.reopen_as_hex(),
             Command::ReopenAsText => self.reopen_as_text(),
+            Command::NewUntitledFile => self.new_untitled_file(),
+            Command::ChangeLanguageMode => self.change_language_mode(),
             Command::ToggleBlame => self.toggle_blame(),
             Command::KillTask => self.kill_task(),
             Command::CloseTask => self.close_shown_task(),
@@ -1460,6 +1462,11 @@ impl App {
         } else {
             self.press(KeyCode::End, KeyModifiers::CONTROL);
         }
+    }
+
+    /// Activates the active group's tab `index`.
+    pub fn test_activate_tab(&mut self, index: usize) {
+        self.activate_tab(index);
     }
 
     /// Runs a command as a key bound to it would.

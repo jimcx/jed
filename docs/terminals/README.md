@@ -67,6 +67,7 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+alt+enter` | Replace all (find widget, Search view) | editor, find, search, searchResults |
 | `cmd+alt+n` | New file | explorer |
 | `cmd+alt+shift+n` | New folder | explorer |
+| `cmd+n` | New untitled file | everywhere |
 | `cmd+s` | Save | everywhere |
 | `cmd+q` | Quit | everywhere |
 | `cmd+w` | Close tab (a task tab in the panel: closes it, killing its task) | everywhere, task |

@@ -193,8 +193,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 let overlay = editor::Overlay {
                     focused,
                     find,
-                    // A log or a commit is read, not edited: no whitespace glyphs.
-                    whitespace: if !buf.has_file() {
+                    // A log or a commit is read, not edited: no whitespace glyphs (an untitled buffer is edited).
+                    whitespace: if !buf.has_file() && !buf.is_untitled() {
                         RenderWhitespace::None
                     } else {
                         whitespace

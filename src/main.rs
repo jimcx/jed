@@ -108,6 +108,8 @@ mod todo_tests;
 mod tools_tests;
 mod tools_view;
 mod ui;
+#[cfg(test)]
+mod untitled_tests;
 mod view;
 mod watcher;
 mod workspace;

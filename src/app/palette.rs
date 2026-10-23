@@ -169,6 +169,11 @@ impl App {
                 hint = Some(text);
                 rows
             }
+            Mode::Language => {
+                let (rows, text) = self.language_rows(&query);
+                hint = Some(text);
+                rows
+            }
             Mode::Files if !self.mode.allows(Command::QuickOpen) => {
                 hint = Some(super::mode::UNAVAILABLE.into());
                 Vec::new()
@@ -187,8 +192,11 @@ impl App {
             p.set_rows(rows);
             p.hint = hint;
             // A size picker starts on the current size (VS Code).
-            if mode == Mode::IndentSize
-                && let Some(i) = p.rows.iter().position(|r| r.detail.starts_with("current"))
+            if matches!(mode, Mode::IndentSize | Mode::Language)
+                && let Some(i) = p
+                    .rows
+                    .iter()
+                    .position(|r| r.detail.ends_with("current") || r.detail.starts_with("current"))
             {
                 p.select(i);
             }
@@ -363,6 +371,13 @@ impl App {
                 self.close_palette();
                 if let Picker::IndentSize { buffer, kind } = picker {
                     self.indent_size_picked(buffer, kind, size);
+                }
+            }
+            (_, Some(Action::Language(lang))) => {
+                let picker = p.picker;
+                self.close_palette();
+                if let Picker::Language { buffer } = picker {
+                    self.language_picked(buffer, lang);
                 }
             }
             (_, Some(Action::Open(rel))) => {

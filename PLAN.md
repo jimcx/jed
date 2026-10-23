@@ -143,7 +143,7 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
   - "File: Save All" (Cmd+Alt+S): every dirty buffer, untitled ones prompting one at a time
   - Close / quit prompts include untitled buffers ("Untitled-1"); an empty untitled buffer closes without asking
   - Crash backups cover untitled buffers (keyed by an id instead of the path's hash, restored as untitled)
-  - Sessions: _decide in the first task_ — leaning: empty untitled tabs aren't saved; non-empty ones are restored from their backup (VS Code's hot exit, minus the prompt), which makes the backup survive a clean quit
+  - Sessions (decided; built in untitled-e): empty untitled tabs aren't saved; non-empty ones are restored from their crash backup (VS Code's hot exit, minus the prompt), which makes the backup survive a clean quit. Until then sessions skip untitled tabs (`!has_file()`)
 
 ### Binary files (hex view)
 A binary file opens read-only as `hexdump -C` would print it, instead of being refused.
@@ -680,7 +680,8 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
   - Untitled buffers (Cmd+N, "Change Language Mode"), Save As (Cmd+Shift+S) moving a buffer to a new path, Save All (Cmd+Alt+S); close / quit prompts, crash backups and sessions covering untitled buffers; Cmd bindings update `docs/terminals/`
   - Done when: Cmd+N, typing and Cmd+S ask for a path and write the file, the tab becomes that file with its highlighting and its language server; Save As to a new name leaves the old file untouched and the buffer follows the new one (git markers, history, title in every split); Save All saves every dirty buffer; quitting with an unsaved untitled buffer asks first; killing jed and restarting offers the untitled buffer's text back as an untitled buffer
   - Subtasks (one agent and one commit each):
-    - untitled-a: untitled buffers: a `Buffer` without a path (`Untitled-N`), Cmd+N, tab titles, Plain Text, "Change Language Mode"; close / quit prompts include them; decide the session behaviour (see [Files](#files))
+    - ✅ untitled-a: untitled buffers: a `Buffer` without a path (`Untitled-N`), Cmd+N, tab titles, Plain Text, "Change Language Mode"; close / quit prompts include them; decide the session behaviour (see [Files](#files))
+      - Done: `Buffer::untitled(n)` (empty path, `is_untitled()`, `has_file()` false, dirty = has text), `Buffers::free_untitled_number`, `Buffer::language_override` (honoured by `App::detect_language`), `Picker::Language`; `App::save` on an untitled buffer only notifies (untitled-c replaces that branch in `app/files.rs`); crash backups skip untitled buffers in three places in `app/backup.rs` (untitled-e lifts them); Ctrl+N on Linux is now New Untitled File; whitespace glyphs use `!has_file() && !is_untitled()`. `Buffers::find_path("")` can match an untitled buffer (untitled-b). Not done: the status bar language item opening the picker
     - untitled-b: every path-keyed feature skips untitled buffers safely (disk checks, watcher, history, git, quick diff, blame, LSP, sessions for now), with a test per feature in the style of `tools_every_command_on_a_log_tab_leaves_it_alone`
     - untitled-c: Save As and Save All: the path prompt (overwrite check), Save on an untitled buffer runs it, the file written and the buffer's path, language, titles (every split) and disk stamp updated; Save All
     - untitled-d: a buffer that changes path follows it everywhere else: LSP close / open, the watcher, file history, git markers and blame, other views; Save As leaving the old file untouched

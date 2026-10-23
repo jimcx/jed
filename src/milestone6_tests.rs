@@ -1467,10 +1467,16 @@ async fn milestone_6_keybindings_toml_in_the_find_context() {
     app.press(K::Enter, M::NONE);
     assert_eq!(ranges(&app), vec![(3, 5)]);
     assert_eq!(text(&app), "ab ab ab");
-    // In the editor Ctrl+N isn't bound and doesn't type.
+    // In the editor Ctrl+N isn't the find's and doesn't type: on Linux it's New Untitled File
+    // (an empty tab), on macOS the Emacs-style cursor down.
     app.press(K::Esc, M::NONE);
     app.press(K::Char('n'), M::CONTROL);
-    assert_eq!(text(&app), "ab ab ab");
+    if cfg!(target_os = "macos") {
+        assert_eq!(text(&app), "ab ab ab");
+    } else {
+        assert!(app.active_buffer().unwrap().is_untitled());
+        assert_eq!(text(&app), "");
+    }
 }
 
 /// The "done when": replace all on the 1 MB file (63k matches) is one undo step, and fast;

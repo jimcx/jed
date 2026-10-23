@@ -187,6 +187,7 @@ async fn milestone_5_every_command_runs_from_the_palette() {
                 | Command::IndentUsingSpaces
                 | Command::IndentUsingTabs
                 | Command::ChangeTabDisplaySize
+                | Command::ChangeLanguageMode
         );
         assert_eq!(app.palette.is_some(), reopens, "{c:?}");
         // Dismiss whatever it opened (prompts, the palette again, the cheat sheet).

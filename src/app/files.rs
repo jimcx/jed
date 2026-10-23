@@ -199,6 +199,15 @@ impl App {
         self.ipc_sweep();
     }
 
+    /// "File: New Untitled File": a new empty "Untitled-N" (the lowest free N) in a tab of the
+    /// active group.
+    pub(super) fn new_untitled_file(&mut self) {
+        let n = self.buffers.free_untitled_number();
+        self.add_buffer(Buffer::untitled(n), None, true);
+        self.reveal_active();
+        tracing::debug!(n, "new untitled buffer");
+    }
+
     /// Puts a loaded buffer in a new tab and activates it, with the selection at `goto`.
     /// Starts no background work (it runs from `App::new`); callers reveal the file.
     pub(super) fn add_buffer(&mut self, buffer: Buffer, goto: Option<Goto>, focus: bool) {
@@ -362,6 +371,16 @@ impl App {
 
     pub(super) fn save(&mut self, id: BufferId) {
         let Some(buf) = self.buffers.get_mut(id) else { return };
+        if buf.is_untitled() {
+            // Save As (a later change) gives it a path.
+            self.after_save = None;
+            let name = buf.name();
+            self.notify(
+                Level::Info,
+                format!("{name} has no file yet: Save As comes in a later change"),
+            );
+            return;
+        }
         if let Some(reason) = buf.read_only.clone() {
             self.after_save = None;
             self.notify(Level::Error, format!("Can't save, read-only: {reason}"));

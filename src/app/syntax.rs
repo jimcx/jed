@@ -2,6 +2,7 @@
 
 use crate::buffer::{Buffer, BufferId};
 use crate::logs::Tool;
+use crate::palette::{self, Picker, Row};
 use crate::syntax::plugin::LIBRARY;
 use crate::syntax::plugin::PluginId;
 use crate::syntax::{self, Associations, Language, Parsed};
@@ -9,8 +10,12 @@ use crate::syntax::{self, Associations, Language, Parsed};
 use super::{App, AppEvent, Level};
 
 impl App {
-    /// The language of `buf`: `.workspace` associations, then its name, then its shebang.
+    /// The language of `buf`: the one picked for it ("Change Language Mode"), else
+    /// `.workspace` associations, then its name, then its shebang.
     pub(super) fn detect_language(&self, buf: &Buffer) -> Language {
+        if let Some(picked) = buf.language_override {
+            return picked;
+        }
         if !buf.has_file() {
             return Language::PlainText;
         }
@@ -18,6 +23,45 @@ impl App {
         let head = rope.slice(..rope.floor_char_boundary(rope.len().min(256))).to_string();
         let first_line = head.lines().next().unwrap_or("");
         syntax::detect(&buf.path, &self.workspace.root, first_line, &self.associations)
+    }
+
+    /// "Change Language Mode": a picker of every language for the active buffer.
+    pub(super) fn change_language_mode(&mut self) {
+        if self.active_buffer().is_none() {
+            return;
+        }
+        let Some(buffer) = self.group().active_tab().map(|t| t.buffer) else {
+            return;
+        };
+        self.open_palette(Picker::Language { buffer }, "");
+    }
+
+    /// The language picker's rows and hint for `query`.
+    pub(super) fn language_rows(&self, query: &str) -> (Vec<Row>, String) {
+        let Some(Picker::Language { buffer }) = self.palette.as_ref().map(|p| p.picker) else {
+            return (Vec::new(), String::new());
+        };
+        let Some(buf) = self.buffers.get(buffer) else {
+            return (Vec::new(), String::new());
+        };
+        let rows = palette::language_rows(query, &Language::all(), buf.syntax.language());
+        let hint = if rows.is_empty() {
+            "No matching language".into()
+        } else {
+            "Select Language Mode".into()
+        };
+        (rows, hint)
+    }
+
+    /// A language picked for `buffer`: it keeps it (over detection) until it closes.
+    pub(super) fn language_picked(&mut self, buffer: BufferId, lang: Language) {
+        let Some(buf) = self.buffers.get_mut(buffer) else {
+            return;
+        };
+        buf.language_override = Some(lang);
+        buf.syntax.set_language(lang);
+        self.servers_dirty = true;
+        tracing::debug!(buffer, language = lang.id(), "language picked");
     }
 
     /// Re-detects every open buffer's language (associations changed, files renamed).

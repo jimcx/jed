@@ -24,7 +24,7 @@ use crate::logs::Tool;
 use crate::logs::tab::LogTab;
 use crate::quick_diff::QuickDiff;
 use crate::selection::Selections;
-use crate::syntax::Syntax;
+use crate::syntax::{Language, Syntax};
 
 pub type BufferId = u64;
 
@@ -93,6 +93,11 @@ pub struct Buffer {
     /// indentation's size; with spaces the indent size stays (`edit::Settings::indent_size`).
     /// Choosing an indentation, re-detecting or a disk reload drops it. Session-only.
     pub tab_display: Option<usize>,
+    /// `Some(n)`: an untitled buffer ("Untitled-n"): no path yet, writable, never on disk.
+    untitled: Option<u32>,
+    /// The language picked for this buffer ("Change Language Mode"), over detection until the
+    /// buffer closes. Session-only.
+    pub language_override: Option<Language>,
 }
 
 /// A change set as a language server needs it: positions are in `before`'s coordinates.
@@ -174,7 +179,19 @@ impl Buffer {
             guess: Guess::default(),
             indentation: None,
             tab_display: None,
+            untitled: None,
+            language_override: None,
         }
+    }
+
+    /// An empty untitled buffer "Untitled-`n`": no path (an empty `path`, so nothing keyed by a
+    /// path takes it: `has_file()` is false), writable, Plain Text until saved or a language is
+    /// picked.
+    pub fn untitled(n: u32) -> Self {
+        let mut buf = Self::without_file("");
+        buf.read_only = None;
+        buf.untitled = Some(n);
+        buf
     }
 
     /// An empty log buffer for `tool` (`app/tools.rs` fills it with `append`).
@@ -207,9 +224,15 @@ impl Buffer {
         )
     }
 
-    /// Whether the buffer is a file's (not a log's or a commit's, which have no path).
+    /// Whether the buffer is a file's: it has a path on disk (not a log's, a commit's or an
+    /// untitled buffer's, which have none).
     pub fn has_file(&self) -> bool {
-        self.log.is_none() && self.commit.is_none()
+        self.log.is_none() && self.commit.is_none() && self.untitled.is_none()
+    }
+
+    /// Whether the buffer is untitled (no path yet).
+    pub fn is_untitled(&self) -> bool {
+        self.untitled.is_some()
     }
 
     #[cfg(test)]
@@ -225,12 +248,20 @@ impl Buffer {
         if let Some(commit) = &self.commit {
             return commit.title();
         }
+        if let Some(n) = self.untitled {
+            return format!("Untitled-{n}");
+        }
         self.path
             .file_name()
             .map_or_else(|| self.path.display().to_string(), |n| n.to_string_lossy().into_owned())
     }
 
+    /// Unsaved changes. An untitled buffer has no file to differ from: it is dirty while it has
+    /// text (an emptied one closes without asking).
     pub fn is_dirty(&self) -> bool {
+        if self.untitled.is_some() {
+            return self.rope.len() > 0;
+        }
         self.deleted || self.has_edits()
     }
 
@@ -498,6 +529,12 @@ impl Buffers {
         self.map.iter_mut().map(|(id, b)| (*id, b))
     }
 
+    /// The lowest `n` ≥ 1 no open untitled buffer is numbered.
+    pub fn free_untitled_number(&self) -> u32 {
+        let used: std::collections::HashSet<u32> = self.map.values().filter_map(|b| b.untitled).collect();
+        (1..).find(|n| !used.contains(n)).unwrap_or(1)
+    }
+
     pub fn dirty(&self) -> Vec<BufferId> {
         let mut ids: Vec<BufferId> = self.iter().filter(|(_, b)| b.is_dirty()).map(|(id, _)| id).collect();
         ids.sort_unstable();
@@ -627,5 +664,30 @@ mod tests {
         buf.track_changes(false);
         buf.undo();
         assert!(buf.take_tracked().is_empty());
+    }
+
+    #[test]
+    fn untitled_buffers_have_no_file_and_are_dirty_only_with_text() {
+        let mut buf = Buffer::untitled(3);
+        assert_eq!(buf.name(), "Untitled-3");
+        assert!(buf.is_untitled() && !buf.has_file() && buf.read_only.is_none());
+        assert!(buf.path.as_os_str().is_empty() && !buf.is_dirty());
+        buf.edit(insert(0, "x"), cursor(0), cursor(1), EditKind::Insert);
+        assert!(buf.is_dirty());
+        buf.undo();
+        assert!(!buf.is_dirty(), "emptied again: nothing to lose");
+        assert!(Buffer::from_str("a").has_file() && !Buffer::from_str("a").is_untitled());
+    }
+
+    #[test]
+    fn the_lowest_free_untitled_number_is_reused() {
+        let mut buffers = Buffers::default();
+        assert_eq!(buffers.free_untitled_number(), 1);
+        let one = buffers.insert(Buffer::untitled(1));
+        buffers.insert(Buffer::untitled(2));
+        buffers.insert(Buffer::from_str("file"));
+        assert_eq!(buffers.free_untitled_number(), 3);
+        buffers.remove(one);
+        assert_eq!(buffers.free_untitled_number(), 1);
     }
 }

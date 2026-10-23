@@ -13,6 +13,7 @@ use crate::field::TextField;
 use crate::history::{self, Entry, Snapshot};
 use crate::logs::Tool;
 use crate::recent;
+use crate::syntax::Language;
 use crate::tasks::{Source, Template};
 
 /// Quick open shows at most this many files (the best matches).
@@ -43,6 +44,9 @@ pub enum Picker {
         buffer: crate::buffer::BufferId,
         kind: SizeKind,
     },
+    /// "Change Language Mode": every `Language` (`language_rows`) for `buffer`; accepting
+    /// picks it.
+    Language { buffer: crate::buffer::BufferId },
 }
 
 /// What an indent size picked sets (`Picker::IndentSize`).
@@ -80,6 +84,7 @@ pub enum Mode {
     Logs,
     Indentation,
     IndentSize,
+    Language,
 }
 
 pub const COMMANDS_PREFIX: char = '>';
@@ -102,6 +107,8 @@ pub enum Action {
     OpenLog(Tool),
     /// An indent size (`Picker::IndentSize`).
     IndentSize(usize),
+    /// A language (`Picker::Language`).
+    Language(Language),
 }
 
 /// One line in the list. Hits are char indices to highlight.
@@ -160,6 +167,7 @@ impl Palette {
             Picker::Logs => Mode::Logs,
             Picker::Indentation => Mode::Indentation,
             Picker::IndentSize { .. } => Mode::IndentSize,
+            Picker::Language { .. } => Mode::Language,
             Picker::QuickOpen => match self.field.text.chars().next() {
                 Some(COMMANDS_PREFIX) => Mode::Commands,
                 Some(LINE_PREFIX) => Mode::GoToLine,
@@ -179,7 +187,8 @@ impl Palette {
             | Mode::Recent
             | Mode::Logs
             | Mode::Indentation
-            | Mode::IndentSize => &self.field.text,
+            | Mode::IndentSize
+            | Mode::Language => &self.field.text,
         }
     }
 
@@ -284,6 +293,42 @@ pub fn size_rows(query: &str, current: usize, configured: usize) -> Vec<Row> {
                 detail_hits: Vec::new(),
                 keys: None,
                 action: Action::IndentSize(n),
+            })
+        })
+        .collect()
+}
+
+/// Rows for "Change Language Mode": `languages` matching `query` by name or id, in order,
+/// `current` marked.
+pub fn language_rows(query: &str, languages: &[Language], current: Language) -> Vec<Row> {
+    let pattern = pattern(query);
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let mut buf = Vec::new();
+    languages
+        .iter()
+        .filter_map(|&lang| {
+            let (mut label_hits, mut detail_hits) = (Vec::new(), Vec::new());
+            let id = lang.id();
+            if !query.is_empty() {
+                let by_name = pattern.indices(Utf32Str::new(lang.name(), &mut buf), &mut matcher, &mut label_hits);
+                if by_name.is_none() {
+                    label_hits.clear();
+                    pattern.indices(Utf32Str::new(id, &mut buf), &mut matcher, &mut detail_hits)?;
+                }
+            }
+            let detail = if lang == current {
+                format!("({id}) current")
+            } else {
+                format!("({id})")
+            };
+            Some(Row {
+                label: lang.name().to_string(),
+                label_hits: sorted(label_hits),
+                // Hits are char indices into the detail, which starts with `(`.
+                detail_hits: sorted(detail_hits).into_iter().map(|i| i + 1).collect(),
+                detail,
+                keys: None,
+                action: Action::Language(lang),
             })
         })
         .collect()
@@ -823,5 +868,27 @@ mod tests {
         assert_eq!(typed.len(), 1);
         assert_eq!((typed[0].label.as_str(), typed[0].label_hits.clone()), ("6", vec![0]));
         assert!(size_rows("9", 2, 4).is_empty());
+    }
+
+    #[test]
+    fn language_rows_filter_by_name_or_id_and_mark_the_current() {
+        let all = [
+            Language::PlainText,
+            Language::Rust,
+            Language::ShellScript,
+            Language::Cpp,
+        ];
+        let rows = language_rows("", &all, Language::Rust);
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["Plain Text", "Rust", "Shell Script", "C++"]);
+        assert_eq!(rows[1].detail, "(rust) current");
+        assert_eq!(rows[1].action, Action::Language(Language::Rust));
+        let by_name = language_rows("rus", &all, Language::PlainText);
+        assert_eq!(by_name.len(), 1);
+        assert_eq!(by_name[0].label_hits, vec![0, 1, 2]);
+        let by_id = language_rows("cpp", &all, Language::PlainText);
+        assert_eq!(by_id.len(), 1);
+        assert!(by_id[0].label_hits.is_empty() && !by_id[0].detail_hits.is_empty());
+        assert!(language_rows("zzz", &all, Language::Rust).is_empty());
     }
 }

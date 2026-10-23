@@ -53,6 +53,7 @@ impl Mode {
                     | Command::Task(_)
                     | Command::ToggleToolTrace
                     | Command::RestartServer
+                    | Command::NewUntitledFile
                     | Command::ShowFileHistory
                     | Command::RestoreFileHistory
                     // Git.
@@ -103,6 +104,7 @@ mod tests {
             Command::AddNextMatch,
             Command::CompareWithSaved,
             Command::ReloadFromDisk,
+            Command::ChangeLanguageMode,
         ] {
             assert!(single.allows(c), "{}", c.name());
         }
@@ -112,6 +114,7 @@ mod tests {
             Command::FindInFiles,
             Command::TogglePanel,
             Command::RunTask,
+            Command::NewUntitledFile,
         ] {
             assert!(!single.allows(c), "{}", c.name());
         }
