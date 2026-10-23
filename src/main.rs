@@ -43,6 +43,7 @@ mod indent;
 mod indentation;
 #[cfg(test)]
 mod indentation_tests;
+mod ipc;
 mod layout;
 mod lines;
 mod locations;
@@ -317,6 +318,24 @@ fn start_of(args: &Args) -> Result<Start, String> {
     })
 }
 
+/// The socket in `jed_ipc` (`$JED_IPC`) and the request for `args`' file target (not a folder; a
+/// missing file is sent too, single file mode makes it), if both exist.
+fn ipc_request(args: &Args, jed_ipc: Option<std::ffi::OsString>) -> Option<(PathBuf, ipc::Request)> {
+    let socket = PathBuf::from(jed_ipc.filter(|v| !v.is_empty())?);
+    let (path, at) = split_position(args.target.as_deref()?);
+    let path = workspace::normalize(&path);
+    if path.is_dir() {
+        return None;
+    }
+    let request = ipc::Request {
+        open: path,
+        line: at.map(|(l, _)| l),
+        col: at.map(|(_, c)| c),
+        wait: args.wait,
+    };
+    Some((socket, request))
+}
+
 fn main() -> ExitCode {
     let args = match parse_args() {
         Ok(a) => a,
@@ -328,6 +347,14 @@ fn main() -> ExitCode {
     if let Some(command) = args.authoring {
         return run_authoring(command);
     }
+    // Started from a task terminal of a running jed: open the file there instead.
+    let ipc_fallback = match ipc_request(&args, std::env::var_os(ipc::ENV)) {
+        Some((socket, request)) => match ipc::client::open(&socket, &request) {
+            ipc::client::Outcome::Done(code) => return ExitCode::from(code),
+            ipc::client::Outcome::Fallback(reason) => Some(reason),
+        },
+        None => None,
+    };
     let tool_logs = logs::Logs::default();
     let log = match logging::init(args.log_level.as_deref(), tool_logs.clone()) {
         Ok(handle) => Some(handle),
@@ -343,6 +370,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Some(reason) = ipc_fallback {
+        tracing::info!(%reason, "JED_IPC unusable, starting normally");
+    }
     let single = mode.is_single();
     tracing::info!(version = env!("JED_VERSION"), root = %root.display(), single, "starting");
 
@@ -473,6 +503,42 @@ mod tests {
         assert_eq!(args.target.as_deref(), Some("msg.txt"));
         assert!(!parse(&["a.rs"]).unwrap().wait);
         assert!(parse(&["--wait"]).is_err());
+    }
+
+    #[test]
+    fn ipc_request_for_file_targets_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("msg.txt");
+        std::fs::write(&file, "").unwrap();
+        let file = workspace::normalize(&file);
+        let env = || Some(std::ffi::OsString::from("/run/jed/1.sock"));
+        let target = |t: &Path| t.to_str().unwrap().to_string();
+
+        let (socket, req) = ipc_request(&parse(&["--wait", &target(&file)]).unwrap(), env()).unwrap();
+        assert_eq!(socket, PathBuf::from("/run/jed/1.sock"));
+        let want = ipc::Request {
+            open: file.clone(),
+            line: None,
+            col: None,
+            wait: true,
+        };
+        assert_eq!(req, want);
+        let with_pos = format!("{}:4:2", target(&file));
+        let (_, req) = ipc_request(&parse(&["-s", &with_pos]).unwrap(), env()).unwrap();
+        assert_eq!((req.line, req.col, req.wait), (Some(4), Some(2), false));
+        assert_eq!(req.open, file);
+        // A file that doesn't exist yet is sent too (absolute), for jed to create.
+        let missing = tmp.path().join("new.txt");
+        let (_, req) = ipc_request(&parse(&[&target(&missing)]).unwrap(), env()).unwrap();
+        assert!(req.open.is_absolute() && req.open.ends_with("new.txt"));
+
+        assert!(ipc_request(&parse(&[&target(&file)]).unwrap(), None).is_none());
+        assert!(ipc_request(&parse(&[&target(&file)]).unwrap(), Some("".into())).is_none());
+        assert!(ipc_request(&parse(&[]).unwrap(), env()).is_none(), "no target");
+        assert!(
+            ipc_request(&parse(&[&target(tmp.path())]).unwrap(), env()).is_none(),
+            "a folder"
+        );
     }
 
     #[test]
