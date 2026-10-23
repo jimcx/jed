@@ -80,9 +80,10 @@ pub struct QuickDiff {
     computed: Option<(u64, Option<Oid>)>,
     /// The index may have changed since: compute again (cheap when the blob is the same).
     index_stale: bool,
-    /// A computation is running: the change sets applied since its snapshot, to map its result
-    /// through.
-    running: Option<Vec<Arc<ChangeSet>>>,
+    /// A computation is running: its generation, and the change sets applied since its
+    /// snapshot, to map its result through.
+    running: Option<(u64, Vec<Arc<ChangeSet>>)>,
+    generation: u64,
 }
 
 /// Whether a buffer's markers need computing.
@@ -103,6 +104,7 @@ pub struct Job {
     pub rope: Rope,
     pub bom: bool,
     pub revision: u64,
+    pub generation: u64,
     /// The blob the current marks came from, when they are for `revision`: not diffed again.
     pub known: Option<Oid>,
 }
@@ -111,6 +113,7 @@ pub struct Job {
 #[derive(Debug)]
 pub struct Computed {
     pub revision: u64,
+    pub generation: u64,
     pub result: Result<Found, String>,
 }
 
@@ -162,17 +165,37 @@ impl QuickDiff {
         self.index_stale = false;
     }
 
-    /// A computation starts from the text at `revision`: the job's `known` blob.
-    pub fn begin(&mut self, revision: u64) -> Option<Oid> {
-        self.running = Some(Vec::new());
+    /// The buffer's file changed (Save As, a rename): the marks were for another path. Forgets
+    /// them and the blob they came from, so the next turn computes afresh; a running
+    /// computation's result (for the old path) is dropped.
+    pub fn reset(&mut self) {
+        *self = QuickDiff {
+            generation: self.generation,
+            ..Default::default()
+        };
+    }
+
+    /// A computation starts from the text at `revision`: its generation and the job's `known`
+    /// blob.
+    pub fn begin(&mut self, revision: u64) -> (u64, Option<Oid>) {
+        self.generation += 1;
+        self.running = Some((self.generation, Vec::new()));
         self.index_stale = false;
-        self.computed.filter(|(r, _)| *r == revision).and_then(|(_, id)| id)
+        let known = self.computed.filter(|(r, _)| *r == revision).and_then(|(_, id)| id);
+        (self.generation, known)
     }
 
     /// The running computation ended: its marks, mapped through the edits made since its
-    /// snapshot, replace the current ones.
+    /// snapshot, replace the current ones. A result of an older generation (reset since) is
+    /// dropped.
     pub fn finish(&mut self, done: Computed) {
-        let sets = self.running.take().unwrap_or_default();
+        let sets = match self.running.take() {
+            Some((g, sets)) if g == done.generation => sets,
+            other => {
+                self.running = other;
+                return;
+            }
+        };
         match done.result {
             Ok(Found::NotTracked) => {
                 self.marks.clear();
@@ -200,7 +223,7 @@ impl QuickDiff {
 
     /// Follows a change set applied to the buffer (`Buffer::apply`).
     pub fn map(&mut self, changes: &Arc<ChangeSet>) {
-        if let Some(sets) = &mut self.running {
+        if let Some((_, sets)) = &mut self.running {
             sets.push(changes.clone());
         }
         map_marks(&mut self.marks, changes);
@@ -330,6 +353,7 @@ fn map_marks(marks: &mut [Mark], changes: &ChangeSet) {
 pub fn compute(job: Job) -> Computed {
     Computed {
         revision: job.revision,
+        generation: job.generation,
         result: find(&job).map_err(|e| e.to_string()),
     }
 }
@@ -475,7 +499,7 @@ mod tests {
         assert_eq!(q.visible(&rope, 0, 5), vec![(3, Marker::Modified)]);
         // A computation started at revision 1 ends after another edit: mapped through it.
         assert_eq!(q.want(1), Want::Later);
-        q.begin(1);
+        let (generation, _) = q.begin(1);
         assert_eq!(q.want(1), Want::Nothing);
         let snapshot = rope.clone();
         let set = Arc::new(ChangeSet::new(vec![Change {
@@ -488,6 +512,7 @@ mod tests {
         let marks = marks(b"a\nb\nc\n", snapshot.to_string().as_bytes(), 0).unwrap();
         q.finish(Computed {
             revision: 1,
+            generation,
             result: Ok(Found::Marks {
                 index: Oid::ZERO_SHA1,
                 marks,
@@ -501,6 +526,36 @@ mod tests {
         assert_eq!(q.want(1), Want::Nothing);
         q.index_changed();
         assert_eq!(q.want(1), Want::Now);
+    }
+
+    #[test]
+    fn a_reset_drops_the_running_computations_result() {
+        // A computation for the old path is running when the buffer's file changes.
+        let mut q = qd("a\nb\n", "a\nB\n");
+        let (old, _) = q.begin(0);
+        q.reset();
+        assert!(q.marks().is_empty() && !q.running());
+        assert_eq!(q.want(0), Want::Now, "computed afresh for the new path");
+        let (new, known) = q.begin(0);
+        assert!(new != old && known.is_none());
+        let found = |text: &[u8]| Found::Marks {
+            index: Oid::ZERO_SHA1,
+            marks: marks(text, b"a\nB\n", 0).unwrap(),
+        };
+        // The old path's result arrives late: dropped, the new one still runs.
+        q.finish(Computed {
+            revision: 0,
+            generation: old,
+            result: Ok(found(b"a\nb\n")),
+        });
+        assert!(q.marks().is_empty() && q.running());
+        q.finish(Computed {
+            revision: 0,
+            generation: new,
+            result: Ok(Found::NotTracked),
+        });
+        assert!(q.marks().is_empty() && !q.running());
+        assert_eq!(q.want(0), Want::Nothing);
     }
 
     fn insert(q: &mut QuickDiff, rope: &mut Rope, at: usize, text: &str) {

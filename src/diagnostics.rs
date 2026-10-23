@@ -128,6 +128,12 @@ impl Marks {
         }
     }
 
+    /// Drops every server's marks (the buffer's file changed: they were for another path).
+    pub fn clear_all(&mut self) {
+        self.marks.clear();
+        self.index();
+    }
+
     /// Follows a change set the buffer applied. Mapping keeps the order, so nothing is sorted.
     pub fn map(&mut self, changes: &ChangeSet) {
         if self.marks.is_empty() || changes.is_empty() {

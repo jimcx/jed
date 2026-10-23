@@ -134,18 +134,7 @@ impl App {
             self.notify(Level::Error, e);
             return;
         }
-        // Re-list every loaded folder above the changed path, so new subfolders appear too.
-        let refresh = |app: &mut Self, p: &Path| {
-            let dirs: Vec<PathBuf> = p
-                .ancestors()
-                .skip(1)
-                .filter(|d| app.explorer.is_loaded(d))
-                .map(Path::to_path_buf)
-                .collect();
-            for dir in dirs {
-                app.request_listing(dir);
-            }
-        };
+        let refresh = |app: &mut Self, p: &Path| app.refresh_listings_above(p);
         match op {
             FileOp::NewFile(path) => {
                 refresh(self, &path);
@@ -165,10 +154,15 @@ impl App {
                         to.join(rest)
                     })
                 };
-                for (_, buf) in self.buffers.iter_mut() {
+                let mut ids = Vec::new();
+                for (id, buf) in self.buffers.iter_mut() {
                     if let Some(path) = moved(&buf.path) {
                         buf.path = path;
+                        ids.push(id);
                     }
+                }
+                for id in ids {
+                    self.forget_path_state(id);
                 }
                 for h in self.groups.hex_tabs_mut() {
                     if let Some(path) = moved(&h.path) {
@@ -197,7 +191,20 @@ impl App {
         }
     }
 
-    fn reveal_path(&mut self, path: &Path) {
+    /// Re-lists every loaded folder above `p`, so new subfolders appear too.
+    pub(super) fn refresh_listings_above(&mut self, p: &Path) {
+        let dirs: Vec<PathBuf> = p
+            .ancestors()
+            .skip(1)
+            .filter(|d| self.explorer.is_loaded(d))
+            .map(Path::to_path_buf)
+            .collect();
+        for dir in dirs {
+            self.request_listing(dir);
+        }
+    }
+
+    pub(super) fn reveal_path(&mut self, path: &Path) {
         for dir in self.explorer.reveal(path) {
             self.request_listing(dir);
         }

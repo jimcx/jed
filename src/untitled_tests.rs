@@ -11,6 +11,11 @@
 //! and a Save As leaves the old file alone; Save All saves files and prompts per untitled buffer;
 //! a close's or quit's Save goes through the prompt and then closes / quits.
 //!
+//! Subtask untitled-d: a buffer that changes path follows it: the language server gets
+//! didClose (old) / didOpen (new) before any didSave, an ex-untitled buffer just didOpen; gutter
+//! markers, blame, Source Control, file history and the Explorer follow the new path; the old
+//! file and its history stay.
+//!
 //! Subtask untitled-b: every path-keyed feature skips an untitled buffer: disk checks and
 //! file system events, file history, git (quick diff, stage, compare), blame and sessions.
 
@@ -834,4 +839,324 @@ async fn untitled_tabs_are_left_out_of_the_session() {
     let text = fs::read_to_string(&file).unwrap_or_default();
     assert!(text.contains("f.txt"), "the file's tab saved: {text}");
     assert!(!text.contains("Untitled") && !text.contains("\"path\": \"\""), "{text}");
+}
+
+/// Messages about documents the fake server received, as (method, uri).
+fn doc_messages(fake: &crate::lsp::fake::FakeLauncher) -> Vec<(String, String)> {
+    fake.received()
+        .iter()
+        .filter_map(|m| {
+            let method = m["method"].as_str()?;
+            method.starts_with("textDocument/did").then_some(())?;
+            let uri = m["params"]["textDocument"]["uri"].as_str()?;
+            Some((method.trim_start_matches("textDocument/").to_string(), uri.to_string()))
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_save_as_moves_the_language_server_document() {
+    let dir = tempfile::tempdir().unwrap();
+    // A server that wants didSave (with the text, which the fake checks against its copy).
+    let fake = crate::lsp::fake::FakeLauncher::new(crate::lsp::fake::FakeOptions {
+        sync: Some(serde_json::json!({ "openClose": true, "change": 2, "save": { "includeText": true } })),
+        ..Default::default()
+    });
+    let (mut app, root) = open_app(&dir, Some(fake.clone()));
+    assert!(
+        app.settle(|_| doc_messages(&fake).iter().any(|(m, _)| m == "didOpen"))
+            .await
+    );
+    let uri = |name: &str| crate::lsp::uri::from_path(&root.join(name)).as_str().to_string();
+
+    // File to file: close a.c, open b.c, never a message about b.c before its open.
+    app.type_text("z");
+    app.press(KeyCode::Char('s'), cmd() | M::SHIFT);
+    app.type_text("b.c");
+    app.press(KeyCode::Enter, M::NONE);
+    wait_saved(&mut app).await;
+    let opened_b = |a: &App| a.lsp.version(a.group().active_tab().unwrap().buffer).is_some();
+    let saved_b = || doc_messages(&fake).contains(&("didSave".to_string(), uri("b.c")));
+    assert!(
+        app.settle(|a| opened_b(a) && saved_b()).await,
+        "{:?}",
+        doc_messages(&fake)
+    );
+    app.type_text("q");
+    app.pump();
+    assert!(
+        app.settle(|_| doc_messages(&fake)
+            .iter()
+            .any(|(m, u)| m == "didChange" && *u == uri("b.c")))
+            .await
+    );
+    let msgs = doc_messages(&fake);
+    let at = |m: &str, n: &str| msgs.iter().position(|(mm, u)| mm == m && *u == uri(n));
+    let (close_a, open_b) = (
+        at("didClose", "a.c").expect("close a"),
+        at("didOpen", "b.c").expect("open b"),
+    );
+    assert!(close_a < open_b, "{msgs:?}");
+    // The Save As's didSave is b.c's, after its open (none for a.c).
+    assert!(at("didSave", "b.c").expect("save b") > open_b, "{msgs:?}");
+    assert_eq!(at("didSave", "a.c"), None, "{msgs:?}");
+    assert!(
+        msgs.iter().position(|(_, u)| *u == uri("b.c")) == Some(open_b),
+        "b.c's first message is its didOpen: {msgs:?}"
+    );
+    assert!(
+        msgs.iter().skip(close_a + 1).all(|(_, u)| *u != uri("a.c")),
+        "nothing about a.c after its close: {msgs:?}"
+    );
+    assert!(fake.errors().is_empty(), "{:?}", fake.errors());
+
+    // Untitled to file: just a didOpen.
+    new_untitled(&mut app);
+    app.type_text("int y;\n");
+    let before = doc_messages(&fake).len();
+    app.press(KeyCode::Char('s'), cmd());
+    app.type_text("x.c");
+    app.press(KeyCode::Enter, M::NONE);
+    wait_saved(&mut app).await;
+    // The fake records a message before applying it: wait for its copy of x.c and the save.
+    let x_text = || fake.document(&uri("x.c")).map(|d| d.text);
+    let saved_x = || doc_messages(&fake).contains(&("didSave".to_string(), uri("x.c")));
+    assert!(
+        app.settle(|_| x_text().as_deref() == Some("int y;\n") && saved_x())
+            .await,
+        "{:?} {:?}",
+        x_text(),
+        doc_messages(&fake)
+    );
+    let msgs = doc_messages(&fake);
+    let x: Vec<_> = msgs[before..].iter().filter(|(_, u)| *u == uri("x.c")).collect();
+    assert_eq!(x[0].0, "didOpen", "{msgs:?}");
+    assert!(msgs[before..].iter().all(|(m, _)| m != "didClose"), "{msgs:?}");
+    assert!(fake.errors().is_empty(), "{:?}", fake.errors());
+    app.shutdown_servers().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_save_as_in_a_repo_follows_git_history_and_the_explorer() {
+    use crate::milestone10_tests::settle_git;
+    let (_d, mut app, root, _state) = git_app().await;
+    app.test_execute(Command::PrevTab);
+    assert!(
+        app.settle(|a| !a.active_buffer().unwrap().quick_diff.marks().is_empty())
+            .await
+    );
+    app.press(KeyCode::Char('s'), cmd() | M::SHIFT);
+    assert_eq!(save_as_text(&app).as_deref(), Some("f.txt"));
+    app.type_text("g.txt");
+    app.press(KeyCode::Enter, M::NONE);
+    wait_saved(&mut app).await;
+
+    assert_eq!(
+        fs::read_to_string(root.join("f.txt")).unwrap(),
+        "two\n",
+        "f.txt untouched"
+    );
+    assert_eq!(fs::read_to_string(root.join("g.txt")).unwrap(), "two\n");
+    assert!(
+        app.active_buffer().unwrap().quick_diff.marks().is_empty(),
+        "f.txt's markers dropped at once"
+    );
+    // Source Control lists the new, untracked file; it has no markers or blame.
+    assert!(
+        settle_git(&mut app, |s| s.entry(std::path::Path::new("g.txt")).is_some()).await,
+        "g.txt in Source Control"
+    );
+    assert!(app.settle(|a| !a.active_buffer().unwrap().quick_diff.running()).await);
+    assert!(app.active_buffer().unwrap().quick_diff.marks().is_empty());
+    // The Explorer shows the new file.
+    assert!(
+        app.settle(|a| a.explorer.rows().iter().any(|r| r.entry.path == root.join("g.txt")))
+            .await,
+        "g.txt listed in the explorer"
+    );
+    // The git history view follows the active path; the old file keeps its own.
+    app.pump();
+    assert_eq!(app.git_history.path, Some(root.join("g.txt")));
+    // File history of the buffer is g.txt's (the Save As snapshot).
+    app.test_execute(Command::ShowFileHistory);
+    assert!(app.settle(|a| a.palette.is_some()).await, "history of g.txt listed");
+}
+
+/// Save As over a tracked file (after Overwrite): the gutter markers and the blame become the
+/// new path's (against its own index and HEAD text), and the old path's are gone at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_save_as_onto_a_tracked_file_takes_its_markers_and_blame() {
+    use crate::blame::Line;
+    use crate::git::HunkKind;
+    use crate::git::test_repo::{commit_all, init};
+    use crate::milestone10_tests::{dirs, open_file_app, settle_git};
+    let (_d, root, state) = dirs();
+    init(&root);
+    fs::write(root.join("f.txt"), "one\n").unwrap();
+    commit_all(&root, "f's commit");
+    fs::write(root.join("h.txt"), "x\ntwo\n").unwrap();
+    commit_all(&root, "h's commit");
+    fs::write(root.join("f.txt"), "two\n").unwrap();
+    let mut app = open_file_app(&root, &state, "f.txt");
+    assert!(settle_git(&mut app, |s| !s.entries.is_empty()).await);
+    app.test_execute(Command::ToggleBlame);
+
+    let kinds = |a: &App| -> Vec<HunkKind> {
+        let b = a.active_buffer().unwrap();
+        b.quick_diff.marks().iter().map(|m| m.kind).collect()
+    };
+    // The first line's blame: a commit's summary, or "uncommitted".
+    let blame = |a: &App| -> Option<String> {
+        let b = a.active_buffer().unwrap();
+        match b.blame.line(&b.rope, 0)? {
+            Line::Committed(c) => Some(c.summary.clone()),
+            Line::Uncommitted => Some("uncommitted".into()),
+        }
+    };
+    let idle = |a: &App| {
+        let b = a.active_buffer().unwrap();
+        !a.git.running() && !b.quick_diff.running() && !b.blame.running()
+    };
+    // f.txt: "one" became "two", not committed.
+    assert!(
+        app.settle(|a| idle(a) && kinds(a) == [HunkKind::Modified] && blame(a).as_deref() == Some("uncommitted"))
+            .await,
+        "f.txt's markers and blame: {:?} {:?}",
+        kinds(&app),
+        blame(&app)
+    );
+
+    app.press(KeyCode::Char('s'), cmd() | M::SHIFT);
+    app.press(KeyCode::Char('a'), cmd());
+    app.type_text("h.txt");
+    app.press(KeyCode::Enter, M::NONE);
+    assert!(
+        app.settle(|a| matches!(a.prompt, Some(Prompt::ConfirmOverwrite { .. })))
+            .await
+    );
+    app.press(KeyCode::Char('o'), M::NONE);
+    wait_saved(&mut app).await;
+    assert_eq!(app.active_buffer().unwrap().path, root.join("h.txt"));
+    assert_eq!(
+        fs::read_to_string(root.join("f.txt")).unwrap(),
+        "two\n",
+        "f.txt untouched"
+    );
+    assert_eq!(fs::read_to_string(root.join("h.txt")).unwrap(), "two\n");
+    // At once, f.txt's markers and blame are gone (h.txt's may already have landed: the
+    // settle in `wait_saved` starts their computations).
+    assert!(
+        kinds(&app) != [HunkKind::Modified] && blame(&app).as_deref() != Some("uncommitted"),
+        "f.txt's markers and blame dropped at once: {:?} {:?}",
+        kinds(&app),
+        blame(&app)
+    );
+    // h.txt: its index and HEAD text is "x\ntwo\n": a line deleted above "two", which is h's.
+    assert!(
+        app.settle(|a| idle(a) && kinds(a) == [HunkKind::Deleted] && blame(a).as_deref() == Some("h's commit"))
+            .await,
+        "h.txt's markers and blame: {:?} {:?}",
+        kinds(&app),
+        blame(&app)
+    );
+}
+
+/// The old path's diagnostics are dropped when a Save As moves the buffer, and a later publish
+/// for the old uri doesn't land on it; the new uri's do.
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_save_as_drops_the_old_paths_diagnostics() {
+    use crate::milestone9_tests::{diag, publish};
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let fake = crate::lsp::fake::FakeLauncher::new(crate::lsp::fake::FakeOptions::default());
+    let (mut app, root) = open_app(&dir, Some(fake.clone()));
+    assert!(
+        app.settle(|_| doc_messages(&fake).iter().any(|(m, _)| m == "didOpen"))
+            .await
+    );
+    let messages = |a: &App| -> Vec<String> {
+        let b = a.active_buffer().unwrap();
+        b.diagnostics.all().iter().map(|m| m.diag.message.clone()).collect()
+    };
+    publish(
+        &app,
+        Language::C,
+        &root.join("a.c"),
+        None,
+        json!([diag(0, 4, 5, 1, "on a")]),
+    );
+    assert!(app.settle(|a| messages(a) == ["on a"]).await, "a.c's squiggle");
+
+    app.press(KeyCode::Char('s'), cmd() | M::SHIFT);
+    app.press(KeyCode::Char('a'), cmd());
+    app.type_text("b.c");
+    app.press(KeyCode::Enter, M::NONE);
+    wait_saved(&mut app).await;
+    assert_eq!(app.active_buffer().unwrap().path, root.join("b.c"));
+    assert!(
+        messages(&app).is_empty(),
+        "a.c's diagnostics dropped: {:?}",
+        messages(&app)
+    );
+
+    // Published in order: a.c's late one first, then b.c's; only b.c's lands.
+    publish(
+        &app,
+        Language::C,
+        &root.join("a.c"),
+        None,
+        json!([diag(0, 0, 3, 1, "late on a")]),
+    );
+    publish(
+        &app,
+        Language::C,
+        &root.join("b.c"),
+        None,
+        json!([diag(0, 0, 3, 2, "on b")]),
+    );
+    assert!(
+        app.settle(|a| !messages(a).is_empty()).await,
+        "b.c's diagnostics arrive"
+    );
+    assert_eq!(messages(&app), ["on b"]);
+    app.shutdown_servers().await;
+}
+
+/// An explorer rename of a tracked file drops its gutter markers at once (they were against the
+/// old path's index blob); the new, untracked path has none.
+#[tokio::test(flavor = "multi_thread")]
+async fn untitled_explorer_rename_drops_the_old_paths_markers() {
+    use crate::milestone10_tests::{dirs, open_file_app, settle_git};
+    let (_d, root, state) = dirs();
+    crate::git::test_repo::init(&root);
+    fs::write(root.join("f.txt"), "one\n").unwrap();
+    crate::git::test_repo::commit_all(&root, "one");
+    fs::write(root.join("f.txt"), "two\n").unwrap();
+    let mut app = open_file_app(&root, &state, "f.txt");
+    assert!(settle_git(&mut app, |s| !s.entries.is_empty()).await);
+    assert!(
+        app.settle(|a| !a.active_buffer().unwrap().quick_diff.marks().is_empty())
+            .await,
+        "f.txt's markers"
+    );
+
+    app.press(KeyCode::Char('e'), cmd() | M::SHIFT);
+    let f = root.join("f.txt");
+    assert!(app.settle(|a| a.explorer.find(&f).is_some()).await, "root listed");
+    app.explorer.selected = Some(f.clone());
+    app.press(KeyCode::F(2), M::NONE);
+    for _ in 0.."f.txt".len() {
+        app.press(KeyCode::Backspace, M::NONE);
+    }
+    app.type_text("g.txt");
+    app.press(KeyCode::Enter, M::NONE);
+    let g = root.join("g.txt");
+    assert!(
+        app.settle(|a| a.active_buffer().unwrap().path == g).await,
+        "the buffer follows the rename"
+    );
+    assert!(
+        app.active_buffer().unwrap().quick_diff.marks().is_empty(),
+        "f.txt's markers dropped at once"
+    );
 }

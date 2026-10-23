@@ -104,7 +104,7 @@ impl App {
                 later = true;
                 continue;
             }
-            let known = buf.quick_diff.begin(revision);
+            let (generation, known) = buf.quick_diff.begin(revision);
             start.push((
                 id,
                 Job {
@@ -113,6 +113,7 @@ impl App {
                     rope: buf.rope.clone(),
                     bom: buf.bom,
                     revision,
+                    generation,
                     known,
                 },
             ));

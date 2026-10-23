@@ -528,6 +528,29 @@ impl App {
         self.spawn_save(buffer, job, Some(path));
     }
 
+    /// Drops what was computed for a buffer's old path: gutter markers, blame and diagnostics
+    /// (the next turn computes them for the new path; the language servers' documents follow at
+    /// the next `sync_servers`, which `servers_dirty` makes start a server the new language needs).
+    pub(super) fn forget_path_state(&mut self, id: BufferId) {
+        if let Some(buf) = self.buffers.get_mut(id) {
+            buf.quick_diff.reset();
+            buf.blame.reset();
+            buf.diagnostics.clear_all();
+        }
+        self.servers_dirty = true;
+        self.needs_redraw = true;
+    }
+
+    /// A Save As gave `id` the path `to`: everything keyed by the path follows. File history
+    /// needs nothing (a copy: the old file keeps its entries, the new path's start with the
+    /// save's snapshot); the watcher covers the whole workspace; tab titles come from the buffer.
+    fn buffer_moved(&mut self, id: BufferId, to: &std::path::Path) {
+        self.forget_path_state(id);
+        self.refresh_git(None);
+        self.refresh_listings_above(to);
+        self.reveal_path(to);
+    }
+
     pub(super) fn save_done(
         &mut self,
         id: BufferId,
@@ -548,7 +571,7 @@ impl App {
                 if let Some(buf) = self.buffers.get_mut(id) {
                     buf.syntax.set_language(lang);
                 }
-                self.servers_dirty = true;
+                self.buffer_moved(id, to);
             }
             _ => buf.finish_save(state, result.as_ref().ok().copied()),
         }
@@ -561,6 +584,8 @@ impl App {
         match result {
             Ok(_) => {
                 self.disk_save_done(id);
+                // `saved` syncs the documents first: after a Save As the server gets didClose
+                // (old path) / didOpen (new) before the didSave.
                 self.lsp.saved(&mut self.buffers, id);
                 self.notify(Level::Info, format!("Saved {path}"));
                 if to.is_some() {
