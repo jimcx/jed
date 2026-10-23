@@ -9,7 +9,13 @@
 //! global keys stay jed's), Shift+PageUp / PageDown / Ctrl+Home / End and the wheel through the
 //! scrollback, exit notes kept on screen and in the status bar (success, exit code, failed
 //! start), a closed tab killing the shell, and quitting hanging every shell up (SIGKILL when
-//! SIGHUP is ignored).
+//! SIGHUP is ignored). shell-c: the real socket end to end — a program started from the shell
+//! records `JED_IPC` (the socket path), and the real `jed` binary run from the shell opens its
+//! file here (`jed <file>`, and `git commit` through `core.editor = "jed --wait"`; both skip
+//! with a printed note when the binary or git is missing) — `stty size` follows the editor
+//! area's resize and a split, and a `.workspace` `scrollback = 50` is what a new shell and a
+//! new task run keep. That the user's own `.zshrc` / `.bashrc` runs is a hand check: it needs
+//! the user's real init and shell, which a test must not depend on.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -22,6 +28,7 @@ use ratatui::backend::TestBackend;
 use crate::app::{App, Focus, Level};
 use crate::buffer::Buffer;
 use crate::command::Command;
+use crate::syntax::Language;
 use crate::tasks::{SHUTDOWN_TIMEOUT, Source, Status, Task, Template};
 use crate::workspace::Workspace;
 use crate::workspace::trust::TrustStore;
@@ -328,6 +335,98 @@ fn scrollback(app: &App) -> usize {
 fn group_gone(pid: u32) -> bool {
     // SAFETY: signal 0 checks for the group's existence and sends nothing.
     unsafe { libc::kill(-(pid as i32), 0) != 0 }
+}
+
+/// An app on `root` with a listening socket in a short temp subdir (`sun_path` is ~104 bytes on
+/// macOS), its `$SHELL` for "Terminal: New Shell" set to `/bin/sh`; with the socket path.
+async fn listening_app(root: &Path, state: &Path, sockets: &tempfile::TempDir) -> (App, PathBuf) {
+    let dir = crate::workspace::normalize(sockets.path()).join("s");
+    let socket = crate::ipc::socket_path(&dir, std::process::id());
+    let ws = Workspace::load(root.to_path_buf());
+    let trust = TrustStore::load(state.join("trust.toml"));
+    let mut app = App::new(ws, trust, None, true);
+    app.ipc_dir = Some(dir);
+    let config_dir = state.join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    app.config_dir = config_dir;
+    app.test_start();
+    assert!(app.settle(|a| a.tasks.ipc.is_some()).await, "the socket is listening");
+    assert_eq!(app.tasks.ipc.as_deref(), Some(socket.as_path()));
+    app.tasks.shell = "/bin/sh".into();
+    (app, socket)
+}
+
+/// `text` into the focused shell as a paste (a long command line arrives at once).
+fn paste(app: &mut App, text: &str) {
+    app.handle_test_event(CEvent::Paste(text.into()));
+}
+
+/// A command line in the focused shell: pasted, then Enter.
+fn run_in_shell(app: &mut App, line: &str) {
+    paste(app, line);
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+}
+
+/// Whether any shell tab's screen text contains `needle` (the shell is not the active tab after
+/// an IPC-opened file takes it).
+fn screen_has(app: &App, needle: &str) -> bool {
+    app.groups
+        .shell_tabs()
+        .any(|s| s.run.screen().screen().contents().contains(needle))
+}
+
+/// Every shell tab's screen text (for a failing test's message).
+fn shell_text(app: &App) -> String {
+    app.groups
+        .shell_tabs()
+        .map(|s| s.run.screen().screen().contents())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The real `jed` executable: unit tests get no `CARGO_BIN_EXE_jed`, so fall back to the target
+/// dir's binary (`<target>/<profile>/deps/jed-<hash>` → `<target>/<profile>/jed`).
+fn jed_binary() -> Option<PathBuf> {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_jed")
+        && Path::new(path).is_file()
+    {
+        return Some(path.into());
+    }
+    let path = std::env::current_exe().ok()?.parent()?.parent()?.join("jed");
+    path.is_file().then_some(path)
+}
+
+/// `jed_binary`, or a printed skip note and `None`: a test needing the real binary passes
+/// without it (as other environment-dependent tests do).
+fn jed_or_skip(test: &str) -> Option<PathBuf> {
+    let binary = jed_binary();
+    if binary.is_none() {
+        eprintln!("skipped {test}: needs the jed binary");
+    }
+    binary
+}
+
+/// A git command run outside the shell (`init`, `add`, `log`), its trimmed stdout when it worked.
+fn git_in(root: &Path, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Quits the app (as `run` does) and checks every shell's process group is gone.
+async fn quit_shells(app: &mut App) {
+    let pids: Vec<u32> = app.groups.shell_tabs().filter_map(|s| s.run.pid()).collect();
+    app.test_execute(Command::Quit);
+    app.shutdown().await;
+    assert!(
+        app.settle(|_| pids.iter().all(|&pid| group_gone(pid))).await,
+        "no shell process is left after quit"
+    );
 }
 
 /// Every key bound to nothing goes to the shell as a terminal sends it (typed chars, Up, Esc,
@@ -811,4 +910,242 @@ async fn shell_quit_kills_a_shell_that_ignores_hangup() {
         other => panic!("still running after the timeout's SIGKILL: {other:?}"),
     }
     assert!(app.settle(|_| group_gone(pid)).await, "the whole process group is gone");
+}
+
+/// `JED_IPC` is in the shell program's environment (the listening socket's path), so tools it
+/// starts (`git commit`, `jed <file>`) reach this jed.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_jed_ipc_is_exported_to_its_program() {
+    let (_d, root, state) = dirs();
+    let sockets = tempfile::tempdir().unwrap();
+    let record = root.join("ipc.txt");
+    let (mut app, socket) = listening_app(&root, &state, &sockets).await;
+    app.tasks.shell = shell_script(
+        &root,
+        "record-ipc",
+        &format!("printf '%s' \"$JED_IPC\" > '{}'\nexec /bin/sh", record.display()),
+    );
+    app.test_execute(Command::NewShell);
+
+    let written = app
+        .settle(|_| std::fs::read_to_string(&record).is_ok_and(|s| !s.is_empty()))
+        .await;
+    assert!(
+        written,
+        "the program wrote JED_IPC to {}:\n{}",
+        record.display(),
+        shell_text(&app)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&record).unwrap(),
+        socket.to_string_lossy(),
+        "the shell's JED_IPC is the socket path, exactly"
+    );
+    assert_eq!(app.tasks.ipc.as_deref(), Some(socket.as_path()));
+    quit_shells(&mut app).await;
+}
+
+/// `jed <file>` typed in the shell opens the file in this jed through the socket (the command
+/// returns 0 at once), not a second instance; one group, the shell still there.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_jed_command_opens_the_file_in_this_jed() {
+    let (_d, root, state) = dirs();
+    let sockets = tempfile::tempdir().unwrap();
+    let Some(jed) = jed_or_skip("shell_jed_command_opens_the_file_in_this_jed") else {
+        return;
+    };
+    let other = root.join("other.txt");
+    std::fs::write(&other, "from the shell\n").unwrap();
+    let (mut app, _socket) = listening_app(&root, &state, &sockets).await;
+    app.test_execute(Command::NewShell);
+
+    run_in_shell(
+        &mut app,
+        &format!("'{}' '{}'; echo JED_OPENED=$?", jed.display(), other.display()),
+    );
+    let opened = app
+        .settle(|a| a.active_buffer().is_some_and(|b| b.name() == "other.txt"))
+        .await;
+    assert!(
+        opened,
+        "the file opened in this jed, not another:\n{}",
+        shell_text(&app)
+    );
+    assert_eq!(app.active_buffer().unwrap().path, other);
+    assert_eq!(app.groups.len(), 1, "the same window: no second group");
+    let finished = app.settle(|a| screen_has(a, "JED_OPENED=0")).await;
+    assert!(finished, "the command came back from this jed:\n{}", shell_text(&app));
+    assert_eq!(app.groups.shell_tabs().count(), 1, "the shell tab stays");
+    quit_shells(&mut app).await;
+}
+
+/// `git commit` typed in the shell: git's `core.editor` is `jed --wait`, so the message opens in
+/// this jed through the socket; saving and closing it lets git finish, and the commit is made.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_git_commit_opens_its_message_here() {
+    let (_d, root, state) = dirs();
+    let sockets = tempfile::tempdir().unwrap();
+    let Some(jed) = jed_or_skip("shell_git_commit_opens_its_message_here") else {
+        return;
+    };
+    if git_in(&root, &["--version"]).is_none() {
+        eprintln!("skipped shell_git_commit_opens_its_message_here: needs git");
+        return;
+    }
+    assert!(git_in(&root, &["init", "-q"]).is_some(), "git init");
+    std::fs::write(root.join("a.txt"), "a\n").unwrap();
+    assert!(git_in(&root, &["add", "a.txt"]).is_some(), "git add");
+    let (mut app, _socket) = listening_app(&root, &state, &sockets).await;
+    app.test_execute(Command::NewShell);
+
+    let message = "Made from the shell";
+    // `GIT_EDITOR` beats `core.editor`, so unset it; the flags and the config isolation keep the
+    // user's git config (templates, hooks, signing) out of the commit.
+    let line = format!(
+        "unset GIT_EDITOR VISUAL; GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git \
+         -c user.name=t -c user.email=t@t.t -c commit.gpgsign=false \
+         -c \"core.editor='{}' --wait\" commit; echo COMMITTED=$?",
+        jed.display()
+    );
+    run_in_shell(&mut app, &line);
+    let opened = app
+        .settle(|a| a.active_buffer().is_some_and(|b| b.name() == "COMMIT_EDITMSG"))
+        .await;
+    assert!(
+        opened,
+        "git's editor opened COMMIT_EDITMSG in this jed:\n{}",
+        shell_text(&app)
+    );
+    assert_eq!(app.active_buffer().unwrap().syntax.language(), Language::GitCommit);
+
+    app.type_text(message);
+    app.press(KeyCode::Char('s'), cmd());
+    assert!(
+        app.settle(|a| a.active_buffer().is_some_and(|b| !b.is_dirty())).await,
+        "the message saved"
+    );
+    app.press(KeyCode::Char('w'), cmd());
+    let committed = app.settle(|a| screen_has(a, "COMMITTED=0")).await;
+    assert!(committed, "the waiting editor let git commit:\n{}", shell_text(&app));
+    assert_eq!(
+        git_in(&root, &["log", "-1", "--format=%s"]).as_deref(),
+        Some(message),
+        "the commit holds the message typed in the tab"
+    );
+    quit_shells(&mut app).await;
+}
+
+/// The shell's PTY follows the editor area (`stty size`): a narrower frame and a split resize the
+/// shell's group, and the shell's program sees each size.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_stty_size_follows_the_editor_area() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    app.tasks.shell = "/bin/sh".into();
+    draw(&mut app, 100, 24);
+    app.test_execute(Command::NewShell);
+    draw(&mut app, 100, 24);
+    let editor = app.hits.group(app.groups.active).unwrap().editor;
+    let expected = format!("SIZE={} {}", editor.height, editor.width);
+    run_in_shell(&mut app, "printf 'SIZE='; stty size");
+    assert!(
+        app.settle(|a| screen_has(a, &expected)).await,
+        "stty size says {expected}:\n{}",
+        shell_text(&app)
+    );
+
+    // A narrower frame.
+    let wide = editor.width;
+    draw(&mut app, 90, 24);
+    let editor = app.hits.group(app.groups.active).unwrap().editor;
+    assert!(editor.width < wide, "the narrower frame shrank the editor");
+    let expected = format!("SIZE={} {}", editor.height, editor.width);
+    app.group()
+        .active_shell()
+        .unwrap()
+        .run
+        .write(b"printf 'SIZE='; stty size\n");
+    assert!(
+        app.settle(|a| screen_has(a, &expected)).await,
+        "after a resize stty size says {expected}:\n{}",
+        shell_text(&app)
+    );
+
+    // A split narrows the shell's group (which is not the active group after it).
+    app.test_execute(Command::SplitRight);
+    let shell_group = app.groups.ids()[0];
+    draw(&mut app, 90, 24);
+    let editor = app.hits.group(shell_group).unwrap().editor;
+    assert!(editor.width < wide, "the split narrowed the shell's group");
+    let expected = format!("SIZE={} {}", editor.height, editor.width);
+    app.groups
+        .get(shell_group)
+        .unwrap()
+        .active_shell()
+        .unwrap()
+        .run
+        .write(b"printf 'SIZE='; stty size\n");
+    assert!(
+        app.settle(|a| screen_has(a, &expected)).await,
+        "after a split stty size says {expected}:\n{}",
+        shell_text(&app)
+    );
+    quit_shells(&mut app).await;
+}
+
+/// A `.workspace` `scrollback = 50` reaches the runs: a shell opened from it and a task run from
+/// it each keep exactly the newest 50 lines above the screen (not just `app.settings` set by
+/// hand).
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_workspace_scrollback_setting() {
+    let (_d, root, state) = dirs();
+    std::fs::write(root.join(".workspace"), "[settings]\nscrollback = 50\n").unwrap();
+    let mut app = shell_app(&root, &state);
+    assert_eq!(app.settings.scrollback, 50, "the .workspace's setting is read");
+    app.tasks.shell = "/bin/sh".into();
+    app.test_execute(Command::NewShell);
+    app.group()
+        .active_shell()
+        .unwrap()
+        .run
+        .write(format!("{COUNT_TO_200}\n").as_bytes());
+    assert!(
+        app.settle(|a| screen_has(a, "199")).await,
+        "the shell ran the command:\n{}",
+        shell_text(&app)
+    );
+    {
+        let mut screen = app.groups.shell_tabs().next().unwrap().run.screen();
+        screen.screen_mut().set_scrollback(usize::MAX);
+        assert_eq!(screen.screen().scrollback(), 50, "a shell keeps the setting's lines");
+        // 200 lines were printed: a window of the newest 50 starts well past line 100, the oldest
+        // 50 at line 0 (the line numbers include the echoed command line).
+        let first: usize = screen.screen().contents().lines().next().unwrap().parse().unwrap();
+        assert!(first >= 100, "the newest 50 lines, not the oldest (first line {first})");
+    }
+
+    // The same setting for a task run started after the workspace was loaded.
+    app.tasks.size = (2, 20);
+    let template = Template {
+        name: "count".into(),
+        task: Task {
+            command: COUNT_TO_200.into(),
+            cwd: None,
+            env: BTreeMap::new(),
+        },
+        source: Source::User,
+    };
+    let id = app.start_task(&template);
+    let ended = app
+        .settle(|a| a.tasks.get(id).is_some_and(|r| !r.status().is_running()))
+        .await;
+    assert!(ended, "the task ended");
+    {
+        let mut screen = app.tasks.get(id).unwrap().screen();
+        screen.screen_mut().set_scrollback(usize::MAX);
+        assert_eq!(screen.screen().scrollback(), 50, "a task run keeps the setting's lines");
+        let first: usize = screen.screen().contents().lines().next().unwrap().parse().unwrap();
+        assert!(first >= 100, "the newest 50 lines, not the oldest (first line {first})");
+    }
+    quit_shells(&mut app).await;
 }

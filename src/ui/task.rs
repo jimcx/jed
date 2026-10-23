@@ -136,6 +136,9 @@ pub fn render_shell(f: &mut Frame, area: Rect, shell: &ShellTab, theme: &Theme, 
     }
     f.buffer_mut()
         .set_style(area, theme.get("editor").patch(theme.get("terminal.background")));
+    // Before `screen()`: the spawn holds the state lock while it takes the screen's (the reverse
+    // order would deadlock on a shell drawn while it starts), as `render` does above.
+    let running = shell.run.status().is_running();
     let parser = shell.run.screen();
     let screen = Shifted {
         screen: parser.screen(),
@@ -149,8 +152,7 @@ pub fn render_shell(f: &mut Frame, area: Rect, shell: &ShellTab, theme: &Theme, 
             theme.terminal_cell(&mut out[(x, y)]);
         }
     }
-    if focused && shell.run.status().is_running() && parser.screen().scrollback() == 0 && !parser.screen().hide_cursor()
-    {
+    if focused && running && parser.screen().scrollback() == 0 && !parser.screen().hide_cursor() {
         let (row, col) = tui_term::widget::Screen::cursor_position(&screen);
         if row < area.height && col < area.width {
             f.set_cursor_position(Position {
@@ -163,7 +165,12 @@ pub fn render_shell(f: &mut Frame, area: Rect, shell: &ShellTab, theme: &Theme, 
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::Duration;
+
     use super::*;
+    use crate::tasks::{RunId, Status};
 
     #[test]
     fn a_taller_screen_keeps_its_last_line_in_view() {
@@ -181,5 +188,57 @@ mod tests {
         let cell = tui_term::widget::Screen::cell(&shifted, 2, 0).unwrap();
         assert_eq!(cell.contents(), "s");
         assert_eq!(tui_term::widget::Screen::cursor_position(&shifted), (3, 0));
+    }
+
+    /// A shell drawn while it is still starting must take the state lock before the screen's: the
+    /// spawn holds the state while it takes the screen's, so the reverse order stopped both (the
+    /// UI froze on a new shell's first frame). With the state held, the draw must wait for it
+    /// without holding the screen.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_draw_waits_for_the_state_without_holding_the_screen() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = ShellTab::new(
+            RunId(1),
+            Path::new("/bin/cat"),
+            dir.path(),
+            None,
+            10,
+            20,
+            Arc::new(|_| {}),
+            0,
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while shell.run.status() != Status::Running {
+            assert!(std::time::Instant::now() < deadline, "the shell started");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let theme = Theme::dark_plus(true);
+        std::thread::scope(|s| {
+            let _state = shell.run.test_hold_state();
+            let (started, rx) = std::sync::mpsc::channel();
+            let (draw_shell, draw_theme) = (&shell, &theme);
+            s.spawn(move || {
+                let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 10)).unwrap();
+                started.send(()).unwrap();
+                term.draw(|f| render_shell(f, Rect::new(0, 0, 20, 10), draw_shell, draw_theme, true))
+                    .unwrap();
+            });
+            rx.recv_timeout(Duration::from_secs(2)).expect("the draw started");
+            // `/bin/cat` prints nothing, so only the draw could hold the screen here.
+            for _ in 0..40 {
+                std::thread::sleep(Duration::from_millis(5));
+                assert!(
+                    shell.run.test_screen_free(),
+                    "the draw held the screen while it waited for the state"
+                );
+            }
+            // The closure ends, dropping the state guard; the scope then waits for the draw.
+        });
+        shell.run.kill();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while shell.run.status().is_running() {
+            assert!(std::time::Instant::now() < deadline, "the shell ended");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 }

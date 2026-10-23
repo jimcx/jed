@@ -260,6 +260,21 @@ impl Drop for Run {
     }
 }
 
+/// Test hooks for the lock order: the spawn holds the state lock while it takes the screen's, so
+/// a caller that took the screen first and then waited for the state would deadlock with it.
+#[cfg(test)]
+impl Run {
+    /// Holds the state lock until the guard is dropped.
+    pub(crate) fn test_hold_state(&self) -> impl Drop + '_ {
+        lock(&self.shared.state)
+    }
+
+    /// Whether the screen's lock is free right now (nothing holds it).
+    pub(crate) fn test_screen_free(&self) -> bool {
+        self.shared.parser.try_lock().is_ok()
+    }
+}
+
 impl Shared {
     fn kill(self: &Arc<Self>, force: bool) {
         let mut state = lock(&self.state);
