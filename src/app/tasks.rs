@@ -239,9 +239,9 @@ impl App {
         self.notify(level, note);
     }
 
-    /// On quit (and when the terminal goes away): language servers asked to exit and running
-    /// tasks killed, both bounded (`lsp::SHUTDOWN_TIMEOUT`, `tasks::SHUTDOWN_TIMEOUT`), and the
-    /// session written (`save_session`), all at once.
+    /// On quit (and when the terminal goes away): language servers asked to exit, running
+    /// tasks and shells killed, all bounded (`lsp::SHUTDOWN_TIMEOUT`, `tasks::SHUTDOWN_TIMEOUT`),
+    /// and the session written (`save_session`), all at once.
     pub async fn shutdown(&mut self) {
         self.ipc_shutdown();
         let session = self.save_session();
@@ -252,7 +252,8 @@ impl App {
                 tracing::warn!("session not saved: {e}");
             }
         };
-        tokio::join!(self.lsp.shutdown(), self.tasks.shutdown(), session);
+        let shells = super::shell::shutdown_shells(&self.groups);
+        tokio::join!(self.lsp.shutdown(), self.tasks.shutdown(), session, shells);
         // The servers' last lines (their "Stopped") onto disk.
         self.flush_tool_logs().await;
         // After the session: a clean quit removes the backups, else they're brought up to date.

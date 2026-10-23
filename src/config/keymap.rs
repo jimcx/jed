@@ -12,7 +12,8 @@ use serde::Deserialize;
 use crate::command::{
     CodeActionCommand as Ca, ColumnMotion, Command, CommitCommand as Cc, ExplorerCommand as X, FindCommand as F,
     GitHistoryCommand as G, LocationsCommand as L, Motion, PaletteCommand as P, ProblemsCommand as Pr,
-    ScmCommand as Sc, SearchCommand as S, SuggestCommand as Sg, TaskCommand as T, ToolsCommand as Tl,
+    ScmCommand as Sc, SearchCommand as S, ShellCommand as Sh, SuggestCommand as Sg, TaskCommand as T,
+    ToolsCommand as Tl,
 };
 
 pub const FILE_NAME: &str = "keybindings.toml";
@@ -210,10 +211,13 @@ pub enum Context {
     /// The editor has the focus and its active tab is a hex view; bindings not found here come
     /// from `Editor` (movement, selection, copy, Tab).
     Hex,
+    /// The editor has the focus and its active tab is a shell: keys bound to nothing (here or
+    /// globally) go to the shell's terminal.
+    Shell,
 }
 
 impl Context {
-    const ALL: [(Context, &'static str); 18] = [
+    const ALL: [(Context, &'static str); 19] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
@@ -232,6 +236,7 @@ impl Context {
         (Context::Commit, "commit"),
         (Context::Task, "task"),
         (Context::Hex, "hex"),
+        (Context::Shell, "shell"),
     ];
 
     fn parse(name: &str) -> Option<Context> {
@@ -855,6 +860,17 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Char('w'), cmd, Command::CloseTask),
     ];
 
+    // A shell tab: scrolling through its scrollback (VS Code's terminal keys, Ctrl rather than
+    // Cmd on macOS). Cmd+W and the global keys still work; every other key goes to the shell.
+    let shell = [
+        (KeyCode::PageUp, shift, Command::Shell(Sh::PageUp)),
+        (KeyCode::PageDown, shift, Command::Shell(Sh::PageDown)),
+        (KeyCode::Up, ctrl | shift, Command::Shell(Sh::ScrollUp)),
+        (KeyCode::Down, ctrl | shift, Command::Shell(Sh::ScrollDown)),
+        (KeyCode::Home, ctrl, Command::Shell(Sh::Top)),
+        (KeyCode::End, ctrl, Command::Shell(Sh::Bottom)),
+    ];
+
     let bind = |code, mods, context, command| Binding {
         combo: KeyCombo { code, mods },
         context,
@@ -926,6 +942,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
     );
     out.extend(commit.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Commit), c)));
     out.extend(task.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Task), c)));
+    out.extend(shell.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Shell), c)));
     out
 }
 
@@ -1024,6 +1041,49 @@ mod tests {
             }
         }
         assert_eq!(Context::parse("task"), Some(Context::Task));
+    }
+
+    #[test]
+    fn shell_tabs_keep_global_keys_and_leave_the_rest_to_the_shell() {
+        for p in [Platform::MacOs, Platform::Linux] {
+            let km = Keymap::default_for(p);
+            let cmd = if p == Platform::MacOs {
+                KeyModifiers::SUPER
+            } else {
+                KeyModifiers::CONTROL
+            };
+            let sh = Context::Shell;
+            assert_eq!(km.lookup(&key(KeyCode::Char('w'), cmd), sh), Some(Command::CloseTab));
+            assert_eq!(
+                km.lookup(&key(KeyCode::Char('p'), cmd | KeyModifiers::SHIFT), sh),
+                Some(Command::ShowCommands)
+            );
+            assert_eq!(
+                km.lookup(&key(KeyCode::Char('q'), KeyModifiers::CONTROL), sh),
+                Some(Command::Quit),
+                "Ctrl+Q quits from a shell"
+            );
+            assert_eq!(
+                km.lookup(&key(KeyCode::PageUp, KeyModifiers::SHIFT), sh),
+                Some(Command::Shell(Sh::PageUp))
+            );
+            assert_eq!(
+                km.lookup(&key(KeyCode::End, KeyModifiers::CONTROL), sh),
+                Some(Command::Shell(Sh::Bottom))
+            );
+            for unbound in [
+                key(KeyCode::Char('y'), KeyModifiers::NONE),
+                key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                key(KeyCode::Char('d'), KeyModifiers::CONTROL),
+                key(KeyCode::Enter, KeyModifiers::NONE),
+                key(KeyCode::Up, KeyModifiers::NONE),
+                key(KeyCode::Esc, KeyModifiers::NONE),
+                key(KeyCode::Tab, KeyModifiers::NONE),
+            ] {
+                assert_eq!(km.lookup(&unbound, sh), None, "{p:?} {unbound:?}");
+            }
+        }
+        assert_eq!(Context::parse("shell"), Some(Context::Shell));
     }
 
     #[test]

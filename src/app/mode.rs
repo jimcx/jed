@@ -52,6 +52,7 @@ impl Mode {
                     | Command::KillTask
                     | Command::CloseTask
                     | Command::Task(_)
+                    | Command::Shell(_)
                     | Command::ToggleToolTrace
                     | Command::RestartServer
                     | Command::NewUntitledFile
@@ -118,6 +119,7 @@ mod tests {
             Command::TogglePanel,
             Command::RunTask,
             Command::NewShell,
+            Command::Shell(crate::command::ShellCommand::ScrollUp),
             Command::NewUntitledFile,
             Command::SaveAs,
         ] {

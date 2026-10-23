@@ -240,6 +240,8 @@ pub enum Command {
     CloseTask,
     /// A task tab's keys (`Context::Task`): scrolling, back to the editor.
     Task(TaskCommand),
+    /// A shell tab's keys (`Context::Shell`): scrolling through its scrollback.
+    Shell(ShellCommand),
     /// "Open Recent Workspace" (Ctrl+R): a picker of recent workspaces; picking one opens it in
     /// another jed (jed never switches its own workspace).
     OpenRecentWorkspace,
@@ -356,6 +358,29 @@ impl TaskCommand {
         TaskCommand::Top,
         TaskCommand::Bottom,
         TaskCommand::FocusEditor,
+    ];
+}
+
+/// A shell tab (`Context::Shell`, while it has the keys); keys bound to nothing go to the shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShellCommand {
+    /// Through the scrollback: a line, a page, the oldest output, the live screen.
+    ScrollUp,
+    ScrollDown,
+    PageUp,
+    PageDown,
+    Top,
+    Bottom,
+}
+
+impl ShellCommand {
+    pub const ALL: [ShellCommand; 6] = [
+        ShellCommand::ScrollUp,
+        ShellCommand::ScrollDown,
+        ShellCommand::PageUp,
+        ShellCommand::PageDown,
+        ShellCommand::Top,
+        ShellCommand::Bottom,
     ];
 }
 
@@ -857,6 +882,7 @@ impl Command {
             Command::CloseTask,
         ]);
         all.extend(TaskCommand::ALL.map(Command::Task));
+        all.extend(ShellCommand::ALL.map(Command::Shell));
         all.push(Command::OpenRecentWorkspace);
         all.push(Command::ToggleRenderWhitespace);
         all.extend([
@@ -1208,6 +1234,17 @@ impl Command {
                     TaskCommand::FocusEditor => "focusEditor",
                 }
             ),
+            Command::Shell(c) => format!(
+                "terminal.{}",
+                match c {
+                    ShellCommand::ScrollUp => "scrollUp",
+                    ShellCommand::ScrollDown => "scrollDown",
+                    ShellCommand::PageUp => "scrollPageUp",
+                    ShellCommand::PageDown => "scrollPageDown",
+                    ShellCommand::Top => "scrollToTop",
+                    ShellCommand::Bottom => "scrollToBottom",
+                }
+            ),
         }
     }
 
@@ -1499,6 +1536,14 @@ impl Command {
                 TaskCommand::Bottom => "Tasks: Scroll to Bottom",
                 TaskCommand::FocusEditor => "Tasks: Back to Editor",
             },
+            Command::Shell(c) => match c {
+                ShellCommand::ScrollUp => "Terminal: Scroll Up",
+                ShellCommand::ScrollDown => "Terminal: Scroll Down",
+                ShellCommand::PageUp => "Terminal: Scroll Page Up",
+                ShellCommand::PageDown => "Terminal: Scroll Page Down",
+                ShellCommand::Top => "Terminal: Scroll to Top",
+                ShellCommand::Bottom => "Terminal: Scroll to Bottom",
+            },
         };
         s.into()
     }
@@ -1622,6 +1667,7 @@ mod tests {
             Command::KillTask => 80,
             Command::CloseTask => 81,
             Command::Task(_) => 82,
+            Command::Shell(_) => 120,
             Command::OpenRecentWorkspace => 83,
             Command::ToggleRenderWhitespace => 84,
             Command::ToggleBlame => 85,
@@ -1657,7 +1703,7 @@ mod tests {
             Command::ConvertIndentationToTabs => 112,
         }
     }
-    const VARIANTS: u8 = 120;
+    const VARIANTS: u8 = 121;
 
     #[test]
     fn all_lists_every_variant() {
@@ -1681,6 +1727,7 @@ mod tests {
         assert_eq!(count(94), GitHistoryCommand::ALL.len());
         assert_eq!(count(95), CommitCommand::ALL.len());
         assert_eq!(count(82), TaskCommand::ALL.len());
+        assert_eq!(count(120), ShellCommand::ALL.len());
         assert_eq!(count(91), ToolsCommand::ALL.len());
     }
 

@@ -187,6 +187,7 @@ fn context_title(context: Context) -> Option<&'static str> {
         Context::Commit => "Commit",
         Context::Task => "Task",
         Context::Hex => "Hex View",
+        Context::Shell => "Terminal",
     })
 }
 
@@ -399,6 +400,16 @@ mod tests {
             assert!(s[0].rows.iter().any(|r| r.key == "F7"));
             // No keys of its own (a hex tab takes the editor's): no section.
             assert_eq!(sections(&km, Context::Hex)[0].title, "Cursor Movement");
+            // A shell tab's own keys are its scrollback, under "Terminal".
+            let s = sections(&km, Context::Shell);
+            assert_eq!(s[0].title, "Terminal");
+            assert!(
+                s[0].rows
+                    .iter()
+                    .any(|r| r.title == short_title(Command::Shell(crate::command::ShellCommand::PageUp))),
+                "{:?}",
+                s[0]
+            );
             // The editor's own keys are the groups.
             assert_eq!(sections(&km, Context::Editor)[0].title, "Cursor Movement");
         }

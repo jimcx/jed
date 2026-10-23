@@ -180,8 +180,13 @@ impl App {
                         PanelTab::Locations => self.locations_scroll(delta),
                         PanelTab::Task(_) => self.task_scroll(delta),
                     },
-                    // Scrolls the group under the mouse, without focusing it.
+                    // Scrolls the group under the mouse, without focusing it (a shell tab
+                    // scrolls its scrollback).
                     Hit::Editor(g) => {
+                        if let Some(shell) = self.groups.get(g).and_then(|g| g.active_shell()) {
+                            shell.run.scroll(delta);
+                            return;
+                        }
                         let tab = self.groups.get_mut(g).and_then(|g| g.active_tab_mut());
                         if let Some(tab) = tab
                             && let Some(buf) = self.buffers.get(tab.buffer)

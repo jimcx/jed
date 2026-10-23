@@ -3,13 +3,14 @@
 //! (`.zshrc` / `.bashrc` / `config.fish`) runs; `JED_IPC` lets `git commit` and `jed <file>` from
 //! it open in this jed.
 //!
-//! No drawing (`ui::task` draws the screen) and no app state (`app/shell.rs` opens it, numbers its
-//! title and hands its events on).
+//! No drawing (`ui::task::render_shell` draws the screen) and no app state (`app/shell.rs` opens
+//! it, numbers its title, sends it keys and pastes, hands its events on and hangs it up at quit).
+//! `end_note` is the line below its output once it ends.
 
 use std::path::Path;
 
 use crate::tasks::templates::{self, Spec};
-use crate::tasks::{Run, RunId, Sink};
+use crate::tasks::{Exit, Run, RunId, Sink, Status};
 
 /// A shell tab: its run, the title the tab bar shows, and the program's name (`zsh`), which
 /// numbers the next shell of the same program.
@@ -51,6 +52,20 @@ pub fn title(base: &str, number: usize) -> String {
     } else {
         format!("{base} ({number})")
     }
+}
+
+/// The line written below a shell's output once it ends ("Shell 'zsh' exited with code 3");
+/// `None` while it starts or runs.
+pub fn end_note(title: &str, status: &Status) -> Option<String> {
+    Some(match status {
+        Status::Starting | Status::Running => return None,
+        Status::Failed(e) => format!("Shell '{title}' failed to start: {e}"),
+        Status::Exited(Exit { killed: true, .. }) => format!("Shell '{title}' was killed"),
+        Status::Exited(Exit {
+            signal: Some(signal), ..
+        }) => format!("Shell '{title}' ended by signal: {signal}"),
+        Status::Exited(e) => format!("Shell '{title}' exited with code {}", e.code),
+    })
 }
 
 /// A shell's name in the tab bar and a run's `name`: the program's file name.
@@ -98,6 +113,30 @@ mod tests {
         assert_eq!(base(Path::new("/bin/zsh")), "zsh");
         assert_eq!(base(Path::new("/usr/local/bin/fish")), "fish");
         assert_eq!(base(Path::new("sh")), "sh");
+    }
+
+    #[test]
+    fn end_notes_say_how_the_shell_ended() {
+        assert_eq!(end_note("zsh", &Status::Starting), None);
+        assert_eq!(end_note("zsh", &Status::Running), None);
+        let exited = |code, signal, killed| end_note("zsh", &Status::Exited(Exit { code, signal, killed }));
+        assert_eq!(
+            exited(3, None, false).as_deref(),
+            Some("Shell 'zsh' exited with code 3")
+        );
+        assert_eq!(
+            exited(0, None, false).as_deref(),
+            Some("Shell 'zsh' exited with code 0")
+        );
+        assert_eq!(exited(1, None, true).as_deref(), Some("Shell 'zsh' was killed"));
+        assert_eq!(
+            exited(1, Some("Hangup".into()), false).as_deref(),
+            Some("Shell 'zsh' ended by signal: Hangup")
+        );
+        assert_eq!(
+            end_note("zsh", &Status::Failed("/bin/zsh: not found".into())).as_deref(),
+            Some("Shell 'zsh' failed to start: /bin/zsh: not found")
+        );
     }
 
     #[test]

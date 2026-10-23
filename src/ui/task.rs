@@ -12,7 +12,9 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Focus};
 use crate::layout;
+use crate::shell::ShellTab;
 use crate::tasks::RunId;
+use crate::theme::Theme;
 
 /// A `vt100` screen seen from row `top` down (`tui-term` draws from row 0).
 struct Shifted<'a> {
@@ -119,6 +121,41 @@ pub fn render(f: &mut Frame, panel: Rect, info: Rect, app: &mut App, id: RunId) 
             f.set_cursor_position(Position {
                 x: content.x + col,
                 y: content.y + row,
+            });
+        }
+    }
+}
+
+/// Draws a shell tab's screen in `area` (the whole editor area: no tab strip or info line, no
+/// scroll bar column). The caller resizes the run to `area` each frame; `focused` shows the
+/// terminal cursor only on the live screen, as a task tab does. No `App`: the caller still holds
+/// the group mutably.
+pub fn render_shell(f: &mut Frame, area: Rect, shell: &ShellTab, theme: &Theme, focused: bool) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    f.buffer_mut()
+        .set_style(area, theme.get("editor").patch(theme.get("terminal.background")));
+    let parser = shell.run.screen();
+    let screen = Shifted {
+        screen: parser.screen(),
+        top: top_row(parser.screen(), area.height),
+    };
+    let term = PseudoTerminal::new(&screen).cursor(Cursor::default().visibility(false));
+    f.render_widget(term, area);
+    let out = f.buffer_mut();
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            theme.terminal_cell(&mut out[(x, y)]);
+        }
+    }
+    if focused && shell.run.status().is_running() && parser.screen().scrollback() == 0 && !parser.screen().hide_cursor()
+    {
+        let (row, col) = tui_term::widget::Screen::cursor_position(&screen);
+        if row < area.height && col < area.width {
+            f.set_cursor_position(Position {
+                x: area.x + col,
+                y: area.y + row,
             });
         }
     }

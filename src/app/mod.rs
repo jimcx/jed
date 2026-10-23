@@ -928,6 +928,7 @@ impl App {
             Focus::Editor if self.group().active_diff().is_some() => Context::Diff,
             Focus::Editor if self.group().active_hex().is_some() => Context::Hex,
             Focus::Editor if self.active_commit().is_some() => Context::Commit,
+            Focus::Editor if self.group().active_shell().is_some() => Context::Shell,
             Focus::Editor => Context::Editor,
             Focus::SidePanel if self.ui.side_panel == SidePanel::Search && self.search_view.list_focused => {
                 Context::SearchResults
@@ -996,6 +997,8 @@ impl App {
                     self.search_key(key);
                 } else if self.task_focused().is_some() {
                     self.task_key(key);
+                } else if self.shell_focused() {
+                    self.shell_key(key);
                 } else if let KeyCode::Char(c) = key.code
                     && (key.modifiers - KeyModifiers::SHIFT).is_empty()
                     && self.ui.focus == Focus::Editor
@@ -1024,6 +1027,8 @@ impl App {
                     self.search_paste(&text);
                 } else if self.prompt.is_none() && self.task_focused().is_some() {
                     self.task_paste(&text);
+                } else if self.prompt.is_none() && self.shell_focused() {
+                    self.shell_paste(&text);
                 } else if self.prompt.is_none() && self.ui.focus == Focus::Editor {
                     self.paste(&text);
                 }
@@ -1230,6 +1235,7 @@ impl App {
             Command::KillTask => self.kill_task(),
             Command::CloseTask => self.close_shown_task(),
             Command::Task(c) => self.task_command(c),
+            Command::Shell(c) => self.shell_command(c),
             Command::NavBack => self.navigate(crate::navigation::Dir::Back),
             Command::NavForward => self.navigate(crate::navigation::Dir::Forward),
             Command::OpenToolLog => self.show_log_picker(),
