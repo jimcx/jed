@@ -252,6 +252,26 @@ fn compile(dir: &Path, tools: &Toolchain, cxx: bool, log: &mut Vec<String>) -> R
     }
 }
 
+/// Whether `tools.cc` can compile *and* link a shared library (run and link), not just run.
+/// Probes with a trivial `src/parser.c` in a temp directory. A compiler that runs but cannot
+/// link — for example a macOS SDK whose linker rejects its own `.tbd` stubs ("unknown
+/// architecture arm64e.x1-macos") — is as unusable for the build tests as no compiler, so tests
+/// that build a real grammar call this and skip (with a note) when it is false.
+#[cfg(test)]
+pub(crate) fn cc_links(tools: &Toolchain) -> bool {
+    let Ok(dir) = tempfile::tempdir() else {
+        return false;
+    };
+    let src = dir.path().join("src");
+    if std::fs::create_dir_all(&src).is_err() {
+        return false;
+    }
+    if std::fs::write(src.join("parser.c"), "int tree_sitter_probe(void) { return 0; }\n").is_err() {
+        return false;
+    }
+    matches!(build(dir.path(), tools, false).outcome, Outcome::Built)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,13 +293,13 @@ mod tests {
         dir
     }
 
-    /// Whether a C compiler is there (a note and a skip without).
+    /// Whether a C compiler is there and can build a shared library (a note and a skip without).
     fn have_cc() -> bool {
-        let ok = Command::new(Toolchain::from_env().cc).arg("--version").output().is_ok();
-        if !ok {
-            eprintln!("note: no C compiler; the build test is skipped");
+        if cc_links(&Toolchain::from_env()) {
+            return true;
         }
-        ok
+        eprintln!("note: no C compiler that can build a shared library; the build test is skipped");
+        false
     }
 
     fn inode(path: &Path) -> u64 {

@@ -594,6 +594,11 @@ pub(crate) mod test_lib {
         static OLD: OnceLock<Option<PathBuf>> = OnceLock::new();
         let slot = if abi12 { &OLD } else { &GOOD };
         slot.get_or_init(|| {
+            let tools = super::super::build::Toolchain::from_env();
+            if !super::super::build::cc_links(&tools) {
+                eprintln!("note: no C compiler that can build a shared library; the grammar-loading test is skipped");
+                return None;
+            }
             let dir = tempfile::tempdir().unwrap().keep();
             let src = source_dir();
             let copy = dir.join("src");
@@ -616,13 +621,9 @@ pub(crate) mod test_lib {
                 )
                 .unwrap();
             }
-            let b = super::super::build::build(&dir, &super::super::build::Toolchain::from_env(), false);
+            let b = super::super::build::build(&dir, &tools, false);
             match b.outcome {
                 super::super::build::Outcome::Built => Some(dir.join(LIBRARY)),
-                super::super::build::Outcome::Failed(e) if e.starts_with("cannot run") => {
-                    eprintln!("note: no C compiler ({e}); the grammar-loading test is skipped");
-                    None
-                }
                 other => panic!("{other:?}: {:?}", b.log),
             }
         })
