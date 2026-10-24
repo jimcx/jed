@@ -84,6 +84,7 @@ mod milestone8_tests;
 mod milestone9_tests;
 #[cfg(test)]
 mod milestone_tests;
+mod mru;
 mod multicursor;
 mod navigation;
 mod pairs;

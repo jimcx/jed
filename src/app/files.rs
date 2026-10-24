@@ -13,6 +13,7 @@ use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::buffer::{Buffer, BufferId, SaveError, SaveJob};
 use crate::command::Command;
 use crate::layout::{GroupId, SplitDir};
+use crate::mru;
 use crate::problems::Place;
 use crate::selection::{Selection, Selections};
 use crate::view::View;
@@ -69,6 +70,9 @@ impl App {
     /// selection at `goto` if given. Loading happens off the UI thread; an already open buffer
     /// gets the selection at once.
     pub(super) fn open_file(&mut self, path: PathBuf, focus: bool, goto: Option<Goto>) {
+        // Recently opened, for quick open's empty list: relative when inside the workspace.
+        let rel = path.strip_prefix(&self.workspace.root).unwrap_or(&path).to_path_buf();
+        mru::record(&mut self.mru.files, rel);
         // A jump: the place before it is recorded for Go Back (`app/navigation.rs`).
         self.nav_jump();
         // The group's hex tab of it (unless it has a text tab of it too); with no buffer open

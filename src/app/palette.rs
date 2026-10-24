@@ -15,6 +15,7 @@ use crate::explorer;
 use crate::field::Outcome;
 use crate::hex;
 use crate::logging;
+use crate::mru;
 use crate::palette::{self, Action, FileMatcher, Mode, Palette, Picker};
 use crate::paths;
 
@@ -82,7 +83,10 @@ impl App {
                     .into_iter()
                     .filter(|c| c.in_palette() && self.mode.allows(*c))
                     .collect();
-                let rows = palette::command_rows(&query, &commands, |c| self.keymap.binding_for(c).map(|k| k.label()));
+                let recent: &[Command] = if query.is_empty() { &self.mru.commands } else { &[] };
+                let rows = palette::command_rows_with_recent(&query, &commands, recent, |c| {
+                    self.keymap.binding_for(c).map(|k| k.label())
+                });
                 if rows.is_empty() {
                     hint = Some("No matching commands".into());
                 }
@@ -185,7 +189,8 @@ impl App {
                 let rows = files.rows();
                 self.files_poll = running.then(|| Instant::now() + FILES_POLL);
                 self.start_file_walk();
-                rows
+                let recent: &[PathBuf] = if query.is_empty() { &self.mru.files } else { &[] };
+                palette::file_rows_with_recent(rows, recent)
             }
         };
         if let Some(p) = &mut self.palette {
@@ -270,10 +275,13 @@ impl App {
         if self.palette.as_ref().is_none_or(|p| p.mode() != Mode::Files) {
             return;
         }
+        let query_empty = self.palette.as_ref().is_some_and(|p| p.query().is_empty());
         let Some(files) = &mut self.files else { return };
         let running = files.tick();
         let rows = files.rows();
         self.files_poll = running.then(|| Instant::now() + FILES_POLL);
+        let recent: &[PathBuf] = if query_empty { &self.mru.files } else { &[] };
+        let rows = palette::file_rows_with_recent(rows, recent);
         if let Some(p) = &mut self.palette {
             // Keep the selection on the same file where possible.
             let selected = p.selected_row().map(|r| r.action.clone());
@@ -301,9 +309,10 @@ impl App {
             return;
         }
         let (matched, total) = files.counts();
+        let recent = if p.query().is_empty() { self.mru.files.len() } else { 0 };
         p.hint = if !files.walked {
             Some(format!("Looking for files… {total} so far"))
-        } else if matched == 0 {
+        } else if matched == 0 && recent == 0 {
             Some("No matching files".into())
         } else if matched > palette::MAX_FILE_ROWS {
             Some(format!("Best {} of {matched} matches", palette::MAX_FILE_ROWS))
@@ -340,6 +349,8 @@ impl App {
             }
             (_, Some(Action::Run(cmd))) => {
                 self.close_palette();
+                // Only a command picked here counts as recently used, not one from a key.
+                mru::record(&mut self.mru.commands, cmd);
                 self.execute(cmd);
             }
             (_, Some(Action::History(snapshot))) => {

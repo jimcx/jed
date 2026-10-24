@@ -68,6 +68,7 @@ use crate::explorer::{self, Explorer};
 use crate::find::{Field, FindWidget};
 use crate::group::{Group, Groups};
 use crate::layout::{GroupId, HitMap, PanelTab, SidePanel, SplitDir};
+use crate::mru;
 use crate::palette::{FileMatcher, Palette, Picker};
 use crate::search_view::SearchView;
 use crate::terminal::Term;
@@ -393,6 +394,9 @@ pub struct App {
     pub backups: backup::BackupState,
     /// Recent workspaces: the start's record, the picker's entries.
     pub recent: recent::RecentState,
+    /// The last commands picked from the palette and files opened, listed first by an empty
+    /// palette / quick open query (`mru`).
+    pub mru: mru::Mru,
     pub message: Option<Message>,
     after_save: Option<AfterSave>,
     /// Untitled buffers still waiting for their Save As prompt (Save All, Save in the quit prompt).
@@ -569,6 +573,7 @@ impl App {
             session: Default::default(),
             backups: Default::default(),
             recent: Default::default(),
+            mru: Default::default(),
             message: None,
             after_save: None,
             save_as_queue: Default::default(),

@@ -105,6 +105,10 @@
 //!   the editor), global non-field commands still running from a field (Cmd+B, Cmd+Shift+P), the
 //!   palette and a rename prompt's field, the selected range drawn selected (find widget and
 //!   prompt), a long query scrolled to the cursor and a short one drawn from the input's start.
+//! - `mru`: the command palette and quick open list the last 20 commands picked from the palette
+//!   and the last 20 files opened first while their input is empty, most recent first, without
+//!   duplicates (a file's walk row kept out by its recent row); a typed query keeps the fuzzy
+//!   score; a key-bound command isn't recorded; both lists stop at 20.
 
 mod render_whitespace {
     use std::fs;
@@ -6546,5 +6550,217 @@ mod single_file {
             "{:?}",
             app.fs_flushed
         );
+    }
+}
+
+/// The command palette and quick open list what was used recently, most recent first, while the
+/// input is empty.
+mod mru {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+
+    use crate::app::{App, InitialFile};
+    use crate::buffer::Buffer;
+    use crate::command::{Command, Motion};
+    use crate::workspace::trust::TrustStore;
+    use crate::workspace::{self, Workspace};
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    /// A workspace `<dir>/proj` with `files`, its trust store in `<dir>/state`.
+    fn project(dir: &Path, files: &[&str]) -> PathBuf {
+        let root = workspace::normalize(dir).join("proj");
+        for name in files {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, format!("{name}\n")).unwrap();
+        }
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// The app on `root` with `first` open.
+    fn open_app(root: &Path, first: &str) -> App {
+        let initial = InitialFile {
+            buffer: Buffer::open(&root.join(first)).unwrap(),
+            goto: None,
+        };
+        let trust = TrustStore::load(root.parent().unwrap().join("state/trust.toml"));
+        let mut app = App::new(Workspace::load(root.to_path_buf()), trust, Some(initial), true);
+        app.test_start();
+        app
+    }
+
+    /// Runs the palette command titled `title` (Cmd+Shift+P).
+    fn palette_command(app: &mut App, title: &str) {
+        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.type_text(title);
+        let p = app.palette.as_ref().unwrap();
+        assert_eq!(p.rows[p.selected].label, title);
+        app.press(K::Enter, M::NONE);
+        assert!(app.palette.is_none());
+    }
+
+    /// Cmd+P, the file's name, Enter once it's listed; waits until it's the active tab.
+    async fn quick_open(app: &mut App, name: &str) {
+        app.press(K::Char('p'), cmd());
+        app.type_text(name);
+        let listed = app
+            .settle(|a| {
+                a.palette
+                    .as_ref()
+                    .is_some_and(|p| p.rows.first().is_some_and(|r| r.label == name))
+            })
+            .await;
+        assert!(listed, "quick open lists {name}");
+        app.press(K::Enter, M::NONE);
+        let opened = app
+            .settle(|a| a.active_buffer().is_some_and(|b| b.name() == name))
+            .await;
+        assert!(opened, "{name} opened");
+    }
+
+    /// Cmd+Shift+P on an empty query: the rows' labels, then Esc.
+    fn command_rows(app: &mut App) -> Vec<String> {
+        app.press(K::Char('p'), cmd() | M::SHIFT);
+        let labels = app
+            .palette
+            .as_ref()
+            .expect("the palette is open")
+            .rows
+            .iter()
+            .map(|r| r.label.clone())
+            .collect();
+        app.press(K::Esc, M::NONE);
+        assert!(app.palette.is_none());
+        labels
+    }
+
+    /// Cmd+P on an empty query once the walk has filled the list: (label, detail) rows, then Esc.
+    async fn file_rows(app: &mut App, n: usize) -> Vec<(String, String)> {
+        app.press(K::Char('p'), cmd());
+        let filled = app
+            .settle(|a| a.palette.as_ref().is_some_and(|p| p.rows.len() >= n))
+            .await;
+        assert!(filled, "quick open lists {n} rows");
+        let rows = app
+            .palette
+            .as_ref()
+            .expect("the palette is open")
+            .rows
+            .iter()
+            .map(|r| (r.label.clone(), r.detail.clone()))
+            .collect();
+        app.press(K::Esc, M::NONE);
+        assert!(app.palette.is_none());
+        rows
+    }
+
+    fn move_left() -> Command {
+        Command::Move {
+            motion: Motion::Left,
+            select: false,
+        }
+    }
+
+    fn move_right() -> Command {
+        Command::Move {
+            motion: Motion::Right,
+            select: false,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn picked_commands_come_back_first_in_recency_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &["a.txt"]);
+        let mut app = open_app(&root, "a.txt");
+        palette_command(&mut app, "Cursor: Move Right");
+        palette_command(&mut app, "Cursor: Move Left");
+        assert_eq!(app.mru.commands, [move_left(), move_right()]);
+        let rows = command_rows(&mut app);
+        assert_eq!(&rows[..2], ["Cursor: Move Left", "Cursor: Move Right"]);
+        assert_eq!(
+            rows.iter().filter(|l| *l == "Cursor: Move Left").count(),
+            1,
+            "no duplicate"
+        );
+        let rest: Vec<&str> = rows[2..].iter().map(String::as_str).collect();
+        assert!(
+            rest.windows(2).all(|w| w[0] <= w[1]),
+            "the rest stays alphabetical: {:?}",
+            &rest[..rest.len().min(4)]
+        );
+        // A typed query keeps the fuzzy score: "Move Left" ranks the match, recently used or not.
+        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.type_text("Save");
+        let p = app.palette.as_ref().unwrap();
+        assert_eq!(p.rows[p.selected].label, "File: Save");
+        app.press(K::Esc, M::NONE);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn opened_files_come_back_first_in_quick_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &["a.txt", "src/b.txt", "src/c.txt"]);
+        let mut app = open_app(&root, "a.txt");
+        quick_open(&mut app, "b.txt").await;
+        quick_open(&mut app, "c.txt").await;
+        let rows = file_rows(&mut app, 3).await;
+        assert_eq!(
+            &rows[..2],
+            [("c.txt".to_string(), "src".into()), ("b.txt".to_string(), "src".into())]
+        );
+        // The walk's rows follow, without the files the recent rows show.
+        let labels: Vec<&str> = rows.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, ["c.txt", "b.txt", "a.txt"]);
+        assert_eq!(labels.iter().filter(|l| **l == "b.txt").count(), 1, "no duplicate");
+        assert_eq!(app.mru.files, [PathBuf::from("src/c.txt"), PathBuf::from("src/b.txt")]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn files_stop_at_twenty() {
+        let names: Vec<String> = (1..=22).map(|i| format!("f{i:02}.txt")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &names);
+        let mut app = open_app(&root, "f01.txt");
+        for name in &names[1..] {
+            quick_open(&mut app, name).await;
+        }
+        assert_eq!(app.mru.files.len(), 20);
+        assert_eq!(app.mru.files[0], PathBuf::from("f22.txt"));
+        assert_eq!(app.mru.files[19], PathBuf::from("f03.txt"));
+        assert!(!app.mru.files.contains(&PathBuf::from("f01.txt")), "the oldest went");
+        assert!(!app.mru.files.contains(&PathBuf::from("f02.txt")));
+        let rows = file_rows(&mut app, names.len()).await;
+        let recent: Vec<&str> = rows.iter().take(20).map(|(l, _)| l.as_str()).collect();
+        assert_eq!(recent[0], "f22.txt");
+        assert_eq!(recent[19], "f03.txt");
+        assert_eq!(rows.len(), names.len(), "20 recent + the 2 walk rows left");
+        assert_eq!(rows.iter().filter(|(l, _)| l == "f22.txt").count(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_command_run_from_a_key_stays_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &["a.txt"]);
+        let mut app = open_app(&root, "a.txt");
+        app.press(K::Char('b'), cmd());
+        assert_eq!(app.last_command, Some(Command::ToggleSidebar));
+        assert!(app.mru.commands.is_empty(), "a key's command isn't recently used");
+        palette_command(&mut app, "Cursor: Move Right");
+        assert_eq!(app.mru.commands, [move_right()]);
+        assert!(!app.mru.commands.contains(&Command::ToggleSidebar));
+        let rows = command_rows(&mut app);
+        assert_eq!(rows[0], "Cursor: Move Right");
     }
 }

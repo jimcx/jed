@@ -1,7 +1,7 @@
 //! Command palette, quick open, go to line and small pickers: one input over a list of rows.
 //! Fuzzy matching through `nucleo`. No drawing here.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -265,6 +265,53 @@ pub fn command_rows(query: &str, commands: &[Command], keys: impl Fn(Command) ->
         .collect();
     scored.sort_by(|(sa, a), (sb, b)| sb.cmp(sa).then_with(|| a.label.cmp(&b.label)));
     scored.into_iter().map(|(_, r)| r).collect()
+}
+
+/// Rows for the commands the palette lists: [`command_rows`], with the `recent` commands first in
+/// that order while `query` is empty (VS Code's "recently used"), the rest alphabetical.
+pub fn command_rows_with_recent(
+    query: &str,
+    commands: &[Command],
+    recent: &[Command],
+    keys: impl Fn(Command) -> Option<String>,
+) -> Vec<Row> {
+    let mut rows = command_rows(query, commands, keys);
+    if query.is_empty() {
+        // Stable: the commands that aren't recent stay alphabetical.
+        rows.sort_by_cached_key(|row| match row.action {
+            Action::Run(c) => recent.iter().position(|r| *r == c).unwrap_or(usize::MAX),
+            _ => usize::MAX,
+        });
+    }
+    rows
+}
+
+/// A recent file's row, as [`FileMatcher::rows`] builds one: the file name, its folder dimmed.
+fn recent_file_row(rel: &Path) -> Row {
+    Row {
+        label: rel
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+        label_hits: Vec::new(),
+        detail: rel
+            .parent()
+            .map_or_else(String::new, |p| p.to_string_lossy().into_owned()),
+        detail_hits: Vec::new(),
+        keys: None,
+        action: Action::Open(rel.to_path_buf()),
+    }
+}
+
+/// Quick open's rows with the `recent` files first (in that order), then the walk's `rows`
+/// without the files a recent row already shows; at most [`MAX_FILE_ROWS`] in all.
+pub fn file_rows_with_recent(rows: Vec<Row>, recent: &[PathBuf]) -> Vec<Row> {
+    let mut out: Vec<Row> = recent.iter().map(|rel| recent_file_row(rel)).collect();
+    out.extend(
+        rows.into_iter()
+            .filter(|row| !matches!(&row.action, Action::Open(rel) if recent.contains(rel))),
+    );
+    out.truncate(MAX_FILE_ROWS as usize);
+    out
 }
 
 /// Rows for an indent size picker: the `INDENT_SIZES` matching `query`, in order, `current`
@@ -790,6 +837,57 @@ mod tests {
         let all = command_rows("", &cmds, |_| None);
         let labels: Vec<&str> = all.iter().map(|r| r.label.as_str()).collect();
         assert_eq!(labels, ["Cursor: Move Left", "File: Save", "View: Split Editor Right"]);
+    }
+
+    #[test]
+    fn empty_command_query_lists_recent_commands_first() {
+        let cmds = [
+            Command::Save,
+            Command::SplitRight,
+            Command::Move {
+                motion: Motion::Left,
+                select: false,
+            },
+        ];
+        let rows = command_rows_with_recent("", &cmds, &[Command::SplitRight, Command::Save], |_| None);
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["View: Split Editor Right", "File: Save", "Cursor: Move Left"]);
+        assert_eq!(rows[0].action, Action::Run(Command::SplitRight));
+        // A recent command this mode doesn't list is left out; the rest stay alphabetical.
+        let rows = command_rows_with_recent("", &cmds, &[Command::Quit, Command::Save], |_| Some("K".into()));
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["File: Save", "Cursor: Move Left", "View: Split Editor Right"]);
+        assert_eq!(rows[0].keys.as_deref(), Some("K"));
+        // A typed query keeps the fuzzy score, not the recency order.
+        let rows = command_rows_with_recent("save", &cmds, &[Command::SplitRight], |_| None);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "File: Save");
+    }
+
+    fn file_row(rel: &str) -> Row {
+        let rel = PathBuf::from(rel);
+        Row {
+            label: rel.file_name().unwrap().to_string_lossy().into_owned(),
+            label_hits: Vec::new(),
+            detail: rel.parent().unwrap().to_string_lossy().into_owned(),
+            detail_hits: Vec::new(),
+            keys: None,
+            action: Action::Open(rel),
+        }
+    }
+
+    #[test]
+    fn empty_file_query_lists_recent_files_first_without_duplicates() {
+        let walked = vec![file_row("src/a.rs"), file_row("src/main.rs"), file_row("notes.txt")];
+        let recent = [PathBuf::from("notes.txt"), PathBuf::from("src/main.rs")];
+        let rows = file_rows_with_recent(walked, &recent);
+        let shown: Vec<(&str, &str)> = rows.iter().map(|r| (r.label.as_str(), r.detail.as_str())).collect();
+        assert_eq!(shown, [("notes.txt", ""), ("main.rs", "src"), ("a.rs", "src")]);
+        assert_eq!(rows[0].action, Action::Open("notes.txt".into()));
+        assert_eq!(rows.iter().filter(|r| r.label == "main.rs").count(), 1, "no duplicate");
+        let rows = file_rows_with_recent(vec![file_row("a.rs")], &[]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "a.rs");
     }
 
     #[test]
