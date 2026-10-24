@@ -122,6 +122,9 @@ pub enum Command {
     FocusExplorer,
     /// Focus editor group N (1-based, reading order); one past the last splits right.
     FocusGroup(u8),
+    /// Focus the next / previous group in reading order, wrapping.
+    FocusNextGroup,
+    FocusPreviousGroup,
     SplitRight,
     SplitDown,
     /// Move the active tab into the next group in reading order (a new group split right when
@@ -869,6 +872,8 @@ impl Command {
         ]);
         all.extend((1..=PALETTE_GROUPS).map(Command::FocusGroup));
         all.extend([
+            Command::FocusNextGroup,
+            Command::FocusPreviousGroup,
             Command::SplitRight,
             Command::SplitDown,
             Command::MoveTabToNextGroup,
@@ -1026,6 +1031,8 @@ impl Command {
             Command::ToggleSidebar => "view.toggleSidebar".into(),
             Command::FocusExplorer => "view.focusExplorer".into(),
             Command::FocusGroup(n) => format!("view.focusGroup{n}"),
+            Command::FocusNextGroup => "view.focusNextGroup".into(),
+            Command::FocusPreviousGroup => "view.focusPreviousGroup".into(),
             Command::SplitRight => "view.splitRight".into(),
             Command::SplitDown => "view.splitDown".into(),
             Command::MoveTabToNextGroup => "view.moveEditorToNextGroup".into(),
@@ -1383,6 +1390,8 @@ impl Command {
             Command::ToggleSidebar => "View: Toggle Side Bar Visibility",
             Command::FocusExplorer => "View: Show Explorer",
             Command::FocusGroup(n) => return format!("View: Focus Editor Group {n}"),
+            Command::FocusNextGroup => "View: Focus Next Editor Group",
+            Command::FocusPreviousGroup => "View: Focus Previous Editor Group",
             Command::SplitRight => "View: Split Editor Right",
             Command::SplitDown => "View: Split Editor Down",
             Command::MoveTabToNextGroup => "View: Move Editor into Next Group",
@@ -1681,6 +1690,8 @@ mod tests {
             Command::ToggleSidebar => 20,
             Command::FocusExplorer => 21,
             Command::FocusGroup(_) => 22,
+            Command::FocusNextGroup => 123,
+            Command::FocusPreviousGroup => 124,
             Command::SplitRight => 23,
             Command::SplitDown => 24,
             Command::Explorer(_) => 25,
@@ -1782,7 +1793,7 @@ mod tests {
             Command::ConvertIndentationToTabs => 112,
         }
     }
-    const VARIANTS: u8 = 123;
+    const VARIANTS: u8 = 125;
 
     #[test]
     fn all_lists_every_variant() {

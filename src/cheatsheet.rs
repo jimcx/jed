@@ -142,6 +142,13 @@ fn groups() -> Vec<(&'static str, Vec<Command>)> {
                 Command::FocusGroup(1),
                 Command::FocusGroup(2),
                 Command::FocusGroup(3),
+                Command::FocusGroup(4),
+                Command::FocusGroup(5),
+                Command::FocusGroup(6),
+                Command::FocusGroup(7),
+                Command::FocusGroup(8),
+                Command::FocusNextGroup,
+                Command::FocusPreviousGroup,
                 Command::SplitRight,
                 Command::SplitDown,
                 Command::MoveTabToNextGroup,
@@ -318,6 +325,9 @@ mod tests {
             assert_eq!(key(Command::QuickOpen), Some(if mac { "Cmd+P" } else { "Ctrl+P" }));
             assert_eq!(key(Command::GoToLine), Some("Ctrl+G"));
             assert_eq!(key(Command::CheatSheet), Some("Shift+F1"));
+            assert_eq!(key(Command::FocusGroup(8)), Some(if mac { "Cmd+8" } else { "Ctrl+8" }));
+            assert_eq!(key(Command::FocusNextGroup), Some("Ctrl+Shift+."));
+            assert_eq!(key(Command::FocusPreviousGroup), Some("Ctrl+Shift+,"));
             assert_eq!(
                 key(Command::Move {
                     motion: Motion::WordLeft,

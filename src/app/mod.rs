@@ -1180,6 +1180,8 @@ impl App {
                     None => {}
                 }
             }
+            Command::FocusNextGroup => self.focus_group_relative(true),
+            Command::FocusPreviousGroup => self.focus_group_relative(false),
             Command::SplitRight => self.split(SplitDir::Right),
             Command::SplitDown => self.split(SplitDir::Down),
             Command::MoveTabToNextGroup => self.move_tab_to_group(true),

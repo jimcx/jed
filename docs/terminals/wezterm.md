@@ -51,7 +51,8 @@ local release = {
   { 'f', 'CMD|SHIFT' },
   { 'h', 'CMD|SHIFT' },
   { 'j', 'CMD|SHIFT' },
-  { '1', 'CMD' }, { '2', 'CMD' }, { '3', 'CMD' },
+  { '1', 'CMD' }, { '2', 'CMD' }, { '3', 'CMD' }, { '4', 'CMD' }, { '5', 'CMD' },
+  { '6', 'CMD' }, { '7', 'CMD' }, { '8', 'CMD' },
   { '\\', 'CMD' }, { '\\', 'CMD|ALT' },
   { 'RightArrow', 'CMD|ALT' }, { 'LeftArrow', 'CMD|ALT' },
   { 'RightArrow', 'CMD|CTRL' }, { 'LeftArrow', 'CMD|CTRL' },
@@ -70,11 +71,11 @@ return config
 
 Don't release `cmd+v`: WezTerm's paste is how text gets into jed.
 
-WezTerm defaults that clash with jed: `cmd+c` copy, `cmd+n` new window, `cmd+w` close tab (with confirmation), `cmd+1..3` activate tab, `cmd+f` search. The rest of jed's Cmd keys have no WezTerm default.
+WezTerm defaults that clash with jed: `cmd+c` copy, `cmd+n` new window, `cmd+w` close tab (with confirmation), `cmd+1..8` activate tab, `cmd+f` search. The rest of jed's Cmd keys have no WezTerm default.
 
 ## What you lose
 
-WezTerm's Cmd+C (copy screen text; Ctrl+Shift+C still copies), Cmd+N (new window), Cmd+W, Cmd+1..3 and Cmd+F (search; Ctrl+Shift+F still searches) in every window; use Cmd+Shift+[ / ] to switch tabs. Right Option no longer composes accented characters (drop the `right` line to keep that).
+WezTerm's Cmd+C (copy screen text; Ctrl+Shift+C still copies), Cmd+N (new window), Cmd+W, Cmd+1..8 and Cmd+F (search; Ctrl+Shift+F still searches) in every window; use Cmd+Shift+[ / ] to switch tabs. Right Option no longer composes accented characters (drop the `right` line to keep that).
 
 ## Checklist
 

@@ -291,6 +291,24 @@ impl App {
         self.reveal_active();
     }
 
+    /// Focuses the group after (`forward`) or before the active one in reading order, wrapping;
+    /// nothing with a single group.
+    pub(super) fn focus_group_relative(&mut self, forward: bool) {
+        let ids = self.groups.ids();
+        if ids.len() < 2 {
+            return;
+        }
+        let Some(i) = ids.iter().position(|&g| g == self.groups.active) else {
+            return;
+        };
+        let next = if forward {
+            (i + 1) % ids.len()
+        } else {
+            (i + ids.len() - 1) % ids.len()
+        };
+        self.focus_group(ids[next]);
+    }
+
     pub(super) fn split(&mut self, dir: SplitDir) {
         if let Some((buf, _)) = self.active_mut() {
             buf.seal_undo();

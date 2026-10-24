@@ -81,6 +81,11 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+1` | Focus group 1 | everywhere |
 | `cmd+2` | Focus group 2 | everywhere |
 | `cmd+3` | Focus group 3 | everywhere |
+| `cmd+4` | Focus group 4 | everywhere |
+| `cmd+5` | Focus group 5 | everywhere |
+| `cmd+6` | Focus group 6 | everywhere |
+| `cmd+7` | Focus group 7 | everywhere |
+| `cmd+8` | Focus group 8 | everywhere |
 | `cmd+backslash` | Split right | everywhere |
 | `cmd+alt+backslash` | Split down | everywhere |
 | `cmd+alt+right` | Next tab | everywhere |

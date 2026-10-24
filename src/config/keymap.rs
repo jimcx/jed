@@ -57,7 +57,8 @@ const SHIFTED_DIGITS: &str = "!@#$%^&*()";
 impl KeyCombo {
     /// Uppercase letters become lowercase + Shift, so `Cmd+Shift+Z` matches however the terminal reports it.
     /// With Cmd, Ctrl or Alt held, a shifted digit (US layout: `!` … `)`) becomes the digit + Shift,
-    /// since kitty-protocol terminals report Cmd+Shift+1 as Cmd+`!`; likewise `_` becomes `-` + Shift.
+    /// since kitty-protocol terminals report Cmd+Shift+1 as Cmd+`!`; likewise `_` becomes `-` + Shift
+    /// and `<` / `>` become `,` / `.` + Shift.
     pub fn from_event(ev: &KeyEvent) -> Self {
         let mut mods =
             ev.modifiers & (KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
@@ -81,6 +82,15 @@ impl KeyCombo {
             KeyCode::Char('_') if chord => {
                 mods |= KeyModifiers::SHIFT;
                 KeyCode::Char('-')
+            }
+            // Shift+, / Shift+. as alternate keys report them (Focus Previous / Next Editor Group).
+            KeyCode::Char('<') if chord => {
+                mods |= KeyModifiers::SHIFT;
+                KeyCode::Char(',')
+            }
+            KeyCode::Char('>') if chord => {
+                mods |= KeyModifiers::SHIFT;
+                KeyCode::Char('.')
             }
             KeyCode::BackTab => {
                 mods |= KeyModifiers::SHIFT;
@@ -768,6 +778,15 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Char('1'), cmd, Command::FocusGroup(1)),
         (KeyCode::Char('2'), cmd, Command::FocusGroup(2)),
         (KeyCode::Char('3'), cmd, Command::FocusGroup(3)),
+        (KeyCode::Char('4'), cmd, Command::FocusGroup(4)),
+        (KeyCode::Char('5'), cmd, Command::FocusGroup(5)),
+        (KeyCode::Char('6'), cmd, Command::FocusGroup(6)),
+        (KeyCode::Char('7'), cmd, Command::FocusGroup(7)),
+        (KeyCode::Char('8'), cmd, Command::FocusGroup(8)),
+        // VS Code's Focus Previous / Next Editor Group: Ctrl+Shift+, / . (terminals report the
+        // shifted keys as `<` / `>`, normalised in `KeyCombo::from_event`; Ctrl, so no Cmd keys).
+        (KeyCode::Char(','), ctrl | shift, Command::FocusPreviousGroup),
+        (KeyCode::Char('.'), ctrl | shift, Command::FocusNextGroup),
         (KeyCode::Char('\\'), cmd, Command::SplitRight),
         // No chords, so not VS Code's Cmd+K Cmd+\\.
         (KeyCode::Char('\\'), cmd | alt, Command::SplitDown),
@@ -1478,6 +1497,61 @@ mod tests {
         // Typed without a chord, `_` stays a character.
         let typed = KeyCombo::from_event(&key(KeyCode::Char('_'), shift));
         assert_eq!((typed.code, typed.mods), (KeyCode::Char('_'), shift));
+    }
+
+    /// Ctrl+Shift+, / Ctrl+Shift+. arrive as `<` / `>` from terminals with alternate keys; both
+    /// spellings focus the previous / next editor group, while typed Shift+< stays a character.
+    #[test]
+    fn shifted_comma_and_period_with_a_modifier_are_the_unshifted_key() {
+        let ctrl = KeyModifiers::CONTROL;
+        let shift = KeyModifiers::SHIFT;
+        let lt = KeyCombo::from_event(&key(KeyCode::Char('<'), ctrl | shift));
+        assert_eq!(lt, KeyCombo::parse("ctrl+shift+,").unwrap());
+        let gt = KeyCombo::from_event(&key(KeyCode::Char('>'), ctrl | shift));
+        assert_eq!(gt, KeyCombo::parse("ctrl+shift+.").unwrap());
+        assert_eq!(lt.label(), "Ctrl+Shift+,");
+        assert_eq!(gt.label(), "Ctrl+Shift+.");
+        // Typed on its own it stays a character.
+        for (c, held) in [('<', shift), ('>', KeyModifiers::NONE)] {
+            let typed = KeyCombo::from_event(&key(KeyCode::Char(c), held));
+            assert_eq!((typed.code, typed.mods), (KeyCode::Char(c), held));
+        }
+        // Bound on both platforms, in every context (global), and found through the shifted key.
+        for km in [
+            Keymap::default_for(Platform::MacOs),
+            Keymap::default_for(Platform::Linux),
+        ] {
+            for ctx in [Context::Editor, Context::Explorer, Context::Problems, Context::Task] {
+                for (c, cmd) in [
+                    ('<', Command::FocusPreviousGroup),
+                    (',', Command::FocusPreviousGroup),
+                    ('>', Command::FocusNextGroup),
+                    ('.', Command::FocusNextGroup),
+                ] {
+                    assert_eq!(km.lookup(&key(KeyCode::Char(c), ctrl | shift), ctx), Some(cmd), "{c:?}");
+                }
+            }
+        }
+    }
+
+    /// Cmd/Ctrl+1-8 focus that group in reading order (the palette lists the same eight).
+    #[test]
+    fn focus_group_digits_one_to_eight() {
+        let mac = Keymap::default_for(Platform::MacOs);
+        let linux = Keymap::default_for(Platform::Linux);
+        for n in 1..=8u8 {
+            let digit = KeyCode::Char(char::from(b'0' + n));
+            for (km, mods) in [(&mac, KeyModifiers::SUPER), (&linux, KeyModifiers::CONTROL)] {
+                for ctx in [Context::Editor, Context::Explorer, Context::Problems, Context::Task] {
+                    assert_eq!(km.lookup(&key(digit, mods), ctx), Some(Command::FocusGroup(n)), "{n}");
+                }
+            }
+        }
+        // A ninth group's key is unbound: one past the last splits right only through the command.
+        assert_eq!(
+            mac.lookup(&key(KeyCode::Char('9'), KeyModifiers::SUPER), Context::Editor),
+            None
+        );
     }
 
     #[test]

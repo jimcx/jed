@@ -26,6 +26,8 @@ mod field;
 mod find;
 #[cfg(test)]
 mod fixes_tests;
+#[cfg(test)]
+mod focus_groups_tests;
 mod format;
 mod git;
 mod git_editor;
