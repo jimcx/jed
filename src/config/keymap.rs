@@ -818,6 +818,9 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::F(4), none, Command::Search(S::NextResult)),
         (KeyCode::F(4), shift, Command::Search(S::PreviousResult)),
         (KeyCode::Char('j'), cmd, Command::TogglePanel),
+        // VS Code's Create New Terminal: Ctrl+` (Ctrl on macOS too). A legacy terminal reports
+        // Ctrl+` as NUL (Ctrl+@), read as Ctrl+Space, so it needs the kitty protocol.
+        (KeyCode::Char('`'), ctrl, Command::NewShell),
         (KeyCode::Char('m'), cmd | shift, Command::ToggleProblems),
         // VS Code's Output (on Linux VS Code has Ctrl+K Ctrl+H; no chords here).
         (KeyCode::Char('u'), cmd | shift, Command::ShowTools),

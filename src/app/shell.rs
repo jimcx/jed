@@ -15,7 +15,7 @@ use crate::shell::{self, ShellTab};
 use crate::tasks::{self, Event, Run, Sink};
 
 impl App {
-    /// "Terminal: New Shell" (`terminal.newShell`, unbound): the user's `$SHELL` (else
+    /// "Terminal: New Shell" (`terminal.newShell`, Ctrl+`): the user's `$SHELL` (else
     /// `/bin/sh`) in a new tab of the active group, interactive in the workspace root, with
     /// `JED_IPC` when the socket listens. The title counts open shells of the same program.
     pub(super) fn new_shell(&mut self) {
