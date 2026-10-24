@@ -320,6 +320,36 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_head_read_after_a_full_status_does_not_downgrade_it() {
+        let (_d, root, mut app) = setup();
+        // A full status (the working-tree walk) has already loaded: it knows `a` changed.
+        let repo = git::Repo::discover(&root).unwrap();
+        let full = git::Status::new(
+            repo.clone(),
+            git::Head::Branch("main".into()),
+            vec![git::Entry {
+                path: PathBuf::from("a"),
+                staged: Some(git::Change::Modified),
+                unstaged: None,
+            }],
+        );
+        app.git.status = Some(full);
+        // The startup's cheap head read lands afterwards, with a different HEAD id: it must not
+        // replace the loaded status with a head-only one (only `None` or a not-yet-loaded status
+        // is upgraded).
+        app.git_head_read(Some(git::Status::head_only(
+            repo,
+            git::Head::Branch("main".into()),
+            Some("deadbeef".into()),
+        )));
+        let status = app.git.status.as_ref().unwrap();
+        assert!(status.loaded, "the full status stays loaded");
+        assert_eq!(status.entries.len(), 1, "its entries survive the late head read");
+        assert!(status.entry(Path::new("a")).is_some());
+        assert_eq!(status.head_id, None, "the head-only status's id did not overwrite it");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn the_full_walk_is_deferred_but_runs_in_the_background() {
         let (_d, root, mut app) = setup();
         fs::write(root.join("a"), "changed\n").unwrap();

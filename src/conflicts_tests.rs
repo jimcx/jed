@@ -834,3 +834,47 @@ async fn milestone_conflicts_the_scan_does_not_cost_per_frame() {
         assert!(turn < budget, "a turn took {turn:?}, over {budget:?}");
     }
 }
+
+/// The Done-when's per-keystroke budget: typing into a 1 MB file with no markers. Each edit
+/// drops the cached scan (`Conflicts::map`), so the following frame rescans the whole rope; that
+/// frame must stay within the typing budget (release; debug builds only report).
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_conflicts_typing_does_not_rescan_at_a_cost_per_frame() {
+    let mut text = String::with_capacity(1_100_000);
+    let mut i = 0;
+    while text.len() < 1_000_000 {
+        text.push_str(&format!("line {i} of a big file with nothing to merge here\n"));
+        i += 1;
+    }
+    let (_dir, mut app) = open(&text);
+    let mut term = Terminal::new(TestBackend::new(160, 50)).unwrap();
+    // The first frame scans the file (and caches it by revision).
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    {
+        let (buf, _) = app.active_mut().unwrap();
+        let revision = buf.revision();
+        assert!(buf.conflicts.scan(&buf.rope, revision).is_empty());
+    }
+    // Type several keys: each edit drops the cached scan, and the following frame rescans the
+    // whole rope (the cost this measures).
+    let mut worst = Duration::ZERO;
+    let mut total = Duration::ZERO;
+    let keys = "type some words here";
+    for c in keys.chars() {
+        let t = Instant::now();
+        app.press(KeyCode::Char(c), KeyModifiers::NONE);
+        app.pump();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let e = t.elapsed();
+        worst = worst.max(e);
+        total += e;
+    }
+    let n = keys.chars().count() as u32;
+    let avg = total / n;
+    println!("conflicts typing: {n} keys, avg {avg:?}, worst {worst:?} (1 MB, no markers)");
+    if !cfg!(debug_assertions) {
+        let budget = Duration::from_millis(16);
+        assert!(avg < budget, "typing took {avg:?} a key");
+        assert!(worst < budget, "a keystroke took {worst:?}");
+    }
+}

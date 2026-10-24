@@ -6804,6 +6804,49 @@ mod mru {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_file_outside_the_workspace_is_stored_absolute_and_recent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &["a.txt"]);
+        let mut app = open_app(&root, "a.txt");
+        // A file outside the workspace: stored absolute (normalized), and listed as its own
+        // recent row in quick open (the walk never reaches it).
+        let outside = workspace::normalize(dir.path()).join("outside.txt");
+        fs::write(&outside, "o\n").unwrap();
+        app.test_open_file(outside.clone());
+        let opened = app
+            .settle(|a| a.active_buffer().is_some_and(|b| b.path == outside))
+            .await;
+        assert!(opened, "the outside file opened");
+        assert_eq!(app.mru.files.len(), 1, "one recent file");
+        assert_eq!(app.mru.files[0], outside, "stored absolute, normalized");
+        let rows = file_rows(&mut app, 2).await;
+        assert_eq!(
+            rows[0],
+            (
+                "outside.txt".to_string(),
+                outside.parent().unwrap().display().to_string(),
+            ),
+            "its own recent row, with the absolute folder"
+        );
+        // The walk's rows follow without it (it is outside the workspace).
+        assert_eq!(rows.len(), 2, "the recent row plus the walk's a.txt");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_hex_open_is_recently_used() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &["a.txt"]);
+        // A binary file in the workspace, opened as hex (a successful open).
+        let bin = root.join("bin.dat");
+        fs::write(&bin, b"a\0b\n").unwrap();
+        let mut app = open_app(&root, "a.txt");
+        app.test_open_file(bin.clone());
+        let opened = app.settle(|a| a.active_hex().is_some_and(|h| h.path == bin)).await;
+        assert!(opened, "the binary file opened as hex");
+        assert_eq!(app.mru.files, [PathBuf::from("bin.dat")], "a hex open is recently used");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_path_opened_through_a_different_spelling_is_not_duplicated() {
         let dir = tempfile::tempdir().unwrap();
         let root = project(dir.path(), &["src/a.txt", "src/b.txt"]);

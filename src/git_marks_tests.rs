@@ -385,6 +385,45 @@ async fn git_marks_survive_an_edit_and_a_scroll() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn git_marks_staged_mark_clears_after_an_external_commit() {
+    let (_d, root, state) = dirs();
+    let original = numbered(30);
+    init(&root);
+    fs::write(root.join("f.txt"), &original).unwrap();
+    commit_all(&root, "one");
+    // Stage a change only (the working tree equals the index): line 10's mark is the staged kind.
+    fs::write(root.join("f.txt"), original.replace("line 10\n", "line ten\n")).unwrap();
+    git(&root, &["add", "f.txt"]);
+
+    let mut app = open_file_app(&root, &state, "f.txt");
+    assert!(settle_markers(&mut app).await);
+    let shown: Vec<_> = app
+        .active_buffer()
+        .unwrap()
+        .quick_diff
+        .marks()
+        .iter()
+        .map(|m| (m.staged, m.kind))
+        .collect();
+    assert_eq!(shown, vec![(true, crate::git::HunkKind::Modified)], "line 10 staged");
+
+    // Commit outside jed: the staged change moves into HEAD, so its mark must go. The quick
+    // diff's cached staged half is keyed by the index blob, which the commit doesn't change, so
+    // this only clears because `head_changed` marks it stale and it is recomputed against the new
+    // HEAD (index == HEAD now: nothing to mark).
+    git(&root, &["commit", "-q", "-m", "two"]);
+    assert!(
+        settle_git(&mut app, |s| s.entries.is_empty() && s.head_id.is_some()).await,
+        "the commit is seen"
+    );
+    assert!(settle_markers(&mut app).await);
+    assert!(
+        app.active_buffer().unwrap().quick_diff.marks().is_empty(),
+        "the staged mark moved into HEAD"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn git_marks_hex_shell_and_single_file_tabs_have_none() {
     // A hex tab of a changed file: no marks (no buffer's quick diff draws on it).
     let (_d, root, state) = dirs();

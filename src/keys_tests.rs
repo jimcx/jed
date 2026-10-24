@@ -628,6 +628,48 @@ mod keys {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn keys_c_enter_reports_a_write_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(&dir);
+        // The config dir can't be created (a file blocks it), so Enter's stub write fails: the
+        // app must say so rather than swallow it.
+        let root = app.workspace.root.clone();
+        let blocked = root.join("blocked");
+        std::fs::write(&blocked, "x").unwrap();
+        app.config_dir = blocked.join("config");
+
+        app.test_execute(Command::KeyboardShortcuts);
+        app.type_text("save as");
+        let index = app
+            .keys
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .position(|r| r.command == Command::SaveAs)
+            .expect("Save As listed");
+        app.keys.as_mut().unwrap().select(index);
+        app.press(K::Enter, M::NONE);
+        assert!(app.keys.is_none(), "the view closes even when the write fails");
+        assert!(
+            app.settle(|a| {
+                a.message.as_ref().is_some_and(|m| {
+                    m.level == crate::app::Level::Error && m.text.contains(crate::config::keymap::FILE_NAME)
+                })
+            })
+            .await,
+            "the failed write is reported: {:?}",
+            app.message.as_ref().map(|m| &m.text)
+        );
+        // No tab opened for a file that wasn't written.
+        assert_eq!(
+            app.active_buffer().map(|b| b.name()),
+            Some("a.txt".to_string()),
+            "the original file is still open"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn keys_c_record_ignores_a_lone_modifier() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = open_app(&dir);
