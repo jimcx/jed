@@ -18,6 +18,7 @@ use undo::{EditKind, History};
 
 use crate::blame::Blame;
 use crate::commit_view::CommitDoc;
+use crate::conflict::Conflicts;
 use crate::diagnostics::Marks;
 use crate::indentation::{Guess, Indentation};
 use crate::logs::Tool;
@@ -77,6 +78,9 @@ pub struct Buffer {
     /// Inline blame's hunks (each line's last commit), mapped through every change set applied
     /// until the next computation (`app/blame.rs`, only while the toggle is on).
     pub blame: Blame,
+    /// Merge conflicts: git's markers at line starts, with the blocks between them; every change
+    /// set applied invalidates the scan, which is cached by revision (`crate::conflict`).
+    pub conflicts: Conflicts,
     /// A tool's log (`Buffer::log`): no file (an empty `path`), read-only, its text only ever
     /// changed by `append` (no undo, never dirty); what it has read of the tool's ring.
     pub log: Option<LogTab>,
@@ -196,6 +200,7 @@ impl Buffer {
             diagnostics: Marks::default(),
             quick_diff: QuickDiff::default(),
             blame: Blame::default(),
+            conflicts: Conflicts::default(),
             log: None,
             commit: None,
             guess: Guess::default(),
@@ -447,6 +452,7 @@ impl Buffer {
         self.diagnostics.map(changes);
         self.quick_diff.map(changes);
         self.blame.map(changes);
+        self.conflicts.map(changes);
         if let Some(old) = old {
             self.syntax.edit(changes, &old, &self.rope);
         }

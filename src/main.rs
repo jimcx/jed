@@ -12,6 +12,7 @@ mod comment;
 mod commit_view;
 mod completion;
 mod config;
+mod conflict;
 mod diagnostics;
 mod diff_view;
 mod disk;
