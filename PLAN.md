@@ -748,6 +748,12 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - ✅ **Cursor style setting** — [details](docs/plan-done.md)
 - ✅ **Syntax highlighting in the diff view** — [details](docs/plan-done.md)
 - ✅ **Indent / outdent lines** — [details](docs/plan-done.md)
+- **Most-recently-used commands and files** (`mru`): the command palette and quick open list the last 20 commands picked from the palette and the last 20 files opened first, most recent first, when the input is empty (VS Code's "recently used")
+  - A `mru.rs` model (`MAX` 20; `record` puts an item first, dropping its earlier copy and anything beyond 20) and the `Mru` state on `App` (`commands: Vec<Command>`, `files: Vec<PathBuf>` — the path relative to the workspace root when inside it), in memory only (reset on quit)
+  - Commands are recorded only when picked from the palette (`accept_palette`'s `Action::Run(cmd)`); a command run from a key binding doesn't count. Files are recorded in `open_file` (quick open, explorer, command line, search / problem / location results, back / forward)
+  - With an empty query, `Mode::Commands` lists the recent commands in recency order before the rest (alphabetical); `Mode::Files` lists recent-file rows (file name, its folder dimmed) before the walk's matches, without duplicating them. A typed query keeps the fuzzy scoring
+  - Tests: unit tests for `mru::record` (dedupe, order, cap) and the empty-query ordering in `palette.rs`; end to end in `src/todo_tests.rs` (`mod mru`) — two commands picked from the palette come back first, two files opened come back first, the cap of 20, and a key-bound command stays out
+  - Done when: the tests above pass and `scripts/check` is green
 - **Reopen closed tab**: Cmd+Shift+T; a stack of closed tabs per window with their view state, files reopened from disk; in the palette; Cmd bindings update `docs/terminals/`
 - **Close tabs and go to the Nth tab**: "Close All", "Close Others", "Close Saved" (in a group; prompts for unsaved like closing one), go to the Nth tab in the group (Ctrl+1–9 on macOS, Alt+1–9 on Linux, as VS Code; 9 = last); in the palette, and on the tab bar's right-click once there are context menus
 - **More line commands**: delete line (Cmd+Shift+K), select line (Cmd+L, repeated: the next line too), join lines (Ctrl+J on macOS; unbound on Linux, where Ctrl+J is the panel), insert line below / above (Cmd+Enter / Cmd+Shift+Enter, with auto-indent); at every selection (`LineWalker`, one undo step each, the line-command budget); Cmd bindings update `docs/terminals/`
