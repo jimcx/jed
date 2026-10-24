@@ -6,6 +6,7 @@ mod cheatsheet;
 mod code_action;
 mod commit_tabs;
 mod completion;
+mod conflict;
 mod cursors;
 mod diff_view;
 mod disk;
@@ -1205,6 +1206,9 @@ impl App {
             Command::NextChange | Command::PreviousChange if self.diff_command(cmd) => {}
             Command::NextChange => self.go_to_change(true),
             Command::PreviousChange => self.go_to_change(false),
+            Command::Merge(crate::command::MergeCommand::Next) => self.go_to_conflict(true),
+            Command::Merge(crate::command::MergeCommand::Previous) => self.go_to_conflict(false),
+            Command::Merge(crate::command::MergeCommand::Compare) => self.compare_conflict(None),
             Command::CompareWithSaved => self.compare_with_saved(),
             Command::OpenChange => self.open_changes(),
             Command::ToggleChanges => self.toggle_changes(),

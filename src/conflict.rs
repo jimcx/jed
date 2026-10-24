@@ -59,7 +59,6 @@ pub struct Conflicts {
     computed: Option<u64>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // the editor and its commands come next
 impl Conflicts {
     /// The conflicts in `rope` at `revision`, scanning again when the revision changed (or an
     /// edit invalidated the cache).
@@ -78,13 +77,22 @@ impl Conflicts {
     }
 
     /// Forgets the conflicts and the revision they were scanned at.
+    #[cfg(test)]
     pub fn reset(&mut self) {
         *self = Self::default();
     }
 
     /// The conflicts of the last `scan`.
+    #[cfg(test)]
     pub fn conflicts(&self) -> &[Conflict] {
         &self.conflicts
+    }
+
+    /// How many conflicts the last `scan` found (`None` before the first scan and after an
+    /// edit, until the next one). The editor scans the active buffer every frame, so the status
+    /// bar, drawn after it, reads the frame's count.
+    pub fn count(&self) -> Option<usize> {
+        self.computed.map(|_| self.conflicts.len())
     }
 
     /// The next conflict starting after `at`, wrapping around to the first; `None` without
@@ -480,6 +488,26 @@ g\n";
         let plain = Rope::from_str("plain\n");
         assert_eq!(conflicts.next(&plain, 1, ByteIdx(0)), None);
         assert_eq!(conflicts.previous(&plain, 1, ByteIdx(0)), None);
+    }
+
+    #[test]
+    fn count_is_the_last_scans_and_none_before_one() {
+        let rope = Rope::from_str(TWO_CONFLICTS);
+        let mut conflicts = Conflicts::default();
+        assert_eq!(conflicts.count(), None, "nothing scanned yet");
+        assert_eq!(conflicts.scan(&rope, 0).len(), 2);
+        assert_eq!(conflicts.count(), Some(2));
+        let plain = Rope::from_str("plain\n");
+        conflicts.scan(&plain, 1);
+        assert_eq!(conflicts.count(), Some(0));
+        // An edit invalidates it until the next scan.
+        let set = Arc::new(ChangeSet::new(vec![Change {
+            start: ByteIdx(0),
+            end: ByteIdx(rope.len()),
+            text: "x\n".into(),
+        }]));
+        conflicts.map(&set);
+        assert_eq!(conflicts.count(), None);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! Diff tabs in the app: opening them (Git: Open Changes, the changed-on-disk banner's Show
-//! Diff; the Source Control panel calls `open_diff`), loading both sides off-thread — again when
+//! Diff; the Source Control panel calls `open_diff`; Compare Current Conflict opens a conflict's
+//! blocks), loading both sides off-thread — again when
 //! the index or the file changes, and `diff_view::DELAY` after edits to an open buffer shown on
 //! a live side — the keys and the mouse in them, and staging / unstaging from them. Staging works
 //! as the gutter's (`app/quick_diff.rs`): a hunk of the working tree is staged from the file on
@@ -71,6 +72,21 @@ impl App {
                     .open_tab(Tab::Diff(Box::new(DiffTab::new(id, path, pair))));
             }
         }
+        self.ui.focus = Focus::Editor;
+        self.needs_redraw = true;
+        self.sync_diffs();
+    }
+
+    /// Opens a merge conflict's current and incoming blocks in a new read-only diff tab
+    /// (Compare Current Conflict). Each conflict of a file has the same `Pair::conflict()`, so
+    /// this never reuses a tab: the blocks are the tab's own bytes, not the file's.
+    pub(super) fn open_conflict_diff(&mut self, path: PathBuf, current: Vec<u8>, incoming: Vec<u8>) {
+        if let Some((buf, _)) = self.active_mut() {
+            buf.seal_undo();
+        }
+        let id = self.next_diff_id();
+        self.group_mut()
+            .open_tab(Tab::Diff(Box::new(DiffTab::conflict(id, path, current, incoming))));
         self.ui.focus = Focus::Editor;
         self.needs_redraw = true;
         self.sync_diffs();
@@ -249,6 +265,7 @@ impl App {
                 },
                 syntax_max_bytes: self.settings.syntax_max_bytes,
                 replace: d.replace.clone(),
+                conflict: d.conflict.clone(),
             };
             jobs.push((d.id, generation, job));
         }

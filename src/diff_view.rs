@@ -2,10 +2,12 @@
 //! drawing: `ui::diff`; no app state: `app/diff_view.rs` opens, loads and stages).
 //!
 //! A [`DiffTab`] compares a [`Pair`] of [`Text`]s of one file: the working tree against the
-//! index (unstaged changes), the index against HEAD (staged ones), or the file on disk against
-//! the open buffer (the changed-on-disk banner's Show Diff). A "live" side (the working tree, the
-//! buffer) is the open buffer's text when the file is open, so unsaved edits show (VS Code), else
-//! the file on disk. Both sides are read only.
+//! index (unstaged changes), the index against HEAD (staged ones), the file on disk against
+//! the open buffer (the changed-on-disk banner's Show Diff), or a history entry / a commit's
+//! blob against the buffer. A "live" side (the working tree, the buffer) is the open buffer's
+//! text when the file is open, so unsaved edits show (VS Code), else the file on disk. Both
+//! sides are read only. A merge conflict's two blocks (`Pair::conflict()`, Compare Current
+//! Conflict) are the tab's own `conflict` bytes, in memory: neither git nor the file is read.
 //!
 //! Loading ([`load`], blocking) reads both texts, diffs them with `git::diff` (context 0: one
 //! hunk per change) and aligns them into rows ([`align`]): unchanged lines side by side, a
@@ -64,6 +66,11 @@ pub enum Text {
     /// every match not dismissed replaced (`DiffTab::replace`, a `FileReplace`). The replace
     /// preview's right side; never in sessions.
     Replaced,
+    /// A merge conflict's current block (Compare Current Conflict), read from the diff tab's
+    /// `conflict` bytes; never in sessions.
+    ConflictCurrent,
+    /// The same conflict's incoming block.
+    ConflictIncoming,
 }
 
 impl Text {
@@ -78,6 +85,8 @@ impl Text {
             Text::Commit(id) => short_commit(id),
             Text::Empty => "Empty Tree".into(),
             Text::Replaced => "Replace Preview".into(),
+            Text::ConflictCurrent => "Current".into(),
+            Text::ConflictIncoming => "Incoming".into(),
         }
     }
 
@@ -126,6 +135,15 @@ impl Pair {
         left: Text::Buffer,
         right: Text::Replaced,
     };
+
+    /// A merge conflict's two sides (Compare Current Conflict): both read from the diff tab's
+    /// `conflict` bytes, never git or the disk; no staging.
+    pub fn conflict() -> Pair {
+        Pair {
+            left: Text::ConflictCurrent,
+            right: Text::ConflictIncoming,
+        }
+    }
 
     /// File History's Compare: an entry against the buffer.
     pub fn history(snapshot: Snapshot) -> Pair {
@@ -527,6 +545,8 @@ pub struct Job {
     pub syntax_max_bytes: usize,
     /// What a `Text::Replaced` side replaces (`None`: it's the text as it is).
     pub replace: Option<Arc<FileReplace>>,
+    /// A `Pair::conflict()`'s current and incoming blocks (`None`: not a conflict compare).
+    pub conflict: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 /// Blocking: reads both sides of `job` and diffs them.
@@ -539,6 +559,14 @@ pub fn load(job: Job) -> Result<Doc, String> {
 }
 
 fn read(job: &Job, text: Text) -> Result<Vec<u8>, stage::Error> {
+    let block = match text {
+        Text::ConflictCurrent => Some(job.conflict.as_ref().map(|(current, _)| current.clone())),
+        Text::ConflictIncoming => Some(job.conflict.as_ref().map(|(_, incoming)| incoming.clone())),
+        _ => None,
+    };
+    if let Some(block) = block {
+        return block.ok_or_else(|| not_found("no conflict in this diff"));
+    }
     if text == Text::Replaced {
         let bytes = read(job, Text::Buffer)?;
         let replaced = job.replace.as_ref().and_then(|r| r.apply(&bytes));
@@ -593,6 +621,7 @@ fn read(job: &Job, text: Text) -> Result<Vec<u8>, stage::Error> {
         }
         Text::Empty => Some(Vec::new()),
         Text::Replaced => unreachable!("read above"),
+        Text::ConflictCurrent | Text::ConflictIncoming => unreachable!("read above"),
     };
     Ok(bytes.unwrap_or_default())
 }
@@ -645,6 +674,8 @@ pub struct DiffTab {
     stale: bool,
     /// A replace preview's replace (`Text::Replaced`); `set_replace` changes it.
     pub replace: Option<Arc<FileReplace>>,
+    /// A `Pair::conflict()`'s current and incoming blocks (Compare Current Conflict).
+    pub conflict: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 impl crate::scrollbar::Scrollable for DiffTab {
@@ -682,6 +713,17 @@ impl DiffTab {
             loaded: None,
             stale: false,
             replace: None,
+            conflict: None,
+        }
+    }
+
+    /// A merge conflict's two blocks compared (Compare Current Conflict): a read-only diff of
+    /// `current` against `incoming`, both in memory (the tab's `path` names the file for its
+    /// title; nothing is read from it).
+    pub fn conflict(id: u64, path: PathBuf, current: Vec<u8>, incoming: Vec<u8>) -> DiffTab {
+        DiffTab {
+            conflict: Some((current, incoming)),
+            ..DiffTab::new(id, path, Pair::conflict())
         }
     }
 
@@ -709,6 +751,7 @@ impl DiffTab {
             // A load in flight reports to the original only.
             stale: self.stale || self.running.is_some(),
             replace: self.replace.clone(),
+            conflict: self.conflict.clone(),
         }
     }
 
@@ -1213,6 +1256,7 @@ mod tests {
             language: None,
             syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
             replace: None,
+            conflict: None,
         };
         let doc = load(job(Some("new\n"))).unwrap();
         assert_eq!((doc.left.line(0), doc.right.line(0)), ("old", "new"));
@@ -1265,6 +1309,7 @@ mod tests {
             language: None,
             syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
             replace,
+            conflict: None,
         };
         let lines = |l: &Lines| (0..l.len()).map(|i| l.line(i).to_string()).collect::<Vec<_>>();
         let doc = load(job(None, replace.clone())).unwrap();
@@ -1278,6 +1323,43 @@ mod tests {
         );
         let doc = load(job(None, None)).unwrap();
         assert!(doc.hunks.is_empty());
+    }
+
+    /// Compare Current Conflict: two in-memory blocks titled Current / Incoming, read only, no
+    /// staging and no repository; the tab keeps its own blocks (one per conflict).
+    #[test]
+    fn conflict_compare_side() {
+        let pair = Pair::conflict();
+        assert_eq!(pair.staging(), None);
+        assert!(!pair.needs_repo() && !pair.live());
+        assert_eq!(pair.tab_title("a.txt"), "a.txt (Current ↔ Incoming)");
+        assert_eq!(pair.titles(), ("Current".into(), "Incoming".into()));
+        let dir = tempfile::tempdir().unwrap();
+        // Nothing is read from the path.
+        let path = dir.path().join("a.txt");
+        let job = |conflict| Job {
+            repo: None,
+            root: dir.path().to_path_buf(),
+            path: path.clone(),
+            pair,
+            live: None,
+            language: None,
+            syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
+            replace: None,
+            conflict,
+        };
+        let doc = load(job(Some((b"ours\n".to_vec(), b"theirs\n".to_vec())))).unwrap();
+        assert_eq!((doc.left.line(0), doc.right.line(0)), ("ours", "theirs"));
+        assert_eq!(doc.hunks.len(), 1);
+        assert!(load(job(None)).unwrap_err().contains("no conflict"));
+        let t = DiffTab::conflict(1, path.clone(), b"a\n".to_vec(), b"b\n".to_vec());
+        assert_eq!(t.pair, pair);
+        assert_eq!(t.title(), "a.txt (Current ↔ Incoming)");
+        assert_eq!(
+            t.conflict.as_ref().map(|(a, b)| (a.as_slice(), b.as_slice())),
+            Some((&b"a\n"[..], &b"b\n"[..]))
+        );
+        assert_eq!(t.copy(2).conflict, t.conflict);
     }
 
     /// Each side's spans as (text, key) pairs, line by line.
@@ -1342,6 +1424,7 @@ mod tests {
             language: None,
             syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
             replace: None,
+            conflict: None,
         };
         let pair = Pair::commit(id(&second), Some(id(&first)));
         assert_eq!(pair.staging(), None);

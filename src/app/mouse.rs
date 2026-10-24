@@ -393,8 +393,8 @@ impl App {
     }
 
     /// A click on a merge conflict's action row: Accept Current / Incoming / Both applies that
-    /// side of the button's conflict (one undo step); Compare is a no-op until its command
-    /// lands. True when the click was on a button.
+    /// side of the button's conflict (one undo step); Compare opens the conflict's current and
+    /// incoming blocks in a diff tab. True when the click was on a button.
     fn merge_click(&mut self, group: crate::layout::GroupId, m: &MouseEvent) -> bool {
         let at = ratatui::layout::Position { x: m.column, y: m.row };
         let Some(&(_, button, start)) = self
@@ -406,20 +406,26 @@ impl App {
         };
         self.focus_group(group);
         self.ui.focus = Focus::Editor;
-        if let MergeButton::Accept(choice) = button
-            && self.active_writable()
-            && let Some((buf, view)) = self.active_mut()
-        {
-            let revision = buf.revision();
-            let conflict = buf
-                .conflicts
-                .scan(&buf.rope, revision)
-                .iter()
-                .find(|c| c.start == start)
-                .cloned();
-            if let Some(conflict) = conflict {
-                crate::edit::accept_merge(buf, view, choice, std::slice::from_ref(&conflict));
+        match button {
+            MergeButton::Accept(choice) => {
+                if !self.active_writable() {
+                    return true;
+                }
+                let Some((buf, view)) = self.active_mut() else {
+                    return true;
+                };
+                let revision = buf.revision();
+                let conflict = buf
+                    .conflicts
+                    .scan(&buf.rope, revision)
+                    .iter()
+                    .find(|c| c.start == start)
+                    .cloned();
+                if let Some(conflict) = conflict {
+                    crate::edit::accept_merge(buf, view, choice, std::slice::from_ref(&conflict));
+                }
             }
+            MergeButton::Compare => self.compare_conflict(Some(start)),
         }
         true
     }

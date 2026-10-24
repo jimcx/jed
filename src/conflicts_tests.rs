@@ -1,14 +1,19 @@
 //! conflicts-b: the editor draws merge conflicts — the blocks in VS Code's merge colours, the
 //! marker labels, the action row after `<<<<<<<` and its clicks — and the accept commands apply
-//! one `EditKind::Other` step. The "Done when" parts covered here: a file with a two-way and a
-//! diff3 conflict shows both conflicts with their action rows; a click on Accept Incoming and
-//! Accept Current / Accept All Incoming from the commands leave what `git checkout --theirs` /
-//! `--ours` gives for those hunks, each an undo step; a file with no markers draws nothing.
-//! Next / Previous, the status bar count and Compare are conflicts-c; Source Control conflicts-d.
+//! one `EditKind::Other` step. conflicts-c: Next / Previous Conflict (Alt+F8 /
+//! Shift+Alt+F8, wrapping), the status bar's "N conflicts" and Compare Current Conflict (a
+//! read-only diff tab of the two blocks).
+//!
+//! The "Done when" parts covered here: a file with a two-way and a diff3 conflict shows both
+//! conflicts with their action rows; a click on Accept Incoming and Accept Current / Accept All
+//! Incoming from the commands leave what `git checkout --theirs` / `--ours` gives for those
+//! hunks, each an undo step; Next / Previous move and wrap; the status bar counts them; Compare
+//! opens Current ↔ Incoming; a file with no markers draws nothing and has nowhere to go. Source
+//! Control is conflicts-d.
 
 use std::fs;
 
-use crossterm::event::{MouseButton, MouseEventKind};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -19,6 +24,7 @@ use crate::buffer::Buffer;
 use crate::buffer::pos::ByteIdx;
 use crate::command::{Command, MergeCommand};
 use crate::conflict::Choice;
+use crate::diff_view::Pair;
 use crate::layout::MergeButton;
 use crate::milestone10_tests::dirs;
 use crate::selection::{Selection, Selections};
@@ -208,7 +214,7 @@ async fn clicking_accept_incoming_leaves_theirs_in_one_undo_step() {
     // One `EditKind::Other` step: one undo brings the markers back.
     app.test_execute(Command::Undo);
     assert_eq!(text(&app), CONFLICTS);
-    // Compare is drawn but does nothing until conflicts-c.
+    // The action row's Compare opens the conflict's blocks in a diff tab (conflicts-c).
     let _term = draw(&mut app, 160);
     let compare = app.hits.groups[0]
         .merge_buttons
@@ -217,7 +223,179 @@ async fn clicking_accept_incoming_leaves_theirs_in_one_undo_step() {
         .map(|(rect, _, _)| *rect)
         .expect("the Compare button");
     app.mouse(MouseEventKind::Down(MouseButton::Left), compare.x + 1, compare.y);
-    assert_eq!(text(&app), CONFLICTS, "Compare is a no-op for now");
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    let d = app.group().active_diff().expect("a diff tab");
+    assert_eq!(d.pair, Pair::conflict());
+    assert_eq!(text_of(&d.doc.as_ref().unwrap().left), "ours1");
+    assert_eq!(text_of(&d.doc.as_ref().unwrap().right), "theirs1");
+}
+
+/// A side's lines as text.
+fn text_of(lines: &crate::diff_view::Lines) -> String {
+    (0..lines.len()).map(|i| lines.line(i)).collect::<Vec<_>>().join("\n")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn next_and_previous_conflict_move_and_wrap() {
+    let (_dir, mut app) = open(CONFLICTS);
+    let starts: Vec<ByteIdx> = {
+        let buf = app.active_buffer().unwrap();
+        let revision = buf.revision();
+        let mut scan = crate::conflict::Conflicts::default();
+        scan.scan(&buf.rope, revision).iter().map(|c| c.start).collect()
+    };
+    assert_eq!(starts.len(), 2);
+    set_cursor(&mut app, 0);
+
+    // Alt+F8: the first, then the second, then wraps to the first.
+    app.press(KeyCode::F(8), KeyModifiers::ALT);
+    assert_eq!(head(&app), starts[0]);
+    // The target is revealed (the cursor is brought on screen next draw) and undo sealed.
+    assert_eq!(
+        app.group().active_tab().unwrap().view.reveal_range,
+        Some((starts[0], starts[0]))
+    );
+    app.press(KeyCode::F(8), KeyModifiers::ALT);
+    assert_eq!(head(&app), starts[1]);
+    app.press(KeyCode::F(8), KeyModifiers::ALT);
+    assert_eq!(head(&app), starts[0], "wraps");
+    assert_eq!(app.group().active_tab().unwrap().view.selections.len(), 1);
+    // Shift+Alt+F8: back to the second at once (wrapping), then the first.
+    app.press(KeyCode::F(8), KeyModifiers::ALT | KeyModifiers::SHIFT);
+    assert_eq!(head(&app), starts[1], "wraps back");
+    app.press(KeyCode::F(8), KeyModifiers::ALT | KeyModifiers::SHIFT);
+    assert_eq!(head(&app), starts[0]);
+
+    // A file without markers: nothing moves.
+    let (_dir, mut app) = open("plain\ntext\n");
+    set_cursor(&mut app, 3);
+    app.press(KeyCode::F(8), KeyModifiers::ALT);
+    app.press(KeyCode::F(8), KeyModifiers::ALT | KeyModifiers::SHIFT);
+    assert_eq!(head(&app), ByteIdx(3));
+    // The command, too (the palette's entry).
+    app.test_execute(Command::Merge(MergeCommand::Next));
+    assert_eq!(head(&app), ByteIdx(3));
+}
+
+/// The active view's primary cursor.
+fn head(app: &App) -> ByteIdx {
+    app.group().active_tab().unwrap().view.selections.primary().head
+}
+
+/// The status bar's last row as drawn.
+fn status_text(term: &Terminal<TestBackend>) -> String {
+    let out = term.backend().buffer();
+    let area = out.area;
+    (area.x..area.x + area.width)
+        .map(|x| out[(x, area.y + area.height - 1)].symbol())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_status_bar_counts_the_conflicts() {
+    let (_dir, mut app) = open(CONFLICTS);
+    let term = draw(&mut app, 160);
+    let status = status_text(&term);
+    assert!(status.contains("2 conflicts"), "{status:?}");
+    assert!(status.contains("a.txt"), "beside the file: {status:?}");
+
+    // A file with one conflict.
+    let (_dir, mut app) = open("<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> main\n");
+    let term = draw(&mut app, 160);
+    assert!(status_text(&term).contains("1 conflict "), "{:?}", status_text(&term));
+
+    // None without markers.
+    let (_dir, mut app) = open("plain\ntext\n");
+    let term = draw(&mut app, 160);
+    assert!(!status_text(&term).contains("conflict"), "{:?}", status_text(&term));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_shows_the_current_and_incoming_blocks() {
+    let (_dir, mut app) = open(CONFLICTS);
+    let _term = draw(&mut app, 160);
+    let ours2 = at(&app, "ours2");
+    set_cursor(&mut app, ours2);
+    app.test_execute(Command::Merge(MergeCommand::Compare));
+    assert!(app.settle(|a| a.diffs_settled()).await);
+
+    let d = app.group().active_diff().expect("a diff tab");
+    assert_eq!(d.pair, Pair::conflict());
+    assert_eq!(d.pair.staging(), None);
+    assert!(!d.pair.needs_repo());
+    assert_eq!(d.title(), "a.txt (Current ↔ Incoming)");
+    assert_eq!(d.pair.titles(), ("Current".into(), "Incoming".into()));
+    let doc = d.doc.as_ref().expect("loaded");
+    assert_eq!(text_of(&doc.left), "ours2");
+    assert_eq!(text_of(&doc.right), "theirs2");
+
+    // Drawn: the header over each side, no Stage / Unstage or Revert buttons.
+    let term = draw(&mut app, 160);
+    let hit = app.hits.groups[0].clone();
+    let header = row_text(&term, hit.editor, hit.editor.y);
+    assert!(header.contains("Current"), "{header:?}");
+    assert!(header.contains("Incoming"), "{header:?}");
+    let diff = hit.diff.expect("the diff view's hit");
+    assert!(diff.buttons.is_empty(), "nothing to stage: {:?}", diff.buttons);
+    assert!(diff.reverts.is_empty(), "nothing to revert");
+
+    // A cursor outside every conflict: nothing opens (the text tab stays).
+    let (_dir, mut app) = open(CONFLICTS);
+    set_cursor(&mut app, 0);
+    app.test_execute(Command::Merge(MergeCommand::Compare));
+    assert!(app.group().active_diff().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_opens_a_new_tab_per_conflict() {
+    let (_dir, mut app) = open(CONFLICTS);
+    let _term = draw(&mut app, 160);
+    let ours1 = at(&app, "ours1");
+    set_cursor(&mut app, ours1);
+    app.test_execute(Command::Merge(MergeCommand::Compare));
+    assert!(app.settle(|a| a.diffs_settled()).await);
+
+    // Back to the text tab, compare the second conflict: a second diff tab, not the first reused.
+    app.group_mut().active = 0;
+    let ours2 = at(&app, "ours2");
+    set_cursor(&mut app, ours2);
+    app.test_execute(Command::Merge(MergeCommand::Compare));
+    assert!(app.settle(|a| a.diffs_settled()).await);
+
+    let mut blocks = app
+        .group()
+        .tabs
+        .iter()
+        .filter_map(|t| {
+            let d = t.diff()?;
+            let doc = d.doc.as_ref().expect("loaded");
+            Some((text_of(&doc.left), text_of(&doc.right)))
+        })
+        .collect::<Vec<_>>();
+    blocks.sort();
+    assert_eq!(
+        blocks,
+        vec![
+            ("ours1".to_string(), "theirs1".to_string()),
+            ("ours2".to_string(), "theirs2".to_string())
+        ],
+        "one diff tab per conflict, each with its own blocks"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_diff_tab_shows_no_conflict_count() {
+    // A compare opens a diff tab over a conflicted buffer: the count is the active text
+    // buffer's, so a diff tab shows none (the file name and "N conflicts" both go).
+    let (_dir, mut app) = open(CONFLICTS);
+    let _term = draw(&mut app, 160);
+    assert!(status_text(&_term).contains("2 conflicts"));
+    let ours1 = at(&app, "ours1");
+    set_cursor(&mut app, ours1);
+    app.test_execute(Command::Merge(MergeCommand::Compare));
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    let term = draw(&mut app, 160);
+    assert!(!status_text(&term).contains("conflict"), "{:?}", status_text(&term));
 }
 
 #[tokio::test(flavor = "multi_thread")]

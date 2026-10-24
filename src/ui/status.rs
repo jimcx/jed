@@ -109,6 +109,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> StatusHit {
                 (format!("{} {text}", m.diag.severity.icon()), style)
             });
         }
+        // Merge conflicts in the file (the editor scanned it earlier in this frame): VS Code's
+        // "2 conflicts" beside the name.
+        let conflicts = buf
+            .conflicts
+            .count()
+            .filter(|&n| n > 0)
+            .map(|n| format!("! {n} conflict{}  ", if n == 1 { "" } else { "s" }))
+            .unwrap_or_default();
         let dirty = if buf.is_dirty() { " ●" } else { "" };
         let flag = if buf.deleted {
             " [deleted]"
@@ -118,7 +126,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> StatusHit {
             ""
         };
         let name = format!(" {}{dirty}{flag}  ", buf.name());
-        let left = format!("{name}{problems}");
+        let left = format!("{name}{conflicts}{problems}");
 
         // As VS Code: the position for one selection, the count for several.
         let count = tab.view.selections.len();
@@ -192,7 +200,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> StatusHit {
         let start = x;
         x = out.set_stringn(x, area.y, &left, room, style).0;
         if !problems.is_empty() {
-            counts = counts_at(start + name.width() as u16, x);
+            counts = counts_at(start + (name.width() + conflicts.width()) as u16, x);
         }
     } else if !problems.is_empty() {
         let start = x;

@@ -31,6 +31,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `disk.rs` — open files changed on disk (`app.disk`): checks, reloads, the banner's actions; hex tabs' re-reads
 - `quick_diff.rs` — gutter markers (`sync_quick_diff`), their peek, staging / unstaging from the gutter
 - `blame.rs` — inline blame (`app.blame`): toggle, `sync_blame`
+- `conflict.rs` — merge conflicts (`app/conflict.rs`): `go_to_conflict(forward)` (Next / Previous Conflict, Alt+F8 / Shift+Alt+F8: the primary cursor to the conflict's start, one selection, revealed, undo sealed; wrapping; nothing without markers) and `compare_conflict(at)` (Compare Current Conflict, the palette and the action row's Compare button: the blocks of the conflict at the cursor, else the one at `at`, through `open_conflict_diff`; a log / untitled buffer's name titles the tab)
 - `diff_view.rs` — diff tabs (`app.diffs`): `open_diff(path, Pair)`, `sync_diffs`, `diff_command`, stage / revert hunks
 - `hex.rs` — hex tabs: binary files' load (`Loaded::Binary`), one tab per path, Reopen as Hex / Text, `hex_command` / `hex_copy`, Go to Offset, `hex_mouse`
 - `commit_tabs.rs` — commit tabs: `sync_commit_tabs`, `fit_commit_tabs`, opening a stat row's diff
@@ -44,7 +45,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `recent.rs` — recent workspaces (`app.recent`): record at start, Ctrl+R's picker
 - `scrollbar.rs` — scroll bars: `with_scrollable(target, f)`, clicks, drags, hover
 - `tab_drag.rs` — dragging a tab along its bar (`Drag::Tab`): the target gap in any group's bar under the pointer (the drop marker's position) or a group's editor, reordering on release, moving the tab to another group (`Groups::move_tab_between`, an empty source closing) / into its editor's centre (activated), edge drops that snap (the nearer quarter of an editor splits its group on that side through `Groups::split_empty_of`, the tab landing in the new split) and the shaded zone (`tab_drop_shade`, `editor.dropBackground`), Esc / a release outside cancelling
-- `mouse.rs` — clicks, drags and the wheel via the last frame's `HitMap` (a merge conflict's action-row button accepts that side); `ClickTracker`, `Drag`
+- `mouse.rs` — clicks, drags and the wheel via the last frame's `HitMap` (a merge conflict's action-row button accepts that side or opens its compare diff); `ClickTracker`, `Drag`
 - `mode.rs` — `Mode::{Workspace, SingleFile}` (`app.mode`, `jed -s`): `allows(cmd)` / `allows_view(panel)`, the one availability check (`execute`, palette, activity bar, icon clicks)
 
 Things to know before editing:

@@ -263,7 +263,15 @@ pub fn is_edit(cmd: Command) -> bool {
             | Command::CommentLine
             | Command::IndentLines
             | Command::OutdentLines
-            | Command::Merge(_)
+            | Command::Merge(
+                MergeCommand::AcceptCurrent
+                    | MergeCommand::AcceptIncoming
+                    | MergeCommand::AcceptBoth
+                    | MergeCommand::AcceptNone
+                    | MergeCommand::AcceptAllCurrent
+                    | MergeCommand::AcceptAllIncoming
+                    | MergeCommand::AcceptAllBoth,
+            )
     )
 }
 
@@ -296,6 +304,8 @@ fn merge_command(buf: &mut Buffer, view: &mut View, cmd: MergeCommand) {
         MergeCommand::AcceptIncoming | MergeCommand::AcceptAllIncoming => Choice::Incoming,
         MergeCommand::AcceptBoth | MergeCommand::AcceptAllBoth => Choice::Both,
         MergeCommand::AcceptNone => Choice::Base,
+        // Not edits (`execute` runs them elsewhere).
+        MergeCommand::Next | MergeCommand::Previous | MergeCommand::Compare => return,
     };
     let every = matches!(
         cmd,

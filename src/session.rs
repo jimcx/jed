@@ -146,7 +146,7 @@ pub enum Side {
     Empty,
 }
 
-/// A replace preview's side isn't stored (its tab isn't kept: `Err`).
+/// A replace preview's or a conflict compare's side isn't stored (its tab isn't kept: `Err`).
 impl TryFrom<Text> for Side {
     type Error = Text;
 
@@ -164,6 +164,8 @@ impl TryFrom<Text> for Side {
             Text::Commit(id) => Side::Commit { id: id.to_string() },
             Text::Empty => Side::Empty,
             Text::Replaced => return Err(t),
+            // Compare Current Conflict: its blocks are the tab's, not the file's.
+            Text::ConflictCurrent | Text::ConflictIncoming => return Err(t),
         })
     }
 }
@@ -745,6 +747,16 @@ mod tests {
         assert_eq!(Text::from(side), commit);
         assert_eq!(Text::from(Side::try_from(Text::Empty).unwrap()), Text::Empty);
         assert_eq!(Side::try_from(Text::Replaced), Err(Text::Replaced), "never stored");
+        assert_eq!(
+            Side::try_from(Text::ConflictCurrent),
+            Err(Text::ConflictCurrent),
+            "never stored"
+        );
+        assert_eq!(
+            Side::try_from(Text::ConflictIncoming),
+            Err(Text::ConflictIncoming),
+            "never stored"
+        );
         // JSON: the variants serialize and read back.
         let pair = Pair::commit(git2::Oid::from_str(&"cd".repeat(20)).unwrap(), None);
         let sides = (Side::try_from(pair.left).unwrap(), Side::try_from(pair.right).unwrap());

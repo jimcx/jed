@@ -684,8 +684,9 @@ impl ScmCommand {
     ];
 }
 
-/// The merge conflict commands (palette; unbound): accept a side of the conflicts the selections
-/// touch, or of every conflict in the file (`AcceptAll*`).
+/// The merge conflict commands: accept a side of the conflicts the selections touch, or of every
+/// conflict in the file (`AcceptAll*`); move the cursor between conflicts (Alt+F8 /
+/// Shift+Alt+F8); compare one against its incoming block (a read-only diff tab).
 #[allow(clippy::enum_variant_names)] // the palette's names, VS Code's: they all accept
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MergeCommand {
@@ -701,10 +702,16 @@ pub enum MergeCommand {
     AcceptAllCurrent,
     AcceptAllIncoming,
     AcceptAllBoth,
+    /// The cursor to the next conflict's `<<<<<<<` line, wrapping (Alt+F8).
+    Next,
+    /// The cursor to the previous conflict's, wrapping (Shift+Alt+F8).
+    Previous,
+    /// A read-only diff tab of the conflict's current and incoming blocks.
+    Compare,
 }
 
 impl MergeCommand {
-    pub const ALL: [MergeCommand; 7] = [
+    pub const ALL: [MergeCommand; 10] = [
         MergeCommand::AcceptCurrent,
         MergeCommand::AcceptIncoming,
         MergeCommand::AcceptBoth,
@@ -712,6 +719,9 @@ impl MergeCommand {
         MergeCommand::AcceptAllCurrent,
         MergeCommand::AcceptAllIncoming,
         MergeCommand::AcceptAllBoth,
+        MergeCommand::Next,
+        MergeCommand::Previous,
+        MergeCommand::Compare,
     ];
 }
 
@@ -1209,6 +1219,9 @@ impl Command {
                     MergeCommand::AcceptAllCurrent => "acceptAllCurrent",
                     MergeCommand::AcceptAllIncoming => "acceptAllIncoming",
                     MergeCommand::AcceptAllBoth => "acceptAllBoth",
+                    MergeCommand::Next => "nextConflict",
+                    MergeCommand::Previous => "previousConflict",
+                    MergeCommand::Compare => "compareCurrent",
                 }
             ),
             Command::GitHistory(c) => format!(
@@ -1533,6 +1546,9 @@ impl Command {
                 MergeCommand::AcceptAllCurrent => "Merge Conflict: Accept All Current",
                 MergeCommand::AcceptAllIncoming => "Merge Conflict: Accept All Incoming",
                 MergeCommand::AcceptAllBoth => "Merge Conflict: Accept All Both",
+                MergeCommand::Next => "Merge Conflict: Next Conflict",
+                MergeCommand::Previous => "Merge Conflict: Previous Conflict",
+                MergeCommand::Compare => "Merge Conflict: Compare Current Conflict",
             },
             Command::GitHistory(c) => match c {
                 GitHistoryCommand::Up => "Git History: Select Previous Commit",

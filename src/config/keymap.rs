@@ -11,9 +11,9 @@ use serde::Deserialize;
 
 use crate::command::{
     CodeActionCommand as Ca, ColumnMotion, Command, CommitCommand as Cc, ExplorerCommand as X, FindCommand as F,
-    GitHistoryCommand as G, LocationsCommand as L, Motion, PaletteCommand as P, ProblemsCommand as Pr,
-    ScmCommand as Sc, SearchCommand as S, ShellCommand as Sh, SuggestCommand as Sg, TaskCommand as T,
-    ToolsCommand as Tl,
+    GitHistoryCommand as G, LocationsCommand as L, MergeCommand as Mg, Motion, PaletteCommand as P,
+    ProblemsCommand as Pr, ScmCommand as Sc, SearchCommand as S, ShellCommand as Sh, SuggestCommand as Sg,
+    TaskCommand as T, ToolsCommand as Tl,
 };
 
 pub const FILE_NAME: &str = "keybindings.toml";
@@ -687,6 +687,10 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Char('u'), cmd | shift, Command::ShowTools),
         (KeyCode::F(8), none, Command::Problems(Pr::Next)),
         (KeyCode::F(8), shift, Command::Problems(Pr::Previous)),
+        // VS Code's Next / Previous Conflict: Alt+F8 / Shift+Alt+F8 (Alt, so no Cmd in the
+        // terminal docs); F8 stays the Problems list.
+        (KeyCode::F(8), alt, Command::Merge(Mg::Next)),
+        (KeyCode::F(8), alt | shift, Command::Merge(Mg::Previous)),
         // VS Code's Go Back / Go Forward: Ctrl on macOS too; Ctrl+Alt+- on Linux.
         (
             KeyCode::Char('-'),
@@ -1277,6 +1281,15 @@ mod tests {
                 assert_eq!(
                     km.lookup(&key(KeyCode::F(8), KeyModifiers::SHIFT), ctx),
                     Some(Command::Problems(Pr::Previous))
+                );
+                // Next / Previous Conflict: Alt+F8 / Shift+Alt+F8, F8 unchanged.
+                assert_eq!(
+                    km.lookup(&key(KeyCode::F(8), KeyModifiers::ALT), ctx),
+                    Some(Command::Merge(Mg::Next))
+                );
+                assert_eq!(
+                    km.lookup(&key(KeyCode::F(8), KeyModifiers::ALT | KeyModifiers::SHIFT), ctx),
+                    Some(Command::Merge(Mg::Previous))
                 );
             }
             assert_eq!(

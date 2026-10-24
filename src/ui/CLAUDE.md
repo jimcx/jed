@@ -28,7 +28,7 @@ One line per widget or editor layer; [docs/dev/ui.md](../../docs/dev/ui.md) has 
 - `diff.rs` — a diff tab: header, side by side or inline rows, Stage / Revert buttons, syntax colours
 - `panel.rs` — the bottom panel: border, tab strip with badges, Problems / Locations lists
 - `task.rs` — a task tab's terminal (`tui-term`, the theme's `terminal_cell`), resizing PTYs to it (render-time state); `render_shell` draws a shell tab's screen in the editor area (no tab strip, info line or scroll bar, the PTY resized by `mod.rs`)
-- `status.rs` — the status bar: Restricted badge, branch, file, problem counts, progress, position / language
+- `status.rs` — the status bar: Restricted badge, branch, file, merge conflict count, problem counts, progress, position / language
 - `banner.rs` — the changed-on-disk banner and its buttons
 - `dialog.rs` — the prompts
 - `splash.rs` — a group with no tabs
