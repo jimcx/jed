@@ -191,8 +191,9 @@ async fn milestone_5_every_command_runs_from_the_palette() {
                 | Command::ChangeLanguageMode
         );
         assert_eq!(app.palette.is_some(), reopens, "{c:?}");
-        // Dismiss whatever it opened (prompts, the palette again, the cheat sheet).
-        while app.prompt.is_some() || app.palette.is_some() || app.cheat_sheet.is_some() {
+        // Dismiss whatever it opened (prompts, the palette again, the cheat sheet, the keyboard
+        // shortcuts view).
+        while app.prompt.is_some() || app.palette.is_some() || app.cheat_sheet.is_some() || app.keys.is_some() {
             app.press(K::Esc, M::NONE);
         }
     }

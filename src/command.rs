@@ -144,6 +144,8 @@ pub enum Command {
     SetLogLevel,
     /// Open `~/.config/jed/settings.toml` (created from a template if missing).
     OpenUserSettings,
+    /// "Preferences: Keyboard Shortcuts": the shortcuts view (`keys.rs`).
+    KeyboardShortcuts,
     /// Keys inside the palette.
     Palette(PaletteCommand),
     /// Cmd+F: open the find widget (seeded from the selection or the word under the cursor).
@@ -884,6 +886,7 @@ impl Command {
             Command::OpenLogFile,
             Command::SetLogLevel,
             Command::OpenUserSettings,
+            Command::KeyboardShortcuts,
         ]);
         all.extend(PaletteCommand::ALL.map(Command::Palette));
         all.extend([Command::OpenFind, Command::OpenReplace]);
@@ -1058,6 +1061,7 @@ impl Command {
             Command::OpenLogFile => "log.open".into(),
             Command::SetLogLevel => "log.setLevel".into(),
             Command::OpenUserSettings => "preferences.openUserSettings".into(),
+            Command::KeyboardShortcuts => "preferences.keyboardShortcuts".into(),
             Command::Palette(c) => format!(
                 "palette.{}",
                 match c {
@@ -1411,6 +1415,7 @@ impl Command {
             Command::OpenLogFile => "Developer: Open Log File",
             Command::SetLogLevel => "Developer: Set Log Level…",
             Command::OpenUserSettings => "Preferences: Open User Settings",
+            Command::KeyboardShortcuts => "Preferences: Keyboard Shortcuts",
             Command::Palette(c) => match c {
                 PaletteCommand::Next => "Palette: Select Next",
                 PaletteCommand::Previous => "Palette: Select Previous",
@@ -1706,6 +1711,7 @@ mod tests {
             Command::Search(_) => 49,
             Command::CommentLine => 50,
             Command::OpenUserSettings => 51,
+            Command::KeyboardShortcuts => 122,
             Command::TogglePanel => 52,
             Command::ToggleProblems => 53,
             Command::Problems(_) => 54,
@@ -1776,7 +1782,7 @@ mod tests {
             Command::ConvertIndentationToTabs => 112,
         }
     }
-    const VARIANTS: u8 = 122;
+    const VARIANTS: u8 = 123;
 
     #[test]
     fn all_lists_every_variant() {

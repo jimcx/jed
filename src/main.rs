@@ -49,6 +49,9 @@ mod indentation;
 #[cfg(test)]
 mod indentation_tests;
 mod ipc;
+mod keys;
+#[cfg(test)]
+mod keys_tests;
 mod layout;
 mod lines;
 mod locations;

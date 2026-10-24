@@ -21,6 +21,7 @@ mod history;
 mod hover;
 mod indentation;
 mod ipc;
+mod keys;
 mod locations;
 mod lsp;
 mod mode;
@@ -354,6 +355,9 @@ pub struct App {
     /// The keyboard cheat sheet overlay, while open (`app/cheatsheet.rs`): it takes every key
     /// and mouse event a prompt doesn't.
     pub cheat_sheet: Option<crate::cheatsheet::CheatSheet>,
+    /// The keyboard shortcuts view, while open (`app/keys.rs`): it takes every key and mouse
+    /// event a prompt doesn't.
+    pub keys: Option<crate::keys::KeysView>,
     /// Quick open's file list; kept between openings so its threads are reused.
     files: Option<FileMatcher>,
     /// A `FilesMatched` event is queued.
@@ -545,6 +549,7 @@ impl App {
             prompt: None,
             palette: None,
             cheat_sheet: None,
+            keys: None,
             files: None,
             files_pending: Arc::new(AtomicBool::new(false)),
             files_poll: None,
@@ -991,6 +996,8 @@ impl App {
                     self.handle_prompt_key(key);
                 } else if self.cheat_sheet.is_some() {
                     self.cheat_sheet_key(key);
+                } else if self.keys.is_some() {
+                    self.keyboard_shortcuts_key(key);
                 } else if popup && esc && self.palette.is_none() && self.ui.focus == Focus::Editor {
                     // Closed above.
                 } else if peek {
@@ -1031,7 +1038,7 @@ impl App {
                 tracing::trace!(target: "input", len = text.len(), "paste");
                 if let Some(Prompt::Input(input)) = &mut self.prompt {
                     input.insert(&text.replace(['\r', '\n'], ""));
-                } else if self.cheat_sheet.is_some() {
+                } else if self.cheat_sheet.is_some() || self.keys.is_some() {
                     // Swallowed.
                 } else if self.prompt.is_none() && self.palette.is_some() {
                     self.palette_paste(&text);
@@ -1048,6 +1055,7 @@ impl App {
                 }
             }
             Event::Mouse(m) if self.prompt.is_none() && self.cheat_sheet.is_some() => self.cheat_sheet_mouse(m),
+            Event::Mouse(m) if self.prompt.is_none() && self.keys.is_some() => self.keyboard_shortcuts_mouse(m),
             Event::Mouse(m) if self.prompt.is_none() && self.palette.is_some() => self.palette_mouse(m),
             Event::Mouse(m) if self.prompt.is_none() => self.handle_mouse(m),
             _ => {}
@@ -1177,6 +1185,7 @@ impl App {
             Command::Paste => self.paste_clipboard(),
             Command::ShowCommands => self.open_palette(Picker::QuickOpen, ">"),
             Command::CheatSheet => self.toggle_cheat_sheet(),
+            Command::KeyboardShortcuts => self.toggle_keyboard_shortcuts(),
             Command::QuickOpen => self.open_palette(Picker::QuickOpen, ""),
             Command::GoToLine => self.open_palette(Picker::QuickOpen, ":"),
             Command::SetLogLevel => self.open_palette(Picker::LogLevel, ""),

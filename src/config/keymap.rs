@@ -272,19 +272,31 @@ impl Platform {
     }
 }
 
-/// One key combo bound to a command, in a context (`None` = everywhere).
+/// Where a binding came from: the built-in defaults or `keybindings.toml`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Default,
+    User,
+}
+
+/// One key combo bound to a command, in a context (`None` = everywhere), and where it came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Binding {
     pub combo: KeyCombo,
     pub context: Option<Context>,
     pub command: Command,
+    pub source: Source,
 }
 
 pub struct Keymap {
     /// `None` context = everywhere.
     bindings: HashMap<(KeyCombo, Option<Context>), Command>,
-    /// The binding the palette shows for each command: the first one that still applies.
-    shown: HashMap<Command, KeyCombo>,
+    /// Where each of `bindings` came from, keyed the same way.
+    #[cfg_attr(not(test), allow(dead_code))] // keys-b's view
+    sources: HashMap<(KeyCombo, Option<Context>), Source>,
+    /// The binding the palette shows for each command (its context too, for its source): the
+    /// first one that still applies.
+    shown: HashMap<Command, (KeyCombo, Option<Context>)>,
 }
 
 /// `keybindings.toml`: a list of `[[binding]]` tables.
@@ -305,10 +317,29 @@ struct UserBinding {
 }
 
 impl Keymap {
+    /// Every binding: combo, context (`None` = everywhere), command and where it came from.
+    #[cfg_attr(not(test), allow(dead_code))] // keys-b's view
+    pub fn bindings_with_source(&self) -> impl Iterator<Item = (KeyCombo, Option<Context>, Command, Source)> + '_ {
+        self.bindings.iter().map(|((combo, ctx), c)| {
+            let source = self.sources.get(&(*combo, *ctx)).copied().unwrap_or(Source::Default);
+            (*combo, *ctx, *c, source)
+        })
+    }
+
     /// Every binding: combo, context (`None` = everywhere) and command.
     #[cfg(test)]
     pub fn bindings(&self) -> impl Iterator<Item = (KeyCombo, Option<Context>, Command)> + '_ {
-        self.bindings.iter().map(|((combo, ctx), c)| (*combo, *ctx, *c))
+        self.bindings_with_source()
+            .map(|(combo, ctx, cmd, _)| (combo, ctx, cmd))
+    }
+
+    /// Where the key the palette shows for `cmd` came from (`Default` when it has none).
+    #[cfg_attr(not(test), allow(dead_code))] // keys-b's view
+    pub fn source_of(&self, cmd: Command) -> Source {
+        let Some(binding) = self.shown.get(&cmd) else {
+            return Source::Default;
+        };
+        self.sources.get(binding).copied().unwrap_or(Source::Default)
     }
 
     /// A binding for the current context wins over its parent's (replace → find), which wins
@@ -327,7 +358,7 @@ impl Keymap {
 
     /// The key shown next to a command in the palette.
     pub fn binding_for(&self, cmd: Command) -> Option<KeyCombo> {
-        self.shown.get(&cmd).copied()
+        self.shown.get(&cmd).map(|(combo, _)| *combo)
     }
 
     /// The commands bound in `context` itself (not its parents or globally), each with its
@@ -338,11 +369,11 @@ impl Keymap {
             if *ctx != Some(context) {
                 continue;
             }
-            let shown = self.shown.get(cmd) == Some(combo);
+            let shown = self.binding_for(*cmd) == Some(*combo);
             by_cmd
                 .entry(*cmd)
                 .and_modify(|c| {
-                    if shown || (self.shown.get(cmd) != Some(c) && combo.label() < c.label()) {
+                    if shown || (self.binding_for(*cmd) != Some(*c) && combo.label() < c.label()) {
                         *c = *combo;
                     }
                 })
@@ -356,16 +387,22 @@ impl Keymap {
     /// Later bindings win on the same key and context.
     fn from_list(list: Vec<Binding>) -> Self {
         let mut bindings = HashMap::new();
+        let mut sources = HashMap::new();
         for b in &list {
             bindings.insert((b.combo, b.context), b.command);
+            sources.insert((b.combo, b.context), b.source);
         }
         let mut shown = HashMap::new();
         for b in &list {
             if bindings.get(&(b.combo, b.context)) == Some(&b.command) {
-                shown.entry(b.command).or_insert(b.combo);
+                shown.entry(b.command).or_insert((b.combo, b.context));
             }
         }
-        Self { bindings, shown }
+        Self {
+            bindings,
+            sources,
+            shown,
+        }
     }
 
     pub fn default_for(platform: Platform) -> Self {
@@ -424,6 +461,7 @@ fn parse_user(text: &str) -> (Vec<Binding>, Vec<String>) {
                 combo,
                 context,
                 command,
+                source: Source::User,
             }),
             (combo, command, context) => {
                 let e = [combo.err(), command.err(), context.err()].into_iter().flatten();
@@ -879,6 +917,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         combo: KeyCombo { code, mods },
         context,
         command,
+        source: Source::Default,
     };
     let mut out = Vec::new();
     out.extend(global.into_iter().map(|(k, m, c)| bind(k, m, None, c)));
@@ -1573,6 +1612,62 @@ mod tests {
 
         let (_, errors) = parse_user("[[binding]]\nkey = 1\n");
         assert_eq!(errors.len(), 1, "a bad file is one error");
+    }
+
+    #[test]
+    fn bindings_know_their_source() {
+        // Every default binding is one, its context comes along, and an unbound command has none.
+        let km = Keymap::default_for(Platform::Linux);
+        let listed: Vec<_> = km.bindings_with_source().collect();
+        assert_eq!(listed.len(), km.bindings().count());
+        assert!(
+            listed.iter().all(|(_, _, _, source)| *source == Source::Default),
+            "a default binding is not Source::Default"
+        );
+        assert!(
+            listed.iter().any(|(_, ctx, _, _)| ctx.is_some()),
+            "a binding's context is listed with it"
+        );
+        assert_eq!(km.source_of(Command::Save), Source::Default);
+        assert_eq!(
+            km.binding_for(Command::ManageWorkspaceTrust),
+            None,
+            "the unbound command really is unbound"
+        );
+        assert_eq!(
+            km.source_of(Command::ManageWorkspaceTrust),
+            Source::Default,
+            "unbound: no binding to take a source from"
+        );
+
+        // A keybindings.toml binding replaces its command's defaults, so it is the only binding
+        // that command has and every one of them is the user's.
+        let (user, errors) = parse_user("[[binding]]\nkey = \"ctrl+alt+s\"\ncommand = \"file.save\"\n");
+        assert!(errors.is_empty(), "{errors:?}");
+        let km = Keymap::with_user(Platform::Linux, &user);
+        assert_eq!(km.source_of(Command::Save), Source::User);
+        assert_eq!(km.source_of(Command::Undo), Source::Default, "untouched");
+        for (combo, _, cmd, source) in km.bindings_with_source() {
+            match cmd {
+                Command::Save => assert_eq!(source, Source::User, "{}", combo.label()),
+                Command::Undo => assert_eq!(source, Source::Default, "{}", combo.label()),
+                _ => {}
+            }
+        }
+        assert_eq!(km.bindings_with_source().count(), km.bindings().count());
+
+        // A context-qualified user binding still reports its own source: `source_of` follows the
+        // shown binding's `(combo, context)` pair, so it finds the user's entry, not a same-combo
+        // default in another context.
+        let (user, errors) =
+            parse_user("[[binding]]\nkey = \"ctrl+alt+s\"\ncommand = \"file.save\"\ncontext = \"editor\"\n");
+        assert!(errors.is_empty(), "{errors:?}");
+        let km = Keymap::with_user(Platform::Linux, &user);
+        assert_eq!(
+            km.binding_for(Command::Save),
+            Some(KeyCombo::parse("ctrl+alt+s").unwrap())
+        );
+        assert_eq!(km.source_of(Command::Save), Source::User);
     }
 
     #[test]

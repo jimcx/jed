@@ -312,7 +312,7 @@ fn short_title(cmd: Command) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::keymap::{Binding, KeyCombo, Platform};
+    use crate::config::keymap::{Binding, KeyCombo, Platform, Source};
 
     fn row<'a>(sections: &'a [Section], title: &str) -> Option<&'a Row> {
         sections.iter().flat_map(|s| &s.rows).find(|r| r.title == title)
@@ -367,6 +367,7 @@ mod tests {
             combo: KeyCombo::parse("ctrl+alt+o").unwrap(),
             context: None,
             command: Command::QuickOpen,
+            source: Source::User,
         }];
         let km = Keymap::with_user(Platform::Linux, &user);
         let s = sections(&km, Context::Editor);
@@ -376,6 +377,7 @@ mod tests {
             combo: KeyCombo::parse("ctrl+g").unwrap(),
             context: None,
             command: Command::QuickOpen,
+            source: Source::User,
         }];
         let s = sections(&Keymap::with_user(Platform::Linux, &user), Context::Editor);
         assert!(row(&s, &short_title(Command::GoToLine)).is_none());

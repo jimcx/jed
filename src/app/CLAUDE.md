@@ -12,6 +12,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `navigation.rs` — back / forward (`app.nav`): `nav_begin` / `nav_end`, `nav_jump`, Go Back / Forward
 - `palette.rs` — opening, keys and accepting the command palette and its pickers
 - `cheatsheet.rs` — the keyboard cheat sheet overlay (`app.cheat_sheet`): toggle, its keys (all swallowed) and mouse
+- `keys.rs` — the Keyboard Shortcuts view (`app.keys`, model `crate::keys`; empty until keys-b): toggle, Esc closes, other keys / paste swallowed, a press closes
 - `cursors.rs` — Cmd+D / Cmd+Shift+L / Cmd+Alt+D sessions, Cmd+U (`cursor_undo`), `track_selections`
 - `find.rs` — the find / replace widget (`app.find`): open, incremental search, next / previous, replace (all); on a hex tab byte search (`find.hex`, the count off-thread via `AppEvent::HexCount`)
 - `workspace_search.rs` — the Search view (`app.search_view`): focus, debounce, starting searches, results, opening matches
