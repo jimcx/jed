@@ -5,12 +5,12 @@
 //!
 //! No drawing (`ui::task::render_shell` draws the screen) and no app state (`app/shell.rs` opens
 //! it, numbers its title, sends it keys and pastes, hands its events on and hangs it up at quit).
-//! `end_note` is the line below its output once it ends.
+//! Its exit note is `tasks::end_note("Shell", …)`.
 
 use std::path::Path;
 
 use crate::tasks::templates::{self, Spec};
-use crate::tasks::{Exit, Run, RunId, Sink, Status};
+use crate::tasks::{Run, RunId, Sink};
 
 /// A shell tab: its run, the title the tab bar shows, and the program's name (`zsh`), which
 /// numbers the next shell of the same program.
@@ -22,24 +22,13 @@ pub struct ShellTab {
 }
 
 impl ShellTab {
-    /// Starts `program` in a `rows` × `cols` PTY in `root`, with `JED_IPC` in its environment
-    /// when `ipc` is Some. Its title is numbered by `App::new_shell` (the first is its name).
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        id: RunId,
-        program: &Path,
-        root: &Path,
-        ipc: Option<&Path>,
-        rows: u16,
-        cols: u16,
-        sink: Sink,
-        scrollback: usize,
-    ) -> ShellTab {
-        let spec = spec(program, root, ipc);
+    /// Starts `spec` in a `rows` × `cols` PTY, titled `title` (`App::new_shell` numbers it: the
+    /// first shell of a program is its name).
+    pub fn new(id: RunId, spec: Spec, rows: u16, cols: u16, sink: Sink, scrollback: usize, title: String) -> ShellTab {
         let base = spec.name.clone();
         ShellTab {
             run: Run::start(id, spec, rows, cols, sink, scrollback),
-            title: title(&base, 1),
+            title,
             base,
         }
     }
@@ -52,20 +41,6 @@ pub fn title(base: &str, number: usize) -> String {
     } else {
         format!("{base} ({number})")
     }
-}
-
-/// The line written below a shell's output once it ends ("Shell 'zsh' exited with code 3");
-/// `None` while it starts or runs.
-pub fn end_note(title: &str, status: &Status) -> Option<String> {
-    Some(match status {
-        Status::Starting | Status::Running => return None,
-        Status::Failed(e) => format!("Shell '{title}' failed to start: {e}"),
-        Status::Exited(Exit { killed: true, .. }) => format!("Shell '{title}' was killed"),
-        Status::Exited(Exit {
-            signal: Some(signal), ..
-        }) => format!("Shell '{title}' ended by signal: {signal}"),
-        Status::Exited(e) => format!("Shell '{title}' exited with code {}", e.code),
-    })
 }
 
 /// A shell's name in the tab bar and a run's `name`: the program's file name.
@@ -98,7 +73,13 @@ pub fn spec(program: &Path, root: &Path, ipc: Option<&Path>) -> Spec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tasks::{Exit, Status};
     use std::path::PathBuf;
+
+    /// The shell's exit note (`tasks::end_note` with the "Shell" noun).
+    fn end_note(name: &str, status: &Status) -> Option<String> {
+        crate::tasks::end_note("Shell", name, status)
+    }
 
     #[test]
     fn titles_number_repeated_programs() {

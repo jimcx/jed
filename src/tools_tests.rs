@@ -1166,7 +1166,7 @@ pub(crate) async fn run_ended(app: &mut App, name: &str) -> RunId {
     assert!(
         app.settle(|a| {
             let run = a.tasks.get(id).unwrap();
-            crate::tasks::end_note(&run.name, &run.status())
+            crate::tasks::end_note("Task", &run.name, &run.status())
                 .is_some_and(|n| run.screen().screen().contents().contains(&n))
         })
         .await

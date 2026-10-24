@@ -13,7 +13,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{App, Focus};
 use crate::layout;
 use crate::shell::ShellTab;
-use crate::tasks::RunId;
+use crate::tasks::{Run, RunId};
 use crate::theme::Theme;
 
 /// A `vt100` screen seen from row `top` down (`tui-term` draws from row 0).
@@ -57,6 +57,40 @@ fn top_row(screen: &vt100::Screen, height: u16) -> u16 {
     (last + 1).saturating_sub(height).min(rows - height)
 }
 
+/// Draws `run`'s screen in `area` (the caller fills its background): `Shifted` from `top_row`
+/// through `PseudoTerminal` (its drawn cursor off), every cell through `theme.terminal_cell`, and
+/// the terminal cursor while `focused`, running, live and not hidden. Returns the scrollback (0 =
+/// the live screen). `status()` is read before `screen()`: the spawn holds the state lock while it
+/// takes the screen's (the reverse order deadlocks on a run that is still starting).
+fn draw_screen(f: &mut Frame, area: Rect, run: &Run, theme: &Theme, focused: bool) -> usize {
+    let running = run.status().is_running();
+    let parser = run.screen();
+    let screen = Shifted {
+        screen: parser.screen(),
+        top: top_row(parser.screen(), area.height),
+    };
+    // The terminal cursor (not tui-term's drawn one) while the tab has the keys.
+    let term = PseudoTerminal::new(&screen).cursor(Cursor::default().visibility(false));
+    f.render_widget(term, area);
+    let out = f.buffer_mut();
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            theme.terminal_cell(&mut out[(x, y)]);
+        }
+    }
+    let back = parser.screen().scrollback();
+    if focused && running && back == 0 && !parser.screen().hide_cursor() {
+        let (row, col) = tui_term::widget::Screen::cursor_position(&screen);
+        if row < area.height && col < area.width {
+            f.set_cursor_position(Position {
+                x: area.x + col,
+                y: area.y + row,
+            });
+        }
+    }
+    back
+}
+
 /// Draws run `id` in the panel `panel` (border row included); `info` is what's left of the tab
 /// strip's row: the "scrolled back" note, else the command (and its folder when not the root),
 /// dimmed.
@@ -74,7 +108,6 @@ pub fn render(f: &mut Frame, panel: Rect, info: Rect, app: &mut App, id: RunId) 
     let Some(run) = app.tasks.get(id) else { return };
     let focused =
         app.ui.focus == Focus::Panel && app.prompt.is_none() && app.palette.is_none() && app.cheat_sheet.is_none();
-    let running = run.status().is_running();
     let theme = &app.theme;
     let base = theme.get("panel");
     let below_tabs = Rect {
@@ -85,21 +118,7 @@ pub fn render(f: &mut Frame, panel: Rect, info: Rect, app: &mut App, id: RunId) 
     f.buffer_mut()
         .set_style(below_tabs, base.patch(theme.get("terminal.background")));
 
-    let parser = run.screen();
-    let screen = Shifted {
-        screen: parser.screen(),
-        top: top_row(parser.screen(), content.height),
-    };
-    // The terminal cursor (not tui-term's drawn one) while the tab has the keys.
-    let term = PseudoTerminal::new(&screen).cursor(Cursor::default().visibility(false));
-    f.render_widget(term, content);
-    let out = f.buffer_mut();
-    for y in content.y..content.y + content.height {
-        for x in content.x..content.x + content.width {
-            theme.terminal_cell(&mut out[(x, y)]);
-        }
-    }
-    let back = parser.screen().scrollback();
+    let back = draw_screen(f, content, run, theme, focused);
     let note = if back > 0 {
         format!("{back} lines back (Shift+PageDown, Ctrl+End)")
     } else {
@@ -113,16 +132,8 @@ pub fn render(f: &mut Frame, panel: Rect, info: Rect, app: &mut App, id: RunId) 
     if info.width > 4 {
         let w = (note.width() as u16).min(info.width - 4);
         let x = info.x + info.width - w - 1;
-        out.set_stringn(x, info.y, &note, w as usize, base.patch(theme.get("panel.dim")));
-    }
-    if focused && running && back == 0 && !parser.screen().hide_cursor() {
-        let (row, col) = tui_term::widget::Screen::cursor_position(&screen);
-        if row < content.height && col < content.width {
-            f.set_cursor_position(Position {
-                x: content.x + col,
-                y: content.y + row,
-            });
-        }
+        f.buffer_mut()
+            .set_stringn(x, info.y, &note, w as usize, base.patch(theme.get("panel.dim")));
     }
 }
 
@@ -136,31 +147,7 @@ pub fn render_shell(f: &mut Frame, area: Rect, shell: &ShellTab, theme: &Theme, 
     }
     f.buffer_mut()
         .set_style(area, theme.get("editor").patch(theme.get("terminal.background")));
-    // Before `screen()`: the spawn holds the state lock while it takes the screen's (the reverse
-    // order would deadlock on a shell drawn while it starts), as `render` does above.
-    let running = shell.run.status().is_running();
-    let parser = shell.run.screen();
-    let screen = Shifted {
-        screen: parser.screen(),
-        top: top_row(parser.screen(), area.height),
-    };
-    let term = PseudoTerminal::new(&screen).cursor(Cursor::default().visibility(false));
-    f.render_widget(term, area);
-    let out = f.buffer_mut();
-    for y in area.y..area.y + area.height {
-        for x in area.x..area.x + area.width {
-            theme.terminal_cell(&mut out[(x, y)]);
-        }
-    }
-    if focused && running && parser.screen().scrollback() == 0 && !parser.screen().hide_cursor() {
-        let (row, col) = tui_term::widget::Screen::cursor_position(&screen);
-        if row < area.height && col < area.width {
-            f.set_cursor_position(Position {
-                x: area.x + col,
-                y: area.y + row,
-            });
-        }
-    }
+    draw_screen(f, area, &shell.run, theme, focused);
 }
 
 #[cfg(test)]
@@ -199,13 +186,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let shell = ShellTab::new(
             RunId(1),
-            Path::new("/bin/cat"),
-            dir.path(),
-            None,
+            crate::shell::spec(Path::new("/bin/cat"), dir.path(), None),
             10,
             20,
             Arc::new(|_| {}),
             0,
+            "cat".into(),
         );
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while shell.run.status() != Status::Running {

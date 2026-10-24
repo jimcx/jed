@@ -33,9 +33,6 @@ pub struct Tasks {
     pub shell: PathBuf,
     /// New runs' (rows, cols).
     pub size: (u16, u16),
-    /// Lines kept above the screen for new runs: the `scrollback` setting, set before each run
-    /// (the `vt100` parser's capacity is fixed at creation).
-    pub scrollback: usize,
     /// Every run, oldest first, until closed (dropping one kills it).
     runs: Vec<Run>,
     next_id: u64,
@@ -51,7 +48,6 @@ impl Default for Tasks {
             user: BTreeMap::new(),
             shell: templates::default_shell(),
             size: DEFAULT_SIZE,
-            scrollback: run::SCROLLBACK,
             runs: Vec::new(),
             next_id: 1,
             sink: None,
@@ -60,17 +56,17 @@ impl Default for Tasks {
     }
 }
 
-/// The line written below a run's output once it ends ("Task 'build' exited with code 2");
-/// `None` while it runs.
-pub fn end_note(name: &str, status: &Status) -> Option<String> {
+/// The line written below a run's output once it ends ("{noun} '{name}' exited with code 2":
+/// `noun` is "Task" or "Shell"); `None` while it starts or runs.
+pub fn end_note(noun: &str, name: &str, status: &Status) -> Option<String> {
     Some(match status {
         Status::Starting | Status::Running => return None,
-        Status::Failed(e) => format!("Task '{name}' failed to start: {e}"),
-        Status::Exited(Exit { killed: true, .. }) => format!("Task '{name}' was killed"),
+        Status::Failed(e) => format!("{noun} '{name}' failed to start: {e}"),
+        Status::Exited(Exit { killed: true, .. }) => format!("{noun} '{name}' was killed"),
         Status::Exited(Exit {
             signal: Some(signal), ..
-        }) => format!("Task '{name}' ended by signal: {signal}"),
-        Status::Exited(e) => format!("Task '{name}' exited with code {}", e.code),
+        }) => format!("{noun} '{name}' ended by signal: {signal}"),
+        Status::Exited(e) => format!("{noun} '{name}' exited with code {}", e.code),
     })
 }
 
@@ -85,9 +81,9 @@ impl Tasks {
         templates::merge(workspace, &self.user)
     }
 
-    /// Starts `template` (cwd relative to `root`) at `self.size`; spawning happens off-thread, so
-    /// it starts as `Status::Starting`.
-    pub fn run(&mut self, template: &Template, root: &Path) -> RunId {
+    /// Starts `template` (cwd relative to `root`) at `self.size`, keeping `scrollback` lines above
+    /// the screen; spawning happens off-thread, so it starts as `Status::Starting`.
+    pub fn run(&mut self, template: &Template, root: &Path, scrollback: usize) -> RunId {
         let id = self.new_run_id();
         let mut spec = template.resolve(root, &self.shell);
         if let Some(socket) = &self.ipc {
@@ -97,7 +93,7 @@ impl Tasks {
         }
         let sink = self.sink.clone().unwrap_or_else(|| Arc::new(|_| {}));
         let (rows, cols) = self.size;
-        self.runs.push(Run::start(id, spec, rows, cols, sink, self.scrollback));
+        self.runs.push(Run::start(id, spec, rows, cols, sink, scrollback));
         id
     }
 
@@ -129,6 +125,7 @@ impl Tasks {
     }
 
     /// Runs still starting or running.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn running(&self) -> usize {
         self.runs.iter().filter(|r| r.status().is_running()).count()
     }
@@ -136,21 +133,29 @@ impl Tasks {
     /// On quit: SIGHUP to every running task, up to `SHUTDOWN_TIMEOUT` for them to end, then
     /// SIGKILL for the rest. Runs are kept (their status says how they ended).
     pub async fn shutdown(&mut self) {
-        if self.running() == 0 {
-            return;
-        }
-        for r in &self.runs {
-            r.kill();
-        }
-        let deadline = tokio::time::Instant::now() + SHUTDOWN_TIMEOUT;
-        while self.running() > 0 && tokio::time::Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        for r in &self.runs {
-            if r.status().is_running() {
-                tracing::warn!(task = %r.name, "task still running at quit: killing it");
-                r.force_kill();
-            }
+        hang_up(self.runs.iter(), "task").await;
+    }
+}
+
+/// On quit: SIGHUP to every run in `runs`, up to `SHUTDOWN_TIMEOUT` for them to end, then SIGKILL
+/// for the rest. `label` names them in the warn log ("task" / "shell"). Runs are kept (their
+/// status says how they ended).
+pub async fn hang_up<'a>(runs: impl Iterator<Item = &'a Run> + Clone, label: &str) {
+    let running = || runs.clone().filter(|r| r.status().is_running()).count();
+    if running() == 0 {
+        return;
+    }
+    for r in runs.clone() {
+        r.kill();
+    }
+    let deadline = tokio::time::Instant::now() + SHUTDOWN_TIMEOUT;
+    while running() > 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    for r in runs.clone() {
+        if r.status().is_running() {
+            tracing::warn!(run = %r.name, "{label} still running at quit: killing it");
+            r.force_kill();
         }
     }
 }
@@ -213,6 +218,7 @@ mod tests {
         let id = t.run(
             &template("printf 'hello\\n\\033[31mred\\033[0m\\n'; exit 3"),
             dir.path(),
+            run::SCROLLBACK,
         );
         let run = t.get(id).unwrap();
         wait_until("exit", || !run.status().is_running()).await;
@@ -243,21 +249,21 @@ mod tests {
                 killed,
             })
         };
-        assert_eq!(end_note("b", &Status::Running), None);
+        assert_eq!(end_note("Task", "b", &Status::Running), None);
         assert_eq!(
-            end_note("b", &exit(2, None, false)).unwrap(),
+            end_note("Task", "b", &exit(2, None, false)).unwrap(),
             "Task 'b' exited with code 2"
         );
         assert_eq!(
-            end_note("b", &exit(1, Some("Hangup"), true)).unwrap(),
+            end_note("Task", "b", &exit(1, Some("Hangup"), true)).unwrap(),
             "Task 'b' was killed"
         );
         assert_eq!(
-            end_note("b", &exit(1, Some("Segmentation fault"), false)).unwrap(),
+            end_note("Task", "b", &exit(1, Some("Segmentation fault"), false)).unwrap(),
             "Task 'b' ended by signal: Segmentation fault"
         );
         assert_eq!(
-            end_note("b", &Status::Failed("x: no such folder".into())).unwrap(),
+            end_note("Task", "b", &Status::Failed("x: no such folder".into())).unwrap(),
             "Task 'b' failed to start: x: no such folder"
         );
     }
@@ -268,7 +274,11 @@ mod tests {
     async fn input_written_while_starting_is_sent_once_running() {
         let (mut t, _) = tasks();
         let dir = tempfile::tempdir().unwrap();
-        let id = t.run(&template("read -r a; read -r b; echo \"got $a $b\""), dir.path());
+        let id = t.run(
+            &template("read -r a; read -r b; echo \"got $a $b\""),
+            dir.path(),
+            run::SCROLLBACK,
+        );
         let run = t.get(id).unwrap();
         assert_eq!(run.status(), Status::Starting);
         assert!(run.write(b"one\n"));
@@ -281,7 +291,7 @@ mod tests {
 
         let mut failing = template("true");
         failing.task.cwd = Some("missing".into());
-        let id = t.run(&failing, dir.path());
+        let id = t.run(&failing, dir.path(), run::SCROLLBACK);
         let run = t.get(id).unwrap();
         // Queued while starting; the failed start may already have finished under load.
         let queued = run.write(b"x");
@@ -296,7 +306,7 @@ mod tests {
     async fn writing_to_a_process_that_doesnt_read_never_blocks() {
         let (mut t, _) = tasks();
         let dir = tempfile::tempdir().unwrap();
-        let id = t.run(&template("echo ready; sleep 30"), dir.path());
+        let id = t.run(&template("echo ready; sleep 30"), dir.path(), run::SCROLLBACK);
         let run = t.get(id).unwrap();
         wait_until("ready", || run.screen().screen().contents().contains("ready")).await;
         let big = vec![b'x'; 4 << 20];
@@ -321,7 +331,11 @@ mod tests {
     async fn input_reaches_the_process() {
         let (mut t, _) = tasks();
         let dir = tempfile::tempdir().unwrap();
-        let id = t.run(&template("printf 'name? '; read n; echo \"hi $n\""), dir.path());
+        let id = t.run(
+            &template("printf 'name? '; read n; echo \"hi $n\""),
+            dir.path(),
+            run::SCROLLBACK,
+        );
         let run = t.get(id).unwrap();
         wait_until("prompt", || run.screen().screen().contents().contains("name?")).await;
         let key = |c| keys::encode(&crossterm::event::KeyEvent::from(c), false).unwrap();
@@ -332,7 +346,7 @@ mod tests {
         wait_until("exit", || !run.status().is_running()).await;
         assert_eq!(run.screen().screen().contents(), "name? bob\nhi bob");
         assert!(!run.write(b"x"), "nothing to write to once ended");
-        run.append_line(&end_note(&run.name, &run.status()).unwrap());
+        run.append_line(&end_note("Task", &run.name, &run.status()).unwrap());
         assert_eq!(
             run.screen().screen().contents(),
             "name? bob\nhi bob\nTask 't' exited with code 0"
@@ -343,7 +357,7 @@ mod tests {
     async fn ctrl_c_interrupts_the_foreground_process() {
         let (mut t, _) = tasks();
         let dir = tempfile::tempdir().unwrap();
-        let id = t.run(&template("echo ready; sleep 30"), dir.path());
+        let id = t.run(&template("echo ready; sleep 30"), dir.path(), run::SCROLLBACK);
         let run = t.get(id).unwrap();
         wait_until("ready", || run.screen().screen().contents().contains("ready")).await;
         // A Ctrl+C between the shell's `echo` and its start of `sleep` can be lost (seen with
@@ -382,7 +396,7 @@ mod tests {
         let (mut t, _) = tasks();
         t.size = (5, 40);
         let dir = tempfile::tempdir().unwrap();
-        let id = t.run(&template("seq 1 50"), dir.path());
+        let id = t.run(&template("seq 1 50"), dir.path(), run::SCROLLBACK);
         let run = t.get(id).unwrap();
         wait_until("exit", || !run.status().is_running()).await;
         run.scroll(-3);
@@ -406,6 +420,7 @@ mod tests {
         let id = t.run(
             &template("i=0; while [ $i -lt 2000 ]; do echo line $i; i=$((i+1)); done"),
             dir.path(),
+            run::SCROLLBACK,
         );
         let run = t.get(id).unwrap();
         let started = Instant::now();
@@ -430,7 +445,7 @@ mod tests {
         let (mut t, _) = tasks();
         t.size = (5, 40);
         let dir = tempfile::tempdir().unwrap();
-        let id = t.run(&template("seq 1 50"), dir.path());
+        let id = t.run(&template("seq 1 50"), dir.path(), run::SCROLLBACK);
         let run = t.get(id).unwrap();
         wait_until("exit", || !run.status().is_running()).await;
         let mut p = run.screen();
@@ -449,7 +464,7 @@ mod tests {
         let mut tpl = template("pwd; echo \"$TERM $COLORTERM $GREETING\"");
         tpl.task.cwd = Some("sub".into());
         tpl.task.env.insert("GREETING".into(), "hi there".into());
-        let id = t.run(&tpl, &root);
+        let id = t.run(&tpl, &root, run::SCROLLBACK);
         let run = t.get(id).unwrap();
         wait_until("exit", || !run.status().is_running()).await;
         assert_eq!(
@@ -465,7 +480,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut tpl = template("true");
         tpl.task.cwd = Some("nope".into());
-        let id = t.run(&tpl, dir.path());
+        let id = t.run(&tpl, dir.path(), run::SCROLLBACK);
         let run = t.get(id).unwrap();
         wait_until("failure", || !run.status().is_running()).await;
         match run.status() {
@@ -484,6 +499,7 @@ mod tests {
         let id = t.run(
             &template("trap 'stty size; exit 0' WINCH; echo ready; i=0; while [ $i -lt 500 ]; do sleep 0.01; i=$((i+1)); done"),
             dir.path(),
+            run::SCROLLBACK,
         );
         let run = t.get(id).unwrap();
         wait_until("ready", || run.screen().screen().contents().contains("ready")).await;
@@ -499,7 +515,11 @@ mod tests {
         let (mut t, _) = tasks();
         let dir = tempfile::tempdir().unwrap();
         // A background child too: the kill must reach it.
-        let id = t.run(&template("sleep 30 & sleep 30; echo never"), dir.path());
+        let id = t.run(
+            &template("sleep 30 & sleep 30; echo never"),
+            dir.path(),
+            run::SCROLLBACK,
+        );
         let run = t.get(id).unwrap();
         wait_until("running", || run.pid().is_some()).await;
         let pgid = run.pid().unwrap();
@@ -521,7 +541,11 @@ mod tests {
     async fn kill_escalates_when_hangup_is_ignored() {
         let (mut t, _) = tasks();
         let dir = tempfile::tempdir().unwrap();
-        let id = t.run(&template("trap '' HUP; echo ready; sleep 30"), dir.path());
+        let id = t.run(
+            &template("trap '' HUP; echo ready; sleep 30"),
+            dir.path(),
+            run::SCROLLBACK,
+        );
         let run = t.get(id).unwrap();
         wait_until("ready", || run.screen().screen().contents().contains("ready")).await;
         let pgid = run.pid().unwrap();
@@ -538,7 +562,11 @@ mod tests {
         let (mut t, _) = tasks();
         let dir = tempfile::tempdir().unwrap();
         // The shell dies of the SIGHUP; its child ignores it and keeps the terminal.
-        let id = t.run(&template("(trap '' HUP; echo ready; exec sleep 30) & wait"), dir.path());
+        let id = t.run(
+            &template("(trap '' HUP; echo ready; exec sleep 30) & wait"),
+            dir.path(),
+            run::SCROLLBACK,
+        );
         let run = t.get(id).unwrap();
         wait_until("ready", || run.screen().screen().contents().contains("ready")).await;
         let pgid = run.pid().unwrap();
@@ -557,6 +585,7 @@ mod tests {
         let id = t.run(
             &template("(trap '' HUP; touch ready; exec sleep 30) & while [ ! -e ready ]; do sleep 0.01; done"),
             dir.path(),
+            run::SCROLLBACK,
         );
         let run = t.get(id).unwrap();
         let pgid = loop {
@@ -577,10 +606,10 @@ mod tests {
     async fn closing_or_dropping_a_run_kills_it() {
         let (mut t, _) = tasks();
         let dir = tempfile::tempdir().unwrap();
-        let a = t.run(&template("sleep 30"), dir.path());
-        let b = t.run(&template("sleep 30"), dir.path());
+        let a = t.run(&template("sleep 30"), dir.path(), run::SCROLLBACK);
+        let b = t.run(&template("sleep 30"), dir.path(), run::SCROLLBACK);
         // Killed while still starting: killed as soon as it exists.
-        let c = t.run(&template("sleep 30"), dir.path());
+        let c = t.run(&template("sleep 30"), dir.path(), run::SCROLLBACK);
         t.get(c).unwrap().kill();
         wait_until("running", || {
             t.get(a).unwrap().pid().is_some() && t.get(b).unwrap().pid().is_some()
@@ -601,9 +630,13 @@ mod tests {
     async fn shutdown_kills_running_tasks() {
         let (mut t, _) = tasks();
         let dir = tempfile::tempdir().unwrap();
-        let a = t.run(&template("trap '' HUP; echo ready; sleep 30"), dir.path());
-        let b = t.run(&template("sleep 30"), dir.path());
-        let done = t.run(&template("true"), dir.path());
+        let a = t.run(
+            &template("trap '' HUP; echo ready; sleep 30"),
+            dir.path(),
+            run::SCROLLBACK,
+        );
+        let b = t.run(&template("sleep 30"), dir.path(), run::SCROLLBACK);
+        let done = t.run(&template("true"), dir.path(), run::SCROLLBACK);
         wait_until("running", || {
             t.get(a).unwrap().screen().screen().contents() == "ready" && t.get(b).unwrap().pid().is_some()
         })
@@ -633,6 +666,7 @@ mod tests {
         let id = t.run(
             &template("trap 'echo hup' HUP; sleep 30 & echo $! > child; echo ready; while :; do sleep 0.05; done"),
             dir.path(),
+            run::SCROLLBACK,
         );
         let run = t.get(id).unwrap();
         wait_until("ready", || run.screen().screen().contents().contains("ready")).await;

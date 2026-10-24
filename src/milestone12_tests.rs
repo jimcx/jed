@@ -100,7 +100,7 @@ pub(crate) async fn settle_ended(app: &mut App, id: RunId) -> bool {
     app.settle(|a| {
         let run = a.tasks.get(id).unwrap();
         let status = run.status();
-        tasks::end_note(&run.name, &status).is_some_and(|n| run.screen().screen().contents().ends_with(&n))
+        tasks::end_note("Task", &run.name, &status).is_some_and(|n| run.screen().screen().contents().ends_with(&n))
     })
     .await
 }
@@ -1015,7 +1015,7 @@ async fn settle_ended_within(app: &mut App, id: RunId, limit: std::time::Duratio
             .settle(|a| {
                 each(a);
                 let run = a.tasks.get(id).unwrap();
-                tasks::end_note(&run.name, &run.status())
+                tasks::end_note("Task", &run.name, &run.status())
                     .is_some_and(|n| run.screen().screen().contents().ends_with(&n))
             })
             .await;

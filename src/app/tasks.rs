@@ -8,7 +8,7 @@ use super::{App, Focus, Level};
 use crate::command::TaskCommand as T;
 use crate::layout::{self, PanelTab};
 use crate::palette::Picker;
-use crate::tasks::{self, Event, RunId, Status, Template, keys};
+use crate::tasks::{self, Event, Run, RunId, Status, Template, keys};
 use crate::workspace::trust::Trust;
 
 impl App {
@@ -89,8 +89,7 @@ impl App {
                 self.tasks.size = (area.height, area.width);
             }
         }
-        self.tasks.scrollback = self.settings.scrollback;
-        self.tasks.run(template, &self.workspace.root)
+        self.tasks.run(template, &self.workspace.root, self.settings.scrollback)
     }
 
     /// The task tab the panel shows, if it shows one.
@@ -169,16 +168,18 @@ impl App {
         let Some(run) = self.shown_task().and_then(|id| self.tasks.get(id)) else {
             return;
         };
-        let page = (run.screen().screen().size().0 as isize - 1).max(1);
-        match cmd {
-            T::ScrollUp => run.scroll(-1),
-            T::ScrollDown => run.scroll(1),
-            T::PageUp => run.scroll(-page),
-            T::PageDown => run.scroll(page),
-            T::Top => run.scroll_to(true),
-            T::Bottom => run.scroll_to(false),
-            T::FocusEditor => {}
-        }
+        scroll_run(
+            run,
+            match cmd {
+                T::ScrollUp => Scroll::Up,
+                T::ScrollDown => Scroll::Down,
+                T::PageUp => Scroll::PageUp,
+                T::PageDown => Scroll::PageDown,
+                T::Top => Scroll::Top,
+                T::Bottom => Scroll::Bottom,
+                T::FocusEditor => return,
+            },
+        );
     }
 
     /// A key bound to nothing while a task tab has the keys: to the task's terminal, as a
@@ -187,12 +188,7 @@ impl App {
         let Some(run) = self.task_focused().and_then(|id| self.tasks.get(id)) else {
             return;
         };
-        let application_cursor = run.screen().screen().application_cursor();
-        if let Some(bytes) = keys::encode(&key, application_cursor)
-            && run.write(&bytes)
-        {
-            run.scroll_to(false);
-        }
+        send_key(run, key);
     }
 
     /// A paste while a task tab has the keys: into its terminal (bracketed when the task asked).
@@ -200,10 +196,7 @@ impl App {
         let Some(run) = self.task_focused().and_then(|id| self.tasks.get(id)) else {
             return;
         };
-        let bracketed = run.screen().screen().bracketed_paste();
-        if run.write(&keys::paste(text, bracketed)) {
-            run.scroll_to(false);
-        }
+        send_paste(run, text);
     }
 
     /// The wheel over a task tab: through its scrollback (negative: up).
@@ -226,15 +219,8 @@ impl App {
     pub(super) fn task_event(&mut self, ev: Event) {
         let Event::Ended(id) = ev else { return };
         let Some(run) = self.tasks.get(id) else { return };
-        let status = run.status();
-        let Some(note) = tasks::end_note(&run.name, &status) else {
+        let Some((level, note)) = end_run_note(run, "Task", &run.name) else {
             return;
-        };
-        run.append_line(&note);
-        let level = match &status {
-            Status::Failed(_) => Level::Error,
-            Status::Exited(e) if e.success() || e.killed => Level::Info,
-            _ => Level::Warning,
         };
         self.notify(level, note);
     }
@@ -259,4 +245,61 @@ impl App {
         // After the session: a clean quit removes the backups, else they're brought up to date.
         self.finish_backups().await;
     }
+}
+
+/// A scroll step through a run's scrollback.
+#[derive(Clone, Copy)]
+pub(super) enum Scroll {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Top,
+    Bottom,
+}
+
+/// Applies a scroll command to `run` (a page = its screen's rows less one).
+pub(super) fn scroll_run(run: &Run, dir: Scroll) {
+    let page = (run.screen().screen().size().0 as isize - 1).max(1);
+    match dir {
+        Scroll::Up => run.scroll(-1),
+        Scroll::Down => run.scroll(1),
+        Scroll::PageUp => run.scroll(-page),
+        Scroll::PageDown => run.scroll(page),
+        Scroll::Top => run.scroll_to(true),
+        Scroll::Bottom => run.scroll_to(false),
+    }
+}
+
+/// A key bound to nothing sent to `run`'s terminal, as a terminal sends it; the view is then back
+/// on the live screen.
+pub(super) fn send_key(run: &Run, key: KeyEvent) {
+    let application_cursor = run.screen().screen().application_cursor();
+    if let Some(bytes) = keys::encode(&key, application_cursor)
+        && run.write(&bytes)
+    {
+        run.scroll_to(false);
+    }
+}
+
+/// A paste into `run`'s terminal (bracketed when it asked), back on the live screen.
+pub(super) fn send_paste(run: &Run, text: &str) {
+    let bracketed = run.screen().screen().bracketed_paste();
+    if run.write(&keys::paste(text, bracketed)) {
+        run.scroll_to(false);
+    }
+}
+
+/// The note appended below an ended `run` and the level to show it with, or `None` while it still
+/// starts or runs (`noun` is "Task" / "Shell").
+pub(super) fn end_run_note(run: &Run, noun: &str, name: &str) -> Option<(Level, String)> {
+    let status = run.status();
+    let note = crate::tasks::end_note(noun, name, &status)?;
+    run.append_line(&note);
+    let level = match &status {
+        Status::Failed(_) => Level::Error,
+        Status::Exited(e) if e.success() || e.killed => Level::Info,
+        _ => Level::Warning,
+    };
+    Some((level, note))
 }

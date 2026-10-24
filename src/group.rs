@@ -78,15 +78,6 @@ impl Tab {
         }
     }
 
-    /// shell-b's drawing and resizing take the active shell mutably.
-    #[allow(dead_code)]
-    pub fn shell_mut(&mut self) -> Option<&mut ShellTab> {
-        match self {
-            Tab::Shell(s) => Some(s),
-            _ => None,
-        }
-    }
-
     /// The buffer a text tab shows (`None` for a diff, hex or shell tab).
     pub fn buffer(&self) -> Option<BufferId> {
         self.text().map(|t| t.buffer)
@@ -148,12 +139,6 @@ impl Group {
     /// The active tab, when it's a shell.
     pub fn active_shell(&self) -> Option<&ShellTab> {
         self.tabs.get(self.active).and_then(Tab::shell)
-    }
-
-    /// shell-b's drawing and resizing take the active shell mutably.
-    #[allow(dead_code)]
-    pub fn active_shell_mut(&mut self) -> Option<&mut ShellTab> {
-        self.tabs.get_mut(self.active).and_then(Tab::shell_mut)
     }
 
     /// The hex tab of `path`.
