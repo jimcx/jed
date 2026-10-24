@@ -117,6 +117,24 @@ pub fn old_lines(hunks: &[Hunk], line: usize) -> Range<usize> {
     at..at + 1
 }
 
+/// The reverse of [`old_lines`]: the new text's lines the old text's `line` stands for (itself,
+/// shifted by the changes above it, or a changed line's hunk's new lines — empty: a deleted line,
+/// the point it was deleted at).
+pub fn new_lines(hunks: &[Hunk], line: usize) -> Range<usize> {
+    let mut delta = 0isize;
+    for h in hunks {
+        if line < h.old.start {
+            break;
+        }
+        if h.old.contains(&line) {
+            return h.new.clone();
+        }
+        delta = h.new.end as isize - h.old.end as isize;
+    }
+    let at = (line as isize + delta).max(0) as usize;
+    at..at + 1
+}
+
 /// Whether a hunk whose new lines are `ours` touches the lines `lines` (both may be points: an
 /// empty range between two lines).
 pub fn touches(ours: &Range<usize>, lines: &Range<usize>) -> bool {
@@ -346,6 +364,17 @@ mod tests {
         assert_eq!(old_lines(&d.hunks, 5), 5..5, "an added line: the point");
         assert_eq!(old_lines(&d.hunks, 7), 5..6);
         assert_eq!(old_lines(&d.hunks, 9), 8..9, "after the deletion");
+        assert_eq!(new_lines(&d.hunks, 0), 0..1);
+        assert_eq!(new_lines(&d.hunks, 1), 1..2);
+        assert_eq!(new_lines(&d.hunks, 4), 4..5);
+        assert_eq!(
+            new_lines(&d.hunks, 5),
+            7..8,
+            "an inserted line's point shifts to the line after"
+        );
+        assert_eq!(new_lines(&d.hunks, 6), 8..9);
+        assert_eq!(new_lines(&d.hunks, 7), 9..9, "a deleted line: the point");
+        assert_eq!(new_lines(&d.hunks, 8), 9..10, "after the deletion");
         assert!(touches(&(2..4), &(3..4)) && !touches(&(2..4), &(4..5)));
         assert!(touches(&(4..4), &(3..4)) && touches(&(4..4), &(4..5)) && !touches(&(6..6), &(4..5)));
         assert!(touches(&(2..4), &(4..4)) && !touches(&(2..4), &(5..5)));

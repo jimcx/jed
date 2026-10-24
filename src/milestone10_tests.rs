@@ -774,10 +774,11 @@ async fn milestone_10_gutter_markers_follow_edits_and_the_index() {
     assert!(settle_markers(&mut app).await);
     assert_eq!(markers(&mut app), expected);
 
-    // `git add` outside jed: the index now holds the file, nothing is marked.
+    // `git add` outside jed: the index now holds the file, nothing is marked in the gutter (the
+    // change is staged now, which the scroll bar shows in its staged colour).
     git(&root, &["add", "a.txt"]);
     assert!(
-        app.settle(|a| a.active_buffer().unwrap().quick_diff.marks().is_empty())
+        app.settle(|a| a.active_buffer().unwrap().quick_diff.marks().iter().all(|m| m.staged))
             .await
     );
     assert!(settle_markers(&mut app).await);
@@ -853,16 +854,15 @@ async fn milestone_10_stage_from_the_gutter_like_add_p() {
     assert!(settle_staged(&mut app, "Staged the change at line 21").await);
     git_with_input(&reference, &["add", "-p", "--", "f.txt"], Some("n\ny\nn\n"));
     assert_eq!(index_state(&root), index_state(&reference));
-    // The staged change isn't marked any more.
+    // The staged change isn't marked in the gutter any more (its scroll-bar mark is staged now).
     assert!(settle_markers(&mut app).await);
     let modified = marker_colour(&app, "editorGutter.modifiedBackground");
     let shown = markers(&mut app);
     assert!(!shown.iter().any(|(l, _, _)| *l == 20 || *l == 21), "{shown:?}");
-    assert_eq!(
-        app.active_buffer().unwrap().quick_diff.marks().len(),
-        2,
-        "lines 2 and 35 left"
-    );
+    let buf = app.active_buffer().unwrap();
+    let marks = buf.quick_diff.marks();
+    assert_eq!(marks.iter().filter(|m| !m.staged).count(), 2, "lines 2 and 35 left");
+    assert_eq!(marks.iter().filter(|m| m.staged).count(), 1, "line 20 staged");
 
     // Enter in the peek stages too: the deletion, drawn below line 35.
     place_cursor(&mut app, 39);

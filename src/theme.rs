@@ -145,6 +145,11 @@ impl Theme {
             ("editorGutter.addedBackground", Style::new().fg(c(0x487E02))),
             ("editorGutter.modifiedBackground", Style::new().fg(c(0x1B81A8))),
             ("editorGutter.deletedBackground", Style::new().fg(c(0xF14C4C))),
+            // The scroll bar's marks for staged changes: the same three, darkened (×0.6), so a
+            // staged line reads quieter than one only in the working tree.
+            ("editorGutter.stagedAddedBackground", Style::new().fg(c(0x2B4B01))),
+            ("editorGutter.stagedModifiedBackground", Style::new().fg(c(0x104D65))),
+            ("editorGutter.stagedDeletedBackground", Style::new().fg(c(0x912E2E))),
             // The gutter's peek: removed / added lines (Dark+'s `diffEditor.*LineBackground`,
             // #ff000033 and #9bb95533, blended over the peek's background), its buttons.
             ("diffEditor.removedLineBackground", Style::new().bg(c(0x511E1E))),
@@ -496,6 +501,28 @@ mod tests {
             for b in &kinds[i + 1..] {
                 assert_ne!(fg(a), fg(b), "{a} and {b}");
             }
+        }
+    }
+
+    /// The scroll bar's staged marks reuse the gutter colours, darkened: each staged key is a
+    /// darker sibling of its unstaged one.
+    #[test]
+    fn staged_gutter_colours_darken_the_unstaged() {
+        let theme = Theme::dark_plus(true);
+        for (unstaged, staged) in [
+            ("editorGutter.addedBackground", "editorGutter.stagedAddedBackground"),
+            (
+                "editorGutter.modifiedBackground",
+                "editorGutter.stagedModifiedBackground",
+            ),
+            ("editorGutter.deletedBackground", "editorGutter.stagedDeletedBackground"),
+        ] {
+            let (Some(Color::Rgb(ar, ag, ab)), Some(Color::Rgb(br, bg, bb))) =
+                (theme.get(unstaged).fg, theme.get(staged).fg)
+            else {
+                panic!("{unstaged} and {staged} should be RGB colours");
+            };
+            assert!(br < ar && bg < ag && bb < ab, "{staged} darker than {unstaged}");
         }
     }
 

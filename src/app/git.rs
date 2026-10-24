@@ -148,9 +148,11 @@ impl App {
             }
             Err(e) => tracing::warn!("git status failed: {e}"),
         }
-        // A commit, checkout, reset or another repository: the file's history is stale.
+        // A commit, checkout, reset or another repository: the file's history is stale, and so
+        // are the staged markers (they compare the index against HEAD).
         if self.git_head() != head_before {
             self.git_history_head_changed();
+            self.quick_diff_head_changed();
         }
         if let Some(changed) = self.git.queued.take() {
             self.refresh_git(changed);

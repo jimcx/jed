@@ -144,6 +144,14 @@ impl App {
         }
     }
 
+    /// HEAD moved (a commit, a checkout, a reset): the markers' staged half (index → HEAD) is
+    /// computed again too, even where the index is still the one they came from.
+    pub(super) fn quick_diff_head_changed(&mut self) {
+        for (_, buf) in self.buffers.iter_mut() {
+            buf.quick_diff.head_changed();
+        }
+    }
+
     /// `editor.nextChange` / `editor.previousChange`: the cursor to the first line of the next /
     /// previous change in the gutter, wrapping around.
     pub(super) fn go_to_change(&mut self, forward: bool) {
