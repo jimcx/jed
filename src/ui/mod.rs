@@ -30,7 +30,9 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::app::{App, Focus};
+use crate::diff_view::DiffTab;
 use crate::edit::RenderWhitespace;
+use crate::git::HunkKind;
 use crate::group::Tab;
 use crate::layout::{self, GroupHit, HitMap, ScrollTarget, SplitDir};
 use crate::scrollbar::Scrollable;
@@ -164,7 +166,16 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     height: bar.height.saturating_sub(1),
                     ..bar
                 };
-                scroll_hit = Some(scrollbar::render(out, track, d.scroll(), look, editor_bg, &app.theme));
+                let marks = diff_marks(d);
+                scroll_hit = Some(scrollbar::render(
+                    out,
+                    track,
+                    d.scroll(),
+                    look,
+                    editor_bg,
+                    &app.theme,
+                    &marks,
+                ));
             }
         }
         let mut hex_drawn = false;
@@ -185,6 +196,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     look,
                     editor_bg,
                     &app.theme,
+                    &[],
                 ));
             }
         }
@@ -250,6 +262,19 @@ pub fn render(f: &mut Frame, app: &mut App) {
                         rope: &buf.rope,
                     }
                     .scroll();
+                    // Every change's lines, staged or not (the gutter shows the unstaged ones).
+                    let marks: Vec<scrollbar::Mark> = buf
+                        .quick_diff
+                        .marks()
+                        .iter()
+                        .filter_map(|m| {
+                            let lines = buf.quick_diff.lines_of(&buf.rope, m)?;
+                            Some(scrollbar::Mark {
+                                lines,
+                                key: m.theme_key(),
+                            })
+                        })
+                        .collect();
                     scroll_hit = Some(scrollbar::render(
                         f.buffer_mut(),
                         bar,
@@ -257,6 +282,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
                         look,
                         editor_bg,
                         &app.theme,
+                        &marks,
                     ));
                 }
             }
@@ -360,6 +386,33 @@ pub fn render(f: &mut Frame, app: &mut App) {
         dialog::render(f, area, app, prompt);
     }
     app.hits = hits;
+}
+
+/// A diff tab's hunks as the bar's marks: each hunk's rows in the layout drawn, in the gutter
+/// colour of its kind (`Hunk::kind`; no staged split: the tab is one side).
+fn diff_marks(d: &DiffTab) -> Vec<scrollbar::Mark> {
+    let starts = &d.aligned().starts;
+    d.hunks()
+        .iter()
+        .enumerate()
+        .filter_map(|(k, h)| {
+            let start = *starts.get(k)?;
+            let rows = if d.inline {
+                h.old.len() + h.new.len()
+            } else {
+                h.old.len().max(h.new.len())
+            };
+            let key = match h.kind() {
+                HunkKind::Added => "editorGutter.addedBackground",
+                HunkKind::Deleted => "editorGutter.deletedBackground",
+                HunkKind::Modified => "editorGutter.modifiedBackground",
+            };
+            Some(scrollbar::Mark {
+                lines: start..start + rows,
+                key,
+            })
+        })
+        .collect()
 }
 
 /// Commit tabs' text is `git show` at the width drawn: each one about to be drawn re-renders

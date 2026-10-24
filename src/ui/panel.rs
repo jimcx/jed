@@ -207,7 +207,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> PanelHits {
     let selected_row = view.selected_row(&files);
     let scroll = view.scrollable(&files).scroll();
     if let Some(track) = bar {
-        let bar = scrollbar::render(out, track, scroll, look, base, theme);
+        let bar = scrollbar::render(out, track, scroll, look, base, theme, &[]);
         hits.scrollbar = Some((ScrollTarget::Panel(PanelTab::Problems), bar));
     }
     let focused = app.ui.focus == Focus::Panel && app.prompt.is_none() && app.palette.is_none();
@@ -313,7 +313,7 @@ fn locations(
     let top = view.scroll(files);
     let selected_row = view.selected_row(files);
     let scroll = view.scrollable(files).scroll();
-    let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme));
+    let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme, &[]));
     let focused = app.ui.focus == Focus::Panel && app.prompt.is_none() && app.palette.is_none();
     let selection = if focused {
         theme.get("list.active")

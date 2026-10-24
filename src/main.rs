@@ -34,6 +34,8 @@ mod git_editor_tests;
 mod git_history;
 #[cfg(test)]
 mod git_history_tests;
+#[cfg(test)]
+mod git_marks_tests;
 mod git_show;
 mod group;
 mod grouped;

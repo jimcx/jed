@@ -107,6 +107,18 @@ impl Scroll {
         })
     }
 
+    /// The track cell the line (a text) or row (a diff) `i` of the whole content projects to on
+    /// `track` cells: where the thumb would start if `i` were the top (its length's rounding
+    /// aside). Independent of `top`, so a mark stays put as the view scrolls; the thumb draws
+    /// over it. Content shorter than the view spreads over the top of the track (its share of
+    /// `max_top + height`), as the thumb's maths does.
+    pub fn cell(&self, track: u16, i: usize) -> u16 {
+        let content = (self.max_top + self.height).max(1) as u64;
+        let i = i.min(content as usize - 1) as u64;
+        let cell = (i * u64::from(track) + content / 2) / content;
+        cell.min(u64::from(track.saturating_sub(1))) as u16
+    }
+
     /// The first row that puts the thumb's start at `start` (cells from the track's start,
     /// clamped to the track) — the smallest such row, else the next one; `top` when the thumb
     /// can't move. As if `shown` (a drag goes on when it reaches the top of a short text).
@@ -316,6 +328,37 @@ mod tests {
         // A one-cell track: the thumb is the track.
         assert_eq!(thumb(Scroll::text(1000, 1, 500), 1), (0, 1));
         assert_eq!(Scroll::text(1000, 1, 500).top_at(1, 0), 500, "nowhere to move");
+    }
+
+    #[test]
+    fn a_line_projects_to_its_cell_over_the_whole_content() {
+        // 100 lines in 20 rows on a 20-cell track: the last line's cell is where its thumb
+        // starts, and the first is at the top.
+        let s = Scroll::text(100, 20, 0);
+        assert_eq!(s.thumb(20).unwrap().start, 0);
+        assert_eq!(s.cell(20, 0), 0);
+        assert_eq!(s.with_top(99).thumb(20).unwrap().start, 17);
+        assert_eq!(s.cell(20, 99), 17);
+        // Monotone, inside the track, and independent of the top (a mark stays put as you
+        // scroll).
+        let mut last = 0;
+        for i in 0..100 {
+            let cell = s.cell(20, i);
+            assert!(cell >= last && cell < 20, "line {i}: {cell}");
+            last = cell;
+            assert_eq!(cell, s.with_top(50).cell(20, i), "line {i}");
+        }
+        // Fewer rows than cells: spread over the content, clamped at the track's end.
+        let r = Scroll::rows(200, 20, 0);
+        assert_eq!((r.cell(20, 0), r.cell(20, 199)), (0, 19));
+        assert_eq!(r.cell(20, 10_000), 19, "clamped");
+        // Content that fits still projects (the bar may show no thumb).
+        let short = Scroll::rows(10, 20, 0);
+        assert_eq!((short.cell(20, 0), short.cell(20, 9)), (0, 9));
+        assert_eq!(short.cell(20, 10_000), 19, "clamped");
+        // No track: cell 0.
+        assert_eq!(Scroll::text(10, 1, 0).cell(0, 5), 0);
+        assert_eq!(Scroll::rows(0, 20, 0).cell(20, 0), 0);
     }
 
     #[test]

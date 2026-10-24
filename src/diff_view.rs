@@ -860,6 +860,12 @@ impl DiffTab {
         &self.aligned().rows
     }
 
+    /// The loaded hunks (the scroll bar marks their rows; `aligned().starts` gives each one's
+    /// first row, in the layout drawn).
+    pub fn hunks(&self) -> &[Hunk] {
+        self.doc.as_ref().map_or(&[][..], |d| d.hunks.as_slice())
+    }
+
     /// Drawing found the layout to use: the cursor and scroll move to the same lines in it; a
     /// cursor on a change's first row (opening, next / previous change) stays on that change's
     /// first row, so where a first load lands doesn't depend on whether it was drawn before.

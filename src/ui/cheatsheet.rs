@@ -79,6 +79,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<CheatSheetHit>
         }
         x = x.saturating_add((col.width + COLUMN_GAP) as u16);
     }
-    let scrollbar = track.map(|t| scrollbar::render(out, t, scroll, look, base, theme));
+    let scrollbar = track.map(|t| scrollbar::render(out, t, scroll, look, base, theme, &[]));
     Some(CheatSheetHit { rect, scrollbar })
 }

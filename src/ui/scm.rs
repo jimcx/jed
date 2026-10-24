@@ -73,7 +73,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ScmHit>, Opti
     let top = view.scroll(&rows);
     let selected = view.selected_row(&rows);
     let scroll = view.scrollable(&rows).scroll();
-    let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme));
+    let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme, &[]));
     let view = &app.scm;
     let mut hit = ScmHit {
         list,

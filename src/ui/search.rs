@@ -198,7 +198,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
     let selected_row = view.selected_row(results);
     let out = f.buffer_mut();
     let scroll = view.list.scrollable(&results.files).scroll();
-    let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme));
+    let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme, &[]));
     let styles = Styles {
         base,
         dim,

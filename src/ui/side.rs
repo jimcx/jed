@@ -123,7 +123,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
     let count = explorer.row_count();
     explorer.scroll = explorer.scroll.min(count.saturating_sub(explorer.height));
     let scroll = Scroll::rows(count, explorer.height, explorer.scroll);
-    let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme));
+    let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme, &[]));
     let rows = explorer.rows();
     let focused = app.ui.focus == Focus::SidePanel && app.prompt.is_none() && app.palette.is_none();
     let selected_style = if focused {
@@ -242,7 +242,7 @@ fn render_history(f: &mut Frame, section: Rect, app: &mut App) -> (Option<Histor
     let top = history.scroll();
     let len = history.rows().len();
     let scroll = history.scrollable().scroll();
-    let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme));
+    let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme, &[]));
     let selected = history.selected_row();
     let focused =
         app.ui.focus == Focus::SidePanel && history.focused() && app.prompt.is_none() && app.palette.is_none();

@@ -642,7 +642,7 @@ fn numbered(n: usize) -> String {
 
 /// Waits until the active buffer's markers are current (nothing running or due) and the git
 /// status read.
-async fn settle_markers(app: &mut App) -> bool {
+pub(crate) async fn settle_markers(app: &mut App) -> bool {
     app.settle(|a| {
         let buf = a.active_buffer().unwrap();
         !a.git.running()
@@ -669,7 +669,7 @@ fn markers(app: &mut App) -> Vec<(usize, String, Option<Color>)> {
         .collect()
 }
 
-fn marker_colour(app: &App, key: &str) -> Option<Color> {
+pub(crate) fn marker_colour(app: &App, key: &str) -> Option<Color> {
     app.theme.get(key).fg
 }
 
@@ -1191,7 +1191,7 @@ async fn settle_diffs(app: &mut App) -> bool {
     app.settle(|a| a.diffs_settled() && a.git.status.is_some()).await
 }
 
-fn draw_sized(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
+pub(crate) fn draw_sized(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| crate::ui::render(f, app)).unwrap();
     term
@@ -1212,7 +1212,7 @@ fn find_text(term: &Terminal<TestBackend>, needle: &str) -> Vec<(u16, u16)> {
     out
 }
 
-fn bg(term: &Terminal<TestBackend>, (x, y): (u16, u16)) -> Option<Color> {
+pub(crate) fn bg(term: &Terminal<TestBackend>, (x, y): (u16, u16)) -> Option<Color> {
     term.backend().buffer()[(x, y)].bg.into()
 }
 

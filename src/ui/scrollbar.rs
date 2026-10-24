@@ -31,6 +31,16 @@ pub fn look(app: &App, target: ScrollTarget) -> Look {
     }
 }
 
+/// A change as the bar draws it: the lines of a text tab (a deletion is the line above it) or
+/// the rows of a diff tab it covers, and the theme key it is coloured in. Distinct from
+/// `quick_diff::Mark` (a change's bytes): [`Scroll::cell`] projects this onto a track.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mark {
+    /// The lines (a text tab) or rows (a diff tab), in the content's own numbering.
+    pub lines: std::ops::Range<usize>,
+    pub key: &'static str,
+}
+
 /// Takes the last column off `area` for a bar (the column is always kept, so nothing reflows
 /// when a thumb appears); `None` when `area` is narrower than two columns.
 pub fn take_column(area: &mut Rect) -> Option<Rect> {
@@ -92,7 +102,7 @@ pub fn render_row(
 }
 
 /// Draws the bar on `track` (one column, on `base`: the background of what it scrolls) for
-/// `scroll`; returns it for the mouse.
+/// `scroll`, the changed lines' `marks` under the thumb; returns it for the mouse.
 pub fn render(
     out: &mut Cells,
     track: Rect,
@@ -100,8 +110,10 @@ pub fn render(
     look: Look,
     base: Style,
     theme: &Theme,
+    marks: &[Mark],
 ) -> ScrollBarHit {
     out.set_style(track, base);
+    render_marks(out, track, scroll, base, theme, marks);
     scroll.shown |= look == Look::Active;
     let thumb = scroll.thumb(track.height);
     if let Some(t) = thumb {
@@ -113,4 +125,40 @@ pub fn render(
         out.set_style(rect, slider(look, base, theme));
     }
     ScrollBarHit { track, thumb }
+}
+
+/// Fills the cells of the lines the changes cover, on the track's base (the column is kept even
+/// when there's no thumb, so a short text still shows its marks; the thumb draws over them).
+/// The gutter keys carry their colour in the foreground (the gutter draws a glyph in it), so a
+/// blank bar cell — no glyph — takes it as its background.
+fn render_marks(out: &mut Cells, track: Rect, scroll: Scroll, base: Style, theme: &Theme, marks: &[Mark]) {
+    if track.height == 0 {
+        return;
+    }
+    // Marks of the same kind come together: one theme lookup per run, not per mark.
+    let mut last: Option<(&str, Style)> = None;
+    for mark in marks.iter().filter(|m| !m.lines.is_empty()) {
+        let fill = match last {
+            Some((key, fill)) if key == mark.key => fill,
+            _ => {
+                let fill = base.patch(Style::default().bg(theme.get(mark.key).fg.unwrap_or_default()));
+                last = Some((mark.key, fill));
+                fill
+            }
+        };
+        let first = scroll.cell(track.height, mark.lines.start);
+        let last_cell = scroll.cell(track.height, mark.lines.end - 1);
+        if first == last_cell {
+            out[(track.x, track.y + first)].set_style(fill);
+        } else {
+            out.set_style(
+                Rect {
+                    y: track.y + first,
+                    height: last_cell - first + 1,
+                    ..track
+                },
+                fill,
+            );
+        }
+    }
 }

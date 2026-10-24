@@ -44,6 +44,21 @@ pub struct Mark {
     pub removed_count: usize,
 }
 
+impl Mark {
+    /// The theme key the scroll bar draws it in: the gutter's colour or, for a staged change,
+    /// its darker sibling (the gutter itself shows the unstaged ones only).
+    pub fn theme_key(&self) -> &'static str {
+        match (self.kind, self.staged) {
+            (HunkKind::Added, false) => "editorGutter.addedBackground",
+            (HunkKind::Added, true) => "editorGutter.stagedAddedBackground",
+            (HunkKind::Modified, false) => "editorGutter.modifiedBackground",
+            (HunkKind::Modified, true) => "editorGutter.stagedModifiedBackground",
+            (HunkKind::Deleted, false) => "editorGutter.deletedBackground",
+            (HunkKind::Deleted, true) => "editorGutter.stagedDeletedBackground",
+        }
+    }
+}
+
 /// What a gutter cell shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Marker {
@@ -139,7 +154,6 @@ pub enum Found {
 }
 
 impl QuickDiff {
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn marks(&self) -> &[Mark] {
         &self.marks
     }
@@ -341,18 +355,23 @@ fn drawn(rope: &Rope, m: &Mark) -> Option<(Range<usize>, Marker)> {
         }
         _ if m.start == m.end => None,
         kind => {
-            let last = pos::line_of(rope, m.end);
-            let end = if pos::line_start(rope, last) == m.end {
-                last
-            } else {
-                last + 1
-            };
+            // The start's line, then one line per line break the mark's bytes hold, plus the
+            // last one when the range doesn't end on a break: the end's line without a second
+            // rope lookup per mark on every drawn frame (thousands of scroll-bar marks).
+            let bytes = rope.slice(m.start.0..m.end.0);
+            let mut lines = 0usize;
+            for chunk in bytes.chunks() {
+                lines += chunk.matches('\n').count();
+            }
+            if rope.byte(m.end.0 - 1) != b'\n' {
+                lines += 1;
+            }
             let marker = if kind == HunkKind::Added {
                 Marker::Added
             } else {
                 Marker::Modified
             };
-            Some((first..end.max(first + 1), marker))
+            Some((first..first + lines.max(1), marker))
         }
     }
 }
@@ -956,6 +975,42 @@ mod tests {
         };
         assert_eq!(ranges(&marks), vec![(2, 4, false), (6, 8, true)]);
         assert_eq!((marks[0].kind, marks[1].kind), (HunkKind::Added, HunkKind::Modified));
+    }
+
+    #[test]
+    fn theme_keys_are_the_gutters_or_its_darker_staged_siblings() {
+        let mark = |kind, staged| Mark {
+            kind,
+            staged,
+            start: ByteIdx(0),
+            end: ByteIdx(0),
+            removed: Arc::new([]),
+            removed_count: 0,
+        };
+        assert_eq!(
+            [
+                mark(HunkKind::Added, false).theme_key(),
+                mark(HunkKind::Modified, false).theme_key(),
+                mark(HunkKind::Deleted, false).theme_key(),
+            ],
+            [
+                "editorGutter.addedBackground",
+                "editorGutter.modifiedBackground",
+                "editorGutter.deletedBackground"
+            ]
+        );
+        assert_eq!(
+            [
+                mark(HunkKind::Added, true).theme_key(),
+                mark(HunkKind::Modified, true).theme_key(),
+                mark(HunkKind::Deleted, true).theme_key(),
+            ],
+            [
+                "editorGutter.stagedAddedBackground",
+                "editorGutter.stagedModifiedBackground",
+                "editorGutter.stagedDeletedBackground"
+            ]
+        );
     }
 
     #[test]
