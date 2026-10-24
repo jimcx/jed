@@ -104,7 +104,7 @@ impl App {
                 later = true;
                 continue;
             }
-            let (generation, known) = buf.quick_diff.begin(revision);
+            let (generation, known, staged) = buf.quick_diff.begin(revision);
             start.push((
                 id,
                 Job {
@@ -115,6 +115,7 @@ impl App {
                     revision,
                     generation,
                     known,
+                    staged,
                 },
             ));
         }

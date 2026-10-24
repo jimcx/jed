@@ -88,6 +88,10 @@ impl Marker {
     }
 }
 
+/// A cached staged diff: the index blob it was computed against and the diff itself (HEAD →
+/// index, which depends only on HEAD and the index, never the buffer's text).
+pub type StagedDiff = (Oid, Arc<stage::FileDiff>);
+
 /// A buffer's markers and the state of their computation.
 #[derive(Debug, Default)]
 pub struct QuickDiff {
@@ -98,6 +102,10 @@ pub struct QuickDiff {
     /// What the marks were computed from: the buffer's revision and the index blob (`None`: the
     /// file wasn't in the index, or not in a repository). `None` before the first computation.
     computed: Option<(u64, Option<Oid>)>,
+    /// The staged half (HEAD → index) of the current marks, keyed by the index blob it was
+    /// computed against. It doesn't depend on the buffer's text, so it is reused across
+    /// recomputes while that blob is unchanged; `head_changed` forces it to be read again.
+    staged: Option<StagedDiff>,
     /// The index may have changed since: compute again (cheap when the blob is the same).
     index_stale: bool,
     /// HEAD moved since: the staged marks may differ even where the index didn't, so the blob
@@ -131,6 +139,9 @@ pub struct Job {
     /// The blob the current marks came from, when they are for `revision` and HEAD hasn't moved
     /// since: not diffed again.
     pub known: Option<Oid>,
+    /// The staged half (HEAD → index) of the last computation, keyed by the index blob it came
+    /// from: reused while that blob is unchanged (the buffer's text doesn't affect it).
+    pub staged: Option<StagedDiff>,
 }
 
 /// A computation's result, for `revision` of the buffer.
@@ -150,6 +161,9 @@ pub enum Found {
     Marks {
         index: Oid,
         marks: Vec<Mark>,
+        /// The staged diff the marks were derived from (freshly read, or the reused cache), so
+        /// `finish` keeps it for the next recompute.
+        staged: Option<StagedDiff>,
     },
 }
 
@@ -192,6 +206,7 @@ impl QuickDiff {
     pub fn clear(&mut self, revision: u64) {
         self.marks.clear();
         self.computed = Some((revision, None));
+        self.staged = None;
         self.index_stale = false;
         self.head_stale = false;
     }
@@ -206,9 +221,10 @@ impl QuickDiff {
         };
     }
 
-    /// A computation starts from the text at `revision`: its generation and the job's `known`
-    /// blob (none when HEAD moved: the staged marks read it too).
-    pub fn begin(&mut self, revision: u64) -> (u64, Option<Oid>) {
+    /// A computation starts from the text at `revision`: its generation, the job's `known`
+    /// blob (none when HEAD moved: the staged marks read it too) and the cached staged diff
+    /// (none when HEAD moved, so it is read again).
+    pub fn begin(&mut self, revision: u64) -> (u64, Option<Oid>, Option<StagedDiff>) {
         self.generation += 1;
         self.running = Some((self.generation, Vec::new()));
         self.index_stale = false;
@@ -216,8 +232,16 @@ impl QuickDiff {
             true => None,
             false => self.computed.filter(|(r, _)| *r == revision).and_then(|(_, id)| id),
         };
+        // The staged half is recomputed only when HEAD moved since; otherwise the cached diff
+        // is reused even though the buffer's revision advanced (typing doesn't affect it).
+        // Clearing it here (not just returning None) matters when the recompute short-circuits
+        // (a binary buffer): the stale HEAD diff must not survive into the next computation.
+        if self.head_stale {
+            self.staged = None;
+        }
+        let staged = self.staged.clone();
         self.head_stale = false;
-        (self.generation, known)
+        (self.generation, known, staged)
     }
 
     /// The running computation ended: its marks, mapped through the edits made since its
@@ -235,18 +259,26 @@ impl QuickDiff {
             Ok(Found::NotTracked) => {
                 self.marks.clear();
                 self.computed = Some((done.revision, None));
+                self.staged = None;
             }
             Ok(Found::Unchanged) => {
                 if let Some(c) = &mut self.computed {
                     c.0 = done.revision;
                 }
             }
-            Ok(Found::Marks { index, mut marks }) => {
+            Ok(Found::Marks {
+                index,
+                mut marks,
+                staged,
+            }) => {
                 for set in &sets {
                     map_marks(&mut marks, set);
                 }
                 self.marks = marks;
                 self.computed = Some((done.revision, Some(index)));
+                if staged.is_some() {
+                    self.staged = staged;
+                }
             }
             Err(e) => {
                 tracing::warn!("quick diff failed: {e}");
@@ -414,10 +446,11 @@ fn find(job: &Job) -> Result<Found, stage::Error> {
     let skip = if job.bom { 3 } else { 0 };
     let unstaged_diff = diff::diff(&text, &ours, 0)?;
     let unstaged = line_marks(&unstaged_diff, &text, &ours, skip);
-    let staged = staged_marks(job, &ours, skip, &unstaged_diff)?;
+    let (staged, staged_diff) = staged_marks(job, index, &ours, skip, &unstaged_diff)?;
     Ok(Found::Marks {
         index,
         marks: merge_staged(unstaged, staged),
+        staged: staged_diff,
     })
 }
 
@@ -452,33 +485,71 @@ fn line_marks(d: &diff::Diff, old: &[u8], new: &[u8], skip: usize) -> Vec<Mark> 
 /// The staged marks: the index → HEAD diff's changed index lines, mapped into the buffer through
 /// the index → buffer diff (`unstaged`: what the working tree did to them) and tagged
 /// [`Mark::staged`]. The mapping takes each end line's *start*, so a change covers the buffer
-/// lines its index lines stand for and nothing more.
-fn staged_marks(job: &Job, ours: &[u8], skip: usize, unstaged: &diff::Diff) -> Result<Vec<Mark>, stage::Error> {
+/// lines its index lines stand for and nothing more. The staged diff itself (HEAD → index)
+/// depends only on HEAD and the index, so it is returned alongside the marks (reused across
+/// recomputes while the index blob is unchanged) rather than read again each time.
+fn staged_marks(
+    job: &Job,
+    index: Oid,
+    ours: &[u8],
+    skip: usize,
+    unstaged: &diff::Diff,
+) -> Result<(Vec<Mark>, Option<StagedDiff>), stage::Error> {
     if unstaged.binary {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     }
-    let d = stage::file_diff(&job.repo, &job.path, stage::Side::Staged, 0)?;
-    if d.diff.binary {
-        return Ok(Vec::new());
-    }
-    let head_lines = diff::lines(&d.old);
-    let starts = line_starts(ours);
-    Ok(d.diff
-        .hunks
-        .iter()
-        .map(|h| {
-            let start = line_at(&starts, diff::new_lines(&unstaged.hunks, h.new.start).start, skip);
-            let end = line_at(&starts, diff::new_lines(&unstaged.hunks, h.new.end).start, skip);
-            Mark {
-                kind: h.kind(),
-                staged: true,
-                start,
-                end: end.max(start),
-                removed: removed_lines(&head_lines, &h.old),
-                removed_count: h.old.len(),
+    // Reuse the cached staged diff when it is for this index blob; else read it again.
+    let staged_diff = match job.staged.as_ref().filter(|(oid, _)| *oid == index) {
+        Some((_, d)) => d.clone(),
+        None => {
+            #[cfg(test)]
+            {
+                STAGED_DIFFS.with(|n| n.set(n.get() + 1));
             }
-        })
-        .collect())
+            Arc::new(stage::file_diff(&job.repo, &job.path, stage::Side::Staged, 0)?)
+        }
+    };
+    if staged_diff.diff.binary {
+        return Ok((Vec::new(), Some((index, staged_diff))));
+    }
+    let head_lines = diff::lines(&staged_diff.old);
+    let starts = line_starts(ours);
+    Ok((
+        staged_diff
+            .diff
+            .hunks
+            .iter()
+            .map(|h| {
+                let start = line_at(&starts, diff::new_lines(&unstaged.hunks, h.new.start).start, skip);
+                let end = line_at(&starts, diff::new_lines(&unstaged.hunks, h.new.end).start, skip);
+                Mark {
+                    kind: h.kind(),
+                    staged: true,
+                    start,
+                    end: end.max(start),
+                    removed: removed_lines(&head_lines, &h.old),
+                    removed_count: h.old.len(),
+                }
+            })
+            .collect(),
+        Some((index, staged_diff)),
+    ))
+}
+
+// Test probe: how many times [`staged_marks`] read the staged half from git on this thread.
+#[cfg(test)]
+thread_local! {
+    static STAGED_DIFFS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn staged_diff_count() -> usize {
+    STAGED_DIFFS.with(|n| n.get())
+}
+
+#[cfg(test)]
+fn reset_staged_diff_count() {
+    STAGED_DIFFS.with(|n| n.set(0));
 }
 
 /// The unstaged marks with the staged ones merged in: a line staged and not edited since stays
@@ -668,7 +739,7 @@ mod tests {
         assert_eq!(q.visible(&rope, 0, 5), vec![(3, Marker::Modified)]);
         // A computation started at revision 1 ends after another edit: mapped through it.
         assert_eq!(q.want(1), Want::Later);
-        let (generation, _) = q.begin(1);
+        let (generation, _, _) = q.begin(1);
         assert_eq!(q.want(1), Want::Nothing);
         let snapshot = rope.clone();
         let set = Arc::new(ChangeSet::new(vec![Change {
@@ -685,6 +756,7 @@ mod tests {
             result: Ok(Found::Marks {
                 index: Oid::ZERO_SHA1,
                 marks,
+                staged: None,
             }),
         });
         assert_eq!(
@@ -701,15 +773,16 @@ mod tests {
     fn a_reset_drops_the_running_computations_result() {
         // A computation for the old path is running when the buffer's file changes.
         let mut q = qd("a\nb\n", "a\nB\n");
-        let (old, _) = q.begin(0);
+        let (old, _, _) = q.begin(0);
         q.reset();
         assert!(q.marks().is_empty() && !q.running());
         assert_eq!(q.want(0), Want::Now, "computed afresh for the new path");
-        let (new, known) = q.begin(0);
+        let (new, known, _) = q.begin(0);
         assert!(new != old && known.is_none());
         let found = |text: &[u8]| Found::Marks {
             index: Oid::ZERO_SHA1,
             marks: marks(text, b"a\nB\n", 0).unwrap(),
+            staged: None,
         };
         // The old path's result arrives late: dropped, the new one still runs.
         q.finish(Computed {
@@ -835,6 +908,7 @@ mod tests {
             revision: 0,
             generation: 0,
             known: None,
+            staged: None,
         }
     }
 
@@ -946,6 +1020,7 @@ mod tests {
             revision: 0,
             generation: 0,
             known: None,
+            staged: None,
         };
         let Found::Marks { marks, .. } = find(&job).unwrap() else {
             panic!("not marked");
@@ -1084,7 +1159,7 @@ mod tests {
         assert_eq!(q.want(1), Want::Nothing);
         q.head_changed();
         assert_eq!(q.want(1), Want::Now);
-        let (generation, known) = q.begin(1);
+        let (generation, known, _) = q.begin(1);
         assert!(
             known.is_none(),
             "the index blob is read again (the staged diff needs HEAD)"
@@ -1097,7 +1172,7 @@ mod tests {
         assert!(!q.running());
         assert_eq!(q.want(1), Want::Nothing);
         // HEAD moving while a computation runs: its result is stale, compute again.
-        let (generation, _) = q.begin(1);
+        let (generation, _, _) = q.begin(1);
         q.head_changed();
         q.finish(Computed {
             revision: 1,
@@ -1105,10 +1180,57 @@ mod tests {
             result: Ok(Found::Marks {
                 index: Oid::ZERO_SHA1,
                 marks: marks_of("a\nb\n", "a\nB\n"),
+                staged: None,
             }),
         });
         assert_eq!(q.want(1), Want::Now);
-        let (_, known) = q.begin(1);
+        let (_, known, _) = q.begin(1);
         assert!(known.is_none());
+    }
+
+    #[test]
+    fn typing_after_a_compute_reuses_the_staged_half_while_marks_update() {
+        use crate::git::test_repo::git;
+        let (_d, repo) = test_repo("a\nb\nc\n");
+        // Stage a change, so the file has a staged half (HEAD → index).
+        std::fs::write(repo.workdir.join("f.txt"), "a\nB\nc\n").unwrap();
+        git(&repo.workdir, &["add", "f.txt"]);
+
+        let path = PathBuf::from("f.txt");
+        let job = |revision: u64, generation: u64, known: Option<Oid>, staged, rope: &Rope| Job {
+            repo: repo.clone(),
+            path: path.clone(),
+            rope: rope.clone(),
+            bom: false,
+            revision,
+            generation,
+            known,
+            staged,
+        };
+
+        let mut q = QuickDiff::default();
+        reset_staged_diff_count();
+
+        // The first computation (the buffer equals the index) reads the staged half once.
+        let rope0 = Rope::from_str("a\nB\nc\n");
+        let (gen0, known0, staged0) = q.begin(0);
+        assert!(known0.is_none() && staged0.is_none(), "nothing cached yet");
+        q.finish(compute(job(0, gen0, known0, staged0, &rope0)));
+        assert_eq!(staged_diff_count(), 1, "the staged half was read once");
+        assert!(q.marks().iter().any(|m| m.staged), "the staged change is marked staged");
+
+        // Typing changes the buffer's revision but not the index or HEAD: the staged half is
+        // reused, the unstaged half recomputed against the new text.
+        let rope1 = Rope::from_str("a\nB\nc\nx\n");
+        let (gen1, known1, staged1) = q.begin(1);
+        assert!(known1.is_none(), "the index blob is read again (the text changed)");
+        assert!(staged1.is_some(), "the staged half is reused across the edit");
+        q.finish(compute(job(1, gen1, known1, staged1, &rope1)));
+        assert_eq!(staged_diff_count(), 1, "the staged half was not recomputed");
+        assert_eq!(
+            q.visible(&rope1, 0, 4),
+            vec![(3, Marker::Added)],
+            "the typed line is a new unstaged change; the staged one stays out of the gutter"
+        );
     }
 }
