@@ -2,16 +2,21 @@
 //! marker labels, the action row after `<<<<<<<` and its clicks — and the accept commands apply
 //! one `EditKind::Other` step. conflicts-c: Next / Previous Conflict (Alt+F8 /
 //! Shift+Alt+F8, wrapping), the status bar's "N conflicts" and Compare Current Conflict (a
-//! read-only diff tab of the two blocks).
+//! read-only diff tab of the two blocks). conflicts-d: Source Control's "Merge Changes" section
+//! (opening a conflicted file opens it, not a diff), Stage File as resolve with the "still has
+//! markers" question, and the Done-when walks against a real `git merge`.
 //!
 //! The "Done when" parts covered here: a file with a two-way and a diff3 conflict shows both
 //! conflicts with their action rows; a click on Accept Incoming and Accept Current / Accept All
 //! Incoming from the commands leave what `git checkout --theirs` / `--ours` gives for those
 //! hunks, each an undo step; Next / Previous move and wrap; the status bar counts them; Compare
-//! opens Current ↔ Incoming; a file with no markers draws nothing and has nowhere to go. Source
-//! Control is conflicts-d.
+//! opens Current ↔ Incoming; a real merge's file sits under "Merge Changes" until staged, which
+//! asks while markers remain; a file with no markers draws nothing, and a 1 MB one stays within
+//! the frame budget.
 
 use std::fs;
+use std::path::Path;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::Terminal;
@@ -19,14 +24,19 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
-use crate::app::{App, InitialFile};
+use crate::app::{App, InitialFile, Prompt};
 use crate::buffer::Buffer;
 use crate::buffer::pos::ByteIdx;
 use crate::command::{Command, MergeCommand};
 use crate::conflict::Choice;
 use crate::diff_view::Pair;
+use crate::git::Change;
+use crate::git::test_repo::{commit_all, git, init};
 use crate::layout::MergeButton;
-use crate::milestone10_tests::dirs;
+use crate::milestone10_tests::{
+    ctrl_shift_g, dirs, file, open_file_app, scm_button, scm_rows, selected_key, settle_git, settle_stage,
+};
+use crate::scm::Section;
 use crate::selection::{Selection, Selections};
 use crate::workspace::Workspace;
 use crate::workspace::trust::TrustStore;
@@ -450,4 +460,344 @@ async fn a_file_without_markers_draws_no_action_row() {
     set_cursor(&mut app, 0);
     app.test_execute(Command::Merge(MergeCommand::AcceptAllIncoming));
     assert_eq!(text(&app), "plain\ntext\n");
+}
+
+// conflicts-d: a real `git merge`, Source Control's "Merge Changes", Stage File as resolve.
+
+/// The base and the two branches' versions of a.txt: two non-overlapping regions changed on
+/// both sides, so `git merge other` leaves two conflicts.
+const BASE_FILE: &str = "alpha\none\nbravo\ncharlie\ntwo\ndelta\necho\nthree\nfoxtrot\n";
+const OURS_FILE: &str = "alpha\nOURS ONE\nbravo\ncharlie\ntwo\ndelta\necho\nOURS THREE\nfoxtrot\n";
+const THEIRS_FILE: &str = "alpha\nTHEIRS ONE\nbravo\ncharlie\ntwo\ndelta\necho\nTHEIRS THREE\nfoxtrot\n";
+
+/// A repository left in the middle of `git merge other` with two conflicts in a.txt (diff3
+/// markers with `diff3`). `b.txt` is unchanged, for opening the app on a file that isn't the
+/// conflicted one.
+fn merge_repo(root: &Path, diff3: bool) {
+    init(root);
+    fs::write(root.join("a.txt"), BASE_FILE).unwrap();
+    fs::write(root.join("b.txt"), "b\n").unwrap();
+    commit_all(root, "base");
+    git(root, &["checkout", "-q", "-b", "other"]);
+    fs::write(root.join("a.txt"), THEIRS_FILE).unwrap();
+    commit_all(root, "theirs");
+    git(root, &["checkout", "-q", "main"]);
+    fs::write(root.join("a.txt"), OURS_FILE).unwrap();
+    commit_all(root, "ours");
+    if diff3 {
+        git(root, &["config", "merge.conflictStyle", "diff3"]);
+    }
+    // `git merge` exits 1 on a conflict, so `test_repo::git` (which asserts success) can't run it:
+    // same environment, the conflict's exit code allowed.
+    let out = std::process::Command::new("git")
+        .args(["merge", "other"])
+        .current_dir(root)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .output()
+        .expect("git runs");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "two conflicts: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn click(app: &mut App, (x, y): (u16, u16)) {
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+}
+
+/// The line (0-based) of the `n`th line starting with `marker`.
+fn marker_line(text: &str, marker: &str, n: usize) -> usize {
+    text.lines()
+        .enumerate()
+        .filter(|(_, l)| l.starts_with(marker))
+        .nth(n)
+        .map(|(i, _)| i)
+        .unwrap_or_else(|| panic!("no {marker:?} line {n} in {text:?}"))
+}
+
+/// `text` with conflict `k` (`<<<<<<<` … `>>>>>>>`) replaced by one of its sides' content (the
+/// line after `side`'s marker): what `git checkout --ours` / `--theirs` leaves for that hunk.
+fn accepted_side(text: &str, k: usize, side: &str) -> String {
+    let content = text
+        .lines()
+        .nth(marker_line(text, side, k) + 1)
+        .expect("the side's text");
+    let mut lines: Vec<&str> = text.lines().collect();
+    lines.splice(
+        marker_line(text, "<<<<<<<", k)..=marker_line(text, ">>>>>>>", k),
+        [content],
+    );
+    lines.join("\n") + "\n"
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn conflicts_done_when_a_real_merge_source_control_accept_and_stage_resolve() {
+    let (_d, root, state) = dirs();
+    merge_repo(&root, false);
+    let merged = fs::read_to_string(root.join("a.txt")).unwrap();
+    assert_eq!(merged.matches("<<<<<<<").count(), 2);
+    assert_eq!(merged.matches(">>>>>>> other").count(), 2);
+    // git's merge stages keep the branches' whole files: the accepted hunks are exactly theirs'
+    // first and ours' second region.
+    assert_eq!(git(&root, &["show", ":2:a.txt"]), OURS_FILE);
+    assert_eq!(git(&root, &["show", ":3:a.txt"]), THEIRS_FILE);
+
+    // The app opens on b.txt; the conflict is reached through Source Control.
+    let mut app = open_file_app(&root, &state, "b.txt");
+    assert!(
+        settle_git(&mut app, |s| {
+            matches!(s.entry(Path::new("a.txt")), Some(e) if e.unstaged == Some(Change::Conflicted))
+        })
+        .await
+    );
+    ctrl_shift_g(&mut app);
+    assert_eq!(
+        scm_rows(&mut app),
+        ["▾ Merge Changes 1", "a.txt !", "▾ Changes 0"],
+        "the conflicted file is under Merge Changes, not Changes"
+    );
+    // The `!` in `gitDecoration.conflictingResourceForeground`.
+    let term = draw(&mut app, 160);
+    let hit = app.hits.scm.clone().unwrap();
+    let letter = term.backend().buffer()[(hit.list.x + hit.list.width - 2, hit.list.y + 1)].clone();
+    assert_eq!(letter.symbol(), "!");
+    assert_eq!(
+        Option::<Color>::from(letter.fg),
+        app.theme.get("gitDecoration.conflictingResourceForeground").fg
+    );
+    // Enter opens the file itself, not a diff.
+    assert_eq!(selected_key(&app), Some(file(Section::MergeChanges, "a.txt")));
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        app.settle(|a| a.active_buffer().is_some_and(|b| b.path == root.join("a.txt")))
+            .await
+    );
+    assert_eq!(app.ui.focus, crate::app::Focus::Editor);
+    assert!(app.group().active_diff().is_none(), "not a diff tab");
+
+    // Both conflicts are coloured, each with its action row.
+    let term = draw(&mut app, 160);
+    let current_header = app.theme.get("merge.currentHeaderBackground").bg;
+    let incoming_header = app.theme.get("merge.incomingHeaderBackground").bg;
+    for k in 0..2 {
+        let line = marker_line(&merged, "<<<<<<<", k);
+        let (text, y) = row_of(&app, line);
+        assert_eq!(bg(&term, (text.x, y)), current_header, "conflict {k}'s header");
+        let row = row_text(&term, text, y);
+        assert!(
+            row.contains("Accept Current") && row.contains("Accept Incoming"),
+            "{row:?}"
+        );
+        let (text, y) = row_of(&app, marker_line(&merged, "=======", k));
+        assert_eq!(
+            bg(&term, (text.x, y)),
+            incoming_header,
+            "conflict {k}'s incoming header"
+        );
+    }
+    let starts: Vec<ByteIdx> = {
+        let mut seen = Vec::new();
+        for (_, _, start) in &app.hits.groups[0].merge_buttons {
+            if !seen.contains(start) {
+                seen.push(*start);
+            }
+        }
+        seen
+    };
+    assert_eq!(starts.len(), 2, "both action rows drawn");
+    for start in &starts {
+        for button in [
+            MergeButton::Accept(Choice::Current),
+            MergeButton::Accept(Choice::Incoming),
+            MergeButton::Accept(Choice::Both),
+            MergeButton::Compare,
+        ] {
+            assert!(
+                app.hits.groups[0]
+                    .merge_buttons
+                    .iter()
+                    .any(|(_, b, s)| b == &button && s == start),
+                "{button:?} on the conflict at {start:?}"
+            );
+        }
+    }
+
+    // Click Accept Incoming on the first conflict: theirs' first hunk, one undo step.
+    let rect = app.hits.groups[0]
+        .merge_buttons
+        .iter()
+        .find(|(_, b, s)| *b == MergeButton::Accept(Choice::Incoming) && *s == starts[0])
+        .map(|(rect, ..)| *rect)
+        .unwrap();
+    click(&mut app, (rect.x + 1, rect.y));
+    let after_incoming = accepted_side(&merged, 0, "=======");
+    assert_eq!(text(&app), after_incoming);
+    app.test_execute(Command::Undo);
+    assert_eq!(text(&app), merged, "one undo step");
+
+    // Accept it again, then Accept Current on the second (at its shifted start): the first hunk
+    // stays theirs', the second becomes ours', as `git checkout --theirs` / `--ours` would leave
+    // them.
+    click(&mut app, (rect.x + 1, rect.y));
+    assert_eq!(text(&app), after_incoming);
+    let second_start = at(&app, "<<<<<<<");
+    set_cursor(&mut app, second_start);
+    app.test_execute(Command::Merge(MergeCommand::AcceptCurrent));
+    let after_both = accepted_side(&after_incoming, 0, "<<<<<<<");
+    assert_eq!(text(&app), after_both);
+    assert_eq!(text(&app), OURS_FILE.replacen("OURS ONE", "THEIRS ONE", 1));
+    app.test_execute(Command::Undo);
+    assert_eq!(text(&app), after_incoming, "the second accept is one undo step");
+    app.test_execute(Command::Undo);
+    assert_eq!(text(&app), merged, "and the first one too");
+
+    // Next Conflict wraps past the last.
+    set_cursor(&mut app, 0);
+    for expected in [starts[0], starts[1], starts[0]] {
+        app.press(KeyCode::F(8), KeyModifiers::ALT);
+        assert_eq!(head(&app), expected);
+    }
+
+    // Compare opens current ↔ incoming of the second conflict.
+    set_cursor(&mut app, starts[1].0);
+    app.test_execute(Command::Merge(MergeCommand::Compare));
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    let d = app.group().active_diff().expect("a diff tab");
+    assert_eq!(d.pair, Pair::conflict());
+    assert_eq!(text_of(&d.doc.as_ref().unwrap().left), "OURS THREE");
+    assert_eq!(text_of(&d.doc.as_ref().unwrap().right), "THEIRS THREE");
+
+    // Stage File on the file still holding markers asks first: Cancel leaves it conflicted.
+    ctrl_shift_g(&mut app);
+    assert_eq!(
+        scm_rows(&mut app),
+        ["▾ Merge Changes 1", "a.txt !", "▾ Changes 0"],
+        "still under Merge Changes"
+    );
+    let button = scm_button(&mut app, &file(Section::MergeChanges, "a.txt"));
+    click(&mut app, button);
+    assert!(matches!(app.prompt, Some(Prompt::ConfirmStageConflict { .. })));
+    let term = draw(&mut app, 160);
+    let screen: Vec<String> = {
+        let out = term.backend().buffer();
+        (0..out.area.height)
+            .map(|y| (0..out.area.width).map(|x| out[(x, y)].symbol()).collect())
+            .collect()
+    };
+    assert!(
+        screen.iter().any(|r| r.contains("still has conflict markers")),
+        "{screen:#?}"
+    );
+    assert!(screen.iter().any(|r| r.contains("tage anyway")), "{screen:#?}");
+    app.press(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.prompt.is_none());
+    assert!(
+        settle_git(&mut app, |s| {
+            matches!(s.entry(Path::new("a.txt")), Some(e) if e.unstaged == Some(Change::Conflicted))
+        })
+        .await
+    );
+
+    // Stage anyway (`git add`) resolves it, and it moves to Staged Changes.
+    click(&mut app, button);
+    assert!(matches!(app.prompt, Some(Prompt::ConfirmStageConflict { .. })));
+    app.press(KeyCode::Char('s'), KeyModifiers::NONE);
+    assert!(settle_stage(&mut app).await);
+    assert_eq!(
+        scm_rows(&mut app),
+        ["▾ Staged Changes 1", "a.txt M", "▾ Changes 0"],
+        "staged: Merge Changes is gone"
+    );
+    assert_eq!(git(&root, &["show", ":a.txt"]), merged, "the disk's text was added");
+    assert_eq!(git(&root, &["diff", "--name-only"]), "", "nothing unstaged");
+    assert_eq!(git(&root, &["diff", "--cached", "--name-only"]), "a.txt\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn conflicts_done_when_a_diff3_merge_shows_the_base_block() {
+    let (_d, root, state) = dirs();
+    merge_repo(&root, true);
+    let merged = fs::read_to_string(root.join("a.txt")).unwrap();
+    assert_eq!(merged.matches("|||||||").count(), 2, "{merged:?}");
+    let mut app = open_file_app(&root, &state, "a.txt");
+    assert!(
+        settle_git(&mut app, |s| {
+            matches!(s.entry(Path::new("a.txt")), Some(e) if e.unstaged == Some(Change::Conflicted))
+        })
+        .await
+    );
+    // The scan finds the base block of both conflicts.
+    {
+        let (buf, _) = app.active_mut().unwrap();
+        let revision = buf.revision();
+        let conflicts = buf.conflicts.scan(&buf.rope, revision);
+        assert_eq!(conflicts.len(), 2);
+        assert!(conflicts.iter().all(|c| c.base.is_some()), "both have a base block");
+        assert!(conflicts.iter().all(|c| {
+            c.base
+                .as_ref()
+                .is_some_and(|b| !buf.rope.slice(b.start.0..b.end.0).to_string().is_empty())
+        }));
+    }
+    // Drawn: the `|||||||` line's label and the base block's colour, on both conflicts.
+    let term = draw(&mut app, 160);
+    let common_header = app.theme.get("merge.commonHeaderBackground").bg;
+    let common_content = app.theme.get("merge.commonContentBackground").bg;
+    for k in 0..2 {
+        let line = marker_line(&merged, "|||||||", k);
+        let (text, y) = row_of(&app, line);
+        assert_eq!(bg(&term, (text.x, y)), common_header, "conflict {k}'s base header");
+        let row = row_text(&term, text, y);
+        assert!(row.contains("(Common Ancestor)"), "{row:?}");
+        let (text, y) = row_of(&app, line + 1);
+        assert_eq!(bg(&term, (text.x, y)), common_content, "conflict {k}'s base content");
+    }
+    assert!(merged.contains("|||||||"));
+}
+
+/// The Done-when's frame budget for the per-frame conflict scan: a 1 MB file with no markers is
+/// scanned once (cached by revision), so drawing it and a loop turn stay within the frame.
+/// Debug builds only report the timings (they are far slower).
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_conflicts_the_scan_does_not_cost_per_frame() {
+    let mut text = String::with_capacity(1_100_000);
+    let mut i = 0;
+    while text.len() < 1_000_000 {
+        text.push_str(&format!("line {i} of a big file with nothing to merge here\n"));
+        i += 1;
+    }
+    let (_dir, mut app) = open(&text);
+    let mut term = Terminal::new(TestBackend::new(160, 50)).unwrap();
+    // The first frame scans the file (and caches it by revision).
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    {
+        let (buf, _) = app.active_mut().unwrap();
+        let revision = buf.revision();
+        assert!(buf.conflicts.scan(&buf.rope, revision).is_empty());
+    }
+    let frames = 20;
+    let start = Instant::now();
+    for _ in 0..frames {
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    }
+    let frame = start.elapsed() / frames;
+    let start = Instant::now();
+    for _ in 0..frames {
+        app.pump();
+    }
+    let turn = start.elapsed() / frames;
+    println!("conflicts scan: frame {frame:?}, turn {turn:?} (1 MB, no markers)");
+    if !cfg!(debug_assertions) {
+        let budget = Duration::from_millis(16);
+        assert!(frame < budget, "a frame took {frame:?}, over {budget:?}");
+        assert!(turn < budget, "a turn took {turn:?}, over {budget:?}");
+    }
 }

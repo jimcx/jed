@@ -15,7 +15,7 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use super::files::Goto;
 use super::mouse::{SIDE_STEP, wheel_columns};
 use super::quick_diff::StageAt;
-use super::{App, AppEvent, Focus, Level};
+use super::{App, AppEvent, Focus, Level, Prompt};
 use crate::buffer::BufferId;
 use crate::buffer::change::ChangeSet;
 use crate::buffer::pos;
@@ -497,8 +497,29 @@ impl App {
 
     /// Stages / unstages the whole file at `path` (absolute; the Source Control view's rows
     /// too): an open buffer's through the gutter's path (saved first, a save in flight waited
-    /// for), else — also a deleted file's open tab — off-thread at once.
+    /// for), else — also a deleted file's open tab — off-thread at once. Staging a conflicted
+    /// file resolves it, so a still-open buffer holding markers asks first (VS Code's "stage as
+    /// resolved" question): `Prompt::ConfirmStageConflict`.
     pub(super) fn stage_path(&mut self, path: PathBuf, unstage: bool) {
+        if self.repo_path(&path).is_none() {
+            return;
+        }
+        if !unstage
+            && let Some(buffer) = self.buffer_of(&path)
+            && let Some(buf) = self.buffers.get_mut(buffer)
+            && !buf.deleted
+        {
+            let revision = buf.revision();
+            if !buf.conflicts.scan(&buf.rope, revision).is_empty() {
+                self.prompt = Some(Prompt::ConfirmStageConflict { buffer, path });
+                return;
+            }
+        }
+        self.stage_path_now(path, unstage);
+    }
+
+    /// [`Self::stage_path`] without the markers question (the prompt's "Stage anyway").
+    pub(super) fn stage_path_now(&mut self, path: PathBuf, unstage: bool) {
         let Some((repo, rel)) = self.repo_path(&path) else {
             return;
         };

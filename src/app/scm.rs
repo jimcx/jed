@@ -1,10 +1,12 @@
 //! The Source Control view in the app (`app.scm`, a `scm::ScmView`; drawn by `ui::scm`): its
 //! focus and keys (`Context::Scm`), opening a file's diff (`open_diff` with its section's
-//! pair), staging / unstaging the selected file or a whole section — a file through the diff
-//! view's `stage_path` (an open dirty buffer saved first, as from the gutter), Stage All after
-//! saving every dirty buffer among its files (one prompt) — and the mouse (rows, buttons,
-//! wheel, the row under the pointer). The list itself is the git status, read again by
-//! `app/git.rs` after `notify` events: `scm_status_changed` keeps the selection on its file.
+//! pair; a conflicted file opens the file itself), staging / unstaging the selected file or a
+//! whole section — a file through the diff view's `stage_path` (an open dirty buffer saved
+//! first, as from the gutter; a conflicted file still holding markers asks before it's staged
+//! as resolved), Stage All after saving every dirty buffer among its files (one prompt) — and
+//! the mouse (rows, buttons, wheel, the row under the pointer). The list itself is the git
+//! status, read again by `app/git.rs` after `notify` events: `scm_status_changed` keeps the
+//! selection on its file.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -95,12 +97,22 @@ impl App {
     }
 
     /// The selected row: a file's diff opens (the editor focused if `focus`, else the keys stay
-    /// in the list); a header collapses / expands its section.
+    /// in the list) — a conflicted file opens the file itself, with its markers — a header
+    /// collapses / expands its section.
     fn scm_open(&mut self, focus: bool) {
         let Some(status) = self.git.status.as_ref() else { return };
         let rows = self.scm.rows(status);
         match self.scm.selected(&rows) {
             Some(Row::Header { section, .. }) => self.scm.toggle(section),
+            Some(Row::File {
+                section: Section::MergeChanges,
+                entry,
+                ..
+            }) => {
+                // VS Code opens a conflicted file, not a diff: its markers are resolved in it.
+                let path = status.repo.workdir.join(&entry.path);
+                self.open_file(path, focus, None);
+            }
             Some(Row::File { section, entry, .. }) => {
                 let path = status.repo.workdir.join(&entry.path);
                 self.open_diff(path, section.pair());
@@ -138,6 +150,7 @@ impl App {
 
     /// `git.stageAll`: every file in Changes (untracked as added, deleted as removed), from
     /// disk. Dirty buffers among them are saved first (one prompt), saves in flight waited for.
+    /// Conflicted files are in Merge Changes, not here: each is staged (resolved) on its own.
     pub(super) fn stage_all(&mut self) {
         let Some(status) = self.git.status.as_ref() else {
             self.notify(Level::Info, "Not in a git repository".into());

@@ -53,6 +53,12 @@ pub enum Prompt {
         /// The replace text.
         with: String,
     },
+    /// Staging a conflicted file whose open buffer still has conflict markers: Stage anyway
+    /// (`git add`, marking it resolved) / Cancel.
+    ConfirmStageConflict {
+        buffer: BufferId,
+        path: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,6 +242,14 @@ impl App {
                 }
                 _ if esc || ch == Some('c') => self.close_prompt(),
                 _ => self.prompt = Some(Prompt::ConfirmDelete { path, is_dir }),
+            },
+            Prompt::ConfirmStageConflict { buffer, path } => match ch {
+                _ if enter || ch == Some('s') => {
+                    self.close_prompt();
+                    self.stage_path_now(path, false);
+                }
+                _ if esc || ch == Some('c') => self.close_prompt(),
+                _ => self.prompt = Some(Prompt::ConfirmStageConflict { buffer, path }),
             },
             Prompt::Input(mut input) => {
                 if esc {

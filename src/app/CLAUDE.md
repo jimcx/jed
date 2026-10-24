@@ -7,7 +7,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `mod.rs` — the `App` struct, `new` / `start` / `run`, `handle_event`, `execute`, `sync_views`, copy / paste, `handle_app_event`, `render_whitespace()`, and the `#[cfg(test)]` driving helpers (`test_start`, `press`, `type_text`, `mouse`, `settle`, `pump`, `test_execute`, the `test_*_tick`s, …: listed in docs/dev/app.md)
 - `field.rs` — `field_key`: keys in a text field (find widget, Search view inputs, palette, prompts) — typed, else the editor context's moves / deletes / select all / copy / cut / paste run on the field (`has_field_meaning`)
 - `files.rs` — opening (off-thread, `opening` map of `OpenRequest`s, `open_file(path, focus, goto)`), saving, closing tabs, `add_buffer`
-- `prompt.rs` — `Prompt`, the modal dialogs (save before close / quit / stage, trust, input, confirm delete / replace, restore backups)
+- `prompt.rs` — `Prompt`, the modal dialogs (save before close / quit / stage, trust, input, confirm delete / replace / stage-a-conflicted-file, restore backups)
 - `side.rs` — explorer commands, directory listings, file ops, fs-change batching (`flush_fs_changes`), the side panel
 - `navigation.rs` — back / forward (`app.nav`): `nav_begin` / `nav_end`, `nav_jump`, Go Back / Forward
 - `palette.rs` — opening, keys and accepting the command palette and its pickers
@@ -32,10 +32,10 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `quick_diff.rs` — gutter markers (`sync_quick_diff`), their peek, staging / unstaging from the gutter
 - `blame.rs` — inline blame (`app.blame`): toggle, `sync_blame`
 - `conflict.rs` — merge conflicts (`app/conflict.rs`): `go_to_conflict(forward)` (Next / Previous Conflict, Alt+F8 / Shift+Alt+F8: the primary cursor to the conflict's start, one selection, revealed, undo sealed; wrapping; nothing without markers) and `compare_conflict(at)` (Compare Current Conflict, the palette and the action row's Compare button: the blocks of the conflict at the cursor, else the one at `at`, through `open_conflict_diff`; a log / untitled buffer's name titles the tab)
-- `diff_view.rs` — diff tabs (`app.diffs`): `open_diff(path, Pair)`, `sync_diffs`, `diff_command`, stage / revert hunks
+- `diff_view.rs` — diff tabs (`app.diffs`): `open_diff(path, Pair)`, `sync_diffs`, `diff_command`, stage / revert hunks (`stage_path` asks before staging a file whose open buffer still has markers)
 - `hex.rs` — hex tabs: binary files' load (`Loaded::Binary`), one tab per path, Reopen as Hex / Text, `hex_command` / `hex_copy`, Go to Offset, `hex_mouse`
 - `commit_tabs.rs` — commit tabs: `sync_commit_tabs`, `fit_commit_tabs`, opening a stat row's diff
-- `scm.rs` — the Source Control view (`app.scm`): focus, keys, stage / unstage, opening diffs
+- `scm.rs` — the Source Control view (`app.scm`): focus, keys, stage / unstage, opening diffs (a Merge Changes file opens the file)
 - `history.rs` — file history (`app.file_history`): recording after saves, moving on renames, Show / Restore / Compare
 - `tasks.rs` — tasks (`app.tasks`): templates, running, task tabs, keys / paste to a task, events
 - `shell.rs` — shell tabs (`Tab::Shell`): "Terminal: New Shell" opening `$SHELL` in the active group with `JED_IPC`, its title and numbering, `Context::Shell`'s scroll commands, keys / pastes to its run (`tasks::keys`), its run's events (the exit note kept on screen and in the status bar) and `shutdown_shells` at quit; `ui::task::render_shell` draws it

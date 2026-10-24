@@ -1,15 +1,16 @@
 //! The Source Control view's model (no drawing; `app/scm.rs` drives it, `ui/scm.rs` draws it):
-//! the git status as VS Code's sections — "Staged Changes" (index against HEAD, only while it
-//! has files) and "Changes" (the work tree against the index: modified, deleted, untracked `U`
-//! and conflicted `!` files together, VS Code's `git.untrackedChanges: mixed`) — each a header
-//! row (title, count, collapsible) followed by its files sorted by path.
+//! the git status as VS Code's sections — "Merge Changes" (conflicted files, only while there
+//! are any), "Staged Changes" (index against HEAD, only while it has files) and "Changes" (the
+//! work tree against the index: modified, deleted, untracked `U` files, VS Code's
+//! `git.untrackedChanges: mixed`; conflicted `!` files are in Merge Changes instead) — each a
+//! header row (title, count, collapsible) followed by its files sorted by path.
 //!
 //! The scroll and selection are kept by [`RowKey`] (section + path), not by row number, so a
 //! status read that adds or drops files above them doesn't move them. `grouped::ListState`
 //! doesn't fit: its keys are a group's path and an item *offset*, and here the items (files)
-//! are what must be followed, the groups being two fixed sections. When the selected file
-//! leaves its section (staged, or its change undone), the selection goes to the next file in
-//! that section (by path), else its last, else the section's header, else the first row.
+//! are what must be followed, the groups being three fixed sections. When the selected file
+//! leaves its section (staged, resolved, or its change undone), the selection goes to the next
+//! file in that section (by path), else its last, else the section's header, else the first row.
 
 use std::path::PathBuf;
 
@@ -18,15 +19,17 @@ use crate::git::{Change, Entry, Status};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Section {
+    MergeChanges,
     Staged,
     Changes,
 }
 
 impl Section {
-    pub const ALL: [Section; 2] = [Section::Staged, Section::Changes];
+    pub const ALL: [Section; 3] = [Section::MergeChanges, Section::Staged, Section::Changes];
 
     pub fn title(self) -> &'static str {
         match self {
+            Section::MergeChanges => "Merge Changes",
             Section::Staged => "Staged Changes",
             Section::Changes => "Changes",
         }
@@ -35,8 +38,9 @@ impl Section {
     /// The entry's change shown in this section.
     pub fn change(self, e: &Entry) -> Option<Change> {
         match self {
+            Section::MergeChanges => (e.unstaged == Some(Change::Conflicted)).then_some(Change::Conflicted),
             Section::Staged => e.staged,
-            Section::Changes => e.unstaged,
+            Section::Changes => e.unstaged.filter(|c| *c != Change::Conflicted),
         }
     }
 
@@ -44,6 +48,8 @@ impl Section {
     /// (an untracked file: everything added).
     pub fn pair(self) -> Pair {
         match self {
+            // Unused: opening a conflicted file opens the file, not a diff.
+            Section::MergeChanges => Pair::UNSTAGED,
             Section::Staged => Pair::STAGED,
             Section::Changes => Pair::UNSTAGED,
         }
@@ -120,7 +126,7 @@ pub fn files(status: &Status, section: Section) -> impl Iterator<Item = (&Entry,
 /// The view's state: collapsed sections, scroll, selection, the row under the mouse.
 #[derive(Debug, Clone, Default)]
 pub struct ScmView {
-    collapsed: [bool; 2],
+    collapsed: [bool; 3],
     /// The top row's index (clamped by drawing).
     top: usize,
     selected: Option<RowKey>,
@@ -168,8 +174,8 @@ impl ScmView {
         self.collapsed[section.index()] = collapsed;
     }
 
-    /// Every row: the staged section (only with files), then the changes; none at all when
-    /// nothing changed.
+    /// Every row: Merge Changes (only with files), Staged Changes (only with files), then
+    /// Changes (always); none at all when nothing changed.
     pub fn rows<'a>(&self, status: &'a Status) -> Vec<Row<'a>> {
         let mut rows = Vec::new();
         if status.entries.is_empty() {
@@ -177,7 +183,7 @@ impl ScmView {
         }
         for section in Section::ALL {
             let count = files(status, section).count();
-            if count == 0 && section == Section::Staged {
+            if count == 0 && section != Section::Changes {
                 continue;
             }
             let collapsed = self.collapsed(section);
@@ -368,20 +374,29 @@ mod tests {
         assert_eq!(
             keys(&v.rows(&s)),
             [
+                "Merge Changes 1",
+                "  e !",
                 "Staged Changes 2",
                 "  b A",
                 "  d D",
-                "Changes 4",
+                "Changes 3",
                 "  a M",
                 "  b M",
-                "  c U",
-                "  e !"
+                "  c U"
             ]
         );
         v.toggle(Section::Staged);
         assert_eq!(
             keys(&v.rows(&s)),
-            ["Staged Changes 2", "Changes 4", "  a M", "  b M", "  c U", "  e !"]
+            [
+                "Merge Changes 1",
+                "  e !",
+                "Staged Changes 2",
+                "Changes 3",
+                "  a M",
+                "  b M",
+                "  c U"
+            ]
         );
         // Nothing staged: no staged section; nothing at all: no rows.
         let s = status(&[("a", None, M)]);
@@ -391,6 +406,10 @@ mod tests {
         let s = status(&[("a", M, None)]);
         v.toggle(Section::Staged);
         assert_eq!(keys(&v.rows(&s)), ["Staged Changes 1", "  a M", "Changes 0"]);
+        // Only a conflict: Merge Changes first, then the empty Changes.
+        let s = status(&[("e", None, C)]);
+        assert_eq!(keys(&v.rows(&s)), ["Merge Changes 1", "  e !", "Changes 0"]);
+        assert_eq!(Section::MergeChanges.pair(), Pair::UNSTAGED);
     }
 
     #[test]

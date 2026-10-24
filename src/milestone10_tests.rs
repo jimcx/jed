@@ -2013,12 +2013,12 @@ async fn milestone_10_diff_of_a_big_file() {
 use crate::app::Prompt;
 use crate::scm::{RowKey, Section};
 
-fn ctrl_shift_g(app: &mut App) {
+pub(crate) fn ctrl_shift_g(app: &mut App) {
     app.press(KeyCode::Char('g'), M::CONTROL | M::SHIFT);
 }
 
 /// The Source Control list as drawn: each row's words (stage / unstage buttons left out).
-fn scm_rows(app: &mut App) -> Vec<String> {
+pub(crate) fn scm_rows(app: &mut App) -> Vec<String> {
     let term = draw(app);
     let Some(hit) = app.hits.scm.clone() else {
         return Vec::new();
@@ -2040,7 +2040,7 @@ fn scm_rows(app: &mut App) -> Vec<String> {
 }
 
 /// The side panel's text below its title (the branch line, a message), words joined.
-fn side_text(app: &mut App) -> String {
+pub(crate) fn side_text(app: &mut App) -> String {
     let term = draw(app);
     let side = app.hits.regions.side.unwrap();
     let screen = lines(&term);
@@ -2060,7 +2060,7 @@ fn side_text(app: &mut App) -> String {
 }
 
 /// The screen cell of the row `key` names (its first column), after a draw.
-fn scm_row(app: &mut App, key: &RowKey) -> (u16, u16) {
+pub(crate) fn scm_row(app: &mut App, key: &RowKey) -> (u16, u16) {
     let _ = draw(app);
     let hit = app.hits.scm.clone().unwrap();
     let i = hit.rows.iter().position(|k| k == key).expect("the row is drawn");
@@ -2068,7 +2068,7 @@ fn scm_row(app: &mut App, key: &RowKey) -> (u16, u16) {
 }
 
 /// The row `key`'s button: the pointer moves over the row (buttons show on hover), then it's drawn.
-fn scm_button(app: &mut App, key: &RowKey) -> (u16, u16) {
+pub(crate) fn scm_button(app: &mut App, key: &RowKey) -> (u16, u16) {
     let (x, y) = scm_row(app, key);
     app.mouse(MouseEventKind::Moved, x, y);
     let _ = draw(app);
@@ -2086,25 +2086,25 @@ fn click(app: &mut App, (x, y): (u16, u16)) {
     app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
 }
 
-fn file(section: Section, path: &str) -> RowKey {
+pub(crate) fn file(section: Section, path: &str) -> RowKey {
     RowKey::File(section, PathBuf::from(path))
 }
 
-fn selected_key(app: &App) -> Option<RowKey> {
+pub(crate) fn selected_key(app: &App) -> Option<RowKey> {
     let status = app.git.status.as_ref()?;
     let rows = app.scm.rows(status);
     app.scm.selected(&rows).map(|r| r.key())
 }
 
 /// Every stage / unstage task ended and the status read after it.
-async fn settle_stage(app: &mut App) -> bool {
+pub(crate) async fn settle_stage(app: &mut App) -> bool {
     app.settle(|a| a.diffs.staging == 0 && a.quick_diff.staging == 0 && !a.git.running() && a.git.status.is_some())
         .await
 }
 
 /// a.txt modified, b.txt new and staged, c.txt staged and modified again, d.txt deleted,
 /// sub/e.txt untracked.
-fn scm_repo(root: &Path) {
+pub(crate) fn scm_repo(root: &Path) {
     repo_with(
         root,
         &[("a.txt", "a\n"), ("c.txt", "c\n"), ("d.txt", "d\n")],

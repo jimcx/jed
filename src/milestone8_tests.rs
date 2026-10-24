@@ -742,6 +742,15 @@ async fn milestone_8_highlighted_one_mb_cpp_file_frames() {
             app.pump();
             draw(&mut term, &mut app);
             let e = t.elapsed();
+            // FLAKE: 2026-10-24, one key of this 1 MB C++ typing loop took >400 ms once under
+            // load (a background re-parse still running). State dumped here to diagnose next time.
+            if e >= FRAME_DEBUG_BOUND {
+                eprintln!(
+                    "FLAKE milestone_8_highlighted_one_mb_cpp_file_frames: key {c:?} at place {i} \
+                     took {e:?}, fell_back={fell_back}, parsed={}, n={n}, worst_so_far={worst_key:?}",
+                    parsed(&app),
+                );
+            }
             assert!(e < FRAME_DEBUG_BOUND, "key {c:?} took {e:?}");
             worst_key = worst_key.max(e);
             total += e;
