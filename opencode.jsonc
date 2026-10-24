@@ -24,7 +24,7 @@
     "task-implementer": {
       "description": "Implements one PLAN.md task or subtask, runs scripts/check, does not commit",
       "mode": "subagent",
-      "model": "ollama-cloud/kimi-k2.7-code",
+      "model": "ollama-cloud/deepseek-v4.1-flash",
       "permissions": [
         { "action": "shell", "resource": "git commit *", "effect": "deny" },
         { "action": "shell", "resource": "git push *", "effect": "deny" },
