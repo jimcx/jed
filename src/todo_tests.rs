@@ -113,6 +113,10 @@
 //!   title only; the user vars and OSC 7 keep the root) and `status_bar` tints the status bar
 //!   from `Theme`'s `statusBar.<colour>` keys; each colour draws, live reload updates both
 //!   (the title re-sent, not pushed) and a bad colour is reported with the last good kept.
+//! - `term_mouse`: mouse events reach a shell or task tab's program as xterm's mouse input when
+//!   it asked for them (clicks, drags, moves and the wheel as SGR bytes, the run's own cells), a
+//!   left click still focusing it; with the mouse off nothing reaches the program and the wheel
+//!   scrolls the scrollback, as it does while the view is scrolled back.
 
 mod render_whitespace {
     use std::fs;
@@ -6939,5 +6943,228 @@ mod window_identity {
         let term = draw(&mut app);
         assert!(status_has_bg(&term, err), "the error cell kept its colour");
         assert!(status_has_bg(&term, green), "the rest stays green");
+    }
+}
+
+/// Mouse in the hosted terminal (`term_mouse`): a shell or task tab whose program asked for the
+/// mouse (`CSI ? 1000 / 1002 / 1003 h`, SGR `1006`) gets jed's clicks, drags, moves and wheel as
+/// xterm's mouse input at the run's own cells — what `cat` echoes back — its left click also
+/// focusing what it lands on; with the mouse off nothing reaches the program and the wheel still
+/// scrolls the scrollback, and so does the wheel while the view is scrolled back. The encoder's
+/// bytes are `tasks::mouse`'s unit tests.
+mod term_mouse {
+    use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+    use vt100::{MouseProtocolEncoding, MouseProtocolMode};
+
+    use crate::app::App;
+    use crate::command::Command;
+    use crate::layout;
+    use crate::shell_tests::{COUNT_TO_200, dirs, draw, screen_text, scrollback, shell_app};
+    use crate::tasks::RunId;
+
+    /// `command` (else nothing), then the shell's `printf` turning the mouse on in `modes`
+    /// (`CSI ? n h`) and `cat`, which echoes every byte the mouse sends at it (ESC as `^[`).
+    fn echo_mouse(command: Option<&str>, modes: &[u16]) -> Vec<u8> {
+        let modes: String = modes.iter().map(|m| format!("\\033[?{m}h")).collect();
+        let command = command.map(|c| format!("{c}; ")).unwrap_or_default();
+        format!("{command}printf '{modes}'; cat\n").into_bytes()
+    }
+
+    /// The task whose template asks for the mouse in `modes` and then echoes what it gets.
+    fn mouse_task(modes: &[u16]) -> String {
+        let modes: String = modes.iter().map(|m| format!("\\033[?{m}h")).collect();
+        format!("[tasks.mouse]\ncommand = '''printf '{modes}'; cat'''\n")
+    }
+
+    fn click(app: &mut App, x: u16, y: u16) {
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    }
+
+    /// The shell's mode is on and its encoding SGR: the two the tests below assert.
+    fn sgr(app: &App, mode: MouseProtocolMode) -> bool {
+        let run = &app.group().active_shell().unwrap().run;
+        let screen = run.screen();
+        screen.screen().mouse_protocol_mode() == mode
+            && screen.screen().mouse_protocol_encoding() == MouseProtocolEncoding::Sgr
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn shell_mouse_clicks_drags_and_the_wheel_reach_its_program() {
+        let (_d, root, state) = dirs();
+        let mut app = shell_app(&root, &state);
+        app.tasks.shell = "/bin/sh".into();
+        app.test_execute(Command::NewShell);
+        assert!(
+            app.group()
+                .active_shell()
+                .unwrap()
+                .run
+                .write(&echo_mouse(Some(COUNT_TO_200), &[1000, 1002, 1006]))
+        );
+        assert!(
+            app.settle(|a| sgr(a, MouseProtocolMode::ButtonMotion)).await,
+            "the program asked for press / release, motion and SGR:\n{}",
+            screen_text(&app)
+        );
+
+        let term = draw(&mut app, 100, 30);
+        let editor = app.hits.group(app.groups.active).unwrap().editor;
+        drop(term);
+        // The editor's cell (2, 1) is the run's cell (3, 2).
+        let (x, y) = (editor.x + 2, editor.y + 1);
+        // A left click also focuses the group, as jed's own clicks do.
+        app.ui.focus = crate::app::Focus::SidePanel;
+        click(&mut app, x, y);
+        assert_eq!(
+            app.ui.focus,
+            crate::app::Focus::Editor,
+            "the click focused the shell's group"
+        );
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), x + 1, y);
+        app.mouse(MouseEventKind::ScrollUp, x + 1, y);
+        app.mouse(MouseEventKind::ScrollDown, x + 1, y);
+        assert!(
+            app.settle(|a| {
+                let text = screen_text(a);
+                text.contains("^[[<0;3;2M")
+                    && text.contains("^[[<0;3;2m")
+                    && text.contains("^[[<32;4;2M")
+                    && text.contains("^[[<64;4;2M")
+                    && text.contains("^[[<65;4;2M")
+            })
+            .await,
+            "the cat echoed the click, the drag and the wheel as SGR bytes:\n{}",
+            screen_text(&app)
+        );
+        assert_eq!(
+            scrollback(&app),
+            0,
+            "the wheel went to the program, not through the scrollback"
+        );
+
+        // Scrolled back, a click stays in jed and the wheel scrolls the scrollback again.
+        let live = screen_text(&app);
+        app.press(KeyCode::PageUp, KeyModifiers::SHIFT);
+        let back = scrollback(&app);
+        assert!(back > 0, "Shift+PageUp went back:\n{}", screen_text(&app));
+        click(&mut app, x, y);
+        app.mouse(MouseEventKind::ScrollUp, x, y);
+        assert_eq!(scrollback(&app), back + 3, "the wheel scrolled the scrollback");
+        app.press(KeyCode::End, KeyModifiers::CONTROL);
+        assert_eq!(
+            screen_text(&app),
+            live,
+            "no mouse byte reached the program while scrolled back"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn task_mouse_clicks_and_motion_reach_its_program() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, state) = crate::milestone12_tests::dirs(&dir);
+        let mut app = crate::milestone12_tests::open_app(&root, &state, Some(&mouse_task(&[1000, 1003, 1006])));
+        // A frame first, as the app always has: the run starts at its tab's size.
+        drop(draw(&mut app, 100, 30));
+        let id: RunId = app.run_task("mouse").unwrap();
+        assert!(
+            app.settle(|a| {
+                let screen = a.tasks.get(id).unwrap().screen();
+                screen.screen().mouse_protocol_mode() == MouseProtocolMode::AnyMotion
+                    && screen.screen().mouse_protocol_encoding() == MouseProtocolEncoding::Sgr
+            })
+            .await,
+            "the task asked for any motion and SGR:\n{}",
+            task_text(&app, id)
+        );
+
+        let term = draw(&mut app, 100, 30);
+        let area = layout::task_area(app.hits.regions.panel.unwrap());
+        drop(term);
+        // The task area's cell (4, 2) is the run's cell (5, 3).
+        let (x, y) = (area.x + 4, area.y + 2);
+        app.ui.focus = crate::app::Focus::SidePanel;
+        click(&mut app, x, y);
+        // Any-motion mode sends moves with no button held (code 35).
+        app.mouse(MouseEventKind::Moved, x + 2, y);
+        app.mouse(MouseEventKind::ScrollDown, x + 2, y);
+        assert!(
+            app.settle(|a| {
+                let text = task_text(a, id);
+                text.contains("^[[<0;5;3M")
+                    && text.contains("^[[<0;5;3m")
+                    && text.contains("^[[<35;7;3M")
+                    && text.contains("^[[<65;7;3M")
+            })
+            .await,
+            "the task echoed the click, the move and the wheel as SGR bytes:\n{}",
+            task_text(&app, id)
+        );
+        let run = app.tasks.get(id).unwrap();
+        assert_eq!(run.screen().screen().scrollback(), 0, "the wheel went to the task");
+        assert_eq!(
+            app.ui.focus,
+            crate::app::Focus::Panel,
+            "the click kept the task tab's keys"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mouse_off_leaves_clicks_alone_and_the_wheel_scrolls() {
+        let (_d, root, state) = dirs();
+        let mut app = shell_app(&root, &state);
+        app.tasks.shell = "/bin/sh".into();
+        app.test_execute(Command::NewShell);
+        assert!(
+            app.group()
+                .active_shell()
+                .unwrap()
+                .run
+                .write(format!("{COUNT_TO_200}\n").as_bytes())
+        );
+        assert!(
+            app.settle(|a| screen_text(a).lines().any(|l| l.trim_end().ends_with("199")))
+                .await,
+            "the command's output arrived:\n{}",
+            screen_text(&app)
+        );
+        assert_eq!(
+            app.group()
+                .active_shell()
+                .unwrap()
+                .run
+                .screen()
+                .screen()
+                .mouse_protocol_mode(),
+            MouseProtocolMode::None,
+            "the program never asked for the mouse"
+        );
+
+        let term = draw(&mut app, 100, 30);
+        let editor = app.hits.group(app.groups.active).unwrap().editor;
+        drop(term);
+        let (x, y) = (editor.x + 2, editor.y + 1);
+        let before = screen_text(&app);
+        click(&mut app, x, y);
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), x + 1, y);
+        assert_eq!(
+            screen_text(&app),
+            before,
+            "clicks reached neither the shell's program nor its output"
+        );
+        assert!(!screen_text(&app).contains("^[["), "nothing was sent as a mouse report");
+
+        // The wheel is jed's: it still scrolls the shell's scrollback.
+        app.mouse(MouseEventKind::ScrollUp, x, y);
+        assert_eq!(scrollback(&app), 3, "the wheel scrolled the scrollback");
+        assert!(
+            !screen_text(&app).contains("^[["),
+            "the wheel sent no mouse report:\n{}",
+            screen_text(&app)
+        );
+    }
+
+    fn task_text(app: &App, id: RunId) -> String {
+        app.tasks.get(id).unwrap().screen().screen().contents()
     }
 }

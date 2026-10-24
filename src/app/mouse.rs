@@ -3,6 +3,8 @@
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
+use vt100::MouseProtocolMode;
 
 use super::tab_drag::TabDrag;
 use super::{App, Focus};
@@ -10,9 +12,10 @@ use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::column::{self, Cell};
 use crate::command::{Command, ExplorerCommand};
 use crate::layout::{
-    Divider, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, MergeButton, PanelTab, ScrollTarget, SidePanel, SplitDir,
+    Divider, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, MergeButton, PanelTab, ScrollTarget, SidePanel, SplitDir, task_area,
 };
 use crate::selection::{Selection, Selections};
+use crate::tasks::{Run, mouse};
 use crate::terminal::Pointer;
 use crate::view::View;
 
@@ -109,6 +112,68 @@ impl App {
         }
     }
 
+    /// The run a mouse event over a shell or task tab goes to, and the screen area its cells are
+    /// in: `Hit::Editor(g)` with a shell tab active there, or `Hit::Panel` showing a task run.
+    fn terminal_run(&self, hit: Hit) -> Option<(&Run, Rect)> {
+        match hit {
+            Hit::Editor(g) => Some((&self.groups.get(g)?.active_shell()?.run, self.hits.group(g)?.editor)),
+            Hit::Panel => match self.ui.panel_tab {
+                PanelTab::Task(id) => Some((self.tasks.get(id)?, task_area(self.hits.regions.panel?))),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// A mouse event over a shell or task tab whose program reports the mouse: to its terminal as
+    /// xterm sends it (`tasks::mouse`), its cells counted from `area`; a left click also focuses
+    /// what it lands on. Nothing while the program hasn't asked for the mouse or has ended, or
+    /// the view is scrolled back (the wheel scrolls the scrollback then). True when the program
+    /// has the event, so jed's click / wheel handling stays out of it.
+    fn terminal_mouse(&mut self, hit: Hit, m: MouseEvent) -> bool {
+        // A drag jed started elsewhere (text, a scroll bar, a tab, a border) keeps its moves
+        // and release.
+        if self.drag.is_some() {
+            return false;
+        }
+        let Some((run, area)) = self.terminal_run(hit) else {
+            return false;
+        };
+        if !run.status().is_running() {
+            return false;
+        }
+        let bytes = {
+            let screen = run.screen();
+            let s = screen.screen();
+            if s.mouse_protocol_mode() == MouseProtocolMode::None || s.scrollback() != 0 {
+                return false;
+            }
+            // 0-based cells in the run's screen (`encode` makes them the protocol's 1-based
+            // ones), the pointer clamped into the area.
+            let cell = MouseEvent {
+                column: m.column.saturating_sub(area.x).min(area.width.saturating_sub(1)),
+                row: m.row.saturating_sub(area.y).min(area.height.saturating_sub(1)),
+                ..m
+            };
+            mouse::encode(&cell, s.mouse_protocol_mode(), s.mouse_protocol_encoding())
+        };
+        if let Some(bytes) = &bytes {
+            run.write(bytes);
+        }
+        if m.kind == MouseEventKind::Down(MouseButton::Left) {
+            match hit {
+                Hit::Editor(g) => self.focus_group(g),
+                Hit::Panel => {
+                    if let PanelTab::Task(id) = self.ui.panel_tab {
+                        self.focus_panel(PanelTab::Task(id));
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
+    }
+
     fn mouse_event(&mut self, m: MouseEvent) {
         let hit = match self.hits.hit(m.column, m.row) {
             // The wheel over a scroll bar scrolls what it scrolls, as the wheel over that.
@@ -151,6 +216,9 @@ impl App {
             return;
         }
         if self.diff_mouse(&m, hit) || self.hex_mouse(&m, hit) {
+            return;
+        }
+        if self.terminal_mouse(hit, m) {
             return;
         }
         // Sideways: the text tab under the mouse, without focusing it or moving its cursor.

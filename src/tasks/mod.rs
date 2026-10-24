@@ -6,9 +6,11 @@
 //! - `run`: one `Run` in a PTY, its output in a `vt100` screen with scrollback; `Event`s through a
 //!   `Sink` (the app's channel); input via `Run::write`
 //! - `keys`: keys and pastes encoded as a terminal sends them
+//! - `mouse`: mouse events encoded as a terminal sends them (xterm's mouse protocol)
 //! - `Tasks` (`app.tasks`): the user's templates, the runs (kept until closed), their sink
 
 pub mod keys;
+pub mod mouse;
 pub mod run;
 pub mod templates;
 
