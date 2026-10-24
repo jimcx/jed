@@ -16,7 +16,10 @@ use crate::scrollbar::Scrollable;
 const KEY_GAP: usize = 2;
 
 pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<KeysHit> {
-    let query = app.keys.as_ref()?.query.clone();
+    let (query, record) = {
+        let view = app.keys.as_ref()?;
+        (view.query.clone(), view.record)
+    };
     if area.width < 12 || area.height < 4 {
         return None;
     }
@@ -47,7 +50,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<KeysHit> {
     let qx = px + prompt.width() as u16;
     if qx < inner.x + inner.width {
         let room = (inner.x + inner.width - qx) as usize;
-        if query.is_empty() {
+        if record {
+            out.set_stringn(qx, inner.y, "Press key combination…", room, placeholder);
+        } else if query.is_empty() {
             out.set_stringn(qx, inner.y, "type to filter by name or key", room, placeholder);
         } else {
             out.set_stringn(qx, inner.y, &query, room, input);

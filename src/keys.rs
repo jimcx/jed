@@ -18,6 +18,9 @@ pub struct Row {
     pub command: Command,
     /// The combo's label (`Cmd+Shift+P`), empty for an unbound command.
     pub key: String,
+    /// The combo's config spelling (`cmd+shift+p`), empty for an unbound command: Enter writes it
+    /// into a `keybindings.toml` stub.
+    pub spec: String,
     /// The context's title (`Editor`, `Find`, …), empty for a global binding or an unbound command.
     pub context: String,
     /// Where the binding came from (`Default` / `User`), empty for an unbound command.
@@ -30,6 +33,8 @@ pub struct Row {
 pub struct KeysView {
     /// The search box's text.
     pub query: String,
+    /// Recording keys: the next combo pressed becomes the search (Alt+K starts it, Esc cancels).
+    pub record: bool,
     /// Every row, by command title then key.
     pub all: Vec<Row>,
     /// The rows `query` matches (all of them for an empty query), best match first.
@@ -45,6 +50,7 @@ impl KeysView {
         let all = build(keymap);
         Self {
             query: String::new(),
+            record: false,
             rows: all.clone(),
             all,
             selected: 0,
@@ -60,8 +66,7 @@ impl KeysView {
         self.top = 0;
     }
 
-    /// The selected row (keys-c's Enter opens its `keybindings.toml` stub).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The selected row (Enter opens its `keybindings.toml` stub).
     pub fn selected_row(&self) -> Option<&Row> {
         self.rows.get(self.selected)
     }
@@ -116,6 +121,7 @@ pub fn build(keymap: &Keymap) -> Vec<Row> {
         rows.push(Row {
             command,
             key: combo.label(),
+            spec: combo.spec(),
             context: context.map(|c| c.title().to_string()).unwrap_or_default(),
             source: match source {
                 Source::Default => "Default",
@@ -129,6 +135,7 @@ pub fn build(keymap: &Keymap) -> Vec<Row> {
             rows.push(Row {
                 command,
                 key: String::new(),
+                spec: String::new(),
                 context: String::new(),
                 source: String::new(),
             });
@@ -200,6 +207,7 @@ mod tests {
         // A global binding, a context one, and a command with no key at all.
         let save = rows.iter().find(|r| r.command == Command::Save).unwrap();
         assert_eq!(save.key, "Ctrl+S");
+        assert_eq!(save.spec, "ctrl+s");
         assert_eq!(save.context, "");
         assert_eq!(save.source, "Default");
         assert!(
@@ -208,7 +216,14 @@ mod tests {
             "a context binding"
         );
         let shortcuts = rows.iter().find(|r| r.command == Command::KeyboardShortcuts).unwrap();
-        assert_eq!((shortcuts.key.as_str(), shortcuts.source.as_str()), ("", ""));
+        assert_eq!(
+            (
+                shortcuts.key.as_str(),
+                shortcuts.spec.as_str(),
+                shortcuts.source.as_str()
+            ),
+            ("", "", "")
+        );
     }
 
     #[test]
@@ -235,6 +250,7 @@ mod tests {
     #[test]
     fn selection_and_scrolling_stay_in_range() {
         let mut view = KeysView::new(&linux());
+        assert!(!view.record, "not recording until asked");
         let len = view.rows.len();
         view.height = 10;
         view.move_selection(-1);

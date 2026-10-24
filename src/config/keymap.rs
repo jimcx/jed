@@ -4,7 +4,7 @@
 //! The defaults are VS Code's; `keybindings.toml` replaces bindings command by command.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
@@ -494,6 +494,61 @@ fn parse_user(text: &str) -> (Vec<Binding>, Vec<String>) {
         }
     }
     (out, errors)
+}
+
+/// What the Keyboard Shortcuts view writes when there's no `keybindings.toml` yet: a comment
+/// header, then the `[[binding]]` table it appends for the command.
+pub const KEYBINDINGS_TEMPLATE: &str = "\
+# jed keybindings. Each [[binding]] replaces its command's default keys.
+# key: a combo such as \"ctrl+alt+s\" (cmd, ctrl, alt, shift + a key name).
+# command: a command's name, e.g. \"file.save\".
+# context: optional; editor, explorer, find, replace, search, problems, ...
+";
+
+/// Blocking. Writes `KEYBINDINGS_TEMPLATE` to `path` (creating its directory) unless the file
+/// exists; never overwrites one, even if it appears meanwhile (`create_new`).
+pub fn create_if_missing(path: &Path) -> Result<PathBuf, String> {
+    use std::io::Write;
+    let fail = |e: std::io::Error| format!("Can't create {}: {e}", path.display());
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(fail)?;
+    }
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(mut f) => f.write_all(KEYBINDINGS_TEMPLATE.as_bytes()).map_err(fail)?,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(fail(e)),
+    }
+    Ok(path.to_path_buf())
+}
+
+/// Blocking. Appends a `[[binding]]` table for `command` to the `keybindings.toml` at `path`,
+/// creating the file if it isn't there; `spec` is its key's config spelling, `""` for a command
+/// with no key yet (the stub then says to set one).
+pub fn append_stub(path: &Path, command: &str, spec: &str) -> Result<(), String> {
+    use std::io::Write;
+    let fail = |e: std::io::Error| format!("Can't write {}: {e}", path.display());
+    let existing = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(fail(e)),
+    };
+    let mut text = String::new();
+    if !existing.is_empty() {
+        if !existing.ends_with(b"\n") {
+            text.push('\n');
+        }
+        text.push('\n');
+    }
+    let note = if spec.is_empty() { "  # set the key" } else { "" };
+    text.push_str(&format!(
+        "[[binding]]\nkey = \"{spec}\"{note}\ncommand = \"{command}\"\n"
+    ));
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+        .map_err(fail)?;
+    file.write_all(text.as_bytes()).map_err(fail)
 }
 
 /// VS Code's default bindings, in priority order for what the palette shows.
@@ -1703,6 +1758,46 @@ mod tests {
             km.binding_for(Command::Save).map(|c| c.label()).as_deref(),
             Some("Cmd+S")
         );
+    }
+
+    #[test]
+    fn stubs_are_created_appended_and_parse_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        assert!(!path.exists());
+        let created = create_if_missing(&path).unwrap();
+        assert_eq!(created, path);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), KEYBINDINGS_TEMPLATE);
+        let (user, errors) = parse_user(KEYBINDINGS_TEMPLATE);
+        assert!(user.is_empty() && errors.is_empty(), "{errors:?}");
+
+        append_stub(&path, "file.saveAs", "ctrl+alt+s").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with(KEYBINDINGS_TEMPLATE), "the template is kept");
+        assert!(
+            text.contains("[[binding]]\nkey = \"ctrl+alt+s\"\ncommand = \"file.saveAs\"\n"),
+            "{text}"
+        );
+        let (user, errors) = parse_user(&text);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(user.len(), 1);
+        assert_eq!(user[0].command, Command::SaveAs);
+        assert_eq!(user[0].combo, KeyCombo::parse("ctrl+alt+s").unwrap());
+        assert_eq!(user[0].source, Source::User);
+
+        // Never overwrites an existing file; an append after no trailing newline still separates,
+        // and the empty-key stub for an unbound command says to set one.
+        std::fs::write(&path, "# mine").unwrap();
+        create_if_missing(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# mine");
+        append_stub(&path, "file.save", "").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# mine\n\n[[binding]]\nkey = \"\"  # set the key\ncommand = \"file.save\"\n"
+        );
+        let (user, errors) = parse_user(&std::fs::read_to_string(&path).unwrap());
+        assert!(user.is_empty());
+        assert_eq!(errors.len(), 1, "an empty key is a load error: {errors:?}");
     }
 
     #[test]

@@ -226,6 +226,8 @@ enum AppEvent {
     LogFileFound(Option<PathBuf>),
     /// `settings.toml` exists (created from the template if it didn't), or why it couldn't be.
     UserSettingsReady(Result<PathBuf, String>),
+    /// `keybindings.toml` exists with the Keyboard Shortcuts view's stub appended, or why not.
+    KeybindingsReady(Result<PathBuf, String>),
     /// Workspace search results; any generation (stale ones are dropped).
     SearchResults(crate::workspace_search::Batch),
     /// The Search view's Replace rewrote the files that aren't open (`app/replace.rs`).
@@ -1421,6 +1423,10 @@ impl App {
             AppEvent::FilesWalked { generation } => self.files_walked(generation),
             AppEvent::LogFileFound(path) => self.log_file_found(path),
             AppEvent::UserSettingsReady(result) => match result {
+                Ok(path) => self.open_file(path, true, None),
+                Err(e) => self.notify(Level::Error, e),
+            },
+            AppEvent::KeybindingsReady(result) => match result {
                 Ok(path) => self.open_file(path, true, None),
                 Err(e) => self.notify(Level::Error, e),
             },
