@@ -16,7 +16,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 
-use crate::app::{App, InitialFile};
+use crate::app::{App, InitialFile, Prompt};
 use crate::buffer::Buffer;
 use crate::buffer::file::Stamp;
 use crate::command::Command;
@@ -1295,4 +1295,95 @@ async fn drag_tabs_a_closed_drag_never_moves_its_neighbour() {
         "its neighbour stayed where it was"
     );
     assert_eq!(app.groups.ids(), ids, "no split and no group closed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn drag_tabs_a_mid_drag_reorder_cancels_the_drop() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = open_app(&dir, &["a.txt", "b.txt", "c.txt"]);
+    draw(&mut app, 80);
+    let (y, tabs) = bar(&app);
+
+    // Start dragging a.txt (index 0) toward the end, then reorder the group with a key: the tab
+    // now at index 0 is its neighbour b.txt, but the count is unchanged, so the drop must not
+    // mistake b.txt for the dragged tab.
+    app.mouse(MouseEventKind::Down(MouseButton::Left), in_tab(&tabs[0]), y);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), tabs[2].x1, y);
+    app.test_execute(Command::MoveTabRight);
+    assert_eq!(
+        layout(&app),
+        [vec!["b.txt", "a.txt", "c.txt"]],
+        "the reorder moved a.txt right"
+    );
+
+    app.mouse(MouseEventKind::Up(MouseButton::Left), tabs[2].x1, y);
+    assert_eq!(
+        layout(&app),
+        [vec!["b.txt", "a.txt", "c.txt"]],
+        "the drop is cancelled: b.txt was not mistaken for the dragged a.txt"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn drag_tabs_esc_closes_a_prompt_before_cancelling_the_drag() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = open_app(&dir, &["a.txt", "b.txt"]);
+    // Make a.txt dirty so closing it asks to save.
+    app.test_activate_tab(0);
+    app.type_text("x");
+    draw(&mut app, 80);
+    let (y, tabs) = bar(&app);
+
+    // Start a drag on a.txt, then close it with a key: the prompt opens over the live drag.
+    app.mouse(MouseEventKind::Down(MouseButton::Left), in_tab(&tabs[0]), y);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), tabs[1].x1, y);
+    app.test_execute(Command::CloseTab);
+    assert!(
+        matches!(app.prompt, Some(Prompt::SaveBeforeClose { .. })),
+        "closing asks to save"
+    );
+    assert!(app.dragging_tab(), "the drag is still armed behind the prompt");
+
+    // Esc goes to the prompt first, not the drag.
+    app.press(K::Esc, M::NONE);
+    assert!(app.prompt.is_none(), "Esc closed the prompt");
+    assert!(app.dragging_tab(), "not the drag: the overlay took the first Esc");
+
+    // With no overlay left, a second Esc cancels the drag, and the release moves nothing.
+    app.press(K::Esc, M::NONE);
+    assert!(!app.dragging_tab(), "the second Esc cancelled the drag");
+    app.mouse(MouseEventKind::Up(MouseButton::Left), tabs[1].x1, y);
+    assert_eq!(layout(&app), [vec!["a.txt", "b.txt"]], "nothing moved");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn drag_tabs_a_stale_drag_is_cleared_by_the_next_press() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = open_app(&dir, &["a.txt", "b.txt", "c.txt"]);
+    draw(&mut app, 80);
+    let (y, tabs) = bar(&app);
+    let status = app.hits.regions.status;
+
+    // Drag a.txt to the end, then lose the release (the button went up outside the terminal):
+    // no Up arrives, so the drag stays armed.
+    app.mouse(MouseEventKind::Down(MouseButton::Left), in_tab(&tabs[0]), y);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), tabs[2].x1, y);
+    assert!(app.dragging_tab(), "the drag is in flight");
+
+    // The next press, on a spot that starts no drag (the status bar), clears the stale drag; a
+    // drag and release after it must not move anything.
+    app.mouse(MouseEventKind::Down(MouseButton::Left), status.x + 2, status.y);
+    assert!(!app.dragging_tab(), "the press cleared the stale drag");
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), tabs[2].x1, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), tabs[2].x1, y);
+    assert_eq!(
+        layout(&app),
+        [vec!["a.txt", "b.txt", "c.txt"]],
+        "no phantom drag moved a.txt"
+    );
+    let term = draw(&mut app, 80);
+    assert!(
+        marker_cells(&app, &term, first_group(&app), y).is_empty(),
+        "no marker from the stale drag"
+    );
 }

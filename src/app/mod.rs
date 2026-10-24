@@ -1022,8 +1022,16 @@ impl App {
                 if !peek && !matches!(key.code, KeyCode::Modifier(_)) {
                     self.close_peek();
                 }
-                if esc && matches!(self.drag, Some(mouse::Drag::Tab(_))) {
-                    // A drag in flight: Esc cancels it (the mouse release then moves nothing).
+                if esc
+                    && matches!(self.drag, Some(mouse::Drag::Tab(_)))
+                    && self.prompt.is_none()
+                    && self.cheat_sheet.is_none()
+                    && self.keys.is_none()
+                    && self.palette.is_none()
+                {
+                    // A drag in flight with no overlay up: Esc cancels it (the mouse release then
+                    // moves nothing). With a prompt, palette or key overlay open, Esc goes to it
+                    // first (VS Code's overlay-first order).
                     self.drag = None;
                 } else if self.prompt.is_some() {
                     self.handle_prompt_key(key);
@@ -1538,6 +1546,11 @@ impl App {
 
     pub fn press(&mut self, code: KeyCode, mods: KeyModifiers) {
         self.handle_event(Event::Key(crossterm::event::KeyEvent::new(code, mods)));
+    }
+
+    /// True while a tab drag is in flight (its press happened and no release or Esc has ended it).
+    pub fn dragging_tab(&self) -> bool {
+        matches!(self.drag, Some(mouse::Drag::Tab(_)))
     }
 
     /// Presses the platform's file start key: Cmd+Up on macOS (VS Code's; Cmd+Home is unbound

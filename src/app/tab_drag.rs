@@ -9,6 +9,7 @@ use ratatui::layout::{Position, Rect};
 
 use super::mouse::Drag;
 use super::{App, Focus};
+use crate::group::{Tab, TabIdentity};
 use crate::layout::{DropSide, GroupId, MIN_GROUP_HEIGHT, MIN_GROUP_WIDTH, TabHit};
 
 /// An in-flight tab drag: the tab's group and index where it started, and where it would land
@@ -17,10 +18,11 @@ use crate::layout::{DropSide, GroupId, MIN_GROUP_HEIGHT, MIN_GROUP_WIDTH, TabHit
 pub struct TabDrag {
     pub from: GroupId,
     pub index: usize,
-    /// The source group's tab count when the drag started. A key can close (or open) a tab while
-    /// a drag is in flight, after which `index` may no longer be the dragged tab: the release
-    /// moves nothing.
-    pub len: usize,
+    /// The dragged tab's identity at the press. A key can close, open or reorder a tab while a
+    /// drag is in flight, after which `index` may no longer be the dragged tab (and the group's
+    /// count alone can't tell): the release moves nothing unless the tab at `index` is still the
+    /// same one.
+    pub tab: Option<TabIdentity>,
     pub target: Option<TabDrop>,
 }
 
@@ -158,13 +160,15 @@ impl App {
         let Some(Drag::Tab(drag)) = self.drag.take() else {
             return;
         };
-        // A key can close a tab while a drag is in flight (only Esc ends a drag): if the source
-        // group's tab list changed, the tab the drag started on is not at `index` any more (the
-        // next one may be), so the release moves nothing.
-        if !self
+        // A key can close, open or move a tab while a drag is in flight (only Esc ends a drag):
+        // if the tab at `index` is no longer the one the drag started on, the release moves
+        // nothing.
+        if self
             .groups
             .get(drag.from)
-            .is_some_and(|g| g.tabs.len() == drag.len && drag.index < g.tabs.len())
+            .and_then(|g| g.tabs.get(drag.index))
+            .map(Tab::identity)
+            != drag.tab
         {
             return;
         }

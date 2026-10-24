@@ -7,6 +7,7 @@ use crate::diff_view::DiffTab;
 use crate::hex::HexTab;
 use crate::layout::{DropSide, GroupId, SplitDir, SplitTree};
 use crate::shell::ShellTab;
+use crate::tasks::RunId;
 use crate::view::View;
 
 /// A text editor tab: a buffer and this tab's view of it.
@@ -26,6 +27,18 @@ pub enum Tab {
     Diff(Box<DiffTab>),
     Hex(Box<HexTab>),
     Shell(Box<ShellTab>),
+}
+
+/// What identifies a tab for the duration of a drag: a text tab's buffer, a diff or hex tab's
+/// unique `id`, or a shell's run. Stable while the tab exists, so a drag can tell whether the tab
+/// it grabbed is still at its index (a close, a reorder, or a close-then-open all change the
+/// list while keeping the count — and so the index — valid).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabIdentity {
+    Text(BufferId),
+    Diff(u64),
+    Hex(u64),
+    Shell(RunId),
 }
 
 impl Tab {
@@ -99,6 +112,16 @@ impl Tab {
             (Tab::Diff(a), Tab::Diff(b)) => a.path == b.path && a.pair == b.pair,
             (Tab::Hex(a), Tab::Hex(b)) => a.path == b.path,
             _ => false,
+        }
+    }
+
+    /// The stable identity used while a tab is dragged (see `TabIdentity`).
+    pub fn identity(&self) -> TabIdentity {
+        match self {
+            Tab::Text(t) => TabIdentity::Text(t.buffer),
+            Tab::Diff(d) => TabIdentity::Diff(d.id),
+            Tab::Hex(h) => TabIdentity::Hex(h.id),
+            Tab::Shell(s) => TabIdentity::Shell(s.run.id),
         }
     }
 }

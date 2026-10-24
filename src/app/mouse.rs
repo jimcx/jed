@@ -11,6 +11,7 @@ use super::{App, Focus};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::column::{self, Cell};
 use crate::command::{Command, ExplorerCommand};
+use crate::group::Tab;
 use crate::layout::{
     Divider, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, MergeButton, PanelTab, ScrollTarget, SidePanel, SplitDir, task_area,
 };
@@ -273,6 +274,11 @@ impl App {
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
+                // A press while a drag is already armed means the previous drag's release never
+                // arrived (the button went up outside the terminal, or a popup swallowed it): that
+                // drag is stale, and the marker / shade it left must go. `left_click` re-arms a
+                // fresh drag where the press starts one.
+                self.drag = None;
                 let count = self.clicks.click(Instant::now(), m.column, m.row);
                 self.left_click(hit, m, count);
             }
@@ -419,7 +425,11 @@ impl App {
                 self.drag = Some(Drag::Tab(TabDrag {
                     from: g,
                     index: i,
-                    len: self.groups.get(g).map_or(0, |group| group.tabs.len()),
+                    tab: self
+                        .groups
+                        .get(g)
+                        .and_then(|group| group.tabs.get(i))
+                        .map(Tab::identity),
                     target: None,
                 }));
             }
