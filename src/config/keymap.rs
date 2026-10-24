@@ -243,6 +243,31 @@ impl Context {
         Self::ALL.iter().find(|(_, n)| *n == name).map(|(c, _)| *c)
     }
 
+    /// For people, e.g. `Search Results` (the config spelling is `searchResults`).
+    pub fn title(self) -> &'static str {
+        match self {
+            Context::Editor => "Editor",
+            Context::Explorer => "Explorer",
+            Context::Palette => "Command Palette",
+            Context::Find => "Find",
+            Context::Replace => "Replace",
+            Context::Search => "Search",
+            Context::SearchResults => "Search Results",
+            Context::Problems => "Problems",
+            Context::Locations => "Locations",
+            Context::Suggest => "Suggestions",
+            Context::CodeActions => "Code Actions",
+            Context::Diff => "Diff View",
+            Context::Scm => "Source Control",
+            Context::Tools => "Tools",
+            Context::GitHistory => "Git History",
+            Context::Commit => "Commit",
+            Context::Task => "Task",
+            Context::Hex => "Hex View",
+            Context::Shell => "Terminal",
+        }
+    }
+
     /// The context looked at next, before the global bindings.
     pub fn parent(self) -> Option<Context> {
         match self {
@@ -318,7 +343,6 @@ struct UserBinding {
 
 impl Keymap {
     /// Every binding: combo, context (`None` = everywhere), command and where it came from.
-    #[cfg_attr(not(test), allow(dead_code))] // keys-b's view
     pub fn bindings_with_source(&self) -> impl Iterator<Item = (KeyCombo, Option<Context>, Command, Source)> + '_ {
         self.bindings.iter().map(|((combo, ctx), c)| {
             let source = self.sources.get(&(*combo, *ctx)).copied().unwrap_or(Source::Default);

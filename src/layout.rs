@@ -405,6 +405,8 @@ pub struct HitMap {
     pub palette: Option<PaletteHit>,
     /// The keyboard cheat sheet, when open; it takes every mouse event.
     pub cheat_sheet: Option<CheatSheetHit>,
+    /// The keyboard shortcuts view, when open; it takes every mouse event.
+    pub keys: Option<KeysHit>,
     /// The find widget, when shown; it takes clicks on it.
     pub find: Option<FindHit>,
     /// The Search view, when shown.
@@ -592,11 +594,20 @@ pub enum ScrollTarget {
     History,
     /// The keyboard cheat sheet overlay.
     CheatSheet,
+    /// The keyboard shortcuts view overlay.
+    Keys,
 }
 
 /// The keyboard cheat sheet overlay: its box and its scroll bar.
 #[derive(Debug, Clone, Copy)]
 pub struct CheatSheetHit {
+    pub rect: Rect,
+    pub scrollbar: Option<ScrollBarHit>,
+}
+
+/// The keyboard shortcuts view: its full-screen rect and its scroll bar.
+#[derive(Debug, Clone, Copy)]
+pub struct KeysHit {
     pub rect: Rect,
     pub scrollbar: Option<ScrollBarHit>,
 }
@@ -830,6 +841,7 @@ impl HitMap {
             ScrollTarget::Panel(_) => drawn(self.panel_scrollbar),
             ScrollTarget::History => self.history_scrollbar,
             ScrollTarget::CheatSheet => self.cheat_sheet?.scrollbar,
+            ScrollTarget::Keys => self.keys?.scrollbar,
         }
     }
 }
@@ -1007,6 +1019,7 @@ mod tests {
             dividers,
             palette: None,
             cheat_sheet: None,
+            keys: None,
             find: None,
             search: None,
             scm: None,

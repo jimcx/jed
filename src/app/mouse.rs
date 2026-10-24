@@ -129,6 +129,8 @@ impl App {
                     ScrollTarget::History => Hit::HistoryRow(0),
                     // Taken by `cheat_sheet_mouse` while it's open.
                     ScrollTarget::CheatSheet => Hit::Nothing,
+                    // Taken by `keyboard_shortcuts_mouse` while it's open.
+                    ScrollTarget::Keys => Hit::Nothing,
                 }
             }
             hit => hit,

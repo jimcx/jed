@@ -21,6 +21,7 @@ One line per widget or editor layer; [docs/dev/ui.md](../../docs/dev/ui.md) has 
 - `tools.rs` — the Tools view: server / task / jed rows, state marks, error badges
 - `palette.rs` — the palette (input, hint, ≤ 14 rows with match highlights and bindings)
 - `cheatsheet.rs` — the keyboard cheat sheet overlay over the editor area (columns, scroll bar, `cheatSheet.heading`)
+- `keys.rs` — the Keyboard Shortcuts view overlay: search box, rows in key / title / context / source columns, selection, scroll bar (`ScrollTarget::Keys`)
 - `popup.rs` — placing popups at a buffer position (`cell_of`, `place`): shared by hover and completion
 - `hover.rs`, `completion.rs`, `code_action.rs` — the hover popup, the completion list, the code action list (the lightbulb is drawn in `mod.rs`)
 - `quick_diff.rs` — the gutter's peek (removed lines, Stage, `×` close)

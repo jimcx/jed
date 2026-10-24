@@ -11,6 +11,7 @@ mod editor;
 mod find;
 mod hex;
 mod hover;
+mod keys;
 mod palette;
 mod panel;
 mod popup;
@@ -140,7 +141,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
             && app.ui.focus == Focus::Editor
             && app.prompt.is_none()
             && app.palette.is_none()
-            && app.cheat_sheet.is_none();
+            && app.cheat_sheet.is_none()
+            && app.keys.is_none();
         if let Some(d) = group.active_diff_mut() {
             diff_hit = Some(diff::render(
                 f,
@@ -353,6 +355,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     hits.code_actions = code_action::render(f, app, &hits.groups);
     hits.palette = palette::render(f, area, app);
     hits.cheat_sheet = cheatsheet::render(f, regions.editor, app);
+    hits.keys = keys::render(f, regions.editor, app);
     if let Some(prompt) = &app.prompt {
         dialog::render(f, area, app, prompt);
     }

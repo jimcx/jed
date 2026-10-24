@@ -168,27 +168,7 @@ fn groups() -> Vec<(&'static str, Vec<Command>)> {
 
 /// The section heading for a context's own keys; `None` for the editor (the groups are its).
 fn context_title(context: Context) -> Option<&'static str> {
-    Some(match context {
-        Context::Editor => return None,
-        Context::Explorer => "Explorer",
-        Context::Palette => "Command Palette",
-        Context::Find => "Find",
-        Context::Replace => "Replace",
-        Context::Search => "Search",
-        Context::SearchResults => "Search Results",
-        Context::Problems => "Problems",
-        Context::Locations => "Locations",
-        Context::Suggest => "Suggestions",
-        Context::CodeActions => "Code Actions",
-        Context::Diff => "Diff View",
-        Context::Scm => "Source Control",
-        Context::Tools => "Tools",
-        Context::GitHistory => "Git History",
-        Context::Commit => "Commit",
-        Context::Task => "Task",
-        Context::Hex => "Hex View",
-        Context::Shell => "Terminal",
-    })
+    (context != Context::Editor).then(|| context.title())
 }
 
 /// The sections to show: `context`'s own keys first (and its parents' short of the editor's:
