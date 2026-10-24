@@ -34,7 +34,7 @@ use crate::workspace::Workspace;
 use crate::workspace::trust::TrustStore;
 
 /// A command printing 0 to 199, one per line, in the shell (`seq` is missing on macOS).
-const COUNT_TO_200: &str = "i=0; while [ $i -lt 200 ]; do echo $i; i=$((i+1)); done";
+pub(crate) const COUNT_TO_200: &str = "i=0; while [ $i -lt 200 ]; do echo $i; i=$((i+1)); done";
 
 /// The platform's Cmd (Super on macOS, Ctrl on Linux).
 fn cmd() -> KeyModifiers {
@@ -46,7 +46,7 @@ fn cmd() -> KeyModifiers {
 }
 
 /// A workspace app on `root`, its trust store in `state`.
-fn shell_app(root: &Path, state: &Path) -> App {
+pub(crate) fn shell_app(root: &Path, state: &Path) -> App {
     let ws = Workspace::load(root.to_path_buf());
     let trust = TrustStore::load(state.join("trust.toml"));
     let mut app = App::new(ws, trust, None, true);
@@ -65,7 +65,7 @@ fn shell_script(root: &Path, name: &str, body: &str) -> PathBuf {
 }
 
 /// A fresh root and state dir under a tempdir.
-fn dirs() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+pub(crate) fn dirs() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let base = crate::workspace::normalize(dir.path());
     let (root, state) = (base.join("proj"), base.join("state"));
@@ -304,7 +304,7 @@ async fn shell_closes_without_a_prompt() {
 }
 
 /// A draw at `w` × `h`, as `run` does.
-fn draw(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
+pub(crate) fn draw(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| crate::ui::render(f, app)).unwrap();
     term
@@ -322,12 +322,12 @@ fn rows(term: &Terminal<TestBackend>, area: ratatui::layout::Rect) -> Vec<String
 }
 
 /// The active shell's screen text.
-fn screen_text(app: &App) -> String {
+pub(crate) fn screen_text(app: &App) -> String {
     app.group().active_shell().unwrap().run.screen().screen().contents()
 }
 
 /// The active shell's scrollback position (0 = the live screen).
-fn scrollback(app: &App) -> usize {
+pub(crate) fn scrollback(app: &App) -> usize {
     app.group().active_shell().unwrap().run.screen().screen().scrollback()
 }
 
