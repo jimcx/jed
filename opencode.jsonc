@@ -7,6 +7,13 @@
   "instructions": ["CLAUDE.md"],
 
   "agents": {
+    // Orchestrator for `.opencode/commands/release.md`. It cuts and pushes the
+    // v<N> release tag to GitHub; pushing is the point, so it is unrestricted.
+    "release": {
+      "description": "Cuts a release tag (v<N>) and pushes it plus main to GitHub, triggering the release pipeline",
+      "mode": "primary"
+    },
+
     // Orchestrator for `.opencode/commands/task.md`. It plans, judges and
     // commits; the three subagents below do the work.
     "task": {

@@ -1,0 +1,60 @@
+#!/bin/sh
+# Wait for the "Build" GitHub Actions workflow run on a commit to finish, then
+# exit 0 when it passed and non-zero when it failed, was cancelled, or no run
+# appeared. Polls the public GitHub API (unauthenticated; set GITHUB_TOKEN or
+# GH_TOKEN to raise the rate limit). The release command runs it after pushing
+# main, so a release is only tagged once its tests pass.
+#
+# Usage: scripts/wait-ci [<commit-sha>]   (defaults to HEAD)
+set -eu
+
+sha=${1:-$(git rev-parse HEAD)}
+
+# The github remote's repository as "owner/name".
+repo=$(git remote get-url github | sed -e 's#^git@github.com:##' -e 's#^ssh://git@github.com/##' -e 's#^https://github.com/##' -e 's#\.git$##')
+
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    auth="Authorization: Bearer $GITHUB_TOKEN"
+elif [ -n "${GH_TOKEN:-}" ]; then
+    auth="Authorization: Bearer $GH_TOKEN"
+else
+    auth=
+fi
+
+url="https://api.github.com/repos/$repo/actions/runs?branch=main&head_sha=$sha&per_page=1"
+
+fetch() {
+    if [ -n "$auth" ]; then
+        curl -sS -H "$auth" "$url"
+    else
+        curl -sS "$url"
+    fi
+}
+
+attempt=0
+while :; do
+    attempt=$((attempt + 1))
+    json=$(fetch)
+    status=$(printf '%s' "$json" | jq -r '.workflow_runs[0].status // "none"')
+    conclusion=$(printf '%s' "$json" | jq -r '.workflow_runs[0].conclusion // "none"')
+    if [ "$status" = "completed" ]; then
+        break
+    fi
+    if [ "$attempt" -ge 60 ]; then
+        echo "wait-ci: no completed Build run for $sha after 30 minutes" >&2
+        exit 1
+    fi
+    if [ "$status" = "none" ]; then
+        echo "wait-ci: no Build run for $sha yet…"
+    else
+        echo "wait-ci: Build run for $sha is $status…"
+    fi
+    sleep 30
+done
+
+echo "wait-ci: Build run for $sha finished: $conclusion"
+if [ "$conclusion" != "success" ]; then
+    run_url=$(printf '%s' "$json" | jq -r '.workflow_runs[0].html_url // ""')
+    echo "wait-ci: Build failed — see $run_url" >&2
+    exit 1
+fi
