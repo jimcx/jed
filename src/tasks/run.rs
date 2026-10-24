@@ -677,6 +677,7 @@ async fn notifier(shared: Arc<Shared>, sink: Sink) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
     use super::*;
 
     /// `tpgid` is the field right after the parenthesised `comm` (state, ppid, pgrp, session,
