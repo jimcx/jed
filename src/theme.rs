@@ -256,6 +256,9 @@ impl Theme {
             ("tab.scrollArrow.disabled", fg_bg(0x5A5A5A, 0x252526)),
             // A group's number in its tab bar's top-right corner (two or more groups).
             ("tab.groupNumber", fg_bg(0x6E6E6E, 0x252526)),
+            // A shell tab's state glyph: `○` at the prompt, `●` while a command runs.
+            ("tab.shellRunning", Style::new().fg(c(0x3794FF))),
+            ("tab.shellIdle", Style::new().fg(c(0x858585))),
             // Where a dragged tab would land on a tab bar (VS Code's `tab.dropBorder`).
             ("tab.dropMarker", fg_bg(0xFFFFFF, 0x007ACC)),
             // The zone a dragged tab would drop in over an editor (VS Code's

@@ -78,6 +78,13 @@ impl Tab {
         }
     }
 
+    pub fn shell_mut(&mut self) -> Option<&mut ShellTab> {
+        match self {
+            Tab::Shell(s) => Some(s),
+            _ => None,
+        }
+    }
+
     /// The buffer a text tab shows (`None` for a diff, hex or shell tab).
     pub fn buffer(&self) -> Option<BufferId> {
         self.text().map(|t| t.buffer)
@@ -333,6 +340,13 @@ impl Groups {
     /// Every shell tab, in any group (numbering a new shell's title).
     pub fn shell_tabs(&self) -> impl Iterator<Item = &ShellTab> {
         self.map.values().flat_map(|g| g.tabs.iter().filter_map(Tab::shell))
+    }
+
+    /// Every shell tab, in any group.
+    pub fn shell_tabs_mut(&mut self) -> impl Iterator<Item = &mut ShellTab> {
+        self.map
+            .values_mut()
+            .flat_map(|g| g.tabs.iter_mut().filter_map(Tab::shell_mut))
     }
 
     /// Every diff tab, in any group.

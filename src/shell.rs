@@ -16,30 +16,53 @@ use crate::tasks::{Run, RunId, Sink};
 /// numbers the next shell of the same program.
 pub struct ShellTab {
     pub run: Run,
+    /// The tab bar's label: the foreground process while a command runs, the shell at its
+    /// prompt, with the state glyph (`shell::title`).
     pub title: String,
-    /// The shell's file name ("zsh", "sh"), for "zsh (2)".
+    /// The shell's file name ("zsh", "sh"), for "zsh (2)" and the idle title.
     pub base: String,
+    /// This tab's number among the shells of `base`: 1 for "zsh", 2 for "zsh (2)". Stable while
+    /// the foreground changes the title.
+    pub number: usize,
+    /// The foreground is the shell itself (at its prompt): the idle glyph, else the running one.
+    pub idle: bool,
 }
 
 impl ShellTab {
-    /// Starts `spec` in a `rows` × `cols` PTY, titled `title` (`App::new_shell` numbers it: the
-    /// first shell of a program is its name).
-    pub fn new(id: RunId, spec: Spec, rows: u16, cols: u16, sink: Sink, scrollback: usize, title: String) -> ShellTab {
+    /// Starts `spec` in a `rows` × `cols` PTY, the `number`th shell of its program, and watches
+    /// its foreground for the title (`App::new_shell` picks the number).
+    pub fn new(id: RunId, spec: Spec, rows: u16, cols: u16, sink: Sink, scrollback: usize, number: usize) -> ShellTab {
         let base = spec.name.clone();
+        let run = Run::start(id, spec, rows, cols, sink.clone(), scrollback);
+        // The title follows what runs in the shell, off the UI thread.
+        run.watch_foreground(sink);
         ShellTab {
-            run: Run::start(id, spec, rows, cols, sink, scrollback),
-            title,
+            run,
+            title: title(&base, number, None),
             base,
+            number,
+            idle: true,
         }
     }
 }
 
-/// The tab bar's name for the `number`th shell of `base`: `zsh` for the first, `zsh (2)` next.
-pub fn title(base: &str, number: usize) -> String {
+/// The state glyphs in a shell tab's title: a command runs / the shell waits at its prompt.
+pub const RUNNING_GLYPH: &str = "●";
+pub const IDLE_GLYPH: &str = "○";
+
+/// The tab bar's name for the `number`th shell of `base`: `zsh ○` at its prompt, `make ●` while
+/// `make` runs, `zsh (2) ○` for the next shell of the same program. `foreground` is the PTY's
+/// foreground process (its name and whether it's the shell itself); at the prompt the title is
+/// `base` — a shell started through a link (`myshell` → `sh`) keeps its own name.
+pub fn title(base: &str, number: usize, foreground: Option<(&str, bool)>) -> String {
+    let (name, glyph) = match foreground {
+        Some((name, false)) => (name, RUNNING_GLYPH),
+        _ => (base, IDLE_GLYPH),
+    };
     if number <= 1 {
-        base.to_string()
+        format!("{name} {glyph}")
     } else {
-        format!("{base} ({number})")
+        format!("{name} ({number}) {glyph}")
     }
 }
 
@@ -83,10 +106,25 @@ mod tests {
 
     #[test]
     fn titles_number_repeated_programs() {
-        assert_eq!(title("zsh", 1), "zsh");
-        assert_eq!(title("zsh", 2), "zsh (2)");
-        assert_eq!(title("zsh", 12), "zsh (12)");
-        assert_eq!(title("sh", 0), "sh");
+        assert_eq!(title("zsh", 1, None), "zsh ○");
+        assert_eq!(title("zsh", 2, None), "zsh (2) ○");
+        assert_eq!(title("zsh", 12, None), "zsh (12) ○");
+        assert_eq!(title("sh", 0, None), "sh ○");
+    }
+
+    #[test]
+    fn titles_follow_the_foreground_process_and_its_glyph() {
+        assert_eq!(title("zsh", 1, Some(("zsh", true))), "zsh ○", "a prompt");
+        assert_eq!(title("zsh", 1, Some(("make", false))), "make ●", "a command");
+        assert_eq!(title("zsh", 2, Some(("vim", false))), "vim (2) ●");
+        assert_eq!(title("zsh", 3, Some(("less", false))), "less (3) ●");
+        assert_eq!(
+            title("myshell", 1, Some(("sh", true))),
+            "myshell ○",
+            "the shell's own name at its prompt, not the link's target"
+        );
+        assert_eq!(title("zsh", 1, Some(("cat", true))), "zsh ○", "idle: the shell's name");
+        assert_eq!((RUNNING_GLYPH, IDLE_GLYPH), ("●", "○"));
     }
 
     #[test]

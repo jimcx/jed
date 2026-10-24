@@ -15,6 +15,9 @@
 //! never signals a reaped (reusable) pid. It reaps after the reader hit end of output (bounded by
 //! `OUTPUT_GRACE`: a background process can hold the PTY open), so `Exited` means the screen holds
 //! all the output.
+//!
+//! A shell's tab watches what runs in its terminal: a tokio task polls the PTY's foreground
+//! process group (`Run::watch_foreground`), reporting a change as `Event::Foreground`.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -34,17 +37,22 @@ pub const FRAME: Duration = Duration::from_millis(20);
 pub const KILL_GRACE: Duration = Duration::from_secs(1);
 /// After the process exits, how long to wait for the rest of its output.
 const OUTPUT_GRACE: Duration = Duration::from_millis(250);
+/// How often a shell's foreground watcher looks at its terminal.
+pub const FOREGROUND_POLL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RunId(pub u64);
 
 /// What a run tells the app (through the `Sink`); its `status()` / `screen()` say the rest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// The process is running.
     Started(RunId),
     /// New output is on the screen (at most one per `FRAME`).
     Output(RunId),
+    /// The terminal's foreground process changed: `name` runs in it now, or the shell is back at
+    /// its prompt (`idle`). A shell's tab title follows it.
+    Foreground { id: RunId, name: String, idle: bool },
     /// The process exited (all its output read) or never started: `Exited` / `Failed`.
     Ended(RunId),
 }
@@ -252,6 +260,45 @@ impl Run {
     pub fn force_kill(&self) {
         self.shared.kill(true);
     }
+
+    /// Watches what runs in the terminal — the PTY's foreground process group — about once a
+    /// second (`FOREGROUND_POLL`), reporting each change as `Event::Foreground` through `sink`.
+    /// The child is a session leader, so its group is the shell at a prompt and the command's
+    /// while one runs. Stops when the run ends. Needs a tokio runtime; without one it does
+    /// nothing.
+    pub fn watch_foreground(&self, sink: Sink) {
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let shared = self.shared.clone();
+        rt.spawn(async move {
+            let mut reported: Option<Foreground> = None;
+            loop {
+                let (status, pid) = {
+                    let state = lock(&shared.state);
+                    (state.status.clone(), state.pid)
+                };
+                match status {
+                    Status::Starting => {}
+                    Status::Running => {
+                        if let Some(pid) = pid
+                            && let Some(foreground) = foreground(pid)
+                            && reported.as_ref() != Some(&foreground)
+                        {
+                            sink(Event::Foreground {
+                                id: shared.id,
+                                name: foreground.name.clone(),
+                                idle: foreground.idle,
+                            });
+                            reported = Some(foreground);
+                        }
+                    }
+                    Status::Exited(_) | Status::Failed(_) => return,
+                }
+                tokio::time::sleep(FOREGROUND_POLL).await;
+            }
+        });
+    }
 }
 
 impl Drop for Run {
@@ -365,6 +412,80 @@ fn session_members(group: i32) -> bool {
 #[cfg(not(target_os = "macos"))]
 fn session_members(_group: i32) -> bool {
     false
+}
+
+/// What holds a terminal: the foreground process group's name, and whether it's the session
+/// leader (`pid`, the shell) — idle at a prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Foreground {
+    name: String,
+    idle: bool,
+}
+
+/// The foreground process of the terminal the session leader `pid` runs with: the PTY's
+/// foreground process group (`tpgid`) and that group's name. `None` when it can't be read (the
+/// process went away between the two reads, or the terminal has no foreground group yet).
+fn foreground(pid: i32) -> Option<Foreground> {
+    let group = foreground_group(pid)?;
+    let name = process_name(group)?;
+    Some(Foreground {
+        name,
+        idle: group == pid,
+    })
+}
+
+/// The PTY's foreground process group: `/proc/<pid>/stat`'s `tpgid` (the 8th field, after the
+/// parenthesised `comm`).
+#[cfg(target_os = "linux")]
+fn foreground_group(pid: i32) -> Option<i32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    tpgid_from_stat(&stat)
+}
+
+/// `/proc/<pid>/stat`'s `tpgid`: the 8th field overall, the one right after `comm` (state, ppid,
+/// pgrp, session, tty_nr, then tpgid).
+#[cfg(target_os = "linux")]
+fn tpgid_from_stat(stat: &str) -> Option<i32> {
+    // `comm` can hold spaces and parentheses: the fields start after its last `)`.
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(5)?.parse().ok()
+}
+
+/// The PTY's foreground process group: `proc_pidinfo`'s `e_tpgid`.
+#[cfg(target_os = "macos")]
+fn foreground_group(pid: i32) -> Option<i32> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: `info` is the struct the flavour fills, at its size.
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            std::ptr::from_mut(&mut info).cast(),
+            size,
+        )
+    };
+    (read == size).then_some(info.e_tpgid as i32)
+}
+
+/// A process's name: `/proc/<pid>/comm`, NUL-free and one line.
+#[cfg(target_os = "linux")]
+fn process_name(pid: i32) -> Option<String> {
+    let name = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    let name = name.trim_end_matches(['\n', '\r']);
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// A process's name, as `proc_name` gives it (at most `MAXCOMLEN` bytes).
+#[cfg(target_os = "macos")]
+fn process_name(pid: i32) -> Option<String> {
+    let mut buf = [0 as libc::c_char; 64];
+    // SAFETY: a buffer and its size; `proc_name` writes a NUL-terminated name into it.
+    let n = unsafe { libc::proc_name(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    let n = (n.max(0) as usize).min(buf.len());
+    let bytes: Vec<u8> = buf[..n].iter().map(|&c| c as u8).take_while(|&b| b != 0).collect();
+    (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn pty_size(rows: u16, cols: u16) -> PtySize {
@@ -551,5 +672,37 @@ async fn notifier(shared: Arc<Shared>, sink: Sink) {
             return;
         }
         tokio::time::sleep(FRAME).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `tpgid` is the field right after the parenthesised `comm` (state, ppid, pgrp, session,
+    /// tty_nr, then `tpgid`), even when `comm` holds spaces and parentheses — the fields start
+    /// after its last `)`, not its first.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn tpgid_is_the_field_after_the_parenthesised_comm() {
+        assert_eq!(
+            tpgid_from_stat("1 (sh) S 0 1 1 0 1 0 0 0"),
+            Some(1),
+            "idle: tpgid == pid"
+        );
+        assert_eq!(
+            tpgid_from_stat("1 (sh) S 0 1 1 0 42 0 0 0"),
+            Some(42),
+            "a command's group"
+        );
+        assert_eq!(
+            tpgid_from_stat("1 (sh) S 0 1 1 0 -1 0 0 0"),
+            Some(-1),
+            "no foreground group"
+        );
+        // `comm` with a `)` and a space: the closing delimiter is the last `)`.
+        assert_eq!(tpgid_from_stat("1 (my shell (2)) S 0 1 1 0 7 0 0 0"), Some(7));
+        // No parenthesised `comm`: nothing to parse after.
+        assert_eq!(tpgid_from_stat("1 sh S 0 1 1 0 1 0 0 0"), None);
     }
 }

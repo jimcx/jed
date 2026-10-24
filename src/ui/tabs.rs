@@ -4,7 +4,8 @@
 //! move it a tab at a time; it jumps back to the active tab only when the active tab changes.
 //! While a tab is dragged, `drop` marks the gap it would land in (`tab.dropMarker`). With two or
 //! more groups, each bar's top-right corner shows the group's number (`tab.groupNumber`), which
-//! takes the bar's last cells: the `›` arrow then sits one cell left of it.
+//! takes the bar's last cells: the `›` arrow then sits one cell left of it. A shell tab's last
+//! glyph (`●` running / `○` idle) is drawn in its state colour.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -20,6 +21,15 @@ use crate::theme::Theme;
 pub struct TabBarHit {
     pub tabs: Vec<TabHit>,
     pub arrows: Option<TabArrows>,
+}
+
+/// One tab's label: its text, and how it is marked.
+struct Label {
+    name: String,
+    dirty: bool,
+    deleted: bool,
+    /// A shell tab's state glyph (the name's last character) and the theme key for its colour.
+    mark: Option<&'static str>,
 }
 
 /// `active_group`: the focused group's active tab is bright; other groups' active tabs are dimmer.
@@ -64,22 +74,37 @@ pub fn render(
     }
 
     // Label and width for every tab: " name ● " / " name × ".
-    let labels: Vec<(String, bool, bool)> = group
+    let labels: Vec<Label> = group
         .tabs
         .iter()
         .map(|t| match t {
             // A diff tab: `name (Working Tree)`.
-            Tab::Diff(d) => (d.title(), false, false),
+            Tab::Diff(d) => Label {
+                name: d.title(),
+                dirty: false,
+                deleted: false,
+                mark: None,
+            },
             // A hex tab: its file's name, never dirty.
             Tab::Hex(h) => {
                 let mut name = h.name();
                 if h.deleted {
                     name.push_str(" (deleted)");
                 }
-                (name, false, h.deleted)
+                Label {
+                    name,
+                    dirty: false,
+                    deleted: h.deleted,
+                    mark: None,
+                }
             }
-            // A shell tab: its title, never dirty.
-            Tab::Shell(s) => (s.title.clone(), false, false),
+            // A shell tab: the foreground process (or the shell) and its state glyph, never dirty.
+            Tab::Shell(s) => Label {
+                name: s.title.clone(),
+                dirty: false,
+                deleted: false,
+                mark: Some(if s.idle { "tab.shellIdle" } else { "tab.shellRunning" }),
+            },
             Tab::Text(t) => {
                 let buf = buffers.get(t.buffer);
                 let deleted = buf.is_some_and(|b| b.deleted);
@@ -87,7 +112,12 @@ pub fn render(
                 if deleted {
                     name.push_str(" (deleted)");
                 }
-                (name, buf.is_some_and(|b| b.is_dirty()), deleted)
+                Label {
+                    name,
+                    dirty: buf.is_some_and(|b| b.is_dirty()),
+                    deleted,
+                    mark: None,
+                }
             }
         })
         .collect();
@@ -95,7 +125,7 @@ pub fn render(
         return TabBarHit::default();
     }
     let width = |name: &str| name.width() as u16 + 4;
-    let widths: Vec<u32> = labels.iter().map(|(n, ..)| width(n) as u32).collect();
+    let widths: Vec<u32> = labels.iter().map(|l| width(&l.name) as u32).collect();
     let total: u32 = widths.iter().sum();
 
     // Tabs wider than the bar: `‹` / `›` at its ends scroll it, the tabs between them.
@@ -148,10 +178,16 @@ pub fn render(
 
     let mut hits = Vec::new();
     let mut x = left;
-    for (i, (name, dirty, deleted)) in labels.iter().enumerate().skip(group.scroll) {
+    for (i, label) in labels.iter().enumerate().skip(group.scroll) {
         if x >= right {
             break;
         }
+        let Label {
+            name,
+            dirty,
+            deleted,
+            mark,
+        } = label;
         let w = width(name).min(right - x);
         let style = match (i == group.active, active_group) {
             (true, true) => theme.get("tab.active"),
@@ -173,6 +209,15 @@ pub fn render(
             style
         };
         out.set_stringn(x + 1, area.y, name, w.saturating_sub(1) as usize, name_style);
+        if let Some(key) = mark
+            && let Some(glyph) = name.chars().last()
+        {
+            // The state glyph is the label's last cell, in its own colour (the tab's otherwise).
+            let glyph_x = x + name.width() as u16;
+            if glyph_x < x + w && glyph_x < right {
+                out.set_stringn(glyph_x, area.y, glyph.to_string(), 1, style.patch(theme.get(key)));
+            }
+        }
         let close_x = x + w.saturating_sub(2);
         if close_x > x + 1 && close_x < right {
             out.set_stringn(close_x, area.y, if *dirty { "●" } else { "×" }, 1, style);
