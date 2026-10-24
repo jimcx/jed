@@ -88,8 +88,10 @@ async fn shell_new_shell_opens_the_shell_in_a_tab() {
 
     app.test_execute(Command::NewShell);
     let tab = app.group().active_shell().expect("a shell tab in the active group");
-    assert_eq!(tab.title, "myshell", "named after the program, not a hardcoded shell");
+    assert_eq!(tab.title, "myshell ○", "named after the program, not a hardcoded shell");
     assert_eq!(tab.base, "myshell");
+    assert_eq!(tab.number, 1);
+    assert!(tab.idle, "the shell waits at its prompt");
     assert_eq!(tab.run.name, "myshell");
     assert_eq!(tab.run.cwd, root, "started in the workspace root");
     assert!(
@@ -105,7 +107,8 @@ async fn shell_new_shell_opens_the_shell_in_a_tab() {
 
     app.test_execute(Command::NewShell);
     assert_eq!(app.group().tabs.len(), 3, "the text tab and two shells");
-    assert_eq!(app.group().active_shell().unwrap().title, "myshell (2)");
+    assert_eq!(app.group().active_shell().unwrap().title, "myshell (2) ○");
+    assert_eq!(app.group().active_shell().unwrap().number, 2);
 }
 
 /// Numbers count only shells of the same program, and a closed one's number is used again
@@ -120,20 +123,106 @@ async fn shell_titles_reuse_a_closed_number() {
     }
     let mut titles: Vec<String> = app.groups.shell_tabs().map(|s| s.title.clone()).collect();
     titles.sort();
-    assert_eq!(titles, ["sh", "sh (2)", "sh (3)"]);
+    assert_eq!(titles, ["sh (2) ○", "sh (3) ○", "sh ○"]);
 
     // Close the middle one ("sh (2)").
     app.group_mut().active = 1;
     app.test_execute(Command::CloseTab);
     let mut titles: Vec<String> = app.groups.shell_tabs().map(|s| s.title.clone()).collect();
     titles.sort();
-    assert_eq!(titles, ["sh", "sh (3)"]);
+    assert_eq!(titles, ["sh (3) ○", "sh ○"]);
 
     app.test_execute(Command::NewShell);
-    assert_eq!(app.group().active_shell().unwrap().title, "sh (2)", "the free number");
+    assert_eq!(app.group().active_shell().unwrap().title, "sh (2) ○", "the free number");
     let mut titles: Vec<String> = app.groups.shell_tabs().map(|s| s.title.clone()).collect();
     titles.sort();
-    assert_eq!(titles, ["sh", "sh (2)", "sh (3)"], "no repeated title");
+    assert_eq!(titles, ["sh (2) ○", "sh (3) ○", "sh ○"], "no repeated title");
+}
+
+/// The tab's title follows the terminal's foreground process: `sh ○` at the prompt, the
+/// command's name and the running glyph while it runs, and back to the shell when it returns —
+/// also for a command that prints nothing of its own (`cat`, ended with EOF); the glyph is drawn
+/// in its state colour.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_title_follows_the_foreground_process() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    app.tasks.shell = "/bin/sh".into();
+    app.test_execute(Command::NewShell);
+    let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
+    assert_eq!(title(&app), "sh ○", "the shell, at its prompt");
+
+    app.group().active_shell().unwrap().run.write(b"sleep 30\n");
+    assert!(
+        app.settle(|a| title(a) == "sleep ●").await,
+        "the title follows the command: {:?}; screen:\n{}",
+        title(&app),
+        shell_text(&app)
+    );
+    // The running glyph's theme colour.
+    let term = draw(&mut app, 80, 24);
+    let bar = app.hits.group(app.groups.active).unwrap().tab_bar;
+    let drawn: String = (bar.x..bar.x + bar.width)
+        .map(|x| term.backend().buffer()[(x, bar.y)].symbol())
+        .collect();
+    let glyph = drawn.find('●').expect("the running glyph is in the tab bar") as u16;
+    assert_eq!(
+        term.backend().buffer()[(bar.x + glyph, bar.y)].fg,
+        app.theme.get("tab.shellRunning").fg.unwrap()
+    );
+
+    // Ctrl+C ends `sleep`: the shell is at its prompt again.
+    app.group().active_shell().unwrap().run.write(b"\x03");
+    assert!(
+        app.settle(|a| title(a) == "sh ○").await,
+        "back to the shell: {:?}",
+        title(&app)
+    );
+
+    // `cat` has no prompt of its own and prints nothing: its exit still brings the title back.
+    app.group().active_shell().unwrap().run.write(b"cat\n");
+    assert!(app.settle(|a| title(a) == "cat ●").await, "cat runs: {:?}", title(&app));
+    app.group().active_shell().unwrap().run.write(b"\x04"); // EOF: cat exits
+    assert!(
+        app.settle(|a| title(a) == "sh ○").await,
+        "cat exited: {:?}; screen:\n{}",
+        title(&app),
+        shell_text(&app)
+    );
+}
+
+/// Two shells of one program keep distinct titles while a command runs: the number is the
+/// shell's (stable as the foreground changes), so the second shell's command is `sleep (2) ●`
+/// while the idle first shell stays `sh ○`.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_running_titles_keep_the_per_program_number() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    app.tasks.shell = "/bin/sh".into();
+    app.test_execute(Command::NewShell);
+    app.test_execute(Command::NewShell);
+    let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
+    assert_eq!(title(&app), "sh (2) ○", "the second shell, at its prompt");
+
+    app.group().active_shell().unwrap().run.write(b"sleep 30\n");
+    assert!(
+        app.settle(|a| title(a) == "sleep (2) ●").await,
+        "the second shell's number stays while its command runs: {:?}",
+        title(&app)
+    );
+    assert_eq!(
+        app.groups.shell_tabs().next().map(|s| s.title.clone()).as_deref(),
+        Some("sh ○"),
+        "the idle first shell keeps its own (un-numbered) title"
+    );
+
+    // Ctrl+C ends `sleep`: the second shell is back at its numbered prompt.
+    app.group().active_shell().unwrap().run.write(b"\x03");
+    assert!(
+        app.settle(|a| title(a) == "sh (2) ○").await,
+        "back to the numbered prompt: {:?}",
+        title(&app)
+    );
 }
 
 /// The shell gets a terminal (`TERM`, `COLORTERM`); without a listening socket its environment
@@ -286,7 +375,7 @@ async fn shell_split_leaves_the_new_group_empty() {
     assert_eq!(app.groups.len(), 2);
     assert!(app.group().tabs.is_empty(), "a shell is not copied into the new group");
     let first = app.groups.ids()[0];
-    assert_eq!(app.groups.get(first).unwrap().active_shell().unwrap().title, "sh");
+    assert_eq!(app.groups.get(first).unwrap().active_shell().unwrap().title, "sh ○");
 }
 
 /// A shell closes without asking (it's never dirty).

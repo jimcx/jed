@@ -702,7 +702,7 @@ async fn drag_tabs_a_shell_tab_moves_rather_than_copies() {
     draw(&mut app, 120);
     let ids = app.groups.ids();
     let (src, other) = (ids[0], ids[1]);
-    assert_eq!(layout(&app), [vec!["a.txt", "shell:myshell"], vec![]]);
+    assert_eq!(layout(&app), [vec!["a.txt", "shell:myshell ○"], vec![]]);
     let run = app.groups.get(src).unwrap().active_shell().unwrap().run.id;
     let (y, tabs) = bar_of(&app, src);
     let editor = app.hits.groups.iter().find(|g| g.id == other).unwrap().editor;
@@ -713,7 +713,7 @@ async fn drag_tabs_a_shell_tab_moves_rather_than_copies() {
     app.mouse(MouseEventKind::Drag(MouseButton::Left), x, ey);
     app.mouse(MouseEventKind::Up(MouseButton::Left), x, ey);
 
-    assert_eq!(layout(&app), [vec!["a.txt"], vec!["shell:myshell"]]);
+    assert_eq!(layout(&app), [vec!["a.txt"], vec!["shell:myshell ○"]]);
     assert_eq!(app.groups.shell_tabs().count(), 1, "moved, not copied");
     assert_eq!(
         app.groups.shell_tabs().next().unwrap().run.id,

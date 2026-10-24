@@ -1,7 +1,7 @@
 //! Shell tabs (`Tab::Shell`): "Terminal: New Shell" opens the user's `$SHELL` in the active
 //! group; its keys and pastes go to the shell (`Context::Shell`, `tasks::keys`), its run's events
-//! redraw it and append the exit note, and quitting hangs every shell up. Drawing is
-//! `ui::task::render_shell`.
+//! rename it while a command runs and append the exit note, and quitting hangs every shell up.
+//! Drawing is `ui::task::render_shell`.
 
 use std::sync::Arc;
 
@@ -31,20 +31,17 @@ impl App {
         let spec = shell::spec(&program, &root, ipc.as_deref());
         let base = spec.name.clone();
         // The smallest number no open shell of `base` has: closing "zsh (2)" gives that name to
-        // the next shell instead of repeating "zsh (3)".
+        // the next shell instead of repeating "zsh (3)". A shell's number stays put while the
+        // foreground process changes its title.
         let number = (1..)
-            .find(|&n| {
-                let title = shell::title(&base, n);
-                !self.groups.shell_tabs().any(|s| s.base == base && s.title == title)
-            })
+            .find(|&n| !self.groups.shell_tabs().any(|s| s.base == base && s.number == n))
             .unwrap_or(1);
-        let title = shell::title(&base, number);
         let id = self.tasks.new_run_id();
         let tx = self.tx.clone();
         let sink: Sink = Arc::new(move |ev| {
             let _ = tx.send(AppEvent::Shell(ev));
         });
-        let tab = ShellTab::new(id, spec, rows, cols, sink, self.settings.scrollback, title);
+        let tab = ShellTab::new(id, spec, rows, cols, sink, self.settings.scrollback, number);
         tracing::info!(shell = %base, run = id.0, "opened a shell tab");
         self.group_mut().open_tab(Tab::Shell(Box::new(tab)));
         self.ui.focus = Focus::Editor;
@@ -92,20 +89,29 @@ impl App {
     }
 
     /// `AppEvent::Shell`: output and starts only need a redraw (`handle_app_event` asks for one);
-    /// an ended shell keeps its tab, its output and a note below it ("Shell 'zsh' exited with code
-    /// 3"), also in the status bar. A tab closed meanwhile leaves events naming an id nothing holds.
+    /// a foreground change renames the tab (its glyph says running from idle); an ended shell
+    /// keeps its tab, its output and a note below it ("Shell 'zsh' exited with code 3"), also in
+    /// the status bar. A tab closed meanwhile leaves events naming an id nothing holds.
     pub(super) fn shell_event(&mut self, ev: Event) {
-        let id = match ev {
-            Event::Started(id) | Event::Output(id) | Event::Ended(id) => id,
-        };
-        let Event::Ended(_) = ev else { return };
-        let Some(shell) = self.groups.shell_tabs().find(|s| s.run.id == id) else {
-            return;
-        };
-        let Some((level, note)) = end_run_note(&shell.run, "Shell", &shell.title) else {
-            return;
-        };
-        self.notify(level, note);
+        match ev {
+            Event::Foreground { id, name, idle } => {
+                let Some(shell) = self.groups.shell_tabs_mut().find(|s| s.run.id == id) else {
+                    return;
+                };
+                shell.title = shell::title(&shell.base, shell.number, Some((&name, idle)));
+                shell.idle = idle;
+            }
+            Event::Ended(id) => {
+                let Some(shell) = self.groups.shell_tabs().find(|s| s.run.id == id) else {
+                    return;
+                };
+                let Some((level, note)) = end_run_note(&shell.run, "Shell", &shell.base) else {
+                    return;
+                };
+                self.notify(level, note);
+            }
+            Event::Started(_) | Event::Output(_) => {}
+        }
     }
 }
 

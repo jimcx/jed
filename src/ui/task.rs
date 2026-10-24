@@ -191,7 +191,7 @@ mod tests {
             20,
             Arc::new(|_| {}),
             0,
-            "cat".into(),
+            1,
         );
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while shell.run.status() != Status::Running {
