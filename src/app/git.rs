@@ -1,13 +1,19 @@
 //! Git status, kept current off the UI thread: one `git::refresh` at a time in
 //! `spawn_blocking`, started at startup and after file system events that can change it
 //! (debounced with them, `FS_DEBOUNCE`); events arriving while one runs are coalesced into one
-//! more run after it.
+//! more run after it. The first read is just HEAD (`refresh_git_head`, µs), so the branch shows
+//! at once; the full working-tree walk follows `STATUS_DEBOUNCE` later in the background (or on
+//! demand, `ensure_status_loaded`), so the decorations pop in a moment after startup.
 
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::{App, AppEvent, SLOW_TASK};
 use crate::git::{self, Refreshed};
+
+/// How long after the cheap head read the full working-tree walk is deferred: the branch shows
+/// at once, and the decorations pop in this much later (in the background).
+const STATUS_DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// The repository's last status and the refresh in flight.
 #[derive(Default)]
@@ -22,6 +28,8 @@ pub struct GitState {
     queued: Option<Option<Vec<PathBuf>>>,
     /// The git directory being watched besides the workspace root (it was outside it).
     watched: Option<PathBuf>,
+    /// When the deferred full walk is due (set after the head read; cleared once it runs).
+    status_deadline: Option<Instant>,
 }
 
 impl GitState {
@@ -29,6 +37,11 @@ impl GitState {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn running(&self) -> bool {
         self.running || self.queued.is_some()
+    }
+
+    /// When the deferred full walk is due, if one is pending.
+    pub fn status_deadline(&self) -> Option<Instant> {
+        self.status_deadline
     }
 }
 
@@ -53,15 +66,34 @@ impl App {
             return;
         }
         self.git.running = true;
+        // A full read supersedes the deferred one (the timer and `ensure_status_loaded` both
+        // land here; clearing now keeps a second trigger from queuing a duplicate read).
+        self.git.status_deadline = None;
         let root = self.workspace.root.clone();
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let t = Instant::now();
-            let result = git::refresh(&root, changed.as_deref()).map_err(|e| e.message().to_string());
+            let result = crate::perf::time("git.status", || git::refresh(&root, changed.as_deref()))
+                .map_err(|e| e.message().to_string());
             let _ = tx.send(AppEvent::GitRefreshed {
                 result,
                 elapsed: t.elapsed(),
             });
+        });
+    }
+
+    /// Reads only the repository and HEAD (µs) for the status bar, before the full working-tree
+    /// walk runs. Called at startup; the full status (`refresh_git`) runs on demand after that
+    /// (`ensure_status_loaded`, or a file system event).
+    pub(super) fn refresh_git_head(&mut self) {
+        if self.mode.is_single() {
+            return;
+        }
+        let root = self.workspace.root.clone();
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = crate::perf::time("git.head", || git::read_head(&root));
+            let _ = tx.send(AppEvent::GitHead(result));
         });
     }
 
@@ -83,6 +115,7 @@ impl App {
 
     pub(super) fn git_refreshed(&mut self, result: Result<Refreshed, String>, elapsed: Duration) {
         self.git.running = false;
+        self.git.status_deadline = None;
         let head_before = self.git_head();
         if elapsed > SLOW_TASK {
             tracing::warn!(elapsed_ms = elapsed.as_millis() as u64, "slow git status");
@@ -121,6 +154,36 @@ impl App {
         }
         if let Some(changed) = self.git.queued.take() {
             self.refresh_git(changed);
+        }
+    }
+
+    /// `AppEvent::GitHead`: the cheap head read landed. It fills the status bar's branch, but
+    /// never downgrades a full status that arrived first.
+    pub(super) fn git_head_read(&mut self, result: Option<git::Status>) {
+        let Some(head) = result else {
+            // No repository, or HEAD unreadable: nothing to show until a full read says so.
+            return;
+        };
+        self.watch_git_dir(&head.repo.git_dir);
+        let head_before = self.git_head();
+        if self.git.status.as_ref().is_none_or(|s| !s.loaded) {
+            self.git.status = Some(head);
+            // The branch is shown; the full walk follows shortly, in the background.
+            self.git.status_deadline = Some(Instant::now() + STATUS_DEBOUNCE);
+        }
+        if self.git_head() != head_before {
+            self.git_history_head_changed();
+        }
+    }
+
+    /// The full status (`entries`, decorations) is wanted now: read it unless it's already
+    /// loaded or one is running. The cheap head read leaves `loaded` false, so the Source
+    /// Control view and change diffs call this to trigger the working-tree walk on demand (a
+    /// huge repository's walk never runs until then or its deferred timer). Without a
+    /// repository (or before the head read lands) there is nothing to read.
+    pub(super) fn ensure_status_loaded(&mut self) {
+        if self.git.status.as_ref().is_some_and(|s| !s.loaded) && !self.git.running() {
+            self.refresh_git(None);
         }
     }
 
@@ -231,5 +294,43 @@ mod tests {
         app.git_paths_changed(&[root.join(".git/HEAD")]);
         assert!(app.git.running());
         assert!(app.settle(|a| !a.git.running()).await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn head_read_fills_the_branch_and_the_full_walk_runs_on_demand() {
+        let (_d, root, mut app) = setup();
+        fs::write(root.join("a"), "changed\n").unwrap();
+        // The cheap head read gives the branch without walking the working tree.
+        app.refresh_git_head();
+        assert!(app.settle(|a| a.git.status.is_some()).await);
+        let status = app.git.status.as_ref().unwrap();
+        assert_eq!(status.head.name(), "main");
+        assert!(!status.loaded, "only HEAD was read");
+        assert!(status.entries.is_empty(), "no entries yet");
+        // A full read is still `ensure_status_loaded` away (it never downgrades, so a
+        // head-only status is what a demand upgrades from).
+        app.ensure_status_loaded();
+        assert!(app.settle(|a| a.git.status.as_ref().is_some_and(|s| s.loaded)).await);
+        let status = app.git.status.as_ref().unwrap();
+        assert!(status.loaded);
+        assert_eq!(status.entries.len(), 1);
+        assert!(status.entry(Path::new("a")).is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_full_walk_is_deferred_but_runs_in_the_background() {
+        let (_d, root, mut app) = setup();
+        fs::write(root.join("a"), "changed\n").unwrap();
+        // The cheap head read shows the branch at once and arms the deferred full walk.
+        app.refresh_git_head();
+        assert!(app.settle(|a| a.git.status.is_some()).await);
+        assert!(!app.git.status.as_ref().unwrap().loaded, "only HEAD was read");
+        assert!(app.git.status_deadline().is_some(), "the full walk is scheduled");
+        // Let the timer fire: the full walk runs in the background and the change appears.
+        assert!(app.settle(|a| a.git.status.as_ref().is_some_and(|s| s.loaded)).await);
+        let status = app.git.status.as_ref().unwrap();
+        assert_eq!(status.entries.len(), 1);
+        assert!(status.entry(Path::new("a")).is_some());
+        assert!(app.git.status_deadline().is_none(), "the deadline is cleared");
     }
 }

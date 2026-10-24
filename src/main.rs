@@ -88,6 +88,7 @@ mod palette;
 mod panic;
 mod path_filter;
 mod paths;
+mod perf;
 mod problems;
 mod quick_diff;
 mod recent;
@@ -131,8 +132,8 @@ use config::keymap::{self, Keymap, Platform};
 use workspace::Workspace;
 use workspace::trust::TrustStore;
 
-const USAGE: &str = "usage: jed [--log-level <filter>] [<folder> | <file>[:<line>[:<col>]]]\n       \
-                     jed [--log-level <filter>] -s | --single | --wait <file>[:<line>[:<col>]]   (single file mode)\n       \
+const USAGE: &str = "usage: jed [--log-level <filter>] [--perf] [<folder> | <file>[:<line>[:<col>]]]\n       \
+                     jed [--log-level <filter>] [--perf] -s | --single | --wait <file>[:<line>[:<col>]]   (single file mode)\n       \
                      jed --new-language <id>   (start a syntax plugin in ~/.config/jed/languages/<id>)\n       \
                      jed --check-language <id> [--sample <file>]   (build, load and check a syntax plugin)";
 
@@ -154,6 +155,8 @@ struct Args {
     wait: bool,
     /// `--new-language` / `--check-language`: run instead of the editor.
     authoring: Option<Authoring>,
+    /// `--perf`: log timings around file opens and git reads (target `perf`).
+    perf: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -167,6 +170,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
     let mut wait = false;
     let mut authoring = None;
     let mut sample = None;
+    let mut perf = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -175,6 +179,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "--log-level" => log_level = Some(args.next().ok_or("--log-level needs a value")?),
             "-s" | "--single" => single = true,
             "--wait" => wait = true,
+            "--perf" => perf = true,
             "--new-language" => authoring = Some(Authoring::New(args.next().ok_or("--new-language needs an id")?)),
             "--check-language" => {
                 let id = args.next().ok_or("--check-language needs an id")?;
@@ -206,6 +211,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
         single,
         wait,
         authoring,
+        perf,
     })
 }
 
@@ -357,6 +363,9 @@ fn main() -> ExitCode {
     if let Some(command) = args.authoring {
         return run_authoring(command);
     }
+    if args.perf {
+        perf::enable();
+    }
     // Started from a task terminal of a running jed: open the file there instead.
     let ipc_fallback = match ipc_request(&args, std::env::var_os(ipc::ENV)) {
         Some((socket, request)) => match ipc::client::open(&socket, &request) {
@@ -504,6 +513,13 @@ mod tests {
         }
         assert!(!parse(&["a.rs"]).unwrap().single);
         assert!(parse(&["-s"]).is_err());
+    }
+
+    #[test]
+    fn perf_flag() {
+        assert!(parse(&["--perf", "a.rs"]).unwrap().perf);
+        assert!(parse(&["--perf"]).unwrap().perf);
+        assert!(!parse(&["a.rs"]).unwrap().perf);
     }
 
     #[test]

@@ -156,8 +156,10 @@ impl Buffer {
     /// Blocking: reads the file and guesses its indentation (`indentation::guess`, `defaults`
     /// being the settings' `edit::Settings::indentation`).
     pub fn open_with(path: &Path, defaults: Indentation) -> Result<Self, LoadError> {
-        let loaded = file::load(path)?;
-        let guess = crate::indentation::guess(&loaded.rope, defaults);
+        let loaded = crate::perf::time("file.open.read", || file::load(path))?;
+        let guess = crate::perf::time("file.open.indentation", || {
+            crate::indentation::guess(&loaded.rope, defaults)
+        });
         let mut buf = Self::from_loaded(loaded, path.to_path_buf());
         buf.guess = guess;
         Ok(buf)

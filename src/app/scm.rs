@@ -29,6 +29,7 @@ impl App {
 
     /// Ctrl+Shift+G (and its activity bar icon): shows the view and gives it the keys.
     pub(super) fn focus_scm(&mut self) {
+        self.ensure_status_loaded();
         self.focus_side(SidePanel::SourceControl);
     }
 

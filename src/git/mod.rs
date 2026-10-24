@@ -194,21 +194,25 @@ pub struct Status {
     /// Absolute path → colour, for changed files and every folder above one (inside the work
     /// tree).
     decorations: HashMap<PathBuf, Decoration>,
+    /// Whether `entries` / `decorations` reflect the real changes. `false` on a `head_only`
+    /// status: only `repo` / `head` / `head_id` are known (the expensive working-tree walk
+    /// hasn't run), so `entries` is empty and `decoration` / `entry` find nothing yet.
+    pub loaded: bool,
 }
 
 impl Status {
     /// Blocking: HEAD and every changed path (untracked folders listed file by file, ignored
     /// files left out, no rename detection).
     pub fn read(repo: &Repo) -> Result<Status, git2::Error> {
-        let r = repo.open()?;
-        let head = head(&r)?;
+        let (head, head_id) = crate::perf::time("git.status.head", || head(repo))?;
+        let r = crate::perf::time("git.status.open", || repo.open())?;
         let mut opts = StatusOptions::new();
         opts.include_untracked(true)
             .recurse_untracked_dirs(true)
             .include_ignored(false)
             .renames_head_to_index(false)
             .renames_index_to_workdir(false);
-        let statuses = r.statuses(Some(&mut opts))?;
+        let statuses = crate::perf::time("git.status.statuses", || r.statuses(Some(&mut opts)))?;
         let mut entries = Vec::with_capacity(statuses.len());
         for s in statuses.iter() {
             let path = PathBuf::from(String::from_utf8_lossy(s.path_bytes()).into_owned());
@@ -220,14 +224,22 @@ impl Status {
             entries.push(Entry { path, staged, unstaged });
         }
         entries.sort_by(|a, b| a.path.cmp(&b.path));
-        let head_id = r
-            .head()
-            .ok()
-            .and_then(|h| h.peel_to_commit().ok())
-            .map(|c| c.id().to_string());
         let mut status = Status::new(repo.clone(), head, entries);
         status.head_id = head_id;
         Ok(status)
+    }
+
+    /// A status with only the repository and HEAD known (`loaded` false, no `entries`): the
+    /// cheap first read, before the working-tree walk runs.
+    pub fn head_only(repo: Repo, head: Head, head_id: Option<String>) -> Status {
+        Status {
+            repo,
+            head,
+            head_id,
+            entries: Vec::new(),
+            decorations: HashMap::new(),
+            loaded: false,
+        }
     }
 
     /// A status with no HEAD commit id recorded (tests build statuses without a repository);
@@ -252,6 +264,7 @@ impl Status {
             head_id: None,
             entries,
             decorations,
+            loaded: true,
         }
     }
 
@@ -318,7 +331,7 @@ fn changes(f: Flags) -> (Option<Change>, Option<Change>) {
     (staged, unstaged)
 }
 
-fn head(r: &Repository) -> Result<Head, git2::Error> {
+fn head_of(r: &Repository) -> Result<Head, git2::Error> {
     match r.head() {
         Ok(h) if r.head_detached()? => {
             let id = h.peel_to_commit()?.id().to_string();
@@ -336,6 +349,33 @@ fn head(r: &Repository) -> Result<Head, git2::Error> {
     }
 }
 
+/// The branch (or detached commit) and the HEAD commit's full id, cheap — no working-tree walk.
+/// Blocking (`git2`, µs): call from `spawn_blocking`.
+pub fn head(repo: &Repo) -> Result<(Head, Option<String>), git2::Error> {
+    let r = repo.open()?;
+    let head = head_of(&r)?;
+    let head_id = r
+        .head()
+        .ok()
+        .and_then(|h| h.peel_to_commit().ok())
+        .map(|c| c.id().to_string());
+    Ok((head, head_id))
+}
+
+/// The repository and HEAD of `root`, cheap (`head`, µs): a `Status` with `loaded` false and no
+/// entries, for the status bar before the full working-tree walk runs. `None` without a
+/// repository, or when HEAD can't be read.
+pub fn read_head(root: &Path) -> Option<Status> {
+    let repo = Repo::discover(root)?;
+    match head(&repo) {
+        Ok((head, head_id)) => Some(Status::head_only(repo, head, head_id)),
+        Err(e) => {
+            tracing::warn!(path = %root.display(), "can't read HEAD: {e}");
+            None
+        }
+    }
+}
+
 /// What a background refresh found.
 #[derive(Debug, Clone)]
 pub enum Refreshed {
@@ -350,7 +390,7 @@ pub enum Refreshed {
 /// saw) skips the work when every one is `.gitignore`d or can't affect the status; `None`
 /// reads it regardless (the first read).
 pub fn refresh(root: &Path, changed: Option<&[PathBuf]>) -> Result<Refreshed, git2::Error> {
-    let Some(repo) = Repo::discover(root) else {
+    let Some(repo) = crate::perf::time("git.status.discover", || Repo::discover(root)) else {
         return Ok(Refreshed::NoRepo);
     };
     if let Some(changed) = changed

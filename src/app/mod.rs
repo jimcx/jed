@@ -117,6 +117,8 @@ enum Timer {
     Blame,
     /// Dirty buffers changed since their backup are due (`backup::INTERVAL`).
     Backup,
+    /// The deferred full git status walk is due (`STATUS_DEBOUNCE` after the head read).
+    GitStatus,
     /// Log tabs may wake the loop again (`tools::LOG_FRAME` after the last wake).
     Logs,
     /// Quick open's matching was still running at the last tick (`FILES_POLL`).
@@ -256,6 +258,8 @@ enum AppEvent {
         result: Result<crate::git::Refreshed, String>,
         elapsed: Duration,
     },
+    /// The cheap HEAD read finished (`app/git.rs`): the branch, before the full status walk.
+    GitHead(Option<crate::git::Status>),
     /// A page of the active file's commits was read (`app/git_history.rs`).
     GitHistory {
         path: PathBuf,
@@ -669,7 +673,7 @@ impl App {
             Err(e) => self.notify(Level::Warning, format!("Not watching for file changes: {e}")),
         }
         self.start_ipc();
-        self.refresh_git(None);
+        self.refresh_git_head();
         self.restore_session();
         self.scan_backups();
         self.record_recent();
@@ -812,6 +816,10 @@ impl App {
             .backups
             .deadline()
             .map(|d| (tokio::time::Instant::from_std(d), Timer::Backup));
+        let git_status = self
+            .git
+            .status_deadline()
+            .map(|d| (tokio::time::Instant::from_std(d), Timer::GitStatus));
         let logs = self
             .log_tabs
             .deadline()
@@ -820,7 +828,7 @@ impl App {
             .files_poll
             .map(|d| (tokio::time::Instant::from_std(d), Timer::Files));
         let next = [
-            fs, search, hover, completion, bulb, quick_diff, diff, blame, backup, logs, files,
+            fs, search, hover, completion, bulb, quick_diff, diff, blame, backup, git_status, logs, files,
         ]
         .into_iter()
         .flatten()
@@ -848,6 +856,7 @@ impl App {
             Timer::Diff => self.sync_diffs(),
             Timer::Blame => self.sync_blame(),
             Timer::Backup => self.backup_tick(Instant::now()),
+            Timer::GitStatus => self.ensure_status_loaded(),
             Timer::Logs => self.logs_tick(),
             Timer::Files => self.files_matched(),
         }
@@ -1419,6 +1428,7 @@ impl App {
             AppEvent::Lsp(ev) => self.lsp_event(ev),
             AppEvent::LocationsRead { generation, files } => self.locations_read(generation, files),
             AppEvent::GitRefreshed { result, elapsed } => self.git_refreshed(result, elapsed),
+            AppEvent::GitHead(status) => self.git_head_read(status),
             AppEvent::GitHistory {
                 path,
                 skip,
@@ -1458,6 +1468,9 @@ impl App {
 impl App {
     pub fn test_start(&mut self) {
         self.start();
+        // Production defers the full status walk until it's wanted; tests want it eagerly so
+        // they can settle on `git.status` entries right after starting.
+        self.refresh_git(None);
     }
 
     /// Whitespace drawn as plain blanks, as before `render_whitespace` (default `all`): for tests

@@ -142,6 +142,7 @@ impl App {
     /// `git.openChange`: the active file's unstaged changes, else its staged ones.
     pub(super) fn open_changes(&mut self) {
         let Some(path) = self.active_path() else { return };
+        self.ensure_status_loaded();
         let Some((_, rel)) = self.repo_path(&path) else { return };
         let entry = self.git.status.as_ref().and_then(|s| s.entry(&rel));
         let side = match entry {
@@ -414,7 +415,9 @@ impl App {
             return self.notify(Level::Info, text.into());
         };
         let (path, pair, doc) = (d.path.clone(), d.pair, d.doc.clone());
-        let Some(k) = hunk.or_else(|| d.hunk_at_cursor()) else {
+        let k = hunk.or_else(|| d.hunk_at_cursor());
+        self.ensure_status_loaded();
+        let Some(k) = k else {
             if doc.is_some() {
                 self.notify(Level::Info, "No change at the cursor".into());
             }

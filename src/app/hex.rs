@@ -86,7 +86,7 @@ impl App {
         let tx = self.tx.clone();
         let indentation = self.settings.indentation();
         tokio::task::spawn_blocking(move || {
-            let result = load(&path, raw, indentation);
+            let result = crate::perf::time("file.open", || load(&path, raw, indentation));
             let _ = tx.send(AppEvent::Opened { path, result });
         });
     }
