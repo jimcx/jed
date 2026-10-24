@@ -462,6 +462,40 @@ async fn a_file_without_markers_draws_no_action_row() {
     assert_eq!(text(&app), "plain\ntext\n");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn inline_blame_does_not_overwrite_the_conflict_row() {
+    let (_d, root, state) = dirs();
+    merge_repo(&root, false);
+    let mut app = open_file_app(&root, &state, "a.txt");
+    assert!(
+        settle_git(&mut app, |s| {
+            matches!(s.entry(Path::new("a.txt")), Some(e) if e.unstaged == Some(Change::Conflicted))
+        })
+        .await
+    );
+    // Inline blame on: the marker line is uncommitted, so its label would be "Uncommitted
+    // changes" — which must not overwrite the conflict row.
+    app.test_execute(Command::ToggleBlame);
+    assert!(
+        app.settle(|a| {
+            let b = a.active_buffer().unwrap();
+            !b.blame.running() && !b.blame.hunks().is_empty()
+        })
+        .await
+    );
+
+    // The cursor on the `<<<<<<<` line (Next Conflict's target): the conflict label and action
+    // row are drawn, not the blame.
+    let start = at(&app, "<<<<<<<");
+    set_cursor(&mut app, start);
+    let term = draw(&mut app, 160);
+    let (text, y) = row_of(&app, 1);
+    let row = row_text(&term, text, y);
+    assert!(row.contains("(Current Change)"), "the conflict label: {row:?}");
+    assert!(row.contains("Accept Current"), "the action row: {row:?}");
+    assert!(!row.contains("Uncommitted changes"), "no blame over the row: {row:?}");
+}
+
 // conflicts-d: a real `git merge`, Source Control's "Merge Changes", Stage File as resolve.
 
 /// The base and the two branches' versions of a.txt: two non-overlapping regions changed on

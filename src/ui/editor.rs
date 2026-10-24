@@ -488,6 +488,9 @@ pub fn render(
         while mki < marker_rows.len() && marker_rows[mki].line < line {
             mki += 1;
         }
+        // A marker line's label and action row take precedence over inline blame, which would
+        // otherwise overwrite them (Next Conflict leaves the cursor exactly here).
+        let marker_here = marker_rows.get(mki).is_some_and(|m| m.line == line);
         if let Some(marker) = marker_rows.get(mki).filter(|m| m.line == line) {
             let edge = view.left_col + view.width;
             let mut x = col + blame::GAP;
@@ -540,6 +543,7 @@ pub fn render(
         // line reached the right edge), cut with "…" at the edge, nothing when too little room
         // is left or the label's start is scrolled off to the left.
         if line == cursor_line
+            && !marker_here
             && let Some(label) = &blame
             && col < view.left_col + view.width
         {

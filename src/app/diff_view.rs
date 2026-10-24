@@ -514,7 +514,7 @@ impl App {
         {
             let revision = buf.revision();
             if !buf.conflicts.scan(&buf.rope, revision).is_empty() {
-                self.prompt = Some(Prompt::ConfirmStageConflict { buffer, path });
+                self.prompt = Some(Prompt::ConfirmStageConflict { path });
                 return;
             }
         }

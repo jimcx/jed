@@ -1,11 +1,11 @@
 //! The Source Control view, in the side panel below its title: the branch (`Status::label`),
-//! then VS Code's sections — "Staged Changes" (only with files) and "Changes" — each a header
-//! row (`▾` / `▸`, title, the count in a badge at the right) and its files: the name in its
-//! change's `gitDecoration.*` colour (struck through when deleted), the folder dimmed, the
-//! change's letter at the right edge. The hovered and the selected row show their button left
-//! of the letter / badge: `+` stage, `−` unstage (a header's: the whole section). No
-//! repository, still reading, or nothing changed: a line of text instead. Only the rows on
-//! screen are drawn.
+//! then VS Code's sections — "Merge Changes" (conflicted files, only while there are any),
+//! "Staged Changes" and "Changes" (both only with files) — each a header row (`▾` / `▸`, title,
+//! the count in a badge at the right) and its files: the name in its change's `gitDecoration.*`
+//! colour (struck through when deleted), the folder dimmed, the change's letter at the right
+//! edge. The hovered and the selected row show their button left of the letter / badge: `+`
+//! stage, `−` unstage (a header's: the whole section). No repository, still reading, or nothing
+//! changed: a line of text instead. Only the rows on screen are drawn.
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
