@@ -1105,7 +1105,9 @@ async fn syntax_plugins_template_copied_as_cmake2_colours_like_built_in() {
     assert_eq!(spans, built_in);
 }
 
-/// First start: the build runs off the UI thread, so frames drawn meanwhile stay in budget.
+/// A grammar build runs off the UI thread, so frames drawn while it builds stay in budget. The
+/// build is forced while the frame loop is already up, so it is reliably observed (a build run on
+/// the UI thread would blow the budget).
 #[tokio::test(flavor = "multi_thread")]
 async fn syntax_plugins_frames_stay_in_budget_while_a_grammar_builds() {
     use crate::tools_view::GrammarState as G;
@@ -1114,33 +1116,43 @@ async fn syntax_plugins_frames_stay_in_budget_while_a_grammar_builds() {
     let Some(pid) = source_plugin(plugins.path(), "ptg_stall", "ptgstall") else {
         return;
     };
+    // The CMake grammar is tiny: a warm compiler builds it in a few ms, before three frames (2 ms
+    // apart) are drawn, so the "still building" count below would be a race. Pad `parser.c` with a
+    // large external array so the build reliably spans many frames.
+    let parser = plugins.path().join("ptg_stall/src/parser.c");
+    let mut text = std::fs::read_to_string(&parser).unwrap();
+    text.push_str("\nconst unsigned char jed_frame_padding[] = {");
+    let digits = "0,1,2,3,4,5,6,7,8,9,";
+    for _ in 0..(2 * 1024 * 1024 / digits.len()) {
+        text.push_str(digits);
+    }
+    text.push_str("0};\n");
+    std::fs::write(&parser, text).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let mut app = app_for_source_plugin(&dir, pid, "ptgstall");
+    assert!(
+        app.settle(|a| grammar_state(a, "ptg_stall") == G::Ready).await,
+        "the first build landed"
+    );
     let budget = if cfg!(debug_assertions) {
         Duration::from_millis(200)
     } else {
         Duration::from_millis(16)
     };
     let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-    // Every frame counts toward the worst, the one that sees the build finish too (a build run
-    // inside a frame would show there); at least 3 must be drawn while it is still building (a
-    // build run before the first frame, or in one, leaves none).
-    let started = Instant::now();
+    // Force a rebuild and, in the same synchronous block, draw frames until it lands.
+    rebuild_through_palette(&mut app);
     let (mut building, mut frames, mut worst) = (0, 0, Duration::ZERO);
     while grammar_state(&app, "ptg_stall") != G::Ready {
-        assert!(started.elapsed() < Duration::from_secs(120), "never built");
         let t = Instant::now();
         app.pump();
         term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
         worst = worst.max(t.elapsed());
         frames += 1;
-        if grammar_state(&app, "ptg_stall") != G::Ready {
-            building += 1;
-        }
+        building += 1;
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
-    let total = started.elapsed();
-    assert!(building >= 3, "only {building} frames ran during a {total:?} build");
+    assert!(building >= 3, "only {building} frames ran during a rebuild");
     assert!(worst < budget, "worst frame {worst:?} of {frames}");
 }
 

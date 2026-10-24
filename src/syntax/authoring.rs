@@ -637,7 +637,7 @@ mod tests {
         assert!(ok, "{out}");
         assert!(out.contains("built parser"), "{out}");
         assert!(
-            out.contains("cc -shared") || out.contains("-shared"),
+            out.contains("cc -shared") || out.contains("-shared") || out.contains("-dynamiclib"),
             "the command is shown: {out}"
         );
         assert!(out.contains("queries compiled"), "{out}");
