@@ -1,0 +1,63 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  // CLAUDE.md is the codebase summary. V2 does not read it automatically
+  // (only AGENTS.md), so load it as project instructions for every session.
+  // Nested CLAUDE.md files stay on demand, as the root file describes.
+  "instructions": ["CLAUDE.md"],
+
+  "agents": {
+    // Orchestrator for `.opencode/commands/task.md`. It plans, judges and
+    // commits; the three subagents below do the work.
+    "task": {
+      "description": "Builds one PLAN.md task with subagents: implement, validate, mutation-test, commit",
+      "mode": "primary",
+      "permissions": [
+        { "action": "subagent", "resource": "*", "effect": "deny" },
+        { "action": "subagent", "resource": "task-implementer", "effect": "allow" },
+        { "action": "subagent", "resource": "task-validator", "effect": "allow" },
+        { "action": "subagent", "resource": "task-runner", "effect": "allow" },
+        { "action": "shell", "resource": "git push *", "effect": "deny" }
+      ]
+    },
+
+    "task-implementer": {
+      "description": "Implements one PLAN.md task or subtask, runs scripts/check, does not commit",
+      "mode": "subagent",
+      "model": "ollama-cloud/kimi-k2.7-code",
+      "permissions": [
+        { "action": "shell", "resource": "git commit *", "effect": "deny" },
+        { "action": "shell", "resource": "git push *", "effect": "deny" },
+        { "action": "shell", "resource": "git stash *", "effect": "deny" },
+        { "action": "edit", "resource": "PLAN.md", "effect": "deny" },
+        { "action": "edit", "resource": "docs/plan-done.md", "effect": "deny" }
+      ]
+    },
+
+    "task-validator": {
+      "description": "Reviews one task's diff and tests, strengthens tests, writes a mutation plan, does not commit",
+      "mode": "subagent",
+      "model": "ollama-cloud/deepseek-v4-pro:0813#high",
+      "permissions": [
+        { "action": "shell", "resource": "git commit *", "effect": "deny" },
+        { "action": "shell", "resource": "git push *", "effect": "deny" },
+        { "action": "shell", "resource": "git stash *", "effect": "deny" },
+        { "action": "edit", "resource": "PLAN.md", "effect": "deny" },
+        { "action": "edit", "resource": "docs/plan-done.md", "effect": "deny" }
+      ]
+    },
+
+    "task-runner": {
+      "description": "Applies and reverts planned mutations, records caught or survived, runs the flake checks",
+      "mode": "subagent",
+      "model": "ollama-cloud/deepseek-v4.1-flash",
+      "permissions": [
+        { "action": "shell", "resource": "git commit *", "effect": "deny" },
+        { "action": "shell", "resource": "git push *", "effect": "deny" },
+        { "action": "shell", "resource": "git stash *", "effect": "deny" },
+        { "action": "edit", "resource": "PLAN.md", "effect": "deny" },
+        { "action": "edit", "resource": "docs/plan-done.md", "effect": "deny" }
+      ]
+    }
+  }
+}

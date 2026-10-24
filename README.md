@@ -103,8 +103,8 @@ For contributors:
 - [docs/dev/conventions.md](docs/dev/conventions.md) — rules for specific features
 - [docs/dev/testing.md](docs/dev/testing.md) — test helpers per feature
 
-jed is developed with Claude Code: the `CLAUDE.md` files and `docs/dev/` are written for it, and read as well by
-people.
+jed is developed with Claude Code and OpenCode: the `CLAUDE.md` files and `docs/dev/` are written for them, and read
+as well by people. The `/task` workflow exists in both (`.claude/commands/task.md`, `.opencode/commands/task.md`).
 
 ## Development
 
