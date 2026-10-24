@@ -1,5 +1,6 @@
 //! Most-recently-used commands and files, the model (no app state: `App::mru` holds the two
-//! lists, `app/palette.rs` records commands, `app/files.rs` files). The command palette and quick
+//! lists, `app/palette.rs` records commands, `app/files.rs` files — a file only once it opens
+//! successfully, normalized to quick open's walk spelling). The command palette and quick
 //! open list them first while their input is empty, as VS Code's "recently used"; in memory only,
 //! so a restart forgets them.
 
@@ -14,7 +15,7 @@ pub const MAX: usize = 20;
 #[derive(Debug, Default)]
 pub struct Mru {
     pub commands: Vec<Command>,
-    /// Workspace-relative when inside the root, else absolute.
+    /// Workspace-relative when inside the root, else absolute; both normalized.
     pub files: Vec<PathBuf>,
 }
 

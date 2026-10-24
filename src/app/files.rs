@@ -1,7 +1,7 @@
 //! Opening, saving, closing tabs and quitting.
 
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ropey::Rope;
@@ -70,9 +70,6 @@ impl App {
     /// selection at `goto` if given. Loading happens off the UI thread; an already open buffer
     /// gets the selection at once.
     pub(super) fn open_file(&mut self, path: PathBuf, focus: bool, goto: Option<Goto>) {
-        // Recently opened, for quick open's empty list: relative when inside the workspace.
-        let rel = path.strip_prefix(&self.workspace.root).unwrap_or(&path).to_path_buf();
-        mru::record(&mut self.mru.files, rel);
         // A jump: the place before it is recorded for Go Back (`app/navigation.rs`).
         self.nav_jump();
         // The group's hex tab of it (unless it has a text tab of it too); with no buffer open
@@ -81,9 +78,13 @@ impl App {
         let text_here = open.is_some_and(|id| self.group().find(id).is_some());
         let hex_here = self.group().find_hex(&path).is_some();
         if ((hex_here && !text_here) || open.is_none()) && self.show_hex(&path, focus) {
+            // A hex tab already shown is a successful open.
+            self.record_open(&path);
             return;
         }
         if let Some(id) = self.buffers.find_path(&path) {
+            // Already open: shown at once, so it's recently used now (its load already succeeded).
+            self.record_open(&path);
             match self.group().find(id) {
                 Some(i) => self.activate_tab(i),
                 None => {
@@ -124,6 +125,10 @@ impl App {
     pub(super) fn opened(&mut self, path: PathBuf, result: Result<Loaded, LoadError>) {
         if self.nav_opened(&path, &result) {
             return;
+        }
+        // Recently used only once the load succeeded; a failed open must not land in the list.
+        if result.is_ok() {
+            self.record_open(&path);
         }
         let OpenRequest {
             focus,
@@ -203,6 +208,18 @@ impl App {
             self.backup_not_opened(*b, e);
         }
         self.ipc_sweep();
+    }
+
+    /// Records a successfully opened file in the MRU, workspace-relative when inside the root.
+    /// The path is normalized first (symlinks resolved, `..` collapsed), matching quick open's
+    /// walk spelling, so the same physical file can't appear twice.
+    fn record_open(&mut self, path: &Path) {
+        let normalized = crate::workspace::normalize(path);
+        let rel = normalized
+            .strip_prefix(&self.workspace.root)
+            .unwrap_or(&normalized)
+            .to_path_buf();
+        mru::record(&mut self.mru.files, rel);
     }
 
     /// "File: New Untitled File": a new empty "Untitled-N" (the lowest free N) in a tab of the

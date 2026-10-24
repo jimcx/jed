@@ -1544,6 +1544,12 @@ impl App {
         self.add_buffer(buffer, None, true);
     }
 
+    /// Opens `path` through `open_file` (the off-thread load), as quick open, a search result or
+    /// the command line's socket does.
+    pub fn test_open_file(&mut self, path: std::path::PathBuf) {
+        self.open_file(path, true, None);
+    }
+
     pub fn press(&mut self, code: KeyCode, mods: KeyModifiers) {
         self.handle_event(Event::Key(crossterm::event::KeyEvent::new(code, mods)));
     }

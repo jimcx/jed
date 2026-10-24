@@ -6,7 +6,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 
 - `mod.rs` — the `App` struct, `new` / `start` / `run`, `handle_event`, `execute`, `sync_views`, copy / paste, `handle_app_event`, `render_whitespace()`, and the `#[cfg(test)]` driving helpers (`test_start`, `press`, `type_text`, `mouse`, `settle`, `pump`, `test_execute`, the `test_*_tick`s, …: listed in docs/dev/app.md)
 - `field.rs` — `field_key`: keys in a text field (find widget, Search view inputs, palette, prompts) — typed, else the editor context's moves / deletes / select all / copy / cut / paste run on the field (`has_field_meaning`)
-- `files.rs` — opening (off-thread, `opening` map of `OpenRequest`s, `open_file(path, focus, goto)`, which records the file in `mru`), saving, closing tabs, `add_buffer`
+- `files.rs` — opening (off-thread, `opening` map of `OpenRequest`s, `open_file(path, focus, goto)`, which records a successfully opened file in `mru`), saving, closing tabs, `add_buffer`
 - `prompt.rs` — `Prompt`, the modal dialogs (save before close / quit / stage, trust, input, confirm delete / replace / stage-a-conflicted-file, restore backups)
 - `side.rs` — explorer commands, directory listings, file ops, fs-change batching (`flush_fs_changes`), the side panel
 - `navigation.rs` — back / forward (`app.nav`): `nav_begin` / `nav_end`, `nav_jump`, Go Back / Forward

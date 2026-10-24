@@ -108,7 +108,8 @@
 //! - `mru`: the command palette and quick open list the last 20 commands picked from the palette
 //!   and the last 20 files opened first while their input is empty, most recent first, without
 //!   duplicates (a file's walk row kept out by its recent row); a typed query keeps the fuzzy
-//!   score; a key-bound command isn't recorded; both lists stop at 20.
+//!   score; a key-bound command isn't recorded; both lists stop at 20; a failed open isn't
+//!   recorded, and a file opened through a `..` spelling is normalized so it can't duplicate.
 //! - `window_identity`: `.workspace` `[window] title` names the window `jed <title>` (the OSC 2
 //!   title only; the user vars and OSC 7 keep the root) and `status_bar` tints the status bar
 //!   from `Theme`'s `statusBar.<colour>` keys; each colour draws, live reload updates both
@@ -6770,6 +6771,47 @@ mod mru {
         assert!(!app.mru.commands.contains(&Command::ToggleSidebar));
         let rows = command_rows(&mut app);
         assert_eq!(rows[0], "Cursor: Move Right");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_open_is_not_recently_used() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &["a.txt"]);
+        // A genuinely unopenable path (mode 000), outside the workspace so the walk can't list it.
+        // (A missing file opens as an empty buffer in jed, so it is a successful open.)
+        let unreadable = dir.path().join("unreadable.txt");
+        fs::write(&unreadable, "x\n").unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+        let mut app = open_app(&root, "a.txt");
+        app.test_open_file(unreadable.clone());
+        let failed = app
+            .settle(|a| a.message.as_ref().is_some_and(|m| m.text.contains("unreadable.txt")))
+            .await;
+        assert!(failed, "the failed open reports an error");
+        assert!(app.mru.files.is_empty(), "a failed open isn't recently used");
+        // Quick open's empty list has no recent row for it either.
+        let rows = file_rows(&mut app, 1).await;
+        assert!(rows.iter().all(|(l, _)| l != "unreadable.txt"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_path_opened_through_a_different_spelling_is_not_duplicated() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &["src/a.txt", "src/b.txt"]);
+        let mut app = open_app(&root, "src/b.txt");
+        // Open a.txt through a `..` spelling; the record normalizes it to `src/a.txt` (the
+        // walk's spelling), so quick open doesn't show it twice.
+        app.test_open_file(root.join("src/../src/a.txt"));
+        let opened = app
+            .settle(|a| a.active_buffer().is_some_and(|b| b.name() == "a.txt"))
+            .await;
+        assert!(opened, "a.txt opened");
+        assert_eq!(app.mru.files, [PathBuf::from("src/a.txt")], "stored normalized");
+        let rows = file_rows(&mut app, 2).await;
+        let labels: Vec<&str> = rows.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, ["a.txt", "b.txt"]);
+        assert_eq!(labels.iter().filter(|l| **l == "a.txt").count(), 1, "no duplicate");
     }
 }
 
