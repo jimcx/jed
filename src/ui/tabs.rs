@@ -2,7 +2,9 @@
 //! disk is struck through, with "(deleted)" after its name (VS Code). Tabs wider than the bar
 //! scroll: `‹` / `›` at the bar's ends (dimmed when there's nothing more that way) and the wheel
 //! move it a tab at a time; it jumps back to the active tab only when the active tab changes.
-//! While a tab is dragged, `drop` marks the gap it would land in (`tab.dropMarker`).
+//! While a tab is dragged, `drop` marks the gap it would land in (`tab.dropMarker`). With two or
+//! more groups, each bar's top-right corner shows the group's number (`tab.groupNumber`), which
+//! takes the bar's last cells: the `›` arrow then sits one cell left of it.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -22,6 +24,8 @@ pub struct TabBarHit {
 
 /// `active_group`: the focused group's active tab is bright; other groups' active tabs are dimmer.
 /// `drop`: the gap a dragged tab would land in, drawn as one marker cell.
+/// `number`: the group's 1-based place in reading order, or `None` with a single group.
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     f: &mut Frame,
     area: Rect,
@@ -30,10 +34,32 @@ pub fn render(
     theme: &Theme,
     active_group: bool,
     drop: Option<usize>,
+    number: Option<u8>,
 ) -> TabBarHit {
     let out = f.buffer_mut();
     out.set_style(area, theme.get("tabBar"));
     if area.width == 0 {
+        return TabBarHit::default();
+    }
+
+    // The number takes the bar's last cells; the tabs, arrows and drop marker stay in `bar`,
+    // left of it. Clicking those cells is a click on the bar (`Hit::TabBar`), which focuses it.
+    let label = number.map(|n| n.to_string());
+    let label_w = label.as_ref().map_or(0, |l| l.width() as u16).min(area.width);
+    let bar = Rect {
+        width: area.width - label_w,
+        ..area
+    };
+    if let Some(label) = &label {
+        out.set_stringn(
+            area.x + bar.width,
+            area.y,
+            label,
+            label_w as usize,
+            theme.get("tab.groupNumber"),
+        );
+    }
+    if bar.width == 0 {
         return TabBarHit::default();
     }
 
@@ -73,11 +99,11 @@ pub fn render(
     let total: u32 = widths.iter().sum();
 
     // Tabs wider than the bar: `‹` / `›` at its ends scroll it, the tabs between them.
-    let overflow = total > area.width as u32 && area.width >= 3;
+    let overflow = total > bar.width as u32 && bar.width >= 3;
     let (left, right) = if overflow {
-        (area.x + 1, area.x + area.width - 1)
+        (bar.x + 1, bar.x + bar.width - 1)
     } else {
-        (area.x, area.x + area.width)
+        (bar.x, bar.x + bar.width)
     };
     let inner = (right - left) as u32;
     let last = labels.len() - 1;
@@ -92,8 +118,8 @@ pub fn render(
     // Scroll so the active tab is fully visible, when it or the bar's width changed since the
     // last reveal; otherwise the bar stays where the wheel or an arrow left it.
     let active = group.active.min(last);
-    if group.revealed != Some((active, area.width)) {
-        group.revealed = Some((active, area.width));
+    if group.revealed != Some((active, bar.width)) {
+        group.revealed = Some((active, bar.width));
         group.scroll = group.scroll.min(active);
         let mut used: u32 = widths[group.scroll..=active].iter().sum();
         while group.scroll < active && used > inner {
@@ -112,10 +138,10 @@ pub fn render(
                 "tab.scrollArrow.disabled"
             })
         };
-        out.set_string(area.x, area.y, "‹", arrow(group.scroll > 0));
+        out.set_string(bar.x, area.y, "‹", arrow(group.scroll > 0));
         out.set_string(right, area.y, "›", arrow(group.scroll < max_scroll));
         arrows = Some(TabArrows {
-            back: area.x,
+            back: bar.x,
             forward: right,
         });
     }

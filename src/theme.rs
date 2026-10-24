@@ -243,6 +243,8 @@ impl Theme {
             // dimmed when there's nothing more that way).
             ("tab.scrollArrow", fg_bg(0xC5C5C5, 0x252526)),
             ("tab.scrollArrow.disabled", fg_bg(0x5A5A5A, 0x252526)),
+            // A group's number in its tab bar's top-right corner (two or more groups).
+            ("tab.groupNumber", fg_bg(0x6E6E6E, 0x252526)),
             // Where a dragged tab would land on a tab bar (VS Code's `tab.dropBorder`).
             ("tab.dropMarker", fg_bg(0xFFFFFF, 0x007ACC)),
             // The zone a dragged tab would drop in over an editor (VS Code's

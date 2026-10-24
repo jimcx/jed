@@ -62,6 +62,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     let (cells, dividers) = app.groups.tree.layout(regions.editor);
     fit_commit_tabs(app, &cells);
+    // Each group's number in reading order, for the corner of its tab bar (two or more groups).
+    let group_ids = (app.groups.len() >= 2).then(|| app.groups.ids());
     let mut active_editor = None;
     let whitespace = app.render_whitespace();
     // The lightbulb: the active group's cursor line, when code actions exist there.
@@ -81,8 +83,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let look = scrollbar::look(app, ScrollTarget::Group(id));
         let editor_bg = app.theme.get("editor");
         let drop = app.tab_drop_in(id);
+        let number = group_ids
+            .as_ref()
+            .and_then(|ids| ids.iter().position(|&g| g == id))
+            .map(|i| i as u8 + 1);
         let Some(group) = app.groups.get_mut(id) else { continue };
-        let tabs = tabs::render(f, tab_bar, group, &app.buffers, &app.theme, is_active, drop);
+        let tabs = tabs::render(f, tab_bar, group, &app.buffers, &app.theme, is_active, drop, number);
 
         // The changed-on-disk banner takes the editor's first row (leaving it at least one); a
         // diff tab of the file shows it too.
