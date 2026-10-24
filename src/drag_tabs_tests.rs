@@ -848,6 +848,79 @@ async fn drag_tabs_own_edge_drop_splits_its_group() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn drag_tabs_own_edge_drop_splits_on_every_side() {
+    for side in [DropSide::Left, DropSide::Right, DropSide::Up, DropSide::Down] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, &["a.txt", "b.txt", "c.txt"]);
+        draw(&mut app, 100);
+        let group = first_group(&app);
+        let (y, tabs) = bar_of(&app, group);
+        let editor = editor_of(&app, group);
+        let (x, ey) = edge_point(editor, side);
+
+        app.mouse(MouseEventKind::Down(MouseButton::Left), in_tab(&tabs[1]), y);
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), x, ey);
+        let term = draw(&mut app, 100);
+        assert!(
+            whole_area_is_shaded(&app, &term, half(editor, side)),
+            "{side:?}: its own band is shaded"
+        );
+        app.mouse(MouseEventKind::Up(MouseButton::Left), x, ey);
+
+        let new = *app.groups.ids().iter().find(|&&id| id != group).expect("a new group");
+        assert_eq!(app.groups.len(), 2, "{side:?}: the group split in two");
+        assert_eq!(
+            app.groups.get(new).unwrap().tabs.len(),
+            1,
+            "{side:?}: the dragged tab is alone in the new group"
+        );
+        assert_eq!(
+            app.groups.get(group).unwrap().tabs.len(),
+            2,
+            "{side:?}: the other two tabs stay in their group"
+        );
+        assert_eq!(app.groups.active, new, "{side:?}: the new split is active");
+        assert_eq!(active_name(&app), "b.txt", "{side:?}: the moved tab is active");
+
+        // The new group's editor sits on `side` of the original's.
+        draw(&mut app, 100);
+        let (new_ed, old_ed) = (editor_of(&app, new), editor_of(&app, group));
+        match side {
+            DropSide::Left => assert!(new_ed.x + new_ed.width <= old_ed.x, "{side:?}: left"),
+            DropSide::Right => assert!(old_ed.x + old_ed.width <= new_ed.x, "{side:?}: right"),
+            DropSide::Up => assert!(new_ed.y + new_ed.height <= old_ed.y, "{side:?}: above"),
+            DropSide::Down => assert!(old_ed.y + old_ed.height <= new_ed.y, "{side:?}: below"),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn drag_tabs_own_centre_drop_shades_the_editor() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _) = open_app(&dir, &["a.txt", "b.txt"]);
+    draw(&mut app, 80);
+    let group = first_group(&app);
+    let (y, tabs) = bar_of(&app, group);
+    let editor = editor_of(&app, group);
+    let before = layout(&app);
+    let (x, ey) = centre(editor);
+
+    // A drop on the centre of its own editor moves nothing, but the whole editor shades: it is
+    // the only cue that a drop here is a no-op rather than a missed target.
+    app.mouse(MouseEventKind::Down(MouseButton::Left), in_tab(&tabs[0]), y);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), x, ey);
+    let term = draw(&mut app, 80);
+    assert!(
+        whole_area_is_shaded(&app, &term, editor),
+        "the whole editor shades for its own centre drop"
+    );
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x, ey);
+    assert_eq!(layout(&app), before, "the centre drop moves nothing");
+    let term = draw(&mut app, 80);
+    assert_eq!(shaded_cells(&app, &term, editor), 0, "the shade clears once dropped");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn drag_tabs_a_lone_tabs_own_edge_drop_leaves_one_group() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, _) = open_app(&dir, &["a.txt"]);

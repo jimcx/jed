@@ -567,4 +567,42 @@ mod tests {
         assert!(matches!(snapshot.groups[0].tabs[0], TabState::Text { .. }));
         assert_eq!(snapshot.groups[0].active, 0, "the shell's tab index is dropped");
     }
+
+    /// With a shell *before* the active text tab, the snapshot's active index still counts only
+    /// the text tabs (the shell is skipped, not just the tabs after it): `[shell, a.txt, b.txt]`
+    /// with `a.txt` active saves both text tabs and names `a.txt` active.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_active_index_counts_text_tabs_with_a_shell_before_the_active_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let (root, state) = (base.join("proj"), base.join("state"));
+        fs::create_dir_all(&root).unwrap();
+        let mut app = App::new(
+            Workspace::load(root.clone()),
+            TrustStore::load(state.join("trust.toml")),
+            None,
+            true,
+        );
+        app.test_start();
+        app.tasks.shell = "/bin/sh".into();
+        app.test_execute(crate::command::Command::NewShell);
+        app.test_open(Buffer::new_file(&root.join("a.txt")));
+        app.test_open(Buffer::new_file(&root.join("b.txt")));
+        app.group_mut().active = 1;
+
+        let snapshot = app.session_snapshot();
+        assert_eq!(snapshot.groups.len(), 1);
+        let group = &snapshot.groups[0];
+        assert_eq!(group.tabs.len(), 2, "both text tabs are saved, the shell is not");
+        let paths: Vec<String> = group
+            .tabs
+            .iter()
+            .map(|t| match t {
+                TabState::Text { path, .. } => path.to_string_lossy().into_owned(),
+                _ => panic!("a shell was saved"),
+            })
+            .collect();
+        assert_eq!(paths, ["a.txt", "b.txt"], "a.txt then b.txt");
+        assert_eq!(group.active, 0, "a.txt is the active text tab");
+    }
 }

@@ -465,6 +465,30 @@ async fn shell_keys_and_pastes_go_to_the_shell() {
     assert!(app.palette.is_some(), "the palette opens from a shell tab");
 }
 
+/// `shell_key` / `shell_paste` are gated by the shell's focus: with the focus on the side panel,
+/// keys and pastes no longer reach the shell (`cat` would echo them).
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_keys_and_pastes_stop_when_the_shell_is_unfocused() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    app.tasks.shell = "/bin/cat".into();
+    app.test_execute(Command::NewShell);
+    assert!(
+        app.group().active_shell().is_some(),
+        "the shell tab is open and focused"
+    );
+
+    app.ui.focus = Focus::SidePanel;
+    app.type_text("nope");
+    app.handle_test_event(CEvent::Paste("nada".into()));
+    assert!(
+        app.settle(|a| !screen_text(a).contains("nope") && !screen_text(a).contains("nada"))
+            .await,
+        "nothing reached the shell while it was unfocused:\n{}",
+        screen_text(&app)
+    );
+}
+
 /// Keys and pastes follow the modes the shell's program turned on: `SS3` arrows in application
 /// cursor mode and the paste wrapped for bracketed paste (both read from the emulated screen).
 #[tokio::test(flavor = "multi_thread")]
@@ -571,6 +595,56 @@ async fn shell_scrollback_keys_and_wheel_scroll() {
     let editor = app.hits.group(app.groups.active).unwrap().editor;
     app.mouse(MouseEventKind::ScrollUp, editor.x + 1, editor.y + 1);
     assert!(scrollback(&app) > 0, "the wheel scrolls the shell's scrollback");
+}
+
+/// The wheel scrolls the shell of the group it is over, without focusing it: over an inactive
+/// group's editor, only that group's shell scrolls back.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_wheel_scrolls_a_non_focused_groups_shell() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    app.tasks.shell = "/bin/sh".into();
+    app.test_execute(Command::NewShell);
+    app.test_execute(Command::SplitRight);
+    app.test_execute(Command::NewShell);
+    assert_eq!(app.groups.shell_tabs().count(), 2, "a shell in each group");
+    for shell in app.groups.shell_tabs() {
+        shell.run.write(format!("{COUNT_TO_200}\n").as_bytes());
+    }
+    assert!(
+        app.settle(|a| {
+            a.groups.shell_tabs().all(|s| {
+                s.run
+                    .screen()
+                    .screen()
+                    .contents()
+                    .lines()
+                    .any(|l| l.trim_end() == "199")
+            })
+        })
+        .await,
+        "both shells printed the output:\n{}",
+        shell_text(&app)
+    );
+
+    let active = app.groups.active;
+    let inactive = *app.groups.ids().iter().find(|&&g| g != active).expect("two groups");
+    draw(&mut app, 100, 30);
+    let editor = app.hits.group(inactive).unwrap().editor;
+    app.mouse(MouseEventKind::ScrollUp, editor.x + 1, editor.y + 1);
+    let scrollback_of = |a: &App, g| {
+        a.groups
+            .get(g)
+            .unwrap()
+            .active_shell()
+            .unwrap()
+            .run
+            .screen()
+            .screen()
+            .scrollback()
+    };
+    assert!(scrollback_of(&app, inactive) > 0, "the inactive group's shell scrolled");
+    assert_eq!(scrollback_of(&app, active), 0, "the focused group's shell did not");
 }
 
 /// The screen is drawn in the editor area, at its size; resizing the frame (a split included)
@@ -808,6 +882,35 @@ async fn shell_exit_notes_cover_success_and_failure_to_start() {
     );
 }
 
+/// A shell ended by a signal (not a `kill` by jed, and not an exit code) says so in its note,
+/// at `Warning` — the branch `tasks::end_note`'s "ended by signal" and `end_run_note`'s warning
+/// for it, covered end to end rather than only by the unit test.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_a_signal_ended_shell_says_so_as_a_warning() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    app.tasks.shell = shell_script(&root, "die", "kill -TERM $$");
+    app.test_execute(Command::NewShell);
+    let ended = app
+        .settle(|a| {
+            a.group()
+                .active_shell()
+                .is_some_and(|s| matches!(s.run.status(), Status::Exited(_)))
+        })
+        .await;
+    assert!(ended, "the shell ended by SIGTERM:\n{}", screen_text(&app));
+    assert!(
+        screen_text(&app).contains("ended by signal"),
+        "the note says a signal ended it:\n{}",
+        screen_text(&app)
+    );
+    assert_eq!(
+        app.message.as_ref().map(|m| m.level),
+        Some(Level::Warning),
+        "a signal-ended shell is a warning"
+    );
+}
+
 /// Closing a shell tab kills its shell (the run is dropped); Cmd+W works in the shell context.
 #[tokio::test(flavor = "multi_thread")]
 async fn shell_close_kills_the_shell() {
@@ -910,6 +1013,39 @@ async fn shell_quit_kills_a_shell_that_ignores_hangup() {
         other => panic!("still running after the timeout's SIGKILL: {other:?}"),
     }
     assert!(app.settle(|_| group_gone(pid)).await, "the whole process group is gone");
+}
+
+/// Quitting while a shell is still `Starting` (its PTY spawn is off-thread) hangs it up through
+/// the `kill_when_started` path: the quit stays bounded and the shell is killed once it starts,
+/// not left running.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_quit_while_the_shell_is_still_starting() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    app.tasks.shell = shell_script(&root, "slow", "sleep 30");
+    app.test_execute(Command::NewShell);
+    assert!(
+        matches!(app.group().active_shell().unwrap().run.status(), Status::Starting),
+        "the shell is still starting (the spawn is off-thread)"
+    );
+
+    let at = Instant::now();
+    app.test_execute(Command::Quit);
+    app.shutdown().await;
+    let took = at.elapsed();
+    assert!(took < SHUTDOWN_TIMEOUT * 2, "quit stays bounded: {took:?}");
+    let ended = app
+        .settle(|a| {
+            a.groups
+                .shell_tabs()
+                .all(|s| matches!(s.run.status(), Status::Exited(_)))
+        })
+        .await;
+    assert!(ended, "the shell was killed once it started:\n{}", shell_text(&app));
+    match app.groups.shell_tabs().next().unwrap().run.status() {
+        Status::Exited(e) => assert!(e.killed, "the late-starting shell was killed: {e:?}"),
+        other => panic!("still {other:?} after quit"),
+    }
 }
 
 /// `JED_IPC` is in the shell program's environment (the listening socket's path), so tools it
