@@ -281,16 +281,23 @@ impl Run {
                 match status {
                     Status::Starting => {}
                     Status::Running => {
-                        if let Some(pid) = pid
-                            && let Some(foreground) = foreground(pid)
-                            && reported.as_ref() != Some(&foreground)
-                        {
-                            sink(Event::Foreground {
-                                id: shared.id,
-                                name: foreground.name.clone(),
-                                idle: foreground.idle,
-                            });
-                            reported = Some(foreground);
+                        if let Some(pid) = pid {
+                            // The probe reads `/proc` (Linux) or the proc syscalls (macOS): off
+                            // the runtime worker, as any file read or blocking syscall is.
+                            let foreground = tokio::task::spawn_blocking(move || foreground(pid))
+                                .await
+                                .ok()
+                                .flatten();
+                            if let Some(foreground) = foreground
+                                && reported.as_ref() != Some(&foreground)
+                            {
+                                sink(Event::Foreground {
+                                    id: shared.id,
+                                    name: foreground.name.clone(),
+                                    idle: foreground.idle,
+                                });
+                                reported = Some(foreground);
+                            }
                         }
                     }
                     Status::Exited(_) | Status::Failed(_) => return,
@@ -422,9 +429,10 @@ struct Foreground {
     idle: bool,
 }
 
-/// The foreground process of the terminal the session leader `pid` runs with: the PTY's
-/// foreground process group (`tpgid`) and that group's name. `None` when it can't be read (the
-/// process went away between the two reads, or the terminal has no foreground group yet).
+/// Blocking: the foreground process of the terminal the session leader `pid` runs with — the
+/// PTY's foreground process group (`tpgid`) and that group's name. `None` when it can't be read
+/// (the process went away between the two reads, or the terminal has no foreground group yet).
+/// Call from `spawn_blocking`.
 fn foreground(pid: i32) -> Option<Foreground> {
     let group = foreground_group(pid)?;
     let name = process_name(group)?;
@@ -434,8 +442,8 @@ fn foreground(pid: i32) -> Option<Foreground> {
     })
 }
 
-/// The PTY's foreground process group: `/proc/<pid>/stat`'s `tpgid` (the 8th field, after the
-/// parenthesised `comm`).
+/// Blocking: the PTY's foreground process group, `/proc/<pid>/stat`'s `tpgid` (the 8th field,
+/// after the parenthesised `comm`).
 #[cfg(target_os = "linux")]
 fn foreground_group(pid: i32) -> Option<i32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -451,7 +459,7 @@ fn tpgid_from_stat(stat: &str) -> Option<i32> {
     rest.split_whitespace().nth(5)?.parse().ok()
 }
 
-/// The PTY's foreground process group: `proc_pidinfo`'s `e_tpgid`.
+/// Blocking: the PTY's foreground process group, `proc_pidinfo`'s `e_tpgid`.
 #[cfg(target_os = "macos")]
 fn foreground_group(pid: i32) -> Option<i32> {
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
@@ -469,15 +477,25 @@ fn foreground_group(pid: i32) -> Option<i32> {
     (read == size).then_some(info.e_tpgid as i32)
 }
 
-/// A process's name: `/proc/<pid>/comm`, NUL-free and one line.
+/// A process name for a tab title, its control characters dropped (as the window title drops
+/// them): a process can put ESC or other control bytes into its name, which must not reach the
+/// rendered tab bar. `None` when nothing printable is left, so the title falls back to the idle
+/// one.
+fn sanitized(name: &str) -> Option<String> {
+    let name: String = name.chars().filter(|c| !c.is_control()).collect();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Blocking: a process's name, `/proc/<pid>/comm` read off the UI thread, its control characters
+/// dropped (`sanitized`). `None` when it can't be read or nothing printable is left.
 #[cfg(target_os = "linux")]
 fn process_name(pid: i32) -> Option<String> {
     let name = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
-    let name = name.trim_end_matches(['\n', '\r']);
-    (!name.is_empty()).then(|| name.to_string())
+    sanitized(name.trim_end_matches(['\n', '\r']))
 }
 
-/// A process's name, as `proc_name` gives it (at most `MAXCOMLEN` bytes).
+/// Blocking: a process's name, as `proc_name` gives it (at most `MAXCOMLEN` bytes), its control
+/// characters dropped (`sanitized`). `None` when nothing printable is left.
 #[cfg(target_os = "macos")]
 fn process_name(pid: i32) -> Option<String> {
     let mut buf = [0 as libc::c_char; 64];
@@ -485,7 +503,8 @@ fn process_name(pid: i32) -> Option<String> {
     let n = unsafe { libc::proc_name(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
     let n = (n.max(0) as usize).min(buf.len());
     let bytes: Vec<u8> = buf[..n].iter().map(|&c| c as u8).take_while(|&b| b != 0).collect();
-    (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
+    let name = String::from_utf8_lossy(&bytes);
+    sanitized(&name)
 }
 
 fn pty_size(rows: u16, cols: u16) -> PtySize {
@@ -677,8 +696,25 @@ async fn notifier(shared: Arc<Shared>, sink: Sink) {
 
 #[cfg(test)]
 mod tests {
+    use super::sanitized;
     #[cfg(target_os = "linux")]
     use super::*;
+
+    /// A process name for the tab bar drops control characters (ESC, tabs, newlines, DEL) and is
+    /// `None` when nothing printable is left, so the title falls back to the idle one.
+    #[test]
+    fn process_names_drop_control_characters() {
+        assert_eq!(sanitized("sh").as_deref(), Some("sh"));
+        assert_eq!(sanitized("my shell (2)").as_deref(), Some("my shell (2)"));
+        assert_eq!(sanitized("evil\x1b]2;x\x07").as_deref(), Some("evil]2;x"));
+        assert_eq!(
+            sanitized("a\tb\nc").as_deref(),
+            Some("abc"),
+            "whitespace controls dropped too"
+        );
+        assert_eq!(sanitized("\x1b\x07").as_deref(), None, "nothing printable left");
+        assert_eq!(sanitized("").as_deref(), None);
+    }
 
     /// `tpgid` is the field right after the parenthesised `comm` (state, ppid, pgrp, session,
     /// tty_nr, then `tpgid`), even when `comm` holds spaces and parentheses — the fields start
