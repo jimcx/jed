@@ -317,7 +317,7 @@ The VS Code behaviour, especially Cmd+D and Cmd+Shift+L, is a must-have.
   - Layout is a binary split tree (`layout::SplitTree`); 1-cell divider lines between groups
   - New group shows the active tab's buffer, same cursor and scroll, and gets focus
 - Focus groups by keyboard and mouse
-  - Cmd+1/2/3 in reading order; one past the last group splits right (as VS Code)
+  - Cmd+1–8 in reading order; one past the last group splits right (as VS Code)
   - Click in a group's tab bar or text focuses it; mouse wheel scrolls the group under the mouse without focusing
 - Resize splits by dragging dividers
   - Minimum group size 12 cols × 4 rows
@@ -540,7 +540,7 @@ jed as git's editor (the [Git editor](#tasks) task): `git config --global core.e
 | Source control | Ctrl+Shift+G | Ctrl+Shift+G |
 | Search in workspace | Cmd+Shift+F | Ctrl+Shift+F |
 | Split editor right / down | Cmd+\ / Cmd+Alt+\ | Ctrl+\ / Ctrl+Alt+\ |
-| Focus group 1/2/3 | Cmd+1/2/3 | Ctrl+1/2/3 |
+| Focus group 1–8 | Cmd+1–8 | Ctrl+1–8 |
 | Move editor into next / previous group | Ctrl+Cmd+Right / Left | Ctrl+Alt+Right / Left |
 | Move editor left / right (in its group) | Cmd+Shift+PageUp / PageDown | Ctrl+Shift+PageUp / PageDown |
 | Find / replace | Cmd+F / Cmd+Alt+F | Ctrl+F / Ctrl+H |
@@ -764,6 +764,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - ✅ **Most-recently-used commands and files** (`mru`): the command palette and quick open list the last 20 commands picked from the palette and the last 20 files opened first, most recent first, when the input is empty — [details](docs/plan-done.md)
 - **Reopen closed tab**: Cmd+Shift+T; a stack of closed tabs per window with their view state, files reopened from disk; in the palette; Cmd bindings update `docs/terminals/`
 - **Close tabs and go to the Nth tab**: "Close All", "Close Others", "Close Saved" (in a group; prompts for unsaved like closing one), go to the Nth tab in the group (Ctrl+1–9 on macOS, Alt+1–9 on Linux, as VS Code; 9 = last); in the palette, and on the tab bar's right-click once there are context menus
+- **Editor group number label and more focus-group keys**: a small `⌘n` label in each editor group's top-right corner showing its number in reading order (the same numbering as the Focus group commands, `groups.ids()`), shown only with two or more groups; clicking it focuses that group. Drawn at the right end of the group's tab bar row (right-aligned, after the tabs; where the `›` scroll arrow sits it takes precedence — decide), a new theme key (dim foreground on the tab bar's background). Also extend the focus-group keybindings from 3 to 8: Cmd+1–8 / Ctrl+1–8 in `keymap.rs` (the palette already lists 1–8 via `PALETTE_GROUPS`), the cheat sheet's "Tabs and Groups" section, and `docs/terminals/`. And "View: Focus Next / Previous Editor Group" (VS Code's; new `FocusNextGroup` / `FocusPreviousGroup` commands focusing the group after / before the active one in reading order, wrapping), bound to Ctrl+Shift+, (previous) / Ctrl+Shift+. (next) on both platforms — the move-editor commands already use Ctrl+Alt+Right/Left on Linux, Ctrl+Cmd+Right/Left on macOS; note the shifted `,` / `.` arrive as `<` / `>`, so `KeyCombo::from_event` needs the same shifted-character normalisation the Settings task adds (or bind `<` / `>` directly). Tests: with a split, each group's corner shows its number in reading order and clicking it focuses the group; a single group shows nothing; the numbers follow reading order as groups are split, closed and reopened; Cmd/Ctrl+8 focuses the eighth group in reading order (and one past the last group splits right, as VS Code); Focus Next / Previous Editor Group cycles through the groups in reading order
 - **More line commands**: delete line (Cmd+Shift+K), select line (Cmd+L, repeated: the next line too), join lines (Ctrl+J on macOS; unbound on Linux, where Ctrl+J is the panel), insert line below / above (Cmd+Enter / Cmd+Shift+Enter, with auto-indent); at every selection (`LineWalker`, one undo step each, the line-command budget); Cmd bindings update `docs/terminals/`
 - **Transform, sort and dedupe lines** (palette, unbound): transform to upper / lower / title case, sort lines ascending / descending, delete duplicate lines; at every selection (`LineWalker`, one undo step each, the line-command budget)
 - **Expand / shrink selection** (Shift+Alt+Right / Left on Linux, Ctrl+Shift+Cmd+Right / Left on macOS, as VS Code): grow each selection to the enclosing tree-sitter node (word first, then string contents, the string, the bracket contents, the brackets, the statement, the block, …), shrink back through the same history (kept per view, cleared on other selection changes); without a tree: word, line, all; at every selection
