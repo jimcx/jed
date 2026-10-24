@@ -1460,7 +1460,10 @@ impl App {
                 Err(e) => self.notify(Level::Error, e),
             },
             AppEvent::KeybindingsReady(result) => match result {
-                Ok(path) => self.open_file(path, true, None),
+                Ok(path) => {
+                    self.notify(Level::Info, "Keybinding written — takes effect next start".into());
+                    self.open_file(path, true, None);
+                }
                 Err(e) => self.notify(Level::Error, e),
             },
             AppEvent::SearchResults(batch) => self.search_results(batch),

@@ -544,4 +544,105 @@ mod keys {
         );
         assert_eq!(text.matches("\n[[binding]]").count(), 2, "the first stub is kept");
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn keys_c_enter_on_a_context_row_writes_its_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(&dir);
+        let path = app.config_dir.join(crate::config::keymap::FILE_NAME);
+        app.test_execute(Command::KeyboardShortcuts);
+        // Find the find.next row that is Enter in the find input (not its F3 rows).
+        app.type_text("find.next");
+        let index = app
+            .keys
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .position(|r| r.command == Command::Find(crate::command::FindCommand::Next) && r.key == "Enter")
+            .expect("the find input's Enter row");
+        app.keys.as_mut().unwrap().select(index);
+        let row = app.keys.as_ref().unwrap().selected_row().unwrap().clone();
+        assert_eq!(row.context, "Find");
+        app.press(K::Enter, M::NONE);
+        assert!(
+            app.settle(|a| a.active_buffer().is_some_and(|b| b.path == path)).await,
+            "keybindings.toml opens in a tab"
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains(&format!(
+                "[[binding]]\nkey = \"{}\"\ncommand = \"find.next\"\ncontext = \"find\"\n",
+                row.spec
+            )),
+            "{text}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn keys_c_enter_on_a_multi_default_command_keeps_the_other_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(&dir);
+        let path = app.config_dir.join(crate::config::keymap::FILE_NAME);
+        app.test_execute(Command::KeyboardShortcuts);
+        // find.next has three keys: Enter and F3 in the find input, F3 in the editor. Changing
+        // the find input's Enter must write a stub that keeps the other two.
+        app.type_text("find.next");
+        let index = app
+            .keys
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .position(|r| r.command == Command::Find(crate::command::FindCommand::Next) && r.key == "Enter")
+            .expect("the find input's Enter row");
+        app.keys.as_mut().unwrap().select(index);
+        app.press(K::Enter, M::NONE);
+        assert!(
+            app.settle(|a| a.active_buffer().is_some_and(|b| b.path == path)).await,
+            "keybindings.toml opens in a tab"
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            text.matches("[[binding]]").count(),
+            3,
+            "the shown key plus the other two: {text}"
+        );
+
+        // Reload it the way main does: the command still has all three keys.
+        let (keymap, errors) = Keymap::load(&path, Platform::current());
+        assert!(errors.is_empty(), "{errors:?}");
+        let ctx = crate::config::keymap::Context::Editor;
+        let next = Command::Find(crate::command::FindCommand::Next);
+        for (code, context) in [
+            (K::F(3), ctx),
+            (K::F(3), crate::config::keymap::Context::Find),
+            (K::Enter, crate::config::keymap::Context::Find),
+        ] {
+            assert_eq!(
+                keymap.lookup(&KeyEvent::new(code, M::NONE), context),
+                Some(next),
+                "{context:?}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn keys_c_record_ignores_a_lone_modifier() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(&dir);
+        app.test_execute(Command::KeyboardShortcuts);
+        app.press(K::Char('k'), M::ALT);
+        assert!(app.keys.as_ref().unwrap().record);
+        // A lone modifier (kitty reports Shift/Ctrl as KeyCode::Modifier) isn't a combo.
+        app.press(K::Modifier(crossterm::event::ModifierKeyCode::LeftShift), M::NONE);
+        let view = app.keys.as_ref().unwrap();
+        assert!(view.record, "a lone modifier keeps recording");
+        assert_eq!(view.query, "", "it isn't recorded as the query");
+        // A real combo still ends recording.
+        app.press(K::Char('x'), M::NONE);
+        let view = app.keys.as_ref().unwrap();
+        assert!(!view.record, "a real combo ends recording");
+        assert_eq!(view.query, "X");
+    }
 }

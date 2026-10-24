@@ -278,6 +278,20 @@ impl Context {
         }
     }
 
+    /// The config spelling, e.g. `searchResults` (the reverse of `parse`; `title` is for people).
+    pub fn name(self) -> &'static str {
+        Self::ALL
+            .iter()
+            .find(|(c, _)| *c == self)
+            .map(|(_, n)| *n)
+            .expect("every context is in ALL")
+    }
+
+    /// The context whose `title` is `title` (`None` when none; the titles are unique).
+    pub fn from_title(title: &str) -> Option<Context> {
+        Self::ALL.iter().find(|(c, _)| c.title() == title).map(|(c, _)| *c)
+    }
+
     /// The context looked at next, before the global bindings.
     pub fn parent(self) -> Option<Context> {
         match self {
@@ -324,13 +338,10 @@ pub struct Binding {
 }
 
 pub struct Keymap {
-    /// `None` context = everywhere.
-    bindings: HashMap<(KeyCombo, Option<Context>), Command>,
-    /// Where each of `bindings` came from, keyed the same way.
-    #[cfg_attr(not(test), allow(dead_code))] // keys-b's view
-    sources: HashMap<(KeyCombo, Option<Context>), Source>,
-    /// The binding the palette shows for each command (its context too, for its source): the
-    /// first one that still applies.
+    /// `None` context = everywhere; each binding's command and where it came from.
+    bindings: HashMap<(KeyCombo, Option<Context>), (Command, Source)>,
+    /// The binding the palette shows for each command (its context too): the first one that
+    /// still applies.
     shown: HashMap<Command, (KeyCombo, Option<Context>)>,
 }
 
@@ -354,10 +365,9 @@ struct UserBinding {
 impl Keymap {
     /// Every binding: combo, context (`None` = everywhere), command and where it came from.
     pub fn bindings_with_source(&self) -> impl Iterator<Item = (KeyCombo, Option<Context>, Command, Source)> + '_ {
-        self.bindings.iter().map(|((combo, ctx), c)| {
-            let source = self.sources.get(&(*combo, *ctx)).copied().unwrap_or(Source::Default);
-            (*combo, *ctx, *c, source)
-        })
+        self.bindings
+            .iter()
+            .map(|((combo, ctx), (command, source))| (*combo, *ctx, *command, *source))
     }
 
     /// Every binding: combo, context (`None` = everywhere) and command.
@@ -367,15 +377,6 @@ impl Keymap {
             .map(|(combo, ctx, cmd, _)| (combo, ctx, cmd))
     }
 
-    /// Where the key the palette shows for `cmd` came from (`Default` when it has none).
-    #[cfg_attr(not(test), allow(dead_code))] // keys-b's view
-    pub fn source_of(&self, cmd: Command) -> Source {
-        let Some(binding) = self.shown.get(&cmd) else {
-            return Source::Default;
-        };
-        self.sources.get(binding).copied().unwrap_or(Source::Default)
-    }
-
     /// A binding for the current context wins over its parent's (replace → find), which wins
     /// over a global one.
     pub fn lookup(&self, ev: &KeyEvent, context: Context) -> Option<Command> {
@@ -383,11 +384,11 @@ impl Keymap {
         let mut ctx = Some(context);
         while let Some(c) = ctx {
             if let Some(cmd) = self.bindings.get(&(combo, Some(c))) {
-                return Some(*cmd);
+                return Some(cmd.0);
             }
             ctx = c.parent();
         }
-        self.bindings.get(&(combo, None)).copied()
+        self.bindings.get(&(combo, None)).map(|(cmd, _)| *cmd)
     }
 
     /// The key shown next to a command in the palette.
@@ -399,7 +400,7 @@ impl Keymap {
     /// palette key when that's one of them, else its first by label; sorted by command title.
     pub fn context_bindings(&self, context: Context) -> Vec<(KeyCombo, Command)> {
         let mut by_cmd: HashMap<Command, KeyCombo> = HashMap::new();
-        for ((combo, ctx), cmd) in &self.bindings {
+        for ((combo, ctx), (cmd, _)) in &self.bindings {
             if *ctx != Some(context) {
                 continue;
             }
@@ -421,22 +422,16 @@ impl Keymap {
     /// Later bindings win on the same key and context.
     fn from_list(list: Vec<Binding>) -> Self {
         let mut bindings = HashMap::new();
-        let mut sources = HashMap::new();
         for b in &list {
-            bindings.insert((b.combo, b.context), b.command);
-            sources.insert((b.combo, b.context), b.source);
+            bindings.insert((b.combo, b.context), (b.command, b.source));
         }
         let mut shown = HashMap::new();
         for b in &list {
-            if bindings.get(&(b.combo, b.context)) == Some(&b.command) {
+            if bindings.get(&(b.combo, b.context)).map(|(command, _)| *command) == Some(b.command) {
                 shown.entry(b.command).or_insert((b.combo, b.context));
             }
         }
-        Self {
-            bindings,
-            sources,
-            shown,
-        }
+        Self { bindings, shown }
     }
 
     pub fn default_for(platform: Platform) -> Self {
@@ -507,12 +502,14 @@ fn parse_user(text: &str) -> (Vec<Binding>, Vec<String>) {
 }
 
 /// What the Keyboard Shortcuts view writes when there's no `keybindings.toml` yet: a comment
-/// header, then the `[[binding]]` table it appends for the command.
+/// header, then the `[[binding]]` tables it appends for the command.
 pub const KEYBINDINGS_TEMPLATE: &str = "\
-# jed keybindings. Each [[binding]] replaces its command's default keys.
+# jed keybindings. A command named here keeps only the keys written here, so the
+# Keyboard Shortcuts view writes every key a command has when you change one of them.
 # key: a combo such as \"ctrl+alt+s\" (cmd, ctrl, alt, shift + a key name).
 # command: a command's name, e.g. \"file.save\".
 # context: optional; editor, explorer, find, replace, search, problems, ...
+# Changes take effect the next time jed starts.
 ";
 
 /// Blocking. Writes `KEYBINDINGS_TEMPLATE` to `path` (creating its directory) unless the file
@@ -531,10 +528,35 @@ pub fn create_if_missing(path: &Path) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
-/// Blocking. Appends a `[[binding]]` table for `command` to the `keybindings.toml` at `path`,
-/// creating the file if it isn't there; `spec` is its key's config spelling, `""` for a command
-/// with no key yet (the stub then says to set one).
-pub fn append_stub(path: &Path, command: &str, spec: &str) -> Result<(), String> {
+/// The `[[binding]]`s the Keyboard Shortcuts view's Enter writes for `command` when the selected
+/// row shows `spec` in `context` (`None` = everywhere): that binding first, then the command's
+/// other current bindings, so `with_user`'s replace-all — a command named in `keybindings.toml`
+/// keeps only the keys written there — doesn't silently drop them. A command with no key is just
+/// its one empty-key binding. Each entry is (command name, key spec, context spelling).
+pub fn stub_bindings(
+    keymap: &Keymap,
+    command: Command,
+    spec: &str,
+    context: Option<Context>,
+) -> Vec<(String, String, Option<String>)> {
+    let name = command.name().to_string();
+    let shown = (name.clone(), spec.to_string(), context.map(|c| c.name().to_string()));
+    let mut others: Vec<(String, String, Option<String>)> = keymap
+        .bindings_with_source()
+        .filter(|(_, _, cmd, _)| *cmd == command)
+        .map(|(combo, ctx, _, _)| (name.clone(), combo.spec(), ctx.map(|c| c.name().to_string())))
+        .filter(|b| *b != shown)
+        .collect();
+    others.sort();
+    let mut out = vec![shown];
+    out.extend(others);
+    out
+}
+
+/// Blocking. Appends `[[binding]]` tables for `bindings` — each a (command, key spec, context
+/// spelling; `None` = everywhere) — to the `keybindings.toml` at `path`, creating the file if it
+/// isn't there. An empty spec gets a `# set the key` note.
+pub fn append_stub(path: &Path, bindings: &[(String, String, Option<String>)]) -> Result<(), String> {
     use std::io::Write;
     let fail = |e: std::io::Error| format!("Can't write {}: {e}", path.display());
     let existing = match std::fs::read(path) {
@@ -549,10 +571,15 @@ pub fn append_stub(path: &Path, command: &str, spec: &str) -> Result<(), String>
         }
         text.push('\n');
     }
-    let note = if spec.is_empty() { "  # set the key" } else { "" };
-    text.push_str(&format!(
-        "[[binding]]\nkey = \"{spec}\"{note}\ncommand = \"{command}\"\n"
-    ));
+    for (command, spec, context) in bindings {
+        let note = if spec.is_empty() { "  # set the key" } else { "" };
+        text.push_str(&format!(
+            "[[binding]]\nkey = \"{spec}\"{note}\ncommand = \"{command}\"\n"
+        ));
+        if let Some(context) = context {
+            text.push_str(&format!("context = \"{context}\"\n"));
+        }
+    }
     let mut file = std::fs::OpenOptions::new()
         .append(true)
         .create(true)
@@ -1784,16 +1811,10 @@ mod tests {
             listed.iter().any(|(_, ctx, _, _)| ctx.is_some()),
             "a binding's context is listed with it"
         );
-        assert_eq!(km.source_of(Command::Save), Source::Default);
         assert_eq!(
             km.binding_for(Command::ManageWorkspaceTrust),
             None,
             "the unbound command really is unbound"
-        );
-        assert_eq!(
-            km.source_of(Command::ManageWorkspaceTrust),
-            Source::Default,
-            "unbound: no binding to take a source from"
         );
 
         // A keybindings.toml binding replaces its command's defaults, so it is the only binding
@@ -1801,8 +1822,6 @@ mod tests {
         let (user, errors) = parse_user("[[binding]]\nkey = \"ctrl+alt+s\"\ncommand = \"file.save\"\n");
         assert!(errors.is_empty(), "{errors:?}");
         let km = Keymap::with_user(Platform::Linux, &user);
-        assert_eq!(km.source_of(Command::Save), Source::User);
-        assert_eq!(km.source_of(Command::Undo), Source::Default, "untouched");
         for (combo, _, cmd, source) in km.bindings_with_source() {
             match cmd {
                 Command::Save => assert_eq!(source, Source::User, "{}", combo.label()),
@@ -1812,9 +1831,9 @@ mod tests {
         }
         assert_eq!(km.bindings_with_source().count(), km.bindings().count());
 
-        // A context-qualified user binding still reports its own source: `source_of` follows the
-        // shown binding's `(combo, context)` pair, so it finds the user's entry, not a same-combo
-        // default in another context.
+        // A context-qualified user binding keeps its own source: `bindings_with_source` keys each
+        // binding's source by its (combo, context) pair, so it finds the user's entry, not a
+        // same-combo default in another context.
         let (user, errors) =
             parse_user("[[binding]]\nkey = \"ctrl+alt+s\"\ncommand = \"file.save\"\ncontext = \"editor\"\n");
         assert!(errors.is_empty(), "{errors:?}");
@@ -1823,7 +1842,12 @@ mod tests {
             km.binding_for(Command::Save),
             Some(KeyCombo::parse("ctrl+alt+s").unwrap())
         );
-        assert_eq!(km.source_of(Command::Save), Source::User);
+        for (combo, ctx, cmd, source) in km.bindings_with_source() {
+            if cmd == Command::Save {
+                assert_eq!(source, Source::User, "{}", combo.label());
+                assert_eq!(ctx, Some(Context::Editor));
+            }
+        }
     }
 
     #[test]
@@ -1848,7 +1872,7 @@ mod tests {
         let (user, errors) = parse_user(KEYBINDINGS_TEMPLATE);
         assert!(user.is_empty() && errors.is_empty(), "{errors:?}");
 
-        append_stub(&path, "file.saveAs", "ctrl+alt+s").unwrap();
+        append_stub(&path, &[("file.saveAs".into(), "ctrl+alt+s".into(), None)]).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with(KEYBINDINGS_TEMPLATE), "the template is kept");
         assert!(
@@ -1867,7 +1891,7 @@ mod tests {
         std::fs::write(&path, "# mine").unwrap();
         create_if_missing(&path).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "# mine");
-        append_stub(&path, "file.save", "").unwrap();
+        append_stub(&path, &[("file.save".into(), "".into(), None)]).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "# mine\n\n[[binding]]\nkey = \"\"  # set the key\ncommand = \"file.save\"\n"
@@ -1875,6 +1899,56 @@ mod tests {
         let (user, errors) = parse_user(&std::fs::read_to_string(&path).unwrap());
         assert!(user.is_empty());
         assert_eq!(errors.len(), 1, "an empty key is a load error: {errors:?}");
+    }
+
+    #[test]
+    fn stub_bindings_writes_the_shown_key_then_a_command_s_other_keys() {
+        let km = Keymap::default_for(Platform::MacOs);
+        // find.next is F3 in the editor and F3 / Enter in the find input. Selecting the find
+        // input's Enter row writes it first, then the other two so replace-all keeps them.
+        let next = Command::Find(F::Next);
+        assert_eq!(
+            stub_bindings(&km, next, "enter", Some(Context::Find)),
+            vec![
+                ("find.next".to_string(), "enter".to_string(), Some("find".to_string())),
+                ("find.next".to_string(), "f3".to_string(), Some("editor".to_string())),
+                ("find.next".to_string(), "f3".to_string(), Some("find".to_string())),
+            ]
+        );
+        // A single global key writes just that binding, with no context.
+        assert_eq!(
+            stub_bindings(&km, Command::Save, "cmd+s", None),
+            vec![("file.save".to_string(), "cmd+s".to_string(), None)]
+        );
+    }
+
+    #[test]
+    fn append_stub_writes_a_context_and_many_bindings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        create_if_missing(&path).unwrap();
+        append_stub(
+            &path,
+            &[
+                ("find.next".into(), "enter".into(), Some("find".into())),
+                ("find.next".into(), "f3".into(), Some("editor".into())),
+            ],
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("[[binding]]\nkey = \"enter\"\ncommand = \"find.next\"\ncontext = \"find\"\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("[[binding]]\nkey = \"f3\"\ncommand = \"find.next\"\ncontext = \"editor\"\n"),
+            "{text}"
+        );
+        let (user, errors) = parse_user(&text);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(user.len(), 2);
+        assert_eq!(user[0].context, Some(Context::Find));
+        assert_eq!(user[1].context, Some(Context::Editor));
     }
 
     #[test]

@@ -40,7 +40,12 @@ impl App {
             return;
         }
         if view.record {
-            // The navigation keys still move the selection; anything else is the combo recorded.
+            // A lone modifier (kitty-protocol terminals report Shift/Ctrl as KeyCode::Modifier)
+            // isn't a combo; keep recording. The navigation keys still move the selection;
+            // anything else is the combo recorded.
+            if matches!(key.code, KeyCode::Modifier(_)) {
+                return;
+            }
             match key.code {
                 KeyCode::Up => view.move_selection(-1),
                 KeyCode::Down => view.move_selection(1),
@@ -87,22 +92,20 @@ impl App {
 
     /// Enter on a row: appends a `[[binding]]` stub for its command to `keybindings.toml`
     /// (created from the template if it isn't there) and opens it, closing the view (VS Code
-    /// switches to the file).
+    /// switches to the file). The stub writes the row's binding first, then the command's other
+    /// keys, so changing one key doesn't drop the rest.
     pub(super) fn open_keybinding_stub(&mut self) {
-        let Some((command, spec)) = self
-            .keys
-            .as_ref()
-            .and_then(|v| v.selected_row())
-            .map(|r| (r.command.name(), r.spec.clone()))
-        else {
+        let Some(row) = self.keys.as_ref().and_then(|v| v.selected_row()).cloned() else {
             return;
         };
+        let context = crate::config::keymap::Context::from_title(&row.context);
+        let bindings = crate::config::keymap::stub_bindings(&self.keymap, row.command, &row.spec, context);
         let path = self.config_dir.join(crate::config::keymap::FILE_NAME);
         let tx = self.tx.clone();
         self.keys = None;
         tokio::task::spawn_blocking(move || {
             let result = crate::config::keymap::create_if_missing(&path).and_then(|path| {
-                crate::config::keymap::append_stub(&path, &command, &spec)?;
+                crate::config::keymap::append_stub(&path, &bindings)?;
                 Ok(path)
             });
             let _ = tx.send(AppEvent::KeybindingsReady(result));
