@@ -417,7 +417,8 @@ fn main() -> ExitCode {
         .as_ref()
         .filter(|_| mode.is_single())
         .map(|(path, _)| path.as_path());
-    let identity = terminal::Identity::new(&workspace.root, single_file, &paths::home());
+    let identity = terminal::Identity::new(&workspace.root, single_file, &paths::home())
+        .with_title(workspace.config.window.title.as_deref());
     let initial = match file {
         Some((path, goto)) => match Buffer::open_with(&path, workspace.settings().indentation()) {
             Ok(buffer) => Some(app::InitialFile { buffer, goto }),
@@ -464,6 +465,7 @@ fn main() -> ExitCode {
         .and_then(|mut term| {
             runtime.block_on(async {
                 let mut app = app::App::new_in(mode, workspace, trust_store, initial, kitty);
+                app.identity = identity.clone();
                 app.editor_hint = hint;
                 if let Some((path, doc)) = initial_hex {
                     app.open_initial_hex(path, doc);

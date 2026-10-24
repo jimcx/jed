@@ -179,7 +179,18 @@ impl Theme {
             ("quickDiff.action", fg_bg(0xFFFFFF, 0x0E639C)),
             // The diff view's Revert button (red: Dark+'s `statusBarItem.errorBackground`).
             ("diffEditor.revertAction", fg_bg(0xFFFFFF, 0xC72E0F)),
-            ("statusBar", fg_bg(0xFFFFFF, 0x007ACC)),
+            // The status bar's backgrounds (`[window] status_bar`): a matching family, white
+            // text, Dark+'s blue kept as `statusBar.blue`. The warning / error / restricted
+            // cells keep their own keys.
+            ("statusBar.red", fg_bg(0xFFFFFF, 0xC72E0F)),
+            ("statusBar.orange", fg_bg(0xFFFFFF, 0xB35C00)),
+            ("statusBar.yellow", fg_bg(0xFFFFFF, 0x8A6D00)),
+            ("statusBar.green", fg_bg(0xFFFFFF, 0x16825D)),
+            ("statusBar.cyan", fg_bg(0xFFFFFF, 0x0E7A8C)),
+            ("statusBar.blue", fg_bg(0xFFFFFF, 0x007ACC)),
+            ("statusBar.purple", fg_bg(0xFFFFFF, 0x68217A)),
+            ("statusBar.magenta", fg_bg(0xFFFFFF, 0xB51963)),
+            ("statusBar.grey", fg_bg(0xFFFFFF, 0x5A5A5A)),
             ("statusBar.warning", fg_bg(0x1E1E1E, 0xCCA700)),
             ("statusBar.error", fg_bg(0xFFFFFF, 0xC72E0F)),
             ("dialog", fg_bg(0xCCCCCC, 0x252526)),
@@ -526,6 +537,28 @@ mod tests {
             };
             assert!(br < ar && bg < ag && bb < ab, "{staged} darker than {unstaged}");
         }
+    }
+
+    /// `[window] status_bar` has a key per colour, white text on distinct backgrounds, with
+    /// Dark+'s blue kept.
+    #[test]
+    fn status_bar_colours_are_in_the_theme() {
+        let theme = Theme::dark_plus(true);
+        let mut backgrounds = Vec::new();
+        for colour in crate::workspace::config::StatusBarColor::ALL {
+            let style = theme.get(colour.theme_key());
+            assert_eq!(style.fg, Some(Color::Rgb(0xFF, 0xFF, 0xFF)), "{}", colour.name());
+            let Some(bg) = style.bg else {
+                panic!("{} has a background", colour.name());
+            };
+            assert!(!backgrounds.contains(&bg), "{} is distinct", colour.name());
+            backgrounds.push(bg);
+        }
+        assert_eq!(
+            theme.get("statusBar.blue").bg,
+            Some(Color::Rgb(0x00, 0x7A, 0xCC)),
+            "the existing Dark+ blue"
+        );
     }
 
     #[test]

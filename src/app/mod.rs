@@ -421,6 +421,12 @@ pub struct App {
     /// The cursor shape the terminal has (`terminal::enter` sent the settings'; `run` sends a
     /// new one through `sync_cursor_shape` when a `.workspace` reload changes it).
     cursor_shape: crate::terminal::CursorShape,
+    /// The window's identity (`terminal::enter` sent `start`; `main` replaces this with its own,
+    /// which knows single file mode's file). `sync_window_title` re-sends its title after a
+    /// `.workspace` reload changes `[window] title`.
+    pub identity: crate::terminal::Identity,
+    /// `[window] title` changed: the next `run` turn re-sends the OSC 2 title.
+    title_dirty: bool,
     /// The find widget's options (case, whole word, regex), which Cmd+D also uses for selected
     /// text (VS Code's `selectedTextMatchMode: findOptions`; it ignores `regex`).
     pub find_options: search::Options,
@@ -522,12 +528,20 @@ impl App {
         let (tx, rx) = mpsc::unbounded_channel();
         let root = workspace.root.clone();
         let settings = workspace.settings();
+        let single = initial
+            .as_ref()
+            .filter(|_| mode.is_single())
+            .map(|f| f.buffer.path.clone());
+        let identity = crate::terminal::Identity::new(&root, single.as_deref(), &crate::paths::home())
+            .with_title(workspace.config.window.title.as_deref());
         let mut app = Self {
             mode,
             editor_hint: None,
             trust: trust_store.evaluate(&root, &workspace.config),
             trust_store,
             cursor_shape: crate::terminal::CursorShape::of(&settings),
+            identity,
+            title_dirty: false,
             settings,
             excludes: explorer::excludes(&root, &workspace.config.files.exclude),
             explorer: Explorer::new(root),
@@ -765,6 +779,7 @@ impl App {
                 crate::terminal::set_pointer(terminal.backend_mut(), pointer)?;
             }
             self.sync_cursor_shape(terminal.backend_mut())?;
+            self.sync_window_title(terminal.backend_mut())?;
             let timer = self.next_timer();
             tokio::select! {
                 ev = events.next() => match ev {
@@ -923,6 +938,17 @@ impl App {
         if shape != self.cursor_shape {
             crate::terminal::set_cursor_shape(out, shape)?;
             self.cursor_shape = shape;
+        }
+        Ok(())
+    }
+
+    /// Re-sends the window's OSC 2 title when a `.workspace` reload changed `[window] title`
+    /// (the title stack was pushed at start; this never pushes it again).
+    pub fn sync_window_title(&mut self, out: &mut impl std::io::Write) -> std::io::Result<()> {
+        if self.title_dirty {
+            out.write_all(self.identity.title_sequence().as_bytes())?;
+            out.flush()?;
+            self.title_dirty = false;
         }
         Ok(())
     }

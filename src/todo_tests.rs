@@ -109,6 +109,10 @@
 //!   and the last 20 files opened first while their input is empty, most recent first, without
 //!   duplicates (a file's walk row kept out by its recent row); a typed query keeps the fuzzy
 //!   score; a key-bound command isn't recorded; both lists stop at 20.
+//! - `window_identity`: `.workspace` `[window] title` names the window `jed <title>` (the OSC 2
+//!   title only; the user vars and OSC 7 keep the root) and `status_bar` tints the status bar
+//!   from `Theme`'s `statusBar.<colour>` keys; each colour draws, live reload updates both
+//!   (the title re-sent, not pushed) and a bad colour is reported with the last good kept.
 
 mod render_whitespace {
     use std::fs;
@@ -6762,5 +6766,178 @@ mod mru {
         assert!(!app.mru.commands.contains(&Command::ToggleSidebar));
         let rows = command_rows(&mut app);
         assert_eq!(rows[0], "Cursor: Move Right");
+    }
+}
+
+mod window_identity {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::workspace::Workspace;
+    use crate::workspace::config::StatusBarColor;
+    use crate::workspace::trust::TrustStore;
+
+    /// An app on `<dir>/ws` with `a.txt` open and `config` as its `.workspace`.
+    fn open_app(dir: &tempfile::TempDir, config: &str) -> (App, PathBuf) {
+        let base = crate::workspace::normalize(dir.path());
+        let root = base.join("ws");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(".workspace"), config).unwrap();
+        let path = root.join("a.txt");
+        fs::write(&path, "ab\n").unwrap();
+        let ws = Workspace::load(root.clone());
+        let trust = TrustStore::load(base.join("trust.toml"));
+        let initial = crate::app::InitialFile {
+            buffer: Buffer::open(&path).unwrap(),
+            goto: None,
+        };
+        let mut app = App::new(ws, trust, Some(initial), true);
+        app.test_start();
+        (app, root)
+    }
+
+    fn draw(app: &mut App) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    /// The status bar's background at its right end (never a warning / error / restricted cell).
+    fn status_bg(term: &Terminal<TestBackend>) -> Color {
+        let area = term.backend().buffer().area;
+        term.backend().buffer()[(area.right() - 2, area.bottom() - 1)].bg
+    }
+
+    /// Whether any status bar cell has `bg` (the warning / error message cells' background).
+    fn status_has_bg(term: &Terminal<TestBackend>, bg: Color) -> bool {
+        let area = term.backend().buffer().area;
+        let y = area.bottom() - 1;
+        (area.x..area.right()).any(|x| term.backend().buffer()[(x, y)].bg == bg)
+    }
+
+    /// What `sync_window_title` sends (as `run` does each turn).
+    fn sent_title(app: &mut App) -> String {
+        let mut out = Vec::new();
+        app.sync_window_title(&mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_status_bar_colour_is_drawn() {
+        for colour in StatusBarColor::ALL {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut app, _) = open_app(&dir, &format!("[window]\nstatus_bar = \"{}\"\n", colour.name()));
+            assert_eq!(app.workspace.config.window.status_bar, colour);
+            let term = draw(&mut app);
+            assert_eq!(
+                status_bg(&term),
+                app.theme.get(colour.theme_key()).bg.unwrap(),
+                "{}",
+                colour.name()
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_updates_the_title_and_the_colour() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, root) = open_app(&dir, "[window]\ntitle = \"api\"\nstatus_bar = \"green\"\n");
+        assert_eq!(
+            app.identity.title_sequence(),
+            "\x1b]2;jed api\x1b\\",
+            "the start's title"
+        );
+        assert_eq!(sent_title(&mut app), "", "enter sent it already");
+        assert_eq!(status_bg(&draw(&mut app)), app.theme.get("statusBar.green").bg.unwrap());
+
+        fs::write(
+            root.join(".workspace"),
+            "[window]\ntitle = \"web\"\nstatus_bar = \"red\"\n",
+        )
+        .unwrap();
+        assert!(
+            app.settle(|a| a.workspace.config.window.status_bar == StatusBarColor::Red)
+                .await
+        );
+        assert_eq!(sent_title(&mut app), "\x1b]2;jed web\x1b\\", "re-sent, not pushed");
+        assert_eq!(sent_title(&mut app), "", "once");
+        assert_eq!(status_bg(&draw(&mut app)), app.theme.get("statusBar.red").bg.unwrap());
+
+        // A reload changing only another setting re-sends nothing.
+        fs::write(
+            root.join(".workspace"),
+            "[window]\ntitle = \"web\"\nstatus_bar = \"red\"\n[settings]\ntab_width = 2\n",
+        )
+        .unwrap();
+        assert!(app.settle(|a| a.settings.tab_width == 2).await);
+        assert_eq!(sent_title(&mut app), "", "the title didn't change");
+
+        // The override gone: the root's title and the default colour.
+        fs::write(root.join(".workspace"), "").unwrap();
+        assert!(app.settle(|a| a.identity.title_override().is_none()).await);
+        let default = format!(
+            "\x1b]2;jed {}\x1b\\",
+            crate::recent::display(&root, &crate::paths::home())
+        );
+        assert_eq!(sent_title(&mut app), default);
+        assert_eq!(
+            status_bg(&draw(&mut app)),
+            app.theme.get("statusBar.blue").bg.unwrap(),
+            "the default colour"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bad_colour_is_reported_and_keeps_the_last_good() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, root) = open_app(&dir, "[window]\nstatus_bar = \"green\"\n");
+        fs::write(root.join(".workspace"), "[window]\nstatus_bar = \"pink\"\n").unwrap();
+        assert!(app.settle(|a| a.workspace.config_error.is_some()).await);
+        assert_eq!(
+            app.workspace.config.window.status_bar,
+            StatusBarColor::Green,
+            "the last good value kept"
+        );
+        assert_eq!(status_bg(&draw(&mut app)), app.theme.get("statusBar.green").bg.unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn warning_and_error_cells_keep_their_colours() {
+        // A tinted bar recolours only the base cells: the warning and error messages keep their
+        // own keys (warning's amber on a red bar, error's red on a green bar).
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, root) = open_app(&dir, "[window]\nstatus_bar = \"red\"\n");
+        let warn = app.theme.get("statusBar.warning").bg.unwrap();
+        let red = app.theme.get("statusBar.red").bg.unwrap();
+        assert_ne!(warn, red, "warning and the base differ");
+        app.message = Some(crate::app::Message {
+            text: "careful".into(),
+            level: crate::app::Level::Warning,
+        });
+        let term = draw(&mut app);
+        assert!(status_has_bg(&term, warn), "the warning cell kept its colour");
+        assert!(status_has_bg(&term, red), "the rest stays red");
+
+        fs::write(root.join(".workspace"), "[window]\nstatus_bar = \"green\"\n").unwrap();
+        assert!(
+            app.settle(|a| a.workspace.config.window.status_bar == StatusBarColor::Green)
+                .await
+        );
+        let err = app.theme.get("statusBar.error").bg.unwrap();
+        let green = app.theme.get("statusBar.green").bg.unwrap();
+        assert_ne!(err, green, "error and the base differ");
+        app.message = Some(crate::app::Message {
+            text: "broken".into(),
+            level: crate::app::Level::Error,
+        });
+        let term = draw(&mut app);
+        assert!(status_has_bg(&term, err), "the error cell kept its colour");
+        assert!(status_has_bg(&term, green), "the rest stays green");
     }
 }

@@ -27,13 +27,17 @@ static POINTER_SET: AtomicBool = AtomicBool::new(false);
 static IDENTITY_SET: AtomicBool = AtomicBool::new(false);
 
 /// What the terminal is told about jed's window: its title (`jed <workspace root>`, or `jed
-/// <file>` in single file mode, `~` for home), the user vars `jed` (always) and `jed_workspace`
+/// <file>` in single file mode, `~` for home; `.workspace` `[window] title` replaces the root),
+/// the user vars `jed` (always) and `jed_workspace`
 /// (the root, workspace mode only; kitty's `--when-focus-on var:jed` scopes mappings to jed,
 /// `kitten @ ls` finds the window by `jed_workspace`) and OSC 7's current directory (the root,
 /// workspace mode only: kitty starts new windows opened from jed's in it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
+    /// The default `jed <root>` (or `jed <file>`) title.
     title: String,
+    /// `[window] title`, when set: `jed <title>` instead.
+    title_override: Option<String>,
     workspace: Option<PathBuf>,
     host: String,
 }
@@ -43,17 +47,43 @@ impl Identity {
     pub fn new(root: &Path, single: Option<&Path>, home: &Path) -> Self {
         Self {
             title: format!("jed {}", crate::recent::display(single.unwrap_or(root), home)),
+            title_override: None,
             workspace: single.is_none().then(|| root.to_path_buf()),
             host: hostname(),
         }
     }
 
-    /// The sequences `start` sends: push the title stack (`CSI 22;0 t`) and set the title
-    /// (OSC 2, control characters dropped; not wrapped: tmux takes titles itself), the user vars
-    /// (OSC 1337 `SetUserVar`, base64 values, wrapped for tmux) and OSC 7.
+    /// `.workspace` `[window] title`: names the window `jed <title>` instead of the root.
+    pub fn with_title(mut self, title: Option<&str>) -> Self {
+        self.set_title(title);
+        self
+    }
+
+    /// Changes the title's override; `None` is the root's title again.
+    pub fn set_title(&mut self, title: Option<&str>) {
+        self.title_override = title.map(str::to_owned);
+    }
+
+    pub fn title_override(&self) -> Option<&str> {
+        self.title_override.as_deref()
+    }
+
+    /// OSC 2: the window's title, control characters dropped; not wrapped (tmux takes titles
+    /// itself). `start` sends it after pushing the title stack; a `.workspace` reload only
+    /// re-sends it (`App::sync_window_title`).
+    pub fn title_sequence(&self) -> String {
+        let title = match &self.title_override {
+            Some(title) => format!("jed {title}"),
+            None => self.title.clone(),
+        };
+        let title: String = title.chars().filter(|c| !c.is_control()).collect();
+        format!("\x1b]2;{title}\x1b\\")
+    }
+
+    /// The sequences `start` sends: push the title stack (`CSI 22;0 t`), the title (OSC 2), the
+    /// user vars (OSC 1337 `SetUserVar`, base64 values, wrapped for tmux) and OSC 7.
     fn start(&self) -> String {
-        let title: String = self.title.chars().filter(|c| !c.is_control()).collect();
-        let mut out = format!("\x1b[22;0t\x1b]2;{title}\x1b\\");
+        let mut out = format!("\x1b[22;0t{}", self.title_sequence());
         out.push_str(&passthrough(&set_user_var("jed", Some(b"1"))));
         if let Some(root) = &self.workspace {
             use std::os::unix::ffi::OsStrExt;
@@ -372,6 +402,45 @@ mod tests {
         assert!(restored.ends_with(&cleared), "vars cleared, title popped: {restored:?}");
         let plain = written(|o| finish(o, false, false, false));
         assert!(!plain.contains("1337") && !plain.contains("\x1b[23;0t"), "{plain:?}");
+    }
+
+    #[test]
+    fn a_workspace_title_overrides_only_the_title() {
+        let id = identity("/Users/me/proj", None).with_title(Some("api ~ box"));
+        assert_eq!(id.title_sequence(), "\x1b]2;jed api ~ box\x1b\\");
+        let entered = written(|o| start(o, false, cursor(), Some(&id)));
+        assert!(
+            entered.starts_with("\x1b[?1049h\x1b[22;0t\x1b]2;jed api ~ box\x1b\\"),
+            "pushed once, then the override: {entered:?}"
+        );
+        assert!(
+            entered.contains(&passthrough(
+                "\x1b]1337;SetUserVar=jed_workspace=L1VzZXJzL21lL3Byb2o=\x07"
+            )),
+            "the real root: {entered:?}"
+        );
+        assert!(
+            entered.contains("\x1b]7;file://box.local/Users/me/proj\x1b\\"),
+            "{entered:?}"
+        );
+        assert_eq!(id.title_override(), Some("api ~ box"));
+    }
+
+    #[test]
+    fn a_reload_re_sends_the_title_without_pushing_it() {
+        let mut id = identity("/Users/me/proj", None);
+        id.set_title(Some("api\x1b]2;evil\x07"));
+        assert_eq!(
+            id.title_sequence(),
+            "\x1b]2;jed api]2;evil\x1b\\",
+            "control characters dropped"
+        );
+        assert!(
+            !id.title_sequence().contains("\x1b[22;0t"),
+            "the title stack is pushed only at start"
+        );
+        id.set_title(None);
+        assert_eq!(id.title_sequence(), "\x1b]2;jed ~/proj\x1b\\", "the root's title again");
     }
 
     #[test]

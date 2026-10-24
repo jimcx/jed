@@ -260,6 +260,13 @@ impl App {
         let associations_changed = config.files.associations != self.workspace.config.files.associations;
         self.workspace.config = config;
         self.settings = self.workspace.settings();
+        // `[window] title`: re-sent as OSC 2 (no title-stack push) on the next run turn. The
+        // status bar's colour is read from the config when it draws.
+        let title = self.workspace.config.window.title.clone();
+        if title.as_deref() != self.identity.title_override() {
+            self.identity.set_title(title.as_deref());
+            self.title_dirty = true;
+        }
 
         if excludes_changed {
             self.excludes = explorer::excludes(&self.workspace.root, &self.workspace.config.files.exclude);

@@ -16,6 +16,81 @@ pub struct WorkspaceConfig {
     pub lsp: BTreeMap<String, LspServer>,
     pub tasks: BTreeMap<String, Task>,
     pub history: HistoryConfig,
+    pub window: WindowConfig,
+}
+
+/// `[window]`: the workspace's name in the window title and the status bar's colour, so several
+/// jed windows are told apart. Neither names a command, so neither needs trust.
+#[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WindowConfig {
+    /// `jed <title>` instead of `jed <root>`; control characters are dropped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The status bar's background (`Theme::dark_plus` has `statusBar.<name>` for each).
+    pub status_bar: StatusBarColor,
+}
+
+/// `[window] status_bar`'s colours, by their theme key's suffix.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StatusBarColor {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Cyan,
+    #[default]
+    Blue,
+    Purple,
+    Magenta,
+    Grey,
+}
+
+impl StatusBarColor {
+    /// Every colour, for the tests that cover them all.
+    #[cfg(test)]
+    pub const ALL: [StatusBarColor; 9] = [
+        StatusBarColor::Red,
+        StatusBarColor::Orange,
+        StatusBarColor::Yellow,
+        StatusBarColor::Green,
+        StatusBarColor::Cyan,
+        StatusBarColor::Blue,
+        StatusBarColor::Purple,
+        StatusBarColor::Magenta,
+        StatusBarColor::Grey,
+    ];
+
+    /// The config / theme key name (`red`, …), for the tests.
+    #[cfg(test)]
+    pub fn name(self) -> &'static str {
+        match self {
+            StatusBarColor::Red => "red",
+            StatusBarColor::Orange => "orange",
+            StatusBarColor::Yellow => "yellow",
+            StatusBarColor::Green => "green",
+            StatusBarColor::Cyan => "cyan",
+            StatusBarColor::Blue => "blue",
+            StatusBarColor::Purple => "purple",
+            StatusBarColor::Magenta => "magenta",
+            StatusBarColor::Grey => "grey",
+        }
+    }
+
+    pub fn theme_key(self) -> &'static str {
+        match self {
+            StatusBarColor::Red => "statusBar.red",
+            StatusBarColor::Orange => "statusBar.orange",
+            StatusBarColor::Yellow => "statusBar.yellow",
+            StatusBarColor::Green => "statusBar.green",
+            StatusBarColor::Cyan => "statusBar.cyan",
+            StatusBarColor::Blue => "statusBar.blue",
+            StatusBarColor::Purple => "statusBar.purple",
+            StatusBarColor::Magenta => "statusBar.magenta",
+            StatusBarColor::Grey => "statusBar.grey",
+        }
+    }
 }
 
 /// `[history]`: file history limits (see `crate::history`).
@@ -188,6 +263,34 @@ env = { CC = "clang" }
     #[test]
     fn unknown_keys_are_errors() {
         assert!(WorkspaceConfig::parse("[settings]\ntab_widht = 2").is_err());
+    }
+
+    #[test]
+    fn window_defaults_and_title() {
+        let c = WorkspaceConfig::parse("").unwrap();
+        assert_eq!(c.window.title, None);
+        assert_eq!(c.window.status_bar, StatusBarColor::Blue);
+        let c = WorkspaceConfig::parse("[window]\ntitle = \"api\"").unwrap();
+        assert_eq!(c.window.title.as_deref(), Some("api"));
+        assert_eq!(c.window.status_bar, StatusBarColor::Blue, "the title alone");
+        assert!(WorkspaceConfig::parse("[window]\ntitel = \"api\"").is_err());
+    }
+
+    #[test]
+    fn every_status_bar_colour_parses() {
+        for colour in StatusBarColor::ALL {
+            let text = format!("[window]\nstatus_bar = \"{}\"", colour.name());
+            let c = WorkspaceConfig::parse(&text).unwrap();
+            assert_eq!(c.window.status_bar, colour, "{text}");
+            assert_eq!(colour.theme_key(), format!("statusBar.{}", colour.name()));
+        }
+    }
+
+    #[test]
+    fn an_unknown_status_bar_colour_is_an_error() {
+        let e = WorkspaceConfig::parse("[window]\nstatus_bar = \"pink\"").unwrap_err();
+        assert!(e.contains("unknown variant"), "{e}");
+        assert!(e.contains("pink"), "{e}");
     }
 
     #[test]

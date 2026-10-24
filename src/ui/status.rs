@@ -23,7 +23,7 @@ pub struct StatusHit {
 
 /// Draws the status bar; returns where its clickable items are.
 pub fn render(f: &mut Frame, area: Rect, app: &App) -> StatusHit {
-    let style = app.theme.get("statusBar");
+    let style = app.theme.get(app.workspace.config.window.status_bar.theme_key());
     let out = f.buffer_mut();
     out.set_style(area, style);
     let width = area.width as usize;
