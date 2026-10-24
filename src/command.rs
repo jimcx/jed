@@ -220,6 +220,9 @@ pub enum Command {
     FocusScm,
     /// The Source Control view's list (`Context::Scm`).
     Scm(ScmCommand),
+    /// A merge conflict's accept commands: at the conflicts the selections touch, or at every
+    /// conflict in the file (`AcceptAll*`).
+    Merge(MergeCommand),
     /// The Explorer view's "Git History" section (`Context::GitHistory`).
     GitHistory(GitHistoryCommand),
     /// A commit tab (`Context::Commit`): opening a stat row's diff.
@@ -681,6 +684,37 @@ impl ScmCommand {
     ];
 }
 
+/// The merge conflict commands (palette; unbound): accept a side of the conflicts the selections
+/// touch, or of every conflict in the file (`AcceptAll*`).
+#[allow(clippy::enum_variant_names)] // the palette's names, VS Code's: they all accept
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MergeCommand {
+    /// Keep the current side of each touched conflict (`<<<<<<<` … `=======`).
+    AcceptCurrent,
+    /// Keep the incoming side (VS Code's "Accept Incoming Change").
+    AcceptIncoming,
+    /// Keep both, current then incoming.
+    AcceptBoth,
+    /// Keep the base block (a `|||||||` diff3 conflict); a two-way conflict is removed.
+    AcceptNone,
+    /// The same for every conflict in the file.
+    AcceptAllCurrent,
+    AcceptAllIncoming,
+    AcceptAllBoth,
+}
+
+impl MergeCommand {
+    pub const ALL: [MergeCommand; 7] = [
+        MergeCommand::AcceptCurrent,
+        MergeCommand::AcceptIncoming,
+        MergeCommand::AcceptBoth,
+        MergeCommand::AcceptNone,
+        MergeCommand::AcceptAllCurrent,
+        MergeCommand::AcceptAllIncoming,
+        MergeCommand::AcceptAllBoth,
+    ];
+}
+
 /// The Explorer view's "Git History" section (`Context::GitHistory`, while it has the keys):
 /// moving the selection through the loaded commits, back to the tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -872,6 +906,7 @@ impl Command {
             Command::FocusScm,
         ]);
         all.extend(ScmCommand::ALL.map(Command::Scm));
+        all.extend(MergeCommand::ALL.map(Command::Merge));
         all.extend(GitHistoryCommand::ALL.map(Command::GitHistory));
         all.extend(CommitCommand::ALL.map(Command::Commit));
         all.extend([Command::ShowFileHistory, Command::RestoreFileHistory]);
@@ -1162,6 +1197,18 @@ impl Command {
                     ScmCommand::Open => "open",
                     ScmCommand::Preview => "preview",
                     ScmCommand::FocusEditor => "focusEditor",
+                }
+            ),
+            Command::Merge(c) => format!(
+                "merge.{}",
+                match c {
+                    MergeCommand::AcceptCurrent => "acceptCurrent",
+                    MergeCommand::AcceptIncoming => "acceptIncoming",
+                    MergeCommand::AcceptBoth => "acceptBoth",
+                    MergeCommand::AcceptNone => "acceptNone",
+                    MergeCommand::AcceptAllCurrent => "acceptAllCurrent",
+                    MergeCommand::AcceptAllIncoming => "acceptAllIncoming",
+                    MergeCommand::AcceptAllBoth => "acceptAllBoth",
                 }
             ),
             Command::GitHistory(c) => format!(
@@ -1478,6 +1525,15 @@ impl Command {
                 ScmCommand::Preview => "Source Control: Open Changes, Keep Focus",
                 ScmCommand::FocusEditor => "Source Control: Back to Editor",
             },
+            Command::Merge(c) => match c {
+                MergeCommand::AcceptCurrent => "Merge Conflict: Accept Current",
+                MergeCommand::AcceptIncoming => "Merge Conflict: Accept Incoming",
+                MergeCommand::AcceptBoth => "Merge Conflict: Accept Both",
+                MergeCommand::AcceptNone => "Merge Conflict: Accept None",
+                MergeCommand::AcceptAllCurrent => "Merge Conflict: Accept All Current",
+                MergeCommand::AcceptAllIncoming => "Merge Conflict: Accept All Incoming",
+                MergeCommand::AcceptAllBoth => "Merge Conflict: Accept All Both",
+            },
             Command::GitHistory(c) => match c {
                 GitHistoryCommand::Up => "Git History: Select Previous Commit",
                 GitHistoryCommand::Down => "Git History: Select Next Commit",
@@ -1660,6 +1716,7 @@ mod tests {
             Command::UnstageAll => 74,
             Command::FocusScm => 75,
             Command::Scm(_) => 76,
+            Command::Merge(_) => 121,
             Command::ShowFileHistory => 77,
             Command::RestoreFileHistory => 78,
             Command::RunTask => 79,
@@ -1703,7 +1760,7 @@ mod tests {
             Command::ConvertIndentationToTabs => 112,
         }
     }
-    const VARIANTS: u8 = 121;
+    const VARIANTS: u8 = 122;
 
     #[test]
     fn all_lists_every_variant() {
@@ -1724,6 +1781,7 @@ mod tests {
         assert_eq!(count(59), SuggestCommand::ALL.len());
         assert_eq!(count(104), CodeActionCommand::ALL.len());
         assert_eq!(count(76), ScmCommand::ALL.len());
+        assert_eq!(count(121), MergeCommand::ALL.len());
         assert_eq!(count(94), GitHistoryCommand::ALL.len());
         assert_eq!(count(95), CommitCommand::ALL.len());
         assert_eq!(count(82), TaskCommand::ALL.len());

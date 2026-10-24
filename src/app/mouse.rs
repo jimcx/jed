@@ -9,7 +9,9 @@ use super::{App, Focus};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::column::{self, Cell};
 use crate::command::{Command, ExplorerCommand};
-use crate::layout::{Divider, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, PanelTab, ScrollTarget, SidePanel, SplitDir};
+use crate::layout::{
+    Divider, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, MergeButton, PanelTab, ScrollTarget, SidePanel, SplitDir,
+};
 use crate::selection::{Selection, Selections};
 use crate::terminal::Pointer;
 use crate::view::View;
@@ -366,6 +368,7 @@ impl App {
                 }
             }
             Hit::Editor(_) if m.modifiers.is_empty() && self.bulb_click(&m) => {}
+            Hit::Editor(g) if m.modifiers.is_empty() && self.merge_click(g, &m) => {}
             Hit::Editor(_) if m.modifiers.is_empty() && self.gutter_click(&m) => {}
             Hit::Editor(g) => {
                 self.focus_group(g);
@@ -387,6 +390,38 @@ impl App {
             Hit::StatusLanguage => self.change_language_mode(),
             Hit::Status | Hit::Hover | Hit::Completion | Hit::CodeActions | Hit::QuickDiff | Hit::Nothing => {}
         }
+    }
+
+    /// A click on a merge conflict's action row: Accept Current / Incoming / Both applies that
+    /// side of the button's conflict (one undo step); Compare is a no-op until its command
+    /// lands. True when the click was on a button.
+    fn merge_click(&mut self, group: crate::layout::GroupId, m: &MouseEvent) -> bool {
+        let at = ratatui::layout::Position { x: m.column, y: m.row };
+        let Some(&(_, button, start)) = self
+            .hits
+            .group(group)
+            .and_then(|g| g.merge_buttons.iter().find(|(rect, _, _)| rect.contains(at)))
+        else {
+            return false;
+        };
+        self.focus_group(group);
+        self.ui.focus = Focus::Editor;
+        if let MergeButton::Accept(choice) = button
+            && self.active_writable()
+            && let Some((buf, view)) = self.active_mut()
+        {
+            let revision = buf.revision();
+            let conflict = buf
+                .conflicts
+                .scan(&buf.rope, revision)
+                .iter()
+                .find(|c| c.start == start)
+                .cloned();
+            if let Some(conflict) = conflict {
+                crate::edit::accept_merge(buf, view, choice, std::slice::from_ref(&conflict));
+            }
+        }
+        true
     }
 
     /// Right-click (jed has no context menus): on a tab, its file's history ("File History:

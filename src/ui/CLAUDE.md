@@ -13,7 +13,7 @@ One line per widget or editor layer; [docs/dev/ui.md](../../docs/dev/ui.md) has 
 
 - `activity.rs` — the activity bar's icons (greyed, `activityBar.disabled`, when `Mode::allows_view` says no: single file mode)
 - `tabs.rs` — tab bars: overflow scrolling with `‹` / `›`, revealing the active tab, deleted / diff / shell / dirty titles; a dragged tab's drop marker (`tab.dropMarker`)
-- `editor.rs` — the editor (takes an `Overlay { focused, find, whitespace, blame }`), layered per grapheme in one pass, each walked with one index over sorted on-screen data: syntax spans (`buf.syntax.spans`), matched brackets, diagnostics' squiggles, rendered whitespace, find matches, selections, inline blame on the primary's line, gutter quick-diff markers
+- `editor.rs` — the editor (takes an `Overlay { focused, find, whitespace, blame }`), layered per grapheme in one pass, each walked with one index over sorted on-screen data: syntax spans (`buf.syntax.spans`), matched brackets, diagnostics' squiggles, rendered whitespace, find matches, selections, inline blame on the primary's line, gutter quick-diff markers, merge conflicts' block backgrounds, marker labels and action row (returned for `GroupHit::merge_buttons`)
 - `find.rs` — the find / replace widget (top right of the active editor), `draw_field` (shared one-line input drawing)
 - `side.rs` — the side panel: explorer rows with git colours, the Explorer's split with the "Git History" section (divider, header, commit rows)
 - `search.rs` — the Search view: inputs, toggles, details, results list

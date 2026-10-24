@@ -156,6 +156,15 @@ impl Theme {
             ("diffEditor.insertedTextBackground", Style::new().bg(c(0x505F2F))),
             ("diffEditor.diagonalFill", Style::new().fg(c(0x404040))),
             ("diffEditor.header", fg_bg(0xBBBBBB, 0x252526)),
+            // Merge conflicts' blocks (VS Code's `merge.*Background`; the header colours are
+            // Dark+'s #3675aa55 / #3c806b55 / #3a3a3a55 blended over the editor, the content
+            // ones opaque). The marker labels are `git.blame.editorDecorationForeground`.
+            ("merge.currentHeaderBackground", Style::new().bg(c(0x263B4D))),
+            ("merge.currentContentBackground", Style::new().bg(c(0x2E4B6F))),
+            ("merge.incomingHeaderBackground", Style::new().bg(c(0x283F38))),
+            ("merge.incomingContentBackground", Style::new().bg(c(0x29594E))),
+            ("merge.commonHeaderBackground", Style::new().bg(c(0x272727))),
+            ("merge.commonContentBackground", Style::new().bg(c(0x3D3D3D))),
             // A commit tab (`git show`'s text): git's own log colours — the commit id yellow,
             // the stat graph's `+` green and `-` red; everything else the editor's colour.
             ("gitShow.commit", Style::new().fg(c(0xE5E510))),

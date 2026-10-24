@@ -1,6 +1,7 @@
 //! The text area: gutter (line numbers, quick diff's markers), text (syntax colours), matched
 //! brackets, diagnostics' squiggles, selections, find matches, cursors, rendered whitespace,
-//! the cursor line's inline blame.
+//! merge conflicts (block backgrounds, marker labels, the action row) and the cursor line's
+//! inline blame.
 
 use std::collections::HashSet;
 
@@ -12,9 +13,11 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::blame;
 use crate::buffer::Buffer;
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
+use crate::conflict::Choice;
 use crate::diagnostics::{self, Severity};
 use crate::edit::{CursorStyle, RenderWhitespace, Settings};
 use crate::find::FindWidget;
+use crate::layout::{MergeButton, MergeButtonHit};
 use crate::search::Match;
 use crate::theme::Theme;
 use crate::view::View;
@@ -35,6 +38,15 @@ pub struct Overlay<'a> {
 fn is_blank(c: char) -> bool {
     c == ' ' || c == '\t'
 }
+
+/// The action row after a conflict's `<<<<<<<` line: its buttons' labels and what they do
+/// (VS Code's Accept Current / Incoming / Both, then Compare).
+const MERGE_ACTIONS: [(&str, MergeButton); 4] = [
+    (" Accept Current ", MergeButton::Accept(Choice::Current)),
+    (" Accept Incoming ", MergeButton::Accept(Choice::Incoming)),
+    (" Accept Both ", MergeButton::Accept(Choice::Both)),
+    (" Compare ", MergeButton::Compare),
+];
 
 /// Where a line's leading whitespace ends and its trailing whitespace starts (byte offsets into
 /// the line; a blank line is all leading and all trailing). Only for the modes that need them.
@@ -91,7 +103,8 @@ pub fn text_width(width: u16, rope: &ropey::Rope) -> usize {
     width.saturating_sub(gutter_width(rope)).max(1) as usize
 }
 
-/// Draws the editor and returns the text area (excluding the gutter), for mouse hit-testing.
+/// Draws the editor and returns the text area (excluding the gutter), for mouse hit-testing,
+/// and the merge conflicts' action-row buttons it drew.
 pub fn render(
     f: &mut Frame,
     area: Rect,
@@ -100,7 +113,7 @@ pub fn render(
     theme: &Theme,
     s: &Settings,
     overlay: Overlay,
-) -> Rect {
+) -> (Rect, Vec<MergeButtonHit>) {
     let focused = overlay.focused;
     let s = &s.for_buffer(buf);
     let tab = s.tab_width;
@@ -257,6 +270,79 @@ pub fn render(
     let mut qi = 0;
     let marker_x = (gutter_w > 1 && area.width > gutter_w).then_some(area.x + gutter_w - 1);
 
+    // Merge conflicts on screen: each block line's background (the markers' lines too) and the
+    // labels after the `<<<<<<<`, `|||||||` and `>>>>>>>` lines, the first with the action row.
+    // Both walk the visible conflicts in order (one index each), never the buffer per byte.
+    let revision = buf.revision();
+    let conflicts = buf.conflicts.scan(rope, revision);
+    let (current_header, current_content) = (
+        theme.get("merge.currentHeaderBackground"),
+        theme.get("merge.currentContentBackground"),
+    );
+    let (incoming_header, incoming_content) = (
+        theme.get("merge.incomingHeaderBackground"),
+        theme.get("merge.incomingContentBackground"),
+    );
+    let (common_header, common_content) = (
+        theme.get("merge.commonHeaderBackground"),
+        theme.get("merge.commonContentBackground"),
+    );
+    let mut ci = 0;
+    let mut merge_at = |b: ByteIdx| -> Option<Style> {
+        while ci < conflicts.len() && conflicts[ci].end <= b {
+            ci += 1;
+        }
+        let c = conflicts.get(ci).filter(|c| c.start <= b)?;
+        Some(if b < c.current.start {
+            current_header
+        } else if b < c.current.end {
+            current_content
+        } else if c.base.as_ref().is_some_and(|base| b < base.start) {
+            common_header
+        } else if b < c.base.as_ref().map_or(c.current.end, |base| base.end) {
+            common_content
+        } else if b < c.incoming.start {
+            incoming_header
+        } else if b < c.incoming.end {
+            incoming_content
+        } else {
+            incoming_header
+        })
+    };
+    /// A marker line's label and, on the `<<<<<<<` line, the conflict whose action row it gets.
+    struct Marker {
+        line: usize,
+        label: &'static str,
+        conflict: Option<ByteIdx>,
+    }
+    let view_end = pos::line_end(rope, last_line);
+    let mut marker_rows: Vec<Marker> = Vec::new();
+    for conflict in conflicts
+        .iter()
+        .filter(|c| c.start <= view_end && c.end > view_range.start)
+    {
+        marker_rows.push(Marker {
+            line: pos::line_of(rope, conflict.start),
+            label: "(Current Change)",
+            conflict: Some(conflict.start),
+        });
+        if conflict.base.is_some() {
+            marker_rows.push(Marker {
+                line: pos::line_of(rope, conflict.current.end),
+                label: "(Common Ancestor)",
+                conflict: None,
+            });
+        }
+        marker_rows.push(Marker {
+            line: pos::line_of(rope, conflict.incoming.end),
+            label: "(Incoming Change)",
+            conflict: None,
+        });
+    }
+    let mut mki = 0;
+    let mut merge_buttons: Vec<MergeButtonHit> = Vec::new();
+    let merge_button_style = theme.get("quickDiff.action");
+
     let out = f.buffer_mut();
     out.set_style(area, base);
     let right = text.x + text.width;
@@ -268,7 +354,12 @@ pub fn render(
             break;
         }
         let y = area.y + row;
+        let start = pos::line_start(rope, line);
         let row_style = if line == cursor_line { current_line_style } else { base };
+        let row_style = match merge_at(start) {
+            Some(merge) => row_style.patch(merge),
+            None => row_style,
+        };
         out.set_style(Rect { y, height: 1, ..area }, row_style);
 
         let num_style = if line == cursor_line {
@@ -294,7 +385,6 @@ pub fn render(
             out.set_stringn(x, y, marker.glyph(), 1, style);
         }
 
-        let start = pos::line_start(rope, line);
         let content = pos::line_text(rope, line);
         let bounds = whitespace_bounds(whitespace, &content);
         let mut col = 0usize;
@@ -392,6 +482,60 @@ pub fn render(
             out.set_stringn(text.x + (col - view.left_col) as u16, y, " ", 1, style);
         }
 
+        // Merge conflict markers: the label after the line's text and, on the `<<<<<<<` line,
+        // its action row. Buttons are dropped from the right (Compare first) when they don't
+        // fit; each drawn one is recorded for hit-testing.
+        while mki < marker_rows.len() && marker_rows[mki].line < line {
+            mki += 1;
+        }
+        if let Some(marker) = marker_rows.get(mki).filter(|m| m.line == line) {
+            let edge = view.left_col + view.width;
+            let mut x = col + blame::GAP;
+            if x >= view.left_col && x < edge {
+                let avail = edge.saturating_sub(x);
+                if let Some(shown) = blame::fit(marker.label, avail) {
+                    let at = text.x + (x - view.left_col) as u16;
+                    out.set_stringn(at, y, &shown, (right - at) as usize, row_style.patch(blame_style));
+                    x += shown.chars().count() + blame::GAP;
+                }
+            }
+            if let Some(conflict) = marker.conflict
+                && x >= view.left_col
+            {
+                // The buttons' widths and the one-cell gaps between them.
+                let width = |n: usize| {
+                    MERGE_ACTIONS[..n]
+                        .iter()
+                        .map(|(label, _)| label.chars().count() + 1)
+                        .sum::<usize>()
+                        .saturating_sub(1)
+                };
+                let mut count = MERGE_ACTIONS.len();
+                while count > 0 && x + width(count) > edge {
+                    count -= 1;
+                }
+                let style = row_style.patch(merge_button_style);
+                for (i, (label, button)) in MERGE_ACTIONS[..count].iter().enumerate() {
+                    let at = text.x + (x - view.left_col) as u16;
+                    out.set_stringn(at, y, label, (right - at) as usize, style);
+                    merge_buttons.push((
+                        Rect {
+                            x: at,
+                            y,
+                            width: label.chars().count() as u16,
+                            height: 1,
+                        },
+                        *button,
+                        conflict,
+                    ));
+                    x += label.chars().count();
+                    if i + 1 < count {
+                        x += 1;
+                    }
+                }
+            }
+        }
+
         // Inline blame: `GAP` cells after the line's end (`col`: its whole width, unless the
         // line reached the right edge), cut with "…" at the edge, nothing when too little room
         // is left or the label's start is scrolled off to the left.
@@ -440,7 +584,7 @@ pub fn render(
             f.set_cursor_position(Position { x, y });
         }
     }
-    text
+    (text, merge_buttons)
 }
 
 #[cfg(test)]

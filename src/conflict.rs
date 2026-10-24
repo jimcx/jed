@@ -39,7 +39,6 @@ pub struct Conflict {
 }
 
 /// What an accept keeps of a conflict.
-#[cfg_attr(not(test), allow(dead_code))] // the accept commands come next
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Choice {
     Current,
@@ -107,13 +106,11 @@ impl Conflicts {
     }
 }
 
-/// The change that accepts `choice` of `conflict`: the whole span (markers included) replaced
-/// with the chosen block's text, in the text's coordinates before the edit. Applying it is one
-/// `EditKind::Other` undo step.
-#[cfg_attr(not(test), allow(dead_code))] // the accept commands come next
-pub fn accept(rope: &Rope, conflict: &Conflict, choice: Choice) -> ChangeSet {
+/// The text `choice` keeps of `conflict`: the chosen block, markers left out (the base of a
+/// two-way conflict is empty: accepting it removes the conflict).
+pub fn block(rope: &Rope, conflict: &Conflict, choice: Choice) -> String {
     let block = |range: &Range<ByteIdx>| rope.slice(range.start.0..range.end.0).to_string();
-    let text = match choice {
+    match choice {
         Choice::Current => block(&conflict.current),
         Choice::Incoming => block(&conflict.incoming),
         Choice::Both => {
@@ -125,10 +122,25 @@ pub fn accept(rope: &Rope, conflict: &Conflict, choice: Choice) -> ChangeSet {
             Some(base) => block(base),
             None => String::new(),
         },
-    };
-    let mut set = ChangeSet::with_capacity(1, text.len());
-    set.push(conflict.start, conflict.end, &text);
+    }
+}
+
+/// The changes that accept `choice` of every conflict in `conflicts` (sorted and not
+/// overlapping): each whole span (markers included) replaced with its chosen block's text, in
+/// the text's coordinates before the edit. Applying them is one `EditKind::Other` undo step.
+pub fn accept_all(rope: &Rope, conflicts: &[Conflict], choice: Choice) -> ChangeSet {
+    let mut set = ChangeSet::with_capacity(conflicts.len(), 0);
+    for conflict in conflicts {
+        let text = block(rope, conflict, choice);
+        set.push(conflict.start, conflict.end, &text);
+    }
     set
+}
+
+/// The change that accepts `choice` of `conflict`; see [`accept_all`].
+#[cfg_attr(not(test), allow(dead_code))] // the commands use `accept_all`
+pub fn accept(rope: &Rope, conflict: &Conflict, choice: Choice) -> ChangeSet {
+    accept_all(rope, std::slice::from_ref(conflict), choice)
 }
 
 /// What a marker line is.
@@ -284,7 +296,7 @@ mod tests {
         conflicts.conflicts().to_vec()
     }
 
-    fn block(rope: &Rope, range: &Range<ByteIdx>) -> String {
+    fn slice(rope: &Rope, range: &Range<ByteIdx>) -> String {
         rope.slice(range.start.0..range.end.0).to_string()
     }
 
@@ -322,12 +334,12 @@ g\n";
         let conflict = &list[0];
         assert_eq!(conflict.start, ByteIdx(2), "the <<<<<<< line's start");
         assert_eq!(
-            block(&rope, &(conflict.start..conflict.end)),
+            slice(&rope, &(conflict.start..conflict.end)),
             "<<<<<<< ours\nB\n=======\nX\n>>>>>>> theirs\n",
             "the whole span, markers included"
         );
-        assert_eq!(block(&rope, &conflict.current), "B\n");
-        assert_eq!(block(&rope, &conflict.incoming), "X\n");
+        assert_eq!(slice(&rope, &conflict.current), "B\n");
+        assert_eq!(slice(&rope, &conflict.incoming), "X\n");
         assert_eq!(conflict.base, None);
         assert_eq!(pos::line_of(&rope, conflict.start), 1);
         assert_eq!(
@@ -353,7 +365,7 @@ g\n";
         let list = conflicts(&text);
         assert_eq!(list.len(), 1);
         let base = list[0].base.as_ref().expect("a three-way conflict");
-        assert_eq!(block(&rope, base), "b\n");
+        assert_eq!(slice(&rope, base), "b\n");
     }
 
     #[test]
@@ -372,6 +384,26 @@ g\n";
         assert_eq!(accepted(&merged, Choice::Current), "a\nB\nc\n");
         assert_eq!(accepted(&merged, Choice::Incoming), "a\nX\nc\n");
         assert_eq!(accepted(&merged, Choice::Base), "a\nb\nc\n");
+    }
+
+    #[test]
+    fn accept_all_takes_every_conflict_in_one_set() {
+        let list = conflicts(TWO_CONFLICTS);
+        assert_eq!(list.len(), 2);
+        let applied = |choice| {
+            let mut rope = Rope::from_str(TWO_CONFLICTS);
+            let set = accept_all(&rope, &list, choice);
+            assert_eq!(set.len(), list.len(), "one change per conflict");
+            set.apply(&mut rope);
+            rope.to_string()
+        };
+        assert_eq!(applied(Choice::Current), "a\nb\nd\ne\ng\n");
+        assert_eq!(applied(Choice::Incoming), "a\nc\nd\nf\ng\n");
+        assert_eq!(applied(Choice::Both), "a\nb\nc\nd\ne\nf\ng\n");
+        assert_eq!(applied(Choice::Base), "a\nd\ng\n", "no base block: both are removed");
+        let rope = Rope::from_str(TWO_CONFLICTS);
+        assert_eq!(block(&rope, &list[0], Choice::Current), "b\n");
+        assert_eq!(block(&rope, &list[1], Choice::Both), "e\nf\n");
     }
 
     #[test]

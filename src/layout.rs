@@ -541,6 +541,18 @@ pub struct PaletteHit {
     pub rows: Rect,
 }
 
+/// A merge conflict's action-row button: what a click on it does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeButton {
+    /// Accept that side of the conflict at `ByteIdx` (its `<<<<<<<`).
+    Accept(crate::conflict::Choice),
+    /// A diff of current against incoming (a no-op until the Compare command lands).
+    Compare,
+}
+
+/// One action-row button as drawn: its rect, what it does, and its conflict's `start`.
+pub type MergeButtonHit = (Rect, MergeButton, crate::buffer::pos::ByteIdx);
+
 /// One editor group as drawn: tab bar, editor, and the text area inside it.
 #[derive(Debug, Clone, Default)]
 pub struct GroupHit {
@@ -555,6 +567,8 @@ pub struct GroupHit {
     pub tab_arrows: Option<TabArrows>,
     /// The changed-on-disk banner above the editor, when shown.
     pub banner: Option<BannerHit>,
+    /// The merge conflicts' action-row buttons drawn in the editor.
+    pub merge_buttons: Vec<MergeButtonHit>,
     /// The diff view, when the group shows a diff tab.
     pub diff: Option<DiffHit>,
     /// The vertical scroll bar at the editor's right edge (a text or diff tab).
@@ -970,6 +984,7 @@ mod tests {
                     actions: vec![(Rect::new(r.x + 2, r.y + 1, 6, 1), crate::disk::BannerAction::Reload)],
                 }),
                 diff: None,
+                merge_buttons: Vec::new(),
                 // Its scroll bar at the right edge.
                 scrollbar: Some(ScrollBarHit {
                     track: Rect {

@@ -8,7 +8,8 @@ use crate::buffer::file::Eol;
 use crate::buffer::pos::{self, ByteIdx};
 use crate::buffer::undo::EditKind;
 use crate::clipboard::Copied;
-use crate::command::{Command, Motion};
+use crate::command::{Command, MergeCommand, Motion};
+use crate::conflict::{self, Choice, Conflict};
 use crate::indentation::Indentation;
 use crate::selection::{Selection, Selections};
 use crate::syntax::Language;
@@ -237,6 +238,7 @@ pub fn run(cmd: Command, buf: &mut Buffer, view: &mut View, s: &Settings) -> boo
         Command::CopyLinesUp => lines::copy_lines(buf, view, false),
         Command::CopyLinesDown => lines::copy_lines(buf, view, true),
         Command::CommentLine => comment::toggle(buf, view, s.tab_width),
+        Command::Merge(m) => merge_command(buf, view, m),
         _ => return false,
     }
     true
@@ -261,12 +263,73 @@ pub fn is_edit(cmd: Command) -> bool {
             | Command::CommentLine
             | Command::IndentLines
             | Command::OutdentLines
+            | Command::Merge(_)
     )
 }
 
-/// Typed text: one char from a key press, at every selection. With `auto_indent`, a closing
-/// bracket first on a line re-indents it (`indent::type_char`); with `auto_close_pairs`, a
-/// bracket or quote may close, wrap or type over instead (`pairs::type_char`).
+/// The conflicts `selections` touch (each selection's `start..=end` against the sorted list,
+/// visited in order, each conflict once).
+pub(crate) fn conflicts_touching(conflicts: &[Conflict], selections: &Selections) -> Vec<Conflict> {
+    let mut out: Vec<Conflict> = Vec::new();
+    let mut ci = 0;
+    for sel in selections.iter() {
+        while ci < conflicts.len() && conflicts[ci].end <= sel.start() {
+            ci += 1;
+        }
+        for conflict in &conflicts[ci..] {
+            if conflict.start > sel.end() {
+                break;
+            }
+            if out.last().is_none_or(|last| last.start != conflict.start) {
+                out.push(conflict.clone());
+            }
+        }
+    }
+    out
+}
+
+/// A merge conflict command: accept `choice` at the conflicts the selections touch, or at every
+/// conflict in the file for `AcceptAll*`.
+fn merge_command(buf: &mut Buffer, view: &mut View, cmd: MergeCommand) {
+    let choice = match cmd {
+        MergeCommand::AcceptCurrent | MergeCommand::AcceptAllCurrent => Choice::Current,
+        MergeCommand::AcceptIncoming | MergeCommand::AcceptAllIncoming => Choice::Incoming,
+        MergeCommand::AcceptBoth | MergeCommand::AcceptAllBoth => Choice::Both,
+        MergeCommand::AcceptNone => Choice::Base,
+    };
+    let every = matches!(
+        cmd,
+        MergeCommand::AcceptAllCurrent | MergeCommand::AcceptAllIncoming | MergeCommand::AcceptAllBoth
+    );
+    let revision = buf.revision();
+    let scanned = buf.conflicts.scan(&buf.rope, revision);
+    let selected = if every {
+        scanned.to_vec()
+    } else {
+        conflicts_touching(scanned, &view.selections)
+    };
+    accept_merge(buf, view, choice, &selected);
+}
+
+/// Accepts `choice` of `conflicts` as one `EditKind::Other` step: every cursor collapses onto
+/// its mapped head.
+pub(crate) fn accept_merge(buf: &mut Buffer, view: &mut View, choice: Choice, conflicts: &[Conflict]) {
+    if conflicts.is_empty() {
+        return;
+    }
+    let changes = conflict::accept_all(&buf.rope, conflicts, choice);
+    let before = view.selections.clone();
+    let mapper = changes.mapper();
+    let cursors: Vec<Selection> = before
+        .iter()
+        .map(|sel| Selection::cursor(mapper.map(sel.head, Assoc::After)))
+        .collect();
+    let after = Selections::with_newest(cursors, before.primary_index(), before.newest_index());
+    buf.edit(changes, before, after.clone(), EditKind::Other);
+    view.selections = after;
+    view.reveal_cursor = true;
+}
+
 pub fn insert_char(buf: &mut Buffer, view: &mut View, c: char, s: &Settings) {
     let s = &s.for_buffer(buf);
     if s.auto_indent && indent::type_char(buf, view, c, s) {
@@ -553,6 +616,101 @@ pub(crate) fn replace_each_landing<S: AsRef<str>>(
 mod tests {
     use super::*;
     use crate::command::Command as C;
+
+    const CONFLICTS: &str = "a\n\
+<<<<<<< HEAD\n\
+b\n\
+=======\n\
+c\n\
+>>>>>>> main\n\
+d\n\
+<<<<<<< HEAD\n\
+e\n\
+=======\n\
+f\n\
+>>>>>>> main\n\
+g\n";
+
+    fn at(text: &str, needle: &str) -> ByteIdx {
+        ByteIdx(text.find(needle).unwrap())
+    }
+
+    #[test]
+    fn merge_commands_touch_the_conflicts_under_each_selection() {
+        let mut buf = Buffer::from_str(CONFLICTS);
+        let mut view = View::new();
+        let revision = buf.revision();
+        let conflicts = buf.conflicts.scan(&buf.rope, revision).to_vec();
+        assert_eq!(conflicts.len(), 2);
+        let (first, second) = (conflicts[0].start, conflicts[1].start);
+
+        // Outside every conflict: nothing.
+        view.selections = Selections::single(Selection::cursor(ByteIdx(0)));
+        assert!(conflicts_touching(&conflicts, &view.selections).is_empty());
+        // The byte right after a conflict's `>>>>>>>` line is outside it too (a conflict's
+        // span is `[start, end)`): the cursor on the line after the markers must not accept.
+        view.selections = Selections::single(Selection::cursor(conflicts[0].end));
+        assert!(conflicts_touching(&conflicts, &view.selections).is_empty());
+        // In the first conflict's current block, then its incoming one.
+        view.selections = Selections::single(Selection::cursor(at(CONFLICTS, "b\n")));
+        let got = conflicts_touching(&conflicts, &view.selections);
+        assert_eq!(got.iter().map(|c| c.start).collect::<Vec<_>>(), vec![first]);
+        view.selections = Selections::single(Selection::cursor(at(CONFLICTS, "c\n")));
+        assert_eq!(conflicts_touching(&conflicts, &view.selections)[0].start, first);
+        // A selection over both, and one cursor in each: both once, sorted.
+        view.selections = Selections::single(Selection::new(at(CONFLICTS, "b\n"), at(CONFLICTS, "f\n")));
+        assert_eq!(conflicts_touching(&conflicts, &view.selections).len(), 2);
+        view.selections = Selections::new(
+            vec![
+                Selection::cursor(at(CONFLICTS, "b\n")),
+                Selection::cursor(at(CONFLICTS, "f\n")),
+            ],
+            0,
+        );
+        let got = conflicts_touching(&conflicts, &view.selections);
+        assert_eq!(got.iter().map(|c| c.start).collect::<Vec<_>>(), vec![first, second]);
+    }
+
+    #[test]
+    fn accepting_a_merge_choice_is_one_undo_step() {
+        let mut buf = Buffer::from_str(CONFLICTS);
+        let mut view = View::new();
+        view.selections = Selections::single(Selection::cursor(at(CONFLICTS, "b\n")));
+        let before = buf.rope.to_string();
+        assert!(run(
+            C::Merge(MergeCommand::AcceptIncoming),
+            &mut buf,
+            &mut view,
+            &Settings::default()
+        ));
+        assert_eq!(
+            buf.rope.to_string(),
+            "a\nc\nd\n<<<<<<< HEAD\ne\n=======\nf\n>>>>>>> main\ng\n"
+        );
+        assert!(buf.has_edits());
+        assert!(buf.undo().is_some(), "one step");
+        assert_eq!(buf.rope.to_string(), before);
+        assert!(buf.undo().is_none(), "a single undo step");
+        // Every conflict: both sides chosen.
+        assert!(run(
+            C::Merge(MergeCommand::AcceptAllBoth),
+            &mut buf,
+            &mut view,
+            &Settings::default()
+        ));
+        assert_eq!(buf.rope.to_string(), "a\nb\nc\nd\ne\nf\ng\n");
+        // A cursor not touching a conflict does nothing.
+        view.selections = Selections::single(Selection::cursor(ByteIdx(0)));
+        assert!(run(
+            C::Merge(MergeCommand::AcceptCurrent),
+            &mut buf,
+            &mut view,
+            &Settings::default()
+        ));
+        assert_eq!(buf.rope.to_string(), "a\nb\nc\nd\ne\nf\ng\n");
+        assert!(buf.undo().is_some(), "the Accept All step");
+        assert_eq!(buf.rope.to_string(), before);
+    }
 
     #[test]
     fn a_language_default_for_rulers_applies_unless_the_user_set_some() {

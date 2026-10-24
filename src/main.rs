@@ -13,6 +13,8 @@ mod commit_view;
 mod completion;
 mod config;
 mod conflict;
+#[cfg(test)]
+mod conflicts_tests;
 mod diagnostics;
 mod diff_view;
 mod disk;
