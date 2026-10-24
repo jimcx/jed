@@ -885,36 +885,19 @@ async fn shell_exit_notes_cover_success_and_failure_to_start() {
 /// A shell ended by a signal (not a `kill` by jed, and not an exit code) says so in its note,
 /// at `Warning` — the branch `tasks::end_note`'s "ended by signal" and `end_run_note`'s warning
 /// for it, covered end to end rather than only by the unit test.
-// FLAKE: 2026-10-24, this test's `settle` (on the run's `Status::Exited`) passed but the "ended
-// by signal" note / `Warning` message weren't present yet — the app handles the run's `Ended`
-// event a beat after the waiter thread marks it Exited. State is dumped below to diagnose the
-// next occurrence.
 #[tokio::test(flavor = "multi_thread")]
 async fn shell_a_signal_ended_shell_says_so_as_a_warning() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = shell_script(&root, "die", "kill -TERM $$");
     app.test_execute(Command::NewShell);
-    let ended = app
-        .settle(|a| {
-            a.group()
-                .active_shell()
-                .is_some_and(|s| matches!(s.run.status(), Status::Exited(_)))
-        })
-        .await;
-    if !ended
-        || !screen_text(&app).contains("ended by signal")
-        || app.message.as_ref().map(|m| m.level) != Some(Level::Warning)
-    {
-        eprintln!(
-            "FLAKE shell_a_signal_ended_shell_says_so_as_a_warning: ended={ended}, status={:?}, \
-             message={:?}, screen={:?}",
-            app.group().active_shell().map(|s| s.run.status()),
-            app.message.as_ref().map(|m| (m.level, m.text.clone())),
-            screen_text(&app),
-        );
-    }
-    assert!(ended, "the shell ended by SIGTERM:\n{}", screen_text(&app));
+    // The note is appended (and the warning shown) when the app handles the run's `Ended` event,
+    // a beat after the waiter thread marks it `Exited` — settle on the note, not the raw status.
+    assert!(
+        app.settle(|a| screen_text(a).contains("ended by signal")).await,
+        "the shell ended by SIGTERM:\n{}",
+        screen_text(&app)
+    );
     assert!(
         screen_text(&app).contains("ended by signal"),
         "the note says a signal ended it:\n{}",
