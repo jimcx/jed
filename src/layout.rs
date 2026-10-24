@@ -605,10 +605,12 @@ pub struct CheatSheetHit {
     pub scrollbar: Option<ScrollBarHit>,
 }
 
-/// The keyboard shortcuts view: its full-screen rect and its scroll bar.
+/// The keyboard shortcuts view: its full-screen rect, the rows' area (a click selects the row
+/// under the pointer) and its scroll bar.
 #[derive(Debug, Clone, Copy)]
 pub struct KeysHit {
     pub rect: Rect,
+    pub rows: Rect,
     pub scrollbar: Option<ScrollBarHit>,
 }
 

@@ -112,8 +112,8 @@ impl App {
         });
     }
 
-    /// A mouse event while it's open: the wheel scrolls it, its bar drags, a press outside it
-    /// closes it (and does nothing else).
+    /// A mouse event while it's open: the wheel scrolls it, its bar drags, a press on a row
+    /// selects it, a press outside it closes it (and does nothing else).
     pub(super) fn keyboard_shortcuts_mouse(&mut self, m: MouseEvent) {
         self.pointer = Pointer::Default;
         let target = ScrollTarget::Keys;
@@ -139,6 +139,14 @@ impl App {
             }
             MouseEventKind::Down(_) if !hit.rect.contains(p) => self.keys = None,
             MouseEventKind::Down(MouseButton::Left) if on_bar => self.scrollbar_click(target, m.column, m.row),
+            MouseEventKind::Down(MouseButton::Left) if hit.rows.contains(p) => {
+                if let Some(view) = &mut self.keys {
+                    let index = view.top + (p.y - hit.rows.y) as usize;
+                    if index < view.rows.len() {
+                        view.select(index);
+                    }
+                }
+            }
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(Drag::ScrollBar { target, grab }) = self.drag {
                     self.scrollbar_drag(target, m.column, m.row, grab);

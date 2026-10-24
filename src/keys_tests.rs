@@ -288,9 +288,37 @@ mod keys {
         app.mouse(Mouse::ScrollUp, x, y);
         assert!(app.keys.as_ref().unwrap().top < top);
         app.mouse(Mouse::Down(MouseButton::Left), x, y);
-        assert!(app.keys.is_some(), "a press on the list does nothing");
+        assert!(app.keys.is_some(), "a press on a row keeps the view open");
         app.mouse(Mouse::Down(MouseButton::Left), 1, 23);
         assert!(app.keys.is_none(), "a press outside it closes it");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn keys_b_a_press_selects_the_row_under_the_pointer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(&dir);
+        app.test_execute(Command::KeyboardShortcuts);
+        let _term = draw(&mut app, 100, 24);
+        let hit = app.hits.keys.expect("the view is drawn");
+        assert_eq!(app.keys.as_ref().unwrap().selected, 0);
+        // A click on the third visible row selects it (the selection is the row's index, not
+        // the click's y: the search box and its blank row are above the list).
+        let (x, y) = (hit.rows.x + 1, hit.rows.y + 2);
+        app.mouse(Mouse::Down(MouseButton::Left), x, y);
+        assert!(app.keys.is_some(), "the view stays open");
+        assert_eq!(app.keys.as_ref().unwrap().selected, 2);
+        // The click maps from the list's top: after scrolling, the same screen row selects a
+        // later row.
+        app.mouse(Mouse::ScrollDown, x, y);
+        let top = app.keys.as_ref().unwrap().top;
+        assert!(top > 0);
+        app.mouse(Mouse::Down(MouseButton::Left), x, y);
+        assert_eq!(app.keys.as_ref().unwrap().selected, top + 2);
+        // An empty result list: a click does nothing and doesn't move the selection.
+        app.type_text("zzznotacommand");
+        assert!(app.keys.as_ref().unwrap().rows.is_empty());
+        app.mouse(Mouse::Down(MouseButton::Left), x, y);
+        assert_eq!(app.keys.as_ref().unwrap().selected, 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]
