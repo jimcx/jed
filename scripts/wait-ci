@@ -2,11 +2,19 @@
 # Wait for the "Build" GitHub Actions workflow run on a commit to finish, then
 # exit 0 when it passed and non-zero when it failed, was cancelled, or no run
 # appeared. Polls the public GitHub API (unauthenticated; set GITHUB_TOKEN or
-# GH_TOKEN to raise the rate limit). The release command runs it after pushing
-# main, so a release is only tagged once its tests pass.
+# GH_TOKEN to raise the rate limit) and needs curl and jq on PATH. The release
+# command runs it after pushing main, so a release is only tagged once its
+# tests pass.
 #
 # Usage: scripts/wait-ci [<commit-sha>]   (defaults to HEAD)
 set -eu
+
+for tool in curl jq; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "wait-ci: $tool is required but not found in PATH" >&2
+        exit 1
+    fi
+done
 
 sha=${1:-$(git rev-parse HEAD)}
 
@@ -21,7 +29,9 @@ else
     auth=
 fi
 
-url="https://api.github.com/repos/$repo/actions/runs?branch=main&head_sha=$sha&per_page=1"
+# Scope to the Build workflow (build.yml) so a later push-triggered workflow
+# does not shadow it; build.yml's name is "Build".
+url="https://api.github.com/repos/$repo/actions/workflows/build.yml/runs?branch=main&head_sha=$sha&per_page=1"
 
 fetch() {
     if [ -n "$auth" ]; then
