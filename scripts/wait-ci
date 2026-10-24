@@ -45,9 +45,9 @@ while :; do
         exit 1
     fi
     if [ "$status" = "none" ]; then
-        echo "wait-ci: no Build run for $sha yet…"
+        echo "wait-ci: no Build run for $sha yet..."
     else
-        echo "wait-ci: Build run for $sha is $status…"
+        echo "wait-ci: Build run for $sha is $status..."
     fi
     sleep 30
 done
