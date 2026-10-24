@@ -809,50 +809,19 @@ async fn drag_tabs_edge_drops_split_the_group_on_that_side() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn drag_tabs_own_edge_drop_splits_its_group() {
-    let dir = tempfile::tempdir().unwrap();
-    let (mut app, _) = open_app(&dir, &["a.txt", "b.txt", "c.txt"]);
-    // b.txt is scrolled, with a selection.
-    app.test_activate_tab(1);
-    for _ in 0..19 {
-        app.press(K::Down, M::NONE);
-    }
-    app.press(K::Right, M::SHIFT);
-    draw(&mut app, 100);
-    let before = view_state(&app);
-    let group = first_group(&app);
-    let (y, tabs) = bar_of(&app, group);
-    let editor = editor_of(&app, group);
-    let (x, ey) = edge_point(editor, DropSide::Left);
-
-    app.mouse(MouseEventKind::Down(MouseButton::Left), in_tab(&tabs[1]), y);
-    app.mouse(MouseEventKind::Drag(MouseButton::Left), x, ey);
-    let term = draw(&mut app, 100);
-    assert!(
-        whole_area_is_shaded(&app, &term, half(editor, DropSide::Left)),
-        "its own left band is shaded"
-    );
-    assert_eq!(shaded_cells(&app, &term, half(editor, DropSide::Right)), 0);
-    app.mouse(MouseEventKind::Up(MouseButton::Left), x, ey);
-
-    assert_eq!(
-        layout(&app),
-        [vec!["b.txt"], vec!["a.txt", "c.txt"]],
-        "its own group split on the left"
-    );
-    let new = app.groups.ids()[0];
-    assert_ne!(new, group, "the new group is on the left");
-    assert_eq!(app.groups.active, new);
-    assert_eq!(active_name(&app), "b.txt");
-    assert_eq!(view_state(&app), before, "its view is kept");
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn drag_tabs_own_edge_drop_splits_on_every_side() {
     for side in [DropSide::Left, DropSide::Right, DropSide::Up, DropSide::Down] {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _) = open_app(&dir, &["a.txt", "b.txt", "c.txt"]);
+        // b.txt is scrolled, with a selection, so its view survives the move.
+        app.test_activate_tab(1);
+        for _ in 0..19 {
+            app.press(K::Down, M::NONE);
+        }
+        app.press(K::Right, M::SHIFT);
         draw(&mut app, 100);
+        let before = view_state(&app);
+        assert!(before.1 > 0, "the view is scrolled");
         let group = first_group(&app);
         let (y, tabs) = bar_of(&app, group);
         let editor = editor_of(&app, group);
@@ -881,6 +850,7 @@ async fn drag_tabs_own_edge_drop_splits_on_every_side() {
         );
         assert_eq!(app.groups.active, new, "{side:?}: the new split is active");
         assert_eq!(active_name(&app), "b.txt", "{side:?}: the moved tab is active");
+        assert_eq!(view_state(&app), before, "{side:?}: its view is kept");
 
         // The new group's editor sits on `side` of the original's.
         draw(&mut app, 100);

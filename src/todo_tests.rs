@@ -6306,7 +6306,15 @@ mod single_file {
         let ws = Workspace::load(crate::workspace::root_for_file(path));
         let buffer = Buffer::open_with(path, ws.settings().indentation()).unwrap_or_else(|_| Buffer::new_file(path));
         let initial = Some(InitialFile { buffer, goto: None });
-        let mut app = App::new_in(mode, ws, TrustStore::load(state.join("trust.toml")), initial, true);
+        let identity = App::start_identity(&ws, mode, initial.as_ref());
+        let mut app = App::new_in(
+            mode,
+            ws,
+            TrustStore::load(state.join("trust.toml")),
+            initial,
+            identity,
+            true,
+        );
         app.state_dir = Some(state.to_path_buf());
         let fake = FakeLauncher::new(FakeOptions::default());
         app.lsp.set_launcher(fake.clone());

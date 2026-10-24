@@ -204,8 +204,8 @@ impl Status {
     /// Blocking: HEAD and every changed path (untracked folders listed file by file, ignored
     /// files left out, no rename detection).
     pub fn read(repo: &Repo) -> Result<Status, git2::Error> {
-        let (head, head_id) = crate::perf::time("git.status.head", || head(repo))?;
         let r = crate::perf::time("git.status.open", || repo.open())?;
+        let (head, head_id) = crate::perf::time("git.status.head", || head_and_id(&r))?;
         let mut opts = StatusOptions::new();
         opts.include_untracked(true)
             .recurse_untracked_dirs(true)
@@ -353,7 +353,13 @@ fn head_of(r: &Repository) -> Result<Head, git2::Error> {
 /// Blocking (`git2`, µs): call from `spawn_blocking`.
 pub fn head(repo: &Repo) -> Result<(Head, Option<String>), git2::Error> {
     let r = repo.open()?;
-    let head = head_of(&r)?;
+    head_and_id(&r)
+}
+
+/// `head` for an already-open repository, so `Status::read` opens once and reuses the handle for
+/// both the head and the working-tree walk.
+fn head_and_id(r: &Repository) -> Result<(Head, Option<String>), git2::Error> {
+    let head = head_of(r)?;
     let head_id = r
         .head()
         .ok()

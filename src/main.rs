@@ -464,8 +464,7 @@ fn main() -> ExitCode {
         .map_err(anyhow::Error::from)
         .and_then(|mut term| {
             runtime.block_on(async {
-                let mut app = app::App::new_in(mode, workspace, trust_store, initial, kitty);
-                app.identity = identity.clone();
+                let mut app = app::App::new_in(mode, workspace, trust_store, initial, identity, kitty);
                 app.editor_hint = hint;
                 if let Some((path, doc)) = initial_hex {
                     app.open_initial_hex(path, doc);

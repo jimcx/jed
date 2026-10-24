@@ -135,7 +135,9 @@ fn render_marks(out: &mut Cells, track: Rect, scroll: Scroll, base: Style, theme
     if track.height == 0 {
         return;
     }
-    // Marks of the same kind come together: one theme lookup per run, not per mark.
+    // A best-effort cache: consecutive marks of the same key reuse one theme lookup. It isn't a
+    // guarantee — merged staged/unstaged marks of a kind interleave by position, so runs of the
+    // same key only happen where they happen to be contiguous.
     let mut last: Option<(&str, Style)> = None;
     for mark in marks.iter().filter(|m| !m.lines.is_empty()) {
         let fill = match last {

@@ -387,23 +387,21 @@ fn drawn(rope: &Rope, m: &Mark) -> Option<(Range<usize>, Marker)> {
         }
         _ if m.start == m.end => None,
         kind => {
-            // The start's line, then one line per line break the mark's bytes hold, plus the
-            // last one when the range doesn't end on a break: the end's line without a second
-            // rope lookup per mark on every drawn frame (thousands of scroll-bar marks).
-            let bytes = rope.slice(m.start.0..m.end.0);
-            let mut lines = 0usize;
-            for chunk in bytes.chunks() {
-                lines += chunk.matches('\n').count();
-            }
-            if rope.byte(m.end.0 - 1) != b'\n' {
-                lines += 1;
-            }
+            // The end's line via two O(log n) lookups, not a scan of the mark's bytes (a
+            // whole-file replacement would be O(hunk size) per drawn frame). A mark ending on a
+            // line start covers up to the line before `m.end`.
+            let last = pos::line_of(rope, m.end);
+            let end = if pos::line_start(rope, last) == m.end {
+                last
+            } else {
+                last + 1
+            };
             let marker = if kind == HunkKind::Added {
                 Marker::Added
             } else {
                 Marker::Modified
             };
-            Some((first..first + lines.max(1), marker))
+            Some((first..end.max(first + 1), marker))
         }
     }
 }
@@ -452,14 +450,6 @@ fn find(job: &Job) -> Result<Found, stage::Error> {
         marks: merge_staged(unstaged, staged),
         staged: staged_diff,
     })
-}
-
-/// The marks from the index text `old` to the buffer's bytes `new` (`skip`: the BOM's length at
-/// its start, which the buffer's positions don't count).
-#[cfg_attr(not(test), allow(dead_code))]
-fn marks(old: &[u8], new: &[u8], skip: usize) -> Result<Vec<Mark>, stage::Error> {
-    let d = diff::diff(old, new, 0)?;
-    Ok(line_marks(&d, old, new, skip))
 }
 
 /// The unstaged marks: each hunk's changed buffer lines as byte ranges (none for a binary text).
@@ -655,7 +645,14 @@ mod tests {
     use crate::buffer::change::Change;
 
     fn marks_of(old: &str, new: &str) -> Vec<Mark> {
-        marks(old.as_bytes(), new.as_bytes(), 0).unwrap()
+        marks(old.as_bytes(), new.as_bytes(), 0)
+    }
+
+    /// The marks from the index text `old` to the buffer's bytes `new` (`skip`: the BOM's length
+    /// at its start, which the buffer's positions don't count).
+    fn marks(old: &[u8], new: &[u8], skip: usize) -> Vec<Mark> {
+        let d = diff::diff(old, new, 0).unwrap();
+        line_marks(&d, old, new, skip)
     }
 
     fn qd(old: &str, new: &str) -> QuickDiff {
@@ -692,7 +689,7 @@ mod tests {
         assert_eq!((m[0].start, m[0].end), (ByteIdx(3), ByteIdx(6)));
         assert_eq!(&*m[0].removed, ["b".to_string()]);
         // A BOM in the file's bytes isn't in the buffer's positions.
-        let m = marks("\u{feff}a\nb\n".as_bytes(), "\u{feff}a\nB\n".as_bytes(), 3).unwrap();
+        let m = marks("\u{feff}a\nb\n".as_bytes(), "\u{feff}a\nB\n".as_bytes(), 3);
         assert_eq!((m[0].start, m[0].end), (ByteIdx(2), ByteIdx(4)));
     }
 
@@ -749,7 +746,7 @@ mod tests {
         }]));
         set.apply(&mut rope);
         q.map(&set);
-        let marks = marks(b"a\nb\nc\n", snapshot.to_string().as_bytes(), 0).unwrap();
+        let marks = marks(b"a\nb\nc\n", snapshot.to_string().as_bytes(), 0);
         q.finish(Computed {
             revision: 1,
             generation,
@@ -781,7 +778,7 @@ mod tests {
         assert!(new != old && known.is_none());
         let found = |text: &[u8]| Found::Marks {
             index: Oid::ZERO_SHA1,
-            marks: marks(text, b"a\nB\n", 0).unwrap(),
+            marks: marks(text, b"a\nB\n", 0),
             staged: None,
         };
         // The old path's result arrives late: dropped, the new one still runs.

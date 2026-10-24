@@ -430,11 +430,14 @@ async fn git_marks_hex_shell_and_single_file_tabs_have_none() {
     repo(&root, &original, &original.replace("line 3\n", "line three\n"));
     let ws = Workspace::load(root.clone());
     let buffer = Buffer::open(&root.join("f.txt")).unwrap();
+    let initial = Some(InitialFile { buffer, goto: None });
+    let identity = App::start_identity(&ws, Mode::SingleFile, initial.as_ref());
     let mut app = App::new_in(
         Mode::SingleFile,
         ws,
         TrustStore::load(state.join("trust.toml")),
-        Some(InitialFile { buffer, goto: None }),
+        initial,
+        identity,
         true,
     );
     app.test_start();

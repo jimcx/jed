@@ -314,11 +314,13 @@ mod editor_mode {
         let (path, goto) = start.file.expect("a file");
         let buffer = Buffer::open_with(&path, ws.settings().indentation()).unwrap();
         let initial = Some(InitialFile { buffer, goto });
+        let identity = App::start_identity(&ws, start.mode, initial.as_ref());
         let mut app = App::new_in(
             start.mode,
             ws,
             TrustStore::load(state.join("trust.toml")),
             initial,
+            identity,
             true,
         );
         app.editor_hint = start.hint;

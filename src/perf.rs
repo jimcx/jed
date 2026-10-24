@@ -42,7 +42,9 @@ mod tests {
 
     #[test]
     fn time_returns_the_value_without_logging_when_disabled() {
-        assert!(!enabled(), "perf is off unless --perf enables it");
+        // `enable` runs only in `main`, so perf is off here; reset the flag anyway so the
+        // disabled-path check below doesn't depend on no other test having enabled it.
+        ENABLED.store(false, Ordering::Relaxed);
         assert_eq!(time("x", || 42), 42);
     }
 }

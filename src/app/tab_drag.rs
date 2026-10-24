@@ -44,7 +44,7 @@ pub enum TabDrop {
 
 /// The gap in `tabs` at `x`: the tabs whose midpoint is left of the pointer. The index is in
 /// the group's own terms, so a scrolled bar's first drawn tab (`tabs[0].index`) is counted from.
-pub(super) fn gap_at(tabs: &[TabHit], x: u16) -> usize {
+fn gap_at(tabs: &[TabHit], x: u16) -> usize {
     let first = tabs.first().map_or(0, |t| t.index);
     first + tabs.iter().filter(|t| t.x0 + (t.x1 - t.x0) / 2 < x).count()
 }
@@ -53,7 +53,7 @@ pub(super) fn gap_at(tabs: &[TabHit], x: u16) -> usize {
 /// centre (or outside it). Each edge's band is a quarter of that dimension, and the nearest
 /// edge within its band wins (ties in the order Left, Right, Up, Down). An edge whose dimension
 /// can't hold a split of two minimum groups is no edge at all.
-pub fn snap_side(rect: Rect, x: u16, y: u16) -> Option<DropSide> {
+fn snap_side(rect: Rect, x: u16, y: u16) -> Option<DropSide> {
     if !rect.contains(Position { x, y }) {
         return None;
     }

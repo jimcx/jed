@@ -86,7 +86,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let number = group_ids
             .as_ref()
             .and_then(|ids| ids.iter().position(|&g| g == id))
-            .map(|i| i as u8 + 1);
+            .map(|i| (i as u8).saturating_add(1));
         let Some(group) = app.groups.get_mut(id) else { continue };
         let tabs = tabs::render(f, tab_bar, group, &app.buffers, &app.theme, is_active, drop, number);
 

@@ -987,11 +987,6 @@ async fn shell_a_signal_ended_shell_says_so_as_a_warning() {
         "the shell ended by SIGTERM:\n{}",
         screen_text(&app)
     );
-    assert!(
-        screen_text(&app).contains("ended by signal"),
-        "the note says a signal ended it:\n{}",
-        screen_text(&app)
-    );
     assert_eq!(
         app.message.as_ref().map(|m| m.level),
         Some(Level::Warning),

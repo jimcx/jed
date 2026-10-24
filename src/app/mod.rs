@@ -71,7 +71,7 @@ use crate::layout::{GroupId, HitMap, PanelTab, SidePanel, SplitDir};
 use crate::mru;
 use crate::palette::{FileMatcher, Palette, Picker};
 use crate::search_view::SearchView;
-use crate::terminal::Term;
+use crate::terminal::{Identity, Term};
 use crate::theme::{self, Theme};
 use crate::view::View;
 use crate::watcher::{self, Watcher};
@@ -513,27 +513,36 @@ impl App {
     /// `new_in` workspace mode (tests; `main` passes its mode).
     #[cfg(test)]
     pub fn new(workspace: Workspace, trust_store: TrustStore, initial: Option<InitialFile>, kitty: bool) -> Self {
-        Self::new_in(Mode::Workspace, workspace, trust_store, initial, kitty)
+        let identity = Self::start_identity(&workspace, Mode::Workspace, initial.as_ref());
+        Self::new_in(Mode::Workspace, workspace, trust_store, initial, identity, kitty)
+    }
+
+    /// The start identity for `workspace` and its optional initial file (single file mode shows
+    /// the file in the title and sets no workspace var). Test-only: `main` computes the same
+    /// value from the CLI args — which know the single file even when it's binary and `initial`
+    /// is `None` — and passes it into `new_in`, so it is built in exactly one place per run.
+    #[cfg(test)]
+    pub(crate) fn start_identity(workspace: &Workspace, mode: Mode, initial: Option<&InitialFile>) -> Identity {
+        let single = initial.filter(|_| mode.is_single()).map(|f| f.buffer.path.as_path());
+        Identity::new(&workspace.root, single, &crate::paths::home())
+            .with_title(workspace.config.window.title.as_deref())
     }
 
     /// Must not start background work: it may run before the runtime is entered. `start` does that.
-    /// Single file mode starts with the side panel hidden and asks no trust.
+    /// Single file mode starts with the side panel hidden and asks no trust. `identity` comes from
+    /// `main` (the caller knows single file mode's file even when it's binary and `initial` is
+    /// `None`); tests build it with `start_identity`.
     pub fn new_in(
         mode: Mode,
         workspace: Workspace,
         trust_store: TrustStore,
         initial: Option<InitialFile>,
+        identity: Identity,
         kitty: bool,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let root = workspace.root.clone();
         let settings = workspace.settings();
-        let single = initial
-            .as_ref()
-            .filter(|_| mode.is_single())
-            .map(|f| f.buffer.path.clone());
-        let identity = crate::terminal::Identity::new(&root, single.as_deref(), &crate::paths::home())
-            .with_title(workspace.config.window.title.as_deref());
         let mut app = Self {
             mode,
             editor_hint: None,

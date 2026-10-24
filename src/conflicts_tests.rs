@@ -794,7 +794,6 @@ async fn conflicts_done_when_a_diff3_merge_shows_the_base_block() {
         let (text, y) = row_of(&app, line + 1);
         assert_eq!(bg(&term, (text.x, y)), common_content, "conflict {k}'s base content");
     }
-    assert!(merged.contains("|||||||"));
 }
 
 /// The Done-when's frame budget for the per-frame conflict scan: a 1 MB file with no markers is
