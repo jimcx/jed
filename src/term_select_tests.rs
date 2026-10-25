@@ -368,6 +368,10 @@ async fn term_select_mouse_reporting_keeps_every_event() {
     }
 }
 
+// FLAKE: 2026-10-26, in a full parallel run the selection was still `Some(..)` after the second
+// command's output arrived (the `Output` event that clears it hadn't been processed by the frame
+// the settle saw); passes alone and in the term_select module. Dump the selection and the screen
+// tail so a recurrence shows whether the output event raced the settle.
 #[tokio::test(flavor = "multi_thread")]
 async fn term_select_output_and_the_wheel_clear_the_selection() {
     let (_d, root, state) = dirs();
@@ -405,11 +409,15 @@ async fn term_select_output_and_the_wheel_clear_the_selection() {
         "the second command's output arrived:\n{}",
         screen_text(&app)
     );
-    assert_eq!(
-        app.group().active_shell().unwrap().run.selection(),
-        None,
-        "new output cleared the selection"
-    );
+    let selection = app.group().active_shell().unwrap().run.selection();
+    if selection.is_some() {
+        let tail = screen_text(&app).lines().rev().take(8).collect::<Vec<_>>().join("\n");
+        eprintln!(
+            "FLAKE term_select_output_and_the_wheel_clear_the_selection: not cleared \
+             ({selection:?}); screen tail:\n{tail}"
+        );
+    }
+    assert_eq!(selection, None, "new output cleared the selection");
 
     // So does a wheel scroll (through the scrollback, which the wheel still does).
     let text = screen_text(&app);
