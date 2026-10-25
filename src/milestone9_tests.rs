@@ -3098,13 +3098,15 @@ async fn milestone_9_server_crash_drops_pending_requests() {
     assert_eq!(app.message.as_ref().unwrap().text, "No hover information");
 }
 
-/// A real server: hover on `word`'s use in `a` shows `hover` in the popup; F12 there opens
-/// `def_file` at its definition (`def_line`, 0-based).
+/// A real server: hover on `word`'s use in `a` shows each `hover` fragment in the popup; F12 there
+/// opens `def_file` at its definition (`def_line`, 0-based). The signature is checked as fragments
+/// rather than one line, since clangd 22 renders it as split markdown (`→ int` / `• int x`) where
+/// older clangd shows the plain `int answer(int x)`.
 #[allow(clippy::too_many_arguments)]
 async fn real_hover_and_definition(
     files: &[(&str, &str)],
     word: &str,
-    hover: &str,
+    hover: &[&str],
     def_file: &str,
     def_line: usize,
     configure: impl FnOnce(&mut App),
@@ -3138,7 +3140,9 @@ async fn real_hover_and_definition(
     }
     draw(&mut term, &mut app);
     let rows = popup_rows(&term, &app).join("\n");
-    assert!(rows.contains(hover), "{process} hover: {rows}");
+    for part in hover {
+        assert!(rows.contains(part), "{process} hover: {rows}");
+    }
 
     app.press(K::F(12), M::NONE);
     let def = root.join(def_file);
@@ -3170,7 +3174,7 @@ async fn milestone_9_real_clangd_hover_and_definition() {
             ),
         ],
         "answer",
-        "int answer(int x)",
+        &["answer", "int x"],
         "b.h",
         1,
         |_| {},
@@ -3193,7 +3197,7 @@ async fn milestone_9_real_ty_hover_and_definition() {
             ("b.py", "\ndef answer(x: int) -> int:\n    return 41 + x\n"),
         ],
         "answer",
-        "def answer(x: int) -> int",
+        &["def answer", "x: int", "-> int"],
         "b.py",
         1,
         configure,
