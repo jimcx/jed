@@ -7,11 +7,14 @@
 //!   `Sink` (the app's channel); input via `Run::write`
 //! - `keys`: keys and pastes encoded as a terminal sends them
 //! - `mouse`: mouse events encoded as a terminal sends them (xterm's mouse protocol)
+//! - `select`: a left-drag selection over a run's screen (its cells and the text they copy), and
+//!   `top_row` (the first row a screen taller than its area is drawn from; `ui/task.rs` uses it)
 //! - `Tasks` (`app.tasks`): the user's templates, the runs (kept until closed), their sink
 
 pub mod keys;
 pub mod mouse;
 pub mod run;
+pub mod select;
 pub mod templates;
 
 use std::collections::BTreeMap;

@@ -13,6 +13,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{App, Focus};
 use crate::layout;
 use crate::shell::ShellTab;
+use crate::tasks::select::top_row;
 use crate::tasks::{Run, RunId};
 use crate::theme::Theme;
 
@@ -37,24 +38,6 @@ impl tui_term::widget::Screen for Shifted<'_> {
         let (row, col) = self.screen.cursor_position();
         (row.saturating_sub(self.top), col)
     }
-}
-
-/// The first row to draw of a `screen` shown in `height` rows: 0 when it fits, else as low as
-/// keeps its last non-blank row and the cursor in view.
-fn top_row(screen: &vt100::Screen, height: u16) -> u16 {
-    let (rows, cols) = screen.size();
-    if rows <= height {
-        return 0;
-    }
-    let last = screen
-        .rows(0, cols)
-        .enumerate()
-        .filter(|(_, text)| !text.trim_end().is_empty())
-        .map(|(i, _)| i as u16)
-        .last()
-        .unwrap_or(0)
-        .max(screen.cursor_position().0);
-    (last + 1).saturating_sub(height).min(rows - height)
 }
 
 /// Draws `run`'s screen in `area` (the caller fills its background): `Shifted` from `top_row`
@@ -159,15 +142,13 @@ mod tests {
     use super::*;
     use crate::tasks::{RunId, Status};
 
+    /// A taller screen is drawn from `top_row` (`tasks::select`): row 2 of the widget is screen
+    /// row 6, and the cursor moves up with it.
     #[test]
-    fn a_taller_screen_keeps_its_last_line_in_view() {
+    fn a_shifted_screen_draws_from_its_top_row() {
         let mut p = vt100::Parser::new(10, 20, 0);
         p.process(b"one\r\ntwo\r\nthree");
-        assert_eq!(top_row(p.screen(), 10), 0, "fits");
-        assert_eq!(top_row(p.screen(), 4), 0, "the output is at the top");
-        assert_eq!(top_row(p.screen(), 2), 1);
         p.process(b"\r\n\r\n\r\n\r\nseven\r\n");
-        assert_eq!(top_row(p.screen(), 4), 4, "the cursor below the last line");
         let shifted = Shifted {
             screen: p.screen(),
             top: 4,
