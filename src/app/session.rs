@@ -120,6 +120,7 @@ impl App {
                         selections,
                         primary,
                         top_line,
+                        top_row,
                         left_col,
                     } => {
                         let path = session::resolve(&root, &path);
@@ -131,7 +132,7 @@ impl App {
                             },
                         };
                         let rope = &self.buffers.get(id).expect("just found").rope;
-                        let view = restored_view(rope, &selections, primary, top_line, left_col);
+                        let view = restored_view(rope, &selections, primary, top_line, top_row, left_col);
                         tabs.push(Tab::Text(TextTab { buffer: id, view }));
                     }
                     TabState::Untitled {
@@ -139,6 +140,7 @@ impl App {
                         selections,
                         primary,
                         top_line,
+                        top_row,
                         left_col,
                     } => {
                         // The buffer a split's other tab already restored, else from the backup.
@@ -160,7 +162,7 @@ impl App {
                             (None, None) => continue,
                         };
                         let rope = &self.buffers.get(id).expect("just found").rope;
-                        let view = restored_view(rope, &selections, primary, top_line, left_col);
+                        let view = restored_view(rope, &selections, primary, top_line, top_row, left_col);
                         tabs.push(Tab::Text(TextTab { buffer: id, view }));
                     }
                     TabState::Diff { path, left, right } => {
@@ -332,6 +334,7 @@ impl App {
                                         selections: sels.iter().map(|s| (s.anchor.0, s.head.0)).collect(),
                                         primary: sels.primary_index(),
                                         top_line: t.view.top_line(),
+                                        top_row: t.view.top_row(),
                                         left_col: t.view.left_col,
                                     });
                                 }
@@ -347,6 +350,7 @@ impl App {
                                 selections: sels.iter().map(|s| (s.anchor.0, s.head.0)).collect(),
                                 primary: sels.primary_index(),
                                 top_line: t.view.top_line(),
+                                top_row: t.view.top_row(),
                                 left_col: t.view.left_col,
                             });
                         }
@@ -422,12 +426,14 @@ impl App {
 }
 
 /// A text tab's view from the session: its selections (clamped to the text, which may have
-/// changed on disk since) and scroll, the cursor not revealed (the scroll is as it was).
+/// changed on disk since) and scroll, the cursor not revealed (the scroll is as it was). The
+/// sub-row is kept as stored; the first draw clamps it to the line's rows at the view's width.
 fn restored_view(
     rope: &ropey::Rope,
     selections: &[(usize, usize)],
     primary: usize,
     top_line: usize,
+    top_row: usize,
     left_col: usize,
 ) -> View {
     let clamp = |b: usize| ByteIdx(rope.floor_char_boundary(b.min(rope.len())));
@@ -440,7 +446,7 @@ fn restored_view(
         let primary = primary.min(list.len() - 1);
         view.selections = Selections::new(list, primary);
     }
-    view.set_top_line(rope, top_line);
+    view.set_top(rope, top_line, top_row);
     view.left_col = left_col;
     view.reveal_cursor = false;
     view.cursor_history.reset(&view.selections);
@@ -460,10 +466,10 @@ mod tests {
     fn restored_selections_are_clamped_to_char_boundaries() {
         let rope = ropey::Rope::from_str("aé\nb\n");
         // Inside 'é' (bytes 1..3), and past the end.
-        let view = restored_view(&rope, &[(2, 2), (0, 99)], 7, 50, 4);
+        let view = restored_view(&rope, &[(2, 2), (0, 99)], 7, 50, 0, 4);
         let sels: Vec<_> = view.selections.iter().map(|s| (s.anchor.0, s.head.0)).collect();
         assert_eq!(sels, [(0, 6)], "merged once clamped");
-        let view = restored_view(&rope, &[(2, 2), (5, 99)], 1, 50, 4);
+        let view = restored_view(&rope, &[(2, 2), (5, 99)], 1, 50, 0, 4);
         let sels: Vec<_> = view.selections.iter().map(|s| (s.anchor.0, s.head.0)).collect();
         assert_eq!(sels, [(1, 1), (5, 6)]);
         assert_eq!(view.selections.primary_index(), 1);
@@ -473,8 +479,15 @@ mod tests {
             "the scroll clamped to the last line"
         );
         assert!(!view.reveal_cursor);
+        // The wrapped sub-row is kept as stored (the first draw clamps it to the line's rows).
+        let view = restored_view(&rope, &[(5, 5)], 0, 1, 2, 3);
+        assert_eq!(
+            (view.top_line(), view.top_row(), view.left_col),
+            (1, 2, 3),
+            "the (line, sub-row) top and the sideways scroll"
+        );
         // No selections stored: the view's default cursor.
-        let view = restored_view(&rope, &[], 0, 0, 0);
+        let view = restored_view(&rope, &[], 0, 0, 0, 0);
         assert_eq!(view.selections.primary().head, ByteIdx(0));
     }
 
@@ -509,6 +522,7 @@ mod tests {
                     selections: vec![(7, 7)],
                     primary: 0,
                     top_line: 0,
+                    top_row: 0,
                     left_col: 0,
                 }],
                 active: 0,

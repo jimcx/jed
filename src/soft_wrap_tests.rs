@@ -23,14 +23,19 @@
 //! Alt+Click map the cell through the row drawn there, and the hover / completion / code action
 //! popups anchor at the cursor's screen row.
 //!
-//! Sessions and the 1 MB release budget come in the task's last subtask. The "Done when" parts
-//! covered here: the setting is read from `settings.toml` and `.workspace`, defaults to `off`,
-//! the toggle flips `App::word_wrap()` and keeps doing so across a `.workspace` reload, the
-//! wrapped rows are drawn as the plan says, scrolling / the scroll bar use screen rows, the
-//! cursor moves over them and the mouse / popups land on them like VS Code's.
+//! Sessions and the 1 MB release budget come in the task's last subtask: a text tab's session
+//! keeps its (line, sub-row) top, the toggle stays session-only (not written to the session
+//! file), and typing in a wrapped 1 MB single-line file stays within the frame budget. The
+//! "Done when" parts covered here: the setting is read from `settings.toml` and
+//! `.workspace`, defaults to `off`, the toggle flips `App::word_wrap()` and keeps doing so across
+//! a `.workspace` reload, the wrapped rows are drawn as the plan says, every character of a long
+//! Markdown paragraph and of a 1 MB minified JSON line is on screen rows with no sideways scroll,
+//! scrolling / the scroll bar use screen rows, the cursor moves over them, the mouse / popups land
+//! on them like VS Code's, and toggling off returns to the unwrapped view at the same cursor.
 
 use std::fs;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::Terminal;
@@ -1065,4 +1070,262 @@ async fn soft_wrap_row_scroll_closes_the_hover() {
     // The next event's `check_hover` sees the row scroll and closes the popup.
     app.test_execute(Command::Copy);
     assert!(app.hover.popup.is_none(), "the row scroll closed the hover");
+}
+
+/// A Markdown file's long paragraphs draw every word on the wrapped rows, with no sideways
+/// scroll: the editor's whole width is used and the line's tail is on its continuation rows.
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_markdown_paragraphs_show_every_character() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = "# Long paragraphs\n\nLorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor \
+                incididunt ut labore et dolore magna aliqua.\n\nUt enim ad minim veniam, quis nostrud exercitation \
+                ullamco laboris nisi ut aliquip ex ea commodo consequat.\n";
+    let (mut app, _) = wrapped_editor(&dir, text, 40, 20);
+    let screen = cells(&draw(&mut app, 40, 20));
+    for word in [
+        "Lorem",
+        "ipsum",
+        "consectetur",
+        "eiusmod",
+        "incididunt",
+        "aliqua.",
+        "enim",
+        "veniam",
+        "nostrud",
+        "ullamco",
+        "aliquip",
+        "consequat.",
+    ] {
+        assert_eq!(find(&screen, word).len(), 1, "{word:?} is drawn once: {screen:?}");
+    }
+    let view = &app.group().active_tab().unwrap().view;
+    assert_eq!(view.left_col, 0, "no sideways scroll while wrapping");
+}
+
+/// Toggling wrapping off returns to the unwrapped view at the same cursor (and toggling on puts
+/// it back on its wrapped row).
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_toggle_off_keeps_the_cursor_and_the_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let text: String = (0..2).map(long_line).collect();
+    let (mut app, _) = wrapped_editor(&dir, &text, 30, 10);
+    let rows = line0_rows(&mut app);
+    assert!(rows.len() >= 3, "the line wraps to several rows");
+    put_cursor(&mut app, rows[1].0 + 5);
+    let at = head(&app);
+
+    app.test_execute(Command::ToggleWordWrap);
+    assert_eq!(app.word_wrap(), WordWrap::Off);
+    assert_eq!(head(&app), at, "the cursor stays where it was");
+    let term = draw(&mut app, 30, 10);
+    assert_eq!(top(&app), (0, 0), "the first line's only row, no sub-row");
+    assert_eq!(head(&app), at);
+    let screen = cells(&term);
+    assert!(
+        find(&screen, "hotel").is_empty(),
+        "unwrapped: the line's tail is past the right edge: {screen:?}"
+    );
+
+    app.test_execute(Command::ToggleWordWrap);
+    assert_eq!(app.word_wrap(), WordWrap::On);
+    assert_eq!(head(&app), at, "still the same cursor");
+    let again = cells(&draw(&mut app, 30, 10));
+    assert!(
+        !find(&again, "hotel").is_empty(),
+        "wrapping on shows the tail again on a continuation row: {again:?}"
+    );
+}
+
+/// The session snapshot keeps a text tab's (line, sub-row) top and its cursor, and a start on
+/// the same state dir restores both (the `word_wrap` setting comes back from `.workspace`).
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_sessions_keep_the_wrapped_top() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = crate::workspace::normalize(dir.path());
+    let (root, state) = (base.join("ws"), base.join("state"));
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&state).unwrap();
+    fs::write(root.join(".workspace"), "[settings]\nword_wrap = \"on\"\n").unwrap();
+    let text: String = (0..4).map(long_line).collect();
+    fs::write(root.join("a.txt"), &text).unwrap();
+    let start = |initial: Option<InitialFile>| {
+        let mut app = App::new(
+            Workspace::load(root.clone()),
+            TrustStore::load(state.join("trust.toml")),
+            initial,
+            true,
+        );
+        app.state_dir = Some(state.clone());
+        app.test_start();
+        app
+    };
+
+    let mut app = start(Some(InitialFile {
+        buffer: Buffer::open(&root.join("a.txt")).unwrap(),
+        goto: None,
+    }));
+    assert!(app.settle(|a| !a.session.loading()).await, "no session to restore yet");
+    plain_editor(&mut app);
+    assert_eq!(app.word_wrap(), WordWrap::On);
+    draw(&mut app, 30, 10);
+    // Scroll into line 2's second row, with the cursor below it (where a saved session's
+    // cursor is: within the viewport): the top is a (line, sub-row) pair.
+    let rope = app.active_buffer().unwrap().rope.clone();
+    app.active_mut().unwrap().1.set_top(&rope, 2, 1);
+    put_cursor(&mut app, pos::line_start(&rope, 3).0 + 5);
+    draw(&mut app, 30, 10);
+    assert_eq!(top(&app), (2, 1));
+    let at = head(&app);
+    app.shutdown().await;
+
+    let mut app = start(None);
+    assert!(app.settle(|a| a.session.restored == 1).await, "the session is restored");
+    plain_editor(&mut app);
+    draw(&mut app, 30, 10);
+    assert_eq!(top(&app), (2, 1), "the session's (line, sub-row) top");
+    assert_eq!(head(&app), at, "and its cursor");
+    assert_eq!(
+        app.word_wrap(),
+        WordWrap::On,
+        "the setting is on again, no toggle needed"
+    );
+}
+
+/// The toggle is session-only: "View: Toggle Word Wrap" is not written to the session file, so a
+/// restart with the setting off starts unwrapped again (only the `word_wrap` setting persists).
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_toggle_is_not_persisted_in_the_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = crate::workspace::normalize(dir.path());
+    let (root, state) = (base.join("ws"), base.join("state"));
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&state).unwrap();
+    fs::write(root.join("a.txt"), "one two three\n").unwrap();
+    let start = |initial: Option<InitialFile>| {
+        let mut app = App::new(
+            Workspace::load(root.clone()),
+            TrustStore::load(state.join("trust.toml")),
+            initial,
+            true,
+        );
+        app.state_dir = Some(state.clone());
+        app.test_start();
+        app
+    };
+
+    let mut app = start(Some(InitialFile {
+        buffer: Buffer::open(&root.join("a.txt")).unwrap(),
+        goto: None,
+    }));
+    assert!(app.settle(|a| !a.session.loading()).await, "no session to restore yet");
+    assert_eq!(app.word_wrap(), WordWrap::Off);
+    app.test_execute(Command::ToggleWordWrap);
+    assert_eq!(app.word_wrap(), WordWrap::On);
+    assert_eq!(app.settings.word_wrap, WordWrap::Off, "the toggle, not the setting");
+    app.shutdown().await;
+
+    let mut app = start(None);
+    assert!(app.settle(|a| a.session.restored == 1).await, "the session is restored");
+    assert_eq!(
+        app.word_wrap(),
+        WordWrap::Off,
+        "the toggle was not saved: the off setting wins again"
+    );
+}
+
+/// A stale sub-row — a session's `top_row` restored at a narrower width than it was saved at —
+/// is clamped to the line's last row on the first frame (never past it, never a panic).
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_a_stale_sub_row_clamps_to_the_lines_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let text: String = (0..3).map(long_line).collect();
+    let (mut app, _) = wrapped_editor(&dir, &text, 30, 10);
+    let rope = app.active_buffer().unwrap().rope.clone();
+    app.active_mut().unwrap().1.set_top(&rope, 0, 1_000);
+    draw(&mut app, 30, 10);
+    let last = {
+        let (buf, view) = app.active_mut().unwrap();
+        view.wrap
+            .layout(&buf.rope, view.revision, 0, view.width, view.tab_width)
+            .len()
+            - 1
+    };
+    assert_eq!(top(&app), (0, last), "the sub-row clamps to the line's last row");
+    let rope = app.active_buffer().unwrap().rope.clone();
+    app.active_mut().unwrap().1.set_top(&rope, 0, 1_000);
+    // And a wider frame can still lay the line out (the oversized row is gone).
+    draw(&mut app, 80, 10);
+    assert_eq!(top(&app), (0, 0), "a wider width fits the line on one row");
+}
+
+/// One typed character in a wrapped 1 MB single-line minified JSON, plus the frame after it,
+/// stays within a 60 Hz frame: the row counts are kept current through the edit and only the
+/// drawn line is laid out. Timings are asserted in release builds only:
+/// `cargo test --release milestone -- --nocapture`.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_soft_wrap_budget_typing_in_a_wrapped_1mb_line() {
+    // Debug builds use a quarter of the size: still catches a layout of the whole line per
+    // keystroke going quadratic, and keeps the test suite quick.
+    let size = if cfg!(debug_assertions) { 250_000 } else { 1_000_000 };
+    let mut json = String::with_capacity(size + 100);
+    json.push('[');
+    let mut i = 0;
+    while json.len() < size {
+        if i > 0 {
+            json.push(',');
+        }
+        json.push_str(&format!(
+            r#"{{"id":{i},"name":"item_{i}","tags":["alpha","bravo"],"ok":true}}"#
+        ));
+        i += 1;
+    }
+    json.push(']');
+    assert!(!json.contains('\n'), "one minified line");
+
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _, _) = open_text(&dir, "", "", &json);
+    plain_editor(&mut app);
+    app.test_execute(Command::ToggleWordWrap);
+    assert_eq!(app.word_wrap(), WordWrap::On);
+    let mut term = Terminal::new(TestBackend::new(160, 50)).unwrap();
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+
+    // Every character is laid out on the rows, and the line takes many screens.
+    let height = app.group().active_tab().unwrap().view.height;
+    let (buf, view) = app.active_mut().unwrap();
+    let (revision, width, tab) = (view.revision, view.width, view.tab_width);
+    let layout = view.wrap.layout(&buf.rope, revision, 0, width, tab);
+    assert_eq!(
+        layout.row_end(layout.len() - 1),
+        ByteIdx(json.len()),
+        "the last row ends at the line's end: every character is on a row"
+    );
+    assert!(
+        layout.len() > height * 10,
+        "the line wraps to many screens: {} rows",
+        layout.len()
+    );
+    assert_eq!(view.left_col, 0, "no sideways scroll while wrapping");
+
+    // A warm key, then five measured ones: each key and the frame after it.
+    app.press(KeyCode::Char('x'), KeyModifiers::NONE);
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    let n = 5u32;
+    let mut took = Duration::ZERO;
+    for _ in 0..n {
+        let t = Instant::now();
+        app.press(KeyCode::Char('y'), KeyModifiers::NONE);
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        took += t.elapsed();
+    }
+    let avg = took / n;
+    println!("typing in a wrapped 1 MB line: {n} keys in {took:?}, avg {avg:?}");
+    // Debug builds are far slower: this only catches going quadratic (a whole-line layout per
+    // grapheme rather than per keystroke).
+    assert!(avg < Duration::from_secs(2), "typing too slow: avg {avg:?}");
+    if !cfg!(debug_assertions) {
+        let budget = Duration::from_millis(16);
+        assert!(avg < budget, "typing in a wrapped 1 MB line too slow: avg {avg:?}");
+    }
+    assert!(app.active_buffer().unwrap().rope.len() > size, "the keys were typed");
 }

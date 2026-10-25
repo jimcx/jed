@@ -163,16 +163,29 @@ fn row_end(text: &str, start: usize, col: usize, width: usize, tab_width: usize)
     let mut at = col;
     // The end of the last space that fits, where a row can break after a word.
     let mut space: Option<(usize, usize)> = None;
+    let bytes = text.as_bytes();
     while i < text.len() {
-        let next = pos::next_grapheme_in(text, i);
-        let grapheme = &text[i..next];
-        let w = pos::display_grapheme(grapheme, DisplayCol(at), tab_width).1;
+        // Printable ASCII (a space included) is one byte and one column: the common case, which
+        // skips grapheme segmentation and the width table. It only holds while the byte is its
+        // own grapheme — a combining mark (non-ASCII) after it extends the cluster, so an
+        // ASCII/non-ASCII boundary falls back to the grapheme walk.
+        let b = bytes[i];
+        let next_ascii = bytes.get(i + 1).is_none_or(|&nb| nb.is_ascii());
+        let (next, w, is_space) = if next_ascii && b.is_ascii_graphic() {
+            (i + 1, 1, false)
+        } else if next_ascii && b == b' ' {
+            (i + 1, 1, true)
+        } else {
+            let next = pos::next_grapheme_in(text, i);
+            let w = pos::display_grapheme(&text[i..next], DisplayCol(at), tab_width).1;
+            (next, w, &text[i..next] == " ")
+        };
         if at + w > width {
             if i == start {
                 // A grapheme wider than the whole row (a wide char or tab) gets it alone.
                 return (next, at + w);
             }
-            if grapheme == " " {
+            if is_space {
                 // Break after the space, even though it doesn't fit: it stays at the end of
                 // this row, so the next row starts at the word.
                 return (next, at + w);
@@ -181,7 +194,7 @@ fn row_end(text: &str, start: usize, col: usize, width: usize, tab_width: usize)
         }
         at += w;
         i = next;
-        if grapheme == " " {
+        if is_space {
             space = Some((i, at));
         }
     }
@@ -657,6 +670,8 @@ mod tests {
             "longwordlongwordlongword",
             "a          b",
             "  \t  x",
+            // A combining mark after an ASCII byte is one grapheme with it, never split.
+            "e\u{0301} e\u{0301}e\u{0301}",
         ]
         .iter()
         .map(|s| s.to_string())

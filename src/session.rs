@@ -8,7 +8,8 @@
 //! path and [`Pair`], commit tabs by id, hex tabs by path with the cursor's offset and column and
 //! the top row's offset (task tabs live in the panel, never here) — the active tab
 //! and group, and the side and bottom panels' layout (the Explorer's Git History section's
-//! collapse and height too). Paths inside the root are stored relative to it.
+//! collapse and height too). A text tab's scroll is the top line and, while lines wrap, the
+//! sub-row of it shown first. Paths inside the root are stored relative to it.
 //!
 //! [`save`] writes atomically (temp file, fsync, rename); [`read`] loads the file, every text
 //! tab's file and every hex tab's bytes (a hex tab stays one even if its file is text now),
@@ -92,6 +93,10 @@ pub enum TabState {
         selections: Vec<(usize, usize)>,
         primary: usize,
         top_line: usize,
+        /// The sub-row of `top_line` shown first while lines wrap (`#[serde(default)]`, so older
+        /// files read as the line's first row).
+        #[serde(default)]
+        top_row: usize,
         left_col: usize,
     },
     Diff {
@@ -107,6 +112,9 @@ pub enum TabState {
         selections: Vec<(usize, usize)>,
         primary: usize,
         top_line: usize,
+        /// See `Text::top_row`.
+        #[serde(default)]
+        top_row: usize,
         left_col: usize,
     },
     /// A commit tab, by its full id (dropped at restore when the commit is gone).
@@ -471,6 +479,7 @@ mod tests {
                             selections: vec![(0, 2), (5, 5)],
                             primary: 1,
                             top_line: 3,
+                            top_row: 1,
                             left_col: 2,
                         },
                         TabState::Diff {
@@ -491,6 +500,7 @@ mod tests {
                         selections: vec![(1, 1)],
                         primary: 0,
                         top_line: 0,
+                        top_row: 0,
                         left_col: 0,
                     }],
                     active: 0,
@@ -560,6 +570,7 @@ mod tests {
             selections: vec![(0, 0)],
             primary: 0,
             top_line: 0,
+            top_row: 0,
             left_col: 0,
         });
         // The history entry doesn't exist: that diff tab goes; b.txt is missing.
@@ -627,6 +638,8 @@ mod tests {
             }
         );
         assert!(matches!(tabs[1], TabState::Text { .. }));
+        // An older text tab (no `top_row`) reads as the line's first row.
+        assert!(matches!(tabs[1], TabState::Text { top_row: 0, .. }));
         let bad = r#"{"kind":"hex","path":"a.bin","cursor":5,"column":"middle","top":0}"#;
         assert!(serde_json::from_str::<TabState>(bad).is_err(), "an unknown column");
     }
