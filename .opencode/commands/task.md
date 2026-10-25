@@ -1,5 +1,5 @@
 ---
-description: Build a PLAN.md task in a worktree with subagents — one commit, or one per subtask; implement, validate, mutation-test, commit, then rebase/ff-merge back to main
+description: Build a PLAN.md task in a worktree with subagents — one commit, or one per subtask; implement, validate, mutation-test, commit, then land back to main
 agent: task
 ---
 
@@ -7,7 +7,7 @@ Build one task from PLAN.md's `## Tasks` list with subagents. The task: $ARGUMEN
 
 A task is either **single** (one implementer, one validator and its mutation runner, one commit) or **has subtasks** (a short id like `soft_wrap`, "Needs", "Done when" and a `Subtasks (one agent and one commit each):` list of `<id>-a: …` lines). A task with subtasks is built one subtask at a time, in order, each going through the same steps as a single task.
 
-Each task runs in its own git worktree, on its own branch. All the work and commits happen there; main is untouched until the task is done, when the branch is rebased/ff-merged back and the worktree removed.
+Each task runs in its own git worktree, on its own branch. All the work and commits happen there; main is untouched until the task is done, when the branch is landed back (via `scripts/land`) and the worktree removed.
 
 ## Harness
 
@@ -97,9 +97,9 @@ Each task runs in its own git worktree, on its own branch. All the work and comm
 ## Merge back to main
 
 11. When the whole task is done (a single task, or its last subtask is committed):
+    - Land the branch with `scripts/land <branch>` (run it from the task's worktree, on the branch, which is clean). It replays the branch onto main's current tip and moves main with a compare-and-swap, so two tasks landing at once can't interleave — one wins, the other replays and retries; a real conflict stops with a message instead of looping.
     - Move the session back to the main checkout: `execute` → `tools.opencode.session_move({ directory: <main path> })`.
-    - Bring the branch in: prefer a fast-forward, `git merge --ff-only <branch>`, which keeps history linear. If main has moved since the branch forked, `git rebase main <branch>` first, then `git merge --ff-only <branch>`. (Pushes are denied and main is otherwise untouched during a task, so the ff-only path is the norm.)
-    - Remove the worktree: `execute` → `tools.opencode.worktree_remove({ directory })`, then delete the merged branch with `git branch -d <branch>`.
+    - Remove the worktree: `execute` → `tools.opencode.worktree_remove({ directory })` (the branch is already deleted by `scripts/land`).
     - Confirm `git status` is clean and `git log --oneline -5` shows the task's commits on main. Then stop: don't start another task unless asked.
 
 ## Flaky tests
