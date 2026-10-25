@@ -31,12 +31,14 @@ pub fn look(app: &App, target: ScrollTarget) -> Look {
     }
 }
 
-/// A change as the bar draws it: the lines of a text tab (a deletion is the line above it) or
-/// the rows of a diff tab it covers, and the theme key it is coloured in. Distinct from
-/// `quick_diff::Mark` (a change's bytes): [`Scroll::cell`] projects this onto a track.
+/// A change as the bar draws it: the lines of a text tab (a deletion is the line above it; the
+/// screen rows while wrapping) or the rows of a diff tab it covers, and the theme key it is
+/// coloured in. Distinct from `quick_diff::Mark` (a change's bytes): [`Scroll::cell`] projects
+/// this onto a track.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mark {
-    /// The lines (a text tab) or rows (a diff tab), in the content's own numbering.
+    /// The lines (a text tab; its rows while wrapping) or rows (a diff tab), in the content's
+    /// own numbering.
     pub lines: std::ops::Range<usize>,
     pub key: &'static str,
 }

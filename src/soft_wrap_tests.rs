@@ -11,15 +11,20 @@
 //! are on, a quick-diff gutter marker and the lightbulb sit on the line's first row (where the
 //! line number is), and find matches, squiggles and selections stay on their rows.
 //!
-//! Scrolling, movement and the mouse on wrapped rows come in the task's later subtasks. The
-//! "Done when" parts covered here: the setting is read from `settings.toml` and `.workspace`,
-//! defaults to `off`, the toggle flips `App::word_wrap()` and keeps doing so across a
-//! `.workspace` reload, and the wrapped rows are drawn as the plan says.
+//! soft_wrap-d: scrolling over screen rows — the wheel and the PageUp / PageDown scroll move by
+//! rows, the scroll bar's top, thumb and git marks are rows, and a split that narrows rewraps
+//! with the cursor kept in view.
+//!
+//! Movement (Up / Down / Home / End's goal column) and the mouse's positions on wrapped rows come
+//! in the task's later subtasks. The "Done when" parts covered here: the setting is read from
+//! `settings.toml` and `.workspace`, defaults to `off`, the toggle flips `App::word_wrap()` and
+//! keeps doing so across a `.workspace` reload, the wrapped rows are drawn as the plan says, and
+//! scrolling / the scroll bar use screen rows.
 
 use std::fs;
 use std::path::PathBuf;
 
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Position;
@@ -37,6 +42,7 @@ use crate::lsp::ServerId;
 use crate::lsp::fake::{FakeLauncher, FakeOptions};
 use crate::milestone9_tests::{open_app, open_synced, project, put_cursor};
 use crate::milestone10_tests::{dirs, open_file_app, settle_markers};
+use crate::scrollbar::Scroll;
 use crate::selection::{Selection, Selections};
 use crate::workspace::Workspace;
 use crate::workspace::trust::TrustStore;
@@ -475,4 +481,190 @@ async fn soft_wrap_lightbulb_on_the_cursor_lines_first_row() {
         "in the gutter: {screen:?}"
     );
     app.shutdown_servers().await;
+}
+
+/// A line long enough to wrap to several rows at a 30-column terminal.
+fn long_line(i: usize) -> String {
+    format!("line {i} alpha bravo charlie delta echo foxtrot golf hotel\n")
+}
+
+/// An app on `text` with the side panel off and wrapping on, drawn at `w`×`h` (which sets the
+/// view's width, rows and wrap cache scrolling reads).
+fn wrapped_editor(dir: &tempfile::TempDir, text: &str, w: u16, h: u16) -> (App, Terminal<TestBackend>) {
+    let (mut app, _, _) = open_text(dir, "", "", text);
+    plain_editor(&mut app);
+    app.test_execute(Command::ToggleWordWrap);
+    assert_eq!(app.word_wrap(), WordWrap::On);
+    let term = draw(&mut app, w, h);
+    (app, term)
+}
+
+/// The active view's first shown row as one global screen row.
+fn global_top(app: &mut App) -> usize {
+    let (buf, view) = app.active_mut().unwrap();
+    let (revision, width, tab) = (view.revision, view.width, view.tab_width);
+    view.wrap.row_of_line(&buf.rope, revision, view.top_line(), width, tab) + view.top_row()
+}
+
+/// The active view's first shown (line, row).
+fn top(app: &App) -> (usize, usize) {
+    let view = &app.group().active_tab().unwrap().view;
+    (view.top_line(), view.top_row())
+}
+
+/// The wheel and PageUp / PageDown scroll screen rows, and a frame keeps the sub-row the view was
+/// scrolled to (rows movement itself is soft_wrap-e).
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_wheel_and_page_keys_scroll_by_screen_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let text: String = (0..12).map(long_line).collect();
+    let (mut app, _) = wrapped_editor(&dir, &text, 30, 10);
+    let text_rect = app.hits.group(app.groups.active).unwrap().text;
+    assert_eq!(global_top(&mut app), 0);
+
+    app.mouse(MouseEventKind::ScrollDown, text_rect.x + 1, text_rect.y + 1);
+    assert_eq!(
+        global_top(&mut app),
+        3,
+        "the wheel scrolls rows, not lines (which would give line 3)"
+    );
+    app.mouse(MouseEventKind::ScrollUp, text_rect.x + 1, text_rect.y + 1);
+    assert_eq!(global_top(&mut app), 0);
+
+    // PageDown scrolls by the view's rows; the cursor's own move is soft_wrap-e.
+    let page = app.group().active_tab().unwrap().view.height;
+    app.press(KeyCode::PageDown, KeyModifiers::NONE);
+    assert_eq!(global_top(&mut app), page, "PageDown scrolls by its rows");
+    app.press(KeyCode::PageUp, KeyModifiers::NONE);
+    assert_eq!(global_top(&mut app), 0, "PageUp scrolls back by its rows");
+    draw(&mut app, 30, 10); // the frame after PageUp reveals the cursor (to line 0)
+
+    // A frame re-anchors the top line without dropping the row.
+    app.mouse(MouseEventKind::ScrollDown, text_rect.x + 1, text_rect.y + 1);
+    draw(&mut app, 30, 10);
+    assert_eq!(global_top(&mut app), 3, "the frame keeps the first shown row");
+}
+
+/// The scroll bar's thumb and drag work over the whole text's rows: a press at the track's bottom
+/// lands on the last line's last row, and a frame doesn't reveal the cursor back.
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_scroll_bar_counts_rows_and_drags_to_the_last_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let text: String = (0..12).map(long_line).collect();
+    let (mut app, _) = wrapped_editor(&dir, &text, 30, 10);
+    let (total, height) = {
+        let (buf, view) = app.active_mut().unwrap();
+        let total = view
+            .wrap
+            .total_rows(&buf.rope, view.revision, view.width, view.tab_width);
+        (total, view.height)
+    };
+    assert!(total > height, "the wrapped text is taller than the view");
+    let bar = app.hits.group(app.groups.active).unwrap().scrollbar.unwrap();
+    let expected = Scroll::text(total, height, 0).thumb(bar.track.height).unwrap();
+    let hit = bar.thumb.unwrap();
+    assert_eq!(
+        (hit.start, hit.len),
+        (expected.start, expected.len),
+        "the thumb's length is the screen's share of the rows"
+    );
+
+    // A press at the track's bottom scrolls to the last row.
+    let track = bar.track;
+    let (x, y) = (track.x, track.y + track.height - 1);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    let (line, row) = {
+        let (buf, view) = app.active_mut().unwrap();
+        view.wrap
+            .line_at(&buf.rope, view.revision, total - 1, view.width, view.tab_width)
+    };
+    assert_eq!(top(&app), (line, row), "the drag's row, not its line");
+    let lines = crate::buffer::pos::line_count(&app.active_buffer().unwrap().rope);
+    assert_eq!(line, lines - 1, "the text's last line");
+
+    // The next frame keeps the row (nothing reveals the cursor back up).
+    draw(&mut app, 30, 10);
+    let bar = app.hits.group(app.groups.active).unwrap().scrollbar.unwrap();
+    assert!(bar.thumb.unwrap().start > hit.start, "the thumb moved down the track");
+}
+
+/// While wrapping, a change's scroll-bar marks are its rows: a line below a wrapping line
+/// projects to the cell of its first row, not of its line number.
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_scroll_bar_marks_are_projected_over_rows() {
+    let (_d, root, state) = dirs();
+    init(&root);
+    let original = "one\n  alpha bravo charlie delta echo foxtrot\nthree\nfour\nfive\nsix\nseven\neight\n";
+    fs::write(root.join("f.txt"), original).unwrap();
+    commit_all(&root, "one");
+    fs::write(root.join("f.txt"), original.replace("three", "THREE")).unwrap();
+    let mut app = open_file_app(&root, &state, "f.txt");
+    assert!(settle_markers(&mut app).await, "the gutter markers are current");
+    app.ui.side_visible = false;
+    app.test_execute(Command::ToggleWordWrap);
+    let term = draw(&mut app, 30, 14);
+
+    // The changed line (2) starts below the wrapping line 1, so its row is past its line.
+    let (total, start, height) = {
+        let (buf, view) = app.active_mut().unwrap();
+        let total = view
+            .wrap
+            .total_rows(&buf.rope, view.revision, view.width, view.tab_width);
+        let start = view
+            .wrap
+            .row_of_line(&buf.rope, view.revision, 2, view.width, view.tab_width);
+        (total, start, view.height)
+    };
+    assert!(start > 2, "line 2 is below the wrapped line 1: row {start}");
+    let bar = app.hits.group(app.groups.active).unwrap().scrollbar.unwrap();
+    let row_cell = Scroll::text(total, height, 0).cell(bar.track.height, start);
+    let lines = crate::buffer::pos::line_count(&app.active_buffer().unwrap().rope);
+    let line_cell = Scroll::text(lines, height, 0).cell(bar.track.height, 2);
+    assert_ne!(row_cell, line_cell, "rows, not lines, put the mark on the track");
+    let mark = app.theme.get("editorGutter.modifiedBackground").fg.unwrap();
+    assert_eq!(
+        bg(&term, bar.track.x, bar.track.y + row_cell),
+        Some(mark),
+        "the change's mark is on its first row's cell"
+    );
+    assert_ne!(
+        bg(&term, bar.track.x, bar.track.y + line_cell),
+        Some(mark),
+        "not on the line-number cell"
+    );
+}
+
+/// Narrowing a split rewraps the lines: the cursor's line takes more rows, and the frame keeps
+/// the cursor visible.
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_narrowing_a_split_rewraps_with_the_cursor_in_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let text: String = (0..40)
+        .map(|i| format!("line {i} with several more words to wrap around\n"))
+        .collect();
+    let (mut app, _, _) = open_text(&dir, "", "", &text);
+    plain_editor(&mut app);
+    app.test_execute(Command::ToggleWordWrap);
+    let end = app.active_buffer().unwrap().rope.len();
+    put_cursor(&mut app, end);
+    app.active_mut().unwrap().1.reveal_cursor = true;
+
+    let term = draw(&mut app, 100, 12);
+    let area = app.hits.group(app.groups.active).unwrap().text;
+    let cursor = term.backend().cursor_position();
+    assert!(
+        (area.y..area.y + area.height).contains(&cursor.y),
+        "visible when wide: {cursor:?} in {area:?}"
+    );
+
+    // At 40 columns the lines wrap to more rows: the cursor's row falls past the view's bottom
+    // unless the frame re-reveals it.
+    let term = draw(&mut app, 40, 12);
+    let area = app.hits.group(app.groups.active).unwrap().text;
+    let cursor = term.backend().cursor_position();
+    assert!(
+        (area.y..area.y + area.height).contains(&cursor.y),
+        "the cursor is still on screen after the split narrowed: {cursor:?} in {area:?}"
+    );
 }

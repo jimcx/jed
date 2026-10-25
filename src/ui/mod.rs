@@ -299,13 +299,28 @@ pub fn render(f: &mut Frame, app: &mut App) {
                         rope: &buf.rope,
                     }
                     .scroll();
-                    // Every change's lines, staged or not (the gutter shows the unstaged ones).
+                    // Every change's lines, staged or not (the gutter shows the unstaged ones);
+                    // while wrapping, the bar's marks are rows.
+                    let (revision, width, tab_width) = (tab.view.revision, tab.view.width, tab.view.tab_width);
                     let marks: Vec<scrollbar::Mark> = buf
                         .quick_diff
                         .marks()
                         .iter()
                         .filter_map(|m| {
                             let lines = buf.quick_diff.lines_of(&buf.rope, m)?;
+                            let lines = if wrapping {
+                                let start =
+                                    tab.view
+                                        .wrap
+                                        .row_of_line(&buf.rope, revision, lines.start, width, tab_width);
+                                let end = tab
+                                    .view
+                                    .wrap
+                                    .row_of_line(&buf.rope, revision, lines.end, width, tab_width);
+                                start..end
+                            } else {
+                                lines
+                            };
                             Some(scrollbar::Mark {
                                 lines,
                                 key: m.theme_key(),

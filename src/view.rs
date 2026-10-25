@@ -25,6 +25,11 @@ pub struct View {
     /// Text area size from the last render, used by page movement.
     pub height: usize,
     pub width: usize,
+    /// Whether the last frame wrapped lines, and the revision / tab width its rows were laid
+    /// out for: written by drawing, read by scrolling (`scroll_lines`, `TextScroll`).
+    pub wrapping: bool,
+    pub revision: u64,
+    pub tab_width: usize,
     /// Set by commands that move the cursor; the next render scrolls it into view.
     pub reveal_cursor: bool,
     /// Set by Cmd+D and friends: the next render shows this range, centred if it's off screen
@@ -129,12 +134,32 @@ pub struct TextScroll<'a> {
 
 impl crate::scrollbar::Scrollable for TextScroll<'_> {
     fn scroll(&self) -> crate::scrollbar::Scroll {
+        if self.view.wrapping {
+            let (revision, width, tab) = (self.view.revision, self.view.width, self.view.tab_width);
+            let total = self.view.wrap.cached_total(revision, width, tab);
+            let line = self
+                .view
+                .wrap
+                .cached_row_of_line(revision, self.view.top_line(), width, tab);
+            // Drawing primes the counts; without a frame yet, scroll by lines as before.
+            if let (Some(total), Some(line)) = (total, line) {
+                return crate::scrollbar::Scroll::text(total, self.view.height, line + self.view.top_row());
+            }
+        }
         crate::scrollbar::Scroll::text(pos::line_count(self.rope), self.view.height, self.view.top_line())
     }
 
     /// Drops pending reveals: the pointer decides where the view is.
     fn set_top(&mut self, top: usize) {
-        self.view.set_top_line(self.rope, top);
+        let (revision, width, tab) = (self.view.revision, self.view.width, self.view.tab_width);
+        // Rows only while the counts are current for this key, matching `scroll`'s fallback to
+        // lines: otherwise `top` is a line index (from the line-based `Scroll`), not a row.
+        if self.view.wrapping && self.view.wrap.cached_total(revision, width, tab).is_some() {
+            let (line, row) = self.view.wrap.line_at(self.rope, revision, top, width, tab);
+            self.view.set_top(self.rope, line, row);
+        } else {
+            self.view.set_top_line(self.rope, top);
+        }
         self.view.reveal_cursor = false;
         self.view.reveal_range = None;
         self.view.reveal_pos = None;
@@ -154,6 +179,9 @@ impl View {
             scroll_width: Default::default(),
             height: 1,
             width: 1,
+            wrapping: false,
+            revision: 0,
+            tab_width: 4,
             reveal_cursor: true,
             reveal_range: None,
             reveal_pos: None,
@@ -184,21 +212,83 @@ impl View {
         self.top_byte = pos::line_start(rope, self.top_line);
     }
 
-    /// Sets the first shown (line, sub-row): wrapped scrolling in a later step (`soft_wrap-d`).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Sets the first shown (line, sub-row): wrapped scrolling. Callers take `row` from a layout
+    /// or the row walkers, which clamp it.
     pub fn set_top(&mut self, rope: &Rope, line: usize, row: usize) {
         self.set_top_line(rope, line);
         self.top_row = row;
     }
 
+    /// Scrolls `delta` screen rows (the wheel, PageUp / PageDown), or lines while not wrapping;
+    /// stops at the first row and the text's last row.
     pub fn scroll_lines(&mut self, rope: &Rope, delta: isize) {
-        self.set_top_line(rope, self.top_line.saturating_add_signed(delta));
+        if !self.wrapping {
+            self.set_top_line(rope, self.top_line.saturating_add_signed(delta));
+            return;
+        }
+        let (line, row) = if delta >= 0 {
+            self.rows_down(rope, self.top_line, self.top_row, delta.unsigned_abs())
+        } else {
+            self.rows_up(rope, self.top_line, self.top_row, delta.unsigned_abs())
+        };
+        self.set_top(rope, line, row);
+    }
+
+    /// The (line, row) `count` rows below (`at`, `row`), clamped to the text's last row. Walks
+    /// only the lines crossed, not the whole text.
+    fn rows_down(&mut self, rope: &Rope, at: usize, row: usize, count: usize) -> (usize, usize) {
+        let (revision, width, tab) = (self.revision, self.width, self.tab_width);
+        let total = pos::line_count(rope);
+        let (mut at, mut remaining) = (at, row + count);
+        while at < total {
+            let rows = self.wrap.line_rows(rope, revision, at, width, tab);
+            if remaining < rows {
+                return (at, remaining);
+            }
+            remaining -= rows;
+            at += 1;
+        }
+        let last = total - 1;
+        (last, self.wrap.line_rows(rope, revision, last, width, tab) - 1)
+    }
+
+    /// The (line, row) `count` rows above (`at`, `row`), clamped to the first row.
+    fn rows_up(&mut self, rope: &Rope, at: usize, row: usize, count: usize) -> (usize, usize) {
+        let (revision, width, tab) = (self.revision, self.width, self.tab_width);
+        let (mut at, mut row, mut up) = (at, row, count);
+        while up > 0 {
+            if row >= up {
+                row -= up;
+                break;
+            }
+            up -= row;
+            if at == 0 {
+                row = 0;
+                break;
+            }
+            at -= 1;
+            row = self.wrap.line_rows(rope, revision, at, width, tab) - 1;
+            up -= 1;
+        }
+        (at, row)
+    }
+
+    /// `head`'s row within its line, from the line's wrap layout.
+    fn wrapped_row(&mut self, rope: &Rope, line: usize, head: ByteIdx, tab_width: usize) -> usize {
+        let within = head.0.saturating_sub(pos::line_start(rope, line).0);
+        self.wrap
+            .layout(rope, self.revision, line, self.width, tab_width)
+            .row_of(ByteIdx(within))
+            .0
     }
 
     /// Scrolls sideways by `delta` columns (the wheel), stopping when the widest line drawn so
-    /// far ends in view; the selections stay put and nothing is revealed (the next reveal
-    /// scrolls back).
+    /// far ends in view; nothing while wrapping (the rows already fit the text width). The
+    /// selections stay put and nothing is revealed (the next reveal scrolls back).
     pub fn scroll_columns(&mut self, delta: isize) {
+        if self.wrapping {
+            return;
+        }
         self.left_col = self.scroll_width.scroll(self.left_col, delta, self.width);
     }
 
@@ -208,9 +298,23 @@ impl View {
     }
 
     /// Scrolls just enough to show `head` (clamped to the text: it may be from before an edit).
+    /// While wrapping that is the cursor's screen row, and nothing scrolls sideways.
     pub fn scroll_to(&mut self, rope: &Rope, head: ByteIdx, tab_width: usize) {
         let head = ByteIdx(rope.floor_char_boundary(head.0.min(rope.len())));
         let line = pos::line_of(rope, head);
+        if self.wrapping {
+            let row = self.wrapped_row(rope, line, head, tab_width);
+            if (line, row) < (self.top_line, self.top_row) {
+                self.set_top(rope, line, row);
+            } else {
+                let bottom = self.rows_down(rope, self.top_line, self.top_row, self.height.saturating_sub(1));
+                if (line, row) > bottom {
+                    let (at, sub) = self.rows_up(rope, line, row, self.height.saturating_sub(1));
+                    self.set_top(rope, at, sub);
+                }
+            }
+            return;
+        }
         if line < self.top_line {
             self.set_top_line(rope, line);
         } else if line >= self.top_line + self.height {
@@ -224,10 +328,19 @@ impl View {
         }
     }
 
-    /// Shows `start..end`: if its first line is off screen, centres it vertically; scrolls
-    /// sideways just enough to show its end.
+    /// Shows `start..end`: if its first row is off screen, centres it vertically; scrolls
+    /// sideways just enough to show its end (nothing while wrapping).
     pub fn reveal_in_center(&mut self, rope: &Rope, start: ByteIdx, end: ByteIdx, tab_width: usize) {
         let line = pos::line_of(rope, start);
+        if self.wrapping {
+            let row = self.wrapped_row(rope, line, start, tab_width);
+            let bottom = self.rows_down(rope, self.top_line, self.top_row, self.height.saturating_sub(1));
+            if (line, row) < (self.top_line, self.top_row) || (line, row) > bottom {
+                let (at, sub) = self.rows_up(rope, line, row, self.height / 2);
+                self.set_top(rope, at, sub);
+            }
+            return;
+        }
         if line < self.top_line || line >= self.top_line + self.height {
             self.set_top_line(rope, line.saturating_sub(self.height / 2));
         }
@@ -282,6 +395,7 @@ mod tests {
     use super::*;
     use crate::buffer::Buffer;
     use crate::edit::{self, Settings};
+    use crate::scrollbar::Scrollable;
 
     fn cursor(at: usize) -> Selections {
         Selections::single(Selection::cursor(ByteIdx(at)))
@@ -473,5 +587,148 @@ mod tests {
         assert_eq!(v.left_col, 7);
         assert_eq!(v.selections.primary().head, ByteIdx(0));
         assert!(v.reveal_cursor, "scrolling sideways doesn't touch the reveal");
+    }
+
+    /// A view wrapping lines at `width` columns and `height` rows (the fields drawing writes).
+    fn wrapped(width: usize, height: usize) -> View {
+        let mut v = View::new();
+        (v.width, v.height, v.wrapping, v.tab_width) = (width, height, true, 4);
+        v
+    }
+
+    /// The wheel and PageUp / PageDown scroll screen rows while wrapping, over line breaks, and
+    /// stop at the first and last rows.
+    #[test]
+    fn scroll_lines_walks_wrapped_rows_and_stops_at_the_ends() {
+        // At width 5: two rows, one row, two rows.
+        let rope = Rope::from_str("aaaa bbbb\ncc\ndddd eeee\n");
+        let mut v = wrapped(5, 2);
+        v.scroll_lines(&rope, 1);
+        assert_eq!((v.top_line(), v.top_row()), (0, 1));
+        v.scroll_lines(&rope, 1);
+        assert_eq!((v.top_line(), v.top_row()), (1, 0), "over to the next line");
+        v.scroll_lines(&rope, 2);
+        assert_eq!((v.top_line(), v.top_row()), (2, 1), "the last row");
+        v.scroll_lines(&rope, 10);
+        assert_eq!((v.top_line(), v.top_row()), (3, 0), "clamped at the last row");
+        v.scroll_lines(&rope, -1);
+        assert_eq!((v.top_line(), v.top_row()), (2, 1));
+        v.scroll_lines(&rope, -3);
+        assert_eq!((v.top_line(), v.top_row()), (0, 1), "back over a whole line");
+        v.scroll_lines(&rope, -10);
+        assert_eq!((v.top_line(), v.top_row()), (0, 0), "clamped at the top");
+    }
+
+    /// Revealing a cursor below the view scrolls to its row (the last visible row is its row),
+    /// above to its row at the top; nothing scrolls sideways while wrapping.
+    #[test]
+    fn scroll_to_reveals_the_cursor_row_without_sideways_scroll() {
+        let rope = Rope::from_str("aaaa bbbb\ncc\ndddd eeee\n");
+        let mut v = wrapped(5, 2);
+        v.left_col = 3;
+        v.scroll_to(&rope, ByteIdx(pos::line_end(&rope, 2).0), 4);
+        assert_eq!((v.top_line(), v.top_row()), (2, 0), "the end's row at the bottom");
+        assert_eq!(v.left_col, 3, "no sideways scroll while wrapping");
+        v.scroll_to(&rope, ByteIdx(pos::line_start(&rope, 1).0), 4);
+        assert_eq!((v.top_line(), v.top_row()), (1, 0), "above: it becomes the top row");
+        v.scroll_to(&rope, ByteIdx(0), 4);
+        assert_eq!((v.top_line(), v.top_row()), (0, 0));
+        v.scroll_to(&rope, ByteIdx(pos::line_end(&rope, 0).0), 4);
+        assert_eq!(
+            (v.top_line(), v.top_row()),
+            (0, 0),
+            "a row already on screen: no scroll"
+        );
+        v.scroll_width.measure(30);
+        v.scroll_columns(4);
+        assert_eq!(v.left_col, 3, "the sideways wheel does nothing while wrapping");
+    }
+
+    /// Cmd+D's centre reveal works on rows: an off-screen row is centred, a row above goes as
+    /// far up as it can.
+    #[test]
+    fn reveal_in_center_centres_off_screen_rows() {
+        let rope = Rope::from_str("aaaa bbbb\ncc\ndddd eeee\n");
+        let mut v = wrapped(5, 2);
+        v.left_col = 3;
+        let at = |line: usize, col: usize| ByteIdx(pos::line_start(&rope, line).0 + col);
+        v.reveal_in_center(&rope, at(0, 0), at(0, 0), 4);
+        assert_eq!((v.top_line(), v.top_row()), (0, 0), "on screen: no scroll");
+        v.reveal_in_center(&rope, at(2, 0), at(2, 0), 4);
+        assert_eq!((v.top_line(), v.top_row()), (1, 0), "below: one row up");
+        assert_eq!(v.left_col, 3, "no sideways scroll while wrapping");
+        v.reveal_in_center(&rope, at(0, 1), at(0, 1), 4);
+        assert_eq!(
+            (v.top_line(), v.top_row()),
+            (0, 0),
+            "above, near the top: as far as it goes"
+        );
+    }
+
+    /// The scroll bar is over rows while wrapping: its top is the row (not the line), and a
+    /// drag lands on the (line, row) of that global row.
+    #[test]
+    fn the_text_scroll_bar_uses_rows() {
+        let rope = Rope::from_str("aaaa bbbb\ncc\ndddd eeee\n");
+        let mut v = wrapped(5, 2);
+        assert_eq!(v.wrap.total_rows(&rope, 0, 5, 4), 6, "drawing primes the counts");
+        {
+            let scroll = TextScroll {
+                view: &mut v,
+                rope: &rope,
+            }
+            .scroll();
+            assert_eq!((scroll.top, scroll.max_top, scroll.height), (0, 5, 2));
+        }
+        v.set_top(&rope, 1, 0); // line 1's first row is global row 2
+        {
+            let scroll = TextScroll {
+                view: &mut v,
+                rope: &rope,
+            }
+            .scroll();
+            assert_eq!(scroll.top, 2, "the top is the row, not the line");
+        }
+        {
+            let mut bar = TextScroll {
+                view: &mut v,
+                rope: &rope,
+            };
+            crate::scrollbar::Scrollable::set_top(&mut bar, 4);
+        }
+        assert_eq!((v.top_line(), v.top_row()), (2, 1), "the last row");
+        {
+            let mut bar = TextScroll {
+                view: &mut v,
+                rope: &rope,
+            };
+            crate::scrollbar::Scrollable::set_top(&mut bar, 99);
+        }
+        assert_eq!((v.top_line(), v.top_row()), (3, 0), "clamped");
+        assert!(!v.reveal_cursor, "the pointer decides where the view is");
+    }
+
+    /// Before the first wrapped frame primes the counts, the scroll bar reads lines and a drag
+    /// sets the line (not a row), so `scroll` and `set_top` agree on the units.
+    #[test]
+    fn the_scroll_bar_falls_back_to_lines_before_the_first_wrapped_frame() {
+        let rope = Rope::from_str("aaaa bbbb\ncc\ndddd eeee\n");
+        let mut v = wrapped(5, 2);
+        {
+            let scroll = TextScroll {
+                view: &mut v,
+                rope: &rope,
+            }
+            .scroll();
+            assert_eq!((scroll.max_top, scroll.top), (3, 0), "four lines, no rows primed yet");
+        }
+        {
+            let mut bar = TextScroll {
+                view: &mut v,
+                rope: &rope,
+            };
+            crate::scrollbar::Scrollable::set_top(&mut bar, 2);
+        }
+        assert_eq!((v.top_line(), v.top_row()), (2, 0), "a line index, not a global row");
     }
 }

@@ -253,6 +253,48 @@ impl Wrap {
         counts.rows.get(line).copied().unwrap_or(1)
     }
 
+    /// The global screen row `line`'s first row is at: the rows of every line before it. Walks
+    /// the counts, so O(lines) — for the scroll bar's marks and a drag.
+    pub fn row_of_line(&mut self, rope: &Rope, revision: u64, line: usize, width: usize, tab_width: usize) -> usize {
+        let counts = self.counts(rope, revision, width, tab_width);
+        let line = line.min(counts.rows.len());
+        counts.rows[..line].iter().sum()
+    }
+
+    /// The (line, sub-row) of global screen row `row`, clamped to the text's last row. Walks the
+    /// counts, so O(lines) — for a scroll bar drag.
+    pub fn line_at(
+        &mut self,
+        rope: &Rope,
+        revision: u64,
+        row: usize,
+        width: usize,
+        tab_width: usize,
+    ) -> (usize, usize) {
+        let counts = self.counts(rope, revision, width, tab_width);
+        let mut row = row;
+        for (line, &rows) in counts.rows.iter().enumerate() {
+            if row < rows {
+                return (line, row);
+            }
+            row -= rows;
+        }
+        let last = counts.rows.len().saturating_sub(1);
+        (last, counts.rows.get(last).copied().unwrap_or(1).saturating_sub(1))
+    }
+
+    /// `total_rows`' count when the counts are already for this key (drawing primes them), for
+    /// callers that can't lay the text out (`TextScroll::scroll` takes `&self`).
+    pub fn cached_total(&self, revision: u64, width: usize, tab_width: usize) -> Option<usize> {
+        self.counts_for(revision, width, tab_width).map(|c| c.total)
+    }
+
+    /// `row_of_line`'s row when the counts are already for this key (`cached_total`).
+    pub fn cached_row_of_line(&self, revision: u64, line: usize, width: usize, tab_width: usize) -> Option<usize> {
+        let counts = self.counts_for(revision, width, tab_width)?;
+        Some(counts.rows[..line.min(counts.rows.len())].iter().sum())
+    }
+
     /// `line`'s break points at `width`, laid out on first use and kept while the buffer
     /// revision, width and tab width stay.
     pub fn layout(&mut self, rope: &Rope, revision: u64, line: usize, width: usize, tab_width: usize) -> &Layout {
@@ -316,6 +358,14 @@ impl Wrap {
     #[cfg(test)]
     pub fn sweeps(&self) -> usize {
         self.sweeps
+    }
+
+    /// The counts when they are for this key (nothing to lay out).
+    fn counts_for(&self, revision: u64, width: usize, tab_width: usize) -> Option<&Counts> {
+        let width = width.max(1);
+        self.counts
+            .as_ref()
+            .filter(|c| (c.revision, c.width, c.tab_width) == (revision, width, tab_width))
     }
 
     /// The counts, laid out for the whole text when they aren't for this key.
@@ -644,6 +694,23 @@ mod tests {
         assert_eq!(sum, total);
         assert_eq!(wrap.line_rows(&rope, 3, 99, 5, 4), 1, "past the end");
         assert_eq!(wrap.sweeps, 1, "one layout of the whole text for the key");
+    }
+
+    /// Global rows: a line's first row from `row_of_line`, and back from `line_at` (a multi-row
+    /// line's rows all map to it, the end clamps to the last row).
+    #[test]
+    fn global_rows_map_to_lines_and_back() {
+        let rope = Rope::from_str("aaaa bbbb\ncc\ndddd eeee\n");
+        let mut wrap = Wrap::default();
+        assert_eq!(wrap.total_rows(&rope, 0, 5, 4), 6);
+        let starts: Vec<usize> = (0..=3).map(|line| wrap.row_of_line(&rope, 0, line, 5, 4)).collect();
+        assert_eq!(starts, [0, 2, 3, 5], "line 0 wraps to two rows, line 2 to two");
+        assert_eq!(wrap.row_of_line(&rope, 0, 99, 5, 4), 6, "past the end: the total");
+        let rows = [(0, 0), (0, 1), (1, 0), (2, 0), (2, 1), (3, 0)];
+        for (row, at) in rows.iter().enumerate() {
+            assert_eq!(wrap.line_at(&rope, 0, row, 5, 4), *at, "row {row}");
+        }
+        assert_eq!(wrap.line_at(&rope, 0, 99, 5, 4), (3, 0), "clamped to the last row");
     }
 
     fn fresh_total(rope: &Rope, revision: u64, width: usize, tab_width: usize) -> usize {

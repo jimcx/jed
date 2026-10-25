@@ -188,10 +188,30 @@ pub fn render(
         ..area
     };
 
-    view.height = text.height.max(1) as usize;
-    view.width = text.width.max(1) as usize;
-    // Re-anchor the viewport (the buffer may have changed since the last frame).
+    let height = text.height.max(1) as usize;
+    let width = text.width.max(1) as usize;
+    let wrapping = overlay.wrapping;
+    let revision = buf.revision();
+    // A split resize rewraps the lines: the cursor may have moved off screen, so reveal it again.
+    if wrapping && view.width != width {
+        view.reveal_cursor = true;
+    }
+    // The wrap inputs scrolling reads (the view's width / height are written the same way).
+    view.height = height;
+    view.width = width;
+    view.wrapping = wrapping;
+    view.revision = revision;
+    view.tab_width = tab;
+    // Re-anchor the viewport (the buffer may have changed since the last frame); wrapping keeps
+    // the sub-row it was scrolled to, clamped to the line's rows at this width.
+    let top_row = view.top_row();
     view.set_top_line(rope, view.top_line());
+    if wrapping {
+        let rows = view.wrap.layout(rope, revision, view.top_line(), width, tab).len();
+        view.set_top(rope, view.top_line(), top_row.min(rows - 1));
+        // The scroll bar reads the total rows without laying the text out itself.
+        view.wrap.total_rows(rope, revision, width, tab);
+    }
     if let Some((start, end)) = view.reveal_range.take() {
         view.reveal_in_center(rope, start, end, tab);
         view.reveal_cursor = false;
@@ -202,8 +222,6 @@ pub fn render(
         view.scroll_to_cursor(rope, tab);
         view.reveal_cursor = false;
     }
-    let revision = buf.revision();
-    let wrapping = overlay.wrapping;
     // The rows to draw, top first: a wrapped line takes several. Their byte range is what the
     // byte-range overlays below look at, so nothing off screen is walked.
     let rows = visual_rows(rope, view, revision, wrapping, total, tab);
