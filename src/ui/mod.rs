@@ -38,25 +38,42 @@ use crate::layout::{self, GroupHit, HitMap, ScrollTarget, SplitDir};
 use crate::scrollbar::Scrollable;
 use crate::view::{TextScroll, View};
 
-/// The screen row (0-based from the editor's first text row) `view` draws `line`'s first row
-/// on, if it is on screen: the wrapped rows of the lines from the view's top down to `line`
-/// (where the gutter number is drawn), less the rows of the top line scrolled past. Only the
-/// visible lines are laid out, so a line below the view costs at most the screen's height.
-fn line_screen_row(view: &mut View, rope: &ropey::Rope, revision: u64, line: usize, tab_width: usize) -> Option<usize> {
+/// The screen row (0-based from the editor's first text row) `view` draws `line`'s `sub` row on,
+/// if it is on screen: the wrapped rows of the lines from the view's top down to `line`, less the
+/// rows of the top line scrolled past. Only the visible lines are laid out, so a line below the
+/// view costs at most the screen's height.
+fn row_screen_row(
+    view: &mut View,
+    rope: &ropey::Rope,
+    revision: u64,
+    line: usize,
+    sub: usize,
+    tab_width: usize,
+) -> Option<usize> {
     let (width, height, top, top_row) = (view.width, view.height, view.top_line(), view.top_row());
     if line < top {
         return None;
     }
-    // `row` is the full rows of the lines from `top` down to `at`, so `line`'s first row is at
-    // screen row `row - top_row` (on screen when `top_row <= row < height + top_row`); stop as
-    // soon as a line's first row reaches the bottom edge, so only the visible lines are laid out.
+    // `row` is the full rows of the lines from `top` down to `line`, so `(line, sub)` is at
+    // screen row `row + sub - top_row` (on screen when `top_row <= row + sub < height + top_row`);
+    // stop as soon as a line's first row reaches the bottom edge, so only the visible lines are
+    // laid out.
     let mut row = 0;
     let mut at = top;
     while at < line && row < height + top_row {
         row += view.wrap.layout(rope, revision, at, width, tab_width).len();
         at += 1;
     }
-    (at == line && row >= top_row && row < height + top_row).then(|| row - top_row)
+    if at != line {
+        return None;
+    }
+    let screen = row + sub;
+    (screen >= top_row && screen < height + top_row).then(|| screen - top_row)
+}
+
+/// The screen row of `line`'s first row (`row_screen_row`).
+fn line_screen_row(view: &mut View, rope: &ropey::Rope, revision: u64, line: usize, tab_width: usize) -> Option<usize> {
+    row_screen_row(view, rope, revision, line, 0, tab_width)
 }
 
 pub fn render(f: &mut Frame, app: &mut App) {

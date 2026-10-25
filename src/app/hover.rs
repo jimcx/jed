@@ -24,7 +24,7 @@ use serde_json::Value;
 use super::App;
 use super::lsp::{Pending, Request};
 use crate::buffer::BufferId;
-use crate::buffer::pos::{self, ByteIdx};
+use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::diagnostics::{self, Diagnostic};
 use crate::hover::{self, Popup, Rest};
 use crate::layout::{GroupId, Hit};
@@ -188,7 +188,7 @@ impl App {
             group,
             buffer,
             revision,
-            scroll: (view.top_line(), view.left_col),
+            scroll: (view.top_line(), view.top_row(), view.left_col),
             anchor: about.0,
             range,
             lines,
@@ -281,10 +281,10 @@ impl App {
     }
 
     /// The text under a screen cell, in any group: its group, buffer, position, and the run of
-    /// same-class characters there. `None` past a line's end, on blank space or off the text,
+    /// same-class characters there. `None` past a row's text, on blank space or off the text,
     /// unless a squiggle is drawn on that cell (a diagnostic on whitespace, at a line end, or the
-    /// cell past an empty line).
-    fn hover_target(&self, x: u16, y: u16) -> Option<(GroupId, BufferId, ByteIdx, (ByteIdx, ByteIdx))> {
+    /// cell past an empty line). While wrapping the cell is on one of its line's screen rows.
+    fn hover_target(&mut self, x: u16, y: u16) -> Option<(GroupId, BufferId, ByteIdx, (ByteIdx, ByteIdx))> {
         let Hit::Editor(g) = self.hits.hit(x, y) else {
             return None;
         };
@@ -292,25 +292,42 @@ impl App {
         if !text.contains(ratatui::layout::Position { x, y }) {
             return None;
         }
-        let tab = self.groups.get(g)?.active_tab()?;
+        let settings = self.settings.clone();
+        let tab = self.groups.get_mut(g)?.active_tab_mut()?;
         let buf = self.buffers.get(tab.buffer)?;
         let rope = &buf.rope;
-        let line = tab.view.top_line() + (y - text.y) as usize;
-        if line >= pos::line_count(rope) {
-            return None;
-        }
-        let tab_width = self.settings.for_buffer(buf).tab_width;
+        let tab_width = settings.for_buffer(buf).tab_width;
+        let dy = (y - text.y) as usize;
+        // The line, the byte the cell is on, and whether the cell is over the row's text (vs at
+        // or past its end, where only an empty line's squiggle is drawn).
+        let (line, at, over, at_end) = if tab.view.wrapping && tab.view.width > 0 {
+            let (revision, width) = (tab.view.revision, tab.view.width);
+            let (top, top_row) = (tab.view.top_line(), tab.view.top_row());
+            let (line, sub) = tab.view.rows_down(rope, top, top_row, dy);
+            let layout = tab.view.wrap.layout(rope, revision, line, width, tab_width);
+            let sub = sub.min(layout.len() - 1);
+            let within = DisplayCol(((x - text.x) as usize).saturating_sub(layout.rows()[sub].col.0));
+            let at = ByteIdx(pos::line_start(rope, line).0 + layout.byte_at(sub, within).0);
+            let width = layout.row_width(sub);
+            (line, at, within < width, within == width)
+        } else {
+            let line = tab.view.top_line() + dy;
+            if line >= pos::line_count(rope) {
+                return None;
+            }
+            let l = pos::Line::new(rope, line);
+            let col = DisplayCol(tab.view.left_col + (x - text.x) as usize);
+            let end_col = l.col(l.end(), tab_width);
+            (line, l.byte_at_col(col, tab_width), col < end_col, col == end_col)
+        };
         let l = pos::Line::new(rope, line);
-        let col = pos::DisplayCol(tab.view.left_col + (x - text.x) as usize);
-        let end_col = l.col(l.end(), tab_width);
         let squiggled = |at| !buf.diagnostics.drawn_at(rope, at).is_empty();
-        let at = if col < end_col {
-            let at = l.byte_at_col(col, tab_width);
+        let at = if over {
             if pos::Peek::new(rope).after(at).is_none_or(char::is_whitespace) && !squiggled(at) {
                 return None;
             }
             at
-        } else if col == end_col && l.start() == l.end() && squiggled(l.end()) {
+        } else if at_end && l.start() == l.end() && squiggled(l.end()) {
             l.end()
         } else {
             return None;
@@ -343,12 +360,9 @@ impl App {
     /// its view scrolled.
     pub(super) fn check_hover(&mut self) {
         let Some(p) = &self.hover.popup else { return };
-        let fits = self
-            .groups
-            .get(p.group)
-            .and_then(|g| g.active_tab())
-            .is_some_and(|t| t.buffer == p.buffer && (t.view.top_line(), t.view.left_col) == p.scroll)
-            && self.buffers.get(p.buffer).is_some_and(|b| b.revision() == p.revision);
+        let fits = self.groups.get(p.group).and_then(|g| g.active_tab()).is_some_and(|t| {
+            t.buffer == p.buffer && (t.view.top_line(), t.view.top_row(), t.view.left_col) == p.scroll
+        }) && self.buffers.get(p.buffer).is_some_and(|b| b.revision() == p.revision);
         if !fits {
             self.hover.popup = None;
             self.needs_redraw = true;

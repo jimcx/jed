@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
+use ropey::Rope;
 use vt100::MouseProtocolMode;
 
 use super::tab_drag::TabDrag;
@@ -747,24 +748,11 @@ impl App {
     }
 
     /// Screen cell to line and display column in the active group, the column not limited to
-    /// the line's text. With `clamp`, as `text_position`.
-    fn text_cell(&self, x: u16, y: u16, clamp: bool) -> Option<Cell> {
-        let a = self.hits.group(self.groups.active)?.text;
-        let tab = self.group().active_tab()?;
-        let buf = self.buffers.get(tab.buffer)?;
-        if a.width == 0 || a.height == 0 {
-            return None;
-        }
-        let (x, y) = if clamp {
-            (x.clamp(a.x, a.x + a.width - 1), y.clamp(a.y, a.y + a.height - 1))
-        } else {
-            (x.max(a.x), y)
-        };
-        if y < a.y || y >= a.y + a.height {
-            return None;
-        }
-        let line = (tab.view.top_line() + (y - a.y) as usize).min(pos::line_count(&buf.rope) - 1);
-        Some((line, DisplayCol(tab.view.left_col + (x - a.x) as usize)))
+    /// the line's text (line-relative, as `column::select` takes). With `clamp`, as
+    /// `text_position`.
+    fn text_cell(&mut self, x: u16, y: u16, clamp: bool) -> Option<Cell> {
+        let (line, _, col) = self.text_hit(x, y, clamp)?;
+        Some((line, col))
     }
 
     /// The text field a `FieldTarget` names, when it is showing.
@@ -836,16 +824,68 @@ impl App {
 
     /// Screen cell to buffer position in the active group. With `clamp`, points outside
     /// the text area (while dragging) are pulled to its edge.
-    fn text_position(&self, x: u16, y: u16, clamp: bool) -> Option<ByteIdx> {
-        let (line, col) = self.text_cell(x, y, clamp)?;
-        let buf = self.buffers.get(self.group().active_tab()?.buffer)?;
-        Some(pos::byte_at_col(
-            &buf.rope,
-            line,
-            col,
-            self.settings.for_buffer(buf).tab_width,
-        ))
+    fn text_position(&mut self, x: u16, y: u16, clamp: bool) -> Option<ByteIdx> {
+        Some(self.text_hit(x, y, clamp)?.1)
     }
+
+    /// Screen cell to (line, byte, line-relative display column) in the active group; the
+    /// column may lie past the line's text.
+    fn text_hit(&mut self, x: u16, y: u16, clamp: bool) -> Option<(usize, ByteIdx, DisplayCol)> {
+        let a = self.hits.group(self.groups.active)?.text;
+        let settings = self.settings.clone();
+        let (buf, view) = self.active_mut()?;
+        let tab_width = settings.for_buffer(buf).tab_width;
+        hit_at(&buf.rope, view, a, x, y, clamp, tab_width)
+    }
+}
+
+/// A screen cell in a view's text area `text` to (line, byte, line-relative display column).
+/// While wrapping, a screen row is a row of some line, so the byte comes from that row's break
+/// points (`wrap::Layout`), not from the line's whole unwrapped width; a cell in a continuation
+/// row's indentation lands at the row's first byte. With `clamp`, points outside `text` (while
+/// dragging) are pulled to its edge.
+fn hit_at(
+    rope: &Rope,
+    view: &mut View,
+    text: Rect,
+    x: u16,
+    y: u16,
+    clamp: bool,
+    tab_width: usize,
+) -> Option<(usize, ByteIdx, DisplayCol)> {
+    if text.width == 0 || text.height == 0 {
+        return None;
+    }
+    let (x, y) = if clamp {
+        (
+            x.clamp(text.x, text.x + text.width - 1),
+            y.clamp(text.y, text.y + text.height - 1),
+        )
+    } else {
+        (x.max(text.x), y)
+    };
+    if y < text.y || y >= text.y + text.height {
+        return None;
+    }
+    let (dx, dy) = ((x - text.x) as usize, (y - text.y) as usize);
+    if !view.wrapping || view.width == 0 {
+        let line = (view.top_line() + dy).min(pos::line_count(rope) - 1);
+        let col = DisplayCol(view.left_col + dx);
+        let at = pos::byte_at_col(rope, line, col, tab_width);
+        return Some((line, at, col));
+    }
+    let (revision, width) = (view.revision, view.width);
+    let (top, top_row) = (view.top_line(), view.top_row());
+    let (line, sub) = view.rows_down(rope, top, top_row, dy);
+    let layout = view.wrap.layout(rope, revision, line, width, tab_width);
+    let sub = sub.min(layout.len() - 1);
+    let within = DisplayCol(dx.saturating_sub(layout.rows()[sub].col.0));
+    let at = ByteIdx(pos::line_start(rope, line).0 + layout.byte_at(sub, within).0);
+    // Past the row's last grapheme: keep the cell's distance from the text, so a box's corner
+    // can lie beyond the line's end (the unwrapped mapping's column).
+    let extra = within.0.saturating_sub(layout.row_width(sub).0);
+    let col = DisplayCol(pos::display_col(rope, at, tab_width).0 + extra);
+    Some((line, at, col))
 }
 
 /// The byte offset under screen column `x` of a field drawn in `rect` scrolled by `scroll`
@@ -933,5 +973,69 @@ mod tests {
         alt_click(&mut v, ByteIdx(1), none, 1);
         assert_eq!(heads(&v), vec![1, 6]);
         assert_eq!((v.selections.primary().head.0, v.selections.newest().head.0), (6, 1));
+    }
+
+    /// Without wrapping a cell is its line and display column, as before.
+    #[test]
+    fn cells_map_to_a_line_and_column_without_wrapping() {
+        let rope = Rope::from_str("  aaaa bbbb cccc\ndddd\n");
+        let mut view = View::new();
+        let text = Rect::new(3, 1, 10, 6);
+        let hit = hit_at(&rope, &mut view, text, text.x + 3, text.y + 1, false, 4);
+        assert_eq!(hit, Some((1, ByteIdx(20), DisplayCol(3))));
+        assert_eq!(hit_at(&rope, &mut view, text, text.x, text.y + 99, false, 4), None);
+    }
+
+    /// With wrapping a cell maps through the row drawn there: its text's bytes on the row's
+    /// first row, its indentation and the row's first byte on a continuation row, and past its
+    /// text the line column keeps the cell's distance (a box's corner past the line's end).
+    #[test]
+    fn cells_map_through_the_wrapped_rows() {
+        let rope = Rope::from_str("  aaaa bbbb cccc\ndddd\n");
+        let mut view = View::new();
+        (view.width, view.height) = (6, 6);
+        view.wrapping = true;
+        let text = Rect::new(3, 1, 10, 6);
+        // Line 0 is three rows at width 6; each continuation row starts at its two-space
+        // indentation and its text follows.
+        let hit = |view: &mut View, x: u16, y: u16| hit_at(&rope, view, text, x, y, false, 4);
+        assert_eq!(
+            hit(&mut view, text.x + 4, text.y + 1),
+            Some((0, ByteIdx(9), DisplayCol(9)))
+        );
+        assert_eq!(
+            hit(&mut view, text.x + 1, text.y + 1),
+            Some((0, ByteIdx(7), DisplayCol(7))),
+            "in the continuation row's indentation: its first byte"
+        );
+        assert_eq!(
+            hit(&mut view, text.x + 2, text.y + 3),
+            Some((1, ByteIdx(19), DisplayCol(2))),
+            "the next line's first row"
+        );
+        // Scrolled into the line's second row: the first screen row is that row.
+        view.set_top(&rope, 0, 1);
+        assert_eq!(hit(&mut view, text.x + 3, text.y), Some((0, ByteIdx(8), DisplayCol(8))));
+    }
+
+    /// A cell past a wrapped row's text keeps its distance from the text in the line column,
+    /// as the unwrapped mapping does, so a box's corner can lie beyond the line's end.
+    #[test]
+    fn cells_past_a_wrapped_rows_text_keep_the_line_column() {
+        let rope = Rope::from_str("ab cd ef\n");
+        let mut view = View::new();
+        (view.width, view.height) = (3, 4);
+        view.wrapping = true;
+        let text = Rect::new(3, 1, 8, 4);
+        // Rows "ab " / "cd " / "ef": five columns into the second row is past "cd ".
+        assert_eq!(
+            hit_at(&rope, &mut view, text, text.x + 5, text.y + 1, false, 4),
+            Some((0, ByteIdx(6), DisplayCol(8)))
+        );
+        // The last row: past "ef", the line's end plus the extra columns.
+        assert_eq!(
+            hit_at(&rope, &mut view, text, text.x + 4, text.y + 2, false, 4),
+            Some((0, ByteIdx(8), DisplayCol(10)))
+        );
     }
 }

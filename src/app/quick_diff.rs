@@ -389,8 +389,10 @@ impl App {
         }
     }
 
-    /// The gutter marker under a screen cell: its group and line.
-    fn marker_at(&self, x: u16, y: u16) -> Option<(GroupId, usize)> {
+    /// The gutter marker under a screen cell: its group and line. The marker is drawn on the
+    /// line's first row, so while wrapping the screen row maps through the rows and only a first
+    /// row is a hit.
+    fn marker_at(&mut self, x: u16, y: u16) -> Option<(GroupId, usize)> {
         let Hit::Editor(g) = self.hits.hit(x, y) else {
             return None;
         };
@@ -398,9 +400,19 @@ impl App {
         if text.x == 0 || x + 1 != text.x || y < text.y || y >= text.y + text.height {
             return None;
         }
-        let tab = self.groups.get(g)?.active_tab()?;
+        let tab = self.groups.get_mut(g)?.active_tab_mut()?;
         let buf = self.buffers.get(tab.buffer)?;
-        let line = tab.view.top_line() + (y - text.y) as usize;
+        let dy = (y - text.y) as usize;
+        let line = if tab.view.wrapping && tab.view.width > 0 {
+            let (top, top_row) = (tab.view.top_line(), tab.view.top_row());
+            let (line, sub) = tab.view.rows_down(&buf.rope, top, top_row, dy);
+            if sub != 0 {
+                return None;
+            }
+            line
+        } else {
+            tab.view.top_line() + dy
+        };
         buf.quick_diff.at_line(&buf.rope, line).map(|_| (g, line))
     }
 
@@ -420,6 +432,7 @@ impl App {
         let Some(peek) = &self.quick_diff.peek else {
             return false;
         };
+        let (group, lines) = (peek.group, peek.lines.clone());
         let down = matches!(m.kind, MouseEventKind::Down(MouseButton::Left));
         if hit == Hit::QuickDiff {
             if down && let Some(h) = self.hits.quick_diff {
@@ -435,7 +448,7 @@ impl App {
         if matches!(m.kind, MouseEventKind::Down(_)) {
             let own = self
                 .marker_at(m.column, m.row)
-                .is_some_and(|(g, line)| g == peek.group && peek.lines.contains(&line));
+                .is_some_and(|(g, line)| g == group && lines.contains(&line));
             self.close_peek();
             return own;
         }

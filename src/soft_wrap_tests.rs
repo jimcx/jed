@@ -19,11 +19,15 @@
 //! the goal column, Home / End stop on the row's edge before the line's, and every selection
 //! moves (the layouts are walked in order at 60k selections).
 //!
-//! The mouse's positions on wrapped rows come in the task's later subtasks. The "Done when"
-//! parts covered here: the setting is read from `settings.toml` and `.workspace`, defaults to
-//! `off`, the toggle flips `App::word_wrap()` and keeps doing so across a `.workspace` reload,
-//! the wrapped rows are drawn as the plan says, scrolling / the scroll bar use screen rows, and
-//! the cursor moves over them like VS Code's.
+//! soft_wrap-f: the mouse and popups on screen rows — a click, drag, double / triple click and
+//! Alt+Click map the cell through the row drawn there, and the hover / completion / code action
+//! popups anchor at the cursor's screen row.
+//!
+//! Sessions and the 1 MB release budget come in the task's last subtask. The "Done when" parts
+//! covered here: the setting is read from `settings.toml` and `.workspace`, defaults to `off`,
+//! the toggle flips `App::word_wrap()` and keeps doing so across a `.workspace` reload, the
+//! wrapped rows are drawn as the plan says, scrolling / the scroll bar use screen rows, the
+//! cursor moves over them and the mouse / popups land on them like VS Code's.
 
 use std::fs;
 use std::path::PathBuf;
@@ -793,4 +797,272 @@ async fn soft_wrap_narrowing_a_split_rewraps_with_the_cursor_in_view() {
         (area.y..area.y + area.height).contains(&cursor.y),
         "the cursor is still on screen after the split narrowed: {cursor:?} in {area:?}"
     );
+}
+
+/// The active view's rows of `line`: `(start, end, indent)` — the bytes the row covers within
+/// the line, and the display column it is drawn from (a continuation row's indentation).
+fn rows_of_line(app: &mut App, line: usize) -> Vec<(usize, usize, usize)> {
+    let (buf, view) = app.active_mut().unwrap();
+    let layout = view
+        .wrap
+        .layout(&buf.rope, view.revision, line, view.width, view.tab_width);
+    (0..layout.len())
+        .map(|i| (layout.rows()[i].start.0, layout.row_end(i).0, layout.rows()[i].col.0))
+        .collect()
+}
+
+/// A click, a drag, a double / triple click and an Alt+Click on a continuation row land on its
+/// bytes: its first byte in the indentation, the text's bytes where they are drawn, the word /
+/// line for the extra clicks and a new cursor for Alt.
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_clicks_land_on_the_wrapped_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = "    alpha bravo charlie delta echo foxtrot\nsecond line\n";
+    let (mut app, _) = wrapped_editor(&dir, text, 30, 10);
+    let rect = app.hits.group(app.groups.active).unwrap().text;
+    let rows = rows_of_line(&mut app, 0);
+    assert!(rows.len() >= 2, "the line wraps: {rows:?}");
+    let (start, end, indent) = rows[1];
+    assert!(end - start > 8 && indent > 1, "a continuation row with text: {rows:?}");
+    let at = |within: usize| start + within;
+
+    // A click in the continuation row's indentation is its first byte.
+    let (x, y) = (rect.x + 1, rect.y + 1);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    assert_eq!(head(&app), start, "the row's first byte, not the line's");
+
+    // A click on the row's text is the byte drawn there (the indent is not a line column).
+    let (x, y) = (rect.x + indent as u16 + 2, rect.y + 1);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    assert_eq!(head(&app), at(2));
+
+    // A drag across the row selects from the press to the pointer.
+    let (x0, x1, y) = (rect.x + indent as u16 + 3, rect.x + indent as u16 + 7, rect.y + 1);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x0, y);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), x1, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x1, y);
+    let sel = app.group().active_tab().unwrap().view.selections.primary();
+    assert_eq!((sel.start().0, sel.end().0), (at(3), at(7)));
+
+    // A double click selects the word on the row.
+    let (x, y) = (rect.x + indent as u16 + 4, rect.y + 1);
+    for _ in 0..2 {
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    }
+    let (word_start, word_end) = {
+        let rope = &app.active_buffer().unwrap().rope;
+        pos::word_range(rope, ByteIdx(at(4)))
+    };
+    assert_ne!(word_start.0, word_end.0, "the click is in a word");
+    let sel = app.group().active_tab().unwrap().view.selections.primary();
+    assert_eq!(
+        (sel.start().0, sel.end().0),
+        (word_start.0, word_end.0),
+        "the word drawn on the continuation row"
+    );
+
+    // A triple click selects the whole line, not the row (line commands stay per line).
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    let sel = app.group().active_tab().unwrap().view.selections.primary();
+    let line_end = text.find('\n').unwrap();
+    assert_eq!((sel.start().0, sel.end().0), (0, line_end + 1));
+
+    // Alt+Click adds a cursor at the row's byte.
+    put_cursor(&mut app, 0);
+    let (x, y) = (rect.x + indent as u16 + 5, rect.y + 1);
+    app.mouse_with(MouseEventKind::Down(MouseButton::Left), x, y, KeyModifiers::ALT);
+    let view = &app.group().active_tab().unwrap().view;
+    assert_eq!(view.selections.len(), 2, "a cursor added with the click");
+    assert_eq!(view.selections.newest().head.0, at(5));
+
+    // Shift+Alt+Click (box select) keeps the line-relative column: from the line's start to
+    // the clicked byte, though it is drawn on a continuation row.
+    put_cursor(&mut app, 0);
+    app.mouse_with(
+        MouseEventKind::Down(MouseButton::Left),
+        rect.x + indent as u16 + 6,
+        rect.y + 1,
+        KeyModifiers::SHIFT | KeyModifiers::ALT,
+    );
+    let view = &app.group().active_tab().unwrap().view;
+    assert!(view.column.is_some());
+    let sel = view.selections.primary();
+    assert_eq!((sel.start().0, sel.end().0), (0, at(6)));
+}
+
+/// The mouse resting on a continuation row, or on a line below one that wraps, targets that
+/// row's byte (a mouse hover is a hit like a click), and nothing past a row's text.
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_mouse_rest_targets_the_wrapped_rows_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = "    alpha bravo charlie delta echo\n    second line words here\n";
+    let (mut app, _) = wrapped_editor(&dir, text, 30, 10);
+    let rect = app.hits.group(app.groups.active).unwrap().text;
+    let rows0 = rows_of_line(&mut app, 0);
+    assert!(rows0.len() >= 3, "line 0 wraps: {rows0:?}");
+    let (start, _, indent) = rows0[1];
+
+    // A word on line 0's second row: its own byte, not the line's column at that screen row.
+    let (x, y) = (rect.x + indent as u16 + 2, rect.y + 1);
+    app.mouse(MouseEventKind::Moved, x, y);
+    let at = ByteIdx(start + 2);
+    let rope = &app.active_buffer().unwrap().rope;
+    let rest = app.hover.rest.as_ref().expect("resting over the row's text");
+    assert_eq!(rest.at, at);
+    assert_eq!(rest.word, pos::word_range(rope, at));
+
+    // Line 1's first row is below line 0's rows: the screen row counts them.
+    let line1 = text.find("second").unwrap();
+    let y = rect.y + rows0.len() as u16;
+    app.mouse(MouseEventKind::Moved, rect.x + 4 + 2, y);
+    let rest = app.hover.rest.as_ref().expect("resting on line 1's first row");
+    assert_eq!(rest.at, ByteIdx(line1 + 2));
+
+    // Past the last row's text (the line breaks early): nothing to rest on.
+    let rows1 = rows_of_line(&mut app, 1);
+    let last = rows1.last().unwrap();
+    let x = (rect.x + last.2 as u16 + (last.1 - last.0) as u16 + 1).min(rect.x + rect.width - 1);
+    let y = rect.y + rows0.len() as u16 + rows1.len() as u16 - 1;
+    app.mouse(MouseEventKind::Moved, x, y);
+    assert!(app.hover.rest.is_none(), "past the row's text");
+}
+
+/// The code action list anchors at the cursor's screen cell on a continuation row: the list's
+/// first row is the row below it, over the cursor's drawn column.
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_popup_anchors_at_the_wrapped_cursor() {
+    let dir = tempfile::tempdir().unwrap();
+    let source =
+        "one\n  alpha alpha alpha alpha alpha alpha alpha\n  call(LONGA aaaa bbbb cccc dddd LONGB eeee ffff)\nlast\n";
+    let root = project(dir.path(), &[("a.cpp", source)]);
+    let fake = FakeLauncher::new(FakeOptions {
+        utf8: true,
+        ..Default::default()
+    });
+    let mut app = open_app(&root, fake.clone());
+    open_synced(&mut app, &fake, &root.join("a.cpp")).await;
+    fake.respond(
+        "textDocument/codeAction",
+        serde_json::json!([{ "title": "Change it", "kind": "quickfix" }]),
+    );
+    app.ui.side_visible = false;
+    app.test_execute(Command::ToggleWordWrap);
+    // The cursor a word into LONGB, which wraps to a continuation row.
+    let cursor = source.find("LONGB").unwrap() + 1;
+    put_cursor(&mut app, cursor);
+    let term = draw(&mut app, 30, 14);
+    let screen = cells(&term);
+    let start = find(&screen, "LONGB");
+    assert_eq!(start.len(), 1, "LONGB drawn once: {screen:?}");
+    let (x, y) = start[0];
+    let cursor_cell = (x + 1, y);
+    let (_, above) = find(&screen, "LONGA")[0];
+    assert!(y > above, "LONGB is on a continuation row: {screen:?}");
+
+    app.test_execute(Command::QuickFix);
+    assert!(app.settle(|a| a.code_actions.popup.is_some()).await);
+    draw(&mut app, 30, 14);
+    let rect = app.hits.code_actions.expect("list drawn").rect;
+    assert_eq!(rect.y, cursor_cell.1 + 1, "the row below the wrapped cursor's");
+    assert!(
+        rect.x <= cursor_cell.0 && cursor_cell.0 < rect.x + rect.width,
+        "over the cursor's drawn column: {rect:?} at {cursor_cell:?}"
+    );
+    app.shutdown_servers().await;
+}
+
+/// Clicking the gutter marker of a changed line below a wrapping line opens that line's peek:
+/// the click maps through the rows, so a line whose first row is below wrapping lines is not
+/// mistaken for a later line (the marker is only on the line's first row).
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_gutter_click_opens_the_change_below_the_wrapped_rows() {
+    let (_d, root, state) = dirs();
+    init(&root);
+    fs::write(root.join("f.txt"), "one\ntwo\nthree\n").unwrap();
+    commit_all(&root, "one");
+    // Line 0 wraps (a change), and line 1 changed too: its marker is on line 1's first row,
+    // several screen rows below the top.
+    fs::write(
+        root.join("f.txt"),
+        "alpha alpha alpha alpha alpha alpha alpha alpha\ntwo changed\nthree\n",
+    )
+    .unwrap();
+    let mut app = open_file_app(&root, &state, "f.txt");
+    assert!(settle_markers(&mut app).await, "the gutter markers are current");
+    app.ui.side_visible = false;
+    app.test_execute(Command::ToggleWordWrap);
+    let term = draw(&mut app, 30, 14);
+    let screen = cells(&term);
+    let (_, y0) = find(&screen, "alpha")[0];
+    let (_, y1) = find(&screen, "two changed")[0];
+    assert!(y1 > y0 + 1, "line 0 wraps and the changed line is below it: {screen:?}");
+    let text = app.hits.group(app.groups.active).unwrap().text;
+    assert_eq!(
+        term.backend().buffer()[(text.x - 1, y1)].symbol(),
+        "▎",
+        "the marker is in the gutter on line 1's first row"
+    );
+    assert!(app.quick_diff.peek.is_none(), "no peek before the click");
+
+    app.mouse(MouseEventKind::Down(MouseButton::Left), text.x - 1, y1);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), text.x - 1, y1);
+    let peek = app.quick_diff.peek.as_ref().expect("the click opened the peek");
+    assert!(
+        peek.lines.contains(&1),
+        "the peek is line 1's change, not a later line: {:?}",
+        peek.lines
+    );
+}
+
+/// A row scroll within a wrapped line closes the hover popup: `check_hover` compares the view's
+/// `(top_line, top_row, left_col)` with the scroll recorded when the popup opened, so scrolling
+/// into a continuation row (top_row moves, top_line stays) closes it as a line scroll does.
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_row_scroll_closes_the_hover() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = "  abcd efgh ijkl mnop qrst uvwx\nsecond line\n";
+    let (mut app, _, _) = open_text(&dir, "", "", text);
+    plain_editor(&mut app);
+    app.test_execute(Command::ToggleWordWrap);
+    let start = ByteIdx(text.find("mnop").unwrap());
+    let (buf, _) = app.active_mut().unwrap();
+    buf.diagnostics.replace(
+        ServerId::test(1),
+        vec![Mark {
+            start,
+            end: ByteIdx(start.0 + 4),
+            server: ServerId::test(1),
+            diag: std::sync::Arc::new(Diagnostic {
+                severity: Severity::Error,
+                message: "bad".into(),
+                source: None,
+                code: None,
+                raw: serde_json::Value::Null,
+            }),
+        }],
+    );
+    put_cursor(&mut app, start.0 + 1);
+    draw(&mut app, 30, 14);
+
+    app.test_execute(Command::ShowHover);
+    assert!(app.hover.popup.is_some(), "the hover opened");
+
+    // One screen row down, still inside the wrapped first line: top_row moves, top_line stays.
+    let (buf, view) = app.active_mut().unwrap();
+    let before = (view.top_line(), view.top_row());
+    view.scroll_lines(&buf.rope, 1);
+    let after = (view.top_line(), view.top_row());
+    assert_eq!(before.0, after.0, "still on the first line");
+    assert!(
+        after.1 > before.1,
+        "scrolled into its continuation row: {before:?} -> {after:?}"
+    );
+
+    // The next event's `check_hover` sees the row scroll and closes the popup.
+    app.test_execute(Command::Copy);
+    assert!(app.hover.popup.is_none(), "the row scroll closed the hover");
 }

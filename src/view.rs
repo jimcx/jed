@@ -236,7 +236,7 @@ impl View {
 
     /// The (line, row) `count` rows below (`at`, `row`), clamped to the text's last row. Walks
     /// only the lines crossed, not the whole text.
-    fn rows_down(&mut self, rope: &Rope, at: usize, row: usize, count: usize) -> (usize, usize) {
+    pub(crate) fn rows_down(&mut self, rope: &Rope, at: usize, row: usize, count: usize) -> (usize, usize) {
         let (revision, width, tab) = (self.revision, self.width, self.tab_width);
         let total = pos::line_count(rope);
         let (mut at, mut remaining) = (at, row + count);

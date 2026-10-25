@@ -20,10 +20,10 @@ const STAGE: &str = " Stage Change ";
 const CLOSE: &str = " × ";
 
 /// Draws the peek if there is one and its change is on screen; returns its rect and buttons.
-pub fn render(f: &mut Frame, app: &App, groups: &[GroupHit]) -> Option<QuickDiffHit> {
+pub fn render(f: &mut Frame, app: &mut App, groups: &[GroupHit]) -> Option<QuickDiffHit> {
     let peek = app.quick_diff.peek.as_ref()?;
     let hit = groups.iter().find(|g| g.id == peek.group)?;
-    let tab = app.groups.get(peek.group)?.active_tab()?;
+    let tab = app.groups.get_mut(peek.group)?.active_tab_mut()?;
     if tab.buffer != peek.buffer {
         return None;
     }
@@ -32,7 +32,7 @@ pub fn render(f: &mut Frame, app: &App, groups: &[GroupHit]) -> Option<QuickDiff
     let last = peek.lines.end.saturating_sub(1).min(pos::line_count(rope) - 1);
     let (_, y) = popup::cell_of(
         rope,
-        &tab.view,
+        &mut tab.view,
         hit.text,
         pos::line_start(rope, last),
         app.settings.for_buffer(buf).tab_width,

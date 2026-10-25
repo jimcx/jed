@@ -116,6 +116,20 @@ impl Layout {
         (row, col)
     }
 
+    /// The display width of `row`'s text (the space past it is blank when the row broke early).
+    pub fn row_width(&self, row: usize) -> DisplayCol {
+        let row = row.min(self.rows.len() - 1);
+        let (start, end, base) = (self.rows[row].start.0, self.row_end(row).0, self.rows[row].col.0);
+        let mut at = start;
+        let mut col = 0;
+        while at < end {
+            let next = pos::next_grapheme_in(&self.text, at);
+            col += self.width_of(&self.text[at..next], base + col);
+            at = next;
+        }
+        DisplayCol(col)
+    }
+
     /// The nearest byte boundary on `row` at or before display column `target`: the start of
     /// the grapheme holding it, or the row's end past the last one.
     pub fn byte_at(&self, row: usize, target: DisplayCol) -> ByteIdx {
@@ -491,12 +505,16 @@ mod tests {
         assert_eq!(layout.byte_at(1, DisplayCol(9)), ByteIdx(13));
         assert_eq!(layout.row_end(0), ByteIdx(8));
         assert_eq!(layout.row_end(1), ByteIdx(13));
+        assert_eq!(layout.row_width(0), DisplayCol(8), "the row's drawn width");
+        assert_eq!(layout.row_width(1), DisplayCol(5));
 
         // A column inside a wide char gives its start.
         let layout = Layout::compute("a日bb", 3, 4);
         assert_eq!(layout.byte_at(0, DisplayCol(1)), ByteIdx(1));
         assert_eq!(layout.byte_at(0, DisplayCol(2)), ByteIdx(1));
         assert_eq!(layout.byte_at(0, DisplayCol(3)), ByteIdx(4));
+        assert_eq!(layout.row_width(0), DisplayCol(3));
+        assert_eq!(layout.row_width(1), DisplayCol(2));
 
         // Tabs expand from the row's starting column.
         let layout = Layout::compute("ab\tcd", 10, 4);
@@ -506,6 +524,7 @@ mod tests {
         assert_eq!(layout.byte_at(0, DisplayCol(3)), ByteIdx(2), "inside the tab");
         assert_eq!(layout.byte_at(0, DisplayCol(4)), ByteIdx(3));
         assert_eq!(layout.row_of(ByteIdx(4)), (0, DisplayCol(5)));
+        assert_eq!(layout.row_width(0), DisplayCol(6), "the tab expands");
     }
 
     #[test]

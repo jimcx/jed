@@ -23,14 +23,14 @@ use crate::layout::GroupHit;
 pub fn render(f: &mut Frame, app: &mut App, groups: &[GroupHit]) -> Option<Rect> {
     let popup = app.hover.popup.as_mut()?;
     let hit = groups.iter().find(|g| g.id == popup.group)?;
-    let tab = app.groups.get(popup.group)?.active_tab()?;
+    let tab = app.groups.get_mut(popup.group)?.active_tab_mut()?;
     if tab.buffer != popup.buffer {
         return None;
     }
     let buf = app.buffers.get(popup.buffer)?;
     let anchor = popup::cell_of(
         &buf.rope,
-        &tab.view,
+        &mut tab.view,
         hit.text,
         popup.anchor,
         app.settings.for_buffer(buf).tab_width,

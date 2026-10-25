@@ -433,8 +433,9 @@ pub struct Popup {
     pub buffer: BufferId,
     /// The buffer's revision when it opened: any edit closes it.
     pub revision: u64,
-    /// The view's scroll when it opened (top line, left column): scrolling closes it.
-    pub scroll: (usize, usize),
+    /// The view's scroll when it opened (top line, its sub-row, the left column): scrolling
+    /// closes it.
+    pub scroll: (usize, usize, usize),
     /// Where it's drawn from: the start of the server's range, else of the word.
     pub anchor: ByteIdx,
     /// What it's about (the server's range or the word, and the diagnostics' squiggles): the

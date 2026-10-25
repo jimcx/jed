@@ -26,7 +26,7 @@ pub fn render(f: &mut Frame, app: &mut App, groups: &[GroupHit]) -> Option<Compl
     let state = &mut app.completion;
     let popup = state.popup.as_mut().filter(|p| !p.shown.is_empty())?;
     let hit = groups.iter().find(|g| g.id == popup.anchor.group)?;
-    let tab = app.groups.get(popup.anchor.group)?.active_tab()?;
+    let tab = app.groups.get_mut(popup.anchor.group)?.active_tab_mut()?;
     if tab.buffer != popup.anchor.buffer {
         return None;
     }
@@ -35,7 +35,7 @@ pub fn render(f: &mut Frame, app: &mut App, groups: &[GroupHit]) -> Option<Compl
     let head = tab.view.selections.primary().head;
     let (ax, ay) = popup::cell_of(
         rope,
-        &tab.view,
+        &mut tab.view,
         hit.text,
         popup.anchor.start,
         app.settings.for_buffer(buf).tab_width,

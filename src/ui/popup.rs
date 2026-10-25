@@ -20,13 +20,27 @@ pub enum Side {
     Below,
 }
 
-/// The screen cell of `at` in `view`, whose text was drawn in `text`; `None` when its line is
-/// off screen. A column scrolled off to either side is pulled to the text's edge.
-pub fn cell_of(rope: &Rope, view: &View, text: Rect, at: ByteIdx, tab_width: usize) -> Option<(u16, u16)> {
+/// The screen cell of `at` in `view`, whose text was drawn in `text`; `None` when its row is
+/// off screen. While wrapping, `at`'s row is one of its line's rows (`wrap::Layout`) and its
+/// screen row counts the wrapped rows above it; otherwise a line is one row. A column scrolled
+/// off to either side is pulled to the text's edge.
+pub fn cell_of(rope: &Rope, view: &mut View, text: Rect, at: ByteIdx, tab_width: usize) -> Option<(u16, u16)> {
     if text.width == 0 || text.height == 0 {
         return None;
     }
     let line = pos::line_of(rope, at);
+    if view.wrapping && view.width > 0 {
+        let (revision, width) = (view.revision, view.width);
+        let start = pos::line_start(rope, line);
+        let (sub, within, row_col) = {
+            let layout = view.wrap.layout(rope, revision, line, width, tab_width);
+            let (sub, within) = layout.row_of(ByteIdx(at.0.saturating_sub(start.0)));
+            (sub, within, layout.rows()[sub].col.0)
+        };
+        let row = super::row_screen_row(view, rope, revision, line, sub, tab_width)?;
+        let x = (row_col + within.0).min(text.width as usize - 1);
+        return Some((text.x + x as u16, text.y + row as u16));
+    }
     let top = view.top_line();
     if line < top || line >= top + text.height as usize {
         return None;
@@ -135,14 +149,64 @@ mod tests {
         let rope = Rope::from_str("ab\n\tcd\nlast\n");
         let mut view = View::new();
         let text = Rect::new(5, 1, 10, 2);
-        assert_eq!(cell_of(&rope, &view, text, ByteIdx(1), 4), Some((6, 1)));
-        assert_eq!(cell_of(&rope, &view, text, ByteIdx(4), 4), Some((9, 2)), "after a tab");
-        assert_eq!(cell_of(&rope, &view, text, ByteIdx(7), 4), None, "below the view");
+        assert_eq!(cell_of(&rope, &mut view, text, ByteIdx(1), 4), Some((6, 1)));
+        assert_eq!(
+            cell_of(&rope, &mut view, text, ByteIdx(4), 4),
+            Some((9, 2)),
+            "after a tab"
+        );
+        assert_eq!(cell_of(&rope, &mut view, text, ByteIdx(7), 4), None, "below the view");
         view.left_col = 3;
         assert_eq!(
-            cell_of(&rope, &view, text, ByteIdx(1), 4),
+            cell_of(&rope, &mut view, text, ByteIdx(1), 4),
             Some((5, 1)),
             "pulled to the edge"
         );
+    }
+
+    /// While wrapping a position's screen cell counts its line's rows: a byte on a continuation
+    /// row is on the screen row below the first one, at the line's indentation plus its column
+    /// within the row, and a top scrolled into the line's rows moves them up.
+    #[test]
+    fn anchor_cells_follow_the_wrapped_rows() {
+        let rope = Rope::from_str("  aaaa bbbb cccc\ndddd\n");
+        let mut view = View::new();
+        (view.width, view.height) = (6, 6);
+        view.wrapping = true;
+        let text = Rect::new(3, 1, 10, 6);
+        // Line 0 is three rows at width 6: "  aaaa " / "bbbb " / "cccc" (each continuation
+        // row starting at its two-space indentation).
+        assert_eq!(cell_of(&rope, &mut view, text, ByteIdx(4), 4), Some((7, 1)));
+        assert_eq!(
+            cell_of(&rope, &mut view, text, ByteIdx(7), 4),
+            Some((5, 2)),
+            "the second row's first byte, in its indentation"
+        );
+        assert_eq!(
+            cell_of(&rope, &mut view, text, ByteIdx(9), 4),
+            Some((7, 2)),
+            "two columns into the second row's text"
+        );
+        assert_eq!(
+            cell_of(&rope, &mut view, text, ByteIdx(15), 4),
+            Some((8, 3)),
+            "the last grapheme"
+        );
+        assert_eq!(
+            cell_of(&rope, &mut view, text, ByteIdx(16), 4),
+            Some((9, 3)),
+            "the line's end is on its last row"
+        );
+        // Past the text's width: pulled to its edge.
+        assert_eq!(
+            cell_of(&rope, &mut view, Rect::new(3, 1, 6, 6), ByteIdx(16), 4),
+            Some((8, 3))
+        );
+
+        // Scrolled into the line's second row: the first row is off screen.
+        view.set_top(&rope, 0, 1);
+        assert_eq!(cell_of(&rope, &mut view, text, ByteIdx(4), 4), None);
+        assert_eq!(cell_of(&rope, &mut view, text, ByteIdx(7), 4), Some((5, 1)));
+        assert_eq!(cell_of(&rope, &mut view, text, ByteIdx(16), 4), Some((9, 2)));
     }
 }
