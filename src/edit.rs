@@ -14,6 +14,7 @@ use crate::indentation::Indentation;
 use crate::selection::{Selection, Selections};
 use crate::syntax::Language;
 use crate::view::View;
+use crate::wrap::{Layout, Wrap};
 use crate::{column, comment, indent, lines, pairs, shift};
 
 #[derive(Debug, Clone)]
@@ -480,6 +481,16 @@ fn restore(view: &mut View, sel: Option<Selections>) {
 fn move_cursors(buf: &mut Buffer, view: &mut View, motion: Motion, select: bool, s: &Settings) {
     let rope = &buf.rope;
     let page = view.height.max(1) as isize;
+    // While the last frame wrapped, Up / Down / PageUp / PageDown move over screen rows and
+    // Home / End stop on the row's edge first; the layouts are cached per line, so this stays
+    // cheap at 60k selections (the lines are walked in order).
+    let mut rows = view.wrapping.then_some(Rows {
+        wrap: &mut view.wrap,
+        revision: view.revision,
+        width: view.width,
+        tab_width: view.tab_width,
+    });
+    let mut walker = pos::LineWalker::new(rope);
     view.selections.transform(|sel| {
         if !select && !sel.is_empty() {
             match motion {
@@ -491,25 +502,31 @@ fn move_cursors(buf: &mut Buffer, view: &mut View, motion: Motion, select: bool,
         let (head, goal) = match motion {
             Motion::Left => (pos::prev_grapheme(rope, sel.head), None),
             Motion::Right => (pos::next_grapheme(rope, sel.head), None),
-            Motion::Up => vertical(rope, sel, -1, s.tab_width),
-            Motion::Down => vertical(rope, sel, 1, s.tab_width),
-            Motion::PageUp => vertical(rope, sel, -page, s.tab_width),
-            Motion::PageDown => vertical(rope, sel, page, s.tab_width),
+            Motion::Up => vertical(rope, sel, -1, s.tab_width, rows.as_mut(), &mut walker),
+            Motion::Down => vertical(rope, sel, 1, s.tab_width, rows.as_mut(), &mut walker),
+            Motion::PageUp => vertical(rope, sel, -page, s.tab_width, rows.as_mut(), &mut walker),
+            Motion::PageDown => vertical(rope, sel, page, s.tab_width, rows.as_mut(), &mut walker),
             Motion::WordLeft => (pos::word_left(rope, sel.head), None),
             Motion::WordRight => (pos::word_right(rope, sel.head), None),
-            Motion::LineStart => {
-                let line = pos::line_of(rope, sel.head);
-                let first = pos::first_non_blank(rope, line);
-                (
-                    if sel.head == first {
-                        pos::line_start(rope, line)
-                    } else {
-                        first
-                    },
-                    None,
-                )
-            }
-            Motion::LineEnd => (pos::line_end(rope, pos::line_of(rope, sel.head)), None),
+            Motion::LineStart => match rows.as_mut() {
+                Some(rows) => line_start(rope, sel, rows, &mut walker),
+                None => {
+                    let line = pos::line_of(rope, sel.head);
+                    let first = pos::first_non_blank(rope, line);
+                    (
+                        if sel.head == first {
+                            pos::line_start(rope, line)
+                        } else {
+                            first
+                        },
+                        None,
+                    )
+                }
+            },
+            Motion::LineEnd => match rows.as_mut() {
+                Some(rows) => line_end(rope, sel, rows, &mut walker),
+                None => (pos::line_end(rope, pos::line_of(rope, sel.head)), None),
+            },
             Motion::DocStart => (ByteIdx(0), None),
             Motion::DocEnd => (ByteIdx(rope.len()), None),
         };
@@ -525,9 +542,88 @@ fn move_cursors(buf: &mut Buffer, view: &mut View, motion: Motion, select: bool,
     buf.seal_undo();
 }
 
-/// Up/down by `delta` lines, keeping the remembered column.
-/// Past the first line goes to the start of the file, past the last to the end.
-fn vertical(rope: &Rope, sel: &Selection, delta: isize, tab_width: usize) -> (ByteIdx, Option<pos::DisplayCol>) {
+/// The view's wrap inputs while the last frame wrapped: `Wrap` and the revision / width / tab
+/// width its layouts are cached for (drawing writes them).
+struct Rows<'a> {
+    wrap: &'a mut Wrap,
+    revision: u64,
+    width: usize,
+    tab_width: usize,
+}
+
+impl Rows<'_> {
+    fn layout(&mut self, rope: &Rope, line: usize) -> &Layout {
+        self.wrap.layout(rope, self.revision, line, self.width, self.tab_width)
+    }
+}
+
+/// `head`'s line index, its start and the head's byte offset within it. Heads arrive in order
+/// (selections are sorted), so the walker steps forward instead of looking the line up.
+fn line_here(walker: &mut pos::LineWalker<'_>, head: ByteIdx) -> (usize, ByteIdx, ByteIdx) {
+    let line = walker.line_at(head);
+    let start = line.start();
+    (line.index, start, ByteIdx(head.0 - start.0))
+}
+
+/// Up/down by `delta` screen rows while the view wraps (`rows`), else by `delta` lines, keeping
+/// the remembered column. Past the first row goes to the text's start, past the last to its end.
+fn vertical(
+    rope: &Rope,
+    sel: &Selection,
+    delta: isize,
+    tab_width: usize,
+    rows: Option<&mut Rows<'_>>,
+    walker: &mut pos::LineWalker<'_>,
+) -> (ByteIdx, Option<pos::DisplayCol>) {
+    match rows {
+        None => vertical_lines(rope, sel, delta, tab_width),
+        Some(rows) => {
+            let (line, start, within) = line_here(walker, sel.head);
+            let (mut target, mut row, goal) = {
+                let layout = rows.layout(rope, line);
+                let (row, col) = layout.row_of(within);
+                (line, row, sel.goal.unwrap_or(col))
+            };
+            let last = pos::line_count(rope) - 1;
+            // Roll over the rows crossed, one line's layout at a time (a page is a few hundred
+            // rows at most).
+            let mut remaining = delta;
+            while remaining != 0 {
+                if remaining > 0 {
+                    if row + 1 < rows.layout(rope, target).len() {
+                        row += 1;
+                        remaining -= 1;
+                    } else if target < last {
+                        target += 1;
+                        row = 0;
+                        remaining -= 1;
+                    } else {
+                        return (ByteIdx(rope.len()), None);
+                    }
+                } else if row > 0 {
+                    row -= 1;
+                    remaining += 1;
+                } else if target > 0 {
+                    target -= 1;
+                    row = rows.layout(rope, target).len() - 1;
+                    remaining += 1;
+                } else {
+                    return (ByteIdx(0), None);
+                }
+            }
+            let target_start = if target == line {
+                start
+            } else {
+                pos::line_start(rope, target)
+            };
+            let at = rows.layout(rope, target).byte_at(row, goal);
+            (ByteIdx(target_start.0 + at.0), Some(goal))
+        }
+    }
+}
+
+/// `vertical` over lines: the behaviour without wrapping (rows off).
+fn vertical_lines(rope: &Rope, sel: &Selection, delta: isize, tab_width: usize) -> (ByteIdx, Option<pos::DisplayCol>) {
     let goal = sel.goal.unwrap_or_else(|| pos::display_col(rope, sel.head, tab_width));
     let line = pos::line_of(rope, sel.head);
     let last = pos::line_count(rope) - 1;
@@ -539,6 +635,55 @@ fn vertical(rope: &Rope, sel: &Selection, delta: isize, tab_width: usize) -> (By
             (pos::byte_at_col(rope, target, goal, tab_width), Some(goal))
         }
     }
+}
+
+/// Home while wrapping: the row's start first, then the line's first non-blank, then its start
+/// (VS Code).
+fn line_start(
+    rope: &Rope,
+    sel: &Selection,
+    rows: &mut Rows<'_>,
+    walker: &mut pos::LineWalker<'_>,
+) -> (ByteIdx, Option<pos::DisplayCol>) {
+    let (line, start, within) = line_here(walker, sel.head);
+    let row_start = {
+        let layout = rows.layout(rope, line);
+        let (row, _) = layout.row_of(within);
+        ByteIdx(start.0 + layout.rows()[row].start.0)
+    };
+    // On a continuation row, Home goes to the row's start first; on the line's first row (where
+    // the row's start is the line's) and once at a row's start, it toggles the line's first
+    // non-blank and start (VS Code's smart home).
+    if row_start > start && sel.head != row_start {
+        return (row_start, None);
+    }
+    let first = pos::first_non_blank(rope, line);
+    (if sel.head == first { start } else { first }, None)
+}
+
+/// End while wrapping: the row's end first, then the line's end.
+fn line_end(
+    rope: &Rope,
+    sel: &Selection,
+    rows: &mut Rows<'_>,
+    walker: &mut pos::LineWalker<'_>,
+) -> (ByteIdx, Option<pos::DisplayCol>) {
+    let (line, start, within) = line_here(walker, sel.head);
+    let layout = rows.layout(rope, line);
+    let (row, _) = layout.row_of(within);
+    let line_end = pos::line_end(rope, line);
+    // The cursor is at a row's end when it sits on a row boundary (`row_of` gives a boundary
+    // byte the next row) or at the line's end; then End moves to the line's end, else to this
+    // row's end (VS Code: the row's end first, then the line's).
+    let at_row_end = sel.head == line_end || (row > 0 && within.0 == layout.rows()[row].start.0);
+    (
+        if at_row_end {
+            line_end
+        } else {
+            ByteIdx(start.0 + layout.row_end(row).0)
+        },
+        None,
+    )
 }
 
 /// Deletes each selection, or for an empty one, the range from `to(cursor)` to the cursor.
@@ -875,6 +1020,126 @@ g\n";
         assert_eq!(head(&v), 16);
         run(mv(Motion::Up), &mut b, &mut v, &s);
         assert_eq!(head(&v), 9, "goal column was reset by moving to the end");
+    }
+
+    /// A view as drawing leaves it while wrapping: rows laid out at `width`, a two-row page.
+    fn wrapped(text: &str, cursor: usize, width: usize) -> (Buffer, View, Settings) {
+        let buf = Buffer::from_str(text);
+        let mut view = View::new();
+        view.selections = Selections::single(Selection::cursor(ByteIdx(cursor)));
+        view.wrapping = true;
+        view.width = width;
+        view.height = 2;
+        view.revision = buf.revision();
+        view.tab_width = 4;
+        (buf, view, Settings::default())
+    }
+
+    #[test]
+    fn wrapped_up_down_move_over_rows_keeping_the_row_column() {
+        // "abcdefghij" at 5 columns: rows 0..5 and 5..10; byte 7 is row 1, column 2.
+        let (mut b, mut v, s) = wrapped("abcdefghij", 7, 5);
+        run(mv(Motion::Up), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 2, "up to the row above, at its column 2");
+        assert_eq!(v.selections.primary().goal, Some(pos::DisplayCol(2)));
+        run(mv(Motion::Down), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 7, "down keeps the goal column");
+        run(mv(Motion::Down), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 10, "past the last row goes to the text's end");
+        assert_eq!(v.selections.primary().goal, None);
+    }
+
+    #[test]
+    fn wrapped_vertical_crosses_lines_and_clamps_at_the_edges() {
+        let (mut b, mut v, s) = wrapped("abcde\nfghij", 0, 5);
+        run(mv(Motion::Down), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 6, "the next line's first row");
+        run(mv(Motion::Down), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 11, "past the last row goes to the text's end");
+        assert_eq!(v.selections.primary().goal, None);
+        run(mv(Motion::Up), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 5, "up from the end enters the line above, at its end");
+        run(mv(Motion::Up), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 0, "past the first row goes to the text's start");
+        assert_eq!(v.selections.primary().goal, None);
+    }
+
+    #[test]
+    fn wrapped_page_moves_by_rows() {
+        // Four rows of 5 columns; a page is the view's two rows.
+        let (mut b, mut v, s) = wrapped("abcdefghijklmnopqrst", 2, 5);
+        run(mv(Motion::PageDown), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 12, "two rows down, still at column 2");
+        run(mv(Motion::PageUp), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 2, "two rows up");
+    }
+
+    #[test]
+    fn wrapped_home_and_end_stop_on_the_row_first() {
+        // "    aaaa bbbb cccc" at 10 columns breaks after the spaces: rows [0, 9), [9, 14)
+        // and [14, 18), each continuation row at the indentation's column 4.
+        let (mut b, mut v, s) = wrapped("    aaaa bbbb cccc", 18, 10);
+        run(mv(Motion::LineStart), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 14, "home goes to the row's start first");
+        run(mv(Motion::LineStart), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 4, "then to the line's first non-blank");
+        run(mv(Motion::LineStart), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 0, "then to the line's start");
+        run(mv(Motion::LineEnd), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 9, "end goes to the row's end first");
+        run(mv(Motion::LineEnd), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 18, "then to the line's end, not the next row's");
+        run(mv(Motion::LineEnd), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 18, "and stays there");
+    }
+
+    #[test]
+    fn wrapped_home_on_the_first_row_toggles_first_non_blank() {
+        // A line that doesn't wrap (a single row) still gets VS Code's smart home: first
+        // non-blank, then the start — not straight to the start as if it were a continuation row.
+        let (mut b, mut v, s) = wrapped("    foo", 6, 20);
+        run(mv(Motion::LineStart), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 4, "home goes to the first non-blank, not the line start");
+        run(mv(Motion::LineStart), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 0, "then to the line start");
+    }
+
+    #[test]
+    fn wrapped_end_from_a_continuation_row_stops_at_that_rows_end() {
+        // End in the middle of a continuation row ends that row; only a second End reaches the
+        // line's end (VS Code's "End twice").
+        let (mut b, mut v, s) = wrapped("    aaaa bbbb cccc", 11, 10);
+        run(mv(Motion::LineEnd), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 14, "end stops at this row's end");
+        run(mv(Motion::LineEnd), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 18, "then at the line's end");
+    }
+
+    #[test]
+    fn wrapped_down_clamps_to_a_short_rows_end_keeping_the_goal() {
+        // "abcdefghij" wraps to rows [0,5) and [5,10); "ab" below is one short row.
+        let (mut b, mut v, s) = wrapped("abcdefghij\nab", 7, 5);
+        run(mv(Motion::Down), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 13, "down to the short line clamps to its end");
+        assert_eq!(
+            v.selections.primary().goal,
+            Some(pos::DisplayCol(2)),
+            "goal column kept"
+        );
+        run(mv(Motion::Down), &mut b, &mut v, &s);
+        assert_eq!(head(&v), 13, "past the last row is still the text's end");
+        assert_eq!(v.selections.primary().goal, None);
+    }
+
+    #[test]
+    fn wrapped_movement_applies_at_every_selection() {
+        // Two cursors on the first line (the walker returns the same line for both) and one on
+        // the second: every selection moves one row down at its own column.
+        let (mut b, mut v, s) = wrapped("abcdefghij\nabcdefghij\n", 1, 5);
+        let at = |p| Selection::cursor(ByteIdx(p));
+        v.selections = Selections::new(vec![at(1), at(3), at(12)], 0);
+        run(mv(Motion::Down), &mut b, &mut v, &s);
+        assert_eq!(cursors(&v), vec![6, 8, 17], "each cursor moved one row down");
     }
 
     #[test]

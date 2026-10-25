@@ -15,11 +15,15 @@
 //! rows, the scroll bar's top, thumb and git marks are rows, and a split that narrows rewraps
 //! with the cursor kept in view.
 //!
-//! Movement (Up / Down / Home / End's goal column) and the mouse's positions on wrapped rows come
-//! in the task's later subtasks. The "Done when" parts covered here: the setting is read from
-//! `settings.toml` and `.workspace`, defaults to `off`, the toggle flips `App::word_wrap()` and
-//! keeps doing so across a `.workspace` reload, the wrapped rows are drawn as the plan says, and
-//! scrolling / the scroll bar use screen rows.
+//! soft_wrap-e: movement over screen rows — Up / Down / PageUp / PageDown move by rows keeping
+//! the goal column, Home / End stop on the row's edge before the line's, and every selection
+//! moves (the layouts are walked in order at 60k selections).
+//!
+//! The mouse's positions on wrapped rows come in the task's later subtasks. The "Done when"
+//! parts covered here: the setting is read from `settings.toml` and `.workspace`, defaults to
+//! `off`, the toggle flips `App::word_wrap()` and keeps doing so across a `.workspace` reload,
+//! the wrapped rows are drawn as the plan says, scrolling / the scroll bar use screen rows, and
+//! the cursor moves over them like VS Code's.
 
 use std::fs;
 use std::path::PathBuf;
@@ -32,7 +36,7 @@ use ratatui::style::Modifier;
 
 use crate::app::{App, InitialFile};
 use crate::buffer::Buffer;
-use crate::buffer::pos::ByteIdx;
+use crate::buffer::pos::{self, ByteIdx};
 use crate::command::Command;
 use crate::config::settings;
 use crate::diagnostics::{Diagnostic, Mark, Severity};
@@ -512,8 +516,130 @@ fn top(app: &App) -> (usize, usize) {
     (view.top_line(), view.top_row())
 }
 
+/// The active view's primary cursor as a global screen row and its column within that row.
+fn cursor_row_col(app: &mut App) -> (usize, usize) {
+    let (buf, view) = app.active_mut().unwrap();
+    let head = view.selections.primary().head;
+    let line = pos::line_of(&buf.rope, head);
+    let (revision, width, tab) = (view.revision, view.width, view.tab_width);
+    let layout = view.wrap.layout(&buf.rope, revision, line, width, tab);
+    let within = ByteIdx(head.0 - pos::line_start(&buf.rope, line).0);
+    let (row, col) = layout.row_of(within);
+    (
+        view.wrap.row_of_line(&buf.rope, revision, line, width, tab) + row,
+        col.0,
+    )
+}
+
+/// The active view's row edges of line 0 as `(start, end)` byte offsets within the text, drawn
+/// at the view's width.
+fn line0_rows(app: &mut App) -> Vec<(usize, usize)> {
+    let (buf, view) = app.active_mut().unwrap();
+    let layout = view
+        .wrap
+        .layout(&buf.rope, view.revision, 0, view.width, view.tab_width);
+    (0..layout.len())
+        .map(|i| (layout.rows()[i].start.0, layout.row_end(i).0))
+        .collect()
+}
+
+/// The active view's primary cursor.
+fn head(app: &App) -> usize {
+    app.group().active_tab().unwrap().view.selections.primary().head.0
+}
+
+/// Up / Down move between screen rows at the same column (the goal column), across line breaks
+/// too, and Up undoes Down.
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_arrows_move_by_rows_keeping_the_column() {
+    let dir = tempfile::tempdir().unwrap();
+    let text: String = (0..3).map(long_line).collect();
+    let (mut app, _) = wrapped_editor(&dir, &text, 30, 10);
+    let rows = line0_rows(&mut app);
+    assert!(rows.len() >= 3, "the line wraps to several rows");
+
+    // The second row's fifth column.
+    put_cursor(&mut app, rows[1].0 + 5);
+    let (row, col) = cursor_row_col(&mut app);
+    assert_eq!(col, 5);
+    app.press(KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(
+        cursor_row_col(&mut app),
+        (row + 1, 5),
+        "one screen row down, same column"
+    );
+    app.press(KeyCode::Up, KeyModifiers::NONE);
+    assert_eq!(cursor_row_col(&mut app), (row, 5), "and back up the row");
+
+    // Down off the line's last row lands on the next line's first row.
+    put_cursor(&mut app, rows[rows.len() - 1].0);
+    app.press(KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(
+        cursor_row_col(&mut app),
+        (rows.len(), 0),
+        "down crosses the line break to the next line's first row"
+    );
+    app.press(KeyCode::Up, KeyModifiers::NONE);
+    assert_eq!(
+        cursor_row_col(&mut app),
+        (rows.len() - 1, 0),
+        "up comes back to the line's last row"
+    );
+}
+
+/// Home / End stop on the wrapped row's edge first, then the line's (VS Code).
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_home_and_end_stop_on_the_row_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = "    alpha bravo charlie delta echo foxtrot golf hotel\n";
+    let (mut app, _) = wrapped_editor(&dir, text, 30, 10);
+    let rows = line0_rows(&mut app);
+    assert!(rows.len() >= 3, "the indented line wraps to several rows");
+    let line_end = text.len() - 1;
+
+    put_cursor(&mut app, 0);
+    app.press(KeyCode::End, KeyModifiers::NONE);
+    assert_eq!(head(&app), rows[0].1, "end goes to the first row's end");
+    app.press(KeyCode::End, KeyModifiers::NONE);
+    assert_eq!(head(&app), line_end, "then to the line's end, not the next row's");
+
+    put_cursor(&mut app, line_end);
+    app.press(KeyCode::Home, KeyModifiers::NONE);
+    assert_eq!(head(&app), rows[rows.len() - 1].0, "home goes to the last row's start");
+    app.press(KeyCode::Home, KeyModifiers::NONE);
+    assert_eq!(head(&app), 4, "then to the line's first non-blank");
+    app.press(KeyCode::Home, KeyModifiers::NONE);
+    assert_eq!(head(&app), 0, "then to the line's start");
+}
+
+/// PageUp / PageDown move the cursor a page of screen rows, and the view scrolls with it.
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_page_keys_move_the_cursor_by_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let text: String = (0..12).map(long_line).collect();
+    let (mut app, _) = wrapped_editor(&dir, &text, 30, 10);
+    put_cursor(&mut app, 0);
+    let page = app.group().active_tab().unwrap().view.height;
+    assert!(page >= 2);
+    assert_eq!(cursor_row_col(&mut app), (0, 0));
+
+    app.press(KeyCode::PageDown, KeyModifiers::NONE);
+    assert_eq!(cursor_row_col(&mut app), (page, 0), "a page of rows down");
+    assert_eq!(global_top(&mut app), page, "and the view scrolled by the same rows");
+    draw(&mut app, 30, 10);
+    assert_eq!(
+        cursor_row_col(&mut app),
+        (page, 0),
+        "the frame keeps the cursor on its row"
+    );
+
+    app.press(KeyCode::PageUp, KeyModifiers::NONE);
+    assert_eq!(cursor_row_col(&mut app), (0, 0), "a page of rows back up");
+    assert_eq!(global_top(&mut app), 0);
+}
+
 /// The wheel and PageUp / PageDown scroll screen rows, and a frame keeps the sub-row the view was
-/// scrolled to (rows movement itself is soft_wrap-e).
+/// scrolled to (the cursor's own move is `soft_wrap_page_keys_move_the_cursor_by_rows`).
 #[tokio::test(flavor = "multi_thread")]
 async fn soft_wrap_wheel_and_page_keys_scroll_by_screen_rows() {
     let dir = tempfile::tempdir().unwrap();
@@ -531,7 +657,7 @@ async fn soft_wrap_wheel_and_page_keys_scroll_by_screen_rows() {
     app.mouse(MouseEventKind::ScrollUp, text_rect.x + 1, text_rect.y + 1);
     assert_eq!(global_top(&mut app), 0);
 
-    // PageDown scrolls by the view's rows; the cursor's own move is soft_wrap-e.
+    // PageDown scrolls by the view's rows (the cursor's move is in the page-keys test).
     let page = app.group().active_tab().unwrap().view.height;
     app.press(KeyCode::PageDown, KeyModifiers::NONE);
     assert_eq!(global_top(&mut app), page, "PageDown scrolls by its rows");
