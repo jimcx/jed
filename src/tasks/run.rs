@@ -472,6 +472,12 @@ fn pty_size(rows: u16, cols: u16) -> PtySize {
 
 /// Blocking: opens the PTY and spawns the process, then starts the reader and the waiter.
 fn spawn(shared: Arc<Shared>, spec: Spec, sink: Sink) {
+    // Test-only: hold the run `Starting` until the test releases it, so a quit-while-starting
+    // test is deterministic instead of racing this off-thread spawn.
+    #[cfg(test)]
+    if let Some(gate) = &spec.start_gate {
+        gate.wait();
+    }
     if !spec.cwd.is_dir() {
         return shared.fail(format!("{}: no such folder", spec.cwd.display()), &sink);
     }

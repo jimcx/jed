@@ -42,6 +42,10 @@ pub struct Tasks {
     sink: Option<Sink>,
     /// The socket path every run gets as `JED_IPC` (set once `App` listens).
     pub ipc: Option<PathBuf>,
+    /// Test-only: the next shell opened waits on this before its spawn finishes (kept
+    /// `Starting`), so a test can quit while it is still starting deterministically.
+    #[cfg(test)]
+    pub start_gate: Option<templates::StartGate>,
 }
 
 impl Default for Tasks {
@@ -54,6 +58,8 @@ impl Default for Tasks {
             next_id: 1,
             sink: None,
             ipc: None,
+            #[cfg(test)]
+            start_gate: None,
         }
     }
 }

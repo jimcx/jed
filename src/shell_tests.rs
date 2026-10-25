@@ -1416,6 +1416,10 @@ async fn shell_quit_while_the_shell_is_still_starting() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = shell_script(&root, "slow", "sleep 30");
+    // Hold the spawn off-thread so the shell stays `Starting` deterministically (rather than
+    // racing the spawn on a fast machine).
+    let (gate, handle) = crate::tasks::templates::StartGate::new();
+    app.tasks.start_gate = Some(gate);
     app.test_execute(Command::NewShell);
     assert!(
         matches!(app.group().active_shell().unwrap().run.status(), Status::Starting),
@@ -1427,6 +1431,8 @@ async fn shell_quit_while_the_shell_is_still_starting() {
     app.shutdown().await;
     let took = at.elapsed();
     assert!(took < SHUTDOWN_TIMEOUT * 2, "quit stays bounded: {took:?}");
+    // Let the spawn finish: it sees `kill_when_started` and kills the shell.
+    drop(handle);
     let ended = app
         .settle(|a| {
             a.groups

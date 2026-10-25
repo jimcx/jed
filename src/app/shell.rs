@@ -30,6 +30,13 @@ impl App {
             .map(|hit| (hit.editor.height, hit.editor.width))
             .filter(|&(rows, cols)| rows > 0 && cols > 0)
             .unwrap_or(tasks::DEFAULT_SIZE);
+        #[cfg(test)]
+        let spec = {
+            let mut spec = shell::spec(&program, &root, ipc.as_deref());
+            spec.start_gate = self.tasks.start_gate.clone();
+            spec
+        };
+        #[cfg(not(test))]
         let spec = shell::spec(&program, &root, ipc.as_deref());
         let base = spec.name.clone();
         // The smallest number no open shell of `base` has: closing "zsh (2)" gives that name to

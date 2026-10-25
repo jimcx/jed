@@ -17,6 +17,10 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::{Arc, Mutex};
+#[cfg(test)]
+use std::time::Duration;
 
 pub use crate::workspace::config::Task;
 
@@ -144,6 +148,59 @@ pub struct Spec {
     pub cwd: PathBuf,
     /// Set on top of jed's own environment, in order (the template's last, so it wins).
     pub env: Vec<(String, String)>,
+    /// Test-only: when set, the off-thread spawn blocks on it, keeping the run `Starting` so a
+    /// test can quit while the shell is still starting (rather than racing the spawn).
+    #[cfg(test)]
+    pub start_gate: Option<StartGate>,
+}
+
+/// A test-only latch the spawn waits on (keeping a run `Starting`) until the test drops the
+/// matching [`StartGateHandle`]. `Clone`/`Debug`/`PartialEq` so `Spec` keeps its derives.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub struct StartGate {
+    released: Arc<Mutex<bool>>,
+}
+
+/// The test's end of a [`StartGate`]: dropping it releases the waiting spawn.
+#[cfg(test)]
+pub struct StartGateHandle {
+    released: Arc<Mutex<bool>>,
+}
+
+#[cfg(test)]
+impl StartGate {
+    /// The gate (to put on a `Spec`), and the handle a test drops to release the spawn.
+    pub fn new() -> (StartGate, StartGateHandle) {
+        let released = Arc::new(Mutex::new(false));
+        (
+            StartGate {
+                released: released.clone(),
+            },
+            StartGateHandle { released },
+        )
+    }
+
+    /// Blocks (on the spawn's thread) until the test drops the handle.
+    pub(crate) fn wait(&self) {
+        while !*self.released.lock().unwrap() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+#[cfg(test)]
+impl PartialEq for StartGate {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+impl Drop for StartGateHandle {
+    fn drop(&mut self) {
+        *self.released.lock().unwrap() = true;
+    }
 }
 
 /// What every run gets unless its template sets them: tools see a colour terminal.
@@ -166,6 +223,8 @@ impl Template {
             argv: vec![shell.into(), "-c".into(), self.task.command.clone().into()],
             cwd: resolve_cwd(root, self.task.cwd.as_deref()),
             env,
+            #[cfg(test)]
+            start_gate: None,
         }
     }
 }

@@ -93,6 +93,8 @@ pub fn spec(program: &Path, root: &Path, ipc: Option<&Path>) -> Spec {
         argv: vec![program.as_os_str().to_os_string()],
         cwd: root.to_path_buf(),
         env,
+        #[cfg(test)]
+        start_gate: None,
     }
 }
 
