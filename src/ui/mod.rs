@@ -36,7 +36,28 @@ use crate::git::HunkKind;
 use crate::group::Tab;
 use crate::layout::{self, GroupHit, HitMap, ScrollTarget, SplitDir};
 use crate::scrollbar::Scrollable;
-use crate::view::TextScroll;
+use crate::view::{TextScroll, View};
+
+/// The screen row (0-based from the editor's first text row) `view` draws `line`'s first row
+/// on, if it is on screen: the wrapped rows of the lines from the view's top down to `line`
+/// (where the gutter number is drawn), less the rows of the top line scrolled past. Only the
+/// visible lines are laid out, so a line below the view costs at most the screen's height.
+fn line_screen_row(view: &mut View, rope: &ropey::Rope, revision: u64, line: usize, tab_width: usize) -> Option<usize> {
+    let (width, height, top, top_row) = (view.width, view.height, view.top_line(), view.top_row());
+    if line < top {
+        return None;
+    }
+    // `row` is the full rows of the lines from `top` down to `at`, so `line`'s first row is at
+    // screen row `row - top_row` (on screen when `top_row <= row < height + top_row`); stop as
+    // soon as a line's first row reaches the bottom edge, so only the visible lines are laid out.
+    let mut row = 0;
+    let mut at = top;
+    while at < line && row < height + top_row {
+        row += view.wrap.layout(rope, revision, at, width, tab_width).len();
+        at += 1;
+    }
+    (at == line && row >= top_row && row < height + top_row).then(|| row - top_row)
+}
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -240,9 +261,14 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 merge_buttons = buttons;
                 if let Some((g, line)) = bulb
                     && g == id
-                    && let Some(row) = line.checked_sub(tab.view.top_line())
-                    && row < text.height as usize
                     && text.x >= editor_area.x + 2
+                    && let Some(row) = if wrapping {
+                        let tab_width = app.settings.for_buffer(buf).tab_width;
+                        line_screen_row(&mut tab.view, &buf.rope, buf.revision(), line, tab_width)
+                    } else {
+                        line.checked_sub(tab.view.top_line())
+                    }
+                    && row < text.height as usize
                 {
                     // Over the gutter's first two cells (a space and the widest numbers' first digit).
                     let at = Rect {
@@ -444,5 +470,57 @@ fn fit_commit_tabs(app: &mut App, cells: &[(layout::GroupId, Rect)]) {
         .collect();
     if !widths.is_empty() {
         app.fit_commit_tabs(&widths);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A line's first screen row: the wrapped rows of the lines from the view's top down to it,
+    /// less the top line's rows scrolled past; none for a line above the view or below a screen
+    /// too short to reach it.
+    #[test]
+    fn line_screen_row_follows_the_wrapped_top() {
+        let rope = ropey::Rope::from_str("aaaa bbbb cccc\ncc\ndddd eeee\n");
+        // Line 0 has 3 rows at width 5, line 1 one, line 2 two.
+        let mut view = View::new();
+        (view.width, view.height) = (5, 5);
+        assert_eq!(line_screen_row(&mut view, &rope, 0, 0, 4), Some(0));
+        assert_eq!(line_screen_row(&mut view, &rope, 0, 1, 4), Some(3));
+        assert_eq!(line_screen_row(&mut view, &rope, 0, 2, 4), Some(4));
+
+        // The top line two rows down: its first row is off screen.
+        view.set_top(&rope, 0, 2);
+        assert_eq!(line_screen_row(&mut view, &rope, 0, 0, 4), None);
+        assert_eq!(line_screen_row(&mut view, &rope, 0, 1, 4), Some(1));
+        assert_eq!(line_screen_row(&mut view, &rope, 0, 2, 4), Some(2));
+
+        // A line above the view, and ones the screen is too short to reach.
+        view.set_top(&rope, 1, 0);
+        assert_eq!(line_screen_row(&mut view, &rope, 0, 0, 4), None);
+        assert_eq!(line_screen_row(&mut view, &rope, 0, 2, 4), Some(1));
+        view.height = 2;
+        assert_eq!(line_screen_row(&mut view, &rope, 0, 2, 4), Some(1));
+        assert_eq!(line_screen_row(&mut view, &rope, 0, 3, 4), None);
+    }
+
+    /// With the top line scrolled down, a line whose first row is in the screen's last rows is
+    /// still reported (the count is compared after subtracting `top_row`, not before), and the
+    /// walk keeps going past a line whose full row count alone passes the bottom.
+    #[test]
+    fn line_screen_row_counts_scrolled_rows_for_lines_near_the_bottom() {
+        // Line 0 is six rows at width 5, lines 1..3 one each.
+        let rope = ropey::Rope::from_str("aaaa bbbb cccc dddd eeee ffff\nxx\nyy\nzz\n");
+        let mut view = View::new();
+        (view.width, view.height) = (5, 5);
+        // The top line three rows down: its rows 3..6 fill the screen's first three rows, so
+        // line 1's first row is row 3 and line 2's is row 4 — both on screen, even though their
+        // full row counts (6 and 7) are at or past the height.
+        view.set_top(&rope, 0, 3);
+        assert_eq!(line_screen_row(&mut view, &rope, 0, 1, 4), Some(3));
+        assert_eq!(line_screen_row(&mut view, &rope, 0, 2, 4), Some(4));
+        // Line 3 would be row 5, past the screen's last row (4).
+        assert_eq!(line_screen_row(&mut view, &rope, 0, 3, 4), None);
     }
 }

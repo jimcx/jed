@@ -7,6 +7,10 @@
 //! selection / find match / squiggle on the rows their bytes are drawn on — and wrapping off
 //! draws exactly as it did before.
 //!
+//! soft_wrap-c: the per-line overlays follow the rows: a bracket pair spans the rows its bytes
+//! are on, a quick-diff gutter marker and the lightbulb sit on the line's first row (where the
+//! line number is), and find matches, squiggles and selections stay on their rows.
+//!
 //! Scrolling, movement and the mouse on wrapped rows come in the task's later subtasks. The
 //! "Done when" parts covered here: the setting is read from `settings.toml` and `.workspace`,
 //! defaults to `off`, the toggle flips `App::word_wrap()` and keeps doing so across a
@@ -28,7 +32,11 @@ use crate::command::Command;
 use crate::config::settings;
 use crate::diagnostics::{Diagnostic, Mark, Severity};
 use crate::edit::WordWrap;
+use crate::git::test_repo::{commit_all, init};
 use crate::lsp::ServerId;
+use crate::lsp::fake::{FakeLauncher, FakeOptions};
+use crate::milestone9_tests::{open_app, open_synced, project, put_cursor};
+use crate::milestone10_tests::{dirs, open_file_app, settle_markers};
 use crate::selection::{Selection, Selections};
 use crate::workspace::Workspace;
 use crate::workspace::trust::TrustStore;
@@ -348,4 +356,123 @@ async fn soft_wrap_find_match_on_a_continuation_row() {
             "the match is highlighted on the continuation row"
         );
     }
+}
+
+/// A bracket pair whose halves are on different rows of one wrapped line: both halves take the
+/// bracket highlight on the row their bytes are drawn on.
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_bracket_pair_spans_the_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _, _) = open_text(
+        &dir,
+        "",
+        "",
+        "one\ntwo\nthree\nfour\nfive\n  call(LONGA aaaa bbbb cccc dddd eeee ffff gggg LONGB) tail\nlast\n",
+    );
+    plain_editor(&mut app);
+    app.test_execute(Command::ToggleWordWrap);
+    let (buf, view) = app.active_mut().unwrap();
+    let at = buf.rope.to_string().find("call(").unwrap() + "call".len();
+    view.selections = Selections::single(Selection::cursor(ByteIdx(at)));
+    let term = draw(&mut app, 30, 14);
+    let screen = cells(&term);
+    let (open, close) = (find(&screen, "("), find(&screen, ")"));
+    assert_eq!((open.len(), close.len()), (1, 1), "one pair: {screen:?}");
+    let ((xo, yo), (xc, yc)) = (open[0], close[0]);
+    assert!(yc > yo, "the pair spans the line's rows: {screen:?}");
+    assert_eq!(
+        yo,
+        find(&screen, "LONGA")[0].1,
+        "the opening bracket is on the line's first row"
+    );
+    let bracket = app.theme.get("editor.bracketMatch").bg;
+    assert_eq!(bg(&term, xo, yo), bracket, "the opening bracket on its row");
+    assert_eq!(
+        bg(&term, xc, yc),
+        bracket,
+        "the closing bracket on its continuation row"
+    );
+}
+
+/// The quick-diff gutter marker of a changed line that wraps: the glyph is on the line's first
+/// row (with its number), never on a continuation row.
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_quick_diff_marker_stays_on_the_first_row() {
+    let (_d, root, state) = dirs();
+    init(&root);
+    fs::write(root.join("f.txt"), "one\ntwo\nthree\n").unwrap();
+    commit_all(&root, "one");
+    fs::write(
+        root.join("f.txt"),
+        "one\ntwo  LONGA aaaa bbbb cccc dddd eeee ffff gggg LONGB hhhh\nthree\n",
+    )
+    .unwrap();
+    let mut app = open_file_app(&root, &state, "f.txt");
+    assert!(settle_markers(&mut app).await, "the gutter markers are current");
+    app.ui.side_visible = false;
+    app.test_execute(Command::ToggleWordWrap);
+    let term = draw(&mut app, 30, 14);
+    let screen = cells(&term);
+    let (_, y0) = find(&screen, "LONGA")[0];
+    let (_, y1) = find(&screen, "LONGB")[0];
+    assert!(y1 > y0, "the changed line wraps: {screen:?}");
+    let text = app.hits.group(app.groups.active).unwrap().text;
+    let marker = &term.backend().buffer()[(text.x - 1, y0)];
+    assert_eq!(
+        marker.symbol(),
+        "▎",
+        "the marker is in the gutter on the line's first row"
+    );
+    assert_eq!(
+        Some(marker.fg),
+        app.theme.get("editorGutter.modifiedBackground").fg,
+        "an unstaged modification's colour"
+    );
+    assert_eq!(
+        term.backend().buffer()[(text.x - 1, y1)].symbol(),
+        " ",
+        "no marker on the continuation row"
+    );
+}
+
+/// The lightbulb on the cursor's line with the cursor on a continuation row: it sits in the
+/// gutter on that line's first row, by the line number.
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_lightbulb_on_the_cursor_lines_first_row() {
+    let dir = tempfile::tempdir().unwrap();
+    // Two earlier lines wrap, so the cursor line's first screen row is below its line index:
+    // the bulb must go by the rows, not the line number.
+    let source = "one\n  alpha alpha alpha alpha alpha alpha alpha\nbeta beta beta beta beta beta beta beta beta\nfour\nfive\n  call(LONGA aaaa bbbb cccc dddd LONGB eeee ffff)\nlast\n";
+    let root = project(dir.path(), &[("a.cpp", source)]);
+    let fake = FakeLauncher::new(FakeOptions {
+        utf8: true,
+        ..Default::default()
+    });
+    let mut app = open_app(&root, fake.clone());
+    open_synced(&mut app, &fake, &root.join("a.cpp")).await;
+    fake.respond(
+        "textDocument/codeAction",
+        serde_json::json!([{ "title": "Change it", "kind": "quickfix" }]),
+    );
+    app.ui.side_visible = false;
+    app.test_execute(Command::ToggleWordWrap);
+    put_cursor(&mut app, source.find("LONGB").unwrap());
+    app.press(KeyCode::Right, KeyModifiers::NONE);
+    assert!(app.settle(|a| a.bulb_line().is_some()).await, "actions after the rest");
+    assert_eq!(app.bulb_line().unwrap().1, 5);
+    let term = draw(&mut app, 30, 14);
+    let screen = cells(&term);
+    let (_, y0) = find(&screen, "LONGA")[0];
+    let (_, y1) = find(&screen, "LONGB")[0];
+    assert!(y1 > y0, "the cursor is on a continuation row: {screen:?}");
+    let bulb = find(&screen, crate::code_action::BULB);
+    assert_eq!(bulb.len(), 1, "one bulb: {screen:?}");
+    let (bx, by) = bulb[0];
+    assert_eq!(by, y0, "the bulb is on the cursor line's first row");
+    assert_ne!(by, y1, "not on the continuation row the cursor is on");
+    assert!(
+        bx < app.hits.group(app.groups.active).unwrap().text.x,
+        "in the gutter: {screen:?}"
+    );
+    app.shutdown_servers().await;
 }
