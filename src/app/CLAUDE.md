@@ -8,7 +8,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `field.rs` — `field_key`: keys in a text field (find widget, Search view inputs, palette, prompts) — typed, else the editor context's moves / deletes / select all / copy / cut / paste run on the field (`has_field_meaning`)
 - `files.rs` — opening (off-thread, `opening` map of `OpenRequest`s, `open_file(path, focus, goto)`, which records a successfully opened file in `mru`), saving, closing tabs, `add_buffer`
 - `prompt.rs` — `Prompt`, the modal dialogs (save before close / quit / stage, trust, input, confirm delete / replace / stage-a-conflicted-file, restore backups, the shell integration wizard)
-- `side.rs` — explorer commands, directory listings, file ops, fs-change batching (`flush_fs_changes`), the side panel
+- `side.rs` — explorer commands, directory listings, file ops, fs-change batching (`flush_fs_changes`, which also reloads `.workspace`, `settings.toml` and `keybindings.toml`), the side panel
 - `navigation.rs` — back / forward (`app.nav`): `nav_begin` / `nav_end`, `nav_jump`, Go Back / Forward
 - `palette.rs` — opening, keys and accepting the command palette and its pickers; a command picked there is recorded in `mru` (`App::mru.commands`), and an empty query lists the recent commands and files first (`palette::command_rows_with_recent` / `file_rows_with_recent`)
 - `cheatsheet.rs` — the keyboard cheat sheet overlay (`app.cheat_sheet`): toggle, its keys (all swallowed) and mouse

@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use super::{App, AppEvent, FileOp, Focus, InputKind, Level, Prompt};
 use crate::app::prompt::Input;
 use crate::command::ExplorerCommand as X;
+use crate::config::keymap::{self, Keymap, Platform};
+use crate::config::settings;
 use crate::explorer::{self, Entry};
 use crate::workspace;
 use crate::workspace::config::WorkspaceConfig;
@@ -211,12 +213,16 @@ impl App {
     }
 
     /// Batched file system events: refresh loaded directories, the git status, open files changed
-    /// on disk, reload `.workspace`.
+    /// on disk, reload `.workspace` and the user's `settings.toml` / `keybindings.toml`.
     pub(super) fn flush_fs_changes(&mut self) {
         self.fs_deadline = None;
         let config = self.workspace.config_path();
+        let settings_path = self.config_dir.join(settings::FILE_NAME);
+        let keymap_path = self.config_dir.join(keymap::FILE_NAME);
         let mut dirs: Vec<PathBuf> = Vec::new();
         let mut reload = false;
+        let mut reload_settings = false;
+        let mut reload_keymap = false;
         let paths: Vec<PathBuf> = std::mem::take(&mut self.fs_pending).into_iter().collect();
         #[cfg(test)]
         self.fs_flushed.extend(paths.iter().cloned());
@@ -226,6 +232,8 @@ impl App {
         for p in paths {
             // Single file mode watches only its file: no live `.workspace` reload (deferred).
             reload |= p == config && !self.mode.is_single();
+            reload_settings |= p == settings_path;
+            reload_keymap |= p == keymap_path;
             for d in [Some(p.as_path()), p.parent()].into_iter().flatten() {
                 if self.explorer.is_loaded(d) && !dirs.iter().any(|x| x == d) {
                     dirs.push(d.to_path_buf());
@@ -239,6 +247,19 @@ impl App {
             let tx = self.tx.clone();
             tokio::task::spawn_blocking(move || {
                 let _ = tx.send(AppEvent::ConfigLoaded(workspace::read_config(&config)));
+            });
+        }
+        if reload_settings {
+            let tx = self.tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let _ = tx.send(AppEvent::SettingsLoaded(settings::reload(&settings_path)));
+            });
+        }
+        if reload_keymap {
+            let tx = self.tx.clone();
+            let platform = Platform::current();
+            tokio::task::spawn_blocking(move || {
+                let _ = tx.send(AppEvent::KeymapLoaded(Keymap::reload(&keymap_path, platform)));
             });
         }
     }

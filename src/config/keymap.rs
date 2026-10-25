@@ -454,25 +454,48 @@ impl Keymap {
     /// plus one message per problem. Bad entries are skipped; an unreadable file gives the defaults.
     pub fn load(path: &Path, platform: Platform) -> (Self, Vec<String>) {
         match std::fs::read_to_string(path) {
-            Ok(text) => {
-                let (user, errors) = parse_user(&text);
-                for b in &user {
-                    tracing::info!(key = %b.combo.spec(), command = %b.command.name(), context = ?b.context, "user keybinding");
-                }
-                (Self::with_user(platform, &user), errors)
-            }
+            Ok(text) => Self::from_text(platform, &text).unwrap_or_else(|e| (Self::default_for(platform), vec![e])),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Self::default_for(platform), Vec::new()),
             Err(e) => (Self::default_for(platform), vec![format!("{FILE_NAME}: {e}")]),
         }
     }
+
+    /// Blocking, for a live reload. Like `load`, but a file that can't be read or parsed at all is
+    /// an `Err`, so the caller keeps the last good keymap (as a `.workspace` reload does); problems
+    /// in single bindings still apply the rest, reported.
+    pub fn reload(path: &Path, platform: Platform) -> Result<(Self, Vec<String>), String> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => Self::from_text(platform, &text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((Self::default_for(platform), Vec::new())),
+            Err(e) => Err(format!("{FILE_NAME}: {e}")),
+        }
+    }
+
+    /// The keymap `text` builds on `platform`'s defaults, or its syntax error.
+    fn from_text(platform: Platform, text: &str) -> Result<(Self, Vec<String>), String> {
+        let (user, errors) = user_bindings(user_file(text)?);
+        for b in &user {
+            tracing::info!(key = %b.combo.spec(), command = %b.command.name(), context = ?b.context, "user keybinding");
+        }
+        Ok((Self::with_user(platform, &user), errors))
+    }
 }
 
 /// The bindings in a `keybindings.toml`, and a message for each one that couldn't be used.
+#[cfg(test)]
 fn parse_user(text: &str) -> (Vec<Binding>, Vec<String>) {
-    let file: UserFile = match toml::from_str(text) {
-        Ok(f) => f,
-        Err(e) => return (Vec::new(), vec![format!("{FILE_NAME}: {}", e.message())]),
-    };
+    match user_file(text) {
+        Ok(file) => user_bindings(file),
+        Err(e) => (Vec::new(), vec![e]),
+    }
+}
+
+/// `keybindings.toml`'s TOML, or the message for a syntax error (the whole file is then unusable).
+fn user_file(text: &str) -> Result<UserFile, String> {
+    toml::from_str(text).map_err(|e| format!("{FILE_NAME}: {}", e.message()))
+}
+
+fn user_bindings(file: UserFile) -> (Vec<Binding>, Vec<String>) {
     let mut out = Vec::new();
     let mut errors = Vec::new();
     for b in file.binding {
@@ -509,7 +532,7 @@ pub const KEYBINDINGS_TEMPLATE: &str = "\
 # key: a combo such as \"ctrl+alt+s\" (cmd, ctrl, alt, shift + a key name).
 # command: a command's name, e.g. \"file.save\".
 # context: optional; editor, explorer, find, replace, search, problems, ...
-# Changes take effect the next time jed starts.
+# Changes apply as soon as the file is saved.
 ";
 
 /// Blocking. Writes `KEYBINDINGS_TEMPLATE` to `path` (creating its directory) unless the file

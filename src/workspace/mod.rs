@@ -17,8 +17,8 @@ pub struct Workspace {
     pub config: WorkspaceConfig,
     /// Parse error from the last load; `config` keeps the last good value.
     pub config_error: Option<String>,
-    /// The user's `settings.toml`, which `.workspace` `[settings]` override key by key. Loaded
-    /// once at startup (`with_user_settings`); `.workspace` reloads keep it.
+    /// The user's `settings.toml`, which `.workspace` `[settings]` override key by key. Loaded at
+    /// startup (`with_user_settings`) and replaced on a live reload; `.workspace` reloads keep it.
     pub user_settings: SettingsOverrides,
 }
 

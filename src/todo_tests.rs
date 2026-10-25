@@ -122,6 +122,11 @@
 //!   (palette commands) put the active file's absolute path, and its path relative to the
 //!   workspace root (the absolute path again when the file isn't inside it), on the clipboard; the
 //!   active file is a text or diff tab's, and there's nothing for a tab without one.
+//! - `live_reload`: `settings.toml` and `keybindings.toml` reload when they change (the config dir
+//!   is watched, non-recursively): the user's settings apply live, still layered under
+//!   `.workspace` per key (a `.workspace` reload re-layers the same values), a new binding works
+//!   without a restart, a `[lsp.<id>]` change replaces the user's servers, and a file that can't
+//!   be read or parsed is reported while the last good settings / keymap stay.
 
 mod render_whitespace {
     use std::fs;
@@ -7497,5 +7502,303 @@ mod copy_paths {
 
         palette_command(&mut app, "File: Copy Relative Path of Active File");
         assert_eq!(app.clipboard.read().unwrap(), outside.display().to_string());
+    }
+}
+
+mod live_reload {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+
+    use crate::app::{App, InitialFile, Level, Mode};
+    use crate::buffer::Buffer;
+    use crate::command::{Command, Motion};
+    use crate::config::keymap::{self, Keymap, Platform};
+    use crate::config::settings;
+    use crate::workspace::Workspace;
+    use crate::workspace::trust::TrustStore;
+
+    fn line_start() -> Command {
+        Command::Move {
+            motion: Motion::LineStart,
+            select: false,
+        }
+    }
+
+    fn line_end() -> Command {
+        Command::Move {
+            motion: Motion::LineEnd,
+            select: false,
+        }
+    }
+
+    fn write(root: &Path, rel: &str, text: &str) -> PathBuf {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, text).unwrap();
+        path
+    }
+
+    /// An app as `main` builds it: `<dir>/ws` (`.workspace` text `workspace`) with `a.txt` (holding
+    /// `text`) open, and `<dir>/config` (outside the workspace) holding `settings.toml` (text
+    /// `user`) and, unless `keys` is empty, `keybindings.toml`. Returns it, the root and the config
+    /// dir.
+    fn open_app(
+        dir: &tempfile::TempDir,
+        user: &str,
+        workspace: &str,
+        keys: &str,
+        text: &str,
+    ) -> (App, PathBuf, PathBuf) {
+        let base = crate::workspace::normalize(dir.path());
+        let config_dir = base.join("config");
+        let user_file = write(&config_dir, settings::FILE_NAME, user);
+        if !keys.is_empty() {
+            write(&config_dir, keymap::FILE_NAME, keys);
+        }
+        let root = base.join("ws");
+        write(&root, ".workspace", workspace);
+        let path = write(&root, "a.txt", text);
+        let loaded = settings::load(&user_file);
+        let ws = Workspace::load(root.clone()).with_user_settings(loaded.overrides);
+        let trust = TrustStore::load(base.join("trust.toml"));
+        let initial = crate::app::InitialFile {
+            buffer: Buffer::open(&path).unwrap(),
+            goto: None,
+        };
+        let mut app = App::new(ws, trust, Some(initial), true);
+        app.config_dir = config_dir.clone();
+        let (km, keymap_errors) = Keymap::load(&config_dir.join(keymap::FILE_NAME), Platform::current());
+        let mut errors = loaded.errors;
+        errors.extend(keymap_errors);
+        app.set_keymap(km, errors);
+        app.test_start();
+        (app, root, config_dir)
+    }
+
+    fn text(app: &App) -> String {
+        app.active_buffer().unwrap().rope.to_string()
+    }
+
+    fn head(app: &App) -> usize {
+        app.group().active_tab().unwrap().view.selections.primary().head.0
+    }
+
+    fn message(app: &App) -> String {
+        app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn live_reload_settings_apply_live_under_the_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, root, config_dir) = open_app(
+            &dir,
+            "[settings]\ninsert_spaces = false\n",
+            "[settings]\nauto_close_pairs = true\n",
+            "",
+            "x\n",
+        );
+        assert!(app.settings.auto_close_pairs && !app.settings.insert_spaces);
+
+        // The file changes on disk: the user's values apply without a restart.
+        fs::write(
+            config_dir.join(settings::FILE_NAME),
+            "[settings]\nauto_close_pairs = false\ntab_width = 2\n",
+        )
+        .unwrap();
+        assert!(
+            app.settle(|a| a.settings.tab_width == 2).await,
+            "settings.toml reloaded"
+        );
+        assert_eq!(message(&app), "Reloaded settings.toml");
+        assert!(
+            app.settings.insert_spaces,
+            "a key the new file drops is back to its default"
+        );
+        assert!(app.settings.auto_close_pairs, ".workspace still wins per key");
+
+        // `.workspace`'s override goes: the reloaded user value shows (it was stored, not just
+        // applied), and editing is affected at once.
+        fs::write(root.join(".workspace"), "[settings]\n").unwrap();
+        assert!(
+            app.settle(|a| !a.settings.auto_close_pairs).await,
+            "the user's value applies"
+        );
+        assert_eq!(app.settings.tab_width, 2, "the reloaded settings stay");
+        app.press(K::End, M::NONE);
+        app.type_text("(");
+        assert_eq!(text(&app), "x(\n", "auto-close is off without a restart");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn live_reload_keybindings_rebind_a_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _root, config_dir) = open_app(&dir, "", "", "", "abc\ndef\n");
+        app.press(K::End, M::NONE);
+        assert_eq!(head(&app), 3);
+        app.press(K::Char('h'), M::CONTROL | M::ALT);
+        assert_eq!(head(&app), 3, "ctrl+alt+h is unbound before the file exists");
+
+        // The file appears with the binding: the key works without a restart.
+        fs::write(
+            config_dir.join(keymap::FILE_NAME),
+            "[[binding]]\nkey = \"ctrl+alt+h\"\ncommand = \"cursor.home\"\n",
+        )
+        .unwrap();
+        assert!(
+            app.settle(|a| a
+                .keymap
+                .binding_for(line_start())
+                .is_some_and(|k| k.code == K::Char('h')))
+                .await,
+            "keybindings.toml reloaded: {:?}",
+            app.message.as_ref().map(|m| &m.text)
+        );
+        assert_eq!(message(&app), "Reloaded keybindings.toml");
+        app.press(K::Char('h'), M::CONTROL | M::ALT);
+        assert_eq!(head(&app), 0, "the new binding ran");
+
+        // A second edit replaces it live too.
+        fs::write(
+            config_dir.join(keymap::FILE_NAME),
+            "[[binding]]\nkey = \"ctrl+alt+h\"\ncommand = \"cursor.end\"\n",
+        )
+        .unwrap();
+        assert!(
+            app.settle(|a| a.keymap.binding_for(line_end()).is_some_and(|k| k.code == K::Char('h')))
+                .await,
+            "the second edit reloaded"
+        );
+        app.press(K::Char('h'), M::CONTROL | M::ALT);
+        assert_eq!(head(&app), 3, "the new binding ran");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn live_reload_a_bad_file_keeps_the_last_good_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = "[[binding]]\nkey = \"ctrl+alt+h\"\ncommand = \"cursor.home\"\n";
+        let (mut app, _root, config_dir) = open_app(&dir, "[settings]\ntab_width = 2\n", "", keys, "abc\n");
+        assert_eq!(app.settings.tab_width, 2);
+
+        // A settings.toml that can't be parsed is reported; the last good settings stay.
+        fs::write(config_dir.join(settings::FILE_NAME), "[settings]\ntab_width = ").unwrap();
+        assert!(
+            app.settle(|a| a
+                .message
+                .as_ref()
+                .is_some_and(|m| m.level == Level::Error && m.text.contains(settings::FILE_NAME)))
+                .await,
+            "the parse error is reported: {:?}",
+            app.message.as_ref().map(|m| &m.text)
+        );
+        assert_eq!(app.settings.tab_width, 2, "the last good settings stay");
+        // A bad key still applies the rest.
+        fs::write(
+            config_dir.join(settings::FILE_NAME),
+            "[settings]\ntab_width = 3\nauto_close_pairs = \"nope\"\n",
+        )
+        .unwrap();
+        assert!(app.settle(|a| a.settings.tab_width == 3).await, "the good keys apply");
+        assert!(app.settings.auto_close_pairs, "the bad key is skipped");
+        assert!(
+            app.message.as_ref().is_some_and(|m| m.level == Level::Error),
+            "the bad key is reported"
+        );
+
+        // A keybindings.toml that can't be parsed is reported too; the last good keymap stays.
+        app.press(K::End, M::NONE);
+        app.press(K::Char('h'), M::CONTROL | M::ALT);
+        assert_eq!(head(&app), 0, "the loaded binding works");
+        fs::write(config_dir.join(keymap::FILE_NAME), "[[binding]\nkey = \"ctrl+alt+h\"\n").unwrap();
+        assert!(
+            app.settle(|a| a
+                .message
+                .as_ref()
+                .is_some_and(|m| m.level == Level::Error && m.text.contains(keymap::FILE_NAME)))
+                .await,
+            "the parse error is reported: {:?}",
+            app.message.as_ref().map(|m| &m.text)
+        );
+        app.press(K::End, M::NONE);
+        app.press(K::Char('h'), M::CONTROL | M::ALT);
+        assert_eq!(head(&app), 0, "the last good keymap stays");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn live_reload_settings_update_the_user_language_servers() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _root, config_dir) = open_app(&dir, "[settings]\n", "", "", "x\n");
+        assert!(app.lsp.builtins.user.is_empty());
+
+        fs::write(
+            config_dir.join(settings::FILE_NAME),
+            "[lsp.rust]\ncommand = \"my-rust-analyzer\"\nargs = [\"--log\"]\n",
+        )
+        .unwrap();
+        assert!(
+            app.settle(|a| a.lsp.builtins.user.contains_key("rust")).await,
+            "the user's server arrived: {:?}",
+            app.message.as_ref().map(|m| &m.text)
+        );
+        let server = &app.lsp.builtins.user["rust"];
+        assert_eq!(
+            (server.command.as_str(), server.args.as_slice()),
+            ("my-rust-analyzer", &["--log".to_string()][..])
+        );
+        assert!(!server.from_workspace);
+
+        // An unknown language id is reported; the rest of the file still applies and that server
+        // is gone.
+        fs::write(
+            config_dir.join(settings::FILE_NAME),
+            "[settings]\ntab_width = 2\n[lsp.klingon]\ncommand = \"klingon-ls\"\n",
+        )
+        .unwrap();
+        assert!(
+            app.settle(|a| a
+                .message
+                .as_ref()
+                .is_some_and(|m| m.level == Level::Error && m.text.contains("klingon")))
+                .await,
+            "the unknown id is reported: {:?}",
+            app.message.as_ref().map(|m| &m.text)
+        );
+        assert_eq!(app.settings.tab_width, 2, "the settings part applies");
+        assert!(app.lsp.builtins.user.is_empty(), "the bad id brought no server");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn live_reload_settings_reload_in_single_file_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = crate::workspace::normalize(dir.path());
+        let config_dir = base.join("config");
+        let user_file = write(&config_dir, settings::FILE_NAME, "[settings]\ntab_width = 2\n");
+        let file = write(&base.join("doc"), "a.txt", "x\n");
+        let loaded = settings::load(&user_file);
+        let ws = Workspace::load(crate::workspace::root_for_file(&file)).with_user_settings(loaded.overrides);
+        let trust = TrustStore::load(base.join("trust.toml"));
+        let initial = InitialFile {
+            buffer: Buffer::open(&file).unwrap(),
+            goto: None,
+        };
+        let identity = App::start_identity(&ws, Mode::SingleFile, Some(&initial));
+        let mut app = App::new_in(Mode::SingleFile, ws, trust, Some(initial), identity, true);
+        app.config_dir = config_dir.clone();
+        let (km, keymap_errors) = Keymap::load(&config_dir.join(keymap::FILE_NAME), Platform::current());
+        let mut errors = loaded.errors;
+        errors.extend(keymap_errors);
+        app.set_keymap(km, errors);
+        app.test_start();
+        assert_eq!(app.settings.tab_width, 2);
+
+        // A settings.toml change on disk reaches single file mode too: its watcher lets the
+        // config dir's children through, not just the open file.
+        fs::write(config_dir.join(settings::FILE_NAME), "[settings]\ntab_width = 4\n").unwrap();
+        assert!(
+            app.settle(|a| a.settings.tab_width == 4).await,
+            "settings.toml reloaded in single file mode: {:?}",
+            app.message.as_ref().map(|m| &m.text)
+        );
     }
 }

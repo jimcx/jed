@@ -63,6 +63,7 @@ use crate::buffer::{Buffer, BufferId, Buffers};
 use crate::clipboard::{self, Clipboard, Copied};
 use crate::command::Command;
 use crate::config::keymap::{Context, Keymap, Platform};
+use crate::config::settings::UserSettings;
 use crate::edit::{self, RenderWhitespace, Settings};
 use crate::explorer::{self, Explorer};
 use crate::find::{Field, FindWidget};
@@ -210,6 +211,12 @@ enum AppEvent {
     /// A history entry was read and diffed against its buffer, to restore it.
     HistoryRestore(Box<history::Restore>),
     ConfigLoaded(Result<WorkspaceConfig, String>),
+    /// `settings.toml` was re-read (it changed on disk), or why it couldn't be (the last good
+    /// settings stay).
+    SettingsLoaded(Result<UserSettings, String>),
+    /// `keybindings.toml` was re-read (it changed on disk) and a message per problem, or why it
+    /// couldn't be (the last good keymap stays).
+    KeymapLoaded(Result<(Keymap, Vec<String>), String>),
     FileOpDone {
         op: FileOp,
         result: Result<(), String>,
@@ -711,6 +718,7 @@ impl App {
             Ok(w) => self.watcher = Some(w),
             Err(e) => self.notify(Level::Warning, format!("Not watching for file changes: {e}")),
         }
+        self.watch_config_dir();
         self.start_ipc();
         self.refresh_git_head();
         self.restore_session();
@@ -733,16 +741,31 @@ impl App {
     fn start_single(&mut self) {
         if let Some(path) = self.active_path() {
             let tx = self.tx.clone();
-            match watcher::start_file(&path, move |paths| {
+            match watcher::start_file(&path, &self.config_dir, move |paths| {
                 let _ = tx.send(AppEvent::FsChanged(paths));
             }) {
                 Ok(w) => self.watcher = Some(w),
                 Err(e) => self.notify(Level::Warning, format!("Not watching for file changes: {e}")),
             }
         }
+        self.watch_config_dir();
         self.scan_backups();
         self.reveal_active();
         self.sync_syntax();
+    }
+
+    /// Watches the config dir's own files (not its subdirectories) so `settings.toml` and
+    /// `keybindings.toml` reload live. A missing dir (a fresh install) waits until one of those
+    /// files is created (`UserSettingsReady` / `KeybindingsReady`); watching it again is harmless.
+    fn watch_config_dir(&mut self) {
+        if !self.config_dir.is_dir() {
+            return;
+        }
+        let Some(w) = self.watcher.as_mut() else { return };
+        match w.watch_dir(&self.config_dir) {
+            Ok(()) => tracing::info!(dir = %self.config_dir.display(), "watching the config directory"),
+            Err(e) => tracing::warn!(dir = %self.config_dir.display(), "can't watch the config directory: {e}"),
+        }
     }
 
     /// Draws a frame when one was asked for. A frame can ask for one more (a horizontal bar's
@@ -906,6 +929,49 @@ impl App {
     pub fn set_keymap(&mut self, keymap: Keymap, errors: Vec<String>) {
         self.keymap = keymap;
         self.report_errors(errors);
+    }
+
+    /// A live reload of `settings.toml`: its overrides take the place of the startup ones (still
+    /// layered under `.workspace`, per key), its `[lsp.<id>]` servers replace the old ones. A file
+    /// that can't be read or parsed keeps the last good settings.
+    pub(super) fn settings_loaded(&mut self, result: Result<UserSettings, String>) {
+        let user = match result {
+            Ok(user) => user,
+            Err(e) => {
+                self.notify(Level::Error, e);
+                return;
+            }
+        };
+        self.workspace.user_settings = user.overrides;
+        self.settings = self.workspace.settings();
+        let (servers, server_errors) = crate::lsp::config::user_servers(&user.lsp);
+        self.lsp.builtins.user = servers;
+        self.servers_dirty = true;
+        let mut errors = user.errors;
+        errors.extend(server_errors);
+        // A problem stays on screen; only a clean load says it reloaded.
+        let reloaded = errors.is_empty();
+        self.report_errors(errors);
+        if reloaded {
+            self.notify(Level::Info, format!("Reloaded {}", crate::config::settings::FILE_NAME));
+        }
+    }
+
+    /// A live reload of `keybindings.toml`: as `main` does at startup. A file that can't be read or
+    /// parsed keeps the last good keymap.
+    pub(super) fn keymap_loaded(&mut self, result: Result<(Keymap, Vec<String>), String>) {
+        let (keymap, errors) = match result {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                self.notify(Level::Error, e);
+                return;
+            }
+        };
+        let reloaded = errors.is_empty();
+        self.set_keymap(keymap, errors);
+        if reloaded {
+            self.notify(Level::Info, format!("Reloaded {}", crate::config::keymap::FILE_NAME));
+        }
     }
 
     /// Shows the first of some problems loading a config file (and how many more there are).
@@ -1505,17 +1571,23 @@ impl App {
             AppEvent::HistoryListed(listed) => self.history_listed(*listed),
             AppEvent::HistoryRestore(restore) => self.history_restored(*restore),
             AppEvent::ConfigLoaded(result) => self.config_loaded(result),
+            AppEvent::SettingsLoaded(result) => self.settings_loaded(result),
+            AppEvent::KeymapLoaded(result) => self.keymap_loaded(result),
             AppEvent::FileOpDone { op, result } => self.file_op_done(op, result),
             AppEvent::FilesMatched => self.files_matched(),
             AppEvent::FilesWalked { generation } => self.files_walked(generation),
             AppEvent::LogFileFound(path) => self.log_file_found(path),
             AppEvent::UserSettingsReady(result) => match result {
-                Ok(path) => self.open_file(path, true, None),
+                Ok(path) => {
+                    self.watch_config_dir();
+                    self.open_file(path, true, None);
+                }
                 Err(e) => self.notify(Level::Error, e),
             },
             AppEvent::KeybindingsReady(result) => match result {
                 Ok(path) => {
-                    self.notify(Level::Info, "Keybinding written — takes effect next start".into());
+                    self.watch_config_dir();
+                    self.notify(Level::Info, "Keybinding written — reloaded live".into());
                     self.open_file(path, true, None);
                 }
                 Err(e) => self.notify(Level::Error, e),

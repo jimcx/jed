@@ -169,6 +169,17 @@ pub fn load(path: &Path) -> UserSettings {
     }
 }
 
+/// Blocking, for a live reload. Like `load`, but a file that can't be read or parsed at all is an
+/// `Err`, so the caller keeps the last good settings (as a `.workspace` reload does); problems in
+/// single keys still apply the rest, reported.
+pub fn reload(path: &Path) -> Result<UserSettings, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => table(&text).map(config),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(UserSettings::default()),
+        Err(e) => Err(format!("{FILE_NAME}: {e}")),
+    }
+}
+
 /// Blocking. Writes `TEMPLATE` to `path` (creating its directory) unless the file exists; never
 /// overwrites one, even if it appears meanwhile (`create_new`).
 pub fn create_if_missing(path: &Path) -> Result<std::path::PathBuf, String> {
@@ -187,23 +198,30 @@ pub fn create_if_missing(path: &Path) -> Result<std::path::PathBuf, String> {
 
 /// Parses `settings.toml`, skipping (and reporting) unknown keys and badly typed values.
 pub fn parse(text: &str) -> UserSettings {
-    let mut errors = Vec::new();
-    let table: toml::Table = match toml::from_str(text) {
-        Ok(t) => t,
-        Err(e) => {
-            return UserSettings {
-                overrides: SettingsOverrides::default(),
-                lsp: BTreeMap::new(),
-                errors: vec![match e.span() {
-                    Some(at) => {
-                        let line = text[..at.start.min(text.len())].matches('\n').count() + 1;
-                        format!("{FILE_NAME}: line {line}: {}", e.message().trim_end())
-                    }
-                    None => format!("{FILE_NAME}: {}", e.message().trim_end()),
-                }],
-            };
+    match table(text) {
+        Ok(table) => config(table),
+        Err(error) => UserSettings {
+            overrides: SettingsOverrides::default(),
+            lsp: BTreeMap::new(),
+            errors: vec![error],
+        },
+    }
+}
+
+/// The file's TOML, or the message for a syntax error (the whole file is then unusable).
+fn table(text: &str) -> Result<toml::Table, String> {
+    toml::from_str(text).map_err(|e| match e.span() {
+        Some(at) => {
+            let line = text[..at.start.min(text.len())].matches('\n').count() + 1;
+            format!("{FILE_NAME}: line {line}: {}", e.message().trim_end())
         }
-    };
+        None => format!("{FILE_NAME}: {}", e.message().trim_end()),
+    })
+}
+
+/// A parsed file's `[settings]` and `[lsp.<id>]` tables, reporting what it can't use.
+fn config(table: toml::Table) -> UserSettings {
+    let mut errors = Vec::new();
     let mut settings = toml::Table::new();
     let mut lsp = BTreeMap::new();
     for (key, value) in table {
@@ -255,7 +273,7 @@ pub fn parse(text: &str) -> UserSettings {
 pub const TEMPLATE: &str = "\
 # jed user settings. Uncomment a line to change it.
 # A workspace's .workspace [settings] table overrides these, key by key.
-# Changes apply the next time jed starts.
+# Changes apply as soon as the file is saved.
 
 [settings]
 # tab_width = 4

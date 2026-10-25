@@ -719,7 +719,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - ✅ **Git editor** (`git_editor`): jed as `core.editor` — commit messages coloured, a lean one-file editor mode, and `git commit` from a task terminal opening in the running jed — [details](docs/plan-done.md)
 - ✅ **CI** — [details](docs/plan-done.md)
 - ✅ **Terminal config snippets** — [details](docs/plan-done.md)
-- **Live reload of settings**: `settings.toml`, `.workspace` overrides and `keybindings.toml` reloaded when they change (the files themselves load at startup since M8, 8d)
+- ✅ **Live reload of settings**: `settings.toml` and `keybindings.toml` reloaded live when they change (`.workspace` already was) — [details](docs/plan-done.md)
 - **Settings files** (`settings`): "Preferences: Open User / Workspace Settings" open `settings.toml` and `.workspace`, with settings-aware syntax highlighting and completion — see [Workspace](#workspace), [Syntax highlighting](#syntax-highlighting), [LSP](#lsp)
   - Needs: `Command::OpenUserSettings` (8d), the cheat sheet (`cheatsheet.rs`), `config::settings::TEMPLATE` and `WorkspaceConfig` (M8), completion's popup and insertion (M9), the TOML grammar and its highlight pass (`highlight.rs`)
   - Open user settings (Cmd+, / Ctrl+,) and workspace settings (Cmd+Shift+, / Ctrl+Shift+, — VS Code's), the latter writing a commented `.workspace` template on first open; both listed in the cheat sheet; the Cmd bindings update `docs/terminals/`
