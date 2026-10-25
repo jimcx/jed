@@ -4872,6 +4872,22 @@ async fn real_references_and_rename(
     }
     app.shutdown_servers().await;
     if let Some(n) = children_named(process) {
+        // FLAKE: 2026-10-25, `milestone_9_real_clangd_references_and_rename` failed once with
+        // "no clangd left (left: 1, right: 0)" under load (another checkout's `cargo test` running
+        // concurrently), then passed alone. Dump the lingering child so the next occurrence shows
+        // whether it is a live server or an un-reaped zombie.
+        if n != 0 {
+            let pgrep = std::process::Command::new("pgrep")
+                .args(["-l", "-P", &std::process::id().to_string()])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_else(|e| format!("pgrep failed: {e}"));
+            eprintln!(
+                "FLAKE real_references_and_rename ({process}): {n} child(ren) after shutdown_servers; \
+                 pgrep -l -P {} => {pgrep:?}",
+                std::process::id()
+            );
+        }
         assert_eq!(n, 0, "no {process} left");
     }
 }

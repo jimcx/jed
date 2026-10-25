@@ -176,6 +176,25 @@ impl App {
     }
 
     fn mouse_event(&mut self, m: MouseEvent) {
+        // The mouse's back / forward buttons navigate wherever the pointer is, and over a terminal
+        // or a popup too, so they are handled before anything looks at the hit. A drag while one
+        // is held and its release are consumed here too: the button is jed's, so a terminal
+        // program must never see it.
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Back) => {
+                self.execute(Command::NavBack);
+                return;
+            }
+            MouseEventKind::Down(MouseButton::Forward) => {
+                self.execute(Command::NavForward);
+                return;
+            }
+            MouseEventKind::Drag(MouseButton::Back)
+            | MouseEventKind::Drag(MouseButton::Forward)
+            | MouseEventKind::Up(MouseButton::Back)
+            | MouseEventKind::Up(MouseButton::Forward) => return,
+            _ => {}
+        }
         let hit = match self.hits.hit(m.column, m.row) {
             // The wheel over a scroll bar scrolls what it scrolls, as the wheel over that.
             Hit::ScrollBar(t)

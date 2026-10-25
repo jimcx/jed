@@ -35,6 +35,7 @@ All three must pass before a commit. Cap test runs with `scripts/timeout 300 car
 ## Where things are
 
 `main.rs` parses args and loads config before raw mode; `app/` holds `App` (all state, the event loop, `execute(Command)`); `ui/` draws it (`ui::render(f, &mut App)`, which also writes back render-time state such as view sizes and the mouse `HitMap`). Feature "model" modules in `src/` (`find.rs`, `diff_view.rs`, `scm.rs`, …) hold no app state and draw nothing: `app/<area>.rs` drives them, `ui/<area>.rs` draws them. Positions and the buffer live in `buffer/`, commands in `command.rs`, keys in `config/keymap.rs`, settings in `config/settings.rs` + `edit::Settings`. Find a module in [docs/dev/modules.md](docs/dev/modules.md#module-map-src); the event loop's steps are in [its data flow](docs/dev/modules.md#data-flow).
+`vendor/crossterm/` is a fork of crossterm 0.29 (patched via `[patch.crates-io]`) adding the mouse back / forward buttons; re-vendor it and re-apply the patch on a crossterm upgrade.
 
 ## Invariants
 

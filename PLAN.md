@@ -240,7 +240,7 @@ Go back to any earlier save of a file, independent of git.
 - Back / forward navigation (VS Code's Go Back / Go Forward): return the cursor to where it was before a jump, across files and tabs
   - A location is recorded on jumps: opening or switching files, go to line / definition / references, search and problem results, F4 / F8, Cmd+Home / End, and any click or move of 10+ lines in one step; edits record nothing
   - One history per window: entries are (group, file, primary selection, scroll) that follow edits, at most 50 (VS Code's); going back first records where you are; closed tabs reopen (a closed group's in the active one), files gone from disk are skipped, a diff tab counts as its file; going back then jumping elsewhere drops the forward entries
-  - Keys: Ctrl+- / Ctrl+Shift+- (Linux Ctrl+Alt+- / Ctrl+Shift+-); mouse back / forward buttons (buttons 8 / 9) later (see [Tasks](#tasks))
+  - Keys: Ctrl+- / Ctrl+Shift+- (Linux Ctrl+Alt+- / Ctrl+Shift+-); the mouse's back / forward buttons (buttons 8 / 9)
 - Indentation per buffer (the [Indentation](#tasks) task), VS Code's `editor.detectIndentation`:
   - A `detect_indentation` setting (default true): on load and after a reload, spaces vs tabs and the indent size are guessed from the first ~10k lines (VS Code's `guessIndentation`: line-to-line indentation deltas; ties and files with too little indentation keep the settings); a Makefile (`LanguageConfig::insert_spaces: Some(false)`) always uses tabs
   - The result is stored per buffer (every split of it follows) and overrides the language's / settings' `insert_spaces` and `tab_width` everywhere they are read: typing Tab, Enter and auto-indent, indent / outdent, comment line, completion re-indenting, the drawn width of a tab, column maths (Up / Down, box select) and the LSP `FormattingOptions`
@@ -744,7 +744,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
   - "View: Increase / Decrease Side Bar Width" (unbound, palette; a step of a few cells), sharing the step with Keyboard resize of splits
   - Tests: drag through `app.mouse` (hover colour, overshoot and back, snap closed, reopen, double-click reset), the commands, the session keeping the width
 - ✅ **Back / forward navigation** — [details](docs/plan-done.md)
-- **Mouse back / forward buttons** (after back / forward navigation): the mouse's back / forward buttons run `nav.back` / `nav.forward`. crossterm 0.29 drops SGR mouse buttons 8 / 9 (`parse_cb`: "We do not support other buttons"): needs a patched crossterm (a vendored fork via `[patch.crates-io]`) or jed's own parse of those reports before crossterm sees them — decide first; not every terminal sends them (check kitty, Ghostty, WezTerm, iTerm2, Alacritty)
+- ✅ **Mouse back / forward buttons** — [details](docs/plan-done.md)
 - ✅ **Mouse in the hosted terminal** (`term_mouse`): forward xterm mouse events to a shell or task tab's program — [details](docs/plan-done.md)
 - **Performance pass** against the [Goals](#goals): startup time, memory, 1 MB files; check the slow-frame warnings in the log; tree bracket matching on a 1 MB flat JSON root (see M8)
   - Done when: no warnings over 16 ms in a day of normal use

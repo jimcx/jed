@@ -337,6 +337,19 @@ fn milestone_indentation_budget_detect_10mb() {
     } else {
         Duration::from_millis(5)
     };
+    // FLAKE: 2026-10-25, one guess took 131.6 ms (debug budget 100 ms) while another checkout's
+    // `cargo test` was running concurrently; it passes on its own. The timing is already in the
+    // failure message; dump the load so a recurrence shows whether it was contention.
+    if each >= budget {
+        #[cfg(target_os = "linux")]
+        let load = std::fs::read_to_string("/proc/loadavg").unwrap_or_default();
+        #[cfg(not(target_os = "linux"))]
+        let load = String::new();
+        eprintln!(
+            "FLAKE milestone_indentation_budget_detect_10mb: {each:?} >= {budget:?}; loadavg {}",
+            load.trim()
+        );
+    }
     assert!(each < budget, "{each:?}");
 }
 

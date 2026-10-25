@@ -66,6 +66,11 @@ fn button_code(button: MouseButton) -> u8 {
         MouseButton::Left => 0,
         MouseButton::Middle => 1,
         MouseButton::Right => 2,
+        // The SGR codes. Back / forward never reach here at runtime: `App::mouse_event` consumes
+        // them (navigation on the press, nothing on a drag / release) before a terminal tab encodes
+        // anything.
+        MouseButton::Back => 128,
+        MouseButton::Forward => 129,
     }
 }
 
@@ -130,6 +135,67 @@ mod tests {
         assert_eq!(bytes(press, MouseProtocolMode::Press, SGR).unwrap(), b"\x1b[<0;3;2M");
         assert_eq!(bytes(release, MouseProtocolMode::Press, SGR), None);
         assert_eq!(bytes(press, MouseProtocolMode::None, SGR), None);
+    }
+
+    /// The back / forward buttons' SGR codes (128 / 129, drags 160 / 161) flow through the real
+    /// encoder: `button_code`'s arms for them, though jed consumes the buttons before a terminal
+    /// tab can encode one.
+    #[test]
+    fn sgr_back_and_forward() {
+        assert_eq!(
+            bytes(
+                MouseEventKind::Down(MouseButton::Back),
+                MouseProtocolMode::PressRelease,
+                SGR
+            )
+            .unwrap(),
+            b"\x1b[<128;3;2M"
+        );
+        assert_eq!(
+            bytes(
+                MouseEventKind::Up(MouseButton::Back),
+                MouseProtocolMode::PressRelease,
+                SGR
+            )
+            .unwrap(),
+            b"\x1b[<128;3;2m"
+        );
+        assert_eq!(
+            bytes(
+                MouseEventKind::Down(MouseButton::Forward),
+                MouseProtocolMode::PressRelease,
+                SGR
+            )
+            .unwrap(),
+            b"\x1b[<129;3;2M"
+        );
+        assert_eq!(
+            bytes(
+                MouseEventKind::Up(MouseButton::Forward),
+                MouseProtocolMode::PressRelease,
+                SGR
+            )
+            .unwrap(),
+            b"\x1b[<129;3;2m"
+        );
+        assert_eq!(
+            bytes(
+                MouseEventKind::Drag(MouseButton::Back),
+                MouseProtocolMode::ButtonMotion,
+                SGR
+            )
+            .unwrap(),
+            b"\x1b[<160;3;2M"
+        );
+        assert_eq!(
+            bytes(
+                MouseEventKind::Drag(MouseButton::Forward),
+                MouseProtocolMode::ButtonMotion,
+                SGR
+            )
+            .unwrap(),
+            b"\x1b[<161;3;2M"
+        );
     }
 
     #[test]

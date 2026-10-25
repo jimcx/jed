@@ -58,3 +58,10 @@ tempfile = "3.27.0"
 
 [profile.release]
 strip = true
+
+# jed's vendored crossterm fork: upstream 0.29 drops SGR mouse buttons 8 / 9 (the mouse's back /
+# forward buttons) with "We do not support other buttons". On a crossterm upgrade, re-vendor the
+# crate into `vendor/crossterm` and re-apply the patch (`MouseButton::Back` / `Forward`, their
+# `parse_cb` arms; see `git log -- vendor/crossterm`).
+[patch.crates-io]
+crossterm = { path = "vendor/crossterm" }

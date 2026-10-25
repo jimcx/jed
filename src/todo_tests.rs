@@ -3364,12 +3364,12 @@ mod back_forward {
         app.press(K::Char('_'), M::CONTROL | M::SHIFT);
     }
 
-    fn numbered(name: &str, lines: usize) -> String {
+    pub(super) fn numbered(name: &str, lines: usize) -> String {
         (1..=lines).map(|i| format!("{name} {i}\n")).collect()
     }
 
     /// A workspace `<dir>/proj` with `files`, its trust store in `<dir>/state`.
-    fn project(dir: &Path, files: &[(&str, String)]) -> PathBuf {
+    pub(super) fn project(dir: &Path, files: &[(&str, String)]) -> PathBuf {
         let root = workspace::normalize(dir).join("proj");
         fs::create_dir_all(&root).unwrap();
         for (name, text) in files {
@@ -3378,12 +3378,12 @@ mod back_forward {
         root
     }
 
-    fn trust(root: &Path) -> TrustStore {
+    pub(super) fn trust(root: &Path) -> TrustStore {
         TrustStore::load(root.parent().unwrap().join("state/trust.toml"))
     }
 
     /// The app on `root` with `first` open, drawn once.
-    fn open_app(root: &Path, first: &str) -> App {
+    pub(super) fn open_app(root: &Path, first: &str) -> App {
         let initial = InitialFile {
             buffer: Buffer::open(&root.join(first)).unwrap(),
             goto: None,
@@ -3394,21 +3394,21 @@ mod back_forward {
         app
     }
 
-    fn draw(app: &mut App) -> Terminal<TestBackend> {
+    pub(super) fn draw(app: &mut App) -> Terminal<TestBackend> {
         let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
         term.draw(|f| crate::ui::render(f, app)).unwrap();
         term
     }
 
     /// The active editor: its file's name, the primary head's 0-based line and byte column.
-    fn place(app: &App) -> (String, usize, usize) {
+    pub(super) fn place(app: &App) -> (String, usize, usize) {
         let buf = app.active_buffer().expect("a text tab");
         let head = app.group().active_tab().unwrap().view.selections.primary().head;
         let line = pos::line_of(&buf.rope, head);
         (buf.name(), line, head.0 - pos::line_start(&buf.rope, line).0)
     }
 
-    fn at(name: &str, line: usize) -> (String, usize, usize) {
+    pub(super) fn at(name: &str, line: usize) -> (String, usize, usize) {
         (name.to_string(), line, 0)
     }
 
@@ -3439,14 +3439,14 @@ mod back_forward {
     }
 
     /// Ctrl+G, the 1-based line, Enter.
-    fn go_to_line(app: &mut App, line: usize) {
+    pub(super) fn go_to_line(app: &mut App, line: usize) {
         app.press(K::Char('g'), M::CONTROL);
         app.type_text(&line.to_string());
         app.press(K::Enter, M::NONE);
     }
 
     /// Cmd+P, the file's name, Enter once it's listed; waits until it's the active tab.
-    async fn quick_open(app: &mut App, name: &str) {
+    pub(super) async fn quick_open(app: &mut App, name: &str) {
         app.press(K::Char('p'), cmd());
         app.type_text(name);
         let listed = app
@@ -7153,6 +7153,52 @@ mod term_mouse {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn back_and_forward_drags_and_releases_do_not_reach_the_program() {
+        let (_d, root, state) = dirs();
+        let mut app = shell_app(&root, &state);
+        app.tasks.shell = "/bin/sh".into();
+        app.test_execute(Command::NewShell);
+        assert!(
+            app.group()
+                .active_shell()
+                .unwrap()
+                .run
+                .write(&echo_mouse(Some(COUNT_TO_200), &[1000, 1002, 1006]))
+        );
+        assert!(
+            app.settle(|a| sgr(a, MouseProtocolMode::ButtonMotion)).await,
+            "the program asked for press / release, motion and SGR:\n{}",
+            screen_text(&app)
+        );
+
+        let term = draw(&mut app, 100, 30);
+        let editor = app.hits.group(app.groups.active).unwrap().editor;
+        drop(term);
+        let (x, y) = (editor.x + 2, editor.y + 1);
+        // The back / forward buttons are jed's (navigation), so their drags and releases are
+        // consumed and never forwarded to the program as a phantom button-8 / 9 report.
+        app.mouse(MouseEventKind::Drag(MouseButton::Back), x, y);
+        app.mouse(MouseEventKind::Up(MouseButton::Back), x, y);
+        app.mouse(MouseEventKind::Drag(MouseButton::Forward), x, y);
+        app.mouse(MouseEventKind::Up(MouseButton::Forward), x, y);
+        // A left click still reaches the program: its press echo is the sentinel that the PTY has
+        // drained everything written before it, so any back / forward byte would already show.
+        click(&mut app, x, y);
+        assert!(
+            app.settle(|a| screen_text(a).contains("^[[<0;3;2M")).await,
+            "the sentinel click echoed:\n{}",
+            screen_text(&app)
+        );
+        let text = screen_text(&app);
+        for code in ["128", "129", "160", "161"] {
+            assert!(
+                !text.contains(&format!("^[[<{code}")),
+                "the back / forward button report {code} reached the program:\n{text}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn task_mouse_clicks_and_motion_reach_its_program() {
         let dir = tempfile::tempdir().unwrap();
         let (root, state) = crate::milestone12_tests::dirs(&dir);
@@ -7259,5 +7305,97 @@ mod term_mouse {
 
     fn task_text(app: &App, id: RunId) -> String {
         app.tasks.get(id).unwrap().screen().screen().contents()
+    }
+}
+
+/// The mouse's back / forward buttons run `nav.back` / `nav.forward`. The byte → button parse
+/// lives in the `vendor/crossterm` fork; this covers jed's side, whatever the pointer is over.
+mod mouse_back_forward {
+    use crossterm::event::{MouseButton, MouseEventKind};
+
+    use crate::app::App;
+
+    use super::back_forward::{at, go_to_line, numbered, open_app, place, project, quick_open};
+
+    fn back(app: &mut App) {
+        app.mouse(MouseEventKind::Down(MouseButton::Back), 0, 0);
+    }
+
+    fn forward(app: &mut App) {
+        app.mouse(MouseEventKind::Down(MouseButton::Forward), 0, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mouse_back_button_goes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(
+            dir.path(),
+            &[("a.txt", numbered("a", 100)), ("b.txt", numbered("b", 100))],
+        );
+        let mut app = open_app(&root, "a.txt");
+        go_to_line(&mut app, 5);
+        quick_open(&mut app, "b.txt").await;
+        assert_eq!(place(&app), at("b.txt", 0));
+
+        back(&mut app);
+
+        assert_eq!(place(&app), at("a.txt", 4));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mouse_forward_button_goes_forward() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(
+            dir.path(),
+            &[("a.txt", numbered("a", 100)), ("b.txt", numbered("b", 100))],
+        );
+        let mut app = open_app(&root, "a.txt");
+        go_to_line(&mut app, 5);
+        quick_open(&mut app, "b.txt").await;
+        assert_eq!(place(&app), at("b.txt", 0));
+        back(&mut app);
+        assert_eq!(place(&app), at("a.txt", 4));
+
+        forward(&mut app);
+
+        assert_eq!(place(&app), at("b.txt", 0));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mouse_back_button_does_nothing_with_no_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(dir.path(), &[("a.txt", numbered("a", 20))]);
+        let mut app = open_app(&root, "a.txt");
+        let before = place(&app);
+        assert_eq!(before, at("a.txt", 0));
+
+        back(&mut app);
+
+        assert_eq!(place(&app), before);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mouse_back_forward_drag_and_release_do_not_navigate() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(
+            dir.path(),
+            &[("a.txt", numbered("a", 100)), ("b.txt", numbered("b", 100))],
+        );
+        let mut app = open_app(&root, "a.txt");
+        go_to_line(&mut app, 5);
+        quick_open(&mut app, "b.txt").await;
+        assert_eq!(place(&app), at("b.txt", 0));
+
+        // Only the press navigates; the fork also reports back / forward as drags (while held)
+        // and releases, which must not.
+        app.mouse(MouseEventKind::Drag(MouseButton::Back), 0, 0);
+        app.mouse(MouseEventKind::Up(MouseButton::Back), 0, 0);
+        app.mouse(MouseEventKind::Drag(MouseButton::Forward), 0, 0);
+        app.mouse(MouseEventKind::Up(MouseButton::Forward), 0, 0);
+        assert_eq!(place(&app), at("b.txt", 0), "drag / release don't navigate");
+
+        // The history is untouched by the drag / release, so a real press still goes back.
+        back(&mut app);
+        assert_eq!(place(&app), at("a.txt", 4));
     }
 }
