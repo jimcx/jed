@@ -118,6 +118,10 @@
 //!   it asked for them (clicks, drags, moves and the wheel as SGR bytes, the run's own cells), a
 //!   left click still focusing it; with the mouse off nothing reaches the program and the wheel
 //!   scrolls the scrollback, as it does while the view is scrolled back.
+//! - `copy_paths`: "File: Copy Path of Active File" and "File: Copy Relative Path of Active File"
+//!   (palette commands) put the active file's absolute path, and its path relative to the
+//!   workspace root (the absolute path again when the file isn't inside it), on the clipboard; the
+//!   active file is a text or diff tab's, and there's nothing for a tab without one.
 
 mod render_whitespace {
     use std::fs;
@@ -7397,5 +7401,101 @@ mod mouse_back_forward {
         // The history is untouched by the drag / release, so a real press still goes back.
         back(&mut app);
         assert_eq!(place(&app), at("a.txt", 4));
+    }
+}
+
+/// "File: Copy Path of Active File" and "File: Copy Relative Path of Active File" copy the active
+/// file's absolute and workspace-relative path to the clipboard.
+mod copy_paths {
+    use std::fs;
+    use std::path::Path;
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+
+    use crate::app::{App, InitialFile};
+    use crate::buffer::Buffer;
+    use crate::workspace::trust::TrustStore;
+    use crate::workspace::{self, Workspace};
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    /// Runs the palette command titled `title` (Cmd+Shift+P).
+    fn palette_command(app: &mut App, title: &str) {
+        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.type_text(title);
+        let p = app.palette.as_ref().unwrap();
+        assert_eq!(p.rows[p.selected].label, title);
+        app.press(K::Enter, M::NONE);
+        assert!(app.palette.is_none());
+    }
+
+    /// An app on workspace `root` with `file` open.
+    fn open_app(root: &Path, file: &Path) -> App {
+        let initial = InitialFile {
+            buffer: Buffer::open(file).unwrap(),
+            goto: None,
+        };
+        let trust = TrustStore::load(root.join("trust.toml"));
+        let mut app = App::new(Workspace::load(root.to_path_buf()), trust, Some(initial), true);
+        app.test_start();
+        app
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn copy_path_commands_copy_the_absolute_and_relative_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let root = base.join("proj");
+        fs::create_dir_all(root.join("src")).unwrap();
+        let file = root.join("src").join("a.rs");
+        fs::write(&file, "fn main() {}\n").unwrap();
+
+        let mut app = open_app(&root, &file);
+
+        // "File: Copy Path of Active File" puts the absolute path on the clipboard.
+        palette_command(&mut app, "File: Copy Path of Active File");
+        assert_eq!(app.clipboard.read().unwrap(), file.display().to_string());
+
+        // "File: Copy Relative Path of Active File" puts the path relative to the workspace root.
+        palette_command(&mut app, "File: Copy Relative Path of Active File");
+        assert_eq!(app.clipboard.read().unwrap(), "src/a.rs");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn copy_path_uses_the_active_diff_tabs_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let root = base.join("proj");
+        fs::create_dir_all(root.join("src")).unwrap();
+        let file = root.join("src").join("a.rs");
+        fs::write(&file, "fn main() {}\n").unwrap();
+
+        let mut app = open_app(&root, &file);
+        app.open_diff(file.clone(), crate::diff_view::Pair::SAVED);
+        assert!(app.group().active_diff().is_some());
+
+        palette_command(&mut app, "File: Copy Path of Active File");
+        assert_eq!(app.clipboard.read().unwrap(), file.display().to_string());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn copy_relative_path_falls_back_to_absolute_outside_the_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let root = base.join("proj");
+        fs::create_dir_all(&root).unwrap();
+        let outside = base.join("outside.txt");
+        fs::write(&outside, "x\n").unwrap();
+
+        let mut app = open_app(&root, &outside);
+
+        palette_command(&mut app, "File: Copy Relative Path of Active File");
+        assert_eq!(app.clipboard.read().unwrap(), outside.display().to_string());
     }
 }

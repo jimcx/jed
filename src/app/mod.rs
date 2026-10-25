@@ -60,7 +60,7 @@ use tokio::sync::mpsc;
 
 use crate::buffer::file::LoadError;
 use crate::buffer::{Buffer, BufferId, Buffers};
-use crate::clipboard::{self, Clipboard};
+use crate::clipboard::{self, Clipboard, Copied};
 use crate::command::Command;
 use crate::config::keymap::{Context, Keymap, Platform};
 use crate::edit::{self, RenderWhitespace, Settings};
@@ -1239,6 +1239,8 @@ impl App {
             Command::Copy => self.copy(false),
             Command::Cut => self.copy(true),
             Command::Paste => self.paste_clipboard(),
+            Command::CopyPath => self.copy_path(false),
+            Command::CopyRelativePath => self.copy_path(true),
             Command::ShowCommands => self.open_palette(Picker::QuickOpen, ">"),
             Command::CheatSheet => self.toggle_cheat_sheet(),
             Command::KeyboardShortcuts => self.toggle_keyboard_shortcuts(),
@@ -1362,6 +1364,29 @@ impl App {
             edit::cut(buf, view);
         }
         self.clipboard.write(copied);
+    }
+
+    /// Copies the active tab's file path to the clipboard: absolute, or relative to the workspace
+    /// root (the absolute path when the file isn't inside it). Nothing when there's no file (a
+    /// commit, log or shell tab, or an untitled buffer).
+    fn copy_path(&mut self, relative: bool) {
+        let Some(path) = self.active_path() else {
+            return;
+        };
+        let text = if relative {
+            path.strip_prefix(&self.workspace.root)
+                .unwrap_or(&path)
+                .display()
+                .to_string()
+        } else {
+            path.display().to_string()
+        };
+        self.clipboard.write(Copied {
+            text: text.clone(),
+            whole_line: false,
+            pieces: Vec::new(),
+        });
+        self.notify(Level::Info, format!("Copied path: {text}"));
     }
 
     fn paste_clipboard(&mut self) {

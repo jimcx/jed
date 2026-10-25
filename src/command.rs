@@ -114,6 +114,11 @@ pub enum Command {
     SaveAs,
     /// "File: Save All": every dirty buffer; untitled ones ask for a path one at a time.
     SaveAll,
+    /// "File: Copy Path of Active File": the active file's absolute path to the clipboard.
+    CopyPath,
+    /// "File: Copy Relative Path of Active File": the active file's path relative to the workspace
+    /// root (the absolute path when it isn't inside it) to the clipboard.
+    CopyRelativePath,
     Quit,
     CloseTab,
     NextTab,
@@ -866,6 +871,8 @@ impl Command {
             Command::Save,
             Command::SaveAs,
             Command::SaveAll,
+            Command::CopyPath,
+            Command::CopyRelativePath,
             Command::Quit,
             Command::CloseTab,
             Command::NextTab,
@@ -1028,6 +1035,8 @@ impl Command {
             Command::Save => "file.save".into(),
             Command::SaveAs => "file.saveAs".into(),
             Command::SaveAll => "file.saveAll".into(),
+            Command::CopyPath => "file.copyPath".into(),
+            Command::CopyRelativePath => "file.copyRelativePath".into(),
             Command::Quit => "app.quit".into(),
             Command::CloseTab => "tab.close".into(),
             Command::NextTab => "tab.next".into(),
@@ -1388,6 +1397,8 @@ impl Command {
             Command::Save => "File: Save",
             Command::SaveAs => "File: Save As…",
             Command::SaveAll => "File: Save All",
+            Command::CopyPath => "File: Copy Path of Active File",
+            Command::CopyRelativePath => "File: Copy Relative Path of Active File",
             Command::Quit => "File: Quit",
             Command::CloseTab => "View: Close Editor",
             Command::NextTab => "View: Open Next Editor",
@@ -1689,6 +1700,8 @@ mod tests {
             Command::Save => 15,
             Command::SaveAs => 117,
             Command::SaveAll => 118,
+            Command::CopyPath => 126,
+            Command::CopyRelativePath => 127,
             Command::Quit => 16,
             Command::CloseTab => 17,
             Command::NextTab => 18,
@@ -1800,7 +1813,7 @@ mod tests {
             Command::ConvertIndentationToTabs => 112,
         }
     }
-    const VARIANTS: u8 = 126;
+    const VARIANTS: u8 = 128;
 
     #[test]
     fn all_lists_every_variant() {
