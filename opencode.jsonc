@@ -17,7 +17,7 @@
     // Orchestrator for `.opencode/commands/task.md`. It plans, judges and
     // commits; the three subagents below do the work.
     "task": {
-      "description": "Builds one PLAN.md task with subagents: implement, validate, mutation-test, commit",
+      "description": "Builds one PLAN.md task in a worktree with subagents: implement, validate, mutation-test, commit, then rebase/ff-merge back to main",
       "mode": "primary",
       "permissions": [
         { "action": "subagent", "resource": "*", "effect": "deny" },
