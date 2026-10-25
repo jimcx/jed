@@ -90,6 +90,7 @@ keybind = cmd+p=unbind
 keybind = cmd+j=unbind
 keybind = cmd+shift+m=unbind
 keybind = cmd+shift+u=unbind
+keybind = cmd+alt+z=unbind
 
 # --- jed: Option acts as Alt ---
 macos-option-as-alt = true

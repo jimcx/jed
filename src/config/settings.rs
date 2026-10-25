@@ -12,6 +12,7 @@
 //! | `match_brackets`   | bool | true      | Highlight the bracket next to the cursor and its partner       |
 //! | `quick_suggestions`| bool | true      | Typing a word asks the language server for completions         |
 //! | `render_whitespace`| str  | `"all"`   | Draw spaces `·` / tabs `→`: `none` `boundary` `selection` `trailing` `all` |
+//! | `word_wrap`       | str  | `"off"`   | Wrap long lines at the editor's width: `off` or `on`             |
 //! | `cursor_style`     | str  | `"line"`  | The cursor's shape: `line` (a bar), `block` or `underline`     |
 //! | `cursor_blinking`  | bool | true      | The cursor blinks                                              |
 //! | `hex_bytes_per_line` | int | 32       | A hex tab's widest row: a power of two from 1 to 64            |
@@ -35,7 +36,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::edit::{CursorStyle, RenderWhitespace, Settings};
+use crate::edit::{CursorStyle, RenderWhitespace, Settings, WordWrap};
 use crate::workspace::config::LspServer;
 
 pub const FILE_NAME: &str = "settings.toml";
@@ -62,6 +63,8 @@ pub struct SettingsOverrides {
     pub quick_suggestions: Option<bool>,
     /// Which whitespace is drawn as `·` / `→` (VS Code's `editor.renderWhitespace`).
     pub render_whitespace: Option<RenderWhitespace>,
+    /// Whether long lines wrap at the editor's width (VS Code's `editor.wordWrap`).
+    pub word_wrap: Option<WordWrap>,
     /// The cursor's shape (VS Code's `editor.cursorStyle`; `line` is its default bar).
     pub cursor_style: Option<CursorStyle>,
     /// The cursor blinks (VS Code's `editor.cursorBlinking`, here only on or off).
@@ -118,6 +121,9 @@ impl SettingsOverrides {
         }
         if let Some(mode) = self.render_whitespace {
             s.render_whitespace = mode;
+        }
+        if let Some(mode) = self.word_wrap {
+            s.word_wrap = mode;
         }
         if let Some(style) = self.cursor_style {
             s.cursor_style = style;
@@ -285,6 +291,7 @@ pub const TEMPLATE: &str = "\
 # match_brackets = true
 # quick_suggestions = true
 # render_whitespace = \"all\"  # none, boundary, selection, trailing or all
+# word_wrap = \"off\"  # off or on
 # cursor_style = \"line\"  # line, block or underline
 # cursor_blinking = true
 # rulers = []  # columns that get a vertical line, e.g. [80, 120]; unset, git commit messages get 72 (set, even [], replaces it)
@@ -343,7 +350,7 @@ mod tests {
              detect_indentation = false\nauto_indent = false\nmatch_brackets = false\nquick_suggestions = false\n\
              render_whitespace = \"trailing\"\n\
              cursor_style = \"block\"\ncursor_blinking = false\nhex_bytes_per_line = 16\nrulers = [80, 100]\n\
-             scrollback = 50\n",
+             scrollback = 50\nword_wrap = \"on\"\n",
         );
         assert_eq!(
             o,
@@ -362,6 +369,7 @@ mod tests {
                 hex_bytes_per_line: Some(16),
                 rulers: Some(vec![80, 100]),
                 scrollback: Some(50),
+                word_wrap: Some(WordWrap::On),
             }
         );
     }
@@ -385,6 +393,22 @@ mod tests {
         assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
         assert!(u.errors[0].contains("`render_whitespace`"), "{:?}", u.errors);
         assert_eq!(parse("[settings]\nrender_whitespace = true\n").errors.len(), 1);
+    }
+
+    #[test]
+    fn word_wrap_parses_each_mode_and_reports_a_bad_value() {
+        for (text, mode) in [("off", WordWrap::Off), ("on", WordWrap::On)] {
+            let o = set(&format!("[settings]\nword_wrap = \"{text}\"\n"));
+            assert_eq!(o.word_wrap, Some(mode));
+        }
+        assert_eq!(Settings::default().word_wrap, WordWrap::Off);
+        assert_eq!(WordWrap::default(), WordWrap::Off, "the enum's #[default]");
+        let u = parse("[settings]\nword_wrap = \"bounded\"\ntab_width = 2\n");
+        assert_eq!(u.overrides.word_wrap, None);
+        assert_eq!(u.overrides.tab_width, Some(2), "the other key still applies");
+        assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+        assert!(u.errors[0].contains("`word_wrap`"), "{:?}", u.errors);
+        assert_eq!(parse("[settings]\nword_wrap = true\n").errors.len(), 1);
     }
 
     #[test]
@@ -600,6 +624,7 @@ mod tests {
             hex_bytes_per_line: Some(1),
             rulers: Some(Vec::new()),
             scrollback: Some(5_000),
+            word_wrap: Some(WordWrap::Off),
         };
         let fields = toml::Table::try_from(&every).unwrap();
         assert_eq!(
@@ -640,6 +665,7 @@ mod tests {
             )
         );
         assert!(parse(TEMPLATE).errors.is_empty());
+        assert_eq!(s.word_wrap, d.word_wrap);
     }
 
     #[test]

@@ -60,6 +60,7 @@ local release = {
   { 'p', 'CMD|SHIFT' }, { 'p', 'CMD' },
   { 'j', 'CMD' }, { 'm', 'CMD|SHIFT' },
   { 'u', 'CMD|SHIFT' },
+  { 'z', 'CMD|ALT' },
 }
 config.keys = config.keys or {}
 for _, k in ipairs(release) do

@@ -114,6 +114,8 @@ mod shell_integration;
 #[cfg(test)]
 mod shell_tests;
 mod shift;
+#[cfg(test)]
+mod soft_wrap_tests;
 mod syntax;
 #[cfg(test)]
 mod syntax_plugins_tests;
@@ -134,6 +136,7 @@ mod view;
 mod watcher;
 mod workspace;
 mod workspace_search;
+mod wrap;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

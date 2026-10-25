@@ -48,6 +48,9 @@ pub struct Settings {
     /// `[settings] render_whitespace`. "View: Toggle Render Whitespace" overrides it for the
     /// session (`App::render_whitespace`).
     pub render_whitespace: RenderWhitespace,
+    /// Whether lines wider than the editor wrap onto screen rows (`wrap`): `[settings]
+    /// word_wrap`. "View: Toggle Word Wrap" overrides it for the session (`App::word_wrap`).
+    pub word_wrap: WordWrap,
     /// The terminal cursor's shape (DECSCUSR, sent by `terminal::enter` and again when it
     /// changes) and secondary cursors' look (`ui::editor`): `[settings] cursor_style`.
     pub cursor_style: CursorStyle,
@@ -76,6 +79,18 @@ pub enum CursorStyle {
     Line,
     Block,
     Underline,
+}
+
+/// VS Code's `editor.wordWrap`, whether long lines wrap at the editor's width. Only `off` and
+/// `on` (VS Code's `wordWrapColumn` / `bounded` have no setting here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WordWrap {
+    /// No wrapping: long lines scroll sideways as before.
+    #[default]
+    Off,
+    /// Long lines wrap onto screen rows at the editor's width.
+    On,
 }
 
 /// VS Code's `editor.renderWhitespace`: which whitespace the editor draws visibly. Only U+0020
@@ -111,6 +126,7 @@ impl Default for Settings {
             match_brackets: true,
             quick_suggestions: true,
             render_whitespace: RenderWhitespace::All,
+            word_wrap: WordWrap::Off,
             cursor_style: CursorStyle::Line,
             cursor_blinking: true,
             hex_bytes_per_line: 32,

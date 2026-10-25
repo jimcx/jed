@@ -264,6 +264,9 @@ pub enum Command {
     /// "View: Toggle Render Whitespace": whitespace drawn as `·` / `→` off, or back to the
     /// `render_whitespace` setting (`all` when that is `none`); for the session only.
     ToggleRenderWhitespace,
+    /// "View: Toggle Word Wrap": long lines wrap at the editor's width, or back to the
+    /// `word_wrap` setting; for the session only.
+    ToggleWordWrap,
     /// "Indent Using Spaces": a picker of sizes 1–8 (the current one marked); picking one makes
     /// the active buffer indent with that many spaces (`Buffer::indentation`, every view of it).
     IndentUsingSpaces,
@@ -949,6 +952,7 @@ impl Command {
         all.extend(ShellCommand::ALL.map(Command::Shell));
         all.push(Command::OpenRecentWorkspace);
         all.push(Command::ToggleRenderWhitespace);
+        all.push(Command::ToggleWordWrap);
         all.extend([
             Command::IndentUsingSpaces,
             Command::IndentUsingTabs,
@@ -1275,6 +1279,7 @@ impl Command {
             Command::CloseTask => "task.close".into(),
             Command::OpenRecentWorkspace => "workspace.openRecent".into(),
             Command::ToggleRenderWhitespace => "view.toggleRenderWhitespace".into(),
+            Command::ToggleWordWrap => "view.toggleWordWrap".into(),
             Command::IndentUsingSpaces => "editor.indentUsingSpaces".into(),
             Command::IndentUsingTabs => "editor.indentUsingTabs".into(),
             Command::ChangeTabDisplaySize => "editor.changeTabDisplaySize".into(),
@@ -1601,6 +1606,7 @@ impl Command {
             Command::CloseTask => "Tasks: Close Task Tab",
             Command::OpenRecentWorkspace => "Workspaces: Open Recent Workspace",
             Command::ToggleRenderWhitespace => "View: Toggle Render Whitespace",
+            Command::ToggleWordWrap => "View: Toggle Word Wrap",
             Command::IndentUsingSpaces => "Indent Using Spaces",
             Command::IndentUsingTabs => "Indent Using Tabs",
             Command::ChangeTabDisplaySize => "Change Tab Display Size",
@@ -1811,9 +1817,10 @@ mod tests {
             Command::DetectIndentation => 110,
             Command::ConvertIndentationToSpaces => 111,
             Command::ConvertIndentationToTabs => 112,
+            Command::ToggleWordWrap => 128,
         }
     }
-    const VARIANTS: u8 = 128;
+    const VARIANTS: u8 = 129;
 
     #[test]
     fn all_lists_every_variant() {

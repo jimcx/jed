@@ -763,6 +763,8 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Enter, alt, Command::Find(F::SelectAllMatches)),
     ];
     editor.extend(find_keys);
+    // VS Code's `editor.action.toggleWordWrap`: Alt+Z, Cmd+Alt+Z on macOS.
+    editor.push((KeyCode::Char('z'), toggle, Command::ToggleWordWrap));
     if mac {
         editor.push((KeyCode::Backspace, cmd, Command::DeleteToLineStart));
         // macOS's Emacs-style keys, as VS Code binds them on macOS (after Home / End / arrows /

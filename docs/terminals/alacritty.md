@@ -94,6 +94,7 @@ bindings = [
   { key = "J", mods = "Command", action = "ReceiveChar" },
   { key = "M", mods = "Command|Shift", action = "ReceiveChar" },
   { key = "U", mods = "Command|Shift", action = "ReceiveChar" },
+  { key = "Z", mods = "Command|Alt", action = "ReceiveChar" },
 ]
 ```
 

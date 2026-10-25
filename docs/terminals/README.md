@@ -99,6 +99,7 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+j` | Toggle the bottom panel (Problems) | everywhere |
 | `cmd+shift+m` | Toggle Problems (show and focus the list, or hide the panel) | everywhere |
 | `cmd+shift+u` | Show the Tools view (VS Code's Output) | everywhere |
+| `cmd+alt+z` | Toggle word wrap | editor |
 
 **Mouse with modifiers.** Alt+Click adds or removes a cursor and Shift+Alt+drag makes a box selection. Most terminals keep Shift+drag for their own text selection while a program uses the mouse (kitty `terminal_select_modifiers`, WezTerm `bypass_mouse_reporting_modifiers`), and some use Alt or Cmd+Alt with the mouse for rectangle selection, so these may not reach jed. The keyboard box select (Cmd+Shift+Alt+arrows) always works.
 

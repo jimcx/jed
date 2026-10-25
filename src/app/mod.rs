@@ -64,7 +64,7 @@ use crate::clipboard::{self, Clipboard, Copied};
 use crate::command::Command;
 use crate::config::keymap::{Context, Keymap, Platform};
 use crate::config::settings::UserSettings;
-use crate::edit::{self, RenderWhitespace, Settings};
+use crate::edit::{self, RenderWhitespace, Settings, WordWrap};
 use crate::explorer::{self, Explorer};
 use crate::find::{Field, FindWidget};
 use crate::group::{Group, Groups};
@@ -152,6 +152,9 @@ pub struct UiState {
     /// "View: Toggle Render Whitespace" flipped the `render_whitespace` setting for this session
     /// (`App::render_whitespace`). Never written to a settings file; a `.workspace` reload keeps it.
     pub whitespace_toggled: bool,
+    /// "View: Toggle Word Wrap" flipped the `word_wrap` setting for this session
+    /// (`App::word_wrap`). Never written to a settings file; a `.workspace` reload keeps it.
+    pub word_wrap_toggled: bool,
     /// The scroll bar whose thumb is under the pointer (drawn in its hover colour).
     pub scrollbar_hover: Option<crate::layout::ScrollTarget>,
 }
@@ -577,6 +580,7 @@ impl App {
                 panel_height: PANEL_HEIGHT,
                 panel_tab: PanelTab::Problems,
                 whitespace_toggled: false,
+                word_wrap_toggled: false,
                 scrollbar_hover: None,
             },
             hits: HitMap::default(),
@@ -1042,6 +1046,17 @@ impl App {
         }
     }
 
+    /// Whether long lines wrap: the `word_wrap` setting, or — after "View: Toggle Word Wrap" —
+    /// the other mode for this session.
+    #[cfg_attr(not(test), allow(dead_code))] // drawing and movement read it in soft_wrap-b..e
+    pub fn word_wrap(&self) -> WordWrap {
+        if (self.settings.word_wrap == WordWrap::On) != self.ui.word_wrap_toggled {
+            WordWrap::On
+        } else {
+            WordWrap::Off
+        }
+    }
+
     pub fn active_buffer(&self) -> Option<&Buffer> {
         self.buffers.get(self.group().active_tab()?.buffer)
     }
@@ -1376,6 +1391,7 @@ impl App {
             Command::InstallShellIntegration => self.install_shell_integration(),
             Command::OpenRecentWorkspace => self.show_recent(),
             Command::ToggleRenderWhitespace => self.ui.whitespace_toggled = !self.ui.whitespace_toggled,
+            Command::ToggleWordWrap => self.ui.word_wrap_toggled = !self.ui.word_wrap_toggled,
             Command::IndentUsingSpaces
             | Command::IndentUsingTabs
             | Command::ChangeTabDisplaySize

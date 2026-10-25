@@ -93,6 +93,7 @@ map --when-focus-on var:jed cmd+p
 map --when-focus-on var:jed cmd+j
 map --when-focus-on var:jed cmd+shift+m
 map --when-focus-on var:jed cmd+shift+u
+map --when-focus-on var:jed cmd+alt+z
 
 # --- jed: Option acts as Alt ---
 macos_option_as_alt both
