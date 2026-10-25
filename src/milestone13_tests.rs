@@ -554,8 +554,6 @@ fn backup_file(state: &Path, root: &Path, name: &str) -> PathBuf {
     backup::file(state, root, &root.join(name))
 }
 
-// FLAKE: 2026-10-24, the "Restored unsaved changes to a.txt, b.txt" message text was
-// absent on one run (a full `scripts/check`) then present on re-run — see the dump below.
 #[tokio::test(flavor = "multi_thread")]
 async fn milestone_13_a_killed_jed_offers_its_unsaved_changes_back() {
     let dir = tempfile::tempdir().unwrap();
@@ -608,10 +606,12 @@ async fn milestone_13_a_killed_jed_offers_its_unsaved_changes_back() {
     assert_eq!(text_of(&app, &root, "b.txt"), "Bbee\n");
     assert!(buf_of(&app, &root, "a.txt").unwrap().is_dirty());
     assert_eq!(app.group().tabs.len(), 2, "b.txt opened in a tab");
-    let msg = app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default();
     assert!(
-        msg.contains("Restored unsaved changes to a.txt, b.txt"),
-        "FLAKE milestone_13_a_killed_jed_offers_its_unsaved_changes_back: message was {msg:?}"
+        app.message
+            .as_ref()
+            .unwrap()
+            .text
+            .contains("Restored unsaved changes to a.txt, b.txt")
     );
     // Nothing written.
     assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "one\ntwo\nthree\n");

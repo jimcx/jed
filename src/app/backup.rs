@@ -286,11 +286,14 @@ impl App {
         if self.backups.restoring > 0 {
             return;
         }
-        let restored = std::mem::take(&mut self.backups.restored);
-        let changed = std::mem::take(&mut self.backups.changed_on_disk);
+        let mut restored = std::mem::take(&mut self.backups.restored);
+        let mut changed = std::mem::take(&mut self.backups.changed_on_disk);
         if restored.is_empty() {
             return;
         }
+        // Restores end in whatever order their jobs land: list the names the same way every time.
+        restored.sort();
+        changed.sort();
         let mut text = format!("Restored unsaved changes to {} (not saved)", restored.join(", "));
         if changed.is_empty() {
             self.notify(Level::Info, text);
