@@ -17,12 +17,9 @@ if [ "$(uname)" = Darwin ] && ! command -v cargo >/dev/null 2>&1; then
     export PATH
 fi
 
-# Share one target dir across the main checkout and every task worktree, so a
-# fresh worktree reuses the dependency build instead of recompiling it from
-# scratch. Override by exporting CARGO_TARGET_DIR before calling scripts/check.
-CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/jed/target}"
-export CARGO_TARGET_DIR
-
+# No shared CARGO_TARGET_DIR: each checkout/worktree keeps its own `target/`, so
+# two tasks building at once can't clobber each other's binaries. Export
+# CARGO_TARGET_DIR yourself to point the (non-concurrent) budget runs elsewhere.
 out=$(mktemp)
 trap 'rm -f "$out"' EXIT
 
