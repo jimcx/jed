@@ -1048,7 +1048,6 @@ impl App {
 
     /// Whether long lines wrap: the `word_wrap` setting, or — after "View: Toggle Word Wrap" —
     /// the other mode for this session.
-    #[cfg_attr(not(test), allow(dead_code))] // drawing and movement read it in soft_wrap-b..e
     pub fn word_wrap(&self) -> WordWrap {
         if (self.settings.word_wrap == WordWrap::On) != self.ui.word_wrap_toggled {
             WordWrap::On
@@ -1241,9 +1240,10 @@ impl App {
                     }
                     if gid == origin && i == origin_tab {
                         // The editing view: keep its viewport anchor current.
+                        tab.view.wrap.map(&changes, &buf.rope, buf.revision());
                         tab.view.set_top_line(&buf.rope, tab.view.top_line());
                     } else {
-                        tab.view.map_through(&changes, &buf.rope);
+                        tab.view.map_through(&changes, &buf.rope, buf.revision());
                     }
                 }
             }

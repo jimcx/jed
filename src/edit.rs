@@ -1181,7 +1181,7 @@ g\n";
                     assert_eq!(got, cursors, "round {round} step {step} op {op}: cursors");
                 }
                 text = b.rope.to_string();
-                other.map_through(&b.take_applied(), &b.rope);
+                other.map_through(&b.take_applied(), &b.rope, b.revision());
                 for x in other.selections.iter() {
                     for p in [x.anchor.0, x.head.0] {
                         assert!(text.is_char_boundary(p), "round {round} step {step}: other view at {p}");
@@ -1195,7 +1195,7 @@ g\n";
             let mut undone = vec![b.rope.to_string()];
             while b.undo().is_some() {
                 undone.push(b.rope.to_string());
-                other.map_through(&b.take_applied(), &b.rope);
+                other.map_through(&b.take_applied(), &b.rope, b.revision());
             }
             assert_eq!(undone.last(), snapshots.first(), "round {round}: undo to the original");
             let mut rest = snapshots.iter().rev();
@@ -1209,7 +1209,7 @@ g\n";
             let mut redone = vec![b.rope.to_string()];
             while b.redo().is_some() {
                 redone.push(b.rope.to_string());
-                other.map_through(&b.take_applied(), &b.rope);
+                other.map_through(&b.take_applied(), &b.rope, b.revision());
             }
             undone.reverse();
             assert_eq!(redone, undone, "round {round}: redo retraces undo");

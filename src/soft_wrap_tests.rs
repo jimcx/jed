@@ -2,27 +2,45 @@
 //! Wrap" (`view.toggleWordWrap`, Alt+Z; Cmd+Alt+Z on macOS), which flips the effective mode for
 //! the session without writing it to a settings file.
 //!
-//! Drawing, scrolling and movement on wrapped rows come in the task's later subtasks. The
+//! soft_wrap-b: the editor draws a wrapped line on screen rows — the line number only on its
+//! first row, continuation rows at its indentation, the cursor on the row it lands on, the
+//! selection / find match / squiggle on the rows their bytes are drawn on — and wrapping off
+//! draws exactly as it did before.
+//!
+//! Scrolling, movement and the mouse on wrapped rows come in the task's later subtasks. The
 //! "Done when" parts covered here: the setting is read from `settings.toml` and `.workspace`,
-//! defaults to `off`, and the toggle flips `App::word_wrap()` and keeps doing so across a
-//! `.workspace` reload.
+//! defaults to `off`, the toggle flips `App::word_wrap()` and keeps doing so across a
+//! `.workspace` reload, and the wrapped rows are drawn as the plan says.
 
 use std::fs;
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::layout::Position;
+use ratatui::style::Modifier;
 
 use crate::app::{App, InitialFile};
 use crate::buffer::Buffer;
+use crate::buffer::pos::ByteIdx;
 use crate::command::Command;
 use crate::config::settings;
+use crate::diagnostics::{Diagnostic, Mark, Severity};
 use crate::edit::WordWrap;
+use crate::lsp::ServerId;
+use crate::selection::{Selection, Selections};
 use crate::workspace::Workspace;
 use crate::workspace::trust::TrustStore;
 
 /// A workspace with `a.txt` open, a user `settings.toml` holding `user` and a `.workspace`
 /// holding `workspace` (both as `[settings]` bodies, empty for none).
 fn open(dir: &tempfile::TempDir, user: &str, workspace: &str) -> (App, PathBuf, PathBuf) {
+    open_text(dir, user, workspace, "one two three\nfour\n")
+}
+
+/// `open`, with `a.txt` holding `text`.
+fn open_text(dir: &tempfile::TempDir, user: &str, workspace: &str, text: &str) -> (App, PathBuf, PathBuf) {
     let base = crate::workspace::normalize(dir.path());
     let config_dir = base.join("config");
     fs::create_dir_all(&config_dir).unwrap();
@@ -34,7 +52,7 @@ fn open(dir: &tempfile::TempDir, user: &str, workspace: &str) -> (App, PathBuf, 
     if !workspace.is_empty() {
         fs::write(root.join(".workspace"), format!("[settings]\n{workspace}")).unwrap();
     }
-    fs::write(root.join("a.txt"), "one two three\nfour\n").unwrap();
+    fs::write(root.join("a.txt"), text).unwrap();
     let loaded = settings::load(&config_dir.join(settings::FILE_NAME));
     let ws = Workspace::load(root.clone()).with_user_settings(loaded.overrides);
     let trust = TrustStore::load(base.join("trust.toml"));
@@ -47,6 +65,42 @@ fn open(dir: &tempfile::TempDir, user: &str, workspace: &str) -> (App, PathBuf, 
     app.report_errors(loaded.errors);
     app.test_start();
     (app, root, config_dir)
+}
+
+/// The app with no side panel (the editor takes the terminal's width) and whitespace drawn as
+/// itself, so a drawn row's spaces can be compared.
+fn plain_editor(app: &mut App) {
+    app.ui.side_visible = false;
+    app.test_plain_whitespace();
+}
+
+fn draw(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| crate::ui::render(f, app)).unwrap();
+    term
+}
+
+/// Every drawn row's cells as a string (one char a cell here).
+fn cells(term: &Terminal<TestBackend>) -> Vec<String> {
+    let buf = term.backend().buffer();
+    (0..buf.area.height)
+        .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
+        .collect()
+}
+
+/// Where `needle` is drawn.
+fn find(rows: &[String], needle: &str) -> Vec<(u16, u16)> {
+    let needle: Vec<char> = needle.chars().collect();
+    let mut out = Vec::new();
+    for (y, row) in rows.iter().enumerate() {
+        let chars: Vec<char> = row.chars().collect();
+        for x in 0..=chars.len().saturating_sub(needle.len()) {
+            if chars[x..x + needle.len()] == needle[..] {
+                out.push((x as u16, y as u16));
+            }
+        }
+    }
+    out
 }
 
 /// VS Code's toggle: Alt+Z, Option+Command+Z on macOS.
@@ -106,4 +160,192 @@ async fn soft_wrap_setting_on_is_toggled_off_and_back() {
     assert_eq!(app.word_wrap(), WordWrap::Off);
     app.test_execute(Command::ToggleWordWrap);
     assert_eq!(app.word_wrap(), WordWrap::On);
+}
+
+/// The key that opens the find widget (Cmd+F on macOS, Ctrl+F elsewhere).
+fn cmd() -> KeyModifiers {
+    if cfg!(target_os = "macos") {
+        KeyModifiers::SUPER
+    } else {
+        KeyModifiers::CONTROL
+    }
+}
+
+/// A drawn cell's background (`None` for the terminal's default).
+fn bg(term: &Terminal<TestBackend>, x: u16, y: u16) -> Option<ratatui::style::Color> {
+    term.backend().buffer()[(x, y)].bg.into()
+}
+
+/// A wrapped line's rows: the text on the rows (the continuation at the line's indentation),
+/// the line number on the first row only, and the cursor on the row it lands on.
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_draws_text_on_rows_with_the_cursor_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _, _) = open_text(&dir, "", "", "  abcd efgh ijkl mnop qrst\n");
+    plain_editor(&mut app);
+    app.test_execute(Command::ToggleWordWrap);
+    assert_eq!(app.word_wrap(), WordWrap::On);
+    // The cursor at the line's end lands on its continuation row.
+    app.press(KeyCode::End, KeyModifiers::NONE);
+    let term = draw(&mut app, 30, 8);
+    let screen = cells(&term);
+    let start = find(&screen, "abcd");
+    let continuation = find(&screen, "qrst");
+    assert_eq!(start.len(), 1, "the line's first row: {screen:?}");
+    assert_eq!(continuation.len(), 1, "the line's continuation row: {screen:?}");
+    let ((x0, y0), (x1, y1)) = (start[0], continuation[0]);
+    assert_eq!(
+        (x1, y1),
+        (x0, y0 + 1),
+        "the continuation row starts at the line's two-space indentation"
+    );
+    // The gutter is the five columns left of the text (the line's indentation starts the text).
+    let chars: Vec<char> = screen[y0 as usize].chars().collect();
+    let cont: Vec<char> = screen[y1 as usize].chars().collect();
+    let gutter = (x0 - 2 - 5) as usize;
+    assert_eq!(
+        &chars[gutter..gutter + 5],
+        &[' ', ' ', ' ', '1', ' '],
+        "the line's number is on its first row: {screen:?}"
+    );
+    assert_eq!(
+        &cont[gutter..gutter + 5],
+        &[' '; 5],
+        "the continuation row's gutter is blank"
+    );
+    assert_eq!(
+        term.backend().cursor_position(),
+        Position { x: x1 + 4, y: y1 },
+        "the cursor at the line's end is on its continuation row"
+    );
+}
+
+/// With wrapping off a long line is drawn clipped, as before: two frames off are identical, and
+/// turning wrapping off again brings the same frame back.
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_off_draws_the_long_line_as_before() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _, _) = open_text(&dir, "", "", "  abcd efgh ijkl mnop qrst\n");
+    plain_editor(&mut app);
+    // A frame that measures the line first reserves the sideways bar's row: settle it.
+    draw(&mut app, 30, 8);
+    draw(&mut app, 30, 8);
+    let off = cells(&draw(&mut app, 30, 8));
+    assert!(
+        find(&off, "qrst").is_empty(),
+        "the line is cut at the right edge: {off:?}"
+    );
+
+    app.test_execute(Command::ToggleWordWrap);
+    // While wrapping the line fits the view, so the rest of it is visible on the next row.
+    let on = cells(&draw(&mut app, 30, 8));
+    assert!(
+        !find(&on, "qrst").is_empty(),
+        "wrapping on shows the line's tail: {on:?}"
+    );
+    app.test_execute(Command::ToggleWordWrap);
+    assert_eq!(app.word_wrap(), WordWrap::Off);
+    let back = cells(&draw(&mut app, 30, 8));
+    assert_eq!(back, off, "wrapping off draws exactly as it did");
+}
+
+/// A selection and a squiggle land on the rows their bytes are drawn on.
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_selection_and_squiggle_follow_the_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _, _) = open_text(
+        &dir,
+        "",
+        "",
+        "one\ntwo\nthree\nfour\nfive\n  abcd efgh ijkl mnop qrst\nlast\n",
+    );
+    plain_editor(&mut app);
+    app.test_execute(Command::ToggleWordWrap);
+    let (buf, view) = app.active_mut().unwrap();
+    // "mnop qrst" is selected across the line's two rows; "mnop" has an error squiggle.
+    view.selections = Selections::single(Selection::new(ByteIdx(41), ByteIdx(50)));
+    buf.diagnostics.replace(
+        ServerId::test(1),
+        vec![Mark {
+            start: ByteIdx(41),
+            end: ByteIdx(45),
+            server: ServerId::test(1),
+            diag: std::sync::Arc::new(Diagnostic {
+                severity: Severity::Error,
+                message: "bad".into(),
+                source: None,
+                code: None,
+                raw: serde_json::Value::Null,
+            }),
+        }],
+    );
+    let term = draw(&mut app, 30, 14);
+    let screen = cells(&term);
+    let (xm, ym) = find(&screen, "mnop")[0];
+    let (xq, yq) = find(&screen, "qrst")[0];
+    assert_eq!(yq, ym + 1, "qrst is on the line's continuation row: {screen:?}");
+    assert_eq!(
+        xq,
+        find(&screen, "abcd")[0].0,
+        "the continuation row keeps the indentation"
+    );
+    let selection = app.theme.get("editor.selection").bg;
+    for x in xm..xm + 4 {
+        assert_eq!(bg(&term, x, ym), selection, "the selected 'mnop' is on the first row");
+    }
+    for x in xq..xq + 4 {
+        assert_eq!(
+            bg(&term, x, yq),
+            selection,
+            "the selected 'qrst' is on the continuation row"
+        );
+    }
+    let squiggle = app.theme.get("editorError.foreground").underline_color;
+    for x in xm..xm + 4 {
+        let cell = &term.backend().buffer()[(x, ym)];
+        assert!(
+            cell.modifier.contains(Modifier::UNDERLINED),
+            "the squiggle is under 'mnop'"
+        );
+        assert_eq!(Some(cell.underline_color), squiggle);
+    }
+    assert!(
+        !term.backend().buffer()[(xq, yq)]
+            .modifier
+            .contains(Modifier::UNDERLINED),
+        "the squiggle isn't on the continuation row"
+    );
+}
+
+/// A find match on a continuation row is highlighted there.
+#[tokio::test(flavor = "multi_thread")]
+async fn soft_wrap_find_match_on_a_continuation_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _, _) = open_text(
+        &dir,
+        "",
+        "",
+        "one\ntwo\nthree\nfour\nfive\n  abcd efgh ijkl mnop qrst\nlast\n",
+    );
+    plain_editor(&mut app);
+    app.test_execute(Command::ToggleWordWrap);
+    app.press(KeyCode::Char('f'), cmd());
+    app.type_text("qrst");
+    let term = draw(&mut app, 30, 14);
+    let screen = cells(&term);
+    assert_eq!(
+        find(&screen, "qrst").len(),
+        1,
+        "the match on the continuation row: {screen:?}"
+    );
+    let (x, y) = find(&screen, "qrst")[0];
+    // The find widget's current match is the primary selection, drawn as `editor.findMatch`.
+    let highlight = app.theme.get("editor.findMatch").bg;
+    for i in 0..4 {
+        assert_eq!(
+            bg(&term, x + i, y),
+            highlight,
+            "the match is highlighted on the continuation row"
+        );
+    }
 }

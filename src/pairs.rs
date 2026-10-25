@@ -547,7 +547,7 @@ pub(crate) mod tests {
         let mut other = View::new();
         other.selections = Selections::single(Selection::cursor(ByteIdx(b.rope.len())));
         edit::insert_char(&mut b, &mut other, 'z', &Settings::default());
-        v.map_through(&b.take_applied(), &b.rope);
+        v.map_through(&b.take_applied(), &b.rope, b.revision());
         typed(&mut b, &mut v, ")");
         assert_eq!(show(&b, &v), "x()|)\nyz");
     }

@@ -144,7 +144,7 @@ impl App {
                     }
                     let view = &mut tab.view;
                     let follow = pos::line_of(&old, view.selections.primary().head) == last;
-                    view.map_through(&applied, &buf.rope);
+                    view.map_through(&applied, &buf.rope, buf.revision());
                     if follow {
                         view.selections = Selections::single(Selection::cursor(end));
                         view.cursor_history.reset(&view.selections);

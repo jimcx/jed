@@ -31,7 +31,7 @@ use ratatui::layout::Rect;
 
 use crate::app::{App, Focus};
 use crate::diff_view::DiffTab;
-use crate::edit::RenderWhitespace;
+use crate::edit::{RenderWhitespace, WordWrap};
 use crate::git::HunkKind;
 use crate::group::Tab;
 use crate::layout::{self, GroupHit, HitMap, ScrollTarget, SplitDir};
@@ -87,6 +87,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
             .as_ref()
             .and_then(|ids| ids.iter().position(|&g| g == id))
             .map(|i| (i as u8).saturating_add(1));
+        // Long lines wrap at the editor's width (the effective `word_wrap` setting).
+        let wrapping = app.word_wrap() == WordWrap::On;
         let Some(group) = app.groups.get_mut(id) else { continue };
         let tabs = tabs::render(f, tab_bar, group, &app.buffers, &app.theme, is_active, drop, number);
 
@@ -124,7 +126,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let reserve = bar.is_some()
             && (group
                 .active_tab_mut()
-                .is_some_and(|t| t.view.scroll_width.wants_bar(t.view.width, t.view.left_col))
+                .is_some_and(|t| !wrapping && t.view.scroll_width.wants_bar(t.view.width, t.view.left_col))
                 || group
                     .active_diff_mut()
                     .is_some_and(|d| d.scroll_width.wants_bar(d.text_width, d.left_col)));
@@ -230,6 +232,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
                         whitespace
                     },
                     blame: app.blame.on,
+                    wrapping,
                 };
                 let (drawn, buttons) =
                     editor::render(f, editor_area, buf, &mut tab.view, &app.theme, &app.settings, overlay);
@@ -256,12 +259,14 @@ pub fn render(f: &mut Frame, app: &mut App) {
                         .set_stringn(at.x, at.y, crate::code_action::BULB, 2, style);
                     app.code_actions.bulb_hit = Some((id, at));
                 }
-                hscroll = Some((
-                    tab.view.scroll_width,
-                    tab.view.width,
-                    tab.view.left_col,
-                    (text.width > 0).then_some(text),
-                ));
+                hscroll = (!wrapping).then(|| {
+                    (
+                        tab.view.scroll_width,
+                        tab.view.width,
+                        tab.view.left_col,
+                        (text.width > 0).then_some(text),
+                    )
+                });
                 if let Some(bar) = bar {
                     let scroll = TextScroll {
                         view: &mut tab.view,

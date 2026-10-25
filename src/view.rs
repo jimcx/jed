@@ -9,11 +9,14 @@ use crate::buffer::pos::{self, ByteIdx};
 use crate::column::ColumnBox;
 use crate::pairs::AutoClosed;
 use crate::selection::{Selection, Selections};
+use crate::wrap::Wrap;
 
 #[derive(Debug, Clone)]
 pub struct View {
     pub selections: Selections,
     top_line: usize,
+    /// The sub-row within `top_line` at the top of the view: 0 unless lines are wrapped.
+    top_row: usize,
     /// Start of `top_line`, so the viewport can follow edits made in other views.
     top_byte: ByteIdx,
     pub left_col: usize,
@@ -38,6 +41,8 @@ pub struct View {
     pub auto_closed: AutoClosed,
     /// The brackets drawn highlighted, cached between frames (`brackets::Matches`).
     pub brackets: crate::brackets::Matches,
+    /// The lines' screen rows at the view's width, kept across edits (`wrap::Wrap`).
+    pub wrap: Wrap,
 }
 
 /// VS Code's cursor undo stack. Every selection change that isn't part of a text change pushes
@@ -143,6 +148,7 @@ impl View {
             cursor_history: CursorHistory::new(&selections),
             selections,
             top_line: 0,
+            top_row: 0,
             top_byte: ByteIdx(0),
             left_col: 0,
             scroll_width: Default::default(),
@@ -154,11 +160,17 @@ impl View {
             column: None,
             auto_closed: AutoClosed::default(),
             brackets: Default::default(),
+            wrap: Wrap::default(),
         }
     }
 
     pub fn top_line(&self) -> usize {
         self.top_line
+    }
+
+    /// The sub-row of `top_line` shown first: 0 unless lines are wrapped.
+    pub fn top_row(&self) -> usize {
+        self.top_row
     }
 
     /// The first shown line's start (kept with `top_line`).
@@ -168,7 +180,15 @@ impl View {
 
     pub fn set_top_line(&mut self, rope: &Rope, line: usize) {
         self.top_line = line.min(pos::line_count(rope) - 1);
+        self.top_row = 0;
         self.top_byte = pos::line_start(rope, self.top_line);
+    }
+
+    /// Sets the first shown (line, sub-row): wrapped scrolling in a later step (`soft_wrap-d`).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn set_top(&mut self, rope: &Rope, line: usize, row: usize) {
+        self.set_top_line(rope, line);
+        self.top_row = row;
     }
 
     pub fn scroll_lines(&mut self, rope: &Rope, delta: isize) {
@@ -224,8 +244,9 @@ impl View {
     }
 
     /// Follows edits made through another view on the same buffer: selections and the
-    /// viewport move with the text. `changes` are in the order applied; `rope` is the result.
-    pub fn map_through(&mut self, changes: &[Arc<ChangeSet>], rope: &Rope) {
+    /// viewport move with the text. `changes` are in the order applied; `rope` is the result
+    /// and `revision` its buffer revision (for the wrap cache).
+    pub fn map_through(&mut self, changes: &[Arc<ChangeSet>], rope: &Rope, revision: u64) {
         let len = rope.len();
         let mappers: Vec<_> = changes.iter().map(|c| c.mapper()).collect();
         // Changes start and end on char boundaries and insert whole strings, so a position on
@@ -251,6 +272,7 @@ impl View {
         });
         let top = map(self.top_byte);
         self.set_top_line(rope, pos::line_of(rope, top));
+        self.wrap.map(changes, rope, revision);
         self.cursor_history.reset(&self.selections);
     }
 }
@@ -279,16 +301,42 @@ mod tests {
         b.set_top_line(&buf.rope, 1);
 
         edit::paste(&mut buf, &mut a, "zero\n", false, &[]);
-        b.map_through(&buf.take_applied(), &buf.rope);
+        b.map_through(&buf.take_applied(), &buf.rope, buf.revision());
         let heads: Vec<usize> = b.selections.iter().map(|s| s.head.0).collect();
         assert_eq!(heads, vec![9, 18], "both cursors after the insert moved");
         assert_eq!(b.top_line(), 2, "viewport still starts at `two`");
 
         edit::run(crate::command::Command::Undo, &mut buf, &mut a, &Settings::default());
-        b.map_through(&buf.take_applied(), &buf.rope);
+        b.map_through(&buf.take_applied(), &buf.rope, buf.revision());
         let got: Vec<(usize, usize)> = b.selections.iter().map(|s| (s.anchor.0, s.head.0)).collect();
         assert_eq!(got, vec![(4, 4), (8, 13)]);
         assert_eq!(b.top_line(), 1);
+    }
+
+    /// `map_through` keeps the wrap cache current across edits too, and incrementally: after the
+    /// edit `line_rows` has the new count without laying the whole text out again (one sweep).
+    #[test]
+    fn map_through_maps_the_wrap_cache() {
+        let mut buf = Buffer::from_str("aaaa bbbb\ncc\n");
+        let mut a = View::new();
+        let mut b = View::new();
+        a.selections = cursor(0);
+        b.selections = cursor(0);
+        let rev0 = buf.revision();
+        // Lay out b's wrap cache: line 0 is two rows at width 5.
+        assert_eq!(b.wrap.line_rows(&buf.rope, rev0, 0, 5, 4), 2);
+        assert_eq!(b.wrap.sweeps(), 1);
+
+        // Type at the start of line 0 so it grows to three rows, without changing the line count.
+        edit::paste(&mut buf, &mut a, "zzzz", false, &[]);
+        b.map_through(&buf.take_applied(), &buf.rope, buf.revision());
+
+        assert_eq!(b.wrap.line_rows(&buf.rope, buf.revision(), 0, 5, 4), 3);
+        assert_eq!(
+            b.wrap.sweeps(),
+            1,
+            "map_through mapped the wrap cache, no whole-text layout"
+        );
     }
 
     #[test]
@@ -304,7 +352,7 @@ mod tests {
             &mut a,
             &Settings::default(),
         );
-        b.map_through(&buf.take_applied(), &buf.rope);
+        b.map_through(&buf.take_applied(), &buf.rope, buf.revision());
         assert_eq!(b.selections.primary().head, ByteIdx(0));
         assert_eq!(buf.rope.to_string(), "o world");
     }
@@ -327,7 +375,7 @@ mod tests {
         b.cursor_history.record(&cursor(1), 0, 0);
         assert_eq!(b.cursor_history.len(), 1);
         edit::insert_char(&mut buf, &mut a, 'X', &Settings::default());
-        b.map_through(&buf.take_applied(), &buf.rope);
+        b.map_through(&buf.take_applied(), &buf.rope, buf.revision());
         let got: Vec<(usize, usize)> = b.selections.iter().map(|s| (s.anchor.0, s.head.0)).collect();
         assert_eq!(got, vec![(8, 5), (9, 12)]);
         assert_eq!(b.cursor_history.len(), 0);
@@ -345,7 +393,7 @@ mod tests {
         a.selections = cursor(1);
         b.selections = cursor(1);
         edit::insert_char(&mut buf, &mut a, 'X', &Settings::default());
-        b.map_through(&buf.take_applied(), &buf.rope);
+        b.map_through(&buf.take_applied(), &buf.rope, buf.revision());
         assert_eq!(b.selections.primary().head, ByteIdx(1));
         assert_eq!(a.selections.primary().head, ByteIdx(2));
     }

@@ -14,8 +14,8 @@
 //! their break points. Offsets in a [`Layout`] are within the line's content (no line break):
 //! add the line's start for a buffer position.
 
-// The model is built before the steps that use it: drawing (soft_wrap-b), scrolling and
-// movement (d, e) and the mouse (f) come next.
+// The model is read by drawing (`ui::editor`) and, in later steps, scrolling and movement
+// (soft_wrap-d, -e) and the mouse (soft_wrap-f).
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::HashMap;
@@ -217,7 +217,7 @@ fn row_count(text: &str, width: usize, tab_width: usize) -> usize {
 }
 
 /// One line's row count at a width, and the revision / width / tab width they were computed for.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Counts {
     revision: u64,
     width: usize,
@@ -230,7 +230,7 @@ struct Counts {
 
 /// A view's wrapped-row cache: the text's total row count and each line's row count (kept
 /// current through edits), plus the break points of the lines drawn.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Wrap {
     counts: Option<Counts>,
     layouts: HashMap<usize, Layout>,
@@ -309,6 +309,13 @@ impl Wrap {
             }
         }
         counts.revision = revision;
+    }
+
+    /// How many times every line was laid out from scratch (tests: `map` must keep it at one
+    /// across edits, `map_through` too).
+    #[cfg(test)]
+    pub fn sweeps(&self) -> usize {
+        self.sweeps
     }
 
     /// The counts, laid out for the whole text when they aren't for this key.

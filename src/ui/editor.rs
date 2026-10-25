@@ -3,6 +3,7 @@
 //! merge conflicts (block backgrounds, marker labels, the action row) and the cursor line's
 //! inline blame.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use ratatui::Frame;
@@ -32,6 +33,8 @@ pub struct Overlay<'a> {
     pub whitespace: RenderWhitespace,
     /// Inline blame is on (`app.blame.on`): the primary cursor line's blame after its text.
     pub blame: bool,
+    /// Long lines wrap at the text width (`App::word_wrap`), drawn on screen rows.
+    pub wrapping: bool,
 }
 
 /// Spaces and tabs only, as VS Code's renderer (other Unicode spaces aren't whitespace here).
@@ -103,6 +106,64 @@ pub fn text_width(width: u16, rope: &ropey::Rope) -> usize {
     width.saturating_sub(gutter_width(rope)).max(1) as usize
 }
 
+/// One screen row the editor draws: a whole line, or one of its wrapped rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VisualRow {
+    /// The 0-based line.
+    line: usize,
+    /// The row within the line (0 when not wrapping, 0..`rows` when it is).
+    sub: usize,
+    /// How many screen rows the line has at the view's width (1 when not wrapping).
+    rows: usize,
+    /// The row's first byte, within the line's content (0 when not wrapping).
+    start: usize,
+    /// The byte past the row's last grapheme, within the line's content (0 when not wrapping).
+    end: usize,
+    /// The display column the row's text starts at: the indentation on continuation rows.
+    col: usize,
+}
+
+/// The screen rows `view` shows, top first: while wrapping, a line's rows from `top_row`, then
+/// the next line's from its first row. Only the rows laid out here are drawn (and the overlays'
+/// byte range covers only them); the rows' break points come from `view.wrap`.
+fn visual_rows(
+    rope: &ropey::Rope,
+    view: &mut View,
+    revision: u64,
+    wrapping: bool,
+    total: usize,
+    tab: usize,
+) -> Vec<VisualRow> {
+    let mut out = Vec::with_capacity(view.height);
+    let mut line = view.top_line();
+    let mut sub = if wrapping { view.top_row() } else { 0 };
+    while out.len() < view.height && line < total {
+        let (rows, start, end, col) = if wrapping {
+            let layout = view.wrap.layout(rope, revision, line, view.width, tab);
+            let sub = sub.min(layout.len() - 1);
+            let row = layout.rows()[sub];
+            (layout.len(), row.start.0, layout.row_end(sub).0, row.col.0)
+        } else {
+            (1, 0, 0, 0)
+        };
+        let current = sub.min(rows - 1);
+        out.push(VisualRow {
+            line,
+            sub: current,
+            rows,
+            start,
+            end,
+            col,
+        });
+        sub = current + 1;
+        if sub >= rows {
+            line += 1;
+            sub = 0;
+        }
+    }
+    out
+}
+
 /// Draws the editor and returns the text area (excluding the gutter), for mouse hit-testing,
 /// and the merge conflicts' action-row buttons it drew.
 pub fn render(
@@ -141,6 +202,13 @@ pub fn render(
         view.scroll_to_cursor(rope, tab);
         view.reveal_cursor = false;
     }
+    let revision = buf.revision();
+    let wrapping = overlay.wrapping;
+    // The rows to draw, top first: a wrapped line takes several. Their byte range is what the
+    // byte-range overlays below look at, so nothing off screen is walked.
+    let rows = visual_rows(rope, view, revision, wrapping, total, tab);
+    // Sideways scrolling is off while wrapping: the rows already fit the text width.
+    let left = if wrapping { 0 } else { view.left_col };
 
     let base = theme.get("editor");
     let current_line_style = base.patch(theme.get("editor.lineHighlight"));
@@ -176,10 +244,22 @@ pub fn render(
         .flatten();
     let blame_style = theme.get("git.blame.editorDecorationForeground");
     let last_line = (view.top_line() + view.height).min(total - 1);
-    // Only the selections on screen: there may be tens of thousands.
-    let sels = view
-        .selections
-        .overlapping(pos::line_start(rope, view.top_line()), pos::line_end(rope, last_line));
+    // Only the data on screen: there may be tens of thousands of selections and matches. While
+    // wrapping, a line can extend past the view, so the range is the first drawn row's start to
+    // the last drawn row's end.
+    let (visible_start, visible_end) = if wrapping {
+        let start = rows.first().map_or_else(
+            || pos::line_start(rope, view.top_line()),
+            |r| ByteIdx(pos::line_start(rope, r.line).0 + r.start),
+        );
+        let end = rows
+            .last()
+            .map_or(start, |r| ByteIdx(pos::line_start(rope, r.line).0 + r.end));
+        (start, end.max(start))
+    } else {
+        (pos::line_start(rope, view.top_line()), pos::line_end(rope, last_line))
+    };
+    let sels = view.selections.overlapping(visible_start, visible_end);
     // Matched brackets at the cursors on screen (cached in the view: recomputed only when the
     // text or those cursors change).
     let bracket_marks: Vec<ByteIdx> = if s.match_brackets {
@@ -235,7 +315,7 @@ pub fn render(
     };
     // Find matches on screen (from the widget's cache), walked the same way. The one that is
     // the primary selection is the current match.
-    let view_range = pos::line_start(rope, view.top_line())..pos::line_end(rope, last_line);
+    let view_range = visible_start..visible_end;
     let matches: &[Match] = overlay.find.map_or(&[], |f| f.matches_in(view_range.clone()));
     let mut mi = 0;
     let mut in_match = |b: ByteIdx| {
@@ -273,7 +353,6 @@ pub fn render(
     // Merge conflicts on screen: each block line's background (the markers' lines too) and the
     // labels after the `<<<<<<<`, `|||||||` and `>>>>>>>` lines, the first with the action row.
     // Both walk the visible conflicts in order (one index each), never the buffer per byte.
-    let revision = buf.revision();
     let conflicts = buf.conflicts.scan(rope, revision);
     let (current_header, current_content) = (
         theme.get("merge.currentHeaderBackground"),
@@ -346,14 +425,26 @@ pub fn render(
     let out = f.buffer_mut();
     out.set_style(area, base);
     let right = text.x + text.width;
-    // The widest line drawn, for sideways scrolling (`View::scroll_width`).
+    // The widest line drawn, for sideways scrolling (`View::scroll_width`). Wrapping never
+    // scrolls sideways, so wrapped rows aren't measured.
     let mut widest = 0;
-    for row in 0..area.height {
-        let line = view.top_line() + row as usize;
-        if line >= total {
-            break;
+    // The primary cursor's (row within its line, display column from that row's start).
+    let cursor = focused.then(|| {
+        if wrapping {
+            let layout = view.wrap.layout(rope, revision, cursor_line, view.width, tab);
+            let start = pos::line_start(rope, cursor_line);
+            let (sub, col) = layout.row_of(ByteIdx(primary.0 - start.0));
+            (sub, layout.rows()[sub].col.0 + col.0)
+        } else {
+            (0, pos::display_col(rope, primary, tab).0)
         }
-        let y = area.y + row;
+    });
+    let mut cursor_cell = None;
+    for (offset, visual) in rows.iter().enumerate() {
+        let line = visual.line;
+        let sub = visual.sub;
+        let last = sub + 1 == visual.rows;
+        let y = area.y + offset as u16;
         let start = pos::line_start(rope, line);
         let row_style = if line == cursor_line { current_line_style } else { base };
         let row_style = match merge_at(start) {
@@ -362,43 +453,55 @@ pub fn render(
         };
         out.set_style(Rect { y, height: 1, ..area }, row_style);
 
-        let num_style = if line == cursor_line {
-            gutter.patch(gutter_active)
-        } else {
-            gutter
-        };
-        let num = format!(" {:>digits$} ", line + 1);
-        out.set_stringn(
-            area.x,
-            y,
-            num,
-            gutter_w as usize,
-            num_style.bg(row_style.bg.unwrap_or_default()),
-        );
-        while qi < markers.len() && markers[qi].0 < line {
-            qi += 1;
-        }
-        if let Some(x) = marker_x
-            && let Some(&(_, marker)) = markers.get(qi).filter(|(l, _)| *l == line)
-        {
-            let style = theme.get(marker.theme_key()).bg(row_style.bg.unwrap_or_default());
-            out.set_stringn(x, y, marker.glyph(), 1, style);
+        // The line number only on a line's first row; a continuation row's gutter stays blank.
+        if sub == 0 {
+            let num_style = if line == cursor_line {
+                gutter.patch(gutter_active)
+            } else {
+                gutter
+            };
+            let num = format!(" {:>digits$} ", line + 1);
+            out.set_stringn(
+                area.x,
+                y,
+                num,
+                gutter_w as usize,
+                num_style.bg(row_style.bg.unwrap_or_default()),
+            );
+            while qi < markers.len() && markers[qi].0 < line {
+                qi += 1;
+            }
+            if let Some(x) = marker_x
+                && let Some(&(_, marker)) = markers.get(qi).filter(|(l, _)| *l == line)
+            {
+                let style = theme.get(marker.theme_key()).bg(row_style.bg.unwrap_or_default());
+                out.set_stringn(x, y, marker.glyph(), 1, style);
+            }
         }
 
-        let content = pos::line_text(rope, line);
+        // The row's text: the whole line when not wrapping, its slice when wrapping (`from..to`
+        // within the line, whose display column starts at `visual.col`).
+        let layout = wrapping.then(|| view.wrap.layout(rope, revision, line, view.width, tab));
+        let content: Cow<'_, str> = match &layout {
+            Some(layout) => Cow::Borrowed(layout.text()),
+            None => Cow::Owned(pos::line_text(rope, line)),
+        };
         let bounds = whitespace_bounds(whitespace, &content);
-        let mut col = 0usize;
+        let from = visual.start;
+        let to = if wrapping { visual.end } else { content.len() };
+        let mut col = visual.col;
         // Where the line ran past the right edge: the rest is only measured (`widest`).
         let mut cut = None;
-        for (off, g) in content.grapheme_indices(true) {
+        for (off, g) in content[from..to].grapheme_indices(true) {
+            let off = from + off;
             let b = ByteIdx(start.0 + off);
             let (mut shown, w) = pos::display_grapheme(g, DisplayCol(col), tab);
             let selected = in_selection(b);
-            if col + w <= view.left_col {
+            if col + w <= left {
                 col += w;
                 continue;
             }
-            if col >= view.left_col + view.width {
+            if !wrapping && col >= left + view.width {
                 cut = Some(off);
                 break;
             }
@@ -445,114 +548,126 @@ pub fn render(
             if secondary_here {
                 style = style.patch(secondary_cursor);
             }
-            let x = text.x + (col.max(view.left_col) - view.left_col) as u16;
-            if col < view.left_col {
+            let x = text.x + (col.max(left) - left) as u16;
+            if col < left {
                 // A wide char cut by the left edge: show the visible part as blanks.
-                let visible = col + w - view.left_col;
+                let visible = col + w - left;
                 out.set_stringn(x, y, " ".repeat(visible), visible, style);
             } else {
                 out.set_stringn(x, y, &shown, (right - x) as usize, style);
             }
             col += w;
         }
-        widest = widest.max(match cut {
-            Some(off) => pos::col_after(&content[off..], DisplayCol(col), tab).0,
-            None => col,
-        });
-
-        // End of line: selection running over the line break, or a secondary cursor here.
-        let end = ByteIdx(start.0 + content.len());
-        let over_eol = line + 1 < total && in_selection(end);
-        // A squiggle past the end only on an empty line (an empty range there).
-        let squiggle = squiggle_at(end).filter(|_| content.is_empty());
-        if (over_eol || secondary.contains(&end) || squiggle.is_some())
-            && col >= view.left_col
-            && col < view.left_col + view.width
+        if !wrapping {
+            widest = widest.max(match cut {
+                Some(off) => pos::col_after(&content[off..], DisplayCol(col), tab).0,
+                None => col,
+            });
+        }
+        if let Some((csub, ccol)) = cursor
+            && line == cursor_line
+            && sub == csub
+            && ccol >= left
+            && ccol < left + view.width
         {
-            let mut style = row_style;
-            if let Some(squiggle) = squiggle {
-                style = style.patch(squiggle);
-            }
-            if over_eol {
-                style = style.patch(selection);
-            }
-            if secondary.contains(&end) {
-                style = style.patch(secondary_cursor);
-            }
-            out.set_stringn(text.x + (col - view.left_col) as u16, y, " ", 1, style);
+            cursor_cell = Some((text.x + (ccol - left) as u16, y));
         }
 
-        // Merge conflict markers: the label after the line's text and, on the `<<<<<<<` line,
-        // its action row. Buttons are dropped from the right (Compare first) when they don't
-        // fit; each drawn one is recorded for hit-testing.
-        while mki < marker_rows.len() && marker_rows[mki].line < line {
-            mki += 1;
-        }
-        // A marker line's label and action row take precedence over inline blame, which would
-        // otherwise overwrite them (Next Conflict leaves the cursor exactly here).
-        let marker_here = marker_rows.get(mki).is_some_and(|m| m.line == line);
-        if let Some(marker) = marker_rows.get(mki).filter(|m| m.line == line) {
-            let edge = view.left_col + view.width;
-            let mut x = col + blame::GAP;
-            if x >= view.left_col && x < edge {
-                let avail = edge.saturating_sub(x);
-                if let Some(shown) = blame::fit(marker.label, avail) {
-                    let at = text.x + (x - view.left_col) as u16;
-                    out.set_stringn(at, y, &shown, (right - at) as usize, row_style.patch(blame_style));
-                    x += shown.chars().count() + blame::GAP;
+        // The line's end lives on its last row: a selection running over the line break, a
+        // secondary cursor there, a squiggle past an empty line, the merge labels and the
+        // action row, then inline blame.
+        if last {
+            // A selection over the line break paints one cell past the line end.
+            let end = ByteIdx(start.0 + content.len());
+            let over_eol = line + 1 < total && in_selection(end);
+            // A squiggle past the end only on an empty line (an empty range there).
+            let squiggle = squiggle_at(end).filter(|_| content.is_empty());
+            if (over_eol || secondary.contains(&end) || squiggle.is_some()) && col >= left && col < left + view.width {
+                let mut style = row_style;
+                if let Some(squiggle) = squiggle {
+                    style = style.patch(squiggle);
                 }
+                if over_eol {
+                    style = style.patch(selection);
+                }
+                if secondary.contains(&end) {
+                    style = style.patch(secondary_cursor);
+                }
+                out.set_stringn(text.x + (col - left) as u16, y, " ", 1, style);
             }
-            if let Some(conflict) = marker.conflict
-                && x >= view.left_col
-            {
-                // The buttons' widths and the one-cell gaps between them.
-                let width = |n: usize| {
-                    MERGE_ACTIONS[..n]
-                        .iter()
-                        .map(|(label, _)| label.chars().count() + 1)
-                        .sum::<usize>()
-                        .saturating_sub(1)
-                };
-                let mut count = MERGE_ACTIONS.len();
-                while count > 0 && x + width(count) > edge {
-                    count -= 1;
+
+            // Merge conflict markers: the label after the line's text and, on the `<<<<<<<`
+            // line, its action row. Buttons are dropped from the right (Compare first) when they
+            // don't fit; each drawn one is recorded for hit-testing.
+            while mki < marker_rows.len() && marker_rows[mki].line < line {
+                mki += 1;
+            }
+            // A marker line's label and action row take precedence over inline blame, which would
+            // otherwise overwrite them (Next Conflict leaves the cursor exactly here).
+            let marker_here = marker_rows.get(mki).is_some_and(|m| m.line == line);
+            if let Some(marker) = marker_rows.get(mki).filter(|m| m.line == line) {
+                let edge = left + view.width;
+                let mut x = col + blame::GAP;
+                if x >= left && x < edge {
+                    let avail = edge.saturating_sub(x);
+                    if let Some(shown) = blame::fit(marker.label, avail) {
+                        let at = text.x + (x - left) as u16;
+                        out.set_stringn(at, y, &shown, (right - at) as usize, row_style.patch(blame_style));
+                        x += shown.chars().count() + blame::GAP;
+                    }
                 }
-                let style = row_style.patch(merge_button_style);
-                for (i, (label, button)) in MERGE_ACTIONS[..count].iter().enumerate() {
-                    let at = text.x + (x - view.left_col) as u16;
-                    out.set_stringn(at, y, label, (right - at) as usize, style);
-                    merge_buttons.push((
-                        Rect {
-                            x: at,
-                            y,
-                            width: label.chars().count() as u16,
-                            height: 1,
-                        },
-                        *button,
-                        conflict,
-                    ));
-                    x += label.chars().count();
-                    if i + 1 < count {
-                        x += 1;
+                if let Some(conflict) = marker.conflict
+                    && x >= left
+                {
+                    // The buttons' widths and the one-cell gaps between them.
+                    let width = |n: usize| {
+                        MERGE_ACTIONS[..n]
+                            .iter()
+                            .map(|(label, _)| label.chars().count() + 1)
+                            .sum::<usize>()
+                            .saturating_sub(1)
+                    };
+                    let mut count = MERGE_ACTIONS.len();
+                    while count > 0 && x + width(count) > edge {
+                        count -= 1;
+                    }
+                    let style = row_style.patch(merge_button_style);
+                    for (i, (label, button)) in MERGE_ACTIONS[..count].iter().enumerate() {
+                        let at = text.x + (x - left) as u16;
+                        out.set_stringn(at, y, label, (right - at) as usize, style);
+                        merge_buttons.push((
+                            Rect {
+                                x: at,
+                                y,
+                                width: label.chars().count() as u16,
+                                height: 1,
+                            },
+                            *button,
+                            conflict,
+                        ));
+                        x += label.chars().count();
+                        if i + 1 < count {
+                            x += 1;
+                        }
                     }
                 }
             }
-        }
 
-        // Inline blame: `GAP` cells after the line's end (`col`: its whole width, unless the
-        // line reached the right edge), cut with "…" at the edge, nothing when too little room
-        // is left or the label's start is scrolled off to the left.
-        if line == cursor_line
-            && !marker_here
-            && let Some(label) = &blame
-            && col < view.left_col + view.width
-        {
-            let start = col + blame::GAP;
-            if start >= view.left_col
-                && let Some(shown) = blame::fit(label, (view.left_col + view.width).saturating_sub(start))
+            // Inline blame: `GAP` cells after the line's end (`col`: its whole width, unless the
+            // line reached the right edge), cut with "…" at the edge, nothing when too little
+            // room is left or the label's start is scrolled off to the left.
+            if line == cursor_line
+                && !marker_here
+                && let Some(label) = &blame
+                && col < left + view.width
             {
-                let x = text.x + (start - view.left_col) as u16;
-                out.set_stringn(x, y, &shown, (right - x) as usize, row_style.patch(blame_style));
+                let start = col + blame::GAP;
+                if start >= left
+                    && let Some(shown) = blame::fit(label, (left + view.width).saturating_sub(start))
+                {
+                    let x = text.x + (start - left) as u16;
+                    out.set_stringn(x, y, &shown, (right - x) as usize, row_style.patch(blame_style));
+                }
             }
         }
     }
@@ -562,11 +677,8 @@ pub fn render(
     let rulers = s.rulers.as_deref().unwrap_or_default();
     if !rulers.is_empty() {
         let style = theme.get("editorRuler.foreground");
-        for &col in rulers
-            .iter()
-            .filter(|&&c| c >= view.left_col && c < view.left_col + view.width)
-        {
-            let x = text.x + (col - view.left_col) as u16;
+        for &col in rulers.iter().filter(|&&c| c >= left && c < left + view.width) {
+            let x = text.x + (col - left) as u16;
             for y in text.y..text.y + text.height {
                 let cell = &mut out[(x, y)];
                 if cell.symbol() == " " && cell.modifier.is_empty() {
@@ -577,16 +689,13 @@ pub fn render(
         }
     }
 
-    view.scroll_width.measure(widest);
+    if !wrapping {
+        view.scroll_width.measure(widest);
+    }
 
-    // The terminal's own cursor goes on the primary selection.
-    if focused && cursor_line >= view.top_line() && cursor_line < view.top_line() + view.height {
-        let col = pos::display_col(rope, primary, tab).0;
-        if col >= view.left_col && col < view.left_col + view.width {
-            let x = text.x + (col - view.left_col) as u16;
-            let y = text.y + (cursor_line - view.top_line()) as u16;
-            f.set_cursor_position(Position { x, y });
-        }
+    // The terminal's own cursor goes on the primary selection, on the screen row it lands on.
+    if let Some((x, y)) = cursor_cell {
+        f.set_cursor_position(Position { x, y });
     }
     (text, merge_buttons)
 }
@@ -608,6 +717,45 @@ mod tests {
                 },
             )
             .collect()
+    }
+
+    /// The rows a wrapped line and the next lines take; the first row only when `top_row` says
+    /// so; whole lines when not wrapping.
+    #[test]
+    fn visual_rows_walk_wrapped_lines_and_their_top_row() {
+        let rope = ropey::Rope::from_str("  abcd efgh ijkl mnop qrst\nnext\n\nlast\n");
+        let total = pos::line_count(&rope);
+        let mut view = View::new();
+        (view.width, view.height) = (25, 4);
+        let rows = visual_rows(&rope, &mut view, 0, true, total, 4);
+        let got: Vec<(usize, usize, usize, usize, usize)> =
+            rows.iter().map(|r| (r.line, r.sub, r.start, r.end, r.col)).collect();
+        assert_eq!(
+            got,
+            vec![(0, 0, 0, 22, 0), (0, 1, 22, 26, 2), (1, 0, 0, 4, 0), (2, 0, 0, 0, 0)],
+            "the long line's two rows (indented), then the next lines"
+        );
+
+        // Starting on a continuation row skips the line's first one.
+        view.set_top(&rope, 0, 1);
+        let rows = visual_rows(&rope, &mut view, 0, true, total, 4);
+        assert_eq!(
+            rows[0],
+            VisualRow {
+                line: 0,
+                sub: 1,
+                rows: 2,
+                start: 22,
+                end: 26,
+                col: 2
+            }
+        );
+        assert_eq!((rows[1].line, rows[1].sub), (1, 0));
+
+        // Not wrapping: one row a line from `top_line`, the sub-row ignored.
+        let rows = visual_rows(&rope, &mut view, 0, false, total, 4);
+        let got: Vec<(usize, usize)> = rows.iter().map(|r| (r.line, r.sub)).collect();
+        assert_eq!(got, vec![(0, 0), (1, 0), (2, 0), (3, 0)]);
     }
 
     #[test]

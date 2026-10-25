@@ -203,7 +203,7 @@ impl App {
                     continue;
                 }
                 let view = &mut tab.view;
-                view.map_through(&applied, &buf.rope);
+                view.map_through(&applied, &buf.rope, buf.revision());
                 if first {
                     let at = start.unwrap_or(ByteIdx(0));
                     view.selections = Selections::single(Selection::cursor(at));
