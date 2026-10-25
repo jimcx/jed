@@ -1064,6 +1064,10 @@ impl App {
                     && !(self.field_focused() && field::has_field_meaning(cmd))
                 {
                     self.execute(cmd);
+                } else if self.terminal_copy_key(&key) {
+                    // Cmd/Ctrl+C over a terminal with a mouse selection: it copies. With none the
+                    // key falls through to the program, where Ctrl+C is SIGINT.
+                    self.execute(Command::Copy);
                 } else if self.palette.is_some() {
                     self.palette_key(key);
                 } else if self.ui.focus == Focus::Find {
@@ -1351,6 +1355,9 @@ impl App {
     /// Copies (or cuts) the active view's selections to the clipboard.
     fn copy(&mut self, cut: bool) {
         if !cut && self.hex_copy() {
+            return;
+        }
+        if !cut && self.terminal_copy() {
             return;
         }
         if cut && !self.active_writable() {

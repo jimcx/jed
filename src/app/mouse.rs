@@ -16,7 +16,7 @@ use crate::layout::{
     Divider, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, MergeButton, PanelTab, ScrollTarget, SidePanel, SplitDir, task_area,
 };
 use crate::selection::{Selection, Selections};
-use crate::tasks::{Run, mouse};
+use crate::tasks::{Run, RunId, mouse, select};
 use crate::terminal::Pointer;
 use crate::view::View;
 
@@ -36,6 +36,20 @@ pub(super) fn wheel_columns(m: &MouseEvent) -> Option<isize> {
         MouseEventKind::ScrollDown if shift => Some(SIDE_STEP),
         _ => None,
     }
+}
+
+/// The screen cell `(row, col)` the pointer at `(x, y)` is over in `area`, in the visible-viewport
+/// cells `vt100::Screen::cell` / `tasks::select` use: the pointer clamped into `area`, shifted by
+/// the row a taller screen is drawn from (`select::top_row`), then clamped into the screen.
+fn screen_cell(screen: &vt100::Screen, area: Rect, x: u16, y: u16) -> (u16, u16) {
+    let top = select::top_row(screen, area.height);
+    let (rows, cols) = screen.size();
+    let col = x.saturating_sub(area.x).min(area.width.saturating_sub(1));
+    let row = y.saturating_sub(area.y).min(area.height.saturating_sub(1));
+    (
+        row.saturating_add(top).min(rows.saturating_sub(1)),
+        col.min(cols.saturating_sub(1)),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +78,13 @@ pub enum Drag {
     HistoryDivider,
     /// Selecting bytes in a group's hex tab (`app/hex.rs`).
     Hex(crate::layout::GroupId),
+    /// Selecting text on a terminal screen (`tasks::select`): the run, the anchor cell (in the
+    /// screen's visible-viewport cells) and the area those cells are drawn in.
+    Terminal {
+        run: RunId,
+        anchor: (u16, u16),
+        area: Rect,
+    },
     /// Dragging a tab along a tab bar, or onto another group or editor (`app/tab_drag.rs`).
     Tab(TabDrag),
 }
@@ -175,6 +196,76 @@ impl App {
         true
     }
 
+    /// A mouse event over a shell or task tab whose program hasn't asked for the mouse (so
+    /// `terminal_mouse` let it through): a left press seeds a selection, a drag extends it and a
+    /// click without a drag clears it. The cells are the screen's visible-viewport cells, the
+    /// space `tasks::select` copies from. False for other events (the wheel scrolls the
+    /// scrollback), and while a program reports the mouse it keeps every event.
+    fn terminal_select(&mut self, hit: Hit, m: MouseEvent) -> bool {
+        if m.kind == MouseEventKind::Down(MouseButton::Left) {
+            let Some((run, area)) = self.terminal_run(hit) else {
+                return false;
+            };
+            let id = run.id;
+            let cell = {
+                let screen = run.screen();
+                let s = screen.screen();
+                // Scrolled back, the screen's cells are older output: the wheel's, not a drag's.
+                if s.mouse_protocol_mode() != MouseProtocolMode::None || s.scrollback() != 0 {
+                    return false;
+                }
+                screen_cell(s, area, m.column, m.row)
+            };
+            // A press is an empty selection until the pointer moves, so a click clears it.
+            run.set_selection(select::Selection {
+                anchor: cell,
+                head: cell,
+            });
+            match hit {
+                Hit::Editor(g) => self.focus_group(g),
+                Hit::Panel => {
+                    if let PanelTab::Task(id) = self.ui.panel_tab {
+                        self.focus_panel(PanelTab::Task(id));
+                    }
+                }
+                _ => {}
+            }
+            self.drag = Some(Drag::Terminal {
+                run: id,
+                anchor: cell,
+                area,
+            });
+            return true;
+        }
+        if m.kind == MouseEventKind::Drag(MouseButton::Left)
+            && let Some(Drag::Terminal { run, anchor, area }) = self.drag.clone()
+        {
+            if let Some(run) = self.terminal_run_by_id(run) {
+                let screen = run.screen();
+                let head = screen_cell(screen.screen(), area, m.column, m.row);
+                drop(screen);
+                run.set_selection(select::Selection { anchor, head });
+            }
+            return true;
+        }
+        // A press released without a drag selected no cell: nothing stays to copy.
+        if m.kind == MouseEventKind::Up(MouseButton::Left)
+            && let Some(Drag::Terminal { run, .. }) = self.drag.clone()
+            && let Some(run) = self.terminal_run_by_id(run)
+            && run.selection().is_some_and(|s| s.anchor == s.head)
+        {
+            run.clear_selection();
+        }
+        false
+    }
+
+    /// The run `id` names, in the task tabs or in any group's shell tab.
+    fn terminal_run_by_id(&self, id: RunId) -> Option<&Run> {
+        self.tasks
+            .get(id)
+            .or_else(|| self.groups.shell_tabs().find(|s| s.run.id == id).map(|s| &s.run))
+    }
+
     fn mouse_event(&mut self, m: MouseEvent) {
         // The mouse's back / forward buttons navigate wherever the pointer is, and over a terminal
         // or a popup too, so they are handled before anything looks at the hit. A drag while one
@@ -239,6 +330,9 @@ impl App {
             return;
         }
         if self.terminal_mouse(hit, m) {
+            return;
+        }
+        if self.terminal_select(hit, m) {
             return;
         }
         // Sideways: the text tab under the mouse, without focusing it or moving its cursor.
@@ -353,6 +447,8 @@ impl App {
                 Some(Drag::Tab(_)) => self.tab_drag_to(m.column, m.row),
                 // Taken by `hex_mouse`.
                 Some(Drag::Hex(_)) => {}
+                // Taken by `terminal_select`.
+                Some(Drag::Terminal { .. }) => {}
                 Some(Drag::HistoryDivider) => {
                     // The divider's row is the section's top; the section reaches the body's end
                     // (the side panel's last row, above the status bar).

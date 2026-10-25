@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 
+use super::select;
 use super::templates::Spec;
 
 /// Lines of output kept above the screen unless the `scrollback` setting says otherwise.
@@ -182,6 +183,9 @@ struct Shared {
     id: RunId,
     parser: Mutex<vt100::Parser<TitleCallback>>,
     state: Mutex<State>,
+    /// The text a mouse drag selected, in the screen's visible-viewport cells. Cleared when the
+    /// view moves (new output, a scroll) or a click clears it.
+    selection: Mutex<Option<select::Selection>>,
     /// Output arrived since the last `Event::Output`.
     pending: AtomicBool,
     /// The reader is done (end of output) or there's none (failed to start).
@@ -222,6 +226,7 @@ impl Run {
         let shared = Arc::new(Shared {
             id,
             parser: Mutex::new(vt100::Parser::new_with_callbacks(rows, cols, scrollback, callbacks)),
+            selection: Mutex::new(None),
             state: Mutex::new(State {
                 status: Status::Starting,
                 pid: None,
@@ -269,7 +274,8 @@ impl Run {
         lock(&self.shared.parser)
     }
 
-    /// Resizes the screen and the PTY (the process gets SIGWINCH). Zero is taken as one.
+    /// Resizes the screen and the PTY (the process gets SIGWINCH). Zero is taken as one. A size
+    /// change reflows the rows, so it clears the mouse selection.
     pub fn resize(&self, rows: u16, cols: u16) {
         let (rows, cols) = (rows.max(1), cols.max(1));
         let state = lock(&self.shared.state);
@@ -283,6 +289,7 @@ impl Run {
         {
             tracing::debug!(run = self.id.0, "resize: {e}");
         }
+        self.clear_selection();
     }
 
     /// Sends `bytes` to the process's terminal input (keys, a paste); while it's starting they're
@@ -300,18 +307,44 @@ impl Run {
     }
 
     /// Scrolls the view through the scrollback by `lines` (negative: up, to older output),
-    /// clamped; 0 rows back is the live screen.
+    /// clamped; 0 rows back is the live screen. The selection goes with the rows it was over.
     pub fn scroll(&self, lines: isize) {
         let mut parser = self.screen();
         let back = parser.screen().scrollback();
         parser.screen_mut().set_scrollback(back.saturating_add_signed(-lines));
+        self.clear_selection();
     }
 
-    /// Scrolls to the oldest output kept (`top`) or back to the live screen.
+    /// Scrolls to the oldest output kept (`top`) or back to the live screen. Clears the selection
+    /// (the rows move).
     pub fn scroll_to(&self, top: bool) {
         self.screen()
             .screen_mut()
             .set_scrollback(if top { usize::MAX } else { 0 });
+        self.clear_selection();
+    }
+
+    /// The mouse selection on the screen, if any.
+    pub fn selection(&self) -> Option<select::Selection> {
+        *lock(&self.shared.selection)
+    }
+
+    /// Sets the mouse selection to the `anchor`–`head` cells of the screen's visible viewport.
+    pub fn set_selection(&self, selection: select::Selection) {
+        *lock(&self.shared.selection) = Some(selection);
+    }
+
+    /// Drops the mouse selection (a click, new output, or a scroll moved the rows under it).
+    pub fn clear_selection(&self) {
+        *lock(&self.shared.selection) = None;
+    }
+
+    /// The selection's text (`select::copy_text`: `contents_between`, trailing spaces trimmed),
+    /// `None` without a selection.
+    pub fn copy_selection(&self) -> Option<String> {
+        let selection = self.selection()?;
+        let parser = self.screen();
+        Some(select::copy_text(parser.screen(), &selection))
     }
 
     /// Writes `text` on a line of its own below the output (attributes reset): the exit note.

@@ -131,10 +131,10 @@ impl App {
     }
 
     /// `AppEvent::Shell`: output and starts only need a redraw (`handle_app_event` asks for one);
-    /// a title change renames the tab (its glyph says running from idle, red when the command
-    /// failed); an ended shell keeps its tab, its output and a note below it ("Shell 'zsh' exited
-    /// with code 3"), also in the status bar. A tab closed meanwhile leaves events naming an id
-    /// nothing holds.
+    /// new output clears the mouse selection (the rows moved). A title change renames the tab (its
+    /// glyph says running from idle, red when the command failed); an ended shell keeps its tab,
+    /// its output and a note below it ("Shell 'zsh' exited with code 3"), also in the status bar.
+    /// A tab closed meanwhile leaves events naming an id nothing holds.
     pub(super) fn shell_event(&mut self, ev: Event) {
         match ev {
             Event::Foreground { id, name, idle, error } => {
@@ -154,7 +154,12 @@ impl App {
                 };
                 self.notify(level, note);
             }
-            Event::Started(_) | Event::Output(_) => {}
+            Event::Output(id) => {
+                if let Some(shell) = self.groups.shell_tabs().find(|s| s.run.id == id) {
+                    shell.run.clear_selection();
+                }
+            }
+            Event::Started(_) => {}
         }
     }
 

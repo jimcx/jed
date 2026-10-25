@@ -1,5 +1,6 @@
 //! A task tab's terminal in the bottom panel: the run's `vt100` screen drawn with `tui-term`,
-//! its colours mapped through the theme (`Theme::terminal_cell`: Dark+'s terminal palette).
+//! its colours mapped through the theme (`Theme::terminal_cell`: Dark+'s terminal palette), with
+//! the mouse selection (`tasks::select`) in `editor.selection`'s background over them.
 //!
 //! Render-time state written back: every running task's PTY is resized to the tab's area
 //! (`layout::task_area`), and `app.tasks.size` is set to it. A screen taller than the area (an
@@ -41,16 +42,18 @@ impl tui_term::widget::Screen for Shifted<'_> {
 }
 
 /// Draws `run`'s screen in `area` (the caller fills its background): `Shifted` from `top_row`
-/// through `PseudoTerminal` (its drawn cursor off), every cell through `theme.terminal_cell`, and
-/// the terminal cursor while `focused`, running, live and not hidden. Returns the scrollback (0 =
-/// the live screen). `status()` is read before `screen()`: the spawn holds the state lock while it
-/// takes the screen's (the reverse order deadlocks on a run that is still starting).
+/// through `PseudoTerminal` (its drawn cursor off), every cell through `theme.terminal_cell`, the
+/// mouse selection (`tasks::select`) in `editor.selection`'s background, and the terminal cursor
+/// while `focused`, running, live and not hidden. Returns the scrollback (0 = the live screen).
+/// `status()` is read before `screen()`: the spawn holds the state lock while it takes the
+/// screen's (the reverse order deadlocks on a run that is still starting).
 fn draw_screen(f: &mut Frame, area: Rect, run: &Run, theme: &Theme, focused: bool) -> usize {
     let running = run.status().is_running();
     let parser = run.screen();
+    let top = top_row(parser.screen(), area.height);
     let screen = Shifted {
         screen: parser.screen(),
-        top: top_row(parser.screen(), area.height),
+        top,
     };
     // The terminal cursor (not tui-term's drawn one) while the tab has the keys.
     let term = PseudoTerminal::new(&screen).cursor(Cursor::default().visibility(false));
@@ -59,6 +62,28 @@ fn draw_screen(f: &mut Frame, area: Rect, run: &Run, theme: &Theme, focused: boo
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
             theme.terminal_cell(&mut out[(x, y)]);
+        }
+    }
+    if let Some(selection) = run.selection()
+        && let Some(bg) = theme.get("editor.selection").bg
+    {
+        // `contents_between`'s cells: the first row from its start column, the middle rows the
+        // whole width, the last up to its end column; only the rows drawn here are painted.
+        let ((start_row, start_col), (end_row, end_col)) = selection.rows();
+        for row in start_row..=end_row {
+            if row < top || row >= top + area.height {
+                continue;
+            }
+            let (from, to) = match (row == start_row, row == end_row) {
+                (true, true) => (start_col, end_col),
+                (true, false) => (start_col, area.width),
+                (false, true) => (0, end_col),
+                (false, false) => (0, area.width),
+            };
+            let y = area.y + (row - top);
+            for col in from..to.min(area.width) {
+                out[(area.x + col, y)].set_bg(bg);
+            }
         }
     }
     let back = parser.screen().scrollback();

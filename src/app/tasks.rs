@@ -5,7 +5,9 @@
 use crossterm::event::{KeyEvent, MouseEvent};
 
 use super::{App, Focus, Level};
-use crate::command::TaskCommand as T;
+use crate::clipboard::Copied;
+use crate::command::{Command, TaskCommand as T};
+use crate::config::keymap::Context;
 use crate::layout::{self, PanelTab};
 use crate::palette::Picker;
 use crate::tasks::{self, Event, Run, RunId, Status, Template, keys};
@@ -214,15 +216,56 @@ impl App {
     }
 
     /// `AppEvent::Task`: output and starts only need a redraw (`handle_app_event` asks for one).
-    /// An ended run gets its end note below its output ("Task 'build' exited with code 2"), also
-    /// shown in the status bar.
+    /// New output clears the mouse selection (the rows moved, so the cells would point at other
+    /// text). An ended run gets its end note below its output ("Task 'build' exited with code 2"),
+    /// also shown in the status bar.
     pub(super) fn task_event(&mut self, ev: Event) {
+        if let Event::Output(id) = ev {
+            if let Some(run) = self.tasks.get(id) {
+                run.clear_selection();
+            }
+            return;
+        }
         let Event::Ended(id) = ev else { return };
         let Some(run) = self.tasks.get(id) else { return };
         let Some((level, note)) = end_run_note(run, "Task", &run.name) else {
             return;
         };
         self.notify(level, note);
+    }
+
+    /// Cmd+C on a terminal: copies the mouse selection of the active one — a shell tab with the
+    /// editor's keys, else the shown task — and returns true. False when there is no selection,
+    /// so copy elsewhere (and a terminal with nothing selected) is unaffected.
+    pub(super) fn terminal_copy(&mut self) -> bool {
+        let Some(text) = self.active_terminal().and_then(|run| run.copy_selection()) else {
+            return false;
+        };
+        self.clipboard.write(Copied {
+            text,
+            whole_line: false,
+            pieces: Vec::new(),
+        });
+        true
+    }
+
+    /// Whether `key` is the editor's Cmd+C over the focused terminal with a mouse selection, so
+    /// it copies instead of going to the program (where Ctrl+C is SIGINT). Without a selection
+    /// the key stays the program's. It follows the editor's copy binding, so a rebind works.
+    pub(super) fn terminal_copy_key(&self, key: &KeyEvent) -> bool {
+        matches!(self.context(), Context::Shell | Context::Task)
+            && self.keymap.lookup(key, Context::Editor) == Some(Command::Copy)
+            && self.active_terminal().is_some_and(|run| run.selection().is_some())
+    }
+
+    /// The terminal Cmd+C copies: a shell tab with the editor's keys, else the shown task (with
+    /// the panel's keys). Nothing elsewhere, so the editor's own copy is untouched by a task's
+    /// lingering selection.
+    fn active_terminal(&self) -> Option<&Run> {
+        match self.group().active_shell() {
+            Some(shell) if self.ui.focus == Focus::Editor => Some(&shell.run),
+            _ => self.task_focused().and_then(|id| self.tasks.get(id)),
+        }
     }
 
     /// On quit (and when the terminal goes away): language servers asked to exit, running

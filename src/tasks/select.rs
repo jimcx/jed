@@ -23,9 +23,6 @@ pub struct Selection {
 /// upwards or leftwards copies the same text as the opposite one), soft-wrapped rows joined
 /// without a line break, and trailing spaces trimmed off each line. Empty when it covers no
 /// cell.
-///
-/// Only the tests call this until the mouse wiring copies through it.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn copy_text(screen: &Screen, selection: &Selection) -> String {
     let (start, end) = selection.rows();
     screen

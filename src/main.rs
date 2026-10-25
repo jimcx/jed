@@ -118,6 +118,8 @@ mod syntax;
 #[cfg(test)]
 mod syntax_plugins_tests;
 mod tasks;
+#[cfg(test)]
+mod term_select_tests;
 mod terminal;
 mod theme;
 #[cfg(test)]

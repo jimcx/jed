@@ -38,7 +38,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `commit_tabs.rs` — commit tabs: `sync_commit_tabs`, `fit_commit_tabs`, opening a stat row's diff
 - `scm.rs` — the Source Control view (`app.scm`): focus, keys, stage / unstage, opening diffs (a Merge Changes file opens the file)
 - `history.rs` — file history (`app.file_history`): recording after saves, moving on renames, Show / Restore / Compare
-- `tasks.rs` — tasks (`app.tasks`): templates, running, task tabs, keys / paste to a task, events
+- `tasks.rs` — tasks (`app.tasks`): templates, running, task tabs, keys / paste to a task, events, the terminal mouse selection's copy (`terminal_copy`, Cmd+C when one is selected)
 - `shell.rs` — shell tabs (`Tab::Shell`): "Terminal: New Shell" opening `$SHELL` in the active group with `JED_IPC`, its title (the terminal's OSC title or the shell, with the state glyph; numbered per program by `ShellTab::number`), "Terminal: Install Shell Integration" (`install_shell_integration`: the snippets written to the state dir, the wizard's init file and source line, `shell_integration_*` events), `Context::Shell`'s scroll commands, keys / pastes to its run (`tasks::keys`), its run's events (a title change renames the tab, red after a failed command; the exit note kept on screen and in the status bar) and `shutdown_shells` at quit; `ui::task::render_shell` draws it
 - `session.rs` — sessions (`app.session`): restore at start, `save_session` on quit
 - `backup.rs` — crash backups (`app.backups`): `sync_backups`, `backup_tick`, the offer and restores, `update_crash_snapshot`
@@ -46,7 +46,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `recent.rs` — recent workspaces (`app.recent`): record at start, Ctrl+R's picker
 - `scrollbar.rs` — scroll bars: `with_scrollable(target, f)`, clicks, drags, hover
 - `tab_drag.rs` — dragging a tab along its bar (`Drag::Tab`): the target gap in any group's bar under the pointer (the drop marker's position) or a group's editor, reordering on release, moving the tab to another group (`Groups::move_tab_between`, an empty source closing) / into its editor's centre (activated), edge drops that snap (the nearer quarter of an editor splits its group on that side through `Groups::split_empty_of`, the tab landing in the new split) and the shaded zone (`tab_drop_shade`, `editor.dropBackground`), Esc / a release outside cancelling
-- `mouse.rs` — clicks, drags and the wheel via the last frame's `HitMap` (a merge conflict's action-row button accepts that side or opens its compare diff); a shell or task tab's program that asked for the mouse gets them as xterm mouse input (`terminal_mouse`, `tasks::mouse`), nothing while its view is scrolled back; `ClickTracker`, `Drag`
+- `mouse.rs` — clicks, drags and the wheel via the last frame's `HitMap` (a merge conflict's action-row button accepts that side or opens its compare diff); a shell or task tab's program that asked for the mouse gets them as xterm mouse input (`terminal_mouse`, `tasks::mouse`), nothing while its view is scrolled back; otherwise a left drag selects its text (`terminal_select`, `Drag::Terminal`); `ClickTracker`, `Drag`
 - `mode.rs` — `Mode::{Workspace, SingleFile}` (`app.mode`, `jed -s`): `allows(cmd)` / `allows_view(panel)`, the one availability check (`execute`, palette, activity bar, icon clicks)
 
 Things to know before editing:
