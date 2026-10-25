@@ -69,12 +69,24 @@ fn task_text(app: &App, id: RunId) -> String {
     app.tasks.get(id).unwrap().screen().screen().contents()
 }
 
+/// Waits for the active shell's first prompt (its only output before a command runs), so a command
+/// written next echoes after it and its own output starts at column 0 rather than interleaving with
+/// a prompt that arrives once the shell finishes starting.
+async fn shell_prompt(app: &mut App) {
+    assert!(
+        app.settle(|a| !screen_text(a).trim().is_empty()).await,
+        "the shell printed its prompt:\n{}",
+        screen_text(app)
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn term_select_shell_drag_highlights_and_copy() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
     app.test_execute(Command::NewShell);
+    shell_prompt(&mut app).await;
     assert!(
         app.group()
             .active_shell()
@@ -184,7 +196,7 @@ async fn term_select_ended_task_drag_uses_the_drawn_rows() {
         &root,
         &state,
         Some(
-            "[tasks.ended]\ncommand = '''printf 'one\\ntwo\\nthree\\nfour\\nfive\\nsix\\nseven\\neight\\nnine\\nten\\n'''\n",
+            "[tasks.ended]\ncommand = '''printf 'one\\ntwo\\nthree\\nfour\\nfive\\nsix\\nseven\\neight\\nnine\\nten\\n''''\n",
         ),
     );
     drop(draw(&mut app, 100, 30));
@@ -257,6 +269,7 @@ async fn term_select_click_clears_and_copy_leaves_the_clipboard_alone() {
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
     app.test_execute(Command::NewShell);
+    shell_prompt(&mut app).await;
     assert!(
         app.group()
             .active_shell()
