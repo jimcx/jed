@@ -300,7 +300,10 @@ async fn shell_running_titles_keep_the_per_program_number() {
 /// (nothing on disk), Esc closes; no state dir, or a shell with no snippet (`sh`), says so.
 #[tokio::test(flavor = "multi_thread")]
 async fn shell_install_wizard_shows_the_paths_and_copies_the_line() {
-    let (_d, root, state) = dirs();
+    let (_d, root, _state) = dirs();
+    // A short state dir: macOS temp paths are long enough to clip in the wizard's dialog.
+    let state_tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+    let state = crate::workspace::normalize(state_tmp.path());
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/zsh".into();
 
