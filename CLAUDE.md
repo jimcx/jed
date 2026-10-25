@@ -62,7 +62,7 @@ crossterm is patched via `[patch.crates-io]` with a fork (github.com/jimcx/cross
 
 ## Commits
 
-Look at `git log`. Milestone work: subject `<Milestone name> (<task id>): <short summary>` (one task, e.g. `Tools view and logs (tools-a): …`; the numbered milestones used `Milestone N (Na): …`), blank line, `- ` bullets of user-visible behaviour and notable internals (wrapped ~75 cols). Smaller changes: short imperative subject (`Mark milestone 4 done in the plan`, `Fix crash opening a file inside its workspace; add .workspace`) with a prose body explaining the why when non-obvious. Plan-only edits go in their own commit. End with the `Co-Authored-By:` trailer.
+Look at `git log`. Milestone work: subject `<Milestone name> (<task id>): <short summary>` (one task, e.g. `Tools view and logs (tools-a): …`; the numbered milestones used `Milestone N (Na): …`), blank line, `- ` bullets of user-visible behaviour and notable internals (wrapped ~75 cols). Smaller changes: short imperative subject (`Mark milestone 4 done in the plan`, `Fix crash opening a file inside its workspace; add .workspace`) with a prose body explaining the why when non-obvious. Plan-only edits go in their own commit. Never end with the `Co-Authored-By:` trailer.
 
 ## Keeping these files current
 
