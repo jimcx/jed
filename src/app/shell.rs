@@ -3,16 +3,18 @@
 //! rename it while a command runs and append the exit note, and quitting hangs every shell up.
 //! Drawing is `ui::task::render_shell`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crossterm::event::KeyEvent;
 
 use super::tasks::{Scroll, end_run_note, scroll_run, send_key, send_paste};
-use super::{App, AppEvent, Focus};
+use super::{App, AppEvent, Focus, Level, Prompt};
 use crate::command::ShellCommand;
 use crate::group::{Groups, Tab};
 use crate::shell::{self, ShellTab};
 use crate::tasks::{self, Event, Run, Sink};
+use crate::{paths, shell_integration};
 
 impl App {
     /// "Terminal: New Shell" (`terminal.newShell`, Ctrl+`): the user's `$SHELL` (else
@@ -46,6 +48,39 @@ impl App {
         self.group_mut().open_tab(Tab::Shell(Box::new(tab)));
         self.ui.focus = Focus::Editor;
         self.needs_redraw = true;
+    }
+
+    /// "Terminal: Install Shell Integration" (`terminal.installShellIntegration`): writes the three
+    /// snippets into the state dir off-thread and opens the wizard with the detected shell's init
+    /// file and the line sourcing its snippet. A shell without a snippet (`sh`) gets a message
+    /// instead; the shell itself is never run, so a new shell tab is needed to pick the line up.
+    pub(super) fn install_shell_integration(&mut self) {
+        let Some(state) = self.state_dir.clone() else {
+            self.notify(
+                Level::Warning,
+                "No shell integration: there's no state directory".into(),
+            );
+            return;
+        };
+        let base = shell::base(&self.tasks.shell);
+        let Some(init) = shell_integration::init_for(&paths::home(), &paths::config_home(), &state, &base) else {
+            self.notify(
+                Level::Warning,
+                format!("No shell integration for '{base}': zsh, bash and fish have one"),
+            );
+            return;
+        };
+        let dir = state.clone();
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = shell_integration::write_snippets(&dir);
+            let _ = tx.send(AppEvent::ShellIntegrationWritten(result));
+        });
+        self.prompt = Some(Prompt::InstallShellIntegration {
+            snippet: init.snippet,
+            init: init.init,
+            line: init.source,
+        });
     }
 
     /// Whether a shell tab has the keys (`Context::Shell`).
@@ -113,6 +148,30 @@ impl App {
                 self.notify(level, note);
             }
             Event::Started(_) | Event::Output(_) => {}
+        }
+    }
+
+    /// `AppEvent::ShellIntegrationWritten`: only a failure needs saying (the wizard still opens:
+    /// copying works, and a later install writes the files again).
+    pub(super) fn shell_integration_written(&mut self, result: Result<(), String>) {
+        match result {
+            Ok(()) => tracing::debug!("shell integration snippets written"),
+            Err(e) => self.notify(Level::Error, format!("Can't write the shell integration snippets: {e}")),
+        }
+    }
+
+    /// `AppEvent::ShellIntegrationInstalled`: the line is in the init file — a new shell tab picks
+    /// it up from there — or the append failed.
+    pub(super) fn shell_integration_installed(&mut self, result: Result<PathBuf, String>) {
+        match result {
+            Ok(init) => self.notify(
+                Level::Info,
+                format!(
+                    "Appended to {} — open a new shell tab",
+                    crate::recent::display(&init, &paths::home())
+                ),
+            ),
+            Err(e) => self.notify(Level::Error, format!("Can't install the shell integration: {e}")),
         }
     }
 }

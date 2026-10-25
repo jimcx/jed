@@ -16,7 +16,12 @@
 //! with a printed note when the binary or git is missing) — `stty size` follows the editor
 //! area's resize and a split, and a `.workspace` `scrollback = 50` is what a new shell and a
 //! new task run keep. That the user's own `.zshrc` / `.bashrc` runs is a hand check: it needs
-//! the user's real init and shell, which a test must not depend on.
+//! the user's real init and shell, which a test must not depend on. shell_integration-b: the
+//! wizard (`Command::InstallShellIntegration`) writes the snippets into a test state dir and
+//! shows the detected shell's init file and source line (C copies it, A appends it to a temp
+//! file), and the written bash snippet is sourced in a real `bash --norc --noprofile` over a PTY
+//! — a command's title, a program's own OSC 2 title until `133;D`, the red idle glyph after a
+//! failed command, and the `JED_IPC` guard's no-op when there's no socket.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -26,7 +31,7 @@ use crossterm::event::{Event as CEvent, KeyCode, KeyModifiers, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-use crate::app::{App, Focus, Level};
+use crate::app::{App, Focus, Level, Prompt};
 use crate::buffer::Buffer;
 use crate::command::Command;
 use crate::syntax::Language;
@@ -288,6 +293,243 @@ async fn shell_running_titles_keep_the_per_program_number() {
         "back to the numbered prompt: {:?}",
         title(&app)
     );
+}
+
+/// "Terminal: Install Shell Integration" writes the snippets into the state dir and opens the
+/// wizard with the detected shell's init file and the line sourcing its snippet: C copies the line
+/// (nothing on disk), Esc closes; no state dir, or a shell with no snippet (`sh`), says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_install_wizard_shows_the_paths_and_copies_the_line() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    app.tasks.shell = "/bin/zsh".into();
+
+    // No state dir in tests: nothing to write the snippets to.
+    app.test_execute(Command::InstallShellIntegration);
+    assert!(app.prompt.is_none());
+    assert_eq!(message(&app), "No shell integration: there's no state directory");
+
+    app.state_dir = Some(state.clone());
+    app.test_execute(Command::InstallShellIntegration);
+    let (snippet, init, line) = match app.prompt.as_ref() {
+        Some(Prompt::InstallShellIntegration { snippet, init, line }) => (snippet.clone(), init.clone(), line.clone()),
+        _ => panic!("the wizard opened"),
+    };
+    assert_eq!(snippet, state.join("shell-integration.zsh"));
+    assert_eq!(
+        init,
+        crate::paths::home().join(".zshrc"),
+        "the detected shell's init file"
+    );
+    assert_eq!(line, format!("source '{}'", snippet.display()));
+    assert!(
+        app.settle(|_| state.join("shell-integration.bash").is_file()).await,
+        "the snippets were written off-thread"
+    );
+
+    // The dialog shows the paths, the line and the buttons.
+    let term = draw(&mut app, 100, 30);
+    let drawn = rows(&term, ratatui::layout::Rect::new(0, 0, 100, 30)).join("\n");
+    let snippet_shown = crate::recent::display(&snippet, &crate::paths::home());
+    for needle in [line.as_str(), snippet_shown.as_str(), "[C]opy", "[A]ppend"] {
+        assert!(drawn.contains(needle), "the dialog shows {needle:?}:\n{drawn}");
+    }
+    assert!(
+        drawn.contains(&format!(
+            "[A]ppend to ~/{}",
+            init.strip_prefix(crate::paths::home()).unwrap().display()
+        )),
+        "the append button names the init file:\n{drawn}"
+    );
+
+    // C copies the line and leaves the dialog open.
+    app.press(KeyCode::Char('c'), KeyModifiers::NONE);
+    assert_eq!(app.clipboard.read().unwrap(), line);
+    assert_eq!(message(&app), "Copied the shell integration line");
+    assert!(matches!(app.prompt, Some(Prompt::InstallShellIntegration { .. })));
+
+    app.press(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.prompt.is_none());
+
+    // `sh` has no snippet: a message instead of the wizard.
+    app.tasks.shell = "/bin/sh".into();
+    app.test_execute(Command::InstallShellIntegration);
+    assert!(app.prompt.is_none());
+    assert_eq!(
+        message(&app),
+        "No shell integration for 'sh': zsh, bash and fish have one"
+    );
+}
+
+/// The wizard's A appends the line off-thread (here to a temp init file, never the real `~/.zshrc`)
+/// and reports it: one newline-first line, then a new shell tab picks it up.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_install_wizard_appends_the_line() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    let init = state.join("zshrc");
+    std::fs::write(&init, "export A=1").unwrap();
+    let line = "source '/state/shell-integration.zsh'".to_string();
+    app.prompt = Some(Prompt::InstallShellIntegration {
+        snippet: state.join("shell-integration.zsh"),
+        init: init.clone(),
+        line: line.clone(),
+    });
+
+    app.press(KeyCode::Char('a'), KeyModifiers::NONE);
+    assert!(app.prompt.is_none(), "appending closes the wizard");
+    assert!(
+        app.settle(|a| message(a).starts_with("Appended to ")).await,
+        "the append was reported: {:?}",
+        message(&app)
+    );
+    assert_eq!(std::fs::read_to_string(&init).unwrap(), format!("export A=1\n{line}\n"));
+    assert_eq!(
+        message(&app),
+        format!(
+            "Appended to {} — open a new shell tab",
+            crate::recent::display(&init, &crate::paths::home())
+        )
+    );
+}
+
+/// The app's last message, for the tests above.
+fn message(app: &App) -> String {
+    app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
+}
+
+/// `bash`'s path, or a printed skip note and `None` (the snippet tests run the real bash).
+fn bash_or_skip(test: &str) -> Option<PathBuf> {
+    let bash = ["/bin/bash", "/usr/bin/bash", "/usr/local/bin/bash"]
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|p| p.is_file());
+    if bash.is_none() {
+        eprintln!("skipped {test}: needs bash");
+    }
+    bash
+}
+
+/// A shell running the real bash snippet: with `JED_IPC` set (a listening socket) the guard passes,
+/// and its hooks title the tab — a command while it runs (`read ●`), a program's own OSC 2 title
+/// until `133;D` (`file.rs — VIM ●`), and red at the prompt after a failed one. `read` waits for a
+/// line so a command can be ended without a signal racing its start.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_bash_snippet_titles_a_real_shell() {
+    let Some(bash) = bash_or_skip("shell_bash_snippet_titles_a_real_shell") else {
+        return;
+    };
+    let (_d, root, state) = dirs();
+    let sockets = tempfile::tempdir().unwrap();
+    let (mut app, _socket) = listening_app(&root, &state, &sockets).await;
+    let wrapper = shell_script(
+        &root,
+        "myshell",
+        &format!("exec {} --norc --noprofile\n", bash.display()),
+    );
+    app.tasks.shell = wrapper;
+    app.test_execute(Command::NewShell);
+    let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
+    assert_eq!(title(&app), "myshell ○");
+
+    crate::shell_integration::write_snippets(&state).unwrap();
+    let snippet = state.join("shell-integration.bash");
+    run_in_shell(&mut app, &format!("source '{}'", snippet.display()));
+    run_in_shell(&mut app, "read x");
+    assert!(
+        app.settle(|a| title(a) == "read ●").await,
+        "preexec and its OSC 0 name the command: {:?}\n{}",
+        title(&app),
+        shell_text(&app)
+    );
+    // A line ends `read`: the shell is back at its prompt (a success, so not red).
+    app.group().active_shell().unwrap().run.write(b"\n");
+    assert!(
+        app.settle(|a| title(a) == "myshell ○" && a.group().active_shell().is_some_and(|s| !s.error))
+            .await,
+        "back at the prompt: {:?}\n{}",
+        title(&app),
+        shell_text(&app)
+    );
+
+    // A program's own title, until its command ends (`133;D` resets it).
+    run_in_shell(&mut app, "sh -c 'printf \"\\033]0;file.rs — VIM\\007\"; read x'");
+    assert!(
+        app.settle(|a| title(a) == "file.rs — VIM ●").await,
+        "the program's title replaces the command's: {:?}\n{}",
+        title(&app),
+        shell_text(&app)
+    );
+    app.group().active_shell().unwrap().run.write(b"\n");
+    assert!(
+        app.settle(|a| title(a) == "myshell ○").await,
+        "`133;D` resets the program's title: {:?}",
+        title(&app)
+    );
+
+    // `false`: the idle glyph in the error colour.
+    run_in_shell(&mut app, "false");
+    assert!(
+        app.settle(|a| title(a) == "myshell ○" && a.group().active_shell().is_some_and(|s| s.error))
+            .await,
+        "a failed command's prompt: {:?}",
+        title(&app)
+    );
+    let term = draw(&mut app, 80, 24);
+    let bar = app.hits.group(app.groups.active).unwrap().tab_bar;
+    let drawn: String = (bar.x..bar.x + bar.width)
+        .map(|x| term.backend().buffer()[(x, bar.y)].symbol())
+        .collect();
+    let glyph = drawn.find('○').expect("the idle glyph is in the tab bar") as u16;
+    assert_eq!(
+        term.backend().buffer()[(bar.x + glyph, bar.y)].fg,
+        app.theme.get("tab.shellError").fg.unwrap(),
+        "the failed command's `○` is red"
+    );
+}
+
+/// Without `JED_IPC` (no socket) the snippet's guard returns: sourcing it does nothing, so a
+/// command doesn't rename the tab and the shell keeps running as if it weren't there.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_bash_snippet_does_nothing_without_jed_ipc() {
+    let Some(bash) = bash_or_skip("shell_bash_snippet_does_nothing_without_jed_ipc") else {
+        return;
+    };
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    let wrapper = shell_script(
+        &root,
+        "myshell",
+        &format!("exec {} --norc --noprofile\n", bash.display()),
+    );
+    app.tasks.shell = wrapper;
+    app.test_execute(Command::NewShell);
+    let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
+
+    crate::shell_integration::write_snippets(&state).unwrap();
+    let snippet = state.join("shell-integration.bash");
+    run_in_shell(&mut app, &format!("source '{}'", snippet.display()));
+    // The guard's `return` ended the sourcing only: the shell still runs commands.
+    run_in_shell(&mut app, "echo $((6*7))");
+    assert!(
+        app.settle(|a| shell_text(a).contains("42")).await,
+        "the shell runs on after the guard returned:\n{}",
+        shell_text(&app)
+    );
+
+    // A command prints a marker (not in the typed line) and then waits, so the title is checked
+    // while one really runs.
+    run_in_shell(&mut app, "printf 'M%s\\n' ARK; read x");
+    assert!(
+        app.settle(|a| shell_text(a).contains("MARK")).await,
+        "the command runs:\n{}",
+        shell_text(&app)
+    );
+    let started = Instant::now();
+    assert!(app.settle(|_| started.elapsed() >= Duration::from_millis(300)).await);
+    assert_eq!(title(&app), "myshell ○", "no JED_IPC, so nothing renames the tab");
+    assert!(!app.group().active_shell().unwrap().error);
+    app.group().active_shell().unwrap().run.write(b"\n");
 }
 
 /// The shell gets a terminal (`TERM`, `COLORTERM`); without a listening socket its environment

@@ -12,12 +12,21 @@ pub fn config_dir() -> PathBuf {
     xdg_dir("XDG_CONFIG_HOME", ".config")
 }
 
+/// `$XDG_CONFIG_HOME`, defaulting to `~/.config` (on macOS too): the folder other programs keep
+/// their config in (fish's `fish/config.fish`).
+pub fn config_home() -> PathBuf {
+    xdg_base("XDG_CONFIG_HOME", ".config")
+}
+
 fn xdg_dir(var: &str, default: &str) -> PathBuf {
-    let base = std::env::var_os(var)
+    xdg_base(var, default).join("jed")
+}
+
+fn xdg_base(var: &str, default: &str) -> PathBuf {
+    std::env::var_os(var)
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| home().join(default));
-    base.join("jed")
+        .unwrap_or_else(|| home().join(default))
 }
 
 /// `$HOME`, else `.`.

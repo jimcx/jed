@@ -242,6 +242,9 @@ pub enum Command {
     RunTask,
     /// "Terminal: New Shell": the user's `$SHELL` in a new tab of the active group.
     NewShell,
+    /// "Terminal: Install Shell Integration": the snippet's path and the line that sources it in
+    /// the shell's init file; Copy, or append it to the file.
+    InstallShellIntegration,
     /// Kills the shown task tab's run (else the newest running one).
     KillTask,
     /// Closes the shown task tab, killing its run if it still runs.
@@ -931,6 +934,7 @@ impl Command {
         all.extend([
             Command::RunTask,
             Command::NewShell,
+            Command::InstallShellIntegration,
             Command::KillTask,
             Command::CloseTask,
         ]);
@@ -1257,6 +1261,7 @@ impl Command {
             Command::PreviousChange => "editor.previousChange".into(),
             Command::RunTask => "task.run".into(),
             Command::NewShell => "terminal.newShell".into(),
+            Command::InstallShellIntegration => "terminal.installShellIntegration".into(),
             Command::KillTask => "task.kill".into(),
             Command::CloseTask => "task.close".into(),
             Command::OpenRecentWorkspace => "workspace.openRecent".into(),
@@ -1580,6 +1585,7 @@ impl Command {
             Command::PreviousChange => "Go to Previous Change",
             Command::RunTask => "Tasks: Run Task",
             Command::NewShell => "Terminal: New Shell",
+            Command::InstallShellIntegration => "Terminal: Install Shell Integration",
             Command::KillTask => "Tasks: Kill Task",
             Command::CloseTask => "Tasks: Close Task Tab",
             Command::OpenRecentWorkspace => "Workspaces: Open Recent Workspace",
@@ -1754,6 +1760,7 @@ mod tests {
             Command::RestoreFileHistory => 78,
             Command::RunTask => 79,
             Command::NewShell => 119,
+            Command::InstallShellIntegration => 125,
             Command::KillTask => 80,
             Command::CloseTask => 81,
             Command::Task(_) => 82,
@@ -1793,7 +1800,7 @@ mod tests {
             Command::ConvertIndentationToTabs => 112,
         }
     }
-    const VARIANTS: u8 = 125;
+    const VARIANTS: u8 = 126;
 
     #[test]
     fn all_lists_every_variant() {

@@ -323,6 +323,10 @@ enum AppEvent {
     RecentRecorded(Result<(), String>),
     /// The recent workspaces were read for "Open Recent Workspace".
     RecentListed(Box<recent::Listed>),
+    /// The shell integration snippets were written into the state dir (`app/shell.rs`).
+    ShellIntegrationWritten(Result<(), String>),
+    /// The shell integration's source line was appended to a shell's init file.
+    ShellIntegrationInstalled(Result<PathBuf, String>),
     /// A tool log got lines since the app last rearmed the store's waker (`app/tools.rs`).
     LogsChanged,
 }
@@ -1297,6 +1301,7 @@ impl App {
             Command::RestoreFileHistory => self.show_file_history(true),
             Command::RunTask => self.show_run_task(),
             Command::NewShell => self.new_shell(),
+            Command::InstallShellIntegration => self.install_shell_integration(),
             Command::OpenRecentWorkspace => self.show_recent(),
             Command::ToggleRenderWhitespace => self.ui.whitespace_toggled = !self.ui.whitespace_toggled,
             Command::IndentUsingSpaces
@@ -1521,6 +1526,8 @@ impl App {
             AppEvent::BackupRestore(r) => self.backup_restored(*r),
             AppEvent::RecentRecorded(result) => self.recent_recorded(result),
             AppEvent::RecentListed(listed) => self.recent_listed(*listed),
+            AppEvent::ShellIntegrationWritten(result) => self.shell_integration_written(result),
+            AppEvent::ShellIntegrationInstalled(result) => self.shell_integration_installed(result),
             AppEvent::LogsChanged => {} // handled above: no redraw, no navigation
         }
         self.nav_end(here, false);

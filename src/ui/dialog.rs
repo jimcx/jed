@@ -161,6 +161,25 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) {
             lines.push(Line::raw(""));
             lines.push(buttons(&[("T", "rash"), ("C", "ancel")]));
         }
+        Prompt::InstallShellIntegration { snippet, init, line } => {
+            let home = crate::paths::home();
+            let short = |p: &std::path::Path| match p.strip_prefix(&home) {
+                Ok(r) => format!("~/{}", r.display()),
+                Err(_) => p.display().to_string(),
+            };
+            lines.push(Line::raw(" The tab bar follows each command the shell runs:"));
+            lines.push(Line::raw(" add this line to the shell's init file."));
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(format!("   {line}"), key));
+            lines.push(Line::raw(""));
+            lines.push(Line::raw(format!(" The snippet it sources: {}", short(snippet))));
+            lines.push(Line::raw(format!(" Init file: {}", short(init))));
+            lines.push(Line::raw(""));
+            lines.push(Line::raw(" A new shell tab picks it up; jed never runs the shell."));
+            lines.push(Line::raw(""));
+            let append = format!("ppend to {}", short(init));
+            lines.push(buttons(&[("C", "opy"), ("A", &append)]));
+        }
         Prompt::Input(input) => {
             let title = match &input.kind {
                 InputKind::NewFile { dir } => format!(" New file in {}/", rel(dir)),

@@ -110,6 +110,7 @@ mod search_view;
 mod selection;
 mod session;
 mod shell;
+mod shell_integration;
 #[cfg(test)]
 mod shell_tests;
 mod shift;

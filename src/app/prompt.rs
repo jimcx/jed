@@ -4,9 +4,10 @@ use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::{App, FileOp, Level};
+use super::{App, AppEvent, FileOp, Level};
 use crate::buffer::BufferId;
 use crate::buffer::pos::ByteIdx;
+use crate::clipboard::Copied;
 use crate::explorer;
 use crate::field::{Outcome, TextField};
 use crate::layout::GroupId;
@@ -57,6 +58,13 @@ pub enum Prompt {
     /// (`git add`, marking it resolved) / Cancel.
     ConfirmStageConflict {
         path: PathBuf,
+    },
+    /// "Terminal: Install Shell Integration": the snippet to source, the shell's init file and the
+    /// line that sources it; C copies the line, A appends it, Esc closes.
+    InstallShellIntegration {
+        snippet: PathBuf,
+        init: PathBuf,
+        line: String,
     },
 }
 
@@ -249,6 +257,26 @@ impl App {
                 }
                 _ if esc || ch == Some('c') => self.close_prompt(),
                 _ => self.prompt = Some(Prompt::ConfirmStageConflict { path }),
+            },
+            Prompt::InstallShellIntegration { snippet, init, line } => match ch {
+                Some('c') => {
+                    self.clipboard.write(Copied {
+                        text: line.clone(),
+                        ..Copied::default()
+                    });
+                    self.notify(Level::Info, "Copied the shell integration line".into());
+                    self.prompt = Some(Prompt::InstallShellIntegration { snippet, init, line });
+                }
+                Some('a') => {
+                    self.close_prompt();
+                    let tx = self.tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let result = crate::shell_integration::append_line(&init, &line).map(|()| init);
+                        let _ = tx.send(AppEvent::ShellIntegrationInstalled(result));
+                    });
+                }
+                _ if esc => self.close_prompt(),
+                _ => self.prompt = Some(Prompt::InstallShellIntegration { snippet, init, line }),
             },
             Prompt::Input(mut input) => {
                 if esc {
