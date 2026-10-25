@@ -6,6 +6,7 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
 use super::files::Goto;
+use super::mouse::{Drag, FieldTarget, field_at};
 use super::{App, AppEvent, Focus, Level};
 use crate::buffer::pos;
 use crate::command::SearchCommand as S;
@@ -402,9 +403,19 @@ impl App {
             self.search_command(S::ToggleDetails);
         } else if hit.replace_toggle.contains(at) {
             self.search_command(S::ToggleReplace);
-        } else if let Some((input, _)) = input {
+        } else if let Some((input, rect)) = input {
             self.search_view.input = input;
             self.search_view.list_focused = false;
+            // The cursor goes where clicked (a drag then selects); Shift extends.
+            let (scroll, text) = match input {
+                Input::Query => (hit.input_scrolls[0], &mut self.search_view.query),
+                Input::Include => (hit.input_scrolls[1], &mut self.search_view.include),
+                Input::Exclude => (hit.input_scrolls[2], &mut self.search_view.exclude),
+                Input::Replace => (hit.replace_scroll, &mut self.search_view.replace),
+            };
+            let at = field_at(text, rect, scroll, m.column);
+            text.click(at, count, m.modifiers.contains(KeyModifiers::SHIFT));
+            self.drag = Some(Drag::Field(FieldTarget::Search(input)));
         } else if hit.list.contains(at) {
             let row = hit.rows.get((at.y - hit.list.y) as usize);
             if let (Some(key), Some(results)) = (row, &mut self.search) {

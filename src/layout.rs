@@ -482,10 +482,13 @@ pub struct SearchHit {
     pub details: Rect,
     /// The query, files to include and files to exclude inputs (the last two empty while hidden).
     pub inputs: [Rect; 3],
+    /// Their draw-time sideways scrolls, in the same order.
+    pub input_scrolls: [usize; 3],
     /// The `▸` / `▾` replace toggle left of the query.
     pub replace_toggle: Rect,
     /// The replace input (empty while hidden).
     pub replace: Rect,
+    pub replace_scroll: usize,
     pub list: Rect,
     pub rows: Vec<crate::search_view::RowKey>,
     /// The `×` dismiss button drawn (on the hovered row), by row.
@@ -526,20 +529,28 @@ pub struct HistoryHit {
     pub top: usize,
 }
 
-/// The find widget: its box, the replace row (if shown) and the option toggles (case, whole
-/// word, regex, and hex on a hex tab).
+/// The find widget: its box, the query and replace input rects and their draw-time sideways
+/// scrolls, and the option toggles (case, whole word, regex, and hex on a hex tab).
 #[derive(Debug, Clone, Copy)]
 pub struct FindHit {
     pub area: Rect,
+    /// The query input.
+    pub query: Rect,
+    /// The replace input (if shown).
     pub replace: Option<Rect>,
+    pub query_scroll: usize,
+    pub replace_scroll: usize,
     /// Aa, ab, .*, then 0x (an empty rect unless the widget is over a hex tab).
     pub toggles: [Rect; 4],
 }
 
-/// The palette box, and its list area: row `i` on screen is row `scroll + i`.
+/// The palette box, its input (with its draw-time sideways scroll), and its list area: row `i`
+/// on screen is row `scroll + i`.
 #[derive(Debug, Clone, Copy)]
 pub struct PaletteHit {
     pub area: Rect,
+    pub input: Rect,
+    pub input_scroll: usize,
     pub rows: Rect,
 }
 

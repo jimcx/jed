@@ -1,7 +1,7 @@
 //! The palette: input, hint and list, at the top centre as VS Code's quick input.
 
 use ratatui::Frame;
-use ratatui::layout::{Position, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear};
@@ -10,6 +10,8 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::App;
 use crate::layout::PaletteHit;
 use crate::palette::Mode;
+
+use super::find::draw_field;
 
 /// List rows shown at once.
 const MAX_ROWS: u16 = 14;
@@ -22,6 +24,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<PaletteHit> {
     let dim = base.patch(theme.get("palette.detail"));
     let hl = theme.get("palette.highlight");
     let input = base.patch(theme.get("dialog.input"));
+    let selected = input.patch(theme.get("editor.selection"));
 
     let width = (area.width * 3 / 5).clamp(60.min(area.width), area.width);
     let hint_rows = u16::from(p.hint.is_some());
@@ -59,15 +62,22 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<PaletteHit> {
         Mode::Logs if p.field.text.is_empty() => Some("Select a log to open"),
         _ => None,
     };
-    match placeholder {
-        Some(text) => out.set_stringn(inner.x + 1, inner.y, text, w.saturating_sub(1), input.patch(dim)),
-        None => out.set_stringn(inner.x + 1, inner.y, &p.field.text, w.saturating_sub(1), input),
-    };
-    let cursor_x = inner.x + 1 + p.field.text[..p.field.cursor].width() as u16;
-    f.set_cursor_position(Position {
-        x: cursor_x.min(inner.x + inner.width - 1),
+    let input_rect = Rect {
+        x: inner.x + 1,
         y: inner.y,
-    });
+        width: inner.width.saturating_sub(1),
+        height: 1,
+    };
+    let drawn = draw_field(
+        out,
+        input_rect,
+        &p.field,
+        placeholder.unwrap_or(""),
+        input,
+        selected,
+        dim,
+    );
+    f.set_cursor_position(drawn.cursor);
 
     let out = f.buffer_mut();
     let mut y = inner.y + 1;
@@ -122,6 +132,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<PaletteHit> {
     }
     Some(PaletteHit {
         area: rect,
+        input: input_rect,
+        input_scroll: drawn.scroll,
         rows: rows_area,
     })
 }

@@ -6,8 +6,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
+use super::mouse::{Drag, FieldTarget, field_at};
 use super::{App, AppEvent, Focus, Level};
 use crate::buffer::pos;
 use crate::command::{Command, PaletteCommand as P};
@@ -400,18 +401,46 @@ impl App {
         }
     }
 
-    /// Mouse while the palette is open: click a row to accept it, wheel to scroll,
-    /// click outside to close it.
+    /// Mouse while the palette is open: click the input (the cursor there, a drag selects; it
+    /// takes every mouse event, so unlike the other fields it keeps the drag here), click a row
+    /// to accept it, wheel to scroll, click outside to close it.
     pub(super) fn palette_mouse(&mut self, m: MouseEvent) {
         let Some(hit) = self.hits.palette else { return };
-        let Some(p) = &mut self.palette else { return };
+        if self.palette.is_none() {
+            return;
+        }
         let inside = |r: ratatui::layout::Rect| {
             m.column >= r.x && m.column < r.x + r.width && m.row >= r.y && m.row < r.y + r.height
         };
+        if matches!(m.kind, MouseEventKind::Down(_)) {
+            // A press while a drag is armed means its release was lost (as `mouse::left_click`).
+            self.drag = None;
+        }
         match m.kind {
-            MouseEventKind::ScrollUp => p.scroll_by(-WHEEL_ROWS),
-            MouseEventKind::ScrollDown => p.scroll_by(WHEEL_ROWS),
+            MouseEventKind::ScrollUp => {
+                if let Some(p) = &mut self.palette {
+                    p.scroll_by(-WHEEL_ROWS);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if let Some(p) = &mut self.palette {
+                    p.scroll_by(WHEEL_ROWS);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) if inside(hit.input) => {
+                let count = self.clicks.click(Instant::now(), m.column, m.row);
+                let shift = m.modifiers.contains(KeyModifiers::SHIFT);
+                let at = self
+                    .palette
+                    .as_ref()
+                    .map(|p| field_at(&p.field, hit.input, hit.input_scroll, m.column));
+                if let (Some(at), Some(p)) = (at, self.palette.as_mut()) {
+                    p.field.click(at, count, shift);
+                }
+                self.drag = Some(Drag::Field(FieldTarget::Palette));
+            }
             MouseEventKind::Down(MouseButton::Left) if inside(hit.rows) => {
+                let Some(p) = &mut self.palette else { return };
                 let index = p.scroll + (m.row - hit.rows.y) as usize;
                 if index < p.rows.len() {
                     p.select(index);
@@ -419,6 +448,20 @@ impl App {
                 }
             }
             MouseEventKind::Down(_) if !inside(hit.area) => self.close_palette(),
+            MouseEventKind::Drag(MouseButton::Left) if matches!(self.drag, Some(Drag::Field(FieldTarget::Palette))) => {
+                let at = self
+                    .palette
+                    .as_ref()
+                    .map(|p| field_at(&p.field, hit.input, hit.input_scroll, m.column));
+                if let (Some(at), Some(p)) = (at, self.palette.as_mut()) {
+                    p.field.drag_to(at);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if matches!(self.drag, Some(Drag::Field(FieldTarget::Palette))) {
+                    self.drag = None;
+                }
+            }
             _ => {}
         }
     }

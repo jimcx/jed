@@ -67,7 +67,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
         height: 1,
     };
     let out = f.buffer_mut();
-    let mut cursor = draw_field(out, find_rect, &find.query, "Find", input, selected, dim);
+    let query = draw_field(out, find_rect, &find.query, "Find", input, selected, dim);
+    let mut cursor = query.cursor;
 
     let options = app.find_options;
     let on = [options.case_sensitive, options.whole_word, options.regex, options.hex];
@@ -99,16 +100,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
     out.set_stringn(count_x, rect.y, &count, count_width as usize, dim);
 
     let mut replace = None;
+    let mut replace_scroll = 0;
     if replace_visible {
         let r = Rect {
             y: rect.y + 1,
             ..find_rect
         };
-        let replace_cursor = draw_field(out, r, &find.replace, "Replace", input, selected, dim);
+        let drawn = draw_field(out, r, &find.replace, "Replace", input, selected, dim);
         if find.field == Field::Replace {
-            cursor = replace_cursor;
+            cursor = drawn.cursor;
         }
-        replace = Some(Rect { y: r.y, ..rect });
+        replace = Some(r);
+        replace_scroll = drawn.scroll;
     }
     if let Some(e) = &error {
         let y = rect.y + rows - 1;
@@ -121,13 +124,25 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
     }
     Some(FindHit {
         area: rect,
-        replace: replace.map(|r| Rect { height: 1, ..r }),
+        query: find_rect,
+        replace,
+        query_scroll: query.scroll,
+        replace_scroll,
         toggles,
     })
 }
 
+/// One input as drawn: where its cursor is, and the sideways scroll used to keep the cursor
+/// in view (the first drawn character's display column).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct DrawnField {
+    pub cursor: Position,
+    pub scroll: usize,
+}
+
 /// One input, scrolled sideways to keep the cursor in view (all of it from column 0 when it
-/// fits; a placeholder when empty), its selected text in `selected`; returns where its cursor is.
+/// fits; a placeholder when empty), its selected text in `selected`; returns where its cursor is
+/// and its scroll, for mapping mouse columns.
 pub(super) fn draw_field(
     out: &mut ratatui::buffer::Buffer,
     r: Rect,
@@ -136,11 +151,14 @@ pub(super) fn draw_field(
     style: Style,
     selected: Style,
     dim: Style,
-) -> Position {
+) -> DrawnField {
     out.set_style(r, style);
     if field.text.is_empty() {
         out.set_stringn(r.x, r.y, placeholder, r.width as usize, style.patch(dim));
-        return Position { x: r.x, y: r.y };
+        return DrawnField {
+            cursor: Position { x: r.x, y: r.y },
+            scroll: 0,
+        };
     }
     let width = r.width as usize;
     let cursor_col: usize = field.text[..field.cursor].chars().map(|c| c.width().unwrap_or(0)).sum();
@@ -155,8 +173,11 @@ pub(super) fn draw_field(
         }
         col += w;
     }
-    Position {
-        x: r.x + (cursor_col - scroll).min(width.saturating_sub(1)) as u16,
-        y: r.y,
+    DrawnField {
+        cursor: Position {
+            x: r.x + (cursor_col - scroll).min(width.saturating_sub(1)) as u16,
+            y: r.y,
+        },
+        scroll,
     }
 }

@@ -7,6 +7,8 @@
 use std::ops::Range;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthChar;
 
 use crate::buffer::pos;
 use crate::command::{Command, Motion};
@@ -103,6 +105,57 @@ impl TextField {
     pub fn selection(&self) -> Option<Range<usize>> {
         let a = self.anchor.filter(|&a| a != self.cursor)?;
         Some(a.min(self.cursor)..a.max(self.cursor))
+    }
+
+    /// The byte offset at screen column `col` of the field's text, drawn scrolled sideways by
+    /// `scroll` columns (`ui::find::draw_field`'s layout): the offset of the grapheme there, its
+    /// start when the column falls inside a wide one, the text's end past it. `col` is relative
+    /// to the input's left edge and may go past either end (a drag there scrolls the field): a
+    /// negative `col` maps left of the first drawn column, a large one past the text's end.
+    /// Grapheme boundaries, so a click never lands inside a character.
+    pub fn offset_at_col(&self, col: i64, scroll: usize) -> usize {
+        let target = (scroll as i64 + col).max(0);
+        let mut at: i64 = 0;
+        for (off, grapheme) in self.text.grapheme_indices(true) {
+            if at >= target {
+                return off;
+            }
+            let width = grapheme.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>() as i64;
+            if target < at + width {
+                return off;
+            }
+            at += width;
+        }
+        self.text.len()
+    }
+
+    /// A click at byte offset `at`: `count` 1 places the cursor, 2 selects the word there (the
+    /// editor's classifier, `pos::word_range_in`) and 3 all the text; `shift` with one click
+    /// extends from the existing anchor (or the cursor) instead, as the editor does.
+    pub fn click(&mut self, at: usize, count: u8, shift: bool) {
+        let at = at.min(self.text.len());
+        if shift && count == 1 {
+            let anchor = self.anchor.unwrap_or(self.cursor);
+            self.cursor = at;
+            self.anchor = (anchor != at).then_some(anchor);
+            return;
+        }
+        let (start, end) = match count {
+            2 => pos::word_range_in(&self.text, at),
+            3 => (0, self.text.len()),
+            _ => (at, at),
+        };
+        self.cursor = end;
+        self.anchor = (start != end).then_some(start);
+    }
+
+    /// A drag to byte offset `at`: extends the selection from the click's anchor (the cursor
+    /// when there was none); back at the anchor the selection goes.
+    pub fn drag_to(&mut self, at: usize) {
+        let anchor = self.anchor.unwrap_or(self.cursor);
+        let at = at.min(self.text.len());
+        self.cursor = at;
+        self.anchor = (anchor != at).then_some(anchor);
     }
 
     /// Inserts `s` at the cursor, replacing the selection.
@@ -364,6 +417,74 @@ mod tests {
         let mut empty = TextField::default();
         empty.select_all();
         assert_eq!(empty.selection(), None);
+    }
+
+    #[test]
+    fn offset_at_col_walks_the_drawn_widths() {
+        let f = TextField::new("ab日c".into());
+        assert_eq!(f.offset_at_col(0, 0), 0);
+        assert_eq!(f.offset_at_col(1, 0), 1);
+        assert_eq!(f.offset_at_col(2, 0), 2);
+        assert_eq!(f.offset_at_col(3, 0), 2, "inside the wide char: its start");
+        assert_eq!(f.offset_at_col(4, 0), 5, "after it: the next char");
+        assert_eq!(f.offset_at_col(99, 0), 6, "past the end: the text's end");
+        // The scroll is the first drawn character's display column.
+        assert_eq!(f.offset_at_col(0, 2), 2);
+        assert_eq!(f.offset_at_col(1, 2), 2, "inside the wide char through the scroll");
+        assert_eq!(f.offset_at_col(2, 2), 5);
+        // Negative columns (a drag past the left end) scroll left; past the start clamps to 0.
+        assert_eq!(f.offset_at_col(-1, 2), 1);
+        assert_eq!(f.offset_at_col(-99, 2), 0);
+        // A combining accent is part of its grapheme, not a column of its own.
+        let f = TextField::new("e\u{301}x".into());
+        assert_eq!(f.offset_at_col(0, 0), 0);
+        assert_eq!(f.offset_at_col(1, 0), 3);
+    }
+
+    #[test]
+    fn clicks_place_select_a_word_or_everything() {
+        let mut f = TextField::new("foo.bar baz".into());
+        f.click(5, 1, false);
+        assert_eq!((show(&f), f.selection()), ("foo.b|ar baz".into(), None));
+        // Shift+click extends from the click's anchor.
+        f.click(8, 1, true);
+        assert_eq!((show(&f), f.selection()), ("foo.b[ar |baz".into(), Some(5..8)));
+        // Shift+click again moves the head, keeping the anchor.
+        f.click(2, 1, true);
+        assert_eq!((show(&f), f.selection()), ("fo|o.b[ar baz".into(), Some(2..5)));
+        // A double click takes the word's run, a triple the whole text.
+        f.click(5, 2, false);
+        assert_eq!((show(&f), f.selection()), ("foo.[bar| baz".into(), Some(4..7)));
+        f.click(8, 2, false);
+        assert_eq!((show(&f), f.selection()), ("foo.bar [baz|".into(), Some(8..11)));
+        f.click(3, 3, false);
+        assert_eq!((show(&f), f.selection()), ("[foo.bar baz|".into(), Some(0..11)));
+        // A click past the end goes to the end; a shift click back to the anchor clears it.
+        f.click(99, 1, false);
+        assert_eq!((f.cursor, f.anchor), (11, None));
+        let mut f = TextField::new("ab".into());
+        f.click(0, 1, false);
+        f.click(2, 1, true);
+        assert_eq!((f.selection(), show(&f)), (Some(0..2), "[ab|".into()));
+    }
+
+    #[test]
+    fn dragging_extends_the_selection_whichever_way() {
+        let mut f = TextField::new("abcdef".into());
+        f.click(2, 1, false);
+        f.drag_to(5);
+        assert_eq!((f.selection(), show(&f)), (Some(2..5), "ab[cde|f".into()));
+        f.drag_to(1);
+        assert_eq!((f.selection(), show(&f)), (Some(1..2), "a|b[cdef".into()));
+        f.drag_to(2);
+        assert_eq!((f.selection(), show(&f)), (None, "ab|cdef".into()));
+        f.drag_to(99);
+        assert_eq!((f.selection(), show(&f)), (Some(2..6), "ab[cdef|".into()));
+        // A word double click drags the whole word's range from its start.
+        let mut f = TextField::new("foo bar".into());
+        f.click(1, 2, false);
+        f.drag_to(5);
+        assert_eq!((f.selection(), show(&f)), (Some(0..5), "[foo b|ar".into()));
     }
 
     #[test]

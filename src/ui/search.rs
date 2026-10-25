@@ -60,7 +60,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
         height: 1,
     };
     let mut inputs = [field, Rect::default(), Rect::default()];
-    let mut cursors = [draw_field(out, field, &view.query, "Search", input, selected, dim); 4];
+    let first = draw_field(out, field, &view.query, "Search", input, selected, dim);
+    let mut cursors = [first.cursor; 4];
+    let mut input_scrolls = [first.scroll, 0, 0];
+    let mut replace_scroll = 0;
     // VS Code's replace toggle in the margin left of the query.
     let replace_toggle = Rect {
         x: area.x,
@@ -102,7 +105,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
     if view.replacing && y < bottom {
         // As wide as the query; Replace All where the query's toggles are.
         replace = Rect { y, ..field };
-        cursors[3] = draw_field(out, replace, &view.replace, "Replace", input, selected, dim);
+        let drawn = draw_field(out, replace, &view.replace, "Replace", input, selected, dim);
+        cursors[3] = drawn.cursor;
+        replace_scroll = drawn.scroll;
         let x = field.x + field_w + 1;
         let w = (area.x + area.width)
             .saturating_sub(x + 1)
@@ -128,7 +133,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
                 width: area.width.saturating_sub(2),
                 height: 1,
             };
-            cursors[i + 1] = draw_field(out, r, text, placeholder, input, selected, dim);
+            let drawn = draw_field(out, r, text, placeholder, input, selected, dim);
+            cursors[i + 1] = drawn.cursor;
+            input_scrolls[i + 1] = drawn.scroll;
             inputs[i + 1] = r;
             y += 1;
         }
@@ -171,8 +178,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
         toggles,
         details,
         inputs,
+        input_scrolls,
         replace_toggle,
         replace,
+        replace_scroll,
         list: Rect::default(),
         rows: Vec::new(),
         dismiss: Vec::new(),

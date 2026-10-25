@@ -11,10 +11,13 @@ use super::{App, Focus};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::column::{self, Cell};
 use crate::command::{Command, ExplorerCommand};
+use crate::field::TextField;
+use crate::find::Field;
 use crate::group::Tab;
 use crate::layout::{
     Divider, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, MergeButton, PanelTab, ScrollTarget, SidePanel, SplitDir, task_area,
 };
+use crate::search_view::Input;
 use crate::selection::{Selection, Selections};
 use crate::tasks::{Run, RunId, mouse, select};
 use crate::terminal::Pointer;
@@ -85,8 +88,19 @@ pub enum Drag {
         anchor: (u16, u16),
         area: Rect,
     },
+    /// Selecting text in one of the one-line inputs (`app/find.rs`, `app/workspace_search.rs`,
+    /// `app/palette.rs`).
+    Field(FieldTarget),
     /// Dragging a tab along a tab bar, or onto another group or editor (`app/tab_drag.rs`).
     Tab(TabDrag),
+}
+
+/// Which text field a `Drag::Field` extends the selection of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldTarget {
+    Find(Field),
+    Search(Input),
+    Palette,
 }
 
 /// Counts clicks on the same cell in quick succession (1, 2, 3).
@@ -443,6 +457,13 @@ impl App {
                         self.column_select_to(to);
                     }
                 }
+                Some(Drag::Field(target)) => {
+                    if let Some(at) = self.field_position(target, m.column)
+                        && let Some(field) = self.field_mut(target)
+                    {
+                        field.drag_to(at);
+                    }
+                }
                 Some(Drag::ScrollBar { target, grab }) => self.scrollbar_drag(target, m.column, m.row, grab),
                 Some(Drag::Tab(_)) => self.tab_drag_to(m.column, m.row),
                 // Taken by `hex_mouse`.
@@ -746,6 +767,73 @@ impl App {
         Some((line, DisplayCol(tab.view.left_col + (x - a.x) as usize)))
     }
 
+    /// The text field a `FieldTarget` names, when it is showing.
+    fn field_ref(&self, target: FieldTarget) -> Option<&TextField> {
+        match target {
+            FieldTarget::Find(Field::Find) => Some(&self.find.query),
+            FieldTarget::Find(Field::Replace) => Some(&self.find.replace),
+            FieldTarget::Search(Input::Query) => Some(&self.search_view.query),
+            FieldTarget::Search(Input::Include) => Some(&self.search_view.include),
+            FieldTarget::Search(Input::Exclude) => Some(&self.search_view.exclude),
+            FieldTarget::Search(Input::Replace) => Some(&self.search_view.replace),
+            FieldTarget::Palette => Some(&self.palette.as_ref()?.field),
+        }
+    }
+
+    /// The same field, to change.
+    pub(super) fn field_mut(&mut self, target: FieldTarget) -> Option<&mut TextField> {
+        match target {
+            FieldTarget::Find(Field::Find) => Some(&mut self.find.query),
+            FieldTarget::Find(Field::Replace) => Some(&mut self.find.replace),
+            FieldTarget::Search(Input::Query) => Some(&mut self.search_view.query),
+            FieldTarget::Search(Input::Include) => Some(&mut self.search_view.include),
+            FieldTarget::Search(Input::Exclude) => Some(&mut self.search_view.exclude),
+            FieldTarget::Search(Input::Replace) => Some(&mut self.search_view.replace),
+            FieldTarget::Palette => Some(&mut self.palette.as_mut()?.field),
+        }
+    }
+
+    /// A field's drawn rect and sideways scroll (the previous frame's `HitMap`).
+    fn field_geometry(&self, target: FieldTarget) -> Option<(Rect, usize)> {
+        match target {
+            FieldTarget::Find(Field::Find) => {
+                let hit = self.hits.find.as_ref()?;
+                Some((hit.query, hit.query_scroll))
+            }
+            FieldTarget::Find(Field::Replace) => {
+                let hit = self.hits.find.as_ref()?;
+                Some((hit.replace?, hit.replace_scroll))
+            }
+            FieldTarget::Search(Input::Replace) => {
+                let hit = self.hits.search.as_ref()?;
+                Some((hit.replace, hit.replace_scroll))
+            }
+            FieldTarget::Search(input) => {
+                let hit = self.hits.search.as_ref()?;
+                let i = match input {
+                    Input::Query => 0,
+                    Input::Include => 1,
+                    Input::Exclude => 2,
+                    // Handled above (its rect is `replace`, not in `inputs`).
+                    Input::Replace => return None,
+                };
+                Some((hit.inputs[i], hit.input_scrolls[i]))
+            }
+            FieldTarget::Palette => {
+                let hit = self.hits.palette.as_ref()?;
+                Some((hit.input, hit.input_scroll))
+            }
+        }
+    }
+
+    /// The byte offset under screen column `x` in a field: mapped through its draw-time scroll;
+    /// a pointer past either end (a drag) maps past the visible text, so the field scrolls.
+    pub(super) fn field_position(&self, target: FieldTarget, x: u16) -> Option<usize> {
+        let (rect, scroll) = self.field_geometry(target)?;
+        let field = self.field_ref(target)?;
+        (rect.width > 0).then(|| field_at(field, rect, scroll, x))
+    }
+
     /// Screen cell to buffer position in the active group. With `clamp`, points outside
     /// the text area (while dragging) are pulled to its edge.
     fn text_position(&self, x: u16, y: u16, clamp: bool) -> Option<ByteIdx> {
@@ -758,6 +846,14 @@ impl App {
             self.settings.for_buffer(buf).tab_width,
         ))
     }
+}
+
+/// The byte offset under screen column `x` of a field drawn in `rect` scrolled by `scroll`
+/// columns: `x` relative to the input's left edge, through its scroll. A pointer past either end
+/// (a drag) maps past the visible text, so the field scrolls to follow the selection; the row is
+/// ignored.
+pub(super) fn field_at(field: &TextField, rect: Rect, scroll: usize, x: u16) -> usize {
+    field.offset_at_col(x as i64 - rect.x as i64, scroll)
 }
 
 /// Alt+Click (VS Code): with several selections, clicking on or in one removes it; otherwise a

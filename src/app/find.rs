@@ -5,7 +5,7 @@
 //! query), case only, no replace or select all, next / previous from the cursor, highlights drawn
 //! from the visible bytes, and the whole file's count off the UI thread (`AppEvent::HexCount`).
 
-use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use super::{App, AppEvent, Focus, Level};
 use crate::buffer::Buffer;
@@ -340,8 +340,9 @@ impl App {
         self.notify(Level::Info, format!("Replaced {count} {noun}"));
     }
 
-    /// A click on the widget: an option toggle, or an input (which takes the focus).
-    /// False for anything else (wheel and drags pass through to what's under it).
+    /// A click on the widget: an option toggle, or an input (which takes the focus, places the
+    /// cursor where clicked and arms a text drag; Shift extends, a double / triple click selects
+    /// a word / all). False for anything else (wheel and drags pass through to what's under it).
     pub(super) fn find_mouse(&mut self, m: MouseEvent) -> bool {
         let Some(hit) = self.hits.find else { return false };
         let inside = |r: ratatui::layout::Rect| {
@@ -350,12 +351,34 @@ impl App {
         if !self.find.visible || m.kind != MouseEventKind::Down(MouseButton::Left) || !inside(hit.area) {
             return false;
         }
+        // A press while a drag is armed means its release was lost (`mouse::left_click`'s note).
+        self.drag = None;
+        let count = self.clicks.click(std::time::Instant::now(), m.column, m.row);
+        let shift = m.modifiers.contains(KeyModifiers::SHIFT);
         let toggles = [F::ToggleCase, F::ToggleWholeWord, F::ToggleRegex, F::ToggleHex];
+        let input = if hit.query.contains(ratatui::layout::Position { x: m.column, y: m.row }) {
+            Some((Field::Find, hit.query, hit.query_scroll))
+        } else {
+            hit.replace
+                .filter(|r| r.contains(ratatui::layout::Position { x: m.column, y: m.row }))
+                .map(|r| (Field::Replace, r, hit.replace_scroll))
+        };
         if let Some(i) = hit.toggles.iter().position(|r| inside(*r)) {
             match toggles[i] {
                 F::ToggleHex => self.toggle_find_hex(),
                 cmd => self.toggle_find_option(cmd),
             }
+        } else if let Some((field, rect, scroll)) = input {
+            let at = match field {
+                Field::Find => super::mouse::field_at(&self.find.query, rect, scroll, m.column),
+                Field::Replace => super::mouse::field_at(&self.find.replace, rect, scroll, m.column),
+            };
+            if let Some(text) = self.field_mut(super::mouse::FieldTarget::Find(field)) {
+                text.click(at, count, shift);
+            }
+            self.find.field = field;
+            self.ui.focus = Focus::Find;
+            self.drag = Some(super::mouse::Drag::Field(super::mouse::FieldTarget::Find(field)));
         } else {
             self.find.field = match hit.replace {
                 Some(r) if m.row == r.y => Field::Replace,

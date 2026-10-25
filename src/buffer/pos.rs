@@ -843,13 +843,21 @@ pub fn word_range(rope: &Rope, pos: ByteIdx) -> (ByteIdx, ByteIdx) {
     let start = line_start(rope, line).0;
     let text = line_text(rope, line);
     let off = (pos.0 - start).min(text.len());
+    let (a, b) = word_range_in(&text, off);
+    (ByteIdx(start + a), ByteIdx(start + b))
+}
+
+/// The run of same-class characters around byte offset `off` of one line (`word_range` without
+/// the rope; the text fields' double click uses it).
+/// At a class boundary, the run to the right wins; at the text's end, the run to the left.
+pub fn word_range_in(text: &str, off: usize) -> (usize, usize) {
     let gs: Vec<(usize, &str)> = text.grapheme_indices(true).collect();
     let Some(i) = gs
         .iter()
         .position(|&(o, g)| off < o + g.len())
         .or(gs.len().checked_sub(1))
     else {
-        return (pos, pos);
+        return (off, off);
     };
     let class = class_of(gs[i].1);
     let mut a = i;
@@ -861,7 +869,7 @@ pub fn word_range(rope: &Rope, pos: ByteIdx) -> (ByteIdx, ByteIdx) {
         b += 1;
     }
     let end = gs.get(b).map_or(text.len(), |&(o, _)| o);
-    (ByteIdx(start + gs[a].0), ByteIdx(start + end))
+    (gs[a].0, end)
 }
 
 #[cfg(test)]
@@ -965,6 +973,12 @@ mod tests {
         assert_eq!(word_range(&r, ByteIdx(8)), (ByteIdx(7), ByteIdx(9)));
         assert_eq!(word_range(&r, ByteIdx(12)), (ByteIdx(9), ByteIdx(12)));
         assert_eq!(word_range(&r, ByteIdx(13)), (ByteIdx(13), ByteIdx(13)));
+        // The same classifier on a bare line (the fields' double click).
+        assert_eq!(word_range_in("foo.bar baz", 1), (0, 3));
+        assert_eq!(word_range_in("foo.bar baz", 3), (3, 4));
+        assert_eq!(word_range_in("foo.bar baz", 8), (8, 11));
+        assert_eq!(word_range_in("foo.bar baz", 11), (8, 11), "the run at the end");
+        assert_eq!(word_range_in("", 0), (0, 0));
     }
 
     #[test]

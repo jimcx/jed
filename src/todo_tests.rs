@@ -105,6 +105,10 @@
 //!   the editor), global non-field commands still running from a field (Cmd+B, Cmd+Shift+P), the
 //!   palette and a rename prompt's field, the selected range drawn selected (find widget and
 //!   prompt), a long query scrolled to the cursor and a short one drawn from the input's start.
+//! - `text_field_mouse`: a click in the find widget's query / replace, the Search view's query
+//!   and the palette's input places the cursor where clicked (through the field's sideways
+//!   scroll), a drag selects (past either end selecting to it), Shift+click extends, a double
+//!   click selects the word and a triple click all; the clicked input takes the focus.
 //! - `mru`: the command palette and quick open list the last 20 commands picked from the palette
 //!   and the last 20 files opened first while their input is empty, most recent first, without
 //!   duplicates (a file's walk row kept out by its recent row); a typed query keeps the fuzzy
@@ -2218,10 +2222,11 @@ mod folder_filter {
         assert!(app.search_view.list_focused, "Down: the list");
         app.type_text("x");
         assert_eq!(app.search_view.exclude.text, "x");
-        // A click on an input gives it the keys.
+        // A click on an input gives it the keys, the cursor where clicked.
         draw(&mut app);
-        app.mouse(Mouse::Down(MouseButton::Left), q.x + 2, q.y);
+        app.mouse(Mouse::Down(MouseButton::Left), q.x + 6, q.y);
         assert_eq!((app.ui.focus, app.search_view.input), (Focus::SidePanel, Input::Query));
+        assert_eq!(app.search_view.query.cursor, 6);
         app.handle_test_event(Event::Paste("!".into()));
         assert_eq!(app.search_view.query.text, "needle!");
     }
@@ -6013,6 +6018,222 @@ mod text_field_keys {
         let selection = app.theme.get("editor.selection").bg.unwrap();
         let selected: Vec<bool> = (0..5).map(|i| buf[(x + i, y)].bg == selection).collect();
         assert_eq!(selected, [true, false, false, false, false], "\"a\" selected");
+    }
+}
+
+/// Mouse in the one-line text fields (find widget, Search view inputs, palette): a click places
+/// the cursor at that column through the field's sideways scroll, a drag selects (to either end
+/// when past it), Shift+click extends from the click's anchor, a double click selects the word
+/// and a triple click all; the clicked input takes the focus.
+mod text_field_mouse {
+    use std::path::PathBuf;
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind as Mouse};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::{App, Focus};
+    use crate::buffer::Buffer;
+    use crate::search_view::Input;
+
+    const MAC: bool = cfg!(target_os = "macos");
+
+    fn cmd() -> M {
+        if MAC { M::SUPER } else { M::CONTROL }
+    }
+
+    /// An app on `<dir>/ws` with `a.txt` (`text`) open, the cursor at its start.
+    fn open_app(dir: &tempfile::TempDir, text: &str) -> (App, PathBuf) {
+        let root = crate::workspace::normalize(dir.path()).join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("a.txt");
+        std::fs::write(&path, text).unwrap();
+        let ws = crate::workspace::Workspace::load(root.clone());
+        let trust = crate::workspace::trust::TrustStore::load(dir.path().join("trust.toml"));
+        let initial = crate::app::InitialFile {
+            buffer: Buffer::open(&path).unwrap(),
+            goto: None,
+        };
+        let mut app = App::new(ws, trust, Some(initial), true);
+        app.test_start();
+        app.test_plain_whitespace();
+        (app, root)
+    }
+
+    /// Draws a frame (filling the hit map the mouse uses).
+    fn draw(app: &mut App) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    /// The cells `x..x + width` of screen row `y`.
+    fn cells(term: &Terminal<TestBackend>, y: u16, x: u16, width: u16) -> String {
+        let buf = term.backend().buffer();
+        (x..x + width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    fn click(app: &mut App, x: u16, y: u16) {
+        app.mouse(Mouse::Down(MouseButton::Left), x, y);
+        app.mouse(Mouse::Up(MouseButton::Left), x, y);
+    }
+
+    fn drag(app: &mut App, from: u16, to: u16, y: u16) {
+        app.mouse(Mouse::Down(MouseButton::Left), from, y);
+        app.mouse(Mouse::Drag(MouseButton::Left), to, y);
+        app.mouse(Mouse::Up(MouseButton::Left), to, y);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_field_mouse_find_widget_clicks_drags_and_multi_clicks() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, "foo bar\n");
+        app.press(K::Char('f'), cmd());
+        app.type_text("foo bar");
+        draw(&mut app);
+        let q = app.hits.find.expect("the find widget drawn").query;
+        // A click places the cursor at its column, and the query takes the focus.
+        click(&mut app, q.x + 2, q.y);
+        assert_eq!((app.find.query.cursor, app.find.query.selection()), (2, None));
+        assert_eq!(app.ui.focus, Focus::Find);
+        // A drag selects from the press to the pointer, whichever way it goes.
+        drag(&mut app, q.x + 1, q.x + 4, q.y);
+        assert_eq!(app.find.query.selection(), Some(1..4));
+        assert_eq!(app.find.query.cursor, 4);
+        // Shift+click moves the head from the click's anchor.
+        app.mouse_with(Mouse::Down(MouseButton::Left), q.x + 2, q.y, M::SHIFT);
+        assert_eq!(app.find.query.selection(), Some(1..2));
+        // A double click selects the word there (the editor's classifier), a triple all.
+        click(&mut app, q.x + 5, q.y);
+        click(&mut app, q.x + 5, q.y);
+        assert_eq!(
+            (app.find.query.selection(), app.find.query.cursor),
+            (Some(4..7), 7),
+            "bar"
+        );
+        click(&mut app, q.x + 5, q.y);
+        assert_eq!((app.find.query.selection(), app.find.query.cursor), (Some(0..7), 7));
+        // Past the text, still inside the input: the end.
+        click(&mut app, q.x + 20, q.y);
+        assert_eq!((app.find.query.cursor, app.find.query.selection()), (7, None));
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "foo bar\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_field_mouse_find_widget_scrolled_query_maps_through_the_scroll() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, "x\n");
+        app.press(K::Char('f'), cmd());
+        let query: String = ('a'..='z').chain('0'..='9').chain('A'..='Z').collect();
+        assert_eq!(query.len(), 62);
+        app.type_text(&query);
+        let term = draw(&mut app);
+        let hit = app.hits.find.expect("the find widget drawn");
+        let width = hit.query.width as usize;
+        let scroll = hit.query_scroll;
+        assert_eq!(scroll, query.len() + 1 - width, "the cursor's column is at the end");
+        // The input shows the query's tail, starting at the scroll.
+        assert_eq!(
+            cells(&term, hit.query.y, hit.query.x, hit.query.width),
+            format!("{} ", &query[scroll..])
+        );
+        // A click in the first drawn column is that byte, not column 0 of the text.
+        click(&mut app, hit.query.x, hit.query.y);
+        assert_eq!((app.find.query.cursor, app.find.query.selection()), (scroll, None));
+        // A drag past the input's right end selects to the text's end.
+        drag(
+            &mut app,
+            hit.query.x + 5,
+            hit.query.x + hit.query.width + 5,
+            hit.query.y,
+        );
+        assert_eq!(app.find.query.selection(), Some(scroll + 5..query.len()));
+        // And past its left end scrolls left: the selection reaches 5 columns before the first drawn.
+        drag(&mut app, hit.query.x + 7, hit.query.x.saturating_sub(5), hit.query.y);
+        assert_eq!(app.find.query.selection(), Some(scroll - 5..scroll + 7));
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "x\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_field_mouse_find_widget_drag_past_the_right_end_scrolls() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, "x\n");
+        app.press(K::Char('f'), cmd());
+        let query: String = ('a'..='z').chain('0'..='9').chain('A'..='Z').collect();
+        app.type_text(&query);
+        app.press(K::Home, M::NONE);
+        draw(&mut app);
+        let hit = app.hits.find.expect("the find widget drawn");
+        assert_eq!(hit.query_scroll, 0, "from the start nothing is scrolled");
+        // A drag past the right end scrolls the field and selects the text that was off-screen.
+        drag(&mut app, hit.query.x, hit.query.x + hit.query.width + 8, hit.query.y);
+        let sel = app.find.query.selection().expect("a selection");
+        assert_eq!(sel.start, 0);
+        assert!(
+            sel.end > hit.query.width as usize,
+            "{sel:?} should reach past the first window"
+        );
+        draw(&mut app);
+        assert!(
+            app.hits.find.expect("redrawn").query_scroll > 0,
+            "the field scrolled right"
+        );
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "x\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_field_mouse_search_query_clicks_drags_and_multi_clicks() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, "needle hay\n");
+        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.type_text("foo bar");
+        draw(&mut app);
+        let q = app.hits.search.as_ref().expect("the Search view drawn").inputs[0];
+        click(&mut app, q.x + 2, q.y);
+        assert_eq!(
+            (app.search_view.query.cursor, app.search_view.query.selection()),
+            (2, None)
+        );
+        assert_eq!((app.ui.focus, app.search_view.input), (Focus::SidePanel, Input::Query));
+        assert!(!app.search_view.list_focused);
+        drag(&mut app, q.x + 1, q.x + 4, q.y);
+        assert_eq!(app.search_view.query.selection(), Some(1..4));
+        app.mouse_with(Mouse::Down(MouseButton::Left), q.x + 2, q.y, M::SHIFT);
+        assert_eq!(app.search_view.query.selection(), Some(1..2));
+        click(&mut app, q.x + 5, q.y);
+        click(&mut app, q.x + 5, q.y);
+        assert_eq!(app.search_view.query.selection(), Some(4..7), "bar");
+        click(&mut app, q.x + 5, q.y);
+        assert_eq!(app.search_view.query.selection(), Some(0..7));
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "needle hay\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_field_mouse_palette_input_clicks_drags_and_double_clicks() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir, "x\n");
+        app.press(K::Char('p'), cmd());
+        app.type_text("abcdef gh");
+        draw(&mut app);
+        let input = app.hits.palette.expect("the palette drawn").input;
+        click(&mut app, input.x + 2, input.y);
+        let field = &app.palette.as_ref().unwrap().field;
+        assert_eq!((field.cursor, field.selection()), (2, None));
+        // Double click: the word.
+        click(&mut app, input.x + 1, input.y);
+        click(&mut app, input.x + 1, input.y);
+        assert_eq!(app.palette.as_ref().unwrap().field.selection(), Some(0..6));
+        // A drag from the start to column 8, then a Shift+click back to 3.
+        drag(&mut app, input.x, input.x + 8, input.y);
+        assert_eq!(app.palette.as_ref().unwrap().field.selection(), Some(0..8));
+        app.mouse_with(Mouse::Down(MouseButton::Left), input.x + 3, input.y, M::SHIFT);
+        assert_eq!(app.palette.as_ref().unwrap().field.selection(), Some(0..3));
+        assert!(app.palette.is_some());
+        assert_eq!(
+            app.active_buffer().unwrap().rope.to_string(),
+            "x\n",
+            "the editor untouched"
+        );
     }
 }
 
