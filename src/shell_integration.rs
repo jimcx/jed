@@ -21,7 +21,14 @@ autoload -Uz add-zsh-hook; add-zsh-hook preexec _jed_preexec; add-zsh-hook precm
 
 const BASH: &str = r#"# jed shell integration (sourced from ~/.bashrc)
 [ -n "$JED_IPC" ] || return
-_jed_preexec() { case "$1" in _jed_precmd|PROMPT_COMMAND=*) return;; esac; printf '\033]133;B\007'; printf '\033]0;%s\007' "${1%% *}"; }
+_jed_preexec() {
+  case "$1" in PROMPT_COMMAND=*) return;; esac
+  local pc
+  for pc in "${PROMPT_COMMAND[@]}"; do
+    [ "$1" = "$pc" ] && return
+  done
+  printf '\033]133;B\007'; printf '\033]0;%s\007' "${1%% *}"
+}
 _jed_precmd() { printf '\033]133;D;%s\007' "$?"; }
 PROMPT_COMMAND=_jed_precmd
 trap '_jed_preexec "$BASH_COMMAND"' DEBUG
@@ -165,9 +172,12 @@ mod tests {
         let guard = |shell: &str| SNIPPETS.iter().find(|s| s.shell == shell).map(|s| s.text).unwrap();
         assert!(guard("zsh").contains(r#"[ -n "$JED_IPC" ] || return"#));
         assert!(guard("bash").contains(r#"[ -n "$JED_IPC" ] || return"#));
-        // Bash's DEBUG trap also fires for the prompt's own `_jed_precmd`: skipped, or the tab
-        // would flash it as a running command at every prompt.
-        assert!(guard("bash").contains("_jed_precmd|PROMPT_COMMAND=*"));
+        // Bash's DEBUG trap also fires for every PROMPT_COMMAND hook at the prompt (jed's own
+        // `_jed_precmd` and any other shell's — systemd's `__systemd_osc_context_*`, starship's,
+        // …): preexec skips any command that names one, or the tab would flash them as running
+        // commands at every prompt. `PROMPT_COMMAND=…` assignments are skipped too.
+        assert!(guard("bash").contains(r#"for pc in "${PROMPT_COMMAND[@]}"#));
+        assert!(guard("bash").contains("PROMPT_COMMAND=*) return"));
         assert!(guard("fish").contains("set -q JED_IPC; or return"));
         assert!(guard("fish").contains("$status"));
         assert_eq!(

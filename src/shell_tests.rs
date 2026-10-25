@@ -21,7 +21,9 @@
 //! shows the detected shell's init file and source line (C copies it, A appends it to a temp
 //! file), and the written bash snippet is sourced in a real `bash --norc --noprofile` over a PTY
 //! — a command's title, a program's own OSC 2 title until `133;D`, the red idle glyph after a
-//! failed command, and the `JED_IPC` guard's no-op when there's no socket.
+//! failed command, the `JED_IPC` guard's no-op when there's no socket, and another shell's
+//! PROMPT_COMMAND hook being skipped (any element of `PROMPT_COMMAND` is prompt machinery, not a
+//! command).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -488,6 +490,67 @@ async fn shell_bash_snippet_titles_a_real_shell() {
         term.backend().buffer()[(bar.x + glyph, bar.y)].fg,
         app.theme.get("tab.shellError").fg.unwrap(),
         "the failed command's `○` is red"
+    );
+}
+
+/// Another shell's PROMPT_COMMAND hook (bash ≥ 5.1 keeps `PROMPT_COMMAND` as an array; systemd's
+/// `/etc/profile.d/80-systemd-osc-context.sh` appends `__systemd_osc_context_precmdline` this way):
+/// the snippet's scalar `PROMPT_COMMAND=_jed_precmd` only overwrites index 0, so the DEBUG trap
+/// still fires for the hook at every prompt. The preexec guard skips any PROMPT_COMMAND element,
+/// whatever its name: the tab titles the command, not the hook.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_bash_snippet_skips_other_prompt_command_hooks() {
+    let Some(bash) = bash_or_skip("shell_bash_snippet_skips_other_prompt_command_hooks") else {
+        return;
+    };
+    let (_d, root, state) = dirs();
+    let sockets = tempfile::tempdir().unwrap();
+    let (mut app, _socket) = listening_app(&root, &state, &sockets).await;
+    let wrapper = shell_script(
+        &root,
+        "myshell",
+        &format!("exec {} --norc --noprofile\n", bash.display()),
+    );
+    app.tasks.shell = wrapper;
+    app.test_execute(Command::NewShell);
+    let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
+    assert_eq!(title(&app), "myshell ○");
+
+    // Another shell's profile (sourced before the snippet) installs its precmd hook as an array element.
+    run_in_shell(
+        &mut app,
+        "_my_precmd_hook() { :; }; PROMPT_COMMAND+=(''); PROMPT_COMMAND+=(_my_precmd_hook)",
+    );
+    crate::shell_integration::write_snippets(&state).unwrap();
+    let snippet = state.join("shell-integration.bash");
+    run_in_shell(&mut app, &format!("source '{}'", snippet.display()));
+
+    // The command titles the tab; once it ends and the prompt's hooks all run, the tab is back at
+    // the shell's name — the guard skips the other hook, which would otherwise title it.
+    run_in_shell(&mut app, "read x");
+    assert!(
+        app.settle(|a| title(a) == "read ●").await,
+        "the command, not the hook, titles the tab: {:?}\n{}",
+        title(&app),
+        shell_text(&app)
+    );
+    app.group().active_shell().unwrap().run.write(b"\n");
+    assert!(
+        app.settle(|a| title(a) == "myshell ○").await,
+        "back at the prompt: {:?}\n{}",
+        title(&app),
+        shell_text(&app)
+    );
+    // A beat later the title is still the shell: the hook's DEBUG-trap preexec (if it weren't
+    // guarded) fires right after `_jed_precmd` and would leave the tab "running" under the hook's
+    // name.
+    let started = Instant::now();
+    app.settle(|_| started.elapsed() >= Duration::from_millis(300)).await;
+    assert_eq!(
+        title(&app),
+        "myshell ○",
+        "the other hook doesn't rename the tab:\n{}",
+        shell_text(&app)
     );
 }
 
