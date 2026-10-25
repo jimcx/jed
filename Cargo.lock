@@ -325,6 +325,7 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 [[package]]
 name = "crossterm"
 version = "0.29.0"
+source = "git+https://github.com/jimcx/crossterm.git?tag=0.29%2Bfwdback#c701c1a54f88f4d9d1bdb42848e3af45eb99b1ba"
 dependencies = [
  "bitflags 2.13.2",
  "crossterm_winapi",
@@ -2104,7 +2105,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

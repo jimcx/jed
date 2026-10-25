@@ -7313,7 +7313,7 @@ mod term_mouse {
 }
 
 /// The mouse's back / forward buttons run `nav.back` / `nav.forward`. The byte → button parse
-/// lives in the `vendor/crossterm` fork; this covers jed's side, whatever the pointer is over.
+/// lives in the crossterm fork; this covers jed's side, whatever the pointer is over.
 mod mouse_back_forward {
     use crossterm::event::{MouseButton, MouseEventKind};
 
