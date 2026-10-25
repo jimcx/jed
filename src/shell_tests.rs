@@ -2,8 +2,9 @@
 //! in a tab of the active group (`app.group().active_shell()`), as a terminal emulator starts it
 //! — a PTY in the workspace root at the group's editor size, with `TERM` / `COLORTERM` and
 //! `JED_IPC` only when the socket listens — titled per program (`sh`, `sh (2)`, reusing a closed
-//! number), keeping the `scrollback` setting's lines, never in a session, and with no tab of its
-//! own in a split. shell-b: the screen drawn in the editor area at its size, in the terminal's
+//! number) and following the shell's OSC codes while a command runs, keeping the `scrollback`
+//! setting's lines, never in a session, and with no tab of its own in a split. shell-b: the screen
+//! drawn in the editor area at its size, in the terminal's
 //! colours with its cursor only when focused and live, keys and pastes through `tasks::keys`
 //! (types, Enter, arrows in the shell's cursor mode, Esc, Ctrl+C, bracketed paste; Cmd+W and
 //! global keys stay jed's), Shift+PageUp / PageDown / Ctrl+Home / End and the wheel through the
@@ -139,12 +140,12 @@ async fn shell_titles_reuse_a_closed_number() {
     assert_eq!(titles, ["sh (2) ○", "sh (3) ○", "sh ○"], "no repeated title");
 }
 
-/// The tab's title follows the terminal's foreground process: `sh ○` at the prompt, the
-/// command's name and the running glyph while it runs, and back to the shell when it returns —
-/// also for a command that prints nothing of its own (`cat`, ended with EOF); the glyph is drawn
-/// in its state colour.
+/// The tab's title follows the shell's OSC codes (what the shell integration and programs send):
+/// `sh ○` at the prompt, `133;B` + the snippet's OSC 0 title and the running glyph while a command
+/// runs, a program's own OSC 2 title (vim's) until `133;D`, and back to the shell — red at the
+/// prompt after a non-zero exit. Without the codes the title stays the shell's name.
 #[tokio::test(flavor = "multi_thread")]
-async fn shell_title_follows_the_foreground_process() {
+async fn shell_title_follows_the_shells_osc_codes() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
@@ -152,7 +153,9 @@ async fn shell_title_follows_the_foreground_process() {
     let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
     assert_eq!(title(&app), "sh ○", "the shell, at its prompt");
 
-    app.group().active_shell().unwrap().run.write(b"sleep 30\n");
+    // The integration's preexec (`133;B`) then its OSC 0 with the command's first word.
+    let run = &app.group().active_shell().unwrap().run;
+    run.write(b"printf '\\033]133;B\\007\\033]0;sleep\\007'\n");
     assert!(
         app.settle(|a| title(a) == "sleep ●").await,
         "the title follows the command: {:?}; screen:\n{}",
@@ -170,30 +173,90 @@ async fn shell_title_follows_the_foreground_process() {
         term.backend().buffer()[(bar.x + glyph, bar.y)].fg,
         app.theme.get("tab.shellRunning").fg.unwrap()
     );
+    assert!(
+        !app.group().active_shell().unwrap().error,
+        "a running command isn't an error"
+    );
 
-    // Ctrl+C ends `sleep`: the shell is at its prompt again.
-    app.group().active_shell().unwrap().run.write(b"\x03");
+    // Precmd with a zero exit (`133;D;0`): the shell is at its prompt again.
+    let run = &app.group().active_shell().unwrap().run;
+    run.write(b"printf '\\033]133;D;0\\007'\n");
     assert!(
         app.settle(|a| title(a) == "sh ○").await,
         "back to the shell: {:?}",
         title(&app)
     );
+    assert!(!app.group().active_shell().unwrap().error);
 
-    // `cat` has no prompt of its own and prints nothing: its exit still brings the title back.
-    app.group().active_shell().unwrap().run.write(b"cat\n");
-    assert!(app.settle(|a| title(a) == "cat ●").await, "cat runs: {:?}", title(&app));
-    app.group().active_shell().unwrap().run.write(b"\x04"); // EOF: cat exits
+    // A program's own OSC 2 title (vim's) while it runs, until `133;D` resets it.
+    let run = &app.group().active_shell().unwrap().run;
+    run.write(b"printf '\\033]133;B\\007\\033]2;file.rs \\342\\200\\224 VIM\\007'\n");
     assert!(
-        app.settle(|a| title(a) == "sh ○").await,
-        "cat exited: {:?}; screen:\n{}",
+        app.settle(|a| title(a) == "file.rs — VIM ●").await,
+        "the program's title replaces the first word: {:?}; screen:\n{}",
         title(&app),
         shell_text(&app)
     );
+    let run = &app.group().active_shell().unwrap().run;
+    run.write(b"printf '\\033]133;D;0\\007'\n");
+    assert!(
+        app.settle(|a| title(a) == "sh ○").await,
+        "`133;D` resets the program's title: {:?}",
+        title(&app)
+    );
+
+    // A command that exits non-zero (`133;D;1`): the idle glyph in the error colour.
+    let run = &app.group().active_shell().unwrap().run;
+    run.write(b"printf '\\033]133;B\\007\\033]0;false\\007'\n");
+    assert!(
+        app.settle(|a| title(a) == "false ●").await,
+        "the command runs: {:?}",
+        title(&app)
+    );
+    let run = &app.group().active_shell().unwrap().run;
+    run.write(b"printf '\\033]133;D;1\\007'\n");
+    assert!(
+        app.settle(|a| title(a) == "sh ○" && a.group().active_shell().is_some_and(|s| s.error))
+            .await,
+        "the failed command's prompt is an error: {:?}",
+        title(&app)
+    );
+    let term = draw(&mut app, 80, 24);
+    let bar = app.hits.group(app.groups.active).unwrap().tab_bar;
+    let drawn: String = (bar.x..bar.x + bar.width)
+        .map(|x| term.backend().buffer()[(x, bar.y)].symbol())
+        .collect();
+    let glyph = drawn.find('○').expect("the idle glyph is in the tab bar") as u16;
+    assert_eq!(
+        term.backend().buffer()[(bar.x + glyph, bar.y)].fg,
+        app.theme.get("tab.shellError").fg.unwrap(),
+        "a failed command's `○` is red"
+    );
+}
+
+/// Without the integration's OSC codes nothing renames the tab: a shell's title stays its base
+/// name even while a command runs (`sleep` no longer reaches the title — the `/proc` foreground
+/// poller it used to come from is gone).
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_without_osc_codes_keeps_its_base_name() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    app.tasks.shell = "/bin/sh".into();
+    app.test_execute(Command::NewShell);
+    let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
+
+    app.group().active_shell().unwrap().run.write(b"sleep 30\n");
+    // Two of the old watcher's poll intervals: it would have renamed the tab by now.
+    let started = Instant::now();
+    let pumped = app.settle(|_| started.elapsed() >= Duration::from_secs(2)).await;
+    assert!(pumped, "the app pumped while `sleep` ran");
+    assert_eq!(title(&app), "sh ○", "no OSC codes, so the title stays the base name");
+    app.group().active_shell().unwrap().run.write(b"\x03"); // Ctrl+C: `sleep` ends.
 }
 
 /// Two shells of one program keep distinct titles while a command runs: the number is the
-/// shell's (stable as the foreground changes), so the second shell's command is `sleep (2) ●`
-/// while the idle first shell stays `sh ○`.
+/// shell's (stable as its title changes), so the second shell's command is `sleep (2) ●` while the
+/// idle first shell stays `sh ○`.
 #[tokio::test(flavor = "multi_thread")]
 async fn shell_running_titles_keep_the_per_program_number() {
     let (_d, root, state) = dirs();
@@ -204,7 +267,8 @@ async fn shell_running_titles_keep_the_per_program_number() {
     let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
     assert_eq!(title(&app), "sh (2) ○", "the second shell, at its prompt");
 
-    app.group().active_shell().unwrap().run.write(b"sleep 30\n");
+    let run = &app.group().active_shell().unwrap().run;
+    run.write(b"printf '\\033]133;B\\007\\033]0;sleep\\007'\n");
     assert!(
         app.settle(|a| title(a) == "sleep (2) ●").await,
         "the second shell's number stays while its command runs: {:?}",
@@ -216,8 +280,9 @@ async fn shell_running_titles_keep_the_per_program_number() {
         "the idle first shell keeps its own (un-numbered) title"
     );
 
-    // Ctrl+C ends `sleep`: the second shell is back at its numbered prompt.
-    app.group().active_shell().unwrap().run.write(b"\x03");
+    // Precmd ends the command: the second shell is back at its numbered prompt.
+    let run = &app.group().active_shell().unwrap().run;
+    run.write(b"printf '\\033]133;D;0\\007'\n");
     assert!(
         app.settle(|a| title(a) == "sh (2) ○").await,
         "back to the numbered prompt: {:?}",

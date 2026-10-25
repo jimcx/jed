@@ -16,8 +16,10 @@
 //! `OUTPUT_GRACE`: a background process can hold the PTY open), so `Exited` means the screen holds
 //! all the output.
 //!
-//! A shell's tab watches what runs in its terminal: a tokio task polls the PTY's foreground
-//! process group (`Run::watch_foreground`), reporting a change as `Event::Foreground`.
+//! A shell's tab follows the OSC codes its terminal sends: `133;B` (a command starts) and
+//! `133;D;<code>` (it finished) from the shell integration, and a program's own window title
+//! (OSC 0 / 2, vim's for one) while it runs. `TitleCallback` turns them into
+//! `Event::Foreground`.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -37,8 +39,6 @@ pub const FRAME: Duration = Duration::from_millis(20);
 pub const KILL_GRACE: Duration = Duration::from_secs(1);
 /// After the process exits, how long to wait for the rest of its output.
 const OUTPUT_GRACE: Duration = Duration::from_millis(250);
-/// How often a shell's foreground watcher looks at its terminal.
-pub const FOREGROUND_POLL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RunId(pub u64);
@@ -50,14 +50,91 @@ pub enum Event {
     Started(RunId),
     /// New output is on the screen (at most one per `FRAME`).
     Output(RunId),
-    /// The terminal's foreground process changed: `name` runs in it now, or the shell is back at
-    /// its prompt (`idle`). A shell's tab title follows it.
-    Foreground { id: RunId, name: String, idle: bool },
+    /// The terminal's title changed through its OSC codes: `name` runs in it now, or the shell is
+    /// back at its prompt (`idle`), the last command having failed (`error`). A shell's tab title
+    /// follows it.
+    Foreground {
+        id: RunId,
+        name: String,
+        idle: bool,
+        error: bool,
+    },
     /// The process exited (all its output read) or never started: `Exited` / `Failed`.
     Ended(RunId),
 }
 
 pub type Sink = Arc<dyn Fn(Event) + Send + Sync>;
+
+/// The title a terminal sets through its OSC codes (FinalTerm's semantic prompts, which the shell
+/// integration's preexec / precmd hooks send, and a program's own OSC 0 / 2). Runs on the reader
+/// thread inside the parser: `133;B` starts a command (the `OSC 0 <first word>` that follows names
+/// it), `133;D;<code>` finishes it (a non-zero code marks `error`), and an OSC 0 / 2 title shows
+/// while it runs until `133;D` resets it. Reports each state as `Event::Foreground`.
+pub struct TitleCallback {
+    id: RunId,
+    sink: Sink,
+    /// The shell's own name: the title at its prompt, and until a command names itself.
+    base: String,
+    /// The title the terminal last set (sanitized); `None` means the base one.
+    title: Option<String>,
+    /// Between `133;B` and `133;D`: a command runs.
+    running: bool,
+    /// The last command finished with a non-zero exit code.
+    error: bool,
+}
+
+impl TitleCallback {
+    fn new(id: RunId, sink: Sink, base: String) -> TitleCallback {
+        TitleCallback {
+            id,
+            sink,
+            base,
+            title: None,
+            running: false,
+            error: false,
+        }
+    }
+
+    /// Reports the current state through the sink.
+    fn report(&self) {
+        (self.sink)(Event::Foreground {
+            id: self.id,
+            name: self.title.clone().unwrap_or_else(|| self.base.clone()),
+            idle: !self.running,
+            error: self.error,
+        });
+    }
+}
+
+impl vt100::Callbacks for TitleCallback {
+    /// OSC 0 and 2: the window title (a program's own, while it runs).
+    fn set_window_title(&mut self, _screen: &mut vt100::Screen, title: &[u8]) {
+        self.title = sanitized(&String::from_utf8_lossy(title));
+        self.report();
+    }
+
+    /// OSC 133: FinalTerm's semantic-prompt markers. Only `B` (preexec) and `D` (precmd) carry
+    /// what a tab shows; a prompt's start (`A`) and the command's start (`C`) don't change it.
+    fn unhandled_osc(&mut self, _screen: &mut vt100::Screen, params: &[&[u8]]) {
+        match params {
+            [b"133", b"B"] => {
+                self.running = true;
+                self.error = false;
+                // The snippet's OSC 0 with the command's first word comes next.
+                self.title = None;
+                self.report();
+            }
+            // `133;D;<code>`; FinalTerm also allows `133;D` with no code, a success.
+            [b"133", b"D", rest @ ..] => {
+                self.running = false;
+                self.error = !matches!(rest, [] | [b"0"]);
+                self.title = None;
+                self.report();
+            }
+            _ => {}
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
@@ -103,7 +180,7 @@ pub struct Run {
 
 struct Shared {
     id: RunId,
-    parser: Mutex<vt100::Parser>,
+    parser: Mutex<vt100::Parser<TitleCallback>>,
     state: Mutex<State>,
     /// Output arrived since the last `Event::Output`.
     pending: AtomicBool,
@@ -141,9 +218,10 @@ impl Run {
     /// lines kept above the screen (the `scrollback` setting, read when the run is created).
     pub fn start(id: RunId, spec: Spec, rows: u16, cols: u16, sink: Sink, scrollback: usize) -> Run {
         let (rows, cols) = (rows.max(1), cols.max(1));
+        let callbacks = TitleCallback::new(id, sink.clone(), spec.name.clone());
         let shared = Arc::new(Shared {
             id,
-            parser: Mutex::new(vt100::Parser::new(rows, cols, scrollback)),
+            parser: Mutex::new(vt100::Parser::new_with_callbacks(rows, cols, scrollback, callbacks)),
             state: Mutex::new(State {
                 status: Status::Starting,
                 pid: None,
@@ -187,7 +265,7 @@ impl Run {
 
     /// The terminal: `screen()` for drawing (`tui-term`), `screen().contents()`, scrollback via
     /// `screen_mut().set_scrollback(n)`. Held briefly: the reader waits on it.
-    pub fn screen(&self) -> MutexGuard<'_, vt100::Parser> {
+    pub fn screen(&self) -> MutexGuard<'_, vt100::Parser<TitleCallback>> {
         lock(&self.shared.parser)
     }
 
@@ -259,52 +337,6 @@ impl Run {
     /// SIGKILL to the process group now.
     pub fn force_kill(&self) {
         self.shared.kill(true);
-    }
-
-    /// Watches what runs in the terminal — the PTY's foreground process group — about once a
-    /// second (`FOREGROUND_POLL`), reporting each change as `Event::Foreground` through `sink`.
-    /// The child is a session leader, so its group is the shell at a prompt and the command's
-    /// while one runs. Stops when the run ends. Needs a tokio runtime; without one it does
-    /// nothing.
-    pub fn watch_foreground(&self, sink: Sink) {
-        let Ok(rt) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let shared = self.shared.clone();
-        rt.spawn(async move {
-            let mut reported: Option<Foreground> = None;
-            loop {
-                let (status, pid) = {
-                    let state = lock(&shared.state);
-                    (state.status.clone(), state.pid)
-                };
-                match status {
-                    Status::Starting => {}
-                    Status::Running => {
-                        if let Some(pid) = pid {
-                            // The probe reads `/proc` (Linux) or the proc syscalls (macOS): off
-                            // the runtime worker, as any file read or blocking syscall is.
-                            let foreground = tokio::task::spawn_blocking(move || foreground(pid))
-                                .await
-                                .ok()
-                                .flatten();
-                            if let Some(foreground) = foreground
-                                && reported.as_ref() != Some(&foreground)
-                            {
-                                sink(Event::Foreground {
-                                    id: shared.id,
-                                    name: foreground.name.clone(),
-                                    idle: foreground.idle,
-                                });
-                                reported = Some(foreground);
-                            }
-                        }
-                    }
-                    Status::Exited(_) | Status::Failed(_) => return,
-                }
-                tokio::time::sleep(FOREGROUND_POLL).await;
-            }
-        });
     }
 }
 
@@ -421,90 +453,12 @@ fn session_members(_group: i32) -> bool {
     false
 }
 
-/// What holds a terminal: the foreground process group's name, and whether it's the session
-/// leader (`pid`, the shell) — idle at a prompt.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Foreground {
-    name: String,
-    idle: bool,
-}
-
-/// Blocking: the foreground process of the terminal the session leader `pid` runs with — the
-/// PTY's foreground process group (`tpgid`) and that group's name. `None` when it can't be read
-/// (the process went away between the two reads, or the terminal has no foreground group yet).
-/// Call from `spawn_blocking`.
-fn foreground(pid: i32) -> Option<Foreground> {
-    let group = foreground_group(pid)?;
-    let name = process_name(group)?;
-    Some(Foreground {
-        name,
-        idle: group == pid,
-    })
-}
-
-/// Blocking: the PTY's foreground process group, `/proc/<pid>/stat`'s `tpgid` (the 8th field,
-/// after the parenthesised `comm`).
-#[cfg(target_os = "linux")]
-fn foreground_group(pid: i32) -> Option<i32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    tpgid_from_stat(&stat)
-}
-
-/// `/proc/<pid>/stat`'s `tpgid`: the 8th field overall, the one right after `comm` (state, ppid,
-/// pgrp, session, tty_nr, then tpgid).
-#[cfg(target_os = "linux")]
-fn tpgid_from_stat(stat: &str) -> Option<i32> {
-    // `comm` can hold spaces and parentheses: the fields start after its last `)`.
-    let rest = &stat[stat.rfind(')')? + 1..];
-    rest.split_whitespace().nth(5)?.parse().ok()
-}
-
-/// Blocking: the PTY's foreground process group, `proc_pidinfo`'s `e_tpgid`.
-#[cfg(target_os = "macos")]
-fn foreground_group(pid: i32) -> Option<i32> {
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
-    // SAFETY: `info` is the struct the flavour fills, at its size.
-    let read = unsafe {
-        libc::proc_pidinfo(
-            pid,
-            libc::PROC_PIDTBSDINFO,
-            0,
-            std::ptr::from_mut(&mut info).cast(),
-            size,
-        )
-    };
-    (read == size).then_some(info.e_tpgid as i32)
-}
-
-/// A process name for a tab title, its control characters dropped (as the window title drops
-/// them): a process can put ESC or other control bytes into its name, which must not reach the
-/// rendered tab bar. `None` when nothing printable is left, so the title falls back to the idle
-/// one.
+/// A title for a tab bar, its control characters dropped (as the window title drops them): a
+/// program can put ESC or other control bytes into its title, which must not reach the rendered
+/// tab bar. `None` when nothing printable is left, so the title falls back to the base one.
 fn sanitized(name: &str) -> Option<String> {
     let name: String = name.chars().filter(|c| !c.is_control()).collect();
     (!name.is_empty()).then_some(name)
-}
-
-/// Blocking: a process's name, `/proc/<pid>/comm` read off the UI thread, its control characters
-/// dropped (`sanitized`). `None` when it can't be read or nothing printable is left.
-#[cfg(target_os = "linux")]
-fn process_name(pid: i32) -> Option<String> {
-    let name = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
-    sanitized(name.trim_end_matches(['\n', '\r']))
-}
-
-/// Blocking: a process's name, as `proc_name` gives it (at most `MAXCOMLEN` bytes), its control
-/// characters dropped (`sanitized`). `None` when nothing printable is left.
-#[cfg(target_os = "macos")]
-fn process_name(pid: i32) -> Option<String> {
-    let mut buf = [0 as libc::c_char; 64];
-    // SAFETY: a buffer and its size; `proc_name` writes a NUL-terminated name into it.
-    let n = unsafe { libc::proc_name(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
-    let n = (n.max(0) as usize).min(buf.len());
-    let bytes: Vec<u8> = buf[..n].iter().map(|&c| c as u8).take_while(|&b| b != 0).collect();
-    let name = String::from_utf8_lossy(&bytes);
-    sanitized(&name)
 }
 
 fn pty_size(rows: u16, cols: u16) -> PtySize {
@@ -696,14 +650,23 @@ async fn notifier(shared: Arc<Shared>, sink: Sink) {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitized;
-    #[cfg(target_os = "linux")]
     use super::*;
 
-    /// A process name for the tab bar drops control characters (ESC, tabs, newlines, DEL) and is
-    /// `None` when nothing printable is left, so the title falls back to the idle one.
+    /// A parser whose `TitleCallback` reports into a vector, for `zsh` as the shell's name.
+    fn title_parser(base: &str) -> (vt100::Parser<TitleCallback>, Arc<Mutex<Vec<Event>>>) {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink: Sink = {
+            let events = events.clone();
+            Arc::new(move |ev| lock(&events).push(ev))
+        };
+        let parser = vt100::Parser::new_with_callbacks(24, 80, 0, TitleCallback::new(RunId(7), sink, base.into()));
+        (parser, events)
+    }
+
+    /// A title for the tab bar drops control characters (ESC, tabs, newlines, DEL) and is `None`
+    /// when nothing printable is left, so the title falls back to the shell's name.
     #[test]
-    fn process_names_drop_control_characters() {
+    fn titles_drop_control_characters() {
         assert_eq!(sanitized("sh").as_deref(), Some("sh"));
         assert_eq!(sanitized("my shell (2)").as_deref(), Some("my shell (2)"));
         assert_eq!(sanitized("evil\x1b]2;x\x07").as_deref(), Some("evil]2;x"));
@@ -716,30 +679,61 @@ mod tests {
         assert_eq!(sanitized("").as_deref(), None);
     }
 
-    /// `tpgid` is the field right after the parenthesised `comm` (state, ppid, pgrp, session,
-    /// tty_nr, then `tpgid`), even when `comm` holds spaces and parentheses — the fields start
-    /// after its last `)`, not its first.
-    #[cfg(target_os = "linux")]
+    /// The OSC codes a shell integration and its programs send: `133;B` starts a command (the
+    /// snippet's `OSC 0 <first word>` then names it), `133;D;<code>` returns to the shell's name
+    /// (`code` non-zero = `error`), a program's own OSC 0 / 2 title shows while it runs until
+    /// `133;D`, and a title with control bytes is sanitized (an empty one falls back to the base).
     #[test]
-    fn tpgid_is_the_field_after_the_parenthesised_comm() {
+    fn osc_codes_title_a_shell_and_its_state() {
+        let id = RunId(7);
+        let at = |name: &str, idle: bool, error: bool| Event::Foreground {
+            id,
+            name: name.into(),
+            idle,
+            error,
+        };
+        let last = |events: &Arc<Mutex<Vec<Event>>>| lock(events).last().cloned().unwrap();
+        let (mut parser, events) = title_parser("zsh");
+
+        // Output without OSC codes (a shell with no integration) sends nothing: the title stays.
+        parser.process(b"hello\r\n");
+        assert!(lock(&events).is_empty(), "no OSC codes, no title change");
+
+        // Preexec (`133;B`) then the snippet's `OSC 0 sleep`: a command runs.
+        parser.process(b"\x1b]133;B\x07\x1b]0;sleep\x07");
         assert_eq!(
-            tpgid_from_stat("1 (sh) S 0 1 1 0 1 0 0 0"),
-            Some(1),
-            "idle: tpgid == pid"
+            *lock(&events),
+            [at("zsh", false, false), at("sleep", false, false)],
+            "the base name first, then the command's first word"
         );
-        assert_eq!(
-            tpgid_from_stat("1 (sh) S 0 1 1 0 42 0 0 0"),
-            Some(42),
-            "a command's group"
-        );
-        assert_eq!(
-            tpgid_from_stat("1 (sh) S 0 1 1 0 -1 0 0 0"),
-            Some(-1),
-            "no foreground group"
-        );
-        // `comm` with a `)` and a space: the closing delimiter is the last `)`.
-        assert_eq!(tpgid_from_stat("1 (my shell (2)) S 0 1 1 0 7 0 0 0"), Some(7));
-        // No parenthesised `comm`: nothing to parse after.
-        assert_eq!(tpgid_from_stat("1 sh S 0 1 1 0 1 0 0 0"), None);
+
+        // Precmd (`133;D;0`): back at the prompt, no error.
+        parser.process(b"\x1b]133;D;0\x07");
+        assert_eq!(last(&events), at("zsh", true, false));
+
+        // A non-zero exit: idle in the error colour.
+        parser.process(b"\x1b]133;B\x07\x1b]133;D;2\x07");
+        assert_eq!(last(&events), at("zsh", true, true));
+
+        // A program's own OSC 2 title while it runs, until `133;D` resets it.
+        parser.process(b"\x1b]133;B\x07\x1b]2;file.rs \xe2\x80\x94 VIM\x07");
+        assert_eq!(last(&events), at("file.rs — VIM", false, false));
+        parser.process(b"\x1b]133;D\x07");
+        assert_eq!(last(&events), at("zsh", true, false), "no code is a success");
+
+        // Control bytes in a title never reach the tab bar; an all-control one is the base name.
+        parser.process(b"\x1b]133;B\x07\x1b]2;ev\x01il\x07");
+        assert_eq!(last(&events), at("evil", false, false));
+        parser.process(b"\x1b]2;\x01\x07");
+        assert_eq!(last(&events), at("zsh", false, false));
+    }
+
+    /// FinalTerm's other semantic-prompt markers — `133;A` (a prompt starts) and `133;C` (a
+    /// command's output starts) — don't change the title: only `B` and `D` carry one.
+    #[test]
+    fn osc_133_prompt_and_output_markers_are_ignored() {
+        let (mut parser, events) = title_parser("zsh");
+        parser.process(b"\x1b]133;A\x07\x1b]133;C\x07");
+        assert!(lock(&events).is_empty(), "only `133;B` and `133;D` change the title");
     }
 }

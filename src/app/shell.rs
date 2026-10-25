@@ -31,8 +31,8 @@ impl App {
         let spec = shell::spec(&program, &root, ipc.as_deref());
         let base = spec.name.clone();
         // The smallest number no open shell of `base` has: closing "zsh (2)" gives that name to
-        // the next shell instead of repeating "zsh (3)". A shell's number stays put while the
-        // foreground process changes its title.
+        // the next shell instead of repeating "zsh (3)". A shell's number stays put while its
+        // title changes.
         let number = (1..)
             .find(|&n| !self.groups.shell_tabs().any(|s| s.base == base && s.number == n))
             .unwrap_or(1);
@@ -89,17 +89,19 @@ impl App {
     }
 
     /// `AppEvent::Shell`: output and starts only need a redraw (`handle_app_event` asks for one);
-    /// a foreground change renames the tab (its glyph says running from idle); an ended shell
-    /// keeps its tab, its output and a note below it ("Shell 'zsh' exited with code 3"), also in
-    /// the status bar. A tab closed meanwhile leaves events naming an id nothing holds.
+    /// a title change renames the tab (its glyph says running from idle, red when the command
+    /// failed); an ended shell keeps its tab, its output and a note below it ("Shell 'zsh' exited
+    /// with code 3"), also in the status bar. A tab closed meanwhile leaves events naming an id
+    /// nothing holds.
     pub(super) fn shell_event(&mut self, ev: Event) {
         match ev {
-            Event::Foreground { id, name, idle } => {
+            Event::Foreground { id, name, idle, error } => {
                 let Some(shell) = self.groups.shell_tabs_mut().find(|s| s.run.id == id) else {
                     return;
                 };
                 shell.title = shell::title(&shell.base, shell.number, Some((&name, idle)));
                 shell.idle = idle;
+                shell.error = error;
             }
             Event::Ended(id) => {
                 let Some(shell) = self.groups.shell_tabs().find(|s| s.run.id == id) else {

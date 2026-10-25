@@ -16,32 +16,35 @@ use crate::tasks::{Run, RunId, Sink};
 /// numbers the next shell of the same program.
 pub struct ShellTab {
     pub run: Run,
-    /// The tab bar's label: the foreground process while a command runs, the shell at its
-    /// prompt, with the state glyph (`shell::title`).
+    /// The tab bar's label: the command that runs (the terminal's title) while one runs, the
+    /// shell at its prompt, with the state glyph (`shell::title`).
     pub title: String,
     /// The shell's file name ("zsh", "sh"), for "zsh (2)" and the idle title.
     pub base: String,
     /// This tab's number among the shells of `base`: 1 for "zsh", 2 for "zsh (2)". Stable while
-    /// the foreground changes the title.
+    /// the title changes.
     pub number: usize,
-    /// The foreground is the shell itself (at its prompt): the idle glyph, else the running one.
+    /// The shell waits at its prompt (between the last command's `133;D` and the next `133;B`):
+    /// the idle glyph, else the running one.
     pub idle: bool,
+    /// The last command finished with a non-zero exit code: the idle glyph is drawn in the error
+    /// colour (`tab.shellError`).
+    pub error: bool,
 }
 
 impl ShellTab {
-    /// Starts `spec` in a `rows` × `cols` PTY, the `number`th shell of its program, and watches
-    /// its foreground for the title (`App::new_shell` picks the number).
+    /// Starts `spec` in a `rows` × `cols` PTY, the `number`th shell of its program (`App::new_shell`
+    /// picks the number). The run's parser captures the shell's OSC codes for the title.
     pub fn new(id: RunId, spec: Spec, rows: u16, cols: u16, sink: Sink, scrollback: usize, number: usize) -> ShellTab {
         let base = spec.name.clone();
-        let run = Run::start(id, spec, rows, cols, sink.clone(), scrollback);
-        // The title follows what runs in the shell, off the UI thread.
-        run.watch_foreground(sink);
+        let run = Run::start(id, spec, rows, cols, sink, scrollback);
         ShellTab {
             run,
             title: title(&base, number, None),
             base,
             number,
             idle: true,
+            error: false,
         }
     }
 }
@@ -51,11 +54,11 @@ pub const RUNNING_GLYPH: &str = "●";
 pub const IDLE_GLYPH: &str = "○";
 
 /// The tab bar's name for the `number`th shell of `base`: `zsh ○` at its prompt, `make ●` while
-/// `make` runs, `zsh (2) ○` for the next shell of the same program. `foreground` is the PTY's
-/// foreground process (its name and whether it's the shell itself); at the prompt the title is
-/// `base` — a shell started through a link (`myshell` → `sh`) keeps its own name.
-pub fn title(base: &str, number: usize, foreground: Option<(&str, bool)>) -> String {
-    let (name, glyph) = match foreground {
+/// `make` runs, `zsh (2) ○` for the next shell of the same program. `state` is the terminal's last
+/// title (`Event::Foreground`: its name and whether it's idle); at the prompt the title is `base` —
+/// a shell started through a link (`myshell` → `sh`) keeps its own name.
+pub fn title(base: &str, number: usize, state: Option<(&str, bool)>) -> String {
+    let (name, glyph) = match state {
         Some((name, false)) => (name, RUNNING_GLYPH),
         _ => (base, IDLE_GLYPH),
     };
@@ -112,8 +115,10 @@ mod tests {
         assert_eq!(title("sh", 0, None), "sh ○");
     }
 
+    /// The terminal's last OSC title names the command that runs (and `idle` says whether one
+    /// does): `zsh ○` at the prompt, `make ●` while it runs.
     #[test]
-    fn titles_follow_the_foreground_process_and_its_glyph() {
+    fn titles_follow_the_terminals_state_and_its_glyph() {
         assert_eq!(title("zsh", 1, Some(("zsh", true))), "zsh ○", "a prompt");
         assert_eq!(title("zsh", 1, Some(("make", false))), "make ●", "a command");
         assert_eq!(title("zsh", 2, Some(("vim", false))), "vim (2) ●");

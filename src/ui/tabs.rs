@@ -98,12 +98,18 @@ pub fn render(
                     mark: None,
                 }
             }
-            // A shell tab: the foreground process (or the shell) and its state glyph, never dirty.
+            // A shell tab: the command that runs (or the shell) and its state glyph, never dirty.
             Tab::Shell(s) => Label {
                 name: s.title.clone(),
                 dirty: false,
                 deleted: false,
-                mark: Some(if s.idle { "tab.shellIdle" } else { "tab.shellRunning" }),
+                mark: Some(if !s.idle {
+                    "tab.shellRunning"
+                } else if s.error {
+                    "tab.shellError"
+                } else {
+                    "tab.shellIdle"
+                }),
             },
             Tab::Text(t) => {
                 let buf = buffers.get(t.buffer);
