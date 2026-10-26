@@ -889,6 +889,15 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
   - Subtasks (one agent and one commit each):
     - claude_ide-a: the server and discovery — the localhost WebSocket + MCP handshake, the lock file and its authorization token, the `x-claude-code-ide-authorization` check, and injecting `CLAUDE_CODE_SSE_PORT` + `ENABLE_IDE_INTEGRATION=true` into shell and task environments (as `Tasks::ipc` and the shell spec do for `JED_IPC`); unit and shell tests for the handshake and the environment
     - claude_ide-b: the tools and the done-when — `getCurrentSelection` / `getOpenEditors` and their change notifications from the app's state, `openFile` / `openDiff`, the done-when tests against a scripted client and a real-`claude` smoke test (skipped with a note when the CLI is absent), gaps and hand checks; marks the task ✅
+- **Warn when the shell integration is missing or stale** (`shell_integration_check`): when a shell tab opens, warn the user if their shell's integration isn't installed or is an older version than the one jed embeds, pointing at the wizard that fixes it.
+  - Detection (`shell_integration.rs`, pure): `status(home, config_home, state_dir, shell_base) -> Option<Status>` — `None` for a shell without a snippet (`sh`, …; `init_for` is already `None` there); else read the init file and the snippet file on disk:
+    - `NotInstalled` when the init file doesn't contain the snippet's `source` line (the path `init_for` would append — a user who hand-added it differently still reads `NotInstalled`)
+    - `Stale` when the snippet file's text isn't the embedded `SNIPPETS` text (a missing file counts as stale: re-installing writes it)
+    - `UpToDate` otherwise; a missing state dir is `NotInstalled` (nothing was ever written)
+  - Checked once per app run, on the first shell tab (`new_shell`): the reads run in `spawn_blocking` (the UI never reads files), reported back as `AppEvent::ShellIntegrationStatus`, and a `bool` gates the one `Level::Warning` `notify` — "Shell integration for zsh isn't installed" / "… is out of date", each with "run 'Terminal: Install Shell Integration' to fix it"
+  - The wizard already rewrites the snippets and appends the line, so the warning only needs to point at it; no new command or binding
+  - Needs: `shell_integration` (`SNIPPETS`, `init_for`, `snippet_path`), the shell tab path (`app/shell.rs::new_shell`), `AppEvent` / `notify`
+  - Done when: opening a shell tab with the integration never installed warns "not installed" once (a second tab doesn't repeat it); a stale snippet on disk warns "out of date"; the current snippet plus its `source` line in the init file warns nothing; `sh` (no snippet) warns nothing; and the `status` unit tests and the end-to-end tests (stale snippet on disk, missing source line, up-to-date) pass
 
 ## Stretch goals
 Very low priority. Don't build these yet, but don't make design choices that would block them.
