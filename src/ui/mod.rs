@@ -157,6 +157,15 @@ pub fn render(f: &mut Frame, app: &mut App) {
         } else {
             scrollbar::take_column(&mut editor_area)
         };
+        // A text or diff tab keeps a second column, one cell left of the bar, for its changed
+        // lines' marks (always, so nothing reflows when they appear or go); a hex tab has none,
+        // and single file mode has no git status to mark.
+        let mut marks_col = if !app.mode.is_single() && (group.active_tab().is_some() || group.active_diff().is_some())
+        {
+            scrollbar::take_column(&mut editor_area)
+        } else {
+            None
+        };
         // A text or diff tab whose widest line drawn so far is wider than it (or that is
         // scrolled sideways) keeps the last row for the horizontal bar, from the last frame's
         // sizes; below, a frame that finds that changed asks for another.
@@ -177,11 +186,17 @@ pub fn render(f: &mut Frame, app: &mut App) {
         {
             b.height -= 1;
         }
+        if hrow.is_some()
+            && let Some(m) = &mut marks_col
+        {
+            m.height -= 1;
+        }
         // The sideways scroll's state as drawn, and the cells its bar may take.
         let mut hscroll = None;
         let mut text = Rect::default();
         let mut diff_hit = None;
         let mut scroll_hit = None;
+        let mut marks_hit = None;
         let mut merge_buttons = Vec::new();
         // Only the focused group shows the terminal cursor.
         let focused = is_active
@@ -202,6 +217,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             // As drawn: `diff::render` sets `text_width` and measures the rows it drew.
             hscroll = Some((d.scroll_width, d.text_width, d.left_col, None));
             if let Some(bar) = bar {
+                let scroll = d.scroll();
                 // The header row's cell, then the rows' track.
                 let out = f.buffer_mut();
                 out.set_style(bar, editor_bg);
@@ -211,16 +227,20 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     height: bar.height.saturating_sub(1),
                     ..bar
                 };
-                let marks = diff_marks(d);
-                scroll_hit = Some(scrollbar::render(
-                    out,
-                    track,
-                    d.scroll(),
-                    look,
-                    editor_bg,
-                    &app.theme,
-                    &marks,
-                ));
+                if let Some(m) = marks_col {
+                    // The header's cell, then the hunks' rows on the bar's track.
+                    out.set_style(m, editor_bg);
+                    out.set_style(Rect { height: 1, ..m }, app.theme.get("diffEditor.header"));
+                    let mtrack = Rect {
+                        y: m.y + 1,
+                        height: m.height.saturating_sub(1),
+                        ..m
+                    };
+                    let marks = diff_marks(d);
+                    scrollbar::render_marks(out, mtrack, scroll, editor_bg, &app.theme, &marks);
+                    marks_hit = Some(mtrack);
+                }
+                scroll_hit = Some(scrollbar::render(out, track, scroll, look, editor_bg, &app.theme));
             }
         }
         let mut hex_drawn = false;
@@ -241,7 +261,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     look,
                     editor_bg,
                     &app.theme,
-                    &[],
                 ));
             }
         }
@@ -260,7 +279,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     look,
                     base,
                     &app.theme,
-                    &[],
                 ));
             }
         }
@@ -356,6 +374,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
                             })
                         })
                         .collect();
+                    if let Some(m) = marks_col {
+                        let out = f.buffer_mut();
+                        scrollbar::render_marks(out, m, scroll, editor_bg, &app.theme, &marks);
+                        marks_hit = Some(m);
+                    }
                     scroll_hit = Some(scrollbar::render(
                         f.buffer_mut(),
                         bar,
@@ -363,7 +386,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
                         look,
                         editor_bg,
                         &app.theme,
-                        &marks,
                     ));
                 }
             }
@@ -385,7 +407,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             let out = f.buffer_mut();
             // The corner where the bars meet (and a text tab's gutter) stays blank.
             let all = Rect {
-                width: row.width + u16::from(bar.is_some()),
+                width: row.width + u16::from(bar.is_some()) + u16::from(marks_col.is_some()),
                 ..row
             };
             out.set_style(all, editor_bg);
@@ -411,6 +433,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             banner,
             merge_buttons,
             diff: diff_hit,
+            marks: marks_hit,
             scrollbar: scroll_hit,
             hscrollbar: hscroll_hit,
         });
@@ -508,6 +531,8 @@ fn fit_commit_tabs(app: &mut App, cells: &[(layout::GroupId, Rect)]) {
                 height: rect.height.saturating_sub(1),
                 ..rect
             };
+            // The scroll bar's column and the marks column beside it.
+            scrollbar::take_column(&mut area);
             scrollbar::take_column(&mut area);
             Some((id, editor::text_width(area.width, &buf.rope)))
         })

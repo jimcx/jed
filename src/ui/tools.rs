@@ -45,7 +45,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ToolsHit>, Op
     let top = view.scroll(&rows);
     let selected = view.selected_row(&rows);
     let scroll = view.scrollable(rows.len()).scroll();
-    let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme, &[]));
+    let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme));
     let mut hit = ToolsHit { list, rows: Vec::new() };
     for (i, row) in rows.iter().enumerate().skip(top).take(list.height as usize) {
         let y = list.y + (i - top) as u16;

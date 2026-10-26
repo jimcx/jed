@@ -235,7 +235,7 @@ async fn soft_wrap_draws_text_on_rows_with_the_cursor_there() {
     let term = draw(&mut app, 30, 8);
     let screen = cells(&term);
     let start = find(&screen, "abcd");
-    let continuation = find(&screen, "qrst");
+    let continuation = find(&screen, "mnop");
     assert_eq!(start.len(), 1, "the line's first row: {screen:?}");
     assert_eq!(continuation.len(), 1, "the line's continuation row: {screen:?}");
     let ((x0, y0), (x1, y1)) = (start[0], continuation[0]);
@@ -258,9 +258,10 @@ async fn soft_wrap_draws_text_on_rows_with_the_cursor_there() {
         &[' '; 5],
         "the continuation row's gutter is blank"
     );
+    let (xe, ye) = find(&screen, "qrst")[0];
     assert_eq!(
         term.backend().cursor_position(),
-        Position { x: x1 + 4, y: y1 },
+        Position { x: xe + 4, y: ye },
         "the cursor at the line's end is on its continuation row"
     );
 }
@@ -307,13 +308,14 @@ async fn soft_wrap_selection_and_squiggle_follow_the_rows() {
     plain_editor(&mut app);
     app.test_execute(Command::ToggleWordWrap);
     let (buf, view) = app.active_mut().unwrap();
-    // "mnop qrst" is selected across the line's two rows; "mnop" has an error squiggle.
-    view.selections = Selections::single(Selection::new(ByteIdx(41), ByteIdx(50)));
+    // "ijkl" ends the line's first row and "mnop" starts its continuation: the selection spans
+    // the wrap, and "ijkl" has an error squiggle.
+    view.selections = Selections::single(Selection::new(ByteIdx(36), ByteIdx(45)));
     buf.diagnostics.replace(
         ServerId::test(1),
         vec![Mark {
-            start: ByteIdx(41),
-            end: ByteIdx(45),
+            start: ByteIdx(36),
+            end: ByteIdx(40),
             server: ServerId::test(1),
             diag: std::sync::Arc::new(Diagnostic {
                 severity: Severity::Error,
@@ -326,36 +328,36 @@ async fn soft_wrap_selection_and_squiggle_follow_the_rows() {
     );
     let term = draw(&mut app, 30, 14);
     let screen = cells(&term);
+    let (xi, yi) = find(&screen, "ijkl")[0];
     let (xm, ym) = find(&screen, "mnop")[0];
-    let (xq, yq) = find(&screen, "qrst")[0];
-    assert_eq!(yq, ym + 1, "qrst is on the line's continuation row: {screen:?}");
+    assert_eq!(ym, yi + 1, "mnop is on the line's continuation row: {screen:?}");
     assert_eq!(
-        xq,
+        xm,
         find(&screen, "abcd")[0].0,
         "the continuation row keeps the indentation"
     );
     let selection = app.theme.get("editor.selection").bg;
-    for x in xm..xm + 4 {
-        assert_eq!(bg(&term, x, ym), selection, "the selected 'mnop' is on the first row");
+    for x in xi..xi + 4 {
+        assert_eq!(bg(&term, x, yi), selection, "the selected 'ijkl' is on the first row");
     }
-    for x in xq..xq + 4 {
+    for x in xm..xm + 4 {
         assert_eq!(
-            bg(&term, x, yq),
+            bg(&term, x, ym),
             selection,
-            "the selected 'qrst' is on the continuation row"
+            "the selected 'mnop' is on the continuation row"
         );
     }
     let squiggle = app.theme.get("editorError.foreground").underline_color;
-    for x in xm..xm + 4 {
-        let cell = &term.backend().buffer()[(x, ym)];
+    for x in xi..xi + 4 {
+        let cell = &term.backend().buffer()[(x, yi)];
         assert!(
             cell.modifier.contains(Modifier::UNDERLINED),
-            "the squiggle is under 'mnop'"
+            "the squiggle is under 'ijkl'"
         );
         assert_eq!(Some(cell.underline_color), squiggle);
     }
     assert!(
-        !term.backend().buffer()[(xq, yq)]
+        !term.backend().buffer()[(xm, ym)]
             .modifier
             .contains(Modifier::UNDERLINED),
         "the squiggle isn't on the continuation row"
@@ -742,10 +744,10 @@ async fn soft_wrap_scroll_bar_counts_rows_and_drags_to_the_last_row() {
     assert!(bar.thumb.unwrap().start > hit.start, "the thumb moved down the track");
 }
 
-/// While wrapping, a change's scroll-bar marks are its rows: a line below a wrapping line
-/// projects to the cell of its first row, not of its line number.
+/// While wrapping, a change's marks column is its rows: a line below a wrapping line projects to
+/// the cell of its first row, not of its line number.
 #[tokio::test(flavor = "multi_thread")]
-async fn soft_wrap_scroll_bar_marks_are_projected_over_rows() {
+async fn soft_wrap_marks_are_projected_over_rows() {
     let (_d, root, state) = dirs();
     init(&root);
     let original = "one\n  alpha bravo charlie delta echo foxtrot\nthree\nfour\nfive\nsix\nseven\neight\n";
@@ -770,21 +772,28 @@ async fn soft_wrap_scroll_bar_marks_are_projected_over_rows() {
         (total, start, view.height)
     };
     assert!(start > 2, "line 2 is below the wrapped line 1: row {start}");
-    let bar = app.hits.group(app.groups.active).unwrap().scrollbar.unwrap();
-    let row_cell = Scroll::text(total, height, 0).cell(bar.track.height, start);
+    let hit = app.hits.group(app.groups.active).unwrap().clone();
+    let bar = hit.scrollbar.unwrap();
+    let marks = hit.marks.expect("a marks column");
+    let row_cell = Scroll::text(total, height, 0).cell(marks.height, start);
     let lines = crate::buffer::pos::line_count(&app.active_buffer().unwrap().rope);
-    let line_cell = Scroll::text(lines, height, 0).cell(bar.track.height, 2);
+    let line_cell = Scroll::text(lines, height, 0).cell(marks.height, 2);
     assert_ne!(row_cell, line_cell, "rows, not lines, put the mark on the track");
     let mark = app.theme.get("editorGutter.modifiedBackground").fg.unwrap();
     assert_eq!(
-        bg(&term, bar.track.x, bar.track.y + row_cell),
+        bg(&term, marks.x, marks.y + row_cell),
         Some(mark),
         "the change's mark is on its first row's cell"
     );
     assert_ne!(
-        bg(&term, bar.track.x, bar.track.y + line_cell),
+        bg(&term, marks.x, marks.y + line_cell),
         Some(mark),
         "not on the line-number cell"
+    );
+    assert_ne!(
+        bg(&term, bar.track.x, bar.track.y + row_cell),
+        Some(mark),
+        "and not in the scroll bar's column"
     );
 }
 

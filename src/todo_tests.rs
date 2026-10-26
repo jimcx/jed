@@ -574,16 +574,23 @@ mod scroll_bars {
     async fn a_long_text_shows_a_thumb_sized_to_the_screen_at_the_top_line() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, term) = open_app(&dir, &numbered(200));
-        let editor = group(&app, app.groups.active).editor;
+        let group_hit = group(&app, app.groups.active);
+        let editor = group_hit.editor;
+        let marks = group_hit.marks.expect("a text tab has a marks column");
         let t = track(&app, app.groups.active);
         assert_eq!(
             (t.x, t.y, t.width),
-            (editor.x + editor.width, editor.y, 1),
-            "right of the editor"
+            (marks.x + 1, marks.y, 1),
+            "right of the marks column"
+        );
+        assert_eq!(
+            (marks.x, marks.width),
+            (editor.x + editor.width, 1),
+            "beside the editor"
         );
         assert_eq!(t.height, 22);
-        let text = group(&app, app.groups.active).text;
-        assert_eq!(text.x + text.width, t.x, "the text ends before the bar");
+        let text = group_hit.text;
+        assert_eq!(text.x + text.width, marks.x, "the text ends before the marks column");
         assert_eq!(app.group().active_tab().unwrap().view.width, text.width as usize);
         // 201 lines (the last empty) on 22 rows, scrollable until the last is at the top:
         // 22 / (200 + 22) of the track.
@@ -822,12 +829,14 @@ mod scroll_bars {
         let term = draw(&mut app);
         let g = app.groups.active;
         let rows = group(&app, g).diff.as_ref().unwrap().rows;
+        let marks = group(&app, g).marks.expect("a diff tab has a marks column");
         let t = track(&app, g);
         assert_eq!(
-            (t.x, t.y, t.height),
+            (marks.x, marks.y, marks.height),
             (rows.x + rows.width, rows.y, rows.height),
             "beside the rows"
         );
+        assert_eq!((t.x, t.y, t.height), (marks.x + 1, marks.y, marks.height), "the bar");
         let d = app.group().active_diff().unwrap();
         let n = d.rows().len();
         assert!(n > 100, "{n} rows");
@@ -879,13 +888,15 @@ mod scroll_bars {
         let (mut app, _) = open_app(&dir, &numbered(100));
         let full = {
             let g = group(&app, app.groups.active);
-            g.editor.width + 1
+            // The marks column and the scroll bar the tab takes; neither with no tab.
+            g.editor.width + 2
         };
         app.test_execute(Command::CloseTab);
         assert!(app.group().tabs.is_empty());
         draw(&mut app);
         let g = group(&app, app.groups.active);
         assert!(g.scrollbar.is_none());
+        assert!(g.marks.is_none(), "an empty group has no marks column");
         assert_eq!(g.editor.width, full, "the splash gets the whole width");
     }
 
@@ -895,9 +906,9 @@ mod scroll_bars {
         let (mut app, _) = open_app(&dir, &numbered(100));
         app.test_execute(Command::OpenFind);
         let term = draw(&mut app);
-        let t = track(&app, app.groups.active);
         let find = app.hits.find.as_ref().expect("the find widget").area;
-        assert_eq!(find.x + find.width, t.x);
+        let marks = group(&app, app.groups.active).marks.expect("a marks column");
+        assert_eq!(find.x + find.width, marks.x, "left of the marks column");
         assert_eq!(thumb(&app, &term), Some((0, 4)), "the thumb not covered");
     }
 
@@ -1486,7 +1497,7 @@ mod inline_blame {
     const BOB: (&str, u64) = ("2021-06-01T12:00:00Z", 1_622_548_800);
 
     /// The width of the text area `draw` gives (the explorer and the scroll bar left out).
-    const WIDTH: usize = 61;
+    const WIDTH: usize = 60;
 
     /// Commits everything as `who` (`<who>@example.com`), authored at `date`.
     fn commit_as(root: &Path, who: &str, date: &str, message: &str) {

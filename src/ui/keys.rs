@@ -141,7 +141,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> Option<KeysHit> {
             dim,
         );
     }
-    let scrollbar = track.map(|t| scrollbar::render(out, t, scroll, look, base, theme, &[]));
+    let scrollbar = track.map(|t| scrollbar::render(out, t, scroll, look, base, theme));
     Some(KeysHit {
         rect: area,
         rows,

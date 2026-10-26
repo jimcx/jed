@@ -109,9 +109,9 @@ impl Scroll {
 
     /// The track cell the line (a text) or row (a diff) `i` of the whole content projects to on
     /// `track` cells: where the thumb would start if `i` were the top (its length's rounding
-    /// aside). Independent of `top`, so a mark stays put as the view scrolls; the thumb draws
-    /// over it. Content shorter than the view spreads over the top of the track (its share of
-    /// `max_top + height`), as the thumb's maths does.
+    /// aside). Independent of `top`, so a mark stays put as the view scrolls (the marks column
+    /// has its own track, so the thumb never covers one). Content shorter than the view spreads
+    /// over the top of the track (its share of `max_top + height`), as the thumb's maths does.
     pub fn cell(&self, track: u16, i: usize) -> u16 {
         let content = (self.max_top + self.height).max(1) as u64;
         let i = i.min(content as usize - 1) as u64;

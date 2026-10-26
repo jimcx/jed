@@ -139,7 +139,6 @@ pub fn render(f: &mut Frame, panel: Rect, info: Rect, app: &mut App, id: RunId) 
         look,
         base.patch(theme.get("terminal.background")),
         theme,
-        &[],
     );
     let note = if back > 0 {
         format!("{back} lines back (Shift+PageDown, Ctrl+End)")

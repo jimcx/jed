@@ -1,5 +1,7 @@
-//! Scroll bars: one column (a row for the editors' horizontal bar) at the right edge of an editor or a list, the background of
-//! what it scrolls with the thumb (`scrollbar::Scroll::thumb`) as cells of `scrollbarSlider.*`.
+//! Scroll bars: one column (a row for the editors' horizontal bar) at the right edge of an editor
+//! or a list, the background of what it scrolls with the thumb (`scrollbar::Scroll::thumb`) as
+//! cells of `scrollbarSlider.*`; an editor group also keeps a column left of its bar for the
+//! changed lines' marks (`render_marks`).
 
 use ratatui::buffer::Buffer as Cells;
 use ratatui::layout::Rect;
@@ -31,10 +33,10 @@ pub fn look(app: &App, target: ScrollTarget) -> Look {
     }
 }
 
-/// A change as the bar draws it: the lines of a text tab (a deletion is the line above it; the
-/// screen rows while wrapping) or the rows of a diff tab it covers, and the theme key it is
-/// coloured in. Distinct from `quick_diff::Mark` (a change's bytes): [`Scroll::cell`] projects
-/// this onto a track.
+/// A change as the editor group's marks column draws it: the lines of a text tab (a deletion is
+/// the line above it; the screen rows while wrapping) or the rows of a diff tab it covers, and
+/// the theme key it is coloured in. Distinct from `quick_diff::Mark` (a change's bytes):
+/// [`Scroll::cell`] projects this onto a track.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mark {
     /// The lines (a text tab; its rows while wrapping) or rows (a diff tab), in the content's
@@ -43,8 +45,9 @@ pub struct Mark {
     pub key: &'static str,
 }
 
-/// Takes the last column off `area` for a bar (the column is always kept, so nothing reflows
-/// when a thumb appears); `None` when `area` is narrower than two columns.
+/// Takes the last column off `area` for a bar (or an editor group's marks column; the column is
+/// always kept, so nothing reflows when a thumb or a mark appears); `None` when `area` is
+/// narrower than two columns.
 pub fn take_column(area: &mut Rect) -> Option<Rect> {
     if area.width < 2 || area.height == 0 {
         return None;
@@ -104,7 +107,8 @@ pub fn render_row(
 }
 
 /// Draws the bar on `track` (one column, on `base`: the background of what it scrolls) for
-/// `scroll`, the changed lines' `marks` under the thumb; returns it for the mouse.
+/// `scroll`; returns it for the mouse. The changed lines' marks have a column of their own
+/// ([`render_marks`]), so the thumb never paints over them.
 pub fn render(
     out: &mut Cells,
     track: Rect,
@@ -112,10 +116,8 @@ pub fn render(
     look: Look,
     base: Style,
     theme: &Theme,
-    marks: &[Mark],
 ) -> ScrollBarHit {
     out.set_style(track, base);
-    render_marks(out, track, scroll, base, theme, marks);
     scroll.shown |= look == Look::Active;
     let thumb = scroll.thumb(track.height);
     if let Some(t) = thumb {
@@ -129,11 +131,13 @@ pub fn render(
     ScrollBarHit { track, thumb }
 }
 
-/// Fills the cells of the lines the changes cover, on the track's base (the column is kept even
-/// when there's no thumb, so a short text still shows its marks; the thumb draws over them).
-/// The gutter keys carry their colour in the foreground (the gutter draws a glyph in it), so a
-/// blank bar cell — no glyph — takes it as its background.
-fn render_marks(out: &mut Cells, track: Rect, scroll: Scroll, base: Style, theme: &Theme, marks: &[Mark]) {
+/// Fills `track` (a marks column of its own, left of the scroll bar's) with the cells of the
+/// lines the changes cover, on `base`. The column is kept even when there are no marks, so a
+/// short text still shows them and nothing reflows when they appear or go. The gutter keys carry
+/// their colour in the foreground (the gutter draws a glyph in it), so a blank cell — no glyph —
+/// takes it as its background.
+pub fn render_marks(out: &mut Cells, track: Rect, scroll: Scroll, base: Style, theme: &Theme, marks: &[Mark]) {
+    out.set_style(track, base);
     if track.height == 0 {
         return;
     }

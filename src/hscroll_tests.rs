@@ -330,10 +330,17 @@ async fn hscroll_bar_appears_once_a_long_line_is_drawn() {
         (hit.editor.y + hit.editor.height, hit.text.x, hit.text.width)
     );
     assert_eq!(bar.track.y, hit.text.y + hit.text.height, "the editor's last row");
-    // The corner under the vertical bar (and the gutter cells) are blank editor background.
+    // The corner under the vertical bar (and the gutter and marks cells) are blank editor
+    // background.
     let bg = app.theme.get("editor").bg;
     let v = hit.scrollbar.unwrap().track;
+    let m = hit.marks.expect("a text tab's marks column");
     assert_eq!(term.backend().buffer()[(v.x, bar.track.y)].bg, bg.unwrap());
+    assert_eq!(
+        term.backend().buffer()[(m.x, bar.track.y)].bg,
+        bg.unwrap(),
+        "the marks column's corner is blank too"
+    );
     assert_eq!(term.backend().buffer()[(hit.editor.x, bar.track.y)].bg, bg.unwrap());
     assert_eq!(v.y + v.height, bar.track.y, "the vertical bar stops above the corner");
     // Thumb at the left; its length is the view's share of the 201 columns.

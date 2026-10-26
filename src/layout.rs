@@ -582,7 +582,8 @@ pub type MergeButtonHit = (Rect, MergeButton, crate::buffer::pos::ByteIdx);
 pub struct GroupHit {
     pub id: GroupId,
     pub tab_bar: Rect,
-    /// Below the tab bar (and the banner, if shown), the scroll bar's column excluded.
+    /// Below the tab bar (and the banner, if shown), the scroll bar's and marks columns
+    /// excluded.
     pub editor: Rect,
     /// Text area (gutter excluded).
     pub text: Rect,
@@ -595,6 +596,11 @@ pub struct GroupHit {
     pub merge_buttons: Vec<MergeButtonHit>,
     /// The diff view, when the group shows a diff tab.
     pub diff: Option<DiffHit>,
+    /// The changed lines' marks column, left of the scroll bar (a text tab's `quick_diff`, a
+    /// diff tab's hunks); a diff tab's track starts below its header. `None` for a hex or shell
+    /// tab and in single file mode.
+    #[cfg_attr(not(test), allow(dead_code))] // the tests read where the marks were drawn
+    pub marks: Option<Rect>,
     /// The vertical scroll bar at the editor's right edge (a text or diff tab).
     pub scrollbar: Option<ScrollBarHit>,
     /// The horizontal scroll bar on the editor's last row, while the view's lines are wider
@@ -1021,6 +1027,7 @@ mod tests {
                 }),
                 diff: None,
                 merge_buttons: Vec::new(),
+                marks: None,
                 // Its scroll bar at the right edge.
                 scrollbar: Some(ScrollBarHit {
                     track: Rect {
