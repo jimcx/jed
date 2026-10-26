@@ -8032,3 +8032,192 @@ mod live_reload {
         );
     }
 }
+
+/// Terminal scroll bars: a shell tab and each task tab reserve their last column for a vertical
+/// bar, exactly as the editor does — a thumb only once output has scrolled off the top, at the
+/// bottom on the live screen and moving to the top as the view scrolls back; click / drag, hover
+/// and the wheel work through `app/scrollbar.rs`. A fresh terminal shows no thumb but a reserved
+/// track.
+mod term_scroll_bar {
+    use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+
+    use crate::app::App;
+    use crate::command::Command;
+    use crate::layout::{self, PanelTab, ScrollTarget};
+    use crate::scrollbar::Scrollable;
+    use crate::shell_tests::{COUNT_TO_200, dirs, draw, screen_text, scrollback, shell_app};
+    use crate::tasks::RunId;
+
+    /// The task template printing 0..199, one per line (more than a panel's rows).
+    fn count_task() -> String {
+        format!("[tasks.t]\ncommand = '''{COUNT_TO_200}'''\n")
+    }
+
+    fn task_text(app: &App, id: RunId) -> String {
+        app.tasks.get(id).unwrap().screen().screen().contents()
+    }
+
+    fn task_back(app: &App, id: RunId) -> usize {
+        app.tasks.get(id).unwrap().screen().screen().scrollback()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_shell_has_a_scroll_bar_that_scrolls_its_scrollback() {
+        let (_d, root, state) = dirs();
+        let mut app = shell_app(&root, &state);
+        app.tasks.shell = "/bin/sh".into();
+        app.test_execute(Command::NewShell);
+        assert!(
+            app.group()
+                .active_shell()
+                .unwrap()
+                .run
+                .write(format!("{COUNT_TO_200}\n").as_bytes())
+        );
+        assert!(
+            app.settle(|a| screen_text(a).lines().any(|l| l.trim_end() == "199"))
+                .await,
+            "the command's output arrived:\n{}",
+            screen_text(&app)
+        );
+
+        let term = draw(&mut app, 100, 30);
+        let hit = app.hits.group(app.groups.active).unwrap();
+        let editor = hit.editor;
+        let bar = hit.scrollbar.expect("a scroll bar for the shell");
+        drop(term);
+        assert_eq!(bar.track.width, 1);
+        assert_eq!(editor.x + editor.width, bar.track.x, "the terminal ends before the bar");
+        let scroll = app.group().active_shell().unwrap().run.scrollable().scroll();
+        assert!(scroll.shown, "output scrolled off the top: a thumb");
+        assert_eq!(scroll.top, scroll.max_top, "live screen: thumb at the bottom");
+        assert_eq!(
+            bar.thumb,
+            scroll.thumb(bar.track.height),
+            "drawn where the hit map says"
+        );
+
+        // Ctrl+Home scrolls to the oldest output: the thumb moves to the top.
+        app.press(KeyCode::Home, KeyModifiers::CONTROL);
+        assert!(scrollback(&app) > 0);
+        let term = draw(&mut app, 100, 30);
+        let bar = app.hits.group(app.groups.active).unwrap().scrollbar.unwrap();
+        drop(term);
+        let scroll = app.group().active_shell().unwrap().run.scrollable().scroll();
+        assert_eq!(scroll.top, 0, "oldest output: thumb at the top");
+        assert_eq!(bar.thumb, scroll.thumb(bar.track.height));
+
+        // Dragging the thumb scrolls: to the live screen, then back to the oldest output.
+        let track = bar.track;
+        app.mouse(MouseEventKind::Down(MouseButton::Left), track.x, track.y);
+        app.mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            track.x,
+            track.y + track.height - 1,
+        );
+        app.mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            track.x,
+            track.y + track.height - 1,
+        );
+        assert_eq!(scrollback(&app), 0, "dragged to the live screen");
+        app.mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            track.x,
+            track.y + track.height - 1,
+        );
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), track.x, track.y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), track.x, track.y);
+        assert!(scrollback(&app) > 0, "dragged back to the oldest output");
+
+        // The wheel over the bar scrolls the scrollback, as over the shell.
+        app.press(KeyCode::End, KeyModifiers::CONTROL);
+        assert_eq!(scrollback(&app), 0);
+        app.mouse(MouseEventKind::ScrollUp, track.x, track.y + 2);
+        assert_eq!(scrollback(&app), 3, "the wheel over the bar scrolls back");
+        app.mouse(MouseEventKind::ScrollDown, track.x, track.y + 2);
+        assert_eq!(scrollback(&app), 0, "and forward again");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_fresh_shell_shows_a_reserved_track_with_no_thumb() {
+        let (_d, root, state) = dirs();
+        let mut app = shell_app(&root, &state);
+        app.tasks.shell = "/bin/sh".into();
+        app.test_execute(Command::NewShell);
+        let term = draw(&mut app, 100, 30);
+        let hit = app.hits.group(app.groups.active).unwrap();
+        let bar = hit.scrollbar.expect("a reserved track");
+        assert_eq!(bar.track.width, 1);
+        assert_eq!(bar.thumb, None, "no output scrolled off the top");
+        assert_eq!(hit.editor.x + hit.editor.width, bar.track.x);
+        drop(term);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_task_tab_has_a_scroll_bar_that_scrolls_its_scrollback() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, state) = crate::milestone12_tests::dirs(&dir);
+        let mut app = crate::milestone12_tests::open_app(&root, &state, Some(&count_task()));
+        app.tasks.shell = "/bin/sh".into();
+        drop(draw(&mut app, 100, 30));
+        let id = app.run_task("t").unwrap();
+        assert!(
+            app.settle(|a| task_text(a, id).lines().any(|l| l.trim_end() == "199"))
+                .await,
+            "the task's output arrived:\n{}",
+            task_text(&app, id)
+        );
+
+        let target = ScrollTarget::Panel(PanelTab::Task(id));
+        let term = draw(&mut app, 100, 30);
+        let panel = app.hits.regions.panel.unwrap();
+        let area = layout::task_area(panel);
+        let bar = app.hits.scrollbar(target).expect("a scroll bar for the task");
+        drop(term);
+        assert_eq!(bar.track.width, 1);
+        assert_eq!(area.x + area.width, bar.track.x, "the terminal ends before the bar");
+        let scroll = app.tasks.get(id).unwrap().scrollable().scroll();
+        assert!(scroll.shown);
+        assert_eq!(scroll.top, scroll.max_top, "live screen: thumb at the bottom");
+        assert_eq!(bar.thumb, scroll.thumb(bar.track.height));
+
+        // Shift+PageUp scrolls back a page: the thumb moves toward the top.
+        app.press(KeyCode::PageUp, KeyModifiers::SHIFT);
+        let back = task_back(&app, id);
+        assert!(back > 0);
+        let term = draw(&mut app, 100, 30);
+        let bar = app.hits.scrollbar(target).unwrap();
+        drop(term);
+        let scroll = app.tasks.get(id).unwrap().scrollable().scroll();
+        assert_eq!(scroll.top, scroll.max_top - back);
+        assert_eq!(bar.thumb, scroll.thumb(bar.track.height));
+
+        // Dragging to the top scrolls to the oldest output, and the wheel over the bar scrolls.
+        let track = bar.track;
+        app.mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            track.x,
+            track.y + track.height - 1,
+        );
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), track.x, track.y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), track.x, track.y);
+        let at_top = task_back(&app, id);
+        assert!(at_top > 0, "dragged to the oldest output");
+        let term = draw(&mut app, 100, 30);
+        let bar = app.hits.scrollbar(target).unwrap();
+        drop(term);
+        let scroll = app.tasks.get(id).unwrap().scrollable().scroll();
+        assert_eq!(scroll.top, 0, "the thumb is at the top");
+        assert_eq!(bar.thumb, scroll.thumb(bar.track.height));
+
+        app.mouse(MouseEventKind::ScrollDown, track.x, track.y + 2);
+        assert_eq!(
+            task_back(&app, id),
+            at_top - 3,
+            "the wheel over the bar scrolls forward"
+        );
+        app.mouse(MouseEventKind::ScrollUp, track.x, track.y + 2);
+        assert_eq!(task_back(&app, id), at_top, "and back");
+    }
+}

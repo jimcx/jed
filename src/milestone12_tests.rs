@@ -657,15 +657,15 @@ async fn milestone_12_the_pty_follows_the_panel_size() {
     assert!(app.settle(|a| screen_text(a, id).contains("ready")).await);
     draw_sized(&mut app, 100, 30);
     let list = app.hits.regions.panel.unwrap();
-    // Below the border and the tab strip, one column of padding.
-    let (rows, cols) = (list.height - 2, list.width - 1);
+    // Below the border and the tab strip, one column of padding and one for the scroll bar.
+    let (rows, cols) = (list.height - 2, list.width - 2);
     assert_eq!(app.tasks.size, (rows, cols));
     assert_eq!(app.tasks.get(id).unwrap().screen().screen().size(), (rows, cols));
     // A taller panel, a narrower terminal: the process sees the new size.
     app.ui.panel_height += 4;
     draw_sized(&mut app, 90, 30);
     let list = app.hits.regions.panel.unwrap();
-    let size = (list.height - 2, list.width - 1);
+    let size = (list.height - 2, list.width - 2);
     assert_eq!(size, (rows + 4, cols - 10));
     app.press(KeyCode::Enter, M::NONE);
     assert!(settle_ended(&mut app, id).await);

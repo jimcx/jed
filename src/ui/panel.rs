@@ -172,7 +172,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> PanelHits {
     match app.ui.panel_tab {
         PanelTab::Task(id) => {
             drop(files);
-            super::task::render(f, area, Rect::new(x, tabs_y, end.saturating_sub(x), 1), app, id);
+            let info = Rect::new(x, tabs_y, end.saturating_sub(x), 1);
+            hits.scrollbar =
+                super::task::render(f, area, info, app, id).map(|b| (ScrollTarget::Panel(PanelTab::Task(id)), b));
             return hits;
         }
         PanelTab::Locations => {

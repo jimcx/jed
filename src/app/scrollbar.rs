@@ -14,6 +14,7 @@ use crate::group::Tab;
 use crate::layout::{Hit, PanelTab, ScrollTarget, SidePanel};
 use crate::problems;
 use crate::scrollbar::{Columns, Scroll, Scrollable};
+use crate::tasks::TerminalScroll;
 use crate::view::TextScroll;
 
 impl App {
@@ -46,7 +47,7 @@ impl App {
                     }
                     Tab::Diff(d) => Some(f(d.as_mut())),
                     Tab::Hex(h) => Some(f(h.as_mut())),
-                    Tab::Shell(_) => None,
+                    Tab::Shell(s) => Some(f(&mut TerminalScroll { run: &s.run })),
                 }
             }
             ScrollTarget::Columns(g) => {
@@ -89,7 +90,9 @@ impl App {
                 let l = self.locations.as_mut()?;
                 Some(f(&mut l.list.scrollable(&l.files)))
             }
-            ScrollTarget::Panel(PanelTab::Task(_)) => None,
+            ScrollTarget::Panel(PanelTab::Task(id)) => Some(f(&mut TerminalScroll {
+                run: self.tasks.get(id)?,
+            })),
             ScrollTarget::History if !self.ui.side_visible || self.ui.side_panel != SidePanel::Explorer => None,
             ScrollTarget::History => Some(f(&mut self.git_history.scrollable())),
             ScrollTarget::CheatSheet => Some(f(self.cheat_sheet.as_mut()?)),

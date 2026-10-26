@@ -20,6 +20,10 @@
 //! `133;D;<code>` (it finished) from the shell integration, and a program's own window title
 //! (OSC 0 / 2, vim's for one) while it runs. `TitleCallback` turns them into
 //! `Event::Foreground`.
+//!
+//! The scroll bar (`TerminalScroll`, `Run::scrollable`) is the scrollback as a `Scrollable` in
+//! rows; the kept-line count the bar needs as `max_top` is probed (`scrollbar_extent`) rather than
+//! read, since `vt100` exposes only the offset.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -31,6 +35,7 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 
 use super::select;
 use super::templates::Spec;
+use crate::scrollbar::{Scroll, Scrollable};
 
 /// Lines of output kept above the screen unless the `scrollback` setting says otherwise.
 pub const SCROLLBACK: usize = 5_000;
@@ -324,6 +329,40 @@ impl Run {
         self.clear_selection();
     }
 
+    /// The scroll bar's extent: `(back, max, rows)` — the current offset (0 = the live screen),
+    /// the kept lines, and the screen's rows. The kept-line count `vt100` doesn't expose is probed
+    /// (`set_scrollback(usize::MAX)` then reading `scrollback()` back), O(1) under the parser mutex
+    /// so it is atomic w.r.t. the reader thread, and restored to `back`.
+    pub fn scrollbar_extent(&self) -> (usize, usize, usize) {
+        let mut parser = self.screen();
+        let screen = parser.screen_mut();
+        let rows = screen.size().0 as usize;
+        let back = screen.scrollback();
+        screen.set_scrollback(usize::MAX);
+        let max = screen.scrollback();
+        screen.set_scrollback(back);
+        (back, max, rows)
+    }
+
+    /// Puts the scrollback `top` rows from the oldest output (the `Scroll::rows` space; `max` is
+    /// the live screen). Clears the selection, as `scroll` / `scroll_to` do (the rows move).
+    pub fn set_scrollback_from_top(&self, top: usize) {
+        let mut parser = self.screen();
+        let screen = parser.screen_mut();
+        screen.set_scrollback(usize::MAX);
+        let max = screen.scrollback();
+        screen.set_scrollback(max.saturating_sub(top));
+        drop(parser);
+        self.clear_selection();
+    }
+
+    /// The scroll bar (`TerminalScroll`): the scrollback as a [`Scrollable`] whose `Scroll` is in
+    /// rows. `set_top` is `top` rows from the oldest output, so the live screen is `top == max`
+    /// (thumb at the bottom) and the oldest output `top == 0` (thumb at the top).
+    pub fn scrollable(&self) -> TerminalScroll<'_> {
+        TerminalScroll { run: self }
+    }
+
     /// The mouse selection on the screen, if any.
     pub fn selection(&self) -> Option<select::Selection> {
         *lock(&self.shared.selection)
@@ -376,6 +415,27 @@ impl Run {
 impl Drop for Run {
     fn drop(&mut self) {
         self.shared.kill(false);
+    }
+}
+
+/// A run's scroll bar (`Run::scrollable`): the scrollback as a [`Scrollable`]. Its `Scroll` is in
+/// rows — `Scroll::rows(max + rows, rows, max - back)` — so the live screen is `top == max` (thumb
+/// at the bottom), the oldest output `top == 0` (thumb at the top), and the last page stays full
+/// as a terminal view is always `rows` tall. `set_top` moves the scrollback there, clearing the
+/// selection (the rows move). A `Scrollable` on a borrow, not on `Run`, so its `scroll()` doesn't
+/// clash with `Run::scroll(&self, isize)`.
+pub struct TerminalScroll<'a> {
+    pub run: &'a Run,
+}
+
+impl Scrollable for TerminalScroll<'_> {
+    fn scroll(&self) -> Scroll {
+        let (back, max, rows) = self.run.scrollbar_extent();
+        Scroll::rows(max + rows, rows, max - back)
+    }
+
+    fn set_top(&mut self, top: usize) {
+        self.run.set_scrollback_from_top(top);
     }
 }
 

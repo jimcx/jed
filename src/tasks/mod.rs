@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use run::{Event, Exit, Run, RunId, Sink, Status};
+pub use run::{Event, Exit, Run, RunId, Sink, Status, TerminalScroll};
 pub use templates::{Source, Task, Template};
 
 /// How long quitting waits for SIGHUP'd tasks before SIGKILLing what's left.
@@ -174,6 +174,7 @@ pub async fn hang_up<'a>(runs: impl Iterator<Item = &'a Run> + Clone, label: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scrollbar::Scrollable;
     use std::sync::Mutex;
     use std::time::Instant;
 
@@ -421,6 +422,66 @@ mod tests {
         assert_eq!(run.screen().screen().scrollback(), 46);
         run.scroll_to(false);
         assert_eq!(run.screen().screen().scrollback(), 0);
+    }
+
+    /// The terminal's scroll bar: its `max_top` is the kept lines (probed), `top == max_top` on
+    /// the live screen and `top == 0` at the oldest output, and `set_top` moves the offset,
+    /// clearing a selection.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn terminal_scroll_bar_extent_and_set_top() {
+        let (mut t, _) = tasks();
+        t.size = (5, 40);
+        let dir = tempfile::tempdir().unwrap();
+        let id = t.run(&template("seq 1 50"), dir.path(), run::SCROLLBACK);
+        let run = t.get(id).unwrap();
+        wait_until("exit", || !run.status().is_running()).await;
+
+        let (back, max, rows) = run.scrollbar_extent();
+        assert_eq!((back, rows), (0, 5), "live screen, five rows");
+        {
+            let mut p = run.screen();
+            p.screen_mut().set_scrollback(usize::MAX);
+            assert_eq!(p.screen().scrollback(), max, "the probe's max is the kept lines");
+            p.screen_mut().set_scrollback(0);
+        }
+
+        let scroll = run.scrollable().scroll();
+        assert_eq!((scroll.max_top, scroll.height), (max, rows));
+        assert_eq!(scroll.top, max, "live screen: thumb at the bottom");
+
+        run.scroll_to(true);
+        assert_eq!(run.scrollable().scroll().top, 0, "oldest output: thumb at the top");
+
+        run.scroll_to(false);
+        run.set_selection(select::Selection {
+            anchor: (0, 0),
+            head: (0, 0),
+        });
+        assert!(run.selection().is_some());
+        let mut bar = run.scrollable();
+        crate::scrollbar::Scrollable::set_top(&mut bar, 3);
+        assert_eq!(run.screen().screen().scrollback(), max - 3);
+        assert!(run.selection().is_none(), "the rows moved: the selection cleared");
+        crate::scrollbar::Scrollable::set_top(&mut bar, max);
+        assert_eq!(run.screen().screen().scrollback(), 0);
+        crate::scrollbar::Scrollable::set_top(&mut bar, 0);
+        assert_eq!(run.screen().screen().scrollback(), max, "back to the oldest output");
+    }
+
+    /// No scrollback (the alternate screen, a run that printed nothing): `max == 0`, so the bar
+    /// shows no thumb.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn terminal_scroll_bar_without_scrollback_shows_no_thumb() {
+        let (mut t, _) = tasks();
+        t.size = (5, 40);
+        let dir = tempfile::tempdir().unwrap();
+        let id = t.run(&template("true"), dir.path(), run::SCROLLBACK);
+        let run = t.get(id).unwrap();
+        wait_until("exit", || !run.status().is_running()).await;
+        let (back, max, rows) = run.scrollbar_extent();
+        assert_eq!((back, max, rows), (0, 0, 5));
+        let scroll = run.scrollable().scroll();
+        assert_eq!((scroll.max_top, scroll.shown), (0, false), "no scrollback: no thumb");
     }
 
     #[tokio::test(flavor = "multi_thread")]

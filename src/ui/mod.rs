@@ -151,9 +151,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
             editor_area.height -= 1;
         }
 
-        // A text, diff or hex tab keeps the editor's last column for its scroll bar (a shell
-        // uses the whole area).
-        let mut bar = if group.tabs.is_empty() || group.active_shell().is_some() {
+        // A text, diff, hex or shell tab keeps the editor's last column for its scroll bar.
+        let mut bar = if group.tabs.is_empty() {
             None
         } else {
             scrollbar::take_column(&mut editor_area)
@@ -246,11 +245,24 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 ));
             }
         }
-        // A shell tab: its PTY resized to the whole area each frame, the screen drawn there.
+        // A shell tab: its PTY resized to the whole area each frame, the screen drawn there,
+        // and its scroll bar in the last column.
         if let Some(shell) = group.active_shell() {
             shell.run.resize(editor_area.height, editor_area.width);
             text = editor_area;
             task::render_shell(f, editor_area, shell, &app.theme, focused);
+            if let Some(bar) = bar {
+                let base = app.theme.get("editor").patch(app.theme.get("terminal.background"));
+                scroll_hit = Some(scrollbar::render(
+                    f.buffer_mut(),
+                    bar,
+                    shell.run.scrollable().scroll(),
+                    look,
+                    base,
+                    &app.theme,
+                    &[],
+                ));
+            }
         }
         match group
             .active_tab_mut()

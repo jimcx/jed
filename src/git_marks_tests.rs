@@ -445,7 +445,7 @@ async fn git_marks_hex_shell_and_single_file_tabs_have_none() {
         "no marks on a hex tab: {cells:?}"
     );
 
-    // A shell tab draws no bar at all.
+    // A shell tab draws a bar (the terminal's scroll bar), but no marks on it.
     let (_d, root, state) = dirs();
     let mut app = App::new(
         Workspace::load(root.clone()),
@@ -457,10 +457,12 @@ async fn git_marks_hex_shell_and_single_file_tabs_have_none() {
     app.tasks.shell = PathBuf::from("/bin/sh");
     app.test_execute(Command::NewShell);
     assert!(app.group().active_shell().is_some(), "a shell tab");
-    let _ = draw_sized(&mut app, 100, 24);
+    let term = draw_sized(&mut app, 100, 24);
+    let colours = gutter_colours(&app);
+    let cells = bar_cells(&app, &term);
     assert!(
-        app.hits.group(app.groups.active).unwrap().scrollbar.is_none(),
-        "a shell tab has no scroll bar"
+        cells.iter().all(|c| !c.is_some_and(|c| colours.contains(&c))),
+        "no marks on a shell tab: {cells:?}"
     );
 
     // Single file mode: no git status, so no marks (the bar is still drawn).

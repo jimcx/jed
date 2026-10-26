@@ -69,12 +69,23 @@ impl PanelTab {
 }
 
 /// A task tab's terminal in the panel `panel` (border row included): below the border and the
-/// tab strip, one column of padding on the left. The PTY gets its size.
+/// tab strip, one column of padding on the left, the last column kept for its scroll bar. The
+/// PTY gets its size.
 pub fn task_area(panel: Rect) -> Rect {
     Rect {
         x: panel.x + 1,
         y: panel.y + 2,
-        width: panel.width.saturating_sub(1),
+        width: panel.width.saturating_sub(2),
+        height: panel.height.saturating_sub(2),
+    }
+}
+
+/// A task tab's scroll bar column, just right of [`task_area`] (same rows).
+pub fn task_bar(panel: Rect) -> Rect {
+    Rect {
+        x: panel.x + panel.width.saturating_sub(1),
+        y: panel.y + 2,
+        width: 1,
         height: panel.height.saturating_sub(2),
     }
 }

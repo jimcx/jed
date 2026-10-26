@@ -1172,8 +1172,9 @@ async fn shell_draws_in_the_editor_area_and_resizes_with_it() {
     );
 }
 
-/// The screen fills the editor area with the terminal's colours (no scroll-bar column), and the
-/// terminal cursor is only on the live screen of the focused group while the shell runs.
+/// The screen fills the editor area (its last column kept for the scroll bar) with the
+/// terminal's colours, and the terminal cursor is only on the live screen of the focused group
+/// while the shell runs.
 #[tokio::test(flavor = "multi_thread")]
 async fn shell_draws_colours_and_the_cursor() {
     let (_d, root, state) = dirs();
@@ -1192,11 +1193,14 @@ async fn shell_draws_colours_and_the_cursor() {
     let term = draw(&mut app, 100, 30);
     let hit = app.hits.group(active).unwrap();
     let editor = hit.editor;
-    assert_eq!(hit.text, editor, "the shell uses the whole editor area");
-    assert!(hit.scrollbar.is_none(), "no scroll-bar column for a shell");
+    assert_eq!(hit.text, editor, "the shell uses the editor area");
+    let bar = hit.scrollbar.expect("a scroll-bar column for a shell");
+    assert_eq!(bar.thumb, None, "a fresh shell has no scrollback to thumb");
+    assert_eq!(editor.x + editor.width, bar.track.x, "the terminal ends before the bar");
     assert_eq!(
-        editor.width, hit.tab_bar.width,
-        "the shell is as wide as its group: no column is reserved for a bar"
+        editor.width,
+        hit.tab_bar.width - 1,
+        "one column is reserved for the bar"
     );
     let bg = app.theme.get("terminal.background").bg.unwrap();
     let corner = term.backend().buffer()[(editor.x + editor.width - 1, editor.y + editor.height - 1)].bg;

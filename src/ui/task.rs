@@ -3,7 +3,8 @@
 //! the mouse selection (`tasks::select`) in `editor.selection`'s background over them.
 //!
 //! Render-time state written back: every running task's PTY is resized to the tab's area
-//! (`layout::task_area`), and `app.tasks.size` is set to it. A screen taller than the area (an
+//! (`layout::task_area`, its last column kept for the scroll bar `render` draws in
+//! `layout::task_bar`), and `app.tasks.size` is set to it. A screen taller than the area (an
 //! ended run that started bigger) is drawn from the row that keeps its last line in view.
 
 use ratatui::Frame;
@@ -12,7 +13,8 @@ use tui_term::widget::{Cursor, PseudoTerminal};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Focus};
-use crate::layout;
+use crate::layout::{self, PanelTab, ScrollBarHit, ScrollTarget};
+use crate::scrollbar::Scrollable;
 use crate::shell::ShellTab;
 use crate::tasks::select::top_row;
 use crate::tasks::{Run, RunId};
@@ -101,11 +103,11 @@ fn draw_screen(f: &mut Frame, area: Rect, run: &Run, theme: &Theme, focused: boo
 
 /// Draws run `id` in the panel `panel` (border row included); `info` is what's left of the tab
 /// strip's row: the "scrolled back" note, else the command (and its folder when not the root),
-/// dimmed.
-pub fn render(f: &mut Frame, panel: Rect, info: Rect, app: &mut App, id: RunId) {
+/// dimmed. Returns the run's scroll bar (`None` when the area is too small).
+pub fn render(f: &mut Frame, panel: Rect, info: Rect, app: &mut App, id: RunId) -> Option<ScrollBarHit> {
     let content = layout::task_area(panel);
     if content.width == 0 || content.height == 0 {
-        return;
+        return None;
     }
     app.tasks.size = (content.height, content.width);
     for run in app.tasks.runs() {
@@ -113,7 +115,7 @@ pub fn render(f: &mut Frame, panel: Rect, info: Rect, app: &mut App, id: RunId) 
             run.resize(content.height, content.width);
         }
     }
-    let Some(run) = app.tasks.get(id) else { return };
+    let run = app.tasks.get(id)?;
     let focused =
         app.ui.focus == Focus::Panel && app.prompt.is_none() && app.palette.is_none() && app.cheat_sheet.is_none();
     let theme = &app.theme;
@@ -127,6 +129,18 @@ pub fn render(f: &mut Frame, panel: Rect, info: Rect, app: &mut App, id: RunId) 
         .set_style(below_tabs, base.patch(theme.get("terminal.background")));
 
     let back = draw_screen(f, content, run, theme, focused);
+    // The scroll bar in the panel's last column (`task_area` kept it), over the terminal's
+    // background.
+    let look = super::scrollbar::look(app, ScrollTarget::Panel(PanelTab::Task(id)));
+    let bar = super::scrollbar::render(
+        f.buffer_mut(),
+        layout::task_bar(panel),
+        run.scrollable().scroll(),
+        look,
+        base.patch(theme.get("terminal.background")),
+        theme,
+        &[],
+    );
     let note = if back > 0 {
         format!("{back} lines back (Shift+PageDown, Ctrl+End)")
     } else {
@@ -143,12 +157,13 @@ pub fn render(f: &mut Frame, panel: Rect, info: Rect, app: &mut App, id: RunId) 
         f.buffer_mut()
             .set_stringn(x, info.y, &note, w as usize, base.patch(theme.get("panel.dim")));
     }
+    Some(bar)
 }
 
-/// Draws a shell tab's screen in `area` (the whole editor area: no tab strip or info line, no
-/// scroll bar column). The caller resizes the run to `area` each frame; `focused` shows the
-/// terminal cursor only on the live screen, as a task tab does. No `App`: the caller still holds
-/// the group mutably.
+/// Draws a shell tab's screen in `area` (the editor area less its scroll bar column: no tab
+/// strip or info line). The caller resizes the run to `area` each frame and draws the bar;
+/// `focused` shows the terminal cursor only on the live screen, as a task tab does. No `App`: the
+/// caller still holds the group mutably.
 pub fn render_shell(f: &mut Frame, area: Rect, shell: &ShellTab, theme: &Theme, focused: bool) {
     if area.width == 0 || area.height == 0 {
         return;
