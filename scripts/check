@@ -17,6 +17,12 @@ if [ "$(uname)" = Darwin ] && ! command -v cargo >/dev/null 2>&1; then
     export PATH
 fi
 
+# Running inside a jed shell leaves JED_IPC pointing at that jed's socket; a test
+# spawning the real `jed` binary (or git → `jed --wait`) would connect there and
+# open files in this instance instead of starting its own. Tests set their own
+# socket when they need one, so drop the inherited one before cargo runs.
+unset JED_IPC
+
 # No shared CARGO_TARGET_DIR: each checkout/worktree keeps its own `target/`, so
 # two tasks building at once can't clobber each other's binaries. Export
 # CARGO_TARGET_DIR yourself to point the (non-concurrent) budget runs elsewhere.

@@ -594,6 +594,10 @@ fn spawn(shared: Arc<Shared>, spec: Spec, sink: Sink) {
     };
     let mut cmd = CommandBuilder::from_argv(spec.argv.clone());
     cmd.cwd(&spec.cwd);
+    // A run gets `JED_IPC` only from its spec (this jed's own socket, `Tasks::ipc` /
+    // `shell::spec`). Never inherit one leaked from a parent process — a jed started inside
+    // another jed's shell would otherwise hand its own tasks the outer jed's socket.
+    cmd.env_remove(crate::ipc::ENV);
     for (k, v) in &spec.env {
         cmd.env(k, v);
     }

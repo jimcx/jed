@@ -13,6 +13,9 @@ die "usage: $0 <seconds> <command> [args...]\n" unless defined $secs && $secs =~
 my $pid = fork() // die "fork: $!\n";
 if ($pid == 0) {
     setpgid(0, 0);
+    # A test's real `jed` binary (or git → `jed --wait`) must start its own instance,
+    # not connect to the jed this script happens to run inside of.
+    delete $ENV{JED_IPC};
     exec @ARGV or die "exec $ARGV[0]: $!\n";
 }
 setpgid($pid, $pid);
