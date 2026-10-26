@@ -194,6 +194,7 @@ mod render_whitespace {
         let mut app = App::new(ws, trust, Some(initial), true);
         app.config_dir = config_dir;
         app.report_errors(loaded.errors);
+        app.enable_file_watching();
         app.test_start();
         (app, root, user_file)
     }
@@ -504,6 +505,7 @@ mod scroll_bars {
         let path = root.join("a.txt");
         std::fs::write(&path, text).unwrap();
         let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&path).unwrap());
+        app.enable_file_watching();
         app.test_start();
         let term = draw(&mut app);
         (app, term)
@@ -1870,6 +1872,7 @@ mod folder_filter {
         let buffer = Buffer::open(&root.join("README.md")).unwrap();
         let initial = crate::app::InitialFile { buffer, goto: None };
         let mut app = App::new(ws, trust, Some(initial), true);
+        app.enable_file_watching();
         app.test_start();
         app.test_plain_whitespace();
         assert!(app.settle(|a| a.explorer.row_count() > 0).await);
@@ -3403,6 +3406,7 @@ mod back_forward {
             goto: None,
         };
         let mut app = App::new(Workspace::load(root.to_path_buf()), trust(root), Some(initial), true);
+        app.enable_file_watching();
         app.test_start();
         draw(&mut app);
         app
@@ -5243,6 +5247,7 @@ mod cursor_style {
             goto: None,
         };
         let mut app = App::new(ws, trust, Some(initial), true);
+        app.enable_file_watching();
         app.test_plain_whitespace();
         app.test_start();
         app.press(K::Right, M::NONE);
@@ -6548,6 +6553,7 @@ mod single_file {
         app.state_dir = Some(state.to_path_buf());
         let fake = FakeLauncher::new(FakeOptions::default());
         app.lsp.set_launcher(fake.clone());
+        app.enable_file_watching();
         app.test_start();
         app.test_plain_whitespace();
         (app, fake)
@@ -7125,6 +7131,7 @@ mod window_identity {
             goto: None,
         };
         let mut app = App::new(ws, trust, Some(initial), true);
+        app.enable_file_watching();
         app.test_start();
         (app, root)
     }
@@ -7794,6 +7801,7 @@ mod live_reload {
         let mut errors = loaded.errors;
         errors.extend(keymap_errors);
         app.set_keymap(km, errors);
+        app.enable_file_watching();
         app.test_start();
         (app, root, config_dir)
     }
@@ -8010,6 +8018,7 @@ mod live_reload {
         let mut errors = loaded.errors;
         errors.extend(keymap_errors);
         app.set_keymap(km, errors);
+        app.enable_file_watching();
         app.test_start();
         assert_eq!(app.settings.tab_width, 2);
 

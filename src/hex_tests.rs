@@ -56,6 +56,15 @@ fn data() -> Vec<u8> {
 /// An app on a workspace with `bin.dat` (`data()`) and `notes.txt`, no file open, the side bar
 /// hidden (so the editor's width is the terminal's less the activity bar and the scroll bar).
 async fn hex_app() -> (tempfile::TempDir, PathBuf, App) {
+    hex_app_inner(false).await
+}
+
+/// `hex_app`, with the file watcher on (for tests that change files on disk after start).
+async fn hex_app_watched() -> (tempfile::TempDir, PathBuf, App) {
+    hex_app_inner(true).await
+}
+
+async fn hex_app_inner(watch: bool) -> (tempfile::TempDir, PathBuf, App) {
     let (dir, root, state) = dirs();
     fs::write(root.join("bin.dat"), data()).unwrap();
     fs::write(root.join("notes.txt"), "hello\nworld\n").unwrap();
@@ -65,6 +74,9 @@ async fn hex_app() -> (tempfile::TempDir, PathBuf, App) {
         None,
         true,
     );
+    if watch {
+        app.enable_file_watching();
+    }
     app.test_start();
     app.ui.side_visible = false;
     app.ui.focus = Focus::Editor;
@@ -1552,6 +1564,15 @@ async fn as_hex(app: &mut App, name: &str, bytes: &[u8]) {
 /// An app on `root` with sessions in `state` (as `main`'s), the side bar hidden, the session's
 /// restore waited for.
 async fn state_app(root: &Path, state: &Path) -> App {
+    state_app_inner(root, state, false).await
+}
+
+/// `state_app`, with the file watcher on (for tests that change files on disk after start).
+async fn state_app_watched(root: &Path, state: &Path) -> App {
+    state_app_inner(root, state, true).await
+}
+
+async fn state_app_inner(root: &Path, state: &Path, watch: bool) -> App {
     let mut app = App::new(
         Workspace::load(root.to_path_buf()),
         TrustStore::load(state.join("trust.toml")),
@@ -1559,6 +1580,9 @@ async fn state_app(root: &Path, state: &Path) -> App {
         true,
     );
     app.state_dir = Some(state.to_path_buf());
+    if watch {
+        app.enable_file_watching();
+    }
     app.test_start();
     assert!(app.settle(|a| !a.session.loading()).await, "the session is read");
     app.ui.side_visible = false;
@@ -1590,7 +1614,7 @@ async fn hex_done_when() {
     let path = root.join("bin.dat");
     let bytes = data();
     fs::write(&path, &bytes).unwrap();
-    let mut app = state_app(&root, &state).await;
+    let mut app = state_app_watched(&root, &state).await;
     open_bin(&mut app).await;
 
     // `hexdump -C` row for row at 100 columns (96 for the rows: 16 bytes fit, 32 don't).
@@ -1738,7 +1762,7 @@ fn tabs_of<'a>(app: &'a App, path: &'a Path) -> Vec<&'a HexTab> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn hex_disk_changes_reach_every_tab_of_the_file() {
-    let (_d, root, mut app) = hex_app().await;
+    let (_d, root, mut app) = hex_app_watched().await;
     let path = root.join("bin.dat");
     open_bin(&mut app).await;
     app.test_execute(Command::SplitRight);

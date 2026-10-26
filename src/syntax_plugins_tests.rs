@@ -235,6 +235,7 @@ async fn syntax_plugins_lsp_for_a_plugin_id() {
     app.lsp.builtins.user = servers;
     let fake = FakeLauncher::new(FakeOptions::default());
     app.lsp.set_launcher(fake.clone());
+    app.enable_file_watching();
     app.test_start();
     let config = |app: &App| {
         app.lsp

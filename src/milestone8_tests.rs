@@ -109,10 +109,22 @@ fn write(root: &Path, rel: &str, text: impl AsRef<[u8]>) -> PathBuf {
 
 /// An app on a workspace with `.workspace` text `config`, with `rel` (holding `text`) open.
 fn open_app(dir: &tempfile::TempDir, config: &str, rel: &str, text: &str) -> (App, PathBuf) {
+    open_app_inner(dir, config, rel, text, false)
+}
+
+/// `open_app`, with the file watcher on (for tests that change files on disk after start).
+fn open_app_watched(dir: &tempfile::TempDir, config: &str, rel: &str, text: &str) -> (App, PathBuf) {
+    open_app_inner(dir, config, rel, text, true)
+}
+
+fn open_app_inner(dir: &tempfile::TempDir, config: &str, rel: &str, text: &str, watch: bool) -> (App, PathBuf) {
     let root = crate::workspace::normalize(dir.path());
     write(&root, ".workspace", config);
     let path = write(&root, rel, text);
     let mut app = test_app(&root, Buffer::open(&path).unwrap());
+    if watch {
+        app.enable_file_watching();
+    }
     app.test_start();
     app.test_plain_whitespace();
     (app, root)
@@ -217,7 +229,7 @@ async fn milestone_8_cpp_file_is_parsed_in_the_background() {
 async fn milestone_8_language_detection() {
     let dir = tempfile::tempdir().unwrap();
     let config = "[files]\nassociations = { \"*.bzl\" = \"python\", \"*.h\" = \"c\", \"vendor/**\" = \"plaintext\" }\n";
-    let (mut app, root) = open_app(&dir, config, "SConstruct", "env = Environment()\n");
+    let (mut app, root) = open_app_watched(&dir, config, "SConstruct", "env = Environment()\n");
     let lang = |app: &App, path: &Path| {
         let id = app.buffers.find_path(path).unwrap();
         app.buffers.get(id).unwrap().syntax.language()
@@ -1089,6 +1101,28 @@ fn user_app(
     rel: &str,
     text: &str,
 ) -> (App, PathBuf, PathBuf) {
+    user_app_inner(dir, user, config, rel, text, false)
+}
+
+/// `user_app`, with the file watcher on (for tests that change files on disk after start).
+fn user_app_watched(
+    dir: &tempfile::TempDir,
+    user: Option<&str>,
+    config: &str,
+    rel: &str,
+    text: &str,
+) -> (App, PathBuf, PathBuf) {
+    user_app_inner(dir, user, config, rel, text, true)
+}
+
+fn user_app_inner(
+    dir: &tempfile::TempDir,
+    user: Option<&str>,
+    config: &str,
+    rel: &str,
+    text: &str,
+    watch: bool,
+) -> (App, PathBuf, PathBuf) {
     use crate::config::settings;
     let base = crate::workspace::normalize(dir.path());
     let config_dir = base.join("config");
@@ -1109,6 +1143,9 @@ fn user_app(
     let mut app = App::new(ws, trust, Some(initial), true);
     app.config_dir = config_dir.clone();
     app.report_errors(loaded.errors);
+    if watch {
+        app.enable_file_watching();
+    }
     app.test_start();
     app.test_plain_whitespace();
     (app, root, config_dir)
@@ -1119,7 +1156,7 @@ async fn milestone_8_user_settings_file() {
     // The user turns auto-close off: `(` types plainly.
     let dir = tempfile::tempdir().unwrap();
     let user = "[settings]\nauto_close_pairs = false\ntab_width = 2\n";
-    let (mut app, root, _) = user_app(&dir, Some(user), "", "a.cpp", "x\n");
+    let (mut app, root, _) = user_app_watched(&dir, Some(user), "", "a.cpp", "x\n");
     assert!(!app.settings.auto_close_pairs);
     assert_eq!(app.settings.tab_width, 2);
     assert!(app.message.is_none(), "{:?}", app.message.as_ref().map(|m| &m.text));
@@ -1329,7 +1366,7 @@ async fn milestone_8_bracket_matching() {
 async fn milestone_8_auto_indent_and_match_brackets_settings() {
     let dir = tempfile::tempdir().unwrap();
     let user = "[settings]\nauto_indent = false\nmatch_brackets = false\n";
-    let (mut app, root, _) = user_app(&dir, Some(user), "", "a.cpp", "  f() {}\n");
+    let (mut app, root, _) = user_app_watched(&dir, Some(user), "", "a.cpp", "  f() {}\n");
     assert!(!app.settings.auto_indent && !app.settings.match_brackets);
     let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
     set_cursors(&mut app, &[7]);

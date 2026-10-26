@@ -61,7 +61,12 @@ fn write(root: &Path, rel: &str, text: &str) -> PathBuf {
 /// An app on a workspace holding `files`, the first open as `main` opens it (guessed with the
 /// layered settings), with `user` as the user's `settings.toml`.
 fn open_app(dir: &tempfile::TempDir, user: &str, files: &[(&str, &str)]) -> (App, PathBuf) {
-    open_app_with(dir, user, files, None)
+    open_app_inner(dir, user, files, None, false)
+}
+
+/// `open_app`, with the file watcher on (for tests that change files on disk after start).
+fn open_app_watched(dir: &tempfile::TempDir, user: &str, files: &[(&str, &str)]) -> (App, PathBuf) {
+    open_app_inner(dir, user, files, None, true)
 }
 
 /// `open_app`, with language servers started by `launcher`.
@@ -70,6 +75,16 @@ fn open_app_with(
     user: &str,
     files: &[(&str, &str)],
     launcher: Option<std::sync::Arc<crate::lsp::fake::FakeLauncher>>,
+) -> (App, PathBuf) {
+    open_app_inner(dir, user, files, launcher, false)
+}
+
+fn open_app_inner(
+    dir: &tempfile::TempDir,
+    user: &str,
+    files: &[(&str, &str)],
+    launcher: Option<std::sync::Arc<crate::lsp::fake::FakeLauncher>>,
+    watch: bool,
 ) -> (App, PathBuf) {
     let base = workspace::normalize(dir.path());
     let config_dir = base.join("config");
@@ -89,6 +104,9 @@ fn open_app_with(
     app.config_dir = config_dir;
     if let Some(launcher) = launcher {
         app.lsp.set_launcher(launcher);
+    }
+    if watch {
+        app.enable_file_watching();
     }
     app.test_start();
     app.test_plain_whitespace();
@@ -246,7 +264,7 @@ async fn indentation_a_makefile_indented_with_spaces_still_gets_tabs() {
 #[tokio::test(flavor = "multi_thread")]
 async fn indentation_a_a_clean_buffer_is_guessed_again_on_reload() {
     let dir = tempfile::tempdir().unwrap();
-    let (mut app, root) = open_app(&dir, USER, &[("b.py", PY_2)]);
+    let (mut app, root) = open_app_watched(&dir, USER, &[("b.py", PY_2)]);
     assert_eq!(effective(&app), (true, 2));
     // A chosen indentation is dropped by the reload too.
     app.active_mut().unwrap().0.indentation = Some(Indentation { spaces: true, size: 8 });
@@ -617,7 +635,7 @@ async fn indentation_b_detect_indentation_from_content() {
 #[tokio::test(flavor = "multi_thread")]
 async fn indentation_b_a_reload_drops_what_was_chosen() {
     let dir = tempfile::tempdir().unwrap();
-    let (mut app, root) = open_app(&dir, USER, &[("b.py", PY_2)]);
+    let (mut app, root) = open_app_watched(&dir, USER, &[("b.py", PY_2)]);
     run_from_palette(&mut app, "Change Tab Display Size");
     app.type_text("8");
     app.press(KeyCode::Enter, M::NONE);

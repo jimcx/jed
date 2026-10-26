@@ -66,8 +66,23 @@ fn open(dir: &tempfile::TempDir, user: &str, workspace: &str) -> (App, PathBuf, 
     open_text(dir, user, workspace, "one two three\nfour\n")
 }
 
+/// `open`, with the file watcher on (for tests that change files on disk after start).
+fn open_watched(dir: &tempfile::TempDir, user: &str, workspace: &str) -> (App, PathBuf, PathBuf) {
+    open_text_inner(dir, user, workspace, "one two three\nfour\n", true)
+}
+
 /// `open`, with `a.txt` holding `text`.
 fn open_text(dir: &tempfile::TempDir, user: &str, workspace: &str, text: &str) -> (App, PathBuf, PathBuf) {
+    open_text_inner(dir, user, workspace, text, false)
+}
+
+fn open_text_inner(
+    dir: &tempfile::TempDir,
+    user: &str,
+    workspace: &str,
+    text: &str,
+    watch: bool,
+) -> (App, PathBuf, PathBuf) {
     let base = crate::workspace::normalize(dir.path());
     let config_dir = base.join("config");
     fs::create_dir_all(&config_dir).unwrap();
@@ -90,6 +105,9 @@ fn open_text(dir: &tempfile::TempDir, user: &str, workspace: &str, text: &str) -
     let mut app = App::new(ws, trust, Some(initial), true);
     app.config_dir = config_dir.clone();
     app.report_errors(loaded.errors);
+    if watch {
+        app.enable_file_watching();
+    }
     app.test_start();
     (app, root, config_dir)
 }
@@ -149,7 +167,7 @@ fn soft_wrap_setting_defaults_off() {
 #[tokio::test(flavor = "multi_thread")]
 async fn soft_wrap_toggle_flips_the_effective_mode_for_the_session() {
     let dir = tempfile::tempdir().unwrap();
-    let (mut app, root, config_dir) = open(&dir, "word_wrap = \"off\"\n", "");
+    let (mut app, root, config_dir) = open_watched(&dir, "word_wrap = \"off\"\n", "");
     assert_eq!(app.settings.word_wrap, WordWrap::Off);
     assert_eq!(app.word_wrap(), WordWrap::Off);
 

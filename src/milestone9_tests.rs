@@ -172,9 +172,21 @@ pub(crate) fn project(dir: &Path, files: &[(&str, &str)]) -> PathBuf {
 
 /// The app on `root` with servers started by `launcher`, no file open yet.
 pub(crate) fn open_app(root: &Path, launcher: Arc<dyn Launcher>) -> App {
+    open_app_inner(root, launcher, false)
+}
+
+/// `open_app`, with the file watcher on (for tests that change files on disk after start).
+pub(crate) fn open_app_watched(root: &Path, launcher: Arc<dyn Launcher>) -> App {
+    open_app_inner(root, launcher, true)
+}
+
+fn open_app_inner(root: &Path, launcher: Arc<dyn Launcher>, watch: bool) -> App {
     let trust = TrustStore::load(root.parent().unwrap().join("state/trust.toml"));
     let mut app = App::new(Workspace::load(root.to_path_buf()), trust, None, true);
     app.lsp.set_launcher(launcher);
+    if watch {
+        app.enable_file_watching();
+    }
     app.test_start();
     app.test_plain_whitespace();
     app
@@ -806,7 +818,7 @@ async fn milestone_9_rename_and_language_change_reopen() {
     let root = project(dir.path(), &[("a.cpp", "int a;\n")]);
     let a = root.join("a.cpp");
     let fake = FakeLauncher::new(FakeOptions::default());
-    let mut app = open_app(&root, fake.clone());
+    let mut app = open_app_watched(&root, fake.clone());
     open_synced(&mut app, &fake, &a).await;
     app.type_text("x");
     in_sync(&mut app, &fake, &a, "typing").await;
@@ -1427,7 +1439,7 @@ async fn milestone_9_diagnostics_go_when_the_server_is_stopped() {
     let root = project(dir.path(), &[("a.cpp", "int a = x;\n")]);
     let path = root.join("a.cpp");
     let fake = FakeLauncher::new(FakeOptions::default());
-    let mut app = open_app(&root, fake.clone());
+    let mut app = open_app_watched(&root, fake.clone());
     open_synced(&mut app, &fake, &path).await;
     publish(&app, Language::Cpp, &path, Some(1), json!([diag(0, 8, 9, 1, "x?")]));
     assert!(app.settle(|a| !marks(a, &path).is_empty()).await);

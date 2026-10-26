@@ -422,6 +422,11 @@ pub struct App {
     pub(crate) needs_redraw: bool,
     tx: mpsc::UnboundedSender<AppEvent>,
     rx: mpsc::UnboundedReceiver<AppEvent>,
+    /// Whether `start` creates the file watcher. Always on in production; in test builds it is
+    /// off by default (the macOS FSEvents watcher is pathologically expensive — `notify` rebuilds
+    /// its stream on every `watch` and pegs `fseventsd`) and tests that exercise file-change
+    /// detection turn it back on with `enable_file_watching`.
+    watch_files: bool,
     watcher: Option<Watcher>,
     fs_pending: HashSet<PathBuf>,
     fs_deadline: Option<tokio::time::Instant>,
@@ -620,6 +625,7 @@ impl App {
             needs_redraw: true,
             tx,
             rx,
+            watch_files: !cfg!(test),
             watcher: None,
             fs_pending: HashSet::new(),
             fs_deadline: None,
@@ -716,11 +722,13 @@ impl App {
             let _ = tx.send(AppEvent::Task(ev));
         }));
         let tx = self.tx.clone();
-        match watcher::start(&self.workspace.root, move |paths| {
-            let _ = tx.send(AppEvent::FsChanged(paths));
-        }) {
-            Ok(w) => self.watcher = Some(w),
-            Err(e) => self.notify(Level::Warning, format!("Not watching for file changes: {e}")),
+        if self.watch_files {
+            match watcher::start(&self.workspace.root, move |paths| {
+                let _ = tx.send(AppEvent::FsChanged(paths));
+            }) {
+                Ok(w) => self.watcher = Some(w),
+                Err(e) => self.notify(Level::Warning, format!("Not watching for file changes: {e}")),
+            }
         }
         self.watch_config_dir();
         self.start_ipc();
@@ -743,7 +751,9 @@ impl App {
     /// `start` in single file mode: only the file is watched (for disk changes) and crash
     /// backups scanned; no servers, tasks, git, session, recent entry or listing.
     fn start_single(&mut self) {
-        if let Some(path) = self.active_path() {
+        if let Some(path) = self.active_path()
+            && self.watch_files
+        {
             let tx = self.tx.clone();
             match watcher::start_file(&path, &self.config_dir, move |paths| {
                 let _ = tx.send(AppEvent::FsChanged(paths));
@@ -1666,6 +1676,13 @@ impl App {
         // Production defers the full status walk until it's wanted; tests want it eagerly so
         // they can settle on `git.status` entries right after starting.
         self.refresh_git(None);
+    }
+
+    /// Turn file watching back on for a test that exercises file-change detection (off by default
+    /// in test builds: the FSEvents watcher is pathologically expensive on macOS). Call before
+    /// `test_start`.
+    pub fn enable_file_watching(&mut self) {
+        self.watch_files = true;
     }
 
     /// Whitespace drawn as plain blanks, as before `render_whitespace` (default `all`): for tests

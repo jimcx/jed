@@ -87,6 +87,15 @@ fn focus_history(app: &mut App) {
 
 /// The app on `root` with sessions in `state` (as milestone 13's tests build one).
 fn open_state_app(root: &Path, state: &Path, file: Option<&str>) -> App {
+    open_state_app_inner(root, state, file, false)
+}
+
+/// `open_state_app`, with the file watcher on (for tests that change files on disk after start).
+fn open_state_app_watched(root: &Path, state: &Path, file: Option<&str>) -> App {
+    open_state_app_inner(root, state, file, true)
+}
+
+fn open_state_app_inner(root: &Path, state: &Path, file: Option<&str>, watch: bool) -> App {
     let ws = Workspace::load(root.to_path_buf());
     let trust = TrustStore::load(state.join("trust.toml"));
     let initial = file.map(|file| InitialFile {
@@ -95,6 +104,9 @@ fn open_state_app(root: &Path, state: &Path, file: Option<&str>) -> App {
     });
     let mut app = App::new(ws, trust, initial, true);
     app.state_dir = Some(state.to_path_buf());
+    if watch {
+        app.enable_file_watching();
+    }
     app.test_start();
     app.test_plain_whitespace();
     app
@@ -890,7 +902,7 @@ async fn git_history_done_when() {
     commit_all(&root, "fourth: changes b");
     let (a, b) = (root.join("a.txt"), root.join("b.txt"));
 
-    let mut app = open_state_app(&root, &state, Some("a.txt"));
+    let mut app = open_state_app_watched(&root, &state, Some("a.txt"));
     assert!(settle_history(&mut app, &a, 3).await);
     // The list is `git log -- <path>`'s: newest first, a's commits only.
     let expected = cli_log(&root, "a.txt");

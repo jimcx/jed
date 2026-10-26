@@ -40,8 +40,8 @@ use serde_json::{Value, json};
 use crate::app::App;
 use crate::lsp::fake::{FakeLauncher, FakeOptions};
 use crate::milestone9_tests::{
-    buffer_id, diag, draw, find_cells, idle, open_app, open_synced, popup_rows, project, publish, put_cursor,
-    show_hover, uri,
+    buffer_id, diag, draw, find_cells, idle, open_app, open_app_watched, open_synced, popup_rows, project, publish,
+    put_cursor, show_hover, uri,
 };
 use crate::syntax::Language;
 
@@ -1378,7 +1378,7 @@ async fn fixes_done_when_rust_analyzer() {
     }
     let started = Instant::now();
     let stopping = stopping_workspace(&root, &["rust"]);
-    let mut app = open_app(&root, Arc::new(ProcessLauncher));
+    let mut app = open_app_watched(&root, Arc::new(ProcessLauncher));
     // Its own target directory: its `cargo check` never waits on another build.
     let target = crate::workspace::normalize(dir.path()).join("target");
     app.lsp.builtins.rust_analyzer.init_options = Some(json!({ "cargo": { "targetDir": target } }));
@@ -1539,7 +1539,7 @@ async fn fixes_done_when_clangd() {
     let root = project(dir.path(), &[("a.c", CLANGD_C), ("b.cpp", CLANGD_CPP)]);
     let (c, cpp) = (root.join("a.c"), root.join("b.cpp"));
     let stopping = stopping_workspace(&root, &["c", "cpp"]);
-    let mut app = open_app(&root, Arc::new(ProcessLauncher));
+    let mut app = open_app_watched(&root, Arc::new(ProcessLauncher));
     app.test_open(crate::buffer::Buffer::open(&c).unwrap());
     let both =
         |a: &App| has_code(a, &c, "-Wimplicit-function-declaration") && has_code(a, &c, "expected_semi_declaration");

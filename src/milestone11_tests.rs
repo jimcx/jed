@@ -72,9 +72,21 @@ fn dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
 }
 
 fn open_app(root: &Path, state: &Path) -> App {
+    open_app_inner(root, state, false)
+}
+
+/// `open_app`, with the file watcher on (for tests that change files on disk after start).
+fn open_app_watched(root: &Path, state: &Path) -> App {
+    open_app_inner(root, state, true)
+}
+
+fn open_app_inner(root: &Path, state: &Path, watch: bool) -> App {
     let ws = Workspace::load(root.to_path_buf());
     let trust = TrustStore::load(state.join("trust.toml"));
     let mut app = App::new(ws, trust, None, true);
+    if watch {
+        app.enable_file_watching();
+    }
     app.test_start();
     app
 }
@@ -165,7 +177,7 @@ async fn milestone_11_history_limits_from_the_workspace_file() {
     )
     .unwrap();
     fs::write(root.join("src/a.txt"), "").unwrap();
-    let mut app = open_app(&root, &state);
+    let mut app = open_app_watched(&root, &state);
     open(&mut app, &root.join("src/a.txt"));
 
     for c in ["1", "2", "3"] {
@@ -327,7 +339,7 @@ async fn milestone_11_an_explorer_rename_moves_the_history() {
 async fn milestone_11_watcher_events_under_jed_are_ignored() {
     let (_d, root, state) = dirs();
     fs::write(root.join("src/a.txt"), "a\n").unwrap();
-    let mut app = open_app(&root, &state);
+    let mut app = open_app_watched(&root, &state);
     open(&mut app, &root.join("src/a.txt"));
     app.type_text("x");
     save(&mut app).await;

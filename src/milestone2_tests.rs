@@ -24,9 +24,21 @@ fn cmd() -> M {
 }
 
 fn open_app(root: &Path, state: &Path) -> App {
+    open_app_inner(root, state, false)
+}
+
+/// `open_app`, with the file watcher on (for tests that change files on disk after start).
+fn open_app_watched(root: &Path, state: &Path) -> App {
+    open_app_inner(root, state, true)
+}
+
+fn open_app_inner(root: &Path, state: &Path, watch: bool) -> App {
     let ws = Workspace::load(root.to_path_buf());
     let trust = TrustStore::load(state.join("trust.toml"));
     let mut app = App::new(ws, trust, None, true);
+    if watch {
+        app.enable_file_watching();
+    }
     app.test_start();
     app
 }
@@ -134,7 +146,7 @@ async fn milestone_2_workspace_explorer_tabs() {
     fs::write(root.join(".workspace"), "[tasks.build]\ncommand = \"make\"\n").unwrap();
 
     // Trust: commands present and undecided → asked; the answer is stored.
-    let mut app = open_app(&root, &state);
+    let mut app = open_app_watched(&root, &state);
     assert!(matches!(app.prompt, Some(Prompt::Trust { .. })));
     app.press(K::Char('t'), M::NONE);
     assert_eq!(app.trust, Trust::Trusted);

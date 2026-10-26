@@ -54,6 +54,22 @@ fn open_app(
     dir: &tempfile::TempDir,
     launcher: Option<std::sync::Arc<crate::lsp::fake::FakeLauncher>>,
 ) -> (App, PathBuf) {
+    open_app_inner(dir, launcher, false)
+}
+
+/// `open_app`, with the file watcher on (for tests that change files on disk after start).
+fn open_app_watched(
+    dir: &tempfile::TempDir,
+    launcher: Option<std::sync::Arc<crate::lsp::fake::FakeLauncher>>,
+) -> (App, PathBuf) {
+    open_app_inner(dir, launcher, true)
+}
+
+fn open_app_inner(
+    dir: &tempfile::TempDir,
+    launcher: Option<std::sync::Arc<crate::lsp::fake::FakeLauncher>>,
+    watch: bool,
+) -> (App, PathBuf) {
     let base = workspace::normalize(dir.path());
     let root = base.join("ws");
     fs::create_dir_all(&root).unwrap();
@@ -64,6 +80,9 @@ fn open_app(
     let mut app = App::new(ws, trust, Some(InitialFile { buffer, goto: None }), true);
     if let Some(launcher) = launcher {
         app.lsp.set_launcher(launcher);
+    }
+    if watch {
+        app.enable_file_watching();
     }
     app.test_start();
     app.test_plain_whitespace();
@@ -188,7 +207,7 @@ async fn untitled_quit_asks_only_for_a_buffer_with_text() {
 #[tokio::test(flavor = "multi_thread")]
 async fn untitled_change_language_mode_survives_redetection_and_overrides_files() {
     let dir = tempfile::tempdir().unwrap();
-    let (mut app, root) = open_app(&dir, None);
+    let (mut app, root) = open_app_watched(&dir, None);
     fs::write(root.join("b.c"), "int b;\n").unwrap();
     new_untitled(&mut app);
     run_command(&mut app, "Change Language Mode");
@@ -386,7 +405,7 @@ async fn untitled_save_as_errors_keep_the_prompt_and_esc_cancels() {
 #[tokio::test(flavor = "multi_thread")]
 async fn untitled_save_as_leaves_the_old_file_and_moves_the_buffer() {
     let dir = tempfile::tempdir().unwrap();
-    let (mut app, root) = open_app(&dir, None);
+    let (mut app, root) = open_app_watched(&dir, None);
     app.type_text("z");
     app.press(KeyCode::Char('s'), cmd() | M::SHIFT);
     assert_eq!(save_as_text(&app).as_deref(), Some("a.c"));

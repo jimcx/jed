@@ -66,6 +66,7 @@ fn open_app(root: &Path, state: &Path) -> App {
     let ws = Workspace::load(root.to_path_buf());
     let trust = TrustStore::load(state.join("trust.toml"));
     let mut app = App::new(ws, trust, None, true);
+    app.enable_file_watching();
     app.test_start();
     app.test_plain_whitespace();
     app
@@ -284,6 +285,7 @@ pub(crate) fn open_file_app(root: &Path, state: &Path, file: &str) -> App {
     let trust = TrustStore::load(state.join("trust.toml"));
     let buffer = Buffer::open(&root.join(file)).unwrap();
     let mut app = App::new(ws, trust, Some(InitialFile { buffer, goto: None }), true);
+    app.enable_file_watching();
     app.test_start();
     app.test_plain_whitespace();
     app

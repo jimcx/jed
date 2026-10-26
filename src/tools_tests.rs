@@ -1327,6 +1327,7 @@ async fn tools_a_stopped_server_shows_as_exited() {
     );
     app.lsp.set_launcher(fake.clone());
     app.ui.side_width = 40;
+    app.enable_file_watching();
     app.test_start();
     with_clangd(&mut app, &root).await;
     app.test_execute(Command::ShowTools);
@@ -1825,6 +1826,7 @@ async fn tools_restart_starts_a_stopped_server_again() {
     );
     app.lsp.set_launcher(fake.clone());
     app.ui.side_width = 40;
+    app.enable_file_watching();
     app.test_start();
     with_clangd(&mut app, &root).await;
     app.test_execute(Command::ShowTools);
