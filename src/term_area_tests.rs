@@ -329,13 +329,13 @@ async fn term_area_tab_commands_and_cursor_follow_the_focus() {
     );
 
     // Cmd+W there closes the editor group's tab, not the area's.
-    app.press(KeyCode::Char('w'), KeyModifiers::SUPER);
+    app.press(KeyCode::Char('w'), cmd());
     assert_eq!(app.group().tabs.len(), 1);
     assert_eq!(app.terminals.active_group().tabs.len(), 2);
     // Back in the area, Cmd+W closes its tab and leaves the editor's text tab.
     click(&mut app, area.x + 1, area.y + 1);
     assert_eq!(app.ui.focus, Focus::Terminal);
-    app.press(KeyCode::Char('w'), KeyModifiers::SUPER);
+    app.press(KeyCode::Char('w'), cmd());
     assert_eq!(app.terminals.active_group().tabs.len(), 1);
     assert_eq!(app.group().tabs.len(), 1);
 }

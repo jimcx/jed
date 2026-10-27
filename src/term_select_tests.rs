@@ -29,6 +29,22 @@ fn cmd() -> KeyModifiers {
     }
 }
 
+/// Cmd+C with nothing selected leaves the clipboard alone. Skipped on Linux: Cmd+C is Ctrl+C
+/// there, which the shell gets as SIGINT (its `^C` and new prompt scroll the output by a line at a
+/// random moment).
+fn assert_copy_without_selection_keeps_clipboard(app: &mut App) {
+    if cmd() == KeyModifiers::CONTROL {
+        return;
+    }
+    app.clipboard.write(Copied {
+        text: "keep".into(),
+        whole_line: false,
+        pieces: Vec::new(),
+    });
+    app.press(KeyCode::Char('c'), cmd());
+    assert_eq!(app.clipboard.read().unwrap(), "keep", "no selection: nothing to copy");
+}
+
 /// The visible row whose text is exactly `line` (trailing blanks trimmed).
 fn row_of(text: &str, line: &str) -> u16 {
     text.lines()
@@ -308,13 +324,7 @@ async fn term_select_click_clears_and_copy_leaves_the_clipboard_alone() {
         "the highlight is gone"
     );
     drop(term);
-    app.clipboard.write(Copied {
-        text: "keep".into(),
-        whole_line: false,
-        pieces: Vec::new(),
-    });
-    app.press(KeyCode::Char('c'), cmd());
-    assert_eq!(app.clipboard.read().unwrap(), "keep", "no selection: nothing to copy");
+    assert_copy_without_selection_keeps_clipboard(&mut app);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -570,13 +580,7 @@ fn scrolled_back_scenario(app: &mut App, id: Option<RunId>, area: Rect) {
     app.mouse(MouseEventKind::ScrollUp, x, y);
     click(app, x, y);
     assert_eq!(run_of(app, id).selection(), None);
-    app.clipboard.write(Copied {
-        text: "keep".into(),
-        whole_line: false,
-        pieces: Vec::new(),
-    });
-    app.press(KeyCode::Char('c'), cmd());
-    assert_eq!(app.clipboard.read().unwrap(), "keep", "no selection: nothing to copy");
+    assert_copy_without_selection_keeps_clipboard(app);
 
     // The wheel mid-drag: the anchor stays on its text, the head is where the pointer is in
     // the view scrolled further back, and the copy runs between them.

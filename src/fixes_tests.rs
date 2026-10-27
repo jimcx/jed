@@ -1684,7 +1684,7 @@ async fn fixes_done_when_ty() {
     let root = project(dir.path(), &[("a.py", TY_PY)]);
     let path = root.join("a.py");
     let stopping = stopping_workspace(&root, &["python"]);
-    let mut app = open_app(&root, Arc::new(ProcessLauncher));
+    let mut app = open_app_watched(&root, Arc::new(ProcessLauncher));
     app.lsp.builtins.ty = ServerConfig::new(ty.to_str().unwrap(), &["server"]);
     app.test_open(crate::buffer::Buffer::open(&path).unwrap());
     let both = |a: &App| has_code(a, &path, "unresolved-reference") && has_code(a, &path, "invalid-syntax");
