@@ -1,0 +1,50 @@
+#!/bin/sh
+# Hand a finished task branch to review: push it to `origin` (Gitea) and open a
+# merge request (pull request) against main. Nothing is merged here; the user
+# merges in Gitea. Prints the MR's URL.
+#
+# Needs GITEA_TOKEN (a Gitea access token with repository write access) in the
+# environment, or a configured `tea` CLI (used instead when it is installed).
+# Run from the branch's own worktree (it must be checked out and clean).
+#
+# Usage: scripts/mr <branch> [title]
+#   title defaults to the branch's only commit subject, or the branch name when
+#   there are several; the body lists the branch's commits (subject + body).
+set -e
+
+branch=$1
+title=$2
+[ -n "$branch" ] || { echo "usage: scripts/mr <branch> [title]" >&2; exit 2; }
+[ -z "$(git status --porcelain)" ] || { echo "scripts/mr: working tree not clean" >&2; exit 1; }
+
+range="main..$branch"
+[ "$(git rev-list --count "$range")" -gt 0 ] || { echo "scripts/mr: $branch has no commits over main" >&2; exit 1; }
+if [ -z "$title" ]; then
+    if [ "$(git rev-list --count "$range")" -eq 1 ]; then
+        title=$(git log -1 --format=%s "$branch")
+    else
+        title=$branch
+    fi
+fi
+body=$(git log --reverse --format='### %s%n%n%b' "$range")
+
+git push --force-with-lease -u origin "$branch"
+
+if command -v tea >/dev/null 2>&1; then
+    tea pulls create --base main --head "$branch" --title "$title" --description "$body"
+    exit 0
+fi
+
+[ -n "$GITEA_TOKEN" ] || { echo "scripts/mr: pushed $branch, but GITEA_TOKEN is not set (and tea is not installed) so no MR was opened" >&2; exit 1; }
+
+# origin is https://host/owner/repo(.git) or git@host:owner/repo(.git)
+url=$(git remote get-url origin | sed -E 's#^git@([^:]+):#https://\1/#; s#\.git$##')
+api=$(printf '%s' "$url" | sed -E 's#^(https?://[^/]+)/(.*)$#\1/api/v1/repos/\2#')
+
+payload=$(python3 -I -c 'import json,sys; print(json.dumps({"head": sys.argv[1], "base": "main", "title": sys.argv[2], "body": sys.argv[3]}))' "$branch" "$title" "$body")
+resp=$(curl -sS -X POST "$api/pulls" -H "Authorization: token $GITEA_TOKEN" -H 'Content-Type: application/json' -d "$payload")
+python3 -I -c 'import json,sys
+r = json.loads(sys.argv[1])
+if "html_url" not in r:
+    sys.exit("scripts/mr: " + r.get("message", sys.argv[1]))
+print(r["html_url"])' "$resp"

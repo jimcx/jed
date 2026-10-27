@@ -1,5 +1,5 @@
 ---
-description: Build a PLAN.md task with subagents — a single task in one commit, or a task's subtasks one commit each; implement, validate and commit in a worktree, then land back to main
+description: Build a PLAN.md task with subagents — a single task in one commit, or a task's subtasks one commit each; implement, validate and commit in a worktree, then open a merge request in Gitea
 argument-hint: "[task name or id, e.g. \"Render whitespace\" or soft_wrap]"
 ---
 
@@ -7,7 +7,7 @@ Build one task from PLAN.md's `## Tasks` list with subagents. The task: $ARGUMEN
 
 A task is either **single** (one implementer, one validator and its mutation runner, one commit) or **has subtasks** (a short id like `soft_wrap`, "Needs", "Done when" and a `Subtasks (one agent and one commit each):` list of `<id>-a: …` lines). A task with subtasks is built one subtask at a time, in order, each going through the same steps as a single task.
 
-Each task runs in its own git worktree, on its own branch. All the work and commits happen there; main is untouched until the task is done, when the branch is landed back (via `scripts/land`) and the worktree removed.
+Each task runs in its own git worktree, on its own branch. All the work and commits happen there; main is untouched; when the task is done the branch is pushed and a Gitea merge request opened (via `scripts/mr`) for the user to merge.
 
 The OpenCode twin of this workflow is `.opencode/commands/task.md`; a change to the steps belongs in both.
 
@@ -84,13 +84,13 @@ The OpenCode twin of this workflow is `.opencode/commands/task.md`; a change to 
    - Commit everything. Subject: a single task's is a short imperative naming the feature (e.g. `Add render whitespace`); a subtask's is `<Task name> (<id>-a): <summary>`. Then a blank line and `- ` bullets of behaviour and notable internals. Do not add a `Co-Authored-By:` trailer.
 10. Give the user a short update after each commit: what landed, anything deferred, the hand checks. For a task with subtasks, move on to the next subtask (still in the worktree). When the task is done, go to step 11.
 
-## Merge back to main
+## Hand over for review
 
-11. When the whole task is done (a single task, or its last subtask is committed):
-    - Land the branch with `scripts/land worktree-<name>` (run it from the task's worktree, on the branch, which is clean). It replays the branch onto main's current tip and moves main with a compare-and-swap, so two tasks landing at once can't interleave — one wins, the other replays and retries; a real conflict stops with a message instead of looping.
-    - Leave the worktree with the `ExitWorktree` tool (returns to the main checkout).
-    - Remove the worktree (`git worktree remove .claude/worktrees/<name>`; the branch is already deleted by `scripts/land`).
-    - Confirm `git status` is clean and `git log --oneline -5` shows the task's commits on main. Then stop: don't start another task unless asked.
+11. When the whole task is done (a single task, or its last subtask is committed), open a merge request in Gitea instead of merging:
+    - Run `scripts/mr worktree-<name>` from the task's worktree (clean, on the branch). It pushes the branch to `origin` and opens a MR against `main` through Gitea's API (needs `GITEA_TOKEN` in the environment; it uses `tea` instead when that is installed), printing the MR's URL. It never touches local `main`. If it can't open the MR (no token), the branch is still pushed: tell the user and give them the branch name.
+    - Leave the worktree with the `ExitWorktree` tool (`keep`, not remove, while the MR is open: review feedback is addressed by resuming this worktree, committing, and re-running `scripts/mr`, which force-pushes the branch with a lease; the existing MR updates itself and the script's "already exists" error is expected).
+    - Report the MR URL and the task's hand checks, then stop: don't start another task unless asked. Once the user has merged the MR in Gitea they pull `main`, and the worktree and branch can be removed (`git worktree remove .claude/worktrees/<name>`, `git branch -D worktree-<name>`).
+    - A later task branches from local `main`, so it won't contain a task whose MR is still open; if it depends on one, say so and wait for the merge.
 
 ## Flaky tests
 
