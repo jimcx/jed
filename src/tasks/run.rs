@@ -22,8 +22,8 @@
 //! `Event::Foreground`.
 //!
 //! The scroll bar (`TerminalScroll`, `Run::scrollable`) is the scrollback as a `Scrollable` in
-//! rows; the kept-line count the bar needs as `max_top` is probed (`scrollbar_extent`) rather than
-//! read, since `vt100` exposes only the offset.
+//! rows; the kept-line count the bar needs as `max_top` is `Screen::scrollback_len()`
+//! (`scrollbar_extent`).
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -230,7 +230,12 @@ impl Run {
         let callbacks = TitleCallback::new(id, sink.clone(), spec.name.clone());
         let shared = Arc::new(Shared {
             id,
-            parser: Mutex::new(vt100::Parser::new_with_callbacks(rows, cols, scrollback, callbacks)),
+            parser: Mutex::new(vt100::Parser::new_with_callbacks(
+                nonzero(rows),
+                nonzero(cols),
+                scrollback,
+                callbacks,
+            )),
             selection: Mutex::new(None),
             state: Mutex::new(State {
                 status: Status::Starting,
@@ -285,10 +290,11 @@ impl Run {
         let (rows, cols) = (rows.max(1), cols.max(1));
         let state = lock(&self.shared.state);
         let mut parser = lock(&self.shared.parser);
-        if parser.screen().size() == (rows, cols) {
+        let (nz_rows, nz_cols) = (nonzero(rows), nonzero(cols));
+        if parser.screen().size() == (nz_rows, nz_cols) {
             return;
         }
-        parser.screen_mut().set_size(rows, cols);
+        parser.screen_mut().set_size(nz_rows, nz_cols);
         if let Some(master) = &state.master
             && let Err(e) = master.resize(pty_size(rows, cols))
         {
@@ -329,18 +335,15 @@ impl Run {
     }
 
     /// The scroll bar's extent: `(back, max, rows)` — the current offset (0 = the live screen),
-    /// the kept lines, and the screen's rows. The kept-line count `vt100` doesn't expose is probed
-    /// (`set_scrollback(usize::MAX)` then reading `scrollback()` back), O(1) under the parser mutex
-    /// so it is atomic w.r.t. the reader thread, and restored to `back`.
+    /// the kept lines, and the screen's rows.
     pub fn scrollbar_extent(&self) -> (usize, usize, usize) {
         let mut parser = self.screen();
         let screen = parser.screen_mut();
-        let rows = screen.size().0 as usize;
-        let back = screen.scrollback();
-        screen.set_scrollback(usize::MAX);
-        let max = screen.scrollback();
-        screen.set_scrollback(back);
-        (back, max, rows)
+        (
+            screen.scrollback(),
+            screen.scrollback_len(),
+            screen.size().0.get() as usize,
+        )
     }
 
     /// Puts the scrollback `top` rows from the oldest output (the `Scroll::rows` space; `max` is
@@ -551,6 +554,11 @@ fn sanitized(name: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// `n` as the non-zero size `vt100` takes (zero is taken as one).
+fn nonzero(n: u16) -> std::num::NonZeroU16 {
+    std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN)
+}
+
 fn pty_size(rows: u16, cols: u16) -> PtySize {
     PtySize {
         rows,
@@ -571,7 +579,7 @@ fn spawn(shared: Arc<Shared>, spec: Spec, sink: Sink) {
     if !spec.cwd.is_dir() {
         return shared.fail(format!("{}: no such folder", spec.cwd.display()), &sink);
     }
-    let (rows, cols) = lock(&shared.parser).screen().size();
+    let (rows, cols) = super::select::size(lock(&shared.parser).screen());
     // One PTY opened and spawned at a time: macOS's `openpty` isn't thread-safe (its `ptsname`
     // is a static buffer: concurrent starts failed), and portable-pty marks the new fds
     // close-on-exec only after it, so another run's fork in between would inherit this slave.
@@ -616,7 +624,7 @@ fn spawn(shared: Arc<Shared>, spec: Spec, sink: Sink) {
         state.pid = Some(pid);
         state.group = Some(pid);
         // Resized while starting.
-        let size = lock(&shared.parser).screen().size();
+        let size = super::select::size(lock(&shared.parser).screen());
         if size != (rows, cols) {
             let _ = pair.master.resize(pty_size(size.0, size.1));
         }
@@ -759,8 +767,26 @@ mod tests {
             let events = events.clone();
             Arc::new(move |ev| lock(&events).push(ev))
         };
-        let parser = vt100::Parser::new_with_callbacks(24, 80, 0, TitleCallback::new(RunId(7), sink, base.into()));
+        let parser = vt100::Parser::new_with_callbacks(
+            nonzero(24),
+            nonzero(80),
+            0,
+            TitleCallback::new(RunId(7), sink, base.into()),
+        );
         (parser, events)
+    }
+
+    /// The vt100 fork's calls are reachable through a run's parser: a prompt mark, then
+    /// `clear_before_prompt` keeps the marked row on; with no mark nothing changes.
+    #[test]
+    fn the_fork_clears_before_the_last_prompt_mark() {
+        let (mut parser, _) = title_parser("t");
+        assert!(!parser.screen_mut().clear_before_prompt());
+        parser.process(b"old\r\n");
+        parser.screen_mut().mark_prompt();
+        parser.process(b"$ ls\r\nout");
+        assert!(parser.screen_mut().clear_before_prompt());
+        assert_eq!(parser.screen().contents(), "$ ls\nout");
     }
 
     /// A title for the tab bar drops control characters (ESC, tabs, newlines, DEL) and is `None`

@@ -36,6 +36,7 @@ All three must pass before a commit. Cap test runs with `scripts/timeout 300 car
 
 `main.rs` parses args and loads config before raw mode; `app/` holds `App` (all state, the event loop, `execute(Command)`); `ui/` draws it (`ui::render(f, &mut App)`, which also writes back render-time state such as view sizes and the mouse `HitMap`). Feature "model" modules in `src/` (`find.rs`, `diff_view.rs`, `scm.rs`, …) hold no app state and draw nothing: `app/<area>.rs` drives them, `ui/<area>.rs` draws them. Positions and the buffer live in `buffer/`, commands in `command.rs`, keys in `config/keymap.rs`, settings in `config/settings.rs` + `edit::Settings`. Find a module in [docs/dev/modules.md](docs/dev/modules.md#module-map-src); the event loop's steps are in [its data flow](docs/dev/modules.md#data-flow).
 crossterm is patched via `[patch.crates-io]` with a fork (github.com/jimcx/crossterm, branch `fwdback`, tag `0.29+fwdback`) adding the mouse back / forward buttons; on a crossterm upgrade, rebase `fwdback` and re-apply the patch.
+`vt100` is likewise a fork (`/Users/jim/vt100-rust`, 0.18.1 + prompt marks), temporarily a `[patch.crates-io]` path dependency until pushed to github.com/jimcx/vt100-rust and pinned by tag; `tui-term` runs without its `vt100` feature.
 
 ## Invariants
 

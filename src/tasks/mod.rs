@@ -576,7 +576,7 @@ mod tests {
         let run = t.get(id).unwrap();
         wait_until("ready", || run.screen().screen().contents().contains("ready")).await;
         run.resize(10, 50);
-        assert_eq!(run.screen().screen().size(), (10, 50));
+        assert_eq!(select::size(run.screen().screen()), (10, 50));
         wait_until("exit", || !run.status().is_running()).await;
         assert_eq!(run.screen().screen().contents(), "ready\n10 50");
         assert!(exit(run).success());

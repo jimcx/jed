@@ -677,7 +677,7 @@ async fn shell_size_is_the_active_groups_editor() {
     assert_ne!(editor.width, first_editor.width, "the split's groups differ in width");
 
     app.new_shell_in_editor();
-    let size = app.group().active_shell().unwrap().run.screen().screen().size();
+    let size = crate::tasks::select::size(app.group().active_shell().unwrap().run.screen().screen());
     assert_eq!(
         size,
         (editor.height, editor.width),
@@ -1129,7 +1129,7 @@ async fn shell_draws_in_the_editor_area_and_resizes_with_it() {
     let term = draw(&mut app, 100, 30);
     let active = app.groups.active;
     let editor = app.hits.group(active).unwrap().editor;
-    let size = app.group().active_shell().unwrap().run.screen().screen().size();
+    let size = crate::tasks::select::size(app.group().active_shell().unwrap().run.screen().screen());
     assert_eq!(size, (editor.height, editor.width), "the PTY is the editor area's size");
     let drawn = rows(&term, editor);
     assert!(
@@ -1145,7 +1145,7 @@ async fn shell_draws_in_the_editor_area_and_resizes_with_it() {
 
     let term = draw(&mut app, 90, 24);
     let editor = app.hits.group(active).unwrap().editor;
-    let size = app.group().active_shell().unwrap().run.screen().screen().size();
+    let size = crate::tasks::select::size(app.group().active_shell().unwrap().run.screen().screen());
     assert_eq!(size, (editor.height, editor.width), "a new frame resizes the PTY");
     assert!(rows(&term, editor).iter().any(|r| r.contains(marker)));
 
@@ -1165,6 +1165,7 @@ async fn shell_draws_in_the_editor_area_and_resizes_with_it() {
         .screen()
         .screen()
         .size();
+    let size = (size.0.get(), size.1.get());
     assert_eq!(size, (editor.height, editor.width), "a split resizes the shell's group");
     assert!(
         !term.backend().cursor_visible(),

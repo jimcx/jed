@@ -268,7 +268,7 @@ cwd = "missing"
         assert!(!plain.bold());
         // The first line wraps when the temp path is long (macOS's are).
         let (_, cols) = screen.size();
-        let rgb = screen.rows(0, cols).position(|r| r.starts_with("rgb")).unwrap() as u16;
+        let rgb = screen.rows(0, cols.get()).position(|r| r.starts_with("rgb")).unwrap() as u16;
         assert_eq!(screen.cell(rgb, 0).unwrap().fgcolor(), vt100::Color::Rgb(255, 128, 0));
     }
 
@@ -660,7 +660,10 @@ async fn milestone_12_the_pty_follows_the_panel_size() {
     // Below the border and the tab strip, one column of padding and one for the scroll bar.
     let (rows, cols) = (list.height - 2, list.width - 2);
     assert_eq!(app.tasks.size, (rows, cols));
-    assert_eq!(app.tasks.get(id).unwrap().screen().screen().size(), (rows, cols));
+    assert_eq!(
+        app.tasks.get(id).unwrap().screen().screen().size(),
+        (nz(rows), nz(cols))
+    );
     // A taller panel, a narrower terminal: the process sees the new size.
     app.ui.panel_height += 4;
     draw_sized(&mut app, 90, 30);
@@ -676,7 +679,10 @@ async fn milestone_12_the_pty_follows_the_panel_size() {
     );
     // New runs start at the panel's size.
     let id = pick_task(&mut app, "serve");
-    assert_eq!(app.tasks.get(id).unwrap().screen().screen().size(), size);
+    assert_eq!(
+        app.tasks.get(id).unwrap().screen().screen().size(),
+        (nz(size.0), nz(size.1))
+    );
 }
 
 /// Frames at an unchanged size don't resize the PTY again: the task sees one SIGWINCH per
@@ -1329,4 +1335,9 @@ async fn milestone_12_keys_typed_while_a_task_starts_reach_it() {
     );
     app.test_execute(Command::KillTask);
     assert!(settle_ended(&mut app, id).await);
+}
+
+/// A non-zero `vt100` dimension.
+fn nz(n: u16) -> std::num::NonZeroU16 {
+    std::num::NonZeroU16::new(n).unwrap()
 }

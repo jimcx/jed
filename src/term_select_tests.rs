@@ -219,7 +219,7 @@ async fn term_select_ended_task_drag_uses_the_drawn_rows() {
         let screen = run.screen();
         (
             crate::tasks::select::top_row(screen.screen(), area.height),
-            screen.screen().size().1,
+            screen.screen().size().1.get(),
         )
     };
     assert!(top > 0, "the ended screen is taller than its area");
@@ -739,15 +739,15 @@ fn double_click(app: &mut App, x: u16, y: u16) {
 
 type Sel = Option<crate::tasks::select::Selection>;
 
-/// Checks double-clicks over `row`, which reads `~/src/jed-0.1 ok`: the run `/src/jed-0.1`
-/// (cols 1..13) is selected, highlighted and copied; `~` selects nothing; a third click and a
+/// Checks double-clicks over `row`, which reads `~/src/jed-0.1 ok`: the run `~/src/jed-0.1`
+/// (cols 0..13) is selected, highlighted and copied; a blank selects nothing; a third click and a
 /// single click clear; a drag from a double-click's press extends from the pressed cell; a drag
 /// still selects. No sleeps: a click on another cell restarts the count (`ClickTracker`), so
 /// each double-click starts on a cell other than the last click's.
 fn double_click_checks(app: &mut App, area: Rect, row: u16, selection: impl Fn(&App) -> Sel) {
     let at = |col: u16| (area.x + col, area.y + row);
     let path = Some(crate::tasks::select::Selection {
-        anchor: (row as isize, 1),
+        anchor: (row as isize, 0),
         head: (row as isize, 13),
     });
     let (x, y) = at(5);
@@ -755,23 +755,22 @@ fn double_click_checks(app: &mut App, area: Rect, row: u16, selection: impl Fn(&
     assert_eq!(selection(app), path, "a double-click selects the path run");
     let selected = app.theme.get("editor.selection").bg.unwrap();
     let term = draw(app, 100, 30);
-    for col in [1, 12] {
+    for col in [0, 12] {
         assert_eq!(bg(&term, at(col).0, at(col).1), selected, "col {col} highlighted");
     }
-    assert_ne!(bg(&term, at(0).0, at(0).1), selected, "the `~` is not");
     assert_ne!(bg(&term, at(13).0, at(13).1), selected, "nor the blank");
     drop(term);
     app.press(KeyCode::Char('c'), cmd());
-    assert_eq!(app.clipboard.read().unwrap(), "/src/jed-0.1");
+    assert_eq!(app.clipboard.read().unwrap(), "~/src/jed-0.1");
 
     // A third click on the cell is a plain click: it clears.
     click(app, x, y);
     assert_eq!(selection(app), None, "a triple click clears");
 
     // A double-click on a non-path character selects nothing.
-    let (x, y) = at(0);
+    let (x, y) = at(13);
     double_click(app, x, y);
-    assert_eq!(selection(app), None, "`~` selects nothing");
+    assert_eq!(selection(app), None, "a blank selects nothing");
 
     // A single click on a path character clears the double-click's selection.
     let (x, y) = at(5);

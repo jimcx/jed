@@ -304,7 +304,7 @@ pub(super) enum Scroll {
 
 /// Applies a scroll command to `run` (a page = its screen's rows less one).
 pub(super) fn scroll_run(run: &Run, dir: Scroll) {
-    let page = (run.screen().screen().size().0 as isize - 1).max(1);
+    let page = (run.screen().screen().size().0.get() as isize - 1).max(1);
     match dir {
         Scroll::Up => run.scroll(-1),
         Scroll::Down => run.scroll(1),

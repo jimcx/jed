@@ -10,6 +10,12 @@
 
 use vt100::Screen;
 
+/// `screen`'s `(rows, cols)` as plain numbers (`vt100` 0.18 returns `NonZeroU16`s).
+pub fn size(screen: &Screen) -> (u16, u16) {
+    let (rows, cols) = screen.size();
+    (rows.get(), cols.get())
+}
+
 /// A cell of the terminal's text, independent of the scroll: `(line, col)` where `line` counts
 /// from the live screen's first row (0), so older output in the scrollback is negative. The
 /// viewport row `r` shown `back` rows scrolled back is line `r - back`.
@@ -41,7 +47,7 @@ pub struct Selection {
 /// cell. Reads wherever the selection is, in view or not, by scrolling `screen` a window at a
 /// time (restored afterwards); lines older than the kept scrollback clamp to its oldest row.
 pub fn copy_text(screen: &mut Screen, selection: &Selection) -> String {
-    let (rows, cols) = screen.size();
+    let (rows, cols) = size(screen);
     let back = screen.scrollback();
     screen.set_scrollback(usize::MAX);
     let max = screen.scrollback() as isize;
@@ -107,12 +113,19 @@ fn path_cell(screen: &Screen, row: u16, col: u16) -> bool {
     })
 }
 
+/// A parser of plain `u16` dimensions, for tests.
+#[cfg(test)]
+pub fn test_parser(rows: u16, cols: u16, scrollback: usize) -> vt100::Parser {
+    let nz = |n| std::num::NonZeroU16::new(n).unwrap();
+    vt100::Parser::new(nz(rows), nz(cols), scrollback)
+}
+
 /// The run of path characters around viewport cell `(row, col)` of `screen`, as `(start, end)`
 /// cells on that row, `end` exclusive (the `Selection` convention): the longest contiguous
-/// run of alphanumerics and `/ : - _ .` containing the cell, stopped by any other character, a
+/// run of alphanumerics and `/ : - _ . ~` containing the cell, stopped by any other character, a
 /// blank cell or the row's edges. `None` when the cell itself is not a path character.
 pub fn path_run(screen: &Screen, (row, col): (u16, u16)) -> Option<(Cell, Cell)> {
-    let (rows, cols) = screen.size();
+    let (rows, cols) = size(screen);
     if row >= rows || col >= cols || !path_cell(screen, row, col) {
         return None;
     }
@@ -131,7 +144,7 @@ pub fn path_run(screen: &Screen, (row, col): (u16, u16)) -> Option<(Cell, Cell)>
 /// The first row to draw of a `screen` shown in `height` rows: 0 when it fits, else as low as
 /// keeps its last non-blank row and the cursor in view.
 pub fn top_row(screen: &Screen, height: u16) -> u16 {
-    let (rows, cols) = screen.size();
+    let (rows, cols) = size(screen);
     if rows <= height {
         return 0;
     }
@@ -151,7 +164,7 @@ mod tests {
     use super::*;
 
     fn screen(rows: u16, cols: u16, output: &[u8]) -> vt100::Parser {
-        let mut p = vt100::Parser::new(rows, cols, 0);
+        let mut p = test_parser(rows, cols, 0);
         p.process(output);
         p
     }
@@ -160,12 +173,11 @@ mod tests {
     fn path_run_bounds_and_character_set() {
         let p = screen(3, 20, b"~/src/jed-0.1 x_y:2 \r\nabcdefghijklmnopqrst");
         let s = p.screen();
-        // The run stops at `~` and at the blank; every cell of it gives the same range.
-        for col in 1..13 {
-            assert_eq!(path_run(s, (0, col)), Some(((0, 1), (0, 13))), "col {col}");
+        // The run includes `~` and stops at the blank; every cell of it gives the same range.
+        for col in 0..13 {
+            assert_eq!(path_run(s, (0, col)), Some(((0, 0), (0, 13))), "col {col}");
         }
         assert_eq!(path_run(s, (0, 14)), Some(((0, 14), (0, 19))), "`_` and `:` count");
-        assert_eq!(path_run(s, (0, 0)), None, "`~` is not a path character");
         assert_eq!(path_run(s, (0, 13)), None, "a blank");
         assert_eq!(path_run(s, (0, 19)), None, "a blank");
         // A full row runs to both edges.
@@ -180,7 +192,7 @@ mod tests {
     fn path_run_excludes_other_characters() {
         // Each of these stops the run `a/b` and selects nothing itself: shell punctuation,
         // quotes, brackets, and a non-ASCII letter (alphanumeric, but not ASCII).
-        for c in ['~', ',', '@', '\'', '"', '(', ')', '[', '=', '+', '*', '\\', '|', 'é'] {
+        for c in [',', '@', '\'', '"', '(', ')', '[', '=', '+', '*', '\\', '|', 'é'] {
             let p = screen(1, 10, format!("{c}a/b{c}").as_bytes());
             let s = p.screen();
             assert_eq!(path_run(s, (0, 2)), Some(((0, 1), (0, 4))), "{c:?} bounds the run");
@@ -191,7 +203,7 @@ mod tests {
     #[test]
     fn path_run_lines_are_scroll_independent() {
         // Scrolled back 2 rows, viewport row 0 is the line 2 above the live screen's first.
-        let mut p = vt100::Parser::new(2, 10, 10);
+        let mut p = test_parser(2, 10, 10);
         p.process(b"ab.c\r\ntwo\r\nthree\r\nfour");
         p.screen_mut().set_scrollback(2);
         let s = p.screen();
@@ -269,11 +281,11 @@ mod tests {
     /// break, and the joined line is what gets trimmed.
     #[test]
     fn wrapped_rows_are_joined() {
-        let mut p = vt100::Parser::new(2, 5, 0);
+        let mut p = test_parser(2, 5, 0);
         p.process(b"abcdefgh");
         assert!(p.screen().row_wrapped(0));
         assert_eq!(copy_text(p.screen_mut(), &selection((0, 0), (1, 3))), "abcdefgh");
-        let mut padded = vt100::Parser::new(2, 5, 0);
+        let mut padded = test_parser(2, 5, 0);
         padded.process(b"abcdef  ");
         assert_eq!(copy_text(padded.screen_mut(), &selection((0, 0), (1, 3))), "abcdef");
     }
@@ -282,7 +294,7 @@ mod tests {
     /// from any scroll, and the scroll is restored.
     #[test]
     fn copy_reads_the_scrolled_back_text_from_any_view() {
-        let mut p = vt100::Parser::new(3, 20, 10);
+        let mut p = test_parser(3, 20, 10);
         p.process(b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
         assert_eq!(p.screen().contents(), "three\nfour\nfive");
         p.screen_mut().set_scrollback(1);
@@ -301,7 +313,7 @@ mod tests {
     /// A selection taller than the screen is read in windows, wrapped rows joined across them.
     #[test]
     fn a_selection_taller_than_the_screen() {
-        let mut p = vt100::Parser::new(3, 5, 50);
+        let mut p = test_parser(3, 5, 50);
         p.process(b"l0\r\nl1\r\nl2\r\nabcdefghij\r\nl4\r\nl5\r\nl6\r\nl7");
         p.screen_mut().set_scrollback(usize::MAX);
         let max = p.screen().scrollback() as isize;
@@ -330,7 +342,7 @@ mod tests {
     fn windows_join_wrapped_rows_and_end_at_the_head() {
         // Rows (5 wide): aa, bb, ccccd (wrapped), ddd, ee, ff, gg: lines -4..=2 on 3 rows, so
         // a selection from line -4 reads -4..=-2, then -1..=1.
-        let mut p = vt100::Parser::new(3, 5, 50);
+        let mut p = test_parser(3, 5, 50);
         p.process(b"aa\r\nbb\r\nccccdddd\r\nee\r\nff\r\ngg");
         p.screen_mut().set_scrollback(usize::MAX);
         assert_eq!(p.screen().scrollback(), 4);
@@ -361,7 +373,7 @@ mod tests {
 
     #[test]
     fn a_taller_screen_keeps_its_last_line_in_view() {
-        let mut p = vt100::Parser::new(10, 20, 0);
+        let mut p = test_parser(10, 20, 0);
         p.process(b"one\r\ntwo\r\nthree");
         assert_eq!(top_row(p.screen(), 10), 0, "fits");
         assert_eq!(top_row(p.screen(), 4), 0, "the output is at the top");

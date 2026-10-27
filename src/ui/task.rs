@@ -20,26 +20,90 @@ use crate::tasks::select::{top_row, viewport_row};
 use crate::tasks::{Run, RunId};
 use crate::theme::Theme;
 
-/// A `vt100` screen seen from row `top` down (`tui-term` draws from row 0).
-struct Shifted<'a> {
-    screen: &'a vt100::Screen,
-    top: u16,
+/// A `vt100` cell for `tui-term` (which implements its `Cell` only for the `vt100` 0.16 it
+/// depends on, not the fork's 0.18, so jed does it itself).
+struct TermCell(vt100::Cell);
+
+impl tui_term::widget::Cell for TermCell {
+    fn has_contents(&self) -> bool {
+        self.0.has_contents()
+    }
+
+    fn apply(&self, cell: &mut ratatui::buffer::Cell) {
+        use ratatui::style::{Color, Modifier, Style};
+        let c = &self.0;
+        if c.has_contents() {
+            cell.set_symbol(c.contents());
+        }
+        let map = |color: vt100::Color| match color {
+            vt100::Color::Default => Color::Reset,
+            vt100::Color::Idx(i) => Color::Indexed(i),
+            vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+        };
+        let mut modifier = Modifier::empty();
+        for (on, m) in [
+            (c.bold(), Modifier::BOLD),
+            (c.italic(), Modifier::ITALIC),
+            (c.underline(), Modifier::UNDERLINED),
+            (c.inverse(), Modifier::REVERSED),
+            (c.dim(), Modifier::DIM),
+        ] {
+            if on {
+                modifier |= m;
+            }
+        }
+        cell.set_style(
+            Style::reset()
+                .fg(map(c.fgcolor()))
+                .bg(map(c.bgcolor()))
+                .add_modifier(modifier),
+        );
+    }
 }
 
-impl tui_term::widget::Screen for Shifted<'_> {
-    type C = vt100::Cell;
+/// The `width` x `height` cells of a `vt100` screen seen from row `top` down (`tui-term` draws
+/// from row 0), cloned (it hands out references to its own cell type).
+struct Shifted {
+    cells: Vec<Option<TermCell>>,
+    width: u16,
+    cursor: (u16, u16),
+    hide_cursor: bool,
+}
 
-    fn cell(&self, row: u16, col: u16) -> Option<&vt100::Cell> {
-        self.screen.cell(row + self.top, col)
+impl Shifted {
+    fn new(screen: &vt100::Screen, top: u16, width: u16, height: u16) -> Self {
+        let cells = (0..height)
+            .flat_map(|row| (0..width).map(move |col| (row, col)))
+            .map(|(row, col)| screen.cell(row + top, col).cloned().map(TermCell))
+            .collect();
+        let (row, col) = screen.cursor_position();
+        Self {
+            cells,
+            width,
+            cursor: (row.saturating_sub(top), col),
+            hide_cursor: screen.hide_cursor(),
+        }
+    }
+}
+
+impl tui_term::widget::Screen for Shifted {
+    type C = TermCell;
+
+    fn cell(&self, row: u16, col: u16) -> Option<&TermCell> {
+        if col >= self.width {
+            return None;
+        }
+        self.cells
+            .get(row as usize * self.width as usize + col as usize)?
+            .as_ref()
     }
 
     fn hide_cursor(&self) -> bool {
-        self.screen.hide_cursor()
+        self.hide_cursor
     }
 
     fn cursor_position(&self) -> (u16, u16) {
-        let (row, col) = self.screen.cursor_position();
-        (row.saturating_sub(self.top), col)
+        self.cursor
     }
 }
 
@@ -53,10 +117,7 @@ fn draw_screen(f: &mut Frame, area: Rect, run: &Run, theme: &Theme, focused: boo
     let running = run.status().is_running();
     let parser = run.screen();
     let top = top_row(parser.screen(), area.height);
-    let screen = Shifted {
-        screen: parser.screen(),
-        top,
-    };
+    let screen = Shifted::new(parser.screen(), top, area.width, area.height);
     // The terminal cursor (not tui-term's drawn one) while the tab has the keys.
     let term = PseudoTerminal::new(&screen).cursor(Cursor::default().visibility(false));
     f.render_widget(term, area);
@@ -185,16 +246,63 @@ mod tests {
     /// row 6, and the cursor moves up with it.
     #[test]
     fn a_shifted_screen_draws_from_its_top_row() {
-        let mut p = vt100::Parser::new(10, 20, 0);
+        let mut p = crate::tasks::select::test_parser(10, 20, 0);
         p.process(b"one\r\ntwo\r\nthree");
         p.process(b"\r\n\r\n\r\n\r\nseven\r\n");
-        let shifted = Shifted {
-            screen: p.screen(),
-            top: 4,
-        };
+        let shifted = Shifted::new(p.screen(), 4, 20, 6);
         let cell = tui_term::widget::Screen::cell(&shifted, 2, 0).unwrap();
-        assert_eq!(cell.contents(), "s");
+        assert_eq!(cell.0.contents(), "s");
         assert_eq!(tui_term::widget::Screen::cursor_position(&shifted), (3, 0));
+    }
+
+    /// `TermCell` hands every cell's look to the buffer as tui-term's own `vt100` mapping did:
+    /// indexed and RGB colours, default as `Reset`, bold / italic / underline / inverse / dim, a
+    /// style reset between cells, a wide character with its continuation cell left alone, and
+    /// `Shifted`'s window (`top`, the area's width) cut from the screen.
+    #[test]
+    fn term_cells_reach_the_buffer_with_their_look() {
+        use ratatui::style::{Color, Modifier};
+        use ratatui::widgets::Widget;
+        let mut p = crate::tasks::select::test_parser(4, 10, 0);
+        p.process(b"skip\r\n");
+        p.process(b"\x1b[1;3;4;7;31;48;5;200mA\x1b[0m\x1b[2;38;2;1;2;3mB\x1b[0m\xe4\xb8\xadx\r\n");
+        p.process(b"0123456789");
+        let shifted = Shifted::new(p.screen(), 1, 8, 2);
+        let area = Rect::new(0, 0, 8, 2);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        // what was drawn there before: each cell's style is replaced, not patched
+        buf.set_style(
+            area,
+            ratatui::style::Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        );
+        PseudoTerminal::new(&shifted)
+            .cursor(Cursor::default().visibility(false))
+            .render(area, &mut buf);
+
+        let a = &buf[(0, 0)];
+        assert_eq!(a.symbol(), "A");
+        assert_eq!((a.fg, a.bg), (Color::Indexed(1), Color::Indexed(200)));
+        // (vt100 keeps one intensity: bold and dim can't both be on)
+        let all = Modifier::BOLD | Modifier::ITALIC | Modifier::UNDERLINED | Modifier::REVERSED;
+        assert_eq!(a.modifier, all);
+
+        let b = &buf[(1, 0)];
+        assert_eq!(b.symbol(), "B");
+        assert_eq!((b.fg, b.bg), (Color::Rgb(1, 2, 3), Color::Reset));
+        assert_eq!(b.modifier, Modifier::DIM);
+
+        assert_eq!(buf[(2, 0)].symbol(), "中");
+        assert_eq!(buf[(3, 0)].symbol(), " ", "a continuation cell isn't drawn over");
+        assert_eq!(buf[(4, 0)].symbol(), "x");
+        assert_eq!(buf[(4, 0)].fg, Color::Reset);
+        assert_eq!(buf[(4, 0)].modifier, Modifier::empty());
+        // row 1 is the screen's row 2, cut at the area's 8 columns
+        let row: String = (0..8).map(|x| buf[(x, 1)].symbol().to_string()).collect();
+        assert_eq!(row, "01234567");
+        assert!(tui_term::widget::Screen::cell(&shifted, 0, 8).is_none());
+        assert!(tui_term::widget::Screen::cell(&shifted, 2, 0).is_none());
     }
 
     /// A shell drawn while it is still starting must take the state lock before the screen's: the

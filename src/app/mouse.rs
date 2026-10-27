@@ -48,7 +48,7 @@ pub(super) fn wheel_columns(m: &MouseEvent) -> Option<isize> {
 /// screen is drawn from (`select::top_row`), then clamped into the screen.
 fn screen_cell(screen: &vt100::Screen, area: Rect, x: u16, y: u16) -> (u16, u16) {
     let top = select::top_row(screen, area.height);
-    let (rows, cols) = screen.size();
+    let (rows, cols) = select::size(screen);
     let col = x.saturating_sub(area.x).min(area.width.saturating_sub(1));
     let row = y.saturating_sub(area.y).min(area.height.saturating_sub(1));
     (
