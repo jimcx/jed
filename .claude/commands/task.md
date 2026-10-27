@@ -11,8 +11,8 @@ Each task runs in its own git worktree, on its own branch. All the work and comm
 
 ## Find where we are
 
-1. `git log --oneline -15`, `git status`, and the task list without its bodies: `awk '/^## Tasks/,/^## Stretch/' PLAN.md | grep -n '^- ' | cut -c1-110` (the section is ~50 KB; don't read it whole). Also `git worktree list` to see whether this task already has one. Then read only the chosen task's entry. Tasks have **no order**; ✅ marks finished ones (and finished subtasks).
-2. The task: the one named in the arguments (by name or id); else one with some subtasks ✅ but not all (work in progress); else list the open tasks (not ✅) in a few lines, those with subtasks marked, and ask the user which. Stop until they answer.
+1. `git log --oneline -15`, `git status`, and the task list without its bodies: `scripts/tasks list` (and `scripts/tasks list --status done` for finished ones); `scripts/tasks check` is the sanity check. Also `git worktree list` to see whether this task already has one. Then read the chosen task's entry with `scripts/tasks show <id>` (and read `tasks/<id>.md`). Tasks have **no order**; ✅ marks finished ones (and finished subtasks).
+2. The task: the one named in the arguments (by name or id); else one with some subtasks ✅ but not all (work in progress); else list the open tasks (`scripts/tasks list --status open`) in a few lines, those with subtasks marked, and ask the user which. Stop until they answer.
    - Subtask commits are named `<Task name> (<id>-a): …`; the last one shows the last finished subtask.
 3. Interrupted work or resume:
    - If a worktree for this task already exists (`git worktree list`, under `.claude/worktrees/`), it's a resume: `EnterWorktree` with its `path` and continue from there (steps 5–11 as appropriate to what's left).
@@ -38,7 +38,7 @@ Each task runs in its own git worktree, on its own branch. All the work and comm
      - **Subtasks** — better when the parts build on each other towards one feature with a clear "Done when" (e.g. soft wrap). Draft: a short id, "Needs", the feature bullets (from the task and the code you read), "Done when", and 3–5 subtasks, each leaving fmt, clippy and tests green, the last one doing the done-when tests, gaps and hand checks and marking the task ✅.
      - **Separate tasks** — better when the parts are independent: 2–5 smaller single tasks that each leave the checks green.
 
-     If they agree, write it into PLAN.md (the task's entry gains its id, "Needs", "Done when" and `- Subtasks (one agent and one commit each):` list; or the new tasks replace it in the list), move any design detail into the right Features section, and commit it as a plan-only change. Then build the first subtask (or the first new task) if they asked, else stop.
+     If they agree, edit `tasks/<id>.md` (the task's entry gains its id, "Needs", "Done when" and a `Subtasks (one agent and one commit each):` list; or new `tasks/<id>.md` files replace it), move any design detail into the right Features section of PLAN.md, regenerate the index with `scripts/tasks index --write`, and commit it as a plan-only change. Then build the first subtask (or the first new task) if they asked, else stop.
    - If you stop here without building anything (not ready, or the user declines), `ExitWorktree` and `git worktree remove` first.
 
 ## Each task or subtask
@@ -52,7 +52,7 @@ Each task runs in its own git worktree, on its own branch. All the work and comm
    - Any new Cmd binding also updates `docs/terminals/`; any new setting follows CLAUDE.md's "Settings layer per key"; any new colour goes through `Theme`.
    - `scripts/check` must pass (fmt, clippy, tests, with quiet output). Iterate with `scripts/check test <filter>` (or `scripts/check clippy`) and run the full `scripts/check` once at the end, not after each change. If it touches editing, drawing or search hot paths, also the release `milestone` / `search` budget runs from CLAUDE.md (through `tail -40`).
    - Update the docs for what it adds (module map, conventions, test helpers, background-work patterns), within the budget in CLAUDE.md's "Keeping these files current": at most a line or two in the root CLAUDE.md, the detail in `docs/dev/` or the directory's nested CLAUDE.md.
-   - Don't commit, and don't edit PLAN.md's Tasks section.
+   - Don't commit, and don't edit PLAN.md or `tasks/`.
    - Report concisely: what it built, files changed with the key entry points (`path:line` of the main new functions and tests, for the validator), CLAUDE.md changes, deviations, deferrals, hand checks, and check results.
 7. **Validator** (a separate general-purpose agent with `model: "opus"`, started after the implementer finishes: the judgement half). Its prompt includes the implementer's report verbatim and says:
    - Read CLAUDE.md. The task (or subtask) text is pasted into the prompt, as for the implementer; it doesn't re-read PLAN.md. Start from `git status` / `git diff --stat` and the report's entry points; read the changed code and its tests, not a fresh tour of the codebase.
@@ -75,9 +75,9 @@ Each task runs in its own git worktree, on its own branch. All the work and comm
    - Run `scripts/check` once yourself; don't re-read files the agents already reported on. A flaky test elsewhere follows [Flaky tests](#flaky-tests): never ignored, never silently retried until it passes.
    - Make sure the diff includes the doc updates (CLAUDE.md files, `docs/dev/`).
    - Check no test binaries are left running (`pgrep -fl deps/jed-`); kill any strays.
-   - Update PLAN.md in the same commit:
+   - Update `tasks/<id>.md` (and regenerate PLAN.md's index) in the same commit:
      - A subtask that isn't the last: mark its line ✅, with notes on what it changed for later subtasks.
-     - A single task, or a task's last subtask: mark the task ✅ with short sub-bullets — what it changed (for later work), "Also:", "Deferred:" and "Still to check by hand:" — then move its full entry (subtask list included) to the end of `docs/plan-done.md`'s Tasks list (`](#` links rewritten as `](../PLAN.md#`), leaving one line in PLAN.md: `- ✅ **<name>** (<id>, if it has one): <its one-line summary, if it has one> — [details](docs/plan-done.md)`.
+     - A single task, or a task's last subtask: mark the task ✅ with short sub-bullets — what it changed (for later work), "Also:", "Deferred:" and "Still to check by hand:" — then set `status: in-progress` after the first subtask and `status: done` after the last, and update `summary`; regenerate the index with `scripts/tasks index --write`. The full entry already lives in `tasks/<id>.md`; nothing moves.
      - Fix other tasks or plan sections if this work changed them.
    - Commit everything. Subject: a single task's is a short imperative naming the feature (e.g. `Add render whitespace`); a subtask's is `<Task name> (<id>-a): <summary>`. Then a blank line and `- ` bullets of behaviour and notable internals. End with the Co-Authored-By trailer.
 10. Give the user a short update after each commit: what landed, anything deferred, the hand checks. For a task with subtasks, move on to the next subtask (still in the worktree). When the task is done, go to step 11.

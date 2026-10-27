@@ -117,6 +117,19 @@ def rel(path):
         return str(path)
 
 
+def unescape(s):
+    out = []
+    i = 0
+    while i < len(s):
+        if s[i] == "\\" and i + 1 < len(s):
+            out.append(s[i + 1])
+            i += 2
+        else:
+            out.append(s[i])
+            i += 1
+    return "".join(out)
+
+
 def parse_scalar(value):
     value = value.strip()
     if value == "[]":
@@ -127,7 +140,7 @@ def parse_scalar(value):
             return []
         return [p.strip().strip("\"'") for p in inner.split(",")]
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-        return value[1:-1]
+        return unescape(value[1:-1])
     return value
 
 

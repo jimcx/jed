@@ -1,0 +1,16 @@
+---
+id: claude_ide
+name: Claude Code IDE integration
+summary: let `claude` running in a jed terminal auto-connect to jed and share the editor's context, by implementing Claude Code's editor-agnostic IDE protocol on jed's side — no upstream change
+status: open
+priority: 0
+dependencies: []
+---
+
+  - Needs: the `JED_IPC` env-injection in shell / task environments ([Git editor](../PLAN.md#git-editor-commit-messages), `Tasks::ipc`, the shell spec), the app's active-editor state (groups, tabs, `Selections`, diagnostics), the diff view, and a WebSocket server + MCP framing (new dependencies)
+  - The protocol (Claude Code's IDE integration, WebSocket + MCP "2025-03-26"; community-documented in `coder/claudecode.nvim`'s `PROTOCOL.md`): the editor runs a localhost-only WebSocket server speaking MCP, writes its authorization token to `~/.claude/ide/<port>.lock`, and `claude` auto-connects when `CLAUDE_CODE_SSE_PORT=<port>` and `ENABLE_IDE_INTEGRATION=true` are in its environment (the `_SSE_PORT` name is legacy — the transport is a WebSocket). jed starts the server from `App::start` beside the IPC socket and puts those two vars in every shell and task environment as it does `JED_IPC`; nothing is advertised globally, and the socket is localhost-only and token-authenticated (`x-claude-code-ide-authorization`)
+  - v1 tools, served from jed's state: context sharing — `getCurrentSelection` and `getOpenEditors` (the active file's path, the primary selection's 1-based line/col and ranges, the open text files), pushed on change as the protocol's selection / editor-state notifications; and `openFile` / `openDiff` — `openFile` opens the file in the active group as quick open does, `openDiff` shows a proposed change in a read-only diff tab (reusing the diff view). `getDiagnostics` / `executeCode` and accepting or rejecting a proposed diff into the buffer are deferred
+  - Done when: a scripted claude-protocol client connects through the lock file with the right token and reads back the current selection and open files, and `openFile` / `openDiff` open a file and a diff tab in jed; a wrong or missing token is refused; a shell spawned in jed has `CLAUDE_CODE_SSE_PORT`, `ENABLE_IDE_INTEGRATION=true` and `JED_IPC`, while a shell outside jed has none of them; hand check (real `claude`): started in a jed shell it auto-connects, its selection context follows the cursor, and its file opens land in jed — smoke-tested on a version bump since the protocol is community-documented, not official
+  - Subtasks (one agent and one commit each):
+    - claude_ide-a: the server and discovery — the localhost WebSocket + MCP handshake, the lock file and its authorization token, the `x-claude-code-ide-authorization` check, and injecting `CLAUDE_CODE_SSE_PORT` + `ENABLE_IDE_INTEGRATION=true` into shell and task environments (as `Tasks::ipc` and the shell spec do for `JED_IPC`); unit and shell tests for the handshake and the environment
+    - claude_ide-b: the tools and the done-when — `getCurrentSelection` / `getOpenEditors` and their change notifications from the app's state, `openFile` / `openDiff`, the done-when tests against a scripted client and a real-`claude` smoke test (skipped with a note when the CLI is absent), gaps and hand checks; marks the task ✅
