@@ -9,6 +9,8 @@ A task is either **single** (one implementer, one validator and its mutation run
 
 Each task runs in its own git worktree, on its own branch. All the work and commits happen there; main is untouched until the task is done, when the branch is landed back (via `scripts/land`) and the worktree removed.
 
+The OpenCode twin of this workflow is `.opencode/commands/task.md`; a change to the steps belongs in both.
+
 ## Find where we are
 
 1. `git log --oneline -15`, `git status`, and the task list without its bodies: `scripts/tasks list` (and `scripts/tasks list --status done` for finished ones); `scripts/tasks check` is the sanity check. Also `git worktree list` to see whether this task already has one. Then read the chosen task's entry with `scripts/tasks show <id>` (and read `tasks/<id>.md`). Tasks have **no order**; ✅ marks finished ones (and finished subtasks).
@@ -62,7 +64,7 @@ Each task runs in its own git worktree, on its own branch. All the work and comm
    - Add or strengthen weak tests and rewrite worthless ones. Fix real bugs minimally and report them.
    - Write a **mutation plan** for the important behaviours, 4–8 mutations, to `<scratchpad>/mutations.md` (the orchestrator's scratchpad path, given in the prompt). Each: an id, the file, the exact text to replace and its replacement (unique in the file, so it applies mechanically), what behaviour it breaks, and the `scripts/check test <filter>` that should fail. Don't run the mutations itself.
    - Run `scripts/check` once (all three checks) after its own changes. Random or property-style tests cap their iterations and output sizes, so a bug fails them quickly instead of eating CPU and RAM.
-   - Update the docs if it changes helpers or conventions (CLAUDE.md's budget applies). Don't commit.
+   - Update the docs if it changes helpers or conventions (CLAUDE.md's budget applies). Don't commit, and don't edit PLAN.md or `tasks/`.
    - Report: verdict, test changes, bugs fixed, the mutation plan's path, check results.
 8. **Mutation runner** (general-purpose agent with `model: "haiku"`: the mechanical half; started after the validator). Its prompt gives the plan's path and says:
    - Don't edit tests or code except to apply and undo the planned mutations. Before the first, save `git diff | shasum` and copy each file it will mutate to the scratchpad.
@@ -79,7 +81,7 @@ Each task runs in its own git worktree, on its own branch. All the work and comm
      - A subtask that isn't the last: mark its line ✅, with notes on what it changed for later subtasks.
      - A single task, or a task's last subtask: mark the task ✅ with short sub-bullets — what it changed (for later work), "Also:", "Deferred:" and "Still to check by hand:" — then set `status: in-progress` after the first subtask and `status: done` after the last, and update `summary`; regenerate the index with `scripts/tasks index --write`. The full entry already lives in `tasks/<id>.md`; nothing moves.
      - Fix other tasks or plan sections if this work changed them.
-   - Commit everything. Subject: a single task's is a short imperative naming the feature (e.g. `Add render whitespace`); a subtask's is `<Task name> (<id>-a): <summary>`. Then a blank line and `- ` bullets of behaviour and notable internals. End with the Co-Authored-By trailer.
+   - Commit everything. Subject: a single task's is a short imperative naming the feature (e.g. `Add render whitespace`); a subtask's is `<Task name> (<id>-a): <summary>`. Then a blank line and `- ` bullets of behaviour and notable internals. Do not add a `Co-Authored-By:` trailer.
 10. Give the user a short update after each commit: what landed, anything deferred, the hand checks. For a task with subtasks, move on to the next subtask (still in the worktree). When the task is done, go to step 11.
 
 ## Merge back to main

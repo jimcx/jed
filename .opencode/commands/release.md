@@ -5,6 +5,8 @@ agent: release
 
 Cut a release for the jed editor. Versions are simple incrementing integers (not major.minor.patch); the release tag for version N is `vN`.
 
+The Claude Code twin of this command is `.claude/commands/release.md`; a change to the steps belongs in both.
+
 Remote release tags right now:
 
 !`git ls-remote --tags github 'v*'`

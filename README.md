@@ -104,7 +104,7 @@ For contributors:
 - [docs/dev/testing.md](docs/dev/testing.md) — test helpers per feature
 
 jed is developed with Claude Code and OpenCode: the `CLAUDE.md` files and `docs/dev/` are written for them, and read
-as well by people. The `/task` workflow exists in both (`.claude/commands/task.md`, `.opencode/commands/task.md`).
+as well by people. The `/task` and `/release` workflows exist in both (`.claude/commands/`, `.opencode/commands/`).
 
 ## Development
 
