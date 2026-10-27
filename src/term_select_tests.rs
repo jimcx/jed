@@ -1,8 +1,10 @@
 //! Mouse selection in a terminal (`term_select`): over a shell and a task tab whose program
 //! hasn't asked for the mouse, a left drag highlights the cells it covers and Cmd/Ctrl+C copies
-//! exactly that text (trailing spaces trimmed, soft-wrapped rows joined); a click clears it; new
-//! output and the wheel clear it (the rows move); a program that asked for the mouse still gets
-//! every event and nothing is selected. The copy's normalisation is `tasks::select`'s unit tests.
+//! exactly that text (trailing spaces trimmed, soft-wrapped rows joined), also when the view is
+//! scrolled back (`term_select_scrollback`: the selection moves with its text through any scroll
+//! and copies in full, in view or not); a click clears it; new output clears it (the rows move);
+//! a program that asked for the mouse still gets every event and nothing is selected, scrolled
+//! back too. The copy's normalisation and windowing are `tasks::select`'s unit tests.
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::Terminal;
@@ -109,8 +111,8 @@ async fn term_select_shell_drag_highlights_and_copy() {
     assert_eq!(
         app.group().active_shell().unwrap().run.selection(),
         Some(crate::tasks::select::Selection {
-            anchor: (alpha, 0),
-            head: (beta, 4),
+            anchor: (alpha as isize, 0),
+            head: (beta as isize, 4),
         }),
         "the drag selected the cells it covered"
     );
@@ -165,8 +167,8 @@ async fn term_select_task_drag_highlights_and_copy() {
     assert_eq!(
         app.tasks.get(id).unwrap().selection(),
         Some(crate::tasks::select::Selection {
-            anchor: (alpha, 0),
-            head: (beta, 4),
+            anchor: (alpha as isize, 0),
+            head: (beta as isize, 4),
         }),
         "the drag selected the cells it covered"
     );
@@ -245,7 +247,7 @@ async fn term_select_ended_task_drag_uses_the_drawn_rows() {
     drag(&mut app, area, (0, 0), (1, 4));
     assert_eq!(
         app.tasks.get(id).unwrap().selection().map(|s| s.anchor),
-        Some((top, 0)),
+        Some((top as isize, 0)),
         "the first drawn row is screen row `top`"
     );
 
@@ -366,6 +368,20 @@ async fn term_select_mouse_reporting_keeps_every_event() {
             "nothing is highlighted while the program reports the mouse"
         );
     }
+    drop(term);
+
+    // Scrolled back (the scroll keys still scroll; the wheel is the program's), a drag still
+    // selects nothing and leaves the view where it is.
+    app.press(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    app.press(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    assert_eq!(scrollback(&app), 2, "Ctrl+Shift+Up scrolled back");
+    drag(&mut app, area, (2, 0), (3, 3));
+    assert_eq!(
+        app.group().active_shell().unwrap().run.selection(),
+        None,
+        "scrolled back, a program that reports the mouse still selects nothing"
+    );
+    assert_eq!(scrollback(&app), 2, "the drag left the view scrolled back");
 }
 
 // FLAKE: 2026-10-26, in a full parallel run the selection was still `Some(..)` after the second
@@ -373,7 +389,7 @@ async fn term_select_mouse_reporting_keeps_every_event() {
 // the settle saw); passes alone and in the term_select module. Dump the selection and the screen
 // tail so a recurrence shows whether the output event raced the settle.
 #[tokio::test(flavor = "multi_thread")]
-async fn term_select_output_and_the_wheel_clear_the_selection() {
+async fn term_select_output_clears_and_the_wheel_moves_the_selection() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
@@ -413,13 +429,13 @@ async fn term_select_output_and_the_wheel_clear_the_selection() {
     if selection.is_some() {
         let tail = screen_text(&app).lines().rev().take(8).collect::<Vec<_>>().join("\n");
         eprintln!(
-            "FLAKE term_select_output_and_the_wheel_clear_the_selection: not cleared \
+            "FLAKE term_select_output_clears_and_the_wheel_moves_the_selection: not cleared \
              ({selection:?}); screen tail:\n{tail}"
         );
     }
     assert_eq!(selection, None, "new output cleared the selection");
 
-    // So does a wheel scroll (through the scrollback, which the wheel still does).
+    // A wheel scroll does not: the selection moves with its text.
     let text = screen_text(&app);
     let after = row_of(&text, "after");
     let term = draw(&mut app, 100, 30);
@@ -435,9 +451,217 @@ async fn term_select_output_and_the_wheel_clear_the_selection() {
     assert_eq!(scrollback(&app), 3, "the wheel scrolled the scrollback");
     assert_eq!(
         app.group().active_shell().unwrap().run.selection(),
-        None,
-        "the wheel cleared the selection"
+        selected,
+        "the wheel kept the selection on its text"
     );
+}
+
+fn run_of(app: &App, id: Option<RunId>) -> &crate::tasks::Run {
+    match id {
+        Some(id) => app.tasks.get(id).unwrap(),
+        None => &app.group().active_shell().unwrap().run,
+    }
+}
+
+fn visible_lines(app: &App, id: Option<RunId>) -> Vec<String> {
+    let contents = run_of(app, id).screen().screen().contents();
+    contents.lines().map(String::from).collect()
+}
+
+/// Scrolled back over `COUNT_TO_200`-style numbered output: a drag over two older rows
+/// highlights and copies them, the highlight follows the text through the wheel, and the copy
+/// stays whole once it is out of view and back on the live screen.
+fn scrolled_back_scenario(app: &mut App, id: Option<RunId>, area: Rect) {
+    let (x, y) = (area.x + 1, area.y + 1);
+    for _ in 0..4 {
+        app.mouse(MouseEventKind::ScrollUp, x, y);
+    }
+    drop(draw(app, 100, 30));
+    let back = run_of(app, id).screen().screen().scrollback();
+    assert_eq!(back, 12, "the wheel scrolled back");
+    let lines = visible_lines(app, id);
+    let (l2, l3) = (lines[2].trim_end().to_string(), lines[3].trim_end().to_string());
+    assert!(
+        l2.parse::<u32>().is_ok() && l3.parse::<u32>().is_ok(),
+        "numbered rows: {lines:?}"
+    );
+    let expected = format!("{l2}\n{}", &l3[..1]);
+
+    drag(app, area, (2, 0), (3, 1));
+    let selection = run_of(app, id).selection().unwrap();
+    assert_eq!(
+        selection.anchor,
+        (2 - back as isize, 0),
+        "the cells are scroll-independent"
+    );
+    let selected = app.theme.get("editor.selection").bg.unwrap();
+    let term = draw(app, 100, 30);
+    assert_eq!(bg(&term, area.x, area.y + 2), selected, "the older row is highlighted");
+    assert_eq!(bg(&term, area.x, area.y + 3), selected);
+    assert_ne!(bg(&term, area.x, area.y + 4), selected);
+    drop(term);
+    app.press(KeyCode::Char('c'), cmd());
+    assert_eq!(
+        app.clipboard.read().unwrap(),
+        expected,
+        "copies exactly the older lines"
+    );
+
+    // One wheel notch (3 rows) up: the highlight is 3 rows lower, the selection unchanged.
+    app.mouse(MouseEventKind::ScrollUp, x, y);
+    assert_eq!(
+        run_of(app, id).selection(),
+        Some(selection),
+        "the wheel kept the selection"
+    );
+    let term = draw(app, 100, 30);
+    assert_eq!(
+        bg(&term, area.x, area.y + 5),
+        selected,
+        "the highlight moved with its text"
+    );
+    assert_ne!(bg(&term, area.x, area.y + 2), selected);
+    drop(term);
+
+    // Back to the live screen: far out of view, the copy is the same whole text.
+    for _ in 0..8 {
+        app.mouse(MouseEventKind::ScrollDown, x, y);
+    }
+    assert_eq!(run_of(app, id).screen().screen().scrollback(), 0);
+    assert_eq!(run_of(app, id).selection(), Some(selection));
+    drop(draw(app, 100, 30));
+    app.press(KeyCode::Char('c'), cmd());
+    assert_eq!(
+        app.clipboard.read().unwrap(),
+        expected,
+        "copies the selection scrolled out of view"
+    );
+    assert_eq!(
+        run_of(app, id).screen().screen().scrollback(),
+        0,
+        "the copy restores the scroll"
+    );
+
+    // A click scrolled back clears it and copies nothing.
+    app.mouse(MouseEventKind::ScrollUp, x, y);
+    click(app, x, y);
+    assert_eq!(run_of(app, id).selection(), None);
+    app.clipboard.write(Copied {
+        text: "keep".into(),
+        whole_line: false,
+        pieces: Vec::new(),
+    });
+    app.press(KeyCode::Char('c'), cmd());
+    assert_eq!(app.clipboard.read().unwrap(), "keep", "no selection: nothing to copy");
+
+    // The wheel mid-drag: the anchor stays on its text, the head is where the pointer is in
+    // the view scrolled further back, and the copy runs between them.
+    let before = run_of(app, id).screen().screen().scrollback();
+    let at = |(row, col): (u16, u16)| (area.x + col, area.y + row);
+    let (px, py) = at((2, 0));
+    app.mouse(MouseEventKind::Down(MouseButton::Left), px, py);
+    app.mouse(MouseEventKind::ScrollUp, px, py);
+    let now = run_of(app, id).screen().screen().scrollback();
+    assert_eq!(now, before + 3, "the wheel scrolled mid-drag");
+    let (hx, hy) = at((3, 1));
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), hx, hy);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), hx, hy);
+    let selection = run_of(app, id).selection().unwrap();
+    assert_eq!(
+        selection.anchor,
+        (2 - before as isize, 0),
+        "the anchor stayed on its text"
+    );
+    assert_eq!(selection.head, (3 - now as isize, 1));
+    // In the current view the anchor's line is row 5: rows 3 (from column 1) to 5 (none of it).
+    let lines = visible_lines(app, id);
+    let expected = format!("{}\n{}\n", &lines[3].trim_end()[1..], lines[4].trim_end());
+    app.press(KeyCode::Char('c'), cmd());
+    assert_eq!(
+        app.clipboard.read().unwrap(),
+        expected,
+        "copies across the mid-drag scroll"
+    );
+
+    // The scroll keys (Ctrl+Shift+Up / Down, the tab having the keys after the drag) scroll the
+    // scrollback too, and leave the selection on its text.
+    app.press(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    assert_eq!(
+        run_of(app, id).screen().screen().scrollback(),
+        now + 1,
+        "Ctrl+Shift+Up scrolled the scrollback"
+    );
+    app.press(KeyCode::Down, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    app.press(KeyCode::Down, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    assert_eq!(
+        run_of(app, id).screen().screen().scrollback(),
+        now - 1,
+        "Ctrl+Shift+Down"
+    );
+    assert_eq!(run_of(app, id).selection(), Some(selection));
+    let term = draw(app, 100, 30);
+    let selected = app.theme.get("editor.selection").bg.unwrap();
+    // One row further down than before the keys: rows 2 (from column 1) to 4 (none of it).
+    assert_ne!(bg(&term, area.x, area.y + 2), selected, "column 0 of the head's row");
+    assert_eq!(
+        bg(&term, area.x + 1, area.y + 2),
+        selected,
+        "the head's row from column 1"
+    );
+    assert_eq!(bg(&term, area.x, area.y + 3), selected);
+    assert_ne!(
+        bg(&term, area.x, area.y + 4),
+        selected,
+        "the anchor's column is excluded"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_scrollback_shell() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    app.tasks.shell = "/bin/sh".into();
+    app.test_execute(Command::NewShell);
+    drop(draw(&mut app, 100, 30));
+    shell_prompt(&mut app).await;
+    assert!(
+        app.group()
+            .active_shell()
+            .unwrap()
+            .run
+            .write(format!("{COUNT_TO_200}\n").as_bytes())
+    );
+    assert!(
+        app.settle(|a| screen_text(a).lines().any(|l| l.trim_end() == "199"))
+            .await,
+        "output arrived:\n{}",
+        screen_text(&app)
+    );
+    drop(draw(&mut app, 100, 30));
+    let area = app.hits.group(app.groups.active).unwrap().editor;
+    scrolled_back_scenario(&mut app, None, area);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_scrollback_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = crate::milestone12_tests::dirs(&dir);
+    let mut app = crate::milestone12_tests::open_app(
+        &root,
+        &state,
+        Some(&format!("[tasks.count]\ncommand = '''{COUNT_TO_200}; sleep 60'''\n")),
+    );
+    drop(draw(&mut app, 100, 30));
+    let id = app.run_task("count").unwrap();
+    assert!(
+        app.settle(|a| task_text(a, id).lines().any(|l| l.trim_end() == "199"))
+            .await,
+        "output arrived:\n{}",
+        task_text(&app, id)
+    );
+    drop(draw(&mut app, 100, 30));
+    let area = layout::task_area(app.hits.regions.panel.unwrap());
+    scrolled_back_scenario(&mut app, Some(id), area);
 }
 
 #[tokio::test(flavor = "multi_thread")]

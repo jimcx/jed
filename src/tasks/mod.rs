@@ -461,7 +461,7 @@ mod tests {
         let mut bar = run.scrollable();
         crate::scrollbar::Scrollable::set_top(&mut bar, 3);
         assert_eq!(run.screen().screen().scrollback(), max - 3);
-        assert!(run.selection().is_none(), "the rows moved: the selection cleared");
+        assert!(run.selection().is_some(), "the selection moves with its text");
         crate::scrollbar::Scrollable::set_top(&mut bar, max);
         assert_eq!(run.screen().screen().scrollback(), 0);
         crate::scrollbar::Scrollable::set_top(&mut bar, 0);

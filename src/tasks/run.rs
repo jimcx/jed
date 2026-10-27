@@ -312,21 +312,20 @@ impl Run {
     }
 
     /// Scrolls the view through the scrollback by `lines` (negative: up, to older output),
-    /// clamped; 0 rows back is the live screen. The selection goes with the rows it was over.
+    /// clamped; 0 rows back is the live screen. The selection stays on its text (its cells are
+    /// scroll-independent).
     pub fn scroll(&self, lines: isize) {
         let mut parser = self.screen();
         let back = parser.screen().scrollback();
         parser.screen_mut().set_scrollback(back.saturating_add_signed(-lines));
-        self.clear_selection();
     }
 
-    /// Scrolls to the oldest output kept (`top`) or back to the live screen. Clears the selection
-    /// (the rows move).
+    /// Scrolls to the oldest output kept (`top`) or back to the live screen. The selection stays
+    /// on its text.
     pub fn scroll_to(&self, top: bool) {
         self.screen()
             .screen_mut()
             .set_scrollback(if top { usize::MAX } else { 0 });
-        self.clear_selection();
     }
 
     /// The scroll bar's extent: `(back, max, rows)` — the current offset (0 = the live screen),
@@ -345,15 +344,13 @@ impl Run {
     }
 
     /// Puts the scrollback `top` rows from the oldest output (the `Scroll::rows` space; `max` is
-    /// the live screen). Clears the selection, as `scroll` / `scroll_to` do (the rows move).
+    /// the live screen). Keeps the selection, as `scroll` / `scroll_to` do.
     pub fn set_scrollback_from_top(&self, top: usize) {
         let mut parser = self.screen();
         let screen = parser.screen_mut();
         screen.set_scrollback(usize::MAX);
         let max = screen.scrollback();
         screen.set_scrollback(max.saturating_sub(top));
-        drop(parser);
-        self.clear_selection();
     }
 
     /// The scroll bar (`TerminalScroll`): the scrollback as a [`Scrollable`] whose `Scroll` is in
@@ -368,12 +365,12 @@ impl Run {
         *lock(&self.shared.selection)
     }
 
-    /// Sets the mouse selection to the `anchor`–`head` cells of the screen's visible viewport.
+    /// Sets the mouse selection to the `anchor`–`head` cells (`select::Cell`, scroll-independent).
     pub fn set_selection(&self, selection: select::Selection) {
         *lock(&self.shared.selection) = Some(selection);
     }
 
-    /// Drops the mouse selection (a click, new output, or a scroll moved the rows under it).
+    /// Drops the mouse selection (a click, new output or a resize moved the rows under it).
     pub fn clear_selection(&self) {
         *lock(&self.shared.selection) = None;
     }
@@ -382,8 +379,8 @@ impl Run {
     /// `None` without a selection.
     pub fn copy_selection(&self) -> Option<String> {
         let selection = self.selection()?;
-        let parser = self.screen();
-        Some(select::copy_text(parser.screen(), &selection))
+        let mut parser = self.screen();
+        Some(select::copy_text(parser.screen_mut(), &selection))
     }
 
     /// Writes `text` on a line of its own below the output (attributes reset): the exit note.
@@ -421,8 +418,8 @@ impl Drop for Run {
 /// A run's scroll bar (`Run::scrollable`): the scrollback as a [`Scrollable`]. Its `Scroll` is in
 /// rows — `Scroll::rows(max + rows, rows, max - back)` — so the live screen is `top == max` (thumb
 /// at the bottom), the oldest output `top == 0` (thumb at the top), and the last page stays full
-/// as a terminal view is always `rows` tall. `set_top` moves the scrollback there, clearing the
-/// selection (the rows move). A `Scrollable` on a borrow, not on `Run`, so its `scroll()` doesn't
+/// as a terminal view is always `rows` tall. `set_top` moves the scrollback there, keeping the
+/// selection on its text. A `Scrollable` on a borrow, not on `Run`, so its `scroll()` doesn't
 /// clash with `Run::scroll(&self, isize)`.
 pub struct TerminalScroll<'a> {
     pub run: &'a Run,

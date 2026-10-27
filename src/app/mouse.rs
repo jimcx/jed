@@ -43,8 +43,8 @@ pub(super) fn wheel_columns(m: &MouseEvent) -> Option<isize> {
 }
 
 /// The screen cell `(row, col)` the pointer at `(x, y)` is over in `area`, in the visible-viewport
-/// cells `vt100::Screen::cell` / `tasks::select` use: the pointer clamped into `area`, shifted by
-/// the row a taller screen is drawn from (`select::top_row`), then clamped into the screen.
+/// cells `vt100::Screen::cell` uses: the pointer clamped into `area`, shifted by the row a taller
+/// screen is drawn from (`select::top_row`), then clamped into the screen.
 fn screen_cell(screen: &vt100::Screen, area: Rect, x: u16, y: u16) -> (u16, u16) {
     let top = select::top_row(screen, area.height);
     let (rows, cols) = screen.size();
@@ -82,11 +82,11 @@ pub enum Drag {
     HistoryDivider,
     /// Selecting bytes in a group's hex tab (`app/hex.rs`).
     Hex(crate::layout::GroupId),
-    /// Selecting text on a terminal screen (`tasks::select`): the run, the anchor cell (in the
-    /// screen's visible-viewport cells) and the area those cells are drawn in.
+    /// Selecting text on a terminal screen (`tasks::select`): the run, the anchor cell
+    /// (scroll-independent) and the area the screen is drawn in.
     Terminal {
         run: RunId,
-        anchor: (u16, u16),
+        anchor: select::Cell,
         area: Rect,
     },
     /// Selecting text in one of the one-line inputs (`app/find.rs`, `app/workspace_search.rs`,
@@ -225,11 +225,11 @@ impl App {
             let cell = {
                 let screen = run.screen();
                 let s = screen.screen();
-                // Scrolled back, the screen's cells are older output: the wheel's, not a drag's.
-                if s.mouse_protocol_mode() != MouseProtocolMode::None || s.scrollback() != 0 {
+                if s.mouse_protocol_mode() != MouseProtocolMode::None {
                     return false;
                 }
-                screen_cell(s, area, m.column, m.row)
+                let (row, col) = screen_cell(s, area, m.column, m.row);
+                select::cell_at(row, col, s.scrollback())
             };
             // A press is an empty selection until the pointer moves, so a click clears it.
             run.set_selection(select::Selection {
@@ -257,7 +257,9 @@ impl App {
         {
             if let Some(run) = self.terminal_run_by_id(run) {
                 let screen = run.screen();
-                let head = screen_cell(screen.screen(), area, m.column, m.row);
+                let s = screen.screen();
+                let (row, col) = screen_cell(s, area, m.column, m.row);
+                let head = select::cell_at(row, col, s.scrollback());
                 drop(screen);
                 run.set_selection(select::Selection { anchor, head });
             }

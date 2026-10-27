@@ -16,7 +16,7 @@ use crate::app::{App, Focus};
 use crate::layout::{self, PanelTab, ScrollBarHit, ScrollTarget};
 use crate::scrollbar::Scrollable;
 use crate::shell::ShellTab;
-use crate::tasks::select::top_row;
+use crate::tasks::select::{top_row, viewport_row};
 use crate::tasks::{Run, RunId};
 use crate::theme::Theme;
 
@@ -71,18 +71,18 @@ fn draw_screen(f: &mut Frame, area: Rect, run: &Run, theme: &Theme, focused: boo
     {
         // `contents_between`'s cells: the first row from its start column, the middle rows the
         // whole width, the last up to its end column; only the rows drawn here are painted.
-        let ((start_row, start_col), (end_row, end_col)) = selection.rows();
-        for row in start_row..=end_row {
-            if row < top || row >= top + area.height {
-                continue;
-            }
+        let ((start_line, start_col), (end_line, end_col)) = selection.rows();
+        let back = parser.screen().scrollback();
+        let (start_row, end_row) = (viewport_row(start_line, back), viewport_row(end_line, back));
+        let (first, last) = (top as isize, (top + area.height) as isize);
+        for row in start_row.max(first)..=end_row.min(last - 1) {
             let (from, to) = match (row == start_row, row == end_row) {
                 (true, true) => (start_col, end_col),
                 (true, false) => (start_col, area.width),
                 (false, true) => (0, end_col),
                 (false, false) => (0, area.width),
             };
-            let y = area.y + (row - top);
+            let y = area.y + (row - first) as u16;
             for col in from..to.min(area.width) {
                 out[(area.x + col, y)].set_bg(bg);
             }
