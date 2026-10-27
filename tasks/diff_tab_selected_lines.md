@@ -4,7 +4,7 @@ name: Selected lines in diff tabs
 summary: select line ranges in a diff tab for stage / unstage / revert
 status: open
 priority: 0
-dependencies: []
+dependencies: [stage_selected_lines]
 ---
 
 After [Stage / unstage / revert selected lines](stage_selected_lines.md): from an unstaged / staged diff tab, a row range selected with Shift + Up / Down (a new selection on `DiffTab`, drawn with `editor.selection`) is what Stage / Unstage / Revert Selected Ranges act on. If [Selection and editing in diff tabs](diff_edit.md) lands first, a selection is text and its row range is the lines the selections touch.

@@ -4,7 +4,7 @@ name: Open and restore earlier versions of a file
 summary: a file's earlier version — a saved snapshot, or its blob at a commit — opens as a read-only text tab so its text can be selected, copied and searched, and the lines a selection touches restore into the file's buffer as one undo step.
 status: open
 priority: 0
-dependencies: []
+dependencies: [history_view, diff_tab_selected_lines]
 ---
 
 See [File history](../PLAN.md#file-history), [Git history](../PLAN.md#git-view-and-stage-only).

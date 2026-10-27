@@ -4,7 +4,7 @@ name: Mouse selection in the terminal scrollback
 summary: select scrolled-back terminal output with the mouse
 status: open
 priority: 0
-dependencies: []
+dependencies: [term_select]
 ---
 
 Extend `term_select`'s left-drag to the scrolled-back view, so the older output the wheel and Ctrl+Shift+Up / Down reveal can be selected too — drawn highlighted and copied by Cmd/Ctrl+C, exactly as on the live screen. A program that has asked for the mouse keeps every event, unchanged.
