@@ -699,6 +699,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **SCons: a real SCons for `site_scons` in the docs** (`scons_docs`): document a real SCons install for ty's `site_scons` helpers — [tasks/scons_docs.md](tasks/scons_docs.md)
 - **Search ignored files toggle** (`search_ignored_files`): toggle searching gitignored files in workspace search — [tasks/search_ignored_files.md](tasks/search_ignored_files.md)
 - **Selected lines in diff tabs** (`diff_tab_selected_lines`): select line ranges in a diff tab for stage / unstage / revert — [tasks/diff_tab_selected_lines.md](tasks/diff_tab_selected_lines.md)
+- **Selection and editing in diff tabs** (`diff_edit`): select text on either side of a diff tab and edit the file's working-tree text in place — [tasks/diff_edit.md](tasks/diff_edit.md)
 - **Self-update from GitHub releases** (`update`): check for and install a newer release from GitHub — [tasks/update.md](tasks/update.md)
 - **Settings files** (`settings`): "Preferences: Open User / Workspace Settings" open `settings.toml` and `.workspace`, with settings-aware syntax highlighting and completion — [tasks/settings.md](tasks/settings.md)
 - **Side panel resizing, finished** (`side_panel_resize`): make the side panel's resize sash discoverable and smooth — [tasks/side_panel_resize.md](tasks/side_panel_resize.md)

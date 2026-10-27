@@ -7,4 +7,4 @@ priority: 0
 dependencies: []
 ---
 
-After [Stage / unstage / revert selected lines](stage_selected_lines.md): from an unstaged / staged diff tab, a row range selected with Shift + Up / Down (a new selection on `DiffTab`, drawn with `editor.selection`) is what Stage / Unstage / Revert Selected Ranges act on
+After [Stage / unstage / revert selected lines](stage_selected_lines.md): from an unstaged / staged diff tab, a row range selected with Shift + Up / Down (a new selection on `DiffTab`, drawn with `editor.selection`) is what Stage / Unstage / Revert Selected Ranges act on. If [Selection and editing in diff tabs](diff_edit.md) lands first, a selection is text and its row range is the lines the selections touch.
