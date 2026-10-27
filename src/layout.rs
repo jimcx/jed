@@ -11,6 +11,8 @@ pub const MIN_GROUP_WIDTH: u16 = 12;
 pub const MIN_GROUP_HEIGHT: u16 = 4;
 /// The bottom panel's smallest height: its top border, its tab strip and two rows.
 pub const MIN_PANEL_HEIGHT: u16 = 4;
+/// The terminal area's smallest height: its top border, its tab bar and two rows.
+pub const MIN_TERMINAL_HEIGHT: u16 = 4;
 /// Room always left above the bottom panel for the editor (a tab bar and a few lines).
 pub const MIN_EDITOR_HEIGHT: u16 = 5;
 
@@ -99,18 +101,39 @@ pub struct Regions {
     pub editor: Rect,
     /// The bottom panel under the editor groups (its top row is the border), when shown.
     pub panel: Option<Rect>,
+    /// The terminal area: full width, directly above the status bar (its top row is the
+    /// border), when shown. Everything else is above it.
+    pub terminal: Option<Rect>,
     pub status: Rect,
 }
 
 /// The screen's regions. `panel_height` (`None`: hidden) is clamped so the editor keeps
 /// `MIN_EDITOR_HEIGHT` rows; the panel gets at least `MIN_PANEL_HEIGHT` when that fits.
-pub fn compute(area: Rect, side_visible: bool, side_width: u16, panel_height: Option<u16>) -> Regions {
-    let body_h = area.height.saturating_sub(1);
+/// `terminal_height` (the terminal area, the same) is carved off the bottom first, across the
+/// whole width: the activity bar, side panel, editor groups and panel are all above it.
+pub fn compute(
+    area: Rect,
+    side_visible: bool,
+    side_width: u16,
+    panel_height: Option<u16>,
+    terminal_height: Option<u16>,
+) -> Regions {
+    let full_h = area.height.saturating_sub(1);
     let status = Rect {
-        y: area.y + body_h,
+        y: area.y + full_h,
         height: 1,
         ..area
     };
+    let terminal = terminal_height.and_then(|h| {
+        let max = full_h.saturating_sub(MIN_EDITOR_HEIGHT);
+        let h = h.min(max).max(MIN_TERMINAL_HEIGHT.min(max));
+        (h > 0).then_some(Rect {
+            y: area.y + full_h - h,
+            height: h,
+            ..area
+        })
+    });
+    let body_h = full_h - terminal.map_or(0, |t| t.height);
     let activity = Rect {
         width: ACTIVITY_WIDTH.min(area.width),
         height: body_h,
@@ -157,6 +180,7 @@ pub fn compute(area: Rect, side_visible: bool, side_width: u16, panel_height: Op
         side,
         editor,
         panel,
+        terminal,
         status,
     }
 }
@@ -714,6 +738,8 @@ pub enum Hit {
     ScrollBar(ScrollTarget),
     /// The bottom panel's top border (dragging it resizes the panel).
     PanelBorder,
+    /// The terminal area's top border (dragging it resizes the area).
+    TerminalBorder,
     PanelTab(PanelTab),
     /// A task tab's close button.
     PanelTabClose(crate::tasks::RunId),
@@ -790,6 +816,12 @@ impl HitMap {
                 return Hit::ExplorerRow(y - self.explorer_rows.y);
             }
             return Hit::SidePanel;
+        }
+        if let Some(t) = r.terminal
+            && t.contains(p)
+            && y == t.y
+        {
+            return Hit::TerminalBorder;
         }
         if let Some(panel) = r.panel
             && panel.contains(p)
@@ -882,41 +914,41 @@ mod tests {
 
     #[test]
     fn regions_tile_the_screen() {
-        let r = compute(Rect::new(0, 0, 100, 30), true, 25, None);
+        let r = compute(Rect::new(0, 0, 100, 30), true, 25, None, None);
         assert_eq!(r.activity, Rect::new(0, 0, 3, 29));
         assert_eq!(r.side, Some(Rect::new(3, 0, 25, 29)));
         assert_eq!(r.editor, Rect::new(28, 0, 72, 29));
         assert_eq!(r.status, Rect::new(0, 29, 100, 1));
 
-        let r = compute(Rect::new(0, 0, 100, 30), false, 25, None);
+        let r = compute(Rect::new(0, 0, 100, 30), false, 25, None, None);
         assert_eq!(r.side, None);
         assert_eq!(r.editor.x, 3);
     }
 
     #[test]
     fn side_width_is_clamped() {
-        let r = compute(Rect::new(0, 0, 60, 10), true, 200, None);
+        let r = compute(Rect::new(0, 0, 60, 10), true, 200, None, None);
         assert_eq!(r.side.unwrap().width, 60 - ACTIVITY_WIDTH - MIN_EDITOR_WIDTH);
-        let r = compute(Rect::new(0, 0, 60, 10), true, 1, None);
+        let r = compute(Rect::new(0, 0, 60, 10), true, 1, None, None);
         assert_eq!(r.side.unwrap().width, MIN_SIDE_WIDTH);
     }
 
     /// The panel sits under the editor groups (not the side panel), clamped both ways.
     #[test]
     fn panel_under_the_editor() {
-        let r = compute(Rect::new(0, 0, 100, 30), true, 25, Some(10));
+        let r = compute(Rect::new(0, 0, 100, 30), true, 25, Some(10), None);
         assert_eq!(r.editor, Rect::new(28, 0, 72, 19));
         assert_eq!(r.panel, Some(Rect::new(28, 19, 72, 10)));
         assert_eq!(r.side, Some(Rect::new(3, 0, 25, 29)), "the side panel keeps its height");
-        let r = compute(Rect::new(0, 0, 100, 30), true, 25, Some(100));
+        let r = compute(Rect::new(0, 0, 100, 30), true, 25, Some(100), None);
         assert_eq!(r.editor.height, MIN_EDITOR_HEIGHT);
         assert_eq!(r.panel.unwrap().height, 29 - MIN_EDITOR_HEIGHT);
-        let r = compute(Rect::new(0, 0, 100, 30), true, 25, Some(1));
+        let r = compute(Rect::new(0, 0, 100, 30), true, 25, Some(1), None);
         assert_eq!(r.panel.unwrap().height, MIN_PANEL_HEIGHT);
         // Too small for both: the editor wins.
-        let r = compute(Rect::new(0, 0, 100, 7), true, 25, Some(10));
+        let r = compute(Rect::new(0, 0, 100, 7), true, 25, Some(10), None);
         assert_eq!((r.editor.height, r.panel.unwrap().height), (5, 1));
-        let r = compute(Rect::new(0, 0, 100, 5), true, 25, Some(10));
+        let r = compute(Rect::new(0, 0, 100, 5), true, 25, Some(10), None);
         assert_eq!((r.editor.height, r.panel), (4, None));
     }
 
@@ -990,7 +1022,7 @@ mod tests {
 
     #[test]
     fn hits() {
-        let regions = compute(Rect::new(0, 0, 100, 30), true, 25, Some(6));
+        let regions = compute(Rect::new(0, 0, 100, 30), true, 25, Some(6), None);
         let mut t = SplitTree::new(7);
         t.split(7, SplitDir::Right, 8);
         let (cells, dividers) = t.layout(regions.editor);

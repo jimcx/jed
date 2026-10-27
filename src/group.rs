@@ -309,7 +309,26 @@ impl Default for Groups {
     }
 }
 
+/// The first id of the terminal area's groups, so they never collide with the editor groups'
+/// in the hit map (`App::terminals`; see `is_terminal_group`).
+pub const TERMINAL_GROUP_BASE: GroupId = 1 << 32;
+
+/// Whether `id` names a group of the terminal area rather than an editor group.
+pub fn is_terminal_group(id: GroupId) -> bool {
+    id >= TERMINAL_GROUP_BASE
+}
+
 impl Groups {
+    /// One empty group with id `first`; new groups count up from there.
+    pub fn starting_at(first: GroupId) -> Self {
+        Self {
+            map: HashMap::from([(first, Group::default())]),
+            active: first,
+            tree: SplitTree::new(first),
+            next: first + 1,
+        }
+    }
+
     pub fn active_group(&self) -> &Group {
         &self.map[&self.active]
     }

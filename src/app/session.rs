@@ -573,7 +573,7 @@ mod tests {
         app.test_start();
         app.tasks.shell = "/bin/sh".into();
         app.test_open(Buffer::new_file(&root.join("a.txt")));
-        app.test_execute(crate::command::Command::NewShell);
+        app.new_shell_in_editor();
 
         let snapshot = app.session_snapshot();
         assert_eq!(snapshot.groups.len(), 1);
@@ -599,7 +599,7 @@ mod tests {
         );
         app.test_start();
         app.tasks.shell = "/bin/sh".into();
-        app.test_execute(crate::command::Command::NewShell);
+        app.new_shell_in_editor();
         app.test_open(Buffer::new_file(&root.join("a.txt")));
         app.test_open(Buffer::new_file(&root.join("b.txt")));
         app.group_mut().active = 1;

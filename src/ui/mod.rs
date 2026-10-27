@@ -82,7 +82,14 @@ pub fn render(f: &mut Frame, app: &mut App) {
         return;
     }
     let panel_height = app.ui.panel_visible.then_some(app.ui.panel_height);
-    let regions = layout::compute(area, app.ui.side_visible, app.ui.side_width, panel_height);
+    let terminal_height = app.ui.terminal_visible.then_some(app.ui.terminal_height);
+    let regions = layout::compute(
+        area,
+        app.ui.side_visible,
+        app.ui.side_width,
+        panel_height,
+        terminal_height,
+    );
     let mut hits = HitMap {
         regions,
         ..HitMap::default()
@@ -98,10 +105,28 @@ pub fn render(f: &mut Frame, app: &mut App) {
         hits.history_scrollbar = side.history_scrollbar;
     }
 
-    let (cells, dividers) = app.groups.tree.layout(regions.editor);
+    let (mut cells, mut dividers) = app.groups.tree.layout(regions.editor);
     fit_commit_tabs(app, &cells);
+    // The terminal area's groups are drawn by the same loop, after the editor's.
+    if let Some(t) = regions.terminal {
+        // Its top row is the border, drawn here; the groups get the rest.
+        let border = app.theme.get("editor").patch(app.theme.get("panel.border"));
+        let out = f.buffer_mut();
+        for x in t.x..t.x + t.width {
+            out.set_stringn(x, t.y, "─", 1, border);
+        }
+        let rest = Rect {
+            y: t.y + 1,
+            height: t.height - 1,
+            ..t
+        };
+        let (c, d) = app.terminals.tree.layout(rest);
+        cells.extend(c);
+        dividers.extend(d);
+    }
     // Each group's number in reading order, for the corner of its tab bar (two or more groups).
     let group_ids = (app.groups.len() >= 2).then(|| app.groups.ids());
+    let terminal_ids = (app.terminals.len() >= 2).then(|| app.terminals.ids());
     let mut active_editor = None;
     let whitespace = app.render_whitespace();
     // The lightbulb: the active group's cursor line, when code actions exist there.
@@ -117,17 +142,29 @@ pub fn render(f: &mut Frame, app: &mut App) {
             height: rect.height - tab_bar.height,
             ..rect
         };
-        let is_active = id == app.groups.active;
+        let terminal = crate::group::is_terminal_group(id);
+        let is_active = id
+            == if terminal {
+                app.terminals.active
+            } else {
+                app.groups.active
+            };
         let look = scrollbar::look(app, ScrollTarget::Group(id));
         let editor_bg = app.theme.get("editor");
         let drop = app.tab_drop_in(id);
-        let number = group_ids
+        let number = (if terminal { &terminal_ids } else { &group_ids })
             .as_ref()
             .and_then(|ids| ids.iter().position(|&g| g == id))
             .map(|i| (i as u8).saturating_add(1));
         // Long lines wrap at the editor's width (the effective `word_wrap` setting).
         let wrapping = app.word_wrap() == WordWrap::On;
-        let Some(group) = app.groups.get_mut(id) else { continue };
+        let Some(group) = (if terminal {
+            app.terminals.get_mut(id)
+        } else {
+            app.groups.get_mut(id)
+        }) else {
+            continue;
+        };
         let tabs = tabs::render(f, tab_bar, group, &app.buffers, &app.theme, is_active, drop, number);
 
         // The changed-on-disk banner takes the editor's first row (leaving it at least one); a
@@ -200,7 +237,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let mut merge_buttons = Vec::new();
         // Only the focused group shows the terminal cursor.
         let focused = is_active
-            && app.ui.focus == Focus::Editor
+            && app.ui.focus == if terminal { Focus::Terminal } else { Focus::Editor }
             && app.prompt.is_none()
             && app.palette.is_none()
             && app.cheat_sheet.is_none()
@@ -420,7 +457,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             let scroll = crate::scrollbar::Scroll::columns(&w, width, left);
             hscroll_hit = Some(scrollbar::render_row(out, track, scroll, hlook, editor_bg, &app.theme));
         }
-        if is_active {
+        if is_active && !terminal {
             active_editor = Some(editor_area);
         }
         hits.groups.push(GroupHit {

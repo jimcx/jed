@@ -19,7 +19,6 @@ use ratatui::style::Color;
 
 use crate::app::{App, InitialFile, Mode};
 use crate::buffer::Buffer;
-use crate::command::Command;
 use crate::diff_view::Pair;
 use crate::git::test_repo::{commit_all, git, init};
 use crate::hex::HexDoc;
@@ -555,7 +554,7 @@ async fn git_marks_hex_shell_and_single_file_tabs_have_none() {
     );
     app.test_start();
     app.tasks.shell = PathBuf::from("/bin/sh");
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     assert!(app.group().active_shell().is_some(), "a shell tab");
     let term = draw_sized(&mut app, 100, 24);
     let hit = app.hits.group(app.groups.active).expect("the group was drawn");

@@ -7298,7 +7298,6 @@ mod term_mouse {
     use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 
     use crate::app::App;
-    use crate::command::Command;
     use crate::layout;
     use crate::shell_tests::{COUNT_TO_200, dirs, draw, screen_text, scrollback, shell_app};
     use crate::tasks::RunId;
@@ -7335,7 +7334,7 @@ mod term_mouse {
         let (_d, root, state) = dirs();
         let mut app = shell_app(&root, &state);
         app.tasks.shell = "/bin/sh".into();
-        app.test_execute(Command::NewShell);
+        app.new_shell_in_editor();
         assert!(
             app.group()
                 .active_shell()
@@ -7405,7 +7404,7 @@ mod term_mouse {
         let (_d, root, state) = dirs();
         let mut app = shell_app(&root, &state);
         app.tasks.shell = "/bin/sh".into();
-        app.test_execute(Command::NewShell);
+        app.new_shell_in_editor();
         assert!(
             app.group()
                 .active_shell()
@@ -7501,7 +7500,7 @@ mod term_mouse {
         let (_d, root, state) = dirs();
         let mut app = shell_app(&root, &state);
         app.tasks.shell = "/bin/sh".into();
-        app.test_execute(Command::NewShell);
+        app.new_shell_in_editor();
         assert!(
             app.group()
                 .active_shell()
@@ -8053,7 +8052,6 @@ mod term_scroll_bar {
     use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 
     use crate::app::App;
-    use crate::command::Command;
     use crate::layout::{self, PanelTab, ScrollTarget};
     use crate::scrollbar::Scrollable;
     use crate::shell_tests::{COUNT_TO_200, dirs, draw, screen_text, scrollback, shell_app};
@@ -8077,7 +8075,7 @@ mod term_scroll_bar {
         let (_d, root, state) = dirs();
         let mut app = shell_app(&root, &state);
         app.tasks.shell = "/bin/sh".into();
-        app.test_execute(Command::NewShell);
+        app.new_shell_in_editor();
         assert!(
             app.group()
                 .active_shell()
@@ -8155,7 +8153,7 @@ mod term_scroll_bar {
         let (_d, root, state) = dirs();
         let mut app = shell_app(&root, &state);
         app.tasks.shell = "/bin/sh".into();
-        app.test_execute(Command::NewShell);
+        app.new_shell_in_editor();
         let term = draw(&mut app, 100, 30);
         let hit = app.hits.group(app.groups.active).unwrap();
         let bar = hit.scrollbar.expect("a reserved track");

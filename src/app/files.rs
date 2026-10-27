@@ -12,6 +12,7 @@ use crate::buffer::file::{LoadError, Stamp};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::buffer::{Buffer, BufferId, SaveError, SaveJob};
 use crate::command::Command;
+use crate::group::is_terminal_group;
 use crate::layout::{GroupId, SplitDir};
 use crate::mru;
 use crate::problems::Place;
@@ -262,11 +263,11 @@ impl App {
     }
 
     pub(super) fn activate_tab(&mut self, index: usize) {
-        if index < self.group().tabs.len() {
+        if index < self.tab_groups().active_group().tabs.len() {
             if let Some((buf, _)) = self.active_mut() {
                 buf.seal_undo();
             }
-            self.group_mut().active = index;
+            self.tab_groups_mut().active_group_mut().active = index;
             self.reveal_active();
         }
     }
@@ -275,7 +276,7 @@ impl App {
         if let Some((buf, _)) = self.active_mut() {
             buf.seal_undo();
         }
-        self.group_mut().cycle(delta);
+        self.tab_groups_mut().active_group_mut().cycle(delta);
         self.reveal_active();
     }
 
@@ -295,6 +296,13 @@ impl App {
 
     /// Makes `group` the active group and focuses the editor.
     pub(super) fn focus_group(&mut self, group: GroupId) {
+        if is_terminal_group(group) {
+            if self.terminals.get(group).is_some() {
+                self.terminals.active = group;
+                self.ui.focus = Focus::Terminal;
+            }
+            return;
+        }
         if self.groups.get(group).is_none() {
             return;
         }
@@ -354,9 +362,9 @@ impl App {
 
     /// Closes a tab; asks first if it's the last tab (in any group) showing an unsaved buffer.
     pub(super) fn close_tab(&mut self, group: GroupId, index: usize) {
-        let Some(tab) = self.groups.get(group).and_then(|g| g.tabs.get(index)) else {
+        let Some(tab) = self.any_group(group).and_then(|g| g.tabs.get(index)) else {
             // Closing in an empty group closes the group.
-            if self.groups.get(group).is_some_and(|g| g.tabs.is_empty()) {
+            if self.any_group(group).is_some_and(|g| g.tabs.is_empty()) {
                 self.close_group(group);
             }
             return;
@@ -378,7 +386,7 @@ impl App {
     /// Closes a tab without asking; drops its buffer if no tab anywhere shows it,
     /// and the group if it's now empty (unless it's the last group).
     pub(super) fn discard_tab(&mut self, group: GroupId, index: usize) {
-        let Some(g) = self.groups.get_mut(group) else { return };
+        let Some(g) = self.any_group_mut(group) else { return };
         if index >= g.tabs.len() {
             return;
         }
@@ -393,6 +401,11 @@ impl App {
         if now_empty {
             self.close_group(group);
         }
+        if is_terminal_group(group) {
+            // The last terminal going hides the area (an empty editor area shows the splash).
+            self.hide_empty_terminals();
+            return;
+        }
         if self.groups.len() == 1 && self.group().tabs.is_empty() {
             if self.mode.is_single() {
                 // Single file mode: closing the last tab quits.
@@ -405,7 +418,12 @@ impl App {
     }
 
     fn close_group(&mut self, group: GroupId) {
-        if self.groups.remove(group) {
+        let groups = if is_terminal_group(group) {
+            &mut self.terminals
+        } else {
+            &mut self.groups
+        };
+        if groups.remove(group) {
             self.reveal_active();
         }
     }

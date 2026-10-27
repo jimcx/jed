@@ -121,6 +121,8 @@ mod syntax;
 mod syntax_plugins_tests;
 mod tasks;
 #[cfg(test)]
+mod term_area_tests;
+#[cfg(test)]
 mod term_select_tests;
 mod terminal;
 mod theme;

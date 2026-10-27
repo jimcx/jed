@@ -137,6 +137,8 @@ pub enum Focus {
     Find,
     /// The bottom panel (its tab, `ui.panel_tab`: the Problems list, the Locations list, a task).
     Panel,
+    /// The terminal area (`App::terminals`): its active shell has the keys (`Context::Shell`).
+    Terminal,
 }
 
 pub struct UiState {
@@ -149,6 +151,10 @@ pub struct UiState {
     pub panel_visible: bool,
     pub panel_height: u16,
     pub panel_tab: PanelTab,
+    /// The terminal area: shown (while it holds a terminal) and its height (border and tab bar
+    /// included; clamped by `layout::compute`).
+    pub terminal_visible: bool,
+    pub terminal_height: u16,
     /// "View: Toggle Render Whitespace" flipped the `render_whitespace` setting for this session
     /// (`App::render_whitespace`). Never written to a settings file; a `.workspace` reload keeps it.
     pub whitespace_toggled: bool,
@@ -161,6 +167,9 @@ pub struct UiState {
 
 /// The bottom panel's height until it's resized.
 pub const PANEL_HEIGHT: u16 = 10;
+
+/// The terminal area's height until it's resized.
+pub const TERMINAL_HEIGHT: u16 = 12;
 
 /// What to do once pending saves finish.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -357,6 +366,8 @@ pub struct App {
     trust_store: TrustStore,
     pub buffers: Buffers,
     pub groups: Groups,
+    /// The terminal area's groups (ids from `group::TERMINAL_GROUP_BASE`): only shell tabs.
+    pub terminals: Groups,
     pub explorer: Explorer,
     excludes: Override,
     pub ui: UiState,
@@ -576,6 +587,7 @@ impl App {
             workspace,
             buffers: Buffers::default(),
             groups: Groups::default(),
+            terminals: Groups::starting_at(crate::group::TERMINAL_GROUP_BASE),
             ui: UiState {
                 side_visible: !mode.is_single(),
                 side_width: 30,
@@ -584,6 +596,8 @@ impl App {
                 panel_visible: false,
                 panel_height: PANEL_HEIGHT,
                 panel_tab: PanelTab::Problems,
+                terminal_visible: false,
+                terminal_height: TERMINAL_HEIGHT,
                 whitespace_toggled: false,
                 word_wrap_toggled: false,
                 scrollbar_hover: None,
@@ -1081,6 +1095,7 @@ impl App {
             Focus::Editor if self.group().active_hex().is_some() => Context::Hex,
             Focus::Editor if self.active_commit().is_some() => Context::Commit,
             Focus::Editor if self.group().active_shell().is_some() => Context::Shell,
+            Focus::Terminal => Context::Shell,
             Focus::Editor => Context::Editor,
             Focus::SidePanel if self.ui.side_panel == SidePanel::Search && self.search_view.list_focused => {
                 Context::SearchResults
@@ -1304,7 +1319,10 @@ impl App {
             }
             Command::SaveAll => self.save_batch(self.buffers.dirty(), false),
             Command::Quit => self.request_quit(),
-            Command::CloseTab => self.close_tab(self.groups.active, self.group().active),
+            Command::CloseTab => {
+                let (g, i) = (self.tab_groups().active, self.tab_groups().active_group().active);
+                self.close_tab(g, i)
+            }
             Command::NextTab => self.cycle_tab(1),
             Command::PrevTab => self.cycle_tab(-1),
             Command::ToggleSidebar => {

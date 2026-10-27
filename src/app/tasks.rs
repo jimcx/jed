@@ -85,6 +85,7 @@ impl App {
                 self.ui.side_visible,
                 self.ui.side_width,
                 Some(self.ui.panel_height),
+                self.ui.terminal_visible.then_some(self.ui.terminal_height),
             );
             let area = regions.panel.map(layout::task_area).unwrap_or_default();
             if area.width > 0 && area.height > 0 {
@@ -262,8 +263,8 @@ impl App {
     /// the panel's keys). Nothing elsewhere, so the editor's own copy is untouched by a task's
     /// lingering selection.
     fn active_terminal(&self) -> Option<&Run> {
-        match self.group().active_shell() {
-            Some(shell) if self.ui.focus == Focus::Editor => Some(&shell.run),
+        match self.focused_shell() {
+            Some(shell) => Some(&shell.run),
             _ => self.task_focused().and_then(|id| self.tasks.get(id)),
         }
     }
@@ -281,7 +282,7 @@ impl App {
                 tracing::warn!("session not saved: {e}");
             }
         };
-        let shells = super::shell::shutdown_shells(&self.groups);
+        let shells = super::shell::shutdown_shells(&self.groups, &self.terminals);
         tokio::join!(self.lsp.shutdown(), self.tasks.shutdown(), session, shells);
         // The servers' last lines (their "Stopped") onto disk.
         self.flush_tool_logs().await;

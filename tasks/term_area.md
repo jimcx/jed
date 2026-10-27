@@ -2,7 +2,7 @@
 id: term_area
 name: Terminal area
 summary: interactive terminals (shell tabs) get a full-width area above the status bar that behaves like an editor group, but only terminal tabs dock there
-status: open
+status: in-progress
 priority: 0
 dependencies: []
 ---
@@ -17,6 +17,9 @@ See [Layout](../PLAN.md#layout), [Tasks](../PLAN.md#tasks-throwaway-terminals).
   - Sessions: the area's shown / height / splits are not session state; a new session opens one terminal in the area (so it starts shown, one shell), and shells stay unsaved as now
   - Done when: Ctrl+` opens a shell in the terminal area and the editor groups keep their space; a second shell is a tab, reordered by dragging, and split — Cmd+\ or dragging it onto a terminal group's edge — into two live shells side by side; dropping a text tab into the area is refused; a terminal dragged onto an editor group moves there and "Move Terminal into Terminal Area" brings it back; closing the last terminal hides the area and, with no editor tabs, shows the Jed splash; a new session opens one terminal in the area
   - Subtasks (one agent and one commit each):
-    - term_area-a: the region and one terminal — `layout::compute` gains the terminal-area region (full width, its height clamped), a `Terminals` model holding the shell tabs, `terminal.newShell` routing there (showing the area), the tab bar + terminal rendering and `Focus::Terminal` / `Context::Shell` keys; closing the last terminal hides the area (the splash shows in an empty editor area)
+    - ✅ term_area-a: the region and one terminal — `layout::compute` gains the terminal-area region (full width, its height clamped), a `Terminals` model holding the shell tabs, `terminal.newShell` routing there (showing the area), the tab bar + terminal rendering and `Focus::Terminal` / `Context::Shell` keys; closing the last terminal hides the area (the splash shows in an empty editor area)
+      - Built: the area is a second `Groups` (`app.terminals`, ids from `TERMINAL_GROUP_BASE`), drawn and hit-tested through the editor groups' own loop, tab bar, close and focus paths (`any_group`, `tab_groups`, `focused_shell` in `app/shell.rs`); `layout::compute` takes `terminal_height`; `Focus::Terminal` maps to `Context::Shell`; test-only `new_shell_in_editor` opens an editor-group shell
+      - For b: `Drag::Divider` always edits `self.groups.tree`, and `hide_empty_terminals` only hides at one terminal; hover, quick_diff, hex, diff_view and the text wheel branch still look only in `self.groups`
+      - Still to check by hand: Ctrl+`, border drag and pointer, the area's scroll bar
     - term_area-b: reorder and split — the terminal area's `SplitTree` of terminal groups, split right / down and focus (the group keys), dragging a terminal as an editor tab drags (reorder along the bar, move between terminal groups, drop onto a terminal group's edge to split it there, the drop zone shaded), and the only-terminals-dock rule (a non-terminal tab refused, a split leaves the new group empty)
     - term_area-c: moving a terminal into / out of an editor group ("Move Terminal into Editor Area" / "into Terminal Area" and dragging it onto an editor group), the startup terminal (a new session opens one in the area; nothing about the area is session state), the done-when tests, gaps and hand checks; marks the task ✅

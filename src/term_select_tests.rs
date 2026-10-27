@@ -87,7 +87,7 @@ async fn term_select_shell_drag_highlights_and_copy() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     shell_prompt(&mut app).await;
     assert!(
         app.group()
@@ -270,7 +270,7 @@ async fn term_select_click_clears_and_copy_leaves_the_clipboard_alone() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     shell_prompt(&mut app).await;
     assert!(
         app.group()
@@ -322,7 +322,7 @@ async fn term_select_mouse_reporting_keeps_every_event() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     assert!(
         app.group()
             .active_shell()
@@ -417,7 +417,7 @@ async fn term_select_output_clears_and_the_wheel_moves_the_selection() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     assert!(
         app.group()
             .active_shell()
@@ -645,7 +645,7 @@ async fn term_select_scrollback_shell() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     drop(draw(&mut app, 100, 30));
     shell_prompt(&mut app).await;
     assert!(
@@ -809,7 +809,7 @@ async fn term_select_double_click_shell() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     shell_prompt(&mut app).await;
     assert!(
         app.group()

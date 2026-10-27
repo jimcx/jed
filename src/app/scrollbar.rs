@@ -10,7 +10,7 @@ use crossterm::event::MouseEvent;
 
 use super::App;
 use super::mouse::Drag;
-use crate::group::Tab;
+use crate::group::{Tab, is_terminal_group};
 use crate::layout::{Hit, PanelTab, ScrollTarget, SidePanel};
 use crate::problems;
 use crate::scrollbar::{Columns, Scroll, Scrollable};
@@ -36,7 +36,13 @@ impl App {
     ) -> Option<R> {
         match target {
             ScrollTarget::Group(g) => {
-                let group = self.groups.get_mut(g)?;
+                // Either area's group (a field borrow: the text arm borrows `self.buffers` too).
+                let groups = if is_terminal_group(g) {
+                    &mut self.terminals
+                } else {
+                    &mut self.groups
+                };
+                let group = groups.get_mut(g)?;
                 match group.tabs.get_mut(group.active)? {
                     Tab::Text(t) => {
                         let rope = &self.buffers.get(t.buffer)?.rope;

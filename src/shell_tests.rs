@@ -94,7 +94,7 @@ async fn shell_new_shell_opens_the_shell_in_a_tab() {
     std::os::unix::fs::symlink("/bin/sh", &program).unwrap();
     app.tasks.shell = program;
 
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     let tab = app.group().active_shell().expect("a shell tab in the active group");
     assert_eq!(tab.title, "myshell ○", "named after the program, not a hardcoded shell");
     assert_eq!(tab.base, "myshell");
@@ -113,7 +113,7 @@ async fn shell_new_shell_opens_the_shell_in_a_tab() {
     assert!(app.active_buffer().is_none(), "editor features find no buffer");
     assert!(app.active_mut().is_none());
 
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     assert_eq!(app.group().tabs.len(), 3, "the text tab and two shells");
     assert_eq!(app.group().active_shell().unwrap().title, "myshell (2) ○");
     assert_eq!(app.group().active_shell().unwrap().number, 2);
@@ -127,7 +127,7 @@ async fn shell_titles_reuse_a_closed_number() {
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
     for _ in 0..3 {
-        app.test_execute(Command::NewShell);
+        app.new_shell_in_editor();
     }
     let mut titles: Vec<String> = app.groups.shell_tabs().map(|s| s.title.clone()).collect();
     titles.sort();
@@ -140,7 +140,7 @@ async fn shell_titles_reuse_a_closed_number() {
     titles.sort();
     assert_eq!(titles, ["sh (3) ○", "sh ○"]);
 
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     assert_eq!(app.group().active_shell().unwrap().title, "sh (2) ○", "the free number");
     let mut titles: Vec<String> = app.groups.shell_tabs().map(|s| s.title.clone()).collect();
     titles.sort();
@@ -156,7 +156,7 @@ async fn shell_title_follows_the_shells_osc_codes() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
     assert_eq!(title(&app), "sh ○", "the shell, at its prompt");
 
@@ -249,7 +249,7 @@ async fn shell_without_osc_codes_keeps_its_base_name() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
 
     app.group().active_shell().unwrap().run.write(b"sleep 30\n");
@@ -269,8 +269,8 @@ async fn shell_running_titles_keep_the_per_program_number() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
+    app.new_shell_in_editor();
     let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
     assert_eq!(title(&app), "sh (2) ○", "the second shell, at its prompt");
 
@@ -433,7 +433,7 @@ async fn shell_bash_snippet_titles_a_real_shell() {
         &format!("exec {} --norc --noprofile\n", bash.display()),
     );
     app.tasks.shell = wrapper;
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
     assert_eq!(title(&app), "myshell ○");
 
@@ -512,7 +512,7 @@ async fn shell_bash_snippet_skips_other_prompt_command_hooks() {
         &format!("exec {} --norc --noprofile\n", bash.display()),
     );
     app.tasks.shell = wrapper;
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
     assert_eq!(title(&app), "myshell ○");
 
@@ -569,7 +569,7 @@ async fn shell_bash_snippet_does_nothing_without_jed_ipc() {
         &format!("exec {} --norc --noprofile\n", bash.display()),
     );
     app.tasks.shell = wrapper;
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
 
     crate::shell_integration::write_snippets(&state).unwrap();
@@ -605,7 +605,7 @@ async fn shell_runs_with_a_terminal_and_no_ipc_without_a_socket() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
 
     let run = &app.group().active_shell().unwrap().run;
     run.write(b"printf 'T=%s C=%s I=%s\\n' \"$TERM\" \"$COLORTERM\" \"${JED_IPC-unset}\"\n");
@@ -634,7 +634,7 @@ async fn shell_gets_jed_ipc_when_the_socket_listens() {
     app.test_start();
     assert!(app.settle(|a| a.tasks.ipc.is_some()).await, "the socket is listening");
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
 
     let expected = format!("IPC={}", app.tasks.ipc.as_ref().unwrap().display());
     app.group()
@@ -676,7 +676,7 @@ async fn shell_size_is_the_active_groups_editor() {
     let first_editor = app.hits.group(first).unwrap().editor;
     assert_ne!(editor.width, first_editor.width, "the split's groups differ in width");
 
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     let size = app.group().active_shell().unwrap().run.screen().screen().size();
     assert_eq!(
         size,
@@ -692,7 +692,7 @@ async fn shell_scrollback_comes_from_the_setting() {
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
     app.settings.scrollback = 2;
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
 
     let run = &app.group().active_shell().unwrap().run;
     run.write(format!("{COUNT_TO_200}\n").as_bytes());
@@ -742,7 +742,7 @@ async fn shell_split_leaves_the_new_group_empty() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
 
     app.test_execute(Command::SplitRight);
     assert_eq!(app.groups.len(), 2);
@@ -757,7 +757,7 @@ async fn shell_closes_without_a_prompt() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
 
     app.test_execute(Command::CloseTab);
     assert!(app.prompt.is_none(), "no save prompt for a shell");
@@ -898,7 +898,7 @@ async fn shell_keys_and_pastes_go_to_the_shell() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/cat".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     assert!(
         app.group().active_shell().is_some(),
         "the shell tab is open and focused"
@@ -934,7 +934,7 @@ async fn shell_keys_and_pastes_stop_when_the_shell_is_unfocused() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/cat".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     assert!(
         app.group().active_shell().is_some(),
         "the shell tab is open and focused"
@@ -958,7 +958,7 @@ async fn shell_keys_follow_the_shells_terminal_modes() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     // sh prints the mode-setting sequences (DECCKM, bracketed paste), then cat echoes keys.
     app.group()
         .active_shell()
@@ -996,7 +996,7 @@ async fn shell_typing_and_enter_run_a_command() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
 
     app.type_text("echo $((6*7))");
     app.press(KeyCode::Enter, KeyModifiers::NONE);
@@ -1015,7 +1015,7 @@ async fn shell_scrollback_keys_and_wheel_scroll() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     app.group()
         .active_shell()
         .unwrap()
@@ -1066,9 +1066,9 @@ async fn shell_wheel_scrolls_a_non_focused_groups_shell() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     app.test_execute(Command::SplitRight);
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     assert_eq!(app.groups.shell_tabs().count(), 2, "a shell in each group");
     for shell in app.groups.shell_tabs() {
         shell.run.write(format!("{COUNT_TO_200}\n").as_bytes());
@@ -1119,7 +1119,7 @@ async fn shell_draws_in_the_editor_area_and_resizes_with_it() {
     // frame draws can't change under the comparison below.
     let marker = "jed-shell-drawn";
     app.tasks.shell = shell_script(&root, "drawn", &format!("echo {marker}\nexec sleep 30"));
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     assert!(
         app.settle(|a| screen_text(a).lines().any(|l| l.contains(marker))).await,
         "the shell printed the marker:\n{}",
@@ -1180,7 +1180,7 @@ async fn shell_draws_colours_and_the_cursor() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     // The command line echoes, so wait for output the typed line can't contain.
     app.group().active_shell().unwrap().run.write(b"echo RE''ADY\n");
     assert!(
@@ -1267,7 +1267,7 @@ async fn shell_exit_keeps_its_tab_and_the_note() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     app.group().active_shell().unwrap().run.write(b"echo leaving; exit 3\n");
     let note = "Shell 'sh' exited with code 3";
     assert!(
@@ -1301,7 +1301,7 @@ async fn shell_exit_notes_cover_success_and_failure_to_start() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     app.group().active_shell().unwrap().run.write(b"exit\n");
     let note = "Shell 'sh' exited with code 0";
     assert!(
@@ -1322,7 +1322,7 @@ async fn shell_exit_notes_cover_success_and_failure_to_start() {
 
     // A program that can't start: its tab stays with the reason below it.
     app.tasks.shell = root.join("missing-shell");
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     let failed = app
         .settle(|a| {
             a.group()
@@ -1356,7 +1356,7 @@ async fn shell_a_signal_ended_shell_says_so_as_a_warning() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = shell_script(&root, "die", "kill -TERM $$");
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     // The note is appended (and the warning shown) when the app handles the run's `Ended` event,
     // a beat after the waiter thread marks it `Exited` — settle on the note, not the raw status.
     assert!(
@@ -1377,7 +1377,7 @@ async fn shell_close_kills_the_shell() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     assert!(
         app.settle(|a| a.group().active_shell().and_then(|s| s.run.pid()).is_some())
             .await,
@@ -1404,9 +1404,9 @@ async fn shell_quit_hangs_the_shell_up() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = shell_script(&root, "well-behaved", "sleep 30");
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     app.test_execute(Command::SplitRight);
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     assert!(
         app.settle(|a| a.groups.shell_tabs().filter(|s| s.run.pid().is_some()).count() == 2)
             .await,
@@ -1443,7 +1443,7 @@ async fn shell_quit_kills_a_shell_that_ignores_hangup() {
         "ignores-hup",
         "trap '' HUP\necho READY\nwhile :; do sleep 0.05; done",
     );
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     assert!(
         app.settle(|a| screen_text(a).contains("READY")).await,
         "the shell is running its loop:\n{}",
@@ -1487,7 +1487,7 @@ async fn shell_quit_while_the_shell_is_still_starting() {
     // racing the spawn on a fast machine).
     let (gate, handle) = crate::tasks::templates::StartGate::new();
     app.tasks.start_gate = Some(gate);
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     assert!(
         matches!(app.group().active_shell().unwrap().run.status(), Status::Starting),
         "the shell is still starting (the spawn is off-thread)"
@@ -1527,7 +1527,7 @@ async fn shell_jed_ipc_is_exported_to_its_program() {
         "record-ipc",
         &format!("printf '%s' \"$JED_IPC\" > '{}'\nexec /bin/sh", record.display()),
     );
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
 
     let written = app
         .settle(|_| std::fs::read_to_string(&record).is_ok_and(|s| !s.is_empty()))
@@ -1559,7 +1559,7 @@ async fn shell_jed_command_opens_the_file_in_this_jed() {
     let other = root.join("other.txt");
     std::fs::write(&other, "from the shell\n").unwrap();
     let (mut app, _socket) = listening_app(&root, &state, &sockets).await;
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
 
     run_in_shell(
         &mut app,
@@ -1598,7 +1598,7 @@ async fn shell_git_commit_opens_its_message_here() {
     std::fs::write(root.join("a.txt"), "a\n").unwrap();
     assert!(git_in(&root, &["add", "a.txt"]).is_some(), "git add");
     let (mut app, _socket) = listening_app(&root, &state, &sockets).await;
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
 
     let message = "Made from the shell";
     // `GIT_EDITOR` beats `core.editor`, so unset it; the flags and the config isolation keep the
@@ -1645,7 +1645,7 @@ async fn shell_stty_size_follows_the_editor_area() {
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
     draw(&mut app, 100, 24);
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     draw(&mut app, 100, 24);
     let editor = app.hits.group(app.groups.active).unwrap().editor;
     let expected = format!("SIZE={} {}", editor.height, editor.width);
@@ -1705,7 +1705,7 @@ async fn shell_workspace_scrollback_setting() {
     let mut app = shell_app(&root, &state);
     assert_eq!(app.settings.scrollback, 50, "the .workspace's setting is read");
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     app.group()
         .active_shell()
         .unwrap()

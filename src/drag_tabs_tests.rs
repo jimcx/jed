@@ -695,7 +695,7 @@ async fn drag_tabs_a_shell_tab_moves_rather_than_copies() {
     let program = root.join("myshell");
     std::os::unix::fs::symlink("/bin/sh", &program).unwrap();
     app.tasks.shell = program;
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     assert_eq!(app.group().tabs.len(), 2, "a.txt and the shell");
     // A split of a shell's group is left empty: the shell can only be in one group.
     app.test_execute(Command::SplitRight);

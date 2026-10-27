@@ -14,9 +14,10 @@ use crate::column::{self, Cell};
 use crate::command::{Command, ExplorerCommand};
 use crate::field::TextField;
 use crate::find::Field;
-use crate::group::Tab;
+use crate::group::{Tab, is_terminal_group};
 use crate::layout::{
-    Divider, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, MergeButton, PanelTab, ScrollTarget, SidePanel, SplitDir, task_area,
+    Divider, Hit, MIN_PANEL_HEIGHT, MIN_SIDE_WIDTH, MIN_TERMINAL_HEIGHT, MergeButton, PanelTab, ScrollTarget,
+    SidePanel, SplitDir, task_area,
 };
 use crate::search_view::Input;
 use crate::selection::{Selection, Selections};
@@ -61,6 +62,7 @@ pub enum Drag {
     SideBorder,
     /// Resizing the bottom panel by its top border.
     PanelBorder,
+    TerminalBorder,
     /// Resizing a split.
     Divider(Divider),
     /// Extending a selection; the anchor range is kept for word/line drags.
@@ -122,6 +124,11 @@ impl ClickTracker {
     }
 }
 
+/// The height of a bottom area whose top border is dragged to `row`, above `bottom`.
+fn border_height(row: u16, bottom: u16, min: u16) -> u16 {
+    bottom.saturating_sub(row).clamp(min, bottom.max(min))
+}
+
 impl App {
     pub(super) fn handle_mouse(&mut self, m: MouseEvent) {
         self.mouse_event(m);
@@ -137,12 +144,12 @@ impl App {
         };
         match &self.drag {
             Some(Drag::SideBorder) => Pointer::ColResize,
-            Some(Drag::PanelBorder | Drag::HistoryDivider) => Pointer::RowResize,
+            Some(Drag::PanelBorder | Drag::TerminalBorder | Drag::HistoryDivider) => Pointer::RowResize,
             Some(Drag::Divider(d)) => divider(d),
             Some(_) => Pointer::Default,
             None => match self.hits.hit(x, y) {
                 Hit::SideBorder => Pointer::ColResize,
-                Hit::PanelBorder | Hit::HistoryDivider => Pointer::RowResize,
+                Hit::PanelBorder | Hit::TerminalBorder | Hit::HistoryDivider => Pointer::RowResize,
                 Hit::Divider(i) => self.hits.dividers.get(i).map_or(Pointer::Default, divider),
                 _ => Pointer::Default,
             },
@@ -153,7 +160,7 @@ impl App {
     /// in: `Hit::Editor(g)` with a shell tab active there, or `Hit::Panel` showing a task run.
     fn terminal_run(&self, hit: Hit) -> Option<(&Run, Rect)> {
         match hit {
-            Hit::Editor(g) => Some((&self.groups.get(g)?.active_shell()?.run, self.hits.group(g)?.editor)),
+            Hit::Editor(g) => Some((&self.any_group(g)?.active_shell()?.run, self.hits.group(g)?.editor)),
             Hit::Panel => match self.ui.panel_tab {
                 PanelTab::Task(id) => Some((self.tasks.get(id)?, task_area(self.hits.regions.panel?))),
                 _ => None,
@@ -296,7 +303,7 @@ impl App {
     fn terminal_run_by_id(&self, id: RunId) -> Option<&Run> {
         self.tasks
             .get(id)
-            .or_else(|| self.groups.shell_tabs().find(|s| s.run.id == id).map(|s| &s.run))
+            .or_else(|| self.shell_tabs().find(|s| s.run.id == id).map(|s| &s.run))
     }
 
     fn mouse_event(&mut self, m: MouseEvent) {
@@ -372,7 +379,7 @@ impl App {
         if let Some(delta) = wheel_columns(&m)
             && let Hit::Editor(g) = hit
         {
-            if let Some(tab) = self.groups.get_mut(g).and_then(|g| g.active_tab_mut()) {
+            if let Some(tab) = self.any_group_mut(g).and_then(|g| g.active_tab_mut()) {
                 tab.view.scroll_columns(delta);
             }
             return;
@@ -392,7 +399,7 @@ impl App {
                     Hit::ExplorerRow(_) | Hit::SidePanel => self.explorer.scroll_by(delta),
                     // The wheel over the tab bar moves it a tab at a time (never focusing it).
                     Hit::TabBar(g) | Hit::Tab(g, _) | Hit::TabClose(g, _) => {
-                        if let Some(group) = self.groups.get_mut(g) {
+                        if let Some(group) = self.any_group_mut(g) {
                             group.scroll_tabs(delta.signum());
                         }
                     }
@@ -405,7 +412,7 @@ impl App {
                     // Scrolls the group under the mouse, without focusing it (a shell tab
                     // scrolls its scrollback).
                     Hit::Editor(g) => {
-                        if let Some(shell) = self.groups.get(g).and_then(|g| g.active_shell()) {
+                        if let Some(shell) = self.any_group(g).and_then(|g| g.active_shell()) {
                             shell.run.scroll(delta);
                             return;
                         }
@@ -440,12 +447,14 @@ impl App {
                         self.ui.side_width = (m.column + 1).saturating_sub(side.x).max(MIN_SIDE_WIDTH);
                     }
                 }
+                // A border's top row follows the pointer; `layout::compute` keeps both minimums.
                 Some(Drag::PanelBorder) => {
-                    // Its top row follows the pointer; `layout::compute` keeps both minimums.
-                    let bottom = self.hits.regions.status.y;
-                    self.ui.panel_height = bottom
-                        .saturating_sub(m.row)
-                        .clamp(MIN_PANEL_HEIGHT, bottom.max(MIN_PANEL_HEIGHT));
+                    let regions = &self.hits.regions;
+                    let bottom = regions.terminal.map_or(regions.status.y, |t| t.y);
+                    self.ui.panel_height = border_height(m.row, bottom, MIN_PANEL_HEIGHT);
+                }
+                Some(Drag::TerminalBorder) => {
+                    self.ui.terminal_height = border_height(m.row, self.hits.regions.status.y, MIN_TERMINAL_HEIGHT);
                 }
                 Some(Drag::Divider(d)) => self.groups.tree.set_ratio(&d, d.ratio_at(m.column, m.row)),
                 Some(Drag::Text { anchor }) => {
@@ -576,15 +585,12 @@ impl App {
             Hit::Tab(g, i) => {
                 self.focus_group(g);
                 self.activate_tab(i);
-                // A drag that never leaves the tab is just a click: it stays active.
-                self.drag = Some(Drag::Tab(TabDrag {
+                // A drag that never leaves the tab is just a click: it stays active. (Terminal
+                // tabs don't drag yet.)
+                self.drag = (!is_terminal_group(g)).then_some(Drag::Tab(TabDrag {
                     from: g,
                     index: i,
-                    tab: self
-                        .groups
-                        .get(g)
-                        .and_then(|group| group.tabs.get(i))
-                        .map(Tab::identity),
+                    tab: self.any_group(g).and_then(|group| group.tabs.get(i)).map(Tab::identity),
                     target: None,
                 }));
             }
@@ -592,7 +598,7 @@ impl App {
             Hit::TabBar(g) => self.focus_group(g),
             Hit::TabArrow(g, forward) => {
                 self.focus_group(g);
-                if let Some(group) = self.groups.get_mut(g) {
+                if let Some(group) = self.any_group_mut(g) {
                     group.scroll_tabs(if forward { 1 } else { -1 });
                 }
             }
@@ -602,6 +608,7 @@ impl App {
                     self.execute(a.command());
                 }
             }
+            Hit::Editor(g) if is_terminal_group(g) => self.focus_group(g),
             Hit::Editor(_) if m.modifiers.is_empty() && self.bulb_click(&m) => {}
             Hit::Editor(g) if m.modifiers.is_empty() && self.merge_click(g, &m) => {}
             Hit::Editor(_) if m.modifiers.is_empty() && self.gutter_click(&m) => {}
@@ -612,6 +619,7 @@ impl App {
             // Scrolls without focusing anything or moving a cursor or a list's selection.
             Hit::ScrollBar(t) => self.scrollbar_click(t, m.column, m.row),
             Hit::PanelBorder => self.drag = Some(Drag::PanelBorder),
+            Hit::TerminalBorder => self.drag = Some(Drag::TerminalBorder),
             Hit::PanelTab(tab) => self.focus_panel(tab),
             Hit::PanelTabClose(id) => self.close_task(id),
             Hit::Panel => match self.ui.panel_tab {
