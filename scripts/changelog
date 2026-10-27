@@ -1,8 +1,8 @@
 #!/bin/sh
-# Print the changelog body for a jed release: the features added to
-# docs/plan-done.md since the previous release, then every commit between them.
-# The release command embeds it in the annotated tag message; CI's release job
-# publishes it as the GitHub Release notes.
+# Print the changelog body for a jed release: the tasks completed since the
+# previous release, then every commit between them. The release command embeds
+# it in the annotated tag message; CI's release job publishes it as the GitHub
+# Release notes.
 #
 # Usage: scripts/changelog [<since> [<until>]]
 #   since  the previous release tag; default the highest `v*` tag reachable
@@ -25,20 +25,12 @@ else
     done
 fi
 
-# Features added to docs/plan-done.md since the previous release: the top-level
-# "- ✅ **Name** (`id`): summary" (tasks) and "N. ✅ **Name**: ..." (milestones)
-# entries, minus the `(id)` and any trailing "— see [...]" link.
+# Tasks completed since the previous release: scripts/tasks done-since lists
+# the tasks whose status flipped to done in the range, as "- **<name>**:
+# <summary>" lines. Milestones never appear (they were already done), and
+# neither do tasks migrated already-done.
 if [ -n "$since" ]; then
-    features=$(git diff "$since..$until" -- docs/plan-done.md |
-        sed -n 's/^+//p' |
-        sed -n '/^\(-\|\([0-9][0-9]*\.\)\) ✅ /p' |
-        sed 's/^\(-\|\([0-9][0-9]*\.\)\) ✅ //' |
-        sed -e 's/^\*\*//' \
-            -e 's/\*\* ([^)]*): /: /' \
-            -e 's/\*\*: /: /' \
-            -e 's/^/- **/' \
-            -e 's/: /**: /' \
-            -e 's/ — see \[[^]]*\]([^)]*)$//')
+    features=$(scripts/tasks done-since "$since" "$until")
 else
     features=
 fi

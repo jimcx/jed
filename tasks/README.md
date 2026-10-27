@@ -130,7 +130,7 @@ by `scripts/tasks index --write`.
    "Done when", the `Subtasks` list, the id), then `scripts/tasks index --write`.
 4. **Step 9** — marking done sets `status` (`in-progress` after the first
    subtask, `done` after the last), updates `summary`, then
-   `scripts/tasks index --write`. No move to `docs/plan-done.md`.
+   `scripts/tasks index --write`. No move to a separate archive.
 5. **Before committing** — `scripts/tasks check` must be clean.
 
 ## Conventions

@@ -644,19 +644,19 @@ jed as git's editor (the [Git editor](#tasks) task): `git config --global core.e
   - Then print them to stderr
 
 ## Milestones
-1. ✅ **Skeleton**: open a file, edit, save, scroll, status bar — [details](docs/plan-done.md)
-2. ✅ **Layout**: workspace root, `.workspace` loading and trust dialog, activity bar, explorer tree, tabs, mouse support — [details](docs/plan-done.md)
-3. ✅ **Splits**: editor groups, resizing, focus switching — [details](docs/plan-done.md)
-4. ✅ **Clipboard**: copy, cut, paste — [details](docs/plan-done.md)
-5. ✅ **Palette**: command palette, quick open, keybinding config with contexts — [details](docs/plan-done.md)
-6. ✅ **Multi-cursor and find**: Cmd+D, Cmd+Shift+L, add above/below, Alt+Click, box select, paste spread across cursors, find/replace in the file — [details](docs/plan-done.md)
-7. ✅ **Workspace search**: plain text, case-sensitive and regex search across the workspace — [details](docs/plan-done.md)
-8. ✅ **Highlighting**: grammars and the built-in dark theme — [details](docs/plan-done.md)
-9. ✅ **LSP**: clangd and ty — [details](docs/plan-done.md)
-10. ✅ **Git**: SCM panel, gutter markers, side-by-side diff view, stage/unstage hunks — [details](docs/plan-done.md)
-11. ✅ **File history**: snapshot on save, history list, compare (diff view), restore — [details](docs/plan-done.md)
-12. ✅ **Tasks**: templates, PTY runner, task tabs in the bottom panel — [details](docs/plan-done.md)
-13. ✅ **Sessions and recent workspaces**: restore open tabs, splits and layout per workspace; jump between workspaces — [details](docs/plan-done.md)
+1. ✅ **Skeleton**: open a file, edit, save, scroll, status bar — [tasks/milestone_1.md](tasks/milestone_1.md)
+2. ✅ **Layout**: workspace root, `.workspace` loading and trust dialog, activity bar, explorer tree, tabs, mouse support — [tasks/milestone_2.md](tasks/milestone_2.md)
+3. ✅ **Splits**: editor groups, resizing, focus switching — [tasks/milestone_3.md](tasks/milestone_3.md)
+4. ✅ **Clipboard**: copy, cut, paste — [tasks/milestone_4.md](tasks/milestone_4.md)
+5. ✅ **Palette**: command palette, quick open, keybinding config with contexts — [tasks/milestone_5.md](tasks/milestone_5.md)
+6. ✅ **Multi-cursor and find**: Cmd+D, Cmd+Shift+L, add above/below, Alt+Click, box select, paste spread across cursors, find/replace in the file — [tasks/milestone_6.md](tasks/milestone_6.md)
+7. ✅ **Workspace search**: plain text, case-sensitive and regex search across the workspace — [tasks/milestone_7.md](tasks/milestone_7.md)
+8. ✅ **Highlighting**: grammars and the built-in dark theme — [tasks/milestone_8.md](tasks/milestone_8.md)
+9. ✅ **LSP**: clangd and ty — [tasks/milestone_9.md](tasks/milestone_9.md)
+10. ✅ **Git**: SCM panel, gutter markers, side-by-side diff view, stage/unstage hunks — [tasks/milestone_10.md](tasks/milestone_10.md)
+11. ✅ **File history**: snapshot on save, history list, compare (diff view), restore — [tasks/milestone_11.md](tasks/milestone_11.md)
+12. ✅ **Tasks**: templates, PTY runner, task tabs in the bottom panel — [tasks/milestone_12.md](tasks/milestone_12.md)
+13. ✅ **Sessions and recent workspaces**: restore open tabs, splits and layout per workspace; jump between workspaces — [tasks/milestone_13.md](tasks/milestone_13.md)
 
 Milestones 1–13 are done and keep their numbers; everything after them is a [task](#tasks).
 

@@ -1,0 +1,76 @@
+---
+id: milestone_9
+name: LSP
+summary: clangd and ty
+status: done
+priority: 0
+dependencies: []
+---
+
+   - Needs: language detection (M8), `LspPos` in `buffer::pos` (M1), workspace trust (M2: servers named in `.workspace` only run when trusted), key contexts (M5), multi-cursor (M6), the results list (M7)
+   - First: check that ty analyzes files without a `.py` extension when opened with `languageId: python`, and honours a `__builtins__.pyi` (best effort, see [LSP](../PLAN.md#lsp))
+   - One tokio task per server; `positionEncoding: utf-8` with a UTF-16 fallback; incremental `didChange`
+   - Bottom panel built here: Problems list; Cmd+J toggles it (Tasks, M12, adds its own tabs)
+   - Diagnostics as squiggles, in Problems and as counts in the status bar
+   - Completion (inserted at every cursor), hover, go to definition (F12), find references (Shift+F12), rename symbol (F2), format document
+   - SCons: ship the `__builtins__.pyi` (if ty supports it)
+   - Logging: `lsp::wire` and `lsp::stderr`
+   - Done when: on a C++ project with `compile_commands.json` and on an SCons project, diagnostics follow edits without full-text syncs; all seven features work in both
+   - Servers for development and tests: `clangd` on `PATH`; `ty` on `PATH` or in the repo's `.venv/bin` (gitignored; `python3 -m venv .venv && .venv/bin/pip install ty`). Tests against real servers find them there and skip with a printed note when absent; protocol tests use an in-process fake server
+   - Tasks (one agent and one commit each):
+     - ✅ 9a: `lsp` module core: JSON-RPC framing over stdio, one tokio task per server, `initialize` (`positionEncoding` utf-8, UTF-16 fallback) / `shutdown` / exit, server config (built-in `clangd` for C/C++ and `ty server` for Python; `[lsp.*]` in `.workspace` only when trusted), started on first open of a matching file, crash / missing binary reported via notify; `lsp::wire` / `lsp::stderr` logging; the ty checks from "First"
+       - `lsp/` (`rpc` framer, `server` task per server, `Manager`, `config`, `uri`, `fake` in-process test server over `tokio::io::duplex`); `app/lsp.rs` `sync_servers` + `AppEvent::Lsp`; `buffer::pos` `PosEncoding` / `LspPos` / `lsp_pos` / `from_lsp_pos`; crates `lsp-types` 0.97, `serde_json`
+       - One server shared by C and C++; a missing binary, crash or `initialize` error is reported once and never restarted; untrusted / undecided workspaces run no `[lsp.*]` server (restricted: the built-in); quit sends `shutdown` / `exit` and kills after ~1.5 s
+       - Servers are off in tests unless `app.lsp.set_launcher(...)`; real clangd / ty tests skip when absent
+       - ty 0.0.88 findings: analyzes an extensionless `SConstruct` opened as `python`; honours a root `__builtins__.pyi`; picks UTF-8; pushes `publishDiagnostics` when the client doesn't declare pull support (clangd 21 also picks UTF-8)
+       - For 9e on: a server that dies drops its pending requests without responses; callers drop theirs on `Failed` / `Exited`
+       - Not done: no "restart language server" command; servers keep running when their files close; unknown ids in `[lsp.*]` aren't reported; quit can hang up to ~2.5 s on a stuck server with no message
+     - ✅ 9b: document sync: `didOpen` / `didClose` / `didSave`, incremental `didChange` from each applied `ChangeSet` (ranges in the negotiated encoding via `buffer::pos`), never full text; a fake-server test that applies the changes and compares with the buffer after random edits, undo / redo, multi-cursor
+       - `Buffer::apply` records change sets (+ the pre-edit rope) while `track_changes(true)` (a document open on a Running server); `lsp/documents.rs` `Manager::sync_documents` each loop turn: didOpen / didClose (also on rename and language change: close + reopen), one didChange per document per turn, changes last-first within a set, touching changes merged (a lone CR could otherwise become CRLF on the server), >256 changes coalesced into one range; positions by `pos::LspWalker` (one forward pass per set)
+       - Server `textDocumentSync` honoured (none / full / incremental, openClose, save + includeText); didSave sends pending changes first
+       - For 9c on: requests about a document call `lsp.sync_documents` first; `lsp.version(buffer)` is the last version sent
+       - 63k cursors with a server (release): a key 7.6 ms avg / 9.1 ms worst; undo 17 ms
+       - clangd keeps indexing after `exit`: killed after `EXIT_GRACE` (300 ms)
+       - Not done: buffers without a file path (jed has none yet); reload-from-disk (M10) must go through `Buffer::edit` so servers see it
+     - ✅ 9c: diagnostics: `publishDiagnostics` → squiggles in the editor (mapped through edits until the next publish), error / warning counts in the status bar, the diagnostic message on hover of the cursor line (status bar)
+       - Parsed in the server task (`Event::Diagnostics`); `lsp::diagnostics::Store` (`app.lsp.diagnostics`): per path, per server, LSP positions, sorted by path, incremental `counts()` — for 9d: `files()`, or `buf.diagnostics.all()` (current byte ranges) for open buffers, both sharing `Arc<Diagnostic>`
+       - `Buffer::diagnostics` (`diagnostics::Marks`: sorted, running max end, `overlapping`), mapped through every change set in `Buffer::apply`; a stale-version publish is read in that version's text (`Documents` keeps the last 32 sent versions) and mapped forward; no / unknown version: current text (VS Code)
+       - Squiggles: coloured underlines (`editorError/Warning/Info/Hint.foreground`, SGR 58 underline colour); status bar `⊗ n  ⚠ m` for the workspace and the cursor line's message (after a notification)
+       - A stopped / crashed server's diagnostics are cleared; closed files keep theirs
+       - 31.6k diagnostics on a 1 MB file (release): placed in ≤ 19 ms, typing at 63k cursors ~8 ms
+       - Not done: undercurl (ratatui has none), hint dots, `Unnecessary` / `Deprecated` tags, source / code in the message; marks of a renamed buffer stay until the server publishes for the new URI
+       - Still to check by hand: underline colour in real terminals and its fallback; the width of `⊗` / `⚠`
+     - ✅ 9d: bottom panel with the Problems list (Cmd+J toggles, grouped by file, Enter / click opens at the position, next / previous problem)
+       - Panel under the editor groups (border row, tab strip with `PanelTab::ALL`, list), drag the border to resize (`PANEL_HEIGHT` 10, editor ≥ 5, panel ≥ 4); `Focus::Panel` → `Context::Problems`; Cmd+J `view.togglePanel`, Cmd+Shift+M `view.toggleProblems`, F8 / Shift+F8 `problems.next` / `previous` (status bar message "(k of n)" instead of VS Code's peek); status bar counts click toggles Problems
+       - `grouped.rs` (`Group`, `RowKey`, `ListState`): grouped lists with scroll / selection kept by key, shared by the Search view and Problems — 9g's references list should use it, and `Goto::Problem { place: Place::Lsp, … }` opens LSP locations in unopened files
+       - For M12: add a `PanelTab` variant, its context in `App::context()` and its drawing in `ui/panel.rs`
+       - Not done (VS Code differences): problems ordered by position, not severity first; no collapsing, filter or copy; unopened files show the LSP character + 1 as the column
+       - Still to check by hand: Ctrl+J on Linux needs the kitty protocol (else it's Enter); Cmd+J / Cmd+Shift+M reach jed in each terminal (iTerm2 menu items); panel border drag; icon widths
+     - ✅ 9e: hover (a popup at the cursor, a command and mouse rest) and go to definition (F12; several locations → the results list)
+       - Requests: `Manager::request_at` (syncs documents first) / `cancel` (`$/cancelRequest`); the app's `requests` map; a new request cancels a pending one of the same kind; `check_requests` after every input cancels requests whose place moved on (edit, cursor, pointer); stale / error answers dropped; Failed / Exited drop a server's pending requests
+       - Hover: `editor.showHover` on Cmd+Alt+I (VS Code's chord Cmd+K Cmd+I: jed has no chords), mouse rest 300 ms (`next_timer`); popup (`ui/popup.rs`: `cell_of`, `place`, `frame` — 9f reuses it) above else below the word, ≤ 72×14, wrapped, simple markdown, wheel-scrollable; closes on any key, click, edit, scroll, tab change, pointer leaving the word
+       - Definition: F12 and Ctrl/Cmd+Click; Location / Location[] / LocationLink (`targetSelectionRange`); one → jump (Cmd+U goes back); several → the panel's LOCATIONS tab (`PanelTab::Locations`, `Context::Locations`, previews of unopened files read off-thread) — 9g: `App::show_locations(title, locations, encoding)`
+       - Not done (VS Code differences): no syntax colours in hover code blocks; no navigation history across files; no F4 through Locations; hover under the find widget still asks
+       - Still to check by hand: mouse-motion hover per terminal; Cmd+Alt+I and F12 reaching jed on macOS; Ctrl+Click on Linux, Cmd+Click on macOS
+     - ✅ 9f: completion: popup on trigger characters and Ctrl+Space, filtered as you type, accepted text (and `textEdit`s) inserted at every cursor
+       - Asking: Ctrl+Space `editor.triggerSuggest` (Ctrl on macOS too; legacy Ctrl+@ works), server trigger characters (`triggerKind` 2), quick suggestions 10 ms after a word char, not in strings / comments (`[settings] quick_suggestions`, default true); "No suggestions." only for Ctrl+Space
+       - List (`Context::Suggest`): below the word (else above), kind letter in `symbolIcon.*` colours, matched chars highlighted, the selected item's detail right-aligned, ≤ 12 rows, wheel scrolls; nucleo fuzzy filter (first char at a word start), score → `sortText` → label; incomplete lists re-ask (`triggerKind` 3); Up / Down wrap, PageUp / PageDown, Enter / Tab accept, Esc closes, click inserts, commit characters; closes on leaving the word, clicks / wheel elsewhere, focus / tab change
+       - Inserting: at every cursor (same chars before / after each head as at the primary), `textEdit` (InsertReplaceEdit's insert range) else `insertText` else label, `additionalTextEdits`, one undo step; snippets stripped (first placeholder selected, else `$0`); multi-line text indented, buffer EOL; selected item resolved for its detail, an item accepted before resolving gets its additional edits as their own step if the buffer is unchanged
+       - `completion.rs` (`Anchor` follows edits via `Buffer::sets_applied`), `app/completion.rs`, `ui/completion.rs`; requests `Completion` / `Resolve`; `send_request_with`, `send_server_request`, `Manager::server_of` / `request`
+       - 63k cursors (release): a key with the list open 8.4 ms, inserting 10.6 ms
+       - Not done (VS Code differences): no snippet session (later tab stops), no documentation side panel, `labelDetails`, deprecated strikethrough or `replace` insert mode; additional edits overlapping the insertions dropped; the list closes after 512 change sets; `allCommitCharacters` untested
+       - Still to check by hand: Ctrl+Space per terminal (kitty vs NUL; macOS input-source shortcut); list colours; real clangd / ty snippets and auto-import edits; quick-suggestion timing in a large file
+     - ✅ 9g: find references (Shift+F12, the results list) and rename symbol (F2 in the editor: a prompt, `WorkspaceEdit` across open and unopened files, one undo step per buffer)
+       - References: `editor.goToReferences` (Shift+F12), `includeDeclaration: true`, the Locations list titled "References to 'w'" (one result still opens the list: it's usually the cursor's own place); none / error / no server → "No references found"
+       - Rename: `editor.rename` (F2 in the editor; the explorer's F2 still renames files); `prepareRename` when supported (placeholder, else the range's text, else the word for `defaultBehavior`; `null` → "The element can't be renamed."), prompt "Rename 'old' to" with the name selected; empty / same name / buffer changed meanwhile sends nothing
+       - `WorkspaceEdit`: `documentChanges` preferred over `changes`; the whole edit refused on file operations, a read-only open file, a version mismatch or overlapping edits; open buffers get one undo step each, all views follow (`follow_edits`); unopened files load off-thread into background tabs (VS Code), edited there and left unsaved; "Renamed 'a' to 'b': n edits in m files"
+       - `rename.rs` (prepare / `WorkspaceEdit` parsing, `changes` → one `ChangeSet`: 9h's format document reuses it), `app/rename.rs`; `group.rs` `open_background`; capabilities: references, rename `prepareSupport`, `workspaceEdit.documentChanges` with no resource operations
+       - Not done (VS Code differences): no peek view, rename preview or change-annotation confirmations; refactored files never auto-saved (no Save All yet); file operations refused; `workspace/applyEdit` still answered "not applied"; two renames racing on one still-loading file, or a server URI through a different symlink path, aren't handled
+       - Still to check by hand: F2 / Shift+F12 per terminal; the prompt's selected prefill; clangd cross-file rename once indexed on a large project
+     - ✅ 9h: format document (Shift+Alt+F), the SCons `__builtins__.pyi` (if supported), the done-when tests on a C++ project with `compile_commands.json` and an SCons project; marks M9 ✅
+       - Format document: `editor.formatDocument` (Shift+Alt+F on macOS, Ctrl+Shift+I on Linux), `textDocument/formatting` with the buffer language's `tabSize` / `insertSpaces`; edits trimmed to what changes (`format::minimize`), one undo step via rename's `apply_changes` / `rename::follow`; dropped if text or cursor changed meanwhile; read-only refused; no provider → "There is no formatter for 'x' files installed."
+       - SCons: `lsp/scons_builtins.pyi` embedded; when ty starts in a workspace with a root `SConstruct` and no `__builtins__.pyi` of its own, jed writes it under `state_dir()/lsp/scons/` (off-thread, only when changed) and adds that dir to ty's `environment.extra-paths` via `initializationOptions.configuration` (merged with the project's) — nothing is written into the workspace
+       - Done-when tests with real clangd (C++ with `compile_commands.json`) and ty (SConstruct + helper): diagnostics follow edits, every `didChange` incremental (a `Tee` launcher records the wire), completion, hover, definition, references, rename, format (clangd)
+       - `format.rs`, `app/format.rs`, `lsp/scons.rs`; `Manager::request_doc` / `App::send_doc_request` for position-less requests
+   - Deferred: Python formatting (ty 0.0.88 has no formatter; VS Code uses a separate ruff extension: needs a second, formatting-only server per language); format selection / on save / on type; SCons `Import("env")` names are still flagged undefined; only a root `SConstruct` is detected; the 9a–9g "Not done" items above
+   - Still to check by hand: Shift+Alt+F on macOS (Option as Alt) and Ctrl+Shift+I on Linux (kitty protocol; legacy terminals send Tab); formatting a larger real C++ file (cursor and scroll); SCons on a real project (`Environment` methods, `site_scons`); plus the 9c–9g hand checks above

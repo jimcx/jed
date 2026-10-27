@@ -37,7 +37,7 @@
         { "action": "shell", "resource": "git push *", "effect": "deny" },
         { "action": "shell", "resource": "git stash *", "effect": "deny" },
         { "action": "edit", "resource": "PLAN.md", "effect": "deny" },
-        { "action": "edit", "resource": "docs/plan-done.md", "effect": "deny" }
+        { "action": "edit", "resource": "tasks/**", "effect": "deny" }
       ]
     },
 
@@ -50,7 +50,7 @@
         { "action": "shell", "resource": "git push *", "effect": "deny" },
         { "action": "shell", "resource": "git stash *", "effect": "deny" },
         { "action": "edit", "resource": "PLAN.md", "effect": "deny" },
-        { "action": "edit", "resource": "docs/plan-done.md", "effect": "deny" }
+        { "action": "edit", "resource": "tasks/**", "effect": "deny" }
       ]
     },
 
@@ -63,7 +63,7 @@
         { "action": "shell", "resource": "git push *", "effect": "deny" },
         { "action": "shell", "resource": "git stash *", "effect": "deny" },
         { "action": "edit", "resource": "PLAN.md", "effect": "deny" },
-        { "action": "edit", "resource": "docs/plan-done.md", "effect": "deny" }
+        { "action": "edit", "resource": "tasks/**", "effect": "deny" }
       ]
     }
   }

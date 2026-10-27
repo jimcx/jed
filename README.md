@@ -95,7 +95,7 @@ For users:
 For contributors:
 
 - [PLAN.md](PLAN.md) — the design and scope: features, keybindings, architecture, milestones, the task list
-- [docs/plan-done.md](docs/plan-done.md) — finished milestones and tasks in full: what was built, what was deferred
+- [tasks/](tasks/README.md) — the task list and finished milestones and tasks, one file each
 - [CLAUDE.md](CLAUDE.md) — the codebase summary: module map, data flow, invariants, how to add a command, tests,
   commit style
 - [docs/dev/modules.md](docs/dev/modules.md) — every module and the data flow step by step

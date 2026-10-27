@@ -55,8 +55,8 @@ jobs:
 
   # A version tag (git tag v0.1.0 && git push origin v0.1.0) publishes a release
   # with both platforms' tarballs, once every build and test has passed. The notes
-  # are a changelog of the commits and docs/plan-done.md entries since the
-  # previous release (scripts/changelog, shared with the release command).
+  # are a changelog of the commits and tasks completed since the previous
+  # release (scripts/changelog, shared with the release command).
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build

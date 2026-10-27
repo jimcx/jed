@@ -1,0 +1,33 @@
+---
+id: milestone_13
+name: Sessions and recent workspaces
+summary: restore open tabs, splits and layout per workspace; jump between workspaces
+status: done
+priority: 0
+dependencies: []
+---
+
+    - Needs: the split tree (M3), state paths (M2), the palette (M5), the panic hook (M1)
+    - Session state in `~/.local/state/jed/`, keyed by workspace path
+    - Task tabs (M12) are throwaway: not restored; history diff tabs (M11) and git diff tabs (M10) may be restored by path and pair
+    - Crash recovery: back up dirty buffers periodically to `~/.local/state/jed/backup/` (the panic hook already writes there); offer restore on next start
+    - Recent workspaces: `recent.toml`; "Open Recent Workspace" (Ctrl+R) in the palette
+    - Kitty (focus / launch from Open Recent Workspace): deferred to the TODO list; picking a recent workspace shows the `jed <path>` message everywhere
+    - Done when: quit and reopen gives back the same tabs, splits, cursors and scroll; killing the terminal loses at most one backup interval of edits (the kitty clause — focus a workspace open in another kitty window, start one not open in a new OS window — moved to the TODO list with the kitty work)
+    - Tasks (one agent and one commit each):
+      - ✅ 13a: sessions: per-workspace session file in the state dir (keyed by workspace path); saved on quit (off the UI thread, atomic), restored on start: groups and the split tree, tabs per group (text tabs by path; git and history diff tabs by path and pair; task tabs never), active tab and group, selections and scroll, side / bottom panel layout; missing files and bad session files skipped with a log line
+        - `session.rs` (model, blocking load / save: `<state>/sessions/<sha256 of root>.json`, root and version checked), `app/session.rs`: one `spawn_blocking` reads the session and every tab's file → `AppEvent::SessionRead`, applied in one step (no half-restored layout); the save runs in `App::shutdown` with servers and tasks, skipped while the restore is still loading
+        - `App::state_dir` (`None` in tests: sessions off unless a test sets it); `jed <file>` restores, then opens the file on top in the active group; `opened` drops a buffer for a path loaded meanwhile (restore / quick open race)
+        - Not done: diff tabs' own cursor / scroll, expanded explorer folders, the Search query, the shown panel tab, focus; a first frame may draw before the session arrives
+      - ✅ 13b: crash recovery: dirty buffers backed up periodically to `~/.local/state/jed/backup/` (one format shared with the panic hook), backups removed when a buffer is saved / discarded / jed quits cleanly; on the next start, an offer to restore them into their buffers (left dirty, nothing written)
+        - `backup.rs` (format: `jed-backup 1` + a JSON header (root, path, bom, base disk stamp, time, length) + the text, `<state>/backup/<root hash>/<path hash>.bak`, atomic), `app/backup.rs`: every 30 s (`backup::INTERVAL`, deadline set by the first change, not pushed back by typing) only changed dirty buffers, one blocking job at a time; removed when a buffer goes clean, closes discarded or is renamed, and on a clean quit; the terminal going away without Quit writes them; the panic hook writes the same files
+        - Offer after the session restore and the trust dialog: Restore (Enter) / Discard / Later (Esc: kept and offered next start, survives a clean quit); restore = one `EditKind::Other` step via `apply_changes`, dirty, nothing written; a file changed since the backup gets the backup's base stamp (`Buffer::set_disk_base`), so the banner shows and a save conflicts
+        - Not done: no untitled buffers to back up; old-format panic backups (`backup/%path.pid.bak`) ignored; the panic hook doesn't spare a not-yet-offered backup; "Later" then saving still offers the stale backup (restoring shows the banner)
+      - ✅ 13c: recent workspaces: `recent.toml` recorded on every start (most recent first, no duplicates, cap 50); "Open Recent Workspace" (Ctrl+R) as a palette picker (folder name, `~` path, current workspace left out, missing folders dropped); picking one outside kitty: status-bar message with `jed <path>`
+        - `recent.rs` (`[[workspace]]` `path` tables, locked read-modify-write via `recent.toml.lock`, atomic), `app/recent.rs`: recorded at start off-thread; `workspace.openRecent` (Ctrl+R, global, literal Ctrl on macOS too: a focused task tab never gets it) lists off-thread (missing folders pruned from the file, current one left out) then opens `Picker::Recent`; a pick shows `To open ~/x, run: jed <quoted path>`
+        - Seam for the deferred kitty work: `recent::Entry::window` (drawn "open"; always `None`) and `recent::how_to_open` → `Open::Message` only
+      - ✅ 13d: the done-when tests (quit and reopen gives back the same tabs, splits, cursors and scroll; killing the terminal loses at most one backup interval of edits), remaining gaps and hand checks; marks M13 ✅. Kitty integration is deferred (see the TODO list)
+        - Done-when tests: `milestone_13_done_when_quit_and_reopen_gives_back_the_same_screen` (a git project driven by keys: three groups with dragged dividers, multi-cursors with a non-first primary, scroll, a diff tab, Source Control and the bottom panel; the reopened frame equals the old one cell for cell, twice), `milestone_13_done_when_a_kill_loses_at_most_one_backup_interval` (Restore gives exactly the buffers at the last backup tick, nothing written, one undo back to disk)
+        - Fix: a diff tab swallowed every mouse event over it (split / panel border drags, Source Control hover); now only wheel and left click
+    - Deferred: kitty integration (TODO list); diff tabs' own cursor / scroll, expanded explorer folders, the Search query, the shown panel tab, focus and the Source Control selection aren't in the session; no untitled buffers to back up; old-format panic backups ignored; Ctrl+R is global, so a task tab never gets it (no reverse-i-search)
+    - Still to check by hand: quit / reopen in a real terminal (groups, ratios, tabs, cursors, scroll, panels, diff tabs reload); `jed <file>:<line>` on a workspace with a session; edit, wait > 30 s, edit, `kill -9`, reopen and Restore (then Cmd+Z, save removes the backup); closing the terminal window with dirty buffers; a forced panic's backups offered next start; restore after another program changed the file (banner, save conflicts until Keep Mine); Later then a clean quit offers again, Discard removes; Ctrl+R in two workspaces (each lists the other, deleted folders vanish, spaced paths quoted); files land in `~/.local/state/jed/sessions/`, `backup/`, `recent.toml`, and a corrupt session file is ignored and replaced
