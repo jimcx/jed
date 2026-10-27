@@ -677,7 +677,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Bug reporter** (`bug_report`): write a self-contained bug report with app state — [tasks/bug_report.md](tasks/bug_report.md)
 - **Change End of Line Sequence** (`change_eol`): change a buffer's line endings to LF or CRLF — [tasks/change_eol.md](tasks/change_eol.md)
 - **Claude Code IDE integration** (`claude_ide`): let `claude` running in a jed terminal auto-connect to jed and share the editor's context, by implementing Claude Code's editor-agnostic IDE protocol on jed's side — no upstream change — [tasks/claude_ide.md](tasks/claude_ide.md)
-- **Clear terminal scrollback** (`clear_scrollback`): clear a shell / task tab's scrollback and screen — [tasks/clear_scrollback.md](tasks/clear_scrollback.md)
+- **Clear terminal scrollback** (`clear_scrollback`): clear a shell / task tab's scrollback and screen, back to the last shell prompt mark when the integration is installed — [tasks/clear_scrollback.md](tasks/clear_scrollback.md)
 - **Close tabs and go to the Nth tab** (`close_tabs_nth`): close all / others / saved tabs, and go to the Nth tab in a group — [tasks/close_tabs_nth.md](tasks/close_tabs_nth.md)
 - **Compare any two files** (`compare_files`): compare any two files in a diff tab — [tasks/compare_files.md](tasks/compare_files.md)
 - **Discard changes in Source Control** (`discard_changes`): discard a file's or all changes in Source Control — [tasks/discard_changes.md](tasks/discard_changes.md)
