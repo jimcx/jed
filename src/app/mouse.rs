@@ -456,7 +456,14 @@ impl App {
                 Some(Drag::TerminalBorder) => {
                     self.ui.terminal_height = border_height(m.row, self.hits.regions.status.y, MIN_TERMINAL_HEIGHT);
                 }
-                Some(Drag::Divider(d)) => self.groups.tree.set_ratio(&d, d.ratio_at(m.column, m.row)),
+                Some(Drag::Divider(d)) => {
+                    let groups = if d.terminal {
+                        &mut self.terminals
+                    } else {
+                        &mut self.groups
+                    };
+                    groups.tree.set_ratio(&d, d.ratio_at(m.column, m.row));
+                }
                 Some(Drag::Text { anchor }) => {
                     let at = self.text_position(m.column, m.row, true);
                     if let (Some(at), Some((_, view))) = (at, self.active_mut()) {
@@ -585,9 +592,8 @@ impl App {
             Hit::Tab(g, i) => {
                 self.focus_group(g);
                 self.activate_tab(i);
-                // A drag that never leaves the tab is just a click: it stays active. (Terminal
-                // tabs don't drag yet.)
-                self.drag = (!is_terminal_group(g)).then_some(Drag::Tab(TabDrag {
+                // A drag that never leaves the tab is just a click: it stays active.
+                self.drag = Some(Drag::Tab(TabDrag {
                     from: g,
                     index: i,
                     tab: self.any_group(g).and_then(|group| group.tabs.get(i)).map(Tab::identity),

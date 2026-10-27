@@ -9,7 +9,7 @@ use ratatui::layout::{Position, Rect};
 
 use super::mouse::Drag;
 use super::{App, Focus};
-use crate::group::{Tab, TabIdentity};
+use crate::group::{Tab, TabIdentity, is_terminal_group};
 use crate::layout::{DropSide, GroupId, MIN_GROUP_HEIGHT, MIN_GROUP_WIDTH, TabHit};
 
 /// An in-flight tab drag: the tab's group and index where it started, and where it would land
@@ -75,18 +75,26 @@ fn snap_side(rect: Rect, x: u16, y: u16) -> Option<DropSide> {
         .map(|(side, ..)| side)
 }
 
+/// Whether a tab dragged out of group `from` may land in group `to`. Only terminals dock in the
+/// terminal area and the area's terminals stay in it for now, so a drag between the area and an
+/// editor group is refused in both directions (the one place term_area-c relaxes).
+fn can_dock(from: GroupId, to: GroupId) -> bool {
+    is_terminal_group(from) == is_terminal_group(to)
+}
+
 impl App {
-    /// Where a tab dropped at (`x`, `y`) would land: a gap in the tab bar under the pointer, or
-    /// a group's editor (on an edge band, or its centre). Anywhere else (a divider, the side
-    /// panel, the status bar) there is no target.
-    pub(super) fn tab_drop_at(&self, x: u16, y: u16) -> Option<TabDrop> {
-        if let Some(group) = self.hits.groups.iter().find(|g| g.tab_bar.contains(Position { x, y })) {
+    /// Where a tab dragged out of `from` and dropped at (`x`, `y`) would land: a gap in the tab bar
+    /// under the pointer, or a group's editor (on an edge band, or its centre). Anywhere else (a
+    /// divider, the side panel, the status bar, a group `can_dock` refuses) there is no target.
+    pub(super) fn tab_drop_at(&self, from: GroupId, x: u16, y: u16) -> Option<TabDrop> {
+        let mut dockable = self.hits.groups.iter().filter(|g| can_dock(from, g.id));
+        if let Some(group) = dockable.clone().find(|g| g.tab_bar.contains(Position { x, y })) {
             return Some(TabDrop::TabBar {
                 group: group.id,
                 index: gap_at(&group.tabs, x),
             });
         }
-        let group = self.hits.groups.iter().find(|g| g.editor.contains(Position { x, y }))?;
+        let group = dockable.find(|g| g.editor.contains(Position { x, y }))?;
         Some(TabDrop::Editor {
             group: group.id,
             side: snap_side(group.editor, x, y),
@@ -146,7 +154,10 @@ impl App {
 
     /// Follows the pointer during a tab drag: records the target for the drop marker.
     pub(super) fn tab_drag_to(&mut self, x: u16, y: u16) {
-        let target = self.tab_drop_at(x, y);
+        let Some(Drag::Tab(drag)) = &self.drag else {
+            return;
+        };
+        let target = self.tab_drop_at(drag.from, x, y);
         if let Some(Drag::Tab(drag)) = &mut self.drag {
             drag.target = target;
         }
@@ -164,20 +175,19 @@ impl App {
         // if the tab at `index` is no longer the one the drag started on, the release moves
         // nothing.
         if self
-            .groups
-            .get(drag.from)
+            .any_group(drag.from)
             .and_then(|g| g.tabs.get(drag.index))
             .map(Tab::identity)
             != drag.tab
         {
             return;
         }
-        let Some(target) = self.tab_drop_at(x, y) else {
+        let Some(target) = self.tab_drop_at(drag.from, x, y) else {
             return;
         };
         let (group, at) = match target {
             TabDrop::TabBar { group, index } if group == drag.from => {
-                let Some(g) = self.groups.get_mut(group) else {
+                let Some(g) = self.any_group_mut(group) else {
                     return;
                 };
                 // `index` counts the dragged tab too, while it is still where it started: a gap
@@ -194,15 +204,17 @@ impl App {
                 if let Some((buf, _)) = self.active_mut() {
                     buf.seal_undo();
                 }
-                let Some(new) = self.groups.split_empty_of(group, side) else {
+                let Some(new) = self.groups_of_mut(group).split_empty_of(group, side) else {
                     return;
                 };
-                if self.groups.move_tab_between(drag.from, drag.index, new, None) {
-                    self.ui.focus = Focus::Editor;
-                    self.reveal_active();
+                if self
+                    .groups_of_mut(group)
+                    .move_tab_between(drag.from, drag.index, new, None)
+                {
+                    self.focus_dropped(group);
                 } else {
                     // Nothing moved: don't leave the empty split behind.
-                    self.groups.remove(new);
+                    self.groups_of_mut(group).remove(new);
                 }
                 return;
             }
@@ -212,7 +224,19 @@ impl App {
         if let Some((buf, _)) = self.active_mut() {
             buf.seal_undo();
         }
-        if self.groups.move_tab_between(drag.from, drag.index, group, at) {
+        if self
+            .groups_of_mut(group)
+            .move_tab_between(drag.from, drag.index, group, at)
+        {
+            self.focus_dropped(group);
+        }
+    }
+
+    /// After a tab dropped into `group`: its area has the focus (the terminal area's or the editor's).
+    fn focus_dropped(&mut self, group: GroupId) {
+        if is_terminal_group(group) {
+            self.ui.focus = Focus::Terminal;
+        } else {
             self.ui.focus = Focus::Editor;
             self.reveal_active();
         }

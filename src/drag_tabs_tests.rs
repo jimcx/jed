@@ -135,12 +135,12 @@ fn editor_of(app: &App, group: GroupId) -> Rect {
 }
 
 /// A point in the middle of `rect`: no edge band reaches it.
-fn centre(rect: Rect) -> (u16, u16) {
+pub(crate) fn centre(rect: Rect) -> (u16, u16) {
     (rect.x + rect.width / 2, rect.y + rect.height / 2)
 }
 
 /// The half of `rect` on `side`, as `tab_drop_shade` gives it.
-fn half(rect: Rect, side: DropSide) -> Rect {
+pub(crate) fn half(rect: Rect, side: DropSide) -> Rect {
     match side {
         DropSide::Left => Rect {
             width: rect.width / 2,
@@ -164,7 +164,7 @@ fn half(rect: Rect, side: DropSide) -> Rect {
 }
 
 /// A point just inside `rect`'s edge on `side`.
-fn edge_point(rect: Rect, side: DropSide) -> (u16, u16) {
+pub(crate) fn edge_point(rect: Rect, side: DropSide) -> (u16, u16) {
     let (mid_x, mid_y) = centre(rect);
     match side {
         DropSide::Left => (rect.x, mid_y),
@@ -175,7 +175,7 @@ fn edge_point(rect: Rect, side: DropSide) -> (u16, u16) {
 }
 
 /// The number of cells in `rect` drawn with the drop shade's two colours.
-fn shaded_cells(app: &App, term: &Terminal<TestBackend>, rect: Rect) -> usize {
+pub(crate) fn shaded_cells(app: &App, term: &Terminal<TestBackend>, rect: Rect) -> usize {
     let style = app.theme.get("editor.dropBackground");
     let (fg, bg) = (style.fg.unwrap(), style.bg.unwrap());
     let mut n = 0;

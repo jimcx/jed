@@ -237,6 +237,8 @@ pub struct Divider {
     pub parent: Rect,
     /// Path from the root to the split: false = first half, true = second.
     path: Vec<bool>,
+    /// Whether it splits the terminal area's tree rather than the editor groups'.
+    pub terminal: bool,
 }
 
 impl Divider {
@@ -339,6 +341,7 @@ impl SplitTree {
                 Node::Split { dir, ratio, a, b } => {
                     let (ra, rd, rb) = split_rect(area, *dir, *ratio);
                     divs.push(Divider {
+                        terminal: false,
                         rect: rd,
                         dir: *dir,
                         parent: area,

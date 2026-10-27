@@ -130,6 +130,15 @@ impl App {
         }
     }
 
+    /// The groups `id` belongs to: the terminal area's or the editor's.
+    pub(super) fn groups_of_mut(&mut self, id: crate::layout::GroupId) -> &mut Groups {
+        if crate::group::is_terminal_group(id) {
+            &mut self.terminals
+        } else {
+            &mut self.groups
+        }
+    }
+
     /// The groups the tab commands (activate, cycle, close) act on: the terminal area's with
     /// `Focus::Terminal`, else the editor groups'.
     pub(super) fn tab_groups(&self) -> &Groups {
@@ -148,6 +157,14 @@ impl App {
         }
     }
 
+    /// After a group command acted on `tab_groups()`: the terminal area keeps its focus, any other
+    /// focus (side panel, ...) goes to the editor.
+    pub(super) fn focus_tab_groups(&mut self) {
+        if self.ui.focus != Focus::Terminal {
+            self.ui.focus = Focus::Editor;
+        }
+    }
+
     /// The shell tab that has the keys: the terminal area's active one with `Focus::Terminal`, the
     /// active editor group's with `Focus::Editor`.
     pub(super) fn focused_shell(&self) -> Option<&ShellTab> {
@@ -158,9 +175,9 @@ impl App {
         }
     }
 
-    /// Hides the terminal area once it holds no terminal, handing its focus to the editor.
+    /// Hides the terminal area once none of its groups holds a terminal, handing its focus to the editor.
     pub(super) fn hide_empty_terminals(&mut self) {
-        if self.terminals.len() == 1 && self.terminals.active_group().tabs.is_empty() {
+        if self.terminals.shell_tabs().next().is_none() {
             self.ui.terminal_visible = false;
             if self.ui.focus == Focus::Terminal {
                 self.ui.focus = Focus::Editor;

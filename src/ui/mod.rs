@@ -122,7 +122,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
         };
         let (c, d) = app.terminals.tree.layout(rest);
         cells.extend(c);
-        dividers.extend(d);
+        dividers.extend(d.into_iter().map(|mut d| {
+            d.terminal = true;
+            d
+        }));
     }
     // Each group's number in reading order, for the corner of its tab bar (two or more groups).
     let group_ids = (app.groups.len() >= 2).then(|| app.groups.ids());

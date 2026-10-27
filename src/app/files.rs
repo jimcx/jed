@@ -319,11 +319,12 @@ impl App {
     /// Focuses the group after (`forward`) or before the active one in reading order, wrapping;
     /// nothing with a single group.
     pub(super) fn focus_group_relative(&mut self, forward: bool) {
-        let ids = self.groups.ids();
+        let groups = self.tab_groups();
+        let ids = groups.ids();
         if ids.len() < 2 {
             return;
         }
-        let Some(i) = ids.iter().position(|&g| g == self.groups.active) else {
+        let Some(i) = ids.iter().position(|&g| g == groups.active) else {
             return;
         };
         let next = if forward {
@@ -339,8 +340,9 @@ impl App {
             buf.seal_undo();
         }
         let diff_id = self.next_diff_id();
-        self.groups.split(dir, diff_id);
-        self.ui.focus = Focus::Editor;
+        // In the terminal area too: a split never copies a shell, so its new group is empty.
+        self.tab_groups_mut().split(dir, diff_id);
+        self.focus_tab_groups();
     }
 
     /// "Move Editor into Next / Previous Group": the active tab, its view as it is, into the
@@ -349,15 +351,15 @@ impl App {
         if let Some((buf, _)) = self.active_mut() {
             buf.seal_undo();
         }
-        if self.groups.move_active_tab(forward) {
-            self.ui.focus = Focus::Editor;
+        if self.tab_groups_mut().move_active_tab(forward) {
+            self.focus_tab_groups();
             self.reveal_active();
         }
     }
 
     /// "Move Editor Left / Right": the active tab one place along its group's tab bar.
     pub(super) fn move_tab(&mut self, delta: isize) {
-        self.group_mut().move_active(delta);
+        self.tab_groups_mut().active_group_mut().move_active(delta);
     }
 
     /// Closes a tab; asks first if it's the last tab (in any group) showing an unsaved buffer.
@@ -418,12 +420,7 @@ impl App {
     }
 
     fn close_group(&mut self, group: GroupId) {
-        let groups = if is_terminal_group(group) {
-            &mut self.terminals
-        } else {
-            &mut self.groups
-        };
-        if groups.remove(group) {
+        if self.groups_of_mut(group).remove(group) {
             self.reveal_active();
         }
     }
