@@ -1,0 +1,560 @@
+#!/usr/bin/env python3
+"""Manage jed's tasks/ directory (see tasks/README.md).
+
+Each tasks/<id>.md file is one task or milestone: a small YAML front-matter
+header (id, name, summary, status, priority, dependencies) followed by the
+task's body, verbatim from PLAN.md. This script lists, shows, finds, checks
+and indexes them, and feeds scripts/changelog. Stdlib only.
+
+Subcommands:
+
+  list    [--status open|in-progress|done]... [--sort priority|name|id]
+          [--reverse] [--json]
+          One line per task, tab-separated: id<TAB>status<TAB>priority<TAB>summary.
+          Defaults to open + in-progress, sorted priority desc then name; --json
+          emits a JSON array of {id,name,status,priority,dependencies}.
+          --status done also includes milestones.
+
+  show    <id> [--header | --body]
+          The whole file by default; --header the front-matter, --body the body.
+          Exit 1 if the id is unknown.
+
+  find    <id>
+          Exact match, else a unique prefix. Prints id<TAB>status<TAB>path.
+          Exit 1 if not found or ambiguous (lists candidates).
+
+  check   [--warn-only]
+          Validate the corpus, problems to stderr. Errors (exit 1): missing or
+          malformed front-matter, a required field missing, id != filename stem,
+          duplicate ids, a bad status, a non-int priority, a dependency id that
+          resolves to nothing. Warnings (never fail): status disagrees with the
+          subtask ✅ marks. --warn-only downgrades errors to warnings (exit 0).
+
+  index   [--write] [--milestones | --tasks]
+          Print the generated index (tasks and milestones by default; one of them
+          with --tasks / --milestones). --write splices it into PLAN.md between the
+          <!-- tasks:index:start/end --> and <!-- milestones:index:start/end -->
+          markers.
+
+  done-since <since> [<until>]
+          List the tasks whose status flipped to done between <since> and <until>
+          (default HEAD), as "- **<name>**: <summary>" lines. Feeds scripts/changelog.
+
+Exit status: 0 ok, 1 error, 2 usage.
+"""
+
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+TASKS = REPO / "tasks"
+PLAN = REPO / "PLAN.md"
+
+STATUSES = ("open", "in-progress", "done")
+REQUIRED = ("id", "name", "summary", "status")
+
+TASKS_START = "<!-- tasks:index:start -->"
+TASKS_END = "<!-- tasks:index:end -->"
+MILESTONES_START = "<!-- milestones:index:start -->"
+MILESTONES_END = "<!-- milestones:index:end -->"
+
+
+class Task:
+    __slots__ = ("path", "fields", "body")
+
+    def __init__(self, path, fields, body):
+        self.path = path
+        self.fields = fields
+        self.body = body
+
+    @property
+    def id(self):
+        return self.fields.get("id", "")
+
+    @property
+    def name(self):
+        return self.fields.get("name", "")
+
+    @property
+    def summary(self):
+        return self.fields.get("summary", "")
+
+    @property
+    def status(self):
+        return self.fields.get("status", "")
+
+    @property
+    def priority(self):
+        try:
+            return int(self.fields.get("priority", 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @property
+    def dependencies(self):
+        deps = self.fields.get("dependencies", [])
+        if isinstance(deps, list):
+            return deps
+        if deps in (None, ""):
+            return []
+        return [deps]
+
+    def is_milestone(self):
+        return re.fullmatch(r"milestone_\d+", self.id) is not None
+
+    def milestone_n(self):
+        m = re.fullmatch(r"milestone_(\d+)", self.id)
+        return int(m.group(1)) if m else None
+
+
+def rel(path):
+    try:
+        return str(path.relative_to(REPO))
+    except ValueError:
+        return str(path)
+
+
+def parse_scalar(value):
+    value = value.strip()
+    if value == "[]":
+        return []
+    if value.startswith("[") and value.endswith("]"):
+        inner = value[1:-1].strip()
+        if not inner:
+            return []
+        return [p.strip().strip("\"'") for p in inner.split(",")]
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
+
+
+def parse_front_matter(text):
+    """Return (fields, body); fields is None when there is no valid header."""
+    if not text.startswith("---"):
+        return None, text
+    lines = text.split("\n")
+    end = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end = i
+            break
+    if end is None:
+        return None, text
+    raw = {}
+    for line in lines[1:end]:
+        line = line.rstrip("\n")
+        if not line.strip():
+            continue
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        raw[key.strip()] = parse_scalar(value)
+    body = "\n".join(lines[end + 1:])
+    if body.startswith("\n"):
+        body = body[1:]
+    return raw, body
+
+
+def read_tasks():
+    tasks = []
+    if not TASKS.is_dir():
+        return tasks
+    for path in sorted(TASKS.glob("*.md")):
+        if path.name == "README.md":
+            continue
+        text = path.read_text()
+        fields, body = parse_front_matter(text)
+        tasks.append(Task(path, fields if fields is not None else {}, body))
+    return tasks
+
+
+def usage(msg=None):
+    if msg:
+        sys.stderr.write(f"scripts/tasks: {msg}\n\n")
+    sys.stderr.write(__doc__ + "\n")
+    return 2
+
+
+# --- list ---
+
+def cmd_list(args):
+    statuses = []
+    sort = "priority"
+    reverse = False
+    as_json = False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--status":
+            i += 1
+            if i >= len(args):
+                return usage("--status needs a value")
+            v = args[i]
+            if v not in STATUSES:
+                return usage(f"bad --status {v!r} (open|in-progress|done)")
+            statuses.append(v)
+        elif a == "--sort":
+            i += 1
+            if i >= len(args):
+                return usage("--sort needs a value")
+            v = args[i]
+            if v not in ("priority", "name", "id"):
+                return usage("bad --sort (priority|name|id)")
+            sort = v
+        elif a == "--reverse":
+            reverse = True
+        elif a == "--json":
+            as_json = True
+        else:
+            return usage(f"unknown option {a!r}")
+        i += 1
+
+    if not statuses:
+        statuses = ["open", "in-progress"]
+
+    tasks = [t for t in read_tasks() if t.status in statuses]
+
+    if sort == "priority":
+        tasks.sort(key=lambda t: (-t.priority, t.name.lower()))
+    elif sort == "name":
+        tasks.sort(key=lambda t: t.name.lower())
+    else:
+        tasks.sort(key=lambda t: t.id)
+    if reverse:
+        tasks.reverse()
+
+    if as_json:
+        out = [
+            {
+                "id": t.id,
+                "name": t.name,
+                "status": t.status,
+                "priority": t.priority,
+                "dependencies": t.dependencies,
+            }
+            for t in tasks
+        ]
+        print(json.dumps(out, indent=2))
+    else:
+        for t in tasks:
+            print(f"{t.id}\t{t.status}\t{t.priority}\t{t.summary}")
+    return 0
+
+
+# --- show ---
+
+def cmd_show(args):
+    mode = None
+    ids = []
+    for a in args:
+        if a in ("--header", "--body"):
+            mode = a
+        else:
+            ids.append(a)
+    if len(ids) != 1:
+        return usage("show <id> [--header|--body]")
+
+    task = None
+    for t in read_tasks():
+        if t.id == ids[0]:
+            task = t
+            break
+    if task is None:
+        sys.stderr.write(f"scripts/tasks: no task with id {ids[0]!r}\n")
+        return 1
+
+    if mode is None:
+        sys.stdout.write(task.path.read_text())
+        return 0
+    if mode == "--body":
+        sys.stdout.write(task.body)
+        return 0
+    # --header: the front-matter block, delimiters included.
+    text = task.path.read_text()
+    lines = text.split("\n")
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            sys.stdout.write("\n".join(lines[: i + 1]) + "\n")
+            return 0
+    sys.stdout.write(text)
+    return 0
+
+
+# --- find ---
+
+def cmd_find(args):
+    if len(args) != 1:
+        return usage("find <id>")
+    key = args[0]
+    tasks = read_tasks()
+    exact = [t for t in tasks if t.id == key]
+    if exact:
+        t = exact[0]
+        print(f"{t.id}\t{t.status}\t{rel(t.path)}")
+        return 0
+    matches = [t for t in tasks if t.id.startswith(key)]
+    if len(matches) == 1:
+        t = matches[0]
+        print(f"{t.id}\t{t.status}\t{rel(t.path)}")
+        return 0
+    if len(matches) > 1:
+        sys.stderr.write(f"scripts/tasks: {key!r} is ambiguous; matches:\n")
+        for t in sorted(matches, key=lambda t: t.id):
+            sys.stderr.write(f"  {t.id}\n")
+        return 1
+    sys.stderr.write(f"scripts/tasks: no task matches {key!r}\n")
+    return 1
+
+
+# --- check ---
+
+def subtask_status(body):
+    """Return the status the body's ✅ marks imply, or None with no subtask list."""
+    lines = body.split("\n")
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s not in ("Subtasks (one agent and one commit each):",
+                     "Tasks (one agent and one commit each):"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        bullets = []
+        min_indent = None
+        for j in range(i + 1, len(lines)):
+            ln = lines[j]
+            if ln.strip() == "":
+                continue
+            ind = len(ln) - len(ln.lstrip(" "))
+            if ind <= indent:
+                break
+            ls = ln.strip()
+            if ls.startswith("- "):
+                if min_indent is None or ind < min_indent:
+                    min_indent = ind
+                bullets.append((ind, ls))
+        subs = [ls for ind, ls in bullets if ind == min_indent]
+        if not subs:
+            return None
+        done = sum(1 for s in subs if s.startswith("- ✅"))
+        if done == 0:
+            return "open"
+        if done == len(subs):
+            return "done"
+        return "in-progress"
+    return None
+
+
+def cmd_check(args):
+    warn_only = "--warn-only" in args
+    if any(a != "--warn-only" for a in args):
+        return usage("check [--warn-only]")
+
+    tasks = read_tasks()
+    errors = []
+    warnings = []
+    seen = {}
+
+    for t in tasks:
+        r = rel(t.path)
+        if not t.fields:
+            errors.append(f"{r}: missing or malformed front-matter")
+            continue
+        for f in REQUIRED:
+            if t.fields.get(f) in (None, ""):
+                errors.append(f"{r}: missing required field {f!r}")
+        stem = t.path.stem
+        if t.id != stem:
+            errors.append(f"{r}: id {t.id!r} != filename stem {stem!r}")
+        if t.status not in STATUSES:
+            errors.append(f"{r}: bad status {t.status!r}")
+        pv = t.fields.get("priority", 0)
+        try:
+            int(pv)
+        except (TypeError, ValueError):
+            errors.append(f"{r}: priority {pv!r} is not an int")
+        if t.id in seen:
+            errors.append(f"{r}: duplicate id {t.id!r} (also {rel(seen[t.id].path)})")
+        else:
+            seen[t.id] = t
+        implied = subtask_status(t.body)
+        if implied is not None and implied != t.status:
+            warnings.append(
+                f"{r}: status {t.status!r} disagrees with subtask ✅ marks (expect {implied!r})"
+            )
+
+    ids = set(t.id for t in tasks if t.fields)
+    for t in tasks:
+        if not t.fields:
+            continue
+        for dep in t.dependencies:
+            if dep not in ids:
+                errors.append(f"{rel(t.path)}: dependency {dep!r} doesn't resolve")
+
+    for e in errors:
+        sys.stderr.write(f"error: {e}\n")
+    for w in warnings:
+        sys.stderr.write(f"warning: {w}\n")
+    if warn_only:
+        return 0
+    return 1 if errors else 0
+
+
+# --- index ---
+
+def cmd_index(args):
+    write = False
+    which = "both"
+    for a in args:
+        if a == "--write":
+            write = True
+        elif a == "--tasks":
+            which = "tasks"
+        elif a == "--milestones":
+            which = "milestones"
+        else:
+            return usage("index [--write] [--milestones | --tasks]")
+
+    tasks = read_tasks()
+    open_tasks = [t for t in tasks if t.status in ("open", "in-progress") and not t.is_milestone()]
+    done_tasks = [t for t in tasks if t.status == "done" and not t.is_milestone()]
+    milestones = [t for t in tasks if t.is_milestone()]
+
+    open_tasks.sort(key=lambda t: (-t.priority, t.name.lower()))
+    done_tasks.sort(key=lambda t: t.name.lower())
+    milestones.sort(key=lambda t: t.milestone_n())
+
+    def task_line(t):
+        done = "✅ " if t.status == "done" else ""
+        prio = f" [p{t.priority}]" if t.priority != 0 else ""
+        return f"- {done}**{t.name}** (`{t.id}`{prio}): {t.summary} — [tasks/{t.id}.md](tasks/{t.id}.md)"
+
+    def milestone_line(t):
+        n = t.milestone_n()
+        return f"{n}. ✅ **{t.name}** — {t.summary} — [tasks/milestone_{n}.md](tasks/milestone_{n}.md)"
+
+    task_lines = [task_line(t) for t in open_tasks + done_tasks]
+    milestone_lines = [milestone_line(t) for t in milestones]
+
+    if write:
+        return write_index(task_lines, milestone_lines, which)
+
+    out = []
+    if which in ("tasks", "both"):
+        out.extend(task_lines)
+    if which in ("milestones", "both"):
+        out.extend(milestone_lines)
+    print("\n".join(out))
+    return 0
+
+
+def splice(text, start, end, lines):
+    if start not in text or end not in text:
+        sys.stderr.write(f"scripts/tasks: missing marker {start} / {end} in PLAN.md\n")
+        return None
+    si = text.index(start)
+    ei = text.index(end)
+    prefix = text[: si + len(start)]
+    suffix = text[ei:]
+    body = "\n".join(lines)
+    return prefix + "\n" + body + "\n" + suffix
+
+
+def write_index(task_lines, milestone_lines, which):
+    if not PLAN.is_file():
+        sys.stderr.write("scripts/tasks: PLAN.md not found\n")
+        return 1
+    text = PLAN.read_text()
+    if which in ("tasks", "both"):
+        new = splice(text, TASKS_START, TASKS_END, task_lines)
+        if new is None:
+            return 1
+        text = new
+    if which in ("milestones", "both"):
+        new = splice(text, MILESTONES_START, MILESTONES_END, milestone_lines)
+        if new is None:
+            return 1
+        text = new
+    PLAN.write_text(text)
+    return 0
+
+
+# --- done-since ---
+
+def cmd_done_since(args):
+    if not 1 <= len(args) <= 2:
+        return usage("done-since <since> [<until>]")
+    since = args[0]
+    until = args[1] if len(args) == 2 else "HEAD"
+
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "--unified=0", f"{since}..{until}", "--", "tasks/"],
+            cwd=str(REPO), capture_output=True, text=True, check=True,
+        ).stdout
+    except subprocess.CalledProcessError as e:
+        sys.stderr.write(f"scripts/tasks: git diff failed: {e.stderr.strip()}\n")
+        return 1
+
+    files = {}
+    current = None
+    for line in diff.split("\n"):
+        if line.startswith("+++ b/tasks/"):
+            m = re.match(r"\+{3} b/tasks/([^/]+)\.md", line)
+            if m:
+                current = m.group(1)
+                files.setdefault(current, {"removed": set(), "added": set()})
+        elif current is not None:
+            if line.startswith("-status: "):
+                files[current]["removed"].add(line[len("-status: "):].strip())
+            elif line.startswith("+status: "):
+                files[current]["added"].add(line[len("+status: "):].strip())
+
+    flipped = sorted(
+        fid
+        for fid, info in files.items()
+        if (info["removed"] & {"open", "in-progress"}) and "done" in info["added"]
+    )
+
+    for fid in flipped:
+        try:
+            content = subprocess.run(
+                ["git", "show", f"{until}:tasks/{fid}.md"],
+                cwd=str(REPO), capture_output=True, text=True, check=True,
+            ).stdout
+        except subprocess.CalledProcessError as e:
+            sys.stderr.write(f"scripts/tasks: git show {fid} failed: {e.stderr.strip()}\n")
+            return 1
+        fields, _ = parse_front_matter(content)
+        if not fields:
+            sys.stderr.write(f"scripts/tasks: {fid} has no front-matter at {until}\n")
+            return 1
+        print(f"- **{fields.get('name', '')}**: {fields.get('summary', '')}")
+    return 0
+
+
+# --- main ---
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        sys.stdout.write(__doc__)
+        return 0
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "list":
+        return cmd_list(rest)
+    if cmd == "show":
+        return cmd_show(rest)
+    if cmd == "find":
+        return cmd_find(rest)
+    if cmd == "check":
+        return cmd_check(rest)
+    if cmd == "index":
+        return cmd_index(rest)
+    if cmd == "done-since":
+        return cmd_done_since(rest)
+    return usage(f"unknown command {cmd!r}")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
