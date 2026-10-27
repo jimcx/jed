@@ -92,9 +92,10 @@ impl Selection {
     }
 }
 
-/// Whether `c` can be part of a path: ASCII alphanumeric or one of `/ : - _ .`.
+/// Whether `c` can be part of a path: ASCII alphanumeric or one of `/ : - _ .~`.
+/// ~ is included for home path expansion.
 fn is_path_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, '/' | ':' | '-' | '_' | '.')
+    c.is_ascii_alphanumeric() || matches!(c, '/' | ':' | '-' | '_' | '.' | '~')
 }
 
 /// Whether the viewport cell `(row, col)` of `screen` holds a path character (a wide character,
