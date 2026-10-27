@@ -2,7 +2,7 @@
 id: term_area
 name: Terminal area
 summary: interactive terminals (shell tabs) get a full-width area above the status bar that behaves like an editor group, but only terminal tabs dock there
-status: in-progress
+status: done
 priority: 0
 dependencies: []
 ---
@@ -25,4 +25,8 @@ See [Layout](../PLAN.md#layout), [Tasks](../PLAN.md#tasks-throwaway-terminals).
       - Built: group keys, splits and move-tab keys act on the focused area via `tab_groups[_mut]` / `groups_of_mut(id)` (`app/shell.rs`); `tab_drop_at(from, x, y)` skips groups `can_dock(from, to)` refuses — the one place c lifts for terminal ↔ editor moves; `Divider.terminal` picks the tree a divider drag edits; the area hides when none of its groups holds a shell (empty groups and the tree are kept for the next open)
       - For c: `terminal_size()` sizes a new PTY while the area is hidden from the full-width region, not a split's share (the next draw resizes it)
       - Still to check by hand: edge-drop shade, divider drag between side-by-side shells, Cmd+\ with real shells
-    - term_area-c: moving a terminal into / out of an editor group ("Move Terminal into Editor Area" / "into Terminal Area" and dragging it onto an editor group), the startup terminal (a new session opens one in the area; nothing about the area is session state), the done-when tests, gaps and hand checks; marks the task ✅
+    - ✅ term_area-c: moving a terminal into / out of an editor group ("Move Terminal into Editor Area" / "into Terminal Area" and dragging it onto an editor group), the startup terminal (a new session opens one in the area; nothing about the area is session state), the done-when tests, gaps and hand checks; marks the task ✅
+      - Built: `can_dock` allows terminal → editor only; `move_tab_across` (`app/tab_drag.rs`) serves the drop and both commands (`terminal.moveToEditor` / `terminal.moveToTerminal`, `move_terminal` in `app/shell.rs`) over `Groups::take_tab` / `put_tab`; `App::startup_terminal` (off in `App::new`, on in `main.rs`) makes `start` open one shell in the shown area, focus left on the editor, never in single-file / editor mode; `term_area_done_when` walks the done-when
+      - Also: PLAN.md Layout gains a Terminal area row and bullet
+      - Deferred: dragging an editor-group shell into the area stays refused (the command brings it back; VS Code would accept the drag); `terminal_size()` while the area is hidden sizes from the full-width region (the next draw resizes); `move_tab_between` could go (`move_tab_across` only needs take + put) but its tests would need rewriting
+      - Still to check by hand: Ctrl+` and the startup terminal in a real run (one shell, shown, focus on the editor); dragging a terminal onto an editor group's bar, centre and edge with the shade; typing into the moved shell, then "Move Terminal into Terminal Area"; Cmd+\ with real shells; border drag and pointer; the area's scroll bar; a divider drag between side-by-side shells

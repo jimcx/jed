@@ -76,10 +76,10 @@ fn snap_side(rect: Rect, x: u16, y: u16) -> Option<DropSide> {
 }
 
 /// Whether a tab dragged out of group `from` may land in group `to`. Only terminals dock in the
-/// terminal area and the area's terminals stay in it for now, so a drag between the area and an
-/// editor group is refused in both directions (the one place term_area-c relaxes).
+/// terminal area, and only from the area itself (an editor group's shell goes back with "Move
+/// Terminal into Terminal Area"); a terminal may drop on any editor group.
 fn can_dock(from: GroupId, to: GroupId) -> bool {
-    is_terminal_group(from) == is_terminal_group(to)
+    !is_terminal_group(to) || is_terminal_group(from)
 }
 
 impl App {
@@ -207,10 +207,7 @@ impl App {
                 let Some(new) = self.groups_of_mut(group).split_empty_of(group, side) else {
                     return;
                 };
-                if self
-                    .groups_of_mut(group)
-                    .move_tab_between(drag.from, drag.index, new, None)
-                {
+                if self.move_tab_across(drag.from, drag.index, new, None) {
                     self.focus_dropped(group);
                 } else {
                     // Nothing moved: don't leave the empty split behind.
@@ -224,17 +221,34 @@ impl App {
         if let Some((buf, _)) = self.active_mut() {
             buf.seal_undo();
         }
-        if self
-            .groups_of_mut(group)
-            .move_tab_between(drag.from, drag.index, group, at)
-        {
+        if self.move_tab_across(drag.from, drag.index, group, at) {
             self.focus_dropped(group);
         }
     }
 
-    /// After a tab dropped into `group`: its area has the focus (the terminal area's or the editor's).
-    fn focus_dropped(&mut self, group: GroupId) {
+    /// Moves the tab at `index` of group `from` into group `to` (at a gap, or right of its active
+    /// tab for `None`), within one area or between the terminal area and an editor group:
+    /// `Groups::take_tab` out of `from`'s groups (an emptied group closes), `put_tab` into `to`'s.
+    /// The terminal area hides when its last shell leaves. False and nothing changes for an
+    /// unknown group or a bad `index`.
+    pub(super) fn move_tab_across(&mut self, from: GroupId, index: usize, to: GroupId, at: Option<usize>) -> bool {
+        if from == to || self.any_group(to).is_none() || self.any_group(from).is_none_or(|g| index >= g.tabs.len()) {
+            return false;
+        }
+        let moved = if is_terminal_group(from) == is_terminal_group(to) {
+            self.groups_of_mut(to).move_tab_between(from, index, to, at)
+        } else {
+            let tab = self.groups_of_mut(from).take_tab(from, index);
+            tab.is_some_and(|tab| self.groups_of_mut(to).put_tab(to, tab, at))
+        };
+        self.hide_empty_terminals();
+        moved
+    }
+
+    /// After a tab dropped into `group`: its area has the focus (the terminal area's, shown, or the editor's).
+    pub(super) fn focus_dropped(&mut self, group: GroupId) {
         if is_terminal_group(group) {
+            self.ui.terminal_visible = true;
             self.ui.focus = Focus::Terminal;
         } else {
             self.ui.focus = Focus::Editor;
@@ -245,7 +259,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{gap_at, snap_side};
+    use super::{can_dock, gap_at, snap_side};
+    use crate::group::TERMINAL_GROUP_BASE as T;
     use crate::layout::{DropSide, TabHit};
     use ratatui::layout::Rect;
 
@@ -256,6 +271,13 @@ mod tests {
             x1,
             close_x: x0,
         }
+    }
+
+    #[test]
+    fn only_terminals_dock_in_the_area_and_only_from_it() {
+        assert!(can_dock(T, T + 1) && can_dock(0, 1));
+        assert!(can_dock(T, 0), "a terminal drops on an editor group");
+        assert!(!can_dock(0, T), "nothing from an editor group docks in the area");
     }
 
     #[test]

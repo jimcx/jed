@@ -441,28 +441,42 @@ impl Groups {
     /// becomes the active group. A source group left without tabs closes. False and nothing
     /// changes for an unknown group or a bad `index`.
     pub fn move_tab_between(&mut self, from: GroupId, index: usize, to: GroupId, at: Option<usize>) -> bool {
-        if from == to || !self.map.contains_key(&from) || !self.map.contains_key(&to) {
+        if from == to || !self.map.contains_key(&to) {
             return false;
         }
-        let source = self.map.get_mut(&from).expect("checked");
-        if index >= source.tabs.len() {
+        let Some(tab) = self.take_tab(from, index) else {
             return false;
+        };
+        self.put_tab(to, tab, at)
+    }
+
+    /// Takes the tab at `index` out of group `from`; a group left without tabs closes (never the
+    /// last). `None` and nothing changes for an unknown group or a bad `index`. The first half of
+    /// a move; `put_tab` is the second, which may be in another `Groups` (the terminal area's).
+    pub fn take_tab(&mut self, from: GroupId, index: usize) -> Option<Tab> {
+        let source = self.map.get_mut(&from)?;
+        if index >= source.tabs.len() {
+            return None;
         }
         let tab = source.close(index);
-        let empty = source.tabs.is_empty();
-        let target = self.map.get_mut(&to).expect("checked");
-        match at {
-            Some(at) => {
-                target.insert(tab, at);
-            }
-            None => {
-                target.take(tab);
-            }
-        }
-        self.active = to;
-        if empty {
+        if source.tabs.is_empty() {
             self.remove(from);
         }
+        Some(tab)
+    }
+
+    /// Puts a tab taken out of some group into `to`, at `at` among its tabs or (`None`) right of
+    /// its active tab, activated; `to` becomes the active group. False (the tab dropped) for an
+    /// unknown group.
+    pub fn put_tab(&mut self, to: GroupId, tab: Tab, at: Option<usize>) -> bool {
+        let Some(target) = self.map.get_mut(&to) else {
+            return false;
+        };
+        match at {
+            Some(at) => target.insert(tab, at),
+            None => target.take(tab),
+        };
+        self.active = to;
         true
     }
 
@@ -829,6 +843,24 @@ mod tests {
         assert_eq!(gs.active, third);
         assert_eq!(buffers(gs.active_group()), [2]);
         assert_eq!(buffers(gs.get(first).unwrap()), [1]);
+    }
+
+    /// `take_tab` / `put_tab` are `move_tab_between`'s halves, usable across two `Groups`.
+    #[test]
+    fn a_tab_taken_from_one_groups_is_put_into_another() {
+        let mut a = Groups::default();
+        a.active_group_mut().open(1, View::new());
+        a.active_group_mut().open(2, View::new());
+        let mut b = Groups::starting_at(TERMINAL_GROUP_BASE);
+        assert!(a.take_tab(0, 9).is_none(), "bad index");
+        assert!(a.take_tab(7, 0).is_none(), "bad group");
+        let tab = a.take_tab(0, 0).unwrap();
+        assert_eq!(buffers(a.active_group()), [2]);
+        assert!(!b.put_tab(99, tab, None), "bad group");
+        let tab = a.take_tab(0, 0).unwrap();
+        assert_eq!(a.len(), 1, "the last group stays, empty");
+        assert!(b.put_tab(TERMINAL_GROUP_BASE, tab, None));
+        assert_eq!((b.active, buffers(b.active_group())), (TERMINAL_GROUP_BASE, vec![2]));
     }
 
     #[test]

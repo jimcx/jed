@@ -438,6 +438,10 @@ pub struct App {
     /// its stream on every `watch` and pegs `fseventsd`) and tests that exercise file-change
     /// detection turn it back on with `enable_file_watching`.
     watch_files: bool,
+    /// Whether `start` opens one terminal in the terminal area (a normal run: `main` turns it on;
+    /// off by default so the many test apps spawn no shells; tests of the startup terminal set it
+    /// before `test_start`). Never in single file mode.
+    pub startup_terminal: bool,
     watcher: Option<Watcher>,
     fs_pending: HashSet<PathBuf>,
     fs_deadline: Option<tokio::time::Instant>,
@@ -640,6 +644,7 @@ impl App {
             tx,
             rx,
             watch_files: !cfg!(test),
+            startup_terminal: false,
             watcher: None,
             fs_pending: HashSet::new(),
             fs_deadline: None,
@@ -746,6 +751,7 @@ impl App {
         }
         self.watch_config_dir();
         self.start_ipc();
+        self.start_terminal();
         self.refresh_git_head();
         self.restore_session();
         self.scan_backups();
@@ -1416,6 +1422,8 @@ impl App {
             Command::RestoreFileHistory => self.show_file_history(true),
             Command::RunTask => self.show_run_task(),
             Command::NewShell => self.new_shell(),
+            Command::MoveTerminalToEditor => self.move_terminal(false),
+            Command::MoveTerminalToArea => self.move_terminal(true),
             Command::InstallShellIntegration => self.install_shell_integration(),
             Command::OpenRecentWorkspace => self.show_recent(),
             Command::ToggleRenderWhitespace => self.ui.whitespace_toggled = !self.ui.whitespace_toggled,

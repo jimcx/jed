@@ -245,8 +245,13 @@ pub enum Command {
     RestoreFileHistory,
     /// "Run Task": a picker of the task templates; picking one runs it in a new panel tab.
     RunTask,
-    /// "Terminal: New Shell": the user's `$SHELL` in a new tab of the active group.
+    /// "Terminal: New Shell": the user's `$SHELL` in a new tab of the terminal area.
     NewShell,
+    /// "Terminal: Move Terminal into Editor Area": the terminal area's active terminal into the active editor group.
+    MoveTerminalToEditor,
+    /// "Terminal: Move Terminal into Terminal Area": the active editor group's shell tab into the
+    /// terminal area.
+    MoveTerminalToArea,
     /// "Terminal: Install Shell Integration": the snippet's path and the line that sources it in
     /// the shell's init file; Copy, or append it to the file.
     InstallShellIntegration,
@@ -944,6 +949,8 @@ impl Command {
         all.extend([
             Command::RunTask,
             Command::NewShell,
+            Command::MoveTerminalToEditor,
+            Command::MoveTerminalToArea,
             Command::InstallShellIntegration,
             Command::KillTask,
             Command::CloseTask,
@@ -1274,6 +1281,8 @@ impl Command {
             Command::PreviousChange => "editor.previousChange".into(),
             Command::RunTask => "task.run".into(),
             Command::NewShell => "terminal.newShell".into(),
+            Command::MoveTerminalToEditor => "terminal.moveToEditor".into(),
+            Command::MoveTerminalToArea => "terminal.moveToTerminal".into(),
             Command::InstallShellIntegration => "terminal.installShellIntegration".into(),
             Command::KillTask => "task.kill".into(),
             Command::CloseTask => "task.close".into(),
@@ -1601,6 +1610,8 @@ impl Command {
             Command::PreviousChange => "Go to Previous Change",
             Command::RunTask => "Tasks: Run Task",
             Command::NewShell => "Terminal: New Shell",
+            Command::MoveTerminalToEditor => "Terminal: Move Terminal into Editor Area",
+            Command::MoveTerminalToArea => "Terminal: Move Terminal into Terminal Area",
             Command::InstallShellIntegration => "Terminal: Install Shell Integration",
             Command::KillTask => "Tasks: Kill Task",
             Command::CloseTask => "Tasks: Close Task Tab",
@@ -1818,9 +1829,11 @@ mod tests {
             Command::ConvertIndentationToSpaces => 111,
             Command::ConvertIndentationToTabs => 112,
             Command::ToggleWordWrap => 128,
+            Command::MoveTerminalToEditor => 129,
+            Command::MoveTerminalToArea => 130,
         }
     }
-    const VARIANTS: u8 = 129;
+    const VARIANTS: u8 = 131;
 
     #[test]
     fn all_lists_every_variant() {

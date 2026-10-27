@@ -474,6 +474,7 @@ fn main() -> ExitCode {
             runtime.block_on(async {
                 let mut app = app::App::new_in(mode, workspace, trust_store, initial, identity, kitty);
                 app.editor_hint = hint;
+                app.startup_terminal = true;
                 if let Some((path, doc)) = initial_hex {
                     app.open_initial_hex(path, doc);
                 }

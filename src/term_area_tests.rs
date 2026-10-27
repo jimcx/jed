@@ -7,7 +7,9 @@
 //! the focus, its scroll bar, and editor-group shell tabs still working beside it. term_area-b:
 //! splitting the area (empty groups, never a copied shell), the group keys following the focused
 //! area, reordering and moving terminals by key and drag, edge-drop splits with their shade,
-//! refused drags between the area and editor groups, Esc cancelling, divider drags, hiding.
+//! refused drags into the area, Esc cancelling, divider drags, hiding. term_area-c: moving a
+//! terminal into an editor group (drag onto its bar, screen or edge; "Move Terminal into Editor
+//! Area") and back ("... into Terminal Area"), the startup terminal, and the done-when walk.
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
@@ -623,8 +625,8 @@ async fn term_area_divider_drag_resizes_the_area() {
     assert_eq!(app.groups.tree, before, "the editor's tree is untouched");
 }
 
-/// A text tab can't be dragged into the area, and a terminal can't be dragged into an editor
-/// group (until term_area-c): no marker or shade, nothing moves.
+/// A text tab can't be dragged into the area, nor can an editor group's shell tab: no marker or
+/// shade, nothing moves.
 #[tokio::test(flavor = "multi_thread")]
 async fn term_area_refuses_drags_between_the_area_and_editor_groups() {
     let (_d, root, state) = dirs();
@@ -657,24 +659,24 @@ async fn term_area_refuses_drags_between_the_area_and_editor_groups() {
     assert_eq!(app.terminals.get(tg).unwrap().tabs.len(), 1);
     assert_eq!(app.groups.get(eg).unwrap().tabs.len(), 1);
     draw(&mut app, 100, 40);
-    // Terminal -> the editor group's screen, edge and bar: no shade, no marker, nothing moves.
-    let editor = app.hits.group(eg).unwrap().editor;
-    let bar = app.hits.group(eg).unwrap().tab_bar;
-    let from = tab_point(&app, tg, 0);
+    // An editor group's shell tab is refused by the area too (the command brings it back).
+    app.new_shell_in_editor();
+    draw(&mut app, 100, 40);
+    let from = tab_point(&app, eg, 1);
     app.mouse(MouseEventKind::Down(MouseButton::Left), from.0, from.1);
-    for (x, y) in [centre(editor), edge_point(editor, DropSide::Right), (bar.x + 2, bar.y)] {
+    for (x, y) in [
+        centre(screen),
+        edge_point(screen, DropSide::Left),
+        (tbar.x + tbar.width - 2, tbar.y),
+    ] {
         app.mouse(MouseEventKind::Drag(MouseButton::Left), x, y);
         let term = draw(&mut app, 100, 40);
-        assert_eq!(shaded_cells(&app, &term, editor), 0, "no shade at ({x}, {y})");
-        assert_eq!(app.tab_drop_in(eg), None, "no marker at ({x}, {y})");
+        assert_eq!(shaded_cells(&app, &term, screen), 0, "no shade at ({x}, {y})");
+        assert_eq!(app.tab_drop_in(tg), None, "no marker at ({x}, {y})");
     }
-    app.mouse(MouseEventKind::Up(MouseButton::Left), bar.x + 2, bar.y);
-    assert_eq!(app.terminals.get(tg).unwrap().tabs.len(), 1, "the terminal stays");
-    assert_eq!(app.groups.get(eg).unwrap().tabs.len(), 1);
-    assert_eq!(app.groups.len(), 1);
-    drag_tab(&mut app, tg, centre(editor));
-    assert_eq!(app.terminals.get(tg).unwrap().tabs.len(), 1, "the terminal stays");
-    assert_eq!(app.groups.get(eg).unwrap().tabs.len(), 1);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), screen.x + 3, screen.y + 3);
+    assert_eq!(app.terminals.get(tg).unwrap().tabs.len(), 1);
+    assert_eq!(app.groups.get(eg).unwrap().tabs.len(), 2, "the editor's shell stays");
 }
 
 /// With the editor focused, the split and group keys act on the editor's groups even while the
@@ -750,4 +752,282 @@ async fn term_area_new_shell_after_hiding_with_empty_groups() {
     let term = draw(&mut app, 100, 40);
     let screen = app.hits.group(app.terminals.active).unwrap().editor;
     assert!(screen.contains(term.backend().cursor_position()));
+}
+
+// ---- term_area-c: between the area and editor groups, the startup terminal ----
+
+/// Sends `echo $((n*n))` to the focused shell and waits for the result in the shell `tab` of
+/// `group` (an editor group's or the area's).
+async fn shell_answers(app: &mut App, group: GroupId, n: u32) {
+    app.type_text(&format!("echo $(({n}*{n}))"));
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    let want = (n * n).to_string();
+    let seen = move |a: &App| {
+        (if is_terminal_group(group) {
+            &a.terminals
+        } else {
+            &a.groups
+        })
+        .get(group)
+        .unwrap()
+        .tabs
+        .iter()
+        .filter_map(|t| t.shell())
+        .any(|s| {
+            let text = s.run.screen().screen().contents();
+            text.lines().any(|l| l.trim() == want)
+        })
+    };
+    assert!(app.settle(seen).await, "no answer from the shell");
+}
+
+/// A terminal dropped on an editor group's bar, screen centre or edge band becomes an editor
+/// shell tab of that group, alive (it answers keys), and the area hides with its last terminal.
+#[tokio::test(flavor = "multi_thread")]
+async fn term_area_drag_a_terminal_onto_an_editor_group() {
+    let (_d, root, state) = dirs();
+    for target in ["bar", "centre", "edge"] {
+        let mut app = area_app(&root, &state, 2);
+        let eg = app.groups.active;
+        let tg = app.terminals.active;
+        let editor = app.hits.group(eg).unwrap().editor;
+        let bar = app.hits.group(eg).unwrap().tab_bar;
+        let to = match target {
+            "bar" => (bar.x + bar.width - 2, bar.y),
+            "centre" => centre(editor),
+            _ => edge_point(editor, DropSide::Right),
+        };
+        let from = tab_point(&app, tg, 0);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), from.0, from.1);
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), to.0, to.1);
+        if target != "bar" {
+            let term = draw(&mut app, 100, 40);
+            assert!(shaded_cells(&app, &term, editor) > 0, "{target}: the zone is shaded");
+        }
+        app.mouse(MouseEventKind::Up(MouseButton::Left), to.0, to.1);
+        let eg_now = if target == "edge" {
+            assert_eq!(app.groups.len(), 2, "the edge splits the editor");
+            *app.groups.ids().iter().find(|&&g| g != eg).unwrap()
+        } else {
+            assert_eq!(app.groups.len(), 1);
+            eg
+        };
+        assert_eq!(app.groups.active, eg_now, "{target}");
+        assert_eq!(
+            app.terminals.get(tg).unwrap().tabs.len(),
+            1,
+            "{target}: one terminal left"
+        );
+        assert!(app.ui.terminal_visible);
+        let moved = app.groups.get(eg_now).unwrap();
+        assert!(moved.active_shell().is_some(), "{target}: an editor Tab::Shell, active");
+        assert_eq!(app.ui.focus, Focus::Editor);
+        assert_eq!(app.context(), Context::Shell);
+        shell_answers(&mut app, eg_now, 12).await;
+        assert_eq!(app.shell_tabs().count(), 2);
+        // The last terminal leaving hides the area.
+        draw(&mut app, 100, 40);
+        let from = tab_point(&app, tg, 0);
+        let bar = app.hits.group(eg_now).unwrap().tab_bar;
+        drag(&mut app, from, (bar.x + bar.width - 2, bar.y));
+        assert!(!app.ui.terminal_visible, "{target}: the area hides");
+        assert_eq!(app.shell_tabs().count(), 2);
+        assert_eq!(app.ui.focus, Focus::Editor);
+    }
+}
+
+/// The two palette commands move the shell both ways, with a real palette pick for one; a text
+/// tab (or no terminal) is refused with a message.
+#[tokio::test(flavor = "multi_thread")]
+async fn term_area_move_commands() {
+    let (_d, root, state) = dirs();
+    let mut app = area_app(&root, &state, 1);
+    let eg = app.groups.active;
+    let tg = app.terminals.active;
+    for c in [Command::MoveTerminalToEditor, Command::MoveTerminalToArea] {
+        assert!(Command::all().contains(&c));
+    }
+    assert_eq!(Command::MoveTerminalToEditor.name(), "terminal.moveToEditor");
+    assert_eq!(Command::MoveTerminalToArea.name(), "terminal.moveToTerminal");
+    // A text tab is not a terminal.
+    app.test_execute(Command::MoveTerminalToArea);
+    assert!(app.message.as_ref().is_some_and(|m| m.text.contains("not a terminal")));
+    assert_eq!(app.groups.get(eg).unwrap().tabs.len(), 1);
+
+    // Into the editor area, through the palette.
+    app.press(KeyCode::Char('p'), cmd() | KeyModifiers::SHIFT);
+    app.type_text("Move Terminal into Editor Area");
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.palette.is_none());
+    assert_eq!(app.groups.get(eg).unwrap().tabs.len(), 2);
+    assert!(app.group().active_shell().is_some());
+    assert!(!app.ui.terminal_visible, "the area hid with its last terminal");
+    assert_eq!(app.ui.focus, Focus::Editor);
+    shell_answers(&mut app, eg, 9).await;
+    // With none left there is nothing to move.
+    app.test_execute(Command::MoveTerminalToEditor);
+    assert!(app.message.as_ref().is_some_and(|m| m.text.contains("No terminal")));
+
+    // Back: the area shows again, focused, the shell alive.
+    app.test_execute(Command::MoveTerminalToArea);
+    assert!(app.ui.terminal_visible);
+    assert_eq!(app.ui.focus, Focus::Terminal);
+    assert_eq!(app.terminals.get(tg).unwrap().tabs.len(), 1);
+    assert_eq!(app.groups.get(eg).unwrap().tabs.len(), 1);
+    assert_eq!(app.shell_tabs().count(), 1);
+    draw(&mut app, 100, 40);
+    shell_answers(&mut app, tg, 11).await;
+
+    // With the area split, the active terminal group's shell is the one that moves; its emptied
+    // group closes, the other's shell stays and the area stays shown.
+    app.test_execute(Command::SplitRight);
+    app.test_execute(Command::NewShell);
+    let second = app.terminals.active;
+    assert_ne!(second, tg);
+    assert_eq!(app.terminals.len(), 2);
+    app.test_execute(Command::MoveTerminalToEditor);
+    assert_eq!(app.terminals.ids(), vec![tg]);
+    assert_eq!(app.terminals.active, tg);
+    assert_eq!(app.terminals.get(tg).unwrap().tabs.len(), 1);
+    assert!(app.ui.terminal_visible);
+    assert!(app.groups.get(eg).unwrap().active_shell().is_some());
+    assert_eq!((app.groups.len(), app.ui.focus), (1, Focus::Editor));
+}
+
+/// A new session opens one terminal in the shown area (the focus stays on the editor), a
+/// restored session isn't disturbed and brings no shell back, the saved file holds none, and
+/// single file mode opens none.
+#[tokio::test(flavor = "multi_thread")]
+async fn term_area_startup_terminal() {
+    let (_d, root, state) = dirs();
+    std::fs::write(root.join("a.txt"), "hello").unwrap();
+    let build = |mode: crate::app::Mode| {
+        let ws = crate::workspace::Workspace::load(root.clone());
+        let trust = crate::TrustStore::load(state.join("trust.toml"));
+        let initial = Some(crate::app::InitialFile {
+            buffer: Buffer::open(&root.join("a.txt")).unwrap(),
+            goto: None,
+        });
+        let identity = App::start_identity(&ws, mode, initial.as_ref());
+        let mut app = App::new_in(mode, ws, trust, initial, identity, true);
+        app.tasks.shell = "/bin/sh".into();
+        app.state_dir = Some(state.clone());
+        app.startup_terminal = true;
+        app.test_start();
+        app
+    };
+    let mut app = build(crate::app::Mode::Workspace);
+    assert!(app.settle(|a| !a.session.loading()).await);
+    assert!(app.ui.terminal_visible);
+    assert_eq!(app.shell_tabs().count(), 1);
+    assert_eq!(app.terminals.active_group().tabs.len(), 1);
+    assert_eq!(app.ui.focus, Focus::Editor, "typing still goes to the file");
+    draw(&mut app, 100, 30);
+    assert!(app.hits.regions.terminal.is_some());
+    app.test_execute(Command::Quit);
+    app.shutdown().await;
+    let saved = std::fs::read_to_string(crate::session::file(&state, &root)).unwrap();
+    assert!(
+        !saved.to_lowercase().contains("shell") && !saved.contains("terminal"),
+        "{saved}"
+    );
+
+    // The next session restores the file and opens exactly one terminal, not two.
+    let mut app = build(crate::app::Mode::Workspace);
+    assert!(app.settle(|a| !a.session.loading()).await);
+    assert_eq!(app.shell_tabs().count(), 1);
+    assert_eq!(app.session.restored, 1);
+    assert!(
+        app.groups.active_group().active_tab().is_some(),
+        "the file is still open"
+    );
+    app.shutdown().await;
+
+    let app = build(crate::app::Mode::SingleFile);
+    assert_eq!(app.shell_tabs().count(), 0, "single file mode: none");
+    assert!(!app.ui.terminal_visible);
+}
+
+/// The task's Done when, on one app.
+#[tokio::test(flavor = "multi_thread")]
+async fn term_area_done_when() {
+    let (_d, root, state) = dirs();
+    let mut app = app_in(&root, &state);
+    app.test_open(Buffer::new_file(&root.join("a.txt")));
+    app.ui.terminal_height = 20;
+    let editor_width = {
+        draw(&mut app, 100, 40);
+        app.hits.regions.editor.width
+    };
+    // Ctrl+` opens a shell in the area, the editor keeping its width.
+    app.press(KeyCode::Char('`'), KeyModifiers::CONTROL);
+    draw(&mut app, 100, 40);
+    let tg = app.terminals.active;
+    assert_eq!(app.terminals.get(tg).unwrap().tabs.len(), 1);
+    assert_eq!(app.hits.regions.editor.width, editor_width);
+    assert!(app.hits.regions.editor.height >= MIN_EDITOR_HEIGHT);
+    // A second shell is a tab, reordered by dragging.
+    app.test_execute(Command::NewShell);
+    draw(&mut app, 100, 40);
+    let first = titles(&app, tg);
+    let hit = app.hits.group(tg).unwrap();
+    let to = (hit.tabs[1].x1.saturating_sub(1), hit.tab_bar.y);
+    drag_tab(&mut app, tg, to);
+    assert_eq!(titles(&app, tg), [first[1].clone(), first[0].clone()]);
+    // Split by Cmd+\ into two live shells side by side (the new group empty, so move one in
+    // by dragging onto the first group's edge instead: a second split).
+    draw(&mut app, 100, 40);
+    let screen = app.hits.group(tg).unwrap().editor;
+    let from = tab_point(&app, tg, 0);
+    drag(&mut app, from, edge_point(screen, DropSide::Right));
+    assert_eq!(app.terminals.len(), 2);
+    draw(&mut app, 100, 40);
+    let ids = app.terminals.ids();
+    let (a, b) = (
+        app.hits.group(ids[0]).unwrap().editor,
+        app.hits.group(ids[1]).unwrap().editor,
+    );
+    assert!(a.x + a.width <= b.x, "side by side");
+    // Both live: each answers in its own group.
+    for (i, &g) in ids.iter().enumerate() {
+        assert_eq!(app.terminals.get(g).unwrap().tabs.len(), 1);
+        app.test_execute(Command::FocusGroup(i as u8 + 1));
+        assert_eq!((app.terminals.active, app.ui.focus), (g, Focus::Terminal));
+        shell_answers(&mut app, g, 5 + i as u32).await;
+    }
+    // Dropping a text tab into the area is refused.
+    draw(&mut app, 100, 40);
+    let eg = app.groups.active;
+    let from = tab_point(&app, eg, 0);
+    let to = centre(app.hits.group(tg).unwrap().editor);
+    drag(&mut app, from, to);
+    assert_eq!(app.groups.get(eg).unwrap().tabs.len(), 1);
+    assert_eq!(app.shell_tabs().count(), 2);
+    // A terminal dragged onto the editor moves there; the command brings it back.
+    draw(&mut app, 100, 40);
+    let from = tab_point(&app, tg, 0);
+    let to = centre(app.hits.group(eg).unwrap().editor);
+    drag(&mut app, from, to);
+    assert!(app.groups.get(eg).unwrap().active_shell().is_some());
+    assert_eq!(app.terminals.len(), 1, "its emptied terminal group closed");
+    app.test_execute(Command::MoveTerminalToArea);
+    assert!(app.groups.get(eg).unwrap().tabs.iter().all(|t| t.shell().is_none()));
+    assert_eq!(
+        app.terminals.active_group().tabs.len(),
+        2,
+        "both shells in the area again"
+    );
+    assert_eq!(app.ui.focus, Focus::Terminal);
+    // Closing the last terminal hides the area; with no editor tabs the splash shows.
+    app.test_execute(Command::CloseTab);
+    assert!(app.ui.terminal_visible, "one terminal left");
+    app.test_execute(Command::CloseTab);
+    assert!(!app.ui.terminal_visible, "the last closed: hidden");
+    assert_eq!(app.ui.focus, Focus::Editor);
+    app.test_execute(Command::CloseTab);
+    let term = draw(&mut app, 100, 40);
+    assert!(app.hits.regions.terminal.is_none());
+    let all: String = term.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+    assert!(all.contains("Jim's Editor"), "the splash shows");
+    // (A new session opening one terminal: `term_area_startup_terminal`.)
 }

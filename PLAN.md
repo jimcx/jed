@@ -53,6 +53,8 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
 │t │            │ Panel (problems / tasks)                    │
 │y │            │                                             │
 ├──┴────────────┴─────────────────────────────────────────────┤
+│ Terminal area: [shell][shell]   (full width, shown on demand)│
+├─────────────────────────────────────────────────────────────┤
 │ Status bar: branch · diagnostics · Ln/Col · lang · encoding │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -60,6 +62,7 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
 - **Side panel**: switches with the activity bar; can be toggled and resized
 - **Editor area**: groups with tabs, split horizontally or vertically
 - **Bottom panel**: Problems list, task terminals
+- **Terminal area**: full width above the status bar, shown when a terminal opens (Ctrl+`) and hidden when the last closes. Its own tab bar and split tree of terminal groups, so shells reorder, split and drag as editor tabs do; only shells dock there. A shell moves to an editor group by dragging it there or "Terminal: Move Terminal into Editor Area" and back with "… into Terminal Area" (dragging an editor tab into the area is refused). A new session opens one terminal in it; its shown / height / splits are not session state
 - **Status bar**: git branch, diagnostic counts, cursor position, language mode, line ending
 
 ## Features
@@ -704,7 +707,6 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Snippets** (`snippets`): LSP snippet completions with tab stops, mirrors and choices — [tasks/snippets.md](tasks/snippets.md)
 - **Stage / unstage / revert selected lines** (`stage_selected_lines`): stage, unstage or revert just the selected lines — [tasks/stage_selected_lines.md](tasks/stage_selected_lines.md)
 - **Stale cargo check diagnostics** (`stale_cargo_check`): dim cargo-check diagnostics until the next save — [tasks/stale_cargo_check.md](tasks/stale_cargo_check.md)
-- **Terminal area** (`term_area`): interactive terminals (shell tabs) get a full-width area above the status bar that behaves like an editor group, but only terminal tabs dock there — [tasks/term_area.md](tasks/term_area.md)
 - **Themes** (`themes`): a built-in Light+, a `theme` setting, a picker with live preview and theme files — [tasks/themes.md](tasks/themes.md)
 - **Transform, sort and dedupe lines** (`transform_sort_dedupe`): change case, sort, and deduplicate lines — [tasks/transform_sort_dedupe.md](tasks/transform_sort_dedupe.md)
 - **VHDL: tree-sitter and VHDL-LS** (`vhdl`): VHDL files get syntax colours, comment / pair / indent behaviour and a language server (`vhdl_ls` from rust_hdl), as C++ / Python / Rust do — [tasks/vhdl.md](tasks/vhdl.md)
@@ -751,6 +753,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - ✅ **Soft wrap** (`soft_wrap`): wrap long lines at the editor's width, with movement, scrolling and the mouse on screen rows — [tasks/soft_wrap.md](tasks/soft_wrap.md)
 - ✅ **Syntax highlighting in the diff view** (`diff_syntax`): diff tabs draw both sides with the file's syntax colours — [tasks/diff_syntax.md](tasks/diff_syntax.md)
 - ✅ **Syntax plugins** (`syntax_plugins`): tree-sitter grammars from `~/.config/jed/languages/<id>/`, built with the system C compiler and loaded at runtime — [tasks/syntax_plugins.md](tasks/syntax_plugins.md)
+- ✅ **Terminal area** (`term_area`): interactive terminals (shell tabs) get a full-width area above the status bar that behaves like an editor group, but only terminal tabs dock there — [tasks/term_area.md](tasks/term_area.md)
 - ✅ **Terminal config snippets** (`terminal_config_snippets`): `docs/terminals/<terminal>.md` snippets passing every Cmd binding through, with Option-as-Alt — [tasks/terminal_config_snippets.md](tasks/terminal_config_snippets.md)
 - ✅ **Terminal scroll bars** (`term_scrollbar`): a shell tab and each task tab keep their last column for a vertical scroll bar, exactly like every other scrolled surface — [tasks/term_scrollbar.md](tasks/term_scrollbar.md)
 - ✅ **Terminal window identity** (`terminal_identity`): the window title, kitty user vars and OSC 7 — [tasks/terminal_identity.md](tasks/terminal_identity.md)

@@ -49,6 +49,8 @@ impl Mode {
                     | Command::OpenRecentWorkspace
                     | Command::RunTask
                     | Command::NewShell
+                    | Command::MoveTerminalToEditor
+                    | Command::MoveTerminalToArea
                     | Command::InstallShellIntegration
                     | Command::KillTask
                     | Command::CloseTask
@@ -120,6 +122,8 @@ mod tests {
             Command::TogglePanel,
             Command::RunTask,
             Command::NewShell,
+            Command::MoveTerminalToEditor,
+            Command::MoveTerminalToArea,
             Command::InstallShellIntegration,
             Command::Shell(crate::command::ShellCommand::ScrollUp),
             Command::NewUntitledFile,

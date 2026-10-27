@@ -185,6 +185,46 @@ impl App {
         }
     }
 
+    /// The terminal a new session starts with (`startup_terminal`, workspace mode): one shell in
+    /// the shown terminal area, the focus staying where it was (the editor, or the side panel
+    /// with no file), so typing goes to the opened file. The area is independent of the editor
+    /// groups, so a session restoring afterwards doesn't disturb it, and it is never saved.
+    pub(super) fn start_terminal(&mut self) {
+        if !self.startup_terminal {
+            return;
+        }
+        let focus = self.ui.focus;
+        self.new_shell();
+        self.ui.focus = focus;
+    }
+
+    /// "Terminal: Move Terminal into Editor Area" (`to_area` false: the terminal area's active
+    /// group's shell goes into the active editor group) / "... into Terminal Area" (`to_area`
+    /// true: the active editor group's shell goes into the area's active group, showing it). The
+    /// same move as a drag (`move_tab_across`), the shell staying alive; the target area has the
+    /// focus after. Without a shell to move, a message.
+    pub(super) fn move_terminal(&mut self, to_area: bool) {
+        let (from, to) = if to_area {
+            (self.groups.active, self.terminals.active)
+        } else {
+            (self.terminals.active, self.groups.active)
+        };
+        let Some(group) = self.any_group(from).filter(|g| g.active_shell().is_some()) else {
+            let msg = if to_area {
+                "The active tab is not a terminal"
+            } else {
+                "No terminal in the terminal area"
+            };
+            self.notify(Level::Info, msg.into());
+            return;
+        };
+        let index = group.active;
+        if self.move_tab_across(from, index, to, None) {
+            self.focus_dropped(to);
+        }
+        self.needs_redraw = true;
+    }
+
     /// "Terminal: Install Shell Integration" (`terminal.installShellIntegration`): writes the three
     /// snippets into the state dir off-thread and opens the wizard with the detected shell's init
     /// file and the line sourcing its snippet. A shell without a snippet (`sh`) gets a message
