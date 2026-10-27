@@ -1,11 +1,13 @@
 ---
 id: feature_test_files
 name: Feature-based end-to-end test files
-summary: "the `src/milestone*_tests.rs` files (and `src/todo_tests.rs`) are named after when the work was done, not what they test (`milestone2_tests.rs` = workspace, trust, explorer, tabs, file ops); move them to `src/tests/<feature>.rs` (e.g. `editing`, `multicursor`, `find`, `workspace_search`, `explorer`, `splits`, `palette`, `highlighting`, `lsp`, `git`, `diff_view`, `file_history`, `tasks`, `sessions`, `backups`, `recent`, …), splitting a milestone's file where it spans features and merging tests of one feature from several milestones. Rules for every step:"
+summary: reorganize milestone test files into per-feature files
 status: open
 priority: 0
 dependencies: []
 ---
+
+(four steps, in order, each done as its own `/task` by its bold name below): the `src/milestone*_tests.rs` files (and `src/todo_tests.rs`) are named after when the work was done, not what they test (`milestone2_tests.rs` = workspace, trust, explorer, tabs, file ops); move them to `src/tests/<feature>.rs` (e.g. `editing`, `multicursor`, `find`, `workspace_search`, `explorer`, `splits`, `palette`, `highlighting`, `lsp`, `git`, `diff_view`, `file_history`, `tasks`, `sessions`, `backups`, `recent`, …), splitting a milestone's file where it spans features and merging tests of one feature from several milestones. Rules for every step:
 
   - Pure move and rename: no test logic changes; the test count stays the same (compare `cargo test -- --list` before / after)
   - Tests renamed from `milestone_N_*` / `<id>_*` to the behaviour; `done_when` tests keep a recognisable name (`done_when_*`), their file's `//!` doc saying which milestone's "Done when" they cover; the release budget tests become `budget_*` (CLAUDE.md's `cargo test --release milestone` commands change to `budget` in the step that renames the last of them)

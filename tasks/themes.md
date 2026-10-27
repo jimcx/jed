@@ -7,6 +7,8 @@ priority: 0
 dependencies: []
 ---
 
+See [Themes](../PLAN.md#themes).
+
   - Needs: `Theme` and its keys (M8), settings layering (M8), the palette's pickers (M5)
   - Light+ with the same keys as Dark+; `theme` setting; "Preferences: Color Theme" with live preview, saved to `settings.toml`; theme files from `~/.config/jed/themes/`
   - Done when: picking Light+ recolours everything — editor, syntax, side bar, panel, popups, diff view, task terminals — with no Dark+ colour left (a test draws every view under both and finds no colour of the other theme); Esc in the picker restores the old theme; the choice survives a restart; a theme file dropped into the themes folder is listed and applies, and a broken one is reported and falls back

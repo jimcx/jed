@@ -7,6 +7,8 @@ priority: 0
 dependencies: []
 ---
 
+See [Syntax highlighting](../PLAN.md#syntax-highlighting), [LSP](../PLAN.md#lsp).
+
   - Language: `Language::Vhdl` (id `vhdl`, name "VHDL", VS Code's VHDL extensions' id); detected by `.vhd` / `.vhdl` (case-insensitive, as the other extensions; `.vho` / `.vhf` too if VS Code's VHDL extension lists them — check); `.workspace` associations work as for any language
   - Grammar: the `tree-sitter-vhdl` crate (1.4.0, jpt13653903/tree-sitter-vhdl, MIT, on `tree-sitter-language` like the others; its `HIGHLIGHTS_QUERY` is the Neovim query) — check its captures map to `highlight::KEYS` / `ALIASES` (the every-capture test), add `queries/vhdl.scm` for Dark+'s colours (control keywords `if` / `case` / `loop` / `process` …, built-in types `std_logic` / `integer` …, `--` comments). VHDL is case-insensitive: keyword / type predicates must match any case (`(?i)`). Its `parser.c` is 8.4 MB: note the clean-build time it adds; `scope_of` must know its string / comment / character-literal node kinds (`scopes_in_every_language`)
   - Language config (`LanguageConfig`, VS Code's VHDL extension's `language-configuration.json`): line comment `--`; brackets `()` (VHDL has no `{}` / `[]` blocks in practice — check the extension); quotes `"` (and `'` not auto-closed: it's attributes and character literals, `clk'event`); block comments `/* */` (VHDL-2008) left to the grammar's scopes

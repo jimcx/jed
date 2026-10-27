@@ -1,11 +1,13 @@
 ---
 id: lang
 name: Language features
-summary: go to symbol, signature help and breadcrumbs / sticky scroll (code actions are in Diagnostics and quick fixes)
+summary: go to symbol, signature help and breadcrumbs / sticky scroll
 status: open
 priority: 0
 dependencies: []
 ---
+
+Code actions are in [Diagnostics and quick fixes](fixes.md) — see [LSP](../PLAN.md#lsp).
 
   - Needs: language servers (M9), completion's popup, kind icons and request handling (`App::send_request`), quick open (M5), back / forward navigation (see [Tasks](../PLAN.md#tasks); jumps recorded when it's there)
   - Go to symbol in file (Cmd+Shift+O, `@`) and workspace (Cmd+T, `#`); signature help (trigger characters, Cmd+Shift+Space); breadcrumbs and sticky scroll (settings, off by default); Cmd bindings update `docs/terminals/`

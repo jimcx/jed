@@ -7,6 +7,8 @@ priority: 0
 dependencies: []
 ---
 
+See [Layout](../PLAN.md#layout), [Tasks](../PLAN.md#tasks-throwaway-terminals).
+
   - Needs: the shell tab (`Tab::Shell`, `shell.rs`, `app/shell.rs`, `ui::task::render_shell`), the group model (`Groups` + `layout::SplitTree` + `Group`), `layout::compute` / `Regions` and `HitMap`, `ui/splash.rs`, the `Context::Shell` keys and `Focus`, drag-and-drop tabs (`app/tab_drag.rs`)
   - A `terminal area` region: full width, directly above the status bar (below the side panel, the editor groups and the bottom panel — which keeps the throwaway task terminals); its own height (a new `ui` field, resized by dragging its top border as the bottom panel's is, clamped so the editor keeps its minimum). It shows when a terminal opens and hides when the last closes, so an empty editor area shows the Jed splash as it does now
   - The area behaves like an editor group: a tab bar of its terminal tabs and a `SplitTree` of terminal groups, so terminals reorder (drag along the bar, and the move-tab keys) and split right / down (Cmd+\ / Cmd+Alt+\ in the terminal context) into live side-by-side / stacked shells. Dragging a terminal works exactly as dragging an editor tab (`drag_tabs`): along the bar reorders it, onto another terminal group's bar or screen moves it there, and onto a terminal group's edge (within a quarter of its width or height) splits that group on that side and moves the terminal into the new split, the drop zone shaded. Only `Tab::Shell` docks there — a non-terminal tab dropped or moved in is refused, and task runs stay in the bottom panel, never the terminal area — and a split never copies a shell (a shell can't be in two groups), so splitting a terminal group leaves the new group empty

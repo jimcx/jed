@@ -1,11 +1,13 @@
 ---
 id: update
 name: Self-update from GitHub releases
-summary: "\"jed: Check for Updates\" (`app.checkForUpdates`, palette, unbound) and `jed --update` (run before raw mode, progress printed to stdout) fetch the newest release of `jimcx/jed` and replace the running binary with it. The releases are the ones CI's `release` job publishes on a `v*` tag (`.github/workflows/build.yml`: `jed-<linux|macos>-<uname -m>.tar.gz`, the stripped `jed` inside)"
+summary: check for and install a newer release from GitHub
 status: open
 priority: 0
 dependencies: []
 ---
+
+"jed: Check for Updates" (`app.checkForUpdates`, palette, unbound) and `jed --update` (run before raw mode, progress printed to stdout) fetch the newest release of `jimcx/jed` and replace the running binary with it. The releases are the ones CI's `release` job publishes on a `v*` tag (`.github/workflows/build.yml`: `jed-<linux|macos>-<uname -m>.tar.gz`, the stripped `jed` inside)
 
   - Check: `GET https://api.github.com/repos/jimcx/jed/releases/latest` off the UI thread (`spawn_blocking`, a blocking HTTP client with rustls — e.g. `ureq` — and a `User-Agent`; a timeout of a few seconds), reported as an `AppEvent`. Compared with `JED_VERSION` (`build.rs`): a tag build (`v1.2.0`) updates only to a newer semver tag ("jed is up to date (v1.2.0)" otherwise); a branch / commit build (`main (8d91187)`) is a development build and is always offered the latest release with a note that it replaces a source build. No network error on the UI thread blocks or panics: failures (offline, rate-limited, no asset for this platform) are one `notify` line
   - Offer: a prompt "jed v1.3.0 is available (you have v1.2.0). Update / Release Notes / Not Now" (Release Notes opens the release's `html_url` in the browser or copies it when there's no opener)

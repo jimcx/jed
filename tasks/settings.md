@@ -7,6 +7,8 @@ priority: 0
 dependencies: []
 ---
 
+See [Workspace](../PLAN.md#workspace), [Syntax highlighting](../PLAN.md#syntax-highlighting), [LSP](../PLAN.md#lsp).
+
   - Needs: `Command::OpenUserSettings` (8d), the cheat sheet (`cheatsheet.rs`), `config::settings::TEMPLATE` and `WorkspaceConfig` (M8), completion's popup and insertion (M9), the TOML grammar and its highlight pass (`highlight.rs`)
   - Open user settings (Cmd+, / Ctrl+,) and workspace settings (Cmd+Shift+, / Ctrl+Shift+, — VS Code's), the latter writing a commented `.workspace` template on first open; both listed in the cheat sheet; the Cmd bindings update `docs/terminals/`
   - Settings-aware highlighting over the TOML tree for the two config files: known keys and valid values coloured, unknown keys and bad values marked `invalid`

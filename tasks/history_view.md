@@ -1,11 +1,13 @@
 ---
 id: history_view
 name: File History section in the Explorer
-summary: "the active file's saved snapshots as a third Explorer section, built like \"Git History\" (VS Code's Timeline shows both sources; jed keeps them apart): the tree, then \"FILE HISTORY\", then \"GIT HISTORY\", each section with its header row (click toggles collapse), a draggable divider above it, and the tree keeping its minimum height (`git_history::split` generalised to N sections: each section's height and collapsed state; a collapsed one is its header only)"
+summary: the active file's snapshots as a third Explorer section
 status: open
 priority: 0
 dependencies: []
 ---
+
+See [File history](../PLAN.md#file-history). The active file's saved snapshots as a third Explorer section, built like "Git History" (VS Code's Timeline shows both sources; jed keeps them apart): the tree, then "FILE HISTORY", then "GIT HISTORY", each section with its header row (click toggles collapse), a draggable divider above it, and the tree keeping its minimum height (`git_history::split` generalised to N sections: each section's height and collapsed state; a collapsed one is its header only)
 
   - Rows: the entries newest first, as the picker shows them — relative time (`history::ago`), size (`size_label`), the UTC time dimmed (theme keys, e.g. `fileHistory.date` / `.size`); "No history" for a file with none, a file outside the workspace, or a non-file tab (log, commit); a diff tab counts as its file (a history diff as its file too)
   - Follows the active file like Git History; entries read off-thread (`history::entries` in `spawn_blocking`, generation-checked); re-read after `HistoryDone` for that file (a save added an entry, a rename moved them) — no polling, and nothing read while the section is collapsed
