@@ -1051,6 +1051,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Down, ctrl | shift, Command::Task(T::ScrollDown)),
         (KeyCode::Home, ctrl, Command::Task(T::Top)),
         (KeyCode::End, ctrl, Command::Task(T::Bottom)),
+        (KeyCode::Char('k'), cmd, Command::Task(T::Clear)),
         (KeyCode::Esc, none, Command::Task(T::FocusEditor)),
         (KeyCode::Char('w'), cmd, Command::CloseTask),
     ];
@@ -1064,6 +1065,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Down, ctrl | shift, Command::Shell(Sh::ScrollDown)),
         (KeyCode::Home, ctrl, Command::Shell(Sh::Top)),
         (KeyCode::End, ctrl, Command::Shell(Sh::Bottom)),
+        (KeyCode::Char('k'), cmd, Command::Shell(Sh::Clear)),
     ];
 
     let bind = |code, mods, context, command| Binding {

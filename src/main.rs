@@ -4,6 +4,8 @@ mod blame;
 mod brackets;
 mod buffer;
 mod cheatsheet;
+#[cfg(test)]
+mod clear_scrollback_tests;
 mod clipboard;
 mod code_action;
 mod column;

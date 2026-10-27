@@ -369,18 +369,21 @@ pub enum TaskCommand {
     PageDown,
     Top,
     Bottom,
+    /// Cmd+K: blank the screen and empty the scrollback; the program is untouched.
+    Clear,
     /// Esc: back to the editor; the panel stays.
     FocusEditor,
 }
 
 impl TaskCommand {
-    pub const ALL: [TaskCommand; 7] = [
+    pub const ALL: [TaskCommand; 8] = [
         TaskCommand::ScrollUp,
         TaskCommand::ScrollDown,
         TaskCommand::PageUp,
         TaskCommand::PageDown,
         TaskCommand::Top,
         TaskCommand::Bottom,
+        TaskCommand::Clear,
         TaskCommand::FocusEditor,
     ];
 }
@@ -395,16 +398,19 @@ pub enum ShellCommand {
     PageDown,
     Top,
     Bottom,
+    /// Cmd+K: blank the screen and empty the scrollback; the program is untouched.
+    Clear,
 }
 
 impl ShellCommand {
-    pub const ALL: [ShellCommand; 6] = [
+    pub const ALL: [ShellCommand; 7] = [
         ShellCommand::ScrollUp,
         ShellCommand::ScrollDown,
         ShellCommand::PageUp,
         ShellCommand::PageDown,
         ShellCommand::Top,
         ShellCommand::Bottom,
+        ShellCommand::Clear,
     ];
 }
 
@@ -1330,6 +1336,7 @@ impl Command {
                     TaskCommand::PageDown => "scrollPageDown",
                     TaskCommand::Top => "scrollToTop",
                     TaskCommand::Bottom => "scrollToBottom",
+                    TaskCommand::Clear => "clear",
                     TaskCommand::FocusEditor => "focusEditor",
                 }
             ),
@@ -1342,6 +1349,7 @@ impl Command {
                     ShellCommand::PageDown => "scrollPageDown",
                     ShellCommand::Top => "scrollToTop",
                     ShellCommand::Bottom => "scrollToBottom",
+                    ShellCommand::Clear => "clear",
                 }
             ),
         }
@@ -1654,6 +1662,7 @@ impl Command {
                 TaskCommand::PageDown => "Tasks: Scroll Page Down",
                 TaskCommand::Top => "Tasks: Scroll to Top",
                 TaskCommand::Bottom => "Tasks: Scroll to Bottom",
+                TaskCommand::Clear => "Tasks: Clear",
                 TaskCommand::FocusEditor => "Tasks: Back to Editor",
             },
             Command::Shell(c) => match c {
@@ -1663,6 +1672,7 @@ impl Command {
                 ShellCommand::PageDown => "Terminal: Scroll Page Down",
                 ShellCommand::Top => "Terminal: Scroll to Top",
                 ShellCommand::Bottom => "Terminal: Scroll to Bottom",
+                ShellCommand::Clear => "Terminal: Clear",
             },
         };
         s.into()

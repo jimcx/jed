@@ -73,6 +73,7 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+alt+s` | Save All (untitled files ask for a path one at a time) | everywhere |
 | `cmd+q` | Quit | everywhere |
 | `cmd+w` | Close tab (a task tab in the panel: closes it, killing its task) | everywhere, task |
+| `cmd+k` | Terminal: Clear (a shell or task tab: the screen and the scrollback) | shell, task |
 | `cmd+b` | Toggle sidebar | everywhere |
 | `cmd+shift+e` | Focus explorer | everywhere |
 | `cmd+shift+f` | Search in workspace (Search view, seeded with the selection) | everywhere |

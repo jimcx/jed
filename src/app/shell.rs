@@ -268,6 +268,10 @@ impl App {
         let Some(shell) = self.focused_shell() else {
             return;
         };
+        if cmd == ShellCommand::Clear {
+            shell.run.clear();
+            return;
+        }
         scroll_run(
             &shell.run,
             match cmd {
@@ -277,6 +281,7 @@ impl App {
                 ShellCommand::PageDown => Scroll::PageDown,
                 ShellCommand::Top => Scroll::Top,
                 ShellCommand::Bottom => Scroll::Bottom,
+                ShellCommand::Clear => return,
             },
         );
     }

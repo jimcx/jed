@@ -518,7 +518,18 @@ async fn syntax_plugins_build_at_start_then_up_to_date() {
     rebuild_through_palette(&mut app);
     let m = app.message.take().expect("a message");
     assert!(m.text.contains("already building"), "{}", m.text);
-    assert!(app.settle(|a| grammar_state(a, "pte_first") == G::Ready).await);
+    // FLAKE: 2026-10-28, the first settle below timed out once under load (1772 passed, 1 failed in a
+    // full run; passed alone in 0.9 s)
+    let built = app.settle(|a| grammar_state(a, "pte_first") == G::Ready).await;
+    if !built {
+        let tool = crate::logs::Tool::Grammar("pte_first".into());
+        eprintln!(
+            "FLAKE syntax_plugins_build_at_start_then_up_to_date: state {:?}, log {:?}",
+            grammar_state(&app, "pte_first"),
+            app.logs.texts(&tool)
+        );
+    }
+    assert!(built);
     assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
     assert!(coloured(&mut app));
     let tool = crate::logs::Tool::Grammar("pte_first".into());

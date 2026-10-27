@@ -326,6 +326,21 @@ impl Run {
         parser.screen_mut().set_scrollback(back.saturating_add_signed(-lines));
     }
 
+    /// Terminal: Clear: blanks the screen (cursor home) and empties the kept lines, the view back
+    /// on the live screen. Only the parser is touched, never the PTY: the program runs on and its
+    /// next prompt redraws. The mouse selection is dropped (its rows are gone). On the alternate
+    /// screen (a full-screen program) it blanks that screen until the program redraws and empties
+    /// only its (empty) scrollback: the main screen's kept lines are back when the program leaves.
+    pub fn clear(&self) {
+        {
+            let mut parser = self.screen();
+            parser.process(b"\x1b[2J\x1b[H");
+            parser.screen_mut().clear_scrollback();
+            parser.screen_mut().set_scrollback(0);
+        }
+        self.clear_selection();
+    }
+
     /// Scrolls to the oldest output kept (`top`) or back to the live screen. The selection stays
     /// on its text.
     pub fn scroll_to(&self, top: bool) {

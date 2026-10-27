@@ -68,6 +68,7 @@ bindings = [
   { key = "S", mods = "Command|Alt", action = "ReceiveChar" },
   { key = "Q", mods = "Command", action = "ReceiveChar" },
   { key = "W", mods = "Command", action = "ReceiveChar" },
+  { key = "K", mods = "Command", action = "ReceiveChar" },
   { key = "B", mods = "Command", action = "ReceiveChar" },
   { key = "E", mods = "Command|Shift", action = "ReceiveChar" },
   { key = "F", mods = "Command|Shift", action = "ReceiveChar" },
@@ -102,11 +103,11 @@ If you already have a `[keyboard]` section, merge the entries into its `bindings
 
 Don't add `cmd+v`: Alacritty's paste is how text gets into jed.
 
-Alacritty defaults that clash with jed: `cmd+c` copy, `cmd+n` new window, `cmd+w` and `cmd+q` **both quit Alacritty** (Cmd+W isn't "close tab"), `cmd+f` / `cmd+b` search forward / backward, `cmd+1..8` select tab.
+Alacritty defaults that clash with jed: `cmd+c` copy, `cmd+n` new window, `cmd+w` and `cmd+q` **both quit Alacritty** (Cmd+W isn't "close tab"), `cmd+f` / `cmd+b` search forward / backward, `cmd+k` clear history (and send Ctrl+L), `cmd+1..8` select tab.
 
 ## What you lose
 
-Alacritty's Cmd+C copy, Cmd+N new window, Cmd+W/Cmd+Q quit, Cmd+F/Cmd+B search and Cmd+1..8 tab switching in every window. Alacritty has no per-program config.
+Alacritty's Cmd+C copy, Cmd+N new window, Cmd+W/Cmd+Q quit, Cmd+F/Cmd+B search, Cmd+K clear and Cmd+1..8 tab switching in every window. Alacritty has no per-program config.
 
 ## Checklist
 

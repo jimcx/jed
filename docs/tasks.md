@@ -29,7 +29,7 @@ env = { RUST_LOG = "debug" }     # optional: added to jed's environment
 ## Running
 
 - **Tasks: Run Task** in the palette (Cmd+Shift+P / Ctrl+Shift+P): pick a task by name (fuzzy, also on the command). The list shows each task's command and where it's from.
-- The tab has the keys while focused: what you type goes to the program (answer prompts, Ctrl+C to interrupt). Shift+PageUp / PageDown and Ctrl+Shift+Up / Down scroll back, Ctrl+Home / End jump, Esc goes back to the editor, Cmd+W (Ctrl+W) closes the tab.
+- The tab has the keys while focused: what you type goes to the program (answer prompts, Ctrl+C to interrupt). Shift+PageUp / PageDown and Ctrl+Shift+Up / Down scroll back, Ctrl+Home / End jump, Cmd+K (Ctrl+K) clears the screen and the scrollback (the program keeps running), Esc goes back to the editor, Cmd+W (Ctrl+W) closes the tab.
 - **Tasks: Kill Task** stops it (SIGHUP to everything it started, SIGKILL a second later if anything is left). Closing a running task's tab kills it too.
 - Run the same task again for a new tab beside the old one.
 - The **Tools** view (Cmd+Shift+U / Ctrl+Shift+U) lists runs with their state.

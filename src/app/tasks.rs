@@ -171,6 +171,10 @@ impl App {
         let Some(run) = self.shown_task().and_then(|id| self.tasks.get(id)) else {
             return;
         };
+        if cmd == T::Clear {
+            run.clear();
+            return;
+        }
         scroll_run(
             run,
             match cmd {
@@ -180,7 +184,7 @@ impl App {
                 T::PageDown => Scroll::PageDown,
                 T::Top => Scroll::Top,
                 T::Bottom => Scroll::Bottom,
-                T::FocusEditor => return,
+                T::Clear | T::FocusEditor => return,
             },
         );
     }
