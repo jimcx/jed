@@ -2,7 +2,11 @@
 //! line that sources one from a shell's init file. Each snippet opens with a `JED_IPC` guard, so
 //! sourcing it anywhere else is a no-op; inside jed its preexec hook sends `133;B` and the
 //! command's first word as `OSC 0`, and its precmd hook `133;D;<exit code>` — what
-//! `tasks::run::TitleCallback` turns into the tab's title and glyph.
+//! `tasks::run::TitleCallback` turns into the tab's title and glyph. `133;A` goes at the very
+//! start of the prompt (zsh: the precmd hook puts it at the start of `PS1`; bash: a hook at the
+//! end of `PROMPT_COMMAND` does; fish: a `fish_prompt` wrapper), so Terminal: Clear keeps the
+//! whole prompt, all its lines. The bash precmd hook is prepended to the user's `PROMPT_COMMAND`,
+//! which keeps running with the real `$?`.
 //!
 //! No app state and no drawing: "Terminal: Install Shell Integration" (`app/shell.rs`) opens the
 //! wizard with this data and `app/prompt.rs` copies or appends the line; `ui/dialog.rs` draws it.
@@ -15,22 +19,43 @@ use std::path::{Path, PathBuf};
 const ZSH: &str = r#"# jed shell integration (sourced from ~/.zshrc)
 [ -n "$JED_IPC" ] || return
 _jed_preexec() { printf '\033]133;B\007'; printf '\033]0;%s\007' "${1%% *}"; }
-_jed_precmd() { printf '\033]133;D;%s\007' "$?"; }
+_jed_precmd() {
+  local s=$?
+  printf '\033]133;D;%s\007' "$s"
+  # 133;A starts PS1, so every line of the prompt follows it (added again if a theme rebuilt PS1).
+  case "$PS1" in *'133;A'*) ;; *) PS1=$'%{\033]133;A\007%}'"$PS1";; esac
+  return $s
+}
 autoload -Uz add-zsh-hook; add-zsh-hook preexec _jed_preexec; add-zsh-hook precmd _jed_precmd
 "#;
 
 const BASH: &str = r#"# jed shell integration (sourced from ~/.bashrc)
 [ -n "$JED_IPC" ] || return
 _jed_preexec() {
-  case "$1" in PROMPT_COMMAND=*) return;; esac
-  local pc
+  case "$1" in PROMPT_COMMAND=*|_jed_precmd|_jed_mark) return;; esac
+  local pc p rest nl=$'\n'
   for pc in "${PROMPT_COMMAND[@]}"; do
     [ "$1" = "$pc" ] && return
+    # Each `;`- or newline-separated piece, trimmed (no word splitting, so no globbing).
+    rest="${pc//$nl/;};"
+    while [ -n "$rest" ]; do
+      p=${rest%%;*}; rest=${rest#*;}
+      p=${p#"${p%%[![:space:]]*}"}; p=${p%"${p##*[![:space:]]}"}
+      [ "$1" = "$p" ] && return
+    done
   done
   printf '\033]133;B\007'; printf '\033]0;%s\007' "${1%% *}"
 }
-_jed_precmd() { printf '\033]133;D;%s\007' "$?"; }
-PROMPT_COMMAND=_jed_precmd
+_jed_precmd() { local s=$?; printf '\033]133;D;%s\007' "$s"; return $s; }
+# 133;A starts PS1, so every line of the prompt follows it; \[ \] keep readline's width right.
+_jed_mark() { local s=$?; case "$PS1" in *'133;A'*) ;; *) PS1='\[\e]133;A\a\]'"$PS1";; esac; return $s; }
+# _jed_precmd runs first, so the user's own PROMPT_COMMAND (a string, or an array in bash 5.1+)
+# sees the real $?; _jed_mark last, after any of it that rebuilds PS1 (`__git_ps1`, themes).
+case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
+  *_jed_precmd*) ;;
+  "declare -a"*) PROMPT_COMMAND=(_jed_precmd "${PROMPT_COMMAND[@]}" _jed_mark);;
+  *) PROMPT_COMMAND="_jed_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"$'\n'_jed_mark;;
+esac
 trap '_jed_preexec "$BASH_COMMAND"' DEBUG
 "#;
 
@@ -41,6 +66,17 @@ function _jed_preexec --on-event fish_preexec
 end
 function _jed_precmd --on-event fish_postexec
   printf '\033]133;D;%s\007' $status
+end
+# 133;A before the whole prompt: wrap fish_prompt (once), handing it the status it was called with.
+function _jed_status; return $argv[1]; end
+if not functions -q _jed_fish_prompt
+  functions -c fish_prompt _jed_fish_prompt
+  function fish_prompt
+    set -l last $status
+    printf '\033]133;A\007'
+    _jed_status $last
+    _jed_fish_prompt
+  end
 end
 "#;
 
@@ -167,6 +203,11 @@ mod tests {
                 snippet.file
             );
             assert!(text.contains("133;D;"), "{}: precmd sends 133;D", snippet.file);
+            assert!(
+                text.contains("133;A"),
+                "{}: sends 133;A before the prompt",
+                snippet.file
+            );
             assert!(text.ends_with('\n'), "{}: a whole file", snippet.file);
         }
         let guard = |shell: &str| SNIPPETS.iter().find(|s| s.shell == shell).map(|s| s.text).unwrap();
@@ -177,7 +218,14 @@ mod tests {
         // …): preexec skips any command that names one, or the tab would flash them as running
         // commands at every prompt. `PROMPT_COMMAND=…` assignments are skipped too.
         assert!(guard("bash").contains(r#"for pc in "${PROMPT_COMMAND[@]}"#));
-        assert!(guard("bash").contains("PROMPT_COMMAND=*) return"));
+        assert!(guard("bash").contains("PROMPT_COMMAND=*|_jed_precmd|_jed_mark) return"));
+        // The mark leads PS1 (zsh, bash: `\[ \]` for readline), once; bash keeps the user's hooks
+        // between its own two (the real bash tests in `clear_scrollback_tests` run them).
+        assert!(guard("zsh").contains("*'133;A'*) ;; *) PS1="));
+        assert!(guard("bash").contains(r"PS1='\[\e]133;A\a\]'"));
+        assert!(guard("bash").contains(r#"_jed_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"$'\n'_jed_mark"#));
+        assert!(!guard("bash").contains("PROMPT_COMMAND=_jed_precmd\n"));
+        assert!(guard("fish").contains("functions -c fish_prompt _jed_fish_prompt"));
         assert!(guard("fish").contains("set -q JED_IPC; or return"));
         assert!(guard("fish").contains("$status"));
         assert_eq!(

@@ -2,7 +2,7 @@
 id: clear_scrollback
 name: Clear terminal scrollback
 summary: clear a shell / task tab's scrollback and screen, back to the last shell prompt mark when the integration is installed
-status: in-progress
+status: done
 priority: 0
 dependencies: []
 ---
@@ -28,4 +28,7 @@ See [Tasks](../PLAN.md#tasks-throwaway-terminals). "Terminal: Clear" (Cmd+K on m
       - For -c: `Run::clear` is the place to try `clear_before_prompt()` first. Clear while a full-screen program is on the alternate screen blanks only that screen (the main screen's lines return when the program exits; documented on `Run::clear`). On Linux Ctrl+K no longer reaches readline's kill-line / nano / emacs in a shell or task tab
       - Also: a first-time flaky test, `syntax_plugins_build_at_start_then_up_to_date` (settle timed out once under load), got `FLAKE` debugging, no fix
       - Still to check by hand: Cmd+K in a real shell tab after a long command leaves nothing to scroll back to, and the next prompt redraws at the top
-    - clear_scrollback-c: the integration emits `133;A` before the full prompt in the zsh / bash / fish snippets (bash keeps the user's `PROMPT_COMMAND`), `TitleCallback` records the mark in the parser, Clear goes back to the last mark when there is one; real-bash PTY test showing the whole prompt survives a clear; hand checks; marks the task ✅
+    - ✅ clear_scrollback-c: the integration emits `133;A` before the full prompt in the zsh / bash / fish snippets (bash keeps the user's `PROMPT_COMMAND`), `TitleCallback` records the mark in the parser, Clear goes back to the last mark when there is one; real-bash PTY test showing the whole prompt survives a clear; hand checks; marks the task ✅
+      - Done: the snippets print `133;A` at the start of the prompt — zsh: precmd keeps `%{\e]133;A\a%}` at the front of `PS1`; bash: `_jed_mark`, run last in `PROMPT_COMMAND`, puts `\[\e]133;A\a\]` at the front of `PS1` (so a hook that rebuilds `PS1` keeps the mark), and `_jed_precmd` is prepended to the user's `PROMPT_COMMAND` (string or array form) instead of replacing it, returning the real `$?`; fish: `fish_prompt` wrapped. `TitleCallback` marks the cursor row on `133;A`. `Run::clear` goes back to the last mark (`clear_before_prompt`) only while the shell is at a prompt (not between `133;B` and `133;D`), so the whole, multi-line prompt stays at the top; while a command runs, or with no mark, it is the full clear. vt100 is now `github.com/jimcx/vt100-rust` tag `v0.18.1+jed` in `[patch.crates-io]`
+      - Deferred: the stale-snippet warning (open task `shell_integration_check`): existing installs keep the old snippet file until "Terminal: Install Shell Integration" is re-run; `remove_tui_term` (new, priority -10)
+      - Still to check by hand: re-run the wizard, then in zsh, bash and fish inside jed with a multi-line prompt and lots of output, Cmd+K leaves the whole prompt at the top with nothing to scroll back to; Ctrl+L, a prompt theme (starship / p10k) and a user `PROMPT_COMMAND`; fish (not installed here, checked by reading only) and bash 5's array `PROMPT_COMMAND` (the test skips on macOS bash 3.2); on Linux Ctrl+K no longer reaches readline's kill-line in a shell / task tab

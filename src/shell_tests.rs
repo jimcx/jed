@@ -64,7 +64,7 @@ pub(crate) fn shell_app(root: &Path, state: &Path) -> App {
 
 /// An executable `#!/bin/sh` script at `root/name`, as `tasks.shell` (a program with known
 /// signal behaviour: `sleep`, or `trap '' HUP` and a loop).
-fn shell_script(root: &Path, name: &str, body: &str) -> PathBuf {
+pub(crate) fn shell_script(root: &Path, name: &str, body: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = root.join(name);
     std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -404,7 +404,7 @@ fn message(app: &App) -> String {
 }
 
 /// `bash`'s path, or a printed skip note and `None` (the snippet tests run the real bash).
-fn bash_or_skip(test: &str) -> Option<PathBuf> {
+pub(crate) fn bash_or_skip(test: &str) -> Option<PathBuf> {
     let bash = ["/bin/bash", "/usr/bin/bash", "/usr/local/bin/bash"]
         .into_iter()
         .map(PathBuf::from)
@@ -801,7 +801,7 @@ fn group_gone(pid: u32) -> bool {
 
 /// An app on `root` with a listening socket in a short temp subdir (`sun_path` is ~104 bytes on
 /// macOS), its `$SHELL` for "Terminal: New Shell" set to `/bin/sh`; with the socket path.
-async fn listening_app(root: &Path, state: &Path, sockets: &tempfile::TempDir) -> (App, PathBuf) {
+pub(crate) async fn listening_app(root: &Path, state: &Path, sockets: &tempfile::TempDir) -> (App, PathBuf) {
     let dir = crate::workspace::normalize(sockets.path()).join("s");
     let socket = crate::ipc::socket_path(&dir, std::process::id());
     let ws = Workspace::load(root.to_path_buf());
@@ -819,12 +819,12 @@ async fn listening_app(root: &Path, state: &Path, sockets: &tempfile::TempDir) -
 }
 
 /// `text` into the focused shell as a paste (a long command line arrives at once).
-fn paste(app: &mut App, text: &str) {
+pub(crate) fn paste(app: &mut App, text: &str) {
     app.handle_test_event(CEvent::Paste(text.into()));
 }
 
 /// A command line in the focused shell: pasted, then Enter.
-fn run_in_shell(app: &mut App, line: &str) {
+pub(crate) fn run_in_shell(app: &mut App, line: &str) {
     paste(app, line);
     app.press(KeyCode::Enter, KeyModifiers::NONE);
 }

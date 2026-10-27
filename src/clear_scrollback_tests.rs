@@ -5,6 +5,11 @@
 //! `scrollback = 50` still caps a run after a Clear. The key resolves to `terminal.clear` /
 //! `task.clear` in its contexts and stays unbound in the editor; the cheat sheet and the palette
 //! list it. On the alternate screen it blanks that screen and leaves the main one's kept lines.
+//!
+//! clear_scrollback-c "Done when": with the shell integration (real bash, real zsh) a Clear goes
+//! back to the last prompt mark (`133;A`), so a multi-line prompt survives whole; the user's own
+//! `PROMPT_COMMAND` (a string, or an array in bash 5.1+) still runs with the real `$?`, and one
+//! that rebuilds `PS1` keeps the mark; while a command runs, and with no mark, it is the full clear.
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -12,7 +17,9 @@ use crate::app::App;
 use crate::command::{Command, ShellCommand, TaskCommand};
 use crate::config::keymap::{Context, Keymap, Platform};
 use crate::milestone12_tests::open_app;
-use crate::shell_tests::{COUNT_TO_200, dirs, draw, scrollback, shell_app};
+use crate::shell_tests::{
+    COUNT_TO_200, bash_or_skip, dirs, draw, listening_app, run_in_shell, scrollback, shell_app, shell_script,
+};
 use crate::tasks::RunId;
 use crate::tasks::select::Selection;
 
@@ -102,6 +109,10 @@ async fn clear_scrollback_shell_blanks_screen_and_scrollback() {
         app.press(key, mods);
         assert_eq!(scrollback(&app), 0, "nothing to go back to");
     }
+    draw(&mut app, 80, 20);
+    let editor = app.hits.group(app.groups.active).unwrap().editor;
+    app.mouse(crossterm::event::MouseEventKind::ScrollUp, editor.x + 1, editor.y + 1);
+    assert_eq!(scrollback(&app), 0, "the wheel has nothing to go back to");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -294,5 +305,251 @@ fn clear_scrollback_cheat_sheet_and_palette_list_it() {
     assert_eq!(
         Command::from_name("task.clear"),
         Some(Command::Task(TaskCommand::Clear))
+    );
+}
+
+/// `zsh`'s path, or a printed skip note and `None`.
+fn zsh_or_skip(test: &str) -> Option<std::path::PathBuf> {
+    let zsh = [
+        "/bin/zsh",
+        "/usr/bin/zsh",
+        "/usr/local/bin/zsh",
+        "/opt/homebrew/bin/zsh",
+    ]
+    .into_iter()
+    .map(std::path::PathBuf::from)
+    .find(|p| p.is_file());
+    if zsh.is_none() {
+        eprintln!("skipped {test}: needs zsh");
+    }
+    zsh
+}
+
+/// The shell tab's screen rows, trailing spaces dropped.
+fn rows(app: &App) -> Vec<String> {
+    shell_text(app).lines().map(|l| l.trim_end().to_string()).collect()
+}
+
+/// The last two lines of the screen are the two-line prompt, i.e. the shell is idle at it.
+fn at_prompt(app: &App) -> bool {
+    let r = rows(app);
+    r.len() >= 2 && r[r.len() - 1] == "P2>" && r[r.len() - 2] == "P1"
+}
+
+/// A real `shell` in a shell tab with the jed snippet for `kind` sourced, a two-line prompt
+/// (`P1` / `P2> `), and `before` run first (e.g. a `PROMPT_COMMAND`). Waits for the prompt.
+async fn integrated_shell(
+    root: &std::path::Path,
+    state: &std::path::Path,
+    sockets: &tempfile::TempDir,
+    shell: &std::path::Path,
+    args: &str,
+    kind: &str,
+    before: &str,
+) -> App {
+    let (mut app, _socket) = listening_app(root, state, sockets).await;
+    app.tasks.shell = shell_script(root, "myshell", &format!("exec {} {args}\n", shell.display()));
+    app.test_execute(Command::NewShell);
+    draw(&mut app, 80, 12);
+    crate::shell_integration::write_snippets(state).unwrap();
+    let snippet = state.join(format!("shell-integration.{kind}"));
+    let ps = if kind == "zsh" { "PROMPT" } else { "PS1" };
+    run_in_shell(&mut app, &format!("{ps}=$'P1\\nP2> '; {before}"));
+    run_in_shell(&mut app, &format!("source '{}'", snippet.display()));
+    assert!(
+        app.settle(at_prompt).await,
+        "the two-line prompt:\n{}",
+        shell_text(&app)
+    );
+    app
+}
+
+/// Types `line` and waits for the prompt after its output, whose last line is `last_output`.
+async fn run_and_wait(app: &mut App, line: &str, last_output: &str) {
+    run_in_shell(app, line);
+    assert!(
+        app.settle(|a| {
+            let r = rows(a);
+            at_prompt(a) && r.len() >= 3 && r[r.len() - 3] == last_output
+        })
+        .await,
+        "`{line}` finished:\n{}",
+        shell_text(app)
+    );
+}
+
+fn assert_whole_prompt_kept(app: &App) {
+    let r = rows(app);
+    assert_eq!(
+        r,
+        ["P1", "P2>"],
+        "the whole prompt is all that is left:\n{}",
+        shell_text(app)
+    );
+    assert_eq!(shell_extent(app).1, 0, "nothing to scroll back to");
+}
+
+/// Bash with a two-line prompt and a lot of output: Cmd+K keeps both prompt lines at the top and
+/// empties the scrollback; the shell works on (a command's output follows the prompt).
+#[tokio::test(flavor = "multi_thread")]
+async fn clear_scrollback_bash_keeps_the_whole_prompt() {
+    let Some(bash) = bash_or_skip("clear_scrollback_bash_keeps_the_whole_prompt") else {
+        return;
+    };
+    let (_d, root, state) = dirs();
+    let sockets = tempfile::tempdir().unwrap();
+    let mut app = integrated_shell(&root, &state, &sockets, &bash, "--norc --noprofile", "bash", "").await;
+    run_and_wait(&mut app, COUNT_TO_200, "199").await;
+    assert!(shell_extent(&app).1 > 0, "output went into the scrollback");
+
+    app.press(KeyCode::Char('k'), cmd());
+    assert_whole_prompt_kept(&app);
+
+    run_in_shell(&mut app, "echo after");
+    assert!(
+        app.settle(|a| rows(a).iter().any(|l| l == "after") && at_prompt(a))
+            .await,
+        "the shell works on:\n{}",
+        shell_text(&app)
+    );
+    let r = rows(&app);
+    assert_eq!(&r[..3], ["P1", "P2> echo after", "after"], "{r:?}");
+}
+
+/// The user's own `PROMPT_COMMAND` (a string) still runs after the snippet's, with the real `$?`.
+#[tokio::test(flavor = "multi_thread")]
+async fn clear_scrollback_bash_keeps_the_users_prompt_command() {
+    let Some(bash) = bash_or_skip("clear_scrollback_bash_keeps_the_users_prompt_command") else {
+        return;
+    };
+    let (_d, root, state) = dirs();
+    let log = root.join("pc.log");
+    let sockets = tempfile::tempdir().unwrap();
+    let before = format!("PROMPT_COMMAND='echo \"st=$?\" >> {}'", log.display());
+    let mut app = integrated_shell(&root, &state, &sockets, &bash, "--norc --noprofile", "bash", &before).await;
+    run_in_shell(&mut app, "false");
+    assert!(
+        app.settle(|_| std::fs::read_to_string(&log).is_ok_and(|s| s.lines().last() == Some("st=1")))
+            .await,
+        "the user's hook saw the failed command's status: {:?}",
+        std::fs::read_to_string(&log)
+    );
+    assert!(app.settle(at_prompt).await);
+    app.press(KeyCode::Char('k'), cmd());
+    assert_whole_prompt_kept(&app);
+}
+
+/// Zsh with a two-line prompt (when zsh is installed).
+#[tokio::test(flavor = "multi_thread")]
+async fn clear_scrollback_zsh_keeps_the_whole_prompt() {
+    let Some(zsh) = zsh_or_skip("clear_scrollback_zsh_keeps_the_whole_prompt") else {
+        return;
+    };
+    let (_d, root, state) = dirs();
+    let sockets = tempfile::tempdir().unwrap();
+    let mut app = integrated_shell(&root, &state, &sockets, &zsh, "-f", "zsh", "").await;
+    run_and_wait(&mut app, "seq 1 200", "200").await;
+    assert!(shell_extent(&app).1 > 0);
+    app.press(KeyCode::Char('k'), cmd());
+    assert_whole_prompt_kept(&app);
+}
+
+/// Cmd+K while a command runs (`tail -f`, a build) is the full clear: going back to its prompt
+/// would keep all of its output. The command runs on and its next output lands at the top.
+#[tokio::test(flavor = "multi_thread")]
+async fn clear_scrollback_running_command_is_the_full_clear() {
+    let Some(bash) = bash_or_skip("clear_scrollback_running_command_is_the_full_clear") else {
+        return;
+    };
+    let (_d, root, state) = dirs();
+    let sockets = tempfile::tempdir().unwrap();
+    let mut app = integrated_shell(&root, &state, &sockets, &bash, "--norc --noprofile", "bash", "").await;
+    run_in_shell(&mut app, "seq 1 200; cat");
+    assert!(
+        app.settle(|a| rows(a).last().is_some_and(|l| l == "200")).await,
+        "the output ran past the prompt:\n{}",
+        shell_text(&app)
+    );
+    app.press(KeyCode::Char('k'), cmd());
+    assert_eq!(shell_extent(&app).1, 0, "nothing to scroll back to");
+    assert_eq!(shell_text(&app).trim(), "", "a blank screen");
+    let run = &app.group().active_shell().unwrap().run;
+    assert!(run.status().is_running());
+    run.write(b"more\n");
+    assert!(
+        app.settle(|a| rows(a).iter().filter(|l| *l == "more").count() == 2)
+            .await,
+        "cat runs on (the echo and its copy):\n{}",
+        shell_text(&app)
+    );
+    assert_eq!(rows(&app)[..2], ["more", "more"]);
+    app.group().active_shell().unwrap().run.write(b"\x04");
+    // Back at the prompt, a Clear keeps it again.
+    assert!(app.settle(at_prompt).await, "{}", shell_text(&app));
+    app.press(KeyCode::Char('k'), cmd());
+    assert_whole_prompt_kept(&app);
+}
+
+/// A `PROMPT_COMMAND` of the user's that rebuilds `PS1` at every prompt (`__git_ps1`, themes)
+/// and ends in `;`: the mark is added after it, so the whole prompt still survives a Clear.
+#[tokio::test(flavor = "multi_thread")]
+async fn clear_scrollback_bash_prompt_command_rebuilding_ps1() {
+    let Some(bash) = bash_or_skip("clear_scrollback_bash_prompt_command_rebuilding_ps1") else {
+        return;
+    };
+    let (_d, root, state) = dirs();
+    let sockets = tempfile::tempdir().unwrap();
+    let before = "myps() { PS1=$'P1\\nP2> '; }; PROMPT_COMMAND='myps;'";
+    let mut app = integrated_shell(&root, &state, &sockets, &bash, "--norc --noprofile", "bash", before).await;
+    run_and_wait(&mut app, COUNT_TO_200, "199").await;
+    app.press(KeyCode::Char('k'), cmd());
+    assert_whole_prompt_kept(&app);
+}
+
+/// Bash 5.1+'s array `PROMPT_COMMAND`: the user's element still runs with the real `$?` and the
+/// prompt survives a Clear (skipped on older bash, e.g. macOS's 3.2).
+#[tokio::test(flavor = "multi_thread")]
+async fn clear_scrollback_bash_array_prompt_command() {
+    let Some(bash) = bash_or_skip("clear_scrollback_bash_array_prompt_command") else {
+        return;
+    };
+    let version = std::process::Command::new(&bash)
+        .args(["-c", "echo $((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1]))"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    if version < 501 {
+        eprintln!("skipped clear_scrollback_bash_array_prompt_command: needs bash 5.1+");
+        return;
+    }
+    let (_d, root, state) = dirs();
+    let log = root.join("pc.log");
+    let sockets = tempfile::tempdir().unwrap();
+    let before = format!("PROMPT_COMMAND=('echo \"st=$?\" >> {}')", log.display());
+    let mut app = integrated_shell(&root, &state, &sockets, &bash, "--norc --noprofile", "bash", &before).await;
+    run_in_shell(&mut app, "false");
+    assert!(
+        app.settle(|_| std::fs::read_to_string(&log).is_ok_and(|s| s.lines().last() == Some("st=1")))
+            .await,
+        "the user's hook saw the failed command's status: {:?}",
+        std::fs::read_to_string(&log)
+    );
+    assert!(app.settle(at_prompt).await);
+    app.press(KeyCode::Char('k'), cmd());
+    assert_whole_prompt_kept(&app);
+}
+
+/// With no integration there is no mark: the full clear.
+#[tokio::test(flavor = "multi_thread")]
+async fn clear_scrollback_without_a_mark_is_the_full_clear() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_with_output(&root, &state).await;
+    app.press(KeyCode::Char('k'), cmd());
+    assert_eq!(shell_extent(&app).1, 0);
+    assert!(
+        shell_text(&app).lines().filter(|l| !l.trim().is_empty()).count() <= 1,
+        "blank but for a late prompt:\n{}",
+        shell_text(&app)
     );
 }

@@ -65,7 +65,6 @@ strip = true
 # (`MouseButton::Back` / `Forward`, their `parse_cb` arms).
 [patch.crates-io]
 crossterm = { git = "https://github.com/jimcx/crossterm.git", tag = "0.29+fwdback" }
-# jed's vt100 fork (/Users/jim/vt100-rust, based on 0.18.1): adds `Screen::mark_prompt` /
-# `clear_before_prompt`. Temporary path patch until the fork is pushed to github.com/jimcx/vt100-rust
-# and pointed at by git + tag like crossterm's.
-vt100 = { path = "/Users/jim/vt100-rust" }
+# jed's vt100 fork (based on 0.18.1): adds `Screen::mark_prompt` / `clear_before_prompt`. On a vt100
+# upgrade, rebase the fork's `jed` changes onto the new release and re-tag.
+vt100 = { git = "https://github.com/jimcx/vt100-rust.git", tag = "v0.18.1+jed" }
