@@ -678,6 +678,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Close tabs and go to the Nth tab** (`close_tabs_nth`): close all / others / saved tabs, and go to the Nth tab in a group — [tasks/close_tabs_nth.md](tasks/close_tabs_nth.md)
 - **Compare any two files** (`compare_files`): compare any two files in a diff tab — [tasks/compare_files.md](tasks/compare_files.md)
 - **Discard changes in Source Control** (`discard_changes`): discard a file's or all changes in Source Control — [tasks/discard_changes.md](tasks/discard_changes.md)
+- **Double-click selection in the terminal** (`term_select_word`): double-click in a shell or task tab selects the text under the pointer — a run of path characters (alphanumeric, /, :, -, _, .) — highlighted and copied by Cmd/Ctrl+C — [tasks/term_select_word.md](tasks/term_select_word.md)
 - **Expand / shrink selection** (`expand_shrink_selection`): grow / shrink each selection to enclosing syntax nodes — [tasks/expand_shrink_selection.md](tasks/expand_shrink_selection.md)
 - **Explorer path commands** (`explorer_path_commands`): copy paths, reveal in Finder, and collapse folders in the explorer — [tasks/explorer_path_commands.md](tasks/explorer_path_commands.md)
 - **Feature-based end-to-end test files** (`feature_test_files`): reorganize milestone test files into per-feature files — [tasks/feature_test_files.md](tasks/feature_test_files.md)
