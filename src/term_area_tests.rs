@@ -775,7 +775,8 @@ async fn shell_answers(app: &mut App, group: GroupId, n: u32) {
         .filter_map(|t| t.shell())
         .any(|s| {
             let text = s.run.screen().screen().contents();
-            text.lines().any(|l| l.trim() == want)
+            // Typed before the prompt, the tty echoes the command first and the answer lands after the prompt.
+            text.lines().any(|l| l.trim().trim_start_matches("$ ") == want)
         })
     };
     assert!(app.settle(seen).await, "no answer from the shell");
