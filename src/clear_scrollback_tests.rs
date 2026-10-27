@@ -40,7 +40,7 @@ fn shell_text(app: &App) -> String {
 async fn shell_with_output(root: &std::path::Path, state: &std::path::Path) -> App {
     let mut app = shell_app(root, state);
     app.tasks.shell = "/bin/sh".into();
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     draw(&mut app, 80, 20);
     app.group()
         .active_shell()
@@ -349,7 +349,7 @@ async fn integrated_shell(
 ) -> App {
     let (mut app, _socket) = listening_app(root, state, sockets).await;
     app.tasks.shell = shell_script(root, "myshell", &format!("exec {} {args}\n", shell.display()));
-    app.test_execute(Command::NewShell);
+    app.new_shell_in_editor();
     draw(&mut app, 80, 12);
     crate::shell_integration::write_snippets(state).unwrap();
     let snippet = state.join(format!("shell-integration.{kind}"));
@@ -552,4 +552,49 @@ async fn clear_scrollback_without_a_mark_is_the_full_clear() {
         "blank but for a late prompt:\n{}",
         shell_text(&app)
     );
+}
+
+/// A shell in the terminal area (where `Terminal: New Shell` opens one) clears too: the key
+/// reaches `focused_shell()` for `Focus::Terminal`, not only a shell tab in an editor group.
+#[tokio::test(flavor = "multi_thread")]
+async fn clear_scrollback_terminal_area_shell_clears() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    app.tasks.shell = "/bin/sh".into();
+    app.test_execute(Command::NewShell);
+    draw(&mut app, 80, 30);
+    let text = |a: &App| {
+        a.terminals
+            .active_group()
+            .active_shell()
+            .unwrap()
+            .run
+            .screen()
+            .screen()
+            .contents()
+    };
+    app.terminals
+        .active_group()
+        .active_shell()
+        .unwrap()
+        .run
+        .write(format!("{COUNT_TO_200}\n").as_bytes());
+    assert!(
+        app.settle(|a| text(a)
+            .lines()
+            .skip_while(|l| l.trim_end() != "199")
+            .nth(1)
+            .is_some_and(|l| !l.trim().is_empty()))
+            .await,
+        "the count and the next prompt arrived:\n{}",
+        text(&app)
+    );
+    let run = &app.terminals.active_group().active_shell().unwrap().run;
+    assert!(run.scrollbar_extent().1 > 100, "output scrolled off the top");
+
+    app.press(KeyCode::Char('k'), cmd());
+
+    let run = &app.terminals.active_group().active_shell().unwrap().run;
+    assert_eq!(run.scrollbar_extent().1, 0, "no kept lines");
+    assert_eq!(run.screen().screen().contents().trim(), "", "a blank screen");
 }

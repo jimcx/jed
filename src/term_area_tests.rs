@@ -107,15 +107,15 @@ async fn term_area_ctrl_backtick_opens_a_shell_in_the_area() {
         .expect("the area's group is hit-testable");
     assert!(is_terminal_group(g.id) && g.id >= TERMINAL_GROUP_BASE);
     assert_eq!(g.tabs.len(), 1, "a tab bar of its terminals");
-    let size = app
-        .terminals
-        .active_group()
-        .active_shell()
-        .unwrap()
-        .run
-        .screen()
-        .screen()
-        .size();
+    let size = crate::tasks::select::size(
+        app.terminals
+            .active_group()
+            .active_shell()
+            .unwrap()
+            .run
+            .screen()
+            .screen(),
+    );
     assert_eq!(size, (g.editor.height, g.editor.width), "the shell has the area's size");
 }
 
@@ -216,16 +216,16 @@ async fn term_area_border_drag_resizes() {
     assert_eq!(app.ui.terminal_height, t.height + 4);
     draw(&mut app, 100, 30);
     assert_eq!(app.hits.regions.terminal.unwrap().height, t.height + 4);
-    let rows = app
-        .terminals
-        .active_group()
-        .active_shell()
-        .unwrap()
-        .run
-        .screen()
-        .screen()
-        .size()
-        .0;
+    let rows = crate::tasks::select::size(
+        app.terminals
+            .active_group()
+            .active_shell()
+            .unwrap()
+            .run
+            .screen()
+            .screen(),
+    )
+    .0;
     assert_eq!(rows, t.height + 4 - 2, "the shell is resized to the area");
     // Dragged to the top: the editor keeps its minimum.
     let y = app.hits.regions.terminal.unwrap().y;
@@ -274,7 +274,7 @@ async fn term_area_shell_opens_at_the_area_size() {
     app.test_execute(Command::NewShell);
     let size = |a: &App| {
         let shell = a.terminals.active_group().active_shell().unwrap();
-        shell.run.screen().screen().size()
+        crate::tasks::select::size(shell.run.screen().screen())
     };
     let opened = size(&app);
     draw(&mut app, 100, 30);
