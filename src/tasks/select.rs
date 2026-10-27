@@ -92,6 +92,41 @@ impl Selection {
     }
 }
 
+/// Whether `c` can be part of a path: ASCII alphanumeric or one of `/ : - _ .`.
+fn is_path_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '/' | ':' | '-' | '_' | '.')
+}
+
+/// Whether the viewport cell `(row, col)` of `screen` holds a path character (a wide character,
+/// a blank or an empty cell never does).
+fn path_cell(screen: &Screen, row: u16, col: u16) -> bool {
+    screen.cell(row, col).is_some_and(|cell| {
+        let mut chars = cell.contents().chars();
+        matches!((chars.next(), chars.next()), (Some(c), None) if is_path_char(c))
+    })
+}
+
+/// The run of path characters around viewport cell `(row, col)` of `screen`, as `(start, end)`
+/// cells on that row, `end` exclusive (the `Selection` convention): the longest contiguous
+/// run of alphanumerics and `/ : - _ .` containing the cell, stopped by any other character, a
+/// blank cell or the row's edges. `None` when the cell itself is not a path character.
+pub fn path_run(screen: &Screen, (row, col): (u16, u16)) -> Option<(Cell, Cell)> {
+    let (rows, cols) = screen.size();
+    if row >= rows || col >= cols || !path_cell(screen, row, col) {
+        return None;
+    }
+    let mut start = col;
+    while start > 0 && path_cell(screen, row, start - 1) {
+        start -= 1;
+    }
+    let mut end = col + 1;
+    while end < cols && path_cell(screen, row, end) {
+        end += 1;
+    }
+    let line = row as isize - screen.scrollback() as isize;
+    Some(((line, start), (line, end)))
+}
+
 /// The first row to draw of a `screen` shown in `height` rows: 0 when it fits, else as low as
 /// keeps its last non-blank row and the cursor in view.
 pub fn top_row(screen: &Screen, height: u16) -> u16 {
@@ -118,6 +153,60 @@ mod tests {
         let mut p = vt100::Parser::new(rows, cols, 0);
         p.process(output);
         p
+    }
+
+    #[test]
+    fn path_run_bounds_and_character_set() {
+        let p = screen(3, 20, b"~/src/jed-0.1 x_y:2 \r\nabcdefghijklmnopqrst");
+        let s = p.screen();
+        // The run stops at `~` and at the blank; every cell of it gives the same range.
+        for col in 1..13 {
+            assert_eq!(path_run(s, (0, col)), Some(((0, 1), (0, 13))), "col {col}");
+        }
+        assert_eq!(path_run(s, (0, 14)), Some(((0, 14), (0, 19))), "`_` and `:` count");
+        assert_eq!(path_run(s, (0, 0)), None, "`~` is not a path character");
+        assert_eq!(path_run(s, (0, 13)), None, "a blank");
+        assert_eq!(path_run(s, (0, 19)), None, "a blank");
+        // A full row runs to both edges.
+        assert_eq!(path_run(s, (1, 7)), Some(((1, 0), (1, 20))));
+        // An empty cell and a cell off the screen select nothing.
+        assert_eq!(path_run(s, (2, 3)), None);
+        assert_eq!(path_run(s, (5, 3)), None);
+        assert_eq!(path_run(s, (0, 25)), None);
+    }
+
+    #[test]
+    fn path_run_excludes_other_characters() {
+        // Each of these stops the run `a/b` and selects nothing itself: shell punctuation,
+        // quotes, brackets, and a non-ASCII letter (alphanumeric, but not ASCII).
+        for c in ['~', ',', '@', '\'', '"', '(', ')', '[', '=', '+', '*', '\\', '|', 'é'] {
+            let p = screen(1, 10, format!("{c}a/b{c}").as_bytes());
+            let s = p.screen();
+            assert_eq!(path_run(s, (0, 2)), Some(((0, 1), (0, 4))), "{c:?} bounds the run");
+            assert_eq!(path_run(s, (0, 0)), None, "{c:?} is not a path character");
+        }
+    }
+
+    #[test]
+    fn path_run_lines_are_scroll_independent() {
+        // Scrolled back 2 rows, viewport row 0 is the line 2 above the live screen's first.
+        let mut p = vt100::Parser::new(2, 10, 10);
+        p.process(b"ab.c\r\ntwo\r\nthree\r\nfour");
+        p.screen_mut().set_scrollback(2);
+        let s = p.screen();
+        assert_eq!(s.contents_between(0, 0, 0, 4), "ab.c");
+        assert_eq!(path_run(s, (0, 1)), Some(((-2, 0), (-2, 4))));
+        assert_eq!(cell_at(0, 0, s.scrollback()), (-2, 0), "the same space as `cell_at`");
+    }
+
+    #[test]
+    fn path_run_stops_at_a_wide_character() {
+        let p = screen(1, 12, "ab\u{4f60}cd".as_bytes());
+        let s = p.screen();
+        assert_eq!(path_run(s, (0, 0)), Some(((0, 0), (0, 2))));
+        assert_eq!(path_run(s, (0, 2)), None, "the wide character's cell");
+        assert_eq!(path_run(s, (0, 3)), None, "its continuation cell");
+        assert_eq!(path_run(s, (0, 5)), Some(((0, 4), (0, 6))));
     }
 
     fn selection(anchor: (isize, u16), head: (isize, u16)) -> Selection {

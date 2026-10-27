@@ -218,24 +218,40 @@ impl App {
     /// scrollback), and while a program reports the mouse it keeps every event.
     fn terminal_select(&mut self, hit: Hit, m: MouseEvent) -> bool {
         if m.kind == MouseEventKind::Down(MouseButton::Left) {
+            // Counted only once this press is the selection's: a press a program's mouse
+            // reporting keeps (scrolled back) falls through to `mouse_event`, which counts it.
+            let reports = match self.terminal_run(hit) {
+                None => return false,
+                Some((run, _)) => run.screen().screen().mouse_protocol_mode() != MouseProtocolMode::None,
+            };
+            if reports {
+                return false;
+            }
+            let count = self.clicks.click(Instant::now(), m.column, m.row);
             let Some((run, area)) = self.terminal_run(hit) else {
                 return false;
             };
             let id = run.id;
-            let cell = {
+            let (cell, seed) = {
                 let screen = run.screen();
                 let s = screen.screen();
                 if s.mouse_protocol_mode() != MouseProtocolMode::None {
                     return false;
                 }
                 let (row, col) = screen_cell(s, area, m.column, m.row);
-                select::cell_at(row, col, s.scrollback())
+                let cell = select::cell_at(row, col, s.scrollback());
+                // A double-click selects the path-like run under the pointer (none on a
+                // non-path cell: the empty selection a click makes).
+                let seed = if count == 2 {
+                    select::path_run(s, (row, col))
+                } else {
+                    None
+                };
+                (cell, seed)
             };
             // A press is an empty selection until the pointer moves, so a click clears it.
-            run.set_selection(select::Selection {
-                anchor: cell,
-                head: cell,
-            });
+            let (anchor, head) = seed.unwrap_or((cell, cell));
+            run.set_selection(select::Selection { anchor, head });
             match hit {
                 Hit::Editor(g) => self.focus_group(g),
                 Hit::Panel => {

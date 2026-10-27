@@ -370,6 +370,23 @@ async fn term_select_mouse_reporting_keeps_every_event() {
     }
     drop(term);
 
+    // A double-click on a path character is the program's too: both presses reach it and
+    // nothing is selected.
+    let (x, y) = (area.x + 1, area.y + one_ninety_nine);
+    click(&mut app, x, y);
+    click(&mut app, x, y);
+    assert_eq!(
+        app.group().active_shell().unwrap().run.selection(),
+        None,
+        "a double-click over a program that reports the mouse selects nothing"
+    );
+    let press = format!("^[[<0;2;{}M", one_ninety_nine + 1);
+    assert!(
+        app.settle(|a| screen_text(a).matches(&press).count() >= 2).await,
+        "the program got both presses of the double-click ({press}):\n{}",
+        screen_text(&app)
+    );
+
     // Scrolled back (the scroll keys still scroll; the wheel is the program's), a drag still
     // selects nothing and leaves the view where it is.
     app.press(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
@@ -382,6 +399,13 @@ async fn term_select_mouse_reporting_keeps_every_event() {
         "scrolled back, a program that reports the mouse still selects nothing"
     );
     assert_eq!(scrollback(&app), 2, "the drag left the view scrolled back");
+    click(&mut app, area.x + 1, area.y + 2);
+    click(&mut app, area.x + 1, area.y + 2);
+    assert_eq!(
+        app.group().active_shell().unwrap().run.selection(),
+        None,
+        "scrolled back, a double-click over a program that reports the mouse selects nothing"
+    );
 }
 
 // FLAKE: 2026-10-26, in a full parallel run the selection was still `Some(..)` after the second
@@ -705,4 +729,129 @@ async fn term_select_copy_elsewhere_is_unaffected_by_a_lingering_selection() {
         "hello",
         "copy elsewhere is unaffected by a lingering terminal selection"
     );
+}
+
+/// Double-clicks `(x, y)` (two quick clicks on one cell).
+fn double_click(app: &mut App, x: u16, y: u16) {
+    click(app, x, y);
+    click(app, x, y);
+}
+
+type Sel = Option<crate::tasks::select::Selection>;
+
+/// Checks double-clicks over `row`, which reads `~/src/jed-0.1 ok`: the run `/src/jed-0.1`
+/// (cols 1..13) is selected, highlighted and copied; `~` selects nothing; a third click and a
+/// single click clear; a drag from a double-click's press extends from the pressed cell; a drag
+/// still selects. No sleeps: a click on another cell restarts the count (`ClickTracker`), so
+/// each double-click starts on a cell other than the last click's.
+fn double_click_checks(app: &mut App, area: Rect, row: u16, selection: impl Fn(&App) -> Sel) {
+    let at = |col: u16| (area.x + col, area.y + row);
+    let path = Some(crate::tasks::select::Selection {
+        anchor: (row as isize, 1),
+        head: (row as isize, 13),
+    });
+    let (x, y) = at(5);
+    double_click(app, x, y);
+    assert_eq!(selection(app), path, "a double-click selects the path run");
+    let selected = app.theme.get("editor.selection").bg.unwrap();
+    let term = draw(app, 100, 30);
+    for col in [1, 12] {
+        assert_eq!(bg(&term, at(col).0, at(col).1), selected, "col {col} highlighted");
+    }
+    assert_ne!(bg(&term, at(0).0, at(0).1), selected, "the `~` is not");
+    assert_ne!(bg(&term, at(13).0, at(13).1), selected, "nor the blank");
+    drop(term);
+    app.press(KeyCode::Char('c'), cmd());
+    assert_eq!(app.clipboard.read().unwrap(), "/src/jed-0.1");
+
+    // A third click on the cell is a plain click: it clears.
+    click(app, x, y);
+    assert_eq!(selection(app), None, "a triple click clears");
+
+    // A double-click on a non-path character selects nothing.
+    let (x, y) = at(0);
+    double_click(app, x, y);
+    assert_eq!(selection(app), None, "`~` selects nothing");
+
+    // A single click on a path character clears the double-click's selection.
+    let (x, y) = at(5);
+    double_click(app, x, y);
+    assert_eq!(selection(app), path);
+    let (x, y) = at(6);
+    click(app, x, y);
+    assert_eq!(selection(app), None, "a single click clears");
+
+    // The second press of a double-click seeds the run; a drag from it extends from the
+    // pressed cell, not from the run's ends.
+    let (x, y) = at(9);
+    click(app, x, y);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+    assert_eq!(selection(app), path, "the second press selects the run");
+    let (x, y) = at(11);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), x, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    assert_eq!(
+        selection(app).map(|s| (s.anchor, s.head)),
+        Some(((row as isize, 9), (row as isize, 11))),
+        "a drag from a double-click extends from the clicked cell"
+    );
+
+    drag(app, area, (row, 1), (row, 5));
+    assert_eq!(
+        selection(app).map(|s| (s.anchor.1, s.head.1)),
+        Some((1, 5)),
+        "a drag still selects"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_double_click_shell() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    app.tasks.shell = "/bin/sh".into();
+    app.test_execute(Command::NewShell);
+    shell_prompt(&mut app).await;
+    assert!(
+        app.group()
+            .active_shell()
+            .unwrap()
+            .run
+            .write(b"printf '~/src/jed-0.1 ok\\n'\n")
+    );
+    assert!(
+        app.settle(|a| screen_text(a).lines().any(|l| l.trim_end() == "~/src/jed-0.1 ok"))
+            .await,
+        "{}",
+        screen_text(&app)
+    );
+    let row = row_of(&screen_text(&app), "~/src/jed-0.1 ok");
+    drop(draw(&mut app, 100, 30));
+    let area = app.hits.group(app.groups.active).unwrap().editor;
+    double_click_checks(&mut app, area, row, |a| {
+        a.group().active_shell().unwrap().run.selection()
+    });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_double_click_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = crate::milestone12_tests::dirs(&dir);
+    let mut app = crate::milestone12_tests::open_app(
+        &root,
+        &state,
+        Some("[tasks.select]\ncommand = '''printf '~/src/jed-0.1 ok\\n'; sleep 60'''\n"),
+    );
+    drop(draw(&mut app, 100, 30));
+    let id = app.run_task("select").unwrap();
+    assert!(
+        app.settle(|a| task_text(a, id).lines().any(|l| l.trim_end() == "~/src/jed-0.1 ok"))
+            .await,
+        "{}",
+        task_text(&app, id)
+    );
+    let row = row_of(&task_text(&app, id), "~/src/jed-0.1 ok");
+    drop(draw(&mut app, 100, 30));
+    let area = layout::task_area(app.hits.regions.panel.unwrap());
+    app.ui.focus = Focus::Editor;
+    double_click_checks(&mut app, area, row, |a| a.tasks.get(id).unwrap().selection());
 }
