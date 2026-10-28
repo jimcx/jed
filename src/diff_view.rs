@@ -584,16 +584,30 @@ impl Doc {
 /// in the buffer's text (its BOM not counted) and the index's lines for it, bytes as stored.
 /// `None`: no such hunk, or the index's lines aren't UTF-8.
 pub fn revert_edit(shown: &FileDiff, k: usize, bom: bool) -> Option<(ByteIdx, ByteIdx, String)> {
+    hunk_edit(shown, k, true, bom)
+}
+
+/// The edit moving hunk `k` of `shown` into one side's buffer (`to_right`: the right side's, else
+/// the left's; `bom`: that buffer has a BOM): the byte range of the hunk's lines on that side in
+/// the buffer's text (its BOM not counted) and the other side's lines for it. `None`: no such
+/// hunk, or those lines aren't UTF-8.
+pub fn hunk_edit(shown: &FileDiff, k: usize, to_right: bool, bom: bool) -> Option<(ByteIdx, ByteIdx, String)> {
     let h = shown.diff.hunks.get(k)?;
-    let new = diff::lines(&shown.new);
+    let (target, from, into, source) = if to_right {
+        (&shown.new, &shown.old, &h.new, &h.old)
+    } else {
+        (&shown.old, &shown.new, &h.old, &h.new)
+    };
+    let target = diff::lines(target);
     let len = |lines: &[&[u8]]| lines.iter().map(|l| l.len()).sum::<usize>();
-    let start = len(&new[..h.new.start.min(new.len())]);
-    let end = start + len(&new[h.new.start.min(new.len())..h.new.end.min(new.len())]);
+    let (from_line, to_line) = (into.start.min(target.len()), into.end.min(target.len()));
+    let start = len(&target[..from_line]);
+    let end = start + len(&target[from_line..to_line]);
     let shift = if bom { BOM.len() } else { 0 };
-    let old = diff::lines(&shown.old);
-    let mut text = old[h.old.start.min(old.len())..h.old.end.min(old.len())].concat();
-    // The buffer keeps its own BOM: the index's isn't text.
-    if h.old.start == 0 && text.starts_with(BOM) {
+    let from = diff::lines(from);
+    let mut text = from[source.start.min(from.len())..source.end.min(from.len())].concat();
+    // The buffer keeps its own BOM: the other side's isn't text.
+    if source.start == 0 && text.starts_with(BOM) {
         text.drain(..BOM.len());
     }
     let text = String::from_utf8(text).ok()?;
@@ -1182,8 +1196,76 @@ mod tests {
         }
         // Not UTF-8 in the index: no edit.
         let doc = Doc::new(b"\xFF\n".to_vec(), b"x\n".to_vec()).unwrap();
+        assert_eq!(
+            hunk_edit(&doc.shown, 0, false, false),
+            Some((ByteIdx(0), ByteIdx(2), "x\n".into()))
+        );
         assert_eq!(revert_edit(&doc.shown, 0, false), None);
         assert_eq!(revert_edit(&doc.shown, 1, false), None);
+    }
+
+    /// `hunk_edit` either way, spliced into the target side's text (its BOM not counted): the
+    /// source side's lines replace the hunk's (the target keeps its own BOM), and with the same
+    /// BOM on both sides the hunk is gone from a fresh diff, the others kept.
+    #[test]
+    fn hunk_edit_moves_either_way() {
+        let cases: [(&[u8], &[u8]); 9] = [
+            (b"a\nb\nc\nd\n", b"a\nB\nc\nd\ne\n"),
+            // A last line without its newline, on either side.
+            (b"a\nb", b"a\nb\nc\n"),
+            (b"a\nb\nc\n", b"a\nx"),
+            (b"x\na", b"y\na\n"),
+            (b"a\r\nb\r\nc", b"x\r\na\r\nc\r\nmore"),
+            (b"\xEF\xBB\xBFa\nb\n", b"z\nb\nc\n"),
+            (b"", b"new\nlines"),
+            (b"one\ntwo\n", b""),
+            ("é\n界\n😀\nz\n".as_bytes(), "é\nü\n😀\n".as_bytes()),
+        ];
+        let strip = |t: &[u8]| t.strip_prefix(BOM).unwrap_or(t).to_vec();
+        for (old, new) in cases {
+            let doc = Doc::new(old.to_vec(), new.to_vec()).unwrap();
+            let n = doc.hunks.len();
+            assert!(n > 0, "{old:?} {new:?}");
+            for k in 0..n {
+                for to_right in [true, false] {
+                    let (target, source) = if to_right { (new, old) } else { (old, new) };
+                    let bom = target.starts_with(BOM);
+                    let text = strip(target);
+                    let (start, end, with) = hunk_edit(&doc.shown, k, to_right, bom).unwrap();
+                    let mut got = text[..start.0].to_vec();
+                    got.extend_from_slice(with.as_bytes());
+                    got.extend_from_slice(&text[end.0..]);
+                    let h = &doc.hunks[k];
+                    let (at, from) = if to_right { (&h.new, &h.old) } else { (&h.old, &h.new) };
+                    let (t, s) = (diff::lines(target), diff::lines(source));
+                    let mut want: Vec<u8> = t[..at.start].concat();
+                    want.extend(s[from.clone()].concat());
+                    want.extend(t[at.end..].concat());
+                    let want = strip(&want);
+                    let why = format!("{old:?} {new:?} hunk {k} to_right {to_right}");
+                    assert_eq!(String::from_utf8_lossy(&got), String::from_utf8_lossy(&want), "{why}");
+                    if old.starts_with(BOM) == new.starts_with(BOM) {
+                        let after = if bom { [BOM, &got].concat() } else { got.clone() };
+                        let (o, n2) = if to_right {
+                            (old.to_vec(), after)
+                        } else {
+                            (after, new.to_vec())
+                        };
+                        let again = Doc::new(o, n2).unwrap();
+                        assert_eq!(again.hunks.len(), n - 1, "{why}");
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            hunk_edit(
+                &Doc::new(b"a\n".to_vec(), b"b\n".to_vec()).unwrap().shown,
+                1,
+                true,
+                false
+            ),
+            None
+        );
     }
 
     #[test]

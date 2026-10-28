@@ -692,6 +692,8 @@ pub struct DiffHit {
     pub buttons: Vec<(Rect, usize)>,
     /// Revert (an unstaged diff only), by hunk.
     pub reverts: Vec<(Rect, usize)>,
+    /// A compare tab's Apply to Right / Left buttons, by hunk (`true`: to the right).
+    pub moves: Vec<(Rect, usize, bool)>,
     /// The header's Open File button (the file at the cursor's line), when it fits.
     pub open_file: Option<Rect>,
 }

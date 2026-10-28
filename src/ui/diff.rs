@@ -29,6 +29,9 @@ use crate::theme::Theme;
 
 /// The Revert button's label.
 const REVERT: &str = " Revert ";
+/// A compare tab's buttons moving a change to the right / left side.
+const TO_RIGHT: &str = " → ";
+const TO_LEFT: &str = " ← ";
 /// The header's button opening the file (`git.toggleChanges`).
 const OPEN_FILE: &str = " Open File ";
 
@@ -204,6 +207,7 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
     };
     // Revert: only working tree changes against the index.
     let revertible = d.pair == diff_view::Pair::UNSTAGED;
+    let compare = d.compare.is_some();
     let starts = &aligned.starts;
     let mut next_start = starts.partition_point(|&r| r < top);
     let mut cursor_cell = None;
@@ -287,6 +291,34 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
                 hit.reverts.push((rect, k));
                 // Side by side over the left side's end; inline left of Stage, over both.
                 let over = if inline { w + rw + 1 } else { rw };
+                widest = widest.max(under.1 + over as usize);
+            }
+        } else if compare && starts.get(next_start) == Some(&index) {
+            next_start += 1;
+            let k = row.hunk.unwrap_or_default();
+            let aw = TO_RIGHT.width() as u16;
+            let key = theme.get("diffEditor.revertAction");
+            // `←` then `→`: side by side at the left column's right end, next to the divider (the
+            // right column's line number stays visible); inline at the row's right end.
+            let spots = if inline {
+                (body.width > 2 * aw + 25).then(|| {
+                    let x = body.x + body.width - aw;
+                    (x, x - aw - 1)
+                })
+            } else {
+                (half > 2 * aw + 12 && body.width - half - 1 > 12).then(|| {
+                    let x = body.x + half - aw;
+                    (x, x - aw)
+                })
+            };
+            if let Some((right_x, left_x)) = spots {
+                for (x, label, to_right) in [(right_x, TO_RIGHT, true), (left_x, TO_LEFT, false)] {
+                    let rect = Rect::new(x, y, aw, 1);
+                    out.set_stringn(x, y, label, aw as usize, key);
+                    hit.moves.push((rect, k, to_right));
+                }
+                // Over the end of the line under them: inline both lines', else the left side's.
+                let over = if inline { 2 * aw + 1 } else { 2 * aw };
                 widest = widest.max(under.1 + over as usize);
             }
         }

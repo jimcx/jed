@@ -661,6 +661,62 @@ impl App {
         });
     }
 
+    /// `diff.applyChangeToRight` / `ToLeft` on a compare tab (or a hunk's arrow button: `hunk`):
+    /// the change at the cursor moved to the other side: the source side's lines replace the
+    /// hunk's range in the target side's buffer, one undo step, left unsaved; the diff then
+    /// re-aligns. Refused (a notification, nothing edited) for a target that is read-only, whose
+    /// buffer is closed or whose file isn't open, or when either side's text isn't what the diff shows.
+    pub(super) fn diff_apply(&mut self, to_right: bool, hunk: Option<usize>) {
+        let Some(d) = self.group().active_diff().filter(|d| d.compare.is_some()) else {
+            let text = "Compare two files first: File: Compare Active File With…";
+            return self.notify(Level::Info, text.into());
+        };
+        let Some(k) = hunk.or_else(|| d.hunk_at_cursor()) else {
+            if d.doc.is_some() {
+                self.notify(Level::Info, "No change at the cursor".into());
+            }
+            return;
+        };
+        let Some(doc) = d.doc.clone() else { return };
+        let Some(c) = &d.compare else { return };
+        let side = &c.sides[usize::from(to_right)];
+        let name = if side.name.is_empty() {
+            "the file".to_string()
+        } else {
+            side.name.clone()
+        };
+        let refuse = |why: &str| format!("Can't move the change into {name}: {why}");
+        let buffers = compare_buffers(&self.buffers, d).unwrap_or_default();
+        // Both sides as the diff shows them (a second move before the diff re-aligns would move
+        // a stale change).
+        let stale = buffers.iter().zip([&doc.shown.old, &doc.shown.new]).any(|(b, shown)| {
+            b.and_then(|b| self.buffers.get(b))
+                .is_some_and(|b| crate::buffer::file::encode(&b.rope, b.bom) != *shown)
+        });
+        let Some(buffer) = buffers[usize::from(to_right)] else {
+            let why = match side.source {
+                Source::File(_) => "open the file first (File: Open)",
+                Source::Open(_) => "its buffer is closed",
+            };
+            return self.notify(Level::Info, refuse(why));
+        };
+        let buf = self.buffers.get(buffer).expect("an open buffer");
+        if let Some(reason) = &buf.read_only {
+            return self.notify(Level::Error, format!("Read-only: {reason}"));
+        }
+        if stale {
+            return self.notify(Level::Error, refuse("the text changed, try again"));
+        }
+        let Some((start, end, text)) = diff_view::hunk_edit(&doc.shown, k, to_right, buf.bom) else {
+            return self.notify(Level::Error, refuse("the other side's text isn't UTF-8"));
+        };
+        let mut changes = ChangeSet::with_capacity(1, text.len());
+        changes.push(start, end, &text);
+        self.apply_changes(buffer, changes);
+        self.follow_edits();
+        self.notify(Level::Info, format!("Moved the change into {name} (not saved)"));
+    }
+
     /// `git.stageFile` / `git.unstageFile`: the active file (a text or diff tab's). Staging an
     /// open buffer's file goes through the gutter's path (saved first).
     pub(super) fn stage_file_command(&mut self, unstage: bool) {
@@ -775,6 +831,11 @@ impl App {
                 }
                 let button = h.buttons.iter().find(|(r, _)| r.contains(p)).map(|(_, k)| *k);
                 let revert = h.reverts.iter().find(|(r, _)| r.contains(p)).map(|(_, k)| *k);
+                let apply = h
+                    .moves
+                    .iter()
+                    .find(|(r, _, _)| r.contains(p))
+                    .map(|(_, k, right)| (*k, *right));
                 if h.rows.contains(p) {
                     let row = d.top + (m.row - h.rows.y) as usize;
                     if row < d.rows().len() {
@@ -790,6 +851,8 @@ impl App {
                     self.diff_stage(unstage, Some(k));
                 } else if let Some(k) = revert {
                     self.diff_revert(Some(k));
+                } else if let Some((k, to_right)) = apply {
+                    self.diff_apply(to_right, Some(k));
                 }
             }
             // A divider or panel border dragged over the diff, a release, a move: not its.

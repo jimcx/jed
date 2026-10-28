@@ -23,6 +23,7 @@ use ratatui::backend::TestBackend;
 
 use crate::app::{App, Level};
 use crate::buffer::{Buffer, BufferId};
+use crate::command::Command;
 use crate::diff_view::Source;
 use crate::workspace::trust::TrustStore;
 use crate::workspace::{self, Workspace};
@@ -427,11 +428,12 @@ async fn pick(app: &mut App, query: &str, label: &str) {
     p.select(i);
 }
 
-/// Waits for the open compare picker's file walk to finish (its hint stops saying it looks).
+/// Waits for the open compare picker's file list to be final: the walk done and the matcher's
+/// last results in its rows (`App::files_settled`), the hint no longer saying it looks.
 async fn walked(app: &mut App) -> bool {
     app.settle(|a| {
         let hint = a.palette.as_ref().and_then(|p| p.hint.as_deref());
-        hint.is_some_and(|h| !h.starts_with("Looking for files"))
+        a.files_settled() && hint.is_some_and(|h| !h.starts_with("Looking for files"))
     })
     .await
 }
@@ -644,4 +646,261 @@ async fn compare_files_single_file_mode_lists_open_texts_only() {
     let compare = app.group().active_diff().unwrap().compare.clone().unwrap();
     assert_eq!(compare.sides[0].source, Source::Open(a));
     assert_eq!(compare.sides[1].source, Source::Open(b));
+}
+
+// ---- Subtask compare_files-c: moving a change to the other side ----------------------------
+//
+// Done when: "Diff: Apply Change to Right / Left" (palette) and each hunk's arrow buttons (side
+// by side and inline) replace the hunk's range in the target side's buffer with the source side's
+// lines (modified, added and deleted hunks; only the cursor's hunk), as one undo step, unsaved,
+// and the diff re-aligns; a read-only target, a closed buffer, a file not open, a stale text and
+// a tab that isn't a compare refuse with a notification and edit nothing; narrow widths drop the
+// arrows, and a compare tab has no Stage / Revert.
+
+const LEFT: &str = "a\nb\nc\nd\n";
+const RIGHT: &str = "a\nB\nc\nd\ne\n";
+
+/// `l.txt` and `r.txt` open and compared (left, right), returning their buffers.
+async fn moving(left: &str, right: &str) -> (tempfile::TempDir, App, BufferId, BufferId) {
+    let (d, root, _s, mut app) = setup();
+    fs::write(root.join("l.txt"), left).unwrap();
+    fs::write(root.join("r.txt"), right).unwrap();
+    let l = open(&mut app, &root.join("l.txt"));
+    let r = open(&mut app, &root.join("r.txt"));
+    compare(&mut app, Source::Open(l), Source::Open(r)).await;
+    (d, app, l, r)
+}
+
+fn text(app: &App, id: BufferId) -> String {
+    app.buffers.get(id).unwrap().rope.to_string()
+}
+
+fn at_hunk(app: &mut App, k: usize) {
+    let d = app.group_mut().active_diff_mut().unwrap();
+    d.cursor = d.aligned().starts[k];
+}
+
+fn hunks(app: &App) -> usize {
+    app.group().active_diff().unwrap().hunks().len()
+}
+
+fn message(app: &App) -> String {
+    app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
+}
+
+fn show_diff(app: &mut App) {
+    let i = app.group().tabs.iter().position(|t| t.diff().is_some()).unwrap();
+    app.test_activate_tab(i);
+}
+
+fn undo_in(app: &mut App, id: BufferId) {
+    let i = app.group().find(id).unwrap();
+    app.test_activate_tab(i);
+    app.press(K::Char('z'), cmd());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_apply_to_right_and_left() {
+    for (to_right, k, want) in [
+        (true, 0, "a\nb\nc\nd\ne\n"),
+        (true, 1, "a\nB\nc\nd\n"),
+        (false, 0, "a\nB\nc\nd\n"),
+        (false, 1, "a\nb\nc\nd\ne\n"),
+    ] {
+        let (_d, mut app, l, r) = moving(LEFT, RIGHT).await;
+        at_hunk(&mut app, k);
+        let (target, other) = if to_right { (r, l) } else { (l, r) };
+        let before = text(&app, target);
+        app.test_execute(if to_right {
+            Command::ApplyChangeToRight
+        } else {
+            Command::ApplyChangeToLeft
+        });
+        assert_eq!(text(&app, target), want, "{to_right} {k}");
+        assert!(app.buffers.get(target).unwrap().is_dirty());
+        // The other way at once, before the diff re-aligns: the shown change is stale (either
+        // side changed), so nothing moves.
+        app.test_execute(if to_right {
+            Command::ApplyChangeToLeft
+        } else {
+            Command::ApplyChangeToRight
+        });
+        assert!(message(&app).contains("changed, try again"), "{}", message(&app));
+        assert_eq!(text(&app, target), want);
+        assert_eq!(text(&app, other), if to_right { LEFT } else { RIGHT });
+        assert!(app.settle(|a| a.diffs_settled()).await);
+        assert_eq!(hunks(&app), 1, "the moved hunk is gone, the other stays");
+        assert_eq!(
+            text(&app, other),
+            if to_right { LEFT } else { RIGHT },
+            "source untouched"
+        );
+        // One undo step restores the target.
+        undo_in(&mut app, target);
+        assert_eq!(text(&app, target), before);
+        show_diff(&mut app);
+        assert!(app.settle(|a| a.diffs_settled()).await);
+        assert_eq!(hunks(&app), 2);
+    }
+}
+
+/// A deleted hunk (lines only on the left) into an untitled target.
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_apply_deleted_hunk_into_untitled() {
+    let (_d, root, _s, mut app) = setup();
+    fs::write(root.join("l.txt"), "a\nx\ny\nb\n").unwrap();
+    let l = open(&mut app, &root.join("l.txt"));
+    let u = untitled(&mut app, "a");
+    app.press(K::Enter, M::NONE);
+    app.type_text("b");
+    app.press(K::Enter, M::NONE);
+    assert_eq!(text(&app, u), "a\nb\n");
+    compare(&mut app, Source::Open(l), Source::Open(u)).await;
+    at_hunk(&mut app, 0);
+    app.test_execute(Command::ApplyChangeToRight);
+    assert_eq!(text(&app, u), "a\nx\ny\nb\n");
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    assert_eq!(hunks(&app), 0);
+    assert!(message(&app).contains("not saved"), "{}", message(&app));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_apply_refusals() {
+    // Read-only target.
+    let (_d, mut app, l, r) = moving(LEFT, RIGHT).await;
+    at_hunk(&mut app, 0);
+    app.buffers.get_mut(r).unwrap().read_only = Some("locked".into());
+    app.test_execute(Command::ApplyChangeToRight);
+    assert_eq!(text(&app, r), RIGHT);
+    assert!(message(&app).contains("Read-only"), "{}", message(&app));
+    // The other direction (an editable target) still works.
+    app.test_execute(Command::ApplyChangeToLeft);
+    assert_eq!(text(&app, l), "a\nB\nc\nd\n");
+
+    // Stale: the buffer changed since the diff was loaded.
+    let (_d, mut app, _l, r) = moving(LEFT, RIGHT).await;
+    at_hunk(&mut app, 0);
+    let i = app.group().find(r).unwrap();
+    app.test_activate_tab(i);
+    app.type_text("z");
+    show_diff(&mut app);
+    app.test_execute(Command::ApplyChangeToRight);
+    assert_eq!(text(&app, r), format!("z{RIGHT}"));
+    assert!(message(&app).contains("changed"), "{}", message(&app));
+
+    // Nothing differs: no change at the cursor.
+    let (_d, mut app, l, r) = moving("a\nb\n", "a\nb\n").await;
+    app.test_execute(Command::ApplyChangeToRight);
+    assert_eq!((text(&app, l), text(&app, r)), ("a\nb\n".into(), "a\nb\n".into()));
+
+    // Not a compare tab.
+    let (_d, mut app, _l, r) = moving(LEFT, RIGHT).await;
+    let i = app.group().find(r).unwrap();
+    app.test_activate_tab(i);
+    app.test_execute(Command::ApplyChangeToLeft);
+    assert!(message(&app).contains("Compare two files first"), "{}", message(&app));
+    assert_eq!(text(&app, r), RIGHT);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_apply_into_a_closed_or_unopened_side() {
+    // A File side whose file isn't open.
+    let (_d, root, _s, mut app) = setup();
+    let a = open(&mut app, &root.join("a.txt"));
+    compare(&mut app, Source::Open(a), file(&root, "b.txt")).await;
+    at_hunk(&mut app, 0);
+    app.test_execute(Command::ApplyChangeToRight);
+    assert!(message(&app).contains("open the file"), "{}", message(&app));
+    assert_eq!(fs::read_to_string(root.join("b.txt")).unwrap(), "one\nthree\n");
+    assert!(app.buffers.find_path(&root.join("b.txt")).is_none());
+
+    // An Open side whose buffer closed (frozen).
+    let (_d, root, _s, mut app) = setup();
+    let a = open(&mut app, &root.join("a.txt"));
+    let b = open(&mut app, &root.join("b.txt"));
+    compare(&mut app, Source::Open(a), Source::Open(b)).await;
+    let i = app.group().find(b).unwrap();
+    app.test_activate_tab(i);
+    app.press(K::Char('w'), cmd());
+    show_diff(&mut app);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    at_hunk(&mut app, 0);
+    app.test_execute(Command::ApplyChangeToRight);
+    assert!(message(&app).contains("closed"), "{}", message(&app));
+    app.test_execute(Command::ApplyChangeToLeft);
+    assert_eq!(text(&app, a), "one\nthree\n", "the open side still takes it");
+}
+
+fn draw(app: &mut App, w: u16) -> ratatui::buffer::Buffer {
+    let mut term = Terminal::new(TestBackend::new(w, 20)).unwrap();
+    term.draw(|f| crate::ui::render(f, app)).unwrap();
+    term.backend().buffer().clone()
+}
+
+/// The cells' text in `r`.
+fn cells(buf: &ratatui::buffer::Buffer, r: ratatui::layout::Rect) -> String {
+    (r.x..r.x + r.width).map(|x| buf[(x, r.y)].symbol()).collect()
+}
+
+fn moves(app: &App) -> Vec<(ratatui::layout::Rect, usize, bool)> {
+    let hit = app.hits.group(app.groups.active).unwrap().diff.clone().unwrap();
+    assert!(
+        hit.buttons.is_empty() && hit.reverts.is_empty(),
+        "no Stage / Revert in a compare"
+    );
+    hit.moves
+}
+
+fn click(app: &mut App, r: ratatui::layout::Rect) {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    app.mouse(MouseEventKind::Down(MouseButton::Left), r.x, r.y);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_arrow_buttons_side_by_side_and_inline() {
+    // The layout follows the width (`SIDE_BY_SIDE_MIN`).
+    for (width, inline) in [(180, false), (120, true)] {
+        let (_d, mut app, l, r) = moving(LEFT, RIGHT).await;
+        let screen = draw(&mut app, width);
+        assert_eq!(app.group().active_diff().unwrap().inline, inline);
+        let m = moves(&app);
+        assert_eq!(m.len(), 4, "an arrow each way for both hunks, inline {inline}");
+        for k in 0..2 {
+            assert!(m.iter().any(|(_, h, right)| *h == k && *right));
+            assert!(m.iter().any(|(_, h, right)| *h == k && !*right));
+        }
+        // Each arrow is drawn where it's hit.
+        for (rect, _, right) in &m {
+            let drawn = cells(&screen, *rect);
+            assert_eq!(drawn, if *right { " → " } else { " ← " }, "inline {inline}");
+        }
+        if !inline {
+            // Both line numbers of the first change's row stay visible.
+            let r = m[0].0;
+            let row = cells(&screen, ratatui::layout::Rect::new(0, r.y, width, 1));
+            assert!(row.contains("  2  b") && row.contains("  2  B"), "{row}");
+        }
+        let first = m.iter().find(|(_, h, right)| *h == 0 && *right).unwrap().0;
+        click(&mut app, first);
+        assert_eq!(text(&app, r), "a\nb\nc\nd\ne\n", "inline {inline}");
+        assert!(app.settle(|a| a.diffs_settled()).await);
+        assert_eq!(hunks(&app), 1);
+        draw(&mut app, width);
+        let m = moves(&app);
+        assert_eq!(m.len(), 2, "the moved hunk's arrows are gone");
+        let (rect, _, _) = m.iter().find(|(_, _, right)| !*right).copied().unwrap();
+        click(&mut app, rect);
+        assert_eq!(text(&app, l), "a\nb\nc\nd\ne\n", "inline {inline}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_arrows_drop_when_narrow() {
+    // Side by side (always wide enough for them), inline with room, inline without.
+    let (_d, mut app, _l, _r) = moving(LEFT, RIGHT).await;
+    for (width, inline, shown) in [(180, false, true), (120, true, true), (40, true, false)] {
+        draw(&mut app, width);
+        assert_eq!(app.group().active_diff().unwrap().inline, inline, "{width}");
+        assert_eq!(!moves(&app).is_empty(), shown, "{width}");
+    }
 }

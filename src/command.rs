@@ -219,6 +219,10 @@ pub enum Command {
     CompareActiveFileWith,
     /// "File: Compare Open Editors…": two open texts picked in turn (left, right).
     CompareOpenEditors,
+    /// In a compare tab: the change at the cursor moved to the right / left side (the other side's
+    /// lines replace it there, one undo step in that side's buffer).
+    ApplyChangeToRight,
+    ApplyChangeToLeft,
     /// The diff view of the active file's unstaged changes (staged ones if it has only those).
     OpenChange,
     /// Switches between a diff tab and its file: from a diff tab, the file at the cursor's line
@@ -951,6 +955,8 @@ impl Command {
             Command::CompareWithSaved,
             Command::CompareActiveFileWith,
             Command::CompareOpenEditors,
+            Command::ApplyChangeToRight,
+            Command::ApplyChangeToLeft,
             Command::OpenChange,
             Command::ToggleChanges,
             Command::StageFile,
@@ -1241,6 +1247,8 @@ impl Command {
             Command::CompareWithSaved => "file.compareWithSaved".into(),
             Command::CompareActiveFileWith => "file.compareActiveFileWith".into(),
             Command::CompareOpenEditors => "file.compareOpenEditors".into(),
+            Command::ApplyChangeToRight => "diff.applyChangeToRight".into(),
+            Command::ApplyChangeToLeft => "diff.applyChangeToLeft".into(),
             Command::ShowFileHistory => "fileHistory.show".into(),
             Command::RestoreFileHistory => "fileHistory.restore".into(),
             Command::OpenChange => "git.openChange".into(),
@@ -1588,6 +1596,8 @@ impl Command {
             Command::CompareWithSaved => "File: Compare with Disk",
             Command::CompareActiveFileWith => "File: Compare Active File With…",
             Command::CompareOpenEditors => "File: Compare Open Editors…",
+            Command::ApplyChangeToRight => "Diff: Apply Change to Right",
+            Command::ApplyChangeToLeft => "Diff: Apply Change to Left",
             Command::ShowFileHistory => "File History: Show",
             Command::RestoreFileHistory => "File History: Restore",
             Command::OpenChange => "Git: Open Changes",
@@ -1867,9 +1877,11 @@ mod tests {
             Command::DiscardAll => 132,
             Command::CompareActiveFileWith => 133,
             Command::CompareOpenEditors => 134,
+            Command::ApplyChangeToRight => 135,
+            Command::ApplyChangeToLeft => 136,
         }
     }
-    const VARIANTS: u8 = 135;
+    const VARIANTS: u8 = 137;
 
     #[test]
     fn all_lists_every_variant() {

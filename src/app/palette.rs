@@ -605,3 +605,14 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+impl App {
+    /// The palette's file list is final: the walk finished and the matcher has no more results
+    /// (no tick due, no unhandled `FilesMatched`), so its rows won't change by themselves.
+    pub fn files_settled(&self) -> bool {
+        self.files.as_ref().is_some_and(|f| f.walked)
+            && self.files_poll.is_none()
+            && !self.files_pending.load(Ordering::Acquire)
+    }
+}

@@ -1252,6 +1252,7 @@ async fn untitled_save_as_moves_the_language_server_document() {
     app.shutdown_servers().await;
 }
 
+// FLAKE: 2026-10-28, failed under load (load avg ~14) when run in the full suite, passes alone
 #[tokio::test(flavor = "multi_thread")]
 async fn untitled_save_as_in_a_repo_follows_git_history_and_the_explorer() {
     use crate::milestone10_tests::settle_git;
@@ -1295,7 +1296,17 @@ async fn untitled_save_as_in_a_repo_follows_git_history_and_the_explorer() {
     assert_eq!(app.git_history.path, Some(root.join("g.txt")));
     // File history of the buffer is g.txt's (the Save As snapshot).
     app.test_execute(Command::ShowFileHistory);
-    assert!(app.settle(|a| a.palette.is_some()).await, "history of g.txt listed");
+    let listed = app.settle(|a| a.palette.is_some()).await;
+    if !listed {
+        eprintln!(
+            "FLAKE untitled_save_as_in_a_repo_follows_git_history_and_the_explorer: no palette; message {:?}, \
+             active path {:?}, last command {:?}",
+            app.message.as_ref().map(|m| m.text.clone()),
+            app.active_buffer().map(|b| b.path.clone()),
+            app.last_command,
+        );
+    }
+    assert!(listed, "history of g.txt listed");
 }
 
 /// Save As over a tracked file (after Overwrite): the gutter markers and the blame become the

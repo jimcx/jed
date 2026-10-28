@@ -1415,6 +1415,8 @@ impl App {
             Command::CompareWithSaved => self.compare_with_saved(),
             Command::CompareActiveFileWith => self.compare_active_file_with(),
             Command::CompareOpenEditors => self.compare_open_editors(),
+            Command::ApplyChangeToRight => self.diff_apply(true, None),
+            Command::ApplyChangeToLeft => self.diff_apply(false, None),
             Command::OpenChange => self.open_changes(),
             Command::ToggleChanges => self.toggle_changes(),
             Command::StageFile | Command::UnstageFile if self.scm_focused() => {

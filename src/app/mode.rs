@@ -113,6 +113,8 @@ mod tests {
             Command::CompareWithSaved,
             Command::CompareActiveFileWith,
             Command::CompareOpenEditors,
+            Command::ApplyChangeToRight,
+            Command::ApplyChangeToLeft,
             Command::ReloadFromDisk,
             Command::ChangeLanguageMode,
             Command::SaveAll,

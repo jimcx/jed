@@ -484,6 +484,7 @@ mod tests {
         assert_eq!((scroll.max_top, scroll.shown), (0, false), "no scrollback: no thumb");
     }
 
+    // FLAKE: 2026-10-28, failed under load (load avg ~14) when run in the full suite, passes alone
     #[tokio::test(flavor = "multi_thread")]
     async fn output_events_are_throttled() {
         let (mut t, events) = tasks();
@@ -506,6 +507,16 @@ mod tests {
             .filter(|e| **e == Event::Output(id))
             .count();
         let most = elapsed.as_millis() / run::FRAME.as_millis() + 2;
+        if !(1..=most as usize).contains(&outputs) {
+            let all = events.lock().unwrap();
+            eprintln!(
+                "FLAKE output_events_are_throttled: {outputs} output events (allowed 1..={most}) in {elapsed:?}, \
+                 FRAME {:?}, {} events in all, the first 40: {:?}",
+                run::FRAME,
+                all.len(),
+                all.iter().take(40).collect::<Vec<_>>(),
+            );
+        }
         assert!(
             (1..=most as usize).contains(&outputs),
             "{outputs} output events in {elapsed:?}"
