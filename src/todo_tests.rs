@@ -2987,7 +2987,7 @@ mod revert_hunks {
 
     /// A temp dir with `proj/` (the workspace, a repository with `f.txt` = `original`
     /// committed, then `changed` on disk) and `state/` (the trust store, outside the repo).
-    fn project(original: &str, changed: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+    pub(super) fn project(original: &str, changed: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let base = workspace::normalize(dir.path());
         let (root, state) = (base.join("proj"), base.join("state"));
@@ -3005,7 +3005,7 @@ mod revert_hunks {
     }
 
     /// Lines 0..40 with line 2 changed, a line added after line 20 and line 35 deleted.
-    fn three_changes() -> (String, String) {
+    pub(super) fn three_changes() -> (String, String) {
         let original = numbered(40);
         let changed = original
             .replace("line 2\n", "two\n")
@@ -3015,7 +3015,7 @@ mod revert_hunks {
     }
 
     /// The app on `root`, with `file` open in the editor if given.
-    async fn open_app(root: &Path, state: &Path, file: Option<&str>) -> App {
+    pub(super) async fn open_app(root: &Path, state: &Path, file: Option<&str>) -> App {
         let ws = Workspace::load(root.to_path_buf());
         let trust = TrustStore::load(state.join("trust.toml"));
         let initial = file.map(|f| InitialFile {
@@ -3033,7 +3033,7 @@ mod revert_hunks {
     }
 
     /// Waits until every diff tab is loaded and current and the git status read.
-    async fn settle_diffs(app: &mut App) -> bool {
+    pub(super) async fn settle_diffs(app: &mut App) -> bool {
         app.settle(|a| a.diffs_settled() && a.git.status.is_some()).await
     }
 
@@ -3043,7 +3043,7 @@ mod revert_hunks {
         term
     }
 
-    fn diff_hit(app: &App) -> crate::layout::DiffHit {
+    pub(super) fn diff_hit(app: &App) -> crate::layout::DiffHit {
         app.hits.group(app.groups.active).unwrap().diff.clone().unwrap()
     }
 
@@ -4723,12 +4723,13 @@ mod resize_pointer {
         app.mouse(K::Moved, border + 20, side.y + 10);
         assert_eq!(app.pointer, Pointer::Default);
 
-        // A text drag in the editor never shows one, even crossing a divider.
+        // A text drag in the editor never shows one, even crossing a divider: it keeps the
+        // I-beam.
         let text = app.hits.group(app.groups.active).unwrap().text;
         let right = divider(&app, SplitDir::Right).rect;
         app.mouse(K::Down(MouseButton::Left), text.x + 1, text.y);
         app.mouse(K::Drag(MouseButton::Left), right.x, right.y + 2);
-        assert_eq!(app.pointer, Pointer::Default);
+        assert_eq!(app.pointer, Pointer::Text);
         app.mouse(K::Up(MouseButton::Left), right.x, right.y + 2);
     }
 }
@@ -8228,5 +8229,251 @@ mod term_scroll_bar {
         );
         app.mouse(MouseEventKind::ScrollUp, track.x, track.y + 2);
         assert_eq!(task_back(&app, id), at_top, "and back");
+    }
+}
+
+mod text_pointer {
+    use crossterm::event::{MouseButton, MouseEventKind as K};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::command::Command;
+    use crate::layout::SplitDir;
+    use crate::milestone_tests::test_app;
+    use crate::terminal::{Pointer, set_pointer};
+
+    fn draw(app: &mut App, term: &mut Terminal<TestBackend>) {
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+    }
+
+    fn pointer_at(app: &mut App, x: u16, y: u16) -> Pointer {
+        app.mouse(K::Moved, x, y);
+        app.pointer
+    }
+
+    #[test]
+    fn text_pointer_bytes() {
+        if std::env::var_os("TMUX").is_some() {
+            return;
+        }
+        let mut out = Vec::new();
+        set_pointer(&mut out, Pointer::Text).unwrap();
+        assert_eq!(out, b"\x1b]22;text\x1b\\");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_pointer_over_text_and_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path(), Buffer::from_str(&"hello world\n".repeat(200)));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        app.ui.side_visible = true;
+        app.test_execute(Command::SplitRight);
+        draw(&mut app, &mut term);
+
+        let g = app.hits.group(app.groups.active).unwrap().clone();
+        assert_eq!(pointer_at(&mut app, g.text.x + 2, g.text.y), Pointer::Text);
+        assert_eq!(pointer_at(&mut app, g.text.x - 1, g.text.y), Pointer::Default, "gutter");
+        assert_eq!(pointer_at(&mut app, g.text.x + 2, g.text.y + 3), Pointer::Text);
+        let bar = g.scrollbar.expect("200 lines scroll").track;
+        assert_eq!(pointer_at(&mut app, bar.x, bar.y + 3), Pointer::Default, "scroll bar");
+        assert_eq!(pointer_at(&mut app, g.text.x + 2, g.text.y + 3), Pointer::Text);
+        // An overlay over the text (the hover popup) is not text.
+        let popup = ratatui::layout::Rect::new(g.text.x + 1, g.text.y + 2, 10, 3);
+        app.hits.hover = Some(popup);
+        assert_eq!(
+            pointer_at(&mut app, popup.x + 2, popup.y + 1),
+            Pointer::Default,
+            "hover popup"
+        );
+        app.hits.hover = None;
+        // The other group's text too.
+        let other = app.hits.groups.iter().find(|h| h.id != g.id).unwrap().clone();
+        assert_eq!(pointer_at(&mut app, other.text.x + 2, other.text.y), Pointer::Text);
+        assert_eq!(
+            pointer_at(&mut app, g.tab_bar.x + 2, g.tab_bar.y),
+            Pointer::Default,
+            "tab"
+        );
+        let div = app
+            .hits
+            .dividers
+            .iter()
+            .find(|d| d.dir == SplitDir::Right)
+            .unwrap()
+            .rect;
+        assert_eq!(
+            pointer_at(&mut app, div.x, div.y + 2),
+            Pointer::ColResize,
+            "divider wins"
+        );
+        // Selecting text keeps the I-beam, even off the text; the release drops it there.
+        app.mouse(K::Down(MouseButton::Left), g.text.x + 1, g.text.y);
+        app.mouse(K::Drag(MouseButton::Left), g.text.x + 3, g.text.y);
+        assert_eq!(app.pointer, Pointer::Text);
+        app.mouse(K::Drag(MouseButton::Left), g.tab_bar.x + 2, g.tab_bar.y);
+        assert_eq!(app.pointer, Pointer::Text, "still selecting");
+        app.mouse(K::Up(MouseButton::Left), g.tab_bar.x + 2, g.tab_bar.y);
+        assert_eq!(app.pointer, Pointer::Default, "released over the tab bar");
+        // Dragging the divider keeps its arrow over the text.
+        app.mouse(K::Down(MouseButton::Left), div.x, div.y + 2);
+        app.mouse(K::Drag(MouseButton::Left), g.text.x + 3, div.y + 2);
+        assert_eq!(app.pointer, Pointer::ColResize, "the divider's drag wins over text");
+        app.mouse(K::Up(MouseButton::Left), g.text.x + 3, div.y + 2);
+        draw(&mut app, &mut term);
+        let g = app.hits.group(app.groups.active).unwrap().clone();
+
+        // The find widget's inputs.
+        app.test_execute(Command::OpenReplace);
+        draw(&mut app, &mut term);
+        let f = app.hits.find.unwrap();
+        assert_eq!(pointer_at(&mut app, f.query.x + 1, f.query.y), Pointer::Text);
+        let r = f.replace.unwrap();
+        assert_eq!(pointer_at(&mut app, r.x + 1, r.y), Pointer::Text);
+        assert_eq!(pointer_at(&mut app, f.toggles[0].x, f.toggles[0].y), Pointer::Default);
+
+        // The Search view's inputs.
+        app.test_execute(Command::Search(crate::command::SearchCommand::ReplaceInFiles));
+        draw(&mut app, &mut term);
+        let s = app.hits.search.clone().unwrap();
+        assert_eq!(pointer_at(&mut app, s.inputs[0].x + 1, s.inputs[0].y), Pointer::Text);
+        assert_eq!(pointer_at(&mut app, s.replace.x + 1, s.replace.y), Pointer::Text);
+        assert_eq!(pointer_at(&mut app, s.toggles[0].x, s.toggles[0].y), Pointer::Default);
+        let side = app.hits.regions.side.unwrap();
+        let below = side.y + side.height - 2;
+        assert!(below > s.replace.y + 2, "a row below the inputs");
+        assert_eq!(
+            pointer_at(&mut app, side.x + 2, below),
+            Pointer::Default,
+            "the view below its inputs"
+        );
+
+        // The palette's input; elsewhere under it is the terminal's own.
+        app.test_execute(Command::GoToLine);
+        draw(&mut app, &mut term);
+        let p = app.hits.palette.unwrap();
+        assert_eq!(pointer_at(&mut app, p.input.x + 1, p.input.y), Pointer::Text);
+        assert_eq!(pointer_at(&mut app, g.text.x + 2, g.text.y + 5), Pointer::Default);
+        app.press(crossterm::event::KeyCode::Esc, crossterm::event::KeyModifiers::NONE);
+
+        // The prompt's input.
+        app.test_execute(Command::Explorer(crate::command::ExplorerCommand::NewFile));
+        draw(&mut app, &mut term);
+        let i = app.hits.prompt_input.expect("prompt input drawn");
+        assert_eq!(pointer_at(&mut app, i.x + 1, i.y), Pointer::Text);
+        assert_eq!(pointer_at(&mut app, i.x + 1, i.y - 1), Pointer::Default);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_pointer_not_over_a_hex_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = super::back_forward::project(dir.path(), &[("a.txt", "hello world\n".repeat(5))]);
+        let mut app = super::back_forward::open_app(&root, "a.txt");
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        draw(&mut app, &mut term);
+        let g = app.hits.group(app.groups.active).unwrap().clone();
+        assert_eq!(
+            pointer_at(&mut app, g.editor.x + 12, g.editor.y + 1),
+            Pointer::Text,
+            "the text tab"
+        );
+        app.test_execute(Command::ReopenAsHex);
+        assert!(app.settle(|a| a.active_hex().is_some()).await);
+        draw(&mut app, &mut term);
+        let g = app.hits.group(app.groups.active).unwrap().clone();
+        assert_eq!(pointer_at(&mut app, g.editor.x + 12, g.editor.y + 1), Pointer::Default);
+    }
+
+    /// A diff view's two text panes have the I-beam; its Stage / Revert buttons don't.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_pointer_over_diff_panes_not_buttons() {
+        use super::revert_hunks as rh;
+        let (original, changed) = rh::three_changes();
+        let (_d, root, state) = rh::project(&original, &changed);
+        let mut app = rh::open_app(&root, &state, None).await;
+        app.open_diff(root.join("f.txt"), crate::diff_view::Pair::UNSTAGED);
+        assert!(rh::settle_diffs(&mut app).await);
+        let mut term = Terminal::new(TestBackend::new(150, 60)).unwrap();
+        draw(&mut app, &mut term);
+        let d = rh::diff_hit(&app);
+        let rows = d.rows;
+        let last = rows.y + rows.height - 1;
+        assert_eq!(pointer_at(&mut app, rows.x + 8, last), Pointer::Text, "left pane");
+        assert_eq!(
+            pointer_at(&mut app, rows.x + rows.width * 3 / 4, last),
+            Pointer::Text,
+            "right pane"
+        );
+        let (stage, _) = d.buttons[0];
+        assert_eq!(
+            pointer_at(&mut app, stage.x + 1, stage.y),
+            Pointer::Default,
+            "Stage button"
+        );
+        let (revert, _) = d.reverts[0];
+        assert_eq!(
+            pointer_at(&mut app, revert.x + 1, revert.y),
+            Pointer::Default,
+            "Revert button"
+        );
+        let g = app.hits.group(app.groups.active).unwrap().clone();
+        assert_eq!(
+            pointer_at(&mut app, g.tab_bar.x + 2, g.tab_bar.y),
+            Pointer::Default,
+            "tab"
+        );
+    }
+
+    /// A merge conflict's action-row buttons are buttons, not text.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_pointer_not_over_merge_buttons() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = "a\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> other\nb\n";
+        let mut app = test_app(dir.path(), Buffer::from_str(text));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        draw(&mut app, &mut term);
+        let g = app.hits.group(app.groups.active).unwrap().clone();
+        let (button, _, _) = *g.merge_buttons.first().expect("the conflict's action row drawn");
+        assert_eq!(
+            pointer_at(&mut app, button.x + 1, button.y),
+            Pointer::Default,
+            "a merge button"
+        );
+        assert_eq!(
+            pointer_at(&mut app, g.text.x + 1, g.text.y),
+            Pointer::Text,
+            "line 1's text"
+        );
+    }
+
+    /// A shell tab keeps the terminal's own pointer (its program draws the text).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_pointer_not_over_a_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = test_app(dir.path(), Buffer::from_str("hello\n"));
+        app.test_start();
+        app.tasks.shell = "/bin/sh".into();
+        app.test_execute(Command::NewShell);
+        let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        draw(&mut app, &mut term);
+        let shell = app.terminals.active;
+        let s = app.hits.group(shell).expect("the terminal area's group drawn").clone();
+        assert_eq!(
+            pointer_at(&mut app, s.editor.x + 2, s.editor.y + 1),
+            Pointer::Default,
+            "shell"
+        );
+        let g = app.hits.group(app.groups.active).unwrap().clone();
+        assert_eq!(
+            pointer_at(&mut app, g.text.x + 1, g.text.y),
+            Pointer::Text,
+            "the editor's text"
+        );
+        assert_eq!(
+            pointer_at(&mut app, s.editor.x + 2, s.editor.y + 1),
+            Pointer::Default,
+            "back to the shell"
+        );
     }
 }

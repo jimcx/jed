@@ -154,6 +154,8 @@ pub enum Pointer {
     ColResize,
     /// Over a border dragged up / down (the bottom panel's top, a stacked split, Git History's).
     RowResize,
+    /// Over text you can type or select in (the I-beam).
+    Text,
 }
 
 impl Pointer {
@@ -162,6 +164,7 @@ impl Pointer {
             Pointer::Default => "default",
             Pointer::ColResize => "ew-resize",
             Pointer::RowResize => "ns-resize",
+            Pointer::Text => "text",
         }
     }
 }
@@ -351,10 +354,11 @@ mod tests {
         let mut out = Vec::new();
         set_pointer(&mut out, Pointer::ColResize).unwrap();
         set_pointer(&mut out, Pointer::RowResize).unwrap();
+        set_pointer(&mut out, Pointer::Text).unwrap();
         set_pointer(&mut out, Pointer::Default).unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            "\x1b]22;ew-resize\x1b\\\x1b]22;ns-resize\x1b\\\x1b]22;default\x1b\\"
+            "\x1b]22;ew-resize\x1b\\\x1b]22;ns-resize\x1b\\\x1b]22;text\x1b\\\x1b]22;default\x1b\\"
         );
     }
 

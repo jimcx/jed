@@ -527,7 +527,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     hits.cheat_sheet = cheatsheet::render(f, regions.editor, app);
     hits.keys = keys::render(f, regions.editor, app);
     if let Some(prompt) = &app.prompt {
-        dialog::render(f, area, app, prompt);
+        hits.prompt_input = dialog::render(f, area, app, prompt);
     }
     app.hits = hits;
 }

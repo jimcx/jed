@@ -1225,8 +1225,13 @@ impl App {
             }
             Event::Mouse(m) if self.prompt.is_none() && self.cheat_sheet.is_some() => self.cheat_sheet_mouse(m),
             Event::Mouse(m) if self.prompt.is_none() && self.keys.is_some() => self.keyboard_shortcuts_mouse(m),
-            Event::Mouse(m) if self.prompt.is_none() && self.palette.is_some() => self.palette_mouse(m),
+            Event::Mouse(m) if self.prompt.is_none() && self.palette.is_some() => {
+                self.palette_mouse(m);
+                self.pointer = self.pointer_at(m.column, m.row);
+            }
             Event::Mouse(m) if self.prompt.is_none() => self.handle_mouse(m),
+            // A prompt swallows the mouse; only its input has the I-beam.
+            Event::Mouse(m) => self.pointer = self.pointer_at(m.column, m.row),
             _ => {}
         }
         self.nav_end(here, true);

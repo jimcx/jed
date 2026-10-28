@@ -2,11 +2,13 @@
 id: text_pointer
 name: I-beam pointer over text
 summary: show the mouse pointer as an I-beam (OSC 22 `text`) over the editor text and the text inputs
-status: open
+status: done
 priority: 0
 dependencies: []
 ---
 
+  - ✅ Built. `Pointer::Text`; `App::pointer_at` (`app/mouse.rs`) with `editor_text_at`; `HitMap::prompt_input` (set by `ui::dialog::render`); palette / prompt mouse events now refresh `App::pointer`. A text selection drag keeps the I-beam; merge-conflict buttons, diff Stage / Revert buttons, overlays, hex and shell tabs stay default
+  - Also: jed has no minimap, so nothing to exclude. Unrelated: `clear_scrollback_shell_program_is_untouched` fails on a clean `main` on this Linux machine (PTY `cat -v` echo)
   - Goal: the mouse pointer becomes an I-beam over anything you can type or select text in, as in VS Code, and goes back to the terminal's own over everything else
   - Needs: `terminal::Pointer` gains `Text` (OSC 22 name `text`; `Pointer::name` and `set_pointer`'s `POINTER_SET` bookkeeping already cover any non-default shape, so `restore` resets it); `App::pointer_at` in `app/mouse.rs` returns it, after the resize-border and drag checks (a border or a drag in progress keeps its arrow)
   - Over: an editor group's text area (not its gutter, tab bar, scroll bars or minimap), the find widget's query / replace inputs, the Search view's inputs, the palette's input and the prompt dialog's input (the rects the `HitMap` already holds for clicks), and a diff view's text panes. A terminal tab keeps its own: a program that sets the pointer itself is out of scope

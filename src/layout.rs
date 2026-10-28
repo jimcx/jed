@@ -445,6 +445,8 @@ pub struct HitMap {
     pub cheat_sheet: Option<CheatSheetHit>,
     /// The keyboard shortcuts view, when open; it takes every mouse event.
     pub keys: Option<KeysHit>,
+    /// The prompt dialog's input field (a text input prompt), when shown.
+    pub prompt_input: Option<Rect>,
     /// The find widget, when shown; it takes clicks on it.
     pub find: Option<FindHit>,
     /// The Search view, when shown.
@@ -1084,6 +1086,7 @@ mod tests {
             groups,
             dividers,
             palette: None,
+            prompt_input: None,
             cheat_sheet: None,
             keys: None,
             find: None,

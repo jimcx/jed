@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ropey::Rope;
 use vt100::MouseProtocolMode;
 
@@ -136,8 +136,10 @@ impl App {
     }
 
     /// The pointer's shape: a resize arrow over a border that drags (and while dragging one,
-    /// wherever the pointer is), else the terminal's own.
-    fn pointer_at(&self, x: u16, y: u16) -> Pointer {
+    /// wherever the pointer is), the I-beam over text you can type or select in (and while
+    /// selecting text), else the terminal's own.
+    pub(super) fn pointer_at(&self, x: u16, y: u16) -> Pointer {
+        let p = Position { x, y };
         let divider = |d: &Divider| match d.dir {
             SplitDir::Right => Pointer::ColResize,
             SplitDir::Down => Pointer::RowResize,
@@ -146,13 +148,56 @@ impl App {
             Some(Drag::SideBorder) => Pointer::ColResize,
             Some(Drag::PanelBorder | Drag::TerminalBorder | Drag::HistoryDivider) => Pointer::RowResize,
             Some(Drag::Divider(d)) => divider(d),
+            // Selecting text keeps the I-beam wherever the pointer goes.
+            Some(Drag::Text { .. } | Drag::AddedText { .. } | Drag::Column) => Pointer::Text,
             Some(_) => Pointer::Default,
+            None if self.prompt.is_some() => {
+                self.text_pointer_if(self.hits.prompt_input.is_some_and(|r| r.contains(p)))
+            }
+            None if self.palette.is_some() => {
+                self.text_pointer_if(self.hits.palette.is_some_and(|h| h.input.contains(p)))
+            }
             None => match self.hits.hit(x, y) {
                 Hit::SideBorder => Pointer::ColResize,
                 Hit::PanelBorder | Hit::TerminalBorder | Hit::HistoryDivider => Pointer::RowResize,
                 Hit::Divider(i) => self.hits.dividers.get(i).map_or(Pointer::Default, divider),
+                Hit::Editor(g) => self.text_pointer_if(self.editor_text_at(g, p)),
+                Hit::SidePanel => {
+                    let s = self.hits.search.as_ref();
+                    self.text_pointer_if(
+                        s.is_some_and(|s| s.inputs.iter().any(|r| r.contains(p)) || s.replace.contains(p)),
+                    )
+                }
                 _ => Pointer::Default,
             },
+        }
+    }
+
+    fn text_pointer_if(&self, over: bool) -> Pointer {
+        if over { Pointer::Text } else { Pointer::Default }
+    }
+
+    /// Whether `p`, in group `g`'s editor, is over text you can type or select in: the find
+    /// widget's inputs, a text tab's text area, a diff view's text panes (not its buttons).
+    fn editor_text_at(&self, g: crate::layout::GroupId, p: Position) -> bool {
+        if let Some(f) = &self.hits.find
+            && f.area.contains(p)
+        {
+            return f.query.contains(p) || f.replace.is_some_and(|r| r.contains(p));
+        }
+        let (Some(group), Some(hit)) = (self.any_group(g), self.hits.group(g)) else {
+            return false;
+        };
+        if group.active_tab().is_some() {
+            return hit.text.contains(p) && !hit.merge_buttons.iter().any(|(r, _, _)| r.contains(p));
+        }
+        match (&hit.diff, group.active_diff()) {
+            (Some(d), Some(_)) => {
+                d.rows.contains(p)
+                    && !d.buttons.iter().chain(&d.reverts).any(|(r, _)| r.contains(p))
+                    && hit.scrollbar.is_none_or(|s| !s.track.contains(p))
+            }
+            _ => false,
         }
     }
 

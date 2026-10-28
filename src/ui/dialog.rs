@@ -13,7 +13,7 @@ use crate::workspace::trust::Trust;
 /// Lines of commands shown in the trust dialog before "and N more".
 const MAX_TRUST_LINES: usize = 12;
 
-pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) {
+pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) -> Option<Rect> {
     let style = app.theme.get("dialog");
     let key = style.patch(app.theme.get("dialog.key"));
     let buttons = |choices: &[(&str, &str)]| {
@@ -220,7 +220,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) {
         width,
         height,
     };
+    let mut input_rect = None;
     if let (Some((row, col)), Prompt::Input(_)) = (cursor, prompt) {
+        input_rect = Some(Rect {
+            x: rect.x + 1,
+            y: rect.y + 1 + row as u16,
+            width: width.saturating_sub(2),
+            height: 1,
+        });
         // Stretch the input field across the dialog.
         let field = &mut lines[row];
         let pad = (width as usize).saturating_sub(4 + field.width());
@@ -240,4 +247,5 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) {
         .style(style);
     f.render_widget(Clear, rect);
     f.render_widget(Paragraph::new(lines).style(Style::default()).block(block), rect);
+    input_rect
 }
