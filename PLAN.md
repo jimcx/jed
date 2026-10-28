@@ -678,7 +678,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Change End of Line Sequence** (`change_eol`): change a buffer's line endings to LF or CRLF — [tasks/change_eol.md](tasks/change_eol.md)
 - **Claude Code IDE integration** (`claude_ide`): let `claude` running in a jed terminal auto-connect to jed and share the editor's context, by implementing Claude Code's editor-agnostic IDE protocol on jed's side — no upstream change — [tasks/claude_ide.md](tasks/claude_ide.md)
 - **Close tabs and go to the Nth tab** (`close_tabs_nth`): close all / others / saved tabs, and go to the Nth tab in a group — [tasks/close_tabs_nth.md](tasks/close_tabs_nth.md)
-- **Compare any two files** (`compare_files`): compare any two files in a diff tab — [tasks/compare_files.md](tasks/compare_files.md)
+- **Compare any two files or buffers** (`compare_files`): compare any two files, open or unsaved buffers (dirty or untitled), in a diff tab — [tasks/compare_files.md](tasks/compare_files.md)
 - **Discard changes in Source Control** (`discard_changes`): discard a file's or all changes in Source Control — [tasks/discard_changes.md](tasks/discard_changes.md)
 - **Drag terminals back into the terminal area** (`drag_to_terminal_area`): a shell tab in an editor group can be dragged onto the terminal area (its bar, screen or edge) to dock it there, as "Move Terminal into Terminal Area" does — [tasks/drag_to_terminal_area.md](tasks/drag_to_terminal_area.md)
 - **Expand / shrink selection** (`expand_shrink_selection`): grow / shrink each selection to enclosing syntax nodes — [tasks/expand_shrink_selection.md](tasks/expand_shrink_selection.md)
