@@ -625,7 +625,7 @@ async fn term_area_divider_drag_resizes_the_area() {
     assert_eq!(app.groups.tree, before, "the editor's tree is untouched");
 }
 
-/// A text tab can't be dragged into the area, nor can an editor group's shell tab: no marker or
+/// A text tab can't be dragged into the area (a shell can: todo_tests::drag_to_terminal_area): no marker or
 /// shade, nothing moves.
 #[tokio::test(flavor = "multi_thread")]
 async fn term_area_refuses_drags_between_the_area_and_editor_groups() {
@@ -658,25 +658,6 @@ async fn term_area_refuses_drags_between_the_area_and_editor_groups() {
     app.mouse(MouseEventKind::Up(MouseButton::Left), tbar.x + tbar.width - 2, tbar.y);
     assert_eq!(app.terminals.get(tg).unwrap().tabs.len(), 1);
     assert_eq!(app.groups.get(eg).unwrap().tabs.len(), 1);
-    draw(&mut app, 100, 40);
-    // An editor group's shell tab is refused by the area too (the command brings it back).
-    app.new_shell_in_editor();
-    draw(&mut app, 100, 40);
-    let from = tab_point(&app, eg, 1);
-    app.mouse(MouseEventKind::Down(MouseButton::Left), from.0, from.1);
-    for (x, y) in [
-        centre(screen),
-        edge_point(screen, DropSide::Left),
-        (tbar.x + tbar.width - 2, tbar.y),
-    ] {
-        app.mouse(MouseEventKind::Drag(MouseButton::Left), x, y);
-        let term = draw(&mut app, 100, 40);
-        assert_eq!(shaded_cells(&app, &term, screen), 0, "no shade at ({x}, {y})");
-        assert_eq!(app.tab_drop_in(tg), None, "no marker at ({x}, {y})");
-    }
-    app.mouse(MouseEventKind::Up(MouseButton::Left), screen.x + 3, screen.y + 3);
-    assert_eq!(app.terminals.get(tg).unwrap().tabs.len(), 1);
-    assert_eq!(app.groups.get(eg).unwrap().tabs.len(), 2, "the editor's shell stays");
 }
 
 /// With the editor focused, the split and group keys act on the editor's groups even while the

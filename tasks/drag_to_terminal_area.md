@@ -2,7 +2,7 @@
 id: drag_to_terminal_area
 name: Drag terminals back into the terminal area
 summary: a shell tab in an editor group can be dragged onto the terminal area (its bar, screen or edge) to dock it there, as "Move Terminal into Terminal Area" does
-status: open
+status: done
 priority: 0
 dependencies: []
 ---
@@ -18,3 +18,6 @@ See [Layout](../PLAN.md#layout); `term_area` deferred this ("dragging an editor-
   - Docs: update the Tabs paragraph in `docs/dev/conventions.md` ("dragging an editor tab into the area stays refused" no longer holds for shells) and `term_area`'s Deferred note stays as history
   - Done when: a terminal in an editor group can be dragged onto the terminal area's bar, screen or edge and lands there with its run intact, also when the area was hidden; a non-terminal tab is still refused; and `scripts/check` passes
   - Still to check by hand: dragging a live shell (e.g. running `top`) from an editor group into the area in a real terminal, each of the drop spots with the shade readable; the hidden-area strip and the area's height afterwards; Esc mid-drag
+  - Built ✅: `can_dock(from, to, shell)` lets an editor group's shell dock in the area (bar gap, centre, edge band); other tabs stay refused. `TabDrop::TerminalStrip` + `HitMap::terminal_strip` (set by `ui::render` only while the area is hidden): a shell drag shades the region the area would take at its remembered height; a release docks into `terminals.active` and shows the area
+  - Also: `drag_tabs_a_shell_tab_moves_rather_than_copies` sets `terminal_height` to the minimum (the strip would cover its target); `term_area_refuses_drags_…` lost its "shell refused" tail
+  - Deferred: the strip is the whole hypothetical terminal rect (full width), so while the area is hidden it wins over a lower split group's bar and centre during a shell drag; undo-seal on release is unobservable in tests (the dragged shell is the active tab)

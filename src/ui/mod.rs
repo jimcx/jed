@@ -90,8 +90,21 @@ pub fn render(f: &mut Frame, app: &mut App) {
         panel_height,
         terminal_height,
     );
+    let terminal_strip = (!app.ui.terminal_visible)
+        .then(|| {
+            layout::compute(
+                area,
+                app.ui.side_visible,
+                app.ui.side_width,
+                panel_height,
+                Some(app.ui.terminal_height),
+            )
+            .terminal
+        })
+        .flatten();
     let mut hits = HitMap {
         regions,
+        terminal_strip,
         ..HitMap::default()
     };
 
@@ -486,6 +499,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         .groups
         .iter()
         .filter_map(|g| app.tab_drop_shade(g.id, g.editor))
+        .chain(app.terminal_strip_shade())
         .collect();
     if !shades.is_empty() {
         let out = f.buffer_mut();

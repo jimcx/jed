@@ -40,6 +40,9 @@ pub enum TabDrop {
         group: GroupId,
         side: Option<DropSide>,
     },
+    /// The strip the hidden terminal area would take: a shell dropped here shows the area and
+    /// lands in it.
+    TerminalStrip,
 }
 
 /// The gap in `tabs` at `x`: the tabs whose midpoint is left of the pointer. The index is in
@@ -75,19 +78,26 @@ fn snap_side(rect: Rect, x: u16, y: u16) -> Option<DropSide> {
         .map(|(side, ..)| side)
 }
 
-/// Whether a tab dragged out of group `from` may land in group `to`. Only terminals dock in the
-/// terminal area, and only from the area itself (an editor group's shell goes back with "Move
-/// Terminal into Terminal Area"); a terminal may drop on any editor group.
-fn can_dock(from: GroupId, to: GroupId) -> bool {
-    !is_terminal_group(to) || is_terminal_group(from)
+/// Whether a tab dragged out of group `from` (`shell`: it is a terminal) may land in group `to`.
+/// Only terminals dock in the terminal area, from the area or an editor group; a terminal may
+/// drop on any editor group.
+fn can_dock(from: GroupId, to: GroupId, shell: bool) -> bool {
+    !is_terminal_group(to) || is_terminal_group(from) || shell
 }
 
 impl App {
     /// Where a tab dragged out of `from` and dropped at (`x`, `y`) would land: a gap in the tab bar
     /// under the pointer, or a group's editor (on an edge band, or its centre). Anywhere else (a
     /// divider, the side panel, the status bar, a group `can_dock` refuses) there is no target.
-    pub(super) fn tab_drop_at(&self, from: GroupId, x: u16, y: u16) -> Option<TabDrop> {
-        let mut dockable = self.hits.groups.iter().filter(|g| can_dock(from, g.id));
+    pub(super) fn tab_drop_at(&self, from: GroupId, index: usize, x: u16, y: u16) -> Option<TabDrop> {
+        let shell = self
+            .any_group(from)
+            .is_some_and(|g| matches!(g.tabs.get(index), Some(Tab::Shell(_))));
+        if shell && !self.ui.terminal_visible && self.hits.terminal_strip.is_some_and(|r| r.contains(Position { x, y }))
+        {
+            return Some(TabDrop::TerminalStrip);
+        }
+        let mut dockable = self.hits.groups.iter().filter(|g| can_dock(from, g.id, shell));
         if let Some(group) = dockable.clone().find(|g| g.tab_bar.contains(Position { x, y })) {
             return Some(TabDrop::TabBar {
                 group: group.id,
@@ -152,12 +162,23 @@ impl App {
         })
     }
 
+    /// The strip to shade while a shell is dragged over the hidden terminal area's place.
+    pub(crate) fn terminal_strip_shade(&self) -> Option<Rect> {
+        match &self.drag {
+            Some(Drag::Tab(TabDrag {
+                target: Some(TabDrop::TerminalStrip),
+                ..
+            })) => self.hits.terminal_strip,
+            _ => None,
+        }
+    }
+
     /// Follows the pointer during a tab drag: records the target for the drop marker.
     pub(super) fn tab_drag_to(&mut self, x: u16, y: u16) {
         let Some(Drag::Tab(drag)) = &self.drag else {
             return;
         };
-        let target = self.tab_drop_at(drag.from, x, y);
+        let target = self.tab_drop_at(drag.from, drag.index, x, y);
         if let Some(Drag::Tab(drag)) = &mut self.drag {
             drag.target = target;
         }
@@ -182,7 +203,7 @@ impl App {
         {
             return;
         }
-        let Some(target) = self.tab_drop_at(drag.from, x, y) else {
+        let Some(target) = self.tab_drop_at(drag.from, drag.index, x, y) else {
             return;
         };
         let (group, at) = match target {
@@ -215,6 +236,7 @@ impl App {
                 }
                 return;
             }
+            TabDrop::TerminalStrip => (self.terminals.active, None),
             TabDrop::Editor { group, side: None } if group == drag.from => return,
             TabDrop::Editor { group, side: None } => (group, None),
         };
@@ -274,10 +296,11 @@ mod tests {
     }
 
     #[test]
-    fn only_terminals_dock_in_the_area_and_only_from_it() {
-        assert!(can_dock(T, T + 1) && can_dock(0, 1));
-        assert!(can_dock(T, 0), "a terminal drops on an editor group");
-        assert!(!can_dock(0, T), "nothing from an editor group docks in the area");
+    fn only_shells_dock_in_the_area() {
+        assert!(can_dock(T, T + 1, true) && can_dock(0, 1, false));
+        assert!(can_dock(T, 0, true), "a terminal drops on an editor group");
+        assert!(can_dock(0, T, true), "a shell from an editor group docks in the area");
+        assert!(!can_dock(0, T, false), "no other tab docks in the area");
     }
 
     #[test]

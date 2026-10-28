@@ -8795,3 +8795,269 @@ mod discard_changes {
         assert!(hit.discards.iter().all(|(_, k)| *k != file(Section::Staged, "b.txt")));
     }
 }
+
+/// Drag terminals back into the terminal area: a shell in an editor group dropped on the area's
+/// bar (at a gap), screen centre or edge docks there with its run; a text tab is still refused;
+/// while the area is hidden a shaded strip at its place takes a shell and shows the area.
+mod drag_to_terminal_area {
+    use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::{App, Focus};
+    use crate::buffer::Buffer;
+    use crate::command::Command;
+    use crate::drag_tabs_tests::{centre, edge_point, half, shaded_cells};
+    use crate::group::Tab;
+    use crate::layout::{DropSide, GroupId};
+    use crate::shell_tests::{dirs, draw, shell_app};
+    use crate::tasks::RunId;
+
+    /// a.txt open, `n` area shells, one shell alone in a second editor group (so its source closes
+    /// on a drop); drawn at 100x40. Returns the app, that group and the shell's run id.
+    fn setup(root: &std::path::Path, state: &std::path::Path, n: usize) -> (App, GroupId, RunId) {
+        let mut app = shell_app(root, state);
+        app.tasks.shell = "/bin/sh".into();
+        app.test_open(Buffer::new_file(&root.join("a.txt")));
+        app.ui.terminal_height = 20;
+        for _ in 0..n {
+            app.test_execute(Command::NewShell);
+        }
+        app.new_shell_in_editor();
+        app.test_execute(Command::SplitRight);
+        let ids = app.groups.ids();
+        let tab = app.groups.take_tab(ids[0], 1).unwrap();
+        assert!(matches!(tab, Tab::Shell(_)));
+        app.groups.put_tab(ids[1], tab, None);
+        let run = app.groups.get(ids[1]).unwrap().active_shell().unwrap().run.id;
+        draw(&mut app, 100, 40);
+        (app, ids[1], run)
+    }
+
+    fn tab_point(app: &App, g: GroupId) -> (u16, u16) {
+        let hit = app.hits.group(g).unwrap();
+        (hit.tabs[0].x0 + 1, hit.tab_bar.y)
+    }
+    fn press_tab(app: &mut App, g: GroupId) {
+        let p = tab_point(app, g);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), p.0, p.1);
+    }
+    fn drag_to(app: &mut App, p: (u16, u16)) {
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), p.0, p.1);
+    }
+    fn release(app: &mut App, p: (u16, u16)) {
+        app.mouse(MouseEventKind::Up(MouseButton::Left), p.0, p.1);
+    }
+    fn redraw(app: &mut App) -> Terminal<TestBackend> {
+        draw(app, 100, 40)
+    }
+
+    /// The screen text of the shell running `run`, wherever it is.
+    fn run_text(app: &App, run: RunId) -> String {
+        app.groups
+            .shell_tabs()
+            .chain(app.terminals.shell_tabs())
+            .find(|s| s.run.id == run)
+            .map(|s| s.run.screen().screen().contents())
+            .unwrap_or_default()
+    }
+
+    /// `line` typed into the focused shell, then Enter.
+    fn type_line(app: &mut App, line: &str) {
+        app.type_text(line);
+        app.press(KeyCode::Enter, KeyModifiers::NONE);
+    }
+
+    /// Before the move: the editor group's shell (focused after `setup`) prints 42.
+    async fn print_42(app: &mut App, run: RunId) {
+        assert!(app.group().active_shell().is_some_and(|s| s.run.id == run));
+        type_line(app, "echo $((6*7))");
+        assert!(
+            app.settle(|a| run_text(a, run).contains("42")).await,
+            "{}",
+            run_text(app, run)
+        );
+    }
+
+    /// After the move: the docked shell kept its screen and still runs, taking the keys.
+    async fn still_runs(app: &mut App, run: RunId) {
+        assert!(
+            run_text(app, run).contains("42"),
+            "the output came along: {}",
+            run_text(app, run)
+        );
+        type_line(app, "echo $((7*8))");
+        assert!(
+            app.settle(|a| run_text(a, run).contains("56")).await,
+            "{}",
+            run_text(app, run)
+        );
+    }
+
+    /// The shell with `run` lives in the area, only there, its source group is gone and the area
+    /// is shown and focused.
+    fn docked(app: &App, run: RunId) {
+        assert!(app.terminals.shell_tabs().any(|s| s.run.id == run), "same run");
+        assert_eq!(app.groups.shell_tabs().count(), 0, "moved, not copied");
+        assert_eq!(app.groups.len(), 1, "the source group closed");
+        assert_eq!(app.ui.focus, Focus::Terminal);
+        assert!(app.ui.terminal_visible);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn drag_to_terminal_area_bar_gap() {
+        let (_d, root, state) = dirs();
+        let (mut app, src, run) = setup(&root, &state, 1);
+        let tg = app.terminals.active;
+        let hit = app.hits.group(tg).unwrap();
+        let (tab_x, y) = (hit.tabs[0].x0, hit.tab_bar.y);
+        let end = (hit.tab_bar.x + hit.tab_bar.width - 2, y);
+        press_tab(&mut app, src);
+        drag_to(&mut app, (tab_x, y));
+        assert_eq!(app.tab_drop_in(tg), Some(0), "marker at the first gap");
+        drag_to(&mut app, end);
+        assert_eq!(app.tab_drop_in(tg), Some(1), "marker at the end");
+        release(&mut app, end);
+        redraw(&mut app);
+        docked(&app, run);
+        let tabs = &app.terminals.get(tg).unwrap().tabs;
+        assert_eq!(tabs.len(), 2);
+        assert!(matches!(&tabs[1], Tab::Shell(s) if s.run.id == run), "at the gap");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn drag_to_terminal_area_centre() {
+        let (_d, root, state) = dirs();
+        let (mut app, src, run) = setup(&root, &state, 1);
+        print_42(&mut app, run).await;
+        let tg = app.terminals.active;
+        let screen = app.hits.group(tg).unwrap().editor;
+        press_tab(&mut app, src);
+        drag_to(&mut app, centre(screen));
+        let term = redraw(&mut app);
+        assert!(shaded_cells(&app, &term, screen) > 0, "the screen is shaded");
+        release(&mut app, centre(screen));
+        redraw(&mut app);
+        docked(&app, run);
+        assert_eq!(app.terminals.len(), 1, "no split");
+        assert_eq!(app.terminals.get(tg).unwrap().active_shell().unwrap().run.id, run);
+        still_runs(&mut app, run).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn drag_to_terminal_area_each_edge() {
+        for side in [DropSide::Left, DropSide::Right, DropSide::Up, DropSide::Down] {
+            let (_d, root, state) = dirs();
+            let (mut app, src, run) = setup(&root, &state, 1);
+            let tg = app.terminals.active;
+            let screen = app.hits.group(tg).unwrap().editor;
+            let p = edge_point(screen, side);
+            press_tab(&mut app, src);
+            drag_to(&mut app, p);
+            let term = redraw(&mut app);
+            assert!(
+                shaded_cells(&app, &term, half(screen, side)) > 0,
+                "{side:?} half shaded"
+            );
+            release(&mut app, p);
+            redraw(&mut app);
+            docked(&app, run);
+            assert_eq!(app.terminals.len(), 2, "{side:?}: the area's group split");
+            let new = app.terminals.active;
+            assert_ne!(new, tg);
+            assert_eq!(app.terminals.get(new).unwrap().active_shell().unwrap().run.id, run);
+            assert_eq!(app.terminals.get(tg).unwrap().tabs.len(), 1);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn drag_to_terminal_area_refuses_other_tabs() {
+        let (_d, root, state) = dirs();
+        let (mut app, _src, _run) = setup(&root, &state, 1);
+        let tg = app.terminals.active;
+        let eg = app.groups.ids()[0];
+        let screen = app.hits.group(tg).unwrap().editor;
+        let bar = app.hits.group(tg).unwrap().tab_bar;
+        press_tab(&mut app, eg);
+        for p in [
+            centre(screen),
+            edge_point(screen, DropSide::Left),
+            (bar.x + bar.width - 2, bar.y),
+        ] {
+            drag_to(&mut app, p);
+            let term = redraw(&mut app);
+            assert_eq!(shaded_cells(&app, &term, screen), 0, "no shade at {p:?}");
+            assert_eq!(app.tab_drop_in(tg), None);
+        }
+        release(&mut app, centre(screen));
+        assert_eq!(app.terminals.get(tg).unwrap().tabs.len(), 1);
+        assert_eq!(app.groups.get(eg).unwrap().tabs.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn drag_to_terminal_area_hidden_strip() {
+        let (_d, root, state) = dirs();
+        let (mut app, src, run) = setup(&root, &state, 0);
+        print_42(&mut app, run).await;
+        redraw(&mut app);
+        assert!(!app.ui.terminal_visible);
+        let strip = app.hits.terminal_strip.expect("a strip while hidden");
+        let inside = (strip.x + strip.width / 2, strip.y + strip.height / 2);
+        // A text tab: no strip shade, a release does nothing.
+        let eg = app.groups.ids()[0];
+        press_tab(&mut app, eg);
+        drag_to(&mut app, inside);
+        redraw(&mut app);
+        assert_eq!(app.terminal_strip_shade(), None, "text tabs get no strip");
+        release(&mut app, inside);
+        assert!(!app.ui.terminal_visible);
+        assert_eq!(app.terminals.shell_tabs().count(), 0);
+        redraw(&mut app);
+        // A shell: the strip shades, the release shows the area and docks.
+        press_tab(&mut app, src);
+        drag_to(&mut app, inside);
+        let term = redraw(&mut app);
+        assert_eq!(app.terminal_strip_shade(), Some(strip));
+        assert!(shaded_cells(&app, &term, strip) > 0, "the strip is shaded");
+        release(&mut app, inside);
+        redraw(&mut app);
+        docked(&app, run);
+        assert_eq!(app.hits.terminal_strip, None, "the strip is gone with the area shown");
+        still_runs(&mut app, run).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn drag_to_terminal_area_cancel_and_stale() {
+        let (_d, root, state) = dirs();
+        let (mut app, src, run) = setup(&root, &state, 1);
+        let tg = app.terminals.active;
+        let screen = app.hits.group(tg).unwrap().editor;
+        // Esc cancels.
+        press_tab(&mut app, src);
+        drag_to(&mut app, centre(screen));
+        app.press(KeyCode::Esc, KeyModifiers::NONE);
+        release(&mut app, centre(screen));
+        assert_eq!(app.groups.shell_tabs().count(), 1);
+        // A release outside any target does nothing.
+        press_tab(&mut app, src);
+        drag_to(&mut app, centre(screen));
+        drag_to(&mut app, (0, 0));
+        release(&mut app, (0, 0));
+        assert_eq!(app.groups.shell_tabs().count(), 1);
+        // The dragged shell closed mid-drag and another shell took its place: the release
+        // moves neither (the tab at the drag's index is no longer the one it started on).
+        press_tab(&mut app, src);
+        drag_to(&mut app, centre(screen));
+        app.new_shell_in_editor();
+        let other = app.groups.get(src).unwrap().tabs.len() - 1;
+        let fresh = app.groups.take_tab(src, other).unwrap();
+        assert!(matches!(fresh, Tab::Shell(_)));
+        assert!(app.groups.put_tab(src, fresh, Some(0)));
+        let closed = app.groups.take_tab(src, 1).unwrap();
+        assert!(matches!(&closed, Tab::Shell(s) if s.run.id == run));
+        release(&mut app, centre(screen));
+        assert_eq!(app.terminals.shell_tabs().count(), 1, "nothing docked");
+        assert_eq!(app.groups.shell_tabs().count(), 1, "the new shell stays in its group");
+        assert_ne!(app.ui.focus, Focus::Terminal);
+    }
+}

@@ -438,6 +438,8 @@ pub struct HitMap {
     /// Explorer rows area; row `i` on screen is entry `scroll + i`.
     pub explorer_rows: Rect,
     pub groups: Vec<GroupHit>,
+    /// Where the terminal area would show, while it is hidden: the drop target for a dragged shell.
+    pub terminal_strip: Option<Rect>,
     pub dividers: Vec<Divider>,
     /// The palette, when open; it takes every mouse event.
     pub palette: Option<PaletteHit>,
@@ -1083,6 +1085,7 @@ mod tests {
         let map = HitMap {
             regions,
             icons: vec![(1, SidePanel::Explorer)],
+            terminal_strip: None,
             // The explorer's rows, its scroll bar in the column left of the border.
             explorer_rows: Rect::new(3, 2, 23, 20),
             groups,

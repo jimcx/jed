@@ -694,6 +694,8 @@ async fn drag_tabs_a_shell_tab_moves_rather_than_copies() {
     let (mut app, root) = open_app(&dir, &["a.txt"]);
     let program = root.join("myshell");
     std::os::unix::fs::symlink("/bin/sh", &program).unwrap();
+    // The hidden terminal area's drop strip (its remembered height) must not cover the target.
+    app.ui.terminal_height = crate::layout::MIN_TERMINAL_HEIGHT;
     app.tasks.shell = program;
     app.new_shell_in_editor();
     assert_eq!(app.group().tabs.len(), 2, "a.txt and the shell");
