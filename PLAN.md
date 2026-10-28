@@ -684,6 +684,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Explorer path commands** (`explorer_path_commands`): copy paths, reveal in Finder, and collapse folders in the explorer — [tasks/explorer_path_commands.md](tasks/explorer_path_commands.md)
 - **Feature-based end-to-end test files** (`feature_test_files`): reorganize milestone test files into per-feature files — [tasks/feature_test_files.md](tasks/feature_test_files.md)
 - **File History section in the Explorer** (`history_view`): the active file's snapshots as a third Explorer section — [tasks/history_view.md](tasks/history_view.md)
+- **I-beam pointer over text** (`text_pointer`): show the mouse pointer as an I-beam (OSC 22 `text`) over the editor text and the text inputs — [tasks/text_pointer.md](tasks/text_pointer.md)
 - **Keyboard resize of splits** (`keyboard_resize_splits`): resize the active group's split by keyboard — [tasks/keyboard_resize_splits.md](tasks/keyboard_resize_splits.md)
 - **Kitty integration for recent workspaces** (`kitty_recent`): focus / open recent workspaces in kitty windows via remote control — [tasks/kitty_recent.md](tasks/kitty_recent.md)
 - **Language features** (`lang`): go to symbol, signature help and breadcrumbs / sticky scroll — [tasks/lang.md](tasks/lang.md)
