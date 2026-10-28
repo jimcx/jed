@@ -9061,3 +9061,66 @@ mod drag_to_terminal_area {
         assert_ne!(app.ui.focus, Focus::Terminal);
     }
 }
+
+/// word_drag_select: after a double-click, a drag in an editor extends word by word.
+mod word_drag_select {
+    use crossterm::event::{MouseButton, MouseEventKind as K};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::milestone_tests::test_app;
+
+    fn setup(dir: &std::path::Path) -> (App, u16, u16) {
+        let mut app = test_app(dir, Buffer::from_str("aaa bbb ccc ddd\nsecond line\nthird\n"));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let g = app.hits.group(app.groups.active).unwrap().clone();
+        (app, g.text.x, g.text.y)
+    }
+
+    fn sel(app: &mut App) -> (usize, usize) {
+        let s = app.active_mut().unwrap().1.selections.primary();
+        (s.anchor.0, s.head.0)
+    }
+
+    /// Presses `clicks` times at `from` (the last held), drags to `to` and releases.
+    fn press_drag(app: &mut App, clicks: usize, from: (u16, u16), to: (u16, u16)) {
+        for _ in 0..clicks - 1 {
+            app.mouse(K::Down(MouseButton::Left), from.0, from.1);
+            app.mouse(K::Up(MouseButton::Left), from.0, from.1);
+        }
+        app.mouse(K::Down(MouseButton::Left), from.0, from.1);
+        app.mouse(K::Drag(MouseButton::Left), to.0, to.1);
+        app.mouse(K::Up(MouseButton::Left), to.0, to.1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn word_drag_select_editor() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, x, y) = setup(dir.path());
+        // Double-click "bbb" (4..7), drag right into the middle of "ddd" (12..15).
+        press_drag(&mut app, 2, (x + 5, y), (x + 13, y));
+        assert_eq!(sel(&mut app), (4, 15), "through the end of the word under the pointer");
+        // Drag left into the middle of "aaa" (0..3).
+        press_drag(&mut app, 2, (x + 9, y), (x + 1, y));
+        assert_eq!(sel(&mut app), (11, 0), "from the start of the word, keeping the first");
+        // Dragging inside the anchor word keeps it whole.
+        press_drag(&mut app, 2, (x + 10, y), (x + 8, y));
+        assert_eq!(sel(&mut app), (8, 11));
+        // A single-click drag ends exactly at the pointer.
+        press_drag(&mut app, 1, (x + 5, y), (x + 13, y));
+        assert_eq!(sel(&mut app), (5, 13));
+        // Across lines: double-click "ccc" (8..11), drag into "second" (16..22) on the next line.
+        press_drag(&mut app, 2, (x + 9, y), (x + 3, y + 1));
+        assert_eq!(sel(&mut app), (8, 22), "through the end of the word on the next line");
+        // A triple-click drag selects whole lines.
+        press_drag(&mut app, 3, (x + 2, y), (x + 3, y + 1));
+        assert_eq!(
+            sel(&mut app),
+            (0, 19),
+            "the anchor line stays whole, the head is the pointer (unchanged)"
+        );
+    }
+}

@@ -710,7 +710,6 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **VHDL: tree-sitter and VHDL-LS** (`vhdl`): VHDL files get syntax colours, comment / pair / indent behaviour and a language server (`vhdl_ls` from rust_hdl), as C++ / Python / Rust do — [tasks/vhdl.md](tasks/vhdl.md)
 - **Warn when the shell integration is missing or stale** (`shell_integration_check`): when a shell tab opens, warn the user if their shell's integration isn't installed or is an older version than the one jed embeds, pointing at the wizard that fixes it. — [tasks/shell_integration_check.md](tasks/shell_integration_check.md)
 - **Word-based completion** (`word_completion`): offer words from open buffers when no server suggests — [tasks/word_completion.md](tasks/word_completion.md)
-- **Word-wise selection on double-click drag** (`word_drag_select`): double-click and drag selects whole words, the end rounded out to the word under the pointer, in editors, shells and task tabs — [tasks/word_drag_select.md](tasks/word_drag_select.md)
 - **Remove tui-term** (`remove_tui_term` [p-10]): draw a shell / task tab's vt100 screen straight into the buffer and drop the tui-term dependency — [tasks/remove_tui_term.md](tasks/remove_tui_term.md)
 - ✅ **Back / forward navigation** (`back_forward`): `nav.back` / `nav.forward` on Ctrl+- / Ctrl+Shift+- (Ctrl+Alt+- on Linux), VS Code's Go Back / Go Forward — [tasks/back_forward.md](tasks/back_forward.md)
 - ✅ **CI** (`ci`): CI on GitHub Actions (Linux and macOS): fmt, clippy, build, test, and release tarballs — [tasks/ci.md](tasks/ci.md)
@@ -766,6 +765,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - ✅ **Tools view and logs** (`tools`): a side panel view of every tool jed runs, each with its log in a read-only editor tab — [tasks/tools.md](tasks/tools.md)
 - ✅ **Untitled files and Save As** (`untitled`): new untitled buffers, Save As and Save All — [tasks/untitled.md](tasks/untitled.md)
 - ✅ **Window identity from `.workspace`** (`window_identity`): `[window]` `title` and `status_bar` name the window and tint the status bar — [tasks/window_identity.md](tasks/window_identity.md)
+- ✅ **Word-wise selection on double-click drag** (`word_drag_select`): double-click and drag selects whole words, the end rounded out to the word under the pointer, in editors, shells and task tabs — [tasks/word_drag_select.md](tasks/word_drag_select.md)
 <!-- tasks:index:end -->
 
 ## Stretch goals

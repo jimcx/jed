@@ -57,6 +57,35 @@ fn screen_cell(screen: &vt100::Screen, area: Rect, x: u16, y: u16) -> (u16, u16)
     )
 }
 
+/// The (anchor, head) of a word-wise drag in an editor: the anchor word `anchor` stays selected
+/// and the far end is the end (forwards) or start (backwards) of the word under `at`.
+fn round_word_drag(rope: &Rope, anchor: (ByteIdx, ByteIdx), at: ByteIdx) -> (ByteIdx, ByteIdx) {
+    if at < anchor.0 {
+        (anchor.1, pos::word_range(rope, at).0)
+    } else if at >= anchor.1 {
+        (anchor.0, pos::word_range(rope, at).1.max(anchor.1))
+    } else {
+        anchor
+    }
+}
+
+/// The (anchor, head) of a word-wise drag in a terminal: the anchor run stays selected and the
+/// far end is the end (forwards) or start (backwards) of the run under the pointer (`under`),
+/// or the pointer's cell when it is not on a path run.
+fn round_run_drag(
+    anchor: (select::Cell, select::Cell),
+    head: select::Cell,
+    under: Option<(select::Cell, select::Cell)>,
+) -> (select::Cell, select::Cell) {
+    if head < anchor.0 {
+        (anchor.1, under.map_or(head, |r| r.0.min(head)))
+    } else if head >= anchor.1 {
+        (anchor.0, under.map_or(head, |r| r.1.max(head)))
+    } else {
+        anchor
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Drag {
     SideBorder,
@@ -68,6 +97,8 @@ pub enum Drag {
     /// Extending a selection; the anchor range is kept for word/line drags.
     Text {
         anchor: (ByteIdx, ByteIdx),
+        /// Set by a double-click: the pointer rounds out to whole words (`round_word_drag`).
+        word: bool,
     },
     /// Alt+drag: extending the newest selection (the one Alt+Click added) from `anchor`.
     AddedText {
@@ -88,7 +119,10 @@ pub enum Drag {
     /// (scroll-independent) and the area the screen is drawn in.
     Terminal {
         run: RunId,
-        anchor: select::Cell,
+        /// The seeded path run of a double-click (`word`), else the pressed cell twice.
+        anchor: (select::Cell, select::Cell),
+        /// A drag from a double-click rounds its head out to the run under the pointer.
+        word: bool,
         area: Rect,
     },
     /// Selecting text in one of the one-line inputs (`app/find.rs`, `app/workspace_search.rs`,
@@ -315,20 +349,32 @@ impl App {
             }
             self.drag = Some(Drag::Terminal {
                 run: id,
-                anchor: cell,
+                anchor: (anchor, head),
+                word: seed.is_some(),
                 area,
             });
             return true;
         }
         if m.kind == MouseEventKind::Drag(MouseButton::Left)
-            && let Some(Drag::Terminal { run, anchor, area }) = self.drag.clone()
+            && let Some(Drag::Terminal {
+                run,
+                anchor,
+                word,
+                area,
+            }) = self.drag.clone()
         {
             if let Some(run) = self.terminal_run_by_id(run) {
                 let screen = run.screen();
                 let s = screen.screen();
                 let (row, col) = screen_cell(s, area, m.column, m.row);
                 let head = select::cell_at(row, col, s.scrollback());
+                let word_run = if word { select::path_run(s, (row, col)) } else { None };
                 drop(screen);
+                let (anchor, head) = if word {
+                    round_run_drag(anchor, head, word_run)
+                } else {
+                    (anchor.0, head)
+                };
                 run.set_selection(select::Selection { anchor, head });
             }
             return true;
@@ -509,11 +555,14 @@ impl App {
                     };
                     groups.tree.set_ratio(&d, d.ratio_at(m.column, m.row));
                 }
-                Some(Drag::Text { anchor }) => {
+                Some(Drag::Text { anchor, word }) => {
                     let at = self.text_position(m.column, m.row, true);
-                    if let (Some(at), Some((_, view))) = (at, self.active_mut()) {
-                        // Dragging back past the anchor keeps the whole anchor word/line selected.
-                        let (a, h) = if at < anchor.0 {
+                    if let (Some(at), Some((buf, view))) = (at, self.active_mut()) {
+                        // Dragging back past the anchor keeps the whole anchor word/line selected;
+                        // after a double-click the pointer rounds out to whole words.
+                        let (a, h) = if word {
+                            round_word_drag(&buf.rope, anchor, at)
+                        } else if at < anchor.0 {
                             (anchor.1, at)
                         } else {
                             (anchor.0, at.max(anchor.1))
@@ -809,7 +858,10 @@ impl App {
             self.open_commit_diff(self.groups.active, k);
             return;
         }
-        self.drag = Some(Drag::Text { anchor: (start, end) });
+        self.drag = Some(Drag::Text {
+            anchor: (start, end),
+            word: count == 2,
+        });
     }
 
     /// Box-selects in the active view from its current box corner (or its primary selection's
@@ -1114,5 +1166,39 @@ mod tests {
             hit_at(&rope, &mut view, text, text.x + 4, text.y + 2, false, 4),
             Some((0, ByteIdx(8), DisplayCol(10)))
         );
+    }
+
+    #[test]
+    fn word_drag_rounds_to_whole_words() {
+        let rope = Rope::from_str("aaa bbb ccc\n");
+        let b = ByteIdx;
+        let anchor = (b(4), b(7));
+        assert_eq!(round_word_drag(&rope, anchor, b(9)), (b(4), b(11)));
+        assert_eq!(round_word_drag(&rope, anchor, b(1)), (b(7), b(0)));
+        assert_eq!(round_word_drag(&rope, anchor, b(5)), anchor);
+        assert_eq!(round_word_drag(&rope, anchor, b(4)), anchor, "the anchor word's start");
+        assert_eq!(round_word_drag(&rope, anchor, b(3)), (b(7), b(3)), "the space before");
+        assert_eq!(round_word_drag(&rope, anchor, b(8)), (b(4), b(11)), "a word's start");
+    }
+
+    #[test]
+    fn run_drag_rounds_to_the_run_under_the_pointer() {
+        let anchor = ((1, 4), (1, 10));
+        assert_eq!(
+            round_run_drag(anchor, (1, 13), Some(((1, 12), (1, 20)))),
+            ((1, 4), (1, 20))
+        );
+        assert_eq!(
+            round_run_drag(anchor, (1, 1), Some(((1, 0), (1, 3)))),
+            ((1, 10), (1, 0))
+        );
+        assert_eq!(round_run_drag(anchor, (1, 15), None), ((1, 4), (1, 15)));
+        assert_eq!(round_run_drag(anchor, (1, 2), None), ((1, 10), (1, 2)));
+        assert_eq!(
+            round_run_drag(anchor, (0, 30), Some(((0, 25), (0, 40)))),
+            ((1, 10), (0, 25)),
+            "a run on an earlier row"
+        );
+        assert_eq!(round_run_drag(anchor, (1, 6), None), anchor);
     }
 }

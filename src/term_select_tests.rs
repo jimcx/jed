@@ -396,6 +396,23 @@ async fn term_select_mouse_reporting_keeps_every_event() {
         "the program got both presses of the double-click ({press}):\n{}",
         screen_text(&app)
     );
+    // A drag from a double-click's press is the program's too: no word-wise selection.
+    let (x, y) = (area.x + 2, area.y + one_ninety_nine);
+    click(&mut app, x, y);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), area.x + 6, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), area.x + 6, y);
+    assert_eq!(
+        app.group().active_shell().unwrap().run.selection(),
+        None,
+        "a double-click drag over a program that reports the mouse selects nothing"
+    );
+    let motion = format!("^[[<32;7;{}M", one_ninety_nine + 1);
+    assert!(
+        app.settle(|a| screen_text(a).contains(&motion)).await,
+        "the program got the double-click's drag ({motion}):\n{}",
+        screen_text(&app)
+    );
 
     // Scrolled back (the scroll keys still scroll; the wheel is the program's), a drag still
     // selects nothing and leaves the view where it is.
@@ -745,8 +762,9 @@ type Sel = Option<crate::tasks::select::Selection>;
 
 /// Checks double-clicks over `row`, which reads `~/src/jed-0.1 ok`: the run `~/src/jed-0.1`
 /// (cols 0..13) is selected, highlighted and copied; a blank selects nothing; a third click and a
-/// single click clear; a drag from a double-click's press extends from the pressed cell; a drag
-/// still selects. No sleeps: a click on another cell restarts the count (`ClickTracker`), so
+/// single click clear; a drag from a double-click's press extends word-wise (to the end or start
+/// of the run under the pointer, the cell itself off a run); a single-click drag still selects
+/// exactly to the pointer. No sleeps: a click on another cell restarts the count (`ClickTracker`), so
 /// each double-click starts on a cell other than the last click's.
 fn double_click_checks(app: &mut App, area: Rect, row: u16, selection: impl Fn(&App) -> Sel) {
     let at = |col: u16| (area.x + col, area.y + row);
@@ -784,19 +802,43 @@ fn double_click_checks(app: &mut App, area: Rect, row: u16, selection: impl Fn(&
     click(app, x, y);
     assert_eq!(selection(app), None, "a single click clears");
 
-    // The second press of a double-click seeds the run; a drag from it extends from the
-    // pressed cell, not from the run's ends.
+    // The second press of a double-click seeds the run; a drag from it extends word-wise: the
+    // run stays selected, the head rounds to the end (forwards) or start (backwards) of the
+    // run under the pointer, or to the cell on a non-path cell.
     let (x, y) = at(9);
     click(app, x, y);
     app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
     assert_eq!(selection(app), path, "the second press selects the run");
     let (x, y) = at(11);
     app.mouse(MouseEventKind::Drag(MouseButton::Left), x, y);
+    assert_eq!(selection(app), path, "a drag inside the run keeps it whole");
+    let (x, y) = at(13);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), x, y);
+    assert_eq!(
+        selection(app).map(|s| (s.anchor, s.head)),
+        Some(((row as isize, 0), (row as isize, 13))),
+        "a drag onto a non-path cell ends at that cell"
+    );
+    let (x, y) = at(15);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), x, y);
     app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
     assert_eq!(
         selection(app).map(|s| (s.anchor, s.head)),
-        Some(((row as isize, 9), (row as isize, 11))),
-        "a drag from a double-click extends from the clicked cell"
+        Some(((row as isize, 0), (row as isize, 16))),
+        "a drag into the next run ends at its end"
+    );
+
+    // Backwards: from the "ok" run, dragging into the first run reaches that run's start.
+    let (x, y) = at(15);
+    click(app, x, y);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+    let (x, y) = at(4);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), x, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    assert_eq!(
+        selection(app).map(|s| (s.anchor, s.head)),
+        Some(((row as isize, 16), (row as isize, 0))),
+        "a drag back keeps the anchor run and ends at the start of the run under the pointer"
     );
 
     drag(app, area, (row, 1), (row, 5));
