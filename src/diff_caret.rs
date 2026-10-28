@@ -84,7 +84,7 @@ fn drawn(row: &Row) -> (bool, usize) {
 
 impl DiffTab {
     /// The text of line `line` of a side.
-    fn side_text(&self, right: bool, line: usize) -> &str {
+    pub(crate) fn side_text(&self, right: bool, line: usize) -> &str {
         match &self.doc {
             Some(d) if right => d.right.line(line),
             Some(d) => d.left.line(line),
@@ -103,6 +103,9 @@ impl DiffTab {
     /// Puts the caret back on the cursor's row when it isn't there (the cursor moved by other
     /// means, or the diff reloaded or changed layout), and inside its line's text.
     pub fn sync_caret(&mut self) {
+        if self.edited.is_some() {
+            return;
+        }
         let Some(row) = self.rows().get(self.cursor).copied() else {
             return;
         };
@@ -128,6 +131,31 @@ impl DiffTab {
             head: (line, 0),
             col: None,
         };
+    }
+
+    /// A load finished: the caret an edit left (`edited`) goes on its text in the new lines, when
+    /// the load read the edited revision (an older load in flight leaves it for the next).
+    pub(crate) fn take_edited(&mut self) {
+        let Some((c, rev)) = self.edited else { return };
+        if !self.loaded_revision(rev) {
+            return;
+        }
+        self.edited = None;
+        self.place_caret(c);
+    }
+
+    /// The caret to `c` (clamped to the lines now shown), the cursor on its row.
+    pub(crate) fn place_caret(&mut self, c: Caret) {
+        let n = self.side_len(c.right);
+        let at = |t: &Self, (l, b): At| {
+            let l = l.min(n.saturating_sub(1));
+            (l, t.side_text(c.right, l).floor_char_boundary(b))
+        };
+        let (anchor, head) = (at(self, c.anchor), at(self, c.head));
+        self.caret = Caret { anchor, head, ..c };
+        self.cursor = self.aligned().row_of(c.right, head.0);
+        self.reveal = true;
+        self.reveal_caret_col();
     }
 
     /// The nearest row after (`dir` 1) or before the row `row` showing a line on `right`
@@ -189,6 +217,7 @@ impl DiffTab {
     fn go_row(&mut self, row: usize, right: bool, at: At, select: bool, keep_col: bool) {
         self.cursor = row;
         self.reveal = true;
+        self.edited = None;
         let c = &mut self.caret;
         c.right = right;
         c.head = at;
@@ -403,11 +432,6 @@ impl DiffTab {
             }
         }
         Some(out)
-    }
-
-    /// Whether the caret's side may be edited.
-    pub fn caret_editable(&self) -> bool {
-        self.editable_sides()[self.caret.right as usize]
     }
 }
 

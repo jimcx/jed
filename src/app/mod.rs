@@ -8,6 +8,7 @@ mod commit_tabs;
 mod completion;
 mod conflict;
 mod cursors;
+mod diff_edit;
 mod diff_view;
 mod discard;
 mod disk;
@@ -1195,6 +1196,12 @@ impl App {
                 } else if let KeyCode::Char(c) = key.code
                     && (key.modifiers - KeyModifiers::SHIFT).is_empty()
                     && self.ui.focus == Focus::Editor
+                    && self.group().active_diff().is_some()
+                {
+                    self.diff_edit(diff_edit::DiffEdit::Char(c));
+                } else if let KeyCode::Char(c) = key.code
+                    && (key.modifiers - KeyModifiers::SHIFT).is_empty()
+                    && self.ui.focus == Focus::Editor
                     && self.active_writable()
                 {
                     // A commit character inserts the selected completion first.
@@ -1560,6 +1567,10 @@ impl App {
     /// Pastes into the active view: a whole-line copy goes above the cursor's line, and jed's
     /// own copy of several selections spreads one per cursor when the counts match.
     fn paste(&mut self, text: &str) {
+        if self.group().active_diff().is_some() {
+            self.diff_edit(diff_edit::DiffEdit::Paste(text.to_string()));
+            return;
+        }
         if !self.active_writable() {
             return;
         }

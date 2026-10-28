@@ -1818,7 +1818,16 @@ async fn milestone_10_editor_commands_on_a_diff_tab_do_nothing() {
                 | Command::Tools(_)
         )
     };
+    // The caret on the (read-only) left side: editing commands say so and change nothing; the
+    // right side's editing is `diff_edit_tests`.
+    let left = |app: &mut App| {
+        let d = app.group_mut().active_diff_mut().unwrap();
+        d.caret = Default::default();
+        d.caret.right = false;
+        d.edited = None;
+    };
     for c in Command::all().into_iter().filter(|c| !skip(c)) {
+        left(&mut app);
         app.test_execute(c);
         app.prompt = None;
         app.palette = None;
@@ -1833,6 +1842,7 @@ async fn milestone_10_editor_commands_on_a_diff_tab_do_nothing() {
         draw_sized(&mut app, 70, 24);
     }
     // Typed text, paste, mouse in the text: nothing reaches the buffer.
+    left(&mut app);
     app.type_text("abc");
     app.press(KeyCode::Enter, M::NONE);
     app.press(KeyCode::Backspace, M::NONE);

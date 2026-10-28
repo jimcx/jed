@@ -431,7 +431,7 @@ impl Aligned {
 
     /// The row showing line `line` of the right side (`right`) or the left, else the nearest
     /// row before where it would be.
-    fn row_of(&self, right: bool, line: usize) -> usize {
+    pub(crate) fn row_of(&self, right: bool, line: usize) -> usize {
         let side = |r: &Row| if right { r.right } else { r.left };
         // Rows are in increasing line order on both sides; filler rows have no line.
         let mut best = 0;
@@ -782,6 +782,10 @@ pub struct DiffTab {
     pub compare: Option<Compare>,
     /// The caret and selection in one side's text (`diff_caret`); its row is `cursor`.
     pub caret: crate::diff_caret::Caret,
+    /// After an edit made here (diff_edit): the caret in the text of the buffer revision given,
+    /// which the next load of that revision shows; until then `caret` holds it clamped to the
+    /// lines still shown (drawing and moves slice them) and `sync_caret` leaves it alone.
+    pub edited: Option<(crate::diff_caret::Caret, u64)>,
     /// Written by drawing: the tab width the text is laid out with (column maths of the caret).
     pub tab_width: usize,
 }
@@ -827,6 +831,7 @@ impl DiffTab {
             conflict: None,
             compare: None,
             caret: Default::default(),
+            edited: None,
             tab_width: 4,
         }
     }
@@ -913,6 +918,7 @@ impl DiffTab {
             conflict: self.conflict.clone(),
             compare: self.compare.clone(),
             caret: self.caret,
+            edited: self.edited,
             tab_width: self.tab_width,
         }
     }
@@ -1031,6 +1037,7 @@ impl DiffTab {
                 }
                 self.clamp();
                 self.reveal = true;
+                self.take_edited();
             }
             Err(e) => {
                 tracing::warn!(path = %self.path.display(), "diff failed: {e}");
@@ -1038,6 +1045,11 @@ impl DiffTab {
             }
         }
         true
+    }
+
+    /// The last load started read a live buffer at revision `rev`.
+    pub(crate) fn loaded_revision(&self, rev: u64) -> bool {
+        self.loaded.iter().flatten().flatten().any(|&(_, r)| r == rev)
     }
 
     /// A load is running (tests wait for it).

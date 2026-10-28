@@ -40,6 +40,8 @@ pub struct DiffViews {
     deadline: Option<Instant>,
     /// Stage / unstage tasks started here running (tests wait for them).
     pub staging: usize,
+    /// A key waiting for its file to open (`app/diff_edit.rs`).
+    pub(super) pending: Option<super::diff_edit::PendingEdit>,
 }
 
 impl DiffViews {
@@ -488,6 +490,7 @@ impl App {
         };
         let page = d.height.saturating_sub(1).max(1);
         let mut none = false;
+        let mut editing = false;
         match cmd {
             Command::Move { motion, select } => {
                 d.caret_move(motion, select, page);
@@ -504,7 +507,11 @@ impl App {
             Command::NextChange | Command::PreviousChange => {
                 none = d.doc.is_some() && !d.step(cmd == Command::NextChange);
             }
+            _ if crate::edit::is_edit(cmd) => editing = true,
             _ => tracing::debug!(command = %cmd.name(), "not in a diff view"),
+        }
+        if editing {
+            self.diff_edit(super::diff_edit::DiffEdit::Command(cmd));
         }
         if none {
             self.notify(Level::Info, "No changes".into());
@@ -513,16 +520,17 @@ impl App {
         true
     }
 
-    /// Cmd+C (Cmd+X: `cut`, which only an editable side takes, and for now only copies) on a diff
+    /// Cmd+C (Cmd+X: `cut`, an edit of an editable side (`diff_edit`)) on a diff
     /// tab: the selection of either side, nothing when it is empty. False when the active tab
     /// isn't a diff.
     pub(super) fn diff_copy(&mut self, cut: bool) -> bool {
+        if cut && self.group().active_diff().is_some() {
+            self.diff_edit(super::diff_edit::DiffEdit::Cut);
+            return true;
+        }
         let Some(d) = self.group_mut().active_diff_mut() else {
             return false;
         };
-        if cut && !d.caret_editable() {
-            return true;
-        }
         if let Some(text) = d.selection_text() {
             self.clipboard.write(crate::clipboard::Copied {
                 text,

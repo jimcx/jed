@@ -124,6 +124,7 @@ impl App {
     }
 
     pub(super) fn opened(&mut self, path: PathBuf, result: Result<Loaded, LoadError>) {
+        let opened_path = path.clone();
         if self.nav_opened(&path, &result) {
             return;
         }
@@ -208,6 +209,7 @@ impl App {
         if let Some((b, e)) = unopened {
             self.backup_not_opened(*b, e);
         }
+        self.diff_edit_opened(&opened_path);
         self.ipc_sweep();
     }
 
