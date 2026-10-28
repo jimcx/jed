@@ -125,8 +125,11 @@ async fn clear_scrollback_shell_program_is_untouched() {
     {
         let run = &app.group().active_shell().unwrap().run;
         run.write(b"cat -v\n");
-        run.write(b"ready\n");
     }
+    // Let `cat` start before sending its input: a shell that reads both writes in one go (bash 5.3's
+    // readline) would take `ready` as type-ahead for itself, not for `cat`.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    app.group().active_shell().unwrap().run.write(b"ready\n");
     assert!(
         app.settle(|a| lines_equal(a, "ready") >= 2).await,
         "cat echoed its input:\n{}",
