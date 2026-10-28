@@ -136,7 +136,7 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
         (Some(n), None) => format!(" {n} changes "),
         (None, _) => String::new(),
     };
-    let (left_title, right_title) = d.pair.titles();
+    let (left_title, right_title) = d.titles();
     let half = (area.width - 1) / 2;
     if inline {
         let title = format!(" {left_title} ↔ {right_title}");
@@ -158,7 +158,7 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
     // Open File left of the summary (VS Code's diff editor toolbar), over the right title's end.
     let ow = OPEN_FILE.width() as u16;
     let right_end = area.x + area.width - if sw + 20 < area.width { sw } else { 0 };
-    if right_end >= area.x + ow + 20 {
+    if d.compare.is_none() && right_end >= area.x + ow + 20 {
         let rect = Rect::new(right_end - ow, area.y, ow, 1);
         out.set_stringn(
             rect.x,

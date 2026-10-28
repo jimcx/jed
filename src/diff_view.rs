@@ -71,6 +71,10 @@ pub enum Text {
     ConflictCurrent,
     /// The same conflict's incoming block.
     ConflictIncoming,
+    /// The left / right side of a compare tab (`Compare`): a file or an open buffer, read from
+    /// the tab's `compare` sources (`Job::compare`); never in sessions.
+    CompareLeft,
+    CompareRight,
 }
 
 impl Text {
@@ -87,12 +91,17 @@ impl Text {
             Text::Replaced => "Replace Preview".into(),
             Text::ConflictCurrent => "Current".into(),
             Text::ConflictIncoming => "Incoming".into(),
+            Text::CompareLeft => "Left".into(),
+            Text::CompareRight => "Right".into(),
         }
     }
 
     /// Read from the open buffer when there is one.
     pub fn live(self) -> bool {
-        matches!(self, Text::WorkTree | Text::Buffer | Text::Replaced)
+        matches!(
+            self,
+            Text::WorkTree | Text::Buffer | Text::Replaced | Text::CompareLeft | Text::CompareRight
+        )
     }
 
     fn git(self) -> bool {
@@ -144,6 +153,12 @@ impl Pair {
             right: Text::ConflictIncoming,
         }
     }
+
+    /// Two arbitrary texts (`DiffTab::compare`); no staging.
+    pub const COMPARE: Pair = Pair {
+        left: Text::CompareLeft,
+        right: Text::CompareRight,
+    };
 
     /// File History's Compare: an entry against the buffer.
     pub fn history(snapshot: Snapshot) -> Pair {
@@ -222,6 +237,70 @@ impl Pair {
     fn live(self) -> bool {
         self.left.live() || self.right.live()
     }
+}
+
+/// What one side of a compare tab names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // `Open` is named by the commands (compare_files-b)
+pub enum Source {
+    /// A file (absolute): the open buffer's text when it is open, else the file on disk.
+    File(PathBuf),
+    /// An open buffer's text, saved or not (the only way to name an untitled buffer). Once the
+    /// buffer closes the side keeps its last text.
+    Open(BufferId),
+}
+
+/// One side of a compare tab.
+#[derive(Debug, Clone)]
+pub struct CompareSide {
+    pub source: Source,
+    /// The side's name for the title (the buffer's, else the file's name); `sync_sides` keeps it.
+    pub name: String,
+    /// The side's buffer has unsaved changes.
+    pub dirty: bool,
+    /// The buffer's text and BOM as last seen: an `Open` side whose buffer closed reads it.
+    last: Option<(Rope, bool)>,
+}
+
+impl CompareSide {
+    pub fn new(source: Source) -> CompareSide {
+        let name = match &source {
+            Source::File(p) => p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            Source::Open(_) => String::new(),
+        };
+        CompareSide {
+            source,
+            name,
+            dirty: false,
+            last: None,
+        }
+    }
+
+    /// The side's name with the dirty mark.
+    pub fn title(&self) -> String {
+        if self.dirty {
+            format!("{} ●", self.name)
+        } else {
+            self.name.clone()
+        }
+    }
+}
+
+/// How a compare side is read by `load`.
+pub enum CompareRead {
+    /// An open (or closed: its last) buffer's text and BOM.
+    Live(Rope, bool),
+    /// A file not open (absolute).
+    Disk(PathBuf),
+}
+
+/// A compare tab's two sides.
+#[derive(Debug, Clone)]
+pub struct Compare {
+    pub sides: [CompareSide; 2],
 }
 
 /// One side's text as lines (a UTF-8 BOM dropped, invalid UTF-8 replaced): git's lines, each
@@ -538,6 +617,8 @@ pub struct Job {
     pub pair: Pair,
     /// The open buffer's text and BOM (a live side reads it).
     pub live: Option<(Rope, bool)>,
+    /// A compare tab's two sides' texts (`Pair::COMPARE`).
+    pub compare: Option<[CompareRead; 2]>,
     /// The file's language for the syntax colours (the open buffer's, else by its path); `None`:
     /// the one its text's shebang names.
     pub language: Option<Language>,
@@ -571,6 +652,13 @@ fn read(job: &Job, text: Text) -> Result<Vec<u8>, stage::Error> {
         let bytes = read(job, Text::Buffer)?;
         let replaced = job.replace.as_ref().and_then(|r| r.apply(&bytes));
         return Ok(replaced.unwrap_or(bytes));
+    }
+    if let Text::CompareLeft | Text::CompareRight = text {
+        let side = job.compare.as_ref().ok_or_else(|| not_found("not a compare"))?;
+        return match &side[usize::from(text == Text::CompareRight)] {
+            CompareRead::Live(rope, bom) => Ok(crate::buffer::file::encode(rope, *bom)),
+            CompareRead::Disk(path) => Ok(disk(path)?.unwrap_or_default()),
+        };
     }
     if text.live()
         && let Some((rope, bom)) = &job.live
@@ -622,6 +710,7 @@ fn read(job: &Job, text: Text) -> Result<Vec<u8>, stage::Error> {
         Text::Empty => Some(Vec::new()),
         Text::Replaced => unreachable!("read above"),
         Text::ConflictCurrent | Text::ConflictIncoming => unreachable!("read above"),
+        Text::CompareLeft | Text::CompareRight => unreachable!("read above"),
     };
     Ok(bytes.unwrap_or_default())
 }
@@ -667,16 +756,21 @@ pub struct DiffTab {
     line: Option<usize>,
     generation: u64,
     running: Option<u64>,
-    /// What the last load read the live side from: `Some(None)` the disk, `Some(Some(_))` that
-    /// buffer at that revision; `None` before the first load.
-    loaded: Option<Option<(BufferId, u64)>>,
+    /// What the last load read the live sides from (per side `None`: the disk, else that buffer
+    /// at that revision; only the first is used but by a compare); `None` before the first load.
+    loaded: Option<Live>,
     /// The index or the file changed since the last load: load again at once.
     stale: bool,
     /// A replace preview's replace (`Text::Replaced`); `set_replace` changes it.
     pub replace: Option<Arc<FileReplace>>,
     /// A `Pair::conflict()`'s current and incoming blocks (Compare Current Conflict).
     pub conflict: Option<(Vec<u8>, Vec<u8>)>,
+    /// A compare tab's sides (`Pair::COMPARE`).
+    pub compare: Option<Compare>,
 }
+
+/// The open buffers (with their revisions) a load reads its live sides from.
+pub type Live = [Option<(BufferId, u64)>; 2];
 
 impl crate::scrollbar::Scrollable for DiffTab {
     fn scroll(&self) -> crate::scrollbar::Scroll {
@@ -714,7 +808,53 @@ impl DiffTab {
             stale: false,
             replace: None,
             conflict: None,
+            compare: None,
         }
+    }
+
+    /// A tab comparing two texts (`path` names the right side's file for the syntax colours).
+    pub fn compare(id: u64, path: PathBuf, left: Source, right: Source) -> DiffTab {
+        DiffTab {
+            compare: Some(Compare {
+                sides: [CompareSide::new(left), CompareSide::new(right)],
+            }),
+            ..DiffTab::new(id, path, Pair::COMPARE)
+        }
+    }
+
+    /// Records what the compare's buffers are now: for each side its open buffer's name, dirty
+    /// flag, text and BOM (`None`: not open; it keeps its last name and text). Returns whether
+    /// the title changed.
+    pub fn sync_sides(&mut self, now: [Option<(String, bool, Rope, bool)>; 2]) -> bool {
+        let Some(c) = &mut self.compare else { return false };
+        let mut changed = false;
+        for (side, now) in c.sides.iter_mut().zip(now) {
+            let Some((name, dirty, rope, bom)) = now else {
+                // A file whose buffer closed is read from the disk: nothing unsaved.
+                if let Source::File(_) = side.source {
+                    changed |= side.dirty;
+                    side.dirty = false;
+                }
+                continue;
+            };
+            changed |= side.name != name || side.dirty != dirty;
+            side.name = name;
+            side.dirty = dirty;
+            side.last = Some((rope, bom));
+        }
+        changed
+    }
+
+    /// How each side of a compare is read: a file not open from the disk, else the buffer's text
+    /// (an `Open` side whose buffer closed: its last).
+    pub fn compare_reads(&self, open: [bool; 2]) -> Option<[CompareRead; 2]> {
+        let c = self.compare.as_ref()?;
+        let read = |i: usize| match (&c.sides[i].source, &c.sides[i].last) {
+            (Source::File(p), _) if !open[i] => CompareRead::Disk(p.clone()),
+            (_, Some((rope, bom))) => CompareRead::Live(rope.clone(), *bom),
+            (_, None) => CompareRead::Live(Rope::new(), false),
+        };
+        Some([read(0), read(1)])
     }
 
     /// A merge conflict's two blocks compared (Compare Current Conflict): a read-only diff of
@@ -752,24 +892,43 @@ impl DiffTab {
             stale: self.stale || self.running.is_some(),
             replace: self.replace.clone(),
             conflict: self.conflict.clone(),
+            compare: self.compare.clone(),
         }
     }
 
     /// The file's name for the tab bar.
     pub fn title(&self) -> String {
+        if let Some(c) = &self.compare {
+            return format!("{} ↔ {}", c.sides[0].title(), c.sides[1].title());
+        }
         let name = self.path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
         self.pair.tab_title(&name)
     }
 
+    /// The header's titles of the left and right sides.
+    pub fn titles(&self) -> (String, String) {
+        match &self.compare {
+            Some(c) => (c.sides[0].title(), c.sides[1].title()),
+            None => self.pair.titles(),
+        }
+    }
+
     /// Whether to load again, given the open buffer of the file and its revision (`None`: not
     /// open). A buffer opened or closed since loads at once; an edit after `DELAY`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn want(&self, live: Option<(BufferId, u64)>) -> Want {
-        let live = if self.pair.live() { live } else { None };
+        self.want_sides([live, None])
+    }
+
+    /// `want` for a compare: each side's open buffer.
+    pub fn want_sides(&self, live: Live) -> Want {
+        let live = if self.pair.live() { live } else { [None, None] };
+        let ids = |l: Live| l.map(|s| s.map(|(b, _)| b));
         match self.loaded {
             _ if self.running.is_some() => Want::Nothing,
             None => Want::Now,
             Some(_) if self.stale => Want::Now,
-            Some(was) if was.map(|(b, _)| b) != live.map(|(b, _)| b) => Want::Now,
+            Some(was) if ids(was) != ids(live) => Want::Now,
             Some(was) if was != live => Want::Later,
             Some(_) => Want::Nothing,
         }
@@ -788,17 +947,25 @@ impl DiffTab {
     }
 
     /// A load starts, reading the live side from `live`; returns its generation.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn begin(&mut self, live: Option<(BufferId, u64)>) -> u64 {
+        self.begin_sides([live, None])
+    }
+
+    /// `begin` for a compare: each side's open buffer.
+    pub fn begin_sides(&mut self, live: Live) -> u64 {
         self.generation += 1;
         self.running = Some(self.generation);
         // Only the live buffer's text changed (an edit): the lines drawn so far still count for
         // the scroll width, so the bar doesn't shrink after each edit.
+        let ids = |l: Live| l.map(|s| s.map(|(b, _)| b));
         let live_edit = !self.stale
             && self.pair.live()
-            && matches!((self.loaded, live), (Some(Some((was, _))), Some((now, _))) if was == now);
+            && live.iter().any(Option::is_some)
+            && self.loaded.is_some_and(|was| ids(was) == ids(live));
         self.keep_width = live_edit;
         self.stale = false;
-        self.loaded = Some(if self.pair.live() { live } else { None });
+        self.loaded = Some(if self.pair.live() { live } else { [None, None] });
         self.generation
     }
 
@@ -1263,6 +1430,7 @@ mod tests {
             syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
             replace: None,
             conflict: None,
+            compare: None,
         };
         let doc = load(job(Some("new\n"))).unwrap();
         assert_eq!((doc.left.line(0), doc.right.line(0)), ("old", "new"));
@@ -1316,6 +1484,7 @@ mod tests {
             syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
             replace,
             conflict: None,
+            compare: None,
         };
         let lines = |l: &Lines| (0..l.len()).map(|i| l.line(i).to_string()).collect::<Vec<_>>();
         let doc = load(job(None, replace.clone())).unwrap();
@@ -1353,6 +1522,7 @@ mod tests {
             syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
             replace: None,
             conflict,
+            compare: None,
         };
         let doc = load(job(Some((b"ours\n".to_vec(), b"theirs\n".to_vec())))).unwrap();
         assert_eq!((doc.left.line(0), doc.right.line(0)), ("ours", "theirs"));
@@ -1431,6 +1601,7 @@ mod tests {
             syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
             replace: None,
             conflict: None,
+            compare: None,
         };
         let pair = Pair::commit(id(&second), Some(id(&first)));
         assert_eq!(pair.staging(), None);

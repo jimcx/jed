@@ -12,6 +12,8 @@ mod column;
 mod command;
 mod comment;
 mod commit_view;
+#[cfg(test)]
+mod compare_files_tests;
 mod completion;
 mod config;
 mod conflict;

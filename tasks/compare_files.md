@@ -2,7 +2,7 @@
 id: compare_files
 name: Compare any two files or buffers
 summary: compare any two files or buffers (dirty or untitled) in an editable diff tab, moving hunks between the sides
-status: open
+status: in-progress
 priority: 0
 dependencies: []
 ---
@@ -20,7 +20,7 @@ See [Git](../PLAN.md#git-view-and-stage-only) and [Selection and editing in diff
   - Done when: any two files, dirty buffers or untitled buffers can be compared in a diff tab from the palette or picker, the diff follows edits on both sides, a hunk can be moved to either side, both sides can be edited by hand in the tab; and `scripts/check` passes
   - Still to check by hand: comparing an untitled scratch buffer with a file while typing in it; moving a hunk each way and undoing it in the text tab; typing on the left side of the diff
   - Subtasks (one agent and one commit each):
-    - compare_files-a: `Text::File` / `Text::Open`, the `a ↔ b` title and dirty marks, loading both sides (disk reads in `spawn_blocking`), following edits, the frozen side, the self-compare refusal, no staging; tests with a test-only way to open the pair
+    - ✅ compare_files-a: the `a ↔ b` title and dirty marks, loading both sides (disk reads in `spawn_blocking`), following edits, the frozen side, the self-compare refusal, no staging; tests with a test-only way to open the pair. For b–d: the sides are `Text::CompareLeft` / `CompareRight` (`Pair::COMPARE`) with `diff_view::Source::{File(path), Open(BufferId)}` kept in the tab (`Text` stays `Copy`); `App::open_compare(left, right)` is the entry point (`#[allow(dead_code)]` on it and `Source` until b); `want_sides` / `begin_sides` track a buffer + revision per side; a closed `Open` buffer freezes its side; `session` skips compare tabs; `Tab::same_as` compares the sources
     - compare_files-b: the picker and the two Compare commands (palette, command enum, picker listing open buffers then quick open), end-to-end tests through the picker
     - compare_files-c: Apply to Left / Right (buttons, mouse hits, the two commands), refusals, tests; draws in both layouts
     - compare_files-d: hand editing on both sides (after `diff_edit-b`: generalise its editable side to any open-buffer side, including an untitled one), docs, gaps and hand checks; marks the task ✅

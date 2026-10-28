@@ -20,7 +20,7 @@ use crate::buffer::BufferId;
 use crate::buffer::change::ChangeSet;
 use crate::buffer::pos;
 use crate::command::{Command, Motion};
-use crate::diff_view::{self, DiffTab, Doc, Job, Pair};
+use crate::diff_view::{self, DiffTab, Doc, Job, Pair, Source};
 use crate::git::stage::{self, Side};
 use crate::git::{Change, Repo, diff};
 use crate::group::Tab;
@@ -70,6 +70,51 @@ impl App {
                 let id = self.next_diff_id();
                 self.group_mut()
                     .open_tab(Tab::Diff(Box::new(DiffTab::new(id, path, pair))));
+            }
+        }
+        self.ui.focus = Focus::Editor;
+        self.needs_redraw = true;
+        self.sync_diffs();
+    }
+
+    /// Compares two texts in a diff tab of the active group (a file, else an open buffer, saved or
+    /// not), or shows the group's tab already comparing them, and focuses it. Comparing a text with
+    /// itself says so and opens nothing. The tab is transient: sessions don't keep it.
+    #[allow(dead_code)] // the commands (compare_files-b) call it
+    pub fn open_compare(&mut self, left: Source, right: Source) {
+        let key = |app: &App, s: &Source| match s {
+            Source::Open(id) => match app.buffers.get(*id) {
+                Some(b) if b.has_file() => Source::File(b.path.clone()),
+                _ => s.clone(),
+            },
+            Source::File(_) => s.clone(),
+        };
+        if key(self, &left) == key(self, &right) {
+            return self.notify(Level::Info, "Cannot compare a file with itself".into());
+        }
+        // The right side's file names the tab for the syntax colours; an untitled buffer its title.
+        let path = match &right {
+            Source::File(p) => p.clone(),
+            Source::Open(id) => match self.buffers.get(*id) {
+                Some(b) if b.has_file() => b.path.clone(),
+                Some(b) => PathBuf::from(b.name()),
+                None => PathBuf::new(),
+            },
+        };
+        if let Some((buf, _)) = self.active_mut() {
+            buf.seal_undo();
+        }
+        let existing = self.group().tabs.iter().position(|t| {
+            t.diff()
+                .and_then(|d| d.compare.as_ref())
+                .is_some_and(|c| c.sides[0].source == left && c.sides[1].source == right)
+        });
+        match existing {
+            Some(i) => self.group_mut().active = i,
+            None => {
+                let id = self.next_diff_id();
+                self.group_mut()
+                    .open_tab(Tab::Diff(Box::new(DiffTab::compare(id, path, left, right))));
             }
         }
         self.ui.focus = Focus::Editor;
@@ -192,7 +237,10 @@ impl App {
     /// The diff header's Open File: the active diff tab's file, the cursor on the diff's line
     /// (kept where it is when the group's tab of the file already has it on that line).
     pub(super) fn open_diff_source(&mut self) {
-        let Some((path, line)) = self.group().active_diff().map(|d| (d.path.clone(), d.cursor_line())) else {
+        let Some((path, line)) = (self.group().active_diff())
+            .filter(|d| d.compare.is_none())
+            .map(|d| (d.path.clone(), d.cursor_line()))
+        else {
             return;
         };
         let on_line = self.buffers.find_path(&path).is_some_and(|id| {
@@ -234,9 +282,27 @@ impl App {
         let mut jobs = Vec::new();
         let buffers = &self.buffers;
         for (_, d) in self.groups.diff_tabs_mut() {
-            let open = buffers.iter().find(|(_, b)| b.path == d.path);
-            let live = open.map(|(id, b)| (id, b.revision()));
-            match d.want(live) {
+            let sides = compare_buffers(buffers, d);
+            let open = match sides {
+                // A compare's language is its right side's.
+                Some([_, right]) => right.and_then(|id| buffers.get(id).map(|b| (id, b))),
+                None => buffers.iter().find(|(_, b)| b.path == d.path),
+            };
+            let mut live = [open.map(|(id, b)| (id, b.revision())), None];
+            if let Some(sides) = sides {
+                let buf = |id: Option<BufferId>| id.and_then(|id| buffers.get(id).map(|b| (id, b)));
+                let now = sides.map(|id| {
+                    buf(id).map(|(_, b)| {
+                        let dirty = b.is_dirty();
+                        (b.name(), dirty, b.rope.clone(), b.bom)
+                    })
+                });
+                if d.sync_sides(now) {
+                    self.needs_redraw = true;
+                }
+                live = sides.map(|id| buf(id).map(|(id, b)| (id, b.revision())));
+            }
+            match d.want_sides(live) {
                 Want::Nothing => continue,
                 Want::Later if !due => {
                     later = true;
@@ -252,13 +318,14 @@ impl App {
                 }
                 continue;
             }
-            let generation = d.begin(live);
+            let generation = d.begin_sides(live);
             let job = Job {
                 repo: repo.clone(),
                 root: self.workspace.root.clone(),
                 path: d.path.clone(),
                 pair: d.pair,
                 live: open.map(|(_, b)| (b.rope.clone(), b.bom)),
+                compare: d.compare_reads(live.map(|l| l.is_some())),
                 // The open buffer's language; else its path's, its text's shebang off-thread.
                 language: match open {
                     Some((_, b)) => Some(b.syntax.language()),
@@ -299,10 +366,14 @@ impl App {
         }
     }
 
-    /// Files changed on disk: diff tabs of them (or of files inside them) read them again.
+    /// Files changed on disk: diff tabs of them (or of files inside them; a compare's either
+    /// file) read them again.
     pub(super) fn diffs_paths_changed(&mut self, paths: &[PathBuf]) {
         for (_, d) in self.groups.diff_tabs_mut() {
-            if paths.iter().any(|p| d.path.starts_with(p)) {
+            let hit = |f: &Path| paths.iter().any(|p| f.starts_with(p));
+            let compared = (d.compare.as_ref())
+                .is_some_and(|c| c.sides.iter().any(|s| matches!(&s.source, Source::File(f) if hit(f))));
+            if hit(&d.path) || compared {
                 d.mark_stale();
             }
         }
@@ -628,6 +699,17 @@ impl App {
     }
 }
 
+/// The open buffer of each side of a compare tab (`None`: not a compare; per side `None`: the
+/// file isn't open, or the buffer closed).
+fn compare_buffers(buffers: &crate::buffer::Buffers, d: &DiffTab) -> Option<[Option<BufferId>; 2]> {
+    d.compare.as_ref().map(|c| {
+        c.sides.each_ref().map(|s| match &s.source {
+            Source::File(p) => buffers.find_path(p),
+            Source::Open(id) => buffers.get(*id).map(|_| *id),
+        })
+    })
+}
+
 /// A revert's refusal.
 fn refused(name: &str, why: &str) -> String {
     format!("Can't revert the change in {name}: {why}")
@@ -642,10 +724,12 @@ impl App {
         for id in self.groups.ids() {
             for t in &self.groups.get(id).unwrap().tabs {
                 if let Some(d) = t.diff() {
-                    let live = self
-                        .buffer_of(&d.path)
-                        .map(|b| (b, self.buffers.get(b).unwrap().revision()));
-                    current &= d.doc.is_some() && !d.loading() && d.want(live) == Want::Nothing;
+                    let rev = |b: BufferId| (b, self.buffers.get(b).unwrap().revision());
+                    let live = match compare_buffers(&self.buffers, d) {
+                        Some(sides) => sides.map(|b| b.map(rev)),
+                        None => [self.buffer_of(&d.path).map(rev), None],
+                    };
+                    current &= d.doc.is_some() && !d.loading() && d.want_sides(live) == Want::Nothing;
                 }
             }
         }

@@ -103,13 +103,19 @@ impl Tab {
         self.text().map(|t| t.buffer)
     }
 
-    /// Shows the same thing as `other`: the same buffer, a diff of the same file and sides, or
+    /// Shows the same thing as `other`: the same buffer, a diff of the same file and sides (a
+    /// compare: of the same two sources), or
     /// the same file's bytes. A group never has two such tabs (opening one shows the other).
     /// Each shell is its own tab (it can't be in two groups).
     pub fn same_as(&self, other: &Tab) -> bool {
         match (self, other) {
             (Tab::Text(a), Tab::Text(b)) => a.buffer == b.buffer,
-            (Tab::Diff(a), Tab::Diff(b)) => a.path == b.path && a.pair == b.pair,
+            (Tab::Diff(a), Tab::Diff(b)) => {
+                fn sources(d: &DiffTab) -> Option<[&crate::diff_view::Source; 2]> {
+                    d.compare.as_ref().map(|c| c.sides.each_ref().map(|s| &s.source))
+                }
+                a.path == b.path && a.pair == b.pair && sources(a) == sources(b)
+            }
             (Tab::Hex(a), Tab::Hex(b)) => a.path == b.path,
             _ => false,
         }
