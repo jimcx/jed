@@ -137,6 +137,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ScmHit>, Opti
             out.set_stringn(r.x, y, button, 1, action);
             hit.buttons.push((r, key.clone(), unstage));
             room = room.saturating_sub(2);
+            if row.section() == Section::Changes && right >= list.x + 5 {
+                let r = Rect { x: right - 4, ..r };
+                out.set_stringn(r.x, y, "↶", 1, action);
+                hit.discards.push((r, key.clone()));
+                room = room.saturating_sub(2);
+            }
         }
         let (text, text_style, dir) = label;
         let (end, _) = out.set_stringn(list.x, y, &text, room, text_style);

@@ -54,6 +54,14 @@ pub enum Prompt {
         /// The replace text.
         with: String,
     },
+    /// Discarding changes (the index's text back, untracked files to the Trash): Discard / Cancel.
+    ConfirmDiscard {
+        files: Vec<PathBuf>,
+        /// Some files are open (left unsaved), some closed (can't be undone); `trash` untracked.
+        open: bool,
+        closed: bool,
+        trash: usize,
+    },
     /// Staging a conflicted file whose open buffer still has conflict markers: Stage anyway
     /// (`git add`, marking it resolved) / Cancel.
     ConfirmStageConflict {
@@ -249,6 +257,26 @@ impl App {
                 }
                 _ if esc || ch == Some('c') => self.close_prompt(),
                 _ => self.prompt = Some(Prompt::ConfirmDelete { path, is_dir }),
+            },
+            Prompt::ConfirmDiscard {
+                files,
+                open,
+                closed,
+                trash,
+            } => match ch {
+                _ if enter || ch == Some('d') => {
+                    self.close_prompt();
+                    self.discard_now(files);
+                }
+                _ if esc || ch == Some('c') => self.close_prompt(),
+                _ => {
+                    self.prompt = Some(Prompt::ConfirmDiscard {
+                        files,
+                        open,
+                        closed,
+                        trash,
+                    })
+                }
             },
             Prompt::ConfirmStageConflict { path } => match ch {
                 _ if enter || ch == Some('s') => {

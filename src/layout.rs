@@ -548,6 +548,8 @@ pub struct ScmHit {
     pub list: Rect,
     pub rows: Vec<crate::scm::RowKey>,
     pub buttons: Vec<(Rect, crate::scm::RowKey, bool)>,
+    /// Each discard button (`↶`, left of the stage one on Changes rows and its header).
+    pub discards: Vec<(Rect, crate::scm::RowKey)>,
 }
 
 /// The Tools view's list as drawn: its rect and the row each line shows (`rows[i]` is at

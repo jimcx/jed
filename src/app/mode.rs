@@ -68,6 +68,8 @@ impl Mode {
                     | Command::StageFile
                     | Command::UnstageFile
                     | Command::StageAll
+                    | Command::DiscardChanges
+                    | Command::DiscardAll
                     | Command::UnstageAll
                     | Command::OpenChange
                     | Command::ToggleBlame

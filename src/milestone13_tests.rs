@@ -1215,7 +1215,7 @@ fn frame(app: &mut App, term: &mut Terminal<TestBackend>) -> Frame {
                 row.push(' ');
                 styles.push(ratatui::style::Style::default());
                 side_row.push_str(match cell.symbol() {
-                    "+" | "−" => " ",
+                    "+" | "−" | "↶" => " ",
                     s => s,
                 });
             } else {

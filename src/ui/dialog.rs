@@ -155,6 +155,29 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) -> Option<R
             lines.push(Line::raw(""));
             lines.push(buttons(&[("S", "tage anyway"), ("C", "ancel")]));
         }
+        Prompt::ConfirmDiscard {
+            files,
+            open,
+            closed,
+            trash,
+        } => {
+            let what = match files.as_slice() {
+                [one] => rel(one),
+                many => format!("{} files", many.len()),
+            };
+            lines.push(Line::raw(format!(" Discard changes in {what}?")));
+            if *open {
+                lines.push(Line::raw(" Open files are left unsaved."));
+            }
+            if *closed {
+                lines.push(Line::raw(" This can't be undone."));
+            }
+            if *trash > 0 {
+                lines.push(Line::raw(" Untracked files are moved to the Trash."));
+            }
+            lines.push(Line::raw(""));
+            lines.push(buttons(&[("D", "iscard"), ("C", "ancel")]));
+        }
         Prompt::ConfirmDelete { path, is_dir } => {
             let what = if *is_dir { "folder" } else { "file" };
             lines.push(Line::raw(format!(" Move {what} {} to the Trash?", rel(path))));

@@ -8477,3 +8477,321 @@ mod text_pointer {
         );
     }
 }
+
+/// discard_changes: "Git: Discard Changes" / "Discard All Changes" and the `↶` button in the
+/// Source Control view, through real keys, clicks and the confirm prompt.
+mod discard_changes {
+    use std::fs;
+    use std::path::Path;
+
+    use crossterm::event::{KeyCode, KeyModifiers as M, MouseButton, MouseEventKind};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::{App, Prompt};
+    use crate::command::Command;
+    use crate::git::test_repo::git;
+    use crate::history;
+    use crate::milestone10_tests::{
+        ctrl_shift_g, dirs, draw_sized, file, open_file_app, scm_repo, scm_row, selected_key, settle_git, settle_stage,
+    };
+    use crate::scm::{RowKey, Section};
+
+    /// The screen's text, one line per row.
+    fn screen(app: &mut App) -> String {
+        let term = draw_sized(app, 100, 30);
+        let buf = term.backend().buffer();
+        let mut s = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                s.push_str(buf[(x, y)].symbol());
+            }
+            s.push('\n');
+        }
+        s
+    }
+
+    /// `scm_repo` with the app on `a.txt`, status loaded, the Source Control view focused.
+    async fn setup(root: &Path, state: &Path) -> App {
+        scm_repo(root);
+        let mut app = open_file_app(root, state, "a.txt");
+        assert!(settle_git(&mut app, |s| s.entry(Path::new("sub/e.txt")).is_some()).await);
+        ctrl_shift_g(&mut app);
+        app
+    }
+
+    fn select(app: &mut App, key: &RowKey) {
+        let status = app.git.status.as_ref().unwrap();
+        let rows = app.scm.rows(status);
+        assert!(app.scm.select_key(&rows, key), "{key:?}");
+    }
+
+    fn message(app: &App) -> String {
+        app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
+    }
+
+    fn confirm(app: &mut App) {
+        assert!(matches!(app.prompt, Some(Prompt::ConfirmDiscard { .. })), "asks first");
+        app.press(KeyCode::Char('d'), M::NONE);
+    }
+
+    fn read(root: &Path, name: &str) -> String {
+        fs::read_to_string(root.join(name)).unwrap_or_else(|e| format!("<{e}>"))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn discard_a_closed_file_keeps_the_staged_part() {
+        let (_d, root, state) = dirs();
+        let mut app = setup(&root, &state).await;
+        let index = git(&root, &["ls-files", "-s"]);
+        select(&mut app, &file(Section::Changes, "c.txt"));
+        app.test_execute(Command::DiscardChanges);
+        assert_eq!(read(&root, "c.txt"), "c3\n", "nothing before the answer");
+        let text = screen(&mut app);
+        assert!(text.contains("Discard changes in proj/c.txt?"), "{text}");
+        assert!(text.contains("This can't be undone."), "{text}");
+        assert!(!text.contains("left unsaved") && !text.contains("Trash"), "{text}");
+        confirm(&mut app);
+        assert!(
+            app.settle(|a| a.diffs.staging == 0 && a.file_history.running() == 0 && !a.git.running())
+                .await
+        );
+        assert_eq!(read(&root, "c.txt"), "c2\n");
+        assert_eq!(git(&root, &["ls-files", "-s"]), index, "the index is untouched");
+        assert_eq!(git(&root, &["status", "--porcelain", "c.txt"]), "M  c.txt\n");
+        assert!(
+            message(&app).contains("Discarded changes in 1 file"),
+            "{}",
+            message(&app)
+        );
+        // The text before is kept in the file history.
+        let entries = history::entries(&root, Path::new("c.txt")).unwrap();
+        assert_eq!(entries.len(), 1);
+        let kept = history::read(&root, Path::new("c.txt"), &entries[0].id).unwrap();
+        assert_eq!(kept, b"c3\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn discard_cancel_leaves_the_file() {
+        let (_d, root, state) = dirs();
+        let mut app = setup(&root, &state).await;
+        select(&mut app, &file(Section::Changes, "c.txt"));
+        app.test_execute(Command::DiscardChanges);
+        app.press(KeyCode::Esc, M::NONE);
+        assert!(app.prompt.is_none());
+        assert!(settle_stage(&mut app).await);
+        assert_eq!(read(&root, "c.txt"), "c3\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn discard_an_open_buffer_is_one_undo_step_and_left_dirty() {
+        let (_d, root, state) = dirs();
+        scm_repo(&root);
+        let mut app = open_file_app(&root, &state, "a.txt");
+        assert!(settle_git(&mut app, |s| s.entry(Path::new("a.txt")).is_some()).await);
+        // The editor has the keys: the active file.
+        app.test_execute(Command::DiscardChanges);
+        match &app.prompt {
+            Some(Prompt::ConfirmDiscard { open, closed, .. }) => assert!(*open && !*closed),
+            _ => panic!("the discard prompt"),
+        }
+        let text = screen(&mut app);
+        assert!(text.contains("Discard changes in proj/a.txt?"), "{text}");
+        assert!(text.contains("Open files are left unsaved."), "{text}");
+        assert!(!text.contains("can't be undone"), "{text}");
+        confirm(&mut app);
+        assert!(settle_stage(&mut app).await);
+        let buf = app.active_buffer().unwrap();
+        assert_eq!(buf.rope.to_string(), "a\n");
+        assert!(buf.is_dirty(), "left unsaved");
+        assert_eq!(read(&root, "a.txt"), "a2\n", "the file on disk is not written");
+        app.test_execute(Command::Undo);
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "a2\n", "one undo step");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn discard_a_deleted_file_brings_it_back() {
+        let (_d, root, state) = dirs();
+        let mut app = setup(&root, &state).await;
+        select(&mut app, &file(Section::Changes, "d.txt"));
+        app.test_execute(Command::DiscardChanges);
+        confirm(&mut app);
+        assert!(settle_stage(&mut app).await);
+        assert_eq!(read(&root, "d.txt"), "d\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn discard_an_untracked_file_moves_it_to_the_trash() {
+        // (Under `cfg(test)` `explorer::ops::delete` removes the file rather than using the real
+        // Trash.) The file is open: its tab is marked deleted, the buffer kept.
+        let (_d, root, state) = dirs();
+        scm_repo(&root);
+        let mut app = open_file_app(&root, &state, "sub/e.txt");
+        assert!(settle_git(&mut app, |s| s.entry(Path::new("sub/e.txt")).is_some()).await);
+        ctrl_shift_g(&mut app);
+        select(&mut app, &file(Section::Changes, "sub/e.txt"));
+        app.test_execute(Command::DiscardChanges);
+        match &app.prompt {
+            Some(Prompt::ConfirmDiscard { trash, .. }) => assert_eq!(*trash, 1),
+            _ => panic!("the discard prompt"),
+        }
+        let text = screen(&mut app);
+        assert!(text.contains("Untracked files are moved to the Trash."), "{text}");
+        assert!(!app.active_buffer().unwrap().deleted);
+        confirm(&mut app);
+        assert!(settle_stage(&mut app).await);
+        assert!(!root.join("sub/e.txt").exists(), "{}", message(&app));
+        assert!(root.join("sub").is_dir(), "only the file goes, not its folder");
+        let buf = app.active_buffer().unwrap();
+        assert!(buf.deleted, "its tab is marked deleted");
+        assert_eq!(buf.rope.to_string(), "e\n");
+        assert!(app.git.status.as_ref().unwrap().entry(Path::new("sub/e.txt")).is_none());
+    }
+
+    /// A buffer already holding the index's text (edited back by hand) needs no edit: it counts
+    /// as discarded, its undo history untouched, still unsaved.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn discard_a_buffer_already_at_the_index_text() {
+        let (_d, root, state) = dirs();
+        scm_repo(&root);
+        let mut app = open_file_app(&root, &state, "a.txt");
+        assert!(settle_git(&mut app, |s| s.entry(Path::new("a.txt")).is_some()).await);
+        app.press(KeyCode::Delete, M::NONE);
+        app.press(KeyCode::Delete, M::NONE);
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "\n");
+        app.type_text("a");
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "a\n");
+        app.test_execute(Command::DiscardChanges);
+        confirm(&mut app);
+        assert!(settle_stage(&mut app).await);
+        assert_eq!(message(&app), "Discarded changes in 1 file (open files not saved)");
+        let buf = app.active_buffer().unwrap();
+        assert_eq!(buf.rope.to_string(), "a\n");
+        assert!(buf.is_dirty());
+        assert_eq!(read(&root, "a.txt"), "a2\n");
+        // Undo goes back through the typing, not through a discard step.
+        app.test_execute(Command::Undo);
+        assert_ne!(app.active_buffer().unwrap().rope.to_string(), "a\n");
+    }
+
+    /// A save started while the prompt is up: the Discard is refused then (planned again).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn discard_is_refused_when_a_save_starts_before_the_answer() {
+        let (_d, root, state) = dirs();
+        scm_repo(&root);
+        let mut app = open_file_app(&root, &state, "a.txt");
+        assert!(settle_git(&mut app, |s| s.entry(Path::new("a.txt")).is_some()).await);
+        app.type_text("x");
+        app.test_execute(Command::DiscardChanges);
+        assert!(matches!(app.prompt, Some(Prompt::ConfirmDiscard { .. })));
+        app.test_execute(Command::Save);
+        assert!(app.active_buffer().unwrap().save_in_flight());
+        confirm(&mut app);
+        assert!(message(&app).contains("being saved"), "{}", message(&app));
+        assert_eq!(app.diffs.staging, 0, "nothing started");
+        assert!(app.settle(|a| !a.active_buffer().unwrap().save_in_flight()).await);
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "xa2\n");
+        assert_eq!(read(&root, "a.txt"), "xa2\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn discard_leaves_a_staged_only_change_alone() {
+        let (_d, root, state) = dirs();
+        let mut app = setup(&root, &state).await;
+        select(&mut app, &file(Section::Staged, "b.txt"));
+        app.test_execute(Command::DiscardChanges);
+        assert!(app.prompt.is_none());
+        assert!(message(&app).contains("staged"), "{}", message(&app));
+        assert_eq!(read(&root, "b.txt"), "b\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn discard_refuses_a_conflicted_file() {
+        let (_d, root, state) = dirs();
+        crate::conflicts_tests::merge_repo(&root, false);
+        let mut app = open_file_app(&root, &state, "b.txt");
+        assert!(settle_git(&mut app, |s| s.entry(Path::new("a.txt")).is_some()).await);
+        let before = read(&root, "a.txt");
+        ctrl_shift_g(&mut app);
+        select(&mut app, &file(Section::MergeChanges, "a.txt"));
+        app.test_execute(Command::DiscardChanges);
+        assert!(app.prompt.is_none());
+        assert!(message(&app).contains("merge conflicts"), "{}", message(&app));
+        assert_eq!(read(&root, "a.txt"), before);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn discard_is_refused_while_the_file_is_being_saved() {
+        let (_d, root, state) = dirs();
+        scm_repo(&root);
+        let mut app = open_file_app(&root, &state, "a.txt");
+        assert!(settle_git(&mut app, |s| s.entry(Path::new("a.txt")).is_some()).await);
+        app.type_text("x");
+        app.test_execute(Command::Save);
+        assert!(app.active_buffer().unwrap().save_in_flight());
+        app.test_execute(Command::DiscardChanges);
+        assert!(app.prompt.is_none());
+        assert!(message(&app).contains("being saved"), "{}", message(&app));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn discard_all_from_the_header_restores_every_change() {
+        let (_d, root, state) = dirs();
+        let mut app = setup(&root, &state).await;
+        select(&mut app, &RowKey::Header(Section::Changes));
+        app.test_execute(Command::DiscardChanges);
+        match &app.prompt {
+            Some(Prompt::ConfirmDiscard { files, .. }) => assert_eq!(files.len(), 4),
+            _ => panic!("the discard prompt"),
+        }
+        confirm(&mut app);
+        assert!(settle_stage(&mut app).await);
+        assert_eq!(read(&root, "c.txt"), "c2\n");
+        assert_eq!(read(&root, "d.txt"), "d\n");
+        assert_eq!(app.buffers.iter().next().unwrap().1.rope.to_string(), "a\n");
+        assert!(!root.join("sub/e.txt").exists(), "{}", message(&app));
+        assert_eq!(read(&root, "b.txt"), "b\n", "the staged-only file is not touched");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn discard_all_command_asks_for_every_change() {
+        let (_d, root, state) = dirs();
+        let mut app = setup(&root, &state).await;
+        app.test_execute(Command::DiscardAll);
+        assert!(matches!(&app.prompt, Some(Prompt::ConfirmDiscard { files, .. }) if files.len() == 4));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn discard_button_on_a_row_and_on_the_header() {
+        let (_d, root, state) = dirs();
+        let mut app = setup(&root, &state).await;
+        let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut click_discard = |app: &mut App, key: &RowKey| {
+            let (x, y) = scm_row(app, key);
+            app.mouse(MouseEventKind::Moved, x, y);
+            term.draw(|f| crate::ui::render(f, app)).unwrap();
+            let hit = app.hits.scm.clone().unwrap();
+            let (r, _) = hit.discards.iter().find(|(_, k)| k == key).expect("a discard button");
+            assert_eq!(term.backend().buffer()[(r.x, r.y)].symbol(), "↶");
+            app.mouse(MouseEventKind::Down(MouseButton::Left), r.x, r.y);
+            app.mouse(MouseEventKind::Up(MouseButton::Left), r.x, r.y);
+        };
+        let key = file(Section::Changes, "c.txt");
+        click_discard(&mut app, &key);
+        assert_eq!(selected_key(&app), Some(key));
+        match &app.prompt {
+            Some(Prompt::ConfirmDiscard { files, .. }) => assert_eq!(files.len(), 1),
+            _ => panic!("the discard prompt"),
+        }
+        app.press(KeyCode::Esc, M::NONE);
+        click_discard(&mut app, &RowKey::Header(Section::Changes));
+        assert!(matches!(&app.prompt, Some(Prompt::ConfirmDiscard { files, .. }) if files.len() == 4));
+        // Staged rows have no such button.
+        app.press(KeyCode::Esc, M::NONE);
+        let (x, y) = scm_row(&mut app, &file(Section::Staged, "b.txt"));
+        app.mouse(MouseEventKind::Moved, x, y);
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let hit = app.hits.scm.clone().unwrap();
+        assert!(hit.discards.iter().all(|(_, k)| *k != file(Section::Staged, "b.txt")));
+    }
+}

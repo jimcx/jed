@@ -2034,7 +2034,7 @@ pub(crate) fn scm_rows(app: &mut App) -> Vec<String> {
                 .take(hit.list.width as usize)
                 .collect();
             row.split_whitespace()
-                .filter(|w| *w != "+" && *w != "−")
+                .filter(|w| !matches!(*w, "+" | "−" | "↶"))
                 .collect::<Vec<_>>()
                 .join(" ")
         })

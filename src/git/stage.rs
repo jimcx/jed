@@ -272,6 +272,41 @@ pub fn revert_hunk(repo: &Repo, path: &Path, shown: &FileDiff, k: usize) -> Resu
     Ok(shown.new.clone())
 }
 
+/// Blocking: the file in the working tree gets the index's text back (`git checkout -- path`),
+/// bytes as stored, its permissions kept; a file deleted from the work tree comes back with the
+/// index entry's mode. The index isn't touched. Returns the file's bytes before (`None`: it was
+/// missing). A file not in the index, with conflicts or a symbolic link is refused.
+pub fn discard_file(repo: &Repo, path: &Path) -> Result<Option<Vec<u8>>, Error> {
+    let r = repo.open()?;
+    let index = r.index()?;
+    if conflicted(&index, path) {
+        return Err(Error::Conflicted);
+    }
+    let Some(entry) = in_index(&r, path)? else {
+        return Err(Error::Untracked);
+    };
+    let disk = disk_text(repo, path)?;
+    if entry.mode == SYMLINK || disk.as_ref().is_some_and(|t| t.mode == SYMLINK) {
+        return Err(Error::Symlink);
+    }
+    let full = repo.workdir.join(path);
+    if disk.as_ref().is_none_or(|d| d.bytes != entry.bytes) {
+        if disk.is_none()
+            && let Some(dir) = full.parent()
+        {
+            std::fs::create_dir_all(dir)?;
+        }
+        crate::buffer::file::atomic_write(&full, &entry.bytes)?;
+    }
+    #[cfg(unix)]
+    if disk.is_none() && entry.mode == 0o100755 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&full, std::fs::Permissions::from_mode(0o755))?;
+    }
+    tracing::info!(path = %path.display(), "discarded changes");
+    Ok(disk.map(|t| t.bytes))
+}
+
 /// A symbolic link's git mode.
 const SYMLINK: u32 = 0o120000;
 
@@ -1045,6 +1080,51 @@ mod tests {
         std::fs::write(root.join("new.txt"), "x\n").unwrap();
         let d = file_diff(&repo, Path::new("new.txt"), Side::Unstaged, 0).unwrap();
         let res = revert_hunk(&repo, Path::new("new.txt"), &d, 0);
+        assert!(matches!(res, Err(Error::Untracked)), "{res:?}");
+        assert_eq!(std::fs::read_to_string(root.join("new.txt")).unwrap(), "x\n");
+    }
+
+    /// Discarding writes the index's text (the staged part kept), brings back a deleted file, and
+    /// returns the bytes before.
+    #[test]
+    fn discard_file_restores_the_index_text() {
+        let (_d, root) = repo(&[("f.txt", b"a\nb\n"), ("gone.txt", b"g\n")]);
+        std::fs::write(root.join("f.txt"), "a\nB\n").unwrap();
+        git(&root, &["add", "f.txt"]);
+        std::fs::write(root.join("f.txt"), "A\nB\nc\n").unwrap();
+        std::fs::remove_file(root.join("gone.txt")).unwrap();
+        let repo = r(&root);
+        let before = discard_file(&repo, Path::new("f.txt")).unwrap();
+        assert_eq!(before.as_deref(), Some(&b"A\nB\nc\n"[..]));
+        assert_eq!(std::fs::read_to_string(root.join("f.txt")).unwrap(), "a\nB\n");
+        assert_eq!(discard_file(&repo, Path::new("gone.txt")).unwrap(), None);
+        assert_eq!(std::fs::read_to_string(root.join("gone.txt")).unwrap(), "g\n");
+        assert_eq!(git(&root, &["status", "--porcelain"]), "M  f.txt\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discard_file_keeps_permissions_and_brings_back_a_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_d, root) = repo(&[("run.sh", b"x\n")]);
+        std::fs::set_permissions(root.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        commit_all(&root, "exec");
+        std::fs::write(root.join("run.sh"), "y\n").unwrap();
+        let repo = r(&root);
+        discard_file(&repo, Path::new("run.sh")).unwrap();
+        let mode = |p: &str| std::fs::metadata(root.join(p)).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode("run.sh"), 0o755);
+        std::fs::remove_file(root.join("run.sh")).unwrap();
+        discard_file(&repo, Path::new("run.sh")).unwrap();
+        assert_eq!(mode("run.sh"), 0o755);
+    }
+
+    #[test]
+    fn discard_file_refuses_an_untracked_file() {
+        let (_d, root) = repo(&[("f.txt", b"a\n")]);
+        std::fs::write(root.join("new.txt"), "x\n").unwrap();
+        let repo = r(&root);
+        let res = discard_file(&repo, Path::new("new.txt"));
         assert!(matches!(res, Err(Error::Untracked)), "{res:?}");
         assert_eq!(std::fs::read_to_string(root.join("new.txt")).unwrap(), "x\n");
     }

@@ -225,6 +225,11 @@ pub enum Command {
     UnstageFile,
     /// Stages / unstages every changed file (the Source Control view's section buttons).
     StageAll,
+    /// Discards the active file's working tree changes (the selected row in Source Control): the
+    /// index's text back, after a confirm; an untracked file goes to the Trash.
+    DiscardChanges,
+    /// Discards every change in the Source Control view's Changes section (its header button).
+    DiscardAll,
     UnstageAll,
     /// Ctrl+Shift+G: shows the Source Control view and gives it the keys.
     FocusScm,
@@ -944,6 +949,8 @@ impl Command {
             Command::StageFile,
             Command::UnstageFile,
             Command::StageAll,
+            Command::DiscardChanges,
+            Command::DiscardAll,
             Command::UnstageAll,
             Command::FocusScm,
         ]);
@@ -1232,6 +1239,8 @@ impl Command {
             Command::StageFile => "git.stageFile".into(),
             Command::UnstageFile => "git.unstageFile".into(),
             Command::StageAll => "git.stageAll".into(),
+            Command::DiscardChanges => "git.clean".into(),
+            Command::DiscardAll => "git.cleanAll".into(),
             Command::UnstageAll => "git.unstageAll".into(),
             Command::FocusScm => "view.focusSourceControl".into(),
             Command::Scm(c) => format!(
@@ -1575,6 +1584,8 @@ impl Command {
             Command::StageFile => "Git: Stage File",
             Command::UnstageFile => "Git: Unstage File",
             Command::StageAll => "Git: Stage All Changes",
+            Command::DiscardChanges => "Git: Discard Changes",
+            Command::DiscardAll => "Git: Discard All Changes",
             Command::UnstageAll => "Git: Unstage All Changes",
             Command::FocusScm => "View: Show Source Control",
             Command::Scm(c) => match c {
@@ -1841,9 +1852,11 @@ mod tests {
             Command::ToggleWordWrap => 128,
             Command::MoveTerminalToEditor => 129,
             Command::MoveTerminalToArea => 130,
+            Command::DiscardChanges => 131,
+            Command::DiscardAll => 132,
         }
     }
-    const VARIANTS: u8 = 131;
+    const VARIANTS: u8 = 133;
 
     #[test]
     fn all_lists_every_variant() {

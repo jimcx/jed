@@ -9,6 +9,7 @@ mod completion;
 mod conflict;
 mod cursors;
 mod diff_view;
+mod discard;
 mod disk;
 mod field;
 mod files;
@@ -321,6 +322,8 @@ enum AppEvent {
     },
     /// A stage / unstage from a diff tab (or of a whole file) ended: the message to show.
     DiffStaged(Result<String, String>),
+    /// A discard of working tree changes ended (`app/discard.rs`).
+    Discarded(Box<discard::Done>),
     /// A commit tab's `git show` was read (`app/commit_tabs.rs`).
     CommitLoaded {
         commit: String,
@@ -1418,6 +1421,9 @@ impl App {
             Command::StageFile => self.stage_file_command(false),
             Command::UnstageFile => self.stage_file_command(true),
             Command::StageAll => self.stage_all(),
+            Command::DiscardChanges if self.scm_focused() => self.scm_discard(),
+            Command::DiscardChanges => self.discard_command(),
+            Command::DiscardAll => self.discard_all(),
             Command::UnstageAll => self.unstage_all(),
             Command::FocusScm => self.focus_scm(),
             Command::Scm(c) => self.scm_command(c),
@@ -1676,6 +1682,7 @@ impl App {
             AppEvent::Staged { at, unstage, result } => self.staged(at, unstage, result),
             AppEvent::DiffLoaded { id, generation, result } => self.diff_loaded(id, generation, *result),
             AppEvent::DiffStaged(message) => self.diff_staged(message),
+            AppEvent::Discarded(done) => self.discard_done(*done),
             AppEvent::CommitLoaded { commit, result } => self.commit_loaded(commit, result),
             AppEvent::Task(ev) => self.task_event(ev),
             AppEvent::Shell(ev) => self.shell_event(ev),

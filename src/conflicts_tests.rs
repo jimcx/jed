@@ -507,7 +507,7 @@ const THEIRS_FILE: &str = "alpha\nTHEIRS ONE\nbravo\ncharlie\ntwo\ndelta\necho\n
 /// A repository left in the middle of `git merge other` with two conflicts in a.txt (diff3
 /// markers with `diff3`). `b.txt` is unchanged, for opening the app on a file that isn't the
 /// conflicted one.
-fn merge_repo(root: &Path, diff3: bool) {
+pub(crate) fn merge_repo(root: &Path, diff3: bool) {
     init(root);
     fs::write(root.join("a.txt"), BASE_FILE).unwrap();
     fs::write(root.join("b.txt"), "b\n").unwrap();

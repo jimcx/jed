@@ -257,6 +257,12 @@ impl App {
         let Some(status) = self.git.status.as_ref() else { return };
         let at = Position { x: m.column, y: m.row };
         let rows = self.scm.rows(status);
+        if let Some((_, key)) = hit.discards.iter().find(|(r, _)| r.contains(at)) {
+            if self.scm.select_key(&rows, key) {
+                self.scm_discard();
+            }
+            return;
+        }
         if let Some((_, key, unstage)) = hit.buttons.iter().find(|(r, ..)| r.contains(at)) {
             if self.scm.select_key(&rows, key) {
                 self.scm_stage(*unstage);

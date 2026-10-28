@@ -434,8 +434,18 @@ pub mod ops {
         fs::rename(from, to)
     }
 
+    /// Moves `path` to the Trash. Tests never touch the user's real Trash: under `cfg(test)` the
+    /// entry is removed instead.
     pub fn delete(path: &Path) -> io::Result<()> {
-        trash::delete(path).map_err(io::Error::other)
+        if cfg!(test) {
+            if fs::symlink_metadata(path)?.is_dir() {
+                fs::remove_dir_all(path)
+            } else {
+                fs::remove_file(path)
+            }
+        } else {
+            trash::delete(path).map_err(io::Error::other)
+        }
     }
 }
 
