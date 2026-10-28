@@ -25,6 +25,7 @@ use crate::git::stage::{self, Side};
 use crate::git::{Change, Repo, diff};
 use crate::group::Tab;
 use crate::layout::Hit;
+use crate::palette::{self, Picker};
 use crate::quick_diff::Want;
 use crate::syntax;
 
@@ -80,7 +81,6 @@ impl App {
     /// Compares two texts in a diff tab of the active group (a file, else an open buffer, saved or
     /// not), or shows the group's tab already comparing them, and focuses it. Comparing a text with
     /// itself says so and opens nothing. The tab is transient: sessions don't keep it.
-    #[allow(dead_code)] // the commands (compare_files-b) call it
     pub fn open_compare(&mut self, left: Source, right: Source) {
         let key = |app: &App, s: &Source| match s {
             Source::Open(id) => match app.buffers.get(*id) {
@@ -120,6 +120,106 @@ impl App {
         self.ui.focus = Focus::Editor;
         self.needs_redraw = true;
         self.sync_diffs();
+    }
+
+    /// "File: Compare Active File With…": a picker of the other open texts, then the workspace's
+    /// files (none in single file mode); the pick is the left side, the active buffer the right.
+    pub(super) fn compare_active_file_with(&mut self) {
+        let Some(right) = self
+            .group()
+            .active_tab()
+            .map(|t| t.buffer)
+            .filter(|&id| self.comparable(id))
+        else {
+            return self.notify(Level::Info, "Open a file or an untitled buffer to compare".into());
+        };
+        if !self.mode.allows(Command::QuickOpen) && self.compare_texts(Some(right)).is_empty() {
+            return self.notify(Level::Info, "Open two files to compare them".into());
+        }
+        self.open_palette(Picker::Compare { right }, "");
+    }
+
+    /// "File: Compare Open Editors…": picks two open texts in turn (the left, then the right).
+    pub(super) fn compare_open_editors(&mut self) {
+        if self.compare_texts(None).len() < 2 {
+            return self.notify(Level::Info, "Open two files to compare them".into());
+        }
+        self.open_palette(Picker::CompareEditors { first: None }, "");
+    }
+
+    /// Whether buffer `id` is a text a compare tab can name: a file's or an untitled buffer's.
+    fn comparable(&self, id: BufferId) -> bool {
+        self.buffers.get(id).is_some_and(|b| b.has_file() || b.is_untitled())
+    }
+
+    /// The open texts the compare pickers offer except `skip`, by buffer id.
+    fn compare_texts(&self, skip: Option<BufferId>) -> Vec<palette::OpenText> {
+        let mut texts: Vec<palette::OpenText> = self
+            .buffers
+            .iter()
+            .filter(|(id, b)| Some(*id) != skip && (b.has_file() || b.is_untitled()))
+            .map(|(id, b)| {
+                let folder = if b.is_untitled() {
+                    "untitled".to_string()
+                } else {
+                    let dir = b.path.parent().unwrap_or(Path::new(""));
+                    dir.strip_prefix(&self.workspace.root)
+                        .unwrap_or(dir)
+                        .display()
+                        .to_string()
+                };
+                palette::OpenText {
+                    id,
+                    name: b.name(),
+                    folder,
+                    dirty: b.is_dirty(),
+                }
+            })
+            .collect();
+        texts.sort_by_key(|t| t.id);
+        texts
+    }
+
+    /// The compare pickers' open-text rows for `query` (the picked first text and the active
+    /// buffer left out).
+    pub(super) fn compare_buffer_rows(&self, query: &str) -> Vec<palette::Row> {
+        let skip = match self.palette.as_ref().map(|p| p.picker) {
+            Some(Picker::Compare { right }) => Some(right),
+            Some(Picker::CompareEditors { first }) => first,
+            _ => None,
+        };
+        palette::compare_rows(query, &self.compare_texts(skip))
+    }
+
+    /// The compare pickers' hint above the rows.
+    pub(super) fn compare_hint(&self, picker: Picker) -> String {
+        let name = |id: BufferId| self.buffers.get(id).map(|b| b.name()).unwrap_or_default();
+        match picker {
+            Picker::Compare { right } => format!("Select a file or editor to compare with {}", name(right)),
+            Picker::CompareEditors { first: Some(first) } => {
+                format!("Select the second editor to compare with {}", name(first))
+            }
+            _ => "Select the first editor to compare".into(),
+        }
+    }
+
+    /// A compare picker's pick: an open text (`open`) or a file (workspace-relative `rel`).
+    pub(super) fn compare_picked(&mut self, picker: Picker, open: Option<BufferId>, rel: Option<PathBuf>) {
+        let picked = match (open, rel) {
+            (Some(id), _) => Source::Open(id),
+            (None, Some(rel)) => Source::File(self.workspace.root.join(rel)),
+            (None, None) => return,
+        };
+        match picker {
+            Picker::Compare { right } => self.open_compare(picked, Source::Open(right)),
+            Picker::CompareEditors { first: None } => {
+                if let Source::Open(id) = picked {
+                    self.open_palette(Picker::CompareEditors { first: Some(id) }, "");
+                }
+            }
+            Picker::CompareEditors { first: Some(first) } => self.open_compare(Source::Open(first), picked),
+            _ => {}
+        }
     }
 
     /// Opens a merge conflict's current and incoming blocks in a new read-only diff tab

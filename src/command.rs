@@ -214,6 +214,11 @@ pub enum Command {
     /// The diff view of the active file on disk against its buffer (the changed-on-disk
     /// banner's Show Diff).
     CompareWithSaved,
+    /// "File: Compare Active File With…": a picker of the open texts and the workspace's files;
+    /// the pick on the left, the active buffer on the right, in a diff tab.
+    CompareActiveFileWith,
+    /// "File: Compare Open Editors…": two open texts picked in turn (left, right).
+    CompareOpenEditors,
     /// The diff view of the active file's unstaged changes (staged ones if it has only those).
     OpenChange,
     /// Switches between a diff tab and its file: from a diff tab, the file at the cursor's line
@@ -944,6 +949,8 @@ impl Command {
             Command::NextChange,
             Command::PreviousChange,
             Command::CompareWithSaved,
+            Command::CompareActiveFileWith,
+            Command::CompareOpenEditors,
             Command::OpenChange,
             Command::ToggleChanges,
             Command::StageFile,
@@ -1232,6 +1239,8 @@ impl Command {
             Command::RevertHunk => "git.revertHunk".into(),
             Command::NextChange => "editor.nextChange".into(),
             Command::CompareWithSaved => "file.compareWithSaved".into(),
+            Command::CompareActiveFileWith => "file.compareActiveFileWith".into(),
+            Command::CompareOpenEditors => "file.compareOpenEditors".into(),
             Command::ShowFileHistory => "fileHistory.show".into(),
             Command::RestoreFileHistory => "fileHistory.restore".into(),
             Command::OpenChange => "git.openChange".into(),
@@ -1577,6 +1586,8 @@ impl Command {
             Command::RevertHunk => "Git: Revert Change at Cursor",
             Command::NextChange => "Go to Next Change",
             Command::CompareWithSaved => "File: Compare with Disk",
+            Command::CompareActiveFileWith => "File: Compare Active File With…",
+            Command::CompareOpenEditors => "File: Compare Open Editors…",
             Command::ShowFileHistory => "File History: Show",
             Command::RestoreFileHistory => "File History: Restore",
             Command::OpenChange => "Git: Open Changes",
@@ -1854,9 +1865,11 @@ mod tests {
             Command::MoveTerminalToArea => 130,
             Command::DiscardChanges => 131,
             Command::DiscardAll => 132,
+            Command::CompareActiveFileWith => 133,
+            Command::CompareOpenEditors => 134,
         }
     }
-    const VARIANTS: u8 = 133;
+    const VARIANTS: u8 = 135;
 
     #[test]
     fn all_lists_every_variant() {

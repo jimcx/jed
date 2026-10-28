@@ -241,7 +241,6 @@ impl Pair {
 
 /// What one side of a compare tab names.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // `Open` is named by the commands (compare_files-b)
 pub enum Source {
     /// A file (absolute): the open buffer's text when it is open, else the file on disk.
     File(PathBuf),

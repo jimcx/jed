@@ -47,6 +47,12 @@ pub enum Picker {
     /// "Change Language Mode": every `Language` (`language_rows`) for `buffer`; accepting
     /// picks it.
     Language { buffer: crate::buffer::BufferId },
+    /// "File: Compare Active File With…": the open texts (`compare_rows`), then the workspace's
+    /// files; accepting compares the pick (left) with `right` (the active buffer).
+    Compare { right: crate::buffer::BufferId },
+    /// "File: Compare Open Editors…": an open text (`compare_rows`). The first pick (`first`
+    /// `None`) reopens the picker for the second; the first pick is the left side.
+    CompareEditors { first: Option<crate::buffer::BufferId> },
 }
 
 /// What an indent size picked sets (`Picker::IndentSize`).
@@ -85,6 +91,7 @@ pub enum Mode {
     Indentation,
     IndentSize,
     Language,
+    Compare,
 }
 
 pub const COMMANDS_PREFIX: char = '>';
@@ -109,6 +116,8 @@ pub enum Action {
     IndentSize(usize),
     /// A language (`Picker::Language`).
     Language(Language),
+    /// An open text to compare (`Picker::Compare`, `Picker::CompareEditors`).
+    CompareBuffer(crate::buffer::BufferId),
 }
 
 /// One line in the list. Hits are char indices to highlight.
@@ -168,6 +177,7 @@ impl Palette {
             Picker::Indentation => Mode::Indentation,
             Picker::IndentSize { .. } => Mode::IndentSize,
             Picker::Language { .. } => Mode::Language,
+            Picker::Compare { .. } | Picker::CompareEditors { .. } => Mode::Compare,
             Picker::QuickOpen => match self.field.text.chars().next() {
                 Some(COMMANDS_PREFIX) => Mode::Commands,
                 Some(LINE_PREFIX) => Mode::GoToLine,
@@ -188,7 +198,8 @@ impl Palette {
             | Mode::Logs
             | Mode::Indentation
             | Mode::IndentSize
-            | Mode::Language => &self.field.text,
+            | Mode::Language
+            | Mode::Compare => &self.field.text,
         }
     }
 
@@ -376,6 +387,47 @@ pub fn language_rows(query: &str, languages: &[Language], current: Language) -> 
                 detail,
                 keys: None,
                 action: Action::Language(lang),
+            })
+        })
+        .collect()
+}
+
+/// An open text offered by the compare pickers.
+pub struct OpenText {
+    pub id: crate::buffer::BufferId,
+    pub name: String,
+    /// The file's folder (workspace-relative), or `untitled`.
+    pub folder: String,
+    pub dirty: bool,
+}
+
+/// Rows for the compare pickers: the open `texts` matching `query` by name, in order; a dirty
+/// one is marked `unsaved`.
+pub fn compare_rows(query: &str, texts: &[OpenText]) -> Vec<Row> {
+    let pattern = pattern(query);
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let mut buf = Vec::new();
+    texts
+        .iter()
+        .filter_map(|t| {
+            let mut hits = Vec::new();
+            if !query.is_empty() {
+                pattern.indices(Utf32Str::new(&t.name, &mut buf), &mut matcher, &mut hits)?;
+            }
+            let mut detail = t.folder.clone();
+            if t.dirty {
+                if !detail.is_empty() {
+                    detail.push_str(" \u{b7} ");
+                }
+                detail.push_str("unsaved");
+            }
+            Some(Row {
+                label: t.name.clone(),
+                label_hits: sorted(hits),
+                detail,
+                detail_hits: Vec::new(),
+                keys: None,
+                action: Action::CompareBuffer(t.id),
             })
         })
         .collect()
@@ -966,6 +1018,32 @@ mod tests {
         assert_eq!(typed.len(), 1);
         assert_eq!((typed[0].label.as_str(), typed[0].label_hits.clone()), ("6", vec![0]));
         assert!(size_rows("9", 2, 4).is_empty());
+    }
+
+    #[test]
+    fn compare_rows_list_open_texts_marking_unsaved_ones() {
+        let text = |id, name: &str, folder: &str, dirty| OpenText {
+            id,
+            name: name.into(),
+            folder: folder.into(),
+            dirty,
+        };
+        let texts = [
+            text(3, "main.rs", "src", true),
+            text(5, "Untitled-1", "untitled", false),
+            text(7, "notes.md", "", true),
+        ];
+        let rows = compare_rows("", &texts);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].action, Action::CompareBuffer(3));
+        assert_eq!(rows[0].detail, "src \u{b7} unsaved");
+        assert_eq!(rows[1].detail, "untitled");
+        assert_eq!(rows[2].detail, "unsaved");
+        let by_name = compare_rows("untit", &texts);
+        assert_eq!(by_name.len(), 1);
+        assert_eq!(by_name[0].action, Action::CompareBuffer(5));
+        assert!(!by_name[0].label_hits.is_empty());
+        assert!(compare_rows("zzz", &texts).is_empty());
     }
 
     #[test]

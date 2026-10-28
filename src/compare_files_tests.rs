@@ -7,6 +7,12 @@
 //! `File` side reads the disk again, unmarked) and the tab stays; comparing a
 //! text with itself says so and opens nothing; the tab draws side by side and inline without
 //! Stage / Revert / Open File; sessions don't keep it.
+//!
+//! Subtask compare_files-b, through the palette (keys and a click): "Compare Active File With…"
+//! lists the open texts (unsaved marked, untitled by title, never the active one) then the
+//! files not open (none in single file mode), a query filtering both, and compares the pick
+//! (left) with the active buffer; "Compare Open Editors…" picks two open texts in turn; Esc
+//! opens nothing; too few texts, or no text active, says so.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -381,4 +387,261 @@ async fn compare_files_tabs_are_not_kept_in_sessions() {
     let tabs = &session.groups[0].tabs;
     assert_eq!(tabs.len(), 1, "{tabs:?}");
     assert!(matches!(&tabs[0], crate::session::TabState::Text { path, .. } if path.ends_with("a.txt")));
+}
+
+// ---- subtask b: the picker and the two commands ----
+
+/// Runs a palette command by its title (Cmd+Shift+P, the title, Enter).
+fn run_command(app: &mut App, title: &str) {
+    app.press(K::Char('p'), cmd() | M::SHIFT);
+    app.type_text(title);
+    let p = app.palette.as_ref().unwrap();
+    assert_eq!(p.rows[p.selected].label, title);
+    app.press(K::Enter, M::NONE);
+}
+
+fn labels(app: &App) -> Vec<String> {
+    app.palette
+        .as_ref()
+        .unwrap()
+        .rows
+        .iter()
+        .map(|r| r.label.clone())
+        .collect()
+}
+
+/// Types `query` in the open compare picker, waits for a row `label`, and selects it.
+async fn pick(app: &mut App, query: &str, label: &str) {
+    app.type_text(query);
+    let want = label.to_string();
+    let found = app
+        .settle(|a| {
+            a.palette
+                .as_ref()
+                .is_some_and(|p| p.rows.iter().any(|r| r.label == want))
+        })
+        .await;
+    assert!(found, "lists {label}: {:?}", labels(app));
+    let p = app.palette.as_mut().unwrap();
+    let i = p.rows.iter().position(|r| r.label == label).unwrap();
+    p.select(i);
+}
+
+/// Waits for the open compare picker's file walk to finish (its hint stops saying it looks).
+async fn walked(app: &mut App) -> bool {
+    app.settle(|a| {
+        let hint = a.palette.as_ref().and_then(|p| p.hint.as_deref());
+        hint.is_some_and(|h| !h.starts_with("Looking for files"))
+    })
+    .await
+}
+
+fn type_at_start(app: &mut App, text: &str) {
+    app.press(K::Home, cmd());
+    app.type_text(text);
+}
+
+fn strs(v: &[&str]) -> Vec<String> {
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_active_file_with_an_unsaved_open_buffer() {
+    let (_d, root, _s, mut app) = setup();
+    open(&mut app, &root.join("a.txt"));
+    type_at_start(&mut app, "X");
+    open(&mut app, &root.join("b.txt"));
+    run_command(&mut app, "File: Compare Active File With…");
+    assert_eq!(app.palette.as_ref().unwrap().mode(), crate::palette::Mode::Compare);
+    let rows = &app.palette.as_ref().unwrap().rows;
+    assert_eq!(rows[0].label, "a.txt", "open buffers first");
+    assert!(rows[0].detail.contains("unsaved"), "{}", rows[0].detail);
+    assert!(
+        !labels(&app).contains(&"b.txt".to_string()),
+        "the active buffer isn't offered"
+    );
+    app.press(K::Enter, M::NONE);
+    assert!(app.palette.is_none());
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    let (l, r) = sides(&app);
+    assert_eq!(l, strs(&["Xone", "two"]), "the unsaved text, on the left");
+    assert_eq!(r, strs(&["one", "three"]));
+    let compare = app.group().active_diff().unwrap().compare.clone().unwrap();
+    assert!(compare.sides[0].dirty && !compare.sides[1].dirty);
+    // From the diff tab there is no active text to compare.
+    run_command(&mut app, "File: Compare Active File With…");
+    assert!(app.palette.is_none());
+    assert_eq!(
+        app.message.as_ref().unwrap().text,
+        "Open a file or an untitled buffer to compare"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_active_file_with_an_untitled_buffer() {
+    let (_d, root, _s, mut app) = setup();
+    let id = untitled(&mut app, "hello");
+    open(&mut app, &root.join("b.txt"));
+    run_command(&mut app, "File: Compare Active File With…");
+    assert_eq!(labels(&app)[0], "Untitled-1");
+    pick(&mut app, "Untitled", "Untitled-1").await;
+    app.press(K::Enter, M::NONE);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    let compare = app.group().active_diff().unwrap().compare.clone().unwrap();
+    assert_eq!(compare.sides[0].source, Source::Open(id));
+    let (l, r) = sides(&app);
+    assert_eq!(l, strs(&["hello"]));
+    assert_eq!(r, strs(&["one", "three"]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_active_file_with_a_file_that_is_not_open() {
+    let (_d, root, _s, mut app) = setup();
+    fs::write(root.join("c.txt"), "cee\n").unwrap();
+    let a = open(&mut app, &root.join("a.txt"));
+    run_command(&mut app, "File: Compare Active File With…");
+    pick(&mut app, "c.txt", "c.txt").await;
+    app.press(K::Enter, M::NONE);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    let compare = app.group().active_diff().unwrap().compare.clone().unwrap();
+    assert_eq!(compare.sides[0].source, file(&root, "c.txt"));
+    assert_eq!(compare.sides[1].source, Source::Open(a));
+    let (l, r) = sides(&app);
+    assert_eq!((l, r), (strs(&["cee"]), strs(&["one", "two"])));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_open_files_are_listed_once_and_never_the_active_one() {
+    let (_d, root, _s, mut app) = setup();
+    open(&mut app, &root.join("a.txt"));
+    open(&mut app, &root.join("b.txt"));
+    run_command(&mut app, "File: Compare Active File With…");
+    assert!(walked(&mut app).await);
+    assert_eq!(
+        labels(&app),
+        ["a.txt"],
+        "a.txt as an open text only, not again as a file"
+    );
+    app.press(K::Esc, M::NONE);
+    assert!(app.palette.is_none());
+    assert!(app.group().active_diff().is_none(), "Esc opens nothing");
+    assert_eq!(app.group().tabs.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_a_lone_buffer_has_nothing_open_to_pick() {
+    let (_d, root, _s, mut app) = setup();
+    open(&mut app, &root.join("a.txt"));
+    run_command(&mut app, "File: Compare Open Editors…");
+    assert!(app.palette.is_none());
+    assert_eq!(app.message.as_ref().unwrap().text, "Open two files to compare them");
+    assert_eq!(app.group().tabs.len(), 1);
+    // Compare Active File With still lists files, never the buffer itself.
+    run_command(&mut app, "File: Compare Active File With…");
+    assert!(app.palette.is_some());
+    assert!(walked(&mut app).await);
+    assert_eq!(labels(&app), ["b.txt"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_open_editors_picks_two_in_turn() {
+    let (_d, root, _s, mut app) = setup();
+    open(&mut app, &root.join("a.txt"));
+    untitled(&mut app, "mine");
+    open(&mut app, &root.join("b.txt"));
+    run_command(&mut app, "File: Compare Open Editors…");
+    assert_eq!(
+        labels(&app),
+        ["a.txt", "Untitled-1", "b.txt"],
+        "open texts only, no files"
+    );
+    pick(&mut app, "b.t", "b.txt").await;
+    app.press(K::Enter, M::NONE);
+    // The picker reopens for the second pick, without the first.
+    let p = app.palette.as_ref().expect("second pick");
+    assert!(p.field.text.is_empty());
+    assert!(p.hint.as_deref().unwrap().contains("b.txt"), "{:?}", p.hint);
+    assert_eq!(labels(&app), ["a.txt", "Untitled-1"]);
+    // The second pick by a click on its row.
+    lines(&mut app, 100);
+    let hit = app.hits.palette.expect("the palette drawn");
+    app.mouse(
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        hit.rows.x + 2,
+        hit.rows.y + 1,
+    );
+    assert!(app.palette.is_none());
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    let (l, r) = sides(&app);
+    assert_eq!((l, r), (strs(&["one", "three"]), strs(&["mine"])));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_open_editors_esc_on_the_second_pick_opens_nothing() {
+    let (_d, root, _s, mut app) = setup();
+    open(&mut app, &root.join("a.txt"));
+    open(&mut app, &root.join("b.txt"));
+    run_command(&mut app, "File: Compare Open Editors…");
+    app.press(K::Enter, M::NONE);
+    assert!(app.palette.is_some());
+    app.press(K::Esc, M::NONE);
+    assert!(app.palette.is_none());
+    assert_eq!(app.group().tabs.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_a_query_matches_open_texts_then_files() {
+    let (_d, root, _s, mut app) = setup();
+    fs::write(root.join("c.txt"), "cee\n").unwrap();
+    fs::write(root.join("notes.md"), "md\n").unwrap();
+    let a = open(&mut app, &root.join("a.txt"));
+    let b = open(&mut app, &root.join("b.txt"));
+    run_command(&mut app, "File: Compare Active File With…");
+    app.type_text("txt");
+    let found = app.settle(|a| labels(a) == ["a.txt", "c.txt"]).await;
+    assert!(
+        found,
+        "the open text, then the file; not b.txt nor notes.md: {:?}",
+        labels(&app)
+    );
+    let rows = &app.palette.as_ref().unwrap().rows;
+    assert_eq!(rows[0].action, crate::palette::Action::CompareBuffer(a));
+    assert!(matches!(rows[1].action, crate::palette::Action::Open(_)));
+    app.press(K::Down, M::NONE);
+    app.press(K::Enter, M::NONE);
+    assert!(app.palette.is_none());
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    let compare = app.group().active_diff().unwrap().compare.clone().unwrap();
+    assert_eq!(compare.sides[0].source, file(&root, "c.txt"));
+    assert_eq!(compare.sides[1].source, Source::Open(b));
+    assert!(
+        !app.mru.files.iter().any(|f| f.ends_with("c.txt")),
+        "a compared file isn't a recently opened one: {:?}",
+        app.mru.files
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_single_file_mode_lists_open_texts_only() {
+    let (_d, root, _s, mut app) = setup();
+    fs::write(root.join("c.txt"), "cee\n").unwrap();
+    app.mode = crate::app::Mode::SingleFile;
+    let a = open(&mut app, &root.join("a.txt"));
+    run_command(&mut app, "File: Compare Active File With…");
+    assert!(app.palette.is_none(), "nothing else open");
+    assert_eq!(app.message.as_ref().unwrap().text, "Open two files to compare them");
+    let b = open(&mut app, &root.join("b.txt"));
+    run_command(&mut app, "File: Compare Active File With…");
+    let p = app.palette.as_ref().expect("the picker");
+    assert_eq!(
+        p.hint.as_deref(),
+        Some("Select a file or editor to compare with b.txt"),
+        "no workspace walk"
+    );
+    assert_eq!(labels(&app), ["a.txt"], "no files listed");
+    app.press(K::Enter, M::NONE);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    let compare = app.group().active_diff().unwrap().compare.clone().unwrap();
+    assert_eq!(compare.sides[0].source, Source::Open(a));
+    assert_eq!(compare.sides[1].source, Source::Open(b));
 }

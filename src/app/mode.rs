@@ -111,6 +111,8 @@ mod tests {
             Command::SplitRight,
             Command::AddNextMatch,
             Command::CompareWithSaved,
+            Command::CompareActiveFileWith,
+            Command::CompareOpenEditors,
             Command::ReloadFromDisk,
             Command::ChangeLanguageMode,
             Command::SaveAll,

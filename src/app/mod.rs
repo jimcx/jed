@@ -1413,6 +1413,8 @@ impl App {
             Command::Merge(crate::command::MergeCommand::Previous) => self.go_to_conflict(false),
             Command::Merge(crate::command::MergeCommand::Compare) => self.compare_conflict(None),
             Command::CompareWithSaved => self.compare_with_saved(),
+            Command::CompareActiveFileWith => self.compare_active_file_with(),
+            Command::CompareOpenEditors => self.compare_open_editors(),
             Command::OpenChange => self.open_changes(),
             Command::ToggleChanges => self.toggle_changes(),
             Command::StageFile | Command::UnstageFile if self.scm_focused() => {

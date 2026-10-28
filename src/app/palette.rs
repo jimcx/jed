@@ -179,6 +179,14 @@ impl App {
                 hint = Some(text);
                 rows
             }
+            Mode::Compare => {
+                hint = Some(self.compare_hint(p.picker));
+                let mut rows = self.compare_buffer_rows(&query);
+                if self.palette_lists_files() {
+                    rows.extend(self.compare_file_rows(&query));
+                }
+                rows
+            }
             Mode::Files if !self.mode.allows(Command::QuickOpen) => {
                 hint = Some(super::mode::UNAVAILABLE.into());
                 Vec::new()
@@ -208,6 +216,42 @@ impl App {
             }
         }
         self.update_files_hint();
+    }
+
+    /// The compare picker's file rows: quick open's matches for `query` that aren't open (those
+    /// are listed as open texts). Starts the walk and the matcher as quick open does.
+    fn compare_file_rows(&mut self, query: &str) -> Vec<palette::Row> {
+        let files = self.file_matcher();
+        files.set_query(palette::file_query(query));
+        let running = files.tick();
+        let rows = files.rows();
+        self.files_poll = running.then(|| Instant::now() + FILES_POLL);
+        self.start_file_walk();
+        self.compare_filtered(rows)
+    }
+
+    /// Quick open's `rows` without the files that are open.
+    fn compare_filtered(&self, rows: Vec<palette::Row>) -> Vec<palette::Row> {
+        let open: Vec<PathBuf> = self
+            .buffers
+            .iter()
+            .filter(|(_, b)| b.has_file())
+            .map(|(_, b)| b.path.clone())
+            .collect();
+        let root = &self.workspace.root;
+        let mut rows = palette::file_rows_with_recent(rows, &[]);
+        rows.retain(|r| !matches!(&r.action, Action::Open(rel) if open.contains(&root.join(rel))));
+        rows
+    }
+
+    /// Whether the open palette lists the workspace's files (quick open, "Compare Active File With"
+    /// outside single file mode, which has no quick open).
+    fn palette_lists_files(&self) -> bool {
+        self.palette.as_ref().is_some_and(|p| match p.mode() {
+            Mode::Files => true,
+            Mode::Compare => matches!(p.picker, Picker::Compare { .. }) && self.mode.allows(Command::QuickOpen),
+            _ => false,
+        })
     }
 
     fn line_hint(&self, query: &str) -> String {
@@ -273,16 +317,24 @@ impl App {
     pub(super) fn files_matched(&mut self) {
         self.files_pending.store(false, Ordering::Release);
         self.files_poll = None;
-        if self.palette.as_ref().is_none_or(|p| p.mode() != Mode::Files) {
+        if !self.palette_lists_files() {
             return;
         }
+        let compare = self.palette.as_ref().is_some_and(|p| p.mode() == Mode::Compare);
         let query_empty = self.palette.as_ref().is_some_and(|p| p.query().is_empty());
         let Some(files) = &mut self.files else { return };
         let running = files.tick();
         let rows = files.rows();
         self.files_poll = running.then(|| Instant::now() + FILES_POLL);
-        let recent: &[PathBuf] = if query_empty { &self.mru.files } else { &[] };
-        let rows = palette::file_rows_with_recent(rows, recent);
+        let rows = if compare {
+            let query = self.palette.as_ref().map(|p| p.query().to_string()).unwrap_or_default();
+            let mut all = self.compare_buffer_rows(&query);
+            all.extend(self.compare_filtered(rows));
+            all
+        } else {
+            let recent: &[PathBuf] = if query_empty { &self.mru.files } else { &[] };
+            palette::file_rows_with_recent(rows, recent)
+        };
         if let Some(p) = &mut self.palette {
             // Keep the selection on the same file where possible.
             let selected = p.selected_row().map(|r| r.action.clone());
@@ -303,13 +355,29 @@ impl App {
     }
 
     fn update_files_hint(&mut self) {
+        if !self.palette_lists_files() {
+            return;
+        }
+        let compare = self
+            .palette
+            .as_ref()
+            .filter(|p| p.mode() == Mode::Compare)
+            .map(|p| p.picker);
+        let compare_hint = compare.map(|picker| self.compare_hint(picker));
         let (Some(p), Some(files)) = (&mut self.palette, &self.files) else {
             return;
         };
-        if p.mode() != Mode::Files {
+        let (matched, total) = files.counts();
+        if let Some(text) = compare_hint {
+            p.hint = if !files.walked {
+                Some(format!("Looking for files… {total} so far"))
+            } else if p.rows.is_empty() {
+                Some("No matching files or editors".into())
+            } else {
+                Some(text)
+            };
             return;
         }
-        let (matched, total) = files.counts();
         let recent = if p.query().is_empty() { self.mru.files.len() } else { 0 };
         p.hint = if !files.walked {
             Some(format!("Looking for files… {total} so far"))
@@ -391,6 +459,16 @@ impl App {
                 if let Picker::Language { buffer } = picker {
                     self.language_picked(buffer, lang);
                 }
+            }
+            (Mode::Compare, Some(Action::Open(rel))) => {
+                let picker = p.picker;
+                self.close_palette();
+                self.compare_picked(picker, None, Some(rel));
+            }
+            (_, Some(Action::CompareBuffer(id))) => {
+                let picker = p.picker;
+                self.close_palette();
+                self.compare_picked(picker, Some(id), None);
             }
             (_, Some(Action::Open(rel))) => {
                 let goto = paths::strip_position(&query).map(|(_, (l, c))| super::files::Goto::Cursor(l, c));
