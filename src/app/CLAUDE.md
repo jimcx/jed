@@ -33,7 +33,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `quick_diff.rs` — gutter markers (`sync_quick_diff`), their peek, staging / unstaging from the gutter
 - `blame.rs` — inline blame (`app.blame`): toggle, `sync_blame`
 - `conflict.rs` — merge conflicts (`app/conflict.rs`): `go_to_conflict(forward)` (Next / Previous Conflict, Alt+F8 / Shift+Alt+F8: the primary cursor to the conflict's start, one selection, revealed, undo sealed; wrapping; nothing without markers) and `compare_conflict(at)` (Compare Current Conflict, the palette and the action row's Compare button: the blocks of the conflict at the cursor, else the one at `at`, through `open_conflict_diff`; a log / untitled buffer's name titles the tab)
-- `diff_view.rs` — diff tabs (`app.diffs`): `open_diff(path, Pair)`, `sync_diffs`, `diff_command`, stage / revert hunks (`stage_path` asks before staging a file whose open buffer still has markers)
+- `diff_view.rs` — diff tabs (`app.diffs`): the caret's keys, mouse (`Drag::Diff`: click, Shift+click, drag, double / triple click) and Cmd+C / Cmd+X (`diff_copy`), `open_diff(path, Pair)`, `sync_diffs`, `diff_command`, stage / revert hunks (`stage_path` asks before staging a file whose open buffer still has markers)
 - `hex.rs` — hex tabs: binary files' load (`Loaded::Binary`), one tab per path, Reopen as Hex / Text, `hex_command` / `hex_copy`, Go to Offset, `hex_mouse`
 - `commit_tabs.rs` — commit tabs: `sync_commit_tabs`, `fit_commit_tabs`, opening a stat row's diff
 - `scm.rs` — the Source Control view (`app.scm`): focus, keys, stage / unstage, opening diffs (a Merge Changes file opens the file)

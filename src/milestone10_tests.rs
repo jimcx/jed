@@ -89,7 +89,7 @@ fn draw(app: &mut App) -> Terminal<TestBackend> {
 }
 
 /// Each screen row as text.
-fn lines(term: &Terminal<TestBackend>) -> Vec<String> {
+pub(crate) fn lines(term: &Terminal<TestBackend>) -> Vec<String> {
     let buf = term.backend().buffer();
     (0..buf.area.height)
         .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
@@ -627,7 +627,7 @@ async fn milestone_10_reload_keeps_the_scroll_and_refuses_non_utf8() {
 // 10c: the gutter.
 
 /// A repository with `files` committed, then `changes` written over them on disk.
-fn repo_with(root: &Path, files: &[(&str, &str)], changes: &[(&str, &str)]) {
+pub(crate) fn repo_with(root: &Path, files: &[(&str, &str)], changes: &[(&str, &str)]) {
     init(root);
     for (name, text) in files {
         fs::write(root.join(name), text).unwrap();
@@ -676,7 +676,7 @@ pub(crate) fn marker_colour(app: &App, key: &str) -> Option<Color> {
 }
 
 /// Runs the palette command titled `title`.
-fn run_command(app: &mut App, title: &str) {
+pub(crate) fn run_command(app: &mut App, title: &str) {
     app.press(KeyCode::Char('p'), cmd() | M::SHIFT);
     app.type_text(title);
     let p = app.palette.as_ref().unwrap();
@@ -1189,7 +1189,7 @@ fn diff_tab(app: &App) -> &DiffTab {
 }
 
 /// Waits until every diff tab is loaded and current and the git status read.
-async fn settle_diffs(app: &mut App) -> bool {
+pub(crate) async fn settle_diffs(app: &mut App) -> bool {
     app.settle(|a| a.diffs_settled() && a.git.status.is_some()).await
 }
 
@@ -1200,7 +1200,7 @@ pub(crate) fn draw_sized(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend>
 }
 
 /// Every (x, y) where `needle` starts on screen (cells hold one char each here).
-fn find_text(term: &Terminal<TestBackend>, needle: &str) -> Vec<(u16, u16)> {
+pub(crate) fn find_text(term: &Terminal<TestBackend>, needle: &str) -> Vec<(u16, u16)> {
     let mut out = Vec::new();
     for (y, row) in lines(term).iter().enumerate() {
         let chars: Vec<char> = row.chars().collect();
@@ -1223,7 +1223,7 @@ fn theme_bg(app: &App, key: &str) -> Option<Color> {
 }
 
 /// Lines 0..30, with line 2 changed, a line added after line 10 and line 20 deleted.
-fn three_changes() -> (String, String) {
+pub(crate) fn three_changes() -> (String, String) {
     let original = numbered(30);
     let changed = original
         .replace("line 2\n", "line two\n")

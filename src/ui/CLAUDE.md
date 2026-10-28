@@ -26,7 +26,7 @@ One line per widget or editor layer; [docs/dev/ui.md](../../docs/dev/ui.md) has 
 - `hover.rs`, `completion.rs`, `code_action.rs` — the hover popup, the completion list, the code action list (the lightbulb is drawn in `mod.rs`)
 - `quick_diff.rs` — the gutter's peek (removed lines, Stage, `×` close)
 - `hex.rs` — a hex tab: fitted (`HexTab::fit`), the visible rows as `hex::row` with the `hexEditor.*` keys, find matches, selection and cursor in both columns
-- `diff.rs` — a diff tab: header, side by side or inline rows, Stage / Revert buttons, syntax colours
+- `diff.rs` — a diff tab: the caret's selection (`editor.selection`, over the diff backgrounds, under token colours) and terminal cursor, `DiffHit::text_x` / `divider` for the mouse, header, side by side or inline rows, Stage / Revert buttons, syntax colours
 - `panel.rs` — the bottom panel: border, tab strip with badges, Problems / Locations lists
 - `task.rs` — a task tab's terminal (`tui-term`, the theme's `terminal_cell`, the mouse selection in `editor.selection`), resizing PTYs to it (render-time state) and its scroll bar (`ScrollTarget::Panel(PanelTab::Task(id))`); `render_shell` draws a shell tab's screen in the editor area (no tab strip or info line, the PTY resized and the bar drawn by `mod.rs`)
 - `status.rs` — the status bar: Restricted badge, branch, file, merge conflict count, problem counts, progress, position / language

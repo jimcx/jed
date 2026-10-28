@@ -20,6 +20,9 @@ mod conflict;
 #[cfg(test)]
 mod conflicts_tests;
 mod diagnostics;
+mod diff_caret;
+#[cfg(test)]
+mod diff_edit_tests;
 mod diff_view;
 mod disk;
 #[cfg(test)]

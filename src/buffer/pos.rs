@@ -347,6 +347,22 @@ pub fn byte_at_col(rope: &Rope, line: usize, target: DisplayCol, tab_width: usiz
     ByteIdx(start + offset_at_col(&line_text(rope, line), target, tab_width))
 }
 
+/// Screen column at byte `off` (a grapheme boundary) of one line's `text` (diff tabs' sides).
+pub fn col_before_in(text: &str, off: usize, tab_width: usize) -> DisplayCol {
+    col_in(text, off.min(text.len()), tab_width)
+}
+
+/// The grapheme boundary of one line's `text` at or before column `target` (`byte_at_col` on a
+/// string: diff tabs' sides).
+pub fn byte_at_col_in(text: &str, target: DisplayCol, tab_width: usize) -> usize {
+    offset_at_col(text, target, tab_width)
+}
+
+/// The grapheme boundary of one line's `text` nearest column `target` (a click's position).
+pub fn byte_near_col_in(text: &str, target: DisplayCol, tab_width: usize) -> usize {
+    offset_near_col(text, target, tab_width)
+}
+
 /// One line looked up once, for many conversions on it.
 pub struct Line {
     pub index: usize,

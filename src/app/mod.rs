@@ -1487,6 +1487,9 @@ impl App {
 
     /// Copies (or cuts) the active view's selections to the clipboard.
     fn copy(&mut self, cut: bool) {
+        if self.diff_copy(cut) {
+            return;
+        }
         if !cut && self.hex_copy() {
             return;
         }

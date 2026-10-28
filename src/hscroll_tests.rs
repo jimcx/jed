@@ -236,11 +236,16 @@ async fn hscroll_side_by_side_diff_stops_at_its_widest_line() {
     let d = app.group().active_diff().unwrap();
     assert_eq!(d.left_col, 201 - width - SIDE);
     assert_eq!((d.cursor, d.top), (cursor, 0), "sideways only");
-    // The keyboard's Right stops there too.
+    // The keyboard's Right moves the caret (diff_edit), scrolling only to keep it in view.
     for _ in 0..100 {
         app.press(KeyCode::Right, M::NONE);
     }
-    assert_eq!(app.group().active_diff().unwrap().left_col, 201 - width);
+    let d = app.group().active_diff().unwrap();
+    let col = d.caret.head.1;
+    assert!(
+        col > 0 && d.left_col <= col && col < d.left_col + width,
+        "the caret's column is shown"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

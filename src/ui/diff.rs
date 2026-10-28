@@ -38,6 +38,7 @@ const OPEN_FILE: &str = " Open File ";
 /// The colours, looked up once per frame.
 struct Styles {
     base: Style,
+    selection: Style,
     current: Style,
     gutter: Style,
     gutter_active: Style,
@@ -104,6 +105,7 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
         inserted_text: theme.get("diffEditor.insertedTextBackground"),
         fill: theme.get("editor").patch(theme.get("diffEditor.diagonalFill")),
         control: theme.get("editor.whitespace.control"),
+        selection: theme.get("editor.selection"),
         tokens: crate::syntax::KEYS
             .iter()
             .map(|k| Style {
@@ -120,6 +122,9 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
     }
     let inline = area.width < diff_view::SIDE_BY_SIDE_MIN;
     d.set_layout(inline);
+    d.tab_width = tab_width;
+    d.sync_caret();
+    let caret = d.caret;
     let body = Rect {
         y: area.y + 1,
         height: area.height - 1,
@@ -220,27 +225,40 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
         let room = |w: u16| w.saturating_sub(digits as u16 + 2);
         room(half).min(room(body.width - half - 1))
     } as usize;
+    hit.text_x = if inline {
+        [body.x + 2 * digits as u16 + 4; 2]
+    } else {
+        [body.x + digits as u16 + 2, body.x + half + 1 + digits as u16 + 2]
+    };
+    hit.divider = (!inline).then_some(body.x + half);
     let mut widest = 0;
     for (i, row) in shown.iter().enumerate() {
         let index = top + i;
         let y = body.y + i as u16;
         let current = index == d.cursor;
+        let at_caret;
         let parts = (row.kind() == Kind::Changed)
             .then(|| diff_view::changed_parts(doc.left.line(row.left.unwrap()), doc.right.line(row.right.unwrap())));
         // The row's width and the widths of the lines under the Stage and the Revert buttons.
-        let (cell, w, under) = if inline {
+        let (_, w, under) = if inline {
             let line = match row.kind() {
                 Kind::Removed => left_walk.line(row.left.unwrap_or_default()),
                 _ => right_walk.line(row.right.unwrap_or_default()),
             };
-            let (cell, w) = draw_inline(out, body, y, row, line, digits, d.left_col, tab_width, &st, current);
+            let (right, l) = (row.kind() != Kind::Removed, line_no(row));
+            let sel = caret.on_line(right, l, line.text.len());
+            let (cell, w) = draw_inline(
+                out, body, y, row, line, digits, d.left_col, tab_width, &st, current, sel,
+            );
+            at_caret = (right == caret.right).then_some(cell);
             (cell, w, (w, w))
         } else {
             let left = Rect::new(body.x, y, half, 1);
             let right = Rect::new(body.x + half + 1, y, body.width - half - 1, 1);
-            let side = |rect, line, removed, part| {
+            let side = |rect, line, removed: bool, part, sel| {
                 let ctx = Half {
                     rect,
+                    sel,
                     line,
                     digits,
                     left_col: d.left_col,
@@ -251,17 +269,40 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
             };
             let left_line = row.left.map(|l| (l, left_walk.line(l)));
             let right_line = row.right.map(|l| (l, right_walk.line(l)));
-            let (l, lr, lp) = side(left, left_line, true, parts.as_ref().map(|p| p.0.clone()));
-            let (r, rr, rp) = side(right, right_line, false, parts.map(|p| p.1));
+            let on = |right: bool, l: Option<usize>| {
+                let lines = if right { &doc.right } else { &doc.left };
+                l.and_then(|l| caret.on_line(right, l, lines.line(l).len()))
+            };
+            let (l, lr, lp) = side(
+                left,
+                left_line,
+                true,
+                parts.as_ref().map(|p| p.0.clone()),
+                on(false, row.left),
+            );
+            let (r, rr, rp) = side(right, right_line, false, parts.map(|p| p.1), on(true, row.right));
             let at_left = draw_half(out, &l, row, lr, lp, &st);
             let at_right = draw_half(out, &r, row, rr, rp, &st);
             out.set_stringn(body.x + half, y, "│", 1, theme.get("editorGroup.border"));
             let cell = if row.right.is_some() { at_right.0 } else { at_left.0 };
+            at_caret = Some(if caret.right { at_right.0 } else { at_left.0 });
             (cell, at_left.1.max(at_right.1), (at_right.1, at_left.1))
         };
         widest = widest.max(w);
         if current {
-            cursor_cell = Some(cell);
+            // The caret: its column in its side's text, when that is in view.
+            let text = if caret.right {
+                doc.right.line(caret.head.0)
+            } else {
+                doc.left.line(caret.head.0)
+            };
+            let col = pos::col_before_in(text, caret.head.1, tab_width).0;
+            cursor_cell = match at_caret {
+                Some((x, y)) if col >= d.left_col && col - d.left_col < d.text_width.max(1) => {
+                    Some((x + (col - d.left_col) as u16, y))
+                }
+                _ => None,
+            };
         }
         // The change's buttons on its first row: Stage / Unstage at the row's right end; Revert
         // (an unstaged view) at the left column's right end, or left of Stage inline.
@@ -339,6 +380,8 @@ struct Half<'a> {
     left_col: usize,
     tab_width: usize,
     current: bool,
+    /// The selected bytes of the line, and whether its line break is selected.
+    sel: Option<(Range<usize>, bool)>,
 }
 
 /// Draws one side of a row (its number, then its text; filler when it has no line). Returns
@@ -369,7 +412,17 @@ fn draw_half(
     out.set_stringn(x, y, format!("{:>w$} ", line + 1, w = h.digits), width as usize, number);
     let highlight = part.map(|p| (p, if removed { st.removed_text } else { st.inserted_text }));
     let room = width.saturating_sub(text_x - x);
-    let w = draw_text(out, (text_x, y, room), text, h.left_col, h.tab_width, bg, highlight, st);
+    let w = draw_text(
+        out,
+        (text_x, y, room),
+        text,
+        h.left_col,
+        h.tab_width,
+        bg,
+        highlight,
+        h.sel.clone(),
+        st,
+    );
     ((text_x, y), w)
 }
 
@@ -387,6 +440,7 @@ fn draw_inline(
     tab_width: usize,
     st: &Styles,
     current: bool,
+    sel: Option<(Range<usize>, bool)>,
 ) -> ((u16, u16), usize) {
     let (bg, sign) = match row.kind() {
         Kind::Removed => (st.removed, "-"),
@@ -409,7 +463,7 @@ fn draw_inline(
         bg,
     );
     let room = body.width.saturating_sub(sx - body.x);
-    let w = draw_text(out, (sx, y, room), &line, left_col, tab_width, bg, None, st);
+    let w = draw_text(out, (sx, y, room), &line, left_col, tab_width, bg, None, sel, st);
     ((sx, y), w)
 }
 
@@ -426,6 +480,7 @@ fn draw_text(
     tab_width: usize,
     style: Style,
     highlight: Option<(Range<usize>, Style)>,
+    sel: Option<(Range<usize>, bool)>,
     st: &Styles,
 ) -> usize {
     let width = width as usize;
@@ -458,8 +513,28 @@ fn draw_text(
         if g.starts_with(|c: char| c.is_control()) && g != "\t" {
             s = s.patch(st.control);
         }
+        if let Some((range, _)) = &sel
+            && range.contains(&off)
+        {
+            s = s.patch(st.selection);
+        }
         out.set_stringn(x + (col - left_col) as u16, y, &shown, w, s);
         col += w;
     }
+    // A selected line break: one cell past the text.
+    if let Some((_, true)) = sel
+        && col >= left_col
+        && col - left_col < width
+    {
+        out.set_stringn(x + (col - left_col) as u16, y, " ", 1, style.patch(st.selection));
+    }
     col
+}
+
+/// The line number a row draws inline.
+fn line_no(row: &Row) -> usize {
+    match row.kind() {
+        Kind::Removed => row.left.unwrap_or_default(),
+        _ => row.right.unwrap_or_default(),
+    }
 }

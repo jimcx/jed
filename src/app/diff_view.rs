@@ -10,10 +10,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use super::files::Goto;
-use super::mouse::{SIDE_STEP, wheel_columns};
+use super::mouse::{Drag, wheel_columns};
 use super::quick_diff::StageAt;
 use super::{App, AppEvent, Focus, Level, Prompt};
 use crate::buffer::BufferId;
@@ -486,29 +486,21 @@ impl App {
         let Some(d) = self.group_mut().active_diff_mut() else {
             return false;
         };
-        let page = d.height.saturating_sub(1).max(1) as isize;
+        let page = d.height.saturating_sub(1).max(1);
         let mut none = false;
         match cmd {
-            Command::Move { motion, .. } => match motion {
-                Motion::Up => d.move_cursor(-1),
-                Motion::Down => d.move_cursor(1),
-                Motion::PageUp => {
-                    d.move_cursor(-page);
-                    d.scroll_by(-page);
+            Command::Move { motion, select } => {
+                d.caret_move(motion, select, page);
+                match motion {
+                    Motion::PageUp => d.scroll_by(-(page as isize)),
+                    Motion::PageDown => d.scroll_by(page as isize),
+                    _ => {}
                 }
-                Motion::PageDown => {
-                    d.move_cursor(page);
-                    d.scroll_by(page);
-                }
-                Motion::DocStart => d.cursor_to_end(true),
-                Motion::DocEnd => d.cursor_to_end(false),
-                Motion::Left => d.scroll_columns(-SIDE_STEP),
-                Motion::Right => d.scroll_columns(SIDE_STEP),
-                Motion::WordLeft => d.scroll_columns(-4 * SIDE_STEP),
-                Motion::WordRight => d.scroll_columns(4 * SIDE_STEP),
-                Motion::LineStart => d.left_col = 0,
-                Motion::LineEnd => {}
-            },
+            }
+            Command::SelectAll => d.select_all(),
+            Command::CancelSelection => {
+                d.clear_selection();
+            }
             Command::NextChange | Command::PreviousChange => {
                 none = d.doc.is_some() && !d.step(cmd == Command::NextChange);
             }
@@ -518,6 +510,26 @@ impl App {
             self.notify(Level::Info, "No changes".into());
         }
         self.needs_redraw = true;
+        true
+    }
+
+    /// Cmd+C (Cmd+X: `cut`, which only an editable side takes, and for now only copies) on a diff
+    /// tab: the selection of either side, nothing when it is empty. False when the active tab
+    /// isn't a diff.
+    pub(super) fn diff_copy(&mut self, cut: bool) -> bool {
+        let Some(d) = self.group_mut().active_diff_mut() else {
+            return false;
+        };
+        if cut && !d.caret_editable() {
+            return true;
+        }
+        if let Some(text) = d.selection_text() {
+            self.clipboard.write(crate::clipboard::Copied {
+                text,
+                whole_line: false,
+                pieces: Vec::new(),
+            });
+        }
         true
     }
 
@@ -808,6 +820,20 @@ impl App {
     /// False when the group shows no diff tab there, and for other events (moves, drags,
     /// releases), which go on to the rest of `handle_mouse`.
     pub(super) fn diff_mouse(&mut self, m: &MouseEvent, hit: Hit) -> bool {
+        if let (MouseEventKind::Drag(MouseButton::Left), Some(Drag::Diff(g))) = (&m.kind, &self.drag) {
+            let g = *g;
+            let rect = self.hits.group(g).and_then(|h| h.diff.clone());
+            if let (Some(h), Some(d)) = (rect, self.groups.get_mut(g).and_then(|g| g.active_diff_mut())) {
+                // Rows above / below the view clamp to its first / last; the caret's side only.
+                let row = (m.row.clamp(h.rows.y, (h.rows.y + h.rows.height).saturating_sub(1)) - h.rows.y) as usize;
+                // Columns past the side's text (the divider, the other side) clamp to its edge: no
+                // sideways scroll while dragging.
+                let right = d.caret.right;
+                let col = diff_col(d, &h, right, m.column).min(d.left_col + d.text_width);
+                d.caret_click(d.top + row, right, col, true);
+            }
+            return true;
+        }
         let Hit::Editor(g) = hit else { return false };
         let Some(d) = self.groups.get_mut(g).and_then(|g| g.active_diff_mut()) else {
             return false;
@@ -836,10 +862,27 @@ impl App {
                     .iter()
                     .find(|(r, _, _)| r.contains(p))
                     .map(|(_, k, right)| (*k, *right));
+                let on_action = button.is_some() || revert.is_some() || apply.is_some();
                 if h.rows.contains(p) {
                     let row = d.top + (m.row - h.rows.y) as usize;
                     if row < d.rows().len() {
-                        d.cursor = row;
+                        if on_action {
+                            d.cursor = row;
+                        } else {
+                            let right = !d.inline && h.divider.is_some_and(|x| m.column > x);
+                            let col = diff_col(d, &h, right, m.column);
+                            let extend = m.modifiers.contains(KeyModifiers::SHIFT);
+                            d.caret_click(row, right, col, extend);
+                            let count = self.clicks.click(Instant::now(), m.column, m.row);
+                            if let Some(d) = self.groups.get_mut(g).and_then(|g| g.active_diff_mut()) {
+                                match count {
+                                    2 => d.select_word(),
+                                    3 => d.select_line(),
+                                    _ => {}
+                                }
+                            }
+                            self.drag = Some(Drag::Diff(g));
+                        }
                     }
                 }
                 self.focus_group(g);
@@ -860,6 +903,11 @@ impl App {
         }
         true
     }
+}
+
+/// The display column of the text under screen column `x` on side `right` (0 left of the text).
+fn diff_col(d: &DiffTab, h: &crate::layout::DiffHit, right: bool, x: u16) -> usize {
+    x.saturating_sub(h.text_x[right as usize]) as usize + d.left_col
 }
 
 /// The open buffer of each side of a compare tab (`None`: not a compare; per side `None`: the

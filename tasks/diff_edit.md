@@ -2,7 +2,7 @@
 id: diff_edit
 name: Selection and editing in diff tabs
 summary: select text on either side of a diff tab and edit the file's working-tree text in place
-status: open
+status: in-progress
 priority: 0
 dependencies: []
 ---
@@ -21,6 +21,7 @@ See [Git](../PLAN.md#git-view-and-stage-only). Diff tabs are read-only today: a 
   - Needs: `DiffTab` / `Doc` / `Lines` / `Text` (`diff_view.rs`), `ui/diff.rs`, `app/diff_view.rs`'s `diff_command` / `diff_mouse` and `execute`'s routing, `edit::run` / `Buffer::edit` / `Selections` / `pos`, `active_file_buffer` / `open_file` / `Buffers`, `follow_edits` / `sync_diffs`.
   - Done when: in an unstaged diff, clicking / dragging either side selects text, drawn across the rows; Cmd+C copies exactly the selected text, Shift+arrows extend, Cmd+A selects the side and Esc clears; typing / Enter / Tab / Backspace / Delete / paste on the right side edits the open file's buffer as one unsaved edit the editor's undo / redo and Cmd+S see, and the diff re-aligns with the caret kept; a history compare's right side edits the working-tree file and its history side is unchanged (nothing under `.jed/history/` is written); a commit, staged and conflict diff says the side is read-only and edits nothing; a file not open opens behind the diff on the first key and the key lands; a read-only buffer refuses.
   - Subtasks (one agent and one commit each):
-    - diff_edit-a: the caret and selection model, movement, mouse and drawing, copy / cut / select all / Esc; tests for the side positions and the drawn selection; other edit commands still say read-only
+    - ✅ diff_edit-a: the caret and selection model, movement, mouse and drawing, copy / cut / select all / Esc; tests for the side positions and the drawn selection; other edit commands still say read-only
+      - Built: `src/diff_caret.rs` (`Caret`, moves, clicks, `selection_text`); `DiffTab::caret`, `editable_sides()` returns `[left, right]` per tab (a compare tab's `Source::File` side that is an open buffer reports false: b refines it with the app's buffer lookup); `DiffHit::{text_x, divider}`; `Drag::Diff`. Cmd+X only copies on an editable side until b; an empty selection copies nothing. Keyboard Left/Right now move the caret instead of scrolling sideways. Deferred: word-wise drag after a double click, auto-scroll while dragging outside the view.
     - diff_edit-b: editing the live right side through the file's buffer (typing, deletes, Enter, Tab, paste, cut, undo / redo, save), opening a not-open file behind the diff, refusals and the reload that keeps the caret; the end-to-end edit / save / history tests
     - diff_edit-c: the read-only sides and pairs (staged, commit, conflict, replace), Stage / Unstage / Revert selection rows with `diff_tab_selected_lines`, sessions and docs, gaps and hand checks; marks the task ✅

@@ -115,6 +115,8 @@ pub enum Drag {
     HistoryDivider,
     /// Selecting bytes in a group's hex tab (`app/hex.rs`).
     Hex(crate::layout::GroupId),
+    /// Selecting text in a group's diff tab (`app/diff_view.rs`).
+    Diff(crate::layout::GroupId),
     /// Selecting text on a terminal screen (`tasks::select`): the run, the anchor cell
     /// (scroll-independent) and the area the screen is drawn in.
     Terminal {
@@ -597,7 +599,7 @@ impl App {
                 Some(Drag::ScrollBar { target, grab }) => self.scrollbar_drag(target, m.column, m.row, grab),
                 Some(Drag::Tab(_)) => self.tab_drag_to(m.column, m.row),
                 // Taken by `hex_mouse`.
-                Some(Drag::Hex(_)) => {}
+                Some(Drag::Hex(_) | Drag::Diff(_)) => {}
                 // Taken by `terminal_select`.
                 Some(Drag::Terminal { .. }) => {}
                 Some(Drag::HistoryDivider) => {

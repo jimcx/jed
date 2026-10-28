@@ -780,6 +780,10 @@ pub struct DiffTab {
     pub conflict: Option<(Vec<u8>, Vec<u8>)>,
     /// A compare tab's sides (`Pair::COMPARE`).
     pub compare: Option<Compare>,
+    /// The caret and selection in one side's text (`diff_caret`); its row is `cursor`.
+    pub caret: crate::diff_caret::Caret,
+    /// Written by drawing: the tab width the text is laid out with (column maths of the caret).
+    pub tab_width: usize,
 }
 
 /// The open buffers (with their revisions) a load reads its live sides from.
@@ -822,6 +826,8 @@ impl DiffTab {
             replace: None,
             conflict: None,
             compare: None,
+            caret: Default::default(),
+            tab_width: 4,
         }
     }
 
@@ -906,7 +912,20 @@ impl DiffTab {
             replace: self.replace.clone(),
             conflict: self.conflict.clone(),
             compare: self.compare.clone(),
+            caret: self.caret,
+            tab_width: self.tab_width,
         }
+    }
+
+    /// Which sides the caret may edit, `[left, right]`: the right one when it is the file's
+    /// current text (`Text::WorkTree`, `Text::Buffer`); in a compare tab each side that is an open
+    /// buffer (`Source::Open`; a `Source::File` side's buffer is looked up by the app). Every other
+    /// text (`Head`, `Index`, `Disk`, commits, history, previews, conflicts) is read-only.
+    pub fn editable_sides(&self) -> [bool; 2] {
+        if let Some(c) = &self.compare {
+            return c.sides.each_ref().map(|s| matches!(s.source, Source::Open(_)));
+        }
+        [false, matches!(self.pair.right, Text::WorkTree | Text::Buffer)]
     }
 
     /// The file's name for the tab bar.
@@ -1104,19 +1123,6 @@ impl DiffTab {
         self.cursor = self.aligned().starts[k];
         self.reveal = true;
         true
-    }
-
-    /// Moves the cursor by `delta` rows (clamped).
-    pub fn move_cursor(&mut self, delta: isize) {
-        let last = self.rows().len().saturating_sub(1);
-        self.cursor = self.cursor.saturating_add_signed(delta).min(last);
-        self.reveal = true;
-    }
-
-    /// The cursor to the first (`start`) or last row.
-    pub fn cursor_to_end(&mut self, start: bool) {
-        self.cursor = if start { 0 } else { self.rows().len().saturating_sub(1) };
-        self.reveal = true;
     }
 
     /// Scrolls by `delta` rows, the cursor staying put (the wheel).
