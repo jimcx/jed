@@ -37,7 +37,7 @@ Subcommands:
           markers.
 
   done-since <since> [<until>]
-          List the tasks whose status flipped to done between <since> and <until>
+          List the tasks whose status flipped to done in a commit between <since> and <until>
           (default HEAD), as "- **<name>**: <summary>" lines. Feeds scripts/changelog.
 
 Exit status: 0 ok, 1 error, 2 usage.
@@ -507,36 +507,43 @@ def cmd_done_since(args):
     since = args[0]
     until = args[1] if len(args) == 2 else "HEAD"
 
+    # Walk the history rather than diffing the two ends: a task created and finished inside the
+    # range is a new file at <until>, with no removed status line. A task added already done in a
+    # single commit (a migration) never has a commit that removes open / in-progress, so it stays out.
     try:
-        diff = subprocess.run(
-            ["git", "diff", "--unified=0", f"{since}..{until}", "--", "tasks/"],
+        log = subprocess.run(
+            ["git", "log", "--reverse", "--format=commit %H", "--unified=0", "-p", f"{since}..{until}", "--", "tasks/"],
             cwd=str(REPO), capture_output=True, text=True, check=True,
         ).stdout
     except subprocess.CalledProcessError as e:
-        sys.stderr.write(f"scripts/tasks: git diff failed: {e.stderr.strip()}\n")
+        sys.stderr.write(f"scripts/tasks: git log failed: {e.stderr.strip()}\n")
         return 1
 
-    files = {}
+    flipped = set()
+    removed = set()
+    added = set()
     current = None
-    for line in diff.split("\n"):
-        if line.startswith("+++ b/tasks/"):
+
+    def end_commit():
+        flipped.update(f for f in removed if f in added)
+        removed.clear()
+        added.clear()
+
+    for line in log.split("\n"):
+        if line.startswith("commit "):
+            end_commit()
+            current = None
+        elif line.startswith("+++ b/tasks/"):
             m = re.match(r"\+{3} b/tasks/([^/]+)\.md", line)
-            if m:
-                current = m.group(1)
-                files.setdefault(current, {"removed": set(), "added": set()})
+            current = m.group(1) if m else None
         elif current is not None:
-            if line.startswith("-status: "):
-                files[current]["removed"].add(line[len("-status: "):].strip())
-            elif line.startswith("+status: "):
-                files[current]["added"].add(line[len("+status: "):].strip())
+            if line.startswith("-status: ") and line[len("-status: "):].strip() in ("open", "in-progress"):
+                removed.add(current)
+            elif line.startswith("+status: ") and line[len("+status: "):].strip() == "done":
+                added.add(current)
+    end_commit()
 
-    flipped = sorted(
-        fid
-        for fid, info in files.items()
-        if (info["removed"] & {"open", "in-progress"}) and "done" in info["added"]
-    )
-
-    for fid in flipped:
+    for fid in sorted(flipped):
         try:
             content = subprocess.run(
                 ["git", "show", f"{until}:tasks/{fid}.md"],
