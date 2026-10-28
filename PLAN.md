@@ -678,7 +678,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Change End of Line Sequence** (`change_eol`): change a buffer's line endings to LF or CRLF — [tasks/change_eol.md](tasks/change_eol.md)
 - **Claude Code IDE integration** (`claude_ide`): let `claude` running in a jed terminal auto-connect to jed and share the editor's context, by implementing Claude Code's editor-agnostic IDE protocol on jed's side — no upstream change — [tasks/claude_ide.md](tasks/claude_ide.md)
 - **Close tabs and go to the Nth tab** (`close_tabs_nth`): close all / others / saved tabs, and go to the Nth tab in a group — [tasks/close_tabs_nth.md](tasks/close_tabs_nth.md)
-- **Compare any two files or buffers** (`compare_files`): compare any two files or buffers (dirty or untitled) in an editable diff tab, moving hunks between the sides — [tasks/compare_files.md](tasks/compare_files.md)
+- **Compare any two files or buffers** (`compare_files`): compare any two files or buffers (dirty or untitled) in a diff tab and move hunks between the sides (a–c done); hand editing both sides (d) waits for diff_edit — [tasks/compare_files.md](tasks/compare_files.md)
 - **Expand / shrink selection** (`expand_shrink_selection`): grow / shrink each selection to enclosing syntax nodes — [tasks/expand_shrink_selection.md](tasks/expand_shrink_selection.md)
 - **Explorer path commands** (`explorer_path_commands`): copy paths, reveal in Finder, and collapse folders in the explorer — [tasks/explorer_path_commands.md](tasks/explorer_path_commands.md)
 - **Feature-based end-to-end test files** (`feature_test_files`): reorganize milestone test files into per-feature files — [tasks/feature_test_files.md](tasks/feature_test_files.md)

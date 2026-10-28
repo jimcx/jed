@@ -1,7 +1,7 @@
 ---
 id: compare_files
 name: Compare any two files or buffers
-summary: compare any two files or buffers (dirty or untitled) in an editable diff tab, moving hunks between the sides
+summary: compare any two files or buffers (dirty or untitled) in a diff tab and move hunks between the sides (a–c done); hand editing both sides (d) waits for diff_edit
 status: in-progress
 priority: 0
 dependencies: []
