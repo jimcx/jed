@@ -938,6 +938,9 @@ async fn count_run(scrollback: Option<usize>, task: bool) -> (tempfile::TempDir,
         "output arrived:\n{}",
         text_of(&app, id)
     );
+    // Wait for the prompt too: a shell that starts late would otherwise print after the tests have
+    // picked rows, scrolling them by more than they expect.
+    at_prompt(&mut app, id).await;
     drop(draw(&mut app, 100, 30));
     let area = area_of(&app, id);
     (guard, app, id, area)
