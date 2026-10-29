@@ -287,7 +287,7 @@ The VS Code behaviour, especially Cmd+D and Cmd+Shift+L, is a must-have.
 | Cursor at each selected line's end | Shift+Alt+I | Shift+Alt+I |
 | Add / remove cursor | Alt+Click | Alt+Click |
 | Box (column) select, mouse | Shift+Alt+drag | Shift+Alt+drag |
-| Box (column) select, keyboard | Cmd+Shift+Alt+arrows | Ctrl+Shift+Alt+arrows |
+| Box (column) select, keyboard | Cmd+Shift+Alt+arrows, Ctrl+Shift+Up / Down | Ctrl+Shift+Alt+arrows, Ctrl+Shift+Up / Down |
 | Back to one cursor | Esc | Esc |
 
 - Shift+drag is often grabbed by the terminal for its own selection, so the keyboard box select is the reliable path

@@ -704,6 +704,10 @@ fn defaults(platform: Platform) -> Vec<Binding> {
             cmd | alt | shift,
             Command::ColumnSelect(ColumnMotion::Right),
         ),
+        // Shorter spelling for the vertical steps (Ctrl on both platforms: Cmd+Shift+Up/Down select to the
+        // document's start / end on macOS).
+        (KeyCode::Up, ctrl | shift, Command::ColumnSelect(ColumnMotion::Up)),
+        (KeyCode::Down, ctrl | shift, Command::ColumnSelect(ColumnMotion::Down)),
         (KeyCode::Up, cmd | alt | shift, Command::ColumnSelect(ColumnMotion::Up)),
         (
             KeyCode::Down,
@@ -1298,6 +1302,22 @@ mod tests {
             linux.lookup(&key(KeyCode::Char('s'), KeyModifiers::CONTROL), ed),
             Some(Command::Save)
         );
+    }
+
+    #[test]
+    fn ctrl_shift_up_down_column_select() {
+        let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        for p in [Platform::MacOs, Platform::Linux] {
+            let km = Keymap::default_for(p);
+            assert_eq!(
+                km.lookup(&key(KeyCode::Up, ctrl_shift), Context::Editor),
+                Some(Command::ColumnSelect(ColumnMotion::Up))
+            );
+            assert_eq!(
+                km.lookup(&key(KeyCode::Down, ctrl_shift), Context::Editor),
+                Some(Command::ColumnSelect(ColumnMotion::Down))
+            );
+        }
     }
 
     #[test]
