@@ -1752,3 +1752,50 @@ async fn shell_workspace_scrollback_setting() {
     }
     quit_shells(&mut app).await;
 }
+
+/// The startup terminal waits for the socket, so its shell has `JED_IPC`; and still starts when
+/// the socket can't be made (then without it).
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_startup_terminal_waits_for_the_socket() {
+    for broken in [false, true] {
+        let (_d, root, state) = dirs();
+        let sockets = tempfile::tempdir().unwrap();
+        let record = root.join("ipc.txt");
+        let dir = crate::workspace::normalize(sockets.path()).join("s");
+        let ws = Workspace::load(root.to_path_buf());
+        let trust = TrustStore::load(state.join("trust.toml"));
+        let mut app = App::new(ws, trust, None, true);
+        if broken {
+            // A file where the directory's parent should be: `prepare_dir` fails.
+            let file = sockets.path().join("file");
+            std::fs::write(&file, "").unwrap();
+            app.ipc_dir = Some(file.join("s"));
+        } else {
+            app.ipc_dir = Some(dir);
+        }
+        let config_dir = state.join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        app.config_dir = config_dir;
+        app.startup_terminal = true;
+        app.tasks.shell = shell_script(
+            &root,
+            "record-ipc",
+            &format!(
+                "printf '%s' \"${{JED_IPC-UNSET}}\" > '{}'\nexec /bin/sh",
+                record.display()
+            ),
+        );
+        app.test_start();
+        let written = app
+            .settle(|_| std::fs::read_to_string(&record).is_ok_and(|s| !s.is_empty()))
+            .await;
+        assert!(written, "the startup shell ran (broken socket: {broken})");
+        let got = std::fs::read_to_string(&record).unwrap();
+        if broken {
+            assert_eq!(got, "UNSET");
+        } else {
+            assert_eq!(Some(std::path::Path::new(&got)), app.tasks.ipc.as_deref());
+        }
+        quit_shells(&mut app).await;
+    }
+}

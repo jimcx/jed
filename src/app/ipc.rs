@@ -25,6 +25,10 @@ struct Waiter {
 pub struct Ipc {
     server: Option<Server>,
     waiters: Vec<Waiter>,
+    /// `start_ipc` has spawned the socket and `ipc_started` hasn't answered yet.
+    starting: bool,
+    /// Shells asked for meanwhile: `(in_terminal, keep_focus)`, opened by `ipc_started`.
+    queued_shells: Vec<(bool, bool)>,
 }
 
 impl App {
@@ -33,6 +37,7 @@ impl App {
     pub(super) fn start_ipc(&mut self) {
         let Some(dir) = self.ipc_dir.clone() else { return };
         let tx = self.tx.clone();
+        self.ipc.starting = true;
         tokio::spawn(async move {
             let path = ipc::socket_path(&dir, std::process::id());
             let prepared = tokio::task::spawn_blocking(move || ipc::prepare_dir(&dir).map(|()| dir)).await;
@@ -45,7 +50,17 @@ impl App {
         });
     }
 
+    /// Whether the socket is still coming up, so a new shell should wait for `JED_IPC`.
+    pub(super) fn ipc_starting(&self) -> bool {
+        self.ipc.starting
+    }
+
+    pub(super) fn ipc_queue_shell(&mut self, in_terminal: bool, keep_focus: bool) {
+        self.ipc.queued_shells.push((in_terminal, keep_focus));
+    }
+
     pub(super) fn ipc_started(&mut self, result: Result<Server, String>) {
+        self.ipc.starting = false;
         match result {
             Ok(server) => {
                 tracing::info!(path = %server.path().display(), "listening for task clients");
@@ -55,6 +70,10 @@ impl App {
             }
             // Tasks just won't get `JED_IPC`.
             Err(e) => tracing::warn!(error = %e, "not listening for task clients"),
+        }
+        // Either way the waiting shells start now (without `JED_IPC` after a failure).
+        for (in_terminal, keep_focus) in std::mem::take(&mut self.ipc.queued_shells) {
+            self.open_queued_shell(in_terminal, keep_focus);
         }
     }
 
@@ -112,6 +131,7 @@ impl App {
     /// On quit: the waiting clients' connections close (they exit 1) and the socket goes.
     pub(super) fn ipc_shutdown(&mut self) {
         self.ipc.waiters.clear();
+        self.ipc.queued_shells.clear();
         self.ipc.server = None;
         self.tasks.ipc = None;
         crate::panic::set_ipc_socket(None);

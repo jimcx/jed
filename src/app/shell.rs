@@ -21,19 +21,26 @@ impl App {
     /// `/bin/sh`) in a new tab of the terminal area (shown and focused), interactive in the workspace root, with
     /// `JED_IPC` when the socket listens. The title counts open shells of the same program.
     pub(super) fn new_shell(&mut self) {
-        self.open_shell(true);
+        self.open_shell(true, false);
     }
 
     /// Opens a shell tab in the active editor group instead of the terminal area (a shell tab
     /// can live in either; the tests of editor-group shell tabs use this).
     #[cfg(test)]
     pub(crate) fn new_shell_in_editor(&mut self) {
-        self.open_shell(false);
+        self.open_shell(false, false);
     }
 
     /// A new shell in the terminal area (showing it, `Focus::Terminal`), or in the active editor
-    /// group (`Focus::Editor`).
-    fn open_shell(&mut self, in_terminal: bool) {
+    /// group (`Focus::Editor`). While the socket is still starting the shell waits for it
+    /// (`ipc_started` opens it), so it never starts without `JED_IPC`; `keep_focus` leaves the focus
+    /// where it was.
+    fn open_shell(&mut self, in_terminal: bool, keep_focus: bool) {
+        if self.ipc_starting() {
+            self.ipc_queue_shell(in_terminal, keep_focus);
+            return;
+        }
+        let focus = self.ui.focus;
         let program = self.tasks.shell.clone();
         let root = self.workspace.root.clone();
         let ipc = self.tasks.ipc.clone();
@@ -76,7 +83,15 @@ impl App {
             self.group_mut().open_tab(Tab::Shell(Box::new(tab)));
             self.ui.focus = Focus::Editor;
         }
+        if keep_focus {
+            self.ui.focus = focus;
+        }
         self.needs_redraw = true;
+    }
+
+    /// Opens a shell queued behind the socket (`ipc_started`).
+    pub(super) fn open_queued_shell(&mut self, in_terminal: bool, keep_focus: bool) {
+        self.open_shell(in_terminal, keep_focus);
     }
 
     /// The PTY size (rows, columns) for a new shell: the terminal area's active group as last
@@ -193,9 +208,7 @@ impl App {
         if !self.startup_terminal {
             return;
         }
-        let focus = self.ui.focus;
-        self.new_shell();
-        self.ui.focus = focus;
+        self.open_shell(true, true);
     }
 
     /// "Terminal: Move Terminal into Editor Area" (`to_area` false: the terminal area's active
