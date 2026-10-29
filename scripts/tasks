@@ -10,8 +10,8 @@ Subcommands:
 
   list    [--status open|in-progress|done]... [--sort priority|name|id]
           [--reverse] [--json]
-          One line per task, tab-separated: id<TAB>status<TAB>priority<TAB>summary.
-          Defaults to open + in-progress, sorted priority desc then name; --json
+          One line per task, columns padded with spaces: id, status, priority,
+          summary. Defaults to open + in-progress, sorted priority desc then name; --json
           emits a JSON array of {id,name,status,priority,dependencies}.
           --status done also includes milestones.
 
@@ -252,8 +252,14 @@ def cmd_list(args):
         ]
         print(json.dumps(out, indent=2))
     else:
+        id_w = max((len(t.id) for t in tasks), default=0)
+        status_w = max((len(t.status) for t in tasks), default=0)
+        prio_w = max((len(str(t.priority)) for t in tasks), default=0)
         for t in tasks:
-            print(f"{t.id}\t{t.status}\t{t.priority}\t{t.summary}")
+            print(
+                f"{t.id.ljust(id_w)}  {t.status.ljust(status_w)}  "
+                f"{str(t.priority).rjust(prio_w)}  {t.summary}"
+            )
     return 0
 
 
