@@ -1037,6 +1037,9 @@ async fn term_select_keep_rewrite_clears_task() {
 /// the row as it was) keeps the selection, other text clears it.
 async fn keep_row_rewrite(task: bool, same: bool) {
     let (_d, mut app, id, area) = count_run(None, task).await;
+    // Wait for the prompt first: a shell that starts late would otherwise echo and redraw after
+    // the row is picked, scrolling it by more than the one line Enter's echo does below.
+    at_prompt(&mut app, id).await;
     select_199(&mut app, id, area);
     let (rows, _) = crate::tasks::select::size(run_of(&app, id).screen().screen());
     // Enter's echo scrolls the screen a line before printf runs: the "199" row is then at the
