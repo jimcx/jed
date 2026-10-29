@@ -68,6 +68,5 @@ crossterm = { git = "https://github.com/jimcx/crossterm.git", tag = "0.29+fwdbac
 # jed's vt100 fork (based on 0.18.1): adds `Screen::mark_prompt` / `clear_before_prompt` and
 # `Screen::scrolled_lines` (lines ever pushed into the scrollback, for the terminal selection to
 # follow its text). On a vt100 upgrade, rebase the fork's `jed` changes onto the new release and
-# re-tag. TODO: push the fork's `scrolled-lines` branch, tag it `v0.18.1+jed2` and replace the
-# local path below with that tag (as for crossterm above).
-vt100 = { path = "/home/jim/vt100-rust" }
+# re-tag.
+vt100 = { git = "https://github.com/jimcx/vt100-rust.git", tag = "v0.18.1+jed2" }
