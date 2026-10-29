@@ -431,7 +431,10 @@ impl App {
     /// active tab's untitled one.
     pub(super) fn active_savable_buffer(&self) -> Option<BufferId> {
         self.active_file_buffer().or_else(|| {
-            let id = self.group().active_tab()?.buffer;
+            let id = match self.group().active_diff() {
+                Some(d) => self.compare_caret_buffer(d)?,
+                None => self.group().active_tab()?.buffer,
+            };
             self.buffers.get(id).filter(|b| b.is_untitled()).map(|_| id)
         })
     }

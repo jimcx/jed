@@ -259,11 +259,24 @@ impl App {
             .map(|(id, _)| id)
     }
 
+    /// The open buffer of the side a compare tab's caret is on (`None`: frozen, or a file not
+    /// open). Save, Reload and the like act on it.
+    pub(super) fn compare_caret_buffer(&self, d: &crate::diff_view::DiffTab) -> Option<BufferId> {
+        use crate::diff_view::Source;
+        match &d.compare.as_ref()?.sides[d.caret.right as usize].source {
+            Source::Open(id) => self.buffers.get(*id).map(|_| *id),
+            Source::File(p) => self.buffers.find_path(p),
+        }
+    }
+
     /// The buffer the active tab is about: a text tab's, or the open buffer of a diff tab's file
     /// (what Save, Reload and Keep Mine act on); `None` for a log tab (no file) and a hex tab
     /// (no buffer).
     pub(super) fn active_file_buffer(&self) -> Option<BufferId> {
         match self.group().active_diff() {
+            Some(d) if d.compare.is_some() => self
+                .compare_caret_buffer(d)
+                .filter(|&id| self.buffers.get(id).is_some_and(|b| b.has_file())),
             Some(d) => self.buffer_of(&d.path),
             None => self
                 .group()

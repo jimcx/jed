@@ -13,6 +13,12 @@
 //! files not open (none in single file mode), a query filtering both, and compares the pick
 //! (left) with the active buffer; "Compare Open Editors…" picks two open texts in turn; Esc
 //! opens nothing; too few texts, or no text active, says so.
+//!
+//! Subtask compare_files-d, hand editing in the tab: typing, Enter, Backspace, paste, cut, undo /
+//! redo and Cmd+S on either side edit that side's buffer (dirty, the diff re-aligns, the caret
+//! stays); an untitled side is editable; a `File` side not open opens behind the diff on the
+//! first key; a frozen side says read-only and edits nothing; Apply Left / Right still works
+//! after typing.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -903,4 +909,231 @@ async fn compare_files_arrows_drop_when_narrow() {
         assert_eq!(app.group().active_diff().unwrap().inline, inline, "{width}");
         assert_eq!(!moves(&app).is_empty(), shown, "{width}");
     }
+}
+
+// Subtask d: hand editing.
+
+const EL: &str = "a\nb\nc\n";
+const ER: &str = "a\nB\nc\n";
+
+/// The caret of the compare tab on row `row`, byte `col` of side `right`.
+fn caret_at(app: &mut App, row: usize, right: bool, col: usize) {
+    draw(app, 150);
+    let d = app.group_mut().active_diff_mut().unwrap();
+    d.cursor = row;
+    d.caret_click(row, right, col, false);
+    assert_eq!(d.caret.right, right);
+}
+
+fn caret(app: &App) -> ((usize, usize), bool) {
+    let d = app.group().active_diff().unwrap();
+    (d.caret.head, d.caret.right)
+}
+
+async fn settled(app: &mut App) {
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    draw(app, 150);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_edit_either_side_by_hand() {
+    for right in [false, true] {
+        let (_d, mut app, l, r) = moving(EL, ER).await;
+        let (id, other) = if right { (r, l) } else { (l, r) };
+        let (c, other_text) = if right { ("B", EL) } else { ("b", ER) };
+        caret_at(&mut app, 1, right, 1);
+        app.type_text("XY");
+        let want = format!("a\n{c}XY\nc\n");
+        assert_eq!(text(&app, id), want, "{right}");
+        // The caret is in the new text; clamped to the old lines until the re-read.
+        assert_eq!(caret(&app).1, right);
+        assert!(app.buffers.get(id).unwrap().is_dirty());
+        assert_eq!(text(&app, other), other_text);
+        assert!(!app.buffers.get(other).unwrap().is_dirty());
+        settled(&mut app).await;
+        assert_eq!(caret(&app), ((1, 3), right), "kept across the re-read");
+        let (sl, sr) = sides(&app);
+        assert_eq!(if right { &sr } else { &sl }[1], format!("{c}XY"));
+        // Enter, Backspace, then type on.
+        app.press(K::Enter, M::NONE);
+        app.press(K::Backspace, M::NONE);
+        app.type_text("Z");
+        assert_eq!(text(&app, id), format!("a\n{c}XYZ\nc\n"));
+        settled(&mut app).await;
+        assert_eq!(caret(&app), ((1, 4), right));
+        assert_eq!(hunks(&app), 1);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_undo_redo_and_save_on_either_side() {
+    for right in [false, true] {
+        let (_d, mut app, l, r) = moving(EL, ER).await;
+        let (id, orig, other, other_orig) = if right { (r, ER, l, EL) } else { (l, EL, r, ER) };
+        // The other side is dirty too: Save must pick the caret's side, not just a dirty one.
+        caret_at(&mut app, 2, !right, 0);
+        app.type_text("o");
+        settled(&mut app).await;
+        caret_at(&mut app, 0, right, 1);
+        app.type_text("Q");
+        settled(&mut app).await;
+        let typed = text(&app, id);
+        assert_eq!(typed, orig.replacen("a", "aQ", 1));
+        app.test_execute(Command::Undo);
+        assert_eq!(text(&app, id), orig);
+        assert_eq!(
+            text(&app, other),
+            other_orig.replacen("c", "oc", 1),
+            "undo is the caret side's"
+        );
+        settled(&mut app).await;
+        app.test_execute(Command::Redo);
+        assert_eq!(text(&app, id), typed);
+        settled(&mut app).await;
+        app.press(K::Char('s'), cmd());
+        assert!(app.settle(|a| !a.buffers.any_saving()).await);
+        let path = |id| app.buffers.get(id).unwrap().path.clone();
+        assert_eq!(fs::read_to_string(path(id)).unwrap(), typed);
+        assert!(!app.buffers.get(id).unwrap().is_dirty());
+        assert_eq!(
+            fs::read_to_string(path(other)).unwrap(),
+            other_orig,
+            "the other side isn't saved"
+        );
+        assert!(app.buffers.get(other).unwrap().is_dirty());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_save_a_file_side_and_an_untitled_side() {
+    // A `File` side opened behind the diff by typing: Cmd+S saves it, not the dirty left side.
+    let (_d, root, _s, mut app) = setup();
+    let a = open(&mut app, &root.join("a.txt"));
+    compare(&mut app, Source::Open(a), file(&root, "b.txt")).await;
+    caret_at(&mut app, 0, false, 0);
+    app.type_text("!");
+    settled(&mut app).await;
+    caret_at(&mut app, 0, true, 3);
+    app.type_text("?");
+    assert!(app.settle(|a| a.buffers.find_path(&root.join("b.txt")).is_some()).await);
+    settled(&mut app).await;
+    app.press(K::Char('s'), cmd());
+    assert!(app.settle(|a| !a.buffers.any_saving()).await);
+    assert!(app.prompt.is_none());
+    assert_eq!(fs::read_to_string(root.join("b.txt")).unwrap(), "one?\nthree\n");
+    assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "one\ntwo\n");
+    assert!(app.buffers.get(a).unwrap().is_dirty());
+
+    // An untitled side: Cmd+S asks where to save that buffer; on the file side it saves the file.
+    let (_d, root, _s, mut app) = setup();
+    let a = open(&mut app, &root.join("a.txt"));
+    let u = untitled(&mut app, "one");
+    compare(&mut app, Source::Open(a), Source::Open(u)).await;
+    caret_at(&mut app, 0, false, 0);
+    app.type_text("!");
+    settled(&mut app).await;
+    caret_at(&mut app, 0, true, 3);
+    app.press(K::Char('s'), cmd());
+    assert!(
+        matches!(&app.prompt, Some(crate::app::Prompt::Input(i))
+            if matches!(i.kind, crate::app::InputKind::SaveAs { buffer } if buffer == u)),
+        "Save As for the untitled side"
+    );
+    assert!(!app.buffers.any_saving());
+    app.press(K::Esc, M::NONE);
+    assert!(app.prompt.is_none());
+    caret_at(&mut app, 0, false, 0);
+    app.press(K::Char('s'), cmd());
+    assert!(app.prompt.is_none(), "a file side saves without asking");
+    assert!(app.settle(|a| !a.buffers.any_saving()).await);
+    assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "!one\ntwo\n");
+    assert!(!app.buffers.get(a).unwrap().is_dirty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_paste_and_cut_on_either_side() {
+    for right in [false, true] {
+        let (_d, mut app, l, r) = moving(EL, ER).await;
+        let id = if right { r } else { l };
+        caret_at(&mut app, 2, right, 0);
+        app.handle_test_event(crossterm::event::Event::Paste("pp".into()));
+        assert_eq!(text(&app, id).lines().nth(2), Some("ppc"));
+        settled(&mut app).await;
+        assert_eq!(caret(&app), ((2, 2), right));
+        app.test_execute(Command::Move {
+            motion: crate::command::Motion::Right,
+            select: true,
+        });
+        app.test_execute(Command::Cut);
+        assert_eq!(app.clipboard.read().unwrap(), "c");
+        assert_eq!(text(&app, id).lines().nth(2), Some("pp"));
+        settled(&mut app).await;
+        assert_eq!(caret(&app), ((2, 2), right));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_untitled_and_file_sides_edit() {
+    // An untitled side.
+    let (_d, root, _s, mut app) = setup();
+    let a = open(&mut app, &root.join("a.txt"));
+    let u = untitled(&mut app, "one");
+    compare(&mut app, Source::Open(a), Source::Open(u)).await;
+    caret_at(&mut app, 0, true, 3);
+    app.type_text("!");
+    assert_eq!(text(&app, u), "one!");
+    settled(&mut app).await;
+    assert_eq!(caret(&app), ((0, 4), true));
+
+    // A File side that isn't open opens behind the diff on the first key, which then lands.
+    let (_d, root, _s, mut app) = setup();
+    let a = open(&mut app, &root.join("a.txt"));
+    compare(&mut app, Source::Open(a), file(&root, "b.txt")).await;
+    let tabs = app.group().tabs.len();
+    caret_at(&mut app, 0, true, 3);
+    app.type_text("?");
+    assert!(app.settle(|a| a.buffers.find_path(&root.join("b.txt")).is_some()).await);
+    let b = app.buffers.find_path(&root.join("b.txt")).unwrap();
+    assert_eq!(text(&app, b), "one?\nthree\n");
+    assert_eq!(app.group().tabs.len(), tabs + 1);
+    assert!(app.group().active_diff().is_some());
+    assert!(app.buffers.get(b).unwrap().is_dirty());
+    settled(&mut app).await;
+    assert_eq!(sides(&app).1[0], "one?");
+    assert_eq!(caret(&app), ((0, 4), true));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_a_frozen_side_is_read_only() {
+    let (_d, mut app, l, r) = moving(EL, ER).await;
+    let i = app.group().find(l).unwrap();
+    app.test_activate_tab(i);
+    app.press(K::Char('w'), cmd());
+    show_diff(&mut app);
+    settled(&mut app).await;
+    caret_at(&mut app, 1, false, 1);
+    app.type_text("x");
+    assert_eq!(message(&app), "The left side is read-only");
+    app.press(K::Enter, M::NONE);
+    app.press(K::Backspace, M::NONE);
+    assert_eq!(sides(&app).0, ["a", "b", "c"]);
+    assert_eq!(text(&app, r), ER);
+    // The right side still edits.
+    caret_at(&mut app, 1, true, 1);
+    app.type_text("x");
+    assert_eq!(text(&app, r), "a\nBx\nc\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compare_files_apply_still_works_after_typing() {
+    let (_d, mut app, l, r) = moving(EL, ER).await;
+    caret_at(&mut app, 1, false, 1);
+    app.type_text("x");
+    settled(&mut app).await;
+    at_hunk(&mut app, 0);
+    app.test_execute(Command::ApplyChangeToRight);
+    assert_eq!(text(&app, r), "a\nbx\nc\n");
+    settled(&mut app).await;
+    assert_eq!(hunks(&app), 0);
+    assert_eq!(text(&app, l), "a\nbx\nc\n");
 }

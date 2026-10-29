@@ -1,8 +1,8 @@
 ---
 id: compare_files
 name: Compare any two files or buffers
-summary: compare any two files or buffers (dirty or untitled) in a diff tab and move hunks between the sides (a–c done); hand editing both sides (d) waits for diff_edit
-status: in-progress
+summary: compare any two files or buffers (dirty or untitled) in a diff tab and move hunks between the sides; both sides can be edited by hand
+status: done
 priority: 0
 dependencies: []
 ---
@@ -23,4 +23,7 @@ See [Git](../PLAN.md#git-view-and-stage-only) and [Selection and editing in diff
     - ✅ compare_files-a: the `a ↔ b` title and dirty marks, loading both sides (disk reads in `spawn_blocking`), following edits, the frozen side, the self-compare refusal, no staging; tests with a test-only way to open the pair. For b–d: the sides are `Text::CompareLeft` / `CompareRight` (`Pair::COMPARE`) with `diff_view::Source::{File(path), Open(BufferId)}` kept in the tab (`Text` stays `Copy`); `App::open_compare(left, right)` is the entry point (`#[allow(dead_code)]` on it and `Source` until b); `want_sides` / `begin_sides` track a buffer + revision per side; a closed `Open` buffer freezes its side; `session` skips compare tabs; `Tab::same_as` compares the sources
     - ✅ compare_files-b: the picker and the two Compare commands (palette, command enum, picker listing open buffers then quick open), end-to-end tests through the picker. For c/d: `Picker::Compare { right }` / `Picker::CompareEditors { first }` and `Mode::Compare`; `App::compare_active_file_with` / `compare_open_editors` in `app/diff_view.rs`; single file mode lists open texts only
     - ✅ compare_files-c: Apply to Left / Right (buttons, mouse hits, the two commands), refusals, tests; draws in both layouts. For d: `diff_apply(to_right, hunk)` / `diff_view::hunk_edit` move a hunk; a `File` side that is not open refuses ("open the file first") — d opens it behind the diff; `DiffHit::moves` holds the arrow buttons
-    - compare_files-d: hand editing on both sides (after `diff_edit-b`: generalise its editable side to any open-buffer side, including an untitled one), docs, gaps and hand checks; marks the task ✅
+    - ✅ compare_files-d: hand editing on both sides (after `diff_edit-b`: generalise its editable side to any open-buffer side, including an untitled one), docs, gaps and hand checks; marks the task ✅
+      - Built: `diff_edit`'s `edit_target` already served compare tabs, so typing, Enter, Backspace, paste, cut and undo / redo work on either side; the gap was Save: `App::compare_caret_buffer` (`app/diff_view.rs`) gives the caret side's buffer to `active_file_buffer` and `active_savable_buffer` (`app/files.rs`), so Cmd+S / Save As / Reload act on it (an untitled side opens Save As). Tests `compare_files_*` in `compare_files_tests.rs`.
+      - Deferred: `DiffTab::editable_sides` still reports false for a `Source::File` side (the app looks its buffer up in `edit_target`).
+      - Still to check by hand: click into the left side of two compared files, type, Cmd+S; close one compared buffer and type in its side.
