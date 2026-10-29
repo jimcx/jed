@@ -123,6 +123,14 @@ impl App {
         }
     }
 
+    /// Thumb positions per track cell: 2 for the vertical bars (half blocks), 1 for the horizontal.
+    fn resolution(target: ScrollTarget) -> u16 {
+        match target {
+            ScrollTarget::Columns(_) => 1,
+            _ => 2,
+        }
+    }
+
     /// A left press on `target`'s scroll bar at (`x`, `y`).
     pub(super) fn scrollbar_click(&mut self, target: ScrollTarget, x: u16, y: u16) {
         let Some(hit) = self.hits.scrollbar(target) else { return };
@@ -131,11 +139,15 @@ impl App {
             return;
         };
         let (cell, len) = Self::along(target, hit.track, x, y);
+        // The vertical bar's thumb moves in half rows ([`Self::resolution`]).
+        let k = Self::resolution(target);
+        let (pos, len) = (cell * k, len * k);
         let grab = if thumb.contains(cell) {
-            cell - thumb.start
+            let start = scroll.thumb(len).map_or(0, |t| t.start);
+            pos.saturating_sub(start)
         } else {
-            let grab = thumb.len / 2;
-            let top = scroll.top_at(len, i32::from(cell) - i32::from(grab));
+            let grab = scroll.thumb(len).map_or(0, |t| t.len / 2);
+            let top = scroll.top_at(len, i32::from(pos) - i32::from(grab));
             self.set_target_top(target, top);
             grab
         };
@@ -148,11 +160,12 @@ impl App {
         let Some(scroll) = self.target_scroll(target) else {
             return;
         };
-        let start = match target {
+        let k = i32::from(Self::resolution(target));
+        let start = k * match target {
             ScrollTarget::Columns(_) => i32::from(x) - i32::from(hit.track.x),
             _ => i32::from(y) - i32::from(hit.track.y),
         } - i32::from(grab);
-        let len = Self::along(target, hit.track, x, y).1;
+        let len = Self::along(target, hit.track, x, y).1 * k as u16;
         self.set_target_top(target, scroll.top_at(len, start));
     }
 

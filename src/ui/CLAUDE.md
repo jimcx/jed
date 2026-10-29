@@ -33,4 +33,4 @@ One line per widget or editor layer; [docs/dev/ui.md](../../docs/dev/ui.md) has 
 - `banner.rs` — the changed-on-disk banner and its buttons
 - `dialog.rs` — the prompts
 - `splash.rs` — a group with no tabs
-- `scrollbar.rs` — `take_column`, `look`, `render`, `render_marks`: every scrolled area's one-column bar (+ `take_row`, `render_row`: the editors' horizontal bar); an editor group's marks column (left of the bar, always reserved) draws the changed lines' marks (a text tab's `quick_diff` staged + unstaged, a diff tab's hunks) so the thumb never covers them
+- `scrollbar.rs` — `take_column`, `look`, `render`, `render_marks`: every scrolled area's one-column bar, its thumb in half cells (half blocks at its ends) (+ `take_row`, `render_row`: the editors' horizontal bar); an editor group's marks column (left of the bar, always reserved) draws the changed lines' marks (a text tab's `quick_diff` staged + unstaged, a diff tab's hunks) so the thumb never covers them

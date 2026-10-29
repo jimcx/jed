@@ -716,7 +716,7 @@ async fn soft_wrap_scroll_bar_counts_rows_and_drags_to_the_last_row() {
     };
     assert!(total > height, "the wrapped text is taller than the view");
     let bar = app.hits.group(app.groups.active).unwrap().scrollbar.unwrap();
-    let expected = Scroll::text(total, height, 0).thumb(bar.track.height).unwrap();
+    let expected = Scroll::text(total, height, 0).vthumb(bar.track.height).unwrap();
     let hit = bar.thumb.unwrap();
     assert_eq!(
         (hit.start, hit.len),

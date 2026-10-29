@@ -535,7 +535,7 @@ mod scroll_bars {
         let t = track(app, g);
         let colour = slider(app, key);
         let rows: Vec<u16> = (0..t.height)
-            .filter(|&y| term.backend().buffer()[(t.x, t.y + y)].bg == colour)
+            .filter(|&y| crate::scrollbar::lit(term, t.x, t.y + y, colour))
             .collect();
         let drawn = rows.first().map(|&s| (s, rows.len() as u16));
         if let Some((s, n)) = drawn {
@@ -565,9 +565,58 @@ mod scroll_bars {
         let tab = app.group().active_tab().unwrap();
         let lines = pos::line_count(&app.active_buffer().unwrap().rope);
         let t = Scroll::text(lines, tab.view.height, tab.view.top_line())
-            .thumb(track(app, app.groups.active).height)
+            .vthumb(track(app, app.groups.active).height)
             .unwrap();
         (t.start, t.len)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_thumb_has_half_row_resolution_with_half_blocks_at_its_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, term) = open_app(&dir, &numbered(200));
+        let t = track(&app, app.groups.active);
+        let colour = slider(&app, "scrollbarSlider.background");
+        let text = group(&app, app.groups.active).text;
+        let glyph = |term: &Terminal<TestBackend>, y: u16| term.backend().buffer()[(t.x, t.y + y)].clone();
+        // At the top the thumb starts on a cell boundary: no half block there.
+        assert_ne!(glyph(&term, 0).symbol(), "▄");
+        let mut seen = std::collections::BTreeSet::new();
+        // Scrolling a few lines at a time walks the thumb through half-row positions, so the
+        // blocks at its ends show up (and are the slider's colour on the track's background).
+        for _ in 0..70 {
+            app.mouse(Mouse::ScrollDown, text.x + 2, text.y + 2);
+            let term = draw(&mut app);
+            let halves = {
+                let tab = app.group().active_tab().unwrap();
+                let lines = pos::line_count(&app.active_buffer().unwrap().rope);
+                Scroll::text(lines, tab.view.height, tab.view.top_line())
+                    .vthumb_halves(t.height)
+                    .unwrap()
+            };
+            for y in 0..t.height {
+                let c = glyph(&term, y);
+                let (top, bottom) = (
+                    2 * y >= halves.start && 2 * y < halves.start + halves.len,
+                    2 * y + 1 >= halves.start && 2 * y + 1 < halves.start + halves.len,
+                );
+                match (top, bottom) {
+                    (true, true) => assert_eq!(c.bg, colour, "full cell {y}"),
+                    (true, false) => assert_eq!((c.symbol(), c.fg), ("▀", colour), "upper half {y}"),
+                    (false, true) => assert_eq!((c.symbol(), c.fg), ("▄", colour), "lower half {y}"),
+                    (false, false) => assert_ne!(c.bg, colour, "track {y}"),
+                }
+                if top != bottom {
+                    seen.insert(c.symbol().to_string());
+                }
+            }
+            // The hit map covers every cell the thumb touches, half blocks included.
+            let hit = group(&app, app.groups.active).scrollbar.unwrap().thumb.unwrap();
+            assert_eq!(
+                (hit.start, hit.start + hit.len),
+                (halves.start / 2, (halves.start + halves.len).div_ceil(2))
+            );
+        }
+        assert!(seen.contains("▀") && seen.contains("▄"), "{seen:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -645,10 +694,10 @@ mod scroll_bars {
             drawn_thumb(&app, &term, app.groups.active, "scrollbarSlider.activeBackground").map(|t| t.0),
             Some(0)
         );
-        // Back to where it was grabbed: the first row the thumb is drawn there for (5 rows of
-        // scroll on a 4-cell run, so rows 2 and 3 share a cell).
+        // Back to where it was grabbed: the first row the thumb is drawn there for (the thumb
+        // moves in half rows, so the pointer's cell 2 is half row 4: row 3 is the first drawn there).
         app.mouse(DRAG, t.x, t.y + start);
-        assert_eq!((start, top(&app)), (2, 2));
+        assert_eq!((start, top(&app)), (2, 3));
         app.mouse(DRAG, t.x, 0);
         app.mouse(UP, t.x, 0);
         let term = draw(&mut app);
@@ -1033,7 +1082,7 @@ pub(crate) mod side_scroll_bars {
         let track = bar(app, t).track;
         let colour = app.theme.get(key).bg.unwrap();
         let rows: Vec<u16> = (0..track.height)
-            .filter(|&y| term.backend().buffer()[(track.x, track.y + y)].bg == colour)
+            .filter(|&y| crate::scrollbar::lit(term, track.x, track.y + y, colour))
             .collect();
         let drawn = rows.first().map(|&s| (s, rows.len() as u16));
         if let Some((s, n)) = drawn {
@@ -1052,7 +1101,7 @@ pub(crate) mod side_scroll_bars {
     /// What a list's thumb should be: `rows` rows on a track as tall as the list, from `top`.
     fn expected(rows: usize, track: u16, top: usize) -> Option<(u16, u16)> {
         Scroll::rows(rows, track as usize, top)
-            .thumb(track)
+            .vthumb(track)
             .map(|t| (t.start, t.len))
     }
 
@@ -8103,7 +8152,7 @@ mod term_scroll_bar {
         assert_eq!(scroll.top, scroll.max_top, "live screen: thumb at the bottom");
         assert_eq!(
             bar.thumb,
-            scroll.thumb(bar.track.height),
+            scroll.vthumb(bar.track.height),
             "drawn where the hit map says"
         );
 
@@ -8115,7 +8164,7 @@ mod term_scroll_bar {
         drop(term);
         let scroll = app.group().active_shell().unwrap().run.scrollable().scroll();
         assert_eq!(scroll.top, 0, "oldest output: thumb at the top");
-        assert_eq!(bar.thumb, scroll.thumb(bar.track.height));
+        assert_eq!(bar.thumb, scroll.vthumb(bar.track.height));
 
         // Dragging the thumb scrolls: to the live screen, then back to the oldest output.
         let track = bar.track;
@@ -8190,7 +8239,7 @@ mod term_scroll_bar {
         let scroll = app.tasks.get(id).unwrap().scrollable().scroll();
         assert!(scroll.shown);
         assert_eq!(scroll.top, scroll.max_top, "live screen: thumb at the bottom");
-        assert_eq!(bar.thumb, scroll.thumb(bar.track.height));
+        assert_eq!(bar.thumb, scroll.vthumb(bar.track.height));
 
         // Shift+PageUp scrolls back a page: the thumb moves toward the top.
         app.press(KeyCode::PageUp, KeyModifiers::SHIFT);
@@ -8201,7 +8250,7 @@ mod term_scroll_bar {
         drop(term);
         let scroll = app.tasks.get(id).unwrap().scrollable().scroll();
         assert_eq!(scroll.top, scroll.max_top - back);
-        assert_eq!(bar.thumb, scroll.thumb(bar.track.height));
+        assert_eq!(bar.thumb, scroll.vthumb(bar.track.height));
 
         // Dragging to the top scrolls to the oldest output, and the wheel over the bar scrolls.
         let track = bar.track;
@@ -8219,7 +8268,7 @@ mod term_scroll_bar {
         drop(term);
         let scroll = app.tasks.get(id).unwrap().scrollable().scroll();
         assert_eq!(scroll.top, 0, "the thumb is at the top");
-        assert_eq!(bar.thumb, scroll.thumb(bar.track.height));
+        assert_eq!(bar.thumb, scroll.vthumb(bar.track.height));
 
         app.mouse(MouseEventKind::ScrollDown, track.x, track.y + 2);
         assert_eq!(

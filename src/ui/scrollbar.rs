@@ -1,7 +1,9 @@
 //! Scroll bars: one column (a row for the editors' horizontal bar) at the right edge of an editor
 //! or a list, the background of what it scrolls with the thumb (`scrollbar::Scroll::thumb`) as
 //! cells of `scrollbarSlider.*`; an editor group also keeps a column left of its bar for the
-//! changed lines' marks (`render_marks`).
+//! changed lines' marks (`render_marks`). The thumb is placed in half cells: a cell it covers
+//! only half of is a half block (`▀` / `▄` vertically, `▄` on the horizontal bar, which is half a
+//! row thick).
 
 use ratatui::buffer::Buffer as Cells;
 use ratatui::layout::Rect;
@@ -101,7 +103,18 @@ pub fn render_row(
             width: t.len,
             ..track
         };
-        out.set_style(rect, slider(look, base, theme));
+        // A lower-half block in the slider colour on the track's background: half the height.
+        let style = slider(look, base, theme);
+        let half = Style {
+            fg: style.bg,
+            bg: base.bg,
+            ..style
+        };
+        for x in rect.left()..rect.right() {
+            if let Some(cell) = out.cell_mut((x, rect.y)) {
+                cell.set_symbol("▄").set_style(half);
+            }
+        }
     }
     ScrollBarHit { track, thumb }
 }
@@ -119,14 +132,33 @@ pub fn render(
 ) -> ScrollBarHit {
     out.set_style(track, base);
     scroll.shown |= look == Look::Active;
-    let thumb = scroll.thumb(track.height);
-    if let Some(t) = thumb {
-        let rect = Rect {
-            y: track.y + t.start,
-            height: t.len,
-            ..track
+    // The thumb is placed in half rows: a cell it covers only half of is a half block.
+    let thumb = scroll.vthumb(track.height);
+    if let (Some(t), Some(halves)) = (thumb, scroll.vthumb_halves(track.height)) {
+        let style = slider(look, base, theme);
+        let half = Style {
+            fg: style.bg,
+            bg: base.bg,
+            ..style
         };
-        out.set_style(rect, slider(look, base, theme));
+        let (first, end) = (halves.start, halves.start + halves.len);
+        for c in t.start..t.start + t.len {
+            let Some(cell) = out.cell_mut((track.x, track.y + c)) else {
+                continue;
+            };
+            let (top, bottom) = (2 * c >= first && 2 * c < end, 2 * c + 1 >= first && 2 * c + 1 < end);
+            match (top, bottom) {
+                (true, true) => {
+                    cell.set_style(style);
+                }
+                (true, false) => {
+                    cell.set_symbol("▀").set_style(half);
+                }
+                _ => {
+                    cell.set_symbol("▄").set_style(half);
+                }
+            }
+        }
     }
     ScrollBarHit { track, thumb }
 }

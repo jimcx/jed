@@ -575,7 +575,10 @@ mod view {
         let p = panel(&term);
         assert_eq!(p[2].trim(), "20,000 results in 1 file");
         assert!(p[3].contains("Results truncated"), "{p:?}");
-        assert!(p[5].contains("many.txt") && p[5].ends_with("20,000"), "{p:?}");
+        assert!(
+            p[5].contains("many.txt") && p[5].trim_end_matches(['▀', '▄', ' ']).ends_with("20,000"),
+            "{p:?}"
+        );
         // The wheel scrolls the list (only the visible rows are drawn).
         let (x, y) = (10, 10);
         app.mouse(MouseEventKind::ScrollDown, x, y);
@@ -585,7 +588,11 @@ mod view {
             app.mouse(MouseEventKind::ScrollDown, x, y);
         }
         draw(&mut term, &mut app);
-        assert_eq!(panel(&term)[28].trim(), "q", "the last row reaches the bottom");
+        assert_eq!(
+            panel(&term)[28].trim_end_matches(['▀', '▄', ' ']).trim_start(),
+            "q",
+            "the last row reaches the bottom"
+        );
         assert!(!row(&term, 29).trim().is_empty(), "the status bar is below it");
     }
 

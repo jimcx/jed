@@ -294,7 +294,7 @@ fn hthumb(app: &App, term: &Terminal<TestBackend>, g: GroupId, key: &str) -> Opt
     let t = hbar(app, g).track;
     let colour = app.theme.get(key).bg.unwrap();
     let cols: Vec<u16> = (0..t.width)
-        .filter(|&x| term.backend().buffer()[(t.x + x, t.y)].bg == colour)
+        .filter(|&x| term.backend().buffer()[(t.x + x, t.y)].fg == colour)
         .collect();
     let first = *cols.first()?;
     assert_eq!(cols, (first..first + cols.len() as u16).collect::<Vec<_>>(), "one run");

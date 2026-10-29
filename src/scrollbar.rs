@@ -41,6 +41,19 @@ impl Thumb {
     }
 }
 
+/// Whether the drawn cell at (`x`, `y`) is part of a vertical thumb in `colour`: filled with it, or
+/// a half block drawn in it.
+#[cfg(test)]
+pub fn lit(
+    term: &ratatui::Terminal<ratatui::backend::TestBackend>,
+    x: u16,
+    y: u16,
+    colour: ratatui::style::Color,
+) -> bool {
+    let c = &term.backend().buffer()[(x, y)];
+    c.bg == colour || (c.fg == colour && matches!(c.symbol(), "▀" | "▄"))
+}
+
 impl Scroll {
     /// A text view of `lines` lines (`View::set_top_line` lets the last line reach the top, as
     /// VS Code's `scrollBeyondLastLine`): shown when the text is taller than the view, or the
@@ -104,6 +117,22 @@ impl Scroll {
         Some(Thumb {
             start: start as u16,
             len: len as u16,
+        })
+    }
+
+    /// The thumb as a vertical bar draws it: placed in half rows ([`Scroll::thumb`] on twice the
+    /// track), `halves`, and the cells it touches, `cells`.
+    pub fn vthumb_halves(&self, track: u16) -> Option<Thumb> {
+        self.thumb(track.saturating_mul(2))
+    }
+
+    /// The cells of a `track`-cell vertical bar the thumb touches (a half block at either end
+    /// counts); what the mouse hits.
+    pub fn vthumb(&self, track: u16) -> Option<Thumb> {
+        let t = self.vthumb_halves(track)?;
+        Some(Thumb {
+            start: t.start / 2,
+            len: (t.start + t.len).div_ceil(2) - t.start / 2,
         })
     }
 
@@ -304,6 +333,32 @@ mod tests {
         assert_eq!(thumb(r(0), 20), (0, 4));
         assert_eq!(thumb(r(80), 20), (16, 4));
         assert_eq!(r(500).top, 80, "clamped");
+    }
+
+    #[test]
+    fn the_vertical_thumb_is_placed_in_half_rows_and_the_cells_it_touches_cover_them() {
+        // 100 lines, 20 on screen, 10 cells: the half-row thumb is the 20-cell one.
+        let s = |top| Scroll::text(100, 20, top);
+        for top in 0..100 {
+            let (halves, cells) = (s(top).vthumb_halves(10).unwrap(), s(top).vthumb(10).unwrap());
+            assert_eq!((halves.start, halves.len), thumb(s(top), 20), "top {top}");
+            assert!(cells.start * 2 <= halves.start && (cells.start + cells.len) * 2 >= halves.start + halves.len);
+            assert!(
+                cells.start * 2 + 1 >= halves.start,
+                "no empty cell at the start: top {top}"
+            );
+            assert!(
+                (cells.start + cells.len) * 2 - 1 <= halves.start + halves.len,
+                "none at the end: top {top}"
+            );
+        }
+        // Finer than whole cells: some tops share a cell start but not a half-row start.
+        let starts: std::collections::BTreeSet<_> = (0..100).map(|t| s(t).vthumb_halves(10).unwrap().start).collect();
+        let cells: std::collections::BTreeSet<_> = (0..100).map(|t| s(t).vthumb(10).unwrap().start).collect();
+        assert!(starts.len() > cells.len() && starts.iter().any(|h| h % 2 == 1));
+        // Dragging picks the first row drawn at a half-row position.
+        let t = s(0).top_at(20, 7);
+        assert_eq!(s(t).vthumb_halves(10).unwrap().start, 7);
     }
 
     #[test]

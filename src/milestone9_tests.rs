@@ -1938,7 +1938,11 @@ async fn milestone_9_problems_open_and_keep_their_selection() {
     app.press(K::End, M::NONE);
     draw(&mut term, &mut app);
     let rows = panel_rows(&term, &app);
-    assert_eq!(rows.last().unwrap(), "⊗ b error  [Ln 3, Col 9]", "{rows:#?}");
+    assert_eq!(
+        rows.last().unwrap().trim_end_matches(['▀', '▄', ' ']),
+        "⊗ b error  [Ln 3, Col 9]",
+        "{rows:#?}"
+    );
     // Rows: a.cpp + 2, b0.cpp + 1, c.cpp + 300, sub/b.cpp + 1 = 308; 8 on screen, so End
     // shows rows 300..308 and two PageUps (7 rows each) select row 293, now the top one.
     let files = |a: &App| crate::problems::files(&a.lsp.diagnostics, &a.buffers).len();
