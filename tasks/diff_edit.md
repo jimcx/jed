@@ -2,7 +2,7 @@
 id: diff_edit
 name: Selection and editing in diff tabs
 summary: select text on either side of a diff tab and edit the file's working-tree text in place
-status: in-progress
+status: done
 priority: 0
 dependencies: []
 ---
@@ -25,4 +25,7 @@ See [Git](../PLAN.md#git-view-and-stage-only). Diff tabs are read-only today: a 
       - Built: `src/diff_caret.rs` (`Caret`, moves, clicks, `selection_text`); `DiffTab::caret`, `editable_sides()` returns `[left, right]` per tab (a compare tab's `Source::File` side that is an open buffer reports false: b refines it with the app's buffer lookup); `DiffHit::{text_x, divider}`; `Drag::Diff`. Cmd+X only copies on an editable side until b; an empty selection copies nothing. Keyboard Left/Right now move the caret instead of scrolling sideways. Deferred: word-wise drag after a double click, auto-scroll while dragging outside the view.
     - ✅ diff_edit-b: editing the live right side through the file's buffer (typing, deletes, Enter, Tab, paste, cut, undo / redo, save), opening a not-open file behind the diff, refusals and the reload that keeps the caret; the end-to-end edit / save / history tests
       - Built: `src/app/diff_edit.rs` (`diff_edit`, `edit_buffer`, `diff_edit_opened`): the caret becomes a scratch `View` selection in the file's buffer and `edit::run` / `insert_char` / `paste` / cut do the work; a stale diff (line at the caret differs from the buffer's) refuses with "The diff is updating, try again"; `DiffTab::edited` (caret, buffer revision) holds the caret in the new text until the reload that read that revision seats it (`take_edited` / `place_caret`); a not-open file opens in the background (`DiffViews::pending` holds one key, later keys typed while it loads are dropped). Cut on a read-only side now says so. A compare tab's `Source::File` side is editable via the buffer lookup. Untested: merge-accept and move / copy-lines commands through `is_edit`.
-    - diff_edit-c: the read-only sides and pairs (staged, commit, conflict, replace), Stage / Unstage / Revert selection rows with `diff_tab_selected_lines`, sessions and docs, gaps and hand checks; marks the task ✅
+    - ✅ diff_edit-c: the read-only sides and pairs (staged, commit, conflict, replace), Stage / Unstage / Revert selection rows with `diff_tab_selected_lines`, sessions and docs, gaps and hand checks; marks the task ✅
+      - Built: tests only (`src/diff_edit_tests.rs`, `read_only_both_sides`): staged, commit (incl. root), conflict diffs refuse every editing key on both sides, still copy, change nothing; `editable_sides` is `[false, true]` only for unstaged / saved; Stage / Unstage / Revert still work after a selection. No production change.
+      - Deferred: `diff_tab_selected_lines` (waits for `stage_selected_lines`; its row range is the lines the selection touches), end-to-end replace-preview refusal, a session test that a restored diff opens at its first change (the caret isn't saved).
+      - Still to check by hand: staged / commit / conflict diffs say the side is read-only on typing, Enter, Backspace, paste, Cmd+X while Cmd+C copies.

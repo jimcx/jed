@@ -14,6 +14,12 @@
 //! diff re-aligns with the caret kept, a history compare edits the work tree file and writes
 //! nothing under `.jed/history/`, a file not open opens behind the diff, one open in another
 //! group is reused, and a read-only buffer or side refuses.
+//!
+//! Subtask diff_edit-c (`diff_edit_staged_*`, `diff_edit_commit_*`, `diff_edit_conflict_*`, `diff_edit_the_pairs_*`,
+//! `diff_edit_stage_and_revert_*`): a staged, commit (and root commit) and conflict diff select and copy on both
+//! sides, every editing key (typing, Enter, Backspace, Delete, Tab, paste, cut, a line command) says the side is
+//! read-only and changes no file, buffer or revision and opens no buffer; only Working Tree and Buffer rights are
+//! editable; Stage / Revert Change at Cursor still work after selecting on either side.
 
 use std::path::Path;
 
@@ -688,5 +694,204 @@ async fn diff_edit_edit_a_dirty_buffer_and_a_crlf_bom_file() {
     assert_eq!(
         std::fs::read_to_string(root.join("f.txt")).unwrap(),
         "\u{feff}> alpha one\r\nbeta TWO!\r\ngamma three\r\n"
+    );
+}
+
+// Subtask diff_edit-c: the read-only sides and pairs, end to end.
+
+fn sh(root: &Path, args: &[&str]) -> String {
+    crate::git::test_repo::git(root, args)
+}
+
+/// Every editing key on both sides of the active (read-only) diff says the side is read-only and
+/// changes nothing: the files on disk, the open buffers (text and revision) and the buffer count;
+/// selecting and Cmd+C work on both sides first. `sides` is each side's whole text.
+fn read_only_both_sides(app: &mut App, root: &Path, sides: [&str; 2]) {
+    let disk = |root: &Path| std::fs::read_to_string(root.join("f.txt")).unwrap();
+    let state = |app: &App| -> Vec<(String, u64)> {
+        app.buffers
+            .iter()
+            .map(|(_, b)| (b.rope.to_string(), b.revision()))
+            .collect()
+    };
+    term(app, 150);
+    assert_eq!(diff(app).editable_sides(), [false, false]);
+    let (files, bufs, n) = (disk(root), state(app), app.buffers.iter().count());
+    for right in [false, true] {
+        mv(app, Motion::DocStart, false);
+        let at = cell(app, right, 2);
+        click(app, at);
+        assert_eq!(diff(app).caret.right, right);
+        app.test_execute(Command::SelectAll);
+        assert_eq!(copied(app), sides[right as usize].trim_end(), "side {right}");
+        let word = if right { "right" } else { "left" };
+        app.clipboard.write(crate::clipboard::Copied {
+            text: "pasted".into(),
+            whole_line: false,
+            pieces: Vec::new(),
+        });
+        let keys: [fn(&mut App); 7] = [
+            |a| a.type_text("Q"),
+            |a| a.press(KeyCode::Enter, M::NONE),
+            |a| a.press(KeyCode::Backspace, M::NONE),
+            |a| a.press(KeyCode::Delete, M::NONE),
+            |a| a.press(KeyCode::Tab, M::NONE),
+            |a| a.test_execute(Command::Paste),
+            |a| a.test_execute(Command::Cut),
+        ];
+        for key in keys {
+            app.message = None;
+            key(app);
+            assert_eq!(said(app), format!("The {word} side is read-only"));
+            assert_eq!(
+                (disk(root), state(app), app.buffers.iter().count()),
+                (files.clone(), bufs.clone(), n)
+            );
+        }
+        app.message = None;
+        app.test_execute(Command::MoveLinesUp);
+        assert_eq!(said(app), format!("The {word} side is read-only"));
+        assert_eq!(state(app), bufs);
+        // The selection survived the refusals.
+        assert_eq!(copied(app), sides[right as usize].trim_end());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn diff_edit_staged_diff_is_read_only_on_both_sides() {
+    let (_d, root, state) = dirs();
+    let mut app = open(&root, &state).await;
+    sh(&root, &["add", "f.txt"]);
+    app.open_diff(root.join("f.txt"), Pair::STAGED);
+    assert!(settle_diffs(&mut app).await);
+    // The file is open; the staged diff still doesn't edit it.
+    read_only_both_sides(&mut app, &root, [ORIGINAL, CHANGED]);
+    assert_eq!(buffer_count(&app), 1);
+    // Unstage Change at Cursor still works after selecting on the (read-only) right side.
+    mv(&mut app, Motion::DocStart, false);
+    app.test_execute(Command::NextChange);
+    term(&mut app, 150);
+    let at = cell(&app, true, 2);
+    click(&mut app, at);
+    mv(&mut app, Motion::LineEnd, true);
+    assert_eq!(right_line(&app, diff(&app).caret.head.0), "beta TWO");
+    run_command(&mut app, "Git: Unstage Change at Cursor");
+    assert!(
+        app.settle(|a| a.diffs.staging == 0 && a.message.as_ref().is_some_and(|m| m.text.starts_with("Unstaged")))
+            .await,
+        "{}",
+        said(&app)
+    );
+    let cached = sh(&root, &["diff", "--cached"]);
+    assert!(
+        !cached.contains("+beta TWO") && cached.contains("+delta four"),
+        "{cached}"
+    );
+    assert_eq!(text(&app), CHANGED, "the buffer is untouched by unstaging");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn diff_edit_staged_diff_of_a_file_not_open_opens_nothing() {
+    let (_d, root, state) = dirs();
+    repo_with(&root, &[("f.txt", ORIGINAL), ("g.txt", "g\n")], &[("f.txt", CHANGED)]);
+    sh(&root, &["add", "f.txt"]);
+    let mut app = open_file_app(&root, &state, "g.txt");
+    app.open_diff(root.join("f.txt"), Pair::STAGED);
+    assert!(settle_diffs(&mut app).await);
+    term(&mut app, 150);
+    app.type_text("Q");
+    assert_eq!(said(&app), "The right side is read-only");
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    assert_eq!(buffer_count(&app), 1, "f.txt wasn't opened");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn diff_edit_commit_diff_is_read_only_on_both_sides() {
+    let (_d, root, state) = dirs();
+    let mut app = open(&root, &state).await;
+    crate::git::test_repo::commit_all(&root, "two");
+    let id = |rev: &str| git2::Oid::from_str(sh(&root, &["rev-parse", rev]).trim()).unwrap();
+    app.open_diff(root.join("f.txt"), Pair::commit(id("HEAD"), Some(id("HEAD~1"))));
+    assert!(settle_diffs(&mut app).await);
+    read_only_both_sides(&mut app, &root, [ORIGINAL, CHANGED]);
+    // A root commit: the empty tree on the left.
+    app.open_diff(root.join("f.txt"), Pair::commit(id("HEAD~1"), None));
+    assert!(settle_diffs(&mut app).await);
+    term(&mut app, 150);
+    assert_eq!(diff(&app).editable_sides(), [false, false]);
+    app.type_text("Q");
+    assert_eq!(said(&app), "The right side is read-only");
+    assert_eq!(text(&app), CHANGED);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn diff_edit_conflict_diff_is_read_only_on_both_sides() {
+    use crate::buffer::pos::ByteIdx;
+    use crate::command::MergeCommand;
+    use crate::selection::{Selection, Selections};
+    let (_d, root, state) = dirs();
+    let marked = "a\n<<<<<<< HEAD\nours1\nours1b\n=======\ntheirs1\n>>>>>>> main\nend\n";
+    let mut app = open_with(&root, &state, ORIGINAL, marked).await;
+    // Compare Current Conflict from the file's tab, the cursor in the conflict.
+    app.test_execute(Command::PrevTab);
+    let at = marked.find("ours1").unwrap();
+    app.active_mut().unwrap().1.selections = Selections::single(Selection::cursor(ByteIdx(at)));
+    app.test_execute(Command::Merge(MergeCommand::Compare));
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    assert_eq!(diff(&app).pair, Pair::conflict());
+    read_only_both_sides(&mut app, &root, ["ours1\nours1b", "theirs1"]);
+}
+
+#[test]
+fn diff_edit_the_pairs_editable_sides() {
+    use crate::diff_view::Text;
+    let sides = |pair: Pair| DiffTab::new(1, "f.txt".into(), pair).editable_sides();
+    assert_eq!(sides(Pair::UNSTAGED), [false, true]);
+    assert_eq!(sides(Pair::SAVED), [false, true]);
+    assert_eq!(sides(Pair::STAGED), [false, false]);
+    assert_eq!(sides(Pair::REPLACE), [false, false]);
+    assert_eq!(sides(Pair::conflict()), [false, false]);
+    assert_eq!(
+        sides(Pair {
+            left: Text::Disk,
+            right: Text::Head
+        }),
+        [false, false]
+    );
+    assert_eq!(sides(Pair::commit(git2::Oid::ZERO_SHA1, None)), [false, false]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn diff_edit_stage_and_revert_still_work_after_a_selection() {
+    let (_d, root, state) = dirs();
+    let mut app = open(&root, &state).await;
+    term(&mut app, 150);
+    // A selection on each side (and a refused key on the left) doesn't get in the way.
+    mv(&mut app, Motion::LineEnd, true);
+    let at = cell(&app, false, 1);
+    click(&mut app, at);
+    mv(&mut app, Motion::LineEnd, true);
+    app.type_text("Q");
+    assert_eq!(said(&app), "The left side is read-only");
+    run_command(&mut app, "Git: Stage Change at Cursor");
+    assert!(
+        app.settle(|a| a.diffs.staging == 0 && a.message.as_ref().is_some_and(|m| m.text.starts_with("Staged")))
+            .await
+    );
+    let cached = sh(&root, &["diff", "--cached"]);
+    assert!(cached.contains("+beta TWO"), "{cached}");
+    assert_eq!(text(&app), CHANGED, "the buffer is untouched by staging");
+    assert!(settle_diffs(&mut app).await);
+    // The remaining change (delta) is reverted from the same diff, after selecting on the right.
+    app.test_execute(Command::NextChange);
+    term(&mut app, 150);
+    let at = cell(&app, true, 2);
+    click(&mut app, at);
+    mv(&mut app, Motion::LineEnd, true);
+    run_command(&mut app, "Git: Revert Change at Cursor");
+    assert!(
+        app.settle(|a| text(a) == "alpha one\nbeta TWO\ngamma three\n").await,
+        "{}",
+        said(&app)
     );
 }
