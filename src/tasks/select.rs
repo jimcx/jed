@@ -4,7 +4,16 @@
 //! A `Selection`'s cells are scroll-independent (`Cell`: line 0 is the live screen's first row,
 //! scrollback is negative), so a scroll leaves it on the same text; `copy_text` is
 //! `contents_between` over the range the drag spans, window by window, with trailing spaces
-//! trimmed per line. New output and a resize clear it (the rows reflow).
+//! trimmed per line. A resize clears it (the rows reflow). New output keeps it while it stays on
+//! its text (`Snapshot` before a chunk, `follow` after): a chunk that scrolled `n` lines into the
+//! scrollback (`Screen::scrolled_lines` of the jed vt100 fork) shifts the selection up by `n`
+//! (`Selection::shift`: a part older than the kept scrollback clamps to its oldest row, one
+//! wholly gone is dropped); it is cleared when the text of a live-screen row it covered changed
+//! where that row scrolled to (output rewrote it in place: `\r`, a redraw, the alternate screen,
+//! `clear`), or the scrollback is not what scrolling alone makes it (cleared by the program).
+//! Scrollback rows never change, so only the live rows are compared, row by row (a row the cap
+//! pushed out is skipped). While the user holds a drag only the
+//! anchor follows its text: the head stays on its screen cell and nothing is compared.
 //! Only a program that hasn't asked for the mouse gets a selection (`tasks::mouse` keeps every
 //! event when it has), which the mouse wiring decides.
 
@@ -87,6 +96,29 @@ pub fn copy_text(screen: &mut Screen, selection: &Selection) -> String {
 }
 
 impl Selection {
+    /// The selection after `lines` lines scrolled into a scrollback of `kept` rows: both cells
+    /// move up by `lines`; a cell older than the oldest kept row (line `-kept`) clamps to its
+    /// start. `None` when the whole selection is older than that row (no text is left).
+    pub fn shift(self, lines: usize, kept: usize) -> Option<Selection> {
+        let (_, end) = self.rows();
+        if end.0.saturating_sub(lines as isize) < -(kept as isize) {
+            return None;
+        }
+        Some(Selection {
+            anchor: shift_cell(self.anchor, lines, kept),
+            head: shift_cell(self.head, lines, kept),
+        })
+    }
+
+    /// Like `shift` for a drag in progress: only the anchor follows its text, the head stays
+    /// where the pointer put it (clamped like the anchor).
+    pub fn shift_anchor(self, lines: usize, kept: usize) -> Selection {
+        Selection {
+            anchor: shift_cell(self.anchor, lines, kept),
+            ..self
+        }
+    }
+
     /// The drag's `(start, end)` in row order: `contents_between` takes the first cell first,
     /// whichever way the drag went (tuples compare line first).
     pub fn rows(&self) -> (Cell, Cell) {
@@ -96,6 +128,85 @@ impl Selection {
             (self.head, self.anchor)
         }
     }
+}
+
+fn shift_cell((line, col): Cell, lines: usize, kept: usize) -> Cell {
+    let oldest = -(kept as isize);
+    let line = line.saturating_sub(lines as isize);
+    if line < oldest { (oldest, 0) } else { (line, col) }
+}
+
+/// The part of `selection` on each live-screen row (lines 0 and below), one single-row
+/// selection per row, top to bottom; empty without one.
+fn live_rows(screen: &Screen, selection: &Selection) -> Vec<Selection> {
+    let (rows, cols) = size(screen);
+    let (start, end) = selection.rows();
+    let first = start.0.max(0);
+    let last = end.0.min(rows as isize - 1);
+    (first..=last)
+        .map(|line| Selection {
+            anchor: (line, if line == start.0 { start.1 } else { 0 }),
+            head: (line, if line == end.0 { end.1 } else { cols }),
+        })
+        .collect()
+}
+
+/// What `follow` needs from before a chunk of output is processed.
+pub struct Snapshot {
+    scrolled: u64,
+    kept: usize,
+    /// The selection's part on each live-screen row and its text.
+    live: Vec<(Selection, String)>,
+}
+
+impl Snapshot {
+    /// `Screen::scrolled_lines` when it was taken.
+    pub fn scrolled(&self) -> u64 {
+        self.scrolled
+    }
+}
+
+/// Records `screen` (before output) for `follow`.
+pub fn snapshot(screen: &mut Screen, selection: &Selection) -> Snapshot {
+    let live = live_rows(screen, selection)
+        .into_iter()
+        .map(|row| (row, copy_text(screen, &row)))
+        .collect();
+    Snapshot {
+        scrolled: screen.scrolled_lines(),
+        kept: screen.scrollback_len(),
+        live,
+    }
+}
+
+/// The selection after output was processed, `None` when it no longer covers the same text (see
+/// the module doc). `dragging`: only the anchor follows, and nothing is compared.
+pub fn follow(screen: &mut Screen, selection: Selection, before: &Snapshot, dragging: bool) -> Option<Selection> {
+    let lines = screen.scrolled_lines().saturating_sub(before.scrolled);
+    let lines = usize::try_from(lines).unwrap_or(usize::MAX / 2).min(usize::MAX / 2);
+    let kept = screen.scrollback_len();
+    if dragging {
+        return Some(selection.shift_anchor(lines, kept));
+    }
+    if kept != before.kept.saturating_add(lines).min(screen.scrollback_capacity()) {
+        return None;
+    }
+    // Each live row the selection covered must show the same text where it scrolled to; a row
+    // pushed past the kept scrollback is gone (the selection clamps), so it isn't compared.
+    for (row, text) in &before.live {
+        let line = row.anchor.0.saturating_sub(lines as isize);
+        if line < -(kept as isize) {
+            continue;
+        }
+        let moved = Selection {
+            anchor: (line, row.anchor.1),
+            head: (line, row.head.1),
+        };
+        if copy_text(screen, &moved) != *text {
+            return None;
+        }
+    }
+    selection.shift(lines, kept)
 }
 
 /// Whether `c` can be part of a path: ASCII alphanumeric or one of `/ : - _ .~`.
@@ -167,6 +278,129 @@ mod tests {
         let mut p = test_parser(rows, cols, 0);
         p.process(output);
         p
+    }
+
+    fn sel(a: (isize, u16), h: (isize, u16)) -> Selection {
+        Selection { anchor: a, head: h }
+    }
+
+    #[test]
+    fn shift_moves_both_cells_up_and_keeps_their_order() {
+        let up = sel((2, 1), (4, 3)).shift(3, 10).unwrap();
+        assert_eq!(up, sel((-1, 1), (1, 3)));
+        // A backwards drag keeps anchor after head.
+        let back = sel((4, 3), (2, 1)).shift(3, 10).unwrap();
+        assert_eq!(back, sel((1, 3), (-1, 1)));
+        assert_eq!(sel((1, 1), (1, 1)).shift(0, 10), Some(sel((1, 1), (1, 1))));
+    }
+
+    #[test]
+    fn shift_clamps_to_the_oldest_kept_row_and_drops_what_is_gone() {
+        // The start is older than the kept 5 rows: clamps to the oldest row's start.
+        assert_eq!(sel((-3, 2), (1, 4)).shift(4, 5), Some(sel((-5, 0), (-3, 4))));
+        assert_eq!(sel((1, 4), (-3, 2)).shift(4, 5), Some(sel((-3, 4), (-5, 0))));
+        // The end on the oldest row is still partly there; one row older is gone.
+        assert_eq!(sel((-1, 0), (-1, 2)).shift(4, 5), Some(sel((-5, 0), (-5, 2))));
+        assert_eq!(sel((-1, 0), (-1, 2)).shift(5, 5), None);
+        assert_eq!(sel((3, 0), (-2, 2)).shift(100, 0), None);
+        assert_eq!(sel((1, 0), (2, 2)).shift(usize::MAX / 2, 5), None);
+    }
+
+    #[test]
+    fn shift_anchor_leaves_the_head() {
+        assert_eq!(sel((2, 1), (4, 3)).shift_anchor(3, 10), sel((-1, 1), (4, 3)));
+        assert_eq!(sel((2, 1), (4, 3)).shift_anchor(30, 10), sel((-10, 0), (4, 3)));
+    }
+
+    /// Processes `output` after a selection was made, as the reader does.
+    fn follow_output(p: &mut vt100::Parser, selection: Selection, output: &[u8]) -> Option<Selection> {
+        let before = snapshot(p.screen_mut(), &selection);
+        p.process(output);
+        follow(p.screen_mut(), selection, &before, false)
+    }
+
+    #[test]
+    fn follow_scrolls_with_the_text_and_clears_on_in_place_rewrites() {
+        let mut p = test_parser(4, 10, 20);
+        p.process(b"a\r\nb\r\nc\r\nd");
+        // Rows b..c selected (lines 1..2).
+        let s = sel((1, 0), (2, 1));
+        assert_eq!(copy_text(p.screen_mut(), &s), "b\nc");
+        // Two new lines scroll it up by two; the text is the same.
+        let moved = follow_output(&mut p, s, b"\r\ne\r\nf").unwrap();
+        assert_eq!(moved, sel((-1, 0), (0, 1)));
+        assert_eq!(copy_text(p.screen_mut(), &moved), "b\nc");
+        // A progress line below the selection (rewritten with \r) leaves it.
+        assert_eq!(follow_output(&mut p, moved, b"\rxyz"), Some(moved));
+        // Rewriting a selected live row in place clears it.
+        let live = sel((0, 0), (0, 1));
+        assert_eq!(follow_output(&mut p, live, b"\x1b[1;1HZ"), None);
+        // So does erasing the screen, or entering the alternate screen.
+        assert_eq!(follow_output(&mut p, live, b"\x1b[2J"), None);
+        let mut q = test_parser(4, 10, 20);
+        q.process(b"text");
+        assert_eq!(follow_output(&mut q, sel((0, 0), (0, 4)), b"\x1b[?1049h"), None);
+    }
+
+    #[test]
+    fn follow_handles_the_scrollback_cap_and_clearing() {
+        let mut p = test_parser(3, 10, 4);
+        p.process(b"0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7");
+        assert_eq!(p.screen().scrollback_len(), 4);
+        // Lines -4..-2 (older rows only): pushed one line, the oldest falls off the cap.
+        let s = sel((-4, 0), (-2, 1));
+        let moved = follow_output(&mut p, s, b"\r\n8").unwrap();
+        assert_eq!(moved, sel((-4, 0), (-3, 1)));
+        // Pushed out entirely.
+        let all = sel((-4, 0), (-3, 1));
+        assert_eq!(follow_output(&mut p, all, b"\r\n9\r\n10\r\n11\r\n12\r\n13"), None);
+        // A selection on live rows the cap partly pushes off clamps to the oldest kept row, whose
+        // text is still compared; one the cap pushes off wholly is dropped.
+        let mut q = test_parser(3, 10, 1);
+        q.process(b"0\r\n1\r\n2");
+        let clamped = follow_output(&mut q, sel((0, 0), (2, 1)), b"\r\n3\r\n4\r\n5").unwrap();
+        assert_eq!(clamped, sel((-1, 0), (-1, 1)));
+        assert_eq!(copy_text(q.screen_mut(), &clamped), "2");
+        let mut q = test_parser(3, 10, 1);
+        q.process(b"0\r\n1\r\n2");
+        assert_eq!(follow_output(&mut q, sel((0, 0), (1, 1)), b"\r\n3\r\n4\r\n5"), None);
+        // Clamped with a row still live: kept while it is unchanged, cleared when rewritten.
+        let mut q = test_parser(3, 10, 1);
+        q.process(b"0\r\n1\r\n2");
+        let kept = follow_output(&mut q, sel((0, 0), (2, 1)), b"\r\n3\r\n4").unwrap();
+        assert_eq!(kept, sel((-1, 0), (0, 1)));
+        assert_eq!(copy_text(q.screen_mut(), &kept), "1\n2");
+        let mut q = test_parser(3, 10, 1);
+        q.process(b"0\r\n1\r\n2");
+        assert_eq!(
+            follow_output(&mut q, sel((0, 0), (2, 1)), b"\r\n3\r\n4\x1b[1;1HZ\x1b[3;2H"),
+            None
+        );
+        // The program clearing the scrollback is a change too.
+        let mut r = test_parser(3, 10, 4);
+        r.process(b"0\r\n1\r\n2\r\n3\r\n4");
+        assert_eq!(follow_output(&mut r, sel((-2, 0), (-1, 1)), b"\x1b[3J"), None);
+        // Also for one reaching into the live rows (unchanged): the clamp alone would keep it.
+        let mut r = test_parser(3, 10, 4);
+        r.process(b"0\r\n1\r\n2\r\n3\r\n4");
+        let s = sel((-1, 0), (1, 1));
+        assert_eq!(copy_text(r.screen_mut(), &s), "1\n2\n3");
+        assert_eq!(follow_output(&mut r, s, b"\x1b[3J"), None);
+        assert_eq!(
+            r.screen().contents().lines().next(),
+            Some("2"),
+            "the live rows didn't change"
+        );
+    }
+
+    #[test]
+    fn follow_while_dragging_moves_only_the_anchor() {
+        let mut p = test_parser(3, 10, 10);
+        p.process(b"a\r\nb\r\nc");
+        let s = sel((0, 0), (2, 1));
+        let before = snapshot(p.screen_mut(), &s);
+        p.process(b"\r\nd\x1b[1;1HZ");
+        assert_eq!(follow(p.screen_mut(), s, &before, true), Some(sel((-1, 0), (2, 1))));
     }
 
     #[test]

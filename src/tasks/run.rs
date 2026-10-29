@@ -27,7 +27,7 @@
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -193,6 +193,10 @@ struct Shared {
     /// The text a mouse drag selected, in the screen's visible-viewport cells. Cleared when the
     /// view moves (new output, a scroll) or a click clears it.
     selection: Mutex<Option<select::Selection>>,
+    /// A left drag is held on this screen (`Run::set_dragging`): output then moves only the
+    /// selection's anchor, and `drag_lines` counts the lines it scrolled meanwhile.
+    dragging: AtomicBool,
+    drag_lines: AtomicUsize,
     /// Output arrived since the last `Event::Output`.
     pending: AtomicBool,
     /// The reader is done (end of output) or there's none (failed to start).
@@ -239,6 +243,8 @@ impl Run {
                 callbacks,
             )),
             selection: Mutex::new(None),
+            dragging: AtomicBool::new(false),
+            drag_lines: AtomicUsize::new(0),
             state: Mutex::new(State {
                 status: Status::Starting,
                 pid: None,
@@ -398,7 +404,22 @@ impl Run {
         *lock(&self.shared.selection) = Some(selection);
     }
 
-    /// Drops the mouse selection (a click, new output or a resize moved the rows under it).
+    /// Marks a left drag as held (or released). While held, output keeps the selection's anchor
+    /// on its text and leaves the head on its screen cell; starting one forgets `take_drag_lines`.
+    pub fn set_dragging(&self, on: bool) {
+        if on {
+            self.shared.drag_lines.store(0, Ordering::Release);
+        }
+        self.shared.dragging.store(on, Ordering::Release);
+    }
+
+    /// The lines output scrolled into the scrollback since the last call (or since the drag
+    /// began), for the app's copy of the drag's anchor.
+    pub fn take_drag_lines(&self) -> usize {
+        self.shared.drag_lines.swap(0, Ordering::AcqRel)
+    }
+
+    /// Drops the mouse selection (a click, a resize, Clear, or output that changed its text).
     pub fn clear_selection(&self) {
         *lock(&self.shared.selection) = None;
     }
@@ -692,6 +713,27 @@ fn spawn(shared: Arc<Shared>, spec: Spec, sink: Sink) {
     }
 }
 
+/// Feeds `bytes` to the parser and keeps the mouse selection on its text (`select::follow`).
+/// Locks the parser, then the selection (as `resize` does), so a click can't be overwritten.
+fn process_chunk(shared: &Shared, bytes: &[u8]) {
+    let mut parser = lock(&shared.parser);
+    let mut selection = lock(&shared.selection);
+    let Some(current) = *selection else {
+        parser.process(bytes);
+        return;
+    };
+    let before = select::snapshot(parser.screen_mut(), &current);
+    parser.process(bytes);
+    let dragging = shared.dragging.load(Ordering::Acquire);
+    let scrolled = parser.screen().scrolled_lines().saturating_sub(before.scrolled());
+    if dragging {
+        shared
+            .drag_lines
+            .fetch_add(usize::try_from(scrolled).unwrap_or(usize::MAX / 2), Ordering::AcqRel);
+    }
+    *selection = select::follow(parser.screen_mut(), current, &before, dragging);
+}
+
 /// Reader thread: PTY output into the screen until the end of output.
 fn read_output(shared: Arc<Shared>, mut reader: Box<dyn Read + Send>) {
     let mut buf = vec![0u8; 64 * 1024];
@@ -699,7 +741,7 @@ fn read_output(shared: Arc<Shared>, mut reader: Box<dyn Read + Send>) {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                lock(&shared.parser).process(&buf[..n]);
+                process_chunk(&shared, &buf[..n]);
                 if !shared.pending.swap(true, Ordering::AcqRel) {
                     shared.notify.notify_one();
                 }

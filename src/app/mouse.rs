@@ -69,6 +69,11 @@ fn round_word_drag(rope: &Rope, anchor: (ByteIdx, ByteIdx), at: ByteIdx) -> (Byt
     }
 }
 
+/// `cell` `lines` lines up (the anchor following its text as output scrolls; copy clamps).
+fn shift_drag_cell((line, col): select::Cell, lines: isize) -> select::Cell {
+    (line.saturating_sub(lines), col)
+}
+
 /// The (anchor, head) of a word-wise drag in a terminal: the anchor run stays selected and the
 /// far end is the end (forwards) or start (backwards) of the run under the pointer (`under`),
 /// or the pointer's cell when it is not on a path run.
@@ -336,11 +341,14 @@ impl App {
                 } else {
                     None
                 };
+                // A press is an empty selection until the pointer moves, so a click clears it.
+                // Set while the screen is held, so no output lands between the cell and the drag.
+                let (anchor, head) = seed.unwrap_or((cell, cell));
+                run.set_dragging(true);
+                run.set_selection(select::Selection { anchor, head });
                 (cell, seed)
             };
-            // A press is an empty selection until the pointer moves, so a click clears it.
             let (anchor, head) = seed.unwrap_or((cell, cell));
-            run.set_selection(select::Selection { anchor, head });
             match hit {
                 Hit::Editor(g) => self.focus_group(g),
                 Hit::Panel => {
@@ -366,19 +374,30 @@ impl App {
                 area,
             }) = self.drag.clone()
         {
-            if let Some(run) = self.terminal_run_by_id(run) {
-                let screen = run.screen();
-                let s = screen.screen();
-                let (row, col) = screen_cell(s, area, m.column, m.row);
-                let head = select::cell_at(row, col, s.scrollback());
-                let word_run = if word { select::path_run(s, (row, col)) } else { None };
-                drop(screen);
-                let (anchor, head) = if word {
-                    round_run_drag(anchor, head, word_run)
-                } else {
-                    (anchor.0, head)
-                };
-                run.set_selection(select::Selection { anchor, head });
+            let Some(run) = self.terminal_run_by_id(run) else {
+                return true;
+            };
+            // The screen is held from taking the lines output scrolled to setting the selection,
+            // so no chunk's shift of the anchor is lost in between.
+            let screen = run.screen();
+            // Output scrolled meanwhile: the anchor followed its text, so must our copy.
+            let moved = run.take_drag_lines() as isize;
+            let anchor = (shift_drag_cell(anchor.0, moved), shift_drag_cell(anchor.1, moved));
+            let s = screen.screen();
+            let (row, col) = screen_cell(s, area, m.column, m.row);
+            let head = select::cell_at(row, col, s.scrollback());
+            let word_run = if word { select::path_run(s, (row, col)) } else { None };
+            let (start, head) = if word {
+                round_run_drag(anchor, head, word_run)
+            } else {
+                (anchor.0, head)
+            };
+            run.set_selection(select::Selection { anchor: start, head });
+            drop(screen);
+            if moved != 0
+                && let Some(Drag::Terminal { anchor: stored, .. }) = &mut self.drag
+            {
+                *stored = anchor;
             }
             return true;
         }
@@ -386,9 +405,11 @@ impl App {
         if m.kind == MouseEventKind::Up(MouseButton::Left)
             && let Some(Drag::Terminal { run, .. }) = self.drag.clone()
             && let Some(run) = self.terminal_run_by_id(run)
-            && run.selection().is_some_and(|s| s.anchor == s.head)
         {
-            run.clear_selection();
+            run.set_dragging(false);
+            if run.selection().is_some_and(|s| s.anchor == s.head) {
+                run.clear_selection();
+            }
         }
         false
     }

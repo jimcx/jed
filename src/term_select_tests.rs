@@ -2,7 +2,9 @@
 //! hasn't asked for the mouse, a left drag highlights the cells it covers and Cmd/Ctrl+C copies
 //! exactly that text (trailing spaces trimmed, soft-wrapped rows joined), also when the view is
 //! scrolled back (`term_select_scrollback`: the selection moves with its text through any scroll
-//! and copies in full, in view or not); a click clears it; new output clears it (the rows move);
+//! and copies in full, in view or not); a click clears it; new output keeps it on its text
+//! (`term_select_keep_*`: scrolled up with it, clamped / dropped at the scrollback cap, cleared
+//! when output rewrites its rows, the anchor followed mid-drag) while a resize and Clear clear it;
 //! a program that asked for the mouse still gets every event and nothing is selected, scrolled
 //! back too. The copy's normalisation and windowing are `tasks::select`'s unit tests.
 
@@ -435,12 +437,8 @@ async fn term_select_mouse_reporting_keeps_every_event() {
     );
 }
 
-// FLAKE: 2026-10-26, in a full parallel run the selection was still `Some(..)` after the second
-// command's output arrived (the `Output` event that clears it hadn't been processed by the frame
-// the settle saw); passes alone and in the term_select module. Dump the selection and the screen
-// tail so a recurrence shows whether the output event raced the settle.
 #[tokio::test(flavor = "multi_thread")]
-async fn term_select_output_clears_and_the_wheel_moves_the_selection() {
+async fn term_select_output_keeps_and_the_wheel_moves_the_selection() {
     let (_d, root, state) = dirs();
     let mut app = shell_app(&root, &state);
     app.tasks.shell = "/bin/sh".into();
@@ -458,17 +456,19 @@ async fn term_select_output_clears_and_the_wheel_moves_the_selection() {
         "the command's output arrived:\n{}",
         screen_text(&app)
     );
-    let text = screen_text(&app);
-    let one_ninety_nine = row_of(&text, "199");
     drop(draw(&mut app, 100, 30));
     let area = app.hits.group(app.groups.active).unwrap().editor;
+    // After the draw: it resizes the screen, which moves the rows.
+    let text = app.group().active_shell().unwrap().run.screen().screen().contents();
+    let one_ninety_nine = row_of(&text, "199");
     drag(&mut app, area, (one_ninety_nine, 0), (one_ninety_nine, 3));
     assert!(
         app.group().active_shell().unwrap().run.selection().is_some(),
         "the drag selected the row"
     );
 
-    // New output moves the rows: the stored cells would point at other text, so it is dropped.
+    // New output scrolls the rows: the selection follows its text up into the scrollback.
+    let before = app.group().active_shell().unwrap().run.selection().unwrap();
     assert!(app.group().active_shell().unwrap().run.write(b"printf 'after\\n'\n"));
     assert!(
         app.settle(|a| screen_text(a).lines().any(|l| l.trim_end() == "after"))
@@ -476,15 +476,10 @@ async fn term_select_output_clears_and_the_wheel_moves_the_selection() {
         "the second command's output arrived:\n{}",
         screen_text(&app)
     );
-    let selection = app.group().active_shell().unwrap().run.selection();
-    if selection.is_some() {
-        let tail = screen_text(&app).lines().rev().take(8).collect::<Vec<_>>().join("\n");
-        eprintln!(
-            "FLAKE term_select_output_clears_and_the_wheel_moves_the_selection: not cleared \
-             ({selection:?}); screen tail:\n{tail}"
-        );
-    }
-    assert_eq!(selection, None, "new output cleared the selection");
+    let run = &app.group().active_shell().unwrap().run;
+    let selection = run.selection().expect("new output kept the selection");
+    assert!(selection.anchor.0 < before.anchor.0, "it moved up with its text");
+    assert_eq!(run.copy_selection().as_deref(), Some("199"));
 
     // A wheel scroll does not: the selection moves with its text.
     let text = screen_text(&app);
@@ -899,4 +894,317 @@ async fn term_select_double_click_task() {
     let area = layout::task_area(app.hits.regions.panel.unwrap());
     app.ui.focus = Focus::Editor;
     double_click_checks(&mut app, area, row, |a| a.tasks.get(id).unwrap().selection());
+}
+
+// ---- term_select_keep: new output keeps the selection on its text ----
+
+/// A shell (`None`) or a task tab (`Some`, an `sh` after the count) that printed `COUNT_TO_200`,
+/// drawn, with the area its terminal is drawn in.
+async fn count_run(scrollback: Option<usize>, task: bool) -> (tempfile::TempDir, App, Option<RunId>, Rect) {
+    let (guard, mut app, id) = if task {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, state) = crate::milestone12_tests::dirs(&dir);
+        let mut app = crate::milestone12_tests::open_app(
+            &root,
+            &state,
+            Some(&format!("[tasks.count]\ncommand = '''{COUNT_TO_200}; exec sh'''\n")),
+        );
+        if let Some(n) = scrollback {
+            app.settings.scrollback = n;
+        }
+        drop(draw(&mut app, 100, 30));
+        let id = app.run_task("count").unwrap();
+        (dir, app, Some(id))
+    } else {
+        let (dir, root, state) = dirs();
+        let mut app = shell_app(&root, &state);
+        app.tasks.shell = "/bin/sh".into();
+        if let Some(n) = scrollback {
+            app.settings.scrollback = n;
+        }
+        app.new_shell_in_editor();
+        assert!(
+            app.group()
+                .active_shell()
+                .unwrap()
+                .run
+                .write(format!("{COUNT_TO_200}\n").as_bytes())
+        );
+        (dir, app, None)
+    };
+    assert!(
+        app.settle(|a| text_of(a, id).lines().any(|l| l.trim_end() == "199"))
+            .await,
+        "output arrived:\n{}",
+        text_of(&app, id)
+    );
+    drop(draw(&mut app, 100, 30));
+    let area = area_of(&app, id);
+    (guard, app, id, area)
+}
+
+fn text_of(app: &App, id: Option<RunId>) -> String {
+    run_of(app, id).screen().screen().contents()
+}
+
+fn area_of(app: &App, id: Option<RunId>) -> Rect {
+    match id {
+        Some(_) => layout::task_area(app.hits.regions.panel.unwrap()),
+        None => app.hits.group(app.groups.active).unwrap().editor,
+    }
+}
+
+fn selection_of(app: &App, id: Option<RunId>) -> Option<crate::tasks::select::Selection> {
+    run_of(app, id).selection()
+}
+
+/// Selects the visible "199" row and returns the selection.
+fn select_199(app: &mut App, id: Option<RunId>, area: Rect) -> crate::tasks::select::Selection {
+    let row = row_of(&text_of(app, id), "199");
+    drag(app, area, (row, 0), (row, 3));
+    let selection = selection_of(app, id).expect("the drag selected the row");
+    assert_eq!(run_of(app, id).copy_selection().as_deref(), Some("199"));
+    selection
+}
+
+fn send(app: &App, id: Option<RunId>, bytes: &[u8]) {
+    assert!(run_of(app, id).write(bytes));
+}
+
+/// Waits for the shell's prompt on the last row (the output before it is all in).
+async fn at_prompt(app: &mut App, id: Option<RunId>) {
+    assert!(
+        app.settle(|a| text_of(a, id).lines().last().is_some_and(|l| l.contains('$')))
+            .await,
+        "{}",
+        text_of(app, id)
+    );
+}
+
+/// Output that scrolls the screen moves the highlight up with its text; Cmd/Ctrl+C copies exactly
+/// it; a prompt redrawn under it (rows unchanged) leaves it.
+async fn keep_scrolls(task: bool) {
+    let (_d, mut app, id, area) = count_run(None, task).await;
+    let before = select_199(&mut app, id, area);
+    send(&app, id, b"printf 'a\\nb\\n'\n");
+    assert!(
+        app.settle(|a| text_of(a, id).lines().any(|l| l.trim_end() == "b"))
+            .await,
+        "{}",
+        text_of(&app, id)
+    );
+    at_prompt(&mut app, id).await;
+    let after = selection_of(&app, id).expect("new output kept the selection");
+    assert!(after.anchor.0 < before.anchor.0, "it moved up with its text: {after:?}");
+    assert_eq!(after.anchor.0 - before.anchor.0, after.head.0 - before.head.0);
+    assert_eq!(run_of(&app, id).copy_selection().as_deref(), Some("199"));
+    app.press(KeyCode::Char('c'), cmd());
+    assert_eq!(app.clipboard.read().unwrap(), "199", "copies exactly the selected text");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_keep_output_scrolls_it_shell() {
+    keep_scrolls(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_keep_output_scrolls_it_task() {
+    keep_scrolls(true).await;
+}
+
+/// Output that rewrites the selected rows in place (here an erase of the screen) clears it.
+async fn keep_rewrite_clears(task: bool) {
+    let (_d, mut app, id, area) = count_run(None, task).await;
+    select_199(&mut app, id, area);
+    send(&app, id, b"printf '\\033[2J\\033[H'\n");
+    assert!(
+        app.settle(|a| selection_of(a, id).is_none()).await,
+        "overwriting the rows cleared it"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_keep_rewrite_clears_shell() {
+    keep_rewrite_clears(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_keep_rewrite_clears_task() {
+    keep_rewrite_clears(true).await;
+}
+
+/// Output that writes the selected row in place: the same text again (a prompt redraw that leaves
+/// the row as it was) keeps the selection, other text clears it.
+async fn keep_row_rewrite(task: bool, same: bool) {
+    let (_d, mut app, id, area) = count_run(None, task).await;
+    select_199(&mut app, id, area);
+    let (rows, _) = crate::tasks::select::size(run_of(&app, id).screen().screen());
+    // Enter's echo scrolls the screen a line before printf runs: the "199" row is then at the
+    // 1-based row its 0-based row was. Back to the (blank) last row afterwards, for "done".
+    let row = row_of(&text_of(&app, id), "199");
+    let with = if same { "199" } else { "XYZ" };
+    send(
+        &app,
+        id,
+        format!("printf '\\033[{row};1H{with}\\033[{rows};1H'; echo done\n").as_bytes(),
+    );
+    assert!(
+        app.settle(|a| text_of(a, id).lines().any(|l| l.trim_end() == "done"))
+            .await,
+        "{}",
+        text_of(&app, id)
+    );
+    at_prompt(&mut app, id).await;
+    if same {
+        assert!(selection_of(&app, id).is_some(), "the unchanged row kept it");
+        assert_eq!(run_of(&app, id).copy_selection().as_deref(), Some("199"));
+    } else {
+        assert_eq!(selection_of(&app, id), None, "the rewritten row cleared it");
+        let text = text_of(&app, id);
+        assert!(
+            text.lines().any(|l| l.trim_end() == "XYZ"),
+            "the row was rewritten:\n{text}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_keep_row_rewrite_shell() {
+    keep_row_rewrite(false, true).await;
+    keep_row_rewrite(false, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_keep_row_rewrite_task() {
+    keep_row_rewrite(true, true).await;
+    keep_row_rewrite(true, false).await;
+}
+
+/// With `scrollback = 50`: a selection in the oldest kept rows is clamped as output pushes it out
+/// (the copy keeps the text that is left), and one pushed out entirely is dropped.
+async fn keep_scrollback_cap(task: bool) {
+    let (_d, mut app, id, area) = count_run(Some(50), task).await;
+    // The oldest kept rows: viewed scrolled to the top.
+    run_of(&app, id).screen().screen_mut().set_scrollback(usize::MAX);
+    drop(draw(&mut app, 100, 30));
+    let kept = run_of(&app, id).screen().screen().scrollback_len() as isize;
+    drag(&mut app, area, (0, 0), (area.height - 1, 2));
+    let before = selection_of(&app, id).unwrap();
+    assert_eq!(before.anchor.0, -kept);
+    run_of(&app, id).screen().screen_mut().set_scrollback(0);
+    // 8 lines scroll past the cap.
+    send(&app, id, b"printf 'a\\nb\\nc\\nd\\ne\\nf\\n'\n");
+    assert!(
+        app.settle(|a| text_of(a, id).lines().any(|l| l.trim_end() == "f"))
+            .await
+    );
+    at_prompt(&mut app, id).await;
+    assert_eq!(run_of(&app, id).screen().screen().scrollback_len(), 50);
+    let after = selection_of(&app, id).expect("a part is still in the scrollback");
+    assert_eq!(after.anchor, (-50, 0), "the start clamps to the oldest row");
+    assert!(
+        after.head.0 < before.head.0 && after.head.0 >= -50,
+        "the end follows its text"
+    );
+    let text = run_of(&app, id).copy_selection().unwrap();
+    assert!(!text.is_empty(), "{text:?}");
+
+    // 200 more lines push all of it out.
+    send(&app, id, format!("{COUNT_TO_200}; echo done\n").as_bytes());
+    assert!(
+        app.settle(|a| text_of(a, id).lines().any(|l| l.trim_end() == "done"))
+            .await
+    );
+    assert_eq!(selection_of(&app, id), None, "wholly gone: dropped");
+    assert_eq!(run_of(&app, id).copy_selection(), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_keep_scrollback_cap_shell() {
+    keep_scrollback_cap(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_keep_scrollback_cap_task() {
+    keep_scrollback_cap(true).await;
+}
+
+/// Output arriving while the button is held: the anchor stays on its text, the head on its screen
+/// cell, and the next drag event continues from the moved anchor.
+async fn keep_mid_drag(task: bool) {
+    let (_d, mut app, id, area) = count_run(None, task).await;
+    let row = row_of(&text_of(&app, id), "199");
+    let at = |row: u16, col: u16| (area.x + col, area.y + row);
+    let (x, y) = at(row, 0);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+    let (x, y) = at(row + 1, 2);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), x, y);
+    let before = selection_of(&app, id).unwrap();
+    send(&app, id, b"printf 'a\\nb\\n'\n");
+    assert!(
+        app.settle(|a| text_of(a, id).lines().any(|l| l.trim_end() == "b"))
+            .await,
+        "{}",
+        text_of(&app, id)
+    );
+    let moved = selection_of(&app, id).expect("output kept the held selection");
+    assert!(
+        moved.anchor.0 < before.anchor.0,
+        "the anchor followed its text: {moved:?}"
+    );
+    assert_eq!(moved.head, before.head, "the head stayed on its screen cell");
+    // The pointer moves on: the head is the cell under it, the anchor is still on "199".
+    let (x, y) = at(row + 1, 4);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), x, y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    let end = selection_of(&app, id).unwrap();
+    assert_eq!(end.anchor, moved.anchor);
+    assert_eq!(end.head, (row as isize + 1, 4));
+    let text = run_of(&app, id).copy_selection().unwrap();
+    assert!(
+        text.starts_with("199\n"),
+        "the copy starts at the anchor's text: {text:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_keep_mid_drag_shell() {
+    keep_mid_drag(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_keep_mid_drag_task() {
+    keep_mid_drag(true).await;
+}
+
+/// A resize, a click and "Terminal: Clear" still clear a kept selection.
+async fn keep_other_clears(task: bool) {
+    let (_d, mut app, id, area) = count_run(None, task).await;
+    select_199(&mut app, id, area);
+    let (rows, cols) = crate::tasks::select::size(run_of(&app, id).screen().screen());
+    run_of(&app, id).resize(rows - 1, cols);
+    assert_eq!(selection_of(&app, id), None, "a resize clears it");
+
+    drop(draw(&mut app, 100, 30));
+    let area = area_of(&app, id);
+    select_199(&mut app, id, area);
+    click(&mut app, area.x + 5, area.y + 1);
+    assert_eq!(selection_of(&app, id), None, "a click clears it");
+
+    select_199(&mut app, id, area);
+    match id {
+        Some(_) => app.test_execute(Command::Task(crate::command::TaskCommand::Clear)),
+        None => app.test_execute(Command::Shell(crate::command::ShellCommand::Clear)),
+    }
+    assert_eq!(selection_of(&app, id), None, "Clear clears it");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_keep_resize_click_clear_shell() {
+    keep_other_clears(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_keep_resize_click_clear_task() {
+    keep_other_clears(true).await;
 }

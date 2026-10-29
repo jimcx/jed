@@ -345,12 +345,8 @@ impl App {
                 };
                 self.notify(level, note);
             }
-            Event::Output(id) => {
-                if let Some(shell) = self.shell_tabs().find(|s| s.run.id == id) {
-                    shell.run.clear_selection();
-                }
-            }
-            Event::Started(_) => {}
+            // Output keeps the mouse selection on its text (`Run`'s reader decides).
+            Event::Output(_) | Event::Started(_) => {}
         }
     }
 

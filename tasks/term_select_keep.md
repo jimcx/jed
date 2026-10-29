@@ -1,8 +1,8 @@
 ---
 id: term_select_keep
 name: Keep the terminal selection across new output
-summary: highlighted text in a shell or task tab stays on its text when new output scrolls the screen, instead of being cleared
-status: open
+summary: highlighted text in a shell or task tab follows its text when output scrolls the screen; cleared only when the rows under it change
+status: done
 priority: 0
 dependencies: [term_select_scrollback]
 ---
@@ -19,3 +19,7 @@ See [Tasks](../PLAN.md#tasks-throwaway-terminals). Today any new output clears a
   - Deferred: auto-scrolling while a drag leaves the edge
   - Tests: `tasks::select` units for `shift` (clamp, drop, anchor/head order); `term_select_tests.rs` cases `term_select_keep_*` (output scrolls it, in-place rewrite clears it, scrollback cap, mid-drag output, resize / click / Clear clear it) for shell and task tabs; update `term_select_output_clears_and_the_wheel_moves_the_selection`
   - Still to check by hand: in a real terminal, select a line in a shell, run `seq 1 200` and `make`, and watch the highlight; a prompt with a clock or git status redrawing under the selection
+  - Built: vt100 fork `Screen::scrolled_lines` (fork branch `scrolled-lines`, commit 7e68b36; to be tagged `v0.18.1+jed2`); `Run::process_chunk` snapshots the selection's rows before each PTY chunk and `select::follow` shifts / clamps / drops it after (`Selection::shift`), clearing it when a covered row's text or the scrollback length changed; a held drag shifts only the anchor (`Run::set_dragging` / `take_drag_lines`, `Drag::Terminal`). Tests: `term_select_keep_*`, `select` units.
+  - Also: the old output test is renamed `term_select_output_keeps_and_the_wheel_moves_the_selection` (it had selected the wrong row).
+  - Deferred: auto-scrolling while a drag leaves the edge. Known gap: if a left Up never reaches the terminal, `Run::dragging` stays set until the next press there.
+  - Before merging: push the fork branch and tag `v0.18.1+jed2`, then replace Cargo.toml's local `path` patch with the tag (and refresh Cargo.lock).
