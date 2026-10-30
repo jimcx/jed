@@ -1,4 +1,6 @@
 mod app;
+#[cfg(test)]
+mod apple_langs_tests;
 mod backup;
 mod blame;
 mod brackets;

@@ -15,6 +15,10 @@ pub enum Language {
     PlainText,
     C,
     Cpp,
+    /// Objective-C (`.m`): tree-sitter-objc.
+    ObjC,
+    /// Objective-C++ (`.mm`): tree-sitter-objc too (no grammar of its own).
+    ObjCpp,
     Python,
     Rust,
     Markdown,
@@ -40,10 +44,12 @@ pub enum Language {
 
 impl Language {
     /// The languages compiled in (plugins are in the registry: `all()`).
-    pub const BUILT_IN: [Language; 17] = [
+    pub const BUILT_IN: [Language; 19] = [
         Language::PlainText,
         Language::C,
         Language::Cpp,
+        Language::ObjC,
+        Language::ObjCpp,
         Language::Python,
         Language::Rust,
         Language::Markdown,
@@ -84,6 +90,8 @@ impl Language {
             Language::PlainText => "plaintext",
             Language::C => "c",
             Language::Cpp => "cpp",
+            Language::ObjC => "objective-c",
+            Language::ObjCpp => "objective-cpp",
             Language::Python => "python",
             Language::Rust => "rust",
             Language::Markdown => "markdown",
@@ -108,6 +116,8 @@ impl Language {
             Language::PlainText => "Plain Text",
             Language::C => "C",
             Language::Cpp => "C++",
+            Language::ObjC => "Objective-C",
+            Language::ObjCpp => "Objective-C++",
             Language::Python => "Python",
             Language::Rust => "Rust",
             Language::Markdown => "Markdown",
@@ -140,6 +150,7 @@ impl Language {
             Language::Plugin(p) => return p.get().grammar.get().cloned(),
             Language::C => tree_sitter_c::LANGUAGE.into(),
             Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+            Language::ObjC | Language::ObjCpp => tree_sitter_objc::LANGUAGE.into(),
             Language::Python => tree_sitter_python::LANGUAGE.into(),
             Language::Rust => tree_sitter_rust::LANGUAGE.into(),
             // The block grammar only: inline text (emphasis, links, code spans) is one leaf.
@@ -165,6 +176,7 @@ impl Language {
     pub fn highlight_queries(self) -> &'static [&'static str] {
         const C: &str = include_str!("queries/c.scm");
         const CPP: &str = include_str!("queries/cpp.scm");
+        const OBJC: &str = include_str!("queries/objc.scm");
         const PYTHON: &str = include_str!("queries/python.scm");
         const RUST_FIRST: &str = "(identifier) @variable\n";
         const RUST: &str = include_str!("queries/rust.scm");
@@ -182,6 +194,12 @@ impl Language {
             Language::PlainText | Language::GitRebase | Language::Plugin(_) => &[],
             Language::C => &[tree_sitter_c::HIGHLIGHT_QUERY, C],
             Language::Cpp => &[tree_sitter_c::HIGHLIGHT_QUERY, tree_sitter_cpp::HIGHLIGHT_QUERY, C, CPP],
+            Language::ObjC | Language::ObjCpp => &[
+                tree_sitter_c::HIGHLIGHT_QUERY,
+                tree_sitter_objc::HIGHLIGHTS_QUERY,
+                C,
+                OBJC,
+            ],
             Language::Python => &[tree_sitter_python::HIGHLIGHTS_QUERY, PYTHON],
             Language::Rust => &[RUST_FIRST, tree_sitter_rust::HIGHLIGHTS_QUERY, RUST],
             Language::Markdown => &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK, MARKDOWN],
@@ -367,6 +385,8 @@ fn built_in_extension(path: &Path, lower: &str) -> Option<Language> {
         "c" | "i" => C,
         "h" | "cc" | "cpp" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" | "ii" | "ipp" | "inl" | "tpp" | "txx"
         | "ixx" | "cppm" | "ino" => Cpp,
+        "m" => ObjC,
+        "mm" => ObjCpp,
         "py" | "pyi" | "pyw" | "ipy" | "gyp" | "gypi" | "scons" => Python,
         "rs" => Rust,
         "md" | "mkd" | "mdwn" | "mdown" | "markdown" | "markdn" | "mdtxt" | "mdtext" | "workbook" => Markdown,
@@ -465,6 +485,20 @@ mod tests {
         }
         assert_eq!(detect_plain("/ws/SConstruct", ""), Language::Python);
         assert_eq!(detect_plain("/ws/sub/SConscript", ""), Language::Python);
+        // Objective-C: `.m` / `.mm` (case-insensitive); `.h` stays C++ (ambiguous: detection
+        // doesn't read the header's text).
+        assert_eq!(detect_plain("/ws/a.m", ""), Language::ObjC);
+        assert_eq!(detect_plain("/ws/A.M", ""), Language::ObjC);
+        assert_eq!(detect_plain("/ws/a.mm", ""), Language::ObjCpp);
+        assert_eq!(
+            detect_plain("/ws/a.h", "#import <Foundation/Foundation.h>"),
+            Language::Cpp
+        );
+        assert_eq!(Language::ObjC.id(), "objective-c");
+        assert_eq!(Language::ObjCpp.id(), "objective-cpp");
+        assert_eq!(Language::ObjC.name(), "Objective-C");
+        assert_eq!(Language::ObjCpp.name(), "Objective-C++");
+        assert_eq!(Language::from_id("objective-cpp"), Some(Language::ObjCpp));
         assert_eq!(detect_plain("/ws/notes.txt", ""), Language::PlainText);
         assert_eq!(detect_plain("/ws/.c", ""), Language::PlainText);
         assert_eq!(detect_plain("/ws/Makefile.txt", ""), Language::PlainText);
@@ -586,6 +620,7 @@ mod tests {
             ("*.scons".to_string(), "python".to_string()),
             ("BUILD".to_string(), "python".to_string()),
             ("*.h".to_string(), "c".to_string()),
+            ("*.inc2".to_string(), "objective-c".to_string()),
             ("vendor/**/*.inc".to_string(), "cpp".to_string()),
             ("*.x".to_string(), "cobol".to_string()),
             ("*.conf".to_string(), "shellscript".to_string()),
@@ -596,6 +631,7 @@ mod tests {
         let d = |p: &str| detect(Path::new(p), Path::new("/ws"), "", &a);
         assert_eq!(d("/ws/sub/BUILD"), Language::Python);
         assert_eq!(d("/ws/a.h"), Language::C);
+        assert_eq!(d("/ws/a.inc2"), Language::ObjC);
         assert_eq!(d("/ws/vendor/x/y.inc"), Language::Cpp);
         assert_eq!(d("/ws/other/y.inc"), Language::PlainText);
         assert_eq!(d("/ws/a.x"), Language::PlainText);

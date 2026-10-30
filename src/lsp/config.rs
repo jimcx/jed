@@ -44,7 +44,7 @@ fn command_name(command: &str) -> String {
         .map_or_else(|| command.to_string(), |n| n.to_string_lossy().into_owned())
 }
 
-/// The servers jed knows without configuration: `clangd` for C and C++, `ty server` for Python,
+/// The servers jed knows without configuration: `clangd` for C, C++, Objective-C and Objective-C++, `ty server` for Python,
 /// `rust-analyzer` for Rust (no `initializationOptions`: it finds the cargo workspace under the
 /// root itself, and checks with `cargo check` on save).
 #[derive(Debug, Clone)]
@@ -73,7 +73,7 @@ impl Builtins {
             return Some(c);
         }
         match language {
-            Language::C | Language::Cpp => Some(&self.clangd),
+            Language::C | Language::Cpp | Language::ObjC | Language::ObjCpp => Some(&self.clangd),
             Language::Python => Some(&self.ty),
             Language::Rust => Some(&self.rust_analyzer),
             _ => None,

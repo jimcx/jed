@@ -152,7 +152,7 @@ use crate::syntax::Language;
 use crate::workspace::trust::{Trust, TrustStore};
 use crate::workspace::{self, Workspace};
 
-fn cmd() -> M {
+pub(crate) fn cmd() -> M {
     if cfg!(target_os = "macos") {
         M::SUPER
     } else {
@@ -192,11 +192,11 @@ fn open_app_inner(root: &Path, launcher: Arc<dyn Launcher>, watch: bool) -> App 
     app
 }
 
-fn open(app: &mut App, path: &Path) {
+pub(crate) fn open(app: &mut App, path: &Path) {
     app.test_open(Buffer::open(path).unwrap());
 }
 
-fn encoding(app: &App, language: Language) -> Option<PosEncoding> {
+pub(crate) fn encoding(app: &App, language: Language) -> Option<PosEncoding> {
     app.lsp.server_for(language).and_then(|s| s.encoding())
 }
 
@@ -1467,7 +1467,7 @@ pub(crate) async fn settle_for(app: &mut App, secs: u64, done: impl Fn(&App) -> 
 }
 
 /// A real server reports an error in `file` on `word`; `fix` edits it away and the error goes.
-async fn real_diagnostics(
+pub(crate) async fn real_diagnostics(
     file: (&str, &str),
     word: &str,
     configure: impl FnOnce(&mut App),
@@ -3119,7 +3119,7 @@ async fn milestone_9_server_crash_drops_pending_requests() {
 /// rather than one line, since clangd 22 renders it as split markdown (`→ int` / `• int x`) where
 /// older clangd shows the plain `int answer(int x)`.
 #[allow(clippy::too_many_arguments)]
-async fn real_hover_and_definition(
+pub(crate) async fn real_hover_and_definition(
     files: &[(&str, &str)],
     word: &str,
     hover: &[&str],
@@ -3927,7 +3927,13 @@ async fn milestone_9_completion_at_many_cursors_stays_fast() {
 }
 
 /// A real server: typing `.` after `obj` in `a` lists `member`; Enter inserts it.
-async fn real_completion(file: (&str, &str), obj: &str, member: &str, configure: impl FnOnce(&mut App), process: &str) {
+pub(crate) async fn real_completion(
+    file: (&str, &str),
+    obj: &str,
+    member: &str,
+    configure: impl FnOnce(&mut App),
+    process: &str,
+) {
     let _one_at_a_time = REAL_SERVERS.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let root = project(dir.path(), &[file]);

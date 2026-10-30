@@ -2,7 +2,7 @@
 id: apple_langs
 name: Objective-C and Swift
 summary: Objective-C and Swift files get syntax colours, comment / pair / indent behaviour and language servers (`clangd` for Objective-C, `sourcekit-lsp` for Swift)
-status: open
+status: in-progress
 priority: 0
 dependencies: []
 ---
@@ -18,6 +18,10 @@ See [Syntax highlighting](../PLAN.md#syntax-highlighting), [LSP](../PLAN.md#lsp)
   - Needs: `syntax::Language` and its queries, `lsp::config` `Builtins`, the real-server test helpers (`REAL_SERVERS`, `children_named`), Tools view rows for missing servers if they exist
   - Done when: `.m`, `.mm` and `.swift` files open coloured with comment toggling and auto-closed pairs; a `.m` file shows clangd diagnostics, hover and go to definition; with `sourcekit-lsp` installed a SwiftPM package's `.swift` files show diagnostics, hover, go to definition across files and completion; the tests above pass
   - Subtasks (one agent and one commit each):
-    - apple_langs-a: Objective-C / Objective-C++: `Language::ObjC` / `ObjCpp`, detection (and the `.h` decision), the grammar crate, highlight queries (+ `queries/objc.scm`), `scope_of` kinds, `LanguageConfig`; clangd mapped to both with the fake-server test and a real-clangd test (skipped without it); unit tests; docs (`src/syntax/CLAUDE.md`'s language lists, the server docs)
+    - ✅ apple_langs-a: Objective-C / Objective-C++: `Language::ObjC` / `ObjCpp`, detection (and the `.h` decision), the grammar crate, highlight queries (+ `queries/objc.scm`), `scope_of` kinds, `LanguageConfig`; clangd mapped to both with the fake-server test and a real-clangd test (skipped without it); unit tests; docs (`src/syntax/CLAUDE.md`'s language lists, the server docs)
+      - Built: `Language::ObjC` / `ObjCpp` (both on `tree-sitter-objc` 3.0.2, MIT, `parser.c` ~28 MB; clean build not timed), `.m` / `.mm` detection, `queries/objc.scm`, clangd mapped to both. New aliases `storageclass`, `namespace`, `method`, `parameter` in `highlight.rs`: later grammars may reuse them. `objc.scm` starts with `(identifier) @variable` because the crate's query paints every identifier `property`. Shared real-server helpers in `milestone9_tests.rs` are now `pub(crate)`; `src/apple_langs_tests.rs` exists for b / c.
+      - Decisions: `.h` stays C++ (path detection never reads the text; a test pins it). `.mm` uses the Objective-C grammar (the C++ grammar can't parse `@interface`; neither parses mixed code cleanly).
+      - Deferred: keyword selectors in `@selector(a:b:)` are uncoloured (no child nodes in the grammar).
+      - Still to check by hand: a `.m` file in the real editor (colours, clangd diagnostics / hover / definition).
     - apple_langs-b: Swift highlighting: `Language::Swift`, detection (extension, shebang), the grammar crate, highlight queries (+ `queries/swift.scm`), `scope_of` kinds, `LanguageConfig`; unit tests; docs
     - apple_langs-c: the Swift server: the `sourcekit-lsp` built-in (with the `xcrun` fallback), progress in the status bar, the fake-server test, the real-server test on a SwiftPM package (skipped without the binary), server docs; hand checks (Linux with a swift.org toolchain, macOS with Xcode); marks the task ✅

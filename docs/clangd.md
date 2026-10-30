@@ -1,6 +1,6 @@
 # Configuring clangd
 
-jed starts `clangd` for C and C++ files with no configuration: it runs the `clangd` found on `PATH`, with no arguments, in the workspace root. Everything below is optional.
+jed starts `clangd` for C, C++, Objective-C and Objective-C++ files with no configuration: it runs the `clangd` found on `PATH`, with no arguments, in the workspace root. Everything below is optional.
 
 There are three places to configure it, from most to least common:
 
@@ -65,7 +65,7 @@ After changing any of these, run **Tools: Restart Server** (palette) so clangd r
 
 ## 2. The command jed runs: `.workspace`
 
-A `[lsp.<language id>]` table replaces the built-in server for that language. C and C++ are two languages (`c` and `cpp`), so set both; when their tables are equal, they share one clangd.
+A `[lsp.<language id>]` table replaces the built-in server for that language. C, C++, Objective-C and Objective-C++ are four languages (`c`, `cpp`, `objective-c`, `objective-cpp`), so set each you use; when their tables are equal, they share one clangd.
 
 ```toml
 # .workspace

@@ -532,6 +532,8 @@ fn scopes_in_every_language() {
         (Xml, "<a x=\"y|\">t|</a><!-- c| -->", &[String, Code, Comment]),
         (Markdown, "# a|\n", &[Code]),
         (Cpp, "f(\"a|\"); // b|\n", &[String, Comment]),
+        (ObjC, "x = @\"a|\"; // b|\n/* c| */\n", &[String, Comment, Comment]),
+        (ObjCpp, "x = @\"a|\"; // b|\n", &[String, Comment]),
         (Python, "f'a{b|}c|'  # d|\n", &[Code, String, Comment]),
     ];
     for &(language, marked, want) in cases {

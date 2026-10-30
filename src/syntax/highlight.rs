@@ -77,6 +77,10 @@ pub(super) const ALIASES: &[(&str, &str)] = &[
     ("repeat", "keyword.control"),
     ("include", "keyword.control"),
     ("exception", "keyword.control"),
+    ("storageclass", "keyword"),
+    ("namespace", "type"),
+    ("method", "function"),
+    ("parameter", "variable.parameter"),
     ("text.title", "markup.heading"),
     ("text.literal", "markup.raw"),
     ("text.uri", "markup.link"),
@@ -580,6 +584,7 @@ mod tests {
         const UNCOLOURED: &[&str] = &[
             "attribute", // Rust's `#[…]` and YAML directives: plain in Dark+.
             "delimiter", // C's `;` `,` `.`
+            "preproc",   // Objective-C's `#undef` (the whole directive).
             "none",
             "embedded",
             "spell",
@@ -1064,6 +1069,75 @@ index 1..2 100644
                 ("MAX".into(), "constant"),
             ]
         );
+    }
+
+    #[test]
+    fn objc_spans() {
+        let text = "#import <Foundation/Foundation.h>\n@interface Foo : NSObject <Bar>\n@property (nonatomic, copy) NSString *name;\n@end\n@implementation Foo\n- (void)run:(int)count {\n  [self.obj foo:count];\n  NSString *s = @\"hi\";\n  if (count) { return; }\n}\n@end // c\n";
+        assert_has(
+            Language::ObjC,
+            text,
+            &[
+                ("#import", "keyword.control"),
+                ("@interface", "keyword"),
+                ("Foo", "type"),
+                ("NSObject", "type"),
+                ("Bar", "type"),
+                ("@property", "keyword"),
+                ("@end", "keyword"),
+                ("@implementation", "keyword"),
+                ("void", "type.builtin"),
+                ("run", "function"),
+                ("count", "variable.parameter"),
+                ("self", "variable.builtin"),
+                ("foo", "function"),
+                ("count", "variable"),
+                ("@\"hi\"", "string"),
+                ("if", "keyword.control"),
+                ("// c", "comment"),
+            ],
+        );
+    }
+
+    /// The rest of `queries/objc.scm`: conditionals, attributes, doc comments, protocols, `super`,
+    /// selectors, control at-keywords; and Objective-C++ colours the same.
+    #[test]
+    fn objc_spans_more() {
+        let text = "#if DEBUG\n/** Doc. */\n@protocol P <Q>\n- (id)init __attribute__((unused));\n@end\n#endif\n@implementation C (Cat)\n- (id)init {\n  @try { self = [super init]; } @finally {}\n  SEL s = @selector(run:);\n  BOOL b = YES;\n  return @[@1];\n}\n@end\n";
+        let want: &[(&str, &str)] = &[
+            ("#if", "keyword.control"),
+            ("DEBUG", "constant"),
+            ("/** Doc. */", "comment"),
+            ("@protocol", "keyword"),
+            ("P", "type"),
+            ("Q", "type"),
+            ("-", "operator"),
+            ("id", "type.builtin"),
+            ("init", "function"),
+            ("@end", "keyword"),
+            ("#endif", "keyword.control"),
+            ("@implementation", "keyword"),
+            ("C", "type"),
+            ("Cat", "type"),
+            ("@try", "keyword.control"),
+            ("self", "variable.builtin"),
+            ("super", "variable.builtin"),
+            ("init", "function"),
+            ("@finally", "keyword.control"),
+            ("SEL", "type.builtin"),
+            ("s", "variable"),
+            ("@selector", "keyword"),
+            ("BOOL", "type.builtin"),
+            ("YES", "constant.builtin"),
+            ("return", "keyword.control"),
+            ("@1", "number"),
+        ];
+        assert_has(Language::ObjC, text, want);
+        assert_eq!(all(Language::ObjCpp, text), all(Language::ObjC, text));
+        // An attribute is plain (as in C), its argument not a type.
+        let spans = all(Language::ObjC, text);
+        assert!(!spans.iter().any(|(t, _)| t.contains("__attribute__")), "{spans:?}");
+        assert!(spans.contains(&("unused".to_string(), "variable")), "{spans:?}");
     }
 
     #[test]

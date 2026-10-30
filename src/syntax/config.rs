@@ -322,7 +322,7 @@ impl Language {
     pub fn config(self) -> &'static LanguageConfig {
         match self {
             Language::PlainText => &PLAIN_TEXT,
-            Language::C | Language::Cpp => &C_LIKE,
+            Language::C | Language::Cpp | Language::ObjC | Language::ObjCpp => &C_LIKE,
             Language::Python => &PYTHON,
             Language::Rust => &RUST,
             Language::Markdown => &MARKDOWN,
@@ -396,6 +396,15 @@ mod tests {
         use Language::*;
         let comment = |l: Language| l.config().line_comment;
         assert_eq!(comment(Rust), Some("//"));
+        // Objective-C / ++ are VS Code's C++ data: `//`, brackets, and `"` closes (so `@"` does).
+        for l in [ObjC, ObjCpp] {
+            assert_eq!(comment(l), Some("//"), "{l:?}");
+            assert!(std::ptr::eq(l.config(), Cpp.config()), "{l:?}");
+            assert!(
+                l.config().pairs.iter().any(|p| p.open == '"' && p.close == '"'),
+                "{l:?}"
+            );
+        }
         assert_eq!(comment(Jsonc), Some("//"));
         for l in [
             Python,
