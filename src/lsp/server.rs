@@ -15,8 +15,10 @@ use lsp_types::{
     CompletionItemCapabilityResolveSupport, CompletionListCapability, DocumentFormattingClientCapabilities,
     DynamicRegistrationClientCapabilities, GeneralClientCapabilities, GotoCapability, HoverClientCapabilities,
     InitializeParams, MarkupKind, PositionEncodingKind, PrepareSupportDefaultBehavior,
-    PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities, RenameClientCapabilities, ServerCapabilities,
-    TextDocumentClientCapabilities, WindowClientCapabilities, WorkspaceClientCapabilities,
+    PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities, RenameClientCapabilities, SemanticTokenModifier,
+    SemanticTokenType, SemanticTokensClientCapabilities, SemanticTokensClientCapabilitiesRequests,
+    SemanticTokensFullOptions, SemanticTokensWorkspaceClientCapabilities, ServerCapabilities,
+    TextDocumentClientCapabilities, TokenFormat, WindowClientCapabilities, WorkspaceClientCapabilities,
     WorkspaceEditClientCapabilities, WorkspaceFolder,
 };
 use serde_json::{Value, json};
@@ -542,6 +544,14 @@ impl Conn {
             Message::Request { id, method, params } => {
                 let result = self.answer(&method, &params);
                 self.send(&Message::Response { id, result });
+                // Answered here; the app asks for the tokens again.
+                if method == "workspace/semanticTokens/refresh" {
+                    (self.sink)(Event::Notification {
+                        server: self.id,
+                        method,
+                        params,
+                    });
+                }
             }
             Message::Notification { method, params } => match method.as_str() {
                 "window/logMessage" => {
@@ -796,6 +806,22 @@ fn client_capabilities() -> ClientCapabilities {
                 }),
                 ..Default::default()
             }),
+            // Semantic tokens: the relative format, whole documents and deltas, no multi-line or
+            // overlapping tokens (`semantic::decode` cuts / sorts them anyway).
+            semantic_tokens: Some(SemanticTokensClientCapabilities {
+                dynamic_registration: None,
+                requests: SemanticTokensClientCapabilitiesRequests {
+                    range: None,
+                    full: Some(SemanticTokensFullOptions::Delta { delta: Some(true) }),
+                },
+                token_types: crate::semantic::Kind::NAMES.map(SemanticTokenType::from).to_vec(),
+                token_modifiers: crate::semantic::mods::NAMES.map(SemanticTokenModifier::from).to_vec(),
+                formats: vec![TokenFormat::RELATIVE],
+                overlapping_token_support: Some(false),
+                multiline_token_support: Some(false),
+                server_cancel_support: None,
+                augments_syntax_tokens: Some(true),
+            }),
             ..Default::default()
         }),
         window: Some(WindowClientCapabilities {
@@ -808,6 +834,10 @@ fn client_capabilities() -> ClientCapabilities {
         workspace: Some(WorkspaceClientCapabilities {
             apply_edit: Some(true),
             execute_command: Some(DynamicRegistrationClientCapabilities::default()),
+            // `workspace/semanticTokens/refresh`: the tokens are asked for again.
+            semantic_tokens: Some(SemanticTokensWorkspaceClientCapabilities {
+                refresh_support: Some(true),
+            }),
             workspace_edit: Some(WorkspaceEditClientCapabilities {
                 document_changes: Some(true),
                 resource_operations: Some(Vec::new()),
@@ -946,5 +976,19 @@ mod tests {
         assert_eq!(v["textDocument"]["rename"]["prepareSupportDefaultBehavior"], json!(1));
         assert_eq!(v["workspace"]["workspaceEdit"]["documentChanges"], json!(true));
         assert_eq!(v["workspace"]["workspaceEdit"]["resourceOperations"], json!([]));
+        let st = &v["textDocument"]["semanticTokens"];
+        assert_eq!(st["formats"], json!(["relative"]));
+        assert_eq!(st["requests"]["full"], json!({ "delta": true }));
+        assert!(st["requests"].get("range").is_none());
+        assert_eq!(st["overlappingTokenSupport"], json!(false));
+        assert_eq!(st["multilineTokenSupport"], json!(false));
+        assert_eq!(st["tokenTypes"][0], json!("namespace"));
+        assert!(
+            st["tokenModifiers"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("constructorOrDestructor"))
+        );
+        assert_eq!(v["workspace"]["semanticTokens"]["refreshSupport"], json!(true));
     }
 }

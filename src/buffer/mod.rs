@@ -25,6 +25,7 @@ use crate::logs::Tool;
 use crate::logs::tab::LogTab;
 use crate::quick_diff::QuickDiff;
 use crate::selection::Selections;
+use crate::semantic::Semantic;
 use crate::syntax::{Language, Syntax};
 
 pub type BufferId = u64;
@@ -72,6 +73,8 @@ pub struct Buffer {
     /// Language servers' diagnostics in this text, mapped through every change set applied
     /// until a server publishes again (`lsp::Manager::publish`).
     pub diagnostics: Marks,
+    /// A language server's semantic tokens and inactive regions, mapped like `diagnostics`.
+    pub semantic: Semantic,
     /// The gutter's git markers (lines changed against the index), mapped through every change
     /// set applied until the next computation (`app/quick_diff.rs`).
     pub quick_diff: QuickDiff,
@@ -200,6 +203,7 @@ impl Buffer {
             syntax: Syntax::default(),
             tracked: None,
             diagnostics: Marks::default(),
+            semantic: Semantic::default(),
             quick_diff: QuickDiff::default(),
             blame: Blame::default(),
             conflicts: Conflicts::default(),
@@ -452,6 +456,7 @@ impl Buffer {
         self.sets_applied += 1;
         self.syntax.map_highlights(changes);
         self.diagnostics.map(changes);
+        self.semantic.map(changes);
         self.quick_diff.map(changes);
         self.blame.map(changes);
         self.conflicts.map(changes);

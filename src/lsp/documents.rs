@@ -243,14 +243,20 @@ impl Documents {
 
     /// For diagnostics `server` published for `version` of `buffer`'s document: the text of that
     /// version and the change sets applied since, in order (`sync` first, so the newest version
-    /// is the buffer's text). Versions before it are dropped (a server publishes in order).
+    /// is the buffer's text). Nothing is dropped (only `KEEP_VERSIONS` caps them): diagnostics
+    /// and semantic tokens answer about versions independently, so a publish for a newer version
+    /// must not lose the version a semantic tokens request is still out for.
     /// `None` when the document isn't open on `server` or that version is no longer kept.
-    pub fn since(&mut self, buffer: BufferId, server: ServerId, version: i32) -> Option<(Rope, Vec<Arc<ChangeSet>>)> {
-        let doc = self.open.get_mut(&buffer).filter(|d| d.server == server)?;
+    pub fn since(&self, buffer: BufferId, server: ServerId, version: i32) -> Option<(Rope, Vec<Arc<ChangeSet>>)> {
+        let doc = self.open.get(&buffer).filter(|d| d.server == server)?;
         let i = doc.versions.iter().position(|v| v.version == version)?;
-        doc.versions.drain(..i);
-        let text = doc.versions[0].text.clone();
-        let sets = doc.versions.iter().flat_map(|v| v.then.iter().cloned()).collect();
+        let text = doc.versions[i].text.clone();
+        let sets = doc
+            .versions
+            .iter()
+            .skip(i)
+            .flat_map(|v| v.then.iter().cloned())
+            .collect();
         Some((text, sets))
     }
 }

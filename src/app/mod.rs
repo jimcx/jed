@@ -38,6 +38,7 @@ mod rename;
 mod replace;
 mod scm;
 mod scrollbar;
+mod semantic;
 mod session;
 mod shell;
 mod side;
@@ -114,6 +115,8 @@ enum Timer {
     Completion,
     /// The cursor rested `code_action::BULB_DELAY`: the lightbulb's request.
     Bulb,
+    /// A buffer's semantic tokens are due (`app::semantic::DELAY` after its last edit).
+    Semantic,
     /// Edited buffers' gutter markers are due (`quick_diff::DELAY`).
     QuickDiff,
     /// Diff tabs of edited buffers are due (`diff_view::DELAY`).
@@ -205,6 +208,13 @@ enum AppEvent {
     Opened {
         path: PathBuf,
         result: Result<files::Loaded, LoadError>,
+    },
+    /// A semantic tokens answer decoded in `version`'s text (`app::semantic`).
+    SemanticDecoded {
+        buffer: BufferId,
+        server: crate::lsp::ServerId,
+        version: i32,
+        tokens: Vec<crate::semantic::Token>,
     },
     /// Find's whole-file count on a hex tab (`HexTab::id`) for one query generation
     /// (`find::HexFind`); an older generation's is dropped.
@@ -505,6 +515,8 @@ pub struct App {
     pub completion: crate::completion::Completion,
     /// The code action list, the lightbulb's rest and cache, the hover's quick fixes.
     pub code_actions: crate::code_action::CodeActions,
+    /// Semantic tokens per buffer: result ids, raw arrays and the debounce (`app::semantic`).
+    semantic: semantic::State,
     /// The Locations list (go to definition's places), while there is one.
     pub locations: Option<crate::locations::Locations>,
     /// Numbers Locations lists, so file reads for a replaced one are dropped.
@@ -683,6 +695,7 @@ impl App {
             hover: Default::default(),
             completion: Default::default(),
             code_actions: Default::default(),
+            semantic: Default::default(),
             locations: None,
             locations_generation: 0,
             git: Default::default(),
@@ -905,6 +918,10 @@ impl App {
             .code_actions
             .deadline()
             .map(|d| (tokio::time::Instant::from_std(d), Timer::Bulb));
+        let semantic = self
+            .semantic
+            .deadline()
+            .map(|d| (tokio::time::Instant::from_std(d), Timer::Semantic));
         let quick_diff = self
             .quick_diff
             .deadline()
@@ -933,7 +950,7 @@ impl App {
             .files_poll
             .map(|d| (tokio::time::Instant::from_std(d), Timer::Files));
         let next = [
-            fs, search, hover, completion, bulb, quick_diff, diff, blame, backup, git_status, logs, files,
+            fs, search, hover, completion, bulb, semantic, quick_diff, diff, blame, backup, git_status, logs, files,
         ]
         .into_iter()
         .flatten()
@@ -957,6 +974,7 @@ impl App {
             Timer::Hover => self.hover_tick(Instant::now()),
             Timer::Completion => self.completion_tick(Instant::now()),
             Timer::Bulb => self.bulb_tick(Instant::now()),
+            Timer::Semantic => self.semantic_tick(Instant::now()),
             Timer::QuickDiff => self.sync_quick_diff(),
             Timer::Diff => self.sync_diffs(),
             Timer::Blame => self.sync_blame(),
@@ -1255,6 +1273,7 @@ impl App {
         self.check_requests();
         self.check_hover();
         self.check_code_actions();
+        self.check_semantic();
         self.check_peek();
     }
 
@@ -1649,6 +1668,12 @@ impl App {
                 self.save_done(buffer, state, result, elapsed, to)
             }
             AppEvent::Opened { path, result } => self.opened(path, result),
+            AppEvent::SemanticDecoded {
+                buffer,
+                server,
+                version,
+                tokens,
+            } => self.semantic_decoded(buffer, server, version, tokens),
             AppEvent::HexCount { tab, generation, count } => self.hex_counted(tab, generation, count),
             AppEvent::Listed { dir, ignored, result } => self.listed(dir, ignored, result),
             AppEvent::FsChanged(paths) => self.fs_changed(paths),
@@ -1726,6 +1751,7 @@ impl App {
         self.check_completion();
         self.check_hover();
         self.check_code_actions();
+        self.check_semantic();
         self.check_peek();
     }
 }
@@ -1808,6 +1834,7 @@ impl App {
         self.check_requests();
         self.check_hover();
         self.check_code_actions();
+        self.check_semantic();
         self.check_peek();
     }
 
@@ -1903,6 +1930,7 @@ impl App {
                     lsp::Request::PrepareRename { .. } => "prepare rename",
                     lsp::Request::Rename { .. } => "rename",
                     lsp::Request::Format => "format",
+                    lsp::Request::SemanticTokens { .. } => "semantic tokens",
                     lsp::Request::CodeActions {
                         purpose: crate::code_action::Purpose::List,
                         ..

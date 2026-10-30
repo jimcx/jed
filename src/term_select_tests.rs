@@ -348,7 +348,7 @@ async fn term_select_mouse_reporting_keeps_every_event() {
             run.screen().screen().mouse_protocol_mode() == MouseProtocolMode::ButtonMotion
         })
         .await,
-        "the program asked for the mouse:\n{}",
+        "FLAKE(term_select_mouse_reporting): the program asked for the mouse:\n{}",
         screen_text(&app)
     );
     let text = screen_text(&app);
@@ -368,7 +368,7 @@ async fn term_select_mouse_reporting_keeps_every_event() {
             text.contains("^[[<0;1;") && text.contains("^[[<32;4;")
         })
         .await,
-        "the program got the press and the drag:\n{}",
+        "FLAKE(term_select_mouse_reporting): the program got the press and the drag:\n{}",
         screen_text(&app)
     );
     let term = draw(&mut app, 100, 30);

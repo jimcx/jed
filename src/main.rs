@@ -119,6 +119,9 @@ mod scrollbar;
 mod search;
 mod search_view;
 mod selection;
+mod semantic;
+#[cfg(test)]
+mod semantic_tokens_tests;
 mod session;
 mod shell;
 mod shell_integration;

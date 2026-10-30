@@ -61,12 +61,20 @@ pub(super) enum Request {
     /// `workspace/executeCommand` of an applied action's command (`title`, for a failure's
     /// message): always current (its edits come as the server's `workspace/applyEdit`).
     ExecuteCommand { title: String },
+    /// `textDocument/semanticTokens/full` (or `full/delta`) of `buffer`'s document as sent in
+    /// `version`: never stale, the answer is read in that version's text and mapped forward.
+    SemanticTokens {
+        buffer: BufferId,
+        version: i32,
+        delta: bool,
+    },
 }
 
 impl Request {
     fn same_kind(&self, other: &Request) -> bool {
         match (self, other) {
             (Request::CodeActions { purpose: a, .. }, Request::CodeActions { purpose: b, .. }) => a == b,
+            (Request::SemanticTokens { buffer: a, .. }, Request::SemanticTokens { buffer: b, .. }) => a == b,
             _ => std::mem::discriminant(self) == std::mem::discriminant(other),
         }
     }
@@ -103,6 +111,8 @@ impl App {
         }
         self.lsp.sync_documents(&mut self.buffers);
         self.drop_cleared_diagnostics();
+        // Each turn: a document just opened (or a server just running) is due at once.
+        self.check_semantic();
     }
 
     fn start_servers(&mut self) {
@@ -139,6 +149,9 @@ impl App {
                 Some(p) => self.answer(p, result),
                 None => tracing::debug!(id, "answer to a request nobody waits for (cancelled or replaced)"),
             },
+            Event::Notification { server, method, .. } if method == super::semantic::REFRESH => {
+                self.semantic_refresh(server);
+            }
             event => {
                 if let Event::Failed { server, .. } | Event::Exited { server, .. } = &event {
                     // It answers none of them now.
@@ -327,6 +340,7 @@ impl App {
                 ..
             } => return self.buffers.get(p.buffer).is_some_and(|b| b.revision() == *revision),
             Request::ExecuteCommand { .. } => return true,
+            Request::SemanticTokens { buffer, .. } => return self.buffers.get(*buffer).is_some(),
             Request::CodeActions {
                 purpose: Purpose::Hover,
                 ..
@@ -376,6 +390,9 @@ impl App {
                     {
                         self.code_actions.asking = None;
                     }
+                    if let Request::SemanticTokens { buffer, .. } = p.request {
+                        self.semantic_failed(buffer);
+                    }
                     return;
                 }
                 match &p.request {
@@ -413,6 +430,7 @@ impl App {
                     Request::ExecuteCommand { title } => {
                         self.notify(super::Level::Error, format!("'{title}' failed: {}", e.message));
                     }
+                    Request::SemanticTokens { buffer, .. } => self.semantic_failed(*buffer),
                     _ => {}
                 }
                 return;
@@ -435,6 +453,7 @@ impl App {
             Request::CodeActions { purpose, range } => self.code_actions_answer(&p, purpose, range, &value),
             Request::ResolveAction => self.resolve_action_answer(&p, &value),
             Request::ExecuteCommand { .. } => {}
+            Request::SemanticTokens { version, .. } => self.semantic_answer(&p, version, &value),
         }
     }
 

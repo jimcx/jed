@@ -13,7 +13,9 @@
 //! params (a token's `begin` / `report` / `end`); `test/crash` makes it hang up. For tool logs:
 //! it writes `fake server starting` to its stderr when launched, `test/stderr` writes its
 //! `text` param as a stderr line, `test/log` / `test/show` send `window/logMessage` /
-//! `window/showMessage` with their params.
+//! `window/showMessage` with their params; `test/refresh` sends a
+//! `workspace/semanticTokens/refresh` request (id `"refresh"`; the client's answer in
+//! `answers()`).
 //!
 //! Scripted answers: `respond(method, result)` makes it answer every `method` request (e.g.
 //! `textDocument/hover`) with `result`; `hold(method, true)` keeps those answers until a
@@ -24,7 +26,7 @@
 //! `referencesProvider`, `renameProvider` (with `prepareProvider` unless
 //! `FakeOptions::no_prepare_rename`) and `documentFormattingProvider` (unless
 //! `FakeOptions::no_formatting`) and `codeActionProvider` (with `resolveProvider`, unless
-//! `FakeOptions::no_code_actions`); an unscripted `completionItem/resolve` or
+//! `FakeOptions::no_code_actions`) and, with `FakeOptions::semantic_tokens`, `semanticTokensProvider`; an unscripted `completionItem/resolve` or
 //! `codeAction/resolve` answers with the item it got, any other unscripted request with
 //! MethodNotFound. `apply_edit_on(method, params)` makes it send `workspace/applyEdit` with
 //! `params` before answering each `method` request (a command's edit, as servers send it).
@@ -73,6 +75,9 @@ pub struct FakeOptions {
     pub no_code_actions: bool,
     /// What `Launcher::locate` answers (the `xcrun --find` fallback for `sourcekit-lsp`).
     pub located: Option<String>,
+    /// Advertise `semanticTokensProvider` (legend: types `variable`, `class`, `function`;
+    /// modifiers `declaration`, `constructorOrDestructor`; `full` with `delta`, no `range`).
+    pub semantic_tokens: bool,
 }
 
 /// The fake's copy of an open document.
@@ -340,6 +345,16 @@ async fn serve(
                                 "resolveProvider": true,
                             });
                         }
+                        if options.semantic_tokens {
+                            caps["semanticTokensProvider"] = json!({
+                                "legend": {
+                                    "tokenTypes": ["variable", "class", "function"],
+                                    "tokenModifiers": ["declaration", "constructorOrDestructor"],
+                                },
+                                "full": { "delta": true },
+                                "range": false,
+                            });
+                        }
                         if options.utf8 {
                             caps["positionEncoding"] = json!("utf-8");
                         }
@@ -413,6 +428,11 @@ async fn serve(
                     "test/show" => out.push(Message::notification("window/showMessage", params)),
                     "test/publish" => out.push(Message::notification("textDocument/publishDiagnostics", params)),
                     "test/progress" => out.push(Message::notification("$/progress", params)),
+                    "test/refresh" => out.push(Message::Request {
+                        id: Id::Str("refresh".into()),
+                        method: "workspace/semanticTokens/refresh".into(),
+                        params: Value::Null,
+                    }),
                     "test/flush" => {
                         for (id, params) in held.drain(..).rev() {
                             out.push(Message::Response { id, result: Ok(params) });

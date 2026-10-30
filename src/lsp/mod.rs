@@ -450,9 +450,19 @@ impl Manager {
     }
 
     /// The document version a server has for `buffer`, if open.
-    #[cfg_attr(not(test), allow(dead_code))] // tests
     pub fn version(&self, buffer: BufferId) -> Option<i32> {
         self.docs.version(buffer)
+    }
+
+    /// `Documents::since`: `version`'s text and the change sets after it (call `sync_documents`
+    /// first), for an answer about an older version (diagnostics, semantic tokens).
+    pub fn since(
+        &self,
+        buffer: BufferId,
+        server: ServerId,
+        version: i32,
+    ) -> Option<(ropey::Rope, Vec<Arc<crate::buffer::change::ChangeSet>>)> {
+        self.docs.since(buffer, server, version)
     }
 
     /// The text of `version` of `buffer`'s document as sent, while it's kept: an edit computed
