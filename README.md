@@ -27,7 +27,7 @@ fully supported. Not modal, nothing like vim. Written in Rust (ratatui, crosster
   workspace-wide search and replace with include / exclude filters, split editor groups, back / forward
 - **Syntax highlighting** (tree-sitter): C, C++, Python, Rust, Markdown, YAML, JSON / JSONC, XML, TOML, shell,
   CMake, Makefile, Dockerfile
-- **Language servers:** clangd, ty and rust-analyzer out of the box (others configurable) — diagnostics,
+- **Language servers:** clangd, ty, rust-analyzer and sourcekit-lsp out of the box (others configurable) — diagnostics,
   completion, hover, go to definition, references, rename, formatting, code actions
 - **Git** (view and stage): Source Control view, gutter markers, side-by-side diffs, stage / unstage hunks, inline
   blame, file and commit history
@@ -76,6 +76,7 @@ Language servers:
 
 - [docs/clangd.md](docs/clangd.md) — C and C++ with clangd
 - [docs/ty.md](docs/ty.md) — Python with ty (including SCons projects)
+- [docs/sourcekit-lsp.md](docs/sourcekit-lsp.md) — Swift with sourcekit-lsp
 
 ## Keybindings
 
@@ -90,7 +91,7 @@ For users:
 - [docs/tasks.md](docs/tasks.md) — configuring tasks
 - [docs/git-editor.md](docs/git-editor.md) — jed as git's `core.editor`
 - [docs/syntax-plugins.md](docs/syntax-plugins.md) — adding languages with tree-sitter grammars
-- [docs/clangd.md](docs/clangd.md), [docs/ty.md](docs/ty.md) — language servers
+- [docs/clangd.md](docs/clangd.md), [docs/ty.md](docs/ty.md), [docs/sourcekit-lsp.md](docs/sourcekit-lsp.md) — language servers
 
 For contributors:
 

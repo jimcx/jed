@@ -50,6 +50,12 @@ pub struct Transport {
 /// Starts servers. Called on a runtime worker thread, from the server's task.
 pub trait Launcher: Send + Sync {
     fn launch(&self, config: &ServerConfig, root: &Path) -> std::io::Result<Transport>;
+
+    /// Where to find `sourcekit-lsp` (`XCRUN_TOOL`) when it isn't on `PATH`, if anywhere: an
+    /// absolute path to launch instead. Blocking: call from spawn_blocking.
+    fn locate(&self, _command: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Runs the configured command as a child process with piped stdio, in the workspace root.
@@ -76,6 +82,10 @@ impl Launcher for ProcessLauncher {
             child: Some(child),
         })
     }
+
+    fn locate(&self, command: &str) -> Option<String> {
+        xcrun_fallback(command, cfg!(target_os = "macos"), on_path, xcrun_find)
+    }
 }
 
 /// The command and its arguments as one line, for the log (arguments with spaces quoted).
@@ -85,6 +95,46 @@ fn command_line(config: &ServerConfig) -> String {
         .map(|a| crate::recent::shell_quote(a).into_owned())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// The one built-in server that Xcode / the command line tools hide off `PATH`.
+pub(crate) const XCRUN_TOOL: &str = "sourcekit-lsp";
+
+/// Where to run `command` when it isn't on `PATH`: only on macOS, only for `sourcekit-lsp`, and
+/// only when the PATH lookup (`on_path`) failed, ask `xcrun --find` (`xcrun`). `None`: run it as
+/// named (a missing one then gives the usual "couldn't start" message).
+fn xcrun_fallback(
+    command: &str,
+    macos: bool,
+    on_path: impl FnOnce(&str) -> bool,
+    xcrun: impl FnOnce(&str) -> Option<String>,
+) -> Option<String> {
+    if !macos || command != XCRUN_TOOL || on_path(command) {
+        return None;
+    }
+    xcrun(command)
+}
+
+fn on_path(name: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
+}
+
+/// `xcrun --find <tool>`. Blocking: call from spawn_blocking.
+fn xcrun_find(tool: &str) -> Option<String> {
+    let out = std::process::Command::new("xcrun")
+        .args(["--find", tool])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    xcrun_path(out.status.success(), &out.stdout)
+}
+
+/// What `xcrun --find` printed, if it found something: it succeeded and printed the absolute path
+/// of an existing file (trailing newline trimmed).
+fn xcrun_path(success: bool, stdout: &[u8]) -> Option<String> {
+    let path = std::str::from_utf8(stdout).ok()?.trim();
+    (success && Path::new(path).is_absolute() && Path::new(path).is_file()).then(|| path.to_string())
 }
 
 /// A bare name is looked up on `PATH` (by `Command`); a relative path is relative to the root.
@@ -174,7 +224,17 @@ impl Task {
             command_line(&self.config),
             self.root.display()
         ));
-        let transport = match self.launcher.launch(&self.config, &self.root) {
+        // `sourcekit-lsp` is often not on PATH on macOS (it lives in the Xcode toolchain).
+        let mut launch_config = self.config.clone();
+        if launch_config.command == XCRUN_TOOL {
+            let launcher = self.launcher.clone();
+            let found = tokio::task::spawn_blocking(move || launcher.locate(XCRUN_TOOL)).await;
+            if let Ok(Some(path)) = found {
+                log.info(&format!("Not on PATH: using {path} (from xcrun)"));
+                launch_config.command = path;
+            }
+        }
+        let transport = match self.launcher.launch(&launch_config, &self.root) {
             Ok(t) => t,
             Err(e) => {
                 tracing::warn!(server = %name, command = %self.config.command, "can't start language server: {e}");
@@ -811,6 +871,68 @@ mod tests {
         assert_eq!(program("clangd", root), Path::new("clangd"));
         assert_eq!(program("/usr/bin/clangd", root), Path::new("/usr/bin/clangd"));
         assert_eq!(program(".venv/bin/ty", root), Path::new("/ws/.venv/bin/ty"));
+    }
+
+    #[test]
+    fn xcrun_finds_sourcekit_lsp_only_on_macos_when_not_on_path() {
+        let found = |_: &str| Some("/Xcode/sourcekit-lsp".to_string());
+        let find = |cmd, macos, path| xcrun_fallback(cmd, macos, |_| path, found);
+        assert_eq!(
+            find("sourcekit-lsp", true, false).as_deref(),
+            Some("/Xcode/sourcekit-lsp")
+        );
+        assert_eq!(find("sourcekit-lsp", true, true), None, "on PATH: run as named");
+        assert_eq!(find("sourcekit-lsp", false, false), None, "not macOS");
+        assert_eq!(find("clangd", true, false), None, "other servers");
+        assert_eq!(
+            xcrun_fallback("sourcekit-lsp", true, |_| false, |_| None),
+            None,
+            "xcrun can't find it"
+        );
+    }
+
+    #[test]
+    fn xcrun_output_is_used_only_when_it_names_an_existing_absolute_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = dir.path().join("sourcekit-lsp");
+        std::fs::write(&tool, "").unwrap();
+        let tool = tool.to_str().unwrap();
+        assert_eq!(xcrun_path(true, format!("{tool}\n").as_bytes()).as_deref(), Some(tool));
+        assert_eq!(xcrun_path(false, format!("{tool}\n").as_bytes()), None, "xcrun failed");
+        assert_eq!(xcrun_path(true, b""), None, "nothing printed");
+        assert_eq!(xcrun_path(true, b"  \n"), None, "only whitespace");
+        assert_eq!(xcrun_path(true, b"sourcekit-lsp\n"), None, "not absolute");
+        let gone = dir.path().join("gone");
+        assert_eq!(
+            xcrun_path(true, gone.to_str().unwrap().as_bytes()),
+            None,
+            "no such file"
+        );
+        assert_eq!(
+            xcrun_path(true, dir.path().to_str().unwrap().as_bytes()),
+            None,
+            "a directory"
+        );
+        // No `xcrun` at all (not macOS, or no developer tools): nothing, and no error.
+        if which_xcrun().is_none() {
+            assert_eq!(xcrun_find("sourcekit-lsp"), None);
+        }
+    }
+
+    fn which_xcrun() -> Option<PathBuf> {
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|d| d.join("xcrun"))
+            .find(|p| p.is_file())
+    }
+
+    #[test]
+    fn process_launcher_locates_only_sourcekit_lsp() {
+        // Off macOS (or for another command) it never asks xcrun.
+        if !cfg!(target_os = "macos") {
+            assert_eq!(ProcessLauncher.locate("sourcekit-lsp"), None);
+        }
+        assert_eq!(ProcessLauncher.locate("clangd"), None);
+        assert_eq!(ProcessLauncher.locate("/opt/swift/bin/sourcekit-lsp"), None);
     }
 
     #[test]

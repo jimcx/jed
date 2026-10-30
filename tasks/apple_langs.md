@@ -2,7 +2,7 @@
 id: apple_langs
 name: Objective-C and Swift
 summary: Objective-C and Swift files get syntax colours, comment / pair / indent behaviour and language servers (`clangd` for Objective-C, `sourcekit-lsp` for Swift)
-status: in-progress
+status: done
 priority: 0
 dependencies: []
 ---
@@ -27,4 +27,8 @@ See [Syntax highlighting](../PLAN.md#syntax-highlighting), [LSP](../PLAN.md#lsp)
       - Built: `Language::Swift` on `tree-sitter-swift` 0.7.4 (MIT, `parser.c` ~23 MB + `scanner.c`; ~31 s incremental debug build), `.swift` and `swift` shebang detection, `queries/swift.scm` (the crate's highlights plus keyword.control, attributes, `#if`, shebang). Config `SWIFT` = C-like without the `'` pair. `scope_of` treats `interpolated_expression`, `raw_str_interpolation`, the `\(` opener and `key_path_string_expression` as code. `character.special` is intentionally uncoloured. Tests: `swift_spans`, `apple_langs_swift_*` in `src/apple_langs_tests.rs`.
       - Deferred: `defer` stays plain (no grammar node); no backtick in Swift's `surround` list; "`\(` not auto-closed" was read as "no special pair", so `(` closes inside string text as anywhere.
       - Still to check by hand: a `.swift` file's status bar says Swift and the Dark+ colours look right.
-    - apple_langs-c: the Swift server: the `sourcekit-lsp` built-in (with the `xcrun` fallback), progress in the status bar, the fake-server test, the real-server test on a SwiftPM package (skipped without the binary), server docs; hand checks (Linux with a swift.org toolchain, macOS with Xcode); marks the task ✅
+    - ✅ apple_langs-c: the Swift server: the `sourcekit-lsp` built-in (with the `xcrun` fallback), progress in the status bar, the fake-server test, the real-server test on a SwiftPM package (skipped without the binary), server docs; hand checks (Linux with a swift.org toolchain, macOS with Xcode); marks the task ✅
+      - Built: built-in `sourcekit-lsp` for `Language::Swift` (`Builtins.sourcekit_lsp`, no args); `Launcher::locate` (blocking, run in `spawn_blocking` from `Task::run`) resolves a bare `sourcekit-lsp` through `xcrun --find` on macOS when it isn't on PATH (`xcrun_fallback` / `xcrun_path` are pure and tested); `docs/sourcekit-lsp.md`. Progress uses the generic `$/progress` handling. Fake-server tests for `.m` and `.swift`; three real-server tests for Swift (diagnostics on a lone file, hover / definition on a two-file SwiftPM package, completion) skip without the binary.
+      - Also: `.h` stays C++ (path detection never reads text); `.mm` uses the Objective-C grammar; both grammars are large (`tree-sitter-objc` parser.c ~28 MB, `tree-sitter-swift` ~23 MB).
+      - Deferred: keyword selectors in `@selector(a:b:)` uncoloured; `defer` plain; if the real hover / definition test is flaky on a machine with sourcekit-lsp, retry F12 in `real_hover_and_definition`. No Tools-view row for missing servers exists.
+      - Still to check by hand: sourcekit-lsp was never run (not installed on the Linux dev box): on Linux with a swift.org toolchain run `scripts/check test apple_langs_real`, then open a SwiftPM package (indexing progress in the status bar, diagnostics, hover, definition across files, completion, rename, format) and a lone `.swift` file; on macOS with Xcode check sourcekit-lsp starts when off PATH (Tools log: "Not on PATH: using … (from xcrun)"); `.m` / `.mm` / `.swift` colours, status-bar names and clangd on a `.m` file in the real editor.

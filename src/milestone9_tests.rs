@@ -165,6 +165,9 @@ pub(crate) fn project(dir: &Path, files: &[(&str, &str)]) -> PathBuf {
     let root = workspace::normalize(dir).join("proj");
     fs::create_dir_all(&root).unwrap();
     for (name, text) in files {
+        if let Some(parent) = root.join(name).parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
         fs::write(root.join(name), text).unwrap();
     }
     root

@@ -1,4 +1,4 @@
-//! Which language server runs for a language: the built-ins (`clangd`, `ty`, `rust-analyzer`), or
+//! Which language server runs for a language: the built-ins (`clangd`, `ty`, `rust-analyzer`, `sourcekit-lsp`), or
 //! `.workspace` `[lsp.<language id>]` when the workspace is trusted, or the user's `settings.toml`
 //! `[lsp.<language id>]` (always trusted: the user's own file).
 
@@ -46,13 +46,16 @@ fn command_name(command: &str) -> String {
 
 /// The servers jed knows without configuration: `clangd` for C, C++, Objective-C and Objective-C++, `ty server` for Python,
 /// `rust-analyzer` for Rust (no `initializationOptions`: it finds the cargo workspace under the
-/// root itself, and checks with `cargo check` on save).
+/// root itself, and checks with `cargo check` on save), `sourcekit-lsp` for Swift (no arguments: it
+/// reads `Package.swift` / `compile_commands.json` / `buildServer.json` under the root; off `PATH` on
+/// macOS it is found with `xcrun --find`, see `server.rs`).
 #[derive(Debug, Clone)]
 pub struct Builtins {
     pub clangd: ServerConfig,
     pub ty: ServerConfig,
     pub rust_analyzer: ServerConfig,
-    /// The user's `settings.toml` `[lsp.<id>]` servers by language id: they beat the three above.
+    pub sourcekit_lsp: ServerConfig,
+    /// The user's `settings.toml` `[lsp.<id>]` servers by language id: they beat the four above.
     pub user: BTreeMap<String, ServerConfig>,
 }
 
@@ -62,6 +65,7 @@ impl Default for Builtins {
             clangd: ServerConfig::new("clangd", &[]),
             ty: ServerConfig::new("ty", &["server"]),
             rust_analyzer: ServerConfig::new("rust-analyzer", &[]),
+            sourcekit_lsp: ServerConfig::new("sourcekit-lsp", &[]),
             user: BTreeMap::new(),
         }
     }
@@ -76,6 +80,7 @@ impl Builtins {
             Language::C | Language::Cpp | Language::ObjC | Language::ObjCpp => Some(&self.clangd),
             Language::Python => Some(&self.ty),
             Language::Rust => Some(&self.rust_analyzer),
+            Language::Swift => Some(&self.sourcekit_lsp),
             _ => None,
         }
     }
@@ -261,5 +266,48 @@ init_options = { python = { venv = ".venv" } }
             resolve(Language::Rust, &ws, Trust::Undecided, &b),
             Resolved::AwaitingTrust
         );
+    }
+
+    #[test]
+    fn sourcekit_lsp_is_built_in_for_swift() {
+        let mut b = Builtins::default();
+        let none = WorkspaceConfig::default();
+        let Resolved::Server(s) = resolve(Language::Swift, &none, Trust::NotNeeded, &b) else {
+            panic!()
+        };
+        assert_eq!(s, b.sourcekit_lsp);
+        assert_eq!(
+            (s.name.as_str(), s.command.as_str()),
+            ("sourcekit-lsp", "sourcekit-lsp")
+        );
+        assert!(s.args.is_empty() && s.init_options.is_none() && !s.from_workspace);
+
+        // `.workspace` wins only when trusted.
+        let ws =
+            WorkspaceConfig::parse("[lsp.swift]\ncommand = \"/opt/swift/bin/sourcekit-lsp\"\nargs = [\"-Xswiftc\"]\n")
+                .unwrap();
+        let Resolved::Server(s) = resolve(Language::Swift, &ws, Trust::Trusted, &b) else {
+            panic!()
+        };
+        assert_eq!(
+            (s.command.as_str(), s.args.len(), s.from_workspace),
+            ("/opt/swift/bin/sourcekit-lsp", 1, true)
+        );
+        assert_eq!(
+            resolve(Language::Swift, &ws, Trust::Restricted, &b),
+            Resolved::Server(b.sourcekit_lsp.clone())
+        );
+        assert_eq!(
+            resolve(Language::Swift, &ws, Trust::Undecided, &b),
+            Resolved::AwaitingTrust
+        );
+
+        // The user's settings.toml beats the built-in.
+        let user: BTreeMap<String, LspServer> = toml::from_str("[swift]\ncommand = \"mysk\"\n").unwrap();
+        b.user = user_servers(&user).0;
+        let Resolved::Server(s) = resolve(Language::Swift, &none, Trust::Restricted, &b) else {
+            panic!()
+        };
+        assert_eq!((s.name.as_str(), s.from_workspace), ("mysk", false));
     }
 }

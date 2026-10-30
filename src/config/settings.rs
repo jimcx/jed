@@ -300,7 +300,7 @@ pub const TEMPLATE: &str = "\
 
 # The language server for a language id (a built-in one's, such as python, or a syntax plugin's),
 # in every workspace. A trusted .workspace [lsp.<id>] wins over this; this wins over the built-in
-# clangd, ty and rust-analyzer. command: a name on PATH; args and init_options are optional.
+# clangd, ty, rust-analyzer and sourcekit-lsp. command: a name on PATH; args and init_options are optional.
 # [lsp.lua]
 # command = \"lua-language-server\"
 # args = []

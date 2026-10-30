@@ -71,6 +71,8 @@ pub struct FakeOptions {
     pub no_hover: bool,
     /// Don't advertise `codeActionProvider`.
     pub no_code_actions: bool,
+    /// What `Launcher::locate` answers (the `xcrun --find` fallback for `sourcekit-lsp`).
+    pub located: Option<String>,
 }
 
 /// The fake's copy of an open document.
@@ -85,6 +87,8 @@ pub struct FakeDoc {
 struct Shared {
     /// Each launch's server name (also the ones that fail as missing).
     launches: Vec<String>,
+    /// Each launch's command (a located one's absolute path).
+    commands: Vec<String>,
     /// Every message received (by any launch), in order.
     received: Vec<Value>,
     /// The client's answers to the fake's requests, by request id.
@@ -122,6 +126,11 @@ impl FakeLauncher {
 
     pub fn launches(&self) -> Vec<String> {
         self.shared.lock().unwrap().launches.clone()
+    }
+
+    /// Each launch's command, as launched.
+    pub fn commands(&self) -> Vec<String> {
+        self.shared.lock().unwrap().commands.clone()
     }
 
     /// Methods of the requests and notifications received, in order.
@@ -215,8 +224,16 @@ impl FakeLauncher {
 }
 
 impl Launcher for FakeLauncher {
+    fn locate(&self, _command: &str) -> Option<String> {
+        self.options.located.clone()
+    }
+
     fn launch(&self, config: &ServerConfig, _root: &Path) -> std::io::Result<Transport> {
-        self.shared.lock().unwrap().launches.push(config.name.clone());
+        {
+            let mut shared = self.shared.lock().unwrap();
+            shared.launches.push(config.name.clone());
+            shared.commands.push(config.command.clone());
+        }
         if self.options.missing.contains(&config.command) {
             return Err(std::io::ErrorKind::NotFound.into());
         }

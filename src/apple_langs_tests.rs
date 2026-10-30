@@ -5,7 +5,10 @@
 //! `clangd` (a fake server: one launch for `.m` and `.mm`, `languageId` `objective-c` in
 //! `didOpen`, `objective-cpp` for `.mm`); typing `@"` in a `.m` file closes the string and
 //! Cmd+/ comments a line with `//`; a real clangd (skipped with a note when it isn't on PATH) reports an error, shows
-//! hover, goes to a definition and completes a member in a `.m` file.
+//! hover, goes to a definition and completes a member in a `.m` file. apple_langs-c: `.swift`
+//! files open with the built-in `sourcekit-lsp` (fake server, `languageId` `swift`); a real one
+//! (skipped when not runnable) reports an error, hovers, goes to a definition across a SwiftPM
+//! package's files and completes a member.
 
 use crossterm::event::{KeyCode as K, KeyModifiers as M};
 
@@ -142,7 +145,7 @@ async fn apple_langs_objc_edits_by_the_c_like_config() {
     app.shutdown_servers().await;
 }
 
-/// apple_langs-b: a `.swift` file is Swift (no server yet); `"` closes outside strings and is
+/// apple_langs-b: a `.swift` file is Swift; `"` closes outside strings and is
 /// typed over, `'` doesn't pair, Enter after `{` indents, Cmd+/ uses `//`.
 #[tokio::test(flavor = "multi_thread")]
 async fn apple_langs_swift_edits_by_the_swift_config() {
@@ -217,4 +220,160 @@ async fn apple_langs_swift_quote_closes_in_interpolation_not_in_string_text() {
     quote_at(&mut app, 3).await;
     assert_eq!(text(&app).lines().nth(2), Some("let r = \"a -\" b\""));
     app.shutdown_servers().await;
+}
+
+/// apple_langs-c: a `.swift` file starts the built-in `sourcekit-lsp` (a fake server), with
+/// `languageId` `swift`.
+#[tokio::test(flavor = "multi_thread")]
+async fn apple_langs_swift_files_start_the_sourcekit_lsp_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[("a.swift", "let x = 1\n")]);
+    let fake = FakeLauncher::new(FakeOptions {
+        utf8: true,
+        ..Default::default()
+    });
+    let mut app = open_app(&root, fake.clone());
+    open(&mut app, &root.join("a.swift"));
+    assert_eq!(app.active_buffer().unwrap().syntax.language(), Language::Swift);
+    assert!(app.settle(|a| encoding(a, Language::Swift).is_some()).await);
+    assert_eq!(fake.launches(), ["sourcekit-lsp"]);
+    assert_eq!(fake.commands(), ["sourcekit-lsp"], "found on PATH: run as named");
+    assert!(app.settle(|_| fake.first("textDocument/didOpen").is_some()).await);
+    let open_msg = fake.first("textDocument/didOpen").unwrap();
+    assert_eq!(open_msg["params"]["textDocument"]["languageId"], "swift");
+    assert_eq!(open_msg["params"]["textDocument"]["uri"], uri(&root.join("a.swift")));
+    app.shutdown_servers().await;
+}
+
+/// apple_langs-c: when `sourcekit-lsp` isn't on PATH and `xcrun --find` locates it (the
+/// launcher's `locate`), that path is launched under the same server name and the tool log says
+/// so; other servers' commands are never located.
+#[tokio::test(flavor = "multi_thread")]
+async fn apple_langs_sourcekit_lsp_off_path_runs_what_xcrun_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[("a.swift", "let x = 1\n"), ("b.c", "int x;\n")]);
+    let found = "/Xcode/usr/bin/sourcekit-lsp";
+    let fake = FakeLauncher::new(FakeOptions {
+        utf8: true,
+        located: Some(found.into()),
+        ..Default::default()
+    });
+    let mut app = open_app(&root, fake.clone());
+    open(&mut app, &root.join("a.swift"));
+    assert!(app.settle(|a| encoding(a, Language::Swift).is_some()).await);
+    open(&mut app, &root.join("b.c"));
+    assert!(app.settle(|a| encoding(a, Language::C).is_some()).await);
+    assert_eq!(fake.launches(), ["sourcekit-lsp", "clangd"]);
+    assert_eq!(fake.commands(), [found, "clangd"]);
+    let tool = crate::logs::Tool::Server("sourcekit-lsp".into());
+    let note = format!("Not on PATH: using {found} (from xcrun)");
+    assert!(app.logs.texts(&tool).contains(&note), "{:?}", app.logs.texts(&tool));
+    app.shutdown_servers().await;
+}
+
+/// apple_langs-c: a missing `sourcekit-lsp` (not on PATH, not found by xcrun) gives the usual
+/// not-found error naming `[lsp.swift]`, once.
+#[tokio::test(flavor = "multi_thread")]
+async fn apple_langs_missing_sourcekit_lsp_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[("a.swift", "let x = 1\n"), ("b.swift", "let y = 2\n")]);
+    let fake = FakeLauncher::new(FakeOptions {
+        missing: vec!["sourcekit-lsp".into()],
+        ..Default::default()
+    });
+    let mut app = open_app(&root, fake.clone());
+    open(&mut app, &root.join("a.swift"));
+    assert!(app.settle(|a| a.message.is_some()).await);
+    let message = app.message.take().unwrap();
+    assert_eq!(message.level, crate::app::Level::Error);
+    assert_eq!(
+        message.text,
+        "Language server sourcekit-lsp not found: install it, or set [lsp.swift] command in .workspace"
+    );
+    open(&mut app, &root.join("b.swift"));
+    idle(&mut app).await;
+    assert!(app.message.is_none(), "reported once");
+    assert_eq!(fake.launches(), ["sourcekit-lsp"]);
+    app.shutdown_servers().await;
+}
+
+/// Whether `sourcekit-lsp` can be run here: on PATH, or (macOS) found by `xcrun`.
+fn sourcekit_runs() -> bool {
+    which("sourcekit-lsp").is_some()
+        || (cfg!(target_os = "macos")
+            && std::process::Command::new("xcrun")
+                .args(["--find", "sourcekit-lsp"])
+                .output()
+                .is_ok_and(|o| o.status.success()))
+}
+
+const PACKAGE_SWIFT: &str = "// swift-tools-version:5.5\nimport PackageDescription\nlet package = Package(\n  name: \"App\",\n  targets: [.executableTarget(name: \"App\", path: \"Sources/App\")]\n)\n";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn apple_langs_real_sourcekit_lsp_diagnostics() {
+    if !sourcekit_runs() {
+        eprintln!("apple_langs_real_sourcekit_lsp_diagnostics: skipped, sourcekit-lsp isn't runnable");
+        return;
+    }
+    // A single file, no package: sourcekit-lsp still reports this file's errors.
+    let fix = |app: &mut crate::app::App| {
+        app.press(K::Down, M::NONE);
+        app.press(K::End, M::NONE);
+        app.press(K::Left, M::NONE);
+        app.press(K::Char('d'), crate::milestone9_tests::cmd());
+        app.type_text("0");
+    };
+    real_diagnostics(
+        ("a.swift", "func f() -> Int {\n  return undefined_thing;\n}\n"),
+        "undefined_thing",
+        |_| {},
+        fix,
+        "sourcekit-lsp",
+    )
+    .await;
+}
+
+/// A SwiftPM package of one target and two files: hover and go to definition across files.
+#[tokio::test(flavor = "multi_thread")]
+async fn apple_langs_real_sourcekit_lsp_hover_and_definition() {
+    if !sourcekit_runs() {
+        eprintln!("apple_langs_real_sourcekit_lsp_hover_and_definition: skipped, sourcekit-lsp isn't runnable");
+        return;
+    }
+    real_hover_and_definition(
+        &[
+            ("Sources/App/main.swift", "print(answer(1))\n"),
+            (
+                "Sources/App/util.swift",
+                "// The answer.\nfunc answer(_ x: Int) -> Int {\n  return 41 + x\n}\n",
+            ),
+            ("Package.swift", PACKAGE_SWIFT),
+        ],
+        "answer",
+        &["answer", "Int"],
+        "Sources/App/util.swift",
+        1,
+        |_| {},
+        "sourcekit-lsp",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn apple_langs_real_sourcekit_lsp_completion() {
+    if !sourcekit_runs() {
+        eprintln!("apple_langs_real_sourcekit_lsp_completion: skipped, sourcekit-lsp isn't runnable");
+        return;
+    }
+    real_completion(
+        (
+            "a.swift",
+            "struct Point {\n  var xcoord = 0\n  var ycoord = 0\n}\nfunc f() {\n  let pt = Point()\n  pt\n}\n",
+        ),
+        "pt",
+        "ycoord",
+        |_| {},
+        "sourcekit-lsp",
+    )
+    .await;
 }
