@@ -111,20 +111,19 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
 - "Open Recent Workspace" in the command palette (Ctrl+R, as VS Code's Open Recent): a fuzzy list in the palette's input widget
   - Each row: folder name, then the path with `~` for home; the current workspace is left out
   - Folders that no longer exist are dropped from the list when it opens
-  - Rows already open in a kitty window are marked
+  - Rows already open in jed in a terminal window are marked
 - Picking one:
-  - Already open in jed in a kitty window (any tab, any OS window): focus that window
-  - Else, inside kitty with remote control: open a new kitty OS window running `jed <path>`, with that folder as its cwd
-  - Else (another terminal, or remote control off): status-bar message with the path and the `jed <path>` command; nothing else happens
+  - Already open in jed in a terminal window (any tab, any OS window): switch to that window and tab
+  - Else, with a terminal backend: open a new OS window running `jed <path>`, with that folder as its cwd
+  - Else (another terminal, or remote control off or not answering): status-bar message with the path and the `jed <path>` command; nothing else happens
   - jed never switches its own workspace in place
-- Kitty integration (other terminals are ignored for now):
-  - Inside kitty when `KITTY_WINDOW_ID` is set
+- Terminal integration (the [Terminal integration for recent workspaces](tasks/kitty_recent.md) task): a `termctl::Backend` per terminal (list windows, focus one, launch one), picked by `termctl::detect` from the environment; kitty is the first, others are ignored for now
+  - Kitty: inside kitty with `KITTY_LISTEN_ON` set (kitty exports it when `listen_on` is configured)
   - jed marks its window by setting a kitty user var `jed_workspace` (OSC 1337 `SetUserVar`, base64 path) at startup, and clears it on exit and in the panic hook (done: `terminal::Identity`, with a `jed` var and the window title)
-  - Finding windows: `kitten @ ls` → JSON → the window whose `user_vars.jed_workspace` is the path; focus by id with `kitten @ focus-window --match id:<id>`
+  - jed speaks kitty's remote control protocol itself over that socket (`ESC P @kitty-cmd <json> ESC \`, one request per connection), no `kitten` binary: `ls` finds the window whose `user_vars.jed_workspace` is the path, `focus-window --match id:<id>` raises its OS window and selects its tab, `launch --type=os-window --cwd <path> jed <path>` opens a new one
     - Match on the user var, not the window title or cwd, so a shell `cd`'d into the folder isn't mistaken for jed
-  - New OS window: `kitten @ launch --type=os-window --cwd <path> jed <path>`
-  - `kitten` runs off the UI thread with a short timeout; failure (remote control off, `kitten` missing) falls back to the message, and is logged
-  - Needs `allow_remote_control yes` (or `socket-only` with `listen_on`) in `kitty.conf`: documented in `docs/terminals/kitty.md`
+  - Calls run off the UI thread with a 2 s timeout; any failure (no socket, remote control off, no answer) is logged and falls back to the message
+  - Needs `allow_remote_control socket-only` (or `yes`) and `listen_on` in `kitty.conf`: documented in `docs/terminals/kitty.md`
 
 ### Files
 - Encoding: UTF-8 only in v1; keep a UTF-8 BOM if present; other encodings open read-only with a warning
@@ -683,7 +682,6 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Feature-based end-to-end test files** (`feature_test_files`): reorganize milestone test files into per-feature files — [tasks/feature_test_files.md](tasks/feature_test_files.md)
 - **File History section in the Explorer** (`history_view`): the active file's snapshots as a third Explorer section — [tasks/history_view.md](tasks/history_view.md)
 - **Keyboard resize of splits** (`keyboard_resize_splits`): resize the active group's split by keyboard — [tasks/keyboard_resize_splits.md](tasks/keyboard_resize_splits.md)
-- **Kitty integration for recent workspaces** (`kitty_recent`): focus / open recent workspaces in kitty windows via remote control — [tasks/kitty_recent.md](tasks/kitty_recent.md)
 - **Language features** (`lang`): go to symbol, signature help and breadcrumbs / sticky scroll — [tasks/lang.md](tasks/lang.md)
 - **Language server setup docs** (`language_server_docs`): docs for installing and configuring language servers — [tasks/language_server_docs.md](tasks/language_server_docs.md)
 - **Live diagnostics while editing** (`live_diagnostics`): pull diagnostics after a typing pause, per server — [tasks/live_diagnostics.md](tasks/live_diagnostics.md)
@@ -704,6 +702,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Spell checker** (`spell_check`): misspelled words in comments, strings and identifiers are underlined (camelCase / snake_case split into words), with suggestions and a user dictionary for words to accept — [tasks/spell_check.md](tasks/spell_check.md)
 - **Stage / unstage / revert selected lines** (`stage_selected_lines`): stage, unstage or revert just the selected lines — [tasks/stage_selected_lines.md](tasks/stage_selected_lines.md)
 - **Stale cargo check diagnostics** (`stale_cargo_check`): dim cargo-check diagnostics until the next save — [tasks/stale_cargo_check.md](tasks/stale_cargo_check.md)
+- **Terminal integration for recent workspaces (kitty first)** (`kitty_recent`): switch to a running workspace's terminal window / tab, or open a new one, through kitty's remote control protocol on a socket — [tasks/kitty_recent.md](tasks/kitty_recent.md)
 - **Themes** (`themes`): a built-in Light+, a `theme` setting, a picker with live preview and theme files — [tasks/themes.md](tasks/themes.md)
 - **Transform, sort and dedupe lines** (`transform_sort_dedupe`): change case, sort, and deduplicate lines — [tasks/transform_sort_dedupe.md](tasks/transform_sort_dedupe.md)
 - **VHDL: tree-sitter and VHDL-LS** (`vhdl`): VHDL files get syntax colours, comment / pair / indent behaviour and a language server (`vhdl_ls` from rust_hdl), as C++ / Python / Rust do — [tasks/vhdl.md](tasks/vhdl.md)
