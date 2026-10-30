@@ -1,5 +1,7 @@
 //! End-to-end tests for the Apple languages task (`apple_langs`). So far apple_langs-a,
-//! Objective-C / Objective-C++: `.m` / `.mm` files get their language and open with the built-in
+//! Objective-C / Objective-C++ (apple_langs-b, Swift, is at the end of the file, including `"`
+//! auto-closing inside `\(…)` but not in string text): `.m` / `.mm` files get their language and
+//! open with the built-in
 //! `clangd` (a fake server: one launch for `.m` and `.mm`, `languageId` `objective-c` in
 //! `didOpen`, `objective-cpp` for `.mm`); typing `@"` in a `.m` file closes the string and
 //! Cmd+/ comments a line with `//`; a real clangd (skipped with a note when it isn't on PATH) reports an error, shows
@@ -137,5 +139,82 @@ async fn apple_langs_objc_edits_by_the_c_like_config() {
     // Comment Line uses `//`.
     app.press(K::Char('/'), crate::milestone9_tests::cmd());
     assert_eq!(text(&app), "// id s = @\"hi'\";\n");
+    app.shutdown_servers().await;
+}
+
+/// apple_langs-b: a `.swift` file is Swift (no server yet); `"` closes outside strings and is
+/// typed over, `'` doesn't pair, Enter after `{` indents, Cmd+/ uses `//`.
+#[tokio::test(flavor = "multi_thread")]
+async fn apple_langs_swift_edits_by_the_swift_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(dir.path(), &[("a.swift", "func f() {\n}\nlet s = \n")]);
+    let fake = FakeLauncher::new(FakeOptions {
+        utf8: true,
+        ..Default::default()
+    });
+    let mut app = open_app(&root, fake.clone());
+    open(&mut app, &root.join("a.swift"));
+    assert_eq!(app.active_buffer().unwrap().syntax.language(), Language::Swift);
+    let parsed = |a: &crate::app::App| a.active_buffer().unwrap().syntax.tree().is_some();
+    assert!(app.settle(parsed).await);
+    let text = |a: &crate::app::App| a.active_buffer().unwrap().rope.to_string();
+    // Inside the braces: Enter indents.
+    app.press(K::End, M::NONE);
+    app.press(K::Enter, M::NONE);
+    app.type_text("g()");
+    assert_eq!(text(&app), "func f() {\n    g()\n}\nlet s = \n");
+    // `"` closes and the closing quote is typed over.
+    app.press(K::Down, M::NONE);
+    app.press(K::Down, M::NONE);
+    app.press(K::End, M::NONE);
+    app.type_text("\"a");
+    assert_eq!(text(&app), "func f() {\n    g()\n}\nlet s = \"a\"\n");
+    app.type_text("\"");
+    assert_eq!(text(&app), "func f() {\n    g()\n}\nlet s = \"a\"\n");
+    // `'` has no pair in Swift.
+    app.type_text("'");
+    assert_eq!(text(&app), "func f() {\n    g()\n}\nlet s = \"a\"'\n");
+    // Comment Line uses `//`.
+    app.press(K::Char('/'), crate::milestone9_tests::cmd());
+    assert_eq!(text(&app), "func f() {\n    g()\n}\n// let s = \"a\"'\n");
+    app.shutdown_servers().await;
+}
+
+/// apple_langs-b: auto-close reads Swift's string scopes from the tree: inside `\(…)` (also
+/// right after the `\(`) a `"` closes as in code; in a string's text it doesn't.
+#[tokio::test(flavor = "multi_thread")]
+async fn apple_langs_swift_quote_closes_in_interpolation_not_in_string_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "let q = \"a \\(b + c) d\"\nlet p = \"a \\( b) d\"\nlet r = \"a - b\"\n";
+    let root = project(dir.path(), &[("a.swift", src)]);
+    let fake = FakeLauncher::new(FakeOptions {
+        utf8: true,
+        ..Default::default()
+    });
+    let mut app = open_app(&root, fake.clone());
+    open(&mut app, &root.join("a.swift"));
+    let parsed = |a: &crate::app::App| a.active_buffer().unwrap().syntax.tree().is_some();
+    assert!(app.settle(parsed).await);
+    let text = |a: &crate::app::App| a.active_buffer().unwrap().rope.to_string();
+    // Types `"` at `lefts` from the end of the current line, then waits for the re-parse.
+    async fn quote_at(app: &mut crate::app::App, lefts: usize) {
+        app.press(K::End, M::NONE);
+        for _ in 0..lefts {
+            app.press(K::Left, M::NONE);
+        }
+        app.type_text("\"");
+        assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
+    }
+    // After `+` in `\(b + c)`: code, so `"` closes.
+    quote_at(&mut app, 6).await;
+    assert_eq!(text(&app).lines().next(), Some("let q = \"a \\(b +\"\" c) d\""));
+    // Right after `\(`: code too.
+    app.press(K::Down, M::NONE);
+    quote_at(&mut app, 6).await;
+    assert_eq!(text(&app).lines().nth(1), Some("let p = \"a \\(\"\" b) d\""));
+    // After `-` in `"a - b"`: string text, so `"` is typed alone.
+    app.press(K::Down, M::NONE);
+    quote_at(&mut app, 3).await;
+    assert_eq!(text(&app).lines().nth(2), Some("let r = \"a -\" b\""));
     app.shutdown_servers().await;
 }

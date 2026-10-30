@@ -112,6 +112,15 @@ static C_LIKE: LanguageConfig = LanguageConfig {
     string_prefixes: "",
 };
 
+/// VS Code's `swift` configuration: `//`, brackets, and `"` (not in strings; `"""""` and `\(`
+/// have no pairs of their own, so `(` closes in a string as anywhere). No `'` (a Swift string
+/// is `"`-quoted; there is no character literal).
+static SWIFT: LanguageConfig = LanguageConfig {
+    pairs: &[BRACKETS[0], BRACKETS[1], BRACKETS[2], pair('"', '"', true, false)],
+    surround: &[('{', '}'), ('[', ']'), ('(', ')'), ('"', '"'), ('\'', '\''), ('<', '>')],
+    ..C_LIKE
+};
+
 /// VS Code's `python` configuration: `'` not in strings or comments, `"` and `` ` `` not in
 /// strings, the default `autoCloseBefore`, and the `r` / `u` / `f` / `b` string prefixes.
 static PYTHON: LanguageConfig = LanguageConfig {
@@ -323,6 +332,7 @@ impl Language {
         match self {
             Language::PlainText => &PLAIN_TEXT,
             Language::C | Language::Cpp | Language::ObjC | Language::ObjCpp => &C_LIKE,
+            Language::Swift => &SWIFT,
             Language::Python => &PYTHON,
             Language::Rust => &RUST,
             Language::Markdown => &MARKDOWN,
@@ -405,6 +415,18 @@ mod tests {
                 "{l:?}"
             );
         }
+        // Swift: `//`, brackets and `"` (not in strings), no `'`.
+        assert_eq!(comment(Swift), Some("//"));
+        let swift = Swift.config();
+        assert!(
+            swift
+                .pairs
+                .iter()
+                .any(|p| p.open == '"' && p.not_in_string && !p.not_in_comment)
+        );
+        assert!(!swift.pairs.iter().any(|p| p.open == '\''));
+        assert_eq!(swift.brackets, Cpp.config().brackets);
+        assert!(swift.tree_tokens);
         assert_eq!(comment(Jsonc), Some("//"));
         for l in [
             Python,

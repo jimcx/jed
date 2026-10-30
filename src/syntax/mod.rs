@@ -450,7 +450,17 @@ pub fn scope_of(kind: &str) -> Option<Scope> {
         return Some(Scope::Comment);
     }
     match kind {
-        "interpolation" | "expansion" | "simple_expansion" | "command_substitution" | "variable_ref" => {
+        "interpolation"
+        | "interpolated_expression"
+        | "raw_str_interpolation"
+        | "key_path_string_expression" // Swift's `#keyPath(A.b)`: code, not a string.
+        // Swift's `\(` opener is a leaf of the string, not of its `interpolated_expression`:
+        // right after it is code (`"\(|` closes a `"` typed there).
+        | "\\("
+        | "expansion"
+        | "simple_expansion"
+        | "command_substitution"
+        | "variable_ref" => {
             return Some(Scope::Code);
         }
         "char_literal"

@@ -534,6 +534,19 @@ fn scopes_in_every_language() {
         (Cpp, "f(\"a|\"); // b|\n", &[String, Comment]),
         (ObjC, "x = @\"a|\"; // b|\n/* c| */\n", &[String, Comment, Comment]),
         (ObjCpp, "x = @\"a|\"; // b|\n", &[String, Comment]),
+        (
+            Swift,
+            "let s = \"a|\\(b|)c|\" // d|\nlet m = \"\"\"\nx|\n\"\"\"\n/* e| */\n",
+            &[String, Code, String, Comment, String, Comment],
+        ),
+        // Raw strings and their `\#(…)` interpolation, a string inside an interpolation, a
+        // nested block comment (still a comment after the inner `*/`), `#keyPath(…)` is code, and
+        // so is right after a `\(` (the opener is a leaf of the string).
+        (
+            Swift,
+            "let r = #\"a|\\#(b|)c|\"#\nlet q = \"\\(f(\"x|\"))\"\n/* a /* b */ c| */ d|\nlet k = #keyPath(A.b|)\nlet z = \"\\(| b)\"\n",
+            &[String, Code, String, String, Comment, Code, Code, Code],
+        ),
         (Python, "f'a{b|}c|'  # d|\n", &[Code, String, Comment]),
     ];
     for &(language, marked, want) in cases {
@@ -555,6 +568,9 @@ fn scope_kinds() {
     assert_eq!(scope_of("double_quote_scalar"), Some(Scope::String));
     assert_eq!(scope_of("unquoted_string"), None);
     assert_eq!(scope_of("command_substitution"), Some(Scope::Code));
+    assert_eq!(scope_of("interpolated_expression"), Some(Scope::Code));
+    assert_eq!(scope_of("raw_str_interpolation"), Some(Scope::Code));
+    assert_eq!(scope_of("key_path_string_expression"), Some(Scope::Code));
     assert_eq!(scope_of("identifier"), None);
 }
 

@@ -582,9 +582,10 @@ mod tests {
     #[test]
     fn every_query_compiles_and_its_captures_map() {
         const UNCOLOURED: &[&str] = &[
-            "attribute", // Rust's `#[…]` and YAML directives: plain in Dark+.
-            "delimiter", // C's `;` `,` `.`
-            "preproc",   // Objective-C's `#undef` (the whole directive).
+            "attribute",         // Rust's `#[…]` and YAML directives: plain in Dark+.
+            "delimiter",         // C's `;` `,` `.`
+            "preproc",           // Objective-C's `#undef` (the whole directive).
+            "character.special", // Swift's `_` pattern.
             "none",
             "embedded",
             "spell",
@@ -1138,6 +1139,88 @@ index 1..2 100644
         let spans = all(Language::ObjC, text);
         assert!(!spans.iter().any(|(t, _)| t.contains("__attribute__")), "{spans:?}");
         assert!(spans.contains(&("unused".to_string(), "variable")), "{spans:?}");
+    }
+
+    #[test]
+    fn swift_spans() {
+        let text = "import Foundation\n\n/// Doc.\n@MainActor\nstruct Point: Codable {\n    var x: Int = 0\n    @objc func greet(_ who: String, to other: Person) -> String {\n        if x > 0 { return \"hi \\(who)!\\n\" } else { return nil }\n    }\n}\nlet s = \"\"\"\n  multi \\(x)\n  \"\"\"\n#if DEBUG\nprint(self.x, true, 1.5)\n#endif\nguard let v = f() else { return }\nfor i in 0..<3 { switch i { case 1: break; default: continue } }\nlet t = c ? 1 : 2 // c\n";
+        assert_has(
+            Language::Swift,
+            text,
+            &[
+                ("import", "keyword.control"),
+                ("/// Doc.", "comment"),
+                ("@MainActor", "keyword"),
+                ("struct", "keyword"),
+                ("Point", "type"),
+                ("Codable", "type"),
+                ("var", "keyword"),
+                ("x", "property"),
+                ("Int", "type"),
+                ("0", "number"),
+                ("@objc", "keyword"),
+                ("func", "keyword"),
+                ("greet", "function"),
+                ("who", "variable.parameter"),
+                ("String", "type"),
+                ("other", "variable.parameter"),
+                ("if", "keyword.control"),
+                ("x", "variable"),
+                ("return", "keyword.control"),
+                ("\"hi ", "string"),
+                ("\\(", "punctuation.special"),
+                ("who", "variable"),
+                (")", "punctuation.special"),
+                ("\\n", "escape"),
+                ("else", "keyword.control"),
+                ("nil", "constant.builtin"),
+                ("let", "keyword"),
+                ("\"\"\"\n  multi ", "string"),
+                ("\\(", "punctuation.special"),
+                ("x", "variable"),
+                ("\n  \"\"\"", "string"),
+                ("#if ", "keyword.control"),
+                ("print", "function"),
+                ("self", "variable.builtin"),
+                ("x", "property"),
+                ("true", "constant.builtin"),
+                ("1.5", "number"),
+                ("#endif", "keyword.control"),
+                ("guard", "keyword.control"),
+                ("for", "keyword.control"),
+                ("in", "keyword.control"),
+                ("..<", "operator"),
+                ("switch", "keyword.control"),
+                ("case", "keyword.control"),
+                ("break", "keyword.control"),
+                ("default", "keyword.control"),
+                ("?", "operator"),
+                ("// c", "comment"),
+            ],
+        );
+        // Protocols and classes: names are types, `super` like `self`, protocol members.
+        assert_has(
+            Language::Swift,
+            "protocol P: AnyObject {\n    var n: Int { get }\n    func f()\n}\nclass C: P {\n    override init() { super.init() }\n}\n",
+            &[
+                ("protocol", "keyword"),
+                ("P", "type"),
+                ("AnyObject", "type"),
+                ("n", "property"),
+                ("func", "keyword"),
+                ("f", "function"),
+                ("class", "keyword"),
+                ("C", "type"),
+                ("P", "type"),
+                ("super", "variable.builtin"),
+            ],
+        );
+        // A shebang is a comment.
+        assert_has(
+            Language::Swift,
+            "#!/usr/bin/env swift\nlet a = 1\n",
+            &[("#!/usr/bin/env swift", "comment")],
+        );
     }
 
     #[test]
