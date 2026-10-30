@@ -1,8 +1,8 @@
 ---
 id: semantic_tokens
 name: LSP semantic tokens
-summary: C/C++ (and any server that offers them) get semantic highlighting from the language server on top of tree-sitter: constructors, macros, parameters, fields, readonly, deprecated, and compiled-out `#if` code dimmed
-status: in-progress
+summary: C/C++ (and any server that offers them) get semantic highlighting from the language server on top of tree-sitter, and clangd's compiled-out `#if` code is dimmed
+status: done
 priority: 0
 dependencies: []
 ---
@@ -23,4 +23,8 @@ See [LSP](../PLAN.md#lsp), [Syntax highlighting](../PLAN.md#syntax-highlighting)
     - ✅ semantic_tokens-a: client capability, legend, requests with debounce and delta, off-thread decode, `semantic.rs` storage mapped through edits; unit tests; docs
       - Built: `src/semantic.rs` (`Semantic` on `Buffer::semantic`: `tokens()`, `overlapping`, `overlapping_inactive`, `replace_inactive`; `Kind::name`, `mods`), `src/app/semantic.rs` (debounce, requests, decode, refresh); `Documents::since` no longer drains old versions (so diagnostics and tokens both read stale versions); fake server `semantic_tokens` option and `test/refresh`. Drawing in b reads `buf.semantic.overlapping(..)`; the `#[allow(dead_code)]`s on the b-only items go when b uses them. inactiveRegions (capability + notification) is still to do
       - Also: FLAKE debugging added to `term_select_mouse_reporting_keeps_every_event` (failed once in a full run, unrelated, passed after)
-    - semantic_tokens-b: drawing, theme keys, inactive regions, the setting, end-to-end and real-clangd tests; docs and hand checks
+    - ✅ semantic_tokens-b: drawing, theme keys, inactive regions, the setting, end-to-end and real-clangd tests; docs and hand checks
+      - Built: `src/ui/semantic.rs` (`Styles`), the walkers in `ui/editor.rs` (tokens after the tree-sitter patch; inactive dimming after selection / find, foreground only), `Theme::find`, `semantic.*` theme keys (parameter / property are two greys so they differ from plain variables), setting `semantic_highlighting` (`edit::SemanticHighlighting`; off asks for nothing and clears tokens and regions), clangd `inactiveRegions` (capability patched into the initialize JSON; notification read in the buffer's current text), fake `test/inactive`, real-clangd test `semantic_tokens_done_when_clangd`
+      - Also: FLAKE debugging on `real_rust_analyzer_on_a_cargo_crate` (once failed "cleared after the fix" in a full run, unrelated)
+      - Deferred: range requests, inlay hints, document highlight, folding ranges, per-token italics; after turning the setting back on the `#if 0` dim returns on clangd's next reparse (an edit); `inactiveRegions` has no version
+      - Still to check by hand: a C++ file in clangd: constructors, macros, parameters, fields, `const` values coloured apart from plain functions / variables; `#if 0` dimmed; typing before a coloured token doesn't flicker; `semantic_highlighting = "off"` is pure tree-sitter

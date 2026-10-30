@@ -49,6 +49,11 @@ impl Theme {
         })
     }
 
+    /// `key`'s style, `None` (and no warning) when the theme doesn't define it.
+    pub fn find(&self, key: &str) -> Option<Style> {
+        self.styles.get(key).copied()
+    }
+
     /// The ANSI escape that starts `key`'s style on a terminal (truecolor, or 256 colours as the
     /// theme was built), for text printed outside the UI (`--check-language --sample`); end it
     /// with `ANSI_RESET`.
@@ -113,6 +118,21 @@ impl Theme {
             // Dark+'s `editorBracketMatch` is a faint green fill with a grey border; a terminal cell
             // has no border, so a stronger fill.
             ("editor.bracketMatch", Style::new().bg(c(0x2F4F3A))),
+            // Semantic tokens (the language server's, over tree-sitter's colours; only these differ
+            // from them): Dark+'s enum member / readonly colours; parameters and fields in Visual
+            // Studio's dark C++ greys (Dark+ draws both like variables); constructors and namespaces
+            // in the type colour; macros in Dark+'s macro purple. `inactive` dims the foreground of
+            // code the server compiled out (clangd's `#if 0`).
+            ("semantic.constructor", Style::new().fg(c(0x4EC9B0))),
+            ("semantic.macro", Style::new().fg(c(0xBD63C5))),
+            ("semantic.parameter", Style::new().fg(c(0x9A9A9A))),
+            ("semantic.property", Style::new().fg(c(0xDADADA))),
+            ("semantic.enumMember", Style::new().fg(c(0x4FC1FF))),
+            ("semantic.namespace", Style::new().fg(c(0x4EC9B0))),
+            ("semantic.typeParameter", Style::new().fg(c(0x4EC9B0))),
+            ("semantic.readonly", Style::new().fg(c(0x4FC1FF))),
+            ("semantic.deprecated", Style::new().add_modifier(Modifier::CROSSED_OUT)),
+            ("semantic.inactive", Style::new().fg(c(0x5A5A5A))),
             ("editor.whitespace.control", Style::new().fg(c(0xF48771))),
             // Rendered spaces and tabs (`·` / `→`): Dark+'s #E3E4E229 blended over the editor.
             ("editorWhitespace.foreground", Style::new().fg(c(0x3E3E3D))),

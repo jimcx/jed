@@ -16,12 +16,14 @@ use crate::buffer::Buffer;
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::conflict::Choice;
 use crate::diagnostics::{self, Severity};
-use crate::edit::{CursorStyle, RenderWhitespace, Settings};
+use crate::edit::{CursorStyle, RenderWhitespace, SemanticHighlighting, Settings};
 use crate::find::FindWidget;
 use crate::layout::{MergeButton, MergeButtonHit};
 use crate::search::Match;
 use crate::theme::Theme;
 use crate::view::View;
+
+use super::semantic;
 
 /// What else the editor shows besides the buffer.
 pub struct Overlay<'a> {
@@ -363,6 +365,36 @@ pub fn render(
             .map(|r| squiggles[r.severity as usize])
     };
 
+    // The language server's semantic tokens on screen (binary search, then one index; a token with
+    // no theme style leaves tree-sitter's colour) and the regions it marked inactive (clangd's
+    // compiled-out code), whose foreground is dimmed over everything. Off: neither is read.
+    let semantic_on = s.semantic_highlighting == SemanticHighlighting::On;
+    let (sem_tokens, sem_inactive) = if semantic_on {
+        (
+            buf.semantic.overlapping(view_range.start, view_range.end),
+            buf.semantic.overlapping_inactive(view_range.start, view_range.end),
+        )
+    } else {
+        (&[][..], &[][..])
+    };
+    let sem_styles = (!sem_tokens.is_empty()).then(|| semantic::Styles::new(theme));
+    let inactive_style = theme.get("semantic.inactive");
+    let mut sti = 0;
+    let mut semantic_at = |b: ByteIdx| {
+        while sti < sem_tokens.len() && sem_tokens[sti].end <= b {
+            sti += 1;
+        }
+        let t = sem_tokens.get(sti).filter(|t| t.start <= b)?;
+        sem_styles.as_ref()?.get(t.kind, t.mods)
+    };
+    let mut ii = 0;
+    let mut inactive_at = |b: ByteIdx| {
+        while ii < sem_inactive.len() && sem_inactive[ii].end <= b {
+            ii += 1;
+        }
+        sem_inactive.get(ii).is_some_and(|r| r.start <= b)
+    };
+
     // Quick diff's markers on screen (by line, increasing), in the gutter's last column.
     let markers = buf.quick_diff.visible(rope, view.top_line(), last_line);
     let mut qi = 0;
@@ -527,6 +559,9 @@ pub fn render(
             if let Some(token) = token_at(b) {
                 style = style.patch(token);
             }
+            if let Some(sem) = semantic_at(b) {
+                style = style.patch(sem);
+            }
             if is_bracket(b) {
                 style = style.patch(bracket_match);
             }
@@ -559,6 +594,9 @@ pub fn render(
             }
             if found == Some(true) {
                 style = style.patch(find_match);
+            }
+            if inactive_at(b) {
+                style = style.patch(inactive_style);
             }
             if g.starts_with(|c: char| c.is_control()) && g != "\t" {
                 style = style.patch(control);

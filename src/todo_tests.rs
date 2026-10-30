@@ -2804,6 +2804,8 @@ mod rust_language_server {
     /// after the fix is saved, rename across files and format document (rustfmt). Requests
     /// answered before it's ready (nothing, ContentModified) are retried. Skipped with a note
     /// when `rust-analyzer` doesn't run there.
+    // FLAKE: 2026-10-31, once in a full run: "cleared after the fix" timed out (rustc errors
+    // stayed [""], no progress, message "Saved …/main.rs"); passed in the other runs.
     #[tokio::test(flavor = "multi_thread")]
     async fn real_rust_analyzer_on_a_cargo_crate() {
         let _one_at_a_time = REAL_SERVERS.lock().await;
@@ -2951,7 +2953,7 @@ mod rust_language_server {
         save(&mut app).await;
         assert!(
             settle_for(&mut app, 180, |a| rustc_errors(a, &main).is_empty()).await,
-            "cleared after the fix: {:?}; progress {:?}; message {:?}; text {:?}",
+            "FLAKE(real_rust_analyzer): cleared after the fix: {:?}; progress {:?}; message {:?}; text {:?}",
             rustc_errors(&app, &main),
             app.lsp.progress(),
             message(&app),

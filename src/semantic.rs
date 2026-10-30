@@ -104,16 +104,9 @@ impl Kind {
             .position(|n| *n == name)
             .map_or(Kind::Unknown, |i| Self::ALL[i])
     }
-
-    /// The token type's name as servers (and themes) say it; `Unknown` has none.
-    #[allow(dead_code)] // the theme keys arrive in semantic_tokens-b
-    pub fn name(self) -> &'static str {
-        Self::NAMES.get(self as usize).copied().unwrap_or("")
-    }
 }
 
 /// Modifier bits: the standard modifiers plus the ones clangd sends.
-#[allow(dead_code)] // the named bits are for drawing (semantic_tokens-b)
 pub mod mods {
     pub const NAMES: [&str; 18] = [
         "declaration",
@@ -141,12 +134,10 @@ pub mod mods {
         NAMES.iter().position(|n| *n == name).map_or(0, |i| 1 << i)
     }
 
+    #[cfg(test)]
     pub const DECLARATION: u32 = 1;
-    pub const DEFINITION: u32 = 1 << 1;
     pub const READONLY: u32 = 1 << 2;
-    pub const STATIC: u32 = 1 << 3;
     pub const DEPRECATED: u32 = 1 << 4;
-    pub const DEFAULT_LIBRARY: u32 = 1 << 9;
     pub const CONSTRUCTOR_OR_DESTRUCTOR: u32 = 1 << 10;
 }
 
@@ -320,8 +311,6 @@ impl Semantic {
     }
 }
 
-/// What drawing reads (semantic_tokens-b); tests use it now.
-#[allow(dead_code)]
 impl Semantic {
     /// Replaces the inactive regions (any order; overlapping ones are merged).
     pub fn replace_inactive(&mut self, mut regions: Vec<Region>) {
@@ -337,10 +326,12 @@ impl Semantic {
         self.inactive = out;
     }
 
+    #[cfg(test)]
     pub fn tokens(&self) -> &[Token] {
         &self.tokens
     }
 
+    #[cfg(test)]
     pub fn inactive(&self) -> &[Region] {
         &self.inactive
     }

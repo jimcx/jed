@@ -152,6 +152,9 @@ impl App {
             Event::Notification { server, method, .. } if method == super::semantic::REFRESH => {
                 self.semantic_refresh(server);
             }
+            Event::Notification { server, method, params } if method == super::semantic::INACTIVE => {
+                self.semantic_inactive(server, &params);
+            }
             event => {
                 if let Event::Failed { server, .. } | Event::Exited { server, .. } = &event {
                     // It answers none of them now.

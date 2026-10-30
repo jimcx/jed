@@ -492,6 +492,9 @@ impl Conn {
         let mut params = serde_json::to_value(params).unwrap_or(Value::Null);
         // clangd's pre-3.17 extension, for clangd versions without `positionEncodings`.
         params["capabilities"]["offsetEncoding"] = json!(["utf-8", "utf-16"]);
+        // clangd's extension (not in lsp_types): it sends `textDocument/inactiveRegions` for code
+        // its preprocessor left out (`#if 0`), instead of tokens.
+        params["capabilities"]["textDocument"]["inactiveRegionsCapabilities"] = json!({ "inactiveRegions": true });
         self.request("initialize", params, Pending::Initialize);
     }
 

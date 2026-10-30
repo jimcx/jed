@@ -12,6 +12,9 @@
 //! - An answer is never dropped for a newer revision: the tokens are read in the text of the
 //!   version it was asked for (`Manager::text_at`) on a worker (`AppEvent::SemanticDecoded`), then
 //!   mapped through the change sets since (`Manager::since`) and replace the buffer's.
+//! - `semantic_highlighting = off` treats every server as having none: nothing is asked, tokens and
+//!   inactive regions are dropped (a clangd reparse sends the regions again once it is on).
+//! - `textDocument/inactiveRegions` (`semantic_inactive`) replaces the buffer's inactive regions.
 //! - `workspace/semanticTokens/refresh` (an `Event::Notification` from the server task, already
 //!   answered) makes every buffer of that server due.
 
@@ -27,9 +30,10 @@ use serde_json::{Value, json};
 use super::lsp::{Pending, Request};
 use super::{App, AppEvent};
 use crate::buffer::BufferId;
-use crate::buffer::pos::ByteIdx;
+use crate::buffer::pos::{ByteIdx, LspPos, LspReader};
+use crate::edit::SemanticHighlighting;
 use crate::lsp::ServerId;
-use crate::semantic::{self, DeltaEdit, Legend, Token};
+use crate::semantic::{self, DeltaEdit, Legend, Region, Token};
 use crate::syntax::Language;
 
 /// How long after the last edit the tokens are asked for again.
@@ -38,6 +42,8 @@ pub const DELAY: Duration = Duration::from_millis(150);
 pub const FULL: &str = "textDocument/semanticTokens/full";
 pub const DELTA: &str = "textDocument/semanticTokens/full/delta";
 pub const REFRESH: &str = "workspace/semanticTokens/refresh";
+/// clangd's notification (opt-in at initialize) for code its preprocessor left out.
+pub const INACTIVE: &str = "textDocument/inactiveRegions";
 
 #[derive(Default)]
 pub struct State {
@@ -96,6 +102,7 @@ impl App {
             return;
         }
         let now = Instant::now();
+        let on = self.settings.semantic_highlighting == SemanticHighlighting::On;
         let ids: Vec<BufferId> = self
             .buffers
             .iter()
@@ -107,7 +114,7 @@ impl App {
             let server = self
                 .lsp
                 .server_of(id)
-                .filter(|(_, _, caps)| full_supported(caps))
+                .filter(|(_, _, caps)| on && full_supported(caps))
                 .map(|(s, ..)| s);
             let Some(buf) = self.buffers.get_mut(id) else {
                 continue;
@@ -213,6 +220,56 @@ impl App {
         for d in self.semantic.docs.values_mut().filter(|d| d.server == server) {
             d.deadline = Some(now);
         }
+    }
+
+    /// clangd's `textDocument/inactiveRegions` (`{ textDocument: { uri }, regions: Range[] }`): the
+    /// regions replace the buffer's, read in its current text (the notification names no version;
+    /// an edit since is mapped on the next one clangd sends after reparsing).
+    pub(super) fn semantic_inactive(&mut self, server: ServerId, params: &Value) {
+        if self.settings.semantic_highlighting == SemanticHighlighting::Off {
+            return;
+        }
+        let Some(encoding) = self.lsp.encoding_of(server) else {
+            return;
+        };
+        let path = params
+            .pointer("/textDocument/uri")
+            .and_then(Value::as_str)
+            .and_then(|u| u.parse::<lsp_types::Uri>().ok())
+            .and_then(|u| crate::lsp::uri::to_path(&u));
+        let Some(id) = path.and_then(|p| self.buffers.find_path(&p)) else {
+            return;
+        };
+        if self.lsp.server_of(id).is_none_or(|(s, ..)| s != server) {
+            return;
+        }
+        let Some(buf) = self.buffers.get_mut(id) else {
+            return;
+        };
+        let pos = |v: &Value| -> Option<LspPos> {
+            Some(LspPos {
+                line: v.get("line")?.as_u64()? as u32,
+                character: v.get("character")?.as_u64()? as u32,
+            })
+        };
+        let mut reader = LspReader::new(&buf.rope, encoding);
+        let regions: Vec<Region> = params
+            .get("regions")
+            .and_then(Value::as_array)
+            .map(|rs| {
+                rs.iter()
+                    .filter_map(|r| {
+                        let (s, e) = (pos(r.get("start")?)?, pos(r.get("end")?)?);
+                        Some(Region {
+                            start: reader.byte(s),
+                            end: reader.byte(e),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        buf.semantic.replace_inactive(regions);
+        self.needs_redraw = true;
     }
 
     /// The request ended without tokens to use: the next one is a full request.

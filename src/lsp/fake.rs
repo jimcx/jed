@@ -13,9 +13,9 @@
 //! params (a token's `begin` / `report` / `end`); `test/crash` makes it hang up. For tool logs:
 //! it writes `fake server starting` to its stderr when launched, `test/stderr` writes its
 //! `text` param as a stderr line, `test/log` / `test/show` send `window/logMessage` /
-//! `window/showMessage` with their params; `test/refresh` sends a
-//! `workspace/semanticTokens/refresh` request (id `"refresh"`; the client's answer in
-//! `answers()`).
+//! `window/showMessage` with their params; `test/inactive` sends `textDocument/inactiveRegions`
+//! with its params; `test/refresh` sends a `workspace/semanticTokens/refresh` request (id
+//! `"refresh"`; the client's answer in `answers()`).
 //!
 //! Scripted answers: `respond(method, result)` makes it answer every `method` request (e.g.
 //! `textDocument/hover`) with `result`; `hold(method, true)` keeps those answers until a
@@ -427,6 +427,7 @@ async fn serve(
                     "test/log" => out.push(Message::notification("window/logMessage", params)),
                     "test/show" => out.push(Message::notification("window/showMessage", params)),
                     "test/publish" => out.push(Message::notification("textDocument/publishDiagnostics", params)),
+                    "test/inactive" => out.push(Message::notification("textDocument/inactiveRegions", params)),
                     "test/progress" => out.push(Message::notification("$/progress", params)),
                     "test/refresh" => out.push(Message::Request {
                         id: Id::Str("refresh".into()),

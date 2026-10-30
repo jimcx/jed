@@ -19,6 +19,7 @@ mod quick_diff;
 mod scm;
 mod scrollbar;
 mod search;
+mod semantic;
 mod side;
 mod splash;
 mod status;

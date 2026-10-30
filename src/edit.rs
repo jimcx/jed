@@ -42,6 +42,9 @@ pub struct Settings {
     /// Highlight the bracket next to each cursor and its partner (`brackets`):
     /// `[settings] match_brackets`.
     pub match_brackets: bool,
+    /// The language server's semantic tokens and inactive regions drawn over tree-sitter's
+    /// colours (`ui::editor`, and none requested when off): `[settings] semantic_highlighting`.
+    pub semantic_highlighting: SemanticHighlighting,
     /// Typing a word char asks the language server for completions (outside strings and
     /// comments): `[settings] quick_suggestions`.
     pub quick_suggestions: bool,
@@ -80,6 +83,15 @@ pub enum CursorStyle {
     Line,
     Block,
     Underline,
+}
+
+/// VS Code's `editor.semanticHighlighting.enabled`: the language server's colours over tree-sitter's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SemanticHighlighting {
+    #[default]
+    On,
+    Off,
 }
 
 /// VS Code's `editor.wordWrap`, whether long lines wrap at the editor's width. Only `off` and
@@ -125,6 +137,7 @@ impl Default for Settings {
             auto_close_pairs: true,
             auto_indent: true,
             match_brackets: true,
+            semantic_highlighting: SemanticHighlighting::On,
             quick_suggestions: true,
             render_whitespace: RenderWhitespace::All,
             word_wrap: WordWrap::Off,
