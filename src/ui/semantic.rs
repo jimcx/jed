@@ -3,7 +3,7 @@
 //! tree-sitter colour stays). Theme keys: `semantic.<type>` (`semantic.macro`, `.parameter`,
 //! `.property`, `.enumMember`, `.namespace`, `.typeParameter`), `semantic.constructor` for clangd's
 //! constructors / destructors (type `class` with the `constructorOrDestructor` modifier),
-//! `semantic.readonly` and `semantic.deprecated` patched over the type's, and `semantic.inactive`
+//! `semantic.readonly` and `semantic.deprecated` patched over the type's, and `Theme::dim`
 //! for regions the server marked inactive (`ui::editor` dims their foreground).
 
 use ratatui::style::Style;

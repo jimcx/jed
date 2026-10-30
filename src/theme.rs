@@ -54,6 +54,24 @@ impl Theme {
         self.styles.get(key).copied()
     }
 
+    /// `style` dimmed for code the server says is compiled out: its foreground (the editor's when
+    /// it has none) blended halfway into the editor background, so the syntax colours stay
+    /// recognisable. Without an RGB colour to blend (one of the terminal's 16) it takes
+    /// `semantic.inactive`'s foreground.
+    pub fn dim(&self, style: Style) -> Style {
+        let editor = self.get("editor");
+        let blended = style.fg.or(editor.fg).zip(editor.bg).and_then(|(fg, bg)| {
+            let (f, b) = (rgb_of(fg)?, rgb_of(bg)?);
+            let mix = |f: u8, b: u8| ((f as u16 + b as u16) / 2) as u8;
+            let hex = (mix(f.0, b.0) as u32) << 16 | (mix(f.1, b.1) as u32) << 8 | mix(f.2, b.2) as u32;
+            Some(rgb(hex, matches!(fg, Color::Rgb(..))))
+        });
+        match blended {
+            Some(fg) => style.fg(fg),
+            None => style.patch(self.get("semantic.inactive")),
+        }
+    }
+
     /// The ANSI escape that starts `key`'s style on a terminal (truecolor, or 256 colours as the
     /// theme was built), for text printed outside the UI (`--check-language --sample`); end it
     /// with `ANSI_RESET`.
@@ -119,13 +137,14 @@ impl Theme {
             // has no border, so a stronger fill.
             ("editor.bracketMatch", Style::new().bg(c(0x2F4F3A))),
             // Semantic tokens (the language server's, over tree-sitter's colours; only these differ
-            // from them): Dark+'s enum member / readonly colours; parameters and fields in Visual
-            // Studio's dark C++ greys (Dark+ draws both like variables); constructors and namespaces
-            // in the type colour; macros in Dark+'s macro purple. `inactive` dims the foreground of
-            // code the server compiled out (clangd's `#if 0`).
+            // from them): Dark+'s enum member / readonly colours; parameters in the variable blue
+            // (clangd marks every use, tree-sitter only some), fields in a light grey (Visual
+            // Studio's dark C++); constructors and namespaces in the type colour; macros in Dark+'s
+            // macro purple. `inactive` is the fallback foreground for code the server compiled out
+            // (clangd's `#if 0`) when `Theme::dim` can't blend the cell's own colour.
             ("semantic.constructor", Style::new().fg(c(0x4EC9B0))),
             ("semantic.macro", Style::new().fg(c(0xBD63C5))),
-            ("semantic.parameter", Style::new().fg(c(0x9A9A9A))),
+            ("semantic.parameter", Style::new().fg(c(0x9CDCFE))),
             ("semantic.property", Style::new().fg(c(0xDADADA))),
             ("semantic.enumMember", Style::new().fg(c(0x4FC1FF))),
             ("semantic.namespace", Style::new().fg(c(0x4EC9B0))),
@@ -480,6 +499,24 @@ pub fn terminal_has_truecolor() -> bool {
     std::env::var("COLORTERM").is_ok_and(|v| v == "truecolor" || v == "24bit")
 }
 
+/// A colour's red, green and blue: exact for `Rgb`, xterm's for the 256-colour cube and grey
+/// ramp; `None` for the terminal's 16 palette colours and the default.
+fn rgb_of(color: Color) -> Option<(u8, u8, u8)> {
+    const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+    match color {
+        Color::Rgb(r, g, b) => Some((r, g, b)),
+        Color::Indexed(i @ 16..=231) => {
+            let i = (i - 16) as usize;
+            Some((LEVELS[i / 36], LEVELS[i / 6 % 6], LEVELS[i % 6]))
+        }
+        Color::Indexed(i @ 232..=255) => {
+            let v = 8 + 10 * (i - 232);
+            Some((v, v, v))
+        }
+        _ => None,
+    }
+}
+
 fn rgb(hex: u32, truecolor: bool) -> Color {
     let (r, g, b) = ((hex >> 16) as u8, (hex >> 8) as u8, hex as u8);
     if truecolor {
@@ -514,6 +551,26 @@ fn to_ansi256(r: u8, g: u8, b: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `dim` blends the foreground halfway into the editor background (keeping its hue), in
+    /// truecolor and 256 colours; a palette colour falls back to `semantic.inactive`.
+    #[test]
+    fn dim_blends_the_foreground_into_the_background() {
+        let theme = Theme::dark_plus(true);
+        // Keyword blue 0x569CD6 over 0x1E1E1E.
+        let dim = theme.dim(Style::new().fg(Color::Rgb(0x56, 0x9C, 0xD6)));
+        assert_eq!(dim.fg, Some(Color::Rgb(0x3A, 0x5D, 0x7A)));
+        // No foreground: the editor's own text colour (0xD4D4D4), dimmed.
+        assert_eq!(theme.dim(Style::new()).fg, Some(Color::Rgb(0x79, 0x79, 0x79)));
+        let low = Theme::dark_plus(false);
+        let blue = low.get("keyword").fg.unwrap();
+        let dimmed = low.dim(Style::new().fg(blue)).fg.unwrap();
+        assert!(matches!(dimmed, Color::Indexed(_)) && dimmed != blue);
+        assert_eq!(
+            theme.dim(Style::new().fg(Color::Red)).fg,
+            theme.get("semantic.inactive").fg
+        );
+    }
 
     /// Every highlight key has a colour, distinct in 256-colour mode for the main token kinds.
     #[test]

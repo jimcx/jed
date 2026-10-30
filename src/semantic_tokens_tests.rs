@@ -263,6 +263,11 @@ fn cell_fg(term: &ratatui::Terminal<ratatui::backend::TestBackend>, needle: &str
     term.backend().buffer()[((x as i32 + dx) as u16, y)].fg.into()
 }
 
+/// `fg` as the editor dims it in compiled-out code.
+fn dimmed(app: &App, fg: Option<Color>) -> Option<Color> {
+    app.theme.dim(ratatui::style::Style::new().fg(fg.unwrap())).fg
+}
+
 fn fg_style(app: &App, key: &str) -> Option<Color> {
     app.theme.get(key).fg
 }
@@ -374,21 +379,35 @@ async fn semantic_tokens_inactive_regions_are_dimmed() {
             .await
     );
     let mut term = terminal();
+    // The same frame without the dimming: the setting off.
+    app.settings.semantic_highlighting = SemanticHighlighting::Off;
     draw(&mut term, &mut app);
-    let dim = fg_style(&app, "semantic.inactive");
-    assert_eq!(fgs(&term, "bar();"), vec![dim; 6]);
-    assert_ne!(fg_of(&term, "foo"), dim);
+    let plain = fgs(&term, "bar();");
+    let foo_plain = fg_of(&term, "foo");
+    app.settings.semantic_highlighting = SemanticHighlighting::On;
+    // Dimmed: each cell keeps its own colour, blended into the background.
+    draw(&mut term, &mut app);
+    let dim: Vec<_> = plain.iter().map(|&fg| dimmed(&app, fg)).collect();
+    assert_eq!(fgs(&term, "bar();"), dim);
+    assert!(
+        dim.iter().zip(&plain).all(|(d, p)| d != p),
+        "the dimming changes the colour"
+    );
+    assert_ne!(
+        fg_of(&term, "foo"),
+        dimmed(&app, foo_plain),
+        "outside the region: not dimmed"
+    );
     // Over a selection: the foreground is dimmed, the selection's background kept.
     app.test_execute(Command::SelectAll);
     draw(&mut term, &mut app);
     let (x, y) = find_cells(&term, "bar").unwrap();
     let cell = &term.backend().buffer()[(x, y)];
-    assert_eq!(Option::<Color>::from(cell.fg), dim);
+    assert_eq!(Option::<Color>::from(cell.fg), dim[0]);
     assert_eq!(Some(cell.bg), app.theme.get("editor.selection").bg);
-    assert_ne!(fg_of(&term, "foo"), dim);
     app.settings.semantic_highlighting = SemanticHighlighting::Off;
     draw(&mut term, &mut app);
-    assert_ne!(fg_of(&term, "bar"), dim, "off draws no dimming");
+    assert_eq!(fg_of(&term, "bar"), plain[0], "off draws no dimming");
     app.shutdown_servers().await;
 }
 
@@ -471,7 +490,6 @@ async fn semantic_tokens_done_when_clangd() {
     draw(&mut term, &mut app);
     let on = drawn(&term);
     let key = |k: &str| fg_style(&app, k);
-    let inactive = key("semantic.inactive");
     let (function, variable) = (key("function"), key("variable"));
     assert_eq!(
         on,
@@ -485,20 +503,25 @@ async fn semantic_tokens_done_when_clangd() {
             variable,
         ]
     );
-    for (i, fg) in on[..5].iter().enumerate() {
+    // A parameter is the variable's light blue (not grey), the others are coloured apart.
+    assert_eq!(on[2], variable);
+    for (i, fg) in on[..5].iter().enumerate().filter(|(i, _)| *i != 2) {
         assert!(
             *fg != function && *fg != variable,
             "token {i} is coloured apart: {on:?}"
         );
     }
-    assert_eq!(fg_of(&term, "int dead"), inactive);
+    let dead_on = fg_of(&term, "int dead");
     // Off: tree-sitter's colours, the `#if 0` body too.
     app.settings.semantic_highlighting = SemanticHighlighting::Off;
     draw(&mut term, &mut app);
     let off = drawn(&term);
+    // Compiled-out code keeps its syntax colours, dimmed.
+    let dead_off = fg_of(&term, "int dead");
+    assert_eq!(dead_on, dimmed(&app, dead_off));
+    assert_ne!(dead_on, dead_off);
     assert_eq!(off[0], function, "tree-sitter's constructor is a function: {off:?}");
     assert_eq!(off[4], variable);
     assert_eq!(off[5..], on[5..]);
-    assert_ne!(fg_of(&term, "int dead"), inactive);
     app.shutdown_servers().await;
 }

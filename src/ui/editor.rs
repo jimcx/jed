@@ -378,7 +378,6 @@ pub fn render(
         (&[][..], &[][..])
     };
     let sem_styles = (!sem_tokens.is_empty()).then(|| semantic::Styles::new(theme));
-    let inactive_style = theme.get("semantic.inactive");
     let mut sti = 0;
     let mut semantic_at = |b: ByteIdx| {
         while sti < sem_tokens.len() && sem_tokens[sti].end <= b {
@@ -596,7 +595,7 @@ pub fn render(
                 style = style.patch(find_match);
             }
             if inactive_at(b) {
-                style = style.patch(inactive_style);
+                style = theme.dim(style);
             }
             if g.starts_with(|c: char| c.is_control()) && g != "\t" {
                 style = style.patch(control);
