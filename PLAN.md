@@ -688,6 +688,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Language server setup docs** (`language_server_docs`): docs for installing and configuring language servers — [tasks/language_server_docs.md](tasks/language_server_docs.md)
 - **Live diagnostics while editing** (`live_diagnostics`): pull diagnostics after a typing pause, per server — [tasks/live_diagnostics.md](tasks/live_diagnostics.md)
 - **More line commands** (`more_line_commands`): delete, select, join, and insert lines — [tasks/more_line_commands.md](tasks/more_line_commands.md)
+- **Objective-C and Swift** (`apple_langs`): Objective-C and Swift files get syntax colours, comment / pair / indent behaviour and language servers (`clangd` for Objective-C, `sourcekit-lsp` for Swift) — [tasks/apple_langs.md](tasks/apple_langs.md)
 - **Open and restore earlier versions of a file** (`hist_versions`): a file's earlier version — a saved snapshot, or its blob at a commit — opens as a read-only text tab so its text can be selected, copied and searched, and the lines a selection touches restore into the file's buffer as one undo step. — [tasks/hist_versions.md](tasks/hist_versions.md)
 - **Open File by path** (`open_file_path`): open a file by typing a path with completion — [tasks/open_file_path.md](tasks/open_file_path.md)
 - **Performance pass** (`performance_pass`): startup time, memory, and 1 MB file performance; check slow-frame warnings — [tasks/performance_pass.md](tasks/performance_pass.md)
