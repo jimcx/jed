@@ -215,6 +215,8 @@ enum AppEvent {
     },
     Listed {
         dir: PathBuf,
+        /// The folder was ignored when listed (`explorer::list_dir_in`'s `parent_ignored`).
+        ignored: bool,
         result: std::io::Result<Vec<explorer::Entry>>,
     },
     FsChanged(Vec<PathBuf>),
@@ -1646,7 +1648,7 @@ impl App {
             }
             AppEvent::Opened { path, result } => self.opened(path, result),
             AppEvent::HexCount { tab, generation, count } => self.hex_counted(tab, generation, count),
-            AppEvent::Listed { dir, result } => self.listed(dir, result),
+            AppEvent::Listed { dir, ignored, result } => self.listed(dir, ignored, result),
             AppEvent::FsChanged(paths) => self.fs_changed(paths),
             AppEvent::HistoryDone(result) => self.history_done(result),
             AppEvent::HistoryListed(listed) => self.history_listed(*listed),

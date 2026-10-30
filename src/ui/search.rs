@@ -28,7 +28,7 @@ use crate::search::{Matcher, Replacement};
 use crate::search_view::{self, Input, Row};
 use crate::workspace_search::{FileMatches, LineMatch, MAX_MATCHES, Results};
 
-const TOGGLES: [&str; 3] = ["Aa", "ab", ".*"];
+const TOGGLES: [&str; 4] = ["Aa", "ab", ".*", "Ig"];
 /// The Replace All button beside the replace input, and a hovered row's replace button.
 const REPLACE_ALL: &str = "⇄ All";
 const REPLACE_ROW: &str = "⇄";
@@ -73,8 +73,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<SearchHit>, O
     };
     let chevron = if view.replacing { "▾" } else { "▸" };
     out.set_stringn(area.x, area.y, chevron, 1, base.patch(theme.get("search.chevron")));
-    let on = [view.options.case_sensitive, view.options.whole_word, view.options.regex];
-    let mut toggles = [Rect::default(); 3];
+    let on = [
+        view.options.case_sensitive,
+        view.options.whole_word,
+        view.options.regex,
+        view.include_ignored,
+    ];
+    let mut toggles = [Rect::default(); 4];
     for (i, label) in TOGGLES.iter().enumerate() {
         let x = field.x + field_w + 1 + 3 * i as u16;
         let key = if on[i] { "find.option.active" } else { "find.option" };

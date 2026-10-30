@@ -83,18 +83,29 @@ impl App {
         }
         let excludes = self.excludes.clone();
         let tx = self.tx.clone();
+        let ignored = self.explorer.find(&dir).is_some_and(|e| e.ignored);
         tokio::task::spawn_blocking(move || {
-            let result = explorer::list_dir(&dir, &excludes);
-            let _ = tx.send(AppEvent::Listed { dir, result });
+            let result = explorer::list_dir_in(&dir, &excludes, ignored);
+            let _ = tx.send(AppEvent::Listed { dir, ignored, result });
         });
     }
 
-    pub(super) fn listed(&mut self, dir: PathBuf, result: std::io::Result<Vec<Entry>>) {
+    /// `ignored`: whether the folder was ignored when the listing was asked for. A parent's
+    /// newer listing may have changed that since: an ignored folder's entries all are, and a
+    /// folder no longer ignored is listed again.
+    pub(super) fn listed(&mut self, dir: PathBuf, ignored: bool, result: std::io::Result<Vec<Entry>>) {
         self.listing.remove(&dir);
         match result {
-            Ok(entries) => {
+            Ok(mut entries) => {
+                let now = self.explorer.find(&dir).is_some_and(|e| e.ignored);
+                if now {
+                    entries.iter_mut().for_each(|e| e.ignored = true);
+                }
                 for next in self.explorer.set_children(&dir, entries) {
                     self.request_listing(next);
+                }
+                if ignored && !now {
+                    self.request_listing(dir);
                 }
             }
             Err(e) if dir == self.workspace.root => {
@@ -229,11 +240,27 @@ impl App {
         self.git_paths_changed(&paths);
         self.disk_paths_changed(&paths);
         self.diffs_paths_changed(&paths);
+        let exclude_file = self.workspace.root.join(".git/info/exclude");
         for p in paths {
             // Single file mode watches only its file: no live `.workspace` reload (deferred).
             reload |= p == config && !self.mode.is_single();
             reload_settings |= p == settings_path;
             reload_keymap |= p == keymap_path;
+            // An ignore file changed: what is ignored below its folder may have too.
+            let ignores = if p == exclude_file {
+                Some(self.workspace.root.as_path())
+            } else if p.file_name().is_some_and(|n| n == ".gitignore" || n == ".ignore") {
+                p.parent()
+            } else {
+                None
+            };
+            if let Some(top) = ignores {
+                for d in self.explorer.loaded_dirs() {
+                    if d.starts_with(top) && !dirs.contains(&d) {
+                        dirs.push(d);
+                    }
+                }
+            }
             for d in [Some(p.as_path()), p.parent()].into_iter().flatten() {
                 if self.explorer.is_loaded(d) && !dirs.iter().any(|x| x == d) {
                     dirs.push(d.to_path_buf());

@@ -13,6 +13,8 @@ pub struct Entry {
     pub path: PathBuf,
     pub is_dir: bool,
     pub expanded: bool,
+    /// Left out by `.gitignore` / `.git/info/exclude` / `.ignore`, or inside an ignored folder.
+    pub ignored: bool,
     /// `None` until listed.
     pub children: Option<Vec<Entry>>,
 }
@@ -57,6 +59,7 @@ impl Explorer {
                 path: root,
                 is_dir: true,
                 expanded: true,
+                ignored: false,
                 children: None,
             },
             selected: None,
@@ -127,9 +130,12 @@ impl Explorer {
     }
 
     /// Installs a fresh listing, keeping expanded state and loaded subtrees of entries that still exist.
-    /// Returns directories that should be listed next (to continue a reveal).
+    /// Returns directories that should be listed next (to continue a reveal, or loaded folders
+    /// whose ignored state changed).
     pub fn set_children(&mut self, dir: &Path, mut entries: Vec<Entry>) -> Vec<PathBuf> {
         let Some(e) = self.find_mut(dir) else { return Vec::new() };
+        // Loaded folders whose ignored state changed: their listings are re-made with it.
+        let mut relist = Vec::new();
         if let Some(old) = e.children.take() {
             let mut old: HashMap<String, Entry> = old
                 .into_iter()
@@ -140,6 +146,9 @@ impl Explorer {
                 if let Some(o) = old.remove(&new.name) {
                     new.expanded = o.expanded;
                     new.children = o.children;
+                    if o.ignored != new.ignored && new.children.is_some() {
+                        relist.push(new.path.clone());
+                    }
                 }
             }
         }
@@ -150,7 +159,8 @@ impl Explorer {
         {
             self.selected = None;
         }
-        self.continue_reveal()
+        relist.extend(self.continue_reveal());
+        relist
     }
 
     /// Expands a directory; returns it if it needs listing.
@@ -357,13 +367,42 @@ pub fn walker_with(
     b
 }
 
-/// Blocking: one directory's entries, dirs first, case-insensitive.
+/// `walker` without the ignore files (`.gitignore`, `.git/info/exclude`, `.ignore`, global): the
+/// walk that also visits what they leave out. `.git/`, `.jed/` and the excludes still apply.
+pub fn without_ignore_files(mut b: WalkBuilder) -> WalkBuilder {
+    b.git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .ignore(false)
+        .parents(false);
+    b
+}
+
+/// Blocking: one directory's entries, dirs first, case-insensitive. Ignored entries are listed
+/// too, marked `ignored`.
+#[cfg(test)]
 pub fn list_dir(dir: &Path, excludes: &Override) -> std::io::Result<Vec<Entry>> {
+    list_dir_in(dir, excludes, false)
+}
+
+/// `list_dir` for a directory that is itself ignored when `parent_ignored`: all its entries are.
+pub fn list_dir_in(dir: &Path, excludes: &Override, parent_ignored: bool) -> std::io::Result<Vec<Entry>> {
     if !dir.is_dir() {
         return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not a directory"));
     }
-    let walker = walker(dir, excludes).max_depth(Some(1)).build();
-    let mut entries: Vec<Entry> = walker
+    let visible: std::collections::HashSet<PathBuf> = if parent_ignored {
+        Default::default()
+    } else {
+        walker(dir, excludes)
+            .max_depth(Some(1))
+            .build()
+            .filter_map(Result::ok)
+            .map(|e| e.into_path())
+            .collect()
+    };
+    let mut entries: Vec<Entry> = without_ignore_files(walker(dir, excludes))
+        .max_depth(Some(1))
+        .build()
         .filter_map(Result::ok)
         .filter(|e| e.depth() == 1)
         .map(|e| {
@@ -371,8 +410,9 @@ pub fn list_dir(dir: &Path, excludes: &Override) -> std::io::Result<Vec<Entry>> 
             Entry {
                 name: e.file_name().to_string_lossy().into_owned(),
                 is_dir: path.is_dir(),
-                path,
                 expanded: false,
+                ignored: parent_ignored || !visible.contains(&path),
+                path,
                 children: None,
             }
         })
@@ -492,11 +532,80 @@ mod tests {
     }
 
     #[test]
+    fn listing_marks_ignored_entries_and_their_subtree() {
+        let (_d, root) = tree();
+        let got = list_dir(&root, &Override::empty()).unwrap();
+        let flags: Vec<(&str, bool)> = got.iter().map(|e| (e.name.as_str(), e.ignored)).collect();
+        assert!(flags.contains(&("target", true)) && flags.contains(&("src", false)));
+        assert!(!names(&got).contains(&".git") && !names(&got).contains(&".jed"));
+        let inside = list_dir_in(&root.join("src"), &Override::empty(), true).unwrap();
+        // No pattern matches `main.rs` / `deep` themselves: ignored only through the parent.
+        assert_eq!(names(&inside), vec!["deep", "main.rs"]);
+        assert!(inside.iter().all(|e| e.ignored));
+        let alone = list_dir_in(&root.join("src"), &Override::empty(), false).unwrap();
+        assert!(
+            alone.iter().all(|e| !e.ignored),
+            "the same folder listed as not ignored"
+        );
+    }
+
+    /// `.ignore` counts outside a git repo (`.gitignore` only inside one, as for the search);
+    /// a nested ignore file marks entries of its own folder; excludes still hide entries.
+    #[test]
+    fn listing_marks_by_dot_ignore_and_nested_ignore_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        fs::create_dir_all(root.join("sub/gen")).unwrap();
+        fs::write(root.join(".ignore"), "*.tmp\n").unwrap();
+        fs::write(root.join(".gitignore"), "*.txt\n").unwrap();
+        fs::write(root.join("a.tmp"), "").unwrap();
+        fs::write(root.join("a.txt"), "").unwrap();
+        fs::write(root.join("x.o"), "").unwrap();
+        fs::write(root.join("sub/.ignore"), "gen/\n").unwrap();
+        fs::write(root.join("sub/keep.rs"), "").unwrap();
+        let flags = |dir: &Path| -> Vec<(String, bool)> {
+            let ex = excludes(&root, &["*.o".into()]);
+            list_dir(dir, &ex)
+                .unwrap()
+                .into_iter()
+                .map(|e| (e.name, e.ignored))
+                .collect()
+        };
+        let top = flags(&root);
+        assert!(top.contains(&("a.tmp".into(), true)), "{top:?}");
+        assert!(top.contains(&("a.txt".into(), false)), "not a git repo: {top:?}");
+        assert!(top.contains(&("sub".into(), false)) && !top.iter().any(|(n, _)| n == "x.o"));
+        let sub = flags(&root.join("sub"));
+        assert!(
+            sub.contains(&("gen".into(), true)) && sub.contains(&("keep.rs".into(), false)),
+            "{sub:?}"
+        );
+    }
+
+    /// A loaded folder whose ignored state changes in a fresh listing is returned for relisting
+    /// (its entries carry the flag), keeping it expanded; an unchanged one isn't.
+    #[test]
+    fn a_folder_turning_ignored_is_listed_again() {
+        let (_d, root) = tree();
+        let mut x = Explorer::new(root.clone());
+        let ex = Override::empty();
+        x.set_children(&root, list_dir(&root, &ex).unwrap());
+        x.expand(&root.join("src"));
+        x.set_children(&root.join("src"), list_dir(&root.join("src"), &ex).unwrap());
+        assert!(x.set_children(&root, list_dir(&root, &ex).unwrap()).is_empty());
+        fs::write(root.join(".gitignore"), "target/\nsrc/\n").unwrap();
+        let again = x.set_children(&root, list_dir(&root, &ex).unwrap());
+        assert_eq!(again, vec![root.join("src")]);
+        let src = x.find(&root.join("src")).unwrap();
+        assert!(src.ignored && src.expanded && src.children.is_some());
+    }
+
+    #[test]
     fn listing_sorts_and_filters() {
         let (_d, root) = tree();
         let ex = excludes(&root, &["build/".into(), "*.o".into()]);
         let got = list_dir(&root, &ex).unwrap();
-        assert_eq!(names(&got), vec!["src", ".gitignore", "A.txt", "b.txt"]);
+        assert_eq!(names(&got), vec!["src", "target", ".gitignore", "A.txt", "b.txt"]);
     }
 
     #[test]
@@ -541,7 +650,16 @@ mod tests {
             .collect();
         assert_eq!(
             rows,
-            vec!["src", "  deep", "    f.rs", "  main.rs", ".gitignore", "A.txt", "b.txt"]
+            vec![
+                "src",
+                "  deep",
+                "    f.rs",
+                "  main.rs",
+                "target",
+                ".gitignore",
+                "A.txt",
+                "b.txt"
+            ]
         );
     }
 
@@ -584,17 +702,17 @@ mod tests {
             let listing = list_dir(&dir, &ex).unwrap();
             todo.extend(x.set_children(&dir, listing));
         }
-        assert_eq!((x.row_count(), x.rows().len()), (7, 7));
+        assert_eq!((x.row_count(), x.rows().len()), (8, 8));
         x.collapse(&root.join("src/deep"));
-        assert_eq!((x.row_count(), x.rows().len()), (6, 6), "a collapsed folder's children");
+        assert_eq!((x.row_count(), x.rows().len()), (7, 7), "a collapsed folder's children");
         x.height = 4;
         x.set_top(1);
         assert_eq!(x.scroll().top, 1);
         x.set_top(100);
-        assert_eq!(x.scroll, 2, "the last row at the bottom");
+        assert_eq!(x.scroll, 3, "the last row at the bottom");
         assert_eq!(x.selected.as_deref(), Some(root.join("src/deep/f.rs").as_path()));
         x.collapse(&root.join("src"));
-        assert_eq!((x.row_count(), x.rows().len()), (4, 4));
+        assert_eq!((x.row_count(), x.rows().len()), (5, 5));
     }
 
     #[test]

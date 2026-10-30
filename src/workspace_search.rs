@@ -448,6 +448,8 @@ pub struct Job {
     pub filter: PathFilter,
     /// Snapshots of open buffers with unsaved changes: path relative to the root, and text.
     pub dirty: Vec<(PathBuf, Rope)>,
+    /// Also walk what `.gitignore`, `.git/info/exclude` and `.ignore` leave out.
+    pub include_ignored: bool,
     pub generation: u64,
 }
 
@@ -558,6 +560,7 @@ pub fn run(job: Job, cancel: &AtomicBool, send: &(dyn Fn(Batch) + Sync)) -> Stat
         matcher,
         filter,
         dirty,
+        include_ignored,
         generation,
     } = job;
     tracing::debug!(
@@ -615,6 +618,11 @@ pub fn run(job: Job, cancel: &AtomicBool, send: &(dyn Fn(Batch) + Sync)) -> Stat
                 !e.file_type().is_some_and(|t| t.is_dir())
                     || e.path().strip_prefix(&top).is_ok_and(|rel| !filter.skips_folder(rel))
             })
+        };
+        let walker = if include_ignored {
+            explorer::without_ignore_files(walker)
+        } else {
+            walker
         };
         walker.build_parallel().run(|| {
             let mut searcher = SearcherBuilder::new()
@@ -935,6 +943,18 @@ mod tests {
         exclude: &[&str],
         dirty: Vec<(PathBuf, Rope)>,
     ) -> (Results, Stats) {
+        search_all(root, pattern, options, exclude, dirty, false)
+    }
+
+    /// `search_with`, also walking ignored files when `include_ignored`.
+    fn search_all(
+        root: &Path,
+        pattern: &str,
+        options: search::Options,
+        exclude: &[&str],
+        dirty: Vec<(PathBuf, Rope)>,
+        include_ignored: bool,
+    ) -> (Results, Stats) {
         let query = Query {
             pattern: pattern.to_string(),
             options,
@@ -946,6 +966,7 @@ mod tests {
             matcher: matcher(&query).unwrap(),
             filter: Default::default(),
             dirty,
+            include_ignored,
             generation: 7,
         };
         let (tx, rx) = mpsc::channel();
@@ -1248,6 +1269,39 @@ mod tests {
         );
     }
 
+    /// Include ignored: the walk also enters what `.gitignore` / `.ignore` leave out, the dirty
+    /// buffers there replacing the disk; `.git/`, `.jed/`, the excludes and binary files are
+    /// still skipped. Without it, a dirty ignored file isn't searched either.
+    #[test]
+    fn include_ignored_walks_what_the_ignore_files_leave_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = root_of(&dir);
+        fs::create_dir_all(root.join(".git")).unwrap();
+        write(&root, ".gitignore", "target/\n");
+        write(&root, ".ignore", "*.tmp\n");
+        write(&root, "a.txt", "needle\n");
+        write(&root, "target/built.rs", "needle\n");
+        write(&root, "target/dirty.rs", "on disk\n");
+        write(&root, "target/bin.dat", b"needle\0\x01");
+        write(&root, "x.tmp", "needle\n");
+        write(&root, "build/out.txt", "needle\n");
+        write(&root, ".git/config.txt", "needle\n");
+        write(&root, ".jed/h.txt", "needle\n");
+        let dirty = || vec![(PathBuf::from("target/dirty.rs"), Rope::from_str("dirty needle\n"))];
+        let (off, _) = search_all(&root, "needle", PLAIN, &["build/"], dirty(), false);
+        assert_eq!(hits(&off), vec!["a.txt:1:0-6"]);
+        let (on, _) = search_all(&root, "needle", PLAIN, &["build/"], dirty(), true);
+        assert_eq!(
+            hits(&on),
+            vec![
+                "a.txt:1:0-6",
+                "target/built.rs:1:0-6",
+                "target/dirty.rs:1:6-12",
+                "x.tmp:1:0-6"
+            ]
+        );
+    }
+
     #[test]
     fn rope_and_file_paths_agree() {
         let texts = [
@@ -1374,6 +1428,7 @@ mod tests {
             matcher: matcher(&query).unwrap(),
             filter: Default::default(),
             dirty: Vec::new(),
+            include_ignored: false,
             generation: 1,
         };
         // Cancelled before it starts: nothing searched, nothing sent.

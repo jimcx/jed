@@ -81,6 +81,8 @@ pub struct SearchView {
     pub input: Input,
     /// Case, whole word and regex.
     pub options: Options,
+    /// The `Ig` toggle: also search files `.gitignore` leaves out (off by default, not saved).
+    pub include_ignored: bool,
     /// The query is an invalid regex: shown under the input, nothing runs.
     pub error: Option<SearchError>,
     /// When to restart the search after the last edit.

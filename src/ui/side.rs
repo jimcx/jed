@@ -158,6 +158,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
         let decoration = app.git.status.as_ref().and_then(|s| s.decoration(&e.path));
         let style = match decoration {
             Some(d) => style.patch(theme.get(d.theme_key())),
+            None if e.ignored => style.patch(theme.get("explorer.ignored")),
             None => style,
         };
         let mut room = tree.width as usize;

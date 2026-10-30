@@ -1,8 +1,8 @@
 ---
 id: search_ignored_files
 name: Show ignored files
-summary: gitignored files always visible in the explorer (dimmer), and an "include ignored" checkbox in workspace search
-status: open
+summary: gitignored files always visible in the explorer (dimmer), and an "Ig" toggle in workspace search to include them
+status: done
 priority: 0
 dependencies: []
 ---
@@ -14,3 +14,9 @@ See [Explorer](../PLAN.md#explorer) and [Workspace search](../PLAN.md#workspace-
 **Workspace search:** an "Include ignored files" checkbox in the Search view, unchecked by default; checked, the search also walks files and directories `.gitignore` (and `.git/info/exclude`, `.ignore`) leaves out. `.git/`, `.jed/` and binary files are always skipped, `.workspace` excludes still apply, dirty buffers filtered the same way. Search view state like the other toggles (not in sessions); toggling re-searches; a keyboard/mouse-reachable checkbox that stays visible (or lit) while the details are hidden, as `…` is.
 
 Tests: an ignored file is listed in the explorer with the ignored theme style while a normal one is not; a file under a gitignored `target/` is found by search only with the checkbox checked.
+
+✅ Built.
+- Explorer: `Entry::ignored`; `explorer::list_dir_in(dir, excludes, parent_ignored)` (two depth-1 walks, all vs non-ignored; a subtree of an ignored folder is ignored) in `request_listing`'s `spawn_blocking`; `AppEvent::Listed` carries the `ignored` flag it was asked with. Theme key `explorer.ignored`; git decoration wins. A changed `.gitignore` / `.ignore` / `.git/info/exclude` relists the loaded folders below it; `set_children` returns loaded folders whose flag changed.
+- Search: `SearchView::include_ignored` (not in sessions), `Job::include_ignored` → `explorer::without_ignore_files`; fourth toggle `Ig` on the options row (always visible), `SearchCommand::ToggleIgnored` ("Search: Toggle Include Ignored Files", unbound).
+- Deferred: none.
+- Still to check by hand: the `explorer.ignored` grey against a real terminal theme; the `Ig` toggle fitting a narrow side panel.

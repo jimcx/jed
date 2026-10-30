@@ -221,6 +221,8 @@ impl Theme {
             ("list.active", fg_bg(0xFFFFFF, 0x04395E)),
             // Explorer entries by git status (Dark+'s `gitDecoration.*`; a folder takes its most
             // important file's).
+            // Gitignored entries: dimmer than the normal entry text; git colours win.
+            ("explorer.ignored", Style::new().fg(c(0x8C8C8C))),
             ("gitDecoration.addedResourceForeground", Style::new().fg(c(0x81B88B))),
             ("gitDecoration.modifiedResourceForeground", Style::new().fg(c(0xE2C08D))),
             ("gitDecoration.deletedResourceForeground", Style::new().fg(c(0xC74E39))),

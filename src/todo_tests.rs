@@ -9173,3 +9173,256 @@ mod word_drag_select {
         );
     }
 }
+
+/// Search ignored files: the explorer lists gitignored entries (drawn dimmer, a folder's subtree
+/// too, `.git/` and `.jed/` still hidden), and the Search view's `Ig` toggle (button and palette
+/// command) makes the workspace search walk what `.gitignore` leaves out.
+mod search_ignored_files {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::Instant;
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind as Mouse};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::search_view::DEBOUNCE;
+    use crate::workspace::trust::TrustStore;
+    use crate::workspace::{self, Workspace};
+    use crate::workspace_search::reference;
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    fn write(root: &Path, rel: &str, text: &str) {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, text).unwrap();
+    }
+
+    fn project() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let (root, state) = (base.join("proj"), base.join("state"));
+        fs::create_dir_all(&state).unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        for (rel, text) in [
+            (".gitignore", "target/\n*.log\n"),
+            ("README.md", "a needle in the readme\n"),
+            ("src/main.rs", "fn main() { needle(); }\n"),
+            ("debug.log", "needle log\n"),
+            ("target/out/built.rs", "needle built\n"),
+            (".git/inner.txt", "needle git\n"),
+            (".jed/state.txt", "needle jed\n"),
+        ] {
+            write(&root, rel, text);
+        }
+        (dir, root, state)
+    }
+
+    async fn open_app(root: &Path, state: &Path) -> App {
+        open_app_with(root, state, false).await
+    }
+
+    async fn open_app_with(root: &Path, state: &Path, watch: bool) -> App {
+        let ws = Workspace::load(root.to_path_buf());
+        let trust = TrustStore::load(state.join("trust.toml"));
+        let buffer = Buffer::open(&root.join("README.md")).unwrap();
+        let initial = crate::app::InitialFile { buffer, goto: None };
+        let mut app = App::new(ws, trust, Some(initial), true);
+        if watch {
+            app.enable_file_watching();
+        }
+        app.test_start();
+        app.test_plain_whitespace();
+        assert!(app.settle(|a| a.explorer.row_count() > 0).await);
+        app
+    }
+
+    fn draw(app: &mut App) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    /// The screen row and foreground of the explorer row naming `name`.
+    fn row_of(term: &Terminal<TestBackend>, name: &str) -> Option<(u16, ratatui::style::Color)> {
+        let buf = term.backend().buffer();
+        for y in 0..buf.area.height {
+            let line: String = (0..32).map(|x| buf[(x, y)].symbol()).collect();
+            if let Some(i) = line.find(&format!(" {name}")) {
+                let x = line[..i + 1].chars().count() as u16;
+                return Some((y, buf[(x, y)].fg));
+            }
+        }
+        None
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_explorer_lists_ignored_entries_dimmer() {
+        let (_dir, root, state) = project();
+        let mut app = open_app(&root, &state).await;
+        let dim = app.theme.get("explorer.ignored").fg.expect("the key has a colour");
+        let term = draw(&mut app);
+        let (_, normal) = row_of(&term, "README.md").expect("normal file listed");
+        assert_ne!(normal, dim);
+        assert_eq!(row_of(&term, "debug.log").expect("ignored file listed").1, dim);
+        let (target_y, fg) = row_of(&term, "target").expect("ignored folder listed");
+        assert_eq!(fg, dim);
+        assert!(
+            app.explorer
+                .rows()
+                .iter()
+                .all(|r| r.entry.name != ".git" && r.entry.name != ".jed")
+        );
+        // Expanding the ignored folder lists its subtree, all ignored.
+        app.mouse(Mouse::Down(MouseButton::Left), 12, target_y);
+        app.mouse(Mouse::Up(MouseButton::Left), 12, target_y);
+        assert!(
+            app.settle(|a| a.explorer.rows().iter().any(|r| r.entry.name == "out"))
+                .await
+        );
+        let term = draw(&mut app);
+        assert_eq!(row_of(&term, "out").expect("child listed").1, dim);
+    }
+
+    fn ignored(app: &App, path: &Path) -> Option<bool> {
+        app.explorer.find(path).map(|e| e.ignored)
+    }
+
+    /// The ignored state follows ignore file edits with the live refresh: a pattern matching a
+    /// file inside an expanded folder, then the folder itself (its loaded subtree too), then
+    /// back; the folder stays expanded throughout.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ignored_state_follows_ignore_file_edits() {
+        let (_dir, root, state) = project();
+        write(&root, "src/deep/f.rs", "x\n");
+        let mut app = open_app_with(&root, &state, true).await;
+        let (src, main, deep_f) = (root.join("src"), root.join("src/main.rs"), root.join("src/deep/f.rs"));
+        let deep = root.join("src/deep");
+        let term = draw(&mut app);
+        let (y, _) = row_of(&term, "src").expect("src listed");
+        app.mouse(Mouse::Down(MouseButton::Left), 12, y);
+        app.mouse(Mouse::Up(MouseButton::Left), 12, y);
+        assert!(app.settle(|a| a.explorer.is_loaded(&src)).await);
+        let term = draw(&mut app);
+        let (y, _) = row_of(&term, "deep").expect("deep listed");
+        app.mouse(Mouse::Down(MouseButton::Left), 12, y);
+        app.mouse(Mouse::Up(MouseButton::Left), 12, y);
+        assert!(app.settle(|a| a.explorer.is_loaded(&deep)).await);
+        assert_eq!(ignored(&app, &main), Some(false));
+
+        // A root pattern matching inside the expanded folder.
+        write(&root, ".gitignore", "target/\n*.log\nmain.rs\n");
+        assert!(app.settle(|a| ignored(a, &main) == Some(true)).await);
+        assert_eq!(ignored(&app, &src), Some(false));
+
+        // The folder itself: its whole loaded subtree.
+        write(&root, ".gitignore", "target/\n*.log\nsrc/\n");
+        assert!(
+            app.settle(|a| ignored(a, &src) == Some(true) && ignored(a, &deep_f) == Some(true))
+                .await
+        );
+        assert!(app.explorer.find(&src).unwrap().expanded && app.explorer.find(&deep).unwrap().expanded);
+
+        // And back: nothing ignored there any more.
+        write(&root, ".gitignore", "target/\n*.log\n");
+        assert!(
+            app.settle(|a| [&src, &main, &deep, &deep_f]
+                .iter()
+                .all(|p| ignored(a, p) == Some(false)))
+                .await
+        );
+        assert!(app.explorer.find(&deep).unwrap().expanded);
+    }
+
+    /// Git status colouring wins over the ignored grey: a tracked, modified file under an
+    /// ignored folder is drawn in the modified colour.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn git_decoration_wins_over_ignored() {
+        let (_dir, root, state) = project();
+        fs::remove_dir_all(root.join(".git")).unwrap();
+        let repo = git2::Repository::init(&root).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("README.md")).unwrap();
+        // Force-tracked though ignored (`git add -f`).
+        index.add_path(Path::new("debug.log")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("t", "t@t").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        fs::write(root.join("debug.log"), "needle log changed\n").unwrap();
+
+        let mut app = open_app(&root, &state).await;
+        let log = root.join("debug.log");
+        assert!(
+            app.settle(|a| a.git.status.as_ref().is_some_and(|s| s.decoration(&log).is_some()))
+                .await
+        );
+        assert_eq!(ignored(&app, &log), Some(true));
+        let modified = app.theme.get("gitDecoration.modifiedResourceForeground").fg.unwrap();
+        let dim = app.theme.get("explorer.ignored").fg.unwrap();
+        let term = draw(&mut app);
+        assert_eq!(row_of(&term, "debug.log").unwrap().1, modified);
+        assert_eq!(row_of(&term, "target").unwrap().1, dim, "untracked ignored stays grey");
+    }
+
+    /// Waits for a search newer than `old` to finish; its hits.
+    async fn next_search(app: &mut App, old: u64) -> Vec<String> {
+        app.search_tick(Instant::now() + DEBOUNCE);
+        assert!(
+            app.settle(|a| a.search.as_ref().is_some_and(|r| r.done && r.generation > old))
+                .await
+        );
+        reference::hits(app.search.as_ref().unwrap())
+    }
+
+    fn paths(hits: &[String]) -> Vec<&str> {
+        let mut p: Vec<&str> = hits.iter().map(|h| h.split(':').next().unwrap()).collect();
+        p.sort();
+        p.dedup();
+        p
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn search_walks_ignored_files_only_when_asked() {
+        let (_dir, root, state) = project();
+        let mut app = open_app(&root, &state).await;
+        app.press(K::Char('f'), cmd() | M::SHIFT);
+        app.type_text("needle");
+        let hits = next_search(&mut app, 0).await;
+        assert_eq!(paths(&hits), vec!["README.md", "src/main.rs"]);
+        assert!(!app.search_view.include_ignored);
+
+        // The toggle button.
+        let term = draw(&mut app);
+        let r = app.hits.search.as_ref().unwrap().toggles[3];
+        drop(term);
+        let old = app.search.as_ref().unwrap().generation;
+        app.mouse(Mouse::Down(MouseButton::Left), r.x, r.y);
+        app.mouse(Mouse::Up(MouseButton::Left), r.x, r.y);
+        assert!(app.search_view.include_ignored);
+        let hits = next_search(&mut app, old).await;
+        assert_eq!(
+            paths(&hits),
+            vec!["README.md", "debug.log", "src/main.rs", "target/out/built.rs"],
+            ".git/ and .jed/ stay skipped"
+        );
+
+        // The palette command turns it off again.
+        let old = app.search.as_ref().unwrap().generation;
+        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.type_text("Search: Toggle Include Ignored Files");
+        app.press(K::Enter, M::NONE);
+        assert!(!app.search_view.include_ignored);
+        let hits = next_search(&mut app, old).await;
+        assert_eq!(paths(&hits), vec!["README.md", "src/main.rs"]);
+    }
+}

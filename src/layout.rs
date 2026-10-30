@@ -518,8 +518,8 @@ pub struct ListHit {
 /// even when results streamed in since.
 #[derive(Debug, Clone)]
 pub struct SearchHit {
-    /// Case, whole word, regex.
-    pub toggles: [Rect; 3],
+    /// Case, whole word, regex, include ignored.
+    pub toggles: [Rect; 4],
     /// The `…` button (show / hide the files to include / exclude).
     pub details: Rect,
     /// The query, files to include and files to exclude inputs (the last two empty while hidden).

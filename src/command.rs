@@ -571,6 +571,8 @@ pub enum SearchCommand {
     NextInput,
     PreviousInput,
     ToggleWholeWord,
+    /// The `Ig` button: also search files .gitignore (and friends) leaves out.
+    ToggleIgnored,
     /// Left / Right in the list: collapse / expand the selected file (Left on a line: its file's
     /// row; Right on an expanded file: its first line).
     Collapse,
@@ -593,7 +595,7 @@ pub enum SearchCommand {
 }
 
 impl SearchCommand {
-    pub const ALL: [SearchCommand; 27] = [
+    pub const ALL: [SearchCommand; 28] = [
         SearchCommand::ToggleCase,
         SearchCommand::ToggleRegex,
         SearchCommand::Refresh,
@@ -612,6 +614,7 @@ impl SearchCommand {
         SearchCommand::NextInput,
         SearchCommand::PreviousInput,
         SearchCommand::ToggleWholeWord,
+        SearchCommand::ToggleIgnored,
         SearchCommand::Collapse,
         SearchCommand::Expand,
         SearchCommand::CollapseAll,
@@ -1170,6 +1173,7 @@ impl Command {
                     SearchCommand::NextInput => "nextInput",
                     SearchCommand::PreviousInput => "previousInput",
                     SearchCommand::ToggleWholeWord => "toggleWholeWord",
+                    SearchCommand::ToggleIgnored => "toggleIgnored",
                     SearchCommand::Collapse => "collapse",
                     SearchCommand::Expand => "expand",
                     SearchCommand::CollapseAll => "collapseAll",
@@ -1532,6 +1536,7 @@ impl Command {
                 SearchCommand::NextInput => "Search: Focus Next Input",
                 SearchCommand::PreviousInput => "Search: Focus Previous Input",
                 SearchCommand::ToggleWholeWord => "Search: Toggle Match Whole Word",
+                SearchCommand::ToggleIgnored => "Search: Toggle Include Ignored Files",
                 SearchCommand::Collapse => "Search: Collapse File",
                 SearchCommand::Expand => "Search: Expand File",
                 SearchCommand::CollapseAll => "Search: Collapse All",

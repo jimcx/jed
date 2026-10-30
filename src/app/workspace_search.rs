@@ -82,6 +82,10 @@ impl App {
                 *flag = !*flag;
                 self.run_search();
             }
+            S::ToggleIgnored => {
+                self.search_view.include_ignored = !self.search_view.include_ignored;
+                self.run_search();
+            }
             S::Refresh => self.run_search(),
             S::FocusEditor => {
                 if !self.group().tabs.is_empty() {
@@ -368,7 +372,7 @@ impl App {
             .into_iter()
             .zip(hit.inputs)
             .find(|(_, r)| r.contains(at));
-        let toggle = [S::ToggleCase, S::ToggleWholeWord, S::ToggleRegex]
+        let toggle = [S::ToggleCase, S::ToggleWholeWord, S::ToggleRegex, S::ToggleIgnored]
             .into_iter()
             .zip(hit.toggles)
             .find(|(_, r)| r.contains(at));
@@ -500,6 +504,7 @@ impl App {
             matcher,
             filter,
             dirty,
+            include_ignored: self.search_view.include_ignored,
             generation,
         };
         let tx = self.tx.clone();
