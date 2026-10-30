@@ -37,8 +37,13 @@ fi
 
 [ -n "$GITEA_TOKEN" ] || { echo "scripts/mr: pushed $branch, but GITEA_TOKEN is not set (and tea is not installed) so no MR was opened" >&2; exit 1; }
 
-# origin is https://host/owner/repo(.git) or git@host:owner/repo(.git)
-url=$(git remote get-url origin | sed -E 's#^git@([^:]+):#https://\1/#; s#\.git$##')
+# origin is https://host/owner/repo(.git), ssh://[user@]host[:port]/owner/repo(.git)
+# or [user@]host:owner/repo(.git); the web/API URL is https://host/owner/repo (the
+# ssh port and user don't apply to it).
+url=$(git remote get-url origin | sed -E \
+    -e 's#^ssh://([^@/]+@)?([^:/]+)(:[0-9]+)?/#https://\2/#' \
+    -e 's#^[^@:/]+@([^:/]+):#https://\1/#' \
+    -e 's#\.git$##')
 api=$(printf '%s' "$url" | sed -E 's#^(https?://[^/]+)/(.*)$#\1/api/v1/repos/\2#')
 
 payload=$(python3 -I -c 'import json,sys; print(json.dumps({"head": sys.argv[1], "base": "main", "title": sys.argv[2], "body": sys.argv[3]}))' "$branch" "$title" "$body")
