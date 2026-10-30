@@ -65,6 +65,8 @@ mod ipc;
 mod keys;
 #[cfg(test)]
 mod keys_tests;
+#[cfg(test)]
+mod kitty_recent_tests;
 mod layout;
 mod lines;
 mod locations;
@@ -133,6 +135,7 @@ mod tasks;
 mod term_area_tests;
 #[cfg(test)]
 mod term_select_tests;
+mod termctl;
 mod terminal;
 mod theme;
 #[cfg(test)]

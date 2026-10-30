@@ -13,3 +13,4 @@ Per-terminal config that releases jed's macOS Cmd keys and turns Option into Alt
   - `iterm2.md` — no snippet: GUI steps to remap menu items; update its checklist if a key needs a new menu item freed
 - Each terminal file also has a "defaults that clash with jed" note, a "What you lose" section and a "Checklist"; update them when a new key clashes with a terminal default.
 - Never bind or release `cmd+v`: the terminal's paste reaches jed as a bracketed paste (`Event::Paste`).
+- Switching between workspaces (Ctrl+R) talks to the terminal through `src/termctl/` (`Backend`; only kitty so far, over its remote control socket). Another terminal's file gets its own "Switching between workspaces" section once it has a backend there.

@@ -348,6 +348,7 @@ enum AppEvent {
     RecentRecorded(Result<(), String>),
     /// The recent workspaces were read for "Open Recent Workspace".
     RecentListed(Box<recent::Listed>),
+    TermCtlDone(Box<recent::TermDone>),
     /// The shell integration snippets were written into the state dir (`app/shell.rs`).
     ShellIntegrationWritten(Result<(), String>),
     /// The shell integration's source line was appended to a shell's init file.
@@ -761,6 +762,7 @@ impl App {
         self.refresh_git_head();
         self.restore_session();
         self.scan_backups();
+        self.detect_termctl();
         self.record_recent();
         let root = self.workspace.root.clone();
         self.request_listing(root);
@@ -1714,6 +1716,7 @@ impl App {
             AppEvent::BackupRestore(r) => self.backup_restored(*r),
             AppEvent::RecentRecorded(result) => self.recent_recorded(result),
             AppEvent::RecentListed(listed) => self.recent_listed(*listed),
+            AppEvent::TermCtlDone(done) => self.termctl_done(*done),
             AppEvent::ShellIntegrationWritten(result) => self.shell_integration_written(result),
             AppEvent::ShellIntegrationInstalled(result) => self.shell_integration_installed(result),
             AppEvent::LogsChanged => {} // handled above: no redraw, no navigation

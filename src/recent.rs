@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
+use crate::termctl::WindowRef;
+
 /// In the state dir.
 pub const FILE_NAME: &str = "recent.toml";
 /// The list keeps this many workspaces.
@@ -150,16 +152,13 @@ fn write(path: &Path, text: &str) -> std::io::Result<()> {
     result
 }
 
-/// A kitty window id (for the deferred kitty integration: a TODO in PLAN.md).
-pub type WindowId = u64;
-
 /// A recent workspace as the picker lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub path: PathBuf,
-    /// The terminal window already showing jed on this workspace, when known: its row is
-    /// marked. Kitty integration (a TODO in PLAN.md) would fill it; `None` until then.
-    pub window: Option<WindowId>,
+    /// The terminal window already showing jed on this workspace, when the terminal backend
+    /// (`termctl`) knows one: its row is marked and picking it focuses that window.
+    pub window: Option<WindowRef>,
 }
 
 impl Entry {
@@ -169,17 +168,25 @@ impl Entry {
 }
 
 /// What picking a recent workspace does. jed never switches its own workspace: it opens the
-/// folder in another jed. Kitty integration (a TODO in PLAN.md) would add focusing `entry.window` and launching jed
-/// in a new kitty OS window; until then, and outside kitty, it's a message with the command.
+/// folder in another jed: raising its terminal window, or launching one, through a
+/// `termctl::Backend`; without one, a message with the command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Open {
+    /// Raise the terminal window already running jed on it.
+    Focus(WindowRef),
+    /// Open a new terminal window running `jed <path>`.
+    Launch,
     /// Say how to open it: the path and the `jed <path>` command.
     Message,
 }
 
-/// How to open `entry` (only [`Open::Message`] for now: no terminal integration yet).
-pub fn how_to_open(_entry: &Entry) -> Open {
-    Open::Message
+/// How to open `entry`, given whether a terminal backend is present.
+pub fn how_to_open(entry: &Entry, has_backend: bool) -> Open {
+    match (&entry.window, has_backend) {
+        (Some(w), _) => Open::Focus(w.clone()),
+        (None, true) => Open::Launch,
+        (None, false) => Open::Message,
+    }
 }
 
 /// The status-bar message for opening `path` by hand.
@@ -403,6 +410,13 @@ mod tests {
             "To open ~/a b, run: jed '/home/me/a b'"
         );
         let e = Entry::new("/p".into());
-        assert_eq!((how_to_open(&e), e.window), (Open::Message, None));
+        assert_eq!((how_to_open(&e, false), e.window.clone()), (Open::Message, None));
+        assert_eq!(how_to_open(&e, true), Open::Launch);
+        let w = Entry {
+            window: Some(WindowRef("3".into())),
+            ..e
+        };
+        assert_eq!(how_to_open(&w, true), Open::Focus(WindowRef("3".into())));
+        assert_eq!(how_to_open(&w, false), Open::Focus(WindowRef("3".into())));
     }
 }

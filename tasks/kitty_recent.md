@@ -2,7 +2,7 @@
 id: kitty_recent
 name: Terminal integration for recent workspaces (kitty first)
 summary: switch to a running workspace's terminal window / tab, or open a new one, through kitty's remote control protocol on a socket
-status: open
+status: done
 priority: 0
 dependencies: []
 ---
@@ -47,3 +47,8 @@ Deferred from M13 — see [Recent workspaces](../PLAN.md#workspace). Picking a r
 - `tcp:` / `fd:` addresses, the password / encrypted protocol, the controlling-tty transport (`kitten @` without a socket)
 - Other backends: WezTerm (`wezterm cli list --format json` / `activate-pane`), tmux (`list-panes -a -F` + `select-window`), iTerm2 (its Python API / AppleScript), Ghostty (no remote control yet)
 - A stale mark after a `kill -9`'d jed (the var stays): the focus works but lands on a shell; a follow-up could check the window's `cmdline` / foreground process too
+
+**Built** ✅
+- `src/termctl/` (`Backend` trait, `Env`, `detect`; `kitty.rs` speaks the remote control protocol over `$KITTY_LISTEN_ON`, 2 s deadline). `Entry.window` is a `WindowRef`; `how_to_open(entry, has_backend)` returns `Focus` / `Launch` / `Message`. `App::start` detects the backend; Ctrl+R lists the file and the backend's windows in one `spawn_blocking`; focus / launch report via `AppEvent::TermCtlDone`.
+- Also: tests in `src/kitty_recent_tests.rs` with a fake kitty (`termctl::kitty::fake`); in test builds `detect_termctl` uses an empty `Env` unless `App::test_termctl_env` is called; a workspace with several windows focuses the first from `ls`.
+- Still to check by hand: real kitty on macOS and Linux (`unix:` path and `@abstract` socket; window in another OS window, in a background tab, in a minimised OS window; a stale `jed_workspace` after `kill -9`), then jed inside tmux inside kitty; kitty with remote control off or a password shows the message.

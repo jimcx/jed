@@ -592,7 +592,7 @@ pub fn recent_rows(query: &str, entries: &[recent::Entry], home: &std::path::Pat
                     label_hits: sorted(label_hits),
                     detail,
                     detail_hits: sorted(detail_hits),
-                    keys: e.window.map(|_| "open".to_string()),
+                    keys: e.window.as_ref().map(|_| "open".to_string()),
                     action: Action::OpenWorkspace(e.path.clone()),
                 },
             ))
@@ -834,7 +834,7 @@ mod tests {
             recent::Entry::new("/srv/www".into()),
             recent::Entry::new("/home/me/notes".into()),
         ];
-        entries[1].window = Some(7);
+        entries[1].window = Some(crate::termctl::WindowRef("7".into()));
         let rows = recent_rows("", &entries, home);
         let shown: Vec<_> = rows
             .iter()

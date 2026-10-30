@@ -104,6 +104,20 @@ Don't add `cmd+v`: kitty's paste is how text gets into jed.
 
 Only some of these are kitty defaults (`cmd+c` copy, `cmd+n` new OS window, `cmd+up`/`cmd+down` scroll, `cmd+1..8` switch window, `cmd+w` close tab, `cmd+q` quit, `cmd+k` clear the terminal); the rest are listed so the snippet stays a copy of jed's table.
 
+## Switching between workspaces
+
+"Open Recent Workspace" (Ctrl+R) marks the workspaces open in other jed windows and, on Enter, raises that window (its OS window and tab) or opens a new OS window running `jed <path>`. jed talks to kitty over its remote control socket, so kitty needs:
+
+```
+allow_remote_control socket-only
+listen_on unix:@kitty-{kitty_pid}
+```
+
+- On macOS there are no abstract sockets: use `listen_on unix:/tmp/kitty-{kitty_pid}`. Keep it under `/tmp`: a socket path is limited to 104 bytes there and the long `$TMPDIR` can fail to bind.
+- kitty sets `KITTY_LISTEN_ON` (which jed reads) in new windows only: restart kitty after changing the config.
+- Inside tmux, pass `KITTY_LISTEN_ON` through (`set -g update-environment KITTY_LISTEN_ON`, or `set -ga update-environment ' KITTY_LISTEN_ON'`).
+- Remote control with a `password` is not supported, nor `tcp:` addresses. Without a working socket Enter shows the `jed <path>` command to run.
+
 ## What you lose
 
 While a jed window has focus: kitty's own Cmd+C (copy screen text; use the mouse selection, which kitty can copy on select), Cmd+N (new OS window), Cmd+W (close tab), Cmd+Q (quit), Cmd+K (clear the terminal), Cmd+1..8 (switch window) and Cmd+Up/Down (scroll). Other kitty windows keep them. Close jed's tab with Cmd+Shift+W (close OS window) or the menu.
