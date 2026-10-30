@@ -212,7 +212,7 @@ Go back to any earlier save of a file, independent of git.
   - Keys: Enter open, Space open keeping focus, F2 rename, Delete / Cmd+Backspace delete, Cmd+Alt+N new file, Cmd+Alt+Shift+N new folder (Ctrl+Alt on Linux)
   - New file/folder names may contain `/` to create nested folders
   - Delete moves to the system Trash
-- Respects `.gitignore`
+- Gitignored files and folders are always listed, in a slightly darker grey (task `search_ignored_files`); `.git/`, `.jed/` and `.workspace` excludes stay hidden
 - Live refresh through `notify`
 - Git status colouring on entries
 - "Find in Folder…" (`explorer.findInFolder`; right-click on a folder's row — a file's row shows its history): the Search view with that folder as its files to include (folders only, as VS Code)
@@ -507,7 +507,7 @@ jed as git's editor (the [Git editor](tasks/git_editor.md) task): `git config --
   - Regex: Rust `regex` syntax; an invalid pattern shows the error under the input and nothing runs
   - Toggles combine (e.g. case-sensitive regex)
 - Same matcher (`search` module) as find in file, so each option means the same thing in both
-- Scope: workspace root; skips `.gitignore`d files, `.workspace` excludes, `.jed/` and binary files
+- Scope: workspace root; skips `.gitignore`d files unless the "Include ignored files" checkbox (unchecked by default) is on, `.workspace` excludes, `.jed/` and binary files
 - Open buffers with unsaved changes are searched from the buffer, not the disk
 - Files to include / exclude (VS Code's "Toggle Search Details": the `…` button or Cmd/Ctrl+Shift+J shows two inputs under the query; hidden, they still apply and `…` stays lit):
   - Comma-separated globs (`src/**`, `*.rs`, `{a,b}`), relative to the root; a pattern without `/` matches at any depth (`*.rs`, `src` = every folder named `src`), one with a `/` (or a leading `./`) from the root; a folder or path means everything under it (`src` = `src/**`)
@@ -696,10 +696,10 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Reopen closed tab** (`reopen_closed_tab`): reopen the last closed tab (Cmd+Shift+T) — [tasks/reopen_closed_tab.md](tasks/reopen_closed_tab.md)
 - **SCons settings in `.workspace`** (`scons_settings`): a `[scons]` table for `sconstruct`, `scons_path` and `enabled` — [tasks/scons_settings.md](tasks/scons_settings.md)
 - **SCons: a real SCons for `site_scons` in the docs** (`scons_docs`): document a real SCons install for ty's `site_scons` helpers — [tasks/scons_docs.md](tasks/scons_docs.md)
-- **Search ignored files toggle** (`search_ignored_files`): toggle searching gitignored files in workspace search — [tasks/search_ignored_files.md](tasks/search_ignored_files.md)
 - **Selected lines in diff tabs** (`diff_tab_selected_lines`): select line ranges in a diff tab for stage / unstage / revert — [tasks/diff_tab_selected_lines.md](tasks/diff_tab_selected_lines.md)
 - **Self-update from GitHub releases** (`update`): check for and install a newer release from GitHub — [tasks/update.md](tasks/update.md)
 - **Settings files** (`settings`): "Preferences: Open User / Workspace Settings" open `settings.toml` and `.workspace`, with settings-aware syntax highlighting and completion — [tasks/settings.md](tasks/settings.md)
+- **Show ignored files** (`search_ignored_files`): gitignored files always visible in the explorer (dimmer), and an "include ignored" checkbox in workspace search — [tasks/search_ignored_files.md](tasks/search_ignored_files.md)
 - **Side panel resizing, finished** (`side_panel_resize`): make the side panel's resize sash discoverable and smooth — [tasks/side_panel_resize.md](tasks/side_panel_resize.md)
 - **Snippets** (`snippets`): LSP snippet completions with tab stops, mirrors and choices — [tasks/snippets.md](tasks/snippets.md)
 - **Spell checker** (`spell_check`): misspelled words in comments, strings and identifiers are underlined (camelCase / snake_case split into words), with suggestions and a user dictionary for words to accept — [tasks/spell_check.md](tasks/spell_check.md)
