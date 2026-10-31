@@ -4,10 +4,12 @@ use std::path::{Path, PathBuf};
 
 use super::{App, AppEvent, FileOp, Focus, InputKind, Level, Prompt};
 use crate::app::prompt::Input;
+use crate::clipboard::Copied;
 use crate::command::ExplorerCommand as X;
 use crate::config::keymap::{self, Keymap, Platform};
 use crate::config::settings;
 use crate::explorer::{self, Entry};
+use crate::layout::SidePanel;
 use crate::workspace;
 use crate::workspace::config::WorkspaceConfig;
 use crate::workspace::trust::Trust;
@@ -52,7 +54,61 @@ impl App {
             }
             X::ShowHistory => self.explorer_file_history(),
             X::FindInFolder => self.find_in_folder(),
+            X::CopyPath => self.explorer_copy_path(false),
+            X::CopyRelativePath => self.explorer_copy_path(true),
+            X::RevealInFinder => {
+                if let Some(path) = self.explorer.selected.clone() {
+                    self.reveal_in_finder(path);
+                }
+            }
+            X::RevealActive => {
+                if let Some(path) = self.active_path() {
+                    self.focus_side(SidePanel::Explorer);
+                    for dir in self.explorer.reveal(&path) {
+                        self.request_listing(dir);
+                    }
+                }
+            }
+            X::CollapseAll => self.explorer.collapse_all(),
         }
+    }
+
+    /// "Explorer: Copy Path" / "Copy Relative Path": the selected row's path to the clipboard.
+    fn explorer_copy_path(&mut self, relative: bool) {
+        let Some(path) = self.explorer.selected.clone() else {
+            return;
+        };
+        let text = if relative {
+            relative_path(&self.workspace.root, &path)
+        } else {
+            path.display().to_string()
+        };
+        self.clipboard.write(Copied {
+            text: text.clone(),
+            whole_line: false,
+            pieces: Vec::new(),
+        });
+        self.notify(Level::Info, format!("Copied path: {text}"));
+    }
+
+    /// Shows `path` in the system file manager, off the UI thread; a failure is reported.
+    pub(super) fn reveal_in_finder(&mut self, path: PathBuf) {
+        let (program, args) = reveal_command(&path, cfg!(target_os = "macos"));
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = std::process::Command::new(&program)
+                .args(&args)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            let err = match result {
+                Ok(s) if s.success() => return,
+                Ok(s) => format!("{program} exited with {s}"),
+                Err(e) => format!("{program}: {e}"),
+            };
+            let _ = tx.send(AppEvent::RevealFailed(format!("Can't reveal in file manager: {err}")));
+        });
     }
 
     /// A file opens (focusing the editor if `focus`); a folder toggles.
@@ -335,5 +391,62 @@ impl App {
         if self.group().tabs.is_empty() && self.ui.focus != Focus::SidePanel {
             self.ui.focus = Focus::SidePanel;
         }
+    }
+}
+
+/// `path` below `root`, `/`-separated; `.` for the root itself.
+fn relative_path(root: &Path, path: &Path) -> String {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    let parts: Vec<_> = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect();
+    if parts.is_empty() { ".".into() } else { parts.join("/") }
+}
+
+/// The program and arguments that show `path` in the file manager: macOS `open -R <path>`,
+/// elsewhere `xdg-open <parent>`.
+fn reveal_command(path: &Path, macos: bool) -> (String, Vec<String>) {
+    if macos {
+        ("open".into(), vec!["-R".into(), path.display().to_string()])
+    } else {
+        let parent = path.parent().unwrap_or(path);
+        ("xdg-open".into(), vec![parent.display().to_string()])
+    }
+}
+
+#[cfg(test)]
+mod reveal_tests {
+    use super::*;
+
+    #[test]
+    fn reveal_command_per_platform() {
+        let p = Path::new("/w/src/a.rs");
+        assert_eq!(
+            reveal_command(p, true),
+            ("open".into(), vec!["-R".into(), "/w/src/a.rs".into()])
+        );
+        assert_eq!(reveal_command(p, false), ("xdg-open".into(), vec!["/w/src".into()]));
+    }
+
+    #[test]
+    fn relative_path_uses_slashes() {
+        assert_eq!(relative_path(Path::new("/w"), Path::new("/w/src/a.rs")), "src/a.rs");
+        assert_eq!(relative_path(Path::new("/w"), Path::new("/w")), ".");
+    }
+
+    #[test]
+    fn reveal_failed_is_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = workspace::normalize(dir.path());
+        let mut app = App::new(
+            workspace::Workspace::load(root.clone()),
+            crate::workspace::trust::TrustStore::load(root.join("trust.toml")),
+            None,
+            true,
+        );
+        app.handle_app_event(AppEvent::RevealFailed("Can't reveal in file manager: boom".into()));
+        let m = app.message.as_ref().unwrap();
+        assert_eq!(
+            (m.text.as_str(), m.level),
+            ("Can't reveal in file manager: boom", Level::Warning)
+        );
     }
 }

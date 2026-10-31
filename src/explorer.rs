@@ -179,6 +179,27 @@ impl Explorer {
         }
     }
 
+    /// Closes every folder; the selection moves to its top-level ancestor's row.
+    pub fn collapse_all(&mut self) {
+        fn close(e: &mut Entry) {
+            for c in e.children.iter_mut().flatten() {
+                c.expanded = false;
+                close(c);
+            }
+        }
+        let top = self.selected.as_ref().and_then(|sel| {
+            let rel = sel.strip_prefix(&self.root.path).ok()?;
+            Some(self.root.path.join(rel.components().next()?))
+        });
+        close(&mut self.root);
+        self.reveal = None;
+        if top.is_some() {
+            self.selected = top;
+        }
+        self.scroll = 0;
+        self.scroll_to_selected();
+    }
+
     /// Expands the ancestors of `path` and selects it, listing directories as needed.
     /// Returns directories to list.
     pub fn reveal(&mut self, path: &Path) -> Vec<PathBuf> {
@@ -525,6 +546,27 @@ mod tests {
         fs::write(root.join("src/main.rs"), "").unwrap();
         fs::write(root.join("src/deep/f.rs"), "").unwrap();
         (dir, root)
+    }
+
+    #[test]
+    fn collapse_all_closes_folders_and_selects_the_top_level_row() {
+        let (_d, root) = tree();
+        let mut ex = Explorer::new(root.clone());
+        ex.set_children(&root, list_dir(&root, &Override::empty()).unwrap());
+        ex.expand(&root.join("src"));
+        ex.set_children(
+            &root.join("src"),
+            list_dir(&root.join("src"), &Override::empty()).unwrap(),
+        );
+        ex.expand(&root.join("src/deep"));
+        ex.selected = Some(root.join("src/deep"));
+        let before = ex.rows().len();
+        ex.collapse_all();
+        assert!(ex.rows().len() < before);
+        assert!(ex.rows().iter().all(|r| r.depth == 0));
+        assert_eq!(ex.selected, Some(root.join("src")));
+        assert!(!ex.find(&root.join("src")).unwrap().expanded);
+        assert!(!ex.find(&root.join("src/deep")).unwrap().expanded);
     }
 
     fn names(entries: &[Entry]) -> Vec<&str> {

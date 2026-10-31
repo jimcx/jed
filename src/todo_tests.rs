@@ -126,6 +126,12 @@
 //!   (palette commands) put the active file's absolute path, and its path relative to the
 //!   workspace root (the absolute path again when the file isn't inside it), on the clipboard; the
 //!   active file is a text or diff tab's, and there's nothing for a tab without one.
+//! - `explorer_path_commands`: "Explorer: Copy Path" / "Copy Relative Path" copy the selected row's
+//!   path, "Explorer: Reveal Active File" expands to and selects the active file's row (a diff
+//!   tab's too) and focuses the explorer, and "Explorer: Collapse Folders" closes every folder;
+//!   with nothing selected / no active file they leave the clipboard and focus alone. Reveal in
+//!   Finder's program and arguments and its failure warning are unit-tested in `app/side.rs` (no
+//!   program is spawned).
 //! - `live_reload`: `settings.toml` and `keybindings.toml` reload when they change (the config dir
 //!   is watched, non-recursively): the user's settings apply live, still layered under
 //!   `.workspace` per key (a `.workspace` reload re-layers the same values), a new binding works
@@ -9426,5 +9432,170 @@ mod search_ignored_files {
         assert!(!app.search_view.include_ignored);
         let hits = next_search(&mut app, old).await;
         assert_eq!(paths(&hits), vec!["README.md", "src/main.rs"]);
+    }
+}
+
+mod explorer_path_commands {
+    use std::fs;
+    use std::path::Path;
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+
+    use crate::app::{App, Focus, InitialFile, Level};
+    use crate::buffer::Buffer;
+    use crate::layout::SidePanel;
+    use crate::workspace::trust::TrustStore;
+    use crate::workspace::{self, Workspace};
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    fn palette_command(app: &mut App, title: &str) {
+        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.type_text(title);
+        let p = app.palette.as_ref().unwrap();
+        assert_eq!(p.rows[p.selected].label, title);
+        app.press(K::Enter, M::NONE);
+        assert!(app.palette.is_none());
+    }
+
+    fn open_app(root: &Path, file: &Path) -> App {
+        let initial = InitialFile {
+            buffer: Buffer::open(file).unwrap(),
+            goto: None,
+        };
+        let trust = TrustStore::load(root.join("trust.toml"));
+        let mut app = App::new(Workspace::load(root.to_path_buf()), trust, Some(initial), true);
+        app.test_start();
+        app
+    }
+
+    fn project() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = workspace::normalize(dir.path()).join("proj");
+        fs::create_dir_all(root.join("src/deep")).unwrap();
+        let file = root.join("src/deep/a.rs");
+        fs::write(&file, "fn main() {}\n").unwrap();
+        (dir, root, file)
+    }
+
+    /// Waits for the start's own reveal of the active file, then collapses the tree so the
+    /// file's row is hidden and the selection is elsewhere: a later Reveal Active File has
+    /// work to do.
+    async fn collapsed(app: &mut App, root: &Path, file: &Path) {
+        assert!(app.settle(|a| a.explorer.selected.as_deref() == Some(file)).await);
+        app.explorer.collapse_all();
+        assert_eq!(app.explorer.selected, Some(root.join("src")));
+        assert!(app.explorer.rows().iter().all(|r| r.entry.path != file));
+    }
+
+    fn message(app: &App) -> (String, Option<Level>) {
+        let m = app.message.as_ref();
+        (m.map(|m| m.text.clone()).unwrap_or_default(), m.map(|m| m.level))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reveal_active_selects_the_row_and_copy_commands_use_it() {
+        let (_d, root, file) = project();
+        let mut app = open_app(&root, &file);
+        collapsed(&mut app, &root, &file).await;
+        app.ui.focus = Focus::Editor;
+        app.ui.side_panel = SidePanel::Search;
+
+        palette_command(&mut app, "Explorer: Reveal Active File");
+        assert!(
+            app.settle(|a| a.explorer.selected.as_deref() == Some(file.as_path()))
+                .await
+        );
+        assert_eq!(app.ui.focus, Focus::SidePanel);
+        assert_eq!(app.ui.side_panel, SidePanel::Explorer);
+        assert!(app.explorer.find(&root.join("src/deep")).unwrap().expanded);
+        assert!(app.explorer.rows().iter().any(|r| r.entry.path == file));
+
+        palette_command(&mut app, "Explorer: Copy Path");
+        let abs = file.display().to_string();
+        assert_eq!(app.clipboard.read().unwrap(), abs);
+        assert_eq!(message(&app), (format!("Copied path: {abs}"), Some(Level::Info)));
+        palette_command(&mut app, "Explorer: Copy Relative Path");
+        assert_eq!(app.clipboard.read().unwrap(), "src/deep/a.rs");
+        assert_eq!(message(&app).0, "Copied path: src/deep/a.rs");
+
+        // A folder row works too.
+        app.explorer.selected = Some(root.join("src/deep"));
+        palette_command(&mut app, "Explorer: Copy Relative Path");
+        assert_eq!(app.clipboard.read().unwrap(), "src/deep");
+        palette_command(&mut app, "Explorer: Copy Path");
+        assert_eq!(
+            app.clipboard.read().unwrap(),
+            root.join("src/deep").display().to_string()
+        );
+
+        // Nothing selected: the clipboard and the message are left alone.
+        app.explorer.selected = None;
+        app.message = None;
+        palette_command(&mut app, "Explorer: Copy Relative Path");
+        assert_eq!(
+            app.clipboard.read().unwrap(),
+            root.join("src/deep").display().to_string()
+        );
+        assert!(app.message.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reveal_active_works_for_a_diff_tab() {
+        let (_d, root, file) = project();
+        let mut app = open_app(&root, &file);
+        collapsed(&mut app, &root, &file).await;
+        app.open_diff(file.clone(), crate::diff_view::Pair::SAVED);
+        assert!(app.group().active_diff().is_some());
+        assert_eq!(app.explorer.selected, Some(root.join("src")));
+        palette_command(&mut app, "Explorer: Reveal Active File");
+        assert!(
+            app.settle(|a| a.explorer.selected.as_deref() == Some(file.as_path()))
+                .await
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reveal_active_without_a_file_does_nothing() {
+        let (_d, root, _file) = project();
+        let trust = TrustStore::load(root.join("trust.toml"));
+        let mut app = App::new(Workspace::load(root.to_path_buf()), trust, None, true);
+        app.test_start();
+        assert!(app.settle(|a| !a.explorer.rows().is_empty()).await);
+        app.ui.focus = Focus::Editor;
+        app.explorer.selected = None;
+        palette_command(&mut app, "Explorer: Reveal Active File");
+        assert_eq!(app.ui.focus, Focus::Editor);
+        assert_eq!(app.explorer.selected, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn collapse_folders_closes_everything_and_selects_the_top_level_row() {
+        let (_d, root, file) = project();
+        fs::write(root.join("top.txt"), "").unwrap();
+        let mut app = open_app(&root, &file);
+        assert!(
+            app.settle(|a| a.explorer.selected.as_deref() == Some(file.as_path())
+                && a.explorer.rows().iter().any(|r| r.entry.name == "top.txt"))
+                .await
+        );
+        assert!(app.explorer.rows().iter().any(|r| r.depth == 2));
+
+        palette_command(&mut app, "Explorer: Collapse Folders");
+        assert_eq!(app.explorer.selected, Some(root.join("src")));
+        let rows: Vec<_> = app.explorer.rows().iter().map(|r| r.entry.name.clone()).collect();
+        assert_eq!(rows, ["src", "top.txt"]);
+        assert!(!app.explorer.find(&root.join("src/deep")).unwrap().expanded);
+
+        // A top-level file's row keeps the selection.
+        app.explorer.selected = Some(root.join("top.txt"));
+        palette_command(&mut app, "Explorer: Collapse Folders");
+        assert_eq!(app.explorer.selected, Some(root.join("top.txt")));
     }
 }

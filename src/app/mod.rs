@@ -232,6 +232,8 @@ enum AppEvent {
     FsChanged(Vec<PathBuf>),
     /// A file history task (a save's snapshot, a rename's move) ended; `Err` = the message.
     HistoryDone(Result<(), String>),
+    /// "Reveal in Finder" failed to launch: the message.
+    RevealFailed(String),
     /// A file's history entries were read for the picker.
     HistoryListed(Box<history::Listed>),
     /// A history entry was read and diffed against its buffer, to restore it.
@@ -1398,6 +1400,11 @@ impl App {
             Command::Paste => self.paste_clipboard(),
             Command::CopyPath => self.copy_path(false),
             Command::CopyRelativePath => self.copy_path(true),
+            Command::RevealInFinder => {
+                if let Some(path) = self.active_path() {
+                    self.reveal_in_finder(path);
+                }
+            }
             Command::ShowCommands => self.open_palette(Picker::QuickOpen, ">"),
             Command::CheatSheet => self.toggle_cheat_sheet(),
             Command::KeyboardShortcuts => self.toggle_keyboard_shortcuts(),
@@ -1678,6 +1685,7 @@ impl App {
             AppEvent::Listed { dir, ignored, result } => self.listed(dir, ignored, result),
             AppEvent::FsChanged(paths) => self.fs_changed(paths),
             AppEvent::HistoryDone(result) => self.history_done(result),
+            AppEvent::RevealFailed(msg) => self.notify(Level::Warning, msg),
             AppEvent::HistoryListed(listed) => self.history_listed(*listed),
             AppEvent::HistoryRestore(restore) => self.history_restored(*restore),
             AppEvent::ConfigLoaded(result) => self.config_loaded(result),

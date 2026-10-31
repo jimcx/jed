@@ -119,6 +119,8 @@ pub enum Command {
     /// "File: Copy Relative Path of Active File": the active file's path relative to the workspace
     /// root (the absolute path when it isn't inside it) to the clipboard.
     CopyRelativePath,
+    /// "File: Reveal in Finder": the active file in the system file manager.
+    RevealInFinder,
     Quit,
     CloseTab,
     NextTab,
@@ -456,10 +458,20 @@ pub enum ExplorerCommand {
     /// "Find in Folder…": the Search view with the selected folder as its files to include
     /// (also a right-click on a folder's row).
     FindInFolder,
+    /// "Explorer: Copy Path": the selected row's absolute path.
+    CopyPath,
+    /// "Explorer: Copy Relative Path": the selected row's path from the root, `/`-separated.
+    CopyRelativePath,
+    /// "Explorer: Reveal in Finder": the selected row in the system file manager.
+    RevealInFinder,
+    /// "Explorer: Reveal Active File": expand to and select the active file's row, focusing the explorer.
+    RevealActive,
+    /// "Explorer: Collapse Folders": every folder closed, the selection on its top-level row.
+    CollapseAll,
 }
 
 impl ExplorerCommand {
-    pub const ALL: [ExplorerCommand; 16] = [
+    pub const ALL: [ExplorerCommand; 21] = [
         X::Up,
         X::Down,
         X::PageUp,
@@ -476,6 +488,11 @@ impl ExplorerCommand {
         X::Delete,
         X::ShowHistory,
         X::FindInFolder,
+        X::CopyPath,
+        X::CopyRelativePath,
+        X::RevealInFinder,
+        X::RevealActive,
+        X::CollapseAll,
     ];
 }
 
@@ -904,6 +921,7 @@ impl Command {
             Command::SaveAll,
             Command::CopyPath,
             Command::CopyRelativePath,
+            Command::RevealInFinder,
             Command::Quit,
             Command::CloseTab,
             Command::NextTab,
@@ -1077,6 +1095,7 @@ impl Command {
             Command::SaveAll => "file.saveAll".into(),
             Command::CopyPath => "file.copyPath".into(),
             Command::CopyRelativePath => "file.copyRelativePath".into(),
+            Command::RevealInFinder => "file.revealInFinder".into(),
             Command::Quit => "app.quit".into(),
             Command::CloseTab => "tab.close".into(),
             Command::NextTab => "tab.next".into(),
@@ -1111,6 +1130,11 @@ impl Command {
                     X::Delete => "delete",
                     X::ShowHistory => "showFileHistory",
                     X::FindInFolder => "findInFolder",
+                    X::CopyPath => "copyPath",
+                    X::CopyRelativePath => "copyRelativePath",
+                    X::RevealInFinder => "revealInFinder",
+                    X::RevealActive => "revealActiveFile",
+                    X::CollapseAll => "collapseFolders",
                 }
             ),
             Command::ShowCommands => "palette.showCommands".into(),
@@ -1451,6 +1475,7 @@ impl Command {
             Command::SaveAll => "File: Save All",
             Command::CopyPath => "File: Copy Path of Active File",
             Command::CopyRelativePath => "File: Copy Relative Path of Active File",
+            Command::RevealInFinder => "File: Reveal in Finder",
             Command::Quit => "File: Quit",
             Command::CloseTab => "View: Close Editor",
             Command::NextTab => "View: Open Next Editor",
@@ -1483,6 +1508,11 @@ impl Command {
                 X::Delete => "Explorer: Delete",
                 X::ShowHistory => "Explorer: Show File History",
                 X::FindInFolder => "Explorer: Find in Folder…",
+                X::CopyPath => "Explorer: Copy Path",
+                X::CopyRelativePath => "Explorer: Copy Relative Path",
+                X::RevealInFinder => "Explorer: Reveal in Finder",
+                X::RevealActive => "Explorer: Reveal Active File",
+                X::CollapseAll => "Explorer: Collapse Folders",
             },
             Command::ShowCommands => "Show All Commands",
             Command::CheatSheet => "Help: Keyboard Cheat Sheet",
@@ -1766,6 +1796,7 @@ mod tests {
             Command::SaveAll => 118,
             Command::CopyPath => 126,
             Command::CopyRelativePath => 127,
+            Command::RevealInFinder => 137,
             Command::Quit => 16,
             Command::CloseTab => 17,
             Command::NextTab => 18,
@@ -1886,7 +1917,7 @@ mod tests {
             Command::ApplyChangeToLeft => 136,
         }
     }
-    const VARIANTS: u8 = 137;
+    const VARIANTS: u8 = 138;
 
     #[test]
     fn all_lists_every_variant() {
