@@ -1,0 +1,12 @@
+#!/bin/sh
+# Build the release binary and copy it into ~/.local/bin (or $1 / $PREFIX_BIN).
+set -eu
+cd "$(dirname "$0")/.."
+dest="${1:-${PREFIX_BIN:-$HOME/.local/bin}}"
+cargo build --release
+mkdir -p "$dest"
+# Cargo's strip = true can fail with only a warning, so make sure (as the release workflow does).
+strip target/release/jed
+install -m 755 target/release/jed "$dest/jed"
+echo "installed $dest/jed"
+case ":$PATH:" in *":$dest:"*) ;; *) echo "note: $dest is not on PATH" ;; esac
