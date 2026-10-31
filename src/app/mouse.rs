@@ -468,6 +468,9 @@ impl App {
             }
             hit => hit,
         };
+        if self.context_menu_mouse(&m, hit) {
+            return;
+        }
         if self.code_actions_mouse(&m, hit) {
             return;
         }
@@ -757,7 +760,13 @@ impl App {
             Hit::StatusProblems => {}
             Hit::StatusIndentation => self.indentation_clicked(),
             Hit::StatusLanguage => self.change_language_mode(),
-            Hit::Status | Hit::Hover | Hit::Completion | Hit::CodeActions | Hit::QuickDiff | Hit::Nothing => {}
+            Hit::Status
+            | Hit::Hover
+            | Hit::Completion
+            | Hit::CodeActions
+            | Hit::ContextMenu
+            | Hit::QuickDiff
+            | Hit::Nothing => {}
         }
     }
 

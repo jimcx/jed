@@ -1,6 +1,6 @@
 //! Key combos to commands. Keymaps are data; commands never look at keys.
 //! A binding applies in one context (editor, explorer, palette, find, replace, search,
-//! searchResults, problems, locations, suggest, codeActions, diff, scm, gitHistory, task) or everywhere.
+//! searchResults, problems, locations, suggest, codeActions, contextMenu, diff, scm, gitHistory, task) or everywhere.
 //! The defaults are VS Code's; `keybindings.toml` replaces bindings command by command.
 
 use std::collections::{HashMap, HashSet};
@@ -10,10 +10,10 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
 
 use crate::command::{
-    CodeActionCommand as Ca, ColumnMotion, Command, CommitCommand as Cc, ExplorerCommand as X, FindCommand as F,
-    GitHistoryCommand as G, LocationsCommand as L, MergeCommand as Mg, Motion, PaletteCommand as P,
-    ProblemsCommand as Pr, ScmCommand as Sc, SearchCommand as S, ShellCommand as Sh, SuggestCommand as Sg,
-    TaskCommand as T, ToolsCommand as Tl,
+    CodeActionCommand as Ca, ColumnMotion, Command, CommitCommand as Cc, ContextMenuCommand as Cm,
+    ExplorerCommand as X, FindCommand as F, GitHistoryCommand as G, LocationsCommand as L, MergeCommand as Mg, Motion,
+    PaletteCommand as P, ProblemsCommand as Pr, ScmCommand as Sc, SearchCommand as S, ShellCommand as Sh,
+    SuggestCommand as Sg, TaskCommand as T, ToolsCommand as Tl,
 };
 
 pub const FILE_NAME: &str = "keybindings.toml";
@@ -203,6 +203,9 @@ pub enum Context {
     /// The editor has the focus and the code action list (Cmd+.) is shown; bindings not found
     /// here come from `Editor` (anything else they do closes the list).
     CodeActions,
+    /// A context menu is open: it takes every key (only its own bindings do anything).
+    #[allow(clippy::enum_variant_names)]
+    ContextMenu,
     /// The editor has the focus and its active tab is a diff view; bindings not found here come
     /// from `Editor`.
     Diff,
@@ -227,7 +230,7 @@ pub enum Context {
 }
 
 impl Context {
-    const ALL: [(Context, &'static str); 19] = [
+    const ALL: [(Context, &'static str); 20] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
@@ -239,6 +242,7 @@ impl Context {
         (Context::Locations, "locations"),
         (Context::Suggest, "suggest"),
         (Context::CodeActions, "codeActions"),
+        (Context::ContextMenu, "contextMenu"),
         (Context::Diff, "diff"),
         (Context::Scm, "scm"),
         (Context::Tools, "tools"),
@@ -267,6 +271,7 @@ impl Context {
             Context::Locations => "Locations",
             Context::Suggest => "Suggestions",
             Context::CodeActions => "Code Actions",
+            Context::ContextMenu => "Context Menu",
             Context::Diff => "Diff View",
             Context::Scm => "Source Control",
             Context::Tools => "Tools",
@@ -998,6 +1003,12 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Enter, none, Ca::Accept),
         (KeyCode::Esc, none, Ca::Close),
     ];
+    let context_menu = [
+        (KeyCode::Up, none, Cm::Up),
+        (KeyCode::Down, none, Cm::Down),
+        (KeyCode::Enter, none, Cm::Accept),
+        (KeyCode::Esc, none, Cm::Close),
+    ];
     if mac {
         // VS Code's: the list's selection, not the editor's Ctrl+P / Ctrl+N cursor moves.
         suggest.push((KeyCode::Char('p'), ctrl, Sg::Up));
@@ -1137,6 +1148,11 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         code_actions
             .into_iter()
             .map(|(k, m, c)| bind(k, m, Some(Context::CodeActions), Command::CodeActions(c))),
+    );
+    out.extend(
+        context_menu
+            .into_iter()
+            .map(|(k, m, c)| bind(k, m, Some(Context::ContextMenu), Command::ContextMenu(c))),
     );
     out.extend(diff.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Diff), c)));
     out.extend(

@@ -7,6 +7,7 @@ mod code_action;
 mod commit_tabs;
 mod completion;
 mod conflict;
+mod context_menu;
 mod cursors;
 mod diff_edit;
 mod diff_view;
@@ -522,6 +523,8 @@ pub struct App {
     pub completion: crate::completion::Completion,
     /// The code action list, the lightbulb's rest and cache, the hover's quick fixes.
     pub code_actions: crate::code_action::CodeActions,
+    /// The open context menu (`app::context_menu`); it takes the keys and mouse while open.
+    pub context_menu: Option<crate::context_menu::ContextMenu>,
     /// Semantic tokens per buffer: result ids, raw arrays and the debounce (`app::semantic`).
     semantic: semantic::State,
     /// The Locations list (go to definition's places), while there is one.
@@ -703,6 +706,7 @@ impl App {
             tab_tip: Default::default(),
             completion: Default::default(),
             code_actions: Default::default(),
+            context_menu: None,
             semantic: Default::default(),
             locations: None,
             locations_generation: 0,
@@ -1134,6 +1138,9 @@ impl App {
         if self.palette.is_some() {
             return Context::Palette;
         }
+        if self.context_menu.is_some() {
+            return Context::ContextMenu;
+        }
         match self.ui.focus {
             Focus::Editor if self.code_actions_shown() => Context::CodeActions,
             Focus::Editor if self.completion_shown() => Context::Suggest,
@@ -1200,6 +1207,8 @@ impl App {
                     self.drag = None;
                 } else if self.prompt.is_some() {
                     self.handle_prompt_key(key);
+                } else if self.context_menu.is_some() {
+                    self.context_menu_key(key);
                 } else if self.cheat_sheet.is_some() {
                     self.cheat_sheet_key(key);
                 } else if self.keys.is_some() {
@@ -1250,9 +1259,12 @@ impl App {
                     self.completion_typed(c);
                 }
             }
+            Event::FocusLost => self.close_context_menu(),
             Event::Paste(text) => {
                 tracing::trace!(target: "input", len = text.len(), "paste");
-                if let Some(Prompt::Input(input)) = &mut self.prompt {
+                if self.context_menu.is_some() {
+                    // Swallowed.
+                } else if let Some(Prompt::Input(input)) = &mut self.prompt {
                     input.insert(&text.replace(['\r', '\n'], ""));
                 } else if self.cheat_sheet.is_some() || self.keys.is_some() {
                     // Swallowed.
@@ -1345,6 +1357,10 @@ impl App {
         if !self.mode.allows(cmd) {
             self.notify(Level::Info, mode::UNAVAILABLE.into());
             return;
+        }
+        // Any command but the menu's own keys closes an open context menu.
+        if !matches!(cmd, Command::ContextMenu(_)) {
+            self.close_context_menu();
         }
         // Anything but the palette's own keys (and reopening it) closes it first, as losing focus does in VS Code.
         if self.palette.is_some()
@@ -1445,6 +1461,7 @@ impl App {
             Command::Suggest(c) => self.suggest_command(c),
             Command::QuickFix => self.quick_fix(),
             Command::CodeActions(c) => self.code_action_command(c),
+            Command::ContextMenu(c) => self.context_menu_command(c),
             Command::GoToReferences => self.go_to_references(),
             Command::RenameSymbol => self.rename_symbol(),
             Command::FormatDocument => self.format_document(),
@@ -1892,6 +1909,11 @@ impl App {
     /// Fires the hover resting timer as the event loop would at `now` (no sleeping in tests).
     pub fn test_hover_tick(&mut self, now: Instant) {
         self.hover_tick(now);
+    }
+
+    /// The terminal reporting that it lost the focus.
+    pub fn test_focus_lost(&mut self) {
+        self.handle_event(Event::FocusLost);
     }
 
     /// Fires the tab tooltip's resting timer as the event loop would at `now`.

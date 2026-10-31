@@ -79,7 +79,8 @@ impl App {
             Hit::Tab(g, i) | Hit::TabClose(g, i) => Some((g, i)),
             _ => None,
         };
-        let idle = self.prompt.is_some() || self.palette.is_some() || self.drag.is_some();
+        let idle =
+            self.context_menu.is_some() || self.prompt.is_some() || self.palette.is_some() || self.drag.is_some();
         match (m.kind, on) {
             (MouseEventKind::Moved, Some((g, i))) if !idle => {
                 if self

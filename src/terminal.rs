@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::cursor::{SetCursorStyle, Show};
 use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste, EnableFocusChange,
+    EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
@@ -243,7 +243,7 @@ fn start(out: &mut impl Write, kitty: bool, cursor: CursorShape, identity: Optio
     if let Some(identity) = identity {
         out.write_all(identity.start().as_bytes())?;
     }
-    execute!(out, EnableMouseCapture, EnableBracketedPaste)?;
+    execute!(out, EnableMouseCapture, EnableBracketedPaste, EnableFocusChange)?;
     if kitty {
         execute!(
             out,
@@ -280,6 +280,7 @@ fn finish(out: &mut impl Write, kitty: bool, pointer: bool, identity: bool) -> i
         out,
         SetCursorStyle::DefaultUserShape,
         DisableBracketedPaste,
+        DisableFocusChange,
         DisableMouseCapture,
         LeaveAlternateScreen,
         Show
@@ -328,6 +329,7 @@ mod tests {
             "the alternate screen first: {entered:?}"
         );
         assert!(entered.ends_with("\x1b[5 q"), "{entered:?}");
+        assert!(entered.contains("\x1b[?1004h"), "focus reporting on: {entered:?}");
         let block = CursorShape {
             style: CursorStyle::Block,
             blinking: false,
@@ -341,6 +343,7 @@ mod tests {
         let restored = written(|o| finish(o, false, false, false));
         assert!(restored.starts_with("\x1b[0 q"), "the user's shape: {restored:?}");
         assert!(restored.contains("\x1b[?1049l"), "{restored:?}");
+        assert!(restored.contains("\x1b[?1004l"), "focus reporting off: {restored:?}");
         assert_eq!(restored.matches(" q").count(), 1, "{restored:?}");
         let restored = written(|o| finish(o, true, false, false));
         assert!(restored.starts_with("\x1b[<1u\x1b[0 q"), "{restored:?}");

@@ -9877,3 +9877,366 @@ mod file_info {
         assert!(tip_row(&term, &app).contains(&outside.display().to_string()));
     }
 }
+
+/// file_info-b: the context menu widget, opened with a hand-built item list: drawing, placement,
+/// keys, mouse and dismissal.
+mod file_info_menu {
+    use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::App;
+    use crate::command::{Command, ContextMenuCommand};
+    use crate::context_menu::MenuItem;
+    use crate::workspace::Workspace;
+    use crate::workspace::trust::TrustStore;
+
+    fn app() -> (tempfile::TempDir, App) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        let trust = TrustStore::load(root.join("trust.toml"));
+        let mut app = App::new(Workspace::load(root), trust, None, true);
+        app.test_start();
+        (dir, app)
+    }
+
+    fn draw(app: &mut App) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    fn items() -> Vec<MenuItem> {
+        vec![
+            MenuItem::new("Toggle Panel", Command::TogglePanel),
+            MenuItem::Separator,
+            MenuItem::new("Off", Command::ToggleProblems).disabled(),
+            MenuItem::new("Copy", Command::Copy),
+        ]
+    }
+
+    /// Opens the menu at (x, y) and draws it; returns its rect.
+    fn open(app: &mut App, x: u16, y: u16) -> (ratatui::layout::Rect, Terminal<TestBackend>) {
+        app.open_context_menu((x, y), items());
+        let term = draw(app);
+        (app.hits.context_menu.expect("menu drawn").rect, term)
+    }
+
+    fn row(term: &Terminal<TestBackend>, r: ratatui::layout::Rect, i: u16) -> String {
+        let b = term.backend().buffer();
+        (r.x..r.right()).map(|x| b[(x, r.y + i)].symbol()).collect()
+    }
+
+    #[tokio::test]
+    async fn file_info_menu_draws_padded_rows_hint_separator_and_colours() {
+        let (_d, mut app) = app();
+        let (r, term) = open(&mut app, 10, 5);
+        assert_eq!((r.x, r.y, r.height), (10, 5, 4));
+        assert!(row(&term, r, 0).starts_with(" Toggle Panel"));
+        assert!(row(&term, r, 1).trim().chars().all(|c| c == '─') && row(&term, r, 1).contains('─'));
+        let copy = row(&term, r, 3);
+        let hint = app.keymap.binding_for(Command::Copy).unwrap().label();
+        assert!(
+            copy.starts_with(" Copy") && copy.ends_with(&format!("{hint} ")),
+            "{copy:?}"
+        );
+        let b = term.backend().buffer();
+        let t = &app.theme;
+        // Selected row filled, others on the menu background, disabled dimmed.
+        assert_eq!(b[(r.x, r.y)].bg, t.get("menu.selectionBackground").bg.unwrap());
+        assert_eq!(b[(r.x, r.y + 3)].bg, t.get("menu.background").bg.unwrap());
+        assert_ne!(t.get("menu.background").bg, t.get("editor").bg);
+        assert_eq!(b[(r.x + 1, r.y + 2)].fg, t.get("menu.disabledForeground").fg.unwrap());
+    }
+
+    #[tokio::test]
+    async fn file_info_menu_stays_inside_the_screen_at_every_edge() {
+        let (_d, mut app) = app();
+        for (x, y) in [(0, 0), (99, 0), (0, 29), (99, 29), (50, 28)] {
+            let (r, _) = open(&mut app, x, y);
+            assert!(r.right() <= 100 && r.bottom() <= 30, "{x},{y}: {r:?}");
+            assert_eq!(r.height, 4);
+        }
+        let (r, _) = open(&mut app, 99, 29);
+        assert_eq!((r.right(), r.bottom()), (99, 29), "flipped left and up of the anchor");
+    }
+
+    #[tokio::test]
+    async fn file_info_menu_keys_skip_disabled_enter_runs_and_others_are_swallowed() {
+        let (_d, mut app) = app();
+        open(&mut app, 10, 5);
+        assert_eq!(app.context_menu.as_ref().unwrap().selected, 0);
+        app.press(K::Down, M::NONE);
+        assert_eq!(
+            app.context_menu.as_ref().unwrap().selected,
+            3,
+            "separator and disabled skipped"
+        );
+        app.press(K::Down, M::NONE);
+        assert_eq!(app.context_menu.as_ref().unwrap().selected, 0, "wraps");
+        // Typing and other bound keys do nothing to the editor or the menu.
+        app.type_text("zz");
+        app.press(K::Char('p'), M::CONTROL | M::SHIFT);
+        assert!(app.palette.is_none() && app.context_menu.is_some());
+        assert!(!app.ui.panel_visible);
+        let before = app.ui.panel_visible;
+        app.press(K::Enter, M::NONE);
+        assert!(app.context_menu.is_none());
+        assert_ne!(app.ui.panel_visible, before, "Toggle Panel ran");
+    }
+
+    #[tokio::test]
+    async fn file_info_menu_escape_closes_and_runs_nothing() {
+        let (_d, mut app) = app();
+        open(&mut app, 10, 5);
+        app.press(K::Esc, M::NONE);
+        assert!(app.context_menu.is_none() && !app.ui.panel_visible);
+        draw(&mut app);
+        assert!(app.hits.context_menu.is_none());
+        // A keymap binding, so also rebindable.
+        assert!(
+            app.keymap
+                .binding_for(Command::ContextMenu(ContextMenuCommand::Close))
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn file_info_menu_hover_selects_click_runs_disabled_and_separator_do_nothing() {
+        let (_d, mut app) = app();
+        let (r, _) = open(&mut app, 10, 5);
+        let (x, y) = (r.x + 2, r.y);
+        app.mouse(MouseEventKind::Moved, x, y + 3);
+        assert_eq!(app.context_menu.as_ref().unwrap().selected, 3);
+        app.mouse(MouseEventKind::Moved, x, y + 2);
+        app.mouse(MouseEventKind::Moved, x, y + 1);
+        assert_eq!(
+            app.context_menu.as_ref().unwrap().selected,
+            3,
+            "disabled / separator not hovered"
+        );
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y + 2);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y + 1);
+        assert!(app.context_menu.is_some());
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+        assert!(app.context_menu.is_none());
+        assert!(app.ui.panel_visible, "Toggle Panel ran");
+    }
+
+    #[tokio::test]
+    async fn file_info_menu_outside_click_closes_and_is_consumed() {
+        let (_d, mut app) = app();
+        open(&mut app, 10, 5);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), 60, 15);
+        assert!(app.context_menu.is_none());
+        assert!(!app.ui.panel_visible);
+        assert!(app.palette.is_none() && app.prompt.is_none());
+        // Right-click outside closes too.
+        open(&mut app, 10, 5);
+        app.mouse(MouseEventKind::Down(MouseButton::Right), 60, 15);
+        assert!(app.context_menu.is_none());
+    }
+
+    #[tokio::test]
+    async fn file_info_menu_wheel_and_focus_loss_close_it() {
+        let (_d, mut app) = app();
+        open(&mut app, 10, 5);
+        app.mouse(MouseEventKind::ScrollDown, 60, 15);
+        assert!(app.context_menu.is_none());
+        open(&mut app, 10, 5);
+        app.test_focus_lost();
+        assert!(app.context_menu.is_none());
+        open(&mut app, 10, 5);
+        app.mouse(MouseEventKind::ScrollUp, 11, 5);
+        assert!(app.context_menu.is_none());
+    }
+
+    #[tokio::test]
+    async fn file_info_menu_closes_when_another_command_runs() {
+        let (_d, mut app) = app();
+        open(&mut app, 10, 5);
+        app.test_execute(Command::ToggleProblems);
+        assert!(app.context_menu.is_none());
+    }
+}
+
+/// file_info-b, validator's additions: keys, pastes and an outside click never reach the editor
+/// under the menu; the hint and the keys follow `keybindings.toml`; empty and all-disabled menus;
+/// the item's command runs after the menu has closed.
+mod file_info_menu_more {
+    use crossterm::event::{Event, KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::command::{Command, ContextMenuCommand};
+    use crate::config::keymap::{self, Keymap, Platform};
+    use crate::context_menu::MenuItem;
+    use crate::workspace::Workspace;
+    use crate::workspace::trust::TrustStore;
+
+    fn app(text: &str) -> (tempfile::TempDir, App) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        std::fs::write(root.join("a.txt"), text).unwrap();
+        let trust = TrustStore::load(root.join("trust.toml"));
+        let mut app = App::new(Workspace::load(root.clone()), trust, None, true);
+        app.test_start();
+        app.test_open(Buffer::open(&root.join("a.txt")).unwrap());
+        (dir, app)
+    }
+
+    fn draw(app: &mut App) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    fn text(app: &App) -> String {
+        app.active_buffer().unwrap().rope.to_string()
+    }
+
+    fn head(app: &App) -> usize {
+        app.group().active_tab().unwrap().view.selections.primary().head.0
+    }
+
+    fn row(term: &Terminal<TestBackend>, r: ratatui::layout::Rect, i: u16) -> String {
+        let b = term.backend().buffer();
+        (r.x..r.right()).map(|x| b[(x, r.y + i)].symbol()).collect()
+    }
+
+    #[tokio::test]
+    async fn file_info_menu_keys_pastes_and_outside_clicks_never_reach_the_editor() {
+        let (_d, mut app) = app("abc\nxyz\n");
+        draw(&mut app);
+        let editor = app.hits.group(app.groups.active).unwrap().editor;
+        app.open_context_menu((60, 20), vec![MenuItem::new("Copy", Command::Copy)]);
+        draw(&mut app);
+        app.type_text("zz");
+        for code in [K::Backspace, K::Delete, K::Tab, K::Right, K::End] {
+            app.press(code, M::NONE);
+        }
+        app.press(K::Char('a'), M::CONTROL); // select all in the editor
+        app.handle_test_event(Event::Paste("pasted".into()));
+        assert!(app.context_menu.is_some(), "unbound keys leave the menu open");
+        assert_eq!(text(&app), "abc\nxyz\n");
+        assert_eq!(head(&app), 0);
+        assert!(app.group().active_tab().unwrap().view.selections.primary().is_empty());
+        // A press on the editor's second line closes the menu and moves no cursor ...
+        let (x, y) = (editor.x + 2, editor.y + 1);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+        assert!(app.context_menu.is_none());
+        assert_eq!(head(&app), 0, "the closing click is consumed");
+        // ... though the same press with no menu does.
+        draw(&mut app);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+        assert_ne!(head(&app), 0);
+    }
+
+    #[tokio::test]
+    async fn file_info_menu_hint_and_keys_follow_keybindings_toml() {
+        let (dir, mut app) = app("abc\n");
+        assert!(app.keymap.binding_for(Command::ReopenAsHex).is_none());
+        let config = dir.path().join(keymap::FILE_NAME);
+        let toml = format!(
+            "[[binding]]\nkey = \"ctrl+alt+y\"\ncommand = \"{}\"\n\n\
+             [[binding]]\nkey = \"j\"\ncommand = \"contextMenu.down\"\ncontext = \"contextMenu\"\n",
+            Command::Copy.name()
+        );
+        std::fs::write(&config, toml).unwrap();
+        let (km, errors) = Keymap::load(&config, Platform::current());
+        assert!(errors.is_empty(), "{errors:?}");
+        app.set_keymap(km, errors);
+        let hint = app.keymap.binding_for(Command::Copy).unwrap().label();
+        assert!(hint.to_lowercase().contains('y'), "{hint}");
+        app.open_context_menu(
+            (10, 5),
+            vec![
+                MenuItem::new("Copy", Command::Copy),
+                MenuItem::new("Hex", Command::ReopenAsHex),
+            ],
+        );
+        let term = draw(&mut app);
+        let r = app.hits.context_menu.unwrap().rect;
+        assert!(
+            row(&term, r, 0).ends_with(&format!("{hint} ")),
+            "{:?}",
+            row(&term, r, 0)
+        );
+        assert_eq!(row(&term, r, 1).trim_end(), " Hex", "an unbound command has no hint");
+        // `j` is now Down; Down itself lost its key (a rebound command loses its defaults).
+        app.press(K::Down, M::NONE);
+        assert_eq!(app.context_menu.as_ref().unwrap().selected, 0);
+        app.press(K::Char('j'), M::NONE);
+        assert_eq!(app.context_menu.as_ref().unwrap().selected, 1);
+        assert_eq!(text(&app), "abc\n");
+    }
+
+    #[tokio::test]
+    async fn file_info_menu_empty_or_all_disabled_runs_nothing_and_still_closes() {
+        let (_d, mut app) = app("abc\n");
+        // Empty: nothing drawn, keys swallowed, Esc closes.
+        app.open_context_menu((10, 5), vec![]);
+        draw(&mut app);
+        assert!(app.hits.context_menu.is_none());
+        app.press(K::Enter, M::NONE);
+        app.press(K::Down, M::NONE);
+        assert!(app.context_menu.is_some());
+        assert_eq!(text(&app), "abc\n");
+        app.press(K::Esc, M::NONE);
+        assert!(app.context_menu.is_none());
+        // All disabled: drawn dimmed, Enter and clicks run nothing and keep it open.
+        app.open_context_menu(
+            (10, 5),
+            vec![
+                MenuItem::new("Panel", Command::TogglePanel).disabled(),
+                MenuItem::Separator,
+            ],
+        );
+        let term = draw(&mut app);
+        let r = app.hits.context_menu.unwrap().rect;
+        let b = term.backend().buffer();
+        assert_eq!(
+            b[(r.x + 1, r.y)].fg,
+            app.theme.get("menu.disabledForeground").fg.unwrap()
+        );
+        assert_ne!(b[(r.x, r.y)].bg, app.theme.get("menu.selectionBackground").bg.unwrap());
+        app.press(K::Down, M::NONE);
+        app.press(K::Enter, M::NONE);
+        app.mouse(MouseEventKind::Moved, r.x + 1, r.y);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+        assert!(app.context_menu.is_some() && !app.ui.panel_visible);
+        // A click outside still closes it.
+        app.mouse(MouseEventKind::Down(MouseButton::Left), 80, 25);
+        assert!(app.context_menu.is_none() && !app.ui.panel_visible);
+    }
+
+    #[tokio::test]
+    async fn file_info_menu_item_runs_after_the_menu_has_closed() {
+        let (_d, mut app) = app("abc\n");
+        // An item opening the palette: it ends up open with the menu gone, keys going to it.
+        app.open_context_menu((10, 5), vec![MenuItem::new("Commands", Command::ShowCommands)]);
+        draw(&mut app);
+        app.press(K::Enter, M::NONE);
+        assert!(app.context_menu.is_none());
+        assert!(
+            app.palette.is_some(),
+            "the palette opened and was not closed by the menu"
+        );
+        app.press(K::Esc, M::NONE);
+        assert!(app.palette.is_none());
+        // Likewise by a click.
+        app.open_context_menu((10, 5), vec![MenuItem::new("Commands", Command::ShowCommands)]);
+        draw(&mut app);
+        let r = app.hits.context_menu.unwrap().rect;
+        app.mouse(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
+        assert!(app.context_menu.is_none() && app.palette.is_some());
+        // The menu's own commands do nothing once it is closed (e.g. from the palette).
+        app.press(K::Esc, M::NONE);
+        app.test_execute(Command::ContextMenu(ContextMenuCommand::Accept));
+        assert!(app.palette.is_none() && app.context_menu.is_none());
+    }
+}

@@ -24,6 +24,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `hover.rs` — hover popup (command and mouse rest): the diagnostics there at once, the server's answer appended, closing
 - `tab_tip.rs` — the tab tooltip (500 ms rest on a tab, `Timer::TabTip`) and `path_text`, the one displayed-path helper shared with Copy Relative Path
 - `completion.rs` — completion: trigger / quick suggestions, answers, the list's keys, accepting
+- `context_menu.rs` — the context menu (`app.context_menu`): `open_context_menu`, `Context::ContextMenu` keys, mouse, dismissal
 - `code_action.rs` — code actions: Cmd+., the list, applying (resolve, edits, commands), server `workspace/applyEdit`, the lightbulb, the hover's quick fixes
 - `locations.rs` — go to definition and references, the Locations list
 - `rename.rs` — rename symbol (F2): prepare, prompt, applying the `WorkspaceEdit` across files (`apply_workspace_edit`, shared with code actions)

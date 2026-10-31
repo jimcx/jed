@@ -21,6 +21,7 @@ mod config;
 mod conflict;
 #[cfg(test)]
 mod conflicts_tests;
+mod context_menu;
 mod diagnostics;
 mod diff_caret;
 #[cfg(test)]

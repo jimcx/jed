@@ -23,6 +23,7 @@ One line per widget or editor layer; [docs/dev/ui.md](../../docs/dev/ui.md) has 
 - `cheatsheet.rs` — the keyboard cheat sheet overlay over the editor area (columns, scroll bar, `cheatSheet.heading`)
 - `keys.rs` — the Keyboard Shortcuts view overlay: search box (or the `Press key combination…` record hint), rows in key / title / context / source columns, selection, scroll bar (`ScrollTarget::Keys`)
 - `popup.rs` — placing popups at a buffer position (`cell_of`, `place`): shared by hover and completion
+- `context_menu.rs` — the context menu: borderless popup, hints from the keymap, `hits.context_menu`
 - `hover.rs`, `completion.rs`, `code_action.rs` — the hover popup, the completion list, the code action list (the lightbulb is drawn in `mod.rs`)
 - `quick_diff.rs` — the gutter's peek (removed lines, Stage, `×` close)
 - `hex.rs` — a hex tab: fitted (`HexTab::fit`), the visible rows as `hex::row` with the `hexEditor.*` keys, find matches, selection and cursor in both columns

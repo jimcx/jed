@@ -5,6 +5,7 @@ mod banner;
 mod cheatsheet;
 mod code_action;
 mod completion;
+mod context_menu;
 mod dialog;
 mod diff;
 mod editor;
@@ -540,6 +541,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     tab_tip::render(f, app, &hits.groups);
     hits.completion = completion::render(f, app, &hits.groups);
     hits.code_actions = code_action::render(f, app, &hits.groups);
+    hits.context_menu = context_menu::render(f, app);
     hits.palette = palette::render(f, area, app);
     hits.cheat_sheet = cheatsheet::render(f, regions.editor, app);
     hits.keys = keys::render(f, regions.editor, app);

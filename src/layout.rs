@@ -484,6 +484,8 @@ pub struct HitMap {
     pub completion: Option<CompletionHit>,
     /// The code action list, when shown: on top of everything (the completion list too).
     pub code_actions: Option<CompletionHit>,
+    /// The context menu, when open: on top of everything but the prompts.
+    pub context_menu: Option<ContextMenuHit>,
     /// The gutter's peek, when shown.
     pub quick_diff: Option<QuickDiffHit>,
 }
@@ -503,6 +505,22 @@ pub struct CompletionHit {
     pub rect: Rect,
     pub rows: Rect,
     pub top: usize,
+}
+
+/// The context menu as drawn: its box; item `i` is the row `rect.y + i` (one row each, the
+/// separators too), `shown` of them (a menu taller than the screen is cut).
+#[derive(Debug, Clone, Copy)]
+pub struct ContextMenuHit {
+    pub rect: Rect,
+    pub shown: usize,
+}
+
+impl ContextMenuHit {
+    /// The item at screen row `y`.
+    pub fn item_at(&self, y: u16) -> Option<usize> {
+        let i = y.checked_sub(self.rect.y)? as usize;
+        (i < self.shown).then_some(i)
+    }
 }
 
 /// A grouped list (`grouped`) as drawn: its rect and the row each line shows (`rows[i]` is at
@@ -772,6 +790,8 @@ pub enum Hit {
     Completion,
     /// The code action list (over an editor).
     CodeActions,
+    /// The context menu (anywhere).
+    ContextMenu,
     /// The gutter's peek (over an editor).
     QuickDiff,
     Nothing,
@@ -781,6 +801,9 @@ impl HitMap {
     pub fn hit(&self, x: u16, y: u16) -> Hit {
         let p = Position { x, y };
         let r = &self.regions;
+        if self.context_menu.is_some_and(|c| c.rect.contains(p)) {
+            return Hit::ContextMenu;
+        }
         if self.code_actions.is_some_and(|c| c.rect.contains(p)) {
             return Hit::CodeActions;
         }
@@ -1141,6 +1164,7 @@ mod tests {
             status_language: None,
             hover: Some(Rect::new(40, 5, 10, 4)),
             code_actions: None,
+            context_menu: None,
             completion: Some(CompletionHit {
                 rect: Rect::new(44, 7, 5, 3),
                 rows: Rect::new(45, 8, 3, 1),

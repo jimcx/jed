@@ -421,6 +421,13 @@ impl Theme {
             ("problemsWarningIcon.foreground", Style::new().fg(c(0xCCA700))),
             ("problemsInfoIcon.foreground", Style::new().fg(c(0x3794FF))),
             ("problemsHintIcon.foreground", Style::new().fg(c(0xB0B0B0))),
+            // The context menu: a shade lighter than the editor, a filled selected row.
+            ("menu.background", Style::new().bg(c(0x252526))),
+            ("menu.foreground", Style::new().fg(c(0xCCCCCC))),
+            ("menu.selectionBackground", Style::new().bg(c(0x04395E))),
+            ("menu.selectionForeground", Style::new().fg(c(0xFFFFFF))),
+            ("menu.disabledForeground", Style::new().fg(c(0x6E6E6E))),
+            ("menu.separator", Style::new().fg(c(0x454545))),
             // The hover popup (Dark+), its headings bold, code (inline and blocks) in Dark+'s
             // `textPreformat.foreground`.
             ("editorHoverWidget.background", Style::new().bg(c(0x252526))),

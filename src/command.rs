@@ -189,6 +189,7 @@ pub enum Command {
     QuickFix,
     /// The code action list's keys (only while it's shown).
     CodeActions(CodeActionCommand),
+    ContextMenu(ContextMenuCommand),
     /// Shift+F12: the references to the symbol at the cursor, in the Locations list.
     GoToReferences,
     /// F2 in the editor: rename the symbol at the cursor across the workspace (a prompt).
@@ -875,6 +876,27 @@ impl CodeActionCommand {
     ];
 }
 
+/// An open context menu's keys (`Context::ContextMenu`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContextMenuCommand {
+    /// Up / Down: the previous / next enabled item, wrapping round.
+    Up,
+    Down,
+    /// Enter: close the menu and run the selected item's command.
+    Accept,
+    /// Esc: close the menu.
+    Close,
+}
+
+impl ContextMenuCommand {
+    pub const ALL: [ContextMenuCommand; 4] = [
+        ContextMenuCommand::Up,
+        ContextMenuCommand::Down,
+        ContextMenuCommand::Accept,
+        ContextMenuCommand::Close,
+    ];
+}
+
 impl Command {
     /// Every command, in a stable order: what the palette lists and keybindings can name.
     pub fn all() -> Vec<Command> {
@@ -965,6 +987,7 @@ impl Command {
         all.extend(SuggestCommand::ALL.map(Command::Suggest));
         all.push(Command::QuickFix);
         all.extend(CodeActionCommand::ALL.map(Command::CodeActions));
+        all.extend(ContextMenuCommand::ALL.map(Command::ContextMenu));
         all.extend([Command::GoToReferences, Command::RenameSymbol, Command::FormatDocument]);
         all.extend([Command::ReloadFromDisk, Command::KeepMine]);
         all.extend([
@@ -1251,6 +1274,15 @@ impl Command {
                     SuggestCommand::PageDown => "pageDown",
                     SuggestCommand::Accept => "accept",
                     SuggestCommand::Close => "close",
+                }
+            ),
+            Command::ContextMenu(c) => format!(
+                "contextMenu.{}",
+                match c {
+                    ContextMenuCommand::Up => "up",
+                    ContextMenuCommand::Down => "down",
+                    ContextMenuCommand::Accept => "accept",
+                    ContextMenuCommand::Close => "close",
                 }
             ),
             Command::QuickFix => "editor.action.quickFix".into(),
@@ -1604,6 +1636,12 @@ impl Command {
                 LocationsCommand::FocusEditor => "Locations: Back to Editor",
             },
             Command::TriggerSuggest => "Trigger Suggest",
+            Command::ContextMenu(c) => match c {
+                ContextMenuCommand::Up => "Context Menu: Select Previous",
+                ContextMenuCommand::Down => "Context Menu: Select Next",
+                ContextMenuCommand::Accept => "Context Menu: Run Selected",
+                ContextMenuCommand::Close => "Context Menu: Close",
+            },
             Command::QuickFix => "Quick Fix…",
             Command::CodeActions(c) => match c {
                 CodeActionCommand::Up => "Code Actions: Select Previous",
@@ -1896,6 +1934,7 @@ mod tests {
             Command::MoveTabRight => 102,
             Command::QuickFix => 103,
             Command::CodeActions(_) => 104,
+            Command::ContextMenu(_) => 138,
             Command::ReopenAsHex => 105,
             Command::ReopenAsText => 106,
             Command::NewUntitledFile => 115,
