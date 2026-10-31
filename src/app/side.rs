@@ -94,6 +94,12 @@ impl App {
     /// Shows `path` in the system file manager, off the UI thread; a failure is reported.
     pub(super) fn reveal_in_finder(&mut self, path: PathBuf) {
         let (program, args) = reveal_command(&path, cfg!(target_os = "macos"));
+        // Tests run every command (`Command::all()`): never launch the desktop's file manager there,
+        // unless asked (`JED_TEST_REVEAL=1`, for `todo_tests::explorer_path_commands::reveal_opens_the_file_manager`).
+        if cfg!(test) && std::env::var_os("JED_TEST_REVEAL").is_none() {
+            tracing::debug!("reveal in file manager skipped in tests: {program} {args:?}");
+            return;
+        }
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let result = std::process::Command::new(&program)

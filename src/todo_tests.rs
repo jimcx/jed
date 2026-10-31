@@ -9604,4 +9604,31 @@ mod explorer_path_commands {
         palette_command(&mut app, "Explorer: Collapse Folders");
         assert_eq!(app.explorer.selected, Some(root.join("top.txt")));
     }
+
+    /// Opens the real desktop file manager, so it is off by default and ignored by the other tests'
+    /// sweeps (`reveal_in_finder` skips the launch under `cfg!(test)`). Run it with
+    /// `JED_TEST_REVEAL=1 cargo test reveal_opens_the_file_manager -- --ignored --nocapture`:
+    /// a window should show `src/deep` with `a.rs`, and no warning may be reported.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "opens the desktop file manager; run with JED_TEST_REVEAL=1 -- --ignored"]
+    async fn reveal_opens_the_file_manager() {
+        assert!(
+            std::env::var_os("JED_TEST_REVEAL").is_some(),
+            "set JED_TEST_REVEAL=1, or the launch is skipped"
+        );
+        let (_d, root, file) = project();
+        let mut app = open_app(&root, &file);
+        assert!(
+            app.settle(|a| a.explorer.selected.as_deref() == Some(file.as_path()))
+                .await
+        );
+
+        palette_command(&mut app, "File: Reveal in Finder");
+        palette_command(&mut app, "Explorer: Reveal in Finder");
+        // A failed launch comes back as a warning; wait for one (settle gives up after 5 s).
+        let failed = app
+            .settle(|a| a.message.as_ref().is_some_and(|m| m.level == Level::Warning))
+            .await;
+        assert!(!failed, "launch failed: {:?}", message(&app));
+    }
 }
