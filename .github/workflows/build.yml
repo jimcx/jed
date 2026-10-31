@@ -20,8 +20,19 @@ jobs:
 
       # rust-toolchain.toml pins the version and components; install it explicitly
       # (rustup no longer installs a missing toolchain on first use everywhere).
+      # The Gitea runner image has no rustup, so bootstrap it there; the runner
+      # keeps ~/.rustup and ~/.cargo in persistent volumes, so the bootstrap and
+      # toolchain download only happen once.
       - name: Install toolchain
-        run: rustup toolchain install
+        shell: bash
+        run: |
+          if ! command -v rustup >/dev/null; then
+            [ -x "$HOME/.cargo/bin/rustup" ] || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --no-modify-path --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
 
