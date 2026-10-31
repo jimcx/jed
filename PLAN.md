@@ -672,6 +672,7 @@ Everything still to build, and the finished work after milestone 13: build which
 A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_docs_list_every_cmd_binding` test fails otherwise) — see [Terminals](#terminals). A finished task keeps its file with `status: done`; its full entry (what was built, "Deferred", hand checks) stays in that file.
 
 <!-- tasks:index:start -->
+- **Basic file information** (`file_info`): a path tooltip on hovered tabs, and a right-click context menu (copy relative / full path, open in the file manager) on tabs and the editor — [tasks/file_info.md](tasks/file_info.md)
 - **Block comment and bracket jumps** (`block_comment_bracket`): toggle block comments per selection, and go to / select a bracket — [tasks/block_comment_bracket.md](tasks/block_comment_bracket.md)
 - **Bug reporter** (`bug_report`): write a self-contained bug report with app state — [tasks/bug_report.md](tasks/bug_report.md)
 - **Change End of Line Sequence** (`change_eol`): change a buffer's line endings to LF or CRLF — [tasks/change_eol.md](tasks/change_eol.md)
