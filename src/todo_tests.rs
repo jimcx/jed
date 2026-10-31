@@ -10561,3 +10561,373 @@ mod file_info_tab_menu {
         assert!(app.context_menu.is_some());
     }
 }
+
+/// file_info-d: the editor menu (`MenuTarget::Editor`): a right-click in a text tab's text opens the
+/// tab menu's items at the pointer for the active file without touching the selection; and
+/// `file_info_done_when`, one walk through the whole task's "Done when" on one app.
+mod file_info_editor_menu {
+    use std::fs;
+    use std::time::Instant;
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::App;
+    use crate::app::tab_tip::DELAY;
+    use crate::buffer::Buffer;
+    use crate::buffer::pos::ByteIdx;
+    use crate::selection::{Selection, Selections};
+    use crate::workspace::trust::TrustStore;
+    use crate::workspace::{self, Workspace};
+
+    /// Workspace `proj` with `src/a.rs` and `src/b.rs` (several lines) open (b active), a file outside it.
+    fn setup() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf, App) {
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let root = base.join("proj");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/a.rs"), "fn a() {}\nsecond line\nthird line\n").unwrap();
+        fs::write(root.join("src/b.rs"), "fn b() {}\nsecond line\nthird line\n").unwrap();
+        let outside = base.join("outside.txt");
+        fs::write(&outside, "x\n").unwrap();
+        let trust = TrustStore::load(base.join("trust.toml"));
+        let mut app = App::new(Workspace::load(root.clone()), trust, None, true);
+        app.test_start();
+        app.test_open(Buffer::open(&root.join("src/a.rs")).unwrap());
+        app.test_open(Buffer::open(&root.join("src/b.rs")).unwrap());
+        (dir, root, outside, app)
+    }
+
+    fn draw_w(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    fn draw(app: &mut App) -> Terminal<TestBackend> {
+        draw_w(app, 100, 30)
+    }
+
+    fn row_text(term: &Terminal<TestBackend>, y: u16) -> String {
+        let b = term.backend().buffer();
+        (0..b.area.width).map(|x| b[(x, y)].symbol()).collect()
+    }
+
+    /// A cell in the text on line `line` (relative to the text area), a few columns in.
+    fn text_cell(app: &mut App, line: u16) -> (u16, u16) {
+        draw(app);
+        let t = app.hits.groups[0].text;
+        (t.x + 3, t.y + line)
+    }
+
+    fn right_click(app: &mut App, at: (u16, u16)) {
+        draw(app);
+        app.mouse(MouseEventKind::Down(MouseButton::Right), at.0, at.1);
+    }
+
+    fn click_row(app: &mut App, i: u16) {
+        draw(app);
+        let r = app.hits.context_menu.expect("menu open").rect;
+        app.mouse(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y + i);
+    }
+
+    fn selection_dump(app: &App) -> String {
+        format!("{:?}", app.group().active_tab().unwrap().view.selections)
+    }
+
+    fn select_range(app: &mut App, a: usize, b: usize) {
+        let (buf, view) = app.active_mut().unwrap();
+        buf.seal_undo();
+        view.selections = Selections::single(Selection::new(ByteIdx(a), ByteIdx(b)));
+    }
+
+    #[tokio::test]
+    async fn file_info_editor_right_click_opens_the_menu_at_the_pointer_and_keeps_the_selection() {
+        let (_d, _root, _o, mut app) = setup();
+        select_range(&mut app, 2, 15);
+        let before = selection_dump(&app);
+        let at = text_cell(&mut app, 2);
+        right_click(&mut app, at);
+        assert!(app.context_menu.is_some());
+        assert_eq!(selection_dump(&app), before);
+        assert_eq!(
+            app.active_buffer().unwrap().rope.to_string(),
+            "fn b() {}\nsecond line\nthird line\n"
+        );
+        let term = draw(&mut app);
+        let r = app.hits.context_menu.unwrap().rect;
+        assert_eq!((r.x, r.y), at, "opens at the pointer cell");
+        let all: String = (r.y..r.bottom()).map(|y| row_text(&term, y)).collect();
+        for label in ["Copy Relative Path", "Copy Path", "File History: Show"] {
+            assert!(all.contains(label), "{label}");
+        }
+        app.press(K::Esc, M::NONE);
+        assert_eq!(selection_dump(&app), before);
+    }
+
+    #[tokio::test]
+    async fn file_info_editor_menu_acts_on_the_active_file() {
+        let (_d, root, _o, mut app) = setup();
+        let at = text_cell(&mut app, 0);
+        right_click(&mut app, at);
+        click_row(&mut app, 0);
+        assert_eq!(app.clipboard.read().unwrap(), "src/b.rs");
+        right_click(&mut app, at);
+        click_row(&mut app, 1);
+        assert_eq!(app.clipboard.read().unwrap(), root.join("src/b.rs").to_string_lossy());
+    }
+
+    #[tokio::test]
+    async fn file_info_editor_menu_in_an_unfocused_group_focuses_it_for_its_file() {
+        let (_d, _root, _o, mut app) = setup();
+        app.test_execute(crate::command::Command::SplitRight);
+        // The left group shows a.rs, the focused right one b.rs.
+        let ids = app.groups.ids();
+        app.groups.active = ids[0];
+        app.group_mut().active = 0;
+        app.groups.active = ids[1];
+        draw(&mut app);
+        let t = app.hits.group(ids[0]).unwrap().text;
+        app.mouse(MouseEventKind::Down(MouseButton::Right), t.x + 3, t.y);
+        assert_eq!(app.groups.active, ids[0]);
+        click_row(&mut app, 0);
+        assert_eq!(app.clipboard.read().unwrap(), "src/a.rs");
+    }
+
+    #[tokio::test]
+    async fn file_info_editor_menu_outside_the_workspace_and_untitled() {
+        let (_d, _root, outside, mut app) = setup();
+        app.test_open(Buffer::open(&outside).unwrap());
+        let at = text_cell(&mut app, 0);
+        right_click(&mut app, at);
+        click_row(&mut app, 0);
+        assert_eq!(app.clipboard.read().unwrap(), outside.to_string_lossy());
+
+        app.test_open(Buffer::untitled(1));
+        let before = app.clipboard.read().ok();
+        right_click(&mut app, at);
+        assert!(app.context_menu.is_some());
+        for row in [0, 1, 2, 4] {
+            click_row(&mut app, row);
+            assert!(app.context_menu.is_some(), "row {row}");
+        }
+        assert_eq!(app.clipboard.read().ok(), before);
+    }
+
+    #[tokio::test]
+    async fn file_info_editor_menu_escape_and_outside_click_dismiss() {
+        let (_d, _root, _o, mut app) = setup();
+        let at = text_cell(&mut app, 0);
+        right_click(&mut app, at);
+        app.press(K::Esc, M::NONE);
+        assert!(app.context_menu.is_none());
+        right_click(&mut app, at);
+        let before = selection_dump(&app);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), 90, 25);
+        assert!(app.context_menu.is_none());
+        // The dismissing click didn't reach the editor.
+        assert_eq!(selection_dump(&app), before);
+    }
+
+    #[tokio::test]
+    async fn file_info_editor_right_click_replaces_a_tab_menu() {
+        let (_d, _root, _o, mut app) = setup();
+        draw(&mut app);
+        let g = app.hits.groups[0].clone();
+        let tab = (g.tabs[0].x0 + 1, g.tab_bar.y);
+        app.mouse(MouseEventKind::Down(MouseButton::Right), tab.0, tab.1);
+        assert_eq!(app.group().active, 0);
+        assert_eq!(app.context_menu.as_ref().unwrap().anchor, (tab.0, tab.1 + 1));
+        let at = text_cell(&mut app, 10);
+        right_click(&mut app, at);
+        assert_eq!(app.context_menu.as_ref().expect("replaced").anchor, at);
+        click_row(&mut app, 0);
+        assert_eq!(app.clipboard.read().unwrap(), "src/a.rs");
+    }
+
+    #[tokio::test]
+    async fn file_info_editor_menu_not_on_the_gutter_or_scroll_bar() {
+        let (_d, _root, _o, mut app) = setup();
+        draw(&mut app);
+        let g = app.hits.groups[0].clone();
+        assert!(g.text.x > g.editor.x, "a gutter is drawn");
+        app.mouse(MouseEventKind::Down(MouseButton::Right), g.editor.x, g.text.y);
+        assert!(app.context_menu.is_none(), "gutter");
+        let bar = g.scrollbar.expect("scroll bar").track;
+        app.mouse(MouseEventKind::Down(MouseButton::Right), bar.x, bar.y);
+        assert!(app.context_menu.is_none(), "scroll bar");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_info_editor_menu_not_on_a_shell_tab() {
+        let (_d, _root, _o, mut app) = setup();
+        app.tasks.shell = "/bin/sh".into();
+        app.new_shell_in_editor();
+        assert!(app.group().active_shell().is_some());
+        draw(&mut app);
+        let t = app.hits.groups[0].editor;
+        app.mouse(MouseEventKind::Down(MouseButton::Right), t.x + 3, t.y + 2);
+        assert!(app.context_menu.is_none());
+    }
+
+    #[tokio::test]
+    async fn file_info_editor_menu_near_the_corner_stays_on_screen() {
+        let (_d, _root, _o, mut app) = setup();
+        draw_w(&mut app, 40, 12);
+        let t = app.hits.groups[0].text;
+        app.mouse(MouseEventKind::Down(MouseButton::Right), t.right() - 1, t.bottom() - 1);
+        draw_w(&mut app, 40, 12);
+        let r = app.hits.context_menu.expect("menu").rect;
+        assert!(r.right() <= 40 && r.bottom() <= 12, "{r:?}");
+    }
+
+    /// The whole task's "Done when" on one app.
+    #[tokio::test]
+    async fn file_info_done_when() {
+        let (_d, root, outside, mut app) = setup();
+        app.test_open(Buffer::open(&outside).unwrap());
+        // Resting on a workspace tab: the relative path; on the outside file: its full path; gone on moving.
+        draw(&mut app);
+        let g = app.hits.groups[0].clone();
+        let tab = |i| (g.tabs.iter().find(|t| t.index == i).unwrap().x0 + 1, g.tab_bar.y);
+        let under = |app: &mut App| row_text(&draw(app), g.tab_bar.y + 1);
+        let (x, y) = tab(0);
+        app.mouse(MouseEventKind::Moved, x, y);
+        app.test_tab_tip_tick(Instant::now() + DELAY);
+        assert!(under(&mut app).contains(" src/a.rs "));
+        let (x, y) = tab(2);
+        app.mouse(MouseEventKind::Moved, x, y);
+        app.test_tab_tip_tick(Instant::now() + DELAY);
+        assert!(under(&mut app).contains(&outside.to_string_lossy().to_string()));
+        app.mouse(MouseEventKind::Moved, 50, 15);
+        assert!(!under(&mut app).contains("outside.txt"));
+        // Right-click a tab: the menu; the two copies reach the clipboard.
+        let (x, y) = tab(0);
+        app.mouse(MouseEventKind::Down(MouseButton::Right), x, y);
+        assert!(app.context_menu.is_some());
+        click_row(&mut app, 0);
+        assert_eq!(app.clipboard.read().unwrap(), "src/a.rs");
+        app.mouse(MouseEventKind::Down(MouseButton::Right), x, y);
+        click_row(&mut app, 1);
+        assert_eq!(app.clipboard.read().unwrap(), root.join("src/a.rs").to_string_lossy());
+        // Right-click in the editor: the same menu, selection kept; Escape / a click outside dismiss.
+        select_range(&mut app, 1, 8);
+        let before = selection_dump(&app);
+        let at = text_cell(&mut app, 2);
+        right_click(&mut app, at);
+        assert!(app.context_menu.is_some());
+        assert_eq!(selection_dump(&app), before);
+        click_row(&mut app, 0);
+        assert_eq!(app.clipboard.read().unwrap(), "src/a.rs");
+        right_click(&mut app, at);
+        app.press(K::Esc, M::NONE);
+        assert!(app.context_menu.is_none());
+        right_click(&mut app, at);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), 90, 25);
+        assert!(app.context_menu.is_none());
+        assert_eq!(selection_dump(&app), before);
+        // An untitled buffer's items are disabled.
+        app.test_open(Buffer::untitled(1));
+        right_click(&mut app, at);
+        click_row(&mut app, 0);
+        assert!(app.context_menu.is_some());
+        // The commands run from the palette and are unbound by default on both platforms
+        // (`terminal_docs_list_every_cmd_binding` checks the docs table).
+        use crate::command::Command;
+        use crate::config::keymap::{Keymap, Platform};
+        app.press(K::Esc, M::NONE);
+        assert!(app.context_menu.is_none());
+        draw(&mut app);
+        let g = app.hits.groups[0].clone();
+        let (x, y) = (g.tabs.iter().find(|t| t.index == 0).unwrap().x0 + 1, g.tab_bar.y);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+        assert_eq!(app.active_buffer().unwrap().path, root.join("src/a.rs"));
+        let cmd = if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        };
+        for (title, want) in [
+            ("File: Copy Relative Path of Active File", "src/a.rs".to_string()),
+            (
+                "File: Copy Path of Active File",
+                root.join("src/a.rs").to_string_lossy().to_string(),
+            ),
+        ] {
+            app.clipboard.write(crate::clipboard::Copied {
+                text: "stale".into(),
+                ..Default::default()
+            });
+            app.press(K::Char('p'), cmd | M::SHIFT);
+            app.type_text(title);
+            let p = app.palette.as_ref().unwrap();
+            assert_eq!(p.rows[p.selected].label, title);
+            app.press(K::Enter, M::NONE);
+            assert_eq!(app.clipboard.read().unwrap(), want, "{title}");
+        }
+        for platform in [Platform::MacOs, Platform::Linux] {
+            let km = Keymap::default_for(platform);
+            for c in [Command::CopyRelativePath, Command::CopyPath, Command::RevealInFinder] {
+                assert!(Command::all().contains(&c));
+                assert_eq!(km.binding_for(c), None, "{c:?}");
+            }
+        }
+    }
+
+    /// Several cursors, a scrolled view and an edit just made: the right-click (and the dismissal)
+    /// moves no cursor, scrolls nothing and adds no undo step.
+    #[tokio::test]
+    async fn file_info_editor_right_click_keeps_cursors_viewport_and_undo() {
+        let (_d, root, _o, mut app) = setup();
+        let text: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        fs::write(root.join("src/long.rs"), &text).unwrap();
+        app.test_open(Buffer::open(&root.join("src/long.rs")).unwrap());
+        // Cursors on lines 1 and 3 ("line 1\n" is 7 bytes), then real typing at both.
+        {
+            let (buf, view) = app.active_mut().unwrap();
+            buf.seal_undo();
+            view.selections = Selections::new(
+                vec![
+                    Selection::new(ByteIdx(7), ByteIdx(7)),
+                    Selection::new(ByteIdx(21), ByteIdx(21)),
+                ],
+                0,
+            );
+        }
+        app.type_text("Q");
+        let edited = app.active_buffer().unwrap().rope.to_string();
+        assert!(edited.starts_with("line 0\nQline 1\nline 2\nQline 3\n"));
+        let before = selection_dump(&app);
+        assert!(
+            before.contains("ByteIdx(8)") && before.contains("ByteIdx(23)"),
+            "{before}"
+        );
+        // Scroll away from the cursors with the wheel.
+        let at = text_cell(&mut app, 4);
+        for _ in 0..5 {
+            app.mouse(MouseEventKind::ScrollDown, at.0, at.1);
+        }
+        draw(&mut app);
+        let top = app.group().active_tab().unwrap().view.top_line();
+        assert!(top > 10, "scrolled: {top}");
+
+        right_click(&mut app, at);
+        assert!(app.context_menu.is_some());
+        assert_eq!(selection_dump(&app), before);
+        draw(&mut app);
+        assert_eq!(app.group().active_tab().unwrap().view.top_line(), top, "no scroll");
+        app.press(K::Esc, M::NONE);
+        draw(&mut app);
+        assert_eq!(app.group().active_tab().unwrap().view.top_line(), top, "no scroll");
+        assert_eq!(selection_dump(&app), before);
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), edited);
+
+        // One undo takes the typing back; there's nothing before it.
+        app.test_execute(crate::command::Command::Undo);
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), text);
+        app.test_execute(crate::command::Command::Undo);
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), text);
+    }
+}

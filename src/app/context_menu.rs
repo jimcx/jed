@@ -26,12 +26,15 @@ use crate::layout::Hit;
 pub enum MenuTarget {
     /// A tab; `has_file` is false for an untitled buffer, a shell, a log or a commit tab.
     Tab { has_file: bool },
+    /// The text of an editor group (the active tab); `has_file` as for `Tab`. The place later
+    /// editor items (cut / copy / paste) join.
+    Editor { has_file: bool },
 }
 
 /// The items of the menu for `target`. They are the active file's commands, so whoever opens the
 /// menu makes the target's tab the active one first.
 pub fn menu_for(target: MenuTarget) -> Vec<MenuItem> {
-    let MenuTarget::Tab { has_file } = target;
+    let (MenuTarget::Tab { has_file } | MenuTarget::Editor { has_file }) = target;
     let reveal = if cfg!(target_os = "macos") {
         "Reveal in Finder"
     } else {
@@ -41,6 +44,7 @@ pub fn menu_for(target: MenuTarget) -> Vec<MenuItem> {
         let item = MenuItem::new(label, command);
         if has_file { item } else { item.disabled() }
     };
+    // Both targets list the same items for now.
     vec![
         file_item("Copy Relative Path", Command::CopyRelativePath),
         file_item("Copy Path", Command::CopyPath),
@@ -59,6 +63,26 @@ impl App {
         self.activate_tab(index);
         let has_file = self.tab_path_text(g, index).is_some();
         self.open_context_menu((at.0, at.1.saturating_add(1)), menu_for(MenuTarget::Tab { has_file }));
+    }
+
+    /// A right-click at `at` in the text of group `g`: focus the group (selections untouched) and
+    /// open the editor menu at the pointer for the active file. Only on a text tab's text area
+    /// (not a shell, diff or hex tab, the gutter, a scroll bar or the banner, which are other hits).
+    pub(super) fn open_editor_menu(&mut self, g: crate::layout::GroupId, at: (u16, u16)) {
+        let in_text = self.any_group(g).is_some_and(|group| group.active_tab().is_some())
+            && self.hits.group(g).is_some_and(|h| {
+                let p = ratatui::layout::Position::new(at.0, at.1);
+                h.text.contains(p) && !h.merge_buttons.iter().any(|(r, _, _)| r.contains(p))
+            });
+        if !in_text || crate::group::is_terminal_group(g) {
+            return;
+        }
+        self.focus_group(g);
+        self.ui.focus = super::Focus::Editor;
+        let has_file = self
+            .any_group(g)
+            .is_some_and(|group| self.tab_path_text(g, group.active).is_some());
+        self.open_context_menu(at, menu_for(MenuTarget::Editor { has_file }));
     }
 
     /// Opens a menu of `items` at the screen cell `anchor` (the pointer), replacing any open one.
@@ -150,6 +174,14 @@ mod tests {
     #[test]
     fn menu_commands_are_listed_with_the_palette_commands() {
         assert!(Command::all().contains(&Command::ContextMenu(ContextMenuCommand::Accept)));
+    }
+
+    #[test]
+    fn editor_menu_lists_the_same_items_as_the_tab_menu() {
+        assert_eq!(
+            menu_for(MenuTarget::Editor { has_file: true }),
+            menu_for(MenuTarget::Tab { has_file: true })
+        );
     }
 
     #[test]

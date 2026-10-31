@@ -672,7 +672,6 @@ Everything still to build, and the finished work after milestone 13: build which
 A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_docs_list_every_cmd_binding` test fails otherwise) — see [Terminals](#terminals). A finished task keeps its file with `status: done`; its full entry (what was built, "Deferred", hand checks) stays in that file.
 
 <!-- tasks:index:start -->
-- **Basic file information** (`file_info`): a path tooltip on hovered tabs, and a right-click context menu (copy relative / full path, open in the file manager) on tabs and the editor — [tasks/file_info.md](tasks/file_info.md)
 - **Block comment and bracket jumps** (`block_comment_bracket`): toggle block comments per selection, and go to / select a bracket — [tasks/block_comment_bracket.md](tasks/block_comment_bracket.md)
 - **Bug reporter** (`bug_report`): write a self-contained bug report with app state — [tasks/bug_report.md](tasks/bug_report.md)
 - **Change End of Line Sequence** (`change_eol`): change a buffer's line endings to LF or CRLF — [tasks/change_eol.md](tasks/change_eol.md)
@@ -711,6 +710,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Multiple git repos in one workspace** (`multi_repo` [p-10]): source control, quick diff marks, blame, history and the git tools work with several repositories under one workspace folder, as VS Code does — [tasks/multi_repo.md](tasks/multi_repo.md)
 - **Remove tui-term** (`remove_tui_term` [p-10]): draw a shell / task tab's vt100 screen straight into the buffer and drop the tui-term dependency — [tasks/remove_tui_term.md](tasks/remove_tui_term.md)
 - ✅ **Back / forward navigation** (`back_forward`): `nav.back` / `nav.forward` on Ctrl+- / Ctrl+Shift+- (Ctrl+Alt+- on Linux), VS Code's Go Back / Go Forward — [tasks/back_forward.md](tasks/back_forward.md)
+- ✅ **Basic file information** (`file_info`): a path tooltip on hovered tabs, and a minimal, extensible right-click context menu (copy relative / full path, open in the file manager, file history) on tabs and the editor — [tasks/file_info.md](tasks/file_info.md)
 - ✅ **CI** (`ci`): CI on GitHub Actions (Linux and macOS): fmt, clippy, build, test, and release tarballs — [tasks/ci.md](tasks/ci.md)
 - ✅ **Clear terminal scrollback** (`clear_scrollback`): clear a shell / task tab's scrollback and screen, back to the last shell prompt mark when the integration is installed — [tasks/clear_scrollback.md](tasks/clear_scrollback.md)
 - ✅ **Compare any two files or buffers** (`compare_files`): compare any two files or buffers (dirty or untitled) in a diff tab and move hunks between the sides; both sides can be edited by hand — [tasks/compare_files.md](tasks/compare_files.md)

@@ -809,6 +809,7 @@ impl App {
     }
 
     /// Right-click: on a tab, its menu at the pointer (`open_tab_menu`, the tab activated first);
+    /// in a text tab's text, the same menu for the active file (`open_editor_menu`, selections untouched);
     /// on an explorer file, that file's history; on an explorer folder, "Find in Folder…" (the
     /// row selected first).
     fn right_click(&mut self, hit: Hit, at: (u16, u16)) {
@@ -816,6 +817,7 @@ impl App {
             Hit::Tab(g, i) | Hit::TabClose(g, i) => {
                 self.open_tab_menu(g, i, at);
             }
+            Hit::Editor(g) => self.open_editor_menu(g, at),
             Hit::ExplorerRow(row) if self.ui.side_panel == SidePanel::Explorer => {
                 let index = self.explorer.scroll + row as usize;
                 let Some(path) = self.explorer.rows().get(index).map(|r| r.entry.path.clone()) else {
