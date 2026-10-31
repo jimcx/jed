@@ -9,9 +9,6 @@
 //! - `place` puts the box at the anchor, flipped to the other side of it (left, up) when it does
 //!   not fit that way, and kept inside the screen.
 
-// Nothing opens a menu yet outside tests (the tab and editor menus come with the next subtasks).
-#![cfg_attr(not(test), allow(dead_code))]
-
 use ratatui::layout::Rect;
 
 use crate::command::Command;

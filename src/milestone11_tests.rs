@@ -992,6 +992,10 @@ async fn milestone_11_right_click_on_a_tab_shows_its_files_history() {
             t.x0 + 1,
             app.hits.groups[0].tab_bar.y,
         );
+        // The menu's "File History: Show" row (after three path items and a separator).
+        draw(app);
+        let r = app.hits.context_menu.expect("tab menu").rect;
+        app.mouse(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y + 4);
     };
     // The other tab: it's activated, and its file's entries listed.
     right_click_tab(&mut app, 0);

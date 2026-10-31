@@ -2769,6 +2769,44 @@ mod rust_language_server {
     const RA_MAIN_FORMATTED: &str = "mod util;\n\nuse util::Point;\n\nfn helper_fmt() -> i32 {\n    0\n}\n\nfn main() {\n    let pt = Point {\n        xcoord: 1,\n        ycoord: 2,\n    };\n    let t = util::total(&pt) + helper_fmt();\n    let _ = t;\n}\n";
     const RA_UTIL: &str = "/// A point.\npub struct Point {\n    pub xcoord: i32,\n    pub ycoord: i32,\n}\n\n/// Adds the coordinates.\npub fn total(p: &Point) -> i32 {\n    p.xcoord + p.ycoord\n}\n";
 
+    /// FLAKE debugging for `real_rust_analyzer_on_a_cargo_crate`: every diagnostic the buffer
+    /// holds (any severity or source, with its range and the text it covers), the buffer's
+    /// revision and dirtiness, and the last lines of rust-analyzer's log.
+    fn flake_dump(app: &App, path: &Path) -> String {
+        let Some(id) = app.buffers.find_path(path) else {
+            return "buffer not open".into();
+        };
+        let buf = app.buffers.get(id).unwrap();
+        let text = buf.rope.to_string();
+        let diags: Vec<String> = buf
+            .diagnostics
+            .all()
+            .iter()
+            .map(|m| {
+                format!(
+                    "{:?}/{:?} {}..{} {:?}: {:?}",
+                    m.diag.severity,
+                    m.diag.source,
+                    m.start.0,
+                    m.end.0,
+                    text.get(m.start.0..m.end.0),
+                    m.diag.message
+                )
+            })
+            .collect();
+        let log = app.logs.texts(&crate::logs::Tool::Server("rust-analyzer".into()));
+        let tail = &log[log.len().saturating_sub(40)..];
+        format!(
+            "revision {} dirty {} diagnostics {:#?}\nrust-analyzer log tail ({} of {} lines): {:#?}",
+            buf.revision(),
+            buf.is_dirty(),
+            diags,
+            tail.len(),
+            log.len(),
+            tail
+        )
+    }
+
     fn rustc_errors(app: &App, path: &Path) -> Vec<String> {
         let Some(id) = app.buffers.find_path(path) else {
             return Vec::new();
@@ -2812,6 +2850,20 @@ mod rust_language_server {
     /// when `rust-analyzer` doesn't run there.
     // FLAKE: 2026-10-31, once in a full run: "cleared after the fix" timed out (rustc errors
     // stayed [""], no progress, message "Saved …/main.rs"); passed in the other runs.
+    // Seen again 2026-10-31 (while a `file_info` subtask's full `scripts/check` ran on a busy
+    // machine; re-run alone it passed). Notes for the next pass:
+    //  - the stale error is `[""]`: an EMPTY range, so a diagnostic whose range is at (or was
+    //    mapped to) a zero-width spot, not the `"s"` literal. Suspect: rust-analyzer's `cargo check`
+    //    of the SAVED-BEFORE-FIX text finishing after our fix save (a save during a check restarts
+    //    it, and the old check's push can land last), or our ranges collapsing when the undo
+    //    deletes the text they covered, leaving the old diagnostic in place until the next push.
+    //  - `progress` is None and the message is just "Saved", so rust-analyzer showed no check
+    //    in flight when we gave up: the final push may never have come (a lost/skipped
+    //    `didSave` check), not merely slow. Compare the fail dump's `since_fix_save` with the
+    //    180 s wait and the server log's last lines (`flake_dump`).
+    //  - a repeat under load but never alone points at the machine, not the editor: if the dump
+    //    shows the fix text was sent (`revision`/`dirty`) and no `rustc` publish followed, the
+    //    harness's wait (or a missing re-trigger save) is the thing to change.
     #[tokio::test(flavor = "multi_thread")]
     async fn real_rust_analyzer_on_a_cargo_crate() {
         let _one_at_a_time = REAL_SERVERS.lock().await;
@@ -2957,13 +3009,16 @@ mod rust_language_server {
         );
         undo_to(&mut app, RA_MAIN, 4);
         save(&mut app).await;
+        let fix_saved = Instant::now();
         assert!(
             settle_for(&mut app, 180, |a| rustc_errors(a, &main).is_empty()).await,
-            "FLAKE(real_rust_analyzer): cleared after the fix: {:?}; progress {:?}; message {:?}; text {:?}",
+            "FLAKE(real_rust_analyzer): cleared after the fix: {:?}; progress {:?}; message {:?}; text {:?}\nsince_fix_save {:?}\n{}",
             rustc_errors(&app, &main),
             app.lsp.progress(),
             message(&app),
-            text(&app)
+            text(&app),
+            fix_saved.elapsed(),
+            flake_dump(&app, &main)
         );
 
         // Rename across both files (asked again while it answers ContentModified, which is
@@ -10238,5 +10293,271 @@ mod file_info_menu_more {
         app.press(K::Esc, M::NONE);
         app.test_execute(Command::ContextMenu(ContextMenuCommand::Accept));
         assert!(app.palette.is_none() && app.context_menu.is_none());
+    }
+}
+
+/// file_info-c: the tab menu (`menu_for(MenuTarget::Tab)`, a tab right-click opening it at the
+/// pointer after activating the tab), its path items on the clipboard, disabled items on an
+/// untitled tab, File History through the menu, dismissal and replacement.
+mod file_info_tab_menu {
+    use std::fs;
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::workspace::trust::TrustStore;
+    use crate::workspace::{self, Workspace};
+
+    /// Workspace `proj` with `src/a.rs` and `src/b.rs` open (b active), a file outside it.
+    fn setup() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf, App) {
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let root = base.join("proj");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/a.rs"), "fn a() {}\n").unwrap();
+        fs::write(root.join("src/b.rs"), "fn b() {}\n").unwrap();
+        let outside = base.join("outside.txt");
+        fs::write(&outside, "x\n").unwrap();
+        let trust = TrustStore::load(base.join("trust.toml"));
+        let mut app = App::new(Workspace::load(root.clone()), trust, None, true);
+        app.test_start();
+        app.test_open(Buffer::open(&root.join("src/a.rs")).unwrap());
+        app.test_open(Buffer::open(&root.join("src/b.rs")).unwrap());
+        (dir, root, outside, app)
+    }
+
+    fn draw_w(app: &mut App, width: u16) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(width, 30)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    fn draw(app: &mut App) -> Terminal<TestBackend> {
+        draw_w(app, 100)
+    }
+
+    fn right_click_tab_w(app: &mut App, i: usize, width: u16) -> (u16, u16) {
+        draw_w(app, width);
+        let g = app.hits.groups[0].clone();
+        let at = (g.tabs.iter().find(|t| t.index == i).unwrap().x0 + 1, g.tab_bar.y);
+        app.mouse(MouseEventKind::Down(MouseButton::Right), at.0, at.1);
+        at
+    }
+
+    fn right_click_tab(app: &mut App, i: usize) -> (u16, u16) {
+        right_click_tab_w(app, i, 100)
+    }
+
+    /// Left-clicks menu row `i` (the separator counts).
+    fn click_row(app: &mut App, i: u16) {
+        draw(app);
+        let r = app.hits.context_menu.expect("menu open").rect;
+        app.mouse(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y + i);
+    }
+
+    fn row_text(term: &Terminal<TestBackend>, y: u16) -> String {
+        let b = term.backend().buffer();
+        (0..b.area.width).map(|x| b[(x, y)].symbol()).collect()
+    }
+
+    #[tokio::test]
+    async fn file_info_tab_right_click_opens_the_menu_at_the_pointer_and_activates_the_tab() {
+        let (_d, _root, _o, mut app) = setup();
+        assert_eq!(app.group().active, 1);
+        let at = right_click_tab(&mut app, 0);
+        assert_eq!(app.group().active, 0);
+        assert!(app.palette.is_none());
+        let term = draw(&mut app);
+        let r = app.hits.context_menu.expect("menu").rect;
+        // At the pointer's column, on the row below it: the tab bar stays drawn.
+        assert_eq!((r.x, r.y), (at.0, at.1 + 1));
+        let bar = row_text(&term, at.1);
+        assert!(bar.contains("a.rs") && bar.contains("b.rs"), "{bar}");
+        let all: String = (r.y..r.bottom()).map(|y| row_text(&term, y)).collect();
+        let reveal = if cfg!(target_os = "macos") {
+            "Reveal in Finder"
+        } else {
+            "Open Containing Folder"
+        };
+        for label in ["Copy Relative Path", "Copy Path", reveal, "File History: Show"] {
+            assert!(all.contains(label), "{label}");
+        }
+        // The text is untouched.
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "fn a() {}\n");
+    }
+
+    #[tokio::test]
+    async fn file_info_tab_menu_copies_the_relative_and_the_full_path() {
+        let (_d, root, _o, mut app) = setup();
+        right_click_tab(&mut app, 0);
+        click_row(&mut app, 0);
+        assert!(app.context_menu.is_none());
+        assert_eq!(app.clipboard.read().unwrap(), "src/a.rs");
+        right_click_tab(&mut app, 1);
+        click_row(&mut app, 1);
+        assert_eq!(app.clipboard.read().unwrap(), root.join("src/b.rs").to_string_lossy());
+    }
+
+    #[tokio::test]
+    async fn file_info_tab_menu_outside_the_workspace_copies_the_full_path_for_both() {
+        let (_d, _root, outside, mut app) = setup();
+        app.test_open(Buffer::open(&outside).unwrap());
+        let i = app.group().active;
+        for row in [0, 1] {
+            right_click_tab(&mut app, i);
+            click_row(&mut app, row);
+            assert_eq!(app.clipboard.read().unwrap(), outside.to_string_lossy());
+        }
+    }
+
+    #[tokio::test]
+    async fn file_info_tab_menu_reveal_runs_the_command_and_closes_the_menu() {
+        let (_d, _root, _o, mut app) = setup();
+        right_click_tab(&mut app, 0);
+        // Third item by keys; the real file manager is skipped in tests (`JED_TEST_REVEAL`), and
+        // its failure message is `side.rs`'s `RevealFailed` test.
+        app.press(K::Down, M::NONE);
+        app.press(K::Down, M::NONE);
+        assert_eq!(
+            app.context_menu.as_ref().unwrap().selected_command(),
+            Some(crate::command::Command::RevealInFinder)
+        );
+        let before = app.clipboard.read().ok();
+        app.press(K::Enter, M::NONE);
+        assert!(app.context_menu.is_none());
+        assert_eq!(app.clipboard.read().ok(), before);
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "fn a() {}\n");
+    }
+
+    #[tokio::test]
+    async fn file_info_tab_menu_items_are_disabled_on_an_untitled_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = workspace::normalize(dir.path());
+        let trust = TrustStore::load(root.join("trust.toml"));
+        let mut app = App::new(Workspace::load(root), trust, None, true);
+        app.test_start();
+        app.test_open(Buffer::untitled(1));
+        right_click_tab(&mut app, 0);
+        assert!(app.context_menu.is_some());
+        let before = app.clipboard.read().ok();
+        for row in [0, 1, 2, 4] {
+            click_row(&mut app, row);
+            assert!(app.context_menu.is_some(), "row {row} closed the menu");
+        }
+        assert_eq!(app.clipboard.read().ok(), before);
+        app.press(K::Enter, M::NONE);
+        assert!(app.palette.is_none());
+    }
+
+    #[tokio::test]
+    async fn file_info_tab_menu_file_history_show_runs_for_that_tab() {
+        let (_d, _root, _o, mut app) = setup();
+        right_click_tab(&mut app, 0);
+        click_row(&mut app, 4);
+        assert!(app.context_menu.is_none());
+        assert_eq!(app.group().active, 0);
+        // No history yet: the command ran (off-thread listing) and says so for a.rs.
+        assert!(
+            app.settle(|a| a.message.as_ref().is_some_and(|m| m.text.contains("src/a.rs")))
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn file_info_tab_menu_escape_and_outside_click_dismiss_and_a_second_tab_replaces() {
+        let (_d, _root, _o, mut app) = setup();
+        right_click_tab(&mut app, 0);
+        app.press(K::Esc, M::NONE);
+        assert!(app.context_menu.is_none());
+        right_click_tab(&mut app, 0);
+        draw(&mut app);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), 90, 20);
+        assert!(app.context_menu.is_none());
+        // The menu opens below the tab bar, so a tab right of the first one is still reachable.
+        let first = right_click_tab(&mut app, 0);
+        let second = right_click_tab(&mut app, 1);
+        assert_ne!(first, second);
+        let menu = app.context_menu.as_ref().expect("replaced");
+        assert_eq!(menu.anchor, (second.0, second.1 + 1));
+        assert_eq!(app.group().active, 1);
+        click_row(&mut app, 0);
+        assert_eq!(app.clipboard.read().unwrap(), "src/b.rs");
+    }
+
+    #[tokio::test]
+    async fn file_info_tab_menu_on_a_narrow_screen_stays_inside_it() {
+        let (_d, _root, _o, mut app) = setup();
+        right_click_tab_w(&mut app, 1, 30);
+        draw_w(&mut app, 30);
+        let r = app.hits.context_menu.unwrap().rect;
+        assert!(r.right() <= 30 && r.bottom() <= 30, "{r:?}");
+        assert!(r.y > app.hits.groups[0].tab_bar.y, "{r:?} covers the tab bar");
+    }
+
+    /// The menu acts on the right-clicked tab of an unfocused group, not the focused one's.
+    #[tokio::test]
+    async fn file_info_tab_menu_acts_on_a_tab_of_another_group() {
+        let (_d, _root, _o, mut app) = setup();
+        app.test_execute(crate::command::Command::SplitRight);
+        let ids = app.groups.ids();
+        assert_eq!(app.groups.active, ids[1]);
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "fn b() {}\n");
+        right_click_tab(&mut app, 0);
+        assert_eq!(app.groups.active, ids[0]);
+        click_row(&mut app, 0);
+        assert_eq!(app.clipboard.read().unwrap(), "src/a.rs");
+    }
+
+    /// A right-click on a tab's close button opens the menu; it doesn't close the tab.
+    #[tokio::test]
+    async fn file_info_tab_menu_from_the_close_button() {
+        let (_d, _root, _o, mut app) = setup();
+        draw(&mut app);
+        let g = app.hits.groups[0].clone();
+        let t = g.tabs.iter().find(|t| t.index == 0).unwrap();
+        app.mouse(MouseEventKind::Down(MouseButton::Right), t.close_x, g.tab_bar.y);
+        assert_eq!(app.group().tabs.len(), 2);
+        assert_eq!(app.group().active, 0);
+        assert_eq!(
+            app.context_menu.as_ref().expect("menu").anchor,
+            (t.close_x, g.tab_bar.y + 1)
+        );
+        click_row(&mut app, 0);
+        assert_eq!(app.clipboard.read().unwrap(), "src/a.rs");
+    }
+
+    /// A hex tab has a file: its items are enabled and act on it.
+    #[tokio::test]
+    async fn file_info_tab_menu_on_a_hex_tab_copies_its_path() {
+        let (_d, root, _o, mut app) = setup();
+        let bin = root.join("src/bin.dat");
+        fs::write(&bin, [0u8, 1, 2]).unwrap();
+        app.open_initial_hex(bin, crate::hex::HexDoc::new(vec![0, 1, 2]));
+        let i = app.group().active;
+        right_click_tab(&mut app, i);
+        click_row(&mut app, 0);
+        assert!(app.context_menu.is_none());
+        assert_eq!(app.clipboard.read().unwrap(), "src/bin.dat");
+    }
+
+    /// A shell tab in an editor group has no file: every item is disabled.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_info_tab_menu_items_are_disabled_on_a_shell_tab() {
+        let (_d, _root, _o, mut app) = setup();
+        app.tasks.shell = "/bin/sh".into();
+        app.new_shell_in_editor();
+        assert!(app.group().active_shell().is_some());
+        let i = app.group().active;
+        right_click_tab(&mut app, i);
+        let menu = app.context_menu.as_ref().expect("menu");
+        assert!(menu.items.iter().all(|it| match it {
+            crate::context_menu::MenuItem::Item { enabled, .. } => !enabled,
+            crate::context_menu::MenuItem::Separator => true,
+        }));
+        click_row(&mut app, 0);
+        assert!(app.context_menu.is_some());
     }
 }

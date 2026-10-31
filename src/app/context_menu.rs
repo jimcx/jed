@@ -20,8 +20,47 @@ use crate::command::{Command, ContextMenuCommand};
 use crate::context_menu::{ContextMenu, MenuItem};
 use crate::layout::Hit;
 
+/// What a menu is opened on. `menu_for` is the only place that lists items: a new target adds a
+/// variant and an arm, a new item one line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuTarget {
+    /// A tab; `has_file` is false for an untitled buffer, a shell, a log or a commit tab.
+    Tab { has_file: bool },
+}
+
+/// The items of the menu for `target`. They are the active file's commands, so whoever opens the
+/// menu makes the target's tab the active one first.
+pub fn menu_for(target: MenuTarget) -> Vec<MenuItem> {
+    let MenuTarget::Tab { has_file } = target;
+    let reveal = if cfg!(target_os = "macos") {
+        "Reveal in Finder"
+    } else {
+        "Open Containing Folder"
+    };
+    let file_item = |label: &str, command| {
+        let item = MenuItem::new(label, command);
+        if has_file { item } else { item.disabled() }
+    };
+    vec![
+        file_item("Copy Relative Path", Command::CopyRelativePath),
+        file_item("Copy Path", Command::CopyPath),
+        file_item(reveal, Command::RevealInFinder),
+        MenuItem::Separator,
+        file_item("File History: Show", Command::ShowFileHistory),
+    ]
+}
+
 impl App {
-    #[cfg_attr(not(test), allow(dead_code))] // until the tab / editor menus open one
+    /// A right-click at `at` on tab `index` of group `g`: focus and activate it, open its menu
+    /// under the pointer (on the row below, as VS Code does, so the tab bar stays visible and
+    /// another tab's right-click lands on that tab).
+    pub(super) fn open_tab_menu(&mut self, g: crate::layout::GroupId, index: usize, at: (u16, u16)) {
+        self.focus_group(g);
+        self.activate_tab(index);
+        let has_file = self.tab_path_text(g, index).is_some();
+        self.open_context_menu((at.0, at.1.saturating_add(1)), menu_for(MenuTarget::Tab { has_file }));
+    }
+
     /// Opens a menu of `items` at the screen cell `anchor` (the pointer), replacing any open one.
     pub fn open_context_menu(&mut self, anchor: (u16, u16), items: Vec<MenuItem>) {
         self.close_hover();
@@ -87,6 +126,12 @@ impl App {
                 let cmd = item.and_then(|i| menu.command_at(i));
                 self.run_menu_command(cmd);
             }
+            // A right press elsewhere closes the menu and acts as usual (a tab's right-click
+            // opens its own menu in its place).
+            MouseEventKind::Down(MouseButton::Right) if hit != Hit::ContextMenu => {
+                self.close_context_menu();
+                return false;
+            }
             MouseEventKind::Down(_) if hit != Hit::ContextMenu => self.close_context_menu(),
             MouseEventKind::ScrollUp
             | MouseEventKind::ScrollDown
@@ -105,5 +150,24 @@ mod tests {
     #[test]
     fn menu_commands_are_listed_with_the_palette_commands() {
         assert!(Command::all().contains(&Command::ContextMenu(ContextMenuCommand::Accept)));
+    }
+
+    #[test]
+    fn tab_menu_items_follow_has_file() {
+        let enabled = |has_file| -> Vec<(String, bool)> {
+            menu_for(MenuTarget::Tab { has_file })
+                .iter()
+                .filter_map(|i| match i {
+                    MenuItem::Item { label, enabled, .. } => Some((label.clone(), *enabled)),
+                    MenuItem::Separator => None,
+                })
+                .collect()
+        };
+        let with = enabled(true);
+        assert_eq!(with.len(), 4);
+        assert!(with.iter().all(|(_, e)| *e));
+        assert_eq!(with[0].0, "Copy Relative Path");
+        assert_eq!(with[3].0, "File History: Show");
+        assert!(enabled(false).iter().all(|(_, e)| !*e));
     }
 }

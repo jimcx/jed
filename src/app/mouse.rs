@@ -560,7 +560,7 @@ impl App {
                 Hit::PanelTab(PanelTab::Task(id)) | Hit::PanelTabClose(id) => self.close_task(id),
                 _ => {}
             },
-            MouseEventKind::Down(MouseButton::Right) => self.right_click(hit),
+            MouseEventKind::Down(MouseButton::Right) => self.right_click(hit, (m.column, m.row)),
             MouseEventKind::Drag(MouseButton::Left) => match self.drag.clone() {
                 Some(Drag::SideBorder) => {
                     if let Some(side) = self.hits.regions.side {
@@ -808,15 +808,13 @@ impl App {
         true
     }
 
-    /// Right-click (jed has no context menus): on a tab, its file's history ("File History:
-    /// Show", the tab activated first); on an explorer file, that file's; on an explorer folder,
-    /// "Find in Folder…" (the row selected first).
-    fn right_click(&mut self, hit: Hit) {
+    /// Right-click: on a tab, its menu at the pointer (`open_tab_menu`, the tab activated first);
+    /// on an explorer file, that file's history; on an explorer folder, "Find in Folder…" (the
+    /// row selected first).
+    fn right_click(&mut self, hit: Hit, at: (u16, u16)) {
         match hit {
             Hit::Tab(g, i) | Hit::TabClose(g, i) => {
-                self.focus_group(g);
-                self.activate_tab(i);
-                self.execute(Command::ShowFileHistory);
+                self.open_tab_menu(g, i, at);
             }
             Hit::ExplorerRow(row) if self.ui.side_panel == SidePanel::Explorer => {
                 let index = self.explorer.scroll + row as usize;
