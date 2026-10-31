@@ -21,9 +21,28 @@ pub struct StatusHit {
     pub language: Option<Rect>,
 }
 
+/// The bar's style: `[window] status_bar`'s colour, or for `auto` one picked from a stable hash
+/// (FNV-1a) of the workspace root relative to `$HOME` (the absolute path outside it).
+fn status_style(app: &App) -> ratatui::style::Style {
+    use crate::workspace::config::StatusBarColor;
+    let configured = app.workspace.config.window.status_bar;
+    if configured != StatusBarColor::Auto {
+        return app.theme.get(configured.theme_key());
+    }
+    let root = &app.workspace.root;
+    let rel = std::env::var_os("HOME")
+        .and_then(|h| root.strip_prefix(h).ok())
+        .unwrap_or(root.as_path());
+    let hash = rel
+        .to_string_lossy()
+        .bytes()
+        .fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    app.theme.status_bar_auto(hash)
+}
+
 /// Draws the status bar; returns where its clickable items are.
 pub fn render(f: &mut Frame, area: Rect, app: &App) -> StatusHit {
-    let style = app.theme.get(app.workspace.config.window.status_bar.theme_key());
+    let style = status_style(app);
     let out = f.buffer_mut();
     out.set_style(area, style);
     let width = area.width as usize;

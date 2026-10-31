@@ -45,10 +45,12 @@ pub enum StatusBarColor {
     Purple,
     Magenta,
     Grey,
+    /// A colour picked from a stable hash of the workspace root (`Theme::status_bar_auto`).
+    Auto,
 }
 
 impl StatusBarColor {
-    /// Every colour, for the tests that cover them all.
+    /// Every fixed colour (not `Auto`), for the tests that cover them all.
     #[cfg(test)]
     pub const ALL: [StatusBarColor; 9] = [
         StatusBarColor::Red,
@@ -75,6 +77,7 @@ impl StatusBarColor {
             StatusBarColor::Purple => "purple",
             StatusBarColor::Magenta => "magenta",
             StatusBarColor::Grey => "grey",
+            StatusBarColor::Auto => "auto",
         }
     }
 
@@ -89,6 +92,8 @@ impl StatusBarColor {
             StatusBarColor::Purple => "statusBar.purple",
             StatusBarColor::Magenta => "statusBar.magenta",
             StatusBarColor::Grey => "statusBar.grey",
+            // Not a theme key: the bar asks `Theme::status_bar_auto`; blue is the fallback.
+            StatusBarColor::Auto => "statusBar.blue",
         }
     }
 }
@@ -274,6 +279,12 @@ env = { CC = "clang" }
         assert_eq!(c.window.title.as_deref(), Some("api"));
         assert_eq!(c.window.status_bar, StatusBarColor::Blue, "the title alone");
         assert!(WorkspaceConfig::parse("[window]\ntitel = \"api\"").is_err());
+    }
+
+    #[test]
+    fn status_bar_auto_parses() {
+        let c = WorkspaceConfig::parse("[window]\nstatus_bar = \"auto\"").unwrap();
+        assert_eq!(c.window.status_bar, StatusBarColor::Auto);
     }
 
     #[test]

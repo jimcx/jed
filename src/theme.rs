@@ -38,6 +38,9 @@ pub const ANSI_KEYS: [&str; 16] = [
     "terminal.ansiBrightWhite",
 ];
 
+/// How many backgrounds `Theme::status_bar_auto` picks from: 30 hues × 4 saturation / lightness pairs.
+pub const STATUS_AUTO_SLOTS: u64 = 120;
+
 /// Ends what `Theme::ansi` started.
 pub const ANSI_RESET: &str = "\x1b[0m";
 
@@ -47,6 +50,34 @@ impl Theme {
             tracing::warn!(key, "missing theme key");
             Style::default()
         })
+    }
+
+    /// `[window] status_bar = "auto"`: white text on one of `STATUS_AUTO_SLOTS` backgrounds, `slot`
+    /// (any number; taken modulo) picking a hue (30, equally spaced; consecutive slots step the hue)
+    /// and one of four saturation / lightness pairs at the dark, saturated end, near the fixed colours.
+    /// Computed, not themeable: no theme key, only the terminal's colour depth is used.
+    pub fn status_bar_auto(&self, slot: u64) -> Style {
+        const HUES: u64 = 30;
+        // (saturation, lightness): lightness stays low so the white text reads on every hue.
+        const SL: [(f32, f32); 4] = [(1.0, 0.34), (0.9, 0.30), (0.8, 0.27), (0.7, 0.24)];
+        let slot = slot % STATUS_AUTO_SLOTS;
+        let hue = (slot % HUES) as f32 * 360.0 / HUES as f32;
+        let (s, l) = SL[(slot / HUES) as usize];
+        let chroma = (1.0 - (2.0 * l - 1.0).abs()) * s;
+        let x = chroma * (1.0 - ((hue / 60.0) % 2.0 - 1.0).abs());
+        let (r, g, b) = match (hue / 60.0) as u32 {
+            0 => (chroma, x, 0.0),
+            1 => (x, chroma, 0.0),
+            2 => (0.0, chroma, x),
+            3 => (0.0, x, chroma),
+            4 => (x, 0.0, chroma),
+            _ => (chroma, 0.0, x),
+        };
+        let m = l - chroma / 2.0;
+        let byte = |v: f32| ((v + m) * 255.0).round() as u32;
+        let hex = byte(r) << 16 | byte(g) << 8 | byte(b);
+        let truecolor = self.terminal.truecolor;
+        Style::new().fg(rgb(0xFFFFFF, truecolor)).bg(rgb(hex, truecolor))
     }
 
     /// `key`'s style, `None` (and no warning) when the theme doesn't define it.
@@ -642,6 +673,27 @@ mod tests {
             theme.get("statusBar.blue").bg,
             Some(Color::Rgb(0x00, 0x7A, 0xCC)),
             "the existing Dark+ blue"
+        );
+    }
+
+    /// `status_bar = "auto"` has 120 distinct, dark backgrounds with white text.
+    #[test]
+    fn status_bar_auto_has_120_distinct_dark_colours() {
+        let theme = Theme::dark_plus(true);
+        let mut seen = std::collections::HashSet::new();
+        for slot in 0..STATUS_AUTO_SLOTS {
+            let style = theme.status_bar_auto(slot);
+            assert_eq!(style.fg, Some(Color::Rgb(0xFF, 0xFF, 0xFF)));
+            let Some(Color::Rgb(r, g, b)) = style.bg else {
+                panic!("slot {slot} is RGB")
+            };
+            assert!(r.max(g).max(b) < 0xB0, "slot {slot} stays dark");
+            assert!(seen.insert((r, g, b)), "slot {slot} is distinct");
+        }
+        assert_eq!(
+            theme.status_bar_auto(STATUS_AUTO_SLOTS),
+            theme.status_bar_auto(0),
+            "wraps"
         );
     }
 
