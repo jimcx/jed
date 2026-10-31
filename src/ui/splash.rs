@@ -15,7 +15,7 @@ const LOGO: [&str; 7] = [
     "     ███  ▀██▄▄▄█▀  ▀██▄▄███",
     "     ███",
     "██▄  ███",
-    " ▀█████",
+    " ▀█████▀",
 ];
 
 /// Where the "ed" starts in the logo's rows, and how wide it is: the subtitle is centred under it.
