@@ -35,6 +35,7 @@ jobs:
           rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
+        if: ${{ !env.GITEA_ACTIONS }}
 
       - name: Format
         run: cargo fmt --check
@@ -60,6 +61,7 @@ jobs:
           tar -czf "dist/$pkg.tar.gz" -C target/release jed
 
       - uses: actions/upload-artifact@v4
+        if: ${{ !env.GITEA_ACTIONS }}
         with:
           name: ${{ env.PKG }}
           path: dist/*.tar.gz
@@ -69,7 +71,7 @@ jobs:
   # are a changelog of the commits and tasks completed since the previous
   # release (scripts/changelog, shared with the release command).
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && github.server_url == 'https://github.com'
     needs: build
     runs-on: ubuntu-latest
     permissions:
