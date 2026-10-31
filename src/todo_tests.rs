@@ -9499,10 +9499,7 @@ mod explorer_path_commands {
         (m.map(|m| m.text.clone()).unwrap_or_default(), m.map(|m| m.level))
     }
 
-    // Disabled: these end-to-end tests are slow enough to be annoying during normal runs. Remove the
-    // `#[ignore]` (or run `cargo test explorer_path_commands -- --ignored`) when testing this feature.
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "disabled while using the machine; enable when testing explorer path commands"]
     async fn reveal_active_selects_the_row_and_copy_commands_use_it() {
         let (_d, root, file) = project();
         let mut app = open_app(&root, &file);
@@ -9550,7 +9547,6 @@ mod explorer_path_commands {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "disabled while using the machine; enable when testing explorer path commands"]
     async fn reveal_active_works_for_a_diff_tab() {
         let (_d, root, file) = project();
         let mut app = open_app(&root, &file);
@@ -9566,7 +9562,6 @@ mod explorer_path_commands {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "disabled while using the machine; enable when testing explorer path commands"]
     async fn reveal_active_without_a_file_does_nothing() {
         let (_d, root, _file) = project();
         let trust = TrustStore::load(root.join("trust.toml"));
@@ -9581,7 +9576,6 @@ mod explorer_path_commands {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "disabled while using the machine; enable when testing explorer path commands"]
     async fn collapse_folders_closes_everything_and_selects_the_top_level_row() {
         let (_d, root, file) = project();
         fs::write(root.join("top.txt"), "").unwrap();
@@ -9605,17 +9599,16 @@ mod explorer_path_commands {
         assert_eq!(app.explorer.selected, Some(root.join("top.txt")));
     }
 
-    /// Opens the real desktop file manager, so it is off by default and ignored by the other tests'
-    /// sweeps (`reveal_in_finder` skips the launch under `cfg!(test)`). Run it with
-    /// `JED_TEST_REVEAL=1 cargo test reveal_opens_the_file_manager -- --ignored --nocapture`:
+    /// Opens the real desktop file manager, so it does nothing unless `JED_TEST_REVEAL` is set
+    /// (`reveal_in_finder` skips the launch under `cfg!(test)` otherwise). Run it with
+    /// `JED_TEST_REVEAL=1 cargo test reveal_opens_the_file_manager -- --nocapture`:
     /// a window should show `src/deep` with `a.rs`, and no warning may be reported.
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "opens the desktop file manager; run with JED_TEST_REVEAL=1 -- --ignored"]
     async fn reveal_opens_the_file_manager() {
-        assert!(
-            std::env::var_os("JED_TEST_REVEAL").is_some(),
-            "set JED_TEST_REVEAL=1, or the launch is skipped"
-        );
+        if std::env::var_os("JED_TEST_REVEAL").is_none() {
+            eprintln!("skipped: set JED_TEST_REVEAL=1 to open the real file manager");
+            return;
+        }
         let (_d, root, file) = project();
         let mut app = open_app(&root, &file);
         assert!(

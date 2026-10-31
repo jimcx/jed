@@ -481,9 +481,6 @@ async fn hex_go_to_offset_and_the_status_bar() {
     assert!(status_bar(&term).contains("2 bytes selected"), "{}", status_bar(&term));
 }
 
-// Disabled: running every command also runs "Reveal in Finder", which launches the desktop file manager
-// (`xdg-open` / `open -R`) while using the machine. Remove the `#[ignore]` when testing the feature.
-#[ignore = "launches the file manager via Reveal in Finder; enable when testing it"]
 #[tokio::test(flavor = "multi_thread")]
 async fn hex_editor_commands_leave_the_bytes_alone() {
     let (_d, root, mut app) = hex_app().await;
