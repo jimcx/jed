@@ -122,7 +122,8 @@ fn read_all(stream: &mut UnixStream, deadline: Instant) -> Result<Vec<u8>, Strin
         if left.is_zero() {
             return Err("kitty did not answer in time".into());
         }
-        stream.set_read_timeout(Some(left)).map_err(|e| e.to_string())?;
+        // Best effort (see `call`): the timeout set there still bounds the read.
+        let _ = stream.set_read_timeout(Some(left));
         match stream.read(&mut buf) {
             Ok(0) => return Ok(out),
             Ok(n) => out.extend_from_slice(&buf[..n]),
@@ -144,6 +145,8 @@ impl Kitty {
             .connect()
             .map_err(|e| format!("can't connect to kitty: {e}"))?;
         stream.set_write_timeout(Some(TIMEOUT)).map_err(|e| e.to_string())?;
+        // Before the shutdown below: macOS answers EINVAL to setsockopt on a socket shut down for writing.
+        stream.set_read_timeout(Some(TIMEOUT)).map_err(|e| e.to_string())?;
         stream
             .write_all(&encode(cmd, payload))
             .map_err(|e| format!("writing to kitty: {e}"))?;
