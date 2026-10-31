@@ -101,16 +101,17 @@ pub struct Regions {
     pub editor: Rect,
     /// The bottom panel under the editor groups (its top row is the border), when shown.
     pub panel: Option<Rect>,
-    /// The terminal area: full width, directly above the status bar (its top row is the
-    /// border), when shown. Everything else is above it.
+    /// The terminal area: in the editor's column, under the bottom panel and directly above
+    /// the status bar (its top row is the border), when shown.
     pub terminal: Option<Rect>,
     pub status: Rect,
 }
 
 /// The screen's regions. `panel_height` (`None`: hidden) is clamped so the editor keeps
 /// `MIN_EDITOR_HEIGHT` rows; the panel gets at least `MIN_PANEL_HEIGHT` when that fits.
-/// `terminal_height` (the terminal area, the same) is carved off the bottom first, across the
-/// whole width: the activity bar, side panel, editor groups and panel are all above it.
+/// `terminal_height` (the terminal area, the same) is carved off the bottom of the editor's column
+/// first, so the groups and the panel are above it; the activity bar and side panel run down to
+/// the status bar beside it.
 pub fn compute(
     area: Rect,
     side_visible: bool,
@@ -124,19 +125,11 @@ pub fn compute(
         height: 1,
         ..area
     };
-    let terminal = terminal_height.and_then(|h| {
-        let max = full_h.saturating_sub(MIN_EDITOR_HEIGHT);
-        let h = h.min(max).max(MIN_TERMINAL_HEIGHT.min(max));
-        (h > 0).then_some(Rect {
-            y: area.y + full_h - h,
-            height: h,
-            ..area
-        })
-    });
-    let body_h = full_h - terminal.map_or(0, |t| t.height);
+    // The activity bar and side panel run down to the status bar; the terminal area sits in the editor's
+    // column, under the bottom panel.
     let activity = Rect {
         width: ACTIVITY_WIDTH.min(area.width),
-        height: body_h,
+        height: full_h,
         ..area
     };
     let mut x = activity.x + activity.width;
@@ -152,7 +145,7 @@ pub fn compute(
             x,
             y: area.y,
             width: w,
-            height: body_h,
+            height: full_h,
         };
         x += w;
         r
@@ -161,8 +154,21 @@ pub fn compute(
         x,
         y: area.y,
         width: (area.x + area.width).saturating_sub(x),
-        height: body_h,
+        height: full_h,
     };
+    let terminal = terminal_height.and_then(|h| {
+        let max = full_h.saturating_sub(MIN_EDITOR_HEIGHT);
+        let h = h.min(max).max(MIN_TERMINAL_HEIGHT.min(max));
+        (h > 0).then(|| {
+            editor.height -= h;
+            Rect {
+                y: editor.y + editor.height,
+                height: h,
+                ..editor
+            }
+        })
+    });
+    let body_h = editor.height;
     let panel = panel_height.and_then(|h| {
         let max = body_h.saturating_sub(MIN_EDITOR_HEIGHT);
         let h = h.min(max).max(MIN_PANEL_HEIGHT.min(max));

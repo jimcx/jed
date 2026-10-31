@@ -44,20 +44,21 @@ fn click(app: &mut App, x: u16, y: u16) {
     app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
 }
 
-/// The area is full width above the status bar; the editor, side panel and bottom panel are
-/// above it; its height is clamped to leave the editor its minimum.
+/// The area sits in the editor's column above the status bar, under the bottom panel; the
+/// activity bar and side panel run down to the status bar beside it; its height is clamped to
+/// leave the editor its minimum.
 #[test]
 fn term_area_layout_region_and_clamping() {
     let screen = Rect::new(0, 0, 100, 30);
     let r = layout::compute(screen, true, 25, Some(10), Some(12));
     assert_eq!(
         r.terminal,
-        Some(Rect::new(0, 17, 100, 12)),
-        "full width, above the status bar"
+        Some(Rect::new(28, 17, 72, 12)),
+        "the editor's column, above the status bar"
     );
     assert_eq!(r.status, Rect::new(0, 29, 100, 1));
-    assert_eq!(r.side.unwrap().height, 17, "the side panel stops above it");
-    assert_eq!(r.activity.height, 17);
+    assert_eq!(r.side.unwrap().height, 29, "the side panel runs down to the status bar");
+    assert_eq!(r.activity.height, 29);
     assert_eq!(
         r.editor.height + r.panel.unwrap().height,
         17,
@@ -95,7 +96,10 @@ async fn term_area_ctrl_backtick_opens_a_shell_in_the_area() {
 
     draw(&mut app, 100, 30);
     let t = app.hits.regions.terminal.expect("the area is drawn");
-    assert_eq!((t.x, t.width, t.y + t.height), (0, 100, 29));
+    assert_eq!(
+        (t.x, t.width, t.y + t.height),
+        (app.hits.regions.editor.x, app.hits.regions.editor.width, 29)
+    );
     assert_eq!(app.hits.regions.editor.height, editor_before.height - t.height);
     assert_eq!(
         app.hits.regions.editor.width, editor_before.width,
@@ -209,10 +213,10 @@ async fn term_area_border_drag_resizes() {
     app.test_execute(Command::NewShell);
     draw(&mut app, 100, 30);
     let t = app.hits.regions.terminal.unwrap();
-    assert_eq!(app.hits.hit(10, t.y), Hit::TerminalBorder);
-    app.mouse(MouseEventKind::Down(MouseButton::Left), 10, t.y);
-    app.mouse(MouseEventKind::Drag(MouseButton::Left), 10, t.y - 4);
-    app.mouse(MouseEventKind::Up(MouseButton::Left), 10, t.y - 4);
+    assert_eq!(app.hits.hit(60, t.y), Hit::TerminalBorder);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), 60, t.y);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), 60, t.y - 4);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), 60, t.y - 4);
     assert_eq!(app.ui.terminal_height, t.height + 4);
     draw(&mut app, 100, 30);
     assert_eq!(app.hits.regions.terminal.unwrap().height, t.height + 4);
@@ -229,9 +233,9 @@ async fn term_area_border_drag_resizes() {
     assert_eq!(rows, t.height + 4 - 2, "the shell is resized to the area");
     // Dragged to the top: the editor keeps its minimum.
     let y = app.hits.regions.terminal.unwrap().y;
-    app.mouse(MouseEventKind::Down(MouseButton::Left), 10, y);
-    app.mouse(MouseEventKind::Drag(MouseButton::Left), 10, 0);
-    app.mouse(MouseEventKind::Up(MouseButton::Left), 10, 0);
+    app.mouse(MouseEventKind::Down(MouseButton::Left), 60, y);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), 60, 0);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), 60, 0);
     draw(&mut app, 100, 30);
     assert_eq!(app.hits.regions.editor.height, MIN_EDITOR_HEIGHT);
 }

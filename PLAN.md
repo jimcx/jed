@@ -51,10 +51,10 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
 │v │            │                      │                      │
 │i │            ├──────────────────────┴──────────────────────┤
 │t │            │ Panel (problems / tasks)                    │
-│y │            │                                             │
+│y │            ├─────────────────────────────────────────────┤
+│  │            │ Terminal area: [shell][shell] (on demand)   │
+│  │            │                                             │
 ├──┴────────────┴─────────────────────────────────────────────┤
-│ Terminal area: [shell][shell]   (full width, shown on demand)│
-├─────────────────────────────────────────────────────────────┤
 │ Status bar: branch · diagnostics · Ln/Col · lang · encoding │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -62,7 +62,7 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
 - **Side panel**: switches with the activity bar; can be toggled and resized
 - **Editor area**: groups with tabs, split horizontally or vertically
 - **Bottom panel**: Problems list, task terminals
-- **Terminal area**: full width above the status bar, shown when a terminal opens (Ctrl+`) and hidden when the last closes. Its own tab bar and split tree of terminal groups, so shells reorder, split and drag as editor tabs do; only shells dock there. A shell moves to an editor group by dragging it there or "Terminal: Move Terminal into Editor Area" and back with "… into Terminal Area" (dragging an editor tab into the area is refused). A new session opens one terminal in it; its shown / height / splits are not session state
+- **Terminal area**: in the editor's column under the bottom panel, above the status bar, shown when a terminal opens (Ctrl+`) and hidden when the last closes. Its own tab bar and split tree of terminal groups, so shells reorder, split and drag as editor tabs do; only shells dock there. A shell moves to an editor group by dragging it there or "Terminal: Move Terminal into Editor Area" and back with "… into Terminal Area" (dragging an editor tab into the area is refused). A new session opens one terminal in it; its shown / height / splits are not session state
 - **Status bar**: git branch, diagnostic counts, cursor position, language mode, line ending
 
 ## Features
@@ -764,7 +764,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - ✅ **Soft wrap** (`soft_wrap`): wrap long lines at the editor's width, with movement, scrolling and the mouse on screen rows — [tasks/soft_wrap.md](tasks/soft_wrap.md)
 - ✅ **Syntax highlighting in the diff view** (`diff_syntax`): diff tabs draw both sides with the file's syntax colours — [tasks/diff_syntax.md](tasks/diff_syntax.md)
 - ✅ **Syntax plugins** (`syntax_plugins`): tree-sitter grammars from `~/.config/jed/languages/<id>/`, built with the system C compiler and loaded at runtime — [tasks/syntax_plugins.md](tasks/syntax_plugins.md)
-- ✅ **Terminal area** (`term_area`): interactive terminals (shell tabs) get a full-width area above the status bar that behaves like an editor group, but only terminal tabs dock there — [tasks/term_area.md](tasks/term_area.md)
+- ✅ **Terminal area** (`term_area`): interactive terminals (shell tabs) get an area in the editor's column above the status bar that behaves like an editor group, but only terminal tabs dock there — [tasks/term_area.md](tasks/term_area.md)
 - ✅ **Terminal config snippets** (`terminal_config_snippets`): `docs/terminals/<terminal>.md` snippets passing every Cmd binding through, with Option-as-Alt — [tasks/terminal_config_snippets.md](tasks/terminal_config_snippets.md)
 - ✅ **Terminal integration for recent workspaces (kitty first)** (`kitty_recent`): switch to a running workspace's terminal window / tab, or open a new one, through kitty's remote control protocol on a socket — [tasks/kitty_recent.md](tasks/kitty_recent.md)
 - ✅ **Terminal scroll bars** (`term_scrollbar`): a shell tab and each task tab keep their last column for a vertical scroll bar, exactly like every other scrolled surface — [tasks/term_scrollbar.md](tasks/term_scrollbar.md)

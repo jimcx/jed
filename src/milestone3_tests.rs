@@ -202,3 +202,21 @@ async fn borders_join_with_junction_glyphs() {
         "an unchanged layout is not resolved again"
     );
 }
+
+/// The activity bar and side panel run down to the status bar; the terminal area sits in the editor's
+/// column, and the side panel's edge meets its rule in `├`.
+#[tokio::test(flavor = "multi_thread")]
+async fn side_panel_runs_down_beside_the_terminal_area() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = workspace::normalize(dir.path());
+    fs::write(root.join("a.txt"), "one\n").unwrap();
+    let mut app = open_app(&root, "a.txt");
+    app.ui.terminal_visible = true;
+    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    draw(&mut app, &mut term);
+    let r = app.hits.regions;
+    let (t, side) = (r.terminal.expect("the terminal area is shown"), r.side.unwrap());
+    assert_eq!((r.activity.height, side.height), (29, 29));
+    assert_eq!(t.x, side.x + side.width, "in the editor's column");
+    assert_eq!(term.backend().buffer()[(side.x + side.width - 1, t.y)].symbol(), "├");
+}

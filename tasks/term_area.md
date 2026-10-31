@@ -1,7 +1,7 @@
 ---
 id: term_area
 name: Terminal area
-summary: interactive terminals (shell tabs) get a full-width area above the status bar that behaves like an editor group, but only terminal tabs dock there
+summary: interactive terminals (shell tabs) get an area in the editor's column above the status bar that behaves like an editor group, but only terminal tabs dock there
 status: done
 priority: 0
 dependencies: []
