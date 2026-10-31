@@ -9952,6 +9952,9 @@ mod file_info_menu {
         let trust = TrustStore::load(root.join("trust.toml"));
         let mut app = App::new(Workspace::load(root), trust, None, true);
         app.test_start();
+        // Truecolor whatever `COLORTERM` says: on 256 colours the menu and editor backgrounds
+        // round to the same index, so CI (no `COLORTERM`) could not tell them apart.
+        app.theme = crate::theme::Theme::dark_plus(true);
         (dir, app)
     }
 
