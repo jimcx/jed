@@ -396,6 +396,8 @@ pub struct App {
     pub ui: UiState,
     /// Where things were drawn in the last frame, for mouse hit-testing.
     pub hits: HitMap,
+    /// The border layer's resolved cells, kept until the layout changes.
+    pub borders: crate::ui::borders::Borders,
     pub keymap: Keymap,
     pub theme: Theme,
     pub settings: Settings,
@@ -636,6 +638,7 @@ impl App {
                 scrollbar_hover: None,
             },
             hits: HitMap::default(),
+            borders: Default::default(),
             keymap: Keymap::default_for(Platform::current()),
             theme: Theme::dark_plus(theme::terminal_has_truecolor()),
             #[cfg(not(test))]

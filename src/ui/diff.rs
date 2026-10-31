@@ -283,7 +283,7 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
             let (r, rr, rp) = side(right, right_line, false, parts.map(|p| p.1), on(true, row.right));
             let at_left = draw_half(out, &l, row, lr, lp, &st);
             let at_right = draw_half(out, &r, row, rr, rp, &st);
-            out.set_stringn(body.x + half, y, "│", 1, theme.get("editorGroup.border"));
+            // The cell at `body.x + half` is the centre line (a border: `borders` draws it).
             let cell = if row.right.is_some() { at_right.0 } else { at_left.0 };
             at_caret = Some(if caret.right { at_right.0 } else { at_left.0 });
             (cell, at_left.1.max(at_right.1), (at_right.1, at_left.1))

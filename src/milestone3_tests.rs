@@ -177,3 +177,28 @@ async fn split_down_mouse_focus_and_divider_drag() {
     assert!(row(new_div.y).contains("────"), "{}", row(new_div.y));
     assert!(row(0).contains("a.txt") && row(new_div.y + 1).contains("a.txt"));
 }
+
+/// Borders of different layouts meet in junction glyphs: a horizontal divider ends on the side
+/// panel's edge in `┤`, and a vertical divider in `┬` / `┴` where the panel's rule joins it.
+#[tokio::test(flavor = "multi_thread")]
+async fn borders_join_with_junction_glyphs() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = workspace::normalize(dir.path());
+    fs::write(root.join("a.txt"), "one\ntwo\n").unwrap();
+    let mut app = open_app(&root, "a.txt");
+    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    app.press(K::Char('\\'), cmd() | M::ALT);
+    draw(&mut app, &mut term);
+    let side = app.hits.regions.side.expect("the side panel is shown");
+    let edge = side.x + side.width - 1;
+    let div = app.hits.dividers[0].rect;
+    let b = term.backend().buffer();
+    assert_eq!(b[(edge, div.y)].symbol(), "├", "side edge meets the horizontal divider");
+    assert_eq!(b[(edge, div.y - 1)].symbol(), "│");
+    let resolved = app.borders.resolved;
+    draw(&mut app, &mut term);
+    assert_eq!(
+        app.borders.resolved, resolved,
+        "an unchanged layout is not resolved again"
+    );
+}

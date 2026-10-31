@@ -641,3 +641,16 @@ async fn hscroll_diff_scrolls_the_line_under_its_buttons_into_view() {
         );
     }
 }
+
+/// The side-by-side diff's centre line joins the bottom panel's rule below it.
+#[tokio::test(flavor = "multi_thread")]
+async fn diff_divider_joins_the_panel_rule() {
+    let (_d, mut app) = diff_app(5).await;
+    app.ui.panel_visible = true;
+    let term = frame(&mut app, 150, 30);
+    let diff = app.hits.group(app.groups.active).unwrap().diff.clone().unwrap();
+    let (x, y) = (diff.divider.expect("side by side"), diff.rows.y + diff.rows.height);
+    let b = term.backend().buffer();
+    assert_eq!(b[(x, y - 1)].symbol(), "│");
+    assert_eq!(b[(x, y)].symbol(), "┴", "the rule under the divider");
+}

@@ -2,6 +2,7 @@
 
 mod activity;
 mod banner;
+pub mod borders;
 mod cheatsheet;
 mod code_action;
 mod completion;
@@ -112,12 +113,14 @@ pub fn render(f: &mut Frame, app: &mut App) {
     };
 
     hits.icons = activity::render(f, regions.activity, app);
+    let mut side_rules = Vec::new();
     if let Some(side) = regions.side {
         let side = side::render(f, side, app);
         (hits.explorer_rows, hits.search, hits.scm, hits.tools) =
             (side.explorer_rows, side.search, side.scm, side.tools);
         hits.side_scrollbar = side.scrollbar;
         hits.history = side.history;
+        side_rules = side.rules;
         hits.history_scrollbar = side.history_scrollbar;
     }
 
@@ -125,12 +128,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     fit_commit_tabs(app, &cells);
     // The terminal area's groups are drawn by the same loop, after the editor's.
     if let Some(t) = regions.terminal {
-        // Its top row is the border, drawn here; the groups get the rest.
-        let border = app.theme.get("editor").patch(app.theme.get("panel.border"));
-        let out = f.buffer_mut();
-        for x in t.x..t.x + t.width {
-            out.set_stringn(x, t.y, "─", 1, border);
-        }
+        // Its top row is the border (drawn by `borders`); the groups get the rest.
         let rest = Rect {
             y: t.y + 1,
             height: t.height - 1,
@@ -510,20 +508,61 @@ pub fn render(f: &mut Frame, app: &mut App) {
             out.set_style(rect, shade);
         }
     }
-    let border = app.theme.get("editorGroup.border");
-    for d in &dividers {
-        let (glyph, cells) = match d.dir {
-            SplitDir::Right => ("│", d.rect.height),
-            SplitDir::Down => ("─", d.rect.width),
+    // Every border line, drawn together by `borders` once the regions are filled (later segments win
+    // where they overlap).
+    let line = |r: Rect| Rect { height: 1, ..r };
+    let mut segments: Vec<borders::Segment> = Vec::new();
+    if let Some(side) = regions.side {
+        let edge = Rect {
+            x: side.x + side.width.saturating_sub(1),
+            width: 1,
+            ..side
         };
-        let out = f.buffer_mut();
-        for i in 0..cells {
-            let (x, y) = match d.dir {
-                SplitDir::Right => (d.rect.x, d.rect.y + i),
-                SplitDir::Down => (d.rect.x + i, d.rect.y),
-            };
-            out.set_stringn(x, y, glyph, 1, border);
+        segments.push(borders::Segment::new(
+            edge,
+            SplitDir::Right,
+            Some("sideBar"),
+            "sideBar.border",
+        ));
+    }
+    for r in side_rules {
+        segments.push(borders::Segment::new(
+            r,
+            SplitDir::Down,
+            Some("sideBar"),
+            "sideBar.border",
+        ));
+    }
+    for d in &dividers {
+        segments.push(borders::Segment::new(d.rect, d.dir, None, "editorGroup.border"));
+    }
+    // A side-by-side diff's centre line, down its rows.
+    for d in hits.groups.iter().filter_map(|g| g.diff.as_ref()) {
+        if let Some(x) = d.divider {
+            let centre = Rect { x, width: 1, ..d.rows };
+            segments.push(borders::Segment::new(
+                centre,
+                SplitDir::Right,
+                None,
+                "editorGroup.border",
+            ));
         }
+    }
+    if let Some(t) = regions.terminal {
+        segments.push(borders::Segment::new(
+            line(t),
+            SplitDir::Down,
+            Some("editor"),
+            "panel.border",
+        ));
+    }
+    if let Some(p) = regions.panel {
+        segments.push(borders::Segment::new(
+            line(p),
+            SplitDir::Down,
+            Some("panel"),
+            "panel.border",
+        ));
     }
     hits.dividers = dividers;
     if let Some(panel) = regions.panel {
@@ -532,6 +571,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         hits.panel_scrollbar = panel.scrollbar;
     }
 
+    app.borders.apply(f, segments, &app.theme);
     let status = status::render(f, regions.status, app);
     (hits.status_problems, hits.status_indentation) = (status.problems, status.indentation);
     hits.status_language = status.language;

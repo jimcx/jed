@@ -56,10 +56,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> PanelHits {
     let dim = base.patch(theme.get("panel.dim"));
     let out = f.buffer_mut();
     out.set_style(area, base);
-    let border = base.patch(theme.get("panel.border"));
-    for x in area.x..area.x + area.width {
-        out.set_stringn(x, area.y, "─", 1, border);
-    }
+    // The top row is the border (drawn by `borders`).
     let mut hits = PanelHits::default();
     if area.height < 2 {
         return hits;

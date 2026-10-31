@@ -30,6 +30,10 @@ pub struct SideHits {
     pub tools: Option<ToolsHit>,
     /// The Explorer's "Git History" section, when shown.
     pub history: Option<HistoryHit>,
+    /// Horizontal rules across the panel's body (a section's divider row, left blank here): `mod.rs` hands
+    /// them to the border layer (`borders`), which draws them and joins their ends to the panel's edge.
+    /// A new section pushes its divider here.
+    pub rules: Vec<Rect>,
     /// The shown list's scroll bar (its last column).
     pub scrollbar: Option<(ScrollTarget, ScrollBarHit)>,
     /// The history list's scroll bar (its last column).
@@ -43,12 +47,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
     let out = f.buffer_mut();
     out.set_style(area, base);
 
-    // Border on the right edge; dragging it resizes the panel.
-    let border = base.patch(theme.get("sideBar.border"));
-    let bx = area.x + area.width - 1;
-    for y in area.y..area.y + area.height {
-        out.set_stringn(bx, y, "│", 1, border);
-    }
+    // The last column is the border (drawn by `borders`; dragging it resizes the panel).
     let inner_w = area.width.saturating_sub(1);
     let title = base.patch(theme.get("sideBar.title"));
     out.set_stringn(
@@ -176,7 +175,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
         Some(section) => render_history(f, section, app),
         None => (None, None),
     };
+    let rules = history.iter().map(|h| h.divider).collect();
     SideHits {
+        rules,
         explorer_rows: tree,
         scrollbar: bar.map(|b| (ScrollTarget::Side(SidePanel::Explorer), b)),
         history,
@@ -185,7 +186,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
     }
 }
 
-/// The "Git History" section: the divider row (in the border colour), the collapsible header,
+/// The "Git History" section: the divider row (left blank: a border), the collapsible header,
 /// then the commit rows — summary, author, relative date and short id as space allows — or
 /// "Reading history…", an error, or "No history".
 fn render_history(f: &mut Frame, section: Rect, app: &mut App) -> (Option<HistoryHit>, Option<ScrollBarHit>) {
@@ -197,14 +198,6 @@ fn render_history(f: &mut Frame, section: Rect, app: &mut App) -> (Option<Histor
         height: 1,
         ..section
     };
-    let rule = "─".repeat(divider.width as usize);
-    out.set_stringn(
-        divider.x,
-        divider.y,
-        &rule,
-        divider.width as usize,
-        base.patch(theme.get("sideBar.border")),
-    );
     let header = Rect {
         y: section.y + 1,
         height: 1,
