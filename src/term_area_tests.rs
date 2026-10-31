@@ -329,13 +329,13 @@ async fn term_area_tab_commands_and_cursor_follow_the_focus() {
     );
 
     // Cmd+W there closes the editor group's tab, not the area's.
-    app.press(KeyCode::Char('w'), cmd());
+    app.press(KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
     assert_eq!(app.group().tabs.len(), 1);
     assert_eq!(app.terminals.active_group().tabs.len(), 2);
     // Back in the area, Cmd+W closes its tab and leaves the editor's text tab.
     click(&mut app, area.x + 1, area.y + 1);
     assert_eq!(app.ui.focus, Focus::Terminal);
-    app.press(KeyCode::Char('w'), cmd());
+    app.press(KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
     assert_eq!(app.terminals.active_group().tabs.len(), 1);
     assert_eq!(app.group().tabs.len(), 1);
 }
@@ -581,11 +581,11 @@ async fn term_area_closing_tabs_closes_groups_then_hides() {
     app.press(KeyCode::Char('\\'), cmd());
     app.test_execute(Command::NewShell);
     assert_eq!(app.terminals.len(), 2);
-    app.press(KeyCode::Char('w'), cmd());
+    app.press(KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
     assert_eq!(app.terminals.len(), 1, "the emptied group closed");
     assert!(app.ui.terminal_visible);
     assert_eq!(app.shell_tabs().count(), 1);
-    app.press(KeyCode::Char('w'), cmd());
+    app.press(KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
     assert!(!app.ui.terminal_visible, "no terminal anywhere: hidden");
     assert_eq!(app.ui.focus, Focus::Editor);
 }
@@ -597,7 +597,7 @@ async fn term_area_hides_with_an_empty_group_left() {
     let mut app = area_app(&root, &state, 1);
     app.press(KeyCode::Char('\\'), cmd());
     app.test_execute(Command::FocusPreviousGroup);
-    app.press(KeyCode::Char('w'), cmd());
+    app.press(KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
     assert!(!app.ui.terminal_visible);
 }
 
@@ -720,7 +720,7 @@ async fn term_area_new_shell_after_hiding_with_empty_groups() {
     app.press(KeyCode::Char('\\'), cmd());
     app.press(KeyCode::Char('\\'), cmd() | KeyModifiers::ALT);
     app.test_execute(Command::FocusGroup(1));
-    app.press(KeyCode::Char('w'), cmd());
+    app.press(KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
     assert!(!app.ui.terminal_visible);
     assert_eq!(app.ui.focus, Focus::Editor);
     assert_eq!(app.terminals.len(), 2, "the empty groups are kept");

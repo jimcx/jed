@@ -305,6 +305,12 @@ impl Context {
     }
 }
 
+/// Plain Ctrl+letter keys the shell owns (history search, delete word, ...): a shell tab doesn't
+/// look them up among the global bindings. Ctrl+Q stays Quit.
+fn is_shell_key(combo: &KeyCombo) -> bool {
+    matches!(combo.code, KeyCode::Char(c) if c.is_ascii_lowercase() && c != 'q') && combo.mods == KeyModifiers::CONTROL
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
     MacOs,
@@ -387,6 +393,9 @@ impl Keymap {
                 return Some(cmd.0);
             }
             ctx = c.parent();
+        }
+        if context == Context::Shell && is_shell_key(&combo) {
+            return None;
         }
         self.bindings.get(&(combo, None)).map(|(cmd, _)| *cmd)
     }
@@ -1070,6 +1079,8 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Home, ctrl, Command::Shell(Sh::Top)),
         (KeyCode::End, ctrl, Command::Shell(Sh::Bottom)),
         (KeyCode::Char('k'), cmd, Command::Shell(Sh::Clear)),
+        // Plain Ctrl+W is the shell's (delete word), so Linux closes with Ctrl+Shift+W.
+        (KeyCode::Char('w'), ctrl | shift, Command::CloseTab),
     ];
 
     let bind = |code, mods, context, command| Binding {
@@ -1255,7 +1266,10 @@ mod tests {
                 KeyModifiers::CONTROL
             };
             let sh = Context::Shell;
-            assert_eq!(km.lookup(&key(KeyCode::Char('w'), cmd), sh), Some(Command::CloseTab));
+            assert_eq!(
+                km.lookup(&key(KeyCode::Char('w'), KeyModifiers::SUPER), sh),
+                (p == Platform::MacOs).then_some(Command::CloseTab)
+            );
             assert_eq!(
                 km.lookup(&key(KeyCode::Char('p'), cmd | KeyModifiers::SHIFT), sh),
                 Some(Command::ShowCommands)
@@ -1277,6 +1291,9 @@ mod tests {
                 key(KeyCode::Char('y'), KeyModifiers::NONE),
                 key(KeyCode::Char('c'), KeyModifiers::CONTROL),
                 key(KeyCode::Char('d'), KeyModifiers::CONTROL),
+                key(KeyCode::Char('r'), KeyModifiers::CONTROL),
+                key(KeyCode::Char('p'), KeyModifiers::CONTROL),
+                key(KeyCode::Char('w'), KeyModifiers::CONTROL),
                 key(KeyCode::Enter, KeyModifiers::NONE),
                 key(KeyCode::Up, KeyModifiers::NONE),
                 key(KeyCode::Esc, KeyModifiers::NONE),

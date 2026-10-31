@@ -1386,7 +1386,7 @@ async fn shell_close_kills_the_shell() {
     );
     let pid = app.group().active_shell().unwrap().run.pid().unwrap();
 
-    app.press(KeyCode::Char('w'), cmd());
+    app.press(KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
     assert!(app.prompt.is_none(), "no prompt for a shell");
     assert!(app.group().active_shell().is_none(), "the tab closed");
     assert!(app.settle(|_| group_gone(pid)).await, "the shell process group is gone");
