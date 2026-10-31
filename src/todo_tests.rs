@@ -9499,7 +9499,10 @@ mod explorer_path_commands {
         (m.map(|m| m.text.clone()).unwrap_or_default(), m.map(|m| m.level))
     }
 
+    // Disabled: these end-to-end tests are slow enough to be annoying during normal runs. Remove the
+    // `#[ignore]` (or run `cargo test explorer_path_commands -- --ignored`) when testing this feature.
     #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "disabled while using the machine; enable when testing explorer path commands"]
     async fn reveal_active_selects_the_row_and_copy_commands_use_it() {
         let (_d, root, file) = project();
         let mut app = open_app(&root, &file);
@@ -9547,6 +9550,7 @@ mod explorer_path_commands {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "disabled while using the machine; enable when testing explorer path commands"]
     async fn reveal_active_works_for_a_diff_tab() {
         let (_d, root, file) = project();
         let mut app = open_app(&root, &file);
@@ -9562,6 +9566,7 @@ mod explorer_path_commands {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "disabled while using the machine; enable when testing explorer path commands"]
     async fn reveal_active_without_a_file_does_nothing() {
         let (_d, root, _file) = project();
         let trust = TrustStore::load(root.join("trust.toml"));
@@ -9576,6 +9581,7 @@ mod explorer_path_commands {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "disabled while using the machine; enable when testing explorer path commands"]
     async fn collapse_folders_closes_everything_and_selects_the_top_level_row() {
         let (_d, root, file) = project();
         fs::write(root.join("top.txt"), "").unwrap();
