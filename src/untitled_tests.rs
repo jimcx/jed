@@ -961,6 +961,9 @@ async fn untitled_has_no_language_server_document() {
     app.shutdown_servers().await;
 }
 
+// Disabled: running every command also runs "Reveal in Finder", which launches the desktop file manager
+// (`xdg-open` / `open -R`) while using the machine. Remove the `#[ignore]` when testing the feature.
+#[ignore = "launches the file manager via Reveal in Finder; enable when testing it"]
 #[tokio::test(flavor = "multi_thread")]
 async fn untitled_commands_on_one_leave_files_alone() {
     // Every command on an untitled buffer neither panics nor creates a file.

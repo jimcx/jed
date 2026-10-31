@@ -1780,6 +1780,9 @@ async fn milestone_10_split_and_close_a_diff_tab() {
     assert_eq!(app.active_buffer().unwrap().path, root.join("f.txt"));
 }
 
+// Disabled: running every command also runs "Reveal in Finder", which launches the desktop file manager
+// (`xdg-open` / `open -R`) while using the machine. Remove the `#[ignore]` when testing the feature.
+#[ignore = "launches the file manager via Reveal in Finder; enable when testing it"]
 #[tokio::test(flavor = "multi_thread")]
 async fn milestone_10_editor_commands_on_a_diff_tab_do_nothing() {
     let (_d, root, state) = dirs();

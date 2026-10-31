@@ -995,6 +995,9 @@ async fn tools_a_flood_of_lines_costs_turns_per_frame_not_per_line() {
 
 /// Every command run on a log tab leaves it alone: no file written or staged, no diff, history
 /// or explorer reveal of its empty path, its text unchanged (but by Clear Log) and never dirty.
+// Disabled: running every command also runs "Reveal in Finder", which launches the desktop file manager
+// (`xdg-open` / `open -R`) while using the machine. Remove the `#[ignore]` when testing the feature.
+#[ignore = "launches the file manager via Reveal in Finder; enable when testing it"]
 #[tokio::test(flavor = "multi_thread")]
 async fn tools_every_command_on_a_log_tab_leaves_it_alone() {
     use crate::command::Command;
