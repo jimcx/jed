@@ -23,6 +23,7 @@ mod semantic;
 mod side;
 mod splash;
 mod status;
+mod tab_tip;
 mod tabs;
 mod task;
 mod tools;
@@ -536,6 +537,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     hits.find = active_editor.and_then(|area| find::render(f, area, app));
     hits.quick_diff = quick_diff::render(f, app, &hits.groups);
     hits.hover = hover::render(f, app, &hits.groups);
+    tab_tip::render(f, app, &hits.groups);
     hits.completion = completion::render(f, app, &hits.groups);
     hits.code_actions = code_action::render(f, app, &hits.groups);
     hits.palette = palette::render(f, area, app);

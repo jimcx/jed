@@ -172,6 +172,8 @@ fn border_height(row: u16, bottom: u16, min: u16) -> u16 {
 
 impl App {
     pub(super) fn handle_mouse(&mut self, m: MouseEvent) {
+        let hit = self.hits.hit(m.column, m.row);
+        self.tab_tip_mouse(&m, hit);
         self.mouse_event(m);
         self.pointer = self.pointer_at(m.column, m.row);
     }

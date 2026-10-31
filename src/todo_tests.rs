@@ -9625,3 +9625,255 @@ mod explorer_path_commands {
         assert!(!failed, "launch failed: {:?}", message(&app));
     }
 }
+
+/// file_info-a: the tab tooltip. The pointer resting on a tab for `tab_tip::DELAY` draws a line
+/// under it with the file's path (relative to the workspace and `/`-separated, the full path
+/// outside it; nothing for an untitled buffer or a shell; a diff or hex tab shows its file's),
+/// gone on a move off the tab, a click, a key or the wheel, kept inside the screen; the same text
+/// as Copy Relative Path.
+mod file_info {
+    use std::fs;
+    use std::time::Instant;
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::tab_tip::DELAY;
+    use crate::app::{App, InitialFile};
+    use crate::buffer::Buffer;
+    use crate::diff_view::Pair;
+    use crate::workspace::trust::TrustStore;
+    use crate::workspace::{self, Workspace};
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    fn palette_command(app: &mut App, title: &str) {
+        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.type_text(title);
+        app.press(K::Enter, M::NONE);
+        assert!(app.palette.is_none());
+    }
+
+    /// A workspace with `src/a.rs`, opened in the app, and a file outside it.
+    fn setup() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf, App) {
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let root = base.join("proj");
+        fs::create_dir_all(root.join("src")).unwrap();
+        let file = root.join("src/a.rs");
+        fs::write(&file, "fn main() {}\n").unwrap();
+        let outside = base.join("outside.txt");
+        fs::write(&outside, "x\n").unwrap();
+        let initial = InitialFile {
+            buffer: Buffer::open(&file).unwrap(),
+            goto: None,
+        };
+        let trust = TrustStore::load(base.join("trust.toml"));
+        let mut app = App::new(Workspace::load(root.clone()), trust, Some(initial), true);
+        app.test_start();
+        app.test_plain_whitespace();
+        (dir, root, outside, app)
+    }
+
+    fn draw(app: &mut App, width: u16) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(width, 30)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    fn row(term: &Terminal<TestBackend>, y: u16) -> String {
+        let buf = term.backend().buffer();
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    /// A cell on tab `i` and the bar's row.
+    fn tab_pos(app: &mut App, width: u16, i: usize) -> (u16, u16) {
+        draw(app, width);
+        let g = app.hits.group(app.groups.active).unwrap();
+        (g.tabs.iter().find(|t| t.index == i).unwrap().x0 + 1, g.tab_bar.y)
+    }
+
+    /// Rests the pointer on tab `i` and fires the timer; the screen after a draw.
+    fn rest_on(app: &mut App, width: u16, i: usize) -> Terminal<TestBackend> {
+        let (x, y) = tab_pos(app, width, i);
+        app.mouse(MouseEventKind::Moved, x, y);
+        app.test_tab_tip_tick(Instant::now() + DELAY);
+        draw(app, width)
+    }
+
+    /// The screen row under the tab bar.
+    fn tip_row(term: &Terminal<TestBackend>, app: &App) -> String {
+        row(term, app.hits.group(app.groups.active).unwrap().tab_bar.y + 1)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rested_tab_shows_the_workspace_relative_path_under_it() {
+        let (_d, _root, _o, mut app) = setup();
+        // Before the delay: nothing.
+        let (x, y) = tab_pos(&mut app, 100, 0);
+        app.mouse(MouseEventKind::Moved, x, y);
+        app.test_tab_tip_tick(Instant::now());
+        let term = draw(&mut app, 100);
+        assert!(!tip_row(&term, &app).contains("src/a.rs"));
+        assert!(app.tab_tip.deadline().is_some());
+        // After it: the path on the row under the tab.
+        app.test_tab_tip_tick(Instant::now() + DELAY);
+        let term = draw(&mut app, 100);
+        assert!(tip_row(&term, &app).contains(" src/a.rs "), "{}", tip_row(&term, &app));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tooltip_text_is_what_copy_relative_path_copies() {
+        let (_d, _root, _o, mut app) = setup();
+        let term = rest_on(&mut app, 100, 0);
+        assert!(tip_row(&term, &app).contains("src/a.rs"));
+        palette_command(&mut app, "File: Copy Relative Path of Active File");
+        assert_eq!(app.message.as_ref().unwrap().text, "Copied path: src/a.rs");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_outside_the_workspace_shows_its_full_path() {
+        let (_d, _root, outside, mut app) = setup();
+        app.test_open_file(outside.clone());
+        assert!(app.settle(|a| a.group().tabs.len() == 2).await);
+        let term = rest_on(&mut app, 200, 1);
+        assert!(tip_row(&term, &app).contains(&outside.display().to_string()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn untitled_buffer_shows_no_tooltip() {
+        let (_d, _root, _o, mut app) = setup();
+        palette_command(&mut app, "File: New Untitled File");
+        assert_eq!(app.group().tabs.len(), 2);
+        let _ = rest_on(&mut app, 100, 1);
+        assert!(app.tab_tip.shown.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn shell_tab_shows_no_tooltip() {
+        let (_d, _root, _o, mut app) = setup();
+        app.new_shell_in_editor();
+        assert_eq!(app.group().tabs.len(), 2);
+        let _ = rest_on(&mut app, 100, 1);
+        assert!(app.tab_tip.shown.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn diff_and_hex_tabs_show_their_files_path() {
+        let (_d, root, _o, mut app) = setup();
+        app.open_diff(root.join("src/a.rs"), Pair::SAVED);
+        assert!(app.group().active_diff().is_some());
+        let i = app.group().active;
+        let term = rest_on(&mut app, 100, i);
+        assert!(tip_row(&term, &app).contains("src/a.rs"));
+
+        app.mouse(MouseEventKind::Moved, 90, 20);
+        app.groups.active_group_mut().active = 0;
+        palette_command(&mut app, "View: Reopen as Hex");
+        assert!(app.settle(|a| a.group().active_hex().is_some()).await);
+        let i = app.group().active;
+        let term = rest_on(&mut app, 100, i);
+        assert!(tip_row(&term, &app).contains("src/a.rs"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tooltip_goes_on_a_move_off_the_tab_a_click_a_key_or_the_wheel() {
+        let (_d, _root, _o, mut app) = setup();
+        let shown = |app: &mut App| {
+            let _ = rest_on(app, 100, 0);
+            assert!(app.tab_tip.shown.is_some());
+        };
+        shown(&mut app);
+        app.mouse(MouseEventKind::Moved, 60, 15);
+        assert!(app.tab_tip.shown.is_none());
+
+        shown(&mut app);
+        let (x, y) = tab_pos(&mut app, 100, 0);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+        assert!(app.tab_tip.shown.is_none());
+        app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+
+        shown(&mut app);
+        app.press(K::Char('a'), M::NONE);
+        assert!(app.tab_tip.shown.is_none());
+
+        shown(&mut app);
+        app.mouse(MouseEventKind::ScrollDown, x, y);
+        assert!(app.tab_tip.shown.is_none());
+        assert!(app.tab_tip.deadline().is_none());
+
+        // A move off before the delay cancels the timer.
+        app.mouse(MouseEventKind::Moved, x, y);
+        assert!(app.tab_tip.deadline().is_some());
+        app.mouse(MouseEventKind::Moved, 60, 15);
+        assert!(app.tab_tip.deadline().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tooltip_stays_on_screen_near_the_right_edge() {
+        let (_d, root, _o, mut app) = setup();
+        let long = root.join("src/a_rather_long_file_name.rs");
+        fs::write(&long, "x").unwrap();
+        app.test_open_file(long.clone());
+        assert!(app.settle(|a| a.group().tabs.len() == 2).await);
+        // A narrow screen: the second tab starts far right, the tip is moved left to fit.
+        let width = 44;
+        let text = "src/a_rather_long_file_name.rs";
+        let (x, _) = tab_pos(&mut app, width, 1);
+        assert!(
+            x - 1 + text.len() as u16 + 2 > width,
+            "the tab must start too far right to fit"
+        );
+        let term = rest_on(&mut app, width, 1);
+        let line = tip_row(&term, &app);
+        // Moved left so its right edge is the screen's: the whole path, then the padding.
+        assert!(line.ends_with(&format!(" {text} ")), "{line:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_event_loops_timer_shows_the_tooltip_after_the_delay_not_before() {
+        let (_d, _root, _o, mut app) = setup();
+        let (x, y) = tab_pos(&mut app, 100, 0);
+        let start = Instant::now();
+        app.mouse(MouseEventKind::Moved, x, y);
+        // `settle` sleeps on `next_timer` and runs `on_timer`, as `run` does.
+        assert!(app.settle(|a| a.tab_tip.shown.is_some()).await);
+        assert!(start.elapsed() >= DELAY, "shown after {:?}", start.elapsed());
+        let term = draw(&mut app, 100);
+        assert!(tip_row(&term, &app).contains(" src/a.rs "));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn moves_on_the_same_tab_keep_the_tooltip_another_tab_restarts_it() {
+        let (_d, _root, outside, mut app) = setup();
+        app.test_open_file(outside.clone());
+        assert!(app.settle(|a| a.group().tabs.len() == 2).await);
+        // Moving within the resting tab keeps the deadline.
+        let (x, y) = tab_pos(&mut app, 200, 0);
+        app.mouse(MouseEventKind::Moved, x, y);
+        let due = app.tab_tip.deadline().unwrap();
+        app.mouse(MouseEventKind::Moved, x + 1, y);
+        assert_eq!(app.tab_tip.deadline(), Some(due));
+        // Shown, then moves within the tab keep it.
+        app.test_tab_tip_tick(due);
+        assert!(app.tab_tip.shown.is_some());
+        app.mouse(MouseEventKind::Moved, x, y);
+        assert!(app.tab_tip.shown.is_some());
+        assert!(app.tab_tip.deadline().is_none());
+        // Another tab: the old tip goes, a new rest starts, and it shows that tab's path.
+        let (x1, _) = tab_pos(&mut app, 200, 1);
+        app.mouse(MouseEventKind::Moved, x1, y);
+        assert!(app.tab_tip.shown.is_none());
+        let due = app.tab_tip.deadline().unwrap();
+        app.test_tab_tip_tick(due);
+        let term = draw(&mut app, 200);
+        assert!(tip_row(&term, &app).contains(&outside.display().to_string()));
+    }
+}

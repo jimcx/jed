@@ -44,6 +44,7 @@ mod shell;
 mod side;
 mod syntax;
 mod tab_drag;
+pub(crate) mod tab_tip;
 mod tasks;
 mod tools;
 mod workspace_search;
@@ -111,6 +112,8 @@ enum Timer {
     SearchDebounce,
     /// The mouse has rested on text for `hover::DELAY`.
     Hover,
+    /// The mouse has rested on a tab for `tab_tip::DELAY`.
+    TabTip,
     /// A word char was typed `completion::QUICK_DELAY` ago.
     Completion,
     /// The cursor rested `code_action::BULB_DELAY`: the lightbulb's request.
@@ -513,6 +516,8 @@ pub struct App {
     requests: HashMap<(crate::lsp::ServerId, i64), lsp::Pending>,
     /// The hover popup and the mouse's resting timer.
     pub hover: crate::hover::HoverState,
+    /// The tab tooltip (the file's path) and its resting timer.
+    pub tab_tip: tab_tip::TabTip,
     /// The completion list, its pending request and the quick-suggestion timer.
     pub completion: crate::completion::Completion,
     /// The code action list, the lightbulb's rest and cache, the hover's quick fixes.
@@ -695,6 +700,7 @@ impl App {
             servers_dirty: true,
             requests: HashMap::new(),
             hover: Default::default(),
+            tab_tip: Default::default(),
             completion: Default::default(),
             code_actions: Default::default(),
             semantic: Default::default(),
@@ -912,6 +918,10 @@ impl App {
             .hover
             .deadline()
             .map(|d| (tokio::time::Instant::from_std(d), Timer::Hover));
+        let tab_tip = self
+            .tab_tip
+            .deadline()
+            .map(|d| (tokio::time::Instant::from_std(d), Timer::TabTip));
         let completion = self
             .completion
             .deadline()
@@ -952,7 +962,8 @@ impl App {
             .files_poll
             .map(|d| (tokio::time::Instant::from_std(d), Timer::Files));
         let next = [
-            fs, search, hover, completion, bulb, semantic, quick_diff, diff, blame, backup, git_status, logs, files,
+            fs, search, hover, tab_tip, completion, bulb, semantic, quick_diff, diff, blame, backup, git_status, logs,
+            files,
         ]
         .into_iter()
         .flatten()
@@ -974,6 +985,7 @@ impl App {
             Timer::FsChanges => self.flush_fs_changes(),
             Timer::SearchDebounce => self.search_tick(Instant::now()),
             Timer::Hover => self.hover_tick(Instant::now()),
+            Timer::TabTip => self.tab_tip_tick(Instant::now()),
             Timer::Completion => self.completion_tick(Instant::now()),
             Timer::Bulb => self.bulb_tick(Instant::now()),
             Timer::Semantic => self.semantic_tick(Instant::now()),
@@ -1158,6 +1170,7 @@ impl App {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 tracing::trace!(target: "input", ?key);
                 self.message = None;
+                self.clear_tab_tip();
                 // Any key closes the hover popup; Esc in the editor does only that.
                 let popup = self.hover.popup.is_some();
                 if !matches!(key.code, KeyCode::Modifier(_)) {
@@ -1554,10 +1567,7 @@ impl App {
             return;
         };
         let text = if relative {
-            path.strip_prefix(&self.workspace.root)
-                .unwrap_or(&path)
-                .display()
-                .to_string()
+            tab_tip::path_text(&self.workspace.root, &path)
         } else {
             path.display().to_string()
         };
@@ -1882,6 +1892,11 @@ impl App {
     /// Fires the hover resting timer as the event loop would at `now` (no sleeping in tests).
     pub fn test_hover_tick(&mut self, now: Instant) {
         self.hover_tick(now);
+    }
+
+    /// Fires the tab tooltip's resting timer as the event loop would at `now`.
+    pub fn test_tab_tip_tick(&mut self, now: Instant) {
+        self.tab_tip_tick(now);
     }
 
     /// Fires the backup timer as the event loop would `after` from now (after the turn's
