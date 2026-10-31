@@ -214,7 +214,11 @@ async fn clear_scrollback_setting_still_caps_after_a_clear() {
         .unwrap()
         .run
         .write(format!("{COUNT_TO_200}; echo done2\n").as_bytes());
-    assert!(app.settle(|a| shell_text(a).contains("done2")).await);
+    // On a line of its own: the typed command line echoes "done2" before any output exists.
+    assert!(
+        app.settle(|a| shell_text(a).lines().any(|l| l.trim_end() == "done2"))
+            .await
+    );
     assert_eq!(shell_extent(&app).1, 50, "capped at the setting, not grown or shrunk");
 }
 

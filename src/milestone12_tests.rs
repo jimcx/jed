@@ -88,10 +88,27 @@ fn t(name: &str, command: &str, source: Source) -> (String, String, Source) {
     (name.into(), command.into(), source)
 }
 
-/// Whether any process is in group `pgid`.
-fn group_alive(pgid: u32) -> bool {
+/// Whether any live process is in group `pgid`. Zombies don't count: where nothing reaps orphans
+/// (a container whose pid 1 is not an init) a killed process stays a zombie, which `kill(-pgid, 0)`
+/// still sees.
+pub(crate) fn group_alive(pgid: u32) -> bool {
     // SAFETY: signal 0 only checks for existence.
-    unsafe { libc::kill(-(pgid as i32), 0) == 0 }
+    if unsafe { libc::kill(-(pgid as i32), 0) } != 0 {
+        return false;
+    }
+    let Ok(procs) = std::fs::read_dir("/proc") else {
+        return true;
+    };
+    procs.flatten().any(|e| {
+        // /proc/<pid>/stat: `pid (comm) state ppid pgrp ...`; comm may hold spaces and parens.
+        let Ok(stat) = std::fs::read_to_string(e.path().join("stat")) else {
+            return false;
+        };
+        let mut rest = stat.rsplit_once(')').map_or("", |(_, r)| r).split_whitespace();
+        let state = rest.next();
+        let pgrp = rest.nth(1).and_then(|g| g.parse::<u32>().ok());
+        pgrp == Some(pgid) && state != Some("Z")
+    })
 }
 
 /// Settles until run `id` ended and the app wrote its end note below its output (it handled

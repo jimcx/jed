@@ -219,8 +219,7 @@ mod tests {
 
     /// Whether any process is in group `pgid`.
     fn group_alive(pgid: u32) -> bool {
-        // SAFETY: signal 0 only checks for existence.
-        unsafe { libc::kill(-(pgid as i32), 0) == 0 }
+        crate::milestone12_tests::group_alive(pgid)
     }
 
     #[tokio::test(flavor = "multi_thread")]

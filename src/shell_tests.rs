@@ -795,8 +795,7 @@ pub(crate) fn scrollback(app: &App) -> usize {
 
 /// The shell process group is gone (`kill(-pgid, 0)` fails).
 fn group_gone(pid: u32) -> bool {
-    // SAFETY: signal 0 checks for the group's existence and sends nothing.
-    unsafe { libc::kill(-(pid as i32), 0) != 0 }
+    !crate::milestone12_tests::group_alive(pid)
 }
 
 /// An app on `root` with a listening socket in a short temp subdir (`sun_path` is ~104 bytes on
