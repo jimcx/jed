@@ -11152,6 +11152,54 @@ mod open_workspace_settings {
         );
     }
 
+    /// Cmd+, (Ctrl+, on Linux) creates `settings.toml` in the config dir from the template.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cmd_comma_creates_and_opens_the_user_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, ws) = open_app(&dir);
+        let config_dir = dir.path().join("cfg");
+        app.config_dir = config_dir.clone();
+        let path = config_dir.join(crate::config::settings::FILE_NAME);
+        app.press(K::Char(','), cmd());
+        assert!(app.settle(opened(path.clone())).await);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            crate::config::settings::TEMPLATE
+        );
+        assert!(!ws.exists(), "Cmd+, is the user settings, not the workspace's");
+    }
+
+    /// Both commands are in the cheat sheet with their keys.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_cheat_sheet_lists_both_commands_with_keys() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _) = open_app(&dir);
+        app.press(K::F(1), M::SHIFT);
+        assert!(app.cheat_sheet.is_some());
+        let mut term = Terminal::new(TestBackend::new(200, 60)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+        let screen: Vec<String> = (0..60)
+            .map(|y| (0..200).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect();
+        let (user, ws) = if cfg!(target_os = "macos") {
+            ("Cmd+,", "Cmd+Alt+,")
+        } else {
+            ("Ctrl+,", "Ctrl+Alt+,")
+        };
+        for (cmd, key) in [(Command::OpenUserSettings, user), (Command::OpenWorkspaceSettings, ws)] {
+            let title = crate::cheatsheet::short_title(cmd);
+            let line = screen
+                .iter()
+                .find(|l| l.contains(&title))
+                .unwrap_or_else(|| panic!("{title}: {screen:#?}"));
+            let at = line.find(&title).unwrap();
+            assert!(line[..at].trim_end().ends_with(key), "{line}");
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn opens_an_existing_workspace_file_as_it_is() {
         let dir = tempfile::tempdir().unwrap();

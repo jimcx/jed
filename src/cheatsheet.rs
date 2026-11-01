@@ -119,6 +119,8 @@ fn groups() -> Vec<(&'static str, Vec<Command>)> {
                 Command::QuickOpen,
                 Command::GoToLine,
                 Command::ShowCommands,
+                Command::OpenUserSettings,
+                Command::OpenWorkspaceSettings,
                 Command::NavBack,
                 Command::NavForward,
                 Command::RevealDefinition,
@@ -288,7 +290,7 @@ fn columns(sections: &[Section], count: usize) -> Vec<Vec<Line<'_>>> {
 
 /// A command's title, without the palette's `Cursor: ` / `Selection: ` category (`Cursor: Move
 /// Left` → `Move Left`) in the sections that say it already.
-fn short_title(cmd: Command) -> String {
+pub(crate) fn short_title(cmd: Command) -> String {
     let title = cmd.title();
     match title.split_once(": ") {
         Some(("Cursor" | "Selection", rest)) => rest.to_string(),
@@ -325,6 +327,14 @@ mod tests {
             assert_eq!(key(Command::QuickOpen), Some(if mac { "Cmd+P" } else { "Ctrl+P" }));
             assert_eq!(key(Command::GoToLine), Some("Ctrl+G"));
             assert_eq!(key(Command::CheatSheet), Some("Shift+F1"));
+            assert_eq!(
+                key(Command::OpenUserSettings),
+                Some(if mac { "Cmd+," } else { "Ctrl+," })
+            );
+            assert_eq!(
+                key(Command::OpenWorkspaceSettings),
+                Some(if mac { "Cmd+Alt+," } else { "Ctrl+Alt+," })
+            );
             assert_eq!(key(Command::FocusGroup(8)), Some(if mac { "Cmd+8" } else { "Ctrl+8" }));
             assert_eq!(key(Command::FocusNextGroup), Some("Ctrl+Shift+."));
             assert_eq!(key(Command::FocusPreviousGroup), Some("Ctrl+Shift+,"));
