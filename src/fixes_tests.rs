@@ -1285,7 +1285,12 @@ async fn list_at(app: &mut App, at: usize, secs: u64) {
     while t.elapsed() < Duration::from_secs(secs) {
         put_cursor(app, at);
         quick_fix(app);
-        if settle_for(app, 5, |a| a.code_actions.popup.is_some()).await {
+        // `settle` itself waits up to 30 s, so cut each ask short: a server still loading answers
+        // "content modified" (dropped quietly) and only a new ask gets a list.
+        let asked = Instant::now();
+        app.settle(|a| a.code_actions.popup.is_some() || asked.elapsed() > Duration::from_secs(5))
+            .await;
+        if app.code_actions.popup.is_some() {
             return;
         }
     }

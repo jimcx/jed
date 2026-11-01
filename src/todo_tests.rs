@@ -11895,7 +11895,12 @@ mod title_bar {
         let term = draw(&mut app);
         let top = row(&term, 0);
         assert!(top.starts_with(" jed "), "{top:?}");
-        assert!(top.contains(&app.workspace.root.file_name().unwrap().to_string_lossy().to_string()));
+        // The row is cut to fit 80 columns (a long macOS temp path loses its tail), so check the text itself.
+        assert!(
+            app.identity
+                .title_text()
+                .contains(&app.workspace.root.file_name().unwrap().to_string_lossy().to_string())
+        );
         assert!(
             top.ends_with(&format!(
                 " S   {} ",
