@@ -837,6 +837,14 @@ fn screen_has(app: &App, needle: &str) -> bool {
 }
 
 /// Every shell tab's screen text (for a failing test's message).
+/// For the `FLAKE` messages: the machine's load (`/proc/loadavg`; empty where there is none).
+fn loadavg() -> String {
+    std::fs::read_to_string("/proc/loadavg")
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
 fn shell_text(app: &App) -> String {
     app.groups
         .shell_tabs()
@@ -1568,15 +1576,23 @@ async fn shell_jed_command_opens_the_file_in_this_jed() {
     let opened = app
         .settle(|a| a.active_buffer().is_some_and(|b| b.name() == "other.txt"))
         .await;
+    // FLAKE: 2026-11-01, failed once in a full run under load (several worktrees' tests at
+    // once); passed alone. Which assertion failed wasn't recorded: each now says so.
     assert!(
         opened,
-        "the file opened in this jed, not another:\n{}",
+        "FLAKE shell_jed_command_opens_the_file_in_this_jed: the file opened in this jed, not another; loadavg {}:\n{}",
+        loadavg(),
         shell_text(&app)
     );
     assert_eq!(app.active_buffer().unwrap().path, other);
     assert_eq!(app.groups.len(), 1, "the same window: no second group");
     let finished = app.settle(|a| screen_has(a, "JED_OPENED=0")).await;
-    assert!(finished, "the command came back from this jed:\n{}", shell_text(&app));
+    assert!(
+        finished,
+        "FLAKE shell_jed_command_opens_the_file_in_this_jed: the command came back from this jed; loadavg {}:\n{}",
+        loadavg(),
+        shell_text(&app)
+    );
     assert_eq!(app.groups.shell_tabs().count(), 1, "the shell tab stays");
     quit_shells(&mut app).await;
 }
@@ -1613,9 +1629,12 @@ async fn shell_git_commit_opens_its_message_here() {
     let opened = app
         .settle(|a| a.active_buffer().is_some_and(|b| b.name() == "COMMIT_EDITMSG"))
         .await;
+    // FLAKE: 2026-11-01, failed once in a full run under load (several worktrees' tests at
+    // once); passed alone. Which assertion failed wasn't recorded: each now says so.
     assert!(
         opened,
-        "git's editor opened COMMIT_EDITMSG in this jed:\n{}",
+        "FLAKE shell_git_commit_opens_its_message_here: git's editor opened COMMIT_EDITMSG in this jed; loadavg {}:\n{}",
+        loadavg(),
         shell_text(&app)
     );
     assert_eq!(app.active_buffer().unwrap().syntax.language(), Language::GitCommit);
@@ -1624,11 +1643,17 @@ async fn shell_git_commit_opens_its_message_here() {
     app.press(KeyCode::Char('s'), cmd());
     assert!(
         app.settle(|a| a.active_buffer().is_some_and(|b| !b.is_dirty())).await,
-        "the message saved"
+        "FLAKE shell_git_commit_opens_its_message_here: the message saved; loadavg {}",
+        loadavg()
     );
     app.press(KeyCode::Char('w'), cmd());
     let committed = app.settle(|a| screen_has(a, "COMMITTED=0")).await;
-    assert!(committed, "the waiting editor let git commit:\n{}", shell_text(&app));
+    assert!(
+        committed,
+        "FLAKE shell_git_commit_opens_its_message_here: the waiting editor let git commit; loadavg {}:\n{}",
+        loadavg(),
+        shell_text(&app)
+    );
     assert_eq!(
         git_in(&root, &["log", "-1", "--format=%s"]).as_deref(),
         Some(message),

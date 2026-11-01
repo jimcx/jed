@@ -11368,3 +11368,99 @@ mod settings_schema {
         assert_eq!(app.active_buffer().unwrap().config_file, Some(ConfigFile::Workspace));
     }
 }
+
+/// settings-e: the settings highlighting of `settings.toml` and `.workspace` (unknown keys and bad
+/// values `invalid`), and none for any other TOML file.
+mod settings_highlight {
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+
+    const TEXT: &str = "bogus = 1\n[settings]\ntab_width = \"wide\"\ninsert_spaces = true\n";
+
+    fn make_app(dir: &tempfile::TempDir) -> (App, std::path::PathBuf, std::path::PathBuf) {
+        let root = crate::workspace::normalize(dir.path());
+        let config_dir = root.join("cfg");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let path = root.join("Cargo.toml");
+        std::fs::write(&path, TEXT).unwrap();
+        let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&path).unwrap());
+        app.config_dir = config_dir.clone();
+        app.test_start();
+        (app, root, config_dir)
+    }
+
+    async fn open(app: &mut App, path: &std::path::Path) {
+        app.test_open_file(path.to_path_buf());
+        let want = path.to_path_buf();
+        assert!(
+            app.settle(move |a| a.active_buffer().is_some_and(|b| b.path == want))
+                .await
+        );
+        assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
+    }
+
+    /// The foreground of the first `n` cells of buffer line `line`.
+    fn fgs(app: &mut App, line: u16, n: u16) -> Vec<Color> {
+        let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        let text = app.hits.groups[0].text;
+        (0..n)
+            .map(|x| term.backend().buffer()[(text.x + x, text.y + line)].fg)
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn config_files_mark_what_the_schema_rejects() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, root, cfg) = make_app(&dir);
+        let invalid = app.theme.get("invalid").fg.unwrap();
+        let property = app.theme.get("property").fg.unwrap();
+        // Cargo.toml: plain TOML colours.
+        assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
+        assert_eq!(fgs(&mut app, 0, 5), vec![property; 5]);
+        assert_ne!(fgs(&mut app, 2, 20)[12], invalid);
+        for path in [cfg.join("settings.toml"), root.join(".workspace")] {
+            std::fs::write(&path, TEXT).unwrap();
+            open(&mut app, &path).await;
+            assert_eq!(fgs(&mut app, 0, 5), vec![invalid; 5], "{path:?}: the unknown key");
+            let value = fgs(&mut app, 2, 20);
+            assert_eq!(value[0], property, "a known key");
+            assert_eq!(value[12], invalid, "the bad value");
+            assert!(!fgs(&mut app, 1, 10).contains(&invalid), "a known table header");
+            let valid = fgs(&mut app, 3, 20);
+            assert_eq!(valid[0], property, "a known key");
+            assert!(!valid[..20].contains(&invalid), "a valid row: {valid:?}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn save_as_recolours() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, root, _cfg) = make_app(&dir);
+        let invalid = app.theme.get("invalid").fg.unwrap();
+        assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
+        assert_ne!(fgs(&mut app, 0, 1)[0], invalid);
+        app.test_execute(crate::command::Command::SaveAs);
+        app.press(
+            K::Char('a'),
+            if cfg!(target_os = "macos") {
+                M::SUPER
+            } else {
+                M::CONTROL
+            },
+        );
+        app.type_text(".workspace");
+        app.press(K::Enter, M::NONE);
+        let want = root.join(".workspace");
+        assert!(
+            app.settle(move |a| a.active_buffer().is_some_and(|b| b.path == want))
+                .await
+        );
+        assert!(app.settle(|a| a.active_buffer().unwrap().syntax.tree().is_some()).await);
+        assert_eq!(fgs(&mut app, 0, 1)[0], invalid);
+    }
+}

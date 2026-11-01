@@ -257,6 +257,7 @@ impl App {
     /// selection at `goto`; the caller puts it in a tab.
     pub(super) fn register_buffer(&mut self, mut buffer: Buffer, goto: Option<Goto>) -> (BufferId, View) {
         buffer.config_file = self.config_file_of(&buffer);
+        buffer.syntax.set_config_file(buffer.config_file);
         buffer.syntax.set_language(self.detect_language(&buffer));
         self.lsp.load_diagnostics(&mut buffer);
         let mut view = View::new();
@@ -608,6 +609,7 @@ impl App {
         let file = self.buffers.get(id).and_then(|b| self.config_file_of(b));
         if let Some(buf) = self.buffers.get_mut(id) {
             buf.config_file = file;
+            buf.syntax.set_config_file(file);
             buf.quick_diff.reset();
             buf.blame.reset();
             buf.diagnostics.clear_all();

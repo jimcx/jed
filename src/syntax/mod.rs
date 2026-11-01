@@ -12,6 +12,7 @@
 pub mod authoring;
 pub mod build;
 mod config;
+mod config_pass;
 mod highlight;
 mod language;
 pub mod plugin;
@@ -146,6 +147,13 @@ pub struct Parsed {
 impl Syntax {
     pub fn language(&self) -> Language {
         self.language
+    }
+
+    /// Which of jed's config files the buffer is (`Buffer::config_file`): the TOML highlighting
+    /// then also marks what the schema rejects as `invalid` (`config_pass`). A change drops the
+    /// cached spans.
+    pub fn set_config_file(&mut self, file: Option<crate::config::schema::ConfigFile>) {
+        self.highlights.set_config_file(file);
     }
 
     /// Switches language (dropping the tree); the next `update` parses with the new grammar.

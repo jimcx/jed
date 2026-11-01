@@ -23,6 +23,7 @@ use tree_sitter::{Node, Query, QueryCursor, StreamingIterator, Tree};
 use super::Language;
 use crate::buffer::change::{Assoc, ChangeSet};
 use crate::buffer::pos::{self, ByteIdx};
+use crate::config::schema::ConfigFile;
 
 /// Theme keys a capture can map to (`Theme::dark_plus` has each). A capture's dotted name is
 /// looked up, then its prefixes (`function.method.builtin` → `function.method` → `function`),
@@ -206,6 +207,19 @@ pub fn warm(language: Language) {
 /// (`(identifier) @variable` comes first, the more specific patterns after it; C++'s and jed's
 /// additions come after C's).
 pub fn compute(language: Language, tree: &Tree, rope: &Rope, start: ByteIdx, end: ByteIdx) -> Vec<Span> {
+    compute_in(language, None, tree, rope, start, end)
+}
+
+/// `compute` for a buffer that may be one of jed's config files: TOML then also gets the schema's
+/// `invalid` marks (`config_pass`).
+pub fn compute_in(
+    language: Language,
+    config: Option<ConfigFile>,
+    tree: &Tree,
+    rope: &Rope,
+    start: ByteIdx,
+    end: ByteIdx,
+) -> Vec<Span> {
     let Some(q) = query(language) else {
         return Vec::new();
     };
@@ -232,12 +246,22 @@ pub fn compute(language: Language, tree: &Tree, rope: &Rope, start: ByteIdx, end
     // Tree nodes nest or are disjoint, so length order is nesting order.
     captures.sort_unstable_by_key(|&(s, e, p, _)| (Reverse(e - s), p));
     const NONE: u8 = u8::MAX;
+    let key = |k: &str| highlight_for(k).expect("key in KEYS").0;
     let mut paint = vec![NONE; end.0 - start.0];
     for (s, e, _, h) in captures {
         paint[s.max(start.0) - start.0..e.min(end.0) - start.0].fill(h.0);
     }
     if language == Language::GitCommit {
         git_commit_lines(tree, rope, start, end, &mut paint);
+    }
+    if let (Language::Toml, Some(file)) = (language, config) {
+        let invalid = key("invalid");
+        for (from, to) in super::config_pass::invalid_ranges(file, tree, rope, start.0, end.0) {
+            let (from, to) = (from.max(start.0), to.min(end.0));
+            if from < to {
+                paint[from - start.0..to - start.0].fill(invalid);
+            }
+        }
     }
     if language == Language::Ini {
         ini_lines(rope, start, end, &mut paint);
@@ -502,6 +526,8 @@ struct Region {
 pub struct Highlights {
     /// Oldest first.
     regions: Vec<Region>,
+    /// Which config file the buffer is (TOML gets the schema pass).
+    config: Option<ConfigFile>,
     /// How many times `compute` ran (tests check the cache).
     #[cfg(test)]
     pub computed: usize,
@@ -511,6 +537,14 @@ impl Highlights {
     /// Forgets every span (the language changed, or the text went over the size limit).
     pub fn clear(&mut self) {
         self.regions.clear();
+    }
+
+    /// A new config-file kind (Save As, rename) recolours: the cache goes.
+    pub fn set_config_file(&mut self, file: Option<ConfigFile>) {
+        if file != self.config {
+            self.config = file;
+            self.regions.clear();
+        }
     }
 
     /// Follows a change set the buffer applied, so the kept spans stay on the same text until the
@@ -565,7 +599,7 @@ impl Highlights {
                         let end = pos::line_bounds(rope, to - 1)
                             .2
                             .min(floor(rope, want.1.0 + MARGIN_BYTES));
-                        let spans = compute(language, tree, rope, start, end);
+                        let spans = compute_in(language, self.config, tree, rope, start, end);
                         #[cfg(test)]
                         {
                             self.computed += 1;
