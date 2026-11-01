@@ -224,13 +224,16 @@ pub enum Context {
     /// The editor has the focus and its active tab is a hex view; bindings not found here come
     /// from `Editor` (movement, selection, copy, Tab).
     Hex,
+    /// The editor has the focus and its active tab is a Markdown preview; bindings not found
+    /// here come from `Editor` (movement, selection, copy).
+    Markdown,
     /// The editor has the focus and its active tab is a shell: keys bound to nothing (here or
     /// globally) go to the shell's terminal.
     Shell,
 }
 
 impl Context {
-    const ALL: [(Context, &'static str); 20] = [
+    const ALL: [(Context, &'static str); 21] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
@@ -250,6 +253,7 @@ impl Context {
         (Context::Commit, "commit"),
         (Context::Task, "task"),
         (Context::Hex, "hex"),
+        (Context::Markdown, "markdown"),
         (Context::Shell, "shell"),
     ];
 
@@ -279,6 +283,7 @@ impl Context {
             Context::Commit => "Commit",
             Context::Task => "Task",
             Context::Hex => "Hex View",
+            Context::Markdown => "Markdown Preview",
             Context::Shell => "Terminal",
         }
     }
@@ -302,9 +307,12 @@ impl Context {
         match self {
             Context::Replace => Some(Context::Find),
             Context::SearchResults => Some(Context::Search),
-            Context::Suggest | Context::CodeActions | Context::Diff | Context::Commit | Context::Hex => {
-                Some(Context::Editor)
-            }
+            Context::Suggest
+            | Context::CodeActions
+            | Context::Diff
+            | Context::Commit
+            | Context::Hex
+            | Context::Markdown => Some(Context::Editor),
             _ => None,
         }
     }
@@ -755,6 +763,8 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         // Ctrl on macOS too, as in VS Code.
         (KeyCode::Char(' '), ctrl, Command::TriggerSuggest),
         (KeyCode::Char('.'), cmd, Command::QuickFix),
+        // VS Code's `markdown.showPreviewToSide`.
+        (KeyCode::Char('v'), cmd | alt, Command::OpenMarkdownPreview),
         // VS Code's `workbench.action.editor.nextChange` / `previousChange`.
         (KeyCode::F(5), alt, Command::NextChange),
         (KeyCode::F(5), alt | shift, Command::PreviousChange),
@@ -1336,6 +1346,27 @@ mod tests {
             linux.lookup(&key(KeyCode::Char('s'), KeyModifiers::CONTROL), ed),
             Some(Command::Save)
         );
+    }
+
+    #[test]
+    fn markdown_preview_key_on_both_platforms() {
+        let mac = Keymap::default_for(Platform::MacOs);
+        let linux = Keymap::default_for(Platform::Linux);
+        let (sup_alt, ctrl_alt) = (
+            KeyModifiers::SUPER | KeyModifiers::ALT,
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        for ctx in [Context::Editor, Context::Markdown] {
+            assert_eq!(
+                mac.lookup(&key(KeyCode::Char('v'), sup_alt), ctx),
+                Some(Command::OpenMarkdownPreview)
+            );
+            assert_eq!(
+                linux.lookup(&key(KeyCode::Char('v'), ctrl_alt), ctx),
+                Some(Command::OpenMarkdownPreview)
+            );
+        }
+        assert_eq!(Context::parse("markdown"), Some(Context::Markdown));
     }
 
     #[test]

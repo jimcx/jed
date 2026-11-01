@@ -98,6 +98,13 @@ pub fn render(
                     mark: None,
                 }
             }
+            // A Markdown preview: `Preview name`, never dirty.
+            Tab::Markdown(m) => Label {
+                name: m.title(),
+                dirty: false,
+                deleted: false,
+                mark: None,
+            },
             // A shell tab: the command that runs (or the shell) and its state glyph, never dirty.
             Tab::Shell(s) => Label {
                 name: s.title.clone(),

@@ -27,6 +27,7 @@ mod ipc;
 mod keys;
 mod locations;
 mod lsp;
+mod markdown;
 mod mode;
 mod mouse;
 mod navigation;
@@ -1154,6 +1155,7 @@ impl App {
             Focus::Editor if self.completion_shown() => Context::Suggest,
             Focus::Editor if self.group().active_diff().is_some() => Context::Diff,
             Focus::Editor if self.group().active_hex().is_some() => Context::Hex,
+            Focus::Editor if self.group().active_markdown().is_some() => Context::Markdown,
             Focus::Editor if self.active_commit().is_some() => Context::Commit,
             Focus::Editor if self.group().active_shell().is_some() => Context::Shell,
             Focus::Terminal => Context::Shell,
@@ -1526,6 +1528,7 @@ impl App {
             Command::ConvertIndentationToTabs => self.convert_indentation(false),
             Command::ReopenAsHex => self.reopen_as_hex(),
             Command::ReopenAsText => self.reopen_as_text(),
+            Command::OpenMarkdownPreview => self.open_markdown_preview(),
             Command::NewUntitledFile => self.new_untitled_file(),
             Command::ChangeLanguageMode => self.change_language_mode(),
             Command::ToggleBlame => self.toggle_blame(),
@@ -1547,6 +1550,7 @@ impl App {
             // A diff or hex tab: its own movement keys; other editor commands do nothing.
             _ if self.diff_command(cmd) => {}
             _ if self.hex_command(cmd) => {}
+            _ if self.markdown_command(cmd) => {}
             _ => {
                 if edit::is_edit(cmd) && !self.active_writable() {
                     return;
@@ -1565,7 +1569,7 @@ impl App {
         if self.diff_copy(cut) {
             return;
         }
-        if !cut && self.hex_copy() {
+        if !cut && (self.hex_copy() || self.markdown_copy()) {
             return;
         }
         if !cut && self.terminal_copy() {

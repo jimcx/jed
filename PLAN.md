@@ -281,6 +281,7 @@ The VS Code behaviour, especially Cmd+D and Cmd+Shift+L, is a must-have.
 | Add selection at next match | Cmd+D | Ctrl+D |
 | Select all matches | Cmd+Shift+L | Ctrl+Shift+L |
 | Skip this match, go to next | Cmd+Alt+D | Ctrl+Alt+D |
+| Markdown preview to the side | Cmd+Alt+V | Ctrl+Alt+V |
 | Undo last cursor change | Cmd+U | Ctrl+U |
 | Add cursor above / below | Cmd+Alt+Up/Down | Ctrl+Alt+Up/Down (_clashes with GNOME workspace switch_) |
 | Cursor at each selected line's end | Shift+Alt+I | Shift+Alt+I |

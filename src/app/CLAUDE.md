@@ -38,6 +38,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `diff_view.rs` — diff tabs (`app.diffs`): the caret's keys, mouse (`Drag::Diff`: click, Shift+click, drag, double / triple click) and Cmd+C / Cmd+X (`diff_copy`), `open_diff(path, Pair)`, `sync_diffs`, `diff_command`, stage / revert hunks (`stage_path` asks before staging a file whose open buffer still has markers)
 - `diff_edit.rs` — editing in diff tabs: a typed char / edit command / paste / cut on an editable side runs `edit::run` on a scratch `View` at the caret's bytes of the file's buffer (refused when the diff's lines aren't the buffer's yet, or a side / buffer is read-only); a file not open opens in the background first (`DiffViews::pending`, applied in `opened`)
 - `hex.rs` — hex tabs: binary files' load (`Loaded::Binary`), one tab per path, Reopen as Hex / Text, `hex_command` / `hex_copy`, Go to Offset, `hex_mouse`
+- `markdown.rs` — Markdown preview tabs (`Tab::Markdown`): "Markdown: Open Preview to the Side" (Cmd+Alt+V), `markdown_command` / `markdown_copy` / `markdown_mouse`
 - `commit_tabs.rs` — commit tabs: `sync_commit_tabs`, `fit_commit_tabs`, opening a stat row's diff
 - `scm.rs` — the Source Control view (`app.scm`): focus, keys, stage / unstage, opening diffs (a Merge Changes file opens the file)
 - `discard.rs` — Discard Changes / Discard All (`Prompt::ConfirmDiscard`): the index's text back for tracked files (an open buffer edited, a closed file rewritten), untracked ones to the Trash

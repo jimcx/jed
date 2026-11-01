@@ -120,6 +120,8 @@ pub enum Drag {
     HistoryDivider,
     /// Selecting bytes in a group's hex tab (`app/hex.rs`).
     Hex(crate::layout::GroupId),
+    /// Selecting text in a group's Markdown preview (`app/markdown.rs`).
+    Markdown(crate::layout::GroupId),
     /// Selecting text in a group's diff tab (`app/diff_view.rs`).
     Diff(crate::layout::GroupId),
     /// Selecting text on a terminal screen (`tasks::select`): the run, the anchor cell
@@ -486,7 +488,7 @@ impl App {
         if self.find_mouse(m) {
             return;
         }
-        if self.diff_mouse(&m, hit) || self.hex_mouse(&m, hit) {
+        if self.diff_mouse(&m, hit) || self.hex_mouse(&m, hit) || self.markdown_mouse(&m, hit) {
             return;
         }
         if self.terminal_mouse(hit, m) {
@@ -625,7 +627,7 @@ impl App {
                 Some(Drag::ScrollBar { target, grab }) => self.scrollbar_drag(target, m.column, m.row, grab),
                 Some(Drag::Tab(_)) => self.tab_drag_to(m.column, m.row),
                 // Taken by `hex_mouse`.
-                Some(Drag::Hex(_) | Drag::Diff(_)) => {}
+                Some(Drag::Hex(_) | Drag::Diff(_) | Drag::Markdown(_)) => {}
                 // Taken by `terminal_select`.
                 Some(Drag::Terminal { .. }) => {}
                 Some(Drag::HistoryDivider) => {

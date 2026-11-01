@@ -148,6 +148,7 @@ fn layout(app: &App) -> Vec<(GroupId, Vec<TabShot>, usize)> {
                     }
                     Tab::Diff(d) => (d.title(), None, Some(d.pair)),
                     Tab::Hex(h) => (format!("hex:{}", h.name()), None, None),
+                    Tab::Markdown(m) => (m.title(), None, None),
                     Tab::Shell(s) => (format!("shell:{}", s.title), None, None),
                 })
                 .collect();

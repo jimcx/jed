@@ -27,6 +27,7 @@ keybind = cmd+]=unbind
 keybind = cmd+[=unbind
 keybind = cmd+alt+i=unbind
 keybind = cmd+period=unbind
+keybind = cmd+alt+v=unbind
 keybind = cmd+d=unbind
 keybind = cmd+shift+l=unbind
 keybind = cmd+alt+d=unbind

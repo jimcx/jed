@@ -6,6 +6,7 @@ use crate::buffer::BufferId;
 use crate::diff_view::DiffTab;
 use crate::hex::HexTab;
 use crate::layout::{DropSide, GroupId, SplitDir, SplitTree};
+use crate::markdown_tab::MarkdownTab;
 use crate::shell::ShellTab;
 use crate::tasks::RunId;
 use crate::view::View;
@@ -26,6 +27,8 @@ pub enum Tab {
     Text(TextTab),
     Diff(Box<DiffTab>),
     Hex(Box<HexTab>),
+    /// A rendered Markdown preview of a text buffer (read only).
+    Markdown(Box<MarkdownTab>),
     Shell(Box<ShellTab>),
 }
 
@@ -38,6 +41,7 @@ pub enum TabIdentity {
     Text(BufferId),
     Diff(u64),
     Hex(u64),
+    Markdown(u64),
     Shell(RunId),
 }
 
@@ -66,6 +70,20 @@ impl Tab {
     pub fn diff_mut(&mut self) -> Option<&mut DiffTab> {
         match self {
             Tab::Diff(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    pub fn markdown(&self) -> Option<&MarkdownTab> {
+        match self {
+            Tab::Markdown(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    pub fn markdown_mut(&mut self) -> Option<&mut MarkdownTab> {
+        match self {
+            Tab::Markdown(m) => Some(m),
             _ => None,
         }
     }
@@ -117,6 +135,7 @@ impl Tab {
                 a.path == b.path && a.pair == b.pair && sources(a) == sources(b)
             }
             (Tab::Hex(a), Tab::Hex(b)) => a.path == b.path,
+            (Tab::Markdown(a), Tab::Markdown(b)) => a.source == b.source,
             _ => false,
         }
     }
@@ -127,6 +146,7 @@ impl Tab {
             Tab::Text(t) => TabIdentity::Text(t.buffer),
             Tab::Diff(d) => TabIdentity::Diff(d.id),
             Tab::Hex(h) => TabIdentity::Hex(h.id),
+            Tab::Markdown(m) => TabIdentity::Markdown(m.id),
             Tab::Shell(s) => TabIdentity::Shell(s.run.id),
         }
     }
@@ -170,6 +190,22 @@ impl Group {
 
     pub fn active_hex_mut(&mut self) -> Option<&mut HexTab> {
         self.tabs.get_mut(self.active).and_then(Tab::hex_mut)
+    }
+
+    /// The active tab, when it's a Markdown preview.
+    pub fn active_markdown(&self) -> Option<&MarkdownTab> {
+        self.tabs.get(self.active).and_then(Tab::markdown)
+    }
+
+    pub fn active_markdown_mut(&mut self) -> Option<&mut MarkdownTab> {
+        self.tabs.get_mut(self.active).and_then(Tab::markdown_mut)
+    }
+
+    /// The preview tab of `source`.
+    pub fn find_markdown(&self, source: BufferId) -> Option<usize> {
+        self.tabs
+            .iter()
+            .position(|t| t.markdown().is_some_and(|m| m.source == source))
     }
 
     /// The active tab, when it's a shell.
@@ -385,6 +421,13 @@ impl Groups {
             .flat_map(|g| g.tabs.iter_mut().filter_map(Tab::hex_mut))
     }
 
+    /// The group and index of the preview of `source`, if any group has one.
+    pub fn find_markdown(&self, source: BufferId) -> Option<(GroupId, usize)> {
+        self.map
+            .iter()
+            .find_map(|(&g, grp)| grp.find_markdown(source).map(|i| (g, i)))
+    }
+
     /// Every shell tab, in any group (numbering a new shell's title).
     pub fn shell_tabs(&self) -> impl Iterator<Item = &ShellTab> {
         self.map.values().flat_map(|g| g.tabs.iter().filter_map(Tab::shell))
@@ -497,6 +540,7 @@ impl Groups {
             })),
             Some(Tab::Diff(d)) => Some(Tab::Diff(Box::new(d.copy(diff_id)))),
             Some(Tab::Hex(h)) => Some(Tab::Hex(h.clone())),
+            Some(Tab::Markdown(m)) => Some(Tab::Markdown(Box::new(m.copy()))),
             // A shell can't be in two groups: the new one is left empty.
             Some(Tab::Shell(_)) => None,
             None => None,

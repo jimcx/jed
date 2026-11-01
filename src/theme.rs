@@ -52,6 +52,27 @@ impl Theme {
         })
     }
 
+    /// A Markdown preview span's style: its key's style, plus the span's bold / italic /
+    /// strikethrough flags, on the code block background when `block`.
+    pub fn markdown_style(&self, s: &crate::markdown::SpanStyle) -> Style {
+        let mut st = if s.block {
+            self.get("markdown.codeblock")
+        } else {
+            Style::default()
+        };
+        st = st.patch(self.get(s.key));
+        if s.bold {
+            st = st.add_modifier(Modifier::BOLD);
+        }
+        if s.italic {
+            st = st.add_modifier(Modifier::ITALIC);
+        }
+        if s.strike {
+            st = st.add_modifier(Modifier::CROSSED_OUT);
+        }
+        st
+    }
+
     /// `[window] status_bar = "auto"`: white text on one of `STATUS_AUTO_SLOTS` backgrounds, `slot`
     /// (any number; taken modulo) picking a hue (30, equally spaced; consecutive slots step the hue)
     /// and one of four saturation / lightness pairs at the dark, saturated end, near the fixed colours.

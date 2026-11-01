@@ -87,7 +87,7 @@ impl App {
                 revision: 0,
             }),
             // A shell isn't a place to come back to.
-            Tab::Shell(_) => None,
+            Tab::Shell(_) | Tab::Markdown(_) => None,
         }
     }
 

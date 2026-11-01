@@ -739,6 +739,8 @@ mod tests {
         assert!(exit(t.get(done).unwrap()).success(), "an ended run is left alone");
     }
 
+    // FLAKE: 2026-11-01, failed in full runs under load (load avg ~15-20), passes alone: the
+    // elapsed-time assertion (child gone within KILL_GRACE) is the suspect.
     #[tokio::test(flavor = "multi_thread")]
     async fn kill_hangs_up_the_whole_group() {
         let (mut t, _) = tasks();
@@ -761,7 +763,16 @@ mod tests {
         run.kill();
         // SAFETY: signal 0 only checks for existence (the reaped child is gone or a zombie of init).
         wait_until("child gone", || unsafe { libc::kill(child, 0) } != 0).await;
-        assert!(at.elapsed() < run::KILL_GRACE, "{:?}", at.elapsed());
+        let elapsed = at.elapsed();
+        if elapsed >= run::KILL_GRACE {
+            eprintln!(
+                "FLAKE kill_hangs_up_the_whole_group: child {child} gone after {elapsed:?} (grace {:?}), status {:?}, screen {:?}",
+                run::KILL_GRACE,
+                run.status(),
+                run.screen().screen().contents()
+            );
+        }
+        assert!(elapsed < run::KILL_GRACE, "FLAKE: {elapsed:?} >= {:?}", run::KILL_GRACE);
         wait_until("hup", || run.screen().screen().contents().contains("hup")).await;
         wait_until("exit", || !run.status().is_running()).await;
         assert!(exit(run).signal.unwrap_or_default().contains("Kill"));

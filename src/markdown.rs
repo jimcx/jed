@@ -16,7 +16,6 @@
 //! widest columns shrink one column at a time down to `MIN_COL` (3, or a wide character's width)
 //! and cell text wraps inside them. If even that does not fit, the lines are wider than the view:
 //! `Doc::overflows` / `Doc::max_width` say so, and the preview scrolls horizontally.
-#![allow(dead_code)] // used by the preview tab (markdown_preview-c)
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};

@@ -118,6 +118,23 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> StatusHit {
         if !problems.is_empty() {
             counts = counts_at(start + name.width() as u16, x);
         }
+    } else if let Some(m) = app.active_markdown() {
+        let source = m.path.as_ref().map_or_else(
+            || m.name.clone(),
+            |p| crate::app::tab_tip::path_text(&app.workspace.root, p),
+        );
+        let name = format!(" Markdown preview of {source} [read-only]  ");
+        let left = format!("{name}{problems}");
+        let right = format!("Ln {}, Col {} ", m.cursor.0 + 1, m.cursor.1 + 1);
+        let right_w = right.width().min(width);
+        right_x = area.x + (width - right_w) as u16;
+        out.set_stringn(right_x, area.y, &right, right_w, style);
+        let room = right_x.saturating_sub(x) as usize;
+        let start = x;
+        x = out.set_stringn(x, area.y, &left, room, style).0;
+        if !problems.is_empty() {
+            counts = counts_at(start + name.width() as u16, x);
+        }
     } else if let (Some(buf), Some(tab)) = (app.active_buffer(), app.group().active_tab()) {
         if message.is_none() {
             let head = tab.view.selections.primary().head;

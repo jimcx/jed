@@ -50,6 +50,7 @@ fn layout(app: &App) -> Vec<Vec<String>> {
         Tab::Text(t) => app.buffers.get(t.buffer).unwrap().name(),
         Tab::Diff(d) => format!("diff:{}", d.path.file_name().unwrap().to_string_lossy()),
         Tab::Hex(h) => format!("hex:{}", h.name()),
+        Tab::Markdown(m) => m.title(),
         Tab::Shell(s) => format!("shell:{}", s.title),
     };
     app.groups

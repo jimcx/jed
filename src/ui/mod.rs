@@ -14,6 +14,7 @@ mod find;
 mod hex;
 mod hover;
 mod keys;
+mod markdown;
 mod palette;
 mod panel;
 mod popup;
@@ -190,7 +191,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let file = match group.tabs.get(group.active) {
             Some(Tab::Text(t)) => app.buffers.get(t.buffer),
             Some(Tab::Diff(d)) => app.buffers.iter().find(|(_, b)| b.path == d.path).map(|(_, b)| b),
-            Some(Tab::Hex(_)) | Some(Tab::Shell(_)) | None => None,
+            Some(Tab::Hex(_) | Tab::Markdown(_) | Tab::Shell(_)) | None => None,
         };
         if let Some(buf) = file
             && buf.disk_conflict.is_some()
@@ -220,7 +221,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         } else {
             None
         };
-        // A text or diff tab whose widest line drawn so far is wider than it (or that is
+        // A text, diff or Markdown preview tab whose widest line drawn so far is wider than it (or that is
         // scrolled sideways) keeps the last row for the horizontal bar, from the last frame's
         // sizes; below, a frame that finds that changed asks for another.
         let reserve = bar.is_some()
@@ -229,7 +230,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 .is_some_and(|t| !wrapping && t.view.scroll_width.wants_bar(t.view.width, t.view.left_col))
                 || group
                     .active_diff_mut()
-                    .is_some_and(|d| d.scroll_width.wants_bar(d.text_width, d.left_col)));
+                    .is_some_and(|d| d.scroll_width.wants_bar(d.text_width, d.left_col))
+                || group
+                    .active_markdown_mut()
+                    .is_some_and(|m| m.scroll_width().wants_bar(m.view_width, m.left)));
         let hrow = if reserve {
             scrollbar::take_row(&mut editor_area)
         } else {
@@ -312,6 +316,23 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     f.buffer_mut(),
                     bar,
                     h.scroll(),
+                    look,
+                    editor_bg,
+                    &app.theme,
+                ));
+            }
+        }
+        let mut markdown_drawn = false;
+        if let Some(m) = group.active_markdown_mut() {
+            markdown_drawn = true;
+            text = markdown::render(f, editor_area, m, &app.theme, focused);
+            // As fitted: a table wider than the view scrolls sideways.
+            hscroll = Some((m.scroll_width(), m.view_width, m.left, None));
+            if let Some(bar) = bar {
+                scroll_hit = Some(scrollbar::render(
+                    f.buffer_mut(),
+                    bar,
+                    m.scroll(),
                     look,
                     editor_bg,
                     &app.theme,
@@ -443,7 +464,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     ));
                 }
             }
-            None if diff_hit.is_some() || hex_drawn || shell_drawn => {}
+            None if diff_hit.is_some() || hex_drawn || markdown_drawn || shell_drawn => {}
             None => {
                 f.buffer_mut().set_style(editor_area, app.theme.get("editor"));
                 splash::render(f, editor_area, &app.theme);

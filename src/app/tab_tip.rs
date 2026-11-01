@@ -59,6 +59,7 @@ impl App {
             }
             Tab::Diff(d) => d.path.clone(),
             Tab::Hex(h) => h.path.clone(),
+            Tab::Markdown(m) => m.path.clone()?,
             Tab::Shell(_) => return None,
         };
         Some(path_text(&self.workspace.root, &path))

@@ -53,6 +53,7 @@ impl App {
                     }
                     Tab::Diff(d) => Some(f(d.as_mut())),
                     Tab::Hex(h) => Some(f(h.as_mut())),
+                    Tab::Markdown(m) => Some(f(m.as_mut())),
                     Tab::Shell(s) => Some(f(&mut TerminalScroll { run: &s.run })),
                 }
             }
@@ -69,8 +70,12 @@ impl App {
                         width: d.text_width,
                         left_col: &mut d.left_col,
                     })),
-                    Tab::Hex(_) => None,
-                    Tab::Shell(_) => None,
+                    Tab::Markdown(m) => Some(f(&mut Columns {
+                        scroll_width: m.scroll_width(),
+                        width: m.view_width,
+                        left_col: &mut m.left,
+                    })),
+                    Tab::Hex(_) | Tab::Shell(_) => None,
                 }
             }
             ScrollTarget::Side(panel) if !self.ui.side_visible || self.ui.side_panel != panel => None,

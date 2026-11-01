@@ -311,6 +311,10 @@ pub enum Command {
     /// "View: Reopen as Hex": the active file's bytes on disk in a hex tab, read only, in place
     /// of its text tab (refused while the buffer has unsaved edits).
     ReopenAsHex,
+    /// "Markdown: Open Preview to the Side": a read-only rendered preview of the active Markdown
+    /// tab in the group to the right (the source keeps the focus); one preview per source: again
+    /// focuses it. Anything but a Markdown text tab: a notice.
+    OpenMarkdownPreview,
     /// "View: Reopen as Text": a hex tab's file in a text tab in its place, unless it's binary.
     ReopenAsText,
     /// "File: New Untitled File": a new empty tab "Untitled-N" (the lowest free N) with no
@@ -1039,6 +1043,7 @@ impl Command {
             Command::ConvertIndentationToTabs,
         ]);
         all.extend([Command::ReopenAsHex, Command::ReopenAsText]);
+        all.push(Command::OpenMarkdownPreview);
         all.extend([Command::NewUntitledFile, Command::ChangeLanguageMode]);
         all.push(Command::ToggleBlame);
         all.extend([Command::NavBack, Command::NavForward]);
@@ -1388,6 +1393,7 @@ impl Command {
             Command::ConvertIndentationToSpaces => "editor.indentationToSpaces".into(),
             Command::ConvertIndentationToTabs => "editor.indentationToTabs".into(),
             Command::ReopenAsHex => "view.reopenAsHex".into(),
+            Command::OpenMarkdownPreview => "markdown.openPreview".into(),
             Command::ReopenAsText => "view.reopenAsText".into(),
             Command::NewUntitledFile => "file.newUntitled".into(),
             Command::ChangeLanguageMode => "editor.changeLanguageMode".into(),
@@ -1738,6 +1744,7 @@ impl Command {
             Command::ConvertIndentationToSpaces => "Convert Indentation to Spaces",
             Command::ConvertIndentationToTabs => "Convert Indentation to Tabs",
             Command::ReopenAsHex => "View: Reopen as Hex",
+            Command::OpenMarkdownPreview => "Markdown: Open Preview to the Side",
             Command::ReopenAsText => "View: Reopen as Text",
             Command::NewUntitledFile => "File: New Untitled File",
             Command::ChangeLanguageMode => "Change Language Mode",
@@ -1936,6 +1943,7 @@ mod tests {
             Command::CodeActions(_) => 104,
             Command::ContextMenu(_) => 138,
             Command::ReopenAsHex => 105,
+            Command::OpenMarkdownPreview => 139,
             Command::ReopenAsText => 106,
             Command::NewUntitledFile => 115,
             Command::ChangeLanguageMode => 116,
@@ -1956,7 +1964,7 @@ mod tests {
             Command::ApplyChangeToLeft => 136,
         }
     }
-    const VARIANTS: u8 = 138;
+    const VARIANTS: u8 = 140;
 
     #[test]
     fn all_lists_every_variant() {

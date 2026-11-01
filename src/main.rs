@@ -76,6 +76,9 @@ mod logs;
 mod lsp;
 mod markdown;
 #[cfg(test)]
+mod markdown_preview_tests;
+mod markdown_tab;
+#[cfg(test)]
 mod milestone10_tests;
 #[cfg(test)]
 mod milestone11_tests;

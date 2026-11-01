@@ -377,7 +377,8 @@ impl App {
                             });
                         }
                         // Shells are never saved: a restart shows none.
-                        Tab::Shell(_) => continue,
+                        // Previews are not restored yet (markdown_preview-d).
+                        Tab::Shell(_) | Tab::Markdown(_) => continue,
                     }
                 }
                 let active = active.min(tabs.len().saturating_sub(1));
