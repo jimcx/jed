@@ -420,7 +420,14 @@ async fn term_select_mouse_reporting_keeps_every_event() {
     // selects nothing and leaves the view where it is.
     app.press(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
     app.press(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
-    assert_eq!(scrollback(&app), 2, "Ctrl+Shift+Up scrolled back");
+    // FLAKE: 2026-11-01, once in a full run: left 3, right 2 (a third line of scrollback; late
+    // output from the program's mouse echo while scrolled back is the suspect).
+    assert_eq!(
+        scrollback(&app),
+        2,
+        "FLAKE(term_select_mouse_reporting): Ctrl+Shift+Up scrolled back:\n{}",
+        screen_text(&app)
+    );
     drag(&mut app, area, (2, 0), (3, 3));
     assert_eq!(
         app.group().active_shell().unwrap().run.selection(),

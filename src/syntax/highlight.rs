@@ -239,6 +239,9 @@ pub fn compute(language: Language, tree: &Tree, rope: &Rope, start: ByteIdx, end
     if language == Language::GitCommit {
         git_commit_lines(tree, rope, start, end, &mut paint);
     }
+    if language == Language::Ini {
+        ini_lines(rope, start, end, &mut paint);
+    }
     let mut spans = Vec::new();
     let mut i = 0;
     while i < paint.len() {
@@ -351,6 +354,135 @@ fn git_commit_lines(tree: &Tree, rope: &Rope, start: ByteIdx, end: ByteIdx, pain
         }
         line += 1;
     }
+}
+
+/// The longest part of an INI line the line pass reads.
+const INI_LINE_MAX: usize = 2048;
+
+/// The line pass for INI / conf files: tree-sitter-ini wants `key = value` everywhere, real files
+/// are looser (`key: value`, `key value`, nginx's `listen 80;`), so every line in the range is
+/// painted from its text alone, over the query's colours: `#` / `;` comment lines, `[section]`,
+/// the key, its `=` / `:` separator, and in the value quoted strings, numbers and booleans.
+/// O(range).
+fn ini_lines(rope: &Rope, start: ByteIdx, end: ByteIdx, paint: &mut [u8]) {
+    let key = |k: &str| highlight_for(k).expect("key in KEYS").0;
+    let (comment, ty, bracket, prop, op, string, number, constant) = (
+        key("comment"),
+        key("type"),
+        key("punctuation.bracket"),
+        key("property"),
+        key("operator"),
+        key("string"),
+        key("number"),
+        key("constant.builtin"),
+    );
+    let mut put = |from: usize, to: usize, h: u8| {
+        let (from, to) = (from.max(start.0), to.min(end.0));
+        if from < to {
+            paint[from - start.0..to - start.0].fill(h);
+        }
+    };
+    let lines = pos::line_count(rope);
+    let mut line = pos::line_of(rope, start);
+    while line < lines {
+        let (ls, le, _) = pos::line_bounds(rope, line);
+        line += 1;
+        if ls >= end {
+            break;
+        }
+        let le = floor(rope, le.0.min(ls.0 + INI_LINE_MAX));
+        let text = rope.slice(ls.0..le.0).to_string();
+        // The newline too: the grammar's comment nodes include it.
+        put(ls.0, le.0 + 1, u8::MAX);
+        let t = text.trim_start();
+        let base = ls.0 + (text.len() - t.len());
+        let t = t.trim_end();
+        if t.is_empty() {
+            continue;
+        }
+        if t.starts_with(['#', ';']) {
+            put(base, base + t.len(), comment);
+            continue;
+        }
+        if t.starts_with('[') {
+            let close = t.rfind(']');
+            put(base, base + 1, bracket);
+            put(base + 1, base + close.unwrap_or(t.len()), ty);
+            if let Some(c) = close {
+                put(base + c, base + c + 1, bracket);
+            }
+            continue;
+        }
+        // Key and separator: `a = b`, `a: b`, `my key = b`, else the first word (`listen 80;`).
+        let bytes = t.as_bytes();
+        let spaced_eq = |i: usize| {
+            bytes[i] == b'='
+                && i > 0
+                && bytes[i - 1].is_ascii_whitespace()
+                && bytes.get(i + 1).is_none_or(|b| b.is_ascii_whitespace())
+        };
+        let sep = t
+            .find(['=', ':'])
+            .filter(|&i| !t[..i].contains(char::is_whitespace) || spaced_eq(i));
+        let (key_end, val_start) = match sep {
+            Some(i) => (t[..i].trim_end().len(), i + 1),
+            None => {
+                let w = t.find(char::is_whitespace).unwrap_or(t.len());
+                (w, w)
+            }
+        };
+        put(base, base + key_end, prop);
+        if let Some(i) = sep {
+            put(base + i, base + i + 1, op);
+        }
+        let v = &t[val_start..];
+        let mut i = 0;
+        while i < v.len() {
+            let c = v.as_bytes()[i];
+            if c.is_ascii_whitespace() || c == b',' {
+                i += 1;
+            } else if c == b'"' || c == b'\'' {
+                let close = v[i + 1..].find(c as char).map_or(v.len(), |n| i + 1 + n + 1);
+                put(base + val_start + i, base + val_start + close, string);
+                i = close;
+            } else {
+                let n = v[i..]
+                    // ASCII only, as the skip above: a non-ASCII space (U+00A0) would stop the
+                    // word at 0 bytes and never advance.
+                    .find(|ch: char| ch.is_ascii_whitespace() || ch == ',')
+                    .unwrap_or(v.len() - i);
+                let word = &v[i..i + n];
+                let w = word.trim_end_matches(';');
+                let h = if ini_number(w) {
+                    Some(number)
+                } else if ["true", "false", "yes", "no", "on", "off", "null", "none"]
+                    .iter()
+                    .any(|k| w.eq_ignore_ascii_case(k))
+                {
+                    Some(constant)
+                } else {
+                    None
+                };
+                if let Some(h) = h {
+                    put(base + val_start + i, base + val_start + i + w.len(), h);
+                }
+                i += n;
+            }
+        }
+    }
+}
+
+/// A decimal (signed, optional fraction) or `0x` number.
+fn ini_number(w: &str) -> bool {
+    let d = w.strip_prefix(['+', '-']).unwrap_or(w);
+    if let Some(h) = d.strip_prefix("0x").or_else(|| d.strip_prefix("0X")) {
+        return !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit());
+    }
+    let (int, frac) = d.split_once('.').unwrap_or((d, "0"));
+    !int.is_empty()
+        && int.bytes().all(|b| b.is_ascii_digit())
+        && !frac.is_empty()
+        && frac.bytes().all(|b| b.is_ascii_digit())
 }
 
 fn floor(rope: &Rope, at: usize) -> ByteIdx {
@@ -774,6 +906,74 @@ mod tests {
                 ("\"q\"", "property"),
                 ("'v'", "string"),
             ],
+        );
+    }
+
+    #[test]
+    fn ini_spans() {
+        let text = "# c\n; d\n[core]\nname = \"jed\"\nport: 8080\nverbose = true\nlisten 80;\n  key value 'x'\n[broken\nnot closed\n";
+        assert_has(
+            Language::Ini,
+            text,
+            &[
+                ("# c", "comment"),
+                ("; d", "comment"),
+                ("[", "punctuation"),
+                ("core", "type"),
+                ("]", "punctuation"),
+                ("name", "property"),
+                ("=", "operator"),
+                ("\"jed\"", "string"),
+                ("port", "property"),
+                (":", "operator"),
+                ("8080", "number"),
+                ("true", "constant.builtin"),
+                ("listen", "property"),
+                ("80", "number"),
+                ("key", "property"),
+                ("'x'", "string"),
+                ("broken", "type"),
+                ("not", "property"),
+            ],
+        );
+    }
+
+    #[test]
+    fn ini_spans_odd_input() {
+        // A non-ASCII space in a value (once a hang), CRLF, text after `]`, `=` and `;` in a
+        // value, `:` inside a bare `key value`, non-ASCII keys, a line past the line pass's cap.
+        let long = format!("long = {}42\n", "x ".repeat(2000));
+        let text = format!(
+            "a = 1\u{a0}2 \u{3000}x\r\n[s]x\r\n\r\nk = b=c ; not\nurl http://x:80\nключ = 'да'\n{long}z = true\n"
+        );
+        assert_has(
+            Language::Ini,
+            &text,
+            &[
+                ("a", "property"),
+                ("=", "operator"),
+                ("s", "type"),
+                ("]", "punctuation"),
+                ("k", "property"),
+                ("=", "operator"),
+                ("url", "property"),
+                ("ключ", "property"),
+                ("'да'", "string"),
+                ("long", "property"),
+                ("z", "property"),
+                ("true", "constant.builtin"),
+            ],
+        );
+        let spans = all(Language::Ini, &text);
+        assert!(spans.iter().all(|(s, _)| !s.contains('\r')), "{spans:?}");
+        // `;` mid-line isn't a comment, nor is `:` in a bare `key value` line a separator.
+        assert!(spans.iter().all(|(_, k)| *k != "comment"), "{spans:?}");
+        assert!(!spans.contains(&(":".to_string(), "operator")), "{spans:?}");
+        // Mid-word `=` (`b=c`) is part of the value.
+        assert_eq!(
+            spans.iter().filter(|(s, k)| s == "=" && *k == "operator").count(),
+            5,
+            "{spans:?}"
         );
     }
 

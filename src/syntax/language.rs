@@ -31,6 +31,8 @@ pub enum Language {
     Jsonc,
     Xml,
     Toml,
+    /// `.conf` / `.config` / `.ini` / `.cfg` (VS Code's `ini`): tree-sitter-ini plus a line pass.
+    Ini,
     /// Bash and other POSIX-like shells (VS Code's `shellscript`).
     ShellScript,
     CMake,
@@ -46,7 +48,7 @@ pub enum Language {
 
 impl Language {
     /// The languages compiled in (plugins are in the registry: `all()`).
-    pub const BUILT_IN: [Language; 20] = [
+    pub const BUILT_IN: [Language; 21] = [
         Language::PlainText,
         Language::C,
         Language::Cpp,
@@ -61,6 +63,7 @@ impl Language {
         Language::Jsonc,
         Language::Xml,
         Language::Toml,
+        Language::Ini,
         Language::ShellScript,
         Language::CMake,
         Language::Makefile,
@@ -104,6 +107,7 @@ impl Language {
             Language::Jsonc => "jsonc",
             Language::Xml => "xml",
             Language::Toml => "toml",
+            Language::Ini => "ini",
             Language::ShellScript => "shellscript",
             Language::CMake => "cmake",
             Language::Makefile => "makefile",
@@ -131,6 +135,7 @@ impl Language {
             Language::Jsonc => "JSON with Comments",
             Language::Xml => "XML",
             Language::Toml => "TOML",
+            Language::Ini => "INI",
             Language::ShellScript => "Shell Script",
             Language::CMake => "CMake",
             Language::Makefile => "Makefile",
@@ -165,6 +170,7 @@ impl Language {
             Language::Json | Language::Jsonc => tree_sitter_json::LANGUAGE.into(),
             Language::Xml => tree_sitter_xml::LANGUAGE_XML.into(),
             Language::Toml => tree_sitter_toml_ng::LANGUAGE.into(),
+            Language::Ini => tree_sitter_ini::LANGUAGE.into(),
             Language::ShellScript => tree_sitter_bash::LANGUAGE.into(),
             Language::CMake => tree_sitter_cmake::LANGUAGE.into(),
             Language::Makefile => tree_sitter_make::LANGUAGE.into(),
@@ -192,6 +198,7 @@ impl Language {
         const JSON: &str = include_str!("queries/json.scm");
         const XML: &str = include_str!("queries/xml.scm");
         const TOML: &str = include_str!("queries/toml.scm");
+        const INI: &str = include_str!("queries/ini.scm");
         const SHELL: &str = include_str!("queries/shell.scm");
         const CMAKE: &str = include_str!("queries/cmake.scm");
         const MAKE: &str = include_str!("queries/make.scm");
@@ -215,6 +222,7 @@ impl Language {
             Language::Json | Language::Jsonc => &[tree_sitter_json::HIGHLIGHTS_QUERY, JSON],
             Language::Xml => &[tree_sitter_xml::XML_HIGHLIGHT_QUERY, XML],
             Language::Toml => &[TOML],
+            Language::Ini => &[INI],
             Language::ShellScript => &[tree_sitter_bash::HIGHLIGHT_QUERY, SHELL],
             Language::CMake => &[CMAKE],
             Language::Makefile => &[tree_sitter_make::HIGHLIGHTS_QUERY, MAKE],
@@ -320,6 +328,7 @@ fn built_in_named(path: &Path, name: &str) -> Option<Language> {
         "tsconfig.json" | "jsconfig.json" | "babel.config.json" | ".babelrc" | ".babelrc.json" | ".eslintrc"
         | ".eslintrc.json" | ".jshintrc" | ".jsfmtrc" | ".swcrc" | ".hintrc" | ".ember-cli" | "typedoc.json"
         | ".devcontainer.json" | "devcontainer.json" => Some(Jsonc),
+        ".editorconfig" | ".gitconfig" | ".gitmodules" | ".npmrc" | ".pylintrc" | ".flake8" => Some(Ini),
         ".clang-format" | "_clang-format" | ".clang-tidy" | ".clangd" => Some(Yaml),
         ".bashrc"
         | ".bash_aliases"
@@ -411,6 +420,7 @@ fn built_in_extension(path: &Path, lower: &str) -> Option<Language> {
         | "vcxproj" | "wsdl" | "wxi" | "wxl" | "wxs" | "xaml" | "xbl" | "xib" | "xlf" | "xliff" | "xpdl" | "xul"
         | "xoml" => Xml,
         "toml" => Toml,
+        "conf" | "config" | "ini" | "cfg" | "properties" => Ini,
         "sh" | "bash" | "zsh" | "ksh" | "csh" | "ebuild" | "eclass" | "zsh-theme" => ShellScript,
         "cmake" => CMake,
         "mk" | "mak" => Makefile,
@@ -555,6 +565,15 @@ mod tests {
             ("App.csproj", Xml),
             ("App.csproj.user", Xml),
             ("Cargo.toml", Toml),
+            ("nginx.conf", Ini),
+            ("app.CONFIG", Ini),
+            ("setup.cfg", Ini),
+            ("x.ini", Ini),
+            ("a.properties", Ini),
+            (".editorconfig", Ini),
+            (".gitconfig", Ini),
+            (".npmrc", Ini),
+            (".pylintrc", Ini),
             ("Cargo.lock", Toml),
             ("Pipfile", Toml),
             (".workspace", Toml),
@@ -592,6 +611,17 @@ mod tests {
             assert_eq!(detect_plain(&format!("/ws/.git/{name}"), ""), PlainText, "{name}");
         }
         assert_eq!(detect_plain("/ws/A.RS", ""), Rust);
+        // Only the file's own name counts, not a `.config` directory.
+        assert_eq!(detect_plain("/home/u/.config/foo", ""), PlainText);
+        assert_eq!(detect_plain("/home/u/.config/foo/bar", ""), PlainText);
+        assert_eq!(detect_plain("/ws/.config", ""), PlainText);
+        assert_eq!(detect_plain("/ws/a/b/setup.cfg", ""), Ini);
+        assert_eq!(detect_plain("/ws/x.Ini", ""), Ini);
+        assert_eq!(detect_plain("/ws/.gitmodules", ""), Ini);
+        assert_eq!(detect_plain("/ws/.flake8", ""), Ini);
+        // A `.conf` in a dotfile's name isn't an extension; `foo.conf.bak` isn't INI.
+        assert_eq!(detect_plain("/ws/.conf", ""), PlainText);
+        assert_eq!(detect_plain("/ws/foo.conf.bak", ""), PlainText);
     }
 
     #[test]

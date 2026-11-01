@@ -31,6 +31,8 @@ struct LineInfo {
     prefix: Range<usize>,
     blank: bool,
     commented: bool,
+    /// Length of the token the line starts with (the alternative one may be shorter).
+    tok: usize,
     /// The token is followed by a space (removed with it).
     space: bool,
 }
@@ -40,6 +42,7 @@ pub fn toggle(buf: &mut Buffer, view: &mut View, tab_width: usize) {
         buf.seal_undo();
         return;
     };
+    let alt = buf.syntax.language().config().alt_line_comment;
     let rope = &buf.rope;
     let before = view.selections.clone();
     let mut walk = LineWalker::new(rope);
@@ -70,19 +73,28 @@ pub fn toggle(buf: &mut Buffer, view: &mut View, tab_width: usize) {
             let rest = &text[indent..];
             let at = prefixes.len();
             prefixes.push_str(&text[..indent]);
+            let tok = if rest.starts_with(token) {
+                token.len()
+            } else {
+                alt.map_or(0, str::len)
+            };
             lines.push(LineInfo {
+                tok,
                 start: line.start().0,
                 prefix: at..prefixes.len(),
                 blank: rest.is_empty(),
-                commented: rest.starts_with(token),
-                space: rest.strip_prefix(token).is_some_and(|r| r.starts_with(' ')),
+                commented: rest.starts_with(token) || alt.is_some_and(|a| rest.starts_with(a)),
+                space: rest
+                    .strip_prefix(token)
+                    .or_else(|| alt.and_then(|a| rest.strip_prefix(a)))
+                    .is_some_and(|r| r.starts_with(' ')),
             });
         }
         let all_blank = lines.iter().all(|l| l.blank);
         if !all_blank && lines.iter().all(|l| l.blank || l.commented) {
             for l in lines.iter().filter(|l| !l.blank) {
                 let at = l.start + l.prefix.len();
-                let len = token.len() + usize::from(l.space);
+                let len = l.tok + usize::from(l.space);
                 changes.push(ByteIdx(at), ByteIdx(at + len), "");
             }
         } else {

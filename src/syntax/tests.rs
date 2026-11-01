@@ -91,7 +91,11 @@ fn grammars_load_and_queries_compile() {
         );
         let source = l.highlight_queries().join("\n");
         let query = Query::new(&grammar, &source).unwrap_or_else(|e| panic!("{l:?}: {e}"));
-        assert!(query.capture_names().len() > 5, "{l:?}");
+        // INI's colours come from the line pass: its query is just `@comment`.
+        assert!(
+            query.capture_names().len() > if l == Language::Ini { 0 } else { 5 },
+            "{l:?}"
+        );
     }
 }
 
@@ -516,6 +520,7 @@ fn scopes_in_every_language() {
             &[String, String, String, Comment],
         ),
         (Toml, "a = \"b|\" # c|\n", &[String, Comment]),
+        (Ini, "; c|\n[s]\n# d|\n", &[Comment, Comment]),
         (
             ShellScript,
             "echo \"a|$(b|)\" 'c|' # d|\n",

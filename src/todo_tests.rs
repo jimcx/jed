@@ -10928,3 +10928,170 @@ mod file_info_editor_menu {
         assert_eq!(app.active_buffer().unwrap().rope.to_string(), text);
     }
 }
+
+/// conf_files: `.conf` / `.config` / `.ini` / `.cfg` open as INI (status bar, colours) and Comment
+/// Line toggles `#` (and uncomments `;` lines).
+mod conf_files {
+    use std::fs;
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::buffer::pos::ByteIdx;
+    use crate::milestone_tests::test_app;
+    use crate::selection::{Selection, Selections};
+    use crate::syntax::Language;
+
+    const SAMPLE: &str = "# top\n[core]\nname = jed\n; semi\nport: 80\n";
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    fn open(name: &str, text: &str) -> (tempfile::TempDir, App) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        let path = root.join(name);
+        fs::write(&path, text).unwrap();
+        let mut app = test_app(&root, Buffer::open(&path).unwrap());
+        app.test_start();
+        app.test_plain_whitespace();
+        (dir, app)
+    }
+
+    fn text(app: &App) -> String {
+        app.active_buffer().unwrap().rope.to_string()
+    }
+
+    fn select(app: &mut App, ranges: &[(usize, usize)]) {
+        let list = ranges
+            .iter()
+            .map(|&(a, b)| Selection::new(ByteIdx(a), ByteIdx(b)))
+            .collect();
+        app.active_mut().unwrap().1.selections = Selections::new(list, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extensions_open_as_ini_with_colours_and_status() {
+        for name in ["x.conf", "x.config", "x.ini", "x.cfg"] {
+            let (_d, mut app) = open(name, SAMPLE);
+            assert_eq!(app.active_buffer().unwrap().syntax.language(), Language::Ini, "{name}");
+            assert!(
+                app.settle(|a| a.active_buffer().is_some_and(|b| b.syntax.tree().is_some()))
+                    .await
+            );
+            let mut term = Terminal::new(TestBackend::new(100, 12)).unwrap();
+            term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+            let buf = term.backend().buffer();
+            let rows: Vec<String> = (0..12)
+                .map(|y| (0..100).map(|x| buf[(x, y)].symbol()).collect())
+                .collect();
+            assert!(rows.iter().any(|r| r.contains("INI")), "{name}: status bar");
+            let fg_of = |needle: &str| {
+                let (y, row) = rows.iter().enumerate().find(|(_, r)| r.contains(needle)).unwrap();
+                let x = row.find(needle).map(|i| row[..i].chars().count()).unwrap();
+                buf[(x as u16, y as u16)].fg
+            };
+            let (comment, ty, prop) = (fg_of("# top"), fg_of("core"), fg_of("name"));
+            assert!(
+                comment != ty && ty != prop && comment != prop,
+                "{name}: distinct colours"
+            );
+            assert_eq!(fg_of("; semi"), comment, "{name}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn comment_line_toggles_hash_and_uncomments_semicolon() {
+        let (_d, mut app) = open("x.ini", SAMPLE);
+        select(&mut app, &[(6, 6)]);
+        app.press(K::Char('/'), cmd());
+        assert_eq!(text(&app), "# top\n# [core]\nname = jed\n; semi\nport: 80\n");
+        app.press(K::Char('/'), cmd());
+        assert_eq!(text(&app), SAMPLE);
+        // A `;` line uncomments by itself.
+        let semi = SAMPLE.find("; semi").unwrap();
+        select(&mut app, &[(semi, semi)]);
+        app.press(K::Char('/'), cmd());
+        assert_eq!(text(&app), "# top\n[core]\nname = jed\nsemi\nport: 80\n");
+        app.press(K::Char('z'), cmd());
+        // A `#` line and a `;` line, two selections: each uncomments.
+        select(&mut app, &[(0, 2), (semi, semi + 1)]);
+        app.press(K::Char('/'), cmd());
+        assert_eq!(text(&app), "top\n[core]\nname = jed\nsemi\nport: 80\n");
+        app.press(K::Char('z'), cmd());
+        // `#` and `;` lines in one selection all count as commented.
+        app.press(K::Char('a'), cmd());
+        app.type_text("# a\n; b\n");
+        select(&mut app, &[(0, 8)]);
+        app.press(K::Char('/'), cmd());
+        assert_eq!(text(&app), "a\nb\n");
+        // Now plain: commented with `#`.
+        app.press(K::Char('/'), cmd());
+        assert_eq!(text(&app), "# a\n# b\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn comment_line_mixed_blank_and_indented_lines() {
+        // Mixed: one plain line, so every non-blank line gets `# ` (a `;` line too); the blank
+        // line stays blank.
+        let (_d, mut app) = open("x.ini", "; a\n\nb = 1\n");
+        select(&mut app, &[(0, 9)]);
+        app.press(K::Char('/'), cmd());
+        assert_eq!(text(&app), "# ; a\n\n# b = 1\n");
+        // Now all commented: only the `#` comes off, the `;` stays.
+        app.press(K::Char('/'), cmd());
+        assert_eq!(text(&app), "; a\n\nb = 1\n");
+        // Indented `;` lines (no space after one) with a blank line: all uncomment.
+        app.press(K::Char('a'), cmd());
+        app.type_text("  ;x\n\n  ; y\n");
+        select(&mut app, &[(0, 12)]);
+        app.press(K::Char('/'), cmd());
+        assert_eq!(text(&app), "  x\n\n  y\n");
+        // A `;` mid-line isn't a comment: the line is commented.
+        app.press(K::Char('a'), cmd());
+        app.type_text("k = v ; c");
+        app.press(K::Char('/'), cmd());
+        assert_eq!(text(&app), "# k = v ; c");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn semicolon_is_only_a_comment_in_ini() {
+        // Python's token is `#` too, but a `;` line is code there: commented, not uncommented.
+        let (_d, mut app) = open("x.py", ";x\n");
+        app.press(K::Char('/'), cmd());
+        assert_eq!(text(&app), "# ;x\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn quotes_and_square_brackets_close_nothing_indents() {
+        let (_d, mut app) = open("x.ini", "");
+        app.type_text("[");
+        assert_eq!(text(&app), "[]");
+        app.press(K::Char('a'), cmd());
+        app.press(K::Backspace, M::NONE);
+        app.type_text("k = \"");
+        assert_eq!(text(&app), "k = \"\"");
+        app.press(K::Char('a'), cmd());
+        app.press(K::Backspace, M::NONE);
+        app.type_text("k = '");
+        assert_eq!(text(&app), "k = ''");
+        app.press(K::Char('a'), cmd());
+        app.press(K::Backspace, M::NONE);
+        app.type_text("({");
+        assert_eq!(text(&app), "({");
+        // No auto-indent after a line: Enter after a section starts at column 0 (its `]`
+        // overtyped).
+        app.press(K::Char('a'), cmd());
+        app.press(K::Backspace, M::NONE);
+        app.type_text("[core]\nk = 1\n");
+        assert_eq!(text(&app), "[core]\nk = 1\n");
+    }
+}

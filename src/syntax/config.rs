@@ -19,6 +19,8 @@ pub struct AutoPair {
 pub struct LanguageConfig {
     /// Comment line's token (`//`, `#`); `None`: comment line does nothing.
     pub line_comment: Option<&'static str>,
+    /// A second token that also counts as a comment when toggling off (INI's `;`); never written.
+    pub alt_line_comment: Option<&'static str>,
     pub pairs: &'static [AutoPair],
     /// The bracket pairs (VS Code's `brackets`, single chars only): auto-indent and bracket
     /// matching.
@@ -73,6 +75,7 @@ const DEFAULT_BEFORE_BRACKETS: &str = "'\"`;:.,=}])> \n\t";
 /// quotes don't; a selection can be wrapped in brackets, `<>`, quotes or backticks.
 static PLAIN_TEXT: LanguageConfig = LanguageConfig {
     line_comment: None,
+    alt_line_comment: None,
     pairs: &BRACKETS,
     brackets: BRACKET_PAIRS,
     tree_tokens: true,
@@ -95,6 +98,7 @@ static PLAIN_TEXT: LanguageConfig = LanguageConfig {
 /// VS Code's `cpp` / `c` configuration (its `/*` and `/**` pairs left out).
 static C_LIKE: LanguageConfig = LanguageConfig {
     line_comment: Some("//"),
+    alt_line_comment: None,
     pairs: &[
         BRACKETS[0],
         BRACKETS[1],
@@ -125,6 +129,7 @@ static SWIFT: LanguageConfig = LanguageConfig {
 /// strings, the default `autoCloseBefore`, and the `r` / `u` / `f` / `b` string prefixes.
 static PYTHON: LanguageConfig = LanguageConfig {
     line_comment: Some("#"),
+    alt_line_comment: None,
     pairs: &[
         BRACKETS[0],
         BRACKETS[1],
@@ -153,6 +158,7 @@ pub(super) const fn config(
 ) -> LanguageConfig {
     LanguageConfig {
         line_comment,
+        alt_line_comment: None,
         pairs,
         brackets,
         tree_tokens: true,
@@ -258,6 +264,18 @@ static TOML: LanguageConfig = config(
     &[('{', '}'), ('[', ']'), ('"', '"'), ('\'', '\'')],
 );
 
+/// INI / conf / config / cfg (VS Code's `ini`): `#` is written, `;` also counts as a comment when
+/// toggling off. Quotes (not in strings) and `[` `]` pair; nothing indents.
+static INI: LanguageConfig = LanguageConfig {
+    alt_line_comment: Some(";"),
+    ..config(
+        Some("#"),
+        &[BRACKETS[1], pair('"', '"', true, false), pair('\'', '\'', true, false)],
+        &[('[', ']')],
+        &[('[', ']'), ('"', '"'), ('\'', '\'')],
+    )
+};
+
 /// VS Code's `shellscript`: `#`; quotes and backticks not in strings.
 static SHELL: LanguageConfig = config(
     Some("#"),
@@ -341,6 +359,7 @@ impl Language {
             Language::Jsonc => &JSONC,
             Language::Xml => &XML,
             Language::Toml => &TOML,
+            Language::Ini => &INI,
             Language::ShellScript => &SHELL,
             Language::CMake => &CMAKE,
             Language::Makefile => &MAKEFILE,
@@ -432,6 +451,7 @@ mod tests {
             Python,
             Yaml,
             Toml,
+            Ini,
             ShellScript,
             CMake,
             Makefile,
