@@ -40,7 +40,7 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+d` | Add selection at next match | editor |
 | `cmd+shift+l` | Select all matches | editor |
 | `cmd+alt+d` | Move last selection to next match | editor |
-| `cmd+u` | Undo last cursor change | editor |
+| `cmd+u` | Undo last cursor change (editor) / focus terminal area 3 (elsewhere) | everywhere |
 | `cmd+alt+up` | Add cursor above | editor |
 | `cmd+alt+down` | Add cursor below | editor |
 | `cmd+alt+shift+left` | Column (box) select left | editor |
@@ -88,6 +88,8 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+6` | Focus group 6 | everywhere |
 | `cmd+7` | Focus group 7 | everywhere |
 | `cmd+8` | Focus group 8 | everywhere |
+| `cmd+t` | Focus terminal area 1 (its active tab) | everywhere |
+| `cmd+y` | Focus terminal area 2 | everywhere |
 | `cmd+backslash` | Split right | everywhere |
 | `cmd+alt+backslash` | Split down | everywhere |
 | `cmd+alt+right` | Next tab | everywhere |

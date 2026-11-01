@@ -1017,3 +1017,54 @@ async fn term_area_done_when() {
     assert!(all.contains("Jim's Editor"), "the splash shows");
     // (A new session opening one terminal: `term_area_startup_terminal`.)
 }
+
+/// Cmd+T / Y / U focus the terminal area's first three groups (on their open tab) from the
+/// editor, the group bars show those letters once the area is split, and a missing group or a
+/// hidden area does nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn term_area_focus_keys_t_y_u() {
+    let (_d, root, state) = dirs();
+    let mut app = area_app(&root, &state, 1);
+    app.press(KeyCode::Char('t'), cmd());
+    assert_eq!(app.ui.focus, Focus::Terminal);
+    // Back to the editor, then a second group: Y has a target only now.
+    app.ui.focus = Focus::Editor;
+    app.press(KeyCode::Char('y'), cmd());
+    assert_eq!(app.ui.focus, Focus::Editor, "no second group yet");
+    app.press(KeyCode::Char('t'), cmd());
+    app.press(KeyCode::Char('\\'), cmd());
+    app.test_execute(Command::NewShell);
+    let term = draw(&mut app, 100, 40);
+    let ids = app.terminals.ids();
+    for (key, want) in [('t', 0), ('y', 1)] {
+        app.ui.focus = Focus::Editor;
+        app.press(KeyCode::Char(key), cmd());
+        if want < ids.len() {
+            assert_eq!(
+                (app.ui.focus, app.terminals.active),
+                (Focus::Terminal, ids[want]),
+                "{key}"
+            );
+        } else {
+            unreachable!("{key}");
+        }
+    }
+    // The bars: `t` and `y` in the top-right of the two groups' tab rows.
+    for (id, letter) in ids.iter().zip(["t", "y"]) {
+        let bar = app.hits.group(*id).unwrap().tab_bar;
+        let cell = term.backend().buffer()[(bar.x + bar.width - 1, bar.y)]
+            .symbol()
+            .to_string();
+        assert_eq!(cell, letter);
+    }
+}
+
+/// Cmd+U is Cursor Undo in the editor and the third terminal group's key everywhere else.
+#[test]
+fn term_area_focus_key_u_yields_to_cursor_undo_in_the_editor() {
+    use crate::config::keymap::{Keymap, Platform};
+    let km = Keymap::default_for(Platform::MacOs);
+    let k = crossterm::event::KeyEvent::new(KeyCode::Char('u'), KeyModifiers::SUPER);
+    assert_eq!(km.lookup(&k, Context::Editor), Some(Command::CursorUndo));
+    assert_eq!(km.lookup(&k, Context::Explorer), Some(Command::FocusTerminal(3)));
+}

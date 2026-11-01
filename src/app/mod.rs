@@ -1451,6 +1451,13 @@ impl App {
                     None => {}
                 }
             }
+            Command::FocusTerminal(n) => {
+                if self.ui.terminal_visible
+                    && let Some(&g) = self.terminals.ids().get(n as usize - 1)
+                {
+                    self.focus_group(g);
+                }
+            }
             Command::FocusNextGroup => self.focus_group_relative(true),
             Command::FocusPreviousGroup => self.focus_group_relative(false),
             Command::SplitRight => self.split(SplitDir::Right),

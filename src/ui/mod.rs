@@ -173,7 +173,14 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let number = (if terminal { &terminal_ids } else { &group_ids })
             .as_ref()
             .and_then(|ids| ids.iter().position(|&g| g == id))
-            .map(|i| (i as u8).saturating_add(1));
+            .and_then(|i| {
+                if terminal {
+                    // The terminal areas' keys (Cmd+T / Y / U) rather than numbers; a fourth has none.
+                    tabs::TERMINAL_KEYS.get(i).map(|c| c.to_string())
+                } else {
+                    Some((i + 1).to_string())
+                }
+            });
         // Long lines wrap at the editor's width (the effective `word_wrap` setting).
         let wrapping = app.word_wrap() == WordWrap::On;
         let Some(group) = (if terminal {

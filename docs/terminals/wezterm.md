@@ -52,7 +52,7 @@ local release = {
   { 'h', 'CMD|SHIFT' },
   { 'j', 'CMD|SHIFT' },
   { '1', 'CMD' }, { '2', 'CMD' }, { '3', 'CMD' }, { '4', 'CMD' }, { '5', 'CMD' },
-  { '6', 'CMD' }, { '7', 'CMD' }, { '8', 'CMD' },
+  { '6', 'CMD' }, { '7', 'CMD' }, { '8', 'CMD' }, { 't', 'CMD' }, { 'y', 'CMD' },
   { '\\', 'CMD' }, { '\\', 'CMD|ALT' },
   { 'RightArrow', 'CMD|ALT' }, { 'LeftArrow', 'CMD|ALT' },
   { 'RightArrow', 'CMD|CTRL' }, { 'LeftArrow', 'CMD|CTRL' },
@@ -72,7 +72,7 @@ return config
 
 Don't release `cmd+v`: WezTerm's paste is how text gets into jed.
 
-WezTerm defaults that clash with jed: `cmd+c` copy, `cmd+n` new window, `cmd+w` close tab (with confirmation), `cmd+k` clear scrollback, `cmd+1..8` activate tab, `cmd+f` search. The rest of jed's Cmd keys have no WezTerm default.
+WezTerm defaults that clash with jed: `cmd+c` copy, `cmd+n` new window, `cmd+t` new tab (jed: focus terminal area 1), `cmd+w` close tab (with confirmation), `cmd+k` clear scrollback, `cmd+1..8` activate tab, `cmd+f` search. The rest of jed's Cmd keys have no WezTerm default.
 
 ## What you lose
 

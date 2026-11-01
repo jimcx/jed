@@ -83,6 +83,8 @@ bindings = [
   { key = "6", mods = "Command", action = "ReceiveChar" },
   { key = "7", mods = "Command", action = "ReceiveChar" },
   { key = "8", mods = "Command", action = "ReceiveChar" },
+  { key = "T", mods = "Command", action = "ReceiveChar" },
+  { key = "Y", mods = "Command", action = "ReceiveChar" },
   { key = "Backslash", mods = "Command", action = "ReceiveChar" },
   { key = "Backslash", mods = "Command|Alt", action = "ReceiveChar" },
   { key = "Right", mods = "Command|Alt", action = "ReceiveChar" },

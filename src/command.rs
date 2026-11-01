@@ -129,6 +129,9 @@ pub enum Command {
     FocusExplorer,
     /// Focus editor group N (1-based, reading order); one past the last splits right.
     FocusGroup(u8),
+    /// Focus terminal-area group N (1-3, left to right; Cmd+T / Y / U), on its active tab. Nothing
+    /// while the area is hidden or has fewer groups.
+    FocusTerminal(u8),
     /// Focus the next / previous group in reading order, wrapping.
     FocusNextGroup,
     FocusPreviousGroup,
@@ -439,6 +442,9 @@ impl ShellCommand {
 
 /// Focus-group commands listed in the palette and accepted in keybindings (as VS Code: 1 to 8).
 const PALETTE_GROUPS: u8 = 8;
+
+/// Terminal-area groups with a focus command.
+pub const TERMINAL_GROUPS: u8 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExplorerCommand {
@@ -958,6 +964,7 @@ impl Command {
             Command::FocusExplorer,
         ]);
         all.extend((1..=PALETTE_GROUPS).map(Command::FocusGroup));
+        all.extend((1..=TERMINAL_GROUPS).map(Command::FocusTerminal));
         all.extend([
             Command::FocusNextGroup,
             Command::FocusPreviousGroup,
@@ -1134,6 +1141,7 @@ impl Command {
             Command::ToggleSidebar => "view.toggleSidebar".into(),
             Command::FocusExplorer => "view.focusExplorer".into(),
             Command::FocusGroup(n) => format!("view.focusGroup{n}"),
+            Command::FocusTerminal(n) => format!("view.focusTerminal{n}"),
             Command::FocusNextGroup => "view.focusNextGroup".into(),
             Command::FocusPreviousGroup => "view.focusPreviousGroup".into(),
             Command::SplitRight => "view.splitRight".into(),
@@ -1525,6 +1533,7 @@ impl Command {
             Command::ToggleSidebar => "View: Toggle Side Bar Visibility",
             Command::FocusExplorer => "View: Show Explorer",
             Command::FocusGroup(n) => return format!("View: Focus Editor Group {n}"),
+            Command::FocusTerminal(n) => return format!("View: Focus Terminal Area {n}"),
             Command::FocusNextGroup => "View: Focus Next Editor Group",
             Command::FocusPreviousGroup => "View: Focus Previous Editor Group",
             Command::SplitRight => "View: Split Editor Right",
@@ -1854,6 +1863,7 @@ mod tests {
             Command::ToggleSidebar => 20,
             Command::FocusExplorer => 21,
             Command::FocusGroup(_) => 22,
+            Command::FocusTerminal(_) => 22,
             Command::FocusNextGroup => 123,
             Command::FocusPreviousGroup => 124,
             Command::SplitRight => 23,

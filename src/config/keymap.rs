@@ -855,6 +855,10 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Char('g'), ctrl | shift, Command::FocusScm),
         (KeyCode::Char('f'), cmd | shift, Command::FindInFiles),
         (KeyCode::Char('h'), cmd | shift, Command::Search(S::ReplaceInFiles)),
+        (KeyCode::Char('t'), cmd, Command::FocusTerminal(1)),
+        (KeyCode::Char('y'), cmd, Command::FocusTerminal(2)),
+        // Cursor Undo owns Cmd+U in the editor (context bindings win): the third area's key works elsewhere.
+        (KeyCode::Char('u'), cmd, Command::FocusTerminal(3)),
         (KeyCode::Char('1'), cmd, Command::FocusGroup(1)),
         (KeyCode::Char('2'), cmd, Command::FocusGroup(2)),
         (KeyCode::Char('3'), cmd, Command::FocusGroup(3)),

@@ -32,9 +32,13 @@ struct Label {
     mark: Option<&'static str>,
 }
 
+/// The keys that focus the terminal area's first three groups (`Command::FocusTerminal`), shown in their bars.
+pub const TERMINAL_KEYS: [char; 3] = ['t', 'y', 'u'];
+
 /// `active_group`: the focused group's active tab is bright; other groups' active tabs are dimmer.
 /// `drop`: the gap a dragged tab would land in, drawn as one marker cell.
-/// `number`: the group's 1-based place in reading order, or `None` with a single group.
+/// `number`: the group's 1-based place in reading order (a terminal area's group: the letter of its
+/// Cmd key, `TERMINAL_KEYS`), or `None` with a single group.
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     f: &mut Frame,
@@ -44,7 +48,7 @@ pub fn render(
     theme: &Theme,
     active_group: bool,
     drop: Option<usize>,
-    number: Option<u8>,
+    number: Option<String>,
 ) -> TabBarHit {
     let out = f.buffer_mut();
     out.set_style(area, theme.get("tabBar"));
@@ -54,7 +58,7 @@ pub fn render(
 
     // The number takes the bar's last cells; the tabs, arrows and drop marker stay in `bar`,
     // left of it. Clicking those cells is a click on the bar (`Hit::TabBar`), which focuses it.
-    let label = number.map(|n| n.to_string());
+    let label = number;
     let label_w = label.as_ref().map_or(0, |l| l.width() as u16).min(area.width);
     let bar = Rect {
         width: area.width - label_w,
