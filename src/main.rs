@@ -74,6 +74,7 @@ mod locations;
 mod logging;
 mod logs;
 mod lsp;
+mod markdown;
 #[cfg(test)]
 mod milestone10_tests;
 #[cfg(test)]
