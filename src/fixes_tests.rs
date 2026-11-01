@@ -1176,7 +1176,7 @@ use std::time::{Duration, Instant};
 use crate::diagnostics::Severity;
 use crate::hover::Kind;
 use crate::lsp::{ProcessLauncher, ServerConfig};
-use crate::milestone9_tests::{REAL_SERVERS, children_named, settle_for, squiggle, which};
+use crate::milestone9_tests::{REAL_SERVERS, children_settled, settle_for, squiggle, which};
 
 /// The hover popup's first 12 lines: (kind, text trimmed; a diagnostic's has its icon).
 fn hover_lines(app: &App) -> Vec<(Kind, String)> {
@@ -1511,7 +1511,7 @@ async fn fixes_done_when_rust_analyzer() {
     idle(&mut app).await;
     assert!(app.hover.popup.is_none(), "{:?}", hover_lines(&app));
     app.shutdown_servers().await;
-    if let Some(n) = children_named("rust-analyzer") {
+    if let Some(n) = children_settled("rust-analyzer", 0) {
         assert_eq!(n, 0, "no rust-analyzer left");
     }
     eprintln!("fixes_done_when_rust_analyzer: took {:?}", started.elapsed());
@@ -1660,7 +1660,7 @@ async fn fixes_done_when_clangd() {
     idle(&mut app).await;
     assert!(app.hover.popup.is_none(), "{:?}", hover_lines(&app));
     app.shutdown_servers().await;
-    if let Some(n) = children_named("clangd") {
+    if let Some(n) = children_settled("clangd", 0) {
         assert_eq!(n, 0, "no clangd left");
     }
 }

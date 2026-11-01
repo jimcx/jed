@@ -2393,7 +2393,7 @@ mod rust_language_server {
     use crate::lsp::fake::{FakeLauncher, FakeOptions};
     use crate::lsp::rpc::CONTENT_MODIFIED;
     use crate::lsp::{Launcher, ProcessLauncher, State};
-    use crate::milestone9_tests::{REAL_SERVERS, children_named};
+    use crate::milestone9_tests::{REAL_SERVERS, children_settled};
     use crate::selection::{Selection, Selections};
     use crate::syntax::Language;
     use crate::workspace::trust::{Trust, TrustStore};
@@ -2902,7 +2902,7 @@ mod rust_language_server {
             message(&app)
         );
         assert_eq!(encoding(&app), Some(PosEncoding::Utf8));
-        if let Some(n) = children_named("rust-analyzer") {
+        if let Some(n) = children_settled("rust-analyzer", 1) {
             assert_eq!(n, 1, "rust-analyzer running");
         }
         let begun = |a: &App| a.lsp.server_for(Language::Rust).is_some_and(|s| s.progress.begun() > 0);
@@ -3063,7 +3063,7 @@ mod rust_language_server {
         ));
         app.press(K::Char('q'), cmd());
         app.shutdown_servers().await;
-        if let Some(n) = children_named("rust-analyzer") {
+        if let Some(n) = children_settled("rust-analyzer", 0) {
             assert_eq!(n, 0, "no rust-analyzer left");
         }
     }

@@ -430,7 +430,7 @@ async fn milestone_9_noisy_stuck_server_is_killed() {
         app.message.as_ref().map(|m| &m.text)
     );
     assert_eq!(encoding(&app, Language::Cpp), Some(PosEncoding::Utf8));
-    if let Some(n) = children_named("sleep") {
+    if let Some(n) = children_settled("sleep", 1) {
         assert_eq!(n, 1);
     }
     let t = Instant::now();
@@ -438,7 +438,7 @@ async fn milestone_9_noisy_stuck_server_is_killed() {
     let by_itself = app.lsp.shutdown_within(Duration::from_secs(30)).await;
     assert!(by_itself, "killed by its task, not aborted: {:?}", t.elapsed());
     assert!(t.elapsed() >= SHUTDOWN_TIMEOUT, "{:?}", t.elapsed());
-    if let Some(n) = children_named("sleep") {
+    if let Some(n) = children_settled("sleep", 0) {
         assert_eq!(n, 0, "killed and reaped");
     }
 }
@@ -457,6 +457,20 @@ pub(crate) fn children_named(name: &str) -> Option<usize> {
         .filter(|comm| *comm == name || comm.starts_with(&dotted))
         .count();
     Some(count)
+}
+
+/// Like [`children_named`], but waits (up to 10 s) for the count to reach `want`: a server that was just
+/// shut down is reaped a moment later, more slowly on a loaded machine.
+pub(crate) fn children_settled(name: &str, want: usize) -> Option<usize> {
+    let mut n = children_named(name)?;
+    for _ in 0..200 {
+        if n == want {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        n = children_named(name)?;
+    }
+    Some(n)
 }
 
 /// Held by each test that runs a real server: they count the test process's children by name,
@@ -478,7 +492,7 @@ async fn real_server(language: Language, file: (&str, &str), configure: impl FnO
     );
     assert_eq!(encoding(&app, language), Some(PosEncoding::Utf8));
     assert!(app.message.is_none());
-    if let Some(n) = children_named(process) {
+    if let Some(n) = children_settled(process, 1) {
         assert_eq!(n, 1, "{process} running");
     }
     // Edits at two cursors, undo and a save (9b): the server stays up and says nothing (a bad
@@ -512,7 +526,7 @@ async fn real_server(language: Language, file: (&str, &str), configure: impl FnO
         "{process} exits when asked: {:?}",
         t.elapsed()
     );
-    if let Some(n) = children_named(process) {
+    if let Some(n) = children_settled(process, 0) {
         assert_eq!(n, 0, "no {process} left");
     }
 }
@@ -1507,7 +1521,7 @@ pub(crate) async fn real_diagnostics(
     assert_eq!(app.lsp.diagnostics.counts().of(Severity::Error), 0);
     app.press(K::Char('q'), cmd());
     app.shutdown_servers().await;
-    if let Some(n) = children_named(process) {
+    if let Some(n) = children_settled(process, 0) {
         assert_eq!(n, 0, "no {process} left");
     }
 }
@@ -3174,7 +3188,7 @@ pub(crate) async fn real_hover_and_definition(
     assert_eq!(cursor_line_col(&app).0, def_line, "{process}");
     app.press(K::Char('q'), cmd());
     app.shutdown_servers().await;
-    if let Some(n) = children_named(process) {
+    if let Some(n) = children_settled(process, 0) {
         assert_eq!(n, 0, "no {process} left");
     }
 }
@@ -3979,7 +3993,7 @@ pub(crate) async fn real_completion(
     assert!(text(&app).contains(&want), "{process}: {}", text(&app));
     app.press(K::Char('q'), cmd());
     app.shutdown_servers().await;
-    if let Some(n) = children_named(process) {
+    if let Some(n) = children_settled(process, 0) {
         assert_eq!(n, 0, "no {process} left");
     }
 }
@@ -4901,7 +4915,7 @@ async fn real_references_and_rename(
         assert_eq!(fs::read_to_string(root.join(name)).unwrap(), *text, "not saved");
     }
     app.shutdown_servers().await;
-    if let Some(n) = children_named(process) {
+    if let Some(n) = children_settled(process, 0) {
         // FLAKE: 2026-10-25, `milestone_9_real_clangd_references_and_rename` failed once with
         // "no clangd left (left: 1, right: 0)" under load (another checkout's `cargo test` running
         // concurrently), then passed alone. Dump the lingering child so the next occurrence shows
@@ -5464,7 +5478,7 @@ async fn done_when(app: &mut App, root: &Path, tee: &Tee, d: &DoneWhen<'_>) {
     assert!(n >= 5, "{process}: {n} didChanges");
     app.press(K::Char('q'), cmd());
     app.shutdown_servers().await;
-    if let Some(n) = children_named(process) {
+    if let Some(n) = children_settled(process, 0) {
         assert_eq!(n, 0, "no {process} left");
     }
 }

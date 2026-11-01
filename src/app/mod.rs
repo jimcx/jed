@@ -2120,10 +2120,10 @@ impl App {
         woke
     }
 
-    /// Handles background results (and the Search view's debounce) until `done` holds; false after 5 s.
+    /// Handles background results (and the Search view's debounce) until `done` holds; false after 30 s (slow machines, parallel test runs).
     /// Rechecks every 20 ms too, for conditions outside the app (files written in the background).
     pub async fn settle(&mut self, done: impl Fn(&App) -> bool) -> bool {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             // As the event loop does each turn.
             self.sync_syntax();
