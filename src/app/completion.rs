@@ -11,6 +11,9 @@
 //!   tab changes or the cursor leaves the word (a non-word char typed, a click, Backspace past its
 //!   start); else refilters, and an incomplete list asks again when the word changed. A list
 //!   with no matching item closes (an incomplete one waits for the next answer).
+//! - A config file's buffer (`Buffer::config_file`) never asks a server: `local_completion` builds
+//!   the list from the schema (`config::complete`) at once, for Ctrl+Space and quick suggestions
+//!   (strings allowed there: values and names are inside quotes); its anchor is `wide`.
 //! - Typing a commit character of the selected item inserts it first, then the char.
 //! - Resolve: the selected item is resolved when the server supports it (its detail; additional
 //!   edits). Accepting uses what the item has; if it was never resolved and has no additional
@@ -31,8 +34,12 @@ use crate::buffer::pos::{self, ByteIdx, LspPos};
 use crate::buffer::undo::EditKind;
 use crate::command::SuggestCommand;
 use crate::completion::{self, Anchor, Ask, Insertion, Popup, Quick, Trigger};
+use crate::config::complete;
 use crate::layout::{GroupId, Hit};
 use crate::syntax::Scope;
+
+/// Lines scanned upward for a config file's table header.
+const HEADER_SCAN: usize = 500;
 
 /// Wheel rows per notch over the list.
 const WHEEL_ROWS: isize = 3;
@@ -77,6 +84,9 @@ impl App {
         let Some(buf) = self.buffers.get(buffer) else {
             return false;
         };
+        if buf.config_file.is_some() {
+            return self.local_completion(group, buffer, at);
+        }
         let word = match trigger {
             Trigger::Character(_) => 0,
             _ => completion::word_before(&buf.rope, at),
@@ -107,6 +117,44 @@ impl App {
             anchor,
             trigger,
         });
+        true
+    }
+
+    /// The list for a config file (`settings.toml`, `.workspace`, `keybindings.toml`), built here
+    /// from its schema (`config::complete`) with no server; true when it has items.
+    fn local_completion(&mut self, group: GroupId, buffer: BufferId, at: ByteIdx) -> bool {
+        self.completion.ask = None;
+        let Some(buf) = self.buffers.get(buffer) else {
+            return false;
+        };
+        let Some(file) = buf.config_file else { return false };
+        let rope = &buf.rope;
+        let line = pos::line_of(rope, at);
+        let (ls, le, _) = pos::line_bounds(rope, line);
+        let before = rope.slice(ls.0..at.0).to_string();
+        let after = rope.slice(at.0..le.0.max(at.0)).to_string();
+        let header = (0..line).rev().take(HEADER_SCAN).find_map(|l| {
+            let (s, e, _) = pos::line_bounds(rope, l);
+            complete::parse_header(&rope.slice(s.0..e.0).to_string())
+        });
+        let Some(found) = complete::suggest(file, header.as_ref(), &before, &after) else {
+            return false;
+        };
+        let token = before.len() - found.start;
+        let items: Vec<_> = found
+            .entries
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| completion::Item::local(e.label, e.detail, e.kind, e.text, (i, found.after)))
+            .collect();
+        let anchor = Anchor::local((group, buffer), (rope.clone(), buf.sets_applied()), at, token);
+        let mut popup = Popup::new(anchor, self.completion.generation, items, false, String::new());
+        popup.refilter(rope, at, &mut self.completion.filter, true);
+        if popup.shown.is_empty() {
+            return false;
+        }
+        self.completion.popup = Some(popup);
+        self.needs_redraw = true;
         true
     }
 
@@ -241,6 +289,21 @@ impl App {
         let Some((group, buffer, _)) = self.editor_cursor() else {
             return;
         };
+        if self.buffers.get(buffer).is_some_and(|b| b.config_file.is_some()) {
+            if (pos::is_word_char(c) || matches!(c, '"' | '+' | '['))
+                && self.completion.popup.is_none()
+                && self.settings.quick_suggestions
+            {
+                let revision = self.buffers.get(buffer).map_or(0, |b| b.revision());
+                self.completion.quick = Some(Quick {
+                    deadline: Instant::now() + completion::QUICK_DELAY,
+                    group,
+                    buffer,
+                    revision,
+                });
+            }
+            return;
+        }
         let Some(triggers) = self
             .lsp
             .server_of(buffer)
@@ -282,8 +345,9 @@ impl App {
             || buf.revision() != q.revision
             || self.completion.popup.is_some()
             || self.completion.ask.is_some()
-            || buf.syntax.scope_before(head).is_some_and(|s| s != Scope::Code)
-            || completion::word_before(&buf.rope, head) == 0
+            || (buf.config_file.is_none()
+                && (buf.syntax.scope_before(head).is_some_and(|s| s != Scope::Code)
+                    || completion::word_before(&buf.rope, head) == 0))
         {
             return;
         }

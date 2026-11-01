@@ -111,6 +111,28 @@ pub struct Item {
 }
 
 impl Item {
+    /// An item from the config files' local source (`config::complete`): replaces the text from
+    /// the anchor's start to the cursor, and `after` bytes past it.
+    pub fn local(label: String, detail: String, kind: u64, text: String, (order, after): (usize, usize)) -> Self {
+        Self {
+            label,
+            kind: Some(kind),
+            detail: (!detail.is_empty()).then_some(detail),
+            filter: None,
+            sort: Some(format!("{order:05}")),
+            preselect: false,
+            text,
+            select: None,
+            range: None,
+            lead: 0,
+            after,
+            additional: Vec::new(),
+            commit: Vec::new(),
+            raw: Value::Null,
+            resolved: true,
+        }
+    }
+
     /// What filtering matches against.
     pub fn filter_text(&self) -> &str {
         self.filter.as_deref().unwrap_or(&self.label)
@@ -489,6 +511,9 @@ pub struct Anchor {
     /// The buffer's count of applied change sets (`Buffer::sets_applied`) `rope` and the
     /// places are at.
     applied: u64,
+    /// A local anchor: its token is everything up to a space or `=` (names with `.`, `+`, quotes),
+    /// not word chars only.
+    pub wide: bool,
 }
 
 impl Anchor {
@@ -511,7 +536,26 @@ impl Anchor {
             start: ByteIdx(at.0 - word),
             at,
             since: Some(Vec::new()),
+            wide: false,
         }
+    }
+
+    /// An anchor for a local list (no server): the token before `at` is `token` bytes.
+    pub fn local(
+        (group, buffer): (GroupId, BufferId),
+        (rope, applied): (Rope, u64),
+        at: ByteIdx,
+        token: usize,
+    ) -> Self {
+        let mut a = Self::new(
+            (group, buffer),
+            (ServerId::none(), PosEncoding::Utf8),
+            (rope, applied),
+            at,
+            token,
+        );
+        a.wide = true;
+        a
     }
 
     /// Follows the buffer's last applied change sets (`applied`: its `sets_applied` after them;
@@ -556,9 +600,16 @@ impl Anchor {
         if head < self.start || head.0 - self.start.0 > MAX_WORD || head.0 > rope.len() {
             return false;
         }
-        rope.slice(self.start.0..head.0)
-            .chunks()
-            .all(|c| c.chars().all(pos::is_word_char))
+        let wide = self.wide;
+        rope.slice(self.start.0..head.0).chunks().all(|c| {
+            c.chars().all(|c| {
+                if wide {
+                    !c.is_whitespace() && c != '='
+                } else {
+                    pos::is_word_char(c)
+                }
+            })
+        })
     }
 
     /// The text from `start - lead` to `head` now (`None` when that's no range).

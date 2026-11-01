@@ -48,6 +48,11 @@ const ABORT_MARGIN: Duration = Duration::from_secs(1);
 pub struct ServerId(u64);
 
 impl ServerId {
+    /// The id of no server (a completion list the editor builds itself).
+    pub fn none() -> Self {
+        Self(u64::MAX)
+    }
+
     #[cfg(test)]
     pub fn test(n: u64) -> Self {
         Self(n)

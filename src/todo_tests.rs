@@ -11464,3 +11464,366 @@ mod settings_highlight {
         assert_eq!(fgs(&mut app, 0, 1)[0], invalid);
     }
 }
+
+/// Settings files (settings-f): completion without a server in `settings.toml`, `.workspace` and
+/// `keybindings.toml` (keys and values from the schema, `[[binding]]`'s keys, command and
+/// context names), inserted at every cursor; Ctrl+Space and quick suggestions; never in a
+/// `Cargo.toml`. This is the task's done-when for completion, driven by real keys.
+mod settings_completion {
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::buffer::pos::ByteIdx;
+    use crate::command::Command;
+    use crate::selection::{Selection, Selections};
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+    use std::path::{Path, PathBuf};
+    use std::time::Instant;
+
+    struct Env {
+        app: App,
+        root: PathBuf,
+        cfg: PathBuf,
+        _dir: tempfile::TempDir,
+    }
+
+    fn make_env() -> Env {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        let cfg = root.join("cfg");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let path = root.join("plain.txt");
+        std::fs::write(&path, "").unwrap();
+        let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&path).unwrap());
+        app.config_dir = cfg.clone();
+        app.test_start();
+        Env {
+            app,
+            root,
+            cfg,
+            _dir: dir,
+        }
+    }
+
+    /// Writes `marked` to `path` (each `|` removed), opens it and puts a cursor at each `|`.
+    async fn open(app: &mut App, path: &Path, marked: &str) {
+        let at: Vec<usize> = marked.match_indices('|').enumerate().map(|(i, (p, _))| p - i).collect();
+        std::fs::write(path, marked.replace('|', "")).unwrap();
+        app.test_open(Buffer::open(path).unwrap());
+        let (buf, view) = app.active_mut().unwrap();
+        assert_eq!(buf.rope.to_string(), marked.replace('|', ""), "the file as written");
+        let list = at.iter().map(|&p| Selection::cursor(ByteIdx(p))).collect();
+        view.selections = Selections::new(list, 0);
+    }
+
+    fn labels(app: &App) -> Vec<String> {
+        app.completion.popup.as_ref().map_or_else(Vec::new, |p| {
+            p.shown.iter().map(|&i| p.items[i].label.clone()).collect()
+        })
+    }
+
+    fn text(app: &App) -> String {
+        app.active_buffer().unwrap().rope.to_string()
+    }
+
+    fn ctrl_space(app: &mut App) {
+        app.press(K::Char(' '), M::CONTROL);
+    }
+
+    fn quick(app: &mut App) {
+        app.pump();
+        app.test_completion_tick(Instant::now() + crate::completion::QUICK_DELAY);
+    }
+
+    fn message(app: &App) -> Option<String> {
+        app.message.as_ref().map(|m| m.text.clone())
+    }
+
+    fn put_cursor(app: &mut App, at: usize) {
+        let (_, view) = app.active_mut().unwrap();
+        view.selections = Selections::single(Selection::cursor(ByteIdx(at)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn values_insert_at_every_cursor() {
+        let mut e = make_env();
+        for path in [e.cfg.join("settings.toml"), e.root.join(".workspace")] {
+            let line = "render_whitespace = |\n";
+            open(&mut e.app, &path, &format!("[settings]\n{line}{line}{line}")).await;
+            let app = &mut e.app;
+            ctrl_space(app);
+            let got = labels(app);
+            for want in ["\"none\"", "\"all\""] {
+                assert!(got.iter().any(|l| l == want), "{path:?}: {got:?}");
+            }
+            // Filtered by what is typed, then inserted at the three cursors.
+            app.type_text("\"al");
+            assert_eq!(labels(app)[0], "\"all\"");
+            app.press(K::Tab, M::NONE);
+            let one = "render_whitespace = \"all\"\n";
+            assert_eq!(text(app), format!("[settings]\n{one}{one}{one}"), "{path:?}");
+            assert!(app.completion.popup.is_none());
+        }
+        // Booleans and powers of two.
+        let path = e.cfg.join("settings.toml");
+        open(
+            &mut e.app,
+            &path,
+            "[settings]\ncursor_blinking = |\nhex_bytes_per_line = ",
+        )
+        .await;
+        ctrl_space(&mut e.app);
+        assert_eq!(labels(&e.app), ["true", "false"]);
+        e.app.press(K::Esc, M::NONE);
+        let end = text(&e.app).len();
+        put_cursor(&mut e.app, end);
+        ctrl_space(&mut e.app);
+        assert_eq!(labels(&e.app), ["1", "2", "4", "8", "16", "32", "64"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn quick_suggestions_offer_keys() {
+        let mut e = make_env();
+        let path = e.root.join(".workspace");
+        open(&mut e.app, &path, "[tasks.build]\nco|\n").await;
+        e.app.type_text("m");
+        assert!(e.app.completion.quick.is_some());
+        quick(&mut e.app);
+        let got = labels(&e.app);
+        assert!(
+            got.contains(&"command".to_string()) && !got.contains(&"tab_width".to_string()),
+            "{got:?}"
+        );
+        e.app.press(K::Tab, M::NONE);
+        assert_eq!(text(&e.app), "[tasks.build]\ncommand = \n");
+        // A comment line offers nothing.
+        open(&mut e.app, &path, "[settings]\n# ren|\n").await;
+        ctrl_space(&mut e.app);
+        assert_eq!(message(&e.app).as_deref(), Some("No suggestions."));
+        // `quick_suggestions` off: nothing on typing, Ctrl+Space works.
+        e.app.settings.quick_suggestions = false;
+        open(&mut e.app, &path, "[settings]\nren|\n").await;
+        e.app.type_text("d");
+        assert!(e.app.completion.quick.is_none());
+        ctrl_space(&mut e.app);
+        assert!(labels(&e.app).contains(&"render_whitespace".to_string()));
+        e.app.press(K::Esc, M::NONE);
+        // A finished value offers nothing.
+        open(&mut e.app, &path, "[settings]\nrender_whitespace = \"all\"|\n").await;
+        ctrl_space(&mut e.app);
+        assert!(labels(&e.app).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn keybindings_offer_keys_commands_and_contexts() {
+        let mut e = make_env();
+        let path = e.cfg.join("keybindings.toml");
+        let name = Command::Undo.name();
+        let head = name.split('.').next().unwrap().to_string();
+        open(&mut e.app, &path, "[[binding]]\n|").await;
+        ctrl_space(&mut e.app);
+        assert_eq!(labels(&e.app), ["key", "command", "context"]);
+        e.app.press(K::Esc, M::NONE);
+        // `command = "` as typed (the editor may close the quote): the names; `.` and `-` typed
+        // into the filter don't close the list.
+        e.app.type_text("command = \"");
+        quick(&mut e.app);
+        assert!(labels(&e.app).contains(&name), "{}", labels(&e.app).len());
+        e.app.type_text(&format!("{head}."));
+        assert!(!labels(&e.app).is_empty(), "the list stays open past the dot");
+        let rest = name[head.len() + 1..].to_string();
+        e.app.type_text(&rest);
+        assert_eq!(labels(&e.app)[0], name);
+        e.app.press(K::Tab, M::NONE);
+        let t = text(&e.app);
+        assert!(
+            t == format!("[[binding]]\ncommand = \"{name}\"\n") || t == format!("[[binding]]\ncommand = \"{name}\""),
+            "{t:?}"
+        );
+        // With a closing quote after the cursor it stays single.
+        open(&mut e.app, &path, &format!("[[binding]]\ncommand = \"{head}.|\"\n")).await;
+        ctrl_space(&mut e.app);
+        e.app.type_text(&rest);
+        e.app.press(K::Tab, M::NONE);
+        assert_eq!(text(&e.app), format!("[[binding]]\ncommand = \"{name}\"\n"));
+        // Contexts and key pieces.
+        open(&mut e.app, &path, "[[binding]]\ncontext = \"|\"\n").await;
+        ctrl_space(&mut e.app);
+        assert!(labels(&e.app).contains(&"editor".to_string()));
+        e.app.press(K::Esc, M::NONE);
+        open(&mut e.app, &path, "[[binding]]\nkey = \"ctrl+|\"\n").await;
+        ctrl_space(&mut e.app);
+        let got = labels(&e.app);
+        assert!(
+            got.contains(&"shift+".to_string()) && got.contains(&"enter".to_string()),
+            "{got:?}"
+        );
+        assert!(!got.contains(&name));
+        e.app.press(K::Esc, M::NONE);
+        // The name goes in at every cursor.
+        let two = "[[binding]]\ncommand = \"|\"\n[[binding]]\ncommand = \"|\"\n";
+        open(&mut e.app, &path, two).await;
+        ctrl_space(&mut e.app);
+        e.app.type_text(&name);
+        e.app.press(K::Tab, M::NONE);
+        let want = format!("command = \"{name}\"");
+        assert_eq!(text(&e.app).matches(&want).count(), 2, "{}", text(&e.app));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn other_files_get_nothing() {
+        let mut e = make_env();
+        let path = e.root.join("Cargo.toml");
+        open(&mut e.app, &path, "[settings]\nrender_whitespace = |\n").await;
+        ctrl_space(&mut e.app);
+        assert_eq!(message(&e.app).as_deref(), Some("No suggestions."));
+        assert!(e.app.completion.popup.is_none());
+        e.app.type_text("a");
+        assert!(e.app.completion.quick.is_none());
+        // Save As a config file turns it on.
+        e.app.test_execute(Command::SaveAs);
+        e.app.press(
+            K::Char('a'),
+            if cfg!(target_os = "macos") {
+                M::SUPER
+            } else {
+                M::CONTROL
+            },
+        );
+        e.app.type_text(".workspace");
+        e.app.press(K::Enter, M::NONE);
+        let want = e.root.join(".workspace");
+        assert!(
+            e.app
+                .settle(move |a| a.active_buffer().is_some_and(|b| b.path == want))
+                .await
+        );
+        e.app.press(K::Backspace, M::NONE);
+        ctrl_space(&mut e.app);
+        assert!(labels(&e.app).iter().any(|l| l == "\"all\""), "{:?}", labels(&e.app));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_typed_quote_opens_values_and_save_as_away_stops() {
+        let mut e = make_env();
+        let path = e.root.join(".workspace");
+        open(&mut e.app, &path, "[settings]\nrender_whitespace = |\n").await;
+        e.app.type_text("\"");
+        assert!(e.app.completion.quick.is_some());
+        quick(&mut e.app);
+        assert!(labels(&e.app).iter().any(|l| l == "\"all\""), "{:?}", labels(&e.app));
+        e.app.type_text("al");
+        e.app.press(K::Tab, M::NONE);
+        assert_eq!(text(&e.app), "[settings]\nrender_whitespace = \"all\"\n");
+        // Saved as another name: a plain TOML file, no completion.
+        e.app.test_execute(Command::SaveAs);
+        e.app.press(
+            K::Char('a'),
+            if cfg!(target_os = "macos") {
+                M::SUPER
+            } else {
+                M::CONTROL
+            },
+        );
+        e.app.type_text("other.toml");
+        e.app.press(K::Enter, M::NONE);
+        let want = e.root.join("other.toml");
+        assert!(
+            e.app
+                .settle(move |a| a.active_buffer().is_some_and(|b| b.path == want))
+                .await
+        );
+        assert!(e.app.active_buffer().unwrap().config_file.is_none());
+        put_cursor(&mut e.app, "[settings]\nrender_whitespace = ".len());
+        ctrl_space(&mut e.app);
+        assert_eq!(message(&e.app).as_deref(), Some("No suggestions."));
+        e.app.type_text("\"");
+        assert!(e.app.completion.quick.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cargo_toml_with_binding_lines_gets_nothing() {
+        let mut e = make_env();
+        let path = e.root.join("Cargo.toml");
+        open(&mut e.app, &path, "[[binding]]\ncommand = \"|\"\n").await;
+        ctrl_space(&mut e.app);
+        assert_eq!(message(&e.app).as_deref(), Some("No suggestions."));
+        e.app.type_text("e");
+        assert!(e.app.completion.quick.is_none());
+        open(&mut e.app, &path, "[[binding]]\n|\n").await;
+        e.app.type_text("[");
+        assert!(e.app.completion.quick.is_none());
+        assert!(e.app.completion.popup.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn key_pieces_insert_at_every_cursor() {
+        let mut e = make_env();
+        let path = e.cfg.join("keybindings.toml");
+        let marked = "[[binding]]\nkey = \"ctrl+|\"\n[[binding]]\n  key = \"alt+|\"\n";
+        open(&mut e.app, &path, marked).await;
+        ctrl_space(&mut e.app);
+        e.app.type_text("ente");
+        assert_eq!(labels(&e.app)[0], "enter");
+        e.app.press(K::Tab, M::NONE);
+        assert_eq!(
+            text(&e.app),
+            "[[binding]]\nkey = \"ctrl+enter\"\n[[binding]]\n  key = \"alt+enter\"\n"
+        );
+        // A modifier goes in without a closing quote, at both cursors; then the table headers.
+        let marked = "[[binding]]\nkey = \"|\n[[binding]]\nkey = \"|\n";
+        open(&mut e.app, &path, marked).await;
+        ctrl_space(&mut e.app);
+        e.app.type_text("shi");
+        e.app.press(K::Tab, M::NONE);
+        assert_eq!(
+            text(&e.app),
+            "[[binding]]\nkey = \"shift+\n[[binding]]\nkey = \"shift+\n"
+        );
+        open(&mut e.app, &path, "[[binding]]\nkey = \"a\"\n|\n").await;
+        e.app.type_text("[");
+        quick(&mut e.app);
+        assert_eq!(labels(&e.app), ["[binding]]"]);
+        e.app.press(K::Tab, M::NONE);
+        assert_eq!(text(&e.app), "[[binding]]\nkey = \"a\"\n[[binding]]\n");
+        // In settings.toml a table name, the auto-closed `]` replaced.
+        open(&mut e.app, &e.cfg.join("settings.toml"), "|\n").await;
+        e.app.type_text("[");
+        quick(&mut e.app);
+        e.app.type_text("sett");
+        assert_eq!(labels(&e.app)[0], "settings");
+        e.app.press(K::Tab, M::NONE);
+        assert_eq!(text(&e.app), "[settings]\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn comment_lines_offer_nothing() {
+        let mut e = make_env();
+        let files = [
+            (e.cfg.join("settings.toml"), "[settings]\n"),
+            (e.root.join(".workspace"), "[settings]\n"),
+            (e.cfg.join("keybindings.toml"), "[[binding]]\n"),
+        ];
+        for (path, head) in files {
+            for line in ["# ren|", "#render_whitespace|", "  # command = \"|", "#[|"] {
+                open(&mut e.app, &path, &format!("{head}{line}\n")).await;
+                let before = text(&e.app);
+                ctrl_space(&mut e.app);
+                assert!(
+                    e.app.completion.popup.is_none(),
+                    "{path:?} {line:?}: {:?}",
+                    labels(&e.app)
+                );
+                assert_eq!(message(&e.app).as_deref(), Some("No suggestions."), "{path:?} {line:?}");
+                // A keystroke there: the quick-suggestion timer fires and opens nothing.
+                e.app.type_text("e");
+                quick(&mut e.app);
+                assert!(
+                    e.app.completion.popup.is_none(),
+                    "{path:?} {line:?}: {:?}",
+                    labels(&e.app)
+                );
+                assert!(text(&e.app).len() == before.len() + 1, "{path:?} {line:?}");
+            }
+        }
+    }
+}
