@@ -11235,3 +11235,136 @@ mod open_workspace_settings {
         assert!(app.active_buffer().is_some_and(|b| b.path == root.join("a.txt")));
     }
 }
+
+/// settings-d: `Buffer::config_file` is set by path for the three config files, and follows a
+/// Save As.
+mod settings_schema {
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::config::schema::ConfigFile;
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    fn make_app(dir: &tempfile::TempDir) -> (App, std::path::PathBuf, std::path::PathBuf) {
+        let root = crate::workspace::normalize(dir.path());
+        let config_dir = root.join("cfg");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let path = root.join("Cargo.toml");
+        std::fs::write(&path, "[package]\n").unwrap();
+        let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&path).unwrap());
+        app.config_dir = config_dir.clone();
+        app.test_start();
+        (app, root, config_dir)
+    }
+
+    async fn open(app: &mut App, path: &std::path::Path) {
+        app.test_open_file(path.to_path_buf());
+        let want = path.to_path_buf();
+        assert!(
+            app.settle(move |a| a.active_buffer().is_some_and(|b| b.path == want))
+                .await
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn buffers_are_flagged_by_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, root, cfg) = make_app(&dir);
+        assert_eq!(app.active_buffer().unwrap().config_file, None, "Cargo.toml");
+        for (path, want) in [
+            (cfg.join("settings.toml"), ConfigFile::Settings),
+            (cfg.join("keybindings.toml"), ConfigFile::Keybindings),
+            (root.join(".workspace"), ConfigFile::Workspace),
+        ] {
+            std::fs::write(&path, "\n").unwrap();
+            open(&mut app, &path).await;
+            assert_eq!(app.active_buffer().unwrap().config_file, Some(want), "{path:?}");
+        }
+        let elsewhere = root.join("settings.toml");
+        std::fs::write(&elsewhere, "\n").unwrap();
+        open(&mut app, &elsewhere).await;
+        assert_eq!(app.active_buffer().unwrap().config_file, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_open_commands_flag_their_buffers_and_save_as_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, root, cfg) = make_app(&dir);
+        app.press(K::Char(','), cmd() | M::ALT);
+        let want = root.join(".workspace");
+        assert!(
+            app.settle(move |a| a.active_buffer().is_some_and(|b| b.path == want))
+                .await
+        );
+        assert_eq!(app.active_buffer().unwrap().config_file, Some(ConfigFile::Workspace));
+        app.press(K::Char(','), cmd());
+        let want = cfg.join("settings.toml");
+        assert!(
+            app.settle(move |a| a.active_buffer().is_some_and(|b| b.path == want))
+                .await
+        );
+        assert_eq!(app.active_buffer().unwrap().config_file, Some(ConfigFile::Settings));
+        // Save As to another name clears the flag.
+        app.test_execute(crate::command::Command::SaveAs);
+        app.press(K::Char('a'), cmd());
+        app.type_text("copy.toml");
+        app.press(K::Enter, M::NONE);
+        let want = root.join("copy.toml");
+        assert!(
+            app.settle(move |a| a.active_buffer().is_some_and(|b| b.path == want))
+                .await
+        );
+        assert_eq!(app.active_buffer().unwrap().config_file, None);
+    }
+
+    /// An untitled buffer saved as the config dir's keybindings.toml becomes that file.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_untitled_saved_into_the_config_dir_is_flagged() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _root, cfg) = make_app(&dir);
+        app.test_execute(crate::command::Command::NewUntitledFile);
+        assert!(app.active_buffer().is_some_and(|b| b.is_untitled()));
+        assert_eq!(app.active_buffer().unwrap().config_file, None, "untitled");
+        app.test_execute(crate::command::Command::SaveAs);
+        app.press(K::Char('a'), cmd());
+        let want = cfg.join("keybindings.toml");
+        app.type_text(want.to_str().unwrap());
+        app.press(K::Enter, M::NONE);
+        assert!(
+            app.settle(move |a| a.active_buffer().is_some_and(|b| b.path == want && !b.is_untitled()))
+                .await
+        );
+        assert_eq!(app.active_buffer().unwrap().config_file, Some(ConfigFile::Keybindings));
+    }
+
+    /// An explorer rename re-flags the open buffer: Cargo.toml renamed to .workspace is one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_explorer_rename_reflags_the_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, root, _cfg) = make_app(&dir);
+        assert_eq!(app.active_buffer().unwrap().config_file, None);
+        app.press(K::Char('e'), cmd() | M::SHIFT);
+        let from = root.join("Cargo.toml");
+        assert!(app.settle(|a| a.explorer.find(&from).is_some()).await, "root listed");
+        app.explorer.selected = Some(from.clone());
+        app.press(K::F(2), M::NONE);
+        for _ in 0.."Cargo.toml".len() {
+            app.press(K::Backspace, M::NONE);
+        }
+        app.type_text(".workspace");
+        app.press(K::Enter, M::NONE);
+        let to = root.join(".workspace");
+        assert!(
+            app.settle(move |a| a.active_buffer().unwrap().path == to).await,
+            "the buffer follows the rename"
+        );
+        assert_eq!(app.active_buffer().unwrap().config_file, Some(ConfigFile::Workspace));
+    }
+}

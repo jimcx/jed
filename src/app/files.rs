@@ -244,9 +244,19 @@ impl App {
         }
     }
 
+    /// Which config file `buffer`'s path is (`Buffer::config_file`); the only place that is decided.
+    /// Untitled, log and commit buffers have no file, so none.
+    fn config_file_of(&self, buffer: &Buffer) -> Option<crate::config::schema::ConfigFile> {
+        if !buffer.has_file() {
+            return None;
+        }
+        crate::config::schema::ConfigFile::of(&buffer.path, &self.config_dir, &self.workspace.root)
+    }
+
     /// Adds a loaded buffer (language, stored diagnostics) and makes its first view, with the
     /// selection at `goto`; the caller puts it in a tab.
     pub(super) fn register_buffer(&mut self, mut buffer: Buffer, goto: Option<Goto>) -> (BufferId, View) {
+        buffer.config_file = self.config_file_of(&buffer);
         buffer.syntax.set_language(self.detect_language(&buffer));
         self.lsp.load_diagnostics(&mut buffer);
         let mut view = View::new();
@@ -595,7 +605,9 @@ impl App {
     /// (the next turn computes them for the new path; the language servers' documents follow at
     /// the next `sync_servers`, which `servers_dirty` makes start a server the new language needs).
     pub(super) fn forget_path_state(&mut self, id: BufferId) {
+        let file = self.buffers.get(id).and_then(|b| self.config_file_of(b));
         if let Some(buf) = self.buffers.get_mut(id) {
+            buf.config_file = file;
             buf.quick_diff.reset();
             buf.blame.reset();
             buf.diagnostics.clear_all();

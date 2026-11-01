@@ -100,6 +100,10 @@ pub struct Buffer {
     /// indentation's size; with spaces the indent size stays (`edit::Settings::indent_size`).
     /// Choosing an indentation, re-detecting or a disk reload drops it. Session-only.
     pub tab_display: Option<usize>,
+    /// Which of jed's config files this is, by path (`App::config_file_of`: set when the buffer
+    /// is registered and when its path changes); the settings highlighting and completion key
+    /// off it.
+    pub config_file: Option<crate::config::schema::ConfigFile>,
     /// `Some(n)`: an untitled buffer ("Untitled-n"): no path yet, writable, never on disk.
     untitled: Option<u32>,
     /// An untitled buffer's stable id, the key of its crash backup (kept when it is restored).
@@ -212,6 +216,7 @@ impl Buffer {
             guess: Guess::default(),
             indentation: None,
             tab_display: None,
+            config_file: None,
             untitled: None,
             untitled_id: None,
             language_override: None,

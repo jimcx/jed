@@ -434,7 +434,12 @@ async fn term_select_mouse_reporting_keeps_every_event() {
         None,
         "scrolled back, a program that reports the mouse still selects nothing"
     );
-    assert_eq!(scrollback(&app), 2, "the drag left the view scrolled back");
+    assert_eq!(
+        scrollback(&app),
+        2,
+        "FLAKE(term_select_mouse_reporting): the drag left the view scrolled back:\n{}",
+        screen_text(&app)
+    );
     click(&mut app, area.x + 1, area.y + 2);
     click(&mut app, area.x + 1, area.y + 2);
     assert_eq!(

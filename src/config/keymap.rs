@@ -33,7 +33,7 @@ const MODIFIERS: [(KeyModifiers, &str, &str); 4] = [
 ];
 
 /// Named keys: config spelling, display label.
-const NAMED_KEYS: [(KeyCode, &str, &str); 15] = [
+pub(crate) const NAMED_KEYS: [(KeyCode, &str, &str); 15] = [
     (KeyCode::Left, "left", "Left"),
     (KeyCode::Right, "right", "Right"),
     (KeyCode::Up, "up", "Up"),
@@ -233,7 +233,7 @@ pub enum Context {
 }
 
 impl Context {
-    const ALL: [(Context, &'static str); 21] = [
+    pub(crate) const ALL: [(Context, &'static str); 21] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
