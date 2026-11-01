@@ -814,7 +814,6 @@ fn defaults(platform: Platform) -> Vec<Binding> {
             (KeyCode::Char('d'), ctrl, Command::DeleteRight),
         ]);
     } else {
-        editor.push((KeyCode::Char('y'), ctrl, Command::Redo));
         // macOS leaves Cmd+V to the terminal: it arrives as a bracketed paste.
         editor.push((KeyCode::Char('v'), ctrl, Command::Paste));
     }

@@ -1028,9 +1028,14 @@ async fn term_area_focus_keys_t_y_u() {
     app.press(KeyCode::Char('t'), cmd());
     assert_eq!(app.ui.focus, Focus::Terminal);
     // Back to the editor, then a second group: Y has a target only now.
-    app.ui.focus = Focus::Editor;
+    app.ui.focus = if cfg!(target_os = "macos") {
+        Focus::Editor
+    } else {
+        Focus::SidePanel
+    };
+    let before = app.ui.focus;
     app.press(KeyCode::Char('y'), cmd());
-    assert_eq!(app.ui.focus, Focus::Editor, "no second group yet");
+    assert_eq!(app.ui.focus, before, "no second group yet");
     app.press(KeyCode::Char('t'), cmd());
     app.press(KeyCode::Char('\\'), cmd());
     app.test_execute(Command::NewShell);
