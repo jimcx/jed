@@ -5,7 +5,7 @@ agent: task
 
 Build one task from PLAN.md's `## Tasks` list with subagents. The task: $ARGUMENTS
 
-A task is either **single** (one implementer, one validator and its mutation runner, one commit) or **has subtasks** (a short id like `soft_wrap`, "Needs", "Done when" and a `Subtasks (one agent and one commit each):` list of `<id>-a: …` lines). A task with subtasks is built one subtask at a time, in order, each going through the same steps as a single task.
+A task is either **single** (one implementer, one validator and its mutation runner, one commit) or **has subtasks** (a short id like `soft_wrap`, "Needs", "Done when" and a `Subtasks (one agent and one commit each):` list of `<id>-a: …` lines). A task with subtasks is built one subtask at a time, in order, each going through the same steps as a single task, all in one run: the workflow doesn't stop between subtasks, only after the last one.
 
 Each task runs in its own git worktree, on its own branch. All the work and commits happen there; main is untouched; when the task is done the branch is pushed and a Gitea merge request opened (via `scripts/mr`) for the user to merge.
 
@@ -22,6 +22,7 @@ Each task runs in its own git worktree, on its own branch. All the work and comm
 ## Find where we are
 
 1. `git log --oneline -15`, `git status`, and the task list without its bodies: `scripts/tasks list` (and `scripts/tasks list --status done` for finished ones); `scripts/tasks check` is the sanity check. Also list the project's worktrees with `execute` → `tools.opencode.worktree_list()`, to see whether this task already has one. Then read the chosen task's entry with `scripts/tasks show <id>` (and read `tasks/<id>.md`). Tasks have **no order**; ✅ marks finished ones (and finished subtasks).
+   - Also check that the MR can be opened at the end: `command -v tea >/dev/null || [ -n "$GITEA_TOKEN" ]`. If neither holds, ask the user now (before any work) to export `GITEA_TOKEN` (a Gitea access token with repository write access) in the environment this session runs in, or install and log in `tea`, and wait for their answer; the check is repeated before step 11. Never ask for the token's value in chat or write it to a file.
 2. The task: the one named in the arguments (by name or id); else one with some subtasks ✅ but not all (work in progress); else list the open tasks (`scripts/tasks list --status open`) in a few lines, those with subtasks marked, and ask the user which. Stop until they answer.
    - Subtask commits are named `<Task name> (<id>-a): …`; the last one shows the last finished subtask.
 3. Interrupted work or resume:
@@ -92,22 +93,23 @@ Each task runs in its own git worktree, on its own branch. All the work and comm
      - A single task, or a task's last subtask: mark the task ✅ with short sub-bullets — what it changed (for later work), "Also:", "Deferred:" and "Still to check by hand:" — then set `status: in-progress` after the first subtask and `status: done` after the last, and update `summary`; regenerate the index with `scripts/tasks index --write`. The full entry already lives in `tasks/<id>.md`; nothing moves.
      - Fix other tasks or plan sections if this work changed them.
    - Commit everything. Subject: a single task's is a short imperative naming the feature (e.g. `Add render whitespace`); a subtask's is `<Task name> (<id>-a): <summary>`. Then a blank line and `- ` bullets of behaviour and notable internals. Do not add a `Co-Authored-By:` trailer.
-10. Give the user a short update after each commit: what landed, anything deferred, the hand checks. For a task with subtasks, move on to the next subtask (still in the worktree). When the task is done, go to step 11.
+10. Give the user a short update after each commit: what landed, anything deferred, the hand checks. For a task with subtasks, go straight on to the next subtask (still in the worktree) without stopping or asking: keep going until every subtask is committed and the task is marked done, pausing only for a "Stop and ask the user when" case. When the task is done, go to step 11.
 
 ## Hand over for review
 
 11. When the whole task is done (a single task, or its last subtask is committed), open a merge request in Gitea instead of merging:
+    - Re-run the token check from step 1. If it fails, don't ask: push the branch with `git push --force-with-lease -u origin <branch>` (the script would have done the same), skip `scripts/mr`, and say in the final summary that no MR was opened (no token, no `tea`) and give the branch name.
     - Run `scripts/mr <branch>` from the task's worktree (clean, on the branch). It pushes the branch to `origin` and opens a MR against `main` through Gitea's API (needs `GITEA_TOKEN` in the environment; it uses `tea` instead when that is installed), printing the MR's URL. It never touches local `main`. If it can't open the MR (no token), the branch is still pushed: tell the user and give them the branch name.
     - Keep the worktree while the MR is open: review feedback is addressed by resuming the worktree, committing, and re-running `scripts/mr`, which force-pushes the branch with a lease (the existing MR updates itself; the script's "already exists" error is expected).
-    - Report the MR URL and the task's hand checks, then stop: don't start another task unless asked. Once the user has merged the MR in Gitea they pull `main`, and the worktree and branch can be removed (`tools.opencode.worktree_remove({ directory })`, `git branch -D <branch>`).
+    - Report the MR URL, the task's hand checks, and a **flaky tests** section (every unrelated flake met along the way: test, how it failed, whether `FLAKE` debugging was added or already existed, and the `FLAKE` output with what it suggests), then stop: don't start another task unless asked. Once the user has merged the MR in Gitea they pull `main`, and the worktree and branch can be removed (`tools.opencode.worktree_remove({ directory })`, `git branch -D <branch>`).
     - A later task branches from local `main`, so it won't contain a task whose MR is still open; if it depends on one, say so and wait for the merge.
 
 ## Flaky tests
 
 A flaky test related to the task (one it added or changed, or one covering code it touched) is always fixed then and there by the validator (step 7, or step 8's re-run). The rest of this section is for a test unrelated to the task that fails and then passes on a re-run with no code change (in any agent's run or your own):
 
-- **First time (no `FLAKE` in its output):** don't try to fix it. Have the agent that saw it (or do it yourself) add debugging to that test, tagged with the keyword `FLAKE` so it's easy to grep: a `// FLAKE: <date>, <how it failed>` comment above the test, and assertion messages / an `eprintln!("FLAKE <test name>: …")` on the failing path that dump the state needed to diagnose it next time (the values compared, timings, events seen, the settle condition's inputs). The debugging must not change what the test checks or add sleeps or retries. Confirm `scripts/check test <its name>` passes, then move on with the task. The debugging goes in the task's commit, with a bullet saying which test flaked and how; tell the user in the post-commit update.
-- **Seen again (a failure whose output contains `FLAKE`):** stop and report to the user: the test, the `FLAKE` output, and what it suggests is wrong. Don't fix it until they confirm. Their answer decides whether the fix goes in this task's commit, its own commit, or waits.
+- **First time (no `FLAKE` in its output):** don't try to fix it. Have the agent that saw it (or do it yourself) add debugging to that test, tagged with the keyword `FLAKE` so it's easy to grep: a `// FLAKE: <date>, <how it failed>` comment above the test, and assertion messages / an `eprintln!("FLAKE <test name>: …")` on the failing path that dump the state needed to diagnose it next time (the values compared, timings, events seen, the settle condition's inputs). The debugging must not change what the test checks or add sleeps or retries. Confirm `scripts/check test <its name>` passes, then move on with the task. The debugging goes in the task's commit, with a bullet saying which test flaked and how; note it for the final report (don't ask what to do about it).
+- **Seen again (a failure whose output contains `FLAKE`):** still don't stop or ask, and don't fix it (unless it's related to the task, above). Keep the existing debugging, extending it only if its output was too thin to diagnose from, and carry on. Collect the test, the `FLAKE` output and what it suggests is wrong for the final report.
 - Include this rule in every subagent's prompt (implementer, validator, runner): a flaky test unrelated to the task gets `FLAKE` debugging and no fix (one related to it is fixed), and any `FLAKE` output it sees is reported back to you, not acted on.
 
 ## Stop and ask the user when
@@ -117,4 +119,3 @@ A flaky test related to the task (one it added or changed, or one covering code 
 - A design decision isn't settled by PLAN.md and would be costly to reverse.
 - Checks still fail after an agent says it's done, and a second attempt doesn't fix them.
 - A subagent is blocked by an OpenCode permission rule and the block is not one of the intended guards (commit, push, stash, PLAN.md edits).
-- A test fails with `FLAKE` in its output (see [Flaky tests](#flaky-tests)).
