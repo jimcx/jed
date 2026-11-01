@@ -96,7 +96,7 @@ mod tests {
     }
 
     fn tab(text: &str) -> MarkdownTab {
-        MarkdownTab::new(1, None, "x.md".into(), text.into())
+        MarkdownTab::new(1, None, "x.md".into(), text.into(), 0)
     }
 
     #[test]

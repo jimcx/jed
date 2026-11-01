@@ -4,7 +4,8 @@
 //! out at. `ui::markdown` fits it to the area each frame (`fit`: re-renders when the width
 //! changes, clamps the scroll, reveals a moved caret); `app/markdown.rs` runs its commands and
 //! mouse. It keeps a snapshot of the source text (`text`), so a split copy re-renders on its own.
-//! Following the source's edits is markdown_preview-d.
+//! `app/markdown.rs` keeps it in step with the source (re-render after edits, scroll following,
+//! source closed); the fields below marked "follow" are that bookkeeping.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -46,7 +47,26 @@ pub struct MarkdownTab {
     pub anchor: Option<Place>,
     /// The next frame scrolls the caret into view.
     pub reveal: bool,
+    /// Follow: the source buffer's revision `text` was taken at.
+    pub revision: u64,
+    /// Follow: the latest source revision seen (a change restarts the debounce).
+    pub seen: u64,
+    /// Follow: counts background renders asked for; only the newest result is taken.
+    pub generation: u64,
+    /// Follow: the (revision, width) a background render was asked for, still running.
+    pub requested: Option<(u64, usize)>,
+    /// Follow: scrolling with the source's top line (false once the user scrolled the preview,
+    /// until the source scrolls again).
+    pub following: bool,
+    /// Follow: the source's top line as last seen (`usize::MAX`: not yet, a restored preview).
+    pub src_top: usize,
+    /// Follow: no tab shows the source any more (the title says so; nothing updates it).
+    pub closed: bool,
 }
+
+/// Documents up to this many bytes render on the UI thread (a few ms); bigger ones in the
+/// background.
+pub const SYNC_LIMIT: usize = 32 * 1024;
 
 fn next_id() -> u64 {
     static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -69,10 +89,15 @@ fn bounds(text: &str) -> Vec<usize> {
 }
 
 impl MarkdownTab {
-    /// A preview of `text` (rendering now: the first parse of a big document is for -d to move
-    /// off the UI thread), at an assumed 80 columns until the first frame fits it.
-    pub fn new(source: BufferId, path: Option<PathBuf>, name: String, text: Arc<str>) -> Self {
-        let doc = markdown::render(&text, 80);
+    /// A preview of `text`, the source's text at `revision`, at an assumed 80 columns until the
+    /// first frame fits it. Rendered now when small; a big document starts empty and counts as
+    /// stale (`App::sync_markdown` renders it in the background).
+    pub fn new(source: BufferId, path: Option<PathBuf>, name: String, text: Arc<str>, revision: u64) -> Self {
+        let (doc, revision) = if text.len() <= SYNC_LIMIT {
+            (markdown::render(&text, 80), revision)
+        } else {
+            (Doc::default(), u64::MAX)
+        };
         Self {
             id: next_id(),
             source,
@@ -89,7 +114,37 @@ impl MarkdownTab {
             goal: 0,
             anchor: None,
             reveal: false,
+            revision,
+            seen: revision,
+            generation: 0,
+            requested: None,
+            following: true,
+            src_top: 0,
+            closed: false,
         }
+    }
+
+    /// Takes a finished render of `text` (source `revision`, laid out at `width`): the caret
+    /// stays on its line and the scroll where it was, both clamped at the next `fit`.
+    pub fn apply(&mut self, text: Arc<str>, doc: Doc, width: usize, revision: u64) {
+        self.text = text;
+        self.doc = doc;
+        self.width = width;
+        self.revision = revision;
+        self.requested = None;
+        let last = self.doc.lines.len().saturating_sub(1);
+        self.cursor.0 = self.cursor.0.min(last);
+        self.cursor.1 = self.snap(self.cursor.0, self.cursor.1);
+        if self.anchor.is_some_and(|a| a.0 > last) {
+            self.anchor = None;
+        }
+        self.top = self.top.min(self.max_top());
+        self.left = self.left.min(self.max_left());
+    }
+
+    /// Scrolls to follow the source's top line `line` of `lines`, in proportion to the rows.
+    pub fn follow(&mut self, line: usize, lines: usize) {
+        self.top = (line * self.rows() / lines.max(1)).min(self.max_top());
     }
 
     /// A split's copy: its own id and scroll state, the same source.
@@ -102,7 +157,11 @@ impl MarkdownTab {
 
     /// The tab's title.
     pub fn title(&self) -> String {
-        format!("Preview {}", self.name)
+        if self.closed {
+            format!("Preview {} (source closed)", self.name)
+        } else {
+            format!("Preview {}", self.name)
+        }
     }
 
     /// Fits to the area drawn: re-renders when `width` changed, clamps the scroll and the
@@ -111,7 +170,8 @@ impl MarkdownTab {
         let width = width.max(1);
         self.height = height.max(1);
         self.view_width = width;
-        if width != self.width {
+        // A big document is laid out again in the background (`App::sync_markdown`).
+        if width != self.width && self.text.len() <= SYNC_LIMIT {
             self.doc = markdown::render(&self.text, width);
             self.width = width;
         }
@@ -123,6 +183,7 @@ impl MarkdownTab {
         }
         if self.reveal {
             self.reveal = false;
+            self.following = false;
             let (l, c) = self.cursor;
             if l < self.top {
                 self.top = l;
@@ -135,7 +196,10 @@ impl MarkdownTab {
                 self.left = c + 1 - width;
             }
         }
-        self.top = self.top.min(self.max_top());
+        // Not rendered yet (a big document): a restored scroll waits for the rows (`apply`).
+        if self.revision != u64::MAX {
+            self.top = self.top.min(self.max_top());
+        }
         self.left = self.left.min(self.max_left());
     }
 
@@ -167,6 +231,7 @@ impl MarkdownTab {
 
     /// Scrolls by `rows` (the wheel), the caret staying where it is.
     pub fn scroll_by(&mut self, rows: isize) {
+        self.following = false;
         self.top = self.top.saturating_add_signed(rows).min(self.max_top());
     }
 
@@ -380,6 +445,7 @@ impl crate::scrollbar::Scrollable for MarkdownTab {
     fn set_top(&mut self, top: usize) {
         self.top = top.min(self.max_top());
         self.reveal = false;
+        self.following = false;
     }
 }
 
@@ -388,7 +454,7 @@ mod tests {
     use super::*;
 
     fn tab(text: &str) -> MarkdownTab {
-        let mut t = MarkdownTab::new(1, None, "x.md".into(), text.into());
+        let mut t = MarkdownTab::new(1, None, "x.md".into(), text.into(), 0);
         t.fit(40, 5);
         t
     }

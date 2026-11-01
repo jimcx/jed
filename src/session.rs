@@ -131,6 +131,13 @@ pub enum TabState {
         /// The top row's first byte.
         top: usize,
     },
+    /// A Markdown preview of the text tab of `path` (dropped at restore when that tab is gone).
+    Markdown {
+        /// Relative to the root when inside it.
+        path: PathBuf,
+        /// The first rendered row shown (clamped at restore).
+        top: usize,
+    },
 }
 
 /// A diff side (`diff_view::Text`) as stored.
@@ -362,6 +369,8 @@ pub fn read(
                 }
             }
             TabState::Commit { commit } => commit_still_there(root, commit),
+            // Kept (or not) once every group's text tabs are known, below.
+            TabState::Markdown { .. } => true,
             TabState::Hex { path, .. } => {
                 let path = resolve(root, path);
                 if open_hex.contains(&path) || hex_docs.iter().any(|(p, _)| *p == path) {
@@ -389,6 +398,28 @@ pub fn read(
             }
         });
         // The active tab stays active, else its neighbour does.
+        group.active = active
+            .and_then(|a| group.tabs.iter().position(|t| *t == a))
+            .unwrap_or(group.active)
+            .min(group.tabs.len().saturating_sub(1));
+    }
+    // A preview needs its source: a text tab of the path, restored or already open.
+    let sources: HashSet<PathBuf> = session
+        .groups
+        .iter()
+        .flat_map(|g| g.tabs.iter())
+        .filter_map(|t| match t {
+            TabState::Text { path, .. } => Some(resolve(root, path)),
+            _ => None,
+        })
+        .chain(open.iter().cloned())
+        .collect();
+    for group in &mut session.groups {
+        let active = group.tabs.get(group.active).cloned();
+        group.tabs.retain(|t| match t {
+            TabState::Markdown { path, .. } => sources.contains(&resolve(root, path)),
+            _ => true,
+        });
         group.active = active
             .and_then(|a| group.tabs.iter().position(|t| *t == a))
             .unwrap_or(group.active)
@@ -642,6 +673,14 @@ mod tests {
         assert!(matches!(tabs[1], TabState::Text { .. }));
         // An older text tab (no `top_row`) reads as the line's first row.
         assert!(matches!(tabs[1], TabState::Text { top_row: 0, .. }));
+        let md: TabState = serde_json::from_str(r#"{"kind":"markdown","path":"a.md","top":7}"#).unwrap();
+        assert_eq!(
+            md,
+            TabState::Markdown {
+                path: "a.md".into(),
+                top: 7
+            }
+        );
         let bad = r#"{"kind":"hex","path":"a.bin","cursor":5,"column":"middle","top":0}"#;
         assert!(serde_json::from_str::<TabState>(bad).is_err(), "an unknown column");
     }

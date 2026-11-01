@@ -423,9 +423,17 @@ impl Groups {
 
     /// The group and index of the preview of `source`, if any group has one.
     pub fn find_markdown(&self, source: BufferId) -> Option<(GroupId, usize)> {
+        // In group order, so the pick is the same every time.
+        self.ids()
+            .into_iter()
+            .find_map(|g| self.map.get(&g)?.find_markdown(source).map(|i| (g, i)))
+    }
+
+    /// Every Markdown preview tab, in any group.
+    pub fn markdown_tabs_mut(&mut self) -> impl Iterator<Item = &mut MarkdownTab> {
         self.map
-            .iter()
-            .find_map(|(&g, grp)| grp.find_markdown(source).map(|i| (g, i)))
+            .values_mut()
+            .flat_map(|g| g.tabs.iter_mut().filter_map(Tab::markdown_mut))
     }
 
     /// Every shell tab, in any group (numbering a new shell's title).

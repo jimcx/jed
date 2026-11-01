@@ -86,8 +86,17 @@ impl App {
                 },
                 revision: 0,
             }),
+            // Path only, as a diff tab (an untitled source has no path to come back to).
+            Tab::Markdown(m) => m.path.clone().map(|path| Here {
+                entry: Entry {
+                    group: self.groups.active,
+                    path,
+                    pos: None,
+                },
+                revision: 0,
+            }),
             // A shell isn't a place to come back to.
-            Tab::Shell(_) | Tab::Markdown(_) => None,
+            Tab::Shell(_) => None,
         }
     }
 
@@ -170,11 +179,15 @@ impl App {
                 .iter()
                 .position(|t| t.diff().is_some_and(|d| d.path == entry.path));
             let hex = g.find_hex(&entry.path);
-            // A diff or hex tab counts as its file.
+            let preview = g.tabs.iter().position(|t| {
+                t.markdown()
+                    .is_some_and(|m| m.path.as_deref() == Some(entry.path.as_path()))
+            });
+            // A diff, hex or preview tab counts as its file.
             if entry.pos.is_some() {
                 text.or(hex).or(diff)
             } else {
-                diff.or(hex).or(text)
+                diff.or(hex).or(preview).or(text)
             }
         };
         let open = self.buffers.find_path(&entry.path);

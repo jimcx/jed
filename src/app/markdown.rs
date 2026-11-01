@@ -4,22 +4,182 @@
 //! preview), Cmd+C (`markdown_copy`) and the mouse (`markdown_mouse`: wheel, click, Shift+click,
 //! drag).
 
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use super::mouse::Drag;
-use super::{App, Level};
+use super::{App, AppEvent, Level};
+use crate::buffer::BufferId;
+use crate::buffer::pos;
 use crate::clipboard::Copied;
 use crate::command::Command;
 use crate::group::Tab;
 use crate::layout::{Hit, SplitDir};
-use crate::markdown_tab::MarkdownTab;
+use crate::markdown::{self, Doc};
+use crate::markdown_tab::{MarkdownTab, SYNC_LIMIT};
 use crate::syntax::Language;
+
+/// How long after the source's last edit its previews are rendered again.
+pub const DELAY: Duration = Duration::from_millis(150);
+
+/// The previews' schedule.
+#[derive(Default)]
+pub struct MarkdownState {
+    /// Edited sources' previews are due (`DELAY` after the last edit seen).
+    pub deadline: Option<Instant>,
+    /// Renders started (synchronous or background), for tests.
+    pub renders: usize,
+}
+
+impl MarkdownState {
+    pub fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+}
 
 /// Rows the wheel scrolls; columns for a sideways wheel.
 const WHEEL_ROWS: isize = 3;
 const WHEEL_COLS: isize = 4;
 
 impl App {
+    /// Keeps the previews in step with their sources, once per loop turn and after a frame:
+    /// a changed source restarts the debounce; when it is due the stale previews render again
+    /// (small documents here, big ones in the background → `AppEvent::MarkdownRendered`, only
+    /// the newest result is taken); a width the document was not laid out at renders at once;
+    /// a source scrolled moves its previews (proportionally to the rows) unless the user
+    /// scrolled the preview since; a source no tab shows marks its previews closed; a renamed
+    /// source renames them.
+    pub(super) fn sync_markdown(&mut self) {
+        let now = Instant::now();
+        // The first view of each source buffer: its top line (the active tab of a group wins).
+        let mut tops: HashMap<BufferId, usize> = HashMap::new();
+        let mut any = false;
+        for id in self.groups.ids() {
+            let Some(g) = self.groups.get(id) else { continue };
+            for (i, t) in g.tabs.iter().enumerate() {
+                any |= t.markdown().is_some();
+                if let Some(t) = t.text()
+                    && (i == g.active || !tops.contains_key(&t.buffer))
+                {
+                    tops.insert(t.buffer, t.view.top_line());
+                }
+            }
+        }
+        if !any {
+            self.markdown.deadline = None;
+            return;
+        }
+        let due = self.markdown.deadline.is_some_and(|d| d <= now);
+        if due {
+            self.markdown.deadline = None;
+        }
+        let tx = self.tx.clone();
+        let runtime = tokio::runtime::Handle::try_current().is_ok();
+        let (buffers, state, redraw) = (&self.buffers, &mut self.markdown, &mut self.needs_redraw);
+        for m in self.groups.markdown_tabs_mut() {
+            if m.closed {
+                continue;
+            }
+            let (Some(buf), Some(&top)) = (buffers.get(m.source), tops.get(&m.source)) else {
+                m.closed = true;
+                *redraw = true;
+                continue;
+            };
+            if buf.has_file() && m.path.as_deref() != Some(buf.path.as_path()) {
+                m.path = Some(buf.path.clone());
+                m.name = buf.name();
+                *redraw = true;
+            }
+            let revision = buf.revision();
+            if revision != m.seen {
+                m.seen = revision;
+                state.deadline = Some(now + DELAY);
+            }
+            // A restored preview keeps its own scroll until the source scrolls (`src_top` unseen).
+            if m.src_top == usize::MAX {
+                m.src_top = top;
+                m.following = false;
+            } else if top != m.src_top {
+                m.src_top = top;
+                m.following = true;
+            }
+            if m.following {
+                let before = m.top;
+                m.follow(top, pos::line_count(&buf.rope));
+                *redraw |= m.top != before;
+            }
+            // What to render: the new text once the debounce has passed, else (a new width
+            // only) the text as it is.
+            // A first render still running waits for the debounce too (no 1 MB copy a key).
+            let first = m.revision == u64::MAX;
+            if first && m.requested.is_some() && !due {
+                continue;
+            }
+            let target = if (due || first) && m.revision != revision {
+                revision
+            } else {
+                m.revision
+            };
+            let width = m.view_width;
+            if (target == m.revision && m.width == width) || m.requested == Some((target, width)) {
+                continue;
+            }
+            let text: Arc<str> = if target == m.revision {
+                m.text.clone()
+            } else {
+                buf.rope.to_string().into()
+            };
+            state.renders += 1;
+            if text.len() <= SYNC_LIMIT {
+                let doc = markdown::render(&text, width);
+                m.apply(text, doc, width, target);
+                *redraw = true;
+            } else if runtime {
+                m.generation += 1;
+                m.requested = Some((target, width));
+                let (tab, generation) = (m.id, m.generation);
+                let tx = tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let doc = markdown::render(&text, width);
+                    let _ = tx.send(AppEvent::MarkdownRendered {
+                        tab,
+                        generation,
+                        width,
+                        revision: target,
+                        text,
+                        doc,
+                    });
+                });
+            }
+        }
+    }
+
+    /// A background render finished: taken when it is the newest asked for by that tab.
+    pub(super) fn markdown_rendered(
+        &mut self,
+        tab: u64,
+        generation: u64,
+        width: usize,
+        revision: u64,
+        text: Arc<str>,
+        doc: Doc,
+    ) {
+        let Some(m) = self.groups.markdown_tabs_mut().find(|m| m.id == tab) else {
+            return;
+        };
+        // A newer request, or a render done here since (a document shrunk under `SYNC_LIMIT`),
+        // makes this one stale.
+        if m.generation != generation || m.requested != Some((revision, width)) {
+            tracing::debug!(tab, generation, "markdown: stale render dropped");
+            return;
+        }
+        m.apply(text, doc, width, revision);
+        self.needs_redraw = true;
+    }
+
     /// The active tab's Markdown preview, if it is one.
     pub fn active_markdown(&self) -> Option<&MarkdownTab> {
         self.group().active_markdown()
@@ -51,6 +211,7 @@ impl App {
             buf.has_file().then(|| buf.path.clone()),
             buf.name(),
             buf.rope.to_string().into(),
+            buf.revision(),
         );
         let from = self.groups.active;
         let ids = self.groups.ids();

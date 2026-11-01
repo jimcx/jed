@@ -5,6 +5,14 @@
 //! on its own background, a box-drawn table that follows the width (wide characters too);
 //! movement, selection and copy work, every editing command, typing and paste do nothing; splits
 //! copy it, closing it never prompts.
+//!
+//! markdown_preview-d, and with it the task's "Done when" (`markdown_preview_done_when`: a
+//! README-style file with H1-H6, a fenced Rust block, an indented block, a mixed-alignment table
+//! with a wide-character cell and a task list; the key opens the split to the right, the headings
+//! differ, the Rust block has its own background and is highlighted, the table is an aligned grid
+//! also after narrowing, the preview cannot be edited, typing in the source updates it): the
+//! preview follows the source (debounced re-render, background render for big documents with
+//! stale results dropped, undo, scroll, a closed or renamed source), sessions and back / forward.
 
 use std::fs;
 use std::path::PathBuf;
@@ -441,4 +449,316 @@ async fn markdown_preview_status_bar_names_the_source() {
         .collect();
     assert!(bar.contains("Markdown preview of README.md"), "{bar}");
     assert!(bar.contains("Ln 1, Col 1"), "{bar}");
+}
+
+fn doc_has(app: &App, needle: &str) -> bool {
+    preview(app).doc.lines.iter().any(|l| l.text().contains(needle))
+}
+
+fn long_doc(paragraphs: usize) -> String {
+    (0..paragraphs).map(|i| format!("para {i} text\n\n")).collect()
+}
+
+/// The task's "Done when", in order on one app.
+#[tokio::test(flavor = "multi_thread")]
+async fn markdown_preview_done_when() {
+    let (_d, _root, mut app) = md_app().await;
+    let source = open_preview(&mut app).await;
+    // A split to the right of the source.
+    let (g, _) = app.groups.find_markdown(source_id(&app)).unwrap();
+    assert_eq!(app.groups.ids(), vec![source, g]);
+    let term = draw(&mut app, 140, 50);
+    let (_, rect) = rows_rect(&app);
+    assert!(rect.x > app.hits.group(source).unwrap().text.x, "to the right");
+    let buf = term.backend().buffer();
+    // Six heading levels in six styles; the Rust block on its own, highlighted background.
+    let mut styles = std::collections::HashSet::new();
+    for word in ["One", "Two", "Three", "Four", "Five", "Six"] {
+        let row = row_with(&term, rect, word).unwrap_or_else(|| panic!("{word} drawn"));
+        let x = rect.x + row_text(&term, rect, row).find(word).unwrap() as u16;
+        let c = &buf[(x, rect.y + row)];
+        styles.insert(format!("{:?}{:?}", c.fg, c.modifier));
+    }
+    assert_eq!(styles.len(), 6, "six distinguishable heading styles");
+    let code_bg = crate::theme::Theme::dark_plus(true)
+        .get("markdown.codeblock")
+        .bg
+        .unwrap();
+    let row = row_with(&term, rect, "fn main").expect("code drawn");
+    assert_eq!(buf[(rect.x, rect.y + row)].bg, code_bg);
+    let x = rect.x + row_text(&term, rect, row).find("fn").unwrap() as u16;
+    assert_ne!(buf[(x, rect.y + row)].fg, buf[(x + 3, rect.y + row)].fg, "highlighted");
+    assert!(row_with(&term, rect, "indented block").is_some());
+    // The table: an aligned grid, also narrower.
+    for width in [140, 60] {
+        let term = draw(&mut app, width, 60);
+        let (_, rect) = rows_rect(&app);
+        let top = row_with(&term, rect, "┌").expect("table top");
+        let bottom = row_with(&term, rect, "└").expect("table bottom");
+        let widths: Vec<usize> = (top..=bottom)
+            .map(|i| unicode_width::UnicodeWidthStr::width(row_text(&term, rect, i).as_str()))
+            .collect();
+        assert!(widths.iter().all(|&w| w == widths[0]), "{width}: {widths:?}");
+    }
+    // Cannot be edited.
+    app.press(KeyCode::Char('v'), mods());
+    assert_eq!(app.context(), crate::config::keymap::Context::Markdown);
+    let before = preview(&app).text.clone();
+    app.type_text("zzz");
+    app.press(KeyCode::Backspace, M::NONE);
+    app.press(KeyCode::Char('x'), cmd());
+    app.press(KeyCode::Char('v'), cmd());
+    assert_eq!(preview(&app).text, before);
+    let buf_id = app.groups.get(source).unwrap().tabs[0].buffer().unwrap();
+    assert!(!app.buffers.get(buf_id).unwrap().is_dirty(), "the source is untouched");
+    // Typing in the source updates it.
+    app.test_execute(Command::FocusGroup(1));
+    assert_eq!(app.groups.active, source);
+    app.type_text("Typed ");
+    assert!(app.settle(|a| doc_has(a, "Typed")).await, "the preview follows typing");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn markdown_preview_debounces_edits_and_follows_undo() {
+    let (_d, _root, mut app) = md_app().await;
+    open_preview(&mut app).await;
+    draw(&mut app, 120, 40);
+    let renders = app.markdown.renders;
+    let before = std::time::Instant::now();
+    for c in ["a", "b", "c", "d"] {
+        app.type_text(c);
+    }
+    assert!(!doc_has(&app, "abcd"), "not at once");
+    app.pump();
+    assert!(!doc_has(&app, "abcd"), "not before the debounce");
+    let deadline = app.markdown.deadline.expect("the debounce started");
+    // `markdown::DELAY` (150 ms) after the edits.
+    assert!(deadline >= before + std::time::Duration::from_millis(150), "debounced");
+    assert!(app.settle(|a| doc_has(a, "abcd")).await);
+    assert_eq!(app.markdown.renders, renders + 1, "one render for the burst");
+    app.press(KeyCode::Char('z'), cmd());
+    assert!(app.settle(|a| !doc_has(a, "abcd")).await, "undo reaches the preview");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn markdown_preview_big_documents_render_in_the_background() {
+    let (_d, root, mut app) = md_app().await;
+    fs::write(root.join("big.md"), long_doc(6000)).unwrap();
+    quick_open(&mut app, "big.md").await;
+    app.press(KeyCode::Char('v'), mods());
+    assert!(preview(&app).doc.lines.is_empty(), "not rendered on the UI thread");
+    assert!(app.settle(|a| doc_has(a, "para 5999")).await);
+    let id = preview(&app).id;
+    let (generation, lines) = (preview(&app).generation, preview(&app).doc.lines.len());
+    // A result of an older generation is dropped.
+    app.test_markdown_rendered(id, generation - 1, 80, 0, "stale\n");
+    assert_eq!(preview(&app).doc.lines.len(), lines);
+    assert!(!doc_has(&app, "stale"));
+    // Edits render in the background again.
+    app.type_text("Fresh ");
+    assert!(app.settle(|a| doc_has(a, "Fresh")).await);
+    assert!(preview(&app).generation > generation);
+    // A new width renders at that width.
+    draw(&mut app, 50, 20);
+    let w = preview(&app).view_width;
+    assert!(app.settle(|a| preview(a).width == w).await, "laid out at the new width");
+    // A render done here since (the document shrunk under `SYNC_LIMIT`) makes a running one's
+    // result stale, though no newer background render was asked for.
+    let revision = preview(&app).revision;
+    app.press(KeyCode::Char('a'), cmd());
+    app.type_text("small doc");
+    assert!(app.settle(|a| doc_has(a, "small doc")).await);
+    let (generation, width) = (preview(&app).generation, preview(&app).width);
+    app.test_markdown_rendered(id, generation, width, revision, "stale\n");
+    assert!(
+        doc_has(&app, "small doc") && !doc_has(&app, "stale"),
+        "the newer text stays"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn markdown_preview_first_big_render_waits_and_survives_a_close() {
+    let (_d, root, mut app) = md_app().await;
+    fs::write(root.join("big.md"), long_doc(20000)).unwrap();
+    quick_open(&mut app, "big.md").await;
+    app.press(KeyCode::Char('v'), mods());
+    app.pump();
+    let id = preview(&app).id;
+    assert_eq!(preview(&app).generation, 1, "the first render started");
+    // Typing while it runs asks for no render a key: the debounce decides.
+    app.type_text("abc");
+    app.pump();
+    assert_eq!(preview(&app).generation, 1, "no new render per key");
+    assert!(
+        app.settle(|a| doc_has(a, "abc")).await,
+        "the edits render after the debounce"
+    );
+    // Closing the preview while a render runs: its result is dropped.
+    app.type_text("more");
+    assert!(app.settle(|a| preview(a).requested.is_some()).await);
+    let generation = preview(&app).generation;
+    let (g, _) = app.groups.find_markdown(source_id(&app)).unwrap();
+    let n = app.groups.ids().iter().position(|&x| x == g).unwrap();
+    app.test_execute(Command::FocusGroup(n as u8 + 1));
+    app.test_execute(Command::CloseTab);
+    assert!(app.groups.markdown_tabs_mut().next().is_none());
+    app.test_markdown_rendered(id, generation, 80, 0, "late\n");
+    assert!(app.groups.markdown_tabs_mut().next().is_none());
+    app.pump();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn markdown_preview_scrolls_with_the_source_until_the_user_scrolls() {
+    let (_d, root, mut app) = md_app().await;
+    fs::write(root.join("long.md"), long_doc(300)).unwrap();
+    quick_open(&mut app, "long.md").await;
+    app.press(KeyCode::Char('v'), mods());
+    draw(&mut app, 120, 20);
+    assert_eq!(preview(&app).top, 0);
+    for _ in 0..8 {
+        app.press(KeyCode::PageDown, M::NONE);
+    }
+    draw(&mut app, 120, 20);
+    app.pump();
+    let followed = preview(&app).top;
+    assert!(followed > 0, "the preview scrolled with the source");
+    // The user scrolls the preview: it stays until the source scrolls again.
+    let (_, rect) = rows_rect(&app);
+    app.mouse(MouseEventKind::ScrollUp, rect.x + 1, rect.y + 1);
+    draw(&mut app, 120, 20);
+    app.pump();
+    let own = preview(&app).top;
+    assert!(own < followed);
+    draw(&mut app, 120, 20);
+    app.pump();
+    assert_eq!(preview(&app).top, own, "no feedback");
+    for _ in 0..8 {
+        app.press(KeyCode::PageDown, M::NONE);
+    }
+    draw(&mut app, 120, 20);
+    app.pump();
+    assert!(preview(&app).top > followed, "following again");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn markdown_preview_keeps_its_text_when_the_source_closes_and_follows_a_rename() {
+    let (_d, root, mut app) = md_app().await;
+    open_preview(&mut app).await;
+    draw(&mut app, 120, 20);
+    // Renamed (Save As, an explorer rename): the title follows.
+    let new = root.join("renamed.md");
+    app.active_mut().unwrap().0.path = new.clone();
+    app.pump();
+    assert_eq!(preview(&app).title(), "Preview renamed.md");
+    assert_eq!(preview(&app).path.as_ref(), Some(&new));
+    // A copy of the source in another group keeps it open.
+    app.test_execute(Command::SplitRight);
+    let copy = app.groups.active;
+    app.test_execute(Command::FocusGroup(1));
+    app.test_execute(Command::CloseTab);
+    app.pump();
+    assert!(!preview(&app).closed, "still shown in another group");
+    assert_eq!(preview(&app).title(), "Preview renamed.md");
+    // Closed: the last render stays, the title says so, no more updates.
+    let n = app.groups.ids().iter().position(|&g| g == copy).unwrap();
+    app.test_execute(Command::FocusGroup(n as u8 + 1));
+    assert!(app.group().active_tab().is_some(), "the source's copy");
+    app.test_execute(Command::CloseTab);
+    app.pump();
+    assert_eq!(preview(&app).title(), "Preview renamed.md (source closed)");
+    assert!(doc_has(&app, "emphasis"));
+}
+
+fn state_app_for(root: &std::path::Path, state: &std::path::Path) -> App {
+    let mut app = App::new(
+        Workspace::load(root.to_path_buf()),
+        TrustStore::load(state.join("trust.toml")),
+        None,
+        true,
+    );
+    app.state_dir = Some(state.to_path_buf());
+    app
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn markdown_preview_survives_a_restart() {
+    let (_d, root, state) = dirs();
+    // Big enough to render in the background, also at restore.
+    fs::write(root.join("long.md"), long_doc(3000)).unwrap();
+    let mut app = state_app_for(&root, &state);
+    app.test_start();
+    assert!(app.settle(|a| !a.session.loading()).await);
+    app.ui.side_visible = false;
+    app.ui.focus = Focus::Editor;
+    quick_open(&mut app, "long.md").await;
+    app.press(KeyCode::Char('v'), mods());
+    draw(&mut app, 120, 20);
+    assert!(app.settle(|a| doc_has(a, "para 0")).await);
+    app.press(KeyCode::Char('v'), mods());
+    app.press(KeyCode::PageDown, M::NONE);
+    app.press(KeyCode::PageDown, M::NONE);
+    draw(&mut app, 120, 20);
+    let top = preview(&app).top;
+    assert!(top > 0);
+    app.test_execute(Command::Quit);
+    app.shutdown().await;
+    drop(app);
+
+    let mut app = state_app_for(&root, &state);
+    app.test_start();
+    assert!(app.settle(|a| !a.session.loading()).await);
+    assert!(app.settle(|a| a.groups.len() == 2).await, "the split is back");
+    let (g, _) = app.groups.find_markdown(source_id(&app)).expect("the preview is back");
+    assert_ne!(g, app.groups.ids()[0], "to the right of its source");
+    // The first frame comes before the background render: the scroll waits for the rows.
+    draw(&mut app, 120, 20);
+    assert!(app.settle(|a| doc_has(a, "para 0")).await);
+    draw(&mut app, 120, 20);
+    assert_eq!(preview(&app).top, top, "scrolled where it was");
+    app.test_execute(Command::Quit);
+    app.shutdown().await;
+    drop(app);
+
+    // The source gone: so is its preview.
+    fs::remove_file(root.join("long.md")).unwrap();
+    let mut app = state_app_for(&root, &state);
+    app.test_start();
+    assert!(app.settle(|a| !a.session.loading()).await);
+    assert!(
+        app.groups.markdown_tabs_mut().next().is_none(),
+        "no preview without its source"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn markdown_preview_is_a_back_forward_entry() {
+    let (_d, _root, mut app) = md_app().await;
+    open_preview(&mut app).await;
+    app.press(KeyCode::Char('v'), mods());
+    let g = app.groups.active;
+    quick_open(&mut app, "notes.txt").await;
+    app.test_execute(Command::NavBack);
+    assert!(
+        app.groups.active == g && app.group().active_markdown().is_some(),
+        "back returns to the preview"
+    );
+}
+
+/// Rendering 1 MB of Markdown (headings, tables, code blocks) is why big documents render in
+/// the background; the number is printed (`--release … milestone -- --nocapture`).
+#[test]
+fn milestone_markdown_preview_budget_render_1mb() {
+    let block = "# Title\n\nSome *text* with `code` and a [link](http://x).\n\n```rust\nfn main() { let x = 1; }\n```\n\n\
+| a | b |\n|---|--:|\n| 1 | 2 |\n\n- [x] done\n- item\n\n";
+    let text = block.repeat(1_000_000 / block.len());
+    let t = std::time::Instant::now();
+    let doc = crate::markdown::render(&text, 100);
+    let ms = t.elapsed().as_millis();
+    eprintln!(
+        "markdown render of {} KB: {ms} ms, {} lines",
+        text.len() / 1024,
+        doc.lines.len()
+    );
+    let limit = if cfg!(debug_assertions) { 60_000 } else { 3_000 };
+    assert!(ms < limit, "{ms} ms");
 }

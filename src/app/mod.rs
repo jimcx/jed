@@ -126,6 +126,8 @@ enum Timer {
     QuickDiff,
     /// Diff tabs of edited buffers are due (`diff_view::DELAY`).
     Diff,
+    /// Markdown previews of edited buffers are due (`markdown::DELAY`).
+    Markdown,
     /// Edited buffers' inline blame is due (`blame::DELAY`).
     Blame,
     /// Dirty buffers changed since their backup are due (`backup::INTERVAL`).
@@ -227,6 +229,16 @@ enum AppEvent {
         tab: u64,
         generation: u64,
         count: crate::hex::Count,
+    },
+    /// A big document's Markdown render (`MarkdownTab::id`, the generation asked for, the width
+    /// and source revision it is for); an older generation's is dropped.
+    MarkdownRendered {
+        tab: u64,
+        generation: u64,
+        width: usize,
+        revision: u64,
+        text: std::sync::Arc<str>,
+        doc: crate::markdown::Doc,
     },
     Listed {
         dir: PathBuf,
@@ -548,6 +560,8 @@ pub struct App {
     pub blame: blame::BlameState,
     /// Diff tabs' ids, their reload delay, stages started from them.
     pub diffs: diff_view::DiffViews,
+    /// Markdown previews' re-render schedule.
+    pub markdown: markdown::MarkdownState,
     /// The Source Control view: collapsed sections, scroll, selection.
     pub scm: crate::scm::ScmView,
     /// The Tools view's list (`app/tools.rs`, drawn by `ui::tools`).
@@ -718,6 +732,7 @@ impl App {
             file_history: Default::default(),
             replace: Default::default(),
             quick_diff: Default::default(),
+            markdown: Default::default(),
             blame: Default::default(),
             diffs: Default::default(),
             scm: Default::default(),
@@ -800,6 +815,7 @@ impl App {
         self.sync_quick_diff();
         self.sync_blame();
         self.sync_diffs();
+        self.sync_markdown();
         self.sync_commit_tabs();
         self.sync_git_history();
     }
@@ -849,6 +865,8 @@ impl App {
                 break;
             }
             terminal.draw(|f| ui::render(f, self))?;
+            // The frame fitted the previews and scrolled the sources.
+            self.sync_markdown();
         }
         Ok(())
     }
@@ -868,6 +886,7 @@ impl App {
             self.sync_quick_diff();
             self.sync_blame();
             self.sync_diffs();
+            self.sync_markdown();
             self.sync_commit_tabs();
             self.sync_git_history();
             self.sync_backups();
@@ -949,6 +968,10 @@ impl App {
             .diffs
             .deadline()
             .map(|d| (tokio::time::Instant::from_std(d), Timer::Diff));
+        let markdown = self
+            .markdown
+            .deadline()
+            .map(|d| (tokio::time::Instant::from_std(d), Timer::Markdown));
         let blame = self
             .blame
             .deadline()
@@ -969,8 +992,8 @@ impl App {
             .files_poll
             .map(|d| (tokio::time::Instant::from_std(d), Timer::Files));
         let next = [
-            fs, search, hover, tab_tip, completion, bulb, semantic, quick_diff, diff, blame, backup, git_status, logs,
-            files,
+            fs, search, hover, tab_tip, completion, bulb, semantic, quick_diff, diff, markdown, blame, backup,
+            git_status, logs, files,
         ]
         .into_iter()
         .flatten()
@@ -998,6 +1021,7 @@ impl App {
             Timer::Semantic => self.semantic_tick(Instant::now()),
             Timer::QuickDiff => self.sync_quick_diff(),
             Timer::Diff => self.sync_diffs(),
+            Timer::Markdown => self.sync_markdown(),
             Timer::Blame => self.sync_blame(),
             Timer::Backup => self.backup_tick(Instant::now()),
             Timer::GitStatus => self.ensure_status_loaded(),
@@ -1721,6 +1745,14 @@ impl App {
                 tokens,
             } => self.semantic_decoded(buffer, server, version, tokens),
             AppEvent::HexCount { tab, generation, count } => self.hex_counted(tab, generation, count),
+            AppEvent::MarkdownRendered {
+                tab,
+                generation,
+                width,
+                revision,
+                text,
+                doc,
+            } => self.markdown_rendered(tab, generation, width, revision, text, doc),
             AppEvent::Listed { dir, ignored, result } => self.listed(dir, ignored, result),
             AppEvent::FsChanged(paths) => self.fs_changed(paths),
             AppEvent::HistoryDone(result) => self.history_done(result),
@@ -2022,6 +2054,20 @@ impl App {
         self.handle_app_event(AppEvent::HexCount { tab, generation, count });
     }
 
+    /// Takes in a Markdown render as if it had come through the channel
+    /// (`AppEvent::MarkdownRendered`): for tests of stale results.
+    pub fn test_markdown_rendered(&mut self, tab: u64, generation: u64, width: usize, revision: u64, text: &str) {
+        let doc = crate::markdown::render(text, width);
+        self.handle_app_event(AppEvent::MarkdownRendered {
+            tab,
+            generation,
+            width,
+            revision,
+            text: text.into(),
+            doc,
+        });
+    }
+
     /// Handles every background result already queued, without waiting (as the event loop
     /// would between frames).
     pub fn pump(&mut self) {
@@ -2033,6 +2079,7 @@ impl App {
         self.sync_quick_diff();
         self.sync_blame();
         self.sync_diffs();
+        self.sync_markdown();
         self.sync_commit_tabs();
         self.sync_git_history();
         self.sync_backups();
@@ -2077,6 +2124,7 @@ impl App {
             self.sync_quick_diff();
             self.sync_blame();
             self.sync_diffs();
+            self.sync_markdown();
             self.sync_commit_tabs();
             self.sync_git_history();
             self.sync_backups();

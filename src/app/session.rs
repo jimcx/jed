@@ -10,6 +10,7 @@ use crate::diff_view::DiffTab;
 use crate::group::{self, Group, Groups, Tab, TextTab};
 use crate::hex::{HexDoc, HexTab};
 use crate::layout::{MIN_SIDE_WIDTH, PanelTab};
+use crate::markdown_tab::MarkdownTab;
 use crate::selection::{Selection, Selections};
 use crate::session::{self, GroupState, PanelState, Restore, Session, Side, SideState, TabState};
 use crate::view::View;
@@ -110,9 +111,11 @@ impl App {
             .into_iter()
             .filter_map(|b| Some((b.untitled.clone()?, b)))
             .collect();
-        let mut restored = Vec::new();
+        let mut staged = Vec::new();
         for g in groups.into_iter().filter(|g| kept.contains(&g.id)) {
             let mut tabs = Vec::new();
+            // Previews wait for every group's text tabs: (place in `tabs`, path, top).
+            let mut previews = Vec::new();
             for tab in g.tabs {
                 match tab {
                     TabState::Text {
@@ -189,11 +192,35 @@ impl App {
                         tab.place(cursor, column, top);
                         tabs.push(Tab::Hex(Box::new(tab)));
                     }
+                    TabState::Markdown { path, top } => {
+                        previews.push((tabs.len(), session::resolve(&root, &path), top));
+                    }
                 }
             }
-            let active = g.active.min(tabs.len().saturating_sub(1));
+            staged.push((g.id, g.active, tabs, previews));
+        }
+        let mut restored = Vec::new();
+        for (id, active, mut tabs, previews) in staged {
+            // In order, so each lands where it was among the tabs placed.
+            for (at, path, top) in previews {
+                let Some(source) = self.buffers.find_path(&path) else {
+                    continue;
+                };
+                let buf = self.buffers.get(source).expect("just found");
+                let mut tab = MarkdownTab::new(
+                    source,
+                    Some(path),
+                    buf.name(),
+                    buf.rope.to_string().into(),
+                    buf.revision(),
+                );
+                tab.top = top;
+                tab.src_top = usize::MAX;
+                tabs.insert(at.min(tabs.len()), Tab::Markdown(Box::new(tab)));
+            }
+            let active = active.min(tabs.len().saturating_sub(1));
             restored.push((
-                g.id,
+                id,
                 Group {
                     tabs,
                     active,
@@ -376,9 +403,18 @@ impl App {
                                 right,
                             });
                         }
+                        Tab::Markdown(m) => {
+                            // Untitled sources have no file to find again.
+                            let Some(path) = m.path.as_ref().filter(|p| p.is_absolute()) else {
+                                continue;
+                            };
+                            tabs.push(TabState::Markdown {
+                                path: session::stored(root, path),
+                                top: m.top,
+                            });
+                        }
                         // Shells are never saved: a restart shows none.
-                        // Previews are not restored yet (markdown_preview-d).
-                        Tab::Shell(_) | Tab::Markdown(_) => continue,
+                        Tab::Shell(_) => continue,
                     }
                 }
                 let active = active.min(tabs.len().saturating_sub(1));
