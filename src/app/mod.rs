@@ -1448,10 +1448,13 @@ impl App {
             }
             Command::FocusExplorer => self.focus_side(SidePanel::Explorer),
             Command::FocusGroup(n) => {
-                let ids = self.tab_groups().ids();
+                // Always the editor groups (also from the terminal area: Cmd+1 jumps back to the editor).
+                let ids = self.groups.ids();
                 match ids.get(n as usize - 1) {
                     Some(&g) => self.focus_group(g),
-                    None if n as usize == ids.len() + 1 => self.split(SplitDir::Right),
+                    None if n as usize == ids.len() + 1 && self.ui.focus != Focus::Terminal => {
+                        self.split(SplitDir::Right)
+                    }
                     None => {}
                 }
             }

@@ -487,7 +487,7 @@ async fn term_area_split_keys_make_empty_groups_and_focus_moves() {
 
     app.test_execute(Command::FocusPreviousGroup);
     assert_eq!(app.terminals.active, ids[1]);
-    app.test_execute(Command::FocusGroup(1));
+    app.test_execute(Command::FocusTerminal(1));
     assert_eq!(app.terminals.active, ids[0]);
     assert_eq!(app.groups.active, app.groups.ids()[0]);
     assert_eq!(app.ui.focus, Focus::Terminal);
@@ -688,10 +688,10 @@ async fn term_area_group_keys_follow_the_focused_area() {
     assert_eq!(app.groups.active, ids[1]);
     assert_eq!(app.terminals.active, area_active, "the area's active group stays");
     assert_eq!(app.ui.focus, Focus::Editor);
-    // Back in the area: FocusGroup(n) counts the area's groups.
+    // Back in the area: FocusTerminal(n) counts the area's groups.
     let shell = app.terminals.ids()[0];
     app.test_execute(Command::NewShell);
-    app.test_execute(Command::FocusGroup(1));
+    app.test_execute(Command::FocusTerminal(1));
     assert_eq!(app.terminals.active, shell);
     assert_eq!(app.groups.active, ids[1]);
     assert_eq!(app.ui.focus, Focus::Terminal);
@@ -723,7 +723,7 @@ async fn term_area_new_shell_after_hiding_with_empty_groups() {
     let mut app = area_app(&root, &state, 1);
     app.press(KeyCode::Char('\\'), cmd());
     app.press(KeyCode::Char('\\'), cmd() | KeyModifiers::ALT);
-    app.test_execute(Command::FocusGroup(1));
+    app.test_execute(Command::FocusTerminal(1));
     app.press(KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
     assert!(!app.ui.terminal_visible);
     assert_eq!(app.ui.focus, Focus::Editor);
@@ -977,7 +977,7 @@ async fn term_area_done_when() {
     // Both live: each answers in its own group.
     for (i, &g) in ids.iter().enumerate() {
         assert_eq!(app.terminals.get(g).unwrap().tabs.len(), 1);
-        app.test_execute(Command::FocusGroup(i as u8 + 1));
+        app.test_execute(Command::FocusTerminal(i as u8 + 1));
         assert_eq!((app.terminals.active, app.ui.focus), (g, Focus::Terminal));
         shell_answers(&mut app, g, 5 + i as u32).await;
     }
@@ -1028,14 +1028,9 @@ async fn term_area_focus_keys_t_y_u() {
     app.press(KeyCode::Char('t'), cmd());
     assert_eq!(app.ui.focus, Focus::Terminal);
     // Back to the editor, then a second group: Y has a target only now.
-    app.ui.focus = if cfg!(target_os = "macos") {
-        Focus::Editor
-    } else {
-        Focus::SidePanel
-    };
-    let before = app.ui.focus;
+    app.ui.focus = Focus::Editor;
     app.press(KeyCode::Char('y'), cmd());
-    assert_eq!(app.ui.focus, before, "no second group yet");
+    assert_eq!(app.ui.focus, Focus::Editor, "no second group yet");
     app.press(KeyCode::Char('t'), cmd());
     app.press(KeyCode::Char('\\'), cmd());
     app.test_execute(Command::NewShell);
@@ -1062,6 +1057,22 @@ async fn term_area_focus_keys_t_y_u() {
             .to_string();
         assert_eq!(cell, letter);
     }
+}
+
+/// Cmd+1 / 2 / 3 always mean editor groups, so from the terminal area Cmd+1 jumps back to the editor.
+#[tokio::test(flavor = "multi_thread")]
+async fn term_area_cmd_digits_focus_editor_groups() {
+    let (_d, root, state) = dirs();
+    let mut app = area_app(&root, &state, 1);
+    app.press(KeyCode::Char('t'), cmd());
+    assert_eq!(app.ui.focus, Focus::Terminal);
+    app.press(KeyCode::Char('1'), cmd());
+    assert_eq!(app.ui.focus, Focus::Editor);
+    // Not an editor group yet: from the terminal it does nothing (no split of either area).
+    app.press(KeyCode::Char('t'), cmd());
+    app.press(KeyCode::Char('2'), cmd());
+    assert_eq!(app.ui.focus, Focus::Terminal);
+    assert_eq!(app.groups.ids().len(), 1);
 }
 
 /// Cmd+U is Cursor Undo in the editor and the third terminal group's key everywhere else.
