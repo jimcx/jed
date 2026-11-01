@@ -167,6 +167,50 @@ struct Commands<'a> {
     tasks: &'a BTreeMap<String, Task>,
 }
 
+/// What a new `.workspace` starts as: every section commented out, so it parses to the default.
+pub const TEMPLATE: &str = "\
+# jed workspace settings. Meant to be committed; uncomment a line to use it.
+# Changes apply as soon as the file is saved.
+
+# Overrides the user's settings.toml [settings], key by key (same keys; see that file's template).
+# [settings]
+# tab_width = 2
+# insert_spaces = true
+
+# [window]
+# title = \"my project\"  # the window title is \"jed <title>\" instead of the root's path
+# status_bar = \"blue\"  # red, orange, yellow, green, cyan, blue, purple, magenta, grey or auto
+
+# [files]
+# exclude = [\"build/\", \"*.log\"]  # globs hidden from the explorer, quick open and search
+# associations = { \"SConstruct\" = \"python\" }  # glob = language
+
+# The language server for a language id. command: a name on PATH; args and init_options are
+# optional. Commands run only once the workspace is trusted.
+# [lsp.python]
+# command = \"pyright-langserver\"
+# args = [\"--stdio\"]
+
+# A task (Run Task): command, and optionally cwd and env.
+# [tasks.build]
+# command = \"cargo build\"
+# cwd = \".\"
+# env = { RUST_LOG = \"debug\" }
+";
+
+/// Blocking. Writes `TEMPLATE` to `path` unless the file exists; never overwrites one, even if it
+/// appears meanwhile (`create_new`).
+pub fn create_if_missing(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    use std::io::Write;
+    let fail = |e: std::io::Error| format!("Can't create {}: {e}", path.display());
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(mut f) => f.write_all(TEMPLATE.as_bytes()).map_err(fail)?,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(fail(e)),
+    }
+    Ok(path.to_path_buf())
+}
+
 impl WorkspaceConfig {
     pub fn parse(text: &str) -> Result<Self, String> {
         toml::from_str(text).map_err(|e| e.to_string())
@@ -239,6 +283,38 @@ args = ["--stdio"]
 command = "scons -j8"
 env = { CC = "clang" }
 "#;
+
+    #[test]
+    fn template_parses_to_default_and_commented_examples_parse() {
+        assert_eq!(WorkspaceConfig::parse(TEMPLATE).unwrap(), WorkspaceConfig::default());
+        // Uncommenting every example line must give a valid config.
+        let live: String = TEMPLATE
+            .lines()
+            .map(|l| {
+                l.strip_prefix("# ")
+                    .filter(|r| r.starts_with('[') || r.contains(" = "))
+                    .unwrap_or(l)
+            })
+            .map(|l| l.split("  #").next().unwrap().to_string() + "\n")
+            .collect();
+        let c = WorkspaceConfig::parse(&live).unwrap();
+        assert!(c.tasks.contains_key("build") && c.lsp.contains_key("python") && c.window.title.is_some());
+    }
+
+    #[test]
+    fn create_if_missing_never_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".workspace");
+        assert_eq!(create_if_missing(&path).unwrap(), path);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), TEMPLATE);
+        std::fs::write(&path, "[files]\n").unwrap();
+        create_if_missing(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[files]\n");
+        // Any other failure is an error naming the file.
+        let missing = dir.path().join("no-such-dir").join(".workspace");
+        let e = create_if_missing(&missing).unwrap_err();
+        assert!(e.starts_with("Can't create") && e.contains("no-such-dir"), "{e}");
+    }
 
     #[test]
     fn parses_sample() {

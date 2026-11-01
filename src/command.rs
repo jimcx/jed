@@ -154,6 +154,8 @@ pub enum Command {
     SetLogLevel,
     /// Open `~/.config/jed/settings.toml` (created from a template if missing).
     OpenUserSettings,
+    /// Open the workspace's `.workspace` (created from a commented template if missing).
+    OpenWorkspaceSettings,
     /// "Preferences: Keyboard Shortcuts": the shortcuts view (`keys.rs`).
     KeyboardShortcuts,
     /// Keys inside the palette.
@@ -976,6 +978,7 @@ impl Command {
             Command::OpenLogFile,
             Command::SetLogLevel,
             Command::OpenUserSettings,
+            Command::OpenWorkspaceSettings,
             Command::KeyboardShortcuts,
         ]);
         all.extend(PaletteCommand::ALL.map(Command::Palette));
@@ -1173,6 +1176,7 @@ impl Command {
             Command::OpenLogFile => "log.open".into(),
             Command::SetLogLevel => "log.setLevel".into(),
             Command::OpenUserSettings => "preferences.openUserSettings".into(),
+            Command::OpenWorkspaceSettings => "preferences.openWorkspaceSettings".into(),
             Command::KeyboardShortcuts => "preferences.keyboardShortcuts".into(),
             Command::Palette(c) => format!(
                 "palette.{}",
@@ -1560,6 +1564,7 @@ impl Command {
             Command::OpenLogFile => "Developer: Open Log File",
             Command::SetLogLevel => "Developer: Set Log Level…",
             Command::OpenUserSettings => "Preferences: Open User Settings",
+            Command::OpenWorkspaceSettings => "Preferences: Open Workspace Settings",
             Command::KeyboardShortcuts => "Preferences: Keyboard Shortcuts",
             Command::Palette(c) => match c {
                 PaletteCommand::Next => "Palette: Select Next",
@@ -1881,6 +1886,7 @@ mod tests {
             Command::Search(_) => 49,
             Command::CommentLine => 50,
             Command::OpenUserSettings => 51,
+            Command::OpenWorkspaceSettings => 139,
             Command::KeyboardShortcuts => 122,
             Command::TogglePanel => 52,
             Command::ToggleProblems => 53,

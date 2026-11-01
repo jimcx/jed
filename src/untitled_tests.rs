@@ -970,9 +970,14 @@ async fn untitled_commands_on_one_leave_files_alone() {
     app.type_text("fn main() {}\n");
     let before: Vec<_> = fs::read_dir(&root).unwrap().map(|e| e.unwrap().file_name()).collect();
     for c in Command::all() {
+        // Open Workspace Settings creates `.workspace` on purpose.
         if matches!(
             c,
-            Command::Quit | Command::CloseTab | Command::Save | Command::NewUntitledFile
+            Command::Quit
+                | Command::CloseTab
+                | Command::Save
+                | Command::NewUntitledFile
+                | Command::OpenWorkspaceSettings
         ) {
             continue;
         }

@@ -279,6 +279,8 @@ enum AppEvent {
     LogFileFound(Option<PathBuf>),
     /// `settings.toml` exists (created from the template if it didn't), or why it couldn't be.
     UserSettingsReady(Result<PathBuf, String>),
+    /// `.workspace` exists (created from the template if it didn't), or why it couldn't be.
+    WorkspaceSettingsReady(Result<PathBuf, String>),
     /// `keybindings.toml` exists with the Keyboard Shortcuts view's stub appended, or why not.
     KeybindingsReady(Result<PathBuf, String>),
     /// Workspace search results; any generation (stale ones are dropped).
@@ -1477,6 +1479,7 @@ impl App {
             Command::ManageWorkspaceTrust => self.manage_trust(),
             Command::OpenLogFile => self.open_log_file(),
             Command::OpenUserSettings => self.open_user_settings(),
+            Command::OpenWorkspaceSettings => self.open_workspace_settings(),
             Command::Palette(c) => self.palette_command(c),
             Command::AddNextMatch | Command::SelectAllMatches | Command::SkipToNextMatch => self.match_command(cmd),
             Command::CursorUndo => self.cursor_undo(),
@@ -1771,6 +1774,10 @@ impl App {
                     self.watch_config_dir();
                     self.open_file(path, true, None);
                 }
+                Err(e) => self.notify(Level::Error, e),
+            },
+            AppEvent::WorkspaceSettingsReady(result) => match result {
+                Ok(path) => self.open_file(path, true, None),
                 Err(e) => self.notify(Level::Error, e),
             },
             AppEvent::KeybindingsReady(result) => match result {

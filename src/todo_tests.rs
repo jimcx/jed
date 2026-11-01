@@ -11096,3 +11096,81 @@ mod conf_files {
         assert_eq!(text(&app), "[core]\nk = 1\n");
     }
 }
+
+mod open_workspace_settings {
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::command::Command;
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+
+    fn open_app(dir: &tempfile::TempDir) -> (App, std::path::PathBuf) {
+        let root = crate::workspace::normalize(dir.path());
+        let path = root.join("a.txt");
+        std::fs::write(&path, "abc\n").unwrap();
+        let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&path).unwrap());
+        app.test_start();
+        (app, root.join(crate::workspace::FILE_NAME))
+    }
+
+    fn opened(path: std::path::PathBuf) -> impl Fn(&App) -> bool {
+        move |a| a.active_buffer().is_some_and(|b| b.path == path)
+    }
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn creates_the_workspace_file_from_the_template_and_opens_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, path) = open_app(&dir);
+        assert!(!path.exists());
+        // Through the palette, by its title.
+        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.type_text("Open Workspace Settings");
+        app.press(K::Enter, M::NONE);
+        assert!(app.settle(opened(path.clone())).await);
+        let text = app.active_buffer().unwrap().rope.to_string();
+        assert_eq!(text, crate::workspace::config::TEMPLATE);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn opens_an_existing_workspace_file_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, path) = open_app(&dir);
+        std::fs::write(&path, "[files]\nexclude = [\"x/\"]\n").unwrap();
+        app.test_execute(Command::OpenWorkspaceSettings);
+        assert!(app.settle(opened(path.clone())).await);
+        assert_eq!(
+            app.active_buffer().unwrap().rope.to_string(),
+            "[files]\nexclude = [\"x/\"]\n"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[files]\nexclude = [\"x/\"]\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_file_that_cant_be_created_is_an_error_and_opens_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, path) = open_app(&dir);
+        let root = path.parent().unwrap().to_path_buf();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::write(root.join("probe"), "").is_ok() {
+            return; // running as root: permissions don't stop the write
+        }
+        app.test_execute(Command::OpenWorkspaceSettings);
+        let settled = app
+            .settle(|a| a.message.as_ref().is_some_and(|m| m.text.contains("Can't create")))
+            .await;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(settled);
+        assert!(!path.exists());
+        assert!(app.active_buffer().is_some_and(|b| b.path == root.join("a.txt")));
+    }
+}

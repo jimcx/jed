@@ -2,7 +2,7 @@
 id: settings
 name: Settings files
 summary: '"Preferences: Open User / Workspace Settings" open `settings.toml` and `.workspace`, with settings-aware syntax highlighting and completion (also completion for `keybindings.toml`)'
-status: open
+status: in-progress
 priority: 0
 dependencies: []
 ---
@@ -16,7 +16,8 @@ See [Workspace](../PLAN.md#workspace), [Syntax highlighting](../PLAN.md#syntax-h
   - Keybindings completion: in `keybindings.toml`, `[[binding]]` keys (`key`, `command`, `when`, …) and values — `command` offers every command name (the palette's list, with titles as detail), `key` offers nothing but key-name pieces (`ctrl+`, `shift+`, named keys), `when` offers the contexts (`Context` names) — from the same schema mechanism
   - Done when: Cmd+, / Cmd+Shift+, open (and create from their templates) the two files, with the bindings in the cheat sheet and the terminal docs; in `settings.toml` and `.workspace`, typing a key or value offers the schema's completions that insert at every cursor, and a file with an unknown key / bad value shows it `invalid` while known keys and valid values are coloured; neither completion nor the settings highlighting fires in a `Cargo.toml`; in `keybindings.toml`, `command = "` offers the command names and `[[binding]]` offers its keys, inserting at every cursor
   - Subtasks (one agent and one commit each):
-    - settings-a: `Command::OpenWorkspaceSettings`, opening `.workspace` from a commented template (`WorkspaceConfig` template + `create_if_missing`, as `config::settings::TEMPLATE`), via a new `AppEvent`
+    - ✅ settings-a: `Command::OpenWorkspaceSettings`, opening `.workspace` from a commented template (`WorkspaceConfig` template + `create_if_missing`, as `config::settings::TEMPLATE`), via a new `AppEvent`
+      - Added `Command::OpenWorkspaceSettings` (`preferences.openWorkspaceSettings`, palette only so far), `workspace::config::{TEMPLATE, create_if_missing}` (no parent-dir creation) and `AppEvent::WorkspaceSettingsReady`; `untitled_tests` skips the command (it creates `.workspace`).
     - settings-b: the keybindings (Cmd+, / Cmd+Shift+, on macOS, Ctrl variants on Linux, with the shifted-`,` → `<` normalisation in `KeyCombo::from_event`) and `docs/terminals/` (the README table and every snippet)
     - settings-c: the two commands in the cheat sheet's groups; the shortcut and template tests, including the done-when's open-and-create cases
     - settings-d: the settings schema (tables, keys, value kinds) and the keybindings schema (`[[binding]]` keys, command names from `Command`, context names), and identifying the config files (a buffer flag set by path: settings, workspace, keybindings), shared by the highlighter and completer

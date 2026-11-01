@@ -587,6 +587,18 @@ impl App {
         });
     }
 
+    /// Opens the workspace's `.workspace` in a tab, first writing the commented template if it
+    /// doesn't exist.
+    pub(super) fn open_workspace_settings(&mut self) {
+        let path = self.workspace.root.join(crate::workspace::FILE_NAME);
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(AppEvent::WorkspaceSettingsReady(
+                crate::workspace::config::create_if_missing(&path),
+            ));
+        });
+    }
+
     pub(super) fn log_file_found(&mut self, path: Option<PathBuf>) {
         match path {
             Some(path) => self.open_file(path, true, None),

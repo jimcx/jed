@@ -499,6 +499,7 @@ async fn hex_editor_commands_leave_the_bytes_alone() {
                 | Command::MoveTabLeft
                 | Command::MoveTabRight
                 | Command::OpenUserSettings
+                | Command::OpenWorkspaceSettings
                 | Command::OpenLogFile
                 | Command::Tools(_)
         )
