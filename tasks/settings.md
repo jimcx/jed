@@ -18,7 +18,8 @@ See [Workspace](../PLAN.md#workspace), [Syntax highlighting](../PLAN.md#syntax-h
   - Subtasks (one agent and one commit each):
     - ✅ settings-a: `Command::OpenWorkspaceSettings`, opening `.workspace` from a commented template (`WorkspaceConfig` template + `create_if_missing`, as `config::settings::TEMPLATE`), via a new `AppEvent`
       - Added `Command::OpenWorkspaceSettings` (`preferences.openWorkspaceSettings`, palette only so far), `workspace::config::{TEMPLATE, create_if_missing}` (no parent-dir creation) and `AppEvent::WorkspaceSettingsReady`; `untitled_tests` skips the command (it creates `.workspace`).
-    - settings-b: the keybindings (Cmd+, / Cmd+Shift+, on macOS, Ctrl variants on Linux, with the shifted-`,` → `<` normalisation in `KeyCombo::from_event`) and `docs/terminals/` (the README table and every snippet)
+    - ✅ settings-b: the keybindings (Cmd+, / Cmd+Shift+, on macOS, Ctrl variants on Linux, with the shifted-`,` → `<` normalisation in `KeyCombo::from_event`) and `docs/terminals/` (the README table and every snippet)
+      - Open Workspace Settings is Cmd+Alt+, (Ctrl+Alt+, on Linux), not Cmd+Shift+, — Ctrl+Shift+, is Focus Previous Group on Linux. Cmd+, (user settings) and the `<` → Shift+`,` normalisation already existed. `docs/terminals/` has the row and snippets (also ghostty's missing-order fixes); the cheat sheet entries are settings-c.
     - settings-c: the two commands in the cheat sheet's groups; the shortcut and template tests, including the done-when's open-and-create cases
     - settings-d: the settings schema (tables, keys, value kinds) and the keybindings schema (`[[binding]]` keys, command names from `Command`, context names), and identifying the config files (a buffer flag set by path: settings, workspace, keybindings), shared by the highlighter and completer
     - settings-e: settings-aware highlighting over the TOML tree (known keys and valid values coloured, unknown keys and bad values `invalid`)

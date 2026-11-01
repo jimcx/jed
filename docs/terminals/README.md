@@ -98,6 +98,7 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+shift+pagedown` | Move the tab right in its group | everywhere |
 | `cmd+shift+p` | Command palette | everywhere |
 | `cmd+,` | Open user settings | everywhere |
+| `cmd+alt+,` | Open workspace settings | everywhere |
 | `cmd+p` | Quick open (go to file) | everywhere |
 | `cmd+j` | Toggle the bottom panel (Problems) | everywhere |
 | `cmd+shift+m` | Toggle Problems (show and focus the list, or hide the panel) | everywhere |

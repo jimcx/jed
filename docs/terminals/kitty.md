@@ -92,6 +92,7 @@ map --when-focus-on var:jed cmd+shift+page_up
 map --when-focus-on var:jed cmd+shift+page_down
 map --when-focus-on var:jed cmd+shift+p
 map --when-focus-on var:jed cmd+,
+map --when-focus-on var:jed cmd+alt+,
 map --when-focus-on var:jed cmd+p
 map --when-focus-on var:jed cmd+j
 map --when-focus-on var:jed cmd+shift+m
@@ -104,7 +105,7 @@ macos_option_as_alt both
 
 Don't add `cmd+v`: kitty's paste is how text gets into jed.
 
-Only some of these are kitty defaults (`cmd+c` copy, `cmd+n` new OS window, `cmd+up`/`cmd+down` scroll, `cmd+1..8` switch window, `cmd+w` close tab, `cmd+q` quit, `cmd+k` clear the terminal); the rest are listed so the snippet stays a copy of jed's table.
+Only some of these are kitty defaults (`cmd+c` copy, `cmd+n` new OS window, `cmd+up`/`cmd+down` scroll, `cmd+1..8` switch window, `cmd+w` close tab, `cmd+q` quit, `cmd+k` clear the terminal, `cmd+,` edit kitty.conf, `cmd+alt+,` debug the config); the rest are listed so the snippet stays a copy of jed's table.
 
 ## Switching between workspaces
 

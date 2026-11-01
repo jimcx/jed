@@ -89,6 +89,7 @@ keybind = cmd+shift+page_up=unbind
 keybind = cmd+shift+page_down=unbind
 keybind = cmd+shift+p=unbind
 keybind = cmd+comma=unbind
+keybind = cmd+alt+comma=unbind
 keybind = cmd+p=unbind
 keybind = cmd+j=unbind
 keybind = cmd+shift+m=unbind
@@ -101,7 +102,7 @@ macos-option-as-alt = true
 
 Don't unbind `cmd+v`: Ghostty's paste is how text gets into jed.
 
-Ghostty defaults that clash with jed (macOS): `cmd+a` select all, `cmd+c` copy, `cmd+n` new window, `cmd+z`/`cmd+shift+z` undo/redo, `cmd+left`/`cmd+right`/`cmd+backspace` send line-editing control codes, `cmd+up`/`cmd+down` and `cmd+shift+up`/`cmd+shift+down` jump to prompt, `cmd+q` quit, `cmd+w` close split/tab, `cmd+k` clear screen (jed's Terminal: Clear in a shell or task tab), `cmd+1..8` go to tab, `cmd+alt+arrows` move between splits (jed: Cmd+Alt+Up/Down add a cursor above/below), `cmd+shift+p` Ghostty's own command palette (recent releases), `cmd+d` new split right (jed's Cmd+D, add next match), `cmd+f` Ghostty's search (recent releases; jed's find), `cmd+alt+i` the terminal inspector (jed's show hover), `cmd+[` / `cmd+]` previous / next split (jed's outdent / indent lines), `cmd+ctrl+arrows` resize the split (jed's Cmd+Ctrl+Left/Right move a tab between groups).
+Ghostty defaults that clash with jed (macOS): `cmd+a` select all, `cmd+c` copy, `cmd+n` new window, `cmd+z`/`cmd+shift+z` undo/redo, `cmd+left`/`cmd+right`/`cmd+backspace` send line-editing control codes, `cmd+up`/`cmd+down` and `cmd+shift+up`/`cmd+shift+down` jump to prompt, `cmd+q` quit, `cmd+w` close split/tab, `cmd+k` clear screen (jed's Terminal: Clear in a shell or task tab), `cmd+1..8` go to tab, `cmd+alt+arrows` move between splits (jed: Cmd+Alt+Up/Down add a cursor above/below), `cmd+,` opens Ghostty's config (jed's open user settings), `cmd+shift+p` Ghostty's own command palette (recent releases), `cmd+d` new split right (jed's Cmd+D, add next match), `cmd+f` Ghostty's search (recent releases; jed's find), `cmd+alt+i` the terminal inspector (jed's show hover), `cmd+[` / `cmd+]` previous / next split (jed's outdent / indent lines), `cmd+ctrl+arrows` resize the split (jed's Cmd+Ctrl+Left/Right move a tab between groups).
 
 `macos-option-as-alt` already defaults to `true` on the U.S. and U.S. International layouts; setting it makes other layouts behave the same (`left`/`right` limit it to one Option key).
 

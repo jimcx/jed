@@ -892,6 +892,8 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::F(1), shift, Command::CheatSheet),
         (KeyCode::Char('p'), cmd, Command::QuickOpen),
         (KeyCode::Char(','), cmd, Command::OpenUserSettings),
+        // Not Shift: Ctrl+Shift+, is Focus Previous Group.
+        (KeyCode::Char(','), cmd | alt, Command::OpenWorkspaceSettings),
         // Ctrl on macOS too, as in VS Code.
         (KeyCode::Char('g'), ctrl, Command::GoToLine),
         // VS Code's Open Recent: Ctrl on macOS too. Global, so a task tab doesn't get it either.
@@ -1674,6 +1676,42 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Cmd+Alt+, / Ctrl+Alt+, open the workspace settings (not Shift: Ctrl+Shift+, is Focus
+    /// Previous Group), and Cmd/Ctrl+, stays the user settings.
+    #[test]
+    fn cmd_alt_comma_is_workspace_settings() {
+        let (alt, shift) = (KeyModifiers::ALT, KeyModifiers::SHIFT);
+        let mac = Keymap::default_for(Platform::MacOs);
+        let linux = Keymap::default_for(Platform::Linux);
+        // Every context but the context menu (which takes every key itself): no text input or
+        // terminal tab swallows it.
+        for (ctx, _) in Context::ALL.into_iter().filter(|(c, _)| *c != Context::ContextMenu) {
+            let comma = |m| key(KeyCode::Char(','), m);
+            assert_eq!(
+                mac.lookup(&comma(KeyModifiers::SUPER | alt), ctx),
+                Some(Command::OpenWorkspaceSettings)
+            );
+            assert_eq!(
+                linux.lookup(&comma(KeyModifiers::CONTROL | alt), ctx),
+                Some(Command::OpenWorkspaceSettings)
+            );
+            assert_eq!(
+                mac.lookup(&comma(KeyModifiers::SUPER), ctx),
+                Some(Command::OpenUserSettings)
+            );
+            for km in [&mac, &linux] {
+                assert_eq!(
+                    km.lookup(&comma(KeyModifiers::CONTROL | shift), ctx),
+                    Some(Command::FocusPreviousGroup)
+                );
+            }
+        }
+        let combo = mac.binding_for(Command::OpenWorkspaceSettings).unwrap();
+        assert_eq!((combo.spec(), combo.label()), ("cmd+alt+,".into(), "Cmd+Alt+,".into()));
+        let combo = linux.binding_for(Command::OpenWorkspaceSettings).unwrap();
+        assert_eq!(combo.label(), "Ctrl+Alt+,");
     }
 
     /// Cmd/Ctrl+1-8 focus that group in reading order (the palette lists the same eight).

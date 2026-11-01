@@ -11139,6 +11139,19 @@ mod open_workspace_settings {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
     }
 
+    /// Cmd+Alt+, (Ctrl+Alt+, on Linux) through the platform's keymap.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cmd_alt_comma_opens_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, path) = open_app(&dir);
+        app.press(K::Char(','), cmd() | M::ALT);
+        assert!(app.settle(opened(path.clone())).await);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            crate::workspace::config::TEMPLATE
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn opens_an_existing_workspace_file_as_it_is() {
         let dir = tempfile::tempdir().unwrap();
