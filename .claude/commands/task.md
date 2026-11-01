@@ -57,7 +57,7 @@ The OpenCode twin of this workflow is `.opencode/commands/task.md`; a change to 
    - Update the docs for what it adds (module map, conventions, test helpers, background-work patterns), within the budget in CLAUDE.md's "Keeping these files current": at most a line or two in the root CLAUDE.md, the detail in `docs/dev/` or the directory's nested CLAUDE.md.
    - Don't commit, and don't edit PLAN.md or `tasks/`.
    - Report concisely: what it built, files changed with the key entry points (`path:line` of the main new functions and tests, for the validator), CLAUDE.md changes, deviations, deferrals, hand checks, and check results.
-7. **Validator** (a separate general-purpose agent with `model: "opus"`, started after the implementer finishes: the judgement half). Its prompt includes the implementer's report verbatim and says:
+7. **Validator** (a separate general-purpose agent with `model: "sonnet"`, started after the implementer finishes: the judgement half). Its prompt includes the implementer's report verbatim and says:
    - Read CLAUDE.md. The task (or subtask) text is pasted into the prompt, as for the implementer; it doesn't re-read PLAN.md. Start from `git status` / `git diff --stat` and the report's entry points; read the changed code and its tests, not a fresh tour of the codebase.
    - Read narrowly, as the implementer does: diff one file or hunk at a time (`git diff <file>`, never a whole multi-file diff), ranges of ≤ 150 lines, no `cat` of files over ~300 lines; independent reads in one message.
    - Judge whether the tests are useful and actually test the code. Look for tautologies, assertions that can't fail, checks against test-only hooks instead of real effects, missing negative cases, and flakiness.
