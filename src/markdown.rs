@@ -2,8 +2,20 @@
 //! matter) parsed with `pulldown-cmark` and laid out to a width as lines of styled spans. No app
 //! state and nothing drawn: spans carry a theme key (`markdown.*`, see `Theme::dark_plus`) plus
 //! bold / italic / strikethrough flags, and `ui` turns them into styles. `render(text, width)` is
-//! called again when the width changes. Code blocks and tables are plain placeholders
-//! (`Builder::code_block`, `Builder::table`) until the next subtask.
+//! called again when the width changes.
+//!
+//! Code blocks (`Builder::code_block`) are drawn on a background: every span of a code line has
+//! `SpanStyle::block` set (the UI patches the `markdown.codeblock` background under its key's
+//! style), lines are padded with spaces to the full width (one column pad each side) and a muted
+//! `Kind::CodeLabel` row names the language. **Long code lines are wrapped** (hard-cut at the
+//! content width, no ellipsis), so a block never needs horizontal scrolling. Highlighting goes
+//! through `syntax::highlight_text` (blocking: render big documents off the UI thread); unknown
+//! languages, plugin languages without a grammar and blocks over `HIGHLIGHT_LIMIT` are plain.
+//!
+//! Tables (`Builder::table`) are box-drawn grids. When the natural grid is wider than the view the
+//! widest columns shrink one column at a time down to `MIN_COL` (3, or a wide character's width)
+//! and cell text wraps inside them. If even that does not fit, the lines are wider than the view:
+//! `Doc::overflows` / `Doc::max_width` say so, and the preview scrolls horizontally.
 #![allow(dead_code)] // used by the preview tab (markdown_preview-c)
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -16,6 +28,8 @@ pub struct SpanStyle {
     pub bold: bool,
     pub italic: bool,
     pub strike: bool,
+    /// On a code block's background (`markdown.codeblock`).
+    pub block: bool,
 }
 
 impl SpanStyle {
@@ -25,6 +39,7 @@ impl SpanStyle {
             bold: false,
             italic: false,
             strike: false,
+            block: false,
         }
     }
 }
@@ -54,7 +69,10 @@ pub enum Kind {
     /// The `═` / `─` line under an H1 / H2.
     HeadingRule(u8),
     Rule,
+    /// A code block's source line (padded to the width, on the code background).
     Code,
+    /// The muted language name above a code block.
+    CodeLabel,
     Html,
     FrontMatter,
     Table,
@@ -83,6 +101,18 @@ pub struct Doc {
     pub lines: Vec<Line>,
 }
 
+impl Doc {
+    /// The widest line's display width.
+    pub fn max_width(&self) -> usize {
+        self.lines.iter().map(Line::width).max().unwrap_or(0)
+    }
+
+    /// Whether some line (a table that cannot shrink enough) is wider than `width`.
+    pub fn overflows(&self, width: usize) -> bool {
+        self.max_width() > width.max(1)
+    }
+}
+
 /// Parses `text` and lays it out to `width` columns (at least 1).
 pub fn render(text: &str, width: usize) -> Doc {
     let opts = Options::ENABLE_TABLES
@@ -98,6 +128,11 @@ pub fn render(text: &str, width: usize) -> Doc {
 }
 
 type Chars = Vec<(char, SpanStyle)>;
+
+/// Code blocks over this many bytes are not highlighted.
+const HIGHLIGHT_LIMIT: usize = 64 * 1024;
+/// The narrowest a shrunk table column gets (or its widest character, or its natural width).
+const MIN_COL: usize = 3;
 
 enum Cont {
     Quote {
@@ -207,6 +242,7 @@ impl Builder {
             bold: self.bold > 0,
             italic: self.italic > 0,
             strike: self.strike > 0,
+            block: false,
         }
     }
 
@@ -464,22 +500,175 @@ impl Builder {
         }
     }
 
-    // ---- placeholders for the next subtask ----
+    // ---- code blocks and tables ----
 
-    /// Placeholder: the source lines in code style. `lang` is the fence's first word.
-    fn code_block(&mut self, _lang: &str, body: &str) {
-        self.raw_lines(body.trim_end_matches('\n'), "markdown.code", Kind::Code);
+    /// A code block: a label row (`lang`, the fence's first word) and the source lines wrapped to
+    /// the content width, each padded to the full width on the block background.
+    fn code_block(&mut self, lang: &str, body: &str) {
+        let avail = self.avail();
+        let cwid = avail.saturating_sub(2).max(1);
+        let plain = SpanStyle {
+            block: true,
+            ..SpanStyle::key("markdown.codeblock")
+        };
+        let label = lang.trim();
+        if !label.is_empty() {
+            let muted = SpanStyle {
+                block: true,
+                ..SpanStyle::key("markdown.muted")
+            };
+            let shown: String = hard_wrap(label, cwid).swap_remove(0);
+            let pad = (cwid + 1).saturating_sub(shown.width());
+            let spans = vec![
+                Span {
+                    text: format!(" {shown}"),
+                    style: muted,
+                },
+                Span {
+                    text: " ".repeat(pad),
+                    style: plain,
+                },
+            ];
+            self.emit(spans, Kind::CodeLabel);
+        }
+        let body = body.trim_end_matches('\n').replace('\r', "");
+        let spans = language_of(lang)
+            .filter(|_| body.len() <= HIGHLIGHT_LIMIT)
+            .map(|l| crate::syntax::highlight_text(l, &body))
+            .unwrap_or_default();
+        let mut next = 0; // index into `spans`
+        let mut off = 0; // byte offset of the current line in `body`
+        for src in body.split('\n') {
+            let mut chars: Chars = Vec::new();
+            for (i, c) in src.char_indices() {
+                let at = off + i;
+                while next < spans.len() && spans[next].end.0 <= at {
+                    next += 1;
+                }
+                let st = match spans.get(next) {
+                    Some(sp) if sp.start.0 <= at => SpanStyle {
+                        block: true,
+                        ..SpanStyle::key(crate::syntax::KEYS[sp.highlight.index()])
+                    },
+                    _ => plain,
+                };
+                if c == '\t' {
+                    chars.extend([(' ', st); 4]);
+                } else {
+                    chars.push((c, st));
+                }
+            }
+            off += src.len() + 1;
+            for mut piece in hard_wrap_chars(&chars, cwid) {
+                let w: usize = piece.iter().map(|(c, _)| cw(*c)).sum();
+                piece.insert(0, (' ', plain));
+                piece.extend(std::iter::repeat_n((' ', plain), (cwid + 1).saturating_sub(w)));
+                self.emit(to_spans(&piece), Kind::Code);
+            }
+        }
     }
 
-    /// Placeholder: one `a | b` line per row.
-    fn table(&mut self, _aligns: &[Alignment], rows: &[Vec<Vec<Span>>]) {
-        for row in rows {
-            let cells: Vec<String> = row
-                .iter()
-                .map(|c| c.iter().map(|s| s.text.as_str()).collect::<String>())
-                .collect();
-            self.raw_lines(&cells.join(" | "), "markdown.text", Kind::Table);
+    /// A GFM table as a box-drawn grid (see the module doc for shrinking and overflow). `rows[0]`
+    /// is the header.
+    fn table(&mut self, aligns: &[Alignment], rows: &[Vec<Vec<Span>>]) {
+        let n = aligns.len().max(rows.first().map_or(0, Vec::len));
+        if rows.is_empty() || n == 0 {
+            return;
         }
+        // Cells as styled chars; the header is bold; ragged rows are padded, extra cells dropped.
+        let cells: Vec<Vec<Chars>> = rows
+            .iter()
+            .enumerate()
+            .map(|(r, row)| {
+                (0..n)
+                    .map(|c| {
+                        row.get(c)
+                            .map(|spans| {
+                                spans
+                                    .iter()
+                                    .flat_map(|s| {
+                                        let st = SpanStyle {
+                                            bold: s.style.bold || r == 0,
+                                            ..s.style
+                                        };
+                                        s.text.chars().map(move |ch| (ch, st))
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    })
+                    .collect()
+            })
+            .collect();
+        let line_w = |l: &Chars| l.iter().map(|(c, _)| cw(*c)).sum::<usize>();
+        let mut widths = vec![1usize; n];
+        let mut mins = vec![1usize; n];
+        for row in &cells {
+            for (c, cell) in row.iter().enumerate() {
+                widths[c] = widths[c].max(wrap(cell, 1 << 30).iter().map(line_w).max().unwrap_or(0));
+                let widest = cell.iter().map(|(ch, _)| cw(*ch)).max().unwrap_or(0);
+                mins[c] = mins[c].max(widest);
+            }
+        }
+        for c in 0..n {
+            mins[c] = mins[c].max(MIN_COL).min(widths[c].max(mins[c]));
+        }
+        let budget = self.avail().saturating_sub(3 * n + 1);
+        let mut total: usize = widths.iter().sum();
+        while total > budget {
+            // Shrink the widest column that still can (the leftmost of equals).
+            let Some(c) = (0..n)
+                .filter(|&c| widths[c] > mins[c])
+                .max_by_key(|&c| (widths[c], std::cmp::Reverse(c)))
+            else {
+                break; // at the minimum everywhere: the grid overflows the view
+            };
+            widths[c] -= 1;
+            total -= 1;
+        }
+        let border = SpanStyle::key("markdown.rule");
+        let text = SpanStyle::key("markdown.text");
+        let rule = |l: &str, m: &str, r: &str| -> Vec<Span> {
+            let mut s = String::from(l);
+            for (c, w) in widths.iter().enumerate() {
+                if c > 0 {
+                    s.push_str(m);
+                }
+                s.push_str(&"─".repeat(w + 2));
+            }
+            s.push_str(r);
+            vec![Span { text: s, style: border }]
+        };
+        self.emit(rule("┌", "┬", "┐"), Kind::Table);
+        for (r, row) in cells.iter().enumerate() {
+            let wrapped: Vec<Vec<Chars>> = row.iter().enumerate().map(|(c, cell)| wrap(cell, widths[c])).collect();
+            let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
+            for i in 0..height {
+                let mut spans: Vec<Span> = Vec::new();
+                push_merged(&mut spans, "│", border);
+                for (c, w) in widths.iter().enumerate() {
+                    let empty = Vec::new();
+                    let line = wrapped[c].get(i).unwrap_or(&empty);
+                    let pad = w.saturating_sub(line_w(line));
+                    let (left, right) = match aligns.get(c) {
+                        Some(Alignment::Right) => (pad, 0),
+                        Some(Alignment::Center) => (pad / 2, pad - pad / 2),
+                        _ => (0, pad),
+                    };
+                    push_merged(&mut spans, &" ".repeat(left + 1), text);
+                    for s in to_spans(line) {
+                        push_merged(&mut spans, &s.text, s.style);
+                    }
+                    push_merged(&mut spans, &" ".repeat(right + 1), text);
+                    push_merged(&mut spans, "│", border);
+                }
+                self.emit(spans, Kind::Table);
+            }
+            if r == 0 {
+                self.emit(rule("├", "┼", "┤"), Kind::Table);
+            }
+        }
+        self.emit(rule("└", "┴", "┘"), Kind::Table);
     }
 
     // ---- layout ----
@@ -582,6 +771,68 @@ impl Builder {
             }
         }
     }
+}
+
+/// Appends `text` to `spans`, joining it to the last span of the same style.
+fn push_merged(spans: &mut Vec<Span>, text: &str, style: SpanStyle) {
+    match spans.last_mut() {
+        Some(s) if s.style == style => s.text.push_str(text),
+        _ => spans.push(Span {
+            text: text.to_string(),
+            style,
+        }),
+    }
+}
+
+/// Cuts a styled line into pieces of at most `width` columns (at least one char each); an empty
+/// line stays one piece.
+fn hard_wrap_chars(chars: &[(char, SpanStyle)], width: usize) -> Vec<Chars> {
+    let mut out: Vec<Chars> = vec![Vec::new()];
+    let mut w = 0;
+    for &(c, st) in chars {
+        let cwid = cw(c);
+        if w + cwid > width && w > 0 {
+            out.push(Vec::new());
+            w = 0;
+        }
+        out.last_mut().unwrap().push((c, st));
+        w += cwid;
+    }
+    out
+}
+
+/// The language a fence's info string names: its first word (`rust,ignore`, `{.rust}`, `Rust`) as
+/// a language id, a common alias or a file extension; `None`: plain code.
+fn language_of(info: &str) -> Option<crate::syntax::Language> {
+    use crate::syntax::Language;
+    let word = info
+        .trim_start_matches(['{', '.'])
+        .split(|c: char| c.is_whitespace() || matches!(c, ',' | '{' | '}' | ';'))
+        .next()?
+        .to_lowercase();
+    if word.is_empty() {
+        return None;
+    }
+    let id = match word.as_str() {
+        "rs" => "rust",
+        "py" | "python3" => "python",
+        "sh" | "bash" | "zsh" | "shell" | "console" => "shellscript",
+        "c++" | "cxx" | "hpp" => "cpp",
+        "yml" => "yaml",
+        "md" => "markdown",
+        "objc" | "obj-c" | "objectivec" => "objective-c",
+        "objc++" | "objcpp" => "objective-cpp",
+        "make" => "makefile",
+        "docker" => "dockerfile",
+        "text" | "txt" | "plain" | "plaintext" => return None,
+        other => other,
+    };
+    Language::from_id(id)
+        .or_else(|| {
+            let path = std::path::PathBuf::from(format!("x.{id}"));
+            crate::syntax::detect_path(&path, std::path::Path::new(""), &Default::default())
+        })
+        .filter(|l| *l != Language::PlainText)
 }
 
 fn to_spans(chars: &[(char, SpanStyle)]) -> Vec<Span> {
@@ -883,15 +1134,342 @@ mod tests {
         assert_eq!(d.lines[3].text(), "H");
     }
 
+    fn lines(d: &Doc) -> Vec<String> {
+        d.lines.iter().map(Line::text).collect()
+    }
+
     #[test]
-    fn code_block_and_table_placeholders() {
-        let d = render("```rust\nfn main() {}\n\nlet x;\n```\n", 40);
-        let t: Vec<String> = d.lines.iter().map(Line::text).collect();
-        assert_eq!(t, ["fn main() {}", "", "let x;"]);
-        assert!(d.lines.iter().all(|l| l.kind == Kind::Code));
+    fn fenced_block_with_language() {
+        let d = render("```rust\nfn main() {}\n\nlet x;\n```\n", 20);
+        assert_eq!(
+            lines(&d),
+            [
+                " rust               ",
+                " fn main() {}       ",
+                "                    ",
+                " let x;             "
+            ]
+        );
+        assert_eq!(d.lines[0].kind, Kind::CodeLabel);
+        assert!(d.lines[1..].iter().all(|l| l.kind == Kind::Code));
+        assert!(d.lines.iter().all(|l| l.width() == 20));
+        assert!(d.lines.iter().flat_map(|l| &l.spans).all(|s| s.style.block));
+        assert_eq!(d.lines[0].spans[0].style.key, "markdown.muted");
+        // Highlighted: the keyword and the plain rest have different keys; the text is the source.
+        let k: std::collections::HashSet<_> = d.lines[1].spans.iter().map(|s| s.style.key).collect();
+        assert!(k.len() > 1, "{k:?}");
+        assert!(k.contains("keyword"), "{k:?}");
+        assert!(!d.overflows(20));
+    }
+
+    #[test]
+    fn fenced_block_without_or_unknown_language_is_plain() {
+        let d = render("```\nfn main() {}\n```\n", 20);
+        assert_eq!(lines(&d), [" fn main() {}       "]);
+        assert!(d.lines[0].spans.iter().all(|s| s.style.key == "markdown.codeblock"));
+        let d = render("```nosuchlang\nfn main() {}\n```\n", 20);
+        assert_eq!(lines(&d)[0].trim_end(), " nosuchlang");
+        assert_eq!(d.lines[0].kind, Kind::CodeLabel);
+        assert_eq!(d.lines.len(), 2);
+        assert!(d.lines[1].spans.iter().all(|s| s.style.key == "markdown.codeblock"));
+        // A language with no grammar (plain text) and known aliases.
+        let d = render("```text\nlet x;\n```\n", 20);
+        assert!(d.lines[1].spans.iter().all(|s| s.style.key == "markdown.codeblock"));
+        let d = render("```py\nif x:\n    pass\n```\n", 20);
+        assert!(d.lines[1].spans.iter().any(|s| s.style.key == "keyword.control"));
+    }
+
+    #[test]
+    fn indented_block_and_unclosed_fence() {
+        let d = render("para\n\n    one\n    two\n\nafter", 12);
+        assert_eq!(lines(&d), ["para", "", " one        ", " two        ", "", "after"]);
+        assert_eq!(d.lines[2].kind, Kind::Code);
+        let d = render("```sh\necho hi\nls", 12);
+        assert_eq!(lines(&d), [" sh         ", " echo hi    ", " ls         "]);
+    }
+
+    #[test]
+    fn code_block_empty_tabs_and_long_lines_wrap() {
+        let d = render("```\n```\n", 8);
+        assert_eq!(lines(&d), ["        "]);
+        let d = render("```\n\tx\n```\n", 12);
+        assert_eq!(lines(&d), ["     x      "]);
+        // Wrapped at the content width (width - 2), every row still full width.
+        let d = render("```\nabcdefghijkl\n```\n", 8);
+        assert_eq!(lines(&d), [" abcdef ", " ghijkl "]);
+        assert!(!d.overflows(8));
+        // A wide character is never split.
+        let d = render("```\n日本語\n```\n", 7);
+        assert_eq!(lines(&d), [" 日本  ", " 語    "]);
+        // Tiny widths don't panic.
+        for w in [0, 1, 2, 3] {
+            render("```rust\nlet x = 1;\n```\n    ind\n", w);
+        }
+    }
+
+    #[test]
+    fn code_block_in_list_and_quote_keeps_prefix() {
+        let d = render("- item\n\n  ```\n  x\n  ```\n", 12);
+        assert_eq!(lines(&d), ["• item", "", "   x        "]);
+        let d = render("> ```\n> x\n> ```\n", 10);
+        assert_eq!(lines(&d), ["▎  x      "]);
+        assert!(!d.lines[0].spans[0].style.block);
+    }
+
+    #[test]
+    fn table_aligned_columns() {
         let d = render("| a | b |\n|---|---|\n| 1 | **2** |\n", 40);
-        let t: Vec<String> = d.lines.iter().map(Line::text).collect();
-        assert_eq!(t, ["a | b", "1 | 2"]);
+        assert_eq!(
+            lines(&d),
+            ["┌───┬───┐", "│ a │ b │", "├───┼───┤", "│ 1 │ 2 │", "└───┴───┘"]
+        );
+        assert!(d.lines.iter().all(|l| l.kind == Kind::Table));
+        // Header bold, body not (except emphasis); borders muted.
+        let head = &d.lines[1];
+        // Every header span with text is bold (and exists unmerged from the padding); borders and
+        // plain body cells are not.
+        let words = |l: &Line| -> Vec<(String, bool)> {
+            l.spans
+                .iter()
+                .filter(|s| s.style.key != "markdown.rule" && !s.text.trim().is_empty())
+                .map(|s| (s.text.clone(), s.style.bold))
+                .collect()
+        };
+        assert_eq!(words(head), [("a".to_string(), true), ("b".to_string(), true)]);
+        assert!(
+            d.lines
+                .iter()
+                .flat_map(|l| &l.spans)
+                .filter(|s| s.style.key == "markdown.rule")
+                .all(|s| !s.style.bold)
+        );
+        assert_eq!(
+            words(&d.lines[3]),
+            [(" 1 ".to_string(), false), ("2".to_string(), true)]
+        );
+        assert!(
+            d.lines[3]
+                .spans
+                .iter()
+                .find(|s| s.text.trim() == "1")
+                .is_some_and(|s| !s.style.bold)
+        );
+        assert!(
+            d.lines[3]
+                .spans
+                .iter()
+                .find(|s| s.text.trim() == "2")
+                .is_some_and(|s| s.style.bold)
+        );
+        assert_eq!(head.spans[0].style.key, "markdown.rule");
+    }
+
+    #[test]
+    fn table_alignments() {
+        let src = "| left | mid | right | none |\n|:--|:-:|--:|---|\n| a | b | c | d |\n\
+                   | long one | long two | long three | long four |\n";
+        let d = render(src, 80);
+        assert_eq!(
+            lines(&d),
+            [
+                "┌──────────┬──────────┬────────────┬───────────┐",
+                "│ left     │   mid    │      right │ none      │",
+                "├──────────┼──────────┼────────────┼───────────┤",
+                "│ a        │    b     │          c │ d         │",
+                "│ long one │ long two │ long three │ long four │",
+                "└──────────┴──────────┴────────────┴───────────┘",
+            ]
+        );
+    }
+
+    #[test]
+    fn table_wide_characters_use_display_width() {
+        let d = render("| 名前 | b |\n|---|---|\n| 日本語 | x |\n", 40);
+        assert_eq!(
+            lines(&d),
+            [
+                "┌────────┬───┐",
+                "│ 名前   │ b │",
+                "├────────┼───┤",
+                "│ 日本語 │ x │",
+                "└────────┴───┘"
+            ]
+        );
+        assert!(d.lines.iter().all(|l| l.width() == 14));
+    }
+
+    #[test]
+    fn table_narrower_than_natural_width_shrinks_and_wraps() {
+        let src = "| name | description |\n|---|---|\n| a | the quick brown fox jumps |\n";
+        let d = render(src, 22);
+        assert_eq!(
+            lines(&d),
+            [
+                "┌──────┬─────────────┐",
+                "│ name │ description │",
+                "├──────┼─────────────┤",
+                "│ a    │ the quick   │",
+                "│      │ brown fox   │",
+                "│      │ jumps       │",
+                "└──────┴─────────────┘",
+            ]
+        );
+        assert!(!d.overflows(22));
+        let d = render(src, 16);
+        assert!(d.lines.iter().all(|l| l.width() <= 16), "{:?}", lines(&d));
+        assert!(d.lines.len() > 7);
+        let all = lines(&d).join(" ");
+        for w in ["quick", "brown", "jumps"] {
+            assert!(all.contains(w), "{w} in {all}");
+        }
+    }
+
+    #[test]
+    fn table_wider_than_view_even_at_minimum_reports_overflow() {
+        let d = render("| aaaa | bbbb | cccc |\n|---|---|---|\n| 1 | 2 | 3 |\n", 10);
+        // 3 columns of at least 3 plus 10 border / pad columns.
+        assert_eq!(d.lines[0].text(), "┌─────┬─────┬─────┐");
+        assert!(d.overflows(10));
+        assert_eq!(d.max_width(), 19);
+        for w in [0, 1, 2, 5] {
+            let d = render("| aaaa | 日本 |\n|---|---|\n| 1 | 2 |\n", w);
+            assert!(d.overflows(w));
+        }
+    }
+
+    #[test]
+    fn table_cell_styles_empty_cells_and_ragged_rows() {
+        let src = "| a | b | c |\n|---|---|---|\n| `x` | *y* [l](u) |\n| | 2 | 3 | extra |\n";
+        let d = render(src, 60);
+        assert_eq!(
+            lines(&d),
+            [
+                "┌───┬─────────┬───┐",
+                "│ a │ b       │ c │",
+                "├───┼─────────┼───┤",
+                "│ x │ y l (u) │   │",
+                "│   │ 2       │ 3 │",
+                "└───┴─────────┴───┘",
+            ]
+        );
+        let row = &d.lines[3];
+        let find = |t: &str| row.spans.iter().find(|s| s.text.contains(t)).unwrap().style;
+        assert_eq!(find("x").key, "markdown.code");
+        assert!(find("y").italic);
+        assert_eq!(find("l").key, "markdown.link");
+    }
+
+    #[test]
+    fn table_in_list_quote_and_before_paragraph() {
+        let t = "| a |\n|---|\n| b |\n";
+        let d = render(&format!("- item\n\n  {}\nafter", t.replace('\n', "\n  ")), 30);
+        let l = lines(&d);
+        assert_eq!(l[0], "• item");
+        assert_eq!(l[2], "  ┌───┐");
+        assert_eq!(l[3], "  │ a │");
+        assert_eq!(l[6], "  └───┘");
+        let d = render(&format!("> {}", t.replace('\n', "\n> ")), 30);
+        assert_eq!(lines(&d)[0], "▎ ┌───┐");
+        assert_eq!(d.lines[0].spans[0].style.key, "markdown.quote");
+        // Inside a quote the grid shrinks to the narrower view.
+        let d = render("> | aaaaaaaa | b |\n> |---|---|\n> | 1 | 2 |\n", 14);
+        assert!(!d.overflows(14), "{:?}", lines(&d));
+        let d = render("| a |\n|---|\n| b |\n\nnext", 30);
+        assert_eq!(lines(&d)[5], "");
+        assert_eq!(lines(&d)[6], "next");
+    }
+
+    /// Highlighting maps byte ranges onto chars: with multibyte text (CJK, accents, emoji, inside
+    /// strings and comments) the lines are still exactly the source, every key is a theme key,
+    /// and the string / comment keys land on the right text.
+    #[test]
+    fn highlighted_code_with_multibyte_text_keeps_the_source() {
+        let src = "fn main() {\n    let s = \"日本語 é ü\"; // コメント 😀\n    let c = 'ß';\n}";
+        let d = render(&format!("```rust\n{src}\n```\n"), 60);
+        let got: Vec<String> = d.lines[1..]
+            .iter()
+            .map(|l| l.text()[1..].trim_end().to_string())
+            .collect();
+        assert_eq!(got, src.lines().collect::<Vec<_>>());
+        assert!(d.lines.iter().all(|l| l.width() == 60));
+        let theme = crate::theme::Theme::dark_plus(true);
+        for s in d.lines.iter().flat_map(|l| &l.spans) {
+            assert!(
+                theme.find(s.style.key).is_some(),
+                "{} missing from the theme",
+                s.style.key
+            );
+        }
+        let key_of = |line: usize, t: &str| {
+            d.lines[line]
+                .spans
+                .iter()
+                .find(|s| s.text.contains(t))
+                .unwrap()
+                .style
+                .key
+        };
+        assert_eq!(key_of(2, "日本語"), "string");
+        assert_eq!(key_of(2, "コメント"), "comment");
+        assert_eq!(key_of(3, "ß"), "string");
+        assert_eq!(key_of(2, "let"), "keyword");
+        // Info-string variants name the language too; CRLF sources render the same as LF ones.
+        for info in ["rust,ignore", "{.rust}", "Rust", "rs"] {
+            let d = render(&format!("```{info}\nlet x;\n```\n"), 20);
+            assert!(d.lines[1].spans.iter().any(|s| s.style.key == "keyword"), "{info}");
+        }
+        assert_eq!(
+            render("```rust\r\nlet x = 1;\r\n```\r\n", 20),
+            render("```rust\nlet x = 1;\n```\n", 20)
+        );
+    }
+
+    #[test]
+    fn code_block_over_the_highlight_limit_is_plain() {
+        let body = "let x;\n".repeat(HIGHLIGHT_LIMIT / 7 + 1);
+        let d = render(&format!("```rust\n{body}```\n"), 20);
+        assert_eq!(d.lines.len(), 1 + HIGHLIGHT_LIMIT / 7 + 1);
+        assert!(
+            d.lines[1..]
+                .iter()
+                .flat_map(|l| &l.spans)
+                .all(|s| s.style.key == "markdown.codeblock")
+        );
+        let d = render("```rust\nlet x;\n```\n", 20);
+        assert!(d.lines[1].spans.iter().any(|s| s.style.key == "keyword"));
+    }
+
+    /// Wide characters in a shrunk column wrap without splitting, the borders stay aligned on
+    /// every wrapped row, and a centred cell with odd padding puts the extra space on the right.
+    #[test]
+    fn table_wide_characters_shrink_wrap_and_centre() {
+        let d = render("|日本語の長いテキスト|b|\n|:-:|--:|\n|名前 x|y|\n", 14);
+        assert_eq!(
+            lines(&d),
+            [
+                "┌────────┬───┐",
+                "│ 日本語 │ b │",
+                "│ の長い │   │",
+                "│ テキス │   │",
+                "│   ト   │   │",
+                "├────────┼───┤",
+                "│ 名前 x │ y │",
+                "└────────┴───┘",
+            ]
+        );
+        assert!(d.lines.iter().all(|l| l.width() == 14));
+        assert!(!d.overflows(14));
+        let d = render("| abcde | x |\n|:-:|---|\n| ab | y |\n", 40);
+        assert_eq!(lines(&d)[3], "│  ab   │ y │");
+    }
+
+    #[test]
+    fn table_with_an_empty_header_and_crlf() {
+        let d = render("| | |\r\n|---|---|\r\n| a | b |\r\n", 30);
+        assert_eq!(
+            lines(&d),
+            ["┌───┬───┐", "│   │   │", "├───┼───┤", "│ a │ b │", "└───┴───┘"]
+        );
     }
 
     #[test]
@@ -915,7 +1493,7 @@ mod tests {
         let mut used: Vec<&str> = d.lines.iter().flat_map(keys).collect();
         used.sort_unstable();
         used.dedup();
-        assert_eq!(used.len(), 14, "{used:?}");
+        assert_eq!(used.len(), 15, "{used:?}");
         for k in used {
             assert!(theme.find(k).is_some(), "{k} missing from the theme");
         }

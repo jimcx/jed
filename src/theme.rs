@@ -512,6 +512,8 @@ impl Theme {
             ),
             ("markdown.text", Style::new().fg(c(0xD4D4D4))),
             ("markdown.code", fg_bg(0xCE9178, 0x2D2D2D)),
+            // Fenced / indented code blocks: this background sits under every `block` span.
+            ("markdown.codeblock", fg_bg(0xD4D4D4, 0x262626)),
             (
                 "markdown.link",
                 Style::new().fg(c(0x3794FF)).add_modifier(Modifier::UNDERLINED),
