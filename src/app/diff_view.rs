@@ -876,6 +876,11 @@ impl App {
                     self.open_diff_source();
                     return true;
                 }
+                if h.restore.is_some_and(|r| r.contains(p)) {
+                    self.focus_group(g);
+                    self.show_file_history(true);
+                    return true;
+                }
                 let button = h.buttons.iter().find(|(r, _)| r.contains(p)).map(|(_, k)| *k);
                 let revert = h.reverts.iter().find(|(r, _)| r.contains(p)).map(|(_, k)| *k);
                 let apply = h

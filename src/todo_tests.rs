@@ -8665,8 +8665,8 @@ mod discard_changes {
         assert_eq!(read(&root, "c.txt"), "c3\n", "nothing before the answer");
         let text = screen(&mut app);
         assert!(text.contains("Discard changes in proj/c.txt?"), "{text}");
-        assert!(text.contains("This can't be undone."), "{text}");
-        assert!(!text.contains("left unsaved") && !text.contains("Trash"), "{text}");
+        assert!(text.contains("rewritten on disk now"), "{text}");
+        assert!(!text.contains("Trash"), "{text}");
         confirm(&mut app);
         assert!(
             app.settle(|a| a.diffs.staging == 0 && a.file_history.running() == 0 && !a.git.running())
@@ -8700,7 +8700,7 @@ mod discard_changes {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn discard_an_open_buffer_is_one_undo_step_and_left_dirty() {
+    async fn discard_an_open_buffer_writes_the_disk_and_keeps_the_text_in_history() {
         let (_d, root, state) = dirs();
         scm_repo(&root);
         let mut app = open_file_app(&root, &state, "a.txt");
@@ -8713,16 +8713,19 @@ mod discard_changes {
         }
         let text = screen(&mut app);
         assert!(text.contains("Discard changes in proj/a.txt?"), "{text}");
-        assert!(text.contains("Open files are left unsaved."), "{text}");
-        assert!(!text.contains("can't be undone"), "{text}");
+        assert!(!text.contains("left unsaved"), "{text}");
         confirm(&mut app);
         assert!(settle_stage(&mut app).await);
-        let buf = app.active_buffer().unwrap();
-        assert_eq!(buf.rope.to_string(), "a\n");
-        assert!(buf.is_dirty(), "left unsaved");
-        assert_eq!(read(&root, "a.txt"), "a2\n", "the file on disk is not written");
-        app.test_execute(Command::Undo);
-        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "a2\n", "one undo step");
+        assert!(
+            app.settle(|a| a.file_history.running() == 0 && a.active_buffer().unwrap().rope == "a\n")
+                .await
+        );
+        assert_eq!(read(&root, "a.txt"), "a\n", "written on disk at once");
+        assert!(!app.active_buffer().unwrap().is_dirty());
+        // The text before is in the file history.
+        let entries = history::entries(&root, Path::new("a.txt")).unwrap();
+        let kept = history::read(&root, Path::new("a.txt"), &entries.last().unwrap().id).unwrap();
+        assert_eq!(kept, b"a2\n");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -8764,50 +8767,19 @@ mod discard_changes {
         assert!(app.git.status.as_ref().unwrap().entry(Path::new("sub/e.txt")).is_none());
     }
 
-    /// A buffer already holding the index's text (edited back by hand) needs no edit: it counts
-    /// as discarded, its undo history untouched, still unsaved.
+    /// A buffer with unsaved changes is refused, even one typed back to the index's text.
     #[tokio::test(flavor = "multi_thread")]
-    async fn discard_a_buffer_already_at_the_index_text() {
-        let (_d, root, state) = dirs();
-        scm_repo(&root);
-        let mut app = open_file_app(&root, &state, "a.txt");
-        assert!(settle_git(&mut app, |s| s.entry(Path::new("a.txt")).is_some()).await);
-        app.press(KeyCode::Delete, M::NONE);
-        app.press(KeyCode::Delete, M::NONE);
-        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "\n");
-        app.type_text("a");
-        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "a\n");
-        app.test_execute(Command::DiscardChanges);
-        confirm(&mut app);
-        assert!(settle_stage(&mut app).await);
-        assert_eq!(message(&app), "Discarded changes in 1 file (open files not saved)");
-        let buf = app.active_buffer().unwrap();
-        assert_eq!(buf.rope.to_string(), "a\n");
-        assert!(buf.is_dirty());
-        assert_eq!(read(&root, "a.txt"), "a2\n");
-        // Undo goes back through the typing, not through a discard step.
-        app.test_execute(Command::Undo);
-        assert_ne!(app.active_buffer().unwrap().rope.to_string(), "a\n");
-    }
-
-    /// A save started while the prompt is up: the Discard is refused then (planned again).
-    #[tokio::test(flavor = "multi_thread")]
-    async fn discard_is_refused_when_a_save_starts_before_the_answer() {
+    async fn discard_is_refused_for_a_buffer_with_unsaved_changes() {
         let (_d, root, state) = dirs();
         scm_repo(&root);
         let mut app = open_file_app(&root, &state, "a.txt");
         assert!(settle_git(&mut app, |s| s.entry(Path::new("a.txt")).is_some()).await);
         app.type_text("x");
         app.test_execute(Command::DiscardChanges);
-        assert!(matches!(app.prompt, Some(Prompt::ConfirmDiscard { .. })));
-        app.test_execute(Command::Save);
-        assert!(app.active_buffer().unwrap().save_in_flight());
-        confirm(&mut app);
-        assert!(message(&app).contains("being saved"), "{}", message(&app));
-        assert_eq!(app.diffs.staging, 0, "nothing started");
-        assert!(app.settle(|a| !a.active_buffer().unwrap().save_in_flight()).await);
+        assert!(app.prompt.is_none());
+        assert!(message(&app).contains("unsaved changes"), "{}", message(&app));
         assert_eq!(app.active_buffer().unwrap().rope.to_string(), "xa2\n");
-        assert_eq!(read(&root, "a.txt"), "xa2\n");
+        assert_eq!(read(&root, "a.txt"), "a2\n");
     }
 
     #[tokio::test(flavor = "multi_thread")]

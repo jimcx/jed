@@ -166,11 +166,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) -> Option<R
                 many => format!("{} files", many.len()),
             };
             lines.push(Line::raw(format!(" Discard changes in {what}?")));
-            if *open {
-                lines.push(Line::raw(" Open files are left unsaved."));
-            }
-            if *closed {
-                lines.push(Line::raw(" This can't be undone."));
+            if *open || *closed {
+                lines.push(Line::raw(" The file is rewritten on disk now; File History: Restore"));
+                lines.push(Line::raw(" brings the text back."));
             }
             if *trash > 0 {
                 lines.push(Line::raw(" Untracked files are moved to the Trash."));

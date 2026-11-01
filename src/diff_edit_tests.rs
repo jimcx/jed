@@ -895,3 +895,41 @@ async fn diff_edit_stage_and_revert_still_work_after_a_selection() {
         said(&app)
     );
 }
+
+/// A file-history entry's diff tab has a Restore button: a click restores the file to the entry.
+#[tokio::test(flavor = "multi_thread")]
+async fn diff_history_tab_restore_button_restores_the_entry() {
+    let (_d, root, state) = dirs();
+    let mut app = open(&root, &state).await;
+    let limits = crate::workspace::config::HistoryConfig::default();
+    let crate::history::Recorded::Added(entry) =
+        crate::history::record(&root, Path::new("f.txt"), ORIGINAL.as_bytes(), &limits).unwrap()
+    else {
+        panic!("recorded")
+    };
+    app.open_diff(root.join("f.txt"), Pair::history(entry.snapshot()));
+    assert!(settle_diffs(&mut app).await);
+    term(&mut app, 150);
+    let g = app.groups.active;
+    let r = app
+        .hits
+        .group(g)
+        .and_then(|h| h.diff.clone())
+        .unwrap()
+        .restore
+        .expect("a Restore button");
+    app.mouse(MouseEventKind::Down(MouseButton::Left), r.x, r.y);
+    assert!(app.settle(|a| text(a) == ORIGINAL).await);
+    // Other diffs have none.
+    app.open_diff(root.join("f.txt"), Pair::UNSTAGED);
+    assert!(settle_diffs(&mut app).await);
+    term(&mut app, 150);
+    assert!(
+        app.hits
+            .group(g)
+            .and_then(|h| h.diff.clone())
+            .unwrap()
+            .restore
+            .is_none()
+    );
+}

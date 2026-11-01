@@ -728,6 +728,8 @@ pub struct DiffHit {
     pub moves: Vec<(Rect, usize, bool)>,
     /// The header's Open File button (the file at the cursor's line), when it fits.
     pub open_file: Option<Rect>,
+    /// A file-history entry's Restore button (left of Open File), when it fits.
+    pub restore: Option<Rect>,
     /// The x of each side's text column (inline: both the one column's) and, side by side, of the
     /// divider: the mouse maps a cell to a side and a display column.
     pub text_x: [u16; 2],

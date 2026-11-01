@@ -9,7 +9,8 @@
 //! visible rows; a side without spans is plain. Each change's first row ends
 //! with a ` Stage ` / ` Unstage ` button when the view stages, and an unstaged view's with a red
 //! ` Revert ` on the index (left) side. The header ends with ` Open File ` (the file at the
-//! cursor's line) left of the number of changes. Only the visible rows are drawn.
+//! cursor's line) left of the number of changes, and on a file-history entry's tab a ` Restore `
+//! button left of that. Only the visible rows are drawn.
 
 use std::ops::Range;
 
@@ -34,6 +35,8 @@ const TO_RIGHT: &str = " → ";
 const TO_LEFT: &str = " ← ";
 /// The header's button opening the file (`git.toggleChanges`).
 const OPEN_FILE: &str = " Open File ";
+/// A file-history entry's tab: restores the file to the entry (`fileHistory.restore`).
+const RESTORE: &str = " Restore ";
 
 /// The colours, looked up once per frame.
 struct Styles {
@@ -176,6 +179,18 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
             header.patch(theme.get("quickDiff.action")),
         );
         hit.open_file = Some(rect);
+        let rw = RESTORE.width() as u16;
+        if d.pair.snapshot().is_some() && rect.x >= area.x + rw + 20 {
+            let r = Rect::new(rect.x - rw, area.y, rw, 1);
+            out.set_stringn(
+                r.x,
+                r.y,
+                RESTORE,
+                rw as usize,
+                header.patch(theme.get("diffEditor.revertAction")),
+            );
+            hit.restore = Some(r);
+        }
     }
 
     let message = |out: &mut Cells, text: &str| {

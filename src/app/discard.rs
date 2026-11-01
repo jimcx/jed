@@ -1,17 +1,15 @@
-//! Discarding working tree changes (`git.clean`, `git.cleanAll`, the Changes rows' `↶` button):
-//! after a `Prompt::ConfirmDiscard` naming the files, a modified or deleted file gets the
-//! index's text back (`git checkout -- path`; staged changes are never touched). An open buffer
-//! is edited through `Buffer::edit` (the whole text, one undo step, left unsaved) with the text
-//! read off-thread; a closed file is rewritten off-thread (`stage::discard_file`), its text
-//! before kept in the file history. An untracked file goes to the Trash and its open tabs are
-//! marked deleted. Conflicted files, staged-only ones and files with a save in flight are
-//! refused. Everything ends in `AppEvent::Discarded`.
+//! Discarding working tree changes (`git.clean`, `git.cleanAll`, the Changes rows' `↶` button),
+//! after a `Prompt::ConfirmDiscard` naming the files, at once on disk: a modified or deleted file gets the index's text back on disk
+//! (`git checkout -- path`; staged changes are never touched, `stage::discard_file`) off-thread,
+//! the text before (an open buffer's, unsaved edits included) first kept in the file history so
+//! "File History: Restore" can bring it back. Open buffers then reload from disk (one undo step,
+//! clean). An untracked file goes to the Trash and its open tabs are marked deleted. Conflicted
+//! files, staged-only ones and files with a save in flight are refused. Everything ends in
+//! `AppEvent::Discarded`.
 
 use std::path::PathBuf;
 
 use super::{App, AppEvent, Level, Prompt};
-use crate::buffer::change::ChangeSet;
-use crate::buffer::pos::ByteIdx;
 use crate::git::Change;
 use crate::git::stage;
 use crate::scm::{self, Row, Section};
@@ -44,8 +42,10 @@ impl Plan {
 
 /// `AppEvent::Discarded`'s payload.
 pub struct Done {
-    /// Open buffers' paths and the index's text for them.
-    texts: Vec<(PathBuf, Vec<u8>)>,
+    /// Open buffers' files, written on disk (the buffers reload).
+    opened: Vec<PathBuf>,
+    /// Snapshots sent to the file history.
+    recorded: usize,
     trashed: Vec<PathBuf>,
     /// Closed files rewritten.
     restored: usize,
@@ -123,6 +123,8 @@ impl App {
                 .is_some_and(|b| b.save_in_flight())
             {
                 plan.refused.push(refuse("it is being saved"));
+            } else if buffer.and_then(|b| self.buffers.get(b)).is_some_and(|b| b.is_dirty()) {
+                plan.refused.push(refuse("it has unsaved changes"));
             } else if change == Change::Untracked {
                 plan.trash.push(path.clone());
             } else if buffer.is_some() {
@@ -151,7 +153,10 @@ impl App {
         });
     }
 
-    /// The prompt's Discard: plans again (the status may have moved on) and starts the work.
+    /// The prompt's Discard: plans again (the status may have moved on) and starts the work. Plans (from the status now) and starts the work: tracked files get the index's text on
+    /// disk off-thread, the text before (an open buffer's, unsaved edits included) recorded in
+    /// the file history first; untracked ones go to the Trash. Open buffers then reload from
+    /// disk in `discard_done`.
     pub(super) fn discard_now(&mut self, files: Vec<PathBuf>) {
         let plan = self.discard_plan(&files);
         if plan.is_empty() {
@@ -164,17 +169,28 @@ impl App {
             return;
         };
         let rel = |p: &PathBuf| repo.relative(p).unwrap_or_else(|| p.clone());
-        let closed: Vec<_> = plan.closed.iter().map(|p| (rel(p), self.history_job(p))).collect();
-        for _ in closed.iter().filter(|(_, job)| job.is_some()) {
-            self.history_started();
+        // (relative path, history job, the open buffer's text).
+        let mut tracked = Vec::new();
+        for (paths, open) in [(&plan.closed, false), (&plan.open, true)] {
+            for p in paths {
+                let before = open
+                    .then(|| self.buffer_of(p).and_then(|b| self.buffers.get(b)))
+                    .flatten()
+                    .map(|b| crate::buffer::file::encode(&b.rope, b.bom));
+                let job = self.history_job(p);
+                if job.is_some() {
+                    self.history_started();
+                }
+                tracked.push((p.clone(), rel(p), job, before));
+            }
         }
-        let open: Vec<(PathBuf, PathBuf)> = plan.open.iter().map(|p| (p.clone(), rel(p))).collect();
         let trash = plan.trash;
         self.diffs.staging += 1;
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let mut done = Done {
-                texts: Vec::new(),
+                opened: Vec::new(),
+                recorded: 0,
                 trashed: Vec::new(),
                 restored: 0,
                 errors: Vec::new(),
@@ -183,26 +199,32 @@ impl App {
                 let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
                 format!("Can't discard changes in {name}: {why}")
             };
-            for (rel, job) in closed {
+            for (abs, rel, job, buffer) in tracked {
+                let open = buffer.is_some();
+                // The text kept in the history: the buffer's, else the file's.
+                if let (Some(job), Some(text)) = (&job, &buffer) {
+                    let recorded = job.record(text);
+                    super::history::send_done(&tx, recorded);
+                    done.recorded += 1;
+                }
                 let result = stage::discard_file(&repo, &rel);
-                if let Some(job) = job {
+                if let Some(job) = job
+                    && !open
+                {
                     let recorded = match &result {
                         Ok(Some(before)) => job.record(before),
                         _ => Ok(()),
                     };
                     super::history::send_done(&tx, recorded);
+                    done.recorded += 1;
                 }
                 match result {
-                    Ok(_) => done.restored += 1,
-                    Err(e) => done.errors.push(fail(&rel, e.to_string())),
-                }
-            }
-            for (abs, rel) in open {
-                match stage::index_text(&repo, &rel) {
-                    Ok(Some(t)) if t.mode != 0o120000 => done.texts.push((abs, t.bytes)),
-                    Ok(_) => done
-                        .errors
-                        .push(fail(&rel, "it isn't a regular file in the index".into())),
+                    Ok(_) => {
+                        done.restored += 1;
+                        if open {
+                            done.opened.push(abs);
+                        }
+                    }
                     Err(e) => done.errors.push(fail(&rel, e.to_string())),
                 }
             }
@@ -216,41 +238,24 @@ impl App {
         });
     }
 
-    /// `AppEvent::Discarded`: open buffers get the index's text (one undo step each), trashed
+    /// `AppEvent::Discarded`: open buffers reload from disk (one undo step, clean), trashed
     /// files' tabs are marked deleted, the result is said and the status read again.
     pub(super) fn discard_done(&mut self, done: Done) {
         self.diffs.staging -= 1;
         let Done {
-            texts,
+            opened,
             trashed,
             restored,
-            mut errors,
+            recorded,
+            errors,
         } = done;
-        let mut edited = 0;
-        for (path, bytes) in texts {
-            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-            let Some(id) = self.buffer_of(&path) else { continue };
-            let buf = self.buffers.get(id).expect("an open buffer");
-            if let Some(reason) = &buf.read_only {
-                errors.push(format!("Can't discard changes in {name}: read-only: {reason}"));
-                continue;
+        for path in &opened {
+            if let Some(id) = self.buffer_of(path) {
+                if let Some(buf) = self.buffers.get_mut(id) {
+                    buf.seal_undo();
+                }
+                self.check_disk(id, true);
             }
-            let bytes = if buf.bom {
-                bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes)
-            } else {
-                &bytes
-            };
-            let Ok(text) = std::str::from_utf8(bytes) else {
-                errors.push(format!("Can't discard changes in {name}: the index's text isn't UTF-8"));
-                continue;
-            };
-            if buf.rope != text {
-                let mut changes = ChangeSet::with_capacity(1, text.len());
-                changes.push(ByteIdx(0), ByteIdx(buf.rope.len()), text);
-                self.apply_changes(id, changes);
-                self.follow_edits();
-            }
-            edited += 1;
         }
         for path in &trashed {
             for (_, buf) in self.buffers.iter_mut() {
@@ -259,7 +264,7 @@ impl App {
                 }
             }
         }
-        let total = restored + edited + trashed.len();
+        let total = restored + trashed.len();
         if let Some(e) = errors.first() {
             let more = if errors.len() > 1 {
                 format!(" (and {} more)", errors.len() - 1)
@@ -273,8 +278,12 @@ impl App {
             } else {
                 format!("{total} files")
             };
-            let unsaved = if edited > 0 { " (open files not saved)" } else { "" };
-            self.notify(Level::Info, format!("Discarded changes in {what}{unsaved}"));
+            let kept = if recorded > 0 {
+                " (File History: Restore brings them back)"
+            } else {
+                ""
+            };
+            self.notify(Level::Info, format!("Discarded changes in {what}{kept}"));
         }
         self.quick_diff_index_changed();
         self.refresh_git(None);
