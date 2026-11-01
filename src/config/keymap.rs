@@ -880,6 +880,14 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         global.push((KeyCode::Right, cmd | alt, Command::NextTab));
         global.push((KeyCode::Left, cmd | alt, Command::PrevTab));
     }
+    if !mac {
+        // Ctrl+T / Y / U (above) are the shell's keys inside a terminal; these reach the app there too.
+        global.extend([
+            (KeyCode::Char('t'), ctrl | alt, Command::FocusTerminal(1)),
+            (KeyCode::Char('y'), ctrl | alt, Command::FocusTerminal(2)),
+            (KeyCode::Char('u'), ctrl | alt, Command::FocusTerminal(3)),
+        ]);
+    }
     // VS Code's: Ctrl+Cmd+Right / Left on macOS, Ctrl+Alt+Right / Left on Linux.
     let group_move = if mac { cmd | ctrl } else { ctrl | alt };
     global.extend([
@@ -1213,6 +1221,19 @@ mod tests {
             km.lookup(&key(KeyCode::Char('z'), KeyModifiers::SUPER | KeyModifiers::SHIFT), ed),
             redo
         );
+    }
+
+    #[test]
+    fn terminal_group_keys_work_inside_a_terminal_on_linux() {
+        let km = Keymap::default_for(Platform::Linux);
+        let mods = KeyModifiers::CONTROL | KeyModifiers::ALT;
+        for (c, n) in [('t', 1), ('y', 2), ('u', 3)] {
+            let k = key(KeyCode::Char(c), mods);
+            assert_eq!(km.lookup(&k, Context::Shell), Some(Command::FocusTerminal(n)), "{c}");
+            // Plain Ctrl+letter stays the shell's there.
+            let plain = key(KeyCode::Char(c), KeyModifiers::CONTROL);
+            assert_eq!(km.lookup(&plain, Context::Shell), None, "{c}");
+        }
     }
 
     #[test]
