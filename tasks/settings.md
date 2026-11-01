@@ -1,7 +1,7 @@
 ---
 id: settings
 name: Settings files
-summary: '"Preferences: Open User / Workspace Settings" open `settings.toml` and `.workspace`, with settings-aware syntax highlighting and completion'
+summary: '"Preferences: Open User / Workspace Settings" open `settings.toml` and `.workspace`, with settings-aware syntax highlighting and completion (also completion for `keybindings.toml`)'
 status: open
 priority: 0
 dependencies: []
@@ -13,11 +13,12 @@ See [Workspace](../PLAN.md#workspace), [Syntax highlighting](../PLAN.md#syntax-h
   - Open user settings (Cmd+, / Ctrl+,) and workspace settings (Cmd+Shift+, / Ctrl+Shift+, — VS Code's), the latter writing a commented `.workspace` template on first open; both listed in the cheat sheet; the Cmd bindings update `docs/terminals/`
   - Settings-aware highlighting over the TOML tree for the two config files: known keys and valid values coloured, unknown keys and bad values marked `invalid`
   - Settings completion without a server: keys and value enums (booleans, `render_whitespace` / `cursor_style` strings, powers of two) from a settings schema, offered by Ctrl+Space and quick suggestions in the two config files
-  - Done when: Cmd+, / Cmd+Shift+, open (and create from their templates) the two files, with the bindings in the cheat sheet and the terminal docs; in `settings.toml` and `.workspace`, typing a key or value offers the schema's completions that insert at every cursor, and a file with an unknown key / bad value shows it `invalid` while known keys and valid values are coloured; neither completion nor the settings highlighting fires in a `Cargo.toml`
+  - Keybindings completion: in `keybindings.toml`, `[[binding]]` keys (`key`, `command`, `when`, …) and values — `command` offers every command name (the palette's list, with titles as detail), `key` offers nothing but key-name pieces (`ctrl+`, `shift+`, named keys), `when` offers the contexts (`Context` names) — from the same schema mechanism
+  - Done when: Cmd+, / Cmd+Shift+, open (and create from their templates) the two files, with the bindings in the cheat sheet and the terminal docs; in `settings.toml` and `.workspace`, typing a key or value offers the schema's completions that insert at every cursor, and a file with an unknown key / bad value shows it `invalid` while known keys and valid values are coloured; neither completion nor the settings highlighting fires in a `Cargo.toml`; in `keybindings.toml`, `command = "` offers the command names and `[[binding]]` offers its keys, inserting at every cursor
   - Subtasks (one agent and one commit each):
     - settings-a: `Command::OpenWorkspaceSettings`, opening `.workspace` from a commented template (`WorkspaceConfig` template + `create_if_missing`, as `config::settings::TEMPLATE`), via a new `AppEvent`
     - settings-b: the keybindings (Cmd+, / Cmd+Shift+, on macOS, Ctrl variants on Linux, with the shifted-`,` → `<` normalisation in `KeyCombo::from_event`) and `docs/terminals/` (the README table and every snippet)
     - settings-c: the two commands in the cheat sheet's groups; the shortcut and template tests, including the done-when's open-and-create cases
-    - settings-d: the settings schema (tables, keys, value kinds) and identifying the two config files (a buffer flag set by path), shared by the highlighter and completer
+    - settings-d: the settings schema (tables, keys, value kinds) and the keybindings schema (`[[binding]]` keys, command names from `Command`, context names), and identifying the config files (a buffer flag set by path: settings, workspace, keybindings), shared by the highlighter and completer
     - settings-e: settings-aware highlighting over the TOML tree (known keys and valid values coloured, unknown keys and bad values `invalid`)
-    - settings-f: settings completion without a server (keys and value enums from the schema, Ctrl+Space and quick suggestions, insert at every cursor); the done-when tests, gaps and hand checks; marks the task ✅
+    - settings-f: settings completion without a server (keys and value enums from the schema, `keybindings.toml`'s keys / commands / contexts, Ctrl+Space and quick suggestions, insert at every cursor); the done-when tests, gaps and hand checks; marks the task ✅

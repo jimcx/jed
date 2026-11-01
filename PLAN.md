@@ -697,7 +697,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Selected lines in diff tabs** (`diff_tab_selected_lines`): select line ranges in a diff tab for stage / unstage / revert — [tasks/diff_tab_selected_lines.md](tasks/diff_tab_selected_lines.md)
 - **Self-update from GitHub releases** (`update`): check for and install a newer release from GitHub — [tasks/update.md](tasks/update.md)
 - **Separate untracked files in Source Control** (`scm_untracked_section`): a `[settings] untracked_changes` option splitting the Source Control view's Changes into tracked changes and an Untracked section — [tasks/scm_untracked_section.md](tasks/scm_untracked_section.md)
-- **Settings files** (`settings`): "Preferences: Open User / Workspace Settings" open `settings.toml` and `.workspace`, with settings-aware syntax highlighting and completion — [tasks/settings.md](tasks/settings.md)
+- **Settings files** (`settings`): "Preferences: Open User / Workspace Settings" open `settings.toml` and `.workspace`, with settings-aware syntax highlighting and completion (also completion for `keybindings.toml`) — [tasks/settings.md](tasks/settings.md)
 - **Side panel resizing, finished** (`side_panel_resize`): make the side panel's resize sash discoverable and smooth — [tasks/side_panel_resize.md](tasks/side_panel_resize.md)
 - **Snippets** (`snippets`): LSP snippet completions with tab stops, mirrors and choices — [tasks/snippets.md](tasks/snippets.md)
 - **Spell checker** (`spell_check`): misspelled words in comments, strings and identifiers are underlined (camelCase / snake_case split into words), with suggestions and a user dictionary for words to accept — [tasks/spell_check.md](tasks/spell_check.md)
