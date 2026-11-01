@@ -90,6 +90,7 @@ map --when-focus-on var:jed cmd+ctrl+left
 map --when-focus-on var:jed cmd+shift+page_up
 map --when-focus-on var:jed cmd+shift+page_down
 map --when-focus-on var:jed cmd+shift+p
+map --when-focus-on var:jed cmd+,
 map --when-focus-on var:jed cmd+p
 map --when-focus-on var:jed cmd+j
 map --when-focus-on var:jed cmd+shift+m

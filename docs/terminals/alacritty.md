@@ -92,6 +92,7 @@ bindings = [
   { key = "PageDown", mods = "Command|Shift", action = "ReceiveChar" },
   { key = "P", mods = "Command|Shift", action = "ReceiveChar" },
   { key = "P", mods = "Command", action = "ReceiveChar" },
+  { key = "Comma", mods = "Command", action = "ReceiveChar" },
   { key = "J", mods = "Command", action = "ReceiveChar" },
   { key = "M", mods = "Command|Shift", action = "ReceiveChar" },
   { key = "U", mods = "Command|Shift", action = "ReceiveChar" },

@@ -87,6 +87,7 @@ keybind = cmd+ctrl+arrow_left=unbind
 keybind = cmd+shift+page_up=unbind
 keybind = cmd+shift+page_down=unbind
 keybind = cmd+shift+p=unbind
+keybind = cmd+comma=unbind
 keybind = cmd+p=unbind
 keybind = cmd+j=unbind
 keybind = cmd+shift+m=unbind

@@ -536,6 +536,7 @@ jed as git's editor (the [Git editor](tasks/git_editor.md) task): `git config --
 | Action | macOS | Linux |
 |---|---|---|
 | Command palette | Cmd+Shift+P | Ctrl+Shift+P |
+| Open user settings | Cmd+, | Ctrl+, |
 | Quick open | Cmd+P | Ctrl+P |
 | Save | Cmd+S | Ctrl+S |
 | Save As / Save All | Cmd+Shift+S / Cmd+Alt+S | Ctrl+Shift+S / Ctrl+Alt+S |

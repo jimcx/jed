@@ -57,7 +57,7 @@ local release = {
   { 'RightArrow', 'CMD|ALT' }, { 'LeftArrow', 'CMD|ALT' },
   { 'RightArrow', 'CMD|CTRL' }, { 'LeftArrow', 'CMD|CTRL' },
   { 'PageUp', 'CMD|SHIFT' }, { 'PageDown', 'CMD|SHIFT' },
-  { 'p', 'CMD|SHIFT' }, { 'p', 'CMD' },
+  { 'p', 'CMD|SHIFT' }, { 'p', 'CMD' }, { ',', 'CMD' },
   { 'j', 'CMD' }, { 'm', 'CMD|SHIFT' },
   { 'u', 'CMD|SHIFT' },
   { 'z', 'CMD|ALT' },

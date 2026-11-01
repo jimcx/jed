@@ -881,6 +881,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         // F1 is the palette, so Shift+F1 on both platforms (no Cmd: docs/terminals/ unchanged).
         (KeyCode::F(1), shift, Command::CheatSheet),
         (KeyCode::Char('p'), cmd, Command::QuickOpen),
+        (KeyCode::Char(','), cmd, Command::OpenUserSettings),
         // Ctrl on macOS too, as in VS Code.
         (KeyCode::Char('g'), ctrl, Command::GoToLine),
         // VS Code's Open Recent: Ctrl on macOS too. Global, so a task tab doesn't get it either.
