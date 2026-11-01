@@ -30,6 +30,85 @@ pub struct WindowConfig {
     /// The status bar's background (`Theme::dark_plus` has `statusBar.<name>` for each); unset is blue.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_bar: Option<StatusBarColor>,
+    /// A row at the top of the screen naming the window (`jed <root>` or `jed <title>`) with
+    /// `buttons` at its right; unset is off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_bar: Option<bool>,
+    /// `[[window.buttons]]`: the title bar's buttons, left to right.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub buttons: Option<Vec<TitleButton>>,
+}
+
+/// What a title bar button does.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ButtonAction {
+    /// A palette command, by its name (`file.save`); checked against `Command::all()` when read.
+    Command(crate::command::Command),
+    /// A task template by name (`[tasks.<name>]`, `.workspace` or `tasks.toml`).
+    Task(String),
+}
+
+/// `[[window.buttons]]`: exactly one of `command` / `task`, and an optional `label` replacing
+/// the button's text (the command's title, or the task's name).
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(try_from = "RawButton", into = "RawButton")]
+pub struct TitleButton {
+    pub action: ButtonAction,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RawButton {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+}
+
+impl TryFrom<RawButton> for TitleButton {
+    type Error = String;
+
+    fn try_from(raw: RawButton) -> Result<Self, String> {
+        let action = match (raw.command, raw.task) {
+            (Some(name), None) => ButtonAction::Command(
+                crate::command::Command::from_name(&name).ok_or_else(|| format!("unknown command `{name}`"))?,
+            ),
+            (None, Some(task)) => ButtonAction::Task(task),
+            _ => return Err("a button needs exactly one of `command` and `task`".into()),
+        };
+        Ok(TitleButton {
+            action,
+            label: raw.label,
+        })
+    }
+}
+
+impl From<TitleButton> for RawButton {
+    fn from(b: TitleButton) -> Self {
+        let (command, task) = match b.action {
+            ButtonAction::Command(c) => (Some(c.name()), None),
+            ButtonAction::Task(t) => (None, Some(t)),
+        };
+        RawButton {
+            command,
+            task,
+            label: b.label,
+        }
+    }
+}
+
+impl TitleButton {
+    /// The button's text: `label`, else the command's title or the task's name.
+    pub fn text(&self) -> String {
+        match (&self.label, &self.action) {
+            (Some(l), _) => l.clone(),
+            (None, ButtonAction::Command(c)) => c.title(),
+            (None, ButtonAction::Task(t)) => t.clone(),
+        }
+    }
 }
 
 impl WindowConfig {
@@ -38,6 +117,8 @@ impl WindowConfig {
         WindowConfig {
             title: over.title.clone().or_else(|| self.title.clone()),
             status_bar: over.status_bar.or(self.status_bar),
+            title_bar: over.title_bar.or(self.title_bar),
+            buttons: over.buttons.clone().or_else(|| self.buttons.clone()),
         }
     }
 }

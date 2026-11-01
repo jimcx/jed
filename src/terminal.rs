@@ -68,15 +68,19 @@ impl Identity {
         self.title_override.as_deref()
     }
 
+    /// The window's title, `jed <root>` or `jed <override>` (also the title bar's text).
+    pub fn title_text(&self) -> String {
+        match &self.title_override {
+            Some(title) => format!("jed {title}"),
+            None => self.title.clone(),
+        }
+    }
+
     /// OSC 2: the window's title, control characters dropped; not wrapped (tmux takes titles
     /// itself). `start` sends it after pushing the title stack; a `.workspace` reload only
     /// re-sends it (`App::sync_window_title`).
     pub fn title_sequence(&self) -> String {
-        let title = match &self.title_override {
-            Some(title) => format!("jed {title}"),
-            None => self.title.clone(),
-        };
-        let title: String = title.chars().filter(|c| !c.is_control()).collect();
+        let title: String = self.title_text().chars().filter(|c| !c.is_control()).collect();
         format!("\x1b]2;{title}\x1b\\")
     }
 

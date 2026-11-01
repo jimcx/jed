@@ -55,6 +55,11 @@ impl Workspace {
         self.user_window.layered(&self.config.window).title
     }
 
+    /// The layered `[window]` (`.workspace`'s keys over `settings.toml`'s).
+    pub fn window(&self) -> WindowConfig {
+        self.user_window.layered(&self.config.window)
+    }
+
     /// `[window] status_bar`: `.workspace`'s, else `settings.toml`'s, else blue.
     pub fn status_bar(&self) -> StatusBarColor {
         self.user_window

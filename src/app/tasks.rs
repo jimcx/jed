@@ -79,7 +79,9 @@ impl App {
         tracing::info!(task = %template.name, source = ?template.source, "running task");
         let status = self.hits.regions.status;
         if status.width > 0 {
-            let screen = ratatui::layout::Rect::new(0, 0, status.width, status.y + status.height);
+            // The title bar's row isn't part of what `compute` lays out.
+            let rows = status.y + status.height - self.hits.regions.title.map_or(0, |t| t.height);
+            let screen = ratatui::layout::Rect::new(0, 0, status.width, rows);
             let regions = layout::compute(
                 screen,
                 self.ui.side_visible,
@@ -93,6 +95,21 @@ impl App {
             }
         }
         self.tasks.run(template, &self.workspace.root, self.settings.scrollback)
+    }
+
+    /// A click on title bar button `i` (`[window] buttons`): its command, or its task.
+    pub(super) fn title_button_clicked(&mut self, i: usize) {
+        use crate::workspace::config::ButtonAction;
+        let Some(button) = self.workspace.window().buttons.and_then(|b| b.into_iter().nth(i)) else {
+            return;
+        };
+        match button.action {
+            ButtonAction::Command(c) if self.mode.allows(c) => self.execute(c),
+            ButtonAction::Command(_) => {}
+            ButtonAction::Task(name) => {
+                self.run_task(&name);
+            }
+        }
     }
 
     /// The task tab the panel shows, if it shows one.

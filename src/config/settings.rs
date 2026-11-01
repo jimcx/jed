@@ -336,6 +336,13 @@ pub const TEMPLATE: &str = "\
 # [window]
 # title = \"my project\"  # the window title is \"jed <title>\" instead of the root's path
 # status_bar = \"blue\"  # red, orange, yellow, green, cyan, blue, purple, magenta, grey or auto
+# title_bar = true  # a row at the top: \"jed <root>\" (or the title above) and the buttons below
+# Buttons at the title bar's far right: a palette command (its id) or a task, and an optional label.
+# [[window.buttons]]
+# command = \"file.save\"
+# label = \"S\"  # the text shown; default is the command's title or the task's name
+# [[window.buttons]]
+# task = \"build\"
 
 # [lsp.lua]
 # command = \"lua-language-server\"
@@ -734,6 +741,7 @@ mod window_tests {
         let ws = crate::workspace::config::WindowConfig {
             title: None,
             status_bar: Some(StatusBarColor::Red),
+            ..Default::default()
         };
         let l = u.window.layered(&ws);
         assert_eq!(
@@ -741,5 +749,27 @@ mod window_tests {
             (Some("mine"), Some(StatusBarColor::Red))
         );
         assert_eq!(parse("[window]\nstatus_bar = \"pink\"\n").errors.len(), 1);
+    }
+
+    #[test]
+    fn title_bar_and_buttons_are_read_and_checked() {
+        use crate::workspace::config::ButtonAction;
+        let u = parse(
+            "[window]\ntitle_bar = true\n[[window.buttons]]\ncommand = \"file.save\"\nlabel = \"S\"\n\
+             [[window.buttons]]\ntask = \"build\"\n",
+        );
+        assert!(u.errors.is_empty(), "{:?}", u.errors);
+        assert_eq!(u.window.title_bar, Some(true));
+        let b = u.window.buttons.as_ref().unwrap();
+        assert_eq!((b[0].text().as_str(), b[1].text().as_str()), ("S", "build"));
+        assert_eq!(b[1].action, ButtonAction::Task("build".into()));
+        for bad in [
+            "command = \"nope.nope\"",
+            "task = \"a\"\ncommand = \"file.save\"",
+            "label = \"x\"",
+        ] {
+            let text = format!("[window]\nbuttons = [{{ {} }}]\n", bad.replace('\n', ", "));
+            assert_eq!(parse(&text).errors.len(), 1, "{text}");
+        }
     }
 }

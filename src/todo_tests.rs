@@ -118,6 +118,10 @@
 //!   title only; the user vars and OSC 7 keep the root) and `status_bar` tints the status bar
 //!   from `Theme`'s `statusBar.<colour>` keys; each colour draws, live reload updates both
 //!   (the title re-sent, not pushed) and a bad colour is reported with the last good kept.
+//! - `title_bar`: `[window] title_bar = true` draws a row at the top with `jed <root>` (or
+//!   `jed <title>`) on an indigo background and `[[window.buttons]]` at its right (label
+//!   override, defaults to the command's title / task's name); a click runs the command or task,
+//!   and the rest of the screen lays out one row lower.
 //! - `term_mouse`: mouse events reach a shell or task tab's program as xterm's mouse input when
 //!   it asked for them (clicks, drags, moves and the wheel as SGR bytes, the run's own cells), a
 //!   left click still focusing it; with the mouse off nothing reaches the program and the wheel
@@ -11825,5 +11829,99 @@ mod settings_completion {
                 assert!(text(&e.app).len() == before.len() + 1, "{path:?} {line:?}");
             }
         }
+    }
+}
+
+mod title_bar {
+    use std::fs;
+
+    use crossterm::event::{MouseButton, MouseEventKind};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::workspace::Workspace;
+    use crate::workspace::trust::TrustStore;
+
+    fn open_app(dir: &tempfile::TempDir, config: &str) -> App {
+        let base = crate::workspace::normalize(dir.path());
+        let root = base.join("ws");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(".workspace"), config).unwrap();
+        let path = root.join("a.txt");
+        fs::write(&path, "ab\n").unwrap();
+        let ws = Workspace::load(root);
+        let trust = TrustStore::load(base.join("trust.toml"));
+        let initial = crate::app::InitialFile {
+            buffer: Buffer::open(&path).unwrap(),
+            goto: None,
+        };
+        let mut app = App::new(ws, trust, Some(initial), true);
+        app.test_start();
+        app
+    }
+
+    fn draw(app: &mut App) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term
+    }
+
+    fn row(term: &Terminal<TestBackend>, y: u16) -> String {
+        let buf = term.backend().buffer();
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn off_by_default_and_on_draws_the_title_and_buttons() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(&dir, "");
+        let term = draw(&mut app);
+        assert!(!row(&term, 0).contains("jed "));
+        assert!(app.hits.regions.title.is_none());
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(
+            &dir,
+            "[window]\ntitle_bar = true\n[[window.buttons]]\ncommand = \"file.save\"\nlabel = \"S\"\n\
+             [[window.buttons]]\ncommand = \"file.save\"\n",
+        );
+        let term = draw(&mut app);
+        let top = row(&term, 0);
+        assert!(top.starts_with(" jed "), "{top:?}");
+        assert!(top.contains(&app.workspace.root.file_name().unwrap().to_string_lossy().to_string()));
+        assert!(
+            top.ends_with(&format!(
+                " S   {} ",
+                crate::command::Command::from_name("file.save").unwrap().title()
+            )),
+            "{top:?}"
+        );
+        assert_eq!(
+            term.backend().buffer()[(0, 0)].bg,
+            app.theme.get("titleBar").bg.unwrap()
+        );
+        // The other bars are one row lower: the status bar is still the last row.
+        assert_eq!(app.hits.regions.status.y, 19);
+        assert_eq!(app.hits.regions.activity.y, 1);
+        assert_eq!(app.hits.title_buttons.len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn title_override_and_click_run_the_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(
+            &dir,
+            "[window]\ntitle = \"api\"\ntitle_bar = true\n[[window.buttons]]\ncommand = \"view.toggleSidebar\"\nlabel = \"E\"\n",
+        );
+        let term = draw(&mut app);
+        assert!(row(&term, 0).starts_with(" jed api"));
+        let before = app.ui.side_visible;
+        let (rect, i) = app.hits.title_buttons[0];
+        assert_eq!(i, 0);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), rect.x, 0);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), rect.x, 0);
+        assert_ne!(app.ui.side_visible, before);
     }
 }

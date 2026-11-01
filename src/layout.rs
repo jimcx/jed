@@ -104,6 +104,9 @@ pub struct Regions {
     /// The terminal area: in the editor's column, under the bottom panel and directly above
     /// the status bar (its top row is the border), when shown.
     pub terminal: Option<Rect>,
+    /// The title bar, the screen's top row (`[window] title_bar`), when shown; `compute` leaves it
+    /// to the caller, which gives it the area without that row.
+    pub title: Option<Rect>,
     pub status: Rect,
 }
 
@@ -187,6 +190,7 @@ pub fn compute(
         editor,
         panel,
         terminal,
+        title: None,
         status,
     }
 }
@@ -480,6 +484,8 @@ pub struct HitMap {
     pub panel_scrollbar: Option<(ScrollTarget, ScrollBarHit)>,
     /// The status bar's problem counts (a click toggles the Problems panel).
     pub status_problems: Option<Rect>,
+    /// The title bar's buttons, with their index in `[window] buttons`.
+    pub title_buttons: Vec<(Rect, usize)>,
     /// The status bar's `Spaces: N` / `Tab Size: N` (a click opens the indentation picker).
     pub status_indentation: Option<Rect>,
     /// The status bar's language name (a click opens Change Language Mode).
@@ -785,6 +791,10 @@ pub enum Hit {
     /// Anywhere else in the bottom panel (its list: `HitMap::problems`).
     Panel,
     Status,
+    /// The title bar (not on a button).
+    Title,
+    /// A title bar button: its index in `[window] buttons`.
+    TitleButton(usize),
     /// The status bar's problem counts.
     StatusProblems,
     /// The status bar's indentation item.
@@ -917,6 +927,12 @@ impl HitMap {
             if g.editor.contains(p) {
                 return Hit::Editor(g.id);
             }
+        }
+        if r.title.is_some_and(|t| t.contains(p)) {
+            return match self.title_buttons.iter().find(|(c, _)| c.contains(p)) {
+                Some((_, i)) => Hit::TitleButton(*i),
+                None => Hit::Title,
+            };
         }
         if r.status.contains(p) {
             if self.status_problems.is_some_and(|c| c.contains(p)) {
@@ -1166,6 +1182,7 @@ mod tests {
                 },
             )),
             status_problems: Some(Rect::new(10, 29, 8, 1)),
+            title_buttons: vec![],
             status_indentation: Some(Rect::new(70, 29, 9, 1)),
             status_language: None,
             hover: Some(Rect::new(40, 5, 10, 4)),

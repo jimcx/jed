@@ -760,9 +760,11 @@ impl App {
             },
             Hit::StatusProblems if self.mode.allows(Command::ToggleProblems) => self.problem_counts_clicked(),
             Hit::StatusProblems => {}
+            Hit::TitleButton(i) => self.title_button_clicked(i),
             Hit::StatusIndentation => self.indentation_clicked(),
             Hit::StatusLanguage => self.change_language_mode(),
             Hit::Status
+            | Hit::Title
             | Hit::Hover
             | Hit::Completion
             | Hit::CodeActions

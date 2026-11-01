@@ -57,6 +57,8 @@ pub enum ValueKind {
     StrTable,
     /// Anything (`init_options`).
     Any,
+    /// An array of tables (`[[window.buttons]]`), whose keys the array table's own schema names.
+    Tables,
     /// A command name (`Command::from_name`).
     Command,
     /// A `Context` name.
@@ -187,6 +189,16 @@ const SETTINGS_KEYS: &[KeySchema] = &[
 const WINDOW_KEYS: &[KeySchema] = &[
     key("title", ValueKind::Str, "The window title is \"jed <title>\""),
     key("status_bar", ValueKind::Enum(STATUS_COLORS), "The status bar's colour"),
+    key(
+        "title_bar",
+        ValueKind::Bool,
+        "A row at the top naming the window, with buttons",
+    ),
+    key(
+        "buttons",
+        ValueKind::Tables,
+        "[[window.buttons]]: command or task, and an optional label",
+    ),
 ];
 
 const LSP_KEYS: &[KeySchema] = &[
@@ -230,6 +242,12 @@ const BINDING_KEYS: &[KeySchema] = &[
     ),
 ];
 
+const BUTTON_KEYS: &[KeySchema] = &[
+    key("command", ValueKind::Command, "A palette command (this or task)"),
+    key("task", ValueKind::Str, "A task's name (this or command)"),
+    key("label", ValueKind::Str, "The button's text, e.g. one character"),
+];
+
 const fn table(pattern: &'static str, keys: &'static [KeySchema]) -> TableSchema {
     TableSchema {
         pattern,
@@ -241,12 +259,22 @@ const fn table(pattern: &'static str, keys: &'static [KeySchema]) -> TableSchema
 const SETTINGS_TABLES: &[TableSchema] = &[
     table("settings", SETTINGS_KEYS),
     table("window", WINDOW_KEYS),
+    TableSchema {
+        pattern: "window.buttons",
+        array: true,
+        keys: BUTTON_KEYS,
+    },
     table("lsp.*", LSP_KEYS),
 ];
 
 const WORKSPACE_TABLES: &[TableSchema] = &[
     table("settings", SETTINGS_KEYS),
     table("window", WINDOW_KEYS),
+    TableSchema {
+        pattern: "window.buttons",
+        array: true,
+        keys: BUTTON_KEYS,
+    },
     table("files", FILES_KEYS),
     table("lsp.*", LSP_KEYS),
     table("tasks.*", TASK_KEYS),
@@ -279,6 +307,8 @@ pub fn check(kind: ValueKind, value: &toml::Value) -> Result<(), String> {
     let wrong = |what: &str| Err(format!("expected {what}"));
     match (kind, value) {
         (ValueKind::Any, _) => Ok(()),
+        (ValueKind::Tables, V::Array(a)) if a.iter().all(V::is_table) => Ok(()),
+        (ValueKind::Tables, _) => wrong("a list of tables"),
         (ValueKind::Bool, V::Boolean(_)) => Ok(()),
         (ValueKind::Bool, _) => wrong("true or false"),
         (ValueKind::Int { min, max, pow2 }, V::Integer(n)) => {
@@ -509,6 +539,7 @@ mod tests {
             ValueKind::StrList => "[\"a\"]".into(),
             ValueKind::StrTable => "{ a = \"b\" }".into(),
             ValueKind::Any => "{ a = 1 }".into(),
+            ValueKind::Tables => "[{ command = \"file.save\" }]".into(),
             ValueKind::Command => "\"x\"".into(),
             ValueKind::Context => "\"editor\"".into(),
             ValueKind::Key => "\"ctrl+p\"".into(),
@@ -519,9 +550,22 @@ mod tests {
         pattern.replace('*', "name")
     }
 
+    /// `[[window.buttons]]`'s keys are `RawButton`'s fields, in both files.
+    #[test]
+    fn button_keys_are_accepted_by_both_files() {
+        let text = "[[window.buttons]]\ncommand = \"file.save\"\nlabel = \"S\"\n[[window.buttons]]\ntask = \"t\"\n";
+        let w = WorkspaceConfig::parse(text).unwrap();
+        assert_eq!(w.window.buttons.unwrap().len(), 2);
+        assert!(crate::config::settings::parse(text).errors.is_empty());
+        for k in BUTTON_KEYS {
+            assert!(text.contains(&format!("{} = ", k.name)), "{}", k.name);
+        }
+        assert!(WorkspaceConfig::parse("[[window.buttons]]\ncommand = \"file.save\"\nzz = 1\n").is_err());
+    }
+
     #[test]
     fn workspace_schema_matches_the_parser() {
-        for t in WORKSPACE_TABLES {
+        for t in WORKSPACE_TABLES.iter().filter(|t| !t.array) {
             let mut text = format!("[{}]\n", header(t.pattern));
             for k in t.keys {
                 text += &format!("{} = {}\n", k.name, sample(k.kind));
@@ -700,9 +744,10 @@ mod tests {
             .map(|t| t.pattern.split('.').next().unwrap().to_string())
             .collect();
         roots.sort();
+        roots.dedup();
         assert_eq!(serde_fields::<WorkspaceConfig>(), roots);
         // The two files share `[settings]`, `[window]` and `[lsp.*]`.
-        for t in SETTINGS_TABLES {
+        for t in SETTINGS_TABLES.iter().filter(|t| !t.array) {
             let w = table_at(ConfigFile::Workspace, &header(t.pattern).split('.').collect::<Vec<_>>()).unwrap();
             assert_eq!(schema_names(t.keys), schema_names(w.keys), "{}", t.pattern);
         }
@@ -713,7 +758,7 @@ mod tests {
     #[test]
     fn settings_file_tables_match_the_parser() {
         let mut text = String::new();
-        for t in SETTINGS_TABLES {
+        for t in SETTINGS_TABLES.iter().filter(|t| !t.array) {
             text += &format!("[{}]\n", header(t.pattern));
             for k in t.keys {
                 text += &format!("{} = {}\n", k.name, sample(k.kind));
@@ -722,7 +767,7 @@ mod tests {
         let u = crate::config::settings::parse(&text);
         assert!(u.errors.is_empty(), "{text}{:?}", u.errors);
         assert_eq!(u.lsp.len(), 1);
-        for t in WORKSPACE_TABLES {
+        for t in WORKSPACE_TABLES.iter().filter(|t| !t.array) {
             let path: Vec<String> = header(t.pattern).split('.').map(String::from).collect();
             let path: Vec<&str> = path.iter().map(String::as_str).collect();
             let known = table_at(ConfigFile::Settings, &path).is_some();

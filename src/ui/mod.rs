@@ -29,6 +29,7 @@ mod status;
 mod tab_tip;
 mod tabs;
 mod task;
+mod title;
 mod tools;
 
 use ratatui::Frame;
@@ -82,19 +83,31 @@ fn line_screen_row(view: &mut View, rope: &ropey::Rope, revision: u64, line: usi
 }
 
 pub fn render(f: &mut Frame, app: &mut App) {
-    let area = f.area();
-    if area.height < 4 || area.width < 30 {
+    let screen = f.area();
+    if screen.height < 4 || screen.width < 30 {
         return;
     }
+    // `[window] title_bar`: the top row; everything else lays out in the rest.
+    let title_bar = app.workspace.window().title_bar == Some(true) && screen.height >= 8;
+    let area = if title_bar {
+        Rect {
+            y: screen.y + 1,
+            height: screen.height - 1,
+            ..screen
+        }
+    } else {
+        screen
+    };
     let panel_height = app.ui.panel_visible.then_some(app.ui.panel_height);
     let terminal_height = app.ui.terminal_visible.then_some(app.ui.terminal_height);
-    let regions = layout::compute(
+    let mut regions = layout::compute(
         area,
         app.ui.side_visible,
         app.ui.side_width,
         panel_height,
         terminal_height,
     );
+    regions.title = title_bar.then_some(Rect { height: 1, ..screen });
     let terminal_strip = (!app.ui.terminal_visible)
         .then(|| {
             layout::compute(
@@ -113,6 +126,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
         ..HitMap::default()
     };
 
+    if let Some(t) = regions.title {
+        hits.title_buttons = title::render(f, t, app);
+    }
     hits.icons = activity::render(f, regions.activity, app);
     let mut side_rules = Vec::new();
     if let Some(side) = regions.side {
