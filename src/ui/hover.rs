@@ -3,7 +3,7 @@
 //! `ui::popup`), as wide as its widest line up to `hover::MAX_WIDTH` and the editor, as tall as
 //! its wrapped rows up to `hover::MAX_HEIGHT` and the room there. A border (`editorHoverWidget.border`) with one column of padding inside;
 //! text in `editorHoverWidget.foreground` on `.background`, headings bold, code (blocks and inline)
-//! in `textPreformat.foreground`, rules as a line in the border's colour; a diagnostic's icon in
+//! in `textPreformat.foreground`, rules as a line in the border's colour joined to the side borders with `├` / `┤`; a diagnostic's icon in
 //! its severity's `problems*Icon.foreground`, its `source(code)` in `editorHoverWidget.source`,
 //! the "Quick Fix…" row in `textLink.foreground` (its screen row kept in `popup.link_row`).
 //! A longer one shows "…" in its bottom (more below) / top (more above) border and scrolls with
@@ -71,6 +71,9 @@ pub fn render(f: &mut Frame, app: &mut App, groups: &[GroupHit]) -> Option<Rect>
             for x in inner.x..inner.x + inner.width {
                 out.set_stringn(x, y, "─", 1, border);
             }
+            // Join the side borders.
+            out.set_stringn(rect.x, y, "├", 1, border);
+            out.set_stringn(rect.x + rect.width - 1, y, "┤", 1, border);
             continue;
         }
         if line.kind == Kind::Link {
