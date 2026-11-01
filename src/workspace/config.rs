@@ -27,8 +27,19 @@ pub struct WindowConfig {
     /// `jed <title>` instead of `jed <root>`; control characters are dropped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// The status bar's background (`Theme::dark_plus` has `statusBar.<name>` for each).
-    pub status_bar: StatusBarColor,
+    /// The status bar's background (`Theme::dark_plus` has `statusBar.<name>` for each); unset is blue.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_bar: Option<StatusBarColor>,
+}
+
+impl WindowConfig {
+    /// `self` (the user's `settings.toml`) with every key `over` (`.workspace`) sets replaced.
+    pub fn layered(&self, over: &WindowConfig) -> WindowConfig {
+        WindowConfig {
+            title: over.title.clone().or_else(|| self.title.clone()),
+            status_bar: over.status_bar.or(self.status_bar),
+        }
+    }
 }
 
 /// `[window] status_bar`'s colours, by their theme key's suffix.
@@ -274,17 +285,17 @@ env = { CC = "clang" }
     fn window_defaults_and_title() {
         let c = WorkspaceConfig::parse("").unwrap();
         assert_eq!(c.window.title, None);
-        assert_eq!(c.window.status_bar, StatusBarColor::Blue);
+        assert_eq!(c.window.status_bar, None);
         let c = WorkspaceConfig::parse("[window]\ntitle = \"api\"").unwrap();
         assert_eq!(c.window.title.as_deref(), Some("api"));
-        assert_eq!(c.window.status_bar, StatusBarColor::Blue, "the title alone");
+        assert_eq!(c.window.status_bar, None, "the title alone");
         assert!(WorkspaceConfig::parse("[window]\ntitel = \"api\"").is_err());
     }
 
     #[test]
     fn status_bar_auto_parses() {
         let c = WorkspaceConfig::parse("[window]\nstatus_bar = \"auto\"").unwrap();
-        assert_eq!(c.window.status_bar, StatusBarColor::Auto);
+        assert_eq!(c.window.status_bar, Some(StatusBarColor::Auto));
     }
 
     #[test]
@@ -292,7 +303,7 @@ env = { CC = "clang" }
         for colour in StatusBarColor::ALL {
             let text = format!("[window]\nstatus_bar = \"{}\"", colour.name());
             let c = WorkspaceConfig::parse(&text).unwrap();
-            assert_eq!(c.window.status_bar, colour, "{text}");
+            assert_eq!(c.window.status_bar, Some(colour), "{text}");
             assert_eq!(colour.theme_key(), format!("statusBar.{}", colour.name()));
         }
     }

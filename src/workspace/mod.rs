@@ -5,7 +5,7 @@ pub mod trust;
 
 use std::path::{Path, PathBuf};
 
-use config::{SettingsOverrides, WorkspaceConfig};
+use config::{SettingsOverrides, StatusBarColor, WindowConfig, WorkspaceConfig};
 
 use crate::edit::Settings;
 
@@ -20,6 +20,8 @@ pub struct Workspace {
     /// The user's `settings.toml`, which `.workspace` `[settings]` override key by key. Loaded at
     /// startup (`with_user_settings`) and replaced on a live reload; `.workspace` reloads keep it.
     pub user_settings: SettingsOverrides,
+    /// The user's `settings.toml` `[window]`, under `.workspace`'s (same lifecycle as `user_settings`).
+    pub user_window: WindowConfig,
 }
 
 impl Workspace {
@@ -30,6 +32,7 @@ impl Workspace {
             config: WorkspaceConfig::default(),
             config_error: None,
             user_settings: SettingsOverrides::default(),
+            user_window: WindowConfig::default(),
         };
         ws.reload();
         ws
@@ -39,6 +42,25 @@ impl Workspace {
     pub fn with_user_settings(mut self, user: SettingsOverrides) -> Self {
         self.user_settings = user;
         self
+    }
+
+    /// Layers `settings.toml`'s `[window]` under `.workspace`'s.
+    pub fn with_user_window(mut self, window: WindowConfig) -> Self {
+        self.user_window = window;
+        self
+    }
+
+    /// `[window] title`: `.workspace`'s, else `settings.toml`'s.
+    pub fn window_title(&self) -> Option<String> {
+        self.user_window.layered(&self.config.window).title
+    }
+
+    /// `[window] status_bar`: `.workspace`'s, else `settings.toml`'s, else blue.
+    pub fn status_bar(&self) -> StatusBarColor {
+        self.user_window
+            .layered(&self.config.window)
+            .status_bar
+            .unwrap_or_default()
     }
 
     pub fn config_path(&self) -> PathBuf {

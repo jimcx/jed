@@ -7291,7 +7291,7 @@ mod window_identity {
         for colour in StatusBarColor::ALL {
             let dir = tempfile::tempdir().unwrap();
             let (mut app, _) = open_app(&dir, &format!("[window]\nstatus_bar = \"{}\"\n", colour.name()));
-            assert_eq!(app.workspace.config.window.status_bar, colour);
+            assert_eq!(app.workspace.status_bar(), colour);
             let term = draw(&mut app);
             assert_eq!(
                 status_bg(&term),
@@ -7319,10 +7319,7 @@ mod window_identity {
             "[window]\ntitle = \"web\"\nstatus_bar = \"red\"\n",
         )
         .unwrap();
-        assert!(
-            app.settle(|a| a.workspace.config.window.status_bar == StatusBarColor::Red)
-                .await
-        );
+        assert!(app.settle(|a| a.workspace.status_bar() == StatusBarColor::Red).await);
         assert_eq!(sent_title(&mut app), "\x1b]2;jed web\x1b\\", "re-sent, not pushed");
         assert_eq!(sent_title(&mut app), "", "once");
         assert_eq!(status_bg(&draw(&mut app)), app.theme.get("statusBar.red").bg.unwrap());
@@ -7358,7 +7355,7 @@ mod window_identity {
         fs::write(root.join(".workspace"), "[window]\nstatus_bar = \"pink\"\n").unwrap();
         assert!(app.settle(|a| a.workspace.config_error.is_some()).await);
         assert_eq!(
-            app.workspace.config.window.status_bar,
+            app.workspace.status_bar(),
             StatusBarColor::Green,
             "the last good value kept"
         );
@@ -7383,10 +7380,7 @@ mod window_identity {
         assert!(status_has_bg(&term, red), "the rest stays red");
 
         fs::write(root.join(".workspace"), "[window]\nstatus_bar = \"green\"\n").unwrap();
-        assert!(
-            app.settle(|a| a.workspace.config.window.status_bar == StatusBarColor::Green)
-                .await
-        );
+        assert!(app.settle(|a| a.workspace.status_bar() == StatusBarColor::Green).await);
         let err = app.theme.get("statusBar.error").bg.unwrap();
         let green = app.theme.get("statusBar.green").bg.unwrap();
         assert_ne!(err, green, "error and the base differ");

@@ -25,7 +25,7 @@ pub struct StatusHit {
 /// (FNV-1a) of the workspace root relative to `$HOME` (the absolute path outside it).
 fn status_style(app: &App) -> ratatui::style::Style {
     use crate::workspace::config::StatusBarColor;
-    let configured = app.workspace.config.window.status_bar;
+    let configured = app.workspace.status_bar();
     if configured != StatusBarColor::Auto {
         return app.theme.get(configured.theme_key());
     }

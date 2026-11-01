@@ -433,7 +433,9 @@ fn main() -> ExitCode {
     // Needs the plugins: `[lsp.<id>]` may name one.
     let (user_servers, server_errors) = lsp::config::user_servers(&user_settings.lsp);
     let user_tasks = tasks::templates::load(&paths::config_dir().join(tasks::templates::FILE_NAME));
-    let workspace = Workspace::load(root).with_user_settings(user_settings.overrides);
+    let workspace = Workspace::load(root)
+        .with_user_settings(user_settings.overrides)
+        .with_user_window(user_settings.window);
     // Load before taking over the terminal, so errors print normally. A binary file opens in a
     // hex tab.
     let mut initial_hex = None;
@@ -442,7 +444,7 @@ fn main() -> ExitCode {
         .filter(|_| mode.is_single())
         .map(|(path, _)| path.as_path());
     let identity = terminal::Identity::new(&workspace.root, single_file, &paths::home())
-        .with_title(workspace.config.window.title.as_deref());
+        .with_title(workspace.window_title().as_deref());
     let initial = match file {
         Some((path, goto)) => match Buffer::open_with(&path, workspace.settings().indentation()) {
             Ok(buffer) => Some(app::InitialFile { buffer, goto }),

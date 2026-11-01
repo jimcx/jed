@@ -20,7 +20,7 @@
 //! | `rulers`           | int list | unset | Columns drawn as a thin vertical line behind the text; unset, `git-commit` has `[72]` (`[]` turns it off) |
 //! | `scrollback`       | int  | 5000      | Lines kept above the screen, for shell and task tabs            |
 //!
-//! Precedence, per key: defaults ← `settings.toml` ← `.workspace` (`layer`).
+//! Precedence, per key: defaults ← `settings.toml` ← `.workspace` (`layer`). `[window]` (`title`, `status_bar`) layers the same way (`WindowConfig::layered`).
 //!
 //! Errors: in `settings.toml` an unknown key or a value of the wrong type (or out of range, as a
 //! `hex_bytes_per_line` that isn't a power of two from 1 to 64) is reported and skipped,
@@ -38,7 +38,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::edit::{CursorStyle, RenderWhitespace, SemanticHighlighting, Settings, WordWrap};
-use crate::workspace::config::LspServer;
+use crate::workspace::config::{LspServer, WindowConfig};
 
 pub const FILE_NAME: &str = "settings.toml";
 
@@ -164,6 +164,8 @@ pub struct UserSettings {
     /// `[lsp.<language id>]`: the user's language servers (the ids are checked by `main`, once the
     /// syntax plugins are registered: see `lsp::config::user_servers`).
     pub lsp: BTreeMap<String, LspServer>,
+    /// `[window]`: layered under `.workspace`'s (`Workspace::window_title` / `status_bar`).
+    pub window: WindowConfig,
     pub errors: Vec<String>,
 }
 
@@ -176,6 +178,7 @@ pub fn load(path: &Path) -> UserSettings {
         Err(e) => UserSettings {
             overrides: SettingsOverrides::default(),
             lsp: BTreeMap::new(),
+            window: WindowConfig::default(),
             errors: vec![format!("{FILE_NAME}: {e}")],
         },
     }
@@ -215,6 +218,7 @@ pub fn parse(text: &str) -> UserSettings {
         Err(error) => UserSettings {
             overrides: SettingsOverrides::default(),
             lsp: BTreeMap::new(),
+            window: WindowConfig::default(),
             errors: vec![error],
         },
     }
@@ -236,6 +240,7 @@ fn config(table: toml::Table) -> UserSettings {
     let mut errors = Vec::new();
     let mut settings = toml::Table::new();
     let mut lsp = BTreeMap::new();
+    let mut window = WindowConfig::default();
     for (key, value) in table {
         match (key.as_str(), value) {
             ("settings", toml::Value::Table(t)) => settings = t,
@@ -251,6 +256,20 @@ fn config(table: toml::Table) -> UserSettings {
                     }
                 }
             }
+            // Each key on its own, like [settings].
+            ("window", toml::Value::Table(t)) => {
+                for (k, v) in t {
+                    let one = toml::Value::Table(toml::Table::from_iter([(k.clone(), v)]));
+                    match one.try_into::<WindowConfig>() {
+                        Ok(w) => window = window.layered(&w),
+                        Err(e) if e.message().starts_with("unknown field") => {
+                            errors.push(format!("{FILE_NAME}: unknown [window] key `{k}`"))
+                        }
+                        Err(e) => errors.push(format!("{FILE_NAME}: [window] `{k}`: {}", e.message().trim_end())),
+                    }
+                }
+            }
+            ("window", _) => errors.push(format!("{FILE_NAME}: `window` must be a table")),
             ("lsp", _) => errors.push(format!("{FILE_NAME}: `lsp` must be a table of [lsp.<language id>]")),
             (_, toml::Value::Table(_)) => errors.push(format!("{FILE_NAME}: unknown table [{key}]")),
             _ => errors.push(format!("{FILE_NAME}: `{key}` belongs under [settings]")),
@@ -277,7 +296,12 @@ fn config(table: toml::Table) -> UserSettings {
             errors.push(format!("{FILE_NAME}: {}", e.message().trim_end()));
             SettingsOverrides::default()
         });
-    UserSettings { overrides, lsp, errors }
+    UserSettings {
+        overrides,
+        lsp,
+        window,
+        errors,
+    }
 }
 
 /// What "Preferences: Open User Settings" writes when there's no `settings.toml` yet: every key,
@@ -308,6 +332,11 @@ pub const TEMPLATE: &str = "\
 # The language server for a language id (a built-in one's, such as python, or a syntax plugin's),
 # in every workspace. A trusted .workspace [lsp.<id>] wins over this; this wins over the built-in
 # clangd, ty, rust-analyzer and sourcekit-lsp. command: a name on PATH; args and init_options are optional.
+# Tells several jed windows apart; a .workspace [window] wins over this, key by key.
+# [window]
+# title = \"my project\"  # the window title is \"jed <title>\" instead of the root's path
+# status_bar = \"blue\"  # red, orange, yellow, green, cyan, blue, purple, magenta, grey or auto
+
 # [lsp.lua]
 # command = \"lua-language-server\"
 # args = []
@@ -688,5 +717,29 @@ mod tests {
         std::fs::write(&path, "[settings]\ntab_width = 3\n").unwrap();
         create_if_missing(&path).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[settings]\ntab_width = 3\n");
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+    use crate::workspace::config::StatusBarColor;
+
+    #[test]
+    fn window_table_is_read_per_key_and_layers_under_workspace() {
+        let u = parse("[window]\ntitle = \"mine\"\nstatus_bar = \"green\"\nnope = 1\n");
+        assert_eq!(u.window.title.as_deref(), Some("mine"));
+        assert_eq!(u.window.status_bar, Some(StatusBarColor::Green));
+        assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+        let ws = crate::workspace::config::WindowConfig {
+            title: None,
+            status_bar: Some(StatusBarColor::Red),
+        };
+        let l = u.window.layered(&ws);
+        assert_eq!(
+            (l.title.as_deref(), l.status_bar),
+            (Some("mine"), Some(StatusBarColor::Red))
+        );
+        assert_eq!(parse("[window]\nstatus_bar = \"pink\"\n").errors.len(), 1);
     }
 }

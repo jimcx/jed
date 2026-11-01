@@ -372,7 +372,7 @@ impl App {
         self.settings = self.workspace.settings();
         // `[window] title`: re-sent as OSC 2 (no title-stack push) on the next run turn. The
         // status bar's colour is read from the config when it draws.
-        let title = self.workspace.config.window.title.clone();
+        let title = self.workspace.window_title();
         if title.as_deref() != self.identity.title_override() {
             self.identity.set_title(title.as_deref());
             self.title_dirty = true;
