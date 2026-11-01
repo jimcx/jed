@@ -25,7 +25,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Vec<(Rect, usize)> {
     // From the right, so the first button is the leftmost; one blank cell between buttons.
     for (i, button) in buttons.iter().enumerate().rev() {
         let text = format!(
-            "    {} ",
+            " {} ",
             button.text().chars().filter(|c| !c.is_control()).collect::<String>()
         );
         let w = text.width() as u16;
