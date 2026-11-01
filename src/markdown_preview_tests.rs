@@ -210,7 +210,7 @@ async fn markdown_preview_draws_headings_code_and_table() {
         }
     }
     // The code block on its own background, the text around it not.
-    let theme = crate::theme::Theme::dark_plus(true);
+    let theme = &app.theme;
     let code_bg = theme.get("markdown.codeblock").bg;
     let row = row_with(&term, rect, "fn main").expect("code drawn");
     assert_eq!(buf[(rect.x, rect.y + row)].bg, code_bg.unwrap());
@@ -480,10 +480,7 @@ async fn markdown_preview_done_when() {
         styles.insert(format!("{:?}{:?}", c.fg, c.modifier));
     }
     assert_eq!(styles.len(), 6, "six distinguishable heading styles");
-    let code_bg = crate::theme::Theme::dark_plus(true)
-        .get("markdown.codeblock")
-        .bg
-        .unwrap();
+    let code_bg = app.theme.get("markdown.codeblock").bg.unwrap();
     let row = row_with(&term, rect, "fn main").expect("code drawn");
     assert_eq!(buf[(rect.x, rect.y + row)].bg, code_bg);
     let x = rect.x + row_text(&term, rect, row).find("fn").unwrap() as u16;

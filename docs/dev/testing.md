@@ -14,6 +14,7 @@ Helpers are `#[cfg(test)] impl App` in `app/mod.rs`.
 - Rendering/mouse: `Terminal::new(TestBackend::new(w, h))`, `term.draw(|f| crate::ui::render(f, &mut app))`; draw before mouse events (hit map comes from the last frame); read cells via `term.backend().buffer()`.
 - Startup terminal: `App::startup_terminal` (default false in `App::new` so test apps spawn no shells; `main` sets it) makes `start` open one shell in the terminal area; a test of it sets it before `test_start` (`term_area_tests::term_area_startup_terminal`). Terminal-area tests: `term_area_tests` (`area_app`, `tab_point`, `drag`, `shell_answers` for a live shell).
 - Render whitespace (default `all`) draws spaces as `·`: tests that read drawn text with spaces in it call `app.test_plain_whitespace()` after building the app (the session toggle, so it survives `.workspace` reloads); the earlier milestones' builders that draw do. `todo_tests::render_whitespace` reads the glyphs.
+- **Colours depend on `COLORTERM`.** `App::new` builds its theme with `terminal_has_truecolor()`, so on CI (no `COLORTERM`) colours are `Indexed`, on a truecolor dev machine `Rgb`. A test that compares drawn cells with a theme colour reads it from `app.theme.get(..)`, never `Theme::dark_plus(true)` (passes locally, fails on CI: `Indexed(235)` vs `Rgb(38, 38, 38)`). Run colour tests both ways: `scripts/check test <name>` and `COLORTERM=truecolor scripts/check test <name>`.
 - Under `cfg(test)` the app uses `Clipboard::memory()` — read it with `app.clipboard.read()`.
 - Feature-specific helpers: [below](#by-feature).
 
