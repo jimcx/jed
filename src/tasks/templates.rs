@@ -10,6 +10,20 @@
 //! env = { RUST_LOG = "debug" } # optional: on top of jed's environment, values taken literally
 //! ```
 //!
+//! Environments are named sets of variables (`[environments.<name>]`, in either file, string values),
+//! one active at a time ("Tasks: Select Environment"). A task's `command`, `cwd` and `env` values
+//! use them as `{{NAME}}` (`{{ NAME }}` too; names are letters, digits and `_`, not starting with a
+//! digit); text that isn't that shape, and shell syntax like `${NAME}`, is left alone. A name the
+//! active environment lacks stops the run with a message ([`substitute`]).
+//!
+//! ```toml
+//! [environments.Debug]
+//! PROFILE = ""
+//! [environments.Release]
+//! PROFILE = "--release"
+//! # a task: command = "cargo build {{PROFILE}}"
+//! ```
+//!
 //! Read once at startup like `settings.toml` (`main`), leniently: a TOML syntax error loses the
 //! file (one error with its line), a bad task (unknown key, wrong type, empty command) is reported
 //! and skipped, the others kept.
@@ -22,7 +36,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(test)]
 use std::time::Duration;
 
-pub use crate::workspace::config::Task;
+pub use crate::workspace::config::{Environment, Task};
 
 pub const FILE_NAME: &str = "tasks.toml";
 
@@ -46,6 +60,7 @@ pub struct Template {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct UserTasks {
     pub tasks: BTreeMap<String, Task>,
+    pub environments: BTreeMap<String, Environment>,
     pub errors: Vec<String>,
 }
 
@@ -57,6 +72,7 @@ pub fn load(path: &Path) -> UserTasks {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => UserTasks::default(),
         Err(e) => UserTasks {
             tasks: BTreeMap::new(),
+            environments: BTreeMap::new(),
             errors: vec![format!("{FILE_NAME}: {e}")],
         },
     }
@@ -76,6 +92,7 @@ pub fn parse(text: &str) -> UserTasks {
             };
             return UserTasks {
                 tasks: BTreeMap::new(),
+                environments: BTreeMap::new(),
                 errors: vec![error],
             };
         }
@@ -99,6 +116,25 @@ pub fn parse(text: &str) -> UserTasks {
                 }
             }
             ("tasks", _) => out.errors.push(format!("{FILE_NAME}: `tasks` must be a table")),
+            ("environments", toml::Value::Table(environments)) => {
+                for (name, value) in environments {
+                    match value.try_into::<Environment>() {
+                        Ok(vars) => match vars.keys().find(|k| !valid_name(k)) {
+                            Some(bad) => out.errors.push(format!(
+                                "{FILE_NAME}: [environments.{name}]: `{bad}` is not a variable name (letters, digits, _)"
+                            )),
+                            None => {
+                                out.environments.insert(name, vars);
+                            }
+                        },
+                        Err(e) => out.errors.push(format!(
+                            "{FILE_NAME}: [environments.{name}]: {}",
+                            e.message().trim_end()
+                        )),
+                    }
+                }
+            }
+            ("environments", _) => out.errors.push(format!("{FILE_NAME}: `environments` must be a table")),
             (_, toml::Value::Table(_)) => out.errors.push(format!(
                 "{FILE_NAME}: unknown table [{key}] (tasks go in [tasks.<name>])"
             )),
@@ -137,11 +173,70 @@ pub fn merge(workspace: Option<&BTreeMap<String, Task>>, user: &BTreeMap<String,
     all.into_values().collect()
 }
 
+/// An environment to pick from, with where it is defined.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamedEnvironment {
+    pub name: String,
+    pub vars: Environment,
+    pub source: Source,
+}
+
+/// Every environment, sorted by name: `workspace`'s (`None` when the workspace isn't trusted) and
+/// `user`'s; the workspace's wins a name both have (whole, not variable by variable).
+pub fn merge_environments(
+    workspace: Option<&BTreeMap<String, Environment>>,
+    user: &BTreeMap<String, Environment>,
+) -> Vec<NamedEnvironment> {
+    let mut all: BTreeMap<&str, NamedEnvironment> = BTreeMap::new();
+    for (source, map) in [(Source::User, Some(user)), (Source::Workspace, workspace)] {
+        for (name, vars) in map.into_iter().flatten() {
+            all.insert(
+                name,
+                NamedEnvironment {
+                    name: name.clone(),
+                    vars: vars.clone(),
+                    source,
+                },
+            );
+        }
+    }
+    all.into_values().collect()
+}
+
+fn valid_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// `text` with each `{{NAME}}` replaced by `vars[NAME]` (one pass: a value is not searched again).
+/// `Err(NAME)` for the first name `vars` lacks; `{{` not followed by a name and `}}` is kept.
+pub fn substitute(text: &str, vars: &Environment) -> Result<String, String> {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("{{") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 2..];
+        match after.find("}}").map(|end| (after[..end].trim(), end)) {
+            Some((name, end)) if valid_name(name) => {
+                out.push_str(vars.get(name).ok_or_else(|| name.to_string())?);
+                rest = &after[end + 2..];
+            }
+            _ => {
+                out.push_str("{{");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
 /// A template made ready to run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spec {
     pub name: String,
-    /// The template's command line, as typed.
+    /// The template's command line, with its `{{NAME}}`s filled in.
     pub command: String,
     /// `[shell, "-c", command]`.
     pub argv: Vec<OsString>,
@@ -209,23 +304,28 @@ pub const DEFAULT_ENV: [(&str, &str); 2] = [("TERM", "xterm-256color"), ("COLORT
 impl Template {
     /// The command through `shell -c` (so templates can use pipes, `&&`, globs), the cwd resolved
     /// against `root` (none = the root; `~` / `~/…` = the home folder), `DEFAULT_ENV` then the
-    /// template's env.
-    pub fn resolve(&self, root: &Path, shell: &Path) -> Spec {
+    /// template's env. The command, cwd and env values go through [`substitute`] with `vars` (the
+    /// active environment's); `Err(NAME)` names the first variable `vars` lacks.
+    pub fn resolve(&self, root: &Path, shell: &Path, vars: &Environment) -> Result<Spec, String> {
+        let command = substitute(&self.task.command, vars)?;
+        let cwd = self.task.cwd.as_deref().map(|c| substitute(c, vars)).transpose()?;
         let mut env: Vec<(String, String)> = DEFAULT_ENV
             .iter()
             .filter(|(k, _)| !self.task.env.contains_key(*k))
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        env.extend(self.task.env.iter().map(|(k, v)| (k.clone(), v.clone())));
-        Spec {
+        for (k, v) in &self.task.env {
+            env.push((k.clone(), substitute(v, vars)?));
+        }
+        Ok(Spec {
             name: self.name.clone(),
-            command: self.task.command.clone(),
-            argv: vec![shell.into(), "-c".into(), self.task.command.clone().into()],
-            cwd: resolve_cwd(root, self.task.cwd.as_deref()),
+            argv: vec![shell.into(), "-c".into(), command.clone().into()],
+            command,
+            cwd: resolve_cwd(root, cwd.as_deref()),
             env,
             #[cfg(test)]
             start_gate: None,
-        }
+        })
     }
 }
 
@@ -364,7 +464,7 @@ command = 3
         };
         t.task.env.insert("TERM".into(), "dumb".into());
         t.task.env.insert("A".into(), "1".into());
-        let spec = t.resolve(root, Path::new("/bin/zsh"));
+        let spec = t.resolve(root, Path::new("/bin/zsh"), &Environment::new()).unwrap();
         assert_eq!(
             spec.argv,
             vec![OsString::from("/bin/zsh"), "-c".into(), "make | tee log".into()]
@@ -379,5 +479,85 @@ command = 3
             ],
             "the template's TERM replaces the default"
         );
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> Environment {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn substitutes_names_and_leaves_the_rest() {
+        let v = vars(&[("PROFILE", "--release"), ("EMPTY", ""), ("A", "{{B}}")]);
+        let s = |t: &str| substitute(t, &v);
+        assert_eq!(s("cargo build {{PROFILE}} -q"), Ok("cargo build --release -q".into()));
+        assert_eq!(s("x{{ PROFILE }}{{EMPTY}}y"), Ok("x--releasey".into()));
+        assert_eq!(s("{{A}}"), Ok("{{B}}".into()), "one pass");
+        assert_eq!(
+            s("echo ${HOME} {{ }} {{1x}} {{a b}} }} {{"),
+            Ok("echo ${HOME} {{ }} {{1x}} {{a b}} }} {{".into())
+        );
+        assert_eq!(s("{{PROFILE}} {{MISSING}} {{OTHER}}"), Err("MISSING".into()));
+        assert_eq!(s("{{PROFILE"), Ok("{{PROFILE".into()));
+    }
+
+    #[test]
+    fn resolve_fills_command_cwd_and_env() {
+        let mut t = Template {
+            name: "b".into(),
+            task: task("make {{TARGET}}"),
+            source: Source::User,
+        };
+        t.task.cwd = Some("{{DIR}}/x".into());
+        t.task.env.insert("OUT".into(), "build-{{TARGET}}".into());
+        let v = vars(&[("TARGET", "release"), ("DIR", "sub")]);
+        let spec = t.resolve(Path::new("/w"), Path::new("/bin/sh"), &v).unwrap();
+        assert_eq!(spec.command, "make release");
+        assert_eq!(spec.argv[2], OsString::from("make release"));
+        assert_eq!(spec.cwd, Path::new("/w/sub/x"));
+        assert!(spec.env.contains(&("OUT".into(), "build-release".into())));
+        assert_eq!(
+            t.resolve(Path::new("/w"), Path::new("/bin/sh"), &vars(&[("DIR", "d")])),
+            Err("TARGET".into())
+        );
+    }
+
+    #[test]
+    fn parses_and_merges_environments() {
+        let t = parse(
+            r#"
+[environments.Debug]
+PROFILE = ""
+
+[environments.Release]
+PROFILE = "--release"
+
+[environments.bad-name]
+"a-b" = "x"
+
+[environments.typed]
+N = 1
+"#,
+        );
+        assert_eq!(t.environments.len(), 2);
+        assert_eq!(t.environments["Release"]["PROFILE"], "--release");
+        assert_eq!(t.errors.len(), 2, "{:?}", t.errors);
+        assert!(t.errors.iter().any(|e| e.contains("not a variable name")));
+        assert!(t.errors.iter().any(|e| e.contains("[environments.typed]")));
+
+        let mut ws = BTreeMap::new();
+        ws.insert("Release".to_string(), vars(&[("PROFILE", "-r")]));
+        ws.insert("Extra".to_string(), vars(&[]));
+        let all = merge_environments(Some(&ws), &t.environments);
+        let names: Vec<_> = all.iter().map(|e| (e.name.as_str(), e.source)).collect();
+        assert_eq!(
+            names,
+            [
+                ("Debug", Source::User),
+                ("Extra", Source::Workspace),
+                ("Release", Source::Workspace)
+            ]
+        );
+        assert_eq!(all[2].vars["PROFILE"], "-r");
+        assert_eq!(merge_environments(None, &t.environments).len(), 2);
     }
 }

@@ -725,7 +725,7 @@ async fn task_scrollback_comes_from_the_setting() {
         },
         source: Source::User,
     };
-    let id = app.start_task(&template);
+    let id = app.start_task(&template).unwrap();
     // The end note replaces what the two-row screen showed, so wait for the exit itself.
     let ended = app
         .settle(|a| a.tasks.get(id).is_some_and(|r| !r.status().is_running()))
@@ -1762,7 +1762,7 @@ async fn shell_workspace_scrollback_setting() {
         },
         source: Source::User,
     };
-    let id = app.start_task(&template);
+    let id = app.start_task(&template).unwrap();
     let ended = app
         .settle(|a| a.tasks.get(id).is_some_and(|r| !r.status().is_running()))
         .await;

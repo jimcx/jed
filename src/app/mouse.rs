@@ -763,6 +763,7 @@ impl App {
             Hit::TitleButton(i) => self.title_button_clicked(i),
             Hit::StatusIndentation => self.indentation_clicked(),
             Hit::StatusLanguage => self.change_language_mode(),
+            Hit::StatusEnvironment => self.show_select_environment(),
             Hit::Status
             | Hit::Title
             | Hit::Hover

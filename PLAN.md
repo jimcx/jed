@@ -466,6 +466,7 @@ jed as git's editor (the [Git editor](tasks/git_editor.md) task): `git config --
 - Runs in a PTY, so tools keep their colours and progress bars
 - On exit: show the exit code and keep the output until the tab is closed
 - Kill a running task
+- Environments (the [Task environments](tasks/task_environments.md) task): named sets of variables (`[environments.<name>]`, in `.workspace` and `tasks.toml`) that a task's `command`, `cwd` and `env` values use as `{{NAME}}` — a Debug and a Release build from one task. "Tasks: Select Environment" (`task.selectEnvironment`) or the status bar's `Env:` item picks one (or none); kept in the session
 - Out of scope for tasks: a general-purpose interactive shell — the [Integrated shell](tasks/shell.md) task adds one as its own editor tab
 - Later: parse compiler errors into the Problems list (`file:line:col`)
 

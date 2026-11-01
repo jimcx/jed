@@ -267,6 +267,9 @@ pub enum Command {
     RestoreFileHistory,
     /// "Run Task": a picker of the task templates; picking one runs it in a new panel tab.
     RunTask,
+    /// "Tasks: Select Environment": a picker of the environments (or none); the picked one fills
+    /// the `{{NAME}}`s in task commands.
+    SelectEnvironment,
     /// "Terminal: New Shell": the user's `$SHELL` in a new tab of the terminal area.
     NewShell,
     /// "Terminal: Move Terminal into Editor Area": the terminal area's active terminal into the active editor group.
@@ -1032,6 +1035,7 @@ impl Command {
         all.extend([Command::ShowFileHistory, Command::RestoreFileHistory]);
         all.extend([
             Command::RunTask,
+            Command::SelectEnvironment,
             Command::NewShell,
             Command::MoveTerminalToEditor,
             Command::MoveTerminalToArea,
@@ -1389,6 +1393,7 @@ impl Command {
             ),
             Command::PreviousChange => "editor.previousChange".into(),
             Command::RunTask => "task.run".into(),
+            Command::SelectEnvironment => "task.selectEnvironment".into(),
             Command::NewShell => "terminal.newShell".into(),
             Command::MoveTerminalToEditor => "terminal.moveToEditor".into(),
             Command::MoveTerminalToArea => "terminal.moveToTerminal".into(),
@@ -1742,6 +1747,7 @@ impl Command {
             },
             Command::PreviousChange => "Go to Previous Change",
             Command::RunTask => "Tasks: Run Task",
+            Command::SelectEnvironment => "Tasks: Select Environment…",
             Command::NewShell => "Terminal: New Shell",
             Command::MoveTerminalToEditor => "Terminal: Move Terminal into Editor Area",
             Command::MoveTerminalToArea => "Terminal: Move Terminal into Terminal Area",
@@ -1928,6 +1934,7 @@ mod tests {
             Command::ShowFileHistory => 77,
             Command::RestoreFileHistory => 78,
             Command::RunTask => 79,
+            Command::SelectEnvironment => 140,
             Command::NewShell => 119,
             Command::InstallShellIntegration => 125,
             Command::KillTask => 80,
@@ -1980,7 +1987,7 @@ mod tests {
             Command::ApplyChangeToLeft => 136,
         }
     }
-    const VARIANTS: u8 = 140;
+    const VARIANTS: u8 = 141;
 
     #[test]
     fn all_lists_every_variant() {

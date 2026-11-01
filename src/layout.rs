@@ -490,6 +490,8 @@ pub struct HitMap {
     pub status_indentation: Option<Rect>,
     /// The status bar's language name (a click opens Change Language Mode).
     pub status_language: Option<Rect>,
+    /// The status bar's task environment (a click opens the environment picker).
+    pub status_environment: Option<Rect>,
     /// The hover popup, when shown: on top of everything under it.
     pub hover: Option<Rect>,
     /// The completion list, when shown: on top of everything (the hover too).
@@ -800,6 +802,7 @@ pub enum Hit {
     /// The status bar's indentation item.
     StatusIndentation,
     StatusLanguage,
+    StatusEnvironment,
     /// The hover popup (over an editor).
     Hover,
     /// The completion list (over an editor).
@@ -943,6 +946,9 @@ impl HitMap {
             }
             if self.status_language.is_some_and(|c| c.contains(p)) {
                 return Hit::StatusLanguage;
+            }
+            if self.status_environment.is_some_and(|c| c.contains(p)) {
+                return Hit::StatusEnvironment;
             }
             return Hit::Status;
         }
@@ -1185,6 +1191,7 @@ mod tests {
             title_buttons: vec![],
             status_indentation: Some(Rect::new(70, 29, 9, 1)),
             status_language: None,
+            status_environment: None,
             hover: Some(Rect::new(40, 5, 10, 4)),
             code_actions: None,
             context_menu: None,

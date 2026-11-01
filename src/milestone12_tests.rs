@@ -63,6 +63,7 @@ pub(crate) fn open_app(root: &Path, state: &Path, tasks_toml: Option<&str>) -> A
     let mut app = App::new(ws, trust, None, true);
     app.config_dir = config_dir;
     app.tasks.user = user.tasks;
+    app.tasks.user_environments = user.environments;
     app.report_errors(user.errors);
     app.test_start();
     app

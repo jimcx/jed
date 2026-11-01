@@ -278,6 +278,8 @@ const WORKSPACE_TABLES: &[TableSchema] = &[
     table("files", FILES_KEYS),
     table("lsp.*", LSP_KEYS),
     table("tasks.*", TASK_KEYS),
+    // Any NAME = "value": the variables are the user's own.
+    table("environments.*", &[]),
     table("history", HISTORY_KEYS),
 ];
 
@@ -767,7 +769,7 @@ mod tests {
         let u = crate::config::settings::parse(&text);
         assert!(u.errors.is_empty(), "{text}{:?}", u.errors);
         assert_eq!(u.lsp.len(), 1);
-        for t in WORKSPACE_TABLES.iter().filter(|t| !t.array) {
+        for t in WORKSPACE_TABLES.iter().filter(|t| !t.array && !t.keys.is_empty()) {
             let path: Vec<String> = header(t.pattern).split('.').map(String::from).collect();
             let path: Vec<&str> = path.iter().map(String::as_str).collect();
             let known = table_at(ConfigFile::Settings, &path).is_some();

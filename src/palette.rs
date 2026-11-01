@@ -14,7 +14,7 @@ use crate::history::{self, Entry, Snapshot};
 use crate::logs::Tool;
 use crate::recent;
 use crate::syntax::Language;
-use crate::tasks::{Source, Template};
+use crate::tasks::{NamedEnvironment, Source, Template};
 
 /// Quick open shows at most this many files (the best matches).
 pub const MAX_FILE_ROWS: u32 = 200;
@@ -31,6 +31,9 @@ pub enum Picker {
     History { restore: bool },
     /// "Run Task": a task template (`App::task_templates`); accepting runs it.
     Tasks,
+    /// "Tasks: Select Environment": an environment (`App::task_environments`) or none; accepting
+    /// makes it the one tasks fill their `{{NAME}}`s from.
+    Environment,
     /// "Open Recent Workspace": a recent workspace (the entries are the app's:
     /// `app.recent.picker`); accepting opens it in another jed (`recent::how_to_open`).
     Recent,
@@ -86,6 +89,7 @@ pub enum Mode {
     LogLevel,
     History,
     Tasks,
+    Environment,
     Recent,
     Logs,
     Indentation,
@@ -108,6 +112,8 @@ pub enum Action {
     History(Snapshot),
     /// A task template, by name.
     RunTask(String),
+    /// An environment by name; `None` = no environment.
+    SelectEnvironment(Option<String>),
     /// A recent workspace's root.
     OpenWorkspace(PathBuf),
     /// A tool's log.
@@ -172,6 +178,7 @@ impl Palette {
             Picker::LogLevel => Mode::LogLevel,
             Picker::History { .. } => Mode::History,
             Picker::Tasks => Mode::Tasks,
+            Picker::Environment => Mode::Environment,
             Picker::Recent => Mode::Recent,
             Picker::Logs => Mode::Logs,
             Picker::Indentation => Mode::Indentation,
@@ -194,6 +201,7 @@ impl Palette {
             | Mode::LogLevel
             | Mode::History
             | Mode::Tasks
+            | Mode::Environment
             | Mode::Recent
             | Mode::Logs
             | Mode::Indentation
@@ -529,6 +537,43 @@ pub fn task_rows(query: &str, templates: &[Template]) -> Vec<Row> {
         .collect();
     scored.sort_by(|(sa, a), (sb, b)| sb.cmp(sa).then_with(|| a.label.cmp(&b.label)));
     scored.into_iter().map(|(_, r)| r).collect()
+}
+
+/// Rows for "Tasks: Select Environment": "(none)" first, then the `environments` (sorted by name) whose
+/// name matches `query`, each with its variables dimmed after it and where it is defined; the
+/// `current` one is marked.
+pub fn environment_rows(query: &str, environments: &[NamedEnvironment], current: Option<&str>) -> Vec<Row> {
+    let pattern = pattern(query);
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let mut buf = Vec::new();
+    let none = std::iter::once(("(none)", "No environment".to_string(), None, None));
+    let named = environments.iter().map(|e| {
+        let vars: Vec<String> = e.vars.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        let source = match e.source {
+            Source::Workspace => crate::workspace::FILE_NAME,
+            Source::User => crate::tasks::templates::FILE_NAME,
+        };
+        (e.name.as_str(), vars.join("  "), Some(e.name.clone()), Some(source))
+    });
+    none.chain(named)
+        .filter_map(|(label, detail, name, source)| {
+            let mut hits = Vec::new();
+            pattern.indices(Utf32Str::new(label, &mut buf), &mut matcher, &mut hits)?;
+            let is_current = name.as_deref() == current;
+            Some(Row {
+                label: label.to_string(),
+                label_hits: sorted(hits),
+                detail: if is_current {
+                    format!("{detail} (current)")
+                } else {
+                    detail
+                },
+                detail_hits: Vec::new(),
+                keys: source.map(str::to_string),
+                action: Action::SelectEnvironment(name),
+            })
+        })
+        .collect()
 }
 
 /// Rows for "Tools: Open Log": the `tools` (in their order) whose name matches `query`, best

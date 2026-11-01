@@ -49,6 +49,9 @@ pub struct Session {
     /// Every group in `tree`, by id.
     pub groups: Vec<GroupState>,
     pub active_group: GroupId,
+    /// The selected task environment (older sessions: none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -540,6 +543,7 @@ mod tests {
                 },
             ],
             active_group: 3,
+            environment: None,
         }
     }
 

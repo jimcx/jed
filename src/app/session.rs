@@ -83,8 +83,10 @@ impl App {
             mut tree,
             groups,
             mut active_group,
+            environment,
             ..
         } = session;
+        self.environment = environment;
         let ids: Vec<_> = groups.iter().map(|g| g.id).collect();
         if let Err(e) = group::check_restore(&tree, &ids, active_group) {
             tracing::warn!("session not restored: {e}");
@@ -326,7 +328,7 @@ impl App {
 
     /// What `session::save` writes: the groups in reading order with their tabs (text tabs of
     /// files with a path, diff, commit and hex tabs), the active ones, the panels.
-    fn session_snapshot(&self) -> Session {
+    pub(crate) fn session_snapshot(&self) -> Session {
         let root = &self.workspace.root;
         let groups = self
             .groups
@@ -438,6 +440,7 @@ impl App {
             tree: self.groups.tree.clone(),
             groups,
             active_group: self.groups.active,
+            environment: self.environment.clone(),
         }
     }
 
@@ -565,6 +568,7 @@ mod tests {
                 active: 0,
             }],
             active_group: 0,
+            environment: None,
         };
         session::save(&state, &s).unwrap();
 

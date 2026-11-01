@@ -10,7 +10,7 @@ use crate::command::{Command, TaskCommand as T};
 use crate::config::keymap::Context;
 use crate::layout::{self, PanelTab};
 use crate::palette::Picker;
-use crate::tasks::{self, Event, Run, RunId, Status, Template, keys};
+use crate::tasks::{self, Environment, Event, NamedEnvironment, Run, RunId, Status, Template, keys};
 use crate::workspace::trust::Trust;
 
 impl App {
@@ -20,6 +20,72 @@ impl App {
     pub fn task_templates(&self) -> Vec<Template> {
         let workspace = (self.trust == Trust::Trusted).then_some(&self.workspace.config.tasks);
         self.tasks.templates(workspace)
+    }
+
+    /// Every environment, sorted by name: `.workspace` `[environments]` only when the workspace is
+    /// trusted, the workspace's winning a name both define.
+    pub fn task_environments(&self) -> Vec<NamedEnvironment> {
+        let workspace = (self.trust == Trust::Trusted).then_some(&self.workspace.config.environments);
+        self.tasks.environments(workspace)
+    }
+
+    /// The selected environment's variables (none when none is selected or it no longer exists).
+    pub fn environment_vars(&self) -> Environment {
+        let Some(name) = &self.environment else {
+            return Environment::new();
+        };
+        let found = self.task_environments().into_iter().find(|e| &e.name == name);
+        found.map(|e| e.vars).unwrap_or_default()
+    }
+
+    /// "Tasks: Select Environment" (`task.selectEnvironment`): the picker, or a message saying where
+    /// to define environments.
+    pub(super) fn show_select_environment(&mut self) {
+        if !self.task_environments().is_empty() {
+            self.open_palette(Picker::Environment, "");
+            return;
+        }
+        let user = self.config_dir.join(tasks::templates::FILE_NAME);
+        let text = match self.restricted_environments_note() {
+            Some(note) => format!(
+                "No environments to select. {note}; or add [environments.<name>] to {}",
+                user.display()
+            ),
+            None => format!(
+                "No environments defined: add [environments.<name>] (NAME = \"value\") to {} or {}",
+                crate::workspace::FILE_NAME,
+                user.display()
+            ),
+        };
+        self.notify(Level::Info, text);
+    }
+
+    /// Says that `.workspace` defines environments that aren't offered because the workspace isn't
+    /// trusted (`None` when it defines none or is trusted).
+    pub(super) fn restricted_environments_note(&self) -> Option<String> {
+        let n = self.workspace.config.environments.len();
+        if n == 0 || self.trust == Trust::Trusted {
+            return None;
+        }
+        let mode = match self.trust {
+            Trust::Restricted => "restricted mode",
+            _ => "a workspace not trusted yet",
+        };
+        let environments = if n == 1 { "environment" } else { "environments" };
+        Some(format!(
+            "{n} {environments} in {} not available in {mode} (Manage Workspace Trust)",
+            crate::workspace::FILE_NAME
+        ))
+    }
+
+    /// Makes `name` (`None`: no environment) the environment tasks run with.
+    pub fn select_environment(&mut self, name: Option<String>) {
+        let text = match &name {
+            Some(n) => format!("Tasks run in the '{n}' environment"),
+            None => "Tasks run with no environment".to_string(),
+        };
+        self.environment = name;
+        self.notify(Level::Info, text);
     }
 
     /// "Run Task" (`task.run`): the picker of templates, or a message saying where to define
@@ -67,15 +133,16 @@ impl App {
             self.notify(Level::Error, format!("No task named '{name}'"));
             return None;
         };
-        let id = self.start_task(&template);
+        let id = self.start_task(&template)?;
         self.focus_panel(PanelTab::Task(id));
         Some(id)
     }
 
     /// Starts `template` (cwd relative to the workspace root) at the size its tab will have:
     /// the panel's in the last frame's screen, shown at its height (else `tasks.size`, the last
-    /// drawn task area's); no tab of its own (`run_task` adds that).
-    pub fn start_task(&mut self, template: &Template) -> RunId {
+    /// drawn task area's); no tab of its own (`run_task` adds that). `None` (and a message) when the
+    /// template uses a `{{NAME}}` the selected environment lacks.
+    pub fn start_task(&mut self, template: &Template) -> Option<RunId> {
         tracing::info!(task = %template.name, source = ?template.source, "running task");
         let status = self.hits.regions.status;
         if status.width > 0 {
@@ -94,7 +161,27 @@ impl App {
                 self.tasks.size = (area.height, area.width);
             }
         }
-        self.tasks.run(template, &self.workspace.root, self.settings.scrollback)
+        let vars = self.environment_vars();
+        match self
+            .tasks
+            .run_with(template, &self.workspace.root, &vars, self.settings.scrollback)
+        {
+            Ok(id) => Some(id),
+            Err(name) => {
+                let hint = match &self.environment {
+                    Some(e) if vars.is_empty() && !self.task_environments().iter().any(|x| &x.name == e) => {
+                        format!("environment '{e}' no longer exists")
+                    }
+                    Some(e) => format!("not set in environment '{e}'"),
+                    None => "no environment selected (Tasks: Select Environment)".to_string(),
+                };
+                self.notify(
+                    Level::Error,
+                    format!("Task '{}': no value for {{{{{name}}}}}: {hint}", template.name),
+                );
+                None
+            }
+        }
     }
 
     /// A click on title bar button `i` (`[window] buttons`): its command, or its task.

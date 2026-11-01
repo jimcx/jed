@@ -1,5 +1,10 @@
 //! End-to-end tests for single PLAN.md TODO items, one `mod` per item.
 //!
+//! - `task_environments`: `[environments.<name>]` in `tasks.toml` / `.workspace`; "Tasks: Select
+//!   Environment" picks one (or none); a task's `{{NAME}}`s are filled from it, a missing name
+//!   stops the run with a message; the status bar's `Env:` item shows it and opens the picker; the
+//!   session keeps it; `.workspace`'s environments need trust.
+//!
 //! - `render_whitespace`: spaces drawn as `·` and tabs as `→` (in the tab's first cell) in
 //!   `editorWhitespace.foreground` (over syntax colours), text columns unchanged, under the
 //!   selection background and never dimming a drawn cursor; each of VS Code's modes (`none` / `boundary` / `selection` /
@@ -11923,5 +11928,111 @@ mod title_bar {
         app.mouse(MouseEventKind::Down(MouseButton::Left), rect.x, 0);
         app.mouse(MouseEventKind::Up(MouseButton::Left), rect.x, 0);
         assert_ne!(app.ui.side_visible, before);
+    }
+}
+
+mod task_environments {
+    use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::command::Command;
+    use crate::milestone12_tests::{dirs, open_app, settle_ended};
+
+    const TOML: &str = r#"
+[tasks.build]
+command = "echo build {{PROFILE}} end"
+
+[environments.Debug]
+PROFILE = "dbg"
+
+[environments.Release]
+PROFILE = "--release"
+"#;
+
+    fn status_row(app: &mut crate::app::App) -> String {
+        let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        let buf = term.backend().buffer();
+        (0..buf.area.width).map(|x| buf[(x, 19)].symbol().to_string()).collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pick_an_environment_and_run_a_task_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, state) = dirs(&dir);
+        let mut app = open_app(&root, &state, Some(TOML));
+
+        // None selected: the run is refused and says why.
+        assert_eq!(app.run_task("build"), None);
+        let msg = app.message.as_ref().unwrap().text.clone();
+        assert!(
+            msg.contains("{{PROFILE}}") && msg.contains("no environment selected"),
+            "{msg}"
+        );
+        assert!(status_row(&mut app).trim_end().ends_with("Env: none"));
+
+        // The status bar item opens the picker; the rows are (none) then the environments.
+        let r = app.hits.status_environment.expect("the item is clickable");
+        app.mouse(MouseEventKind::Down(MouseButton::Left), r.x, r.y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), r.x, r.y);
+        let labels: Vec<_> = app
+            .palette
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| r.label.clone())
+            .collect();
+        assert_eq!(labels, ["(none)", "Debug", "Release"]);
+        app.type_text("rel");
+        app.press(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.palette.is_none());
+        assert_eq!(app.environment.as_deref(), Some("Release"));
+        assert!(status_row(&mut app).trim_end().ends_with("Env: Release"));
+
+        let id = app.run_task("build").unwrap();
+        assert!(settle_ended(&mut app, id).await);
+        let out = app.tasks.get(id).unwrap().screen().screen().contents();
+        assert!(out.starts_with("build --release end\n"), "{out}");
+
+        // The session keeps it.
+        assert_eq!(app.session_snapshot().environment.as_deref(), Some("Release"));
+
+        // Back to none through the command and the picker's first row.
+        app.test_execute(Command::SelectEnvironment);
+        app.press(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.environment, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_name_the_environment_lacks_stops_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, state) = dirs(&dir);
+        let mut app = open_app(
+            &root,
+            &state,
+            Some("[tasks.t]\ncommand = \"echo {{NOPE}}\"\n[environments.A]\nX = \"1\"\n"),
+        );
+        app.select_environment(Some("A".into()));
+        assert_eq!(app.run_task("t"), None);
+        assert!(app.tasks.runs().is_empty());
+        let msg = app.message.as_ref().unwrap().text.clone();
+        assert!(
+            msg.contains("{{NOPE}}") && msg.contains("not set in environment 'A'"),
+            "{msg}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_environments_no_status_item_and_a_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, state) = dirs(&dir);
+        let mut app = open_app(&root, &state, None);
+        assert!(!status_row(&mut app).contains("Env:"));
+        assert!(app.hits.status_environment.is_none());
+        app.test_execute(Command::SelectEnvironment);
+        assert!(app.palette.is_none());
+        assert!(app.message.as_ref().unwrap().text.contains("[environments."));
     }
 }

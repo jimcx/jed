@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use run::{Event, Exit, Run, RunId, Sink, Status, TerminalScroll};
-pub use templates::{Source, Task, Template};
+pub use templates::{Environment, NamedEnvironment, Source, Task, Template};
 
 /// How long quitting waits for SIGHUP'd tasks before SIGKILLing what's left.
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
@@ -34,6 +34,8 @@ pub const DEFAULT_SIZE: (u16, u16) = (24, 80);
 pub struct Tasks {
     /// `tasks.toml`'s tasks (read once at startup by `main`; tests set them).
     pub user: BTreeMap<String, Task>,
+    /// `tasks.toml`'s `[environments]`.
+    pub user_environments: BTreeMap<String, Environment>,
     /// Runs commands with `-c`: `$SHELL`, else `/bin/sh`.
     pub shell: PathBuf,
     /// New runs' (rows, cols).
@@ -55,6 +57,7 @@ impl Default for Tasks {
     fn default() -> Self {
         Self {
             user: BTreeMap::new(),
+            user_environments: BTreeMap::new(),
             shell: templates::default_shell(),
             size: DEFAULT_SIZE,
             runs: Vec::new(),
@@ -92,11 +95,24 @@ impl Tasks {
         templates::merge(workspace, &self.user)
     }
 
-    /// Starts `template` (cwd relative to `root`) at `self.size`, keeping `scrollback` lines above
-    /// the screen; spawning happens off-thread, so it starts as `Status::Starting`.
-    pub fn run(&mut self, template: &Template, root: &Path, scrollback: usize) -> RunId {
+    /// Every environment, sorted by name: `workspace` (`None` unless trusted) and the user's, the
+    /// workspace's winning a clash.
+    pub fn environments(&self, workspace: Option<&BTreeMap<String, Environment>>) -> Vec<NamedEnvironment> {
+        templates::merge_environments(workspace, &self.user_environments)
+    }
+
+    /// Starts `template` (cwd relative to `root`, `{{NAME}}`s filled from `vars`) at `self.size`,
+    /// keeping `scrollback` lines above the screen; spawning happens off-thread, so it starts as
+    /// `Status::Starting`. `Err(NAME)` (nothing started) when `vars` lacks a variable it uses.
+    pub fn run_with(
+        &mut self,
+        template: &Template,
+        root: &Path,
+        vars: &Environment,
+        scrollback: usize,
+    ) -> Result<RunId, String> {
+        let mut spec = template.resolve(root, &self.shell, vars)?;
         let id = self.new_run_id();
-        let mut spec = template.resolve(root, &self.shell);
         if let Some(socket) = &self.ipc {
             spec.env.retain(|(k, _)| k != crate::ipc::ENV);
             spec.env
@@ -105,7 +121,13 @@ impl Tasks {
         let sink = self.sink.clone().unwrap_or_else(|| Arc::new(|_| {}));
         let (rows, cols) = self.size;
         self.runs.push(Run::start(id, spec, rows, cols, sink, scrollback));
-        id
+        Ok(id)
+    }
+
+    /// [`run_with`](Self::run_with) with no variables (tests; a template using `{{NAME}}` panics).
+    #[cfg(test)]
+    pub fn run(&mut self, template: &Template, root: &Path, scrollback: usize) -> RunId {
+        self.run_with(template, root, &Environment::new(), scrollback).unwrap()
     }
 
     /// A new run's id, for a run this `Tasks` doesn't own (a shell tab's).

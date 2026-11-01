@@ -575,6 +575,9 @@ pub struct App {
     stage_all_after_save: Option<HashSet<BufferId>>,
     /// Task templates from `tasks.toml` and the task runs (`app/tasks.rs`).
     pub tasks: crate::tasks::Tasks,
+    /// The environment tasks fill their `{{NAME}}`s from (`task_environments`); kept in the session.
+    /// Not checked against the list until a task runs, so a missing one is just "none" then.
+    pub environment: Option<String>,
     /// The syntax plugins whose grammars `start` loads (`app/syntax.rs`): `main` sets every
     /// registered one; tests name their own (the registry is global). Empty by default.
     pub syntax_plugins: Vec<crate::syntax::plugin::PluginId>,
@@ -742,6 +745,7 @@ impl App {
             git_history: Default::default(),
             stage_all_after_save: None,
             tasks: Default::default(),
+            environment: None,
             syntax_plugins: Vec::new(),
             grammars: Vec::new(),
             nav: Default::default(),
@@ -1547,6 +1551,7 @@ impl App {
             Command::ShowFileHistory => self.show_file_history(false),
             Command::RestoreFileHistory => self.show_file_history(true),
             Command::RunTask => self.show_run_task(),
+            Command::SelectEnvironment => self.show_select_environment(),
             Command::NewShell => self.new_shell(),
             Command::MoveTerminalToEditor => self.move_terminal(false),
             Command::MoveTerminalToArea => self.move_terminal(true),

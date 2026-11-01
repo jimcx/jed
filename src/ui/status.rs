@@ -19,6 +19,8 @@ pub struct StatusHit {
     pub indentation: Option<Rect>,
     /// The language name (a click opens Change Language Mode).
     pub language: Option<Rect>,
+    /// The task environment item at the bar's right end (a click opens "Tasks: Select Environment").
+    pub environment: Option<Rect>,
 }
 
 /// The bar's style: `[window] status_bar`'s colour, or for `auto` one picked from a stable hash
@@ -45,6 +47,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> StatusHit {
     let style = status_style(app);
     let out = f.buffer_mut();
     out.set_style(area, style);
+    // The task environment sits at the right end; everything else lays out in what's left of it.
+    let full = area;
+    let environment = environment_label(app).filter(|l| l.width() + 20 <= area.width as usize);
+    let env_w = environment.as_ref().map_or(0, |l| l.width() as u16);
+    let area = Rect {
+        width: area.width - env_w,
+        ..area
+    };
     let width = area.width as usize;
     let mut x = area.x;
 
@@ -254,11 +264,26 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> StatusHit {
         let room = right_x.saturating_sub(x + 1) as usize;
         out.set_stringn(x, area.y, format!(" {text} "), room, msg_style);
     }
+    let environment = environment.map(|label| {
+        let rect = Rect::new(full.x + full.width - env_w, full.y, env_w, 1);
+        out.set_stringn(rect.x, rect.y, &label, env_w as usize, style);
+        rect
+    });
     StatusHit {
         problems: counts,
         indentation,
         language,
+        environment,
     }
+}
+
+/// ` Env: Release ` (` Env: none `), shown once the workspace or `tasks.toml` defines environments
+/// or one is selected; not in single file mode (it runs no tasks).
+fn environment_label(app: &App) -> Option<String> {
+    if app.mode.is_single() || (app.environment.is_none() && app.task_environments().is_empty()) {
+        return None;
+    }
+    Some(format!(" Env: {} ", app.environment.as_deref().unwrap_or("none")))
 }
 
 /// A hex tab's part of the status bar: the cursor's offset in hex and decimal and its byte's

@@ -15,6 +15,8 @@ pub struct WorkspaceConfig {
     pub files: FilesConfig,
     pub lsp: BTreeMap<String, LspServer>,
     pub tasks: BTreeMap<String, Task>,
+    /// `[environments.<name>]`: variables substituted for `{{NAME}}` in tasks (see `tasks::templates`).
+    pub environments: BTreeMap<String, Environment>,
     pub history: HistoryConfig,
     pub window: WindowConfig,
 }
@@ -241,11 +243,16 @@ pub struct Task {
     pub env: BTreeMap<String, String>,
 }
 
+/// An environment's variables (`[environments.<name>]`), e.g. `PROFILE = "--release"`.
+pub type Environment = BTreeMap<String, String>;
+
 /// The parts of the config that run programs; trust covers exactly these.
 #[derive(Serialize)]
 struct Commands<'a> {
     lsp: &'a BTreeMap<String, LspServer>,
     tasks: &'a BTreeMap<String, Task>,
+    /// They fill in task commands, so they are commands too.
+    environments: &'a BTreeMap<String, Environment>,
 }
 
 /// What a new `.workspace` starts as: every section commented out, so it parses to the default.
@@ -277,6 +284,13 @@ pub const TEMPLATE: &str = "\
 # command = \"cargo build\"
 # cwd = \".\"
 # env = { RUST_LOG = \"debug\" }
+
+# Environments (Tasks: Select Environment): variables that a task's command, cwd and env values
+# use as {{NAME}}; with PROFILE below, \"cargo build {{PROFILE}}\" builds the chosen profile.
+# [environments.Debug]
+# PROFILE = \"\"
+# [environments.Release]
+# PROFILE = \"--release\"
 ";
 
 /// Blocking. Writes `TEMPLATE` to `path` unless the file exists; never overwrites one, even if it
@@ -298,7 +312,7 @@ impl WorkspaceConfig {
     }
 
     pub fn has_commands(&self) -> bool {
-        !self.lsp.is_empty() || !self.tasks.is_empty()
+        !self.lsp.is_empty() || !self.tasks.is_empty() || !self.environments.is_empty()
     }
 
     /// One line per command, for the trust dialog.
@@ -318,6 +332,10 @@ impl WorkspaceConfig {
             }
             out.push(line);
         }
+        for (name, vars) in &self.environments {
+            let vars: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            out.push(format!("Environment {name}: {}", vars.join(" ")));
+        }
         out
     }
 
@@ -326,6 +344,7 @@ impl WorkspaceConfig {
         let canonical = toml::to_string(&Commands {
             lsp: &self.lsp,
             tasks: &self.tasks,
+            environments: &self.environments,
         })
         .unwrap_or_default();
         Sha256::digest(canonical.as_bytes())

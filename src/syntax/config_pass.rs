@@ -193,6 +193,10 @@ fn check_pair(file: ConfigFile, schema: Option<&TableSchema>, pair: Node, rope: 
     }
     let mut name = Vec::new();
     segments(first, rope, &mut name);
+    // A table of the user's own names (`[environments.*]`): nothing to check.
+    if schema.is_some_and(|s| s.keys.is_empty()) {
+        return;
+    }
     let Some(known) = schema.and_then(|s| s.key(&name[0])) else {
         let table = |t: &TableSchema| t.pattern.split('.').next() == Some(name[0].as_str());
         if schema.is_none() && schema::tables(file).iter().any(table) {

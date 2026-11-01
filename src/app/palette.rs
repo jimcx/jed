@@ -133,6 +133,16 @@ impl App {
                 };
                 rows
             }
+            Mode::Environment => {
+                let current = self.environment.as_deref();
+                let rows = palette::environment_rows(&query, &self.task_environments(), current);
+                hint = if rows.is_empty() {
+                    Some("No matching environments".into())
+                } else {
+                    self.restricted_environments_note()
+                };
+                rows
+            }
             Mode::Recent => match &self.recent.picker {
                 Some(entries) => {
                     let rows = palette::recent_rows(&query, entries, &paths::home());
@@ -411,6 +421,10 @@ impl App {
             (Mode::LogLevel, _) if query.contains('=') => {
                 self.close_palette();
                 self.set_log_filter(query.trim());
+            }
+            (_, Some(Action::SelectEnvironment(name))) => {
+                self.close_palette();
+                self.select_environment(name);
             }
             (_, Some(Action::SetLogLevel(level))) => {
                 self.close_palette();
