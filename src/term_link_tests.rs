@@ -92,7 +92,8 @@ async fn term_link_ignores_plain_words() {
     let mut app = shell_app(&root, &state);
     let at = show(&mut app, "hello world", "world").await;
     link_click(&mut app, at);
-    assert!(!app.settle(|a| a.palette.is_some() || a.active_buffer().is_some()).await);
+    crate::milestone9_tests::idle(&mut app).await;
+    assert!(app.palette.is_none() && app.active_buffer().is_none());
 }
 
 /// The shell is in the terminal area and the file is open in two editor groups, active in the

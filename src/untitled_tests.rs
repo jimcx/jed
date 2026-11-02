@@ -948,8 +948,7 @@ async fn untitled_has_no_language_server_document() {
     app.type_text("int y;");
     pick_language(&mut app, "c++");
     assert_eq!(active_language(&app), Language::Cpp);
-    app.pump();
-    app.settle(|_| false).await;
+    crate::milestone9_tests::idle(&mut app).await;
     assert_eq!(
         fake.launches().len(),
         1,

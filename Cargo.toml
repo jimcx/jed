@@ -74,3 +74,12 @@ crossterm = { git = "https://github.com/jimcx/crossterm.git", tag = "0.29+fwdbac
 # follow its text). On a vt100 upgrade, rebase the fork's `jed` changes onto the new release and
 # re-tag.
 vt100 = { git = "https://github.com/jimcx/vt100-rust.git", tag = "v0.18.1+jed2" }
+
+# Dependencies (ropey, ratatui, tree-sitter and its C grammars, regex, …) build optimised and
+# without their debug assertions in dev and test builds: the tests spent most of their CPU in
+# them (ropey re-validates a chunk's UTF-8 on every chunk lookup in debug). jed's own code keeps
+# opt-level 0 and its debug assertions, so incremental rebuilds stay fast; only the first build
+# after a dependency change is slower.
+[profile.dev.package."*"]
+opt-level = 2
+debug-assertions = false

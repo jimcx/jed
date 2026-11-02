@@ -2425,7 +2425,7 @@ mod rust_language_server {
     use crate::lsp::fake::{FakeLauncher, FakeOptions};
     use crate::lsp::rpc::CONTENT_MODIFIED;
     use crate::lsp::{Launcher, ProcessLauncher, State};
-    use crate::milestone9_tests::{REAL_SERVERS, children_settled};
+    use crate::milestone9_tests::{REAL_SERVERS, children_settled, settle_for};
     use crate::selection::{Selection, Selections};
     use crate::syntax::Language;
     use crate::workspace::trust::{Trust, TrustStore};
@@ -2516,17 +2516,6 @@ mod rust_language_server {
         let buf = term.backend().buffer();
         let y = buf.area.height - 1;
         (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
-    }
-
-    /// `settle`, for up to `secs` seconds.
-    async fn settle_for(app: &mut App, secs: u64, done: impl Fn(&App) -> bool) -> bool {
-        let t = Instant::now();
-        while t.elapsed() < Duration::from_secs(secs) {
-            if app.settle(&done).await {
-                return true;
-            }
-        }
-        false
     }
 
     const MAIN: &str = "fn helper() -> i32 {\n    1\n}\n\nfn main() {\n    let _ = helper();\n}\n";

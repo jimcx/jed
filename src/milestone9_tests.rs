@@ -1473,15 +1473,19 @@ async fn milestone_9_diagnostics_go_when_the_server_is_stopped() {
     app.shutdown_servers().await;
 }
 
-/// Waits up to `secs` for `done` (real servers can take a while).
+/// `settle` for up to `secs` (real servers can take a while; `settle` alone gives up at 30 s).
+/// Short waits stay short: each `settle` is cut off at the time left.
 pub(crate) async fn settle_for(app: &mut App, secs: u64, done: impl Fn(&App) -> bool) -> bool {
-    let t = Instant::now();
-    while t.elapsed() < Duration::from_secs(secs) {
-        if app.settle(&done).await {
-            return true;
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match tokio::time::timeout(left, app.settle(&done)).await {
+            Ok(true) => return true,
+            Err(_) => return done(app),
+            Ok(false) if Instant::now() >= deadline => return false,
+            Ok(false) => {}
         }
     }
-    false
 }
 
 /// A real server reports an error in `file` on `word`; `fix` edits it away and the error goes.

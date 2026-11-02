@@ -23,7 +23,7 @@ on PATH, so prefix every command with `export PATH="$HOME/.rustup/toolchains/1.9
 ```sh
 cargo fmt --check                            # rustfmt.toml: max_width = 120
 cargo clippy --all-targets -- -D warnings
-cargo test                                   # ~150 tests, ~5 s (search's random reference test is most of it)
+cargo test                                   # ~2300 tests, ~11 s (dependencies build at opt-level 2: Cargo.toml)
 cargo test --release milestone -- --nocapture --test-threads=1   # M1 and M6 (1 MB Cmd+Shift+L + typing; line/cursor commands at 61k selections; find + replace all) budgets: release only (M6 has coarse debug bounds); serial, since parallel tests nearly double the timings on a slow machine
 cargo test --release search -- --nocapture      # so are the 1 MB find-all and 10 MB workspace-search budgets
 ```
