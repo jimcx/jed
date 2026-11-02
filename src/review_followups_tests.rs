@@ -346,3 +346,47 @@ async fn review_followups_hscroll_row_matches_the_line_drawn_from_column_0() {
     }
     assert!(compared > 20, "compared {compared} scroll columns");
 }
+
+/// Subtask c: the explorer caches its flattened rows, so a frame and a key press walk no tree.
+#[tokio::test(flavor = "multi_thread")]
+async fn review_followups_explorer_frames_and_keys_walk_no_tree() {
+    use crate::app::Focus;
+    use crate::explorer::Entry;
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = crate::workspace::normalize(dir.path());
+    std::fs::write(root.join("a.txt"), "x\n").unwrap();
+    let mut app = test_app(&root, Buffer::open(&root.join("a.txt")).unwrap());
+    app.test_start();
+    // 50,000 rows without touching the disk: 500 expanded folders of 99 files each.
+    let entry = |dir: &std::path::Path, name: String, is_dir: bool| Entry {
+        path: dir.join(&name),
+        name,
+        is_dir,
+        expanded: is_dir,
+        ignored: false,
+        children: None,
+    };
+    let folders: Vec<Entry> = (0..500).map(|i| entry(&root, format!("d{i:03}"), true)).collect();
+    app.explorer.set_children(&root, folders);
+    for i in 0..500 {
+        let d = root.join(format!("d{i:03}"));
+        let files = (0..99).map(|j| entry(&d, format!("f{j:02}.txt"), false)).collect();
+        app.explorer.set_children(&d, files);
+    }
+    assert_eq!(app.explorer.row_count(), 50_000);
+    app.ui.focus = Focus::SidePanel;
+    draw(&mut app);
+    assert!(app.explorer.walks.get() > 0, "the walk counter counts the first build");
+    app.explorer.walks.set(0);
+    app.explorer.lookups.set(0);
+    draw(&mut app);
+    for _ in 0..10 {
+        app.press(KeyCode::Down, KeyModifiers::NONE);
+    }
+    draw(&mut app);
+    assert_eq!(app.explorer.walks.get(), 0, "no full tree walk after the first frame");
+    assert_eq!(app.explorer.lookups.get(), 0, "no linear search for the selected row");
+    assert_eq!(app.explorer.selected_index_for_test(), Some(9));
+}

@@ -1,5 +1,6 @@
 //! Explorer tree model: lazily loaded, `.gitignore`-aware. No drawing here.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,6 +37,33 @@ pub struct Explorer {
     reveal_pending: bool,
     /// Where the explorer is expanding towards, e.g. the active file.
     reveal: Option<PathBuf>,
+    /// The flattened rows, built by one walk and dropped by every change to the tree.
+    cache: RefCell<Option<Cache>>,
+    /// Full tree walks made (`cfg(test)`), to show that a frame or a key press makes none.
+    #[cfg(test)]
+    pub walks: std::cell::Cell<usize>,
+    /// Linear searches for the selected row (`cfg(test)`).
+    #[cfg(test)]
+    pub lookups: std::cell::Cell<usize>,
+}
+
+/// One cached row: where its entry is, without borrowing the tree.
+#[derive(Debug, Clone, Copy)]
+struct Node {
+    depth: u32,
+    /// The row of the entry's parent (`NO_PARENT` below the root).
+    parent: u32,
+    /// The entry's index in its parent's children.
+    child: u32,
+}
+
+const NO_PARENT: u32 = u32::MAX;
+
+#[derive(Debug)]
+struct Cache {
+    rows: Vec<Node>,
+    /// The selected path last looked up and its row.
+    selected: Option<(PathBuf, Option<usize>)>,
 }
 
 impl crate::scrollbar::Scrollable for Explorer {
@@ -67,25 +95,76 @@ impl Explorer {
             height: 0,
             reveal_pending: false,
             reveal: None,
+            cache: RefCell::new(None),
+            #[cfg(test)]
+            walks: std::cell::Cell::new(0),
+            #[cfg(test)]
+            lookups: std::cell::Cell::new(0),
         }
+    }
+
+    /// The cached rows, built by one walk when a change dropped them.
+    fn cache(&self) -> std::cell::Ref<'_, Cache> {
+        if self.cache.borrow().is_none() {
+            fn walk(e: &Entry, depth: u32, parent: u32, out: &mut Vec<Node>) {
+                for (i, c) in e.children.iter().flatten().enumerate() {
+                    let me = out.len() as u32;
+                    out.push(Node {
+                        depth,
+                        parent,
+                        child: i as u32,
+                    });
+                    if c.expanded {
+                        walk(c, depth + 1, me, out);
+                    }
+                }
+            }
+            #[cfg(test)]
+            self.walks.set(self.walks.get() + 1);
+            let mut rows = Vec::new();
+            walk(&self.root, 0, NO_PARENT, &mut rows);
+            *self.cache.borrow_mut() = Some(Cache { rows, selected: None });
+        }
+        std::cell::Ref::map(self.cache.borrow(), |c| c.as_ref().expect("just built"))
+    }
+
+    /// The entry of cached row `n`: O(depth).
+    fn entry_at(&self, cache: &Cache, n: usize) -> &Entry {
+        let mut chain = Vec::new();
+        let mut node = cache.rows[n];
+        loop {
+            chain.push(node.child as usize);
+            if node.parent == NO_PARENT {
+                break;
+            }
+            node = cache.rows[node.parent as usize];
+        }
+        let mut e = &self.root;
+        for i in chain.into_iter().rev() {
+            e = &e.children.as_ref().expect("cached rows follow loaded dirs")[i];
+        }
+        e
+    }
+
+    /// The rows `scroll..scroll + height`, from the cache: no walk, O(height · depth).
+    pub fn visible(&self, scroll: usize, height: usize) -> Vec<Row<'_>> {
+        let cache = self.cache();
+        let end = scroll.saturating_add(height).min(cache.rows.len());
+        (scroll.min(end)..end)
+            .map(|n| Row {
+                depth: cache.rows[n].depth as usize,
+                entry: self.entry_at(&cache, n),
+            })
+            .collect()
     }
 
     /// Expanded entries in display order; the root itself isn't shown.
     pub fn rows(&self) -> Vec<Row<'_>> {
-        fn walk<'a>(e: &'a Entry, depth: usize, out: &mut Vec<Row<'a>>) {
-            for c in e.children.iter().flatten() {
-                out.push(Row { depth, entry: c });
-                if c.expanded {
-                    walk(c, depth + 1, out);
-                }
-            }
-        }
-        let mut out = Vec::new();
-        walk(&self.root, 0, &mut out);
-        out
+        self.visible(0, usize::MAX)
     }
 
     fn find_mut(&mut self, path: &Path) -> Option<&mut Entry> {
+        *self.cache.get_mut() = None;
         let rel = path.strip_prefix(&self.root.path).ok()?;
         let mut e = &mut self.root;
         for part in rel.components() {
@@ -192,6 +271,7 @@ impl Explorer {
             Some(self.root.path.join(rel.components().next()?))
         });
         close(&mut self.root);
+        *self.cache.get_mut() = None;
         self.reveal = None;
         if top.is_some() {
             self.selected = top;
@@ -237,36 +317,62 @@ impl Explorer {
         Vec::new()
     }
 
-    fn selected_index(&self, rows: &[Row]) -> Option<usize> {
+    /// The selected row; the lookup is kept while `selected` stays the same path.
+    fn selected_index(&self) -> Option<usize> {
         let sel = self.selected.as_ref()?;
-        rows.iter().position(|r| &r.entry.path == sel)
+        let found = {
+            let cache = self.cache();
+            if let Some((p, i)) = &cache.selected
+                && p == sel
+            {
+                return *i;
+            }
+            #[cfg(test)]
+            self.lookups.set(self.lookups.get() + 1);
+            (0..cache.rows.len()).find(|&n| &self.entry_at(&cache, n).path == sel)
+        };
+        if let Some(c) = self.cache.borrow_mut().as_mut() {
+            c.selected = Some((sel.clone(), found));
+        }
+        found
+    }
+
+    #[cfg(test)]
+    pub fn selected_index_for_test(&self) -> Option<usize> {
+        self.selected_index()
     }
 
     pub fn select_index(&mut self, index: usize) {
         self.reveal = None;
-        let rows = self.rows();
-        if let Some(r) = rows.get(index.min(rows.len().saturating_sub(1))) {
-            self.selected = Some(r.entry.path.clone());
+        let picked = {
+            let cache = self.cache();
+            let n = index.min(cache.rows.len().saturating_sub(1));
+            (n < cache.rows.len()).then(|| (n, self.entry_at(&cache, n).path.clone()))
+        };
+        if let Some((n, path)) = picked {
+            if let Some(c) = self.cache.get_mut().as_mut() {
+                c.selected = Some((path.clone(), Some(n)));
+            }
+            self.selected = Some(path);
         }
         self.scroll_to_selected();
     }
 
     /// Moves the selection by `delta` rows (clamped).
     pub fn move_selection(&mut self, delta: isize) {
-        let rows = self.rows();
-        if rows.is_empty() {
+        let len = self.row_count();
+        if len == 0 {
             return;
         }
-        let i = match self.selected_index(&rows) {
-            Some(i) => i.saturating_add_signed(delta).min(rows.len() - 1),
+        let i = match self.selected_index() {
+            Some(i) => i.saturating_add_signed(delta).min(len - 1),
             None => 0,
         };
-        drop(rows);
         self.select_index(i);
     }
 
     pub fn select_last(&mut self) {
-        let n = self.rows().len();
+        let n = self.row_count();
         self.select_index(n.saturating_sub(1));
     }
 
@@ -301,20 +407,13 @@ impl Explorer {
         }
     }
 
-    /// How many rows `rows` gives, without collecting them.
+    /// How many rows `rows` gives.
     pub fn row_count(&self) -> usize {
-        fn count(e: &Entry) -> usize {
-            e.children
-                .iter()
-                .flatten()
-                .map(|c| 1 + if c.expanded { count(c) } else { 0 })
-                .sum()
-        }
-        count(&self.root)
+        self.cache().rows.len()
     }
 
     pub fn scroll_by(&mut self, delta: isize) {
-        let max = self.rows().len().saturating_sub(self.height.max(1));
+        let max = self.row_count().saturating_sub(self.height.max(1));
         self.scroll = self.scroll.saturating_add_signed(delta).min(max);
     }
 
@@ -334,8 +433,7 @@ impl Explorer {
             self.reveal_pending = true;
             return;
         }
-        let rows = self.rows();
-        if let Some(i) = self.selected_index(&rows) {
+        if let Some(i) = self.selected_index() {
             if i < self.scroll {
                 self.scroll = i;
             } else if i >= self.scroll + self.height {
@@ -788,5 +886,118 @@ mod tests {
         x.scroll = 0;
         x.set_height(2);
         assert_eq!(x.scroll, 0, "only once");
+    }
+
+    fn names_of(x: &Explorer) -> Vec<String> {
+        x.rows()
+            .iter()
+            .map(|r| format!("{}{}", " ".repeat(r.depth), r.entry.name))
+            .collect()
+    }
+
+    /// Every change to the tree or the selection shows in the next read of the cached rows.
+    #[test]
+    fn the_row_cache_follows_every_change() {
+        let (_d, root) = tree();
+        let ex = Override::empty();
+        let mut x = Explorer::new(root.clone());
+        assert!(x.rows().is_empty());
+        x.set_children(&root, list_dir(&root, &ex).unwrap());
+        assert!(names_of(&x).contains(&"src".to_string()));
+        let top = x.row_count();
+        x.expand(&root.join("src"));
+        x.set_children(&root.join("src"), list_dir(&root.join("src"), &ex).unwrap());
+        assert_eq!(x.row_count(), top + 2);
+        x.expand(&root.join("src/deep"));
+        x.set_children(&root.join("src/deep"), list_dir(&root.join("src/deep"), &ex).unwrap());
+        assert_eq!(x.row_count(), top + 3);
+        assert_eq!(x.visible(0, 2).len(), 2);
+        assert_eq!(x.visible(x.row_count() - 1, 5).len(), 1);
+        assert!(x.visible(x.row_count() + 3, 5).is_empty());
+        // Selection assigned directly: its row follows.
+        x.selected = Some(root.join("src/deep/f.rs"));
+        let at = x.selected_index().unwrap();
+        assert_eq!(x.rows()[at].entry.path, root.join("src/deep/f.rs"));
+        x.selected = Some(root.join("src"));
+        let at = x.selected_index().unwrap();
+        assert_eq!(x.rows()[at].entry.path, root.join("src"));
+        x.move_selection(1);
+        assert_eq!(x.selected, Some(root.join("src/deep")));
+        // Collapsing drops the rows below, and the selected row inside is gone.
+        x.collapse(&root.join("src"));
+        assert_eq!(x.row_count(), top);
+        x.selected = Some(root.join("src/deep/f.rs"));
+        assert_eq!(x.selected_index(), None);
+        x.expand(&root.join("src"));
+        assert_eq!(x.row_count(), top + 3);
+        assert!(x.selected_index().is_some());
+        x.collapse_all();
+        assert_eq!(x.row_count(), top);
+        assert_eq!(x.selected, Some(root.join("src")));
+        assert_eq!(
+            x.selected_index().map(|i| x.rows()[i].entry.name.clone()),
+            Some("src".into())
+        );
+        // A fresh listing without the selected file.
+        x.expand(&root.join("src"));
+        x.selected = Some(root.join("src/main.rs"));
+        fs::remove_file(root.join("src/main.rs")).unwrap();
+        x.set_children(&root.join("src"), list_dir(&root.join("src"), &ex).unwrap());
+        assert_eq!(x.selected, None);
+        assert_eq!(x.row_count(), top + 1);
+        // Reveal expands towards a deep file.
+        let mut x = Explorer::new(root.clone());
+        let mut todo = x.reveal(&root.join("src/deep/f.rs"));
+        todo.push(root.clone());
+        while let Some(dir) = todo.pop() {
+            todo.extend(x.set_children(&dir, list_dir(&dir, &ex).unwrap()));
+        }
+        let at = x.selected_index().unwrap();
+        assert_eq!(x.rows()[at].entry.path, root.join("src/deep/f.rs"));
+    }
+
+    /// Edge cases of the cached rows: unloaded and empty folders, an empty tree, zero height.
+    #[test]
+    fn the_row_cache_handles_empty_and_unloaded_trees() {
+        let (_d, root) = tree();
+        let ex = Override::empty();
+        let mut x = Explorer::new(root.clone());
+        // Nothing loaded: no rows, nothing to select, no panic.
+        x.move_selection(3);
+        x.move_selection(-3);
+        x.select_index(7);
+        x.select_last();
+        assert_eq!((x.row_count(), x.selected.clone(), x.selected_index()), (0, None, None));
+        assert!(x.visible(0, 0).is_empty() && x.visible(5, 5).is_empty());
+        x.set_children(&root, list_dir(&root, &ex).unwrap());
+        // An expanded folder whose listing hasn't arrived (children None) adds no rows.
+        let top = x.row_count();
+        x.expand(&root.join("src"));
+        assert_eq!(x.row_count(), top);
+        // An expanded empty folder adds none either.
+        x.set_children(&root.join("src"), Vec::new());
+        assert_eq!(x.row_count(), top);
+        assert!(x.visible(0, 0).is_empty());
+        // No selection: Down selects the first row; selecting far past the end clamps to the last.
+        x.move_selection(1);
+        assert_eq!(x.selected_index(), Some(0));
+        x.select_index(usize::MAX);
+        assert_eq!(x.selected_index(), Some(top - 1));
+        // Rows match the depth-first order with depths.
+        assert!(x.rows().iter().all(|r| r.depth == 0));
+    }
+
+    /// A large move lands on the first or last row.
+    #[test]
+    fn move_selection_clamps_to_the_ends() {
+        let (_d, root) = tree();
+        let mut x = Explorer::new(root.clone());
+        x.set_children(&root, list_dir(&root, &Override::empty()).unwrap());
+        let n = x.row_count();
+        x.move_selection(1);
+        x.move_selection(isize::MAX);
+        assert_eq!(x.selected_index(), Some(n - 1));
+        x.move_selection(isize::MIN);
+        assert_eq!(x.selected_index(), Some(0));
     }
 }

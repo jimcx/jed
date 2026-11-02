@@ -128,7 +128,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
     explorer.scroll = explorer.scroll.min(count.saturating_sub(explorer.height));
     let scroll = Scroll::rows(count, explorer.height, explorer.scroll);
     let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme));
-    let rows = explorer.rows();
+    let rows = explorer.visible(explorer.scroll, tree.height as usize);
     let focused = app.ui.focus == Focus::SidePanel && app.prompt.is_none() && app.palette.is_none();
     let selected_style = if focused {
         theme.get("list.active")
@@ -136,7 +136,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
         base.patch(theme.get("list.inactive"))
     };
 
-    for (i, row) in rows.iter().skip(explorer.scroll).take(tree.height as usize).enumerate() {
+    for (i, row) in rows.iter().enumerate() {
         let y = tree.y + i as u16;
         let e = row.entry;
         let is_selected = explorer.selected.as_ref() == Some(&e.path);
