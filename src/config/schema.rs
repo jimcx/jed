@@ -114,6 +114,8 @@ const WHITESPACE: &[&str] = &["none", "boundary", "selection", "trailing", "all"
 const CURSOR_STYLES: &[&str] = &["line", "block", "underline"];
 const ON_OFF: &[&str] = &["on", "off"];
 const WRAP: &[&str] = &["off", "on"];
+const SPELL_SCOPES: &[&str] = &["all", "comments_and_strings", "off"];
+const SPELL_LANGUAGES: &[&str] = &["en_AU"];
 const STATUS_COLORS: &[&str] = &[
     "red", "orange", "yellow", "green", "cyan", "blue", "purple", "magenta", "grey", "auto",
 ];
@@ -188,6 +190,36 @@ const SETTINGS_KEYS: &[KeySchema] = &[
         "scrollback",
         NONNEG,
         "Lines kept above the screen, for shell and task tabs",
+    ),
+    key(
+        "spell_check_scope",
+        ValueKind::Enum(SPELL_SCOPES),
+        "What the spell checker looks at: comments, strings and identifiers, or less",
+    ),
+    key(
+        "spell_check_min_length",
+        NONNEG,
+        "Words shorter than this are not spell-checked",
+    ),
+    key(
+        "spell_check_problems",
+        ValueKind::Bool,
+        "List misspellings in the Problems panel",
+    ),
+    key(
+        "spell_check_language",
+        ValueKind::Enum(SPELL_LANGUAGES),
+        "The spell checker's dictionary",
+    ),
+    key(
+        "spell_check_ignore_words",
+        ValueKind::StrList,
+        "Extra words the spell checker accepts",
+    ),
+    key(
+        "spell_check_off_languages",
+        ValueKind::StrList,
+        "Language ids that are not spell-checked",
     ),
 ];
 

@@ -26,7 +26,7 @@ use ropey::Rope;
 use tree_sitter::{InputEdit, ParseOptions, Parser, Point, Tree};
 
 pub use config::{AutoPair, LanguageConfig, is_quote};
-pub use highlight::{KEYS, Span};
+pub use highlight::{KEYS, Span, compute as highlight_spans};
 pub use language::{Associations, Language, detect, detect_path, detect_shebang};
 pub use tokens::Tokens;
 
