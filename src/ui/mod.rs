@@ -140,6 +140,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         hits.file_history = side.file_history;
         side_rules = side.rules;
         hits.history_scrollbar = side.history_scrollbar;
+        hits.file_history_scrollbar = side.file_history_scrollbar;
     }
 
     let (mut cells, mut dividers) = app.groups.tree.layout(regions.editor);

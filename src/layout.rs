@@ -469,9 +469,11 @@ pub struct HitMap {
     pub tools: Option<ToolsHit>,
     /// The Explorer view's "Git History" section, when shown.
     pub history: Option<HistoryHit>,
-    /// The "File History" section above it, when shown (no rows yet: its `list` is empty).
+    /// The "File History" section above it, when shown.
     pub file_history: Option<HistoryHit>,
-    /// Its list's scroll bar (its last column), when drawn.
+    /// The "File History" list's scroll bar (its last column), when drawn.
+    pub file_history_scrollbar: Option<ScrollBarHit>,
+    /// The "Git History" list's scroll bar (its last column), when drawn.
     pub history_scrollbar: Option<ScrollBarHit>,
     /// The bottom panel's tab labels.
     pub panel_tabs: Vec<(Rect, PanelTab)>,
@@ -689,6 +691,8 @@ pub enum ScrollTarget {
     Panel(PanelTab),
     /// The Explorer view's "Git History" commit list.
     History,
+    /// The Explorer view's "File History" entry list.
+    FileHistory,
     /// The keyboard cheat sheet overlay.
     CheatSheet,
     /// The keyboard shortcuts view overlay.
@@ -773,6 +777,7 @@ pub enum Hit {
     HistoryDivider,
     FileHistoryDivider,
     FileHistoryHeader,
+    FileHistoryRow(u16),
     /// Its header row (a click toggles the collapse).
     HistoryHeader,
     /// A commit row on screen (add `HistoryHit::top` for the list row).
@@ -866,12 +871,20 @@ impl HitMap {
             {
                 return Hit::ScrollBar(ScrollTarget::History);
             }
+            if let Some(s) = self.file_history_scrollbar
+                && s.track.contains(p)
+            {
+                return Hit::ScrollBar(ScrollTarget::FileHistory);
+            }
             if let Some(h) = &self.file_history {
                 if h.divider.contains(p) {
                     return Hit::FileHistoryDivider;
                 }
                 if h.header.contains(p) {
                     return Hit::FileHistoryHeader;
+                }
+                if h.list.contains(p) {
+                    return Hit::FileHistoryRow(y - h.list.y);
                 }
             }
             if let Some(h) = &self.history {
@@ -984,6 +997,7 @@ impl HitMap {
             ScrollTarget::Side(_) => drawn(self.side_scrollbar),
             ScrollTarget::Panel(_) => drawn(self.panel_scrollbar),
             ScrollTarget::History => self.history_scrollbar,
+            ScrollTarget::FileHistory => self.file_history_scrollbar,
             ScrollTarget::CheatSheet => self.cheat_sheet?.scrollbar,
             ScrollTarget::Keys => self.keys?.scrollbar,
         }
@@ -1174,6 +1188,7 @@ mod tests {
             tools: None,
             // The history section under the tree: divider, header, then rows.
             file_history: None,
+            file_history_scrollbar: None,
             history: Some(HistoryHit {
                 divider: Rect::new(3, 22, 24, 1),
                 header: Rect::new(3, 23, 24, 1),

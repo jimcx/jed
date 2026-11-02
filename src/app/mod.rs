@@ -337,6 +337,13 @@ enum AppEvent {
         generation: u64,
         result: Result<crate::git::log::Page, String>,
     },
+    /// The active file's history entries were read for the Explorer's File History section
+    /// (`app/history.rs`).
+    FileHistoryEntries {
+        path: PathBuf,
+        generation: u64,
+        result: Result<Vec<crate::history::Entry>, String>,
+    },
     /// An open file was read to see whether it changed on disk (`app/disk.rs`).
     DiskChecked(Box<disk::Checked>),
     /// A hex tab's file was read to see whether it changed on disk (`app/disk.rs`).
@@ -845,6 +852,7 @@ impl App {
         self.sync_markdown();
         self.sync_commit_tabs();
         self.sync_git_history();
+        self.sync_file_history();
     }
 
     /// `start` in single file mode: only the file is watched (for disk changes) and crash
@@ -916,6 +924,7 @@ impl App {
             self.sync_markdown();
             self.sync_commit_tabs();
             self.sync_git_history();
+            self.sync_file_history();
             self.sync_backups();
             self.report_log_errors();
             self.sync_logs();
@@ -1811,6 +1820,11 @@ impl App {
             AppEvent::Listed { dir, ignored, result } => self.listed(dir, ignored, result),
             AppEvent::FsChanged(paths) => self.fs_changed(paths),
             AppEvent::HistoryDone(result) => self.history_done(result),
+            AppEvent::FileHistoryEntries {
+                path,
+                generation,
+                result,
+            } => self.file_history_entries(path, generation, result),
             AppEvent::RevealFailed(msg) => self.notify(Level::Warning, msg),
             AppEvent::HistoryListed(listed) => self.history_listed(*listed),
             AppEvent::HistoryRestore(restore) => self.history_restored(*restore),
@@ -2061,6 +2075,22 @@ impl App {
         self.git_history_done(path, skip, generation, result);
     }
 
+    /// Takes in a finished history task, as if the background one had sent `HistoryDone`.
+    pub fn test_history_done(&mut self) {
+        self.history_done(Ok(()));
+    }
+
+    /// Takes in the File History section's entries for `path` and `generation`, as if the
+    /// background read had sent them (to test that another file's or an older read is dropped).
+    pub fn test_file_history_entries(
+        &mut self,
+        path: PathBuf,
+        generation: u64,
+        result: Result<Vec<crate::history::Entry>, String>,
+    ) {
+        self.file_history_entries(path, generation, result);
+    }
+
     /// Language server requests waiting for answers: (method kind, buffer position) pairs.
     pub fn pending_requests(&self) -> Vec<(&'static str, usize)> {
         let mut v: Vec<_> = self
@@ -2141,6 +2171,7 @@ impl App {
         self.sync_markdown();
         self.sync_commit_tabs();
         self.sync_git_history();
+        self.sync_file_history();
         self.sync_backups();
         self.report_log_errors();
         self.sync_logs();
@@ -2186,6 +2217,7 @@ impl App {
             self.sync_markdown();
             self.sync_commit_tabs();
             self.sync_git_history();
+            self.sync_file_history();
             self.sync_backups();
             self.report_log_errors();
             self.sync_logs();

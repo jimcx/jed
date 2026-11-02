@@ -471,6 +471,7 @@ impl App {
                     ScrollTarget::Panel(_) => Hit::Panel,
                     // The wheel over the history's bar scrolls its list, as over its rows.
                     ScrollTarget::History => Hit::HistoryRow(0),
+                    ScrollTarget::FileHistory => Hit::FileHistoryRow(0),
                     // Taken by `cheat_sheet_mouse` while it's open.
                     ScrollTarget::CheatSheet => Hit::Nothing,
                     // Taken by `keyboard_shortcuts_mouse` while it's open.
@@ -530,6 +531,7 @@ impl App {
                     Hit::SidePanel if self.ui.side_panel == SidePanel::SourceControl => self.scm_scroll(delta),
                     Hit::SidePanel if self.ui.side_panel == SidePanel::Tools => self.tools_scroll(delta),
                     Hit::HistoryRow(_) | Hit::HistoryHeader => self.git_history.scroll_by(delta),
+                    Hit::FileHistoryRow(_) | Hit::FileHistoryHeader => self.file_history_view.scroll_by(delta),
                     Hit::ExplorerRow(_) | Hit::SidePanel => self.explorer.scroll_by(delta),
                     // The wheel over the tab bar moves it a tab at a time (never focusing it).
                     Hit::TabBar(g) | Hit::Tab(g, _) | Hit::TabClose(g, _) => {
@@ -701,6 +703,13 @@ impl App {
                 self.git_history.set_focused(false);
                 self.file_history_view.set_focused(true);
                 self.file_history_view.toggle_collapsed();
+            }
+            Hit::FileHistoryRow(row) => {
+                self.ui.focus = Focus::SidePanel;
+                self.git_history.set_focused(false);
+                self.file_history_view.set_focused(true);
+                let top = self.hits.file_history.map_or(0, |h| h.top);
+                self.file_history_view.select_row(top + row as usize);
             }
             Hit::FileHistoryDivider => self.drag = Some(Drag::FileHistoryDivider),
             Hit::HistoryHeader => {

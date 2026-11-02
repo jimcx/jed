@@ -31,7 +31,7 @@ pub struct SideHits {
     pub tools: Option<ToolsHit>,
     /// The Explorer's "Git History" section, when shown.
     pub history: Option<HistoryHit>,
-    /// The "File History" section above it, when shown (no rows yet: its `list` is empty).
+    /// The "File History" section above it, when shown.
     pub file_history: Option<HistoryHit>,
     /// Horizontal rules across the panel's body (a section's divider row, left blank here): `mod.rs` hands
     /// them to the border layer (`borders`), which draws them and joins their ends to the panel's edge.
@@ -39,7 +39,9 @@ pub struct SideHits {
     pub rules: Vec<Rect>,
     /// The shown list's scroll bar (its last column).
     pub scrollbar: Option<(ScrollTarget, ScrollBarHit)>,
-    /// The history list's scroll bar (its last column).
+    /// The file history list's scroll bar (its last column).
+    pub file_history_scrollbar: Option<ScrollBarHit>,
+    /// The git history list's scroll bar (its last column).
     pub history_scrollbar: Option<ScrollBarHit>,
 }
 
@@ -178,7 +180,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
         Some(section) => render_history(f, section, app),
         None => (None, None),
     };
-    let file_history = file_section.map(|s| render_file_history(f, s, app));
+    let (file_history, file_history_scrollbar) = match file_section {
+        Some(section) => {
+            let (hit, bar) = render_file_history(f, section, app);
+            (Some(hit), bar)
+        }
+        None => (None, None),
+    };
     let rules = file_history.iter().chain(&history).map(|h| h.divider).collect();
     SideHits {
         rules,
@@ -186,14 +194,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
         scrollbar: bar.map(|b| (ScrollTarget::Side(SidePanel::Explorer), b)),
         history,
         file_history,
+        file_history_scrollbar,
         history_scrollbar,
         ..SideHits::default()
     }
 }
 
 /// The "File History" section: the divider row (left blank: a border), the collapsible header,
-/// then "No history" (the rows come later).
-fn render_file_history(f: &mut Frame, section: Rect, app: &App) -> HistoryHit {
+/// then the entry rows — ` <ago>  <size>  <UTC time>`, as the picker shows them — or "Reading
+/// history…", an error, or "No history".
+fn render_file_history(f: &mut Frame, section: Rect, app: &mut App) -> (HistoryHit, Option<ScrollBarHit>) {
     let theme = &app.theme;
     let base = theme.get("sideBar");
     let out = f.buffer_mut();
@@ -215,20 +225,80 @@ fn render_file_history(f: &mut Frame, section: Rect, app: &App) -> HistoryHit {
         header.width as usize,
         base.patch(theme.get("sideBar.header")),
     );
-    if !app.file_history_view.collapsed() && section.height > 2 {
-        out.set_stringn(
-            section.x,
-            section.y + 2,
-            "  No history",
-            section.width as usize,
-            base.patch(theme.get("explorer.ignored")),
-        );
-    }
-    HistoryHit {
+    let mut hit = HistoryHit {
         divider,
         header,
         ..HistoryHit::default()
+    };
+    if app.file_history_view.collapsed() || section.height <= 2 {
+        return (hit, None);
     }
+    let mut list = Rect {
+        y: section.y + 2,
+        height: section.height - 2,
+        ..section
+    };
+    let bar = scrollbar::take_column(&mut list);
+    if list.height == 0 || list.width == 0 {
+        return (hit, None);
+    }
+    let look = scrollbar::look(app, ScrollTarget::FileHistory);
+    let view = &mut app.file_history_view;
+    view.set_height(list.height as usize);
+    view.clamp();
+    let top = view.scroll();
+    let len = view.entries.len();
+    let scroll = view.scrollable().scroll();
+    let bar = bar.map(|track| scrollbar::render(out, track, scroll, look, base, theme));
+    let selected = view.selected_row();
+    let focused = app.ui.focus == Focus::SidePanel && view.focused() && app.prompt.is_none() && app.palette.is_none();
+    let selected_style = if focused {
+        theme.get("list.active")
+    } else {
+        base.patch(theme.get("list.inactive"))
+    };
+    if len == 0 {
+        let dim = base.patch(theme.get("sideBar.dim"));
+        let text = if view.loading {
+            "Reading history…".to_string()
+        } else if let Some(error) = &view.error {
+            error.clone()
+        } else {
+            "No history".to_string()
+        };
+        out.set_stringn(list.x + 1, list.y, &text, list.width.saturating_sub(1) as usize, dim);
+    } else {
+        let now = history::now_ms();
+        for i in top..(top + list.height as usize).min(len) {
+            let y = list.y + (i - top) as u16;
+            let style = if selected == Some(i) {
+                base.patch(selected_style)
+            } else {
+                base
+            };
+            if selected == Some(i) {
+                out.set_style(Rect { y, height: 1, ..list }, style);
+            }
+            let e = &view.entries[i];
+            let mut x = list.x;
+            let end = list.x + list.width;
+            for (text, style) in [
+                (format!(" {}", history::ago(e.time, now)), style),
+                ("  ".to_string(), style),
+                (history::size_label(e.size), style.patch(theme.get("fileHistory.size"))),
+                ("  ".to_string(), style),
+                (history::utc_label(e.time), style.patch(theme.get("fileHistory.date"))),
+            ] {
+                if x >= end {
+                    break;
+                }
+                x = out.set_stringn(x, y, &text, (end - x) as usize, style).0;
+            }
+        }
+    }
+    hit.list = list;
+    hit.top = top;
+    (hit, bar)
 }
 
 /// The "Git History" section: the divider row (left blank: a border), the collapsible header,

@@ -134,6 +134,77 @@ impl App {
         if let Err(e) = result {
             self.notify(Level::Warning, e);
         }
+        // A save added an entry or a rename moved some: the section re-reads (an older read in
+        // flight may predate it, so it is dropped).
+        if self.file_history_view.path.is_some() {
+            self.file_history_view.generation += 1;
+            self.file_history_view.loading = false;
+            self.file_history_view.stale = true;
+        }
+    }
+
+    /// Each loop turn: the File History section follows the active file and reads its entries
+    /// off the UI thread (`history::entries`) — only while the section is on screen; hidden or
+    /// collapsed, a new file or a `HistoryDone` only marks it `stale`. A file with no history
+    /// (outside the workspace, a log tab, none open) is never read: the section says "No history".
+    pub(super) fn sync_file_history(&mut self) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let path = self.active_path();
+        let shown = self.ui.side_visible
+            && self.ui.side_panel == super::SidePanel::Explorer
+            && !self.file_history_view.collapsed();
+        let rel = |app: &Self, p: &Path| history::relative(&app.workspace.root, p);
+        if path != self.file_history_view.path {
+            let has = path.as_deref().is_some_and(|p| rel(self, p).is_some());
+            self.file_history_view.reset(path);
+            if has {
+                self.file_history_view.stale = true;
+            }
+        }
+        if !shown || !self.file_history_view.stale || self.file_history_view.loading {
+            return;
+        }
+        self.file_history_view.stale = false;
+        let Some(path) = self.file_history_view.path.clone() else {
+            return;
+        };
+        let root = self.workspace.root.clone();
+        let Some(rel) = history::relative(&root, &path) else {
+            return;
+        };
+        let generation = self.file_history_view.generation;
+        self.file_history_view.loading = true;
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = history::entries(&root, &rel);
+            let _ = tx.send(AppEvent::FileHistoryEntries {
+                path,
+                generation,
+                result,
+            });
+        });
+    }
+
+    /// The section's entries arrived (older generations and other files' are dropped).
+    pub(super) fn file_history_entries(&mut self, path: PathBuf, generation: u64, result: Result<Vec<Entry>, String>) {
+        let view = &mut self.file_history_view;
+        if generation != view.generation || view.path.as_ref() != Some(&path) {
+            return;
+        }
+        view.loading = false;
+        match result {
+            Ok(entries) => {
+                view.error = None;
+                view.set_entries(entries);
+            }
+            Err(e) => {
+                // The rows draw only when there are entries: an error must replace them.
+                view.set_entries(Vec::new());
+                view.error = Some(e);
+            }
+        }
     }
 
     /// File system events under `.jed/` (history writes) aren't changes anyone needs to see.

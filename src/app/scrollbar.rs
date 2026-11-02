@@ -106,6 +106,8 @@ impl App {
             })),
             ScrollTarget::History if !self.ui.side_visible || self.ui.side_panel != SidePanel::Explorer => None,
             ScrollTarget::History => Some(f(&mut self.git_history.scrollable())),
+            ScrollTarget::FileHistory if !self.ui.side_visible || self.ui.side_panel != SidePanel::Explorer => None,
+            ScrollTarget::FileHistory => Some(f(&mut self.file_history_view.scrollable())),
             ScrollTarget::CheatSheet => Some(f(self.cheat_sheet.as_mut()?)),
             ScrollTarget::Keys => Some(f(self.keys.as_mut()?)),
         }
