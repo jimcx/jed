@@ -10,7 +10,7 @@ use nucleo::{Config, Matcher, Utf32Str};
 
 use crate::command::Command;
 use crate::config::keymap::{Keymap, Source};
-use crate::scrollbar::{Scroll, Scrollable};
+use crate::scrollbar::{ListScroll, Scroll, Scrollable};
 
 /// One row: a binding, or a command with no key at all (its `key`, `context` and `source` empty).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,20 +95,31 @@ impl KeysView {
         self.select(self.selected.saturating_add_signed(delta).min(self.rows.len() - 1));
     }
 
+    fn list(&self) -> ListScroll {
+        ListScroll {
+            top: self.top,
+            height: self.height,
+        }
+    }
+
     /// Moves the selection a page up (`-1`) or down, keeping it in view.
     pub fn page(&mut self, delta: isize) {
-        let page = self.height.max(1) as isize * delta;
+        let page = self.list().page(delta);
         self.move_selection(page);
     }
 }
 
 impl Scrollable for KeysView {
     fn scroll(&self) -> Scroll {
-        Scroll::rows(self.rows.len(), self.height, self.top)
+        self.list().scrollbar(self.rows.len())
     }
 
     fn set_top(&mut self, top: usize) {
-        self.top = top.min(self.rows.len().saturating_sub(self.height.max(1)));
+        self.top = ListScroll {
+            top,
+            height: self.height,
+        }
+        .scroll(self.rows.len());
     }
 }
 

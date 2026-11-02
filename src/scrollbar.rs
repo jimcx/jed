@@ -16,6 +16,58 @@ pub trait Scrollable {
     fn set_top(&mut self, top: usize);
 }
 
+/// The scroll of a plain list (rows of one height, the last page kept full): its first row and
+/// the rows drawn (written each frame; 0 before the first draw). The views keep it as their
+/// `top` / `height` and delegate here, so clamping and revealing are written once.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ListScroll {
+    pub top: usize,
+    pub height: usize,
+}
+
+impl ListScroll {
+    /// The top row, clamped so the last of `len` rows can reach the bottom.
+    pub fn scroll(&self, len: usize) -> usize {
+        self.top.min(len.saturating_sub(self.height.max(1)))
+    }
+
+    /// Scrolls `delta` rows (either way), clamped.
+    pub fn scroll_by(&mut self, len: usize, delta: isize) {
+        self.top = self.scroll(len).saturating_add_signed(delta);
+        self.clamp(len);
+    }
+
+    /// Re-clamps the top (the list or its height changed).
+    pub fn clamp(&mut self, len: usize) {
+        self.top = self.scroll(len);
+    }
+
+    /// Sets the drawn height; the views run a reveal they kept waiting for after it.
+    pub fn set_height(&mut self, _len: usize, height: usize) {
+        self.height = height;
+    }
+
+    /// Scrolls the least that shows `row` (callers wait for a height first: 0 shows nothing).
+    pub fn reveal(&mut self, len: usize, row: usize) {
+        let (top, h) = (self.scroll(len), self.height);
+        if row < top {
+            self.top = row;
+        } else if row >= top + h {
+            self.top = row + 1 - h;
+        }
+    }
+
+    /// `delta` pages as rows (a page is the drawn height, at least 1).
+    pub fn page(&self, delta: isize) -> isize {
+        self.height.max(1) as isize * delta
+    }
+
+    /// The bar's view of it over `len` rows.
+    pub fn scrollbar(&self, len: usize) -> Scroll {
+        Scroll::rows(len, self.height, self.top)
+    }
+}
+
 /// A scroll position: the first row shown, the rows on screen and the largest first row the
 /// view can scroll to. The thumb's length is the screen's share of `max_top + height` (every
 /// row the viewport can cover), its position `top`'s share of `max_top`.
@@ -252,6 +304,93 @@ impl Scrollable for Columns<'_> {
 
 #[cfg(test)]
 mod tests {
+    use super::ListScroll;
+
+    fn ls(top: usize, height: usize) -> ListScroll {
+        ListScroll { top, height }
+    }
+
+    #[test]
+    fn list_scroll_clamps() {
+        assert_eq!(ls(50, 5).scroll(20), 15);
+        assert_eq!(ls(3, 5).scroll(20), 3);
+        assert_eq!(ls(3, 5).scroll(4), 0, "fewer rows than the height");
+        assert_eq!(ls(9, 0).scroll(20), 9, "before the first draw a height of 1 is assumed");
+        assert_eq!(ls(30, 0).scroll(20), 19);
+        let mut l = ls(50, 5);
+        l.clamp(20);
+        assert_eq!(l.top, 15);
+        l.clamp(0);
+        assert_eq!(l.top, 0);
+    }
+
+    #[test]
+    fn list_scroll_by_stops_at_both_ends() {
+        let mut l = ls(2, 5);
+        l.scroll_by(20, -10);
+        assert_eq!(l.top, 0);
+        l.scroll_by(20, 1000);
+        assert_eq!(l.top, 15);
+        l.scroll_by(20, isize::MIN);
+        assert_eq!(l.top, 0);
+        l.scroll_by(20, isize::MAX);
+        assert_eq!(l.top, 15);
+        l.scroll_by(3, 4);
+        assert_eq!(l.top, 0, "fewer rows than the height");
+        let mut l = ls(0, 0);
+        l.scroll_by(10, 3);
+        assert_eq!(l.top, 3);
+        let mut l = ls(50, 4);
+        l.scroll_by(10, -1);
+        assert_eq!(l.top, 5, "a stale top is clamped to 6 before the delta");
+        let mut l = ls(50, 4);
+        l.scroll_by(10, 1);
+        assert_eq!(l.top, 6);
+        let mut l = ls(50, 4);
+        l.scroll_by(0, -1);
+        assert_eq!(l.top, 0);
+    }
+
+    #[test]
+    fn list_scroll_set_height_and_page() {
+        let mut l = ls(4, 0);
+        assert_eq!(l.page(1), 1);
+        l.set_height(20, 6);
+        assert_eq!((l.top, l.height), (4, 6));
+        l.set_height(8, 6);
+        assert_eq!((l.top, l.scroll(8)), (4, 2), "the top is clamped when read");
+        assert_eq!((l.page(1), l.page(-2), l.page(0)), (6, -12, 0));
+    }
+
+    #[test]
+    fn list_scroll_reveal_scrolls_the_least() {
+        let mut l = ls(5, 4);
+        l.reveal(20, 7);
+        assert_eq!(l.top, 5, "inside the window");
+        l.reveal(20, 3);
+        assert_eq!(l.top, 3, "above");
+        l.reveal(20, 10);
+        assert_eq!(l.top, 7, "below: the row is the last one shown");
+        l.reveal(20, 19);
+        assert_eq!(l.top, 16);
+        let mut l = ls(50, 4);
+        l.reveal(20, 18);
+        assert_eq!(l.scroll(20), 16, "a stale top is clamped first: 18 is already shown");
+        l.reveal(20, 10);
+        assert_eq!(l.top, 10);
+        let mut l = ls(0, 10);
+        l.reveal(3, 2);
+        assert_eq!(l.top, 0, "fewer rows than the height");
+    }
+
+    #[test]
+    fn list_scroll_scrollbar_is_scroll_rows() {
+        let s = ls(50, 5).scrollbar(20);
+        assert_eq!((s.top, s.height, s.max_top, s.shown), (15, 5, 15, true));
+        let s = ls(0, 0).scrollbar(0);
+        assert_eq!((s.top, s.max_top, s.shown), (0, 0, false));
+    }
+
     #[test]
     fn columns_scroll_and_clamp() {
         let mut w = super::ScrollWidth::default();

@@ -16,6 +16,7 @@ use std::path::PathBuf;
 
 use crate::diff_view::Pair;
 use crate::git::{Change, Entry, Status};
+use crate::scrollbar::ListScroll;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Section {
@@ -284,12 +285,20 @@ impl ScmView {
 
     /// The top row (clamped so the last row can reach the bottom).
     pub fn scroll(&self, rows: &[Row]) -> usize {
-        self.top.min(rows.len().saturating_sub(self.height.max(1)))
+        self.list().scroll(rows.len())
+    }
+
+    fn list(&self) -> ListScroll {
+        ListScroll {
+            top: self.top,
+            height: self.height,
+        }
     }
 
     pub fn scroll_by(&mut self, rows: &[Row], delta: isize) {
-        self.top = self.scroll(rows).saturating_add_signed(delta);
-        self.top = self.scroll(rows);
+        let mut l = self.list();
+        l.scroll_by(rows.len(), delta);
+        self.top = l.top;
     }
 
     /// Re-clamps the scroll (the list or its height changed).
@@ -299,7 +308,9 @@ impl ScmView {
 
     /// The drawn height (each frame); a reveal asked for before the first draw runs now.
     pub fn set_height(&mut self, rows: &[Row], height: usize) {
-        self.height = height;
+        let mut l = self.list();
+        l.set_height(rows.len(), height);
+        self.height = l.height;
         if self.reveal_pending && height > 0 {
             self.reveal_pending = false;
             self.reveal_selected(rows);
@@ -314,12 +325,9 @@ impl ScmView {
             return;
         }
         let Some(row) = self.selected_row(rows) else { return };
-        let (top, height) = (self.scroll(rows), self.height);
-        if row < top {
-            self.top = row;
-        } else if row >= top + height {
-            self.top = row + 1 - height;
-        }
+        let mut l = self.list();
+        l.reveal(rows.len(), row);
+        self.top = l.top;
     }
 }
 

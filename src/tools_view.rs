@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::logs::Tool;
 use crate::lsp::{self, State};
+use crate::scrollbar::ListScroll;
 use crate::tasks::{RunId, Status};
 
 /// What a row shows, stable across rebuilds: the selection's key.
@@ -316,7 +317,7 @@ pub struct ToolsScroll<'a> {
 
 impl crate::scrollbar::Scrollable for ToolsScroll<'_> {
     fn scroll(&self) -> crate::scrollbar::Scroll {
-        crate::scrollbar::Scroll::rows(self.rows, self.view.height, self.view.scroll_in(self.rows))
+        self.view.list().scrollbar(self.rows)
     }
 
     fn set_top(&mut self, top: usize) {
@@ -392,7 +393,7 @@ impl ToolsView {
     }
 
     fn scroll_in(&self, rows: usize) -> usize {
-        self.top.min(rows.saturating_sub(self.height.max(1)))
+        self.list().scroll(rows)
     }
 
     /// The top row (clamped so the last row can reach the bottom).
@@ -400,9 +401,17 @@ impl ToolsView {
         self.scroll_in(rows.len())
     }
 
+    fn list(&self) -> ListScroll {
+        ListScroll {
+            top: self.top,
+            height: self.height,
+        }
+    }
+
     pub fn scroll_by(&mut self, rows: &[Row], delta: isize) {
-        self.top = self.scroll(rows).saturating_add_signed(delta);
-        self.top = self.scroll(rows);
+        let mut l = self.list();
+        l.scroll_by(rows.len(), delta);
+        self.top = l.top;
     }
 
     /// Re-clamps the scroll (the list or its height changed).
@@ -412,7 +421,9 @@ impl ToolsView {
 
     /// The drawn height (each frame); a reveal asked for before the first draw runs now.
     pub fn set_height(&mut self, rows: &[Row], height: usize) {
-        self.height = height;
+        let mut l = self.list();
+        l.set_height(rows.len(), height);
+        self.height = l.height;
         if self.reveal_pending && height > 0 {
             self.reveal_pending = false;
             self.reveal_selected(rows);
@@ -427,12 +438,9 @@ impl ToolsView {
             return;
         }
         let Some(row) = self.selected_row(rows) else { return };
-        let (top, height) = (self.scroll(rows), self.height);
-        if row < top {
-            self.top = row;
-        } else if row >= top + height {
-            self.top = row + 1 - height;
-        }
+        let mut l = self.list();
+        l.reveal(rows.len(), row);
+        self.top = l.top;
     }
 }
 
