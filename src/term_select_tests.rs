@@ -409,10 +409,18 @@ async fn term_select_mouse_reporting_keeps_every_event() {
         None,
         "a double-click drag over a program that reports the mouse selects nothing"
     );
+    // Its release too, the last event sent: the tty echoes each report as it arrives, and a
+    // late echo that wraps the line would scroll the screen while the view below is scrolled
+    // back (which then follows it up a line).
     let motion = format!("^[[<32;7;{}M", one_ninety_nine + 1);
+    let release = format!("^[[<0;7;{}m", one_ninety_nine + 1);
     assert!(
-        app.settle(|a| screen_text(a).contains(&motion)).await,
-        "the program got the double-click's drag ({motion}):\n{}",
+        app.settle(|a| {
+            let text = screen_text(a);
+            text.contains(&motion) && text.contains(&release)
+        })
+        .await,
+        "the program got the double-click's drag ({motion}) and its release ({release}):\n{}",
         screen_text(&app)
     );
 
@@ -420,8 +428,6 @@ async fn term_select_mouse_reporting_keeps_every_event() {
     // selects nothing and leaves the view where it is.
     app.press(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
     app.press(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
-    // FLAKE: 2026-11-01, once in a full run: left 3, right 2 (a third line of scrollback; late
-    // output from the program's mouse echo while scrolled back is the suspect).
     assert_eq!(
         scrollback(&app),
         2,
