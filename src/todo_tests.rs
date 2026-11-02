@@ -1561,7 +1561,7 @@ mod inline_blame {
     const BOB: (&str, u64) = ("2021-06-01T12:00:00Z", 1_622_548_800);
 
     /// The width of the text area `draw` gives (the explorer and the scroll bar left out).
-    const WIDTH: usize = 60;
+    pub(super) const WIDTH: usize = 60;
 
     /// Commits everything as `who` (`<who>@example.com`), authored at `date`.
     fn commit_as(root: &Path, who: &str, date: &str, message: &str) {
@@ -1590,7 +1590,7 @@ mod inline_blame {
 
     /// A repository with `a.txt` committed by Ann, then changed by Bob, and the app on it with the
     /// status read.
-    async fn blamed_project() -> (tempfile::TempDir, std::path::PathBuf, App) {
+    pub(super) async fn blamed_project() -> (tempfile::TempDir, std::path::PathBuf, App) {
         let (dir, root, state) = dirs();
         init(&root);
         fs::write(root.join("a.txt"), "alpha\nold\n").unwrap();
@@ -1602,7 +1602,7 @@ mod inline_blame {
         (dir, root, app)
     }
 
-    async fn settle_blame(app: &mut App) -> bool {
+    pub(super) async fn settle_blame(app: &mut App) -> bool {
         app.settle(|a| {
             let b = a.active_buffer().unwrap();
             !b.blame.running() && b.blame.want(b.revision()) == Want::Nothing
@@ -1610,7 +1610,7 @@ mod inline_blame {
         .await
     }
 
-    fn draw(app: &mut App) -> Terminal<TestBackend> {
+    pub(super) fn draw(app: &mut App) -> Terminal<TestBackend> {
         let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
         term.draw(|f| crate::ui::render(f, app)).unwrap();
         assert_eq!(app.hits.groups[0].text.width as usize, WIDTH);
@@ -1618,7 +1618,7 @@ mod inline_blame {
     }
 
     /// Buffer line `line` as drawn across the text area (no scrolling), trailing blanks dropped.
-    fn row(app: &App, term: &Terminal<TestBackend>, line: u16) -> String {
+    pub(super) fn row(app: &App, term: &Terminal<TestBackend>, line: u16) -> String {
         let text = app.hits.groups[0].text;
         let buf = term.backend().buffer();
         let s: String = (0..text.width)
@@ -1637,9 +1637,24 @@ mod inline_blame {
         app.theme.get("git.blame.editorDecorationForeground").fg.unwrap()
     }
 
-    fn label(who: &str, secs: u64, summary: &str) -> String {
+    /// The 7-character hash of the commit whose subject is `summary`.
+    pub(super) fn hash_of(root: &Path, summary: &str) -> String {
+        let out = std::process::Command::new("git")
+            .current_dir(root)
+            .args(["log", "--all", "-1", "--format=%h", "--grep", summary])
+            .output()
+            .unwrap();
+        let full = std::process::Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", String::from_utf8_lossy(&out.stdout).trim()])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&full.stdout).trim()[..7].to_string()
+    }
+
+    fn label(root: &Path, who: &str, secs: u64, summary: &str) -> String {
         let when = crate::history::ago(secs * 1000, crate::history::now_ms());
-        format!("{who}, {when} • {summary}")
+        format!("{} {who}, {when} • {summary}", hash_of(root, summary))
     }
 
     fn cmd() -> M {
@@ -1650,7 +1665,7 @@ mod inline_blame {
         }
     }
 
-    fn go_to_line(app: &mut App, line: usize) {
+    pub(super) fn go_to_line(app: &mut App, line: usize) {
         app.press_file_start();
         for _ in 0..line {
             app.press(K::Down, M::NONE);
@@ -1659,7 +1674,7 @@ mod inline_blame {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn the_cursor_lines_blame_follows_the_cursor_and_edits() {
-        let (_d, _root, mut app) = blamed_project().await;
+        let (_d, root, mut app) = blamed_project().await;
         // Off by default: nothing drawn, nothing computed.
         app.pump();
         let term = draw(&mut app);
@@ -1670,9 +1685,10 @@ mod inline_blame {
         app.test_execute(Command::ToggleBlame);
         assert!(settle_blame(&mut app).await);
         let term = draw(&mut app);
-        let ann = label("Ann", ANN.1, "First commit");
+        let ann = label(&root, "Ann", ANN.1, "First commit");
         assert_eq!(row(&app, &term, 0), format!("alpha   {ann}"));
-        assert_eq!(fg(&app, &term, 0, 8), blame_colour(&app));
+        assert_eq!(fg(&app, &term, 0, 8), app.theme.get("git.blame.hash").fg.unwrap());
+        assert_eq!(fg(&app, &term, 0, 17), blame_colour(&app));
         assert_eq!(row(&app, &term, 1), "beta", "only the cursor line");
 
         // Another commit's line: drawn at once, nothing recomputed.
@@ -1683,7 +1699,7 @@ mod inline_blame {
         assert_eq!(row(&app, &term, 0), "alpha");
         assert_eq!(
             row(&app, &term, 1),
-            format!("beta   {}", label("Bob", BOB.1, "Second change"))
+            format!("beta   {}", label(&root, "Bob", BOB.1, "Second change"))
         );
 
         // A selection over two lines hides it; within one line it stays.
@@ -1696,7 +1712,7 @@ mod inline_blame {
         app.press(K::Down, M::NONE);
         app.press(K::End, M::SHIFT);
         let term = draw(&mut app);
-        assert!(row(&app, &term, 1).starts_with("beta   Bob, "));
+        assert!(row(&app, &term, 1).starts_with(&format!("beta   {} Bob, ", hash_of(&root, "Second change"))));
 
         // An unsaved edit: uncommitted once recomputed (after the delay); other lines keep theirs.
         // Until then the hunks follow the edit: Bob's still, no computation before the delay.
@@ -1706,7 +1722,7 @@ mod inline_blame {
         assert!(!app.active_buffer().unwrap().blame.running());
         assert!(app.blame.deadline().is_some());
         let term = draw(&mut app);
-        assert!(row(&app, &term, 1).starts_with("beta!   Bob, "));
+        assert!(row(&app, &term, 1).starts_with(&format!("beta!   {} Bob, ", hash_of(&root, "Second change"))));
         assert!(settle_blame(&mut app).await);
         let term = draw(&mut app);
         assert_eq!(row(&app, &term, 1), "beta!   Uncommitted changes");
@@ -1719,7 +1735,7 @@ mod inline_blame {
         assert!(settle_blame(&mut app).await);
         go_to_line(&mut app, 1);
         let term = draw(&mut app);
-        assert!(row(&app, &term, 1).starts_with("beta   Bob, "));
+        assert!(row(&app, &term, 1).starts_with(&format!("beta   {} Bob, ", hash_of(&root, "Second change"))));
 
         // Turned off: nothing.
         app.test_execute(Command::ToggleBlame);
@@ -1729,10 +1745,10 @@ mod inline_blame {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn long_lines_cut_the_blame_at_the_edge_and_full_ones_draw_none() {
-        let (_d, _root, mut app) = blamed_project().await;
+        let (_d, root, mut app) = blamed_project().await;
         app.test_execute(Command::ToggleBlame);
         assert!(settle_blame(&mut app).await);
-        let bob = label("Bob", BOB.1, "Second change");
+        let bob = label(&root, "Bob", BOB.1, "Second change");
 
         // 17 cells after the line's end: cut with "…" in the text area's last cell, never on
         // the scroll bar.
@@ -1796,7 +1812,7 @@ mod inline_blame {
         let term = draw(&mut app);
         assert_eq!(
             row(&app, &term, 1),
-            format!("beta!   {}", label("Cy", 1_640_995_200, "Third"))
+            format!("beta!   {}", label(&root, "Cy", 1_640_995_200, "Third"))
         );
     }
 
@@ -1840,7 +1856,7 @@ mod inline_blame {
         let term = draw(&mut app);
         assert_eq!(
             row(&app, &term, 0),
-            format!("bee   {}", label("Cy", 1_640_995_200, "Third"))
+            format!("bee   {}", label(&root, "Cy", 1_640_995_200, "Third"))
         );
         // a.txt, in a background tab: not blamed until shown.
         let buf = app.buffers.iter().map(|(_, b)| b).find(|b| b.path == a).unwrap();
@@ -1852,7 +1868,7 @@ mod inline_blame {
         let term = draw(&mut app);
         assert_eq!(
             row(&app, &term, 1),
-            format!("beta   {}", label("Bob", BOB.1, "Second change"))
+            format!("beta   {}", label(&root, "Bob", BOB.1, "Second change"))
         );
 
         // Back on b.txt: turned off, HEAD's commit rewritten (b.txt's text unchanged), turned on:
@@ -1879,7 +1895,11 @@ mod inline_blame {
         let term = draw(&mut app);
         let row0 = row(&app, &term, 0);
         assert!(
-            row0.starts_with("bee   Eve, ") && row0.ends_with(" • Amended"),
+            row0.starts_with("bee   ")
+                && row0[6..]
+                    .split_once(" ")
+                    .is_some_and(|(h, r)| h.len() == 7 && r.starts_with("Eve, "))
+                && row0.ends_with(" • Amended"),
             "{row0}"
         );
     }
@@ -12625,5 +12645,212 @@ mod more_line_commands {
             assert_eq!(text(&app), original, "{c:?}");
         }
         assert!(start.elapsed() < Duration::from_secs(20), "{:?}", start.elapsed());
+    }
+}
+
+/// Commit hash in inline blame: the label starts with the commit's 7-character hash, and a
+/// click on it opens the commit tab like a Git History row.
+mod blame_hash {
+    use std::path::Path;
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M, MouseButton, MouseEventKind};
+
+    use super::inline_blame::{blamed_project, draw, go_to_line, hash_of, row, settle_blame};
+    use crate::app::App;
+    use crate::command::Command;
+
+    fn hash_hit(app: &App) -> Option<(ratatui::layout::Rect, String)> {
+        app.hits.groups[0].blame_hash.clone()
+    }
+
+    fn commit_buffers(app: &App) -> usize {
+        app.buffers.iter().filter(|(_, b)| b.commit.is_some()).count()
+    }
+
+    fn click(app: &mut App, x: u16, y: u16) {
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    }
+
+    fn primary(app: &mut App) -> usize {
+        app.active_mut().unwrap().1.selections.primary().head.0
+    }
+
+    fn blame_hash_of_line(root: &Path, line: u32) -> String {
+        let out = std::process::Command::new("git")
+            .current_dir(root)
+            .args(["blame", "-l", "-L", &format!("{line},{line}"), "a.txt"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .trim_start_matches('^')
+            .chars()
+            .take(7)
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn label_starts_with_the_git_blame_hash_and_uncommitted_has_none() {
+        let (_d, root, mut app) = blamed_project().await;
+        app.test_execute(Command::ToggleBlame);
+        assert!(settle_blame(&mut app).await);
+        for (line, summary) in [(0u16, "First commit"), (1, "Second change")] {
+            go_to_line(&mut app, line as usize);
+            let term = draw(&mut app);
+            let hash = hash_of(&root, summary);
+            assert_eq!(hash, blame_hash_of_line(&root, line as u32 + 1));
+            assert!(
+                row(&app, &term, line).contains(&format!("   {hash} ")),
+                "{}",
+                row(&app, &term, line)
+            );
+            let (rect, id) = hash_hit(&app).expect("hash hit");
+            assert_eq!((rect.width, rect.y), (7, app.hits.groups[0].text.y + line));
+            assert!(id.starts_with(&hash) && id.len() == 40);
+        }
+        app.type_text("!");
+        app.press(
+            K::Char('s'),
+            if cfg!(target_os = "macos") {
+                M::SUPER
+            } else {
+                M::CONTROL
+            },
+        );
+        assert!(app.settle(|a| !a.active_buffer().unwrap().is_dirty()).await);
+        assert!(settle_blame(&mut app).await);
+        let term = draw(&mut app);
+        assert!(row(&app, &term, 1).ends_with("   Uncommitted changes"));
+        assert!(hash_hit(&app).is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn clicking_the_hash_opens_one_commit_tab_and_keeps_the_cursor() {
+        let (_d, _root, mut app) = blamed_project().await;
+        app.test_execute(Command::ToggleBlame);
+        assert!(settle_blame(&mut app).await);
+        go_to_line(&mut app, 1);
+        let before = primary(&mut app);
+        draw(&mut app);
+        let (rect, id) = hash_hit(&app).unwrap();
+        click(&mut app, rect.x + 2, rect.y);
+        assert!(
+            app.settle(|a| a.active_commit().is_some_and(|c| c.commit == id && c.show.is_some()))
+                .await
+        );
+        assert_eq!(commit_buffers(&app), 1);
+
+        // Back on the file: the cursor is where it was; the same hash focuses the same tab.
+        app.test_execute(Command::PrevTab);
+        assert!(app.active_commit().is_none());
+        assert_eq!(primary(&mut app), before);
+        draw(&mut app);
+        let (rect, _) = hash_hit(&app).unwrap();
+        // Press only: the commit is already loaded, so a click falling through to the editor
+        // would start a text drag in it (the next drag would select).
+        app.mouse(MouseEventKind::Down(MouseButton::Left), rect.x, rect.y);
+        assert!(
+            app.settle(|a| a.active_commit().is_some_and(|c| c.commit == id && c.show.is_some()))
+                .await
+        );
+        assert_eq!(commit_buffers(&app), 1);
+        // ... and it placed no cursor in the commit text (it started at the top, 0).
+        assert_eq!(primary(&mut app), 0, "the hash press moved the commit tab's cursor");
+        draw(&mut app);
+        let t = app.hits.groups[0].text;
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), t.x + 6, t.y + 3);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), t.x + 6, t.y + 3);
+        let sel = app.active_mut().unwrap().1.selections.primary();
+        assert_eq!(sel.anchor, sel.head, "no drag started by the hash press");
+
+        // Elsewhere on the label places the cursor as before.
+        app.test_execute(Command::PrevTab);
+        draw(&mut app);
+        let (rect, _) = hash_hit(&app).unwrap();
+        click(&mut app, rect.x + 9, rect.y);
+        assert!(app.active_commit().is_none());
+        assert_eq!(commit_buffers(&app), 1);
+        assert_ne!(primary(&mut app), before);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn modified_and_dragged_clicks_on_the_hash_do_not_open_it() {
+        let (_d, _root, mut app) = blamed_project().await;
+        app.test_execute(Command::ToggleBlame);
+        assert!(settle_blame(&mut app).await);
+        go_to_line(&mut app, 1);
+        draw(&mut app);
+        let (rect, _) = hash_hit(&app).unwrap();
+        for m in [M::SHIFT, M::ALT, M::CONTROL, M::SUPER] {
+            app.mouse_with(MouseEventKind::Down(MouseButton::Left), rect.x + 2, rect.y, m);
+            app.mouse_with(MouseEventKind::Up(MouseButton::Left), rect.x + 2, rect.y, m);
+            assert_eq!(commit_buffers(&app), 0, "{m:?}");
+        }
+        // The hash is not text you can select: the default pointer there, the I-beam beside it.
+        app.mouse(MouseEventKind::Moved, rect.x + 2, rect.y);
+        assert_eq!(app.pointer, crate::terminal::Pointer::Default);
+        app.mouse(MouseEventKind::Moved, rect.x + 9, rect.y);
+        assert_eq!(app.pointer, crate::terminal::Pointer::Text);
+        // Right click and a press-drag-release starting on the hash.
+        app.mouse(MouseEventKind::Down(MouseButton::Right), rect.x + 2, rect.y);
+        app.mouse(MouseEventKind::Up(MouseButton::Right), rect.x + 2, rect.y);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), rect.x + 2, rect.y);
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), rect.x + 12, rect.y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), rect.x + 12, rect.y);
+        assert_eq!(commit_buffers(&app), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_git_history_row_of_the_same_commit_focuses_the_blame_opened_tab() {
+        let (_d, root, mut app) = blamed_project().await;
+        app.test_execute(Command::ToggleBlame);
+        assert!(settle_blame(&mut app).await);
+        go_to_line(&mut app, 1);
+        draw(&mut app);
+        let (rect, id) = hash_hit(&app).unwrap();
+        click(&mut app, rect.x + 1, rect.y);
+        assert!(app.settle(|a| a.active_commit().is_some_and(|c| c.commit == id)).await);
+        app.test_execute(Command::PrevTab);
+        let path = root.join("a.txt");
+        assert!(
+            app.settle(|a| {
+                !a.git.running()
+                    && a.git_history.path.as_deref() == Some(path.as_path())
+                    && !a.git_history.loading
+                    && a.git_history.commits.iter().any(|c| c.id == id)
+            })
+            .await
+        );
+        let row = app.git_history.commits.iter().position(|c| c.id == id).unwrap() as u16;
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 40)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let hit = app.hits.history.expect("history drawn");
+        click(&mut app, hit.list.x + 2, hit.list.y + row);
+        assert!(app.active_commit().is_some_and(|c| c.commit == id));
+        assert_eq!(commit_buffers(&app), 1);
+        // a.txt and the one commit tab: the row focused it, it did not open another.
+        assert_eq!(app.groups.get(app.groups.active).unwrap().tabs.len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_narrow_editor_keeps_the_hash_and_none_fits_below_min_width() {
+        let (_d, root, mut app) = blamed_project().await;
+        app.test_execute(Command::ToggleBlame);
+        assert!(settle_blame(&mut app).await);
+        let hash = hash_of(&root, "Second change");
+        // 17 cells of room: the hash kept, the rest cut.
+        go_to_line(&mut app, 2);
+        let term = draw(&mut app);
+        assert!(row(&app, &term, 2).contains(&format!("{hash} Bob")));
+        assert_eq!(hash_hit(&app).unwrap().0.width, 7);
+        // Exactly HASH_LEN cells (no room for hash plus "…"): cut plainly, no panic.
+        assert_eq!(
+            crate::blame::fit_keeping("7f3a2c1 Bob", 7, 7).as_deref(),
+            Some("7f3a2c…")
+        );
+        // Below MIN_WIDTH: nothing drawn and no hit.
+        go_to_line(&mut app, 6);
+        draw(&mut app);
+        assert!(hash_hit(&app).is_none());
     }
 }

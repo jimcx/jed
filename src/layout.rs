@@ -659,6 +659,8 @@ pub struct GroupHit {
     pub banner: Option<BannerHit>,
     /// The merge conflicts' action-row buttons drawn in the editor.
     pub merge_buttons: Vec<MergeButtonHit>,
+    /// The inline blame's hash drawn in the editor, with the full commit id a click opens.
+    pub blame_hash: Option<(Rect, String)>,
     /// The diff view, when the group shows a diff tab.
     pub diff: Option<DiffHit>,
     /// The changed lines' marks column, left of the scroll bar (a text tab's `quick_diff`, a
@@ -1127,6 +1129,7 @@ mod tests {
                 }),
                 diff: None,
                 merge_buttons: Vec::new(),
+                blame_hash: None,
                 marks: None,
                 // Its scroll bar at the right edge.
                 scrollbar: Some(ScrollBarHit {

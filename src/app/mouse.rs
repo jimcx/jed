@@ -234,7 +234,9 @@ impl App {
             return false;
         };
         if group.active_tab().is_some() {
-            return hit.text.contains(p) && !hit.merge_buttons.iter().any(|(r, _, _)| r.contains(p));
+            return hit.text.contains(p)
+                && !hit.merge_buttons.iter().any(|(r, _, _)| r.contains(p))
+                && !hit.blame_hash.as_ref().is_some_and(|(r, _)| r.contains(p));
         }
         match (&hit.diff, group.active_diff()) {
             (Some(d), Some(_)) => {
@@ -746,6 +748,7 @@ impl App {
             Hit::Editor(g) if is_terminal_group(g) => self.focus_group(g),
             Hit::Editor(_) if m.modifiers.is_empty() && self.bulb_click(&m) => {}
             Hit::Editor(g) if m.modifiers.is_empty() && self.merge_click(g, &m) => {}
+            Hit::Editor(g) if m.modifiers.is_empty() && self.blame_hash_click(g, &m) => {}
             Hit::Editor(_) if m.modifiers.is_empty() && self.gutter_click(&m) => {}
             Hit::Editor(g) => {
                 self.focus_group(g);
@@ -777,6 +780,24 @@ impl App {
             | Hit::QuickDiff
             | Hit::Nothing => {}
         }
+    }
+
+    /// A click on the inline blame's commit hash opens that commit (as a Git History row does)
+    /// without touching the cursor or selection. True when the click was on the hash.
+    fn blame_hash_click(&mut self, group: crate::layout::GroupId, m: &MouseEvent) -> bool {
+        let at = ratatui::layout::Position { x: m.column, y: m.row };
+        let Some(id) = self
+            .hits
+            .group(group)
+            .and_then(|g| g.blame_hash.as_ref())
+            .filter(|(rect, _)| rect.contains(at))
+            .map(|(_, id)| id.clone())
+        else {
+            return false;
+        };
+        self.focus_group(group);
+        self.open_commit(&id, None);
+        true
     }
 
     /// A click on a merge conflict's action row: Accept Current / Incoming / Both applies that

@@ -1,8 +1,8 @@
 ---
 id: blame_hash
 name: Commit hash in inline blame
-summary: a short commit hash in the inline blame label that opens the commit view when clicked
-status: open
+summary: inline blame starts with the commit's short hash; clicking it opens the commit tab
+status: done
 priority: 0
 dependencies: [git_blame]
 ---
@@ -14,3 +14,8 @@ The inline blame annotation ("Ann Smith, 3 days ago • Fix crash") gains the co
   - Click: `ui::editor` records the hash's cells in the `HitMap` when it draws the label; a left click there (not a drag, no modifier) calls `open_commit(id, None)` — the same view, tab reuse (`find_commit_buffer`) and loading as a Git History row — and doesn't move the cursor or selection. Hovering the hash gives the hand / underline treatment other clickable text uses, if jed has one. Single file mode and a repo-less buffer have no blame, so nothing changes there.
   - Done when: with inline blame on, a committed line's label starts with its 7-character hash; the hash is the same commit as `git blame` shows for that line; an uncommitted line shows no hash; clicking the hash opens the commit tab for that commit (clicking the same hash again, or the same commit in the Git History section, focuses the existing tab rather than opening a second); clicking elsewhere on the label or the line places the cursor as before; a narrow editor keeps the hash while the rest is cut, and shows nothing below `MIN_WIDTH`. Update the `blame.rs` entry in `docs/dev/modules.md` and the mouse notes in `docs/dev/app.md`. Tests: unit-test `label` / `fit` with a hash, and drive the click headlessly in a temp repo (`mouse`, `settle`, `TestBackend` drawing), asserting the commit tab opened.
   - Deferred: a hover card with the full message, author and date, "Copy Commit Hash" in a context menu (see `file_info`), blame in the gutter
+
+  - ✅ Done. Changed: `blame::label` prefixes `id[..7]` (`HASH_LEN`, `short_id`); `fit_keeping(label, keep, width)` (`fit` = keep 0); `git.blame.hash` theme key; the hash's cells + full id are `GroupHit::blame_hash` (no `Hit::BlameHash` variant: handled like `merge_buttons`, `blame_hash_click` in `app/mouse.rs` before `gutter_click`; `editor_text_at` excludes it so a drag from the hash starts no selection).
+  - Also: a flaky `tasks::tests::output_events_are_throttled` (already had FLAKE debugging) failed again under load; its bare assertion now dumps the screen tail.
+  - Deferred: a hand pointer on hover (jed has none: the hash shows the arrow); the hover card, "Copy Commit Hash", blame in the gutter. At widths 6–7 the cut falls inside the hash.
+  - Still to check by hand: with inline blame on in a real terminal, the dim hash colour and clicking it opening the commit tab.

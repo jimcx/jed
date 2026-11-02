@@ -210,6 +210,8 @@ impl Theme {
             // Inline blame after the cursor line (VS Code's `git.blame.editorDecorationForeground`,
             // Dark+'s `editorCodeLens.foreground`).
             ("git.blame.editorDecorationForeground", Style::new().fg(c(0x999999))),
+            // The commit hash that starts the label (over the label's colour).
+            ("git.blame.hash", Style::new().fg(c(0x6e6e6e))),
             // The editors' scroll bar thumb (its track is the editor's background): Dark+'s
             // translucent sliders blended over the editor — #79797966, hover #646464B3, while
             // dragged #BFBFBF66.

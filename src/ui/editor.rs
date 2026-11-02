@@ -176,7 +176,7 @@ pub fn render(
     theme: &Theme,
     s: &Settings,
     overlay: Overlay,
-) -> (Rect, Vec<MergeButtonHit>) {
+) -> (Rect, Vec<MergeButtonHit>, Option<(Rect, String)>) {
     let focused = overlay.focused;
     let s = &s.for_buffer(buf);
     let tab = s.tab_width;
@@ -259,10 +259,16 @@ pub fn render(
                 return None;
             }
             let line = buf.blame.line(rope, cursor_line)?;
-            Some(blame::label(line, crate::history::now_ms()))
+            let id = match line {
+                blame::Line::Committed(c) => Some(c.id),
+                blame::Line::Uncommitted => None,
+            };
+            Some((blame::label(line, crate::history::now_ms()), id))
         })
         .flatten();
     let blame_style = theme.get("git.blame.editorDecorationForeground");
+    let hash_style = blame_style.patch(theme.get("git.blame.hash"));
+    let mut blame_hash: Option<(Rect, String)> = None;
     let last_line = (view.top_line() + view.height).min(total - 1);
     // Only the data on screen: there may be tens of thousands of selections and matches. While
     // wrapping, a line can extend past the view, so the range is the first drawn row's start to
@@ -713,15 +719,25 @@ pub fn render(
             // room is left or the label's start is scrolled off to the left.
             if line == cursor_line
                 && !marker_here
-                && let Some(label) = &blame
+                && let Some((label, id)) = &blame
                 && col < left + view.width
             {
                 let start = col + blame::GAP;
+                let keep = if id.is_some() { blame::HASH_LEN } else { 0 };
                 if start >= left
-                    && let Some(shown) = blame::fit(label, (left + view.width).saturating_sub(start))
+                    && let Some(shown) = blame::fit_keeping(label, keep, (left + view.width).saturating_sub(start))
                 {
                     let x = text.x + (start - left) as u16;
                     out.set_stringn(x, y, &shown, (right - x) as usize, row_style.patch(blame_style));
+                    if let Some(id) = id {
+                        // The hash's cells (less a cut's "…"): dimmer, and a click opens the commit.
+                        let cells = shown.chars().take(keep).filter(|&c| c != '…').count();
+                        let cells = cells.min((right - x) as usize) as u16;
+                        for dx in 0..cells {
+                            out[(x + dx, y)].set_style(row_style.patch(hash_style));
+                        }
+                        blame_hash = Some((Rect::new(x, y, cells, 1), id.to_string()));
+                    }
                 }
             }
         }
@@ -752,7 +768,7 @@ pub fn render(
     if let Some((x, y)) = cursor_cell {
         f.set_cursor_position(Position { x, y });
     }
-    (text, merge_buttons)
+    (text, merge_buttons, blame_hash)
 }
 
 #[cfg(test)]

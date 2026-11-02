@@ -714,6 +714,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - ✅ **Basic file information** (`file_info`): a path tooltip on hovered tabs, and a minimal, extensible right-click context menu (copy relative / full path, open in the file manager, file history) on tabs and the editor — [tasks/file_info.md](tasks/file_info.md)
 - ✅ **CI** (`ci`): CI on GitHub Actions (Linux and macOS): fmt, clippy, build, test, and release tarballs — [tasks/ci.md](tasks/ci.md)
 - ✅ **Clear terminal scrollback** (`clear_scrollback`): clear a shell / task tab's scrollback and screen, back to the last shell prompt mark when the integration is installed — [tasks/clear_scrollback.md](tasks/clear_scrollback.md)
+- ✅ **Commit hash in inline blame** (`blame_hash`): inline blame starts with the commit's short hash; clicking it opens the commit tab — [tasks/blame_hash.md](tasks/blame_hash.md)
 - ✅ **Compare any two files or buffers** (`compare_files`): compare any two files or buffers (dirty or untitled) in a diff tab and move hunks between the sides; both sides can be edited by hand — [tasks/compare_files.md](tasks/compare_files.md)
 - ✅ **Conf / config / INI files** (`conf_files`): `.conf`, `.config`, `.ini` and `.cfg` files open with syntax colours and Cmd+/ comment toggling — [tasks/conf_files.md](tasks/conf_files.md)
 - ✅ **Cursor style setting** (`cursor_style`): `cursor_style` and `cursor_blinking` settings for the terminal cursor — [tasks/cursor_style.md](tasks/cursor_style.md)

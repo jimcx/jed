@@ -521,7 +521,21 @@ mod tests {
         let started = Instant::now();
         wait_until("exit", || !run.status().is_running()).await;
         let elapsed = started.elapsed();
-        assert!(run.screen().screen().contents().ends_with("line 1999"));
+        let contents = run.screen().screen().contents();
+        assert!(
+            contents.ends_with("line 1999"),
+            "FLAKE output_events_are_throttled: screen does not end with `line 1999` after {elapsed:?}; status {:?}, \
+             screen tail {:?}",
+            run.status(),
+            contents
+                .chars()
+                .rev()
+                .take(80)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>()
+        );
         let outputs = events
             .lock()
             .unwrap()

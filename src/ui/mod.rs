@@ -302,6 +302,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let mut scroll_hit = None;
         let mut marks_hit = None;
         let mut merge_buttons = Vec::new();
+        let mut blame_hash = None;
         // Only the focused group shows the terminal cursor.
         let focused = is_active
             && app.ui.focus == if terminal { Focus::Terminal } else { Focus::Editor }
@@ -423,10 +424,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     blame: app.blame.on,
                     wrapping,
                 };
-                let (drawn, buttons) =
+                let (drawn, buttons, hash) =
                     editor::render(f, editor_area, buf, &mut tab.view, &app.theme, &app.settings, overlay);
                 text = drawn;
                 merge_buttons = buttons;
+                blame_hash = hash;
                 if let Some((g, line)) = bulb
                     && g == id
                     && text.x >= editor_area.x + 2
@@ -559,6 +561,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             tab_arrows: tabs.arrows,
             banner,
             merge_buttons,
+            blame_hash,
             diff: diff_hit,
             marks: marks_hit,
             scrollbar: scroll_hit,

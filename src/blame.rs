@@ -278,35 +278,51 @@ fn map_hunks(hunks: &mut [Hunk], end: ByteIdx, changes: &ChangeSet) -> ByteIdx {
     mapper.map(end, Assoc::Before)
 }
 
-/// The label drawn after the line: `Ann Smith, 3 days ago • Fix crash` (`You` for the
-/// repository's user), or `Uncommitted changes` (no time: unsaved edits have none).
+/// Characters of the commit id the label starts with.
+pub const HASH_LEN: usize = 7;
+
+/// The label drawn after the line: `7f3a2c1 Ann Smith, 3 days ago • Fix crash` (`You` for the
+/// repository's user), or `Uncommitted changes` (no hash, no time: unsaved edits have none).
 pub fn label(line: Line, now_ms: u64) -> String {
     match line {
         Line::Uncommitted => "Uncommitted changes".into(),
         Line::Committed(c) => {
             let who = if c.you { "You" } else { &c.author };
             let when = crate::history::ago(c.time.max(0) as u64 * 1000, now_ms);
+            let hash = short_id(&c.id);
             if c.summary.is_empty() {
-                format!("{who}, {when}")
+                format!("{hash} {who}, {when}")
             } else {
-                format!("{who}, {when} • {}", c.summary)
+                format!("{hash} {who}, {when} • {}", c.summary)
             }
         }
     }
 }
 
+/// The id's first `HASH_LEN` characters.
+pub fn short_id(id: &Oid) -> String {
+    id.to_string().chars().take(HASH_LEN).collect()
+}
+
 /// `label` in at most `width` cells: whole, or cut with "…"; `None` below `MIN_WIDTH`.
 pub fn fit(label: &str, width: usize) -> Option<String> {
+    fit_keeping(label, 0, width)
+}
+
+/// `fit` for a label starting with a hash of `keep` characters: a cut spares the hash while
+/// the width has room for it plus the "…".
+pub fn fit_keeping(label: &str, keep: usize, width: usize) -> Option<String> {
     if width < MIN_WIDTH {
         return None;
     }
+    let keep = if width > keep { keep } else { 0 };
     let mut out = String::new();
     let mut used = 0;
     for c in label.chars() {
         let w = c.width().unwrap_or(0);
         if used + w > width {
             // Back off to leave a cell for "…".
-            while used + 1 > width {
+            while used + 1 > width && out.chars().count() > keep {
                 let Some(last) = out.pop() else { break };
                 used -= last.width().unwrap_or(0);
             }
@@ -635,7 +651,7 @@ mod tests {
     #[test]
     fn labels_and_cutting() {
         let mut c = Commit {
-            id: Oid::ZERO_SHA1,
+            id: Oid::from_str("7f3a2c1d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a49").unwrap(),
             author: "Ann Smith".into(),
             you: false,
             time: 1_000_000,
@@ -644,19 +660,19 @@ mod tests {
         let now = (1_000_000 + 3 * 86_400) * 1000;
         assert_eq!(
             label(Line::Committed(&c), now),
-            "Ann Smith, 3 days ago • Fix crash opening a file"
+            "7f3a2c1 Ann Smith, 3 days ago • Fix crash opening a file"
         );
         c.you = true;
         assert_eq!(
             label(Line::Committed(&c), now),
-            "You, 3 days ago • Fix crash opening a file"
+            "7f3a2c1 You, 3 days ago • Fix crash opening a file"
         );
         assert_eq!(
             label(Line::Committed(&c), (1_000_000 + 120) * 1000),
-            "You, 2 min ago • Fix crash opening a file"
+            "7f3a2c1 You, 2 min ago • Fix crash opening a file"
         );
         c.summary.clear();
-        assert_eq!(label(Line::Committed(&c), now), "You, 3 days ago");
+        assert_eq!(label(Line::Committed(&c), now), "7f3a2c1 You, 3 days ago");
         assert_eq!(label(Line::Uncommitted, now), "Uncommitted changes");
 
         assert_eq!(fit("Uncommitted changes", 40).as_deref(), Some("Uncommitted changes"));
@@ -664,6 +680,13 @@ mod tests {
         assert_eq!(fit("Uncommitted changes", 18).as_deref(), Some("Uncommitted chang…"));
         assert_eq!(fit("Uncommitted changes", 6).as_deref(), Some("Uncom…"));
         assert_eq!(fit("Uncommitted changes", 5), None);
+        // A cut spares the hash while it fits with the "…".
+        let l = label(Line::Committed(&c), now);
+        assert_eq!(fit_keeping(&l, HASH_LEN, 8).as_deref(), Some("7f3a2c1…"));
+        assert_eq!(fit_keeping(&l, HASH_LEN, 12).as_deref(), Some("7f3a2c1 You…"));
+        assert_eq!(fit_keeping(&l, HASH_LEN, 6).as_deref(), Some("7f3a2…"));
+        assert_eq!(fit_keeping(&l, HASH_LEN, 5), None);
+        assert_eq!(fit_keeping(&l, HASH_LEN, 200).as_deref(), Some(l.as_str()));
         // Wide chars never overflow.
         let cut = fit("日本語のコミット", 7).unwrap();
         assert_eq!(cut, "日本語…");
