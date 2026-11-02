@@ -49,9 +49,31 @@ pub fn strip_position(arg: &str) -> Option<(&str, (usize, usize))> {
     }
 }
 
+/// A terminal word read as a file link: `src/a.rs:12:5` → (`src/a.rs`, Some((12, 5))). Trailing
+/// `:` / `.` (a sentence's or a compiler's punctuation) are dropped. `None` unless it looks like
+/// a path (has a `/` or a `.`), so a plain word or a time like `10:30` isn't one.
+pub fn terminal_link(word: &str) -> Option<(&str, Option<(usize, usize)>)> {
+    let word = word.trim_end_matches([':', '.']);
+    let (path, pos) = match strip_position(word) {
+        Some((path, pos)) => (path, Some(pos)),
+        None => (word, None),
+    };
+    (path.contains(['/', '.']) && path.chars().any(|c| c.is_ascii_alphanumeric())).then_some((path, pos))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_links() {
+        assert_eq!(terminal_link("src/a.rs:12:5"), Some(("src/a.rs", Some((12, 5)))));
+        assert_eq!(terminal_link("src/a.rs:12:"), Some(("src/a.rs", Some((12, 1)))));
+        assert_eq!(terminal_link("./a.rs."), Some(("./a.rs", None)));
+        assert_eq!(terminal_link("Makefile"), None);
+        assert_eq!(terminal_link("10:30"), None);
+        assert_eq!(terminal_link("..."), None);
+    }
 
     #[test]
     fn positions() {

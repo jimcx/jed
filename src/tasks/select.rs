@@ -252,6 +252,13 @@ pub fn path_run(screen: &Screen, (row, col): (u16, u16)) -> Option<(Cell, Cell)>
     Some(((line, start), (line, end)))
 }
 
+/// The text of the `path_run` around viewport cell `(row, col)`: what a Cmd/Ctrl+click on a
+/// terminal reads as a `path[:line[:col]]` link. Only this one row's cells are read.
+pub fn path_text(screen: &Screen, at: (u16, u16)) -> Option<String> {
+    let ((_, start), (_, end)) = path_run(screen, at)?;
+    Some(screen.contents_between(at.0, start, at.0, end))
+}
+
 /// The first row to draw of a `screen` shown in `height` rows: 0 when it fits, else as low as
 /// keeps its last non-blank row and the cursor in view.
 pub fn top_row(screen: &Screen, height: u16) -> u16 {

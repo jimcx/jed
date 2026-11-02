@@ -46,7 +46,7 @@ pub(super) fn wheel_columns(m: &MouseEvent) -> Option<isize> {
 /// The screen cell `(row, col)` the pointer at `(x, y)` is over in `area`, in the visible-viewport
 /// cells `vt100::Screen::cell` uses: the pointer clamped into `area`, shifted by the row a taller
 /// screen is drawn from (`select::top_row`), then clamped into the screen.
-fn screen_cell(screen: &vt100::Screen, area: Rect, x: u16, y: u16) -> (u16, u16) {
+pub(super) fn screen_cell(screen: &vt100::Screen, area: Rect, x: u16, y: u16) -> (u16, u16) {
     let top = select::top_row(screen, area.height);
     let (rows, cols) = select::size(screen);
     let col = x.saturating_sub(area.x).min(area.width.saturating_sub(1));
@@ -249,7 +249,7 @@ impl App {
 
     /// The run a mouse event over a shell or task tab goes to, and the screen area its cells are
     /// in: `Hit::Editor(g)` with a shell tab active there, or `Hit::Panel` showing a task run.
-    fn terminal_run(&self, hit: Hit) -> Option<(&Run, Rect)> {
+    pub(super) fn terminal_run(&self, hit: Hit) -> Option<(&Run, Rect)> {
         match hit {
             Hit::Editor(g) => Some((&self.any_group(g)?.active_shell()?.run, self.hits.group(g)?.editor)),
             Hit::Panel => match self.ui.panel_tab {
@@ -489,6 +489,9 @@ impl App {
             return;
         }
         if self.diff_mouse(&m, hit) || self.hex_mouse(&m, hit) || self.markdown_mouse(&m, hit) {
+            return;
+        }
+        if self.drag.is_none() && self.terminal_link_click(hit, m) {
             return;
         }
         if self.terminal_mouse(hit, m) {

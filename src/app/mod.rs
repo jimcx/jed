@@ -48,6 +48,7 @@ mod syntax;
 mod tab_drag;
 pub(crate) mod tab_tip;
 mod tasks;
+mod term_link;
 mod term_search;
 mod tools;
 mod workspace_search;
@@ -212,6 +213,15 @@ enum AppEvent {
         history: bool,
         /// A Save As: the path the buffer takes when it succeeds.
         to: Option<PathBuf>,
+    },
+    /// A Cmd/Ctrl+clicked terminal link resolved off-thread (`app::term_link`): the one file it
+    /// names, or `None` and the text for quick open.
+    TerminalLink {
+        found: Option<PathBuf>,
+        goto: Option<files::Goto>,
+        query: String,
+        /// The editor group the clicked shell is in.
+        from: Option<crate::layout::GroupId>,
     },
     Opened {
         path: PathBuf,
@@ -1768,6 +1778,12 @@ impl App {
                 self.save_done(buffer, state, result, elapsed, to)
             }
             AppEvent::Opened { path, result } => self.opened(path, result),
+            AppEvent::TerminalLink {
+                found,
+                goto,
+                query,
+                from,
+            } => self.terminal_link_resolved(found, goto, query, from),
             AppEvent::SemanticDecoded {
                 buffer,
                 server,

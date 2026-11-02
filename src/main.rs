@@ -142,6 +142,8 @@ mod tasks;
 #[cfg(test)]
 mod term_area_tests;
 #[cfg(test)]
+mod term_link_tests;
+#[cfg(test)]
 mod term_search_tests;
 #[cfg(test)]
 mod term_select_tests;
