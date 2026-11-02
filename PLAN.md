@@ -680,6 +680,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Change End of Line Sequence** (`change_eol`): change a buffer's line endings to LF or CRLF — [tasks/change_eol.md](tasks/change_eol.md)
 - **Claude Code IDE integration** (`claude_ide`): let `claude` running in a jed terminal auto-connect to jed and share the editor's context, by implementing Claude Code's editor-agnostic IDE protocol on jed's side — no upstream change — [tasks/claude_ide.md](tasks/claude_ide.md)
 - **Close tabs and go to the Nth tab** (`close_tabs_nth`): close all / others / saved tabs, and go to the Nth tab in a group — [tasks/close_tabs_nth.md](tasks/close_tabs_nth.md)
+- **Code review follow-ups** (`review_followups`): the 2026-11 code review's performance, reuse and structure fixes — no redraw on idle mouse moves, long unwrapped lines drawn from the left edge, a cached explorer tree, one list-scroll model, AppEvent nested by area — [tasks/review_followups.md](tasks/review_followups.md)
 - **Commit hash in inline blame** (`blame_hash`): a short commit hash in the inline blame label that opens the commit view when clicked — [tasks/blame_hash.md](tasks/blame_hash.md)
 - **Expand / shrink selection** (`expand_shrink_selection`): grow / shrink each selection to enclosing syntax nodes — [tasks/expand_shrink_selection.md](tasks/expand_shrink_selection.md)
 - **Feature-based end-to-end test files** (`feature_test_files`): reorganize milestone test files into per-feature files — [tasks/feature_test_files.md](tasks/feature_test_files.md)
