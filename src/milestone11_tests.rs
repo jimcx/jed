@@ -16,7 +16,7 @@
 //! it); watcher events under `.jed/` never reach the app's file system handling (no listings,
 //! git refreshes or disk checks from history writes).
 //!
-//! 11b, Show / Compare / Restore: "File History: Show" from the palette lists the active file's
+//! 11b, Show / Compare / Restore: "File History: Compare" (then "Show", now the Explorer section) from the palette lists the active file's
 //! entries newest first ("just now · 8 B"), Enter opens a diff tab of the entry against the
 //! buffer (drawn, titled with the entry's age); "File History: Restore" on that tab, or its own
 //! picker, replaces the buffer's text by the entry's (decoded as loading does: BOM dropped, CRLF
@@ -371,7 +371,7 @@ fn run_command(app: &mut App, title: &str) {
     app.press(K::Enter, M::NONE);
 }
 
-/// Runs "File History: Show" / "Restore" and waits for its picker; returns its row labels.
+/// Runs "File History: Compare" / "Restore" and waits for its picker; returns its row labels.
 async fn open_history(app: &mut App, title: &str) -> Vec<String> {
     run_command(app, title);
     assert!(
@@ -428,7 +428,7 @@ async fn milestone_11_show_lists_the_entries_and_compares_one_in_a_diff_tab() {
     two_entries(&mut app, &root).await;
     app.type_text("!"); // unsaved: the diff shows the buffer, not the file
 
-    let rows = open_history(&mut app, "File History: Show").await;
+    let rows = open_history(&mut app, "File History: Compare").await;
     assert_eq!(rows, ["just now · 14 B", "just now · 8 B"], "newest first");
     let p = app.palette.as_ref().unwrap();
     assert!(p.rows[0].detail.ends_with(" UTC"), "{}", p.rows[0].detail);
@@ -458,16 +458,16 @@ async fn milestone_11_show_lists_the_entries_and_compares_one_in_a_diff_tab() {
     assert!(screen.contains("three!"), "the buffer's side");
 
     // The same entry again: the same tab.
-    open_history(&mut app, "File History: Show").await;
+    open_history(&mut app, "File History: Compare").await;
     app.press(K::Down, M::NONE);
     app.press(K::Enter, M::NONE);
     assert_eq!(app.group().tabs.len(), 2);
     // The newest: another tab.
-    open_history(&mut app, "File History: Show").await;
+    open_history(&mut app, "File History: Compare").await;
     app.press(K::Enter, M::NONE);
     assert_eq!(app.group().tabs.len(), 3);
     // Esc closes the picker without doing anything.
-    open_history(&mut app, "File History: Show").await;
+    open_history(&mut app, "File History: Compare").await;
     app.press(K::Esc, M::NONE);
     assert!(app.palette.is_none() && app.file_history.picker.is_none());
     assert_eq!(app.group().tabs.len(), 3);
@@ -531,7 +531,7 @@ async fn milestone_11_restore_from_the_compare_tab() {
     let (_d, root, state) = dirs();
     let mut app = open_app(&root, &state);
     two_entries(&mut app, &root).await;
-    open_history(&mut app, "File History: Show").await;
+    open_history(&mut app, "File History: Compare").await;
     app.press(K::Down, M::NONE);
     app.press(K::Enter, M::NONE);
     assert!(app.settle(|a| a.diffs_settled()).await);
@@ -588,7 +588,7 @@ async fn milestone_11_restore_refused_for_read_only_buffers_and_binary_entries()
     );
     assert!(app.palette.is_none());
     // Read-only from the compare tab too.
-    open_history(&mut app, "File History: Show").await;
+    open_history(&mut app, "File History: Compare").await;
     app.press(K::Down, M::NONE);
     app.press(K::Enter, M::NONE);
     assert!(app.group().active_diff().is_some());
@@ -630,7 +630,7 @@ async fn milestone_11_no_history_or_outside_the_workspace_says_so() {
     fs::write(root.join("src/a.txt"), "a\n").unwrap();
     let mut app = open_app(&root, &state);
     open(&mut app, &root.join("src/a.txt"));
-    run_command(&mut app, "File History: Show");
+    run_command(&mut app, "File History: Compare");
     assert!(
         app.settle(|a| a
             .message
@@ -647,7 +647,7 @@ async fn milestone_11_no_history_or_outside_the_workspace_says_so() {
     let outside = workspace::normalize(d.path()).join("outside.txt");
     fs::write(&outside, "o\n").unwrap();
     open(&mut app, &outside);
-    run_command(&mut app, "File History: Show");
+    run_command(&mut app, "File History: Compare");
     assert_eq!(
         app.message.as_ref().unwrap().text,
         "outside.txt has no file history: it's outside the workspace"
@@ -992,7 +992,7 @@ async fn milestone_11_right_click_on_a_tab_shows_its_files_history() {
             t.x0 + 1,
             app.hits.groups[0].tab_bar.y,
         );
-        // The menu's "File History: Show" row (after three path items and a separator).
+        // The menu's "File History: Compare" row (after three path items and a separator).
         draw(app);
         let r = app.hits.context_menu.expect("tab menu").rect;
         app.mouse(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y + 4);

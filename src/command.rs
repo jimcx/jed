@@ -267,6 +267,8 @@ pub enum Command {
     Merge(MergeCommand),
     /// The Explorer view's "Git History" section (`Context::GitHistory`).
     GitHistory(GitHistoryCommand),
+    /// The Explorer's "File History" section's keys (`Context::FileHistory`).
+    FileHistory(FileHistoryCommand),
     /// A commit tab (`Context::Commit`): opening a stat row's diff.
     Commit(CommitCommand),
     /// The active file's history entries in the palette; picking one compares it with the
@@ -275,6 +277,8 @@ pub enum Command {
     /// On a history diff tab: its entry replaces the buffer's text (one undo step, not saved).
     /// Elsewhere: the history picker, whose pick is restored.
     RestoreFileHistory,
+    /// "File History: Compare": the active file's entries in the palette, one compared in a diff tab.
+    CompareFileHistory,
     /// "Run Task": a picker of the task templates; picking one runs it in a new panel tab.
     RunTask,
     /// "Tasks: Select Environment": a picker of the environments (or none); the picked one fills
@@ -868,6 +872,39 @@ impl GitHistoryCommand {
     ];
 }
 
+/// The Explorer view's "File History" section (`Context::FileHistory`, while it has the keys):
+/// moving the selection through the active file's entries, comparing or restoring one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FileHistoryCommand {
+    /// The selection: a row up / down, a page, the first / last row.
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    First,
+    Last,
+    /// Enter (or a click): Compare, the entry against the buffer in a diff tab.
+    Open,
+    /// "File History: Restore Entry" (Alt+Enter): the selected entry replaces the buffer's text.
+    Restore,
+    /// Left / Esc: back to the tree; the side panel keeps the keys.
+    FocusTree,
+}
+
+impl FileHistoryCommand {
+    pub const ALL: [FileHistoryCommand; 9] = [
+        FileHistoryCommand::Up,
+        FileHistoryCommand::Down,
+        FileHistoryCommand::PageUp,
+        FileHistoryCommand::PageDown,
+        FileHistoryCommand::First,
+        FileHistoryCommand::Last,
+        FileHistoryCommand::Open,
+        FileHistoryCommand::Restore,
+        FileHistoryCommand::FocusTree,
+    ];
+}
+
 /// A commit tab's keys (`Context::Commit`, which falls back to the editor's movement, copy and
 /// select keys): opening the file's diff at the cursor's stat row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1073,8 +1110,13 @@ impl Command {
         all.extend(ScmCommand::ALL.map(Command::Scm));
         all.extend(MergeCommand::ALL.map(Command::Merge));
         all.extend(GitHistoryCommand::ALL.map(Command::GitHistory));
+        all.extend(FileHistoryCommand::ALL.map(Command::FileHistory));
         all.extend(CommitCommand::ALL.map(Command::Commit));
-        all.extend([Command::ShowFileHistory, Command::RestoreFileHistory]);
+        all.extend([
+            Command::ShowFileHistory,
+            Command::RestoreFileHistory,
+            Command::CompareFileHistory,
+        ]);
         all.extend([
             Command::RunTask,
             Command::SelectEnvironment,
@@ -1381,6 +1423,7 @@ impl Command {
             Command::ApplyChangeToLeft => "diff.applyChangeToLeft".into(),
             Command::ShowFileHistory => "fileHistory.show".into(),
             Command::RestoreFileHistory => "fileHistory.restore".into(),
+            Command::CompareFileHistory => "fileHistory.compare".into(),
             Command::OpenChange => "git.openChange".into(),
             Command::ToggleChanges => "git.toggleChanges".into(),
             Command::StageFile => "git.stageFile".into(),
@@ -1432,6 +1475,20 @@ impl Command {
                     GitHistoryCommand::Last => "last",
                     GitHistoryCommand::Open => "open",
                     GitHistoryCommand::FocusTree => "focusTree",
+                }
+            ),
+            Command::FileHistory(c) => format!(
+                "fileHistory.{}",
+                match c {
+                    FileHistoryCommand::Up => "up",
+                    FileHistoryCommand::Down => "down",
+                    FileHistoryCommand::PageUp => "pageUp",
+                    FileHistoryCommand::PageDown => "pageDown",
+                    FileHistoryCommand::First => "first",
+                    FileHistoryCommand::Last => "last",
+                    FileHistoryCommand::Open => "open",
+                    FileHistoryCommand::Restore => "restoreEntry",
+                    FileHistoryCommand::FocusTree => "focusTree",
                 }
             ),
             Command::Commit(c) => format!(
@@ -1763,6 +1820,7 @@ impl Command {
             Command::ApplyChangeToLeft => "Diff: Apply Change to Left",
             Command::ShowFileHistory => "File History: Show",
             Command::RestoreFileHistory => "File History: Restore",
+            Command::CompareFileHistory => "File History: Compare",
             Command::OpenChange => "Git: Open Changes",
             Command::ToggleChanges => "Git: Toggle Changes / File",
             Command::StageFile => "Git: Stage File",
@@ -1806,6 +1864,17 @@ impl Command {
                 GitHistoryCommand::Last => "Git History: Select Last Commit",
                 GitHistoryCommand::Open => "Git History: Open Commit",
                 GitHistoryCommand::FocusTree => "Git History: Back to the Explorer",
+            },
+            Command::FileHistory(c) => match c {
+                FileHistoryCommand::Up => "File History: Select Previous Entry",
+                FileHistoryCommand::Down => "File History: Select Next Entry",
+                FileHistoryCommand::PageUp => "File History: Select Entry a Page Up",
+                FileHistoryCommand::PageDown => "File History: Select Entry a Page Down",
+                FileHistoryCommand::First => "File History: Select First Entry",
+                FileHistoryCommand::Last => "File History: Select Last Entry",
+                FileHistoryCommand::Open => "File History: Compare Entry",
+                FileHistoryCommand::Restore => "File History: Restore Entry",
+                FileHistoryCommand::FocusTree => "File History: Back to the Explorer",
             },
             Command::Commit(c) => match c {
                 CommitCommand::Open => "Commit: Open the File's Changes",
@@ -2011,6 +2080,7 @@ mod tests {
             Command::Merge(_) => 121,
             Command::ShowFileHistory => 77,
             Command::RestoreFileHistory => 78,
+            Command::CompareFileHistory => 147,
             Command::RunTask => 79,
             Command::SelectEnvironment => 140,
             Command::NewShell => 119,
@@ -2033,6 +2103,7 @@ mod tests {
             Command::RestartServer => 93,
             Command::RebuildSyntaxPlugins => 114,
             Command::GitHistory(_) => 94,
+            Command::FileHistory(_) => 148,
             Command::Commit(_) => 95,
             Command::IndentLines => 96,
             Command::OutdentLines => 97,
@@ -2066,7 +2137,7 @@ mod tests {
             Command::ApplyChangeToLeft => 136,
         }
     }
-    const VARIANTS: u8 = 142;
+    const VARIANTS: u8 = 149;
 
     #[test]
     fn all_lists_every_variant() {
@@ -2089,6 +2160,7 @@ mod tests {
         assert_eq!(count(76), ScmCommand::ALL.len());
         assert_eq!(count(121), MergeCommand::ALL.len());
         assert_eq!(count(94), GitHistoryCommand::ALL.len());
+        assert_eq!(count(148), FileHistoryCommand::ALL.len());
         assert_eq!(count(95), CommitCommand::ALL.len());
         assert_eq!(count(82), TaskCommand::ALL.len());
         assert_eq!(count(120), ShellCommand::ALL.len());

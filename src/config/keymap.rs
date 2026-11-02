@@ -11,9 +11,9 @@ use serde::Deserialize;
 
 use crate::command::{
     CodeActionCommand as Ca, ColumnMotion, Command, CommitCommand as Cc, ContextMenuCommand as Cm,
-    ExplorerCommand as X, FindCommand as F, GitHistoryCommand as G, LocationsCommand as L, MergeCommand as Mg, Motion,
-    PaletteCommand as P, ProblemsCommand as Pr, ScmCommand as Sc, SearchCommand as S, ShellCommand as Sh,
-    SuggestCommand as Sg, TaskCommand as T, TermSearchCommand as Ts, ToolsCommand as Tl,
+    ExplorerCommand as X, FileHistoryCommand as Fh, FindCommand as F, GitHistoryCommand as G, LocationsCommand as L,
+    MergeCommand as Mg, Motion, PaletteCommand as P, ProblemsCommand as Pr, ScmCommand as Sc, SearchCommand as S,
+    ShellCommand as Sh, SuggestCommand as Sg, TaskCommand as T, TermSearchCommand as Ts, ToolsCommand as Tl,
 };
 
 pub const FILE_NAME: &str = "keybindings.toml";
@@ -215,6 +215,7 @@ pub enum Context {
     Tools,
     /// The Explorer view's "Git History" section has the keys; unbound keys do nothing.
     GitHistory,
+    FileHistory,
     /// The editor has the focus and its active tab is a commit; bindings not found here come
     /// from `Editor` (movement, copy, select all).
     Commit,
@@ -236,7 +237,7 @@ pub enum Context {
 }
 
 impl Context {
-    pub(crate) const ALL: [(Context, &'static str); 22] = [
+    pub(crate) const ALL: [(Context, &'static str); 23] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
@@ -253,6 +254,7 @@ impl Context {
         (Context::Scm, "scm"),
         (Context::Tools, "tools"),
         (Context::GitHistory, "gitHistory"),
+        (Context::FileHistory, "fileHistory"),
         (Context::Commit, "commit"),
         (Context::Task, "task"),
         (Context::Hex, "hex"),
@@ -284,6 +286,7 @@ impl Context {
             Context::Scm => "Source Control",
             Context::Tools => "Tools",
             Context::GitHistory => "Git History",
+            Context::FileHistory => "File History",
             Context::Commit => "Commit",
             Context::Task => "Task",
             Context::Hex => "Hex View",
@@ -1098,6 +1101,21 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Esc, none, G::FocusTree),
     ];
 
+    // The Explorer's "File History" section: the same movement keys; Enter compares the entry,
+    // Alt+Enter restores it (no Cmd key, so no terminal setup).
+    let file_history = [
+        (KeyCode::Up, none, Fh::Up),
+        (KeyCode::Down, none, Fh::Down),
+        (KeyCode::PageUp, none, Fh::PageUp),
+        (KeyCode::PageDown, none, Fh::PageDown),
+        (KeyCode::Home, none, Fh::First),
+        (KeyCode::End, none, Fh::Last),
+        (KeyCode::Enter, none, Fh::Open),
+        (KeyCode::Enter, alt, Fh::Restore),
+        (KeyCode::Left, none, Fh::FocusTree),
+        (KeyCode::Esc, none, Fh::FocusTree),
+    ];
+
     // A commit tab: Enter opens the cursor's stat row's diff (falls back to the editor's
     // movement, Home / End, Cmd+C and Cmd+A).
     let commit = [(KeyCode::Enter, none, Command::Commit(Cc::Open))];
@@ -1231,6 +1249,11 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         git_history
             .into_iter()
             .map(|(k, m, c)| bind(k, m, Some(Context::GitHistory), Command::GitHistory(c))),
+    );
+    out.extend(
+        file_history
+            .into_iter()
+            .map(|(k, m, c)| bind(k, m, Some(Context::FileHistory), Command::FileHistory(c))),
     );
     out.extend(commit.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Commit), c)));
     out.extend(task.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Task), c)));

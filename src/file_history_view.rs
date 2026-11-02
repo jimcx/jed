@@ -87,6 +87,10 @@ impl FileHistoryView {
         self.collapsed
     }
 
+    pub fn set_collapsed(&mut self, collapsed: bool) {
+        self.collapsed = collapsed;
+    }
+
     pub fn toggle_collapsed(&mut self) {
         self.collapsed = !self.collapsed;
     }
@@ -100,7 +104,6 @@ impl FileHistoryView {
     }
 
     /// The selected entry's id.
-    #[cfg_attr(not(test), expect(dead_code, reason = "read by Enter / click (history_view-c)"))]
     pub fn selected(&self) -> Option<&str> {
         self.selected.as_deref()
     }
@@ -122,10 +125,6 @@ impl FileHistoryView {
     }
 
     /// Moves the selection by `delta` rows (clamped); nothing selected selects the first row.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "bound by the section's keys (history_view-c)")
-    )]
     pub fn move_selection(&mut self, delta: isize) {
         match self.selected_row() {
             Some(row) => {
@@ -138,18 +137,10 @@ impl FileHistoryView {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "bound by the section's keys (history_view-c)")
-    )]
     pub fn first(&mut self) {
         self.select_row(0);
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "bound by the section's keys (history_view-c)")
-    )]
     pub fn last(&mut self) {
         self.select_row(self.entries.len().saturating_sub(1));
     }

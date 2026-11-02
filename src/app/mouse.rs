@@ -710,6 +710,8 @@ impl App {
                 self.file_history_view.set_focused(true);
                 let top = self.hits.file_history.map_or(0, |h| h.top);
                 self.file_history_view.select_row(top + row as usize);
+                // A single click compares the entry (Enter's too).
+                self.file_history_command(crate::command::FileHistoryCommand::Open);
             }
             Hit::FileHistoryDivider => self.drag = Some(Drag::FileHistoryDivider),
             Hit::HistoryHeader => {

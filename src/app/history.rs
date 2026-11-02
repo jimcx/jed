@@ -9,6 +9,7 @@ use super::{App, AppEvent, Level};
 use crate::buffer::BufferId;
 use crate::buffer::change::ChangeSet;
 use crate::buffer::file::{self, LoadError};
+use crate::command::FileHistoryCommand;
 use crate::diff_view::Pair;
 use crate::history::{self, Entry, Recorded, Snapshot};
 use crate::palette::Picker;
@@ -221,9 +222,9 @@ impl App {
 }
 
 impl App {
-    /// "File History: Show" (`restore` false) / "Restore": lists the active tab's file's entries
-    /// (read off-thread) in the palette; a diff tab's file needn't be open. On a history diff
-    /// tab, Restore restores its entry.
+    /// "File History: Compare" / "Restore" (`restore`): lists the active tab's file's entries (read
+    /// off-thread) in the palette; a diff tab's file needn't be open. On a history diff tab, it
+    /// restores its entry.
     pub(super) fn show_file_history(&mut self, restore: bool) {
         if restore
             && let Some(d) = self.group().active_diff()
@@ -237,6 +238,63 @@ impl App {
         }
         let Some(path) = self.active_path() else { return };
         self.list_history(path, restore);
+    }
+
+    /// "File History: Show": the Explorer with the File History section expanded and holding the
+    /// keys (the first entry selected; the reveal waits for the first draw if need be).
+    pub(super) fn focus_file_history(&mut self) {
+        self.focus_side(super::SidePanel::Explorer);
+        self.git_history.set_focused(false);
+        self.file_history_view.set_focused(true);
+        if self.file_history_view.collapsed() {
+            self.file_history_view.toggle_collapsed();
+        }
+        if self.file_history_view.selected().is_none() {
+            self.file_history_view.select_row(0);
+        }
+    }
+
+    /// The section has the keys (the side panel shows the Explorer and the section was clicked
+    /// or focused).
+    pub(super) fn file_history_focused(&self) -> bool {
+        self.ui.focus == super::Focus::SidePanel
+            && self.ui.side_panel == super::SidePanel::Explorer
+            && self.file_history_view.focused()
+    }
+
+    /// `Context::FileHistory`'s commands.
+    pub(super) fn file_history_command(&mut self, cmd: FileHistoryCommand) {
+        use FileHistoryCommand as C;
+        let page = self.file_history_view.height.max(1) as isize;
+        let view = &mut self.file_history_view;
+        match cmd {
+            C::Up => view.move_selection(-1),
+            C::Down => view.move_selection(1),
+            C::PageUp => view.move_selection(-page),
+            C::PageDown => view.move_selection(page),
+            C::First => view.first(),
+            C::Last => view.last(),
+            C::FocusTree => view.set_focused(false),
+            C::Open | C::Restore => {
+                // Nothing selected (the section was just focused): the first entry, as a click.
+                if view.selected().is_none() {
+                    view.select_row(0);
+                }
+                let Some(snapshot) = view
+                    .selected_row()
+                    .and_then(|r| view.entries.get(r))
+                    .map(|e| e.snapshot())
+                else {
+                    return;
+                };
+                let Some(path) = view.path.clone() else { return };
+                if cmd == C::Open {
+                    self.open_diff(path, Pair::history(snapshot));
+                } else if let Some(rel) = history::relative(&self.workspace.root, &path) {
+                    self.restore_history(path, rel, snapshot);
+                }
+            }
+        }
     }
 
     /// "Explorer: Show File History" (also a right-click on a file's row): the selected file's

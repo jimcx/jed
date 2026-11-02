@@ -10384,7 +10384,7 @@ mod file_info_tab_menu {
         } else {
             "Open Containing Folder"
         };
-        for label in ["Copy Relative Path", "Copy Path", reveal, "File History: Show"] {
+        for label in ["Copy Relative Path", "Copy Path", reveal, "File History: Compare"] {
             assert!(all.contains(label), "{label}");
         }
         // The text is untouched.
@@ -10661,7 +10661,7 @@ mod file_info_editor_menu {
         let r = app.hits.context_menu.unwrap().rect;
         assert_eq!((r.x, r.y), at, "opens at the pointer cell");
         let all: String = (r.y..r.bottom()).map(|y| row_text(&term, y)).collect();
-        for label in ["Copy Relative Path", "Copy Path", "File History: Show"] {
+        for label in ["Copy Relative Path", "Copy Path", "File History: Compare"] {
             assert!(all.contains(label), "{label}");
         }
         app.press(K::Esc, M::NONE);

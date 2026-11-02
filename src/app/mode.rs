@@ -38,6 +38,7 @@ impl Mode {
                     | Command::FocusScm
                     | Command::Scm(_)
                     | Command::GitHistory(_)
+                    | Command::FileHistory(_)
                     | Command::ShowTools
                     | Command::Tools(_)
                     | Command::TogglePanel
@@ -62,6 +63,7 @@ impl Mode {
                     | Command::SaveAs
                     | Command::ShowFileHistory
                     | Command::RestoreFileHistory
+                    | Command::CompareFileHistory
                     // Git.
                     | Command::StageHunk
                     | Command::UnstageHunk

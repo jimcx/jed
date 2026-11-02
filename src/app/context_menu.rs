@@ -50,7 +50,7 @@ pub fn menu_for(target: MenuTarget) -> Vec<MenuItem> {
         file_item("Copy Path", Command::CopyPath),
         file_item(reveal, Command::RevealInFinder),
         MenuItem::Separator,
-        file_item("File History: Show", Command::ShowFileHistory),
+        file_item("File History: Compare", Command::CompareFileHistory),
     ]
 }
 
@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(with.len(), 4);
         assert!(with.iter().all(|(_, e)| *e));
         assert_eq!(with[0].0, "Copy Relative Path");
-        assert_eq!(with[3].0, "File History: Show");
+        assert_eq!(with[3].0, "File History: Compare");
         assert!(enabled(false).iter().all(|(_, e)| !*e));
     }
 }

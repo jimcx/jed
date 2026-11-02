@@ -403,6 +403,7 @@ async fn history_view_a_save_re_reads_and_the_selection_stays_on_its_entry() {
     let id = app.file_history_view.entries[0].id.clone();
     assert_eq!(app.file_history_view.selected_row(), Some(0));
     app.ui.focus = crate::app::Focus::Editor;
+    app.group_mut().active = 0; // the click opened the diff tab
     std::thread::sleep(std::time::Duration::from_millis(2));
     app.type_text("yy");
     save(&mut app).await;
@@ -431,4 +432,249 @@ async fn history_view_history_done_invalidates_a_read_in_flight() {
     // A fresh read runs.
     idle(&mut app).await;
     assert_eq!(app.file_history_view.entries.len(), 1);
+}
+
+// ---- history_view-c: keys, Compare, Restore, Show, sessions ----
+
+use crate::command::{Command, FileHistoryCommand};
+
+/// Two saves of a.txt ("xone\n", then "xyyone\n"), the section loaded with two entries.
+async fn two_saves(app: &mut App) {
+    app.type_text("x");
+    save(app).await;
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    app.type_text("yy");
+    save(app).await;
+    assert!(app.settle(|a| a.file_history_view.entries.len() == 2).await);
+}
+
+fn text(app: &App) -> String {
+    app.active_buffer().unwrap().rope.to_string()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_view_show_focuses_and_expands_the_section() {
+    let (_d, mut app) = app();
+    two_saves(&mut app).await;
+    draw(&mut app);
+    let header = app.hits.file_history.unwrap().header;
+    click(&mut app, header);
+    assert!(app.file_history_view.collapsed());
+    // From another side panel, with the section collapsed.
+    app.test_execute(Command::FocusScm);
+    app.test_execute(Command::ShowFileHistory);
+    assert!(app.palette.is_none(), "no picker any more");
+    assert_eq!(app.ui.side_panel, crate::layout::SidePanel::Explorer);
+    assert!(!app.file_history_view.collapsed() && app.file_history_view.focused());
+    assert_eq!(app.context(), crate::config::keymap::Context::FileHistory);
+    assert_eq!(app.file_history_view.selected_row(), Some(0));
+    // Left / Esc give the keys back to the tree.
+    app.press(K::Left, M::NONE);
+    assert_eq!(app.context(), crate::config::keymap::Context::Explorer);
+    app.test_execute(Command::ShowFileHistory);
+    app.press(K::Esc, M::NONE);
+    assert!(!app.file_history_view.focused());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_view_keys_move_the_selection() {
+    let (_d, mut app) = app();
+    let root = app.workspace.root.clone();
+    fs::write(root.join("b.txt"), "b\n").unwrap();
+    for i in 0..9 {
+        let bytes = format!("v{i}\n");
+        history::record(
+            &root,
+            std::path::Path::new("b.txt"),
+            bytes.as_bytes(),
+            &Default::default(),
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    app.test_open(Buffer::open(&root.join("b.txt")).unwrap());
+    assert!(app.settle(|a| a.file_history_view.entries.len() == 9).await);
+    draw(&mut app);
+    app.test_execute(Command::ShowFileHistory);
+    let sel = |a: &App| a.file_history_view.selected_row();
+    assert_eq!(sel(&app), Some(0));
+    app.press(K::Down, M::NONE);
+    app.press(K::Down, M::NONE);
+    app.press(K::Up, M::NONE);
+    assert_eq!(sel(&app), Some(1));
+    app.press(K::PageDown, M::NONE);
+    assert_eq!(sel(&app), Some(5), "a page is the 4 visible rows");
+    app.press(K::End, M::NONE);
+    assert_eq!(sel(&app), Some(8));
+    app.press(K::PageDown, M::NONE);
+    assert_eq!(sel(&app), Some(8), "clamped");
+    app.press(K::PageUp, M::NONE);
+    assert_eq!(sel(&app), Some(4));
+    app.press(K::Home, M::NONE);
+    assert_eq!(sel(&app), Some(0));
+    assert_eq!(app.file_history_view.scroll(), 0);
+    app.press(K::End, M::NONE);
+    draw(&mut app);
+    assert_eq!(app.file_history_view.scroll(), 5, "the selection is revealed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_view_enter_and_a_click_open_the_history_diff() {
+    let (_d, mut app) = app();
+    two_saves(&mut app).await;
+    let older = app.file_history_view.entries[1].snapshot();
+    let newest = app.file_history_view.entries[0].snapshot();
+    draw(&mut app);
+    app.test_execute(Command::ShowFileHistory);
+    app.press(K::Down, M::NONE);
+    app.press(K::Enter, M::NONE);
+    let d = app.group().active_diff().expect("a diff tab");
+    assert_eq!(d.pair.snapshot(), Some(older));
+    // A click on the first row opens its entry.
+    app.group_mut().active = 0;
+    draw(&mut app);
+    let list = app.hits.file_history.unwrap().list;
+    app.mouse(MouseEventKind::Down(MouseButton::Left), list.x + 3, list.y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), list.x + 3, list.y);
+    assert_eq!(app.group().active_diff().unwrap().pair.snapshot(), Some(newest));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_view_restore_entry_is_one_undo_step_and_writes_nothing() {
+    let (_d, mut app) = app();
+    two_saves(&mut app).await;
+    let root = app.workspace.root.clone();
+    let before = text(&app);
+    assert_eq!(before, "xyyone\n");
+    app.test_execute(Command::ShowFileHistory);
+    app.press(K::Down, M::NONE);
+    app.press(K::Enter, M::ALT);
+    assert!(app.settle(|a| a.file_history.restoring == 0).await);
+    assert_eq!(text(&app), "xone\n", "the older entry");
+    assert_eq!(
+        fs::read_to_string(root.join("a.txt")).unwrap(),
+        before,
+        "nothing written"
+    );
+    assert!(app.active_buffer().unwrap().is_dirty());
+    app.ui.focus = crate::app::Focus::Editor;
+    app.press(K::Char('z'), cmd());
+    assert_eq!(text(&app), before, "one undo step");
+    // The palette command restores the selected entry too.
+    app.test_execute(Command::FileHistory(FileHistoryCommand::Restore));
+    assert!(app.settle(|a| a.file_history.restoring == 0).await);
+    assert_eq!(text(&app), "xone\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_view_restore_entry_is_refused_for_a_read_only_buffer() {
+    let (_d, mut app) = app();
+    two_saves(&mut app).await;
+    app.test_execute(Command::ShowFileHistory);
+    app.press(K::Down, M::NONE);
+    app.active_mut().unwrap().0.read_only = Some("test".into());
+    app.press(K::Enter, M::ALT);
+    assert_eq!(app.file_history.restoring, 0);
+    assert_eq!(text(&app), "xyyone\n");
+    assert!(app.message.as_ref().unwrap().text.contains("Read-only"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_view_switching_tabs_switches_the_list() {
+    let (_d, mut app) = app();
+    two_saves(&mut app).await;
+    let root = app.workspace.root.clone();
+    fs::write(root.join("b.txt"), "b\n").unwrap();
+    app.test_open(Buffer::open(&root.join("b.txt")).unwrap());
+    idle(&mut app).await;
+    assert!(app.file_history_view.entries.is_empty());
+    app.group_mut().active = 0;
+    assert!(app.settle(|a| a.file_history_view.entries.len() == 2).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_view_session_keeps_the_collapsed_state_and_height() {
+    let (_d, root, state) = dirs();
+    fs::write(root.join("a.txt"), "one\n").unwrap();
+    let mut app = open_file_app(&root, &state, "a.txt");
+    app.state_dir = Some(state.clone());
+    assert!(app.settle(|a| !a.session.loading()).await);
+    app.file_history_view.set_collapsed(true);
+    app.file_history_view.section_height = 9;
+    app.test_execute(Command::Quit);
+    app.shutdown().await;
+    let session = crate::session::load(&state, &root).unwrap().expect("a session");
+    assert!(session.side.file_history_collapsed);
+    assert_eq!(session.side.file_history_height, 9);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_view_keys_on_an_empty_list_do_nothing() {
+    let (_d, mut app) = app();
+    let root = app.workspace.root.clone();
+    fs::write(root.join("b.txt"), "b\n").unwrap();
+    app.test_open(Buffer::open(&root.join("b.txt")).unwrap());
+    idle(&mut app).await;
+    assert!(app.file_history_view.entries.is_empty());
+    draw(&mut app);
+    let tabs = app.group().tabs.len();
+    app.test_execute(Command::ShowFileHistory);
+    assert_eq!(app.context(), crate::config::keymap::Context::FileHistory);
+    for k in [K::Up, K::Down, K::PageUp, K::PageDown, K::Home, K::End] {
+        app.press(k, M::NONE);
+    }
+    app.press(K::Enter, M::NONE);
+    app.press(K::Enter, M::ALT);
+    idle(&mut app).await;
+    assert_eq!(app.group().tabs.len(), tabs, "Enter opened nothing");
+    assert_eq!(app.file_history.restoring, 0);
+    assert_eq!(text(&app), "b\n");
+    assert_eq!(app.file_history_view.selected_row(), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_view_left_and_esc_do_nothing_special_while_the_tree_has_the_keys() {
+    let (_d, mut app) = app();
+    two_saves(&mut app).await;
+    draw(&mut app);
+    assert_ne!(app.context(), crate::config::keymap::Context::FileHistory);
+    app.press(K::Esc, M::NONE);
+    app.press(K::Left, M::NONE);
+    assert!(!app.file_history_view.focused());
+    assert_eq!(app.file_history_view.entries.len(), 2);
+}
+
+/// Focuses the section without "File History: Show", so no row is selected yet.
+fn focus_without_selecting(app: &mut App) {
+    app.ui.side_visible = true;
+    app.ui.side_panel = crate::layout::SidePanel::Explorer;
+    app.ui.focus = crate::app::Focus::SidePanel;
+    app.file_history_view.set_focused(true);
+    assert!(app.file_history_view.selected().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_view_enter_with_nothing_selected_compares_the_newest_entry() {
+    let (_d, mut app) = app();
+    two_saves(&mut app).await;
+    draw(&mut app);
+    let newest = app.file_history_view.entries[0].snapshot();
+    focus_without_selecting(&mut app);
+    app.press(K::Enter, M::NONE);
+    let d = app.group().active_diff().expect("a diff tab");
+    assert_eq!(d.pair.snapshot(), Some(newest));
+    assert_eq!(app.file_history_view.selected_row(), Some(0));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_view_restore_with_nothing_selected_restores_the_newest_entry() {
+    let (_d, mut app) = app();
+    two_saves(&mut app).await;
+    draw(&mut app);
+    app.type_text("zz");
+    assert_eq!(text(&app), "xyyzzone\n");
+    focus_without_selecting(&mut app);
+    app.press(K::Enter, M::ALT);
+    assert!(app.settle(|a| a.file_history.restoring == 0).await);
+    assert_eq!(text(&app), "xyyone\n");
 }

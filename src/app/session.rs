@@ -273,6 +273,8 @@ impl App {
         self.ui.side_panel = side.view;
         self.git_history.set_collapsed(side.history_collapsed);
         self.git_history.section_height = side.history_height;
+        self.file_history_view.set_collapsed(side.file_history_collapsed);
+        self.file_history_view.section_height = side.file_history_height;
         self.ui.panel_visible = panel.visible;
         self.ui.panel_height = panel.height;
         self.ui.panel_tab = PanelTab::Problems;
@@ -432,6 +434,8 @@ impl App {
                 view: self.ui.side_panel,
                 history_collapsed: self.git_history.collapsed(),
                 history_height: self.git_history.section_height,
+                file_history_collapsed: self.file_history_view.collapsed(),
+                file_history_height: self.file_history_view.section_height,
             },
             panel: PanelState {
                 visible: self.ui.panel_visible,
@@ -549,6 +553,8 @@ mod tests {
                 view: SidePanel::Explorer,
                 history_collapsed: false,
                 history_height: crate::git_history::DEFAULT_SECTION_HEIGHT,
+                file_history_collapsed: false,
+                file_history_height: crate::file_history_view::DEFAULT_SECTION_HEIGHT,
             },
             panel: PanelState {
                 visible: false,

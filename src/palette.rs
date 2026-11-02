@@ -26,7 +26,7 @@ pub enum Picker {
     QuickOpen,
     /// "Set Log Level": a level, or a typed filter.
     LogLevel,
-    /// "File History: Show" / "Restore": an entry of the active file's history (the entries are
+    /// "File History: Compare" / "Restore": an entry of the active file's history (the entries are
     /// the app's: `app.file_history.picker`). Accepting compares, or with `restore` restores.
     History { restore: bool },
     /// "Run Task": a task template (`App::task_templates`); accepting runs it.

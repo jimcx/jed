@@ -65,10 +65,19 @@ pub struct SideState {
     /// Its dragged height in rows (divider, header and commits; older sessions: the default).
     #[serde(default = "default_history_height")]
     pub history_height: u16,
+    /// The "File History" section above it, likewise.
+    #[serde(default)]
+    pub file_history_collapsed: bool,
+    #[serde(default = "default_file_history_height")]
+    pub file_history_height: u16,
 }
 
 fn default_history_height() -> u16 {
     crate::git_history::DEFAULT_SECTION_HEIGHT
+}
+
+fn default_file_history_height() -> u16 {
+    crate::file_history_view::DEFAULT_SECTION_HEIGHT
 }
 
 /// The bottom panel (it always comes back on Problems).
@@ -500,6 +509,8 @@ mod tests {
                 view: SidePanel::Search,
                 history_collapsed: false,
                 history_height: 12,
+                file_history_collapsed: false,
+                file_history_height: 6,
             },
             panel: PanelState {
                 visible: true,
@@ -654,6 +665,11 @@ mod tests {
         let side: SideState = serde_json::from_str(r#"{"visible":true,"width":30,"view":"explorer"}"#).unwrap();
         assert!(!side.history_collapsed);
         assert_eq!(side.history_height, crate::git_history::DEFAULT_SECTION_HEIGHT);
+        assert!(!side.file_history_collapsed);
+        assert_eq!(
+            side.file_history_height,
+            crate::file_history_view::DEFAULT_SECTION_HEIGHT
+        );
     }
 
     /// A hex tab's stored form is fixed (a session file written by this version reads back the
@@ -752,6 +768,8 @@ mod tests {
         let mut s = session(&root);
         s.side.history_collapsed = true;
         s.side.history_height = 7;
+        s.side.file_history_collapsed = true;
+        s.side.file_history_height = 9;
         s.groups[0].tabs = vec![
             TabState::Commit { commit: first.clone() },
             TabState::Diff {
@@ -772,6 +790,8 @@ mod tests {
         assert_eq!(r.session.groups[0].active, 1);
         assert!(r.session.side.history_collapsed);
         assert_eq!(r.session.side.history_height, 7);
+        assert!(r.session.side.file_history_collapsed);
+        assert_eq!(r.session.side.file_history_height, 9);
         // The commits' text isn't loaded with the session.
         assert!(r.buffers.is_empty());
 

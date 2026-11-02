@@ -1300,7 +1300,7 @@ async fn untitled_save_as_in_a_repo_follows_git_history_and_the_explorer() {
     app.pump();
     assert_eq!(app.git_history.path, Some(root.join("g.txt")));
     // File history of the buffer is g.txt's (the Save As snapshot).
-    app.test_execute(Command::ShowFileHistory);
+    app.test_execute(Command::CompareFileHistory);
     let listed = app.settle(|a| a.palette.is_some()).await;
     if !listed {
         eprintln!(

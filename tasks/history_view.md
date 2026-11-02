@@ -1,8 +1,8 @@
 ---
 id: history_view
 name: File History section in the Explorer
-summary: the active file's snapshots as a third Explorer section
-status: in-progress
+summary: the active file's snapshots as an Explorer section above the commit history, with keys, Compare and Restore
+status: done
 priority: 0
 dependencies: []
 ---
@@ -23,4 +23,8 @@ See [File history](../PLAN.md#file-history). The active file's saved snapshots a
     - ✅ history_view-b: the rows: following the active file, entries read off-thread and re-read after `HistoryDone`, "No history" cases, drawing and theme keys, selection / scrolling / the scroll bar
       - Changed: `FileHistoryView` now holds entries/selection (by id)/scroll/loading/error/generation/stale; `App::sync_file_history` + `file_history_entries` in `src/app/history.rs`, `AppEvent::FileHistoryEntries`; any `HistoryDone` marks it stale and bumps the generation; `ScrollTarget::FileHistory`, `Hit::FileHistoryRow`; theme keys `fileHistory.date` / `.size`; a click selects and focuses the section. Test hooks `App::test_file_history_entries`, `test_history_done`. `selected` / `move_selection` / `first` / `last` carry `expect(dead_code)` until -c binds keys.
       - For -c: no e2e test yet for a log tab saying "No history" (needs the async `OpenLogFile` flow); a history-diff tab counting as its file is untested (a plain diff tab is covered).
-    - history_view-c: `Context::FileHistory` keys, Enter / click opens Compare, Restore Entry, "File History: Show" and the picker decision, sessions; the remaining tests, gaps and hand checks; marks the task ✅
+    - ✅ history_view-c: `Context::FileHistory` keys, Enter / click opens Compare, Restore Entry, "File History: Show" and the picker decision, sessions; the remaining tests, gaps and hand checks; marks the task ✅
+      - Changed: `Context::FileHistory` + `FileHistoryCommand` (Up / Down / PageUp / PageDown / Home / End, Enter = Compare, Alt+Enter = Restore Entry, Left / Esc = back to the tree); a click on a row selects, focuses and opens Compare. The Restore key is Alt+Enter, not Cmd/Ctrl+Enter (needs no terminal setup, `docs/terminals/` untouched). "File History: Show" now shows the Explorer, expands and focuses the section (selecting row 0), with no picker; the picker stays for "File History: Restore", the new "File History: Compare" (`Command::CompareFileHistory`, also the tab right-click item) and the explorer's right-click. Sessions keep `SideState.file_history_collapsed` / `file_history_height` (serde defaults, `VERSION` unchanged).
+      - Also: the older Show-based tests (milestone11, untitled, todo, palette) were retargeted to Compare.
+      - Deferred: a log tab saying "No history" and a history-diff tab counting as its file have no end-to-end test (the log flow is async `OpenLogFile`).
+      - Still to check by hand: Alt+Enter reaches jed in the real terminals; the section's focus styling after Show; a click then Enter on the same row (the diff tab takes focus).
