@@ -3450,7 +3450,7 @@ mod revert_hunks {
         let (_d, root, state) = project(&original, &changed);
         fs::write(root.join("new.txt"), "new\n").unwrap();
         // `c.txt` unmerged: conflict stages in the index, markers on disk.
-        const MARKERS: &str = "<<<<<<<\nours\n=======\ntheirs\n>>>>>>>\n";
+        const MARKERS: &str = concat!("", "<<<<<<", "<\nours\n", "======", "=\ntheirs\n", ">>>>>>", ">\n");
         fs::write(root.join("c.txt"), MARKERS).unwrap();
         let blob = |text: &str| git_with_input(&root, &["hash-object", "-w", "--stdin"], Some(text));
         let (base, ours, theirs) = (blob("base\n"), blob("ours\n"), blob("theirs\n"));
@@ -8579,7 +8579,15 @@ mod text_pointer {
     #[tokio::test(flavor = "multi_thread")]
     async fn text_pointer_not_over_merge_buttons() {
         let dir = tempfile::tempdir().unwrap();
-        let text = "a\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> other\nb\n";
+        let text = concat!(
+            "a\n",
+            "<<<<<<",
+            "< HEAD\nours\n",
+            "======",
+            "=\ntheirs\n",
+            ">>>>>>",
+            "> other\nb\n"
+        );
         let mut app = test_app(dir.path(), Buffer::from_str(text));
         let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
         draw(&mut app, &mut term);

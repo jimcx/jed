@@ -17,10 +17,10 @@ use ropey::Rope;
 use crate::buffer::change::ChangeSet;
 use crate::buffer::pos::{self, ByteIdx};
 
-const START: &str = "<<<<<<<";
-const BASE: &str = "|||||||";
-const MIDDLE: &str = "=======";
-const END: &str = ">>>>>>>";
+const START: &str = concat!("<<<<<<", "<",);
+const BASE: &str = concat!("||||||", "|",);
+const MIDDLE: &str = concat!("======", "=");
+const END: &str = concat!(">>>>>>", ">",);
 
 /// One conflict: where it is and the text between its markers, in the buffer's coordinates.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -318,32 +318,34 @@ mod tests {
         rope.to_string()
     }
 
-    const TWO_CONFLICTS: &str = "a\n\
-<<<<<<< HEAD\n\
-b\n\
-=======\n\
-c\n\
->>>>>>> main\n\
-d\n\
-<<<<<<< HEAD\n\
-e\n\
-=======\n\
-f\n\
->>>>>>> main\n\
-g\n";
+    const TWO_CONFLICTS: &str = concat!(
+        "a\n", "<<<<<<", "< HEAD\n", "b\n", "======", "=\n", "c\n", ">>>>>>", "> main\n", "d\n", "<<<<<<", "< HEAD\n",
+        "e\n", "======", "=\n", "f\n", ">>>>>>", "> main\n", "g\n",
+    );
 
     #[test]
     fn a_two_way_merge_has_current_and_incoming_blocks() {
         let text = merge_file("a\nb\nc\n", "a\nB\nc\n", "a\nX\nc\n", false);
-        assert_eq!(text, "a\n<<<<<<< ours\nB\n=======\nX\n>>>>>>> theirs\nc\n");
+        assert_eq!(
+            text,
+            concat!(
+                "a\n",
+                "<<<<<<",
+                "< ours\nB\n",
+                "======",
+                "=\nX\n",
+                ">>>>>>",
+                "> theirs\nc\n"
+            )
+        );
         let rope = Rope::from_str(&text);
         let list = conflicts(&text);
         assert_eq!(list.len(), 1);
         let conflict = &list[0];
-        assert_eq!(conflict.start, ByteIdx(2), "the <<<<<<< line's start");
+        assert_eq!(conflict.start, ByteIdx(2), concat!("the ", "<<<<<<", "< line's start"));
         assert_eq!(
             slice(&rope, &(conflict.start..conflict.end)),
-            "<<<<<<< ours\nB\n=======\nX\n>>>>>>> theirs\n",
+            concat!("", "<<<<<<", "< ours\nB\n", "======", "=\nX\n", ">>>>>>", "> theirs\n"),
             "the whole span, markers included"
         );
         assert_eq!(slice(&rope, &conflict.current), "B\n");
@@ -353,7 +355,7 @@ g\n";
         assert_eq!(
             pos::line_of(&rope, ByteIdx(conflict.end.0 - 1)),
             5,
-            "its last byte is the >>>>>>> line's line break"
+            concat!("its last byte is the ", ">>>>>>", "> line's line break")
         );
         assert_eq!(
             accept(&rope, conflict, Choice::Current).len(),
@@ -367,7 +369,17 @@ g\n";
         let text = merge_file("a\nb\nc\n", "a\nB\nc\n", "a\nX\nc\n", true);
         assert_eq!(
             text,
-            "a\n<<<<<<< ours\nB\n||||||| base\nb\n=======\nX\n>>>>>>> theirs\nc\n"
+            concat!(
+                "a\n",
+                "<<<<<<",
+                "< ours\nB\n",
+                "||||||",
+                "| base\nb\n",
+                "======",
+                "=\nX\n",
+                ">>>>>>",
+                "> theirs\nc\n"
+            )
         );
         let rope = Rope::from_str(&text);
         let list = conflicts(&text);
@@ -416,20 +428,28 @@ g\n";
 
     #[test]
     fn unterminated_markers_are_not_conflicts() {
-        assert!(conflicts("a\n<<<<<<< ours\nB\n=======\nX\n").is_empty());
-        assert!(conflicts("<<<<<<< ours\nB\n=======\nX\n").is_empty());
-        assert!(conflicts("<<<<<<< ours\nB\n>>>>>>> theirs\n").is_empty(), "no =======");
+        assert!(conflicts(concat!("a\n", "<<<<<<", "< ours\nB\n", "======", "=\nX\n")).is_empty());
+        assert!(conflicts(concat!("", "<<<<<<", "< ours\nB\n", "======", "=\nX\n")).is_empty());
+        assert!(
+            conflicts(concat!("", "<<<<<<", "< ours\nB\n", ">>>>>>", "> theirs\n")).is_empty(),
+            concat!("no ", "======", "=")
+        );
     }
 
     #[test]
     fn nested_markers_refuse_the_outer_conflict() {
-        let nested = "a\n<<<<<<< A\nx\n<<<<<<< B\ny\n=======\nz\n>>>>>>> C\nb\n";
+        let nested = concat!(
+            "a\n", "<<<<<<", "< A\nx\n", "<<<<<<", "< B\ny\n", "======", "=\nz\n", ">>>>>>", "> C\nb\n"
+        );
         assert!(
             conflicts(nested).is_empty(),
-            "the outer is refused and so is the <<<<<<< inside it"
+            concat!("the outer is refused and so is the ", "<<<<<<", "< inside it")
         );
         // The scan resumes after the `>>>>>>>` that would have closed the outer.
-        let after = format!("{nested}<<<<<<< D\nq\n=======\nr\n>>>>>>> E\n");
+        let after = format!(
+            "{nested}{}",
+            concat!("<<<<<<", "< D\nq\n", "======", "=\nr\n", ">>>>>>", "> E\n")
+        );
         let list = conflicts(&after);
         assert_eq!(list.len(), 1);
         let rope = Rope::from_str(&after);
@@ -439,29 +459,59 @@ g\n";
 
     #[test]
     fn markers_only_count_at_line_starts() {
-        assert!(conflicts(" <<<<<<< ours\nB\n=======\nX\n>>>>>>> theirs\n").is_empty());
-        assert!(conflicts("a <<<<<<< ours\nB\n=======\nX\n>>>>>>> theirs\n").is_empty());
+        assert!(
+            conflicts(concat!(
+                " ",
+                "<<<<<<",
+                "< ours\nB\n",
+                "======",
+                "=\nX\n",
+                ">>>>>>",
+                "> theirs\n"
+            ))
+            .is_empty()
+        );
+        assert!(
+            conflicts(concat!(
+                "a ",
+                "<<<<<<",
+                "< ours\nB\n",
+                "======",
+                "=\nX\n",
+                ">>>>>>",
+                "> theirs\n"
+            ))
+            .is_empty()
+        );
         // Stray separators and ends alone are content.
-        assert!(conflicts("=====\n=======\n>>>>>>>\n").is_empty());
+        assert!(conflicts(concat!("=====\n", "======", "=\n", ">>>>>>", ">\n")).is_empty());
     }
 
     #[test]
     fn blocks_keep_their_line_breaks_and_empty_sides() {
         // CRLF markers and blocks.
-        let crlf = "<<<<<<< a\r\nx\r\n=======\r\ny\r\n>>>>>>> b\r\n";
+        let crlf = concat!(
+            "",
+            "<<<<<<",
+            "< a\r\nx\r\n",
+            "======",
+            "=\r\ny\r\n",
+            ">>>>>>",
+            "> b\r\n"
+        );
         assert_eq!(accepted(crlf, Choice::Current), "x\r\n");
         assert_eq!(accepted(crlf, Choice::Incoming), "y\r\n");
         assert_eq!(accepted(crlf, Choice::Both), "x\r\ny\r\n");
         // No line break after the end marker: the conflict ends at the text's end.
-        let last = "<<<<<<< a\nx\n=======\ny\n>>>>>>> b";
+        let last = concat!("", "<<<<<<", "< a\nx\n", "======", "=\ny\n", ">>>>>>", "> b");
         assert_eq!(conflicts(last)[0].end, ByteIdx(last.len()));
         assert_eq!(accepted(last, Choice::Current), "x\n");
         // An empty current side (git writes none when a side deleted the lines).
-        let empty = "a\n<<<<<<< ours\n=======\nX\n>>>>>>> theirs\n";
+        let empty = concat!("a\n", "<<<<<<", "< ours\n", "======", "=\nX\n", ">>>>>>", "> theirs\n");
         assert_eq!(accepted(empty, Choice::Current), "a\n");
         assert_eq!(accepted(empty, Choice::Incoming), "a\nX\n");
         // An empty incoming side, the mirror case.
-        let empty_incoming = "a\n<<<<<<< ours\nB\n=======\n>>>>>>> theirs\n";
+        let empty_incoming = concat!("a\n", "<<<<<<", "< ours\nB\n", "======", "=\n", ">>>>>>", "> theirs\n");
         assert_eq!(accepted(empty_incoming, Choice::Incoming), "a\n");
         assert_eq!(accepted(empty_incoming, Choice::Current), "a\nB\n");
     }

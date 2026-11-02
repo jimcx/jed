@@ -786,7 +786,11 @@ mod tests {
             theirs.trim()
         );
         git_with_input(&root, &["update-index", "--index-info"], Some(&info));
-        std::fs::write(root.join("f"), "<<<<<<<\nours\n=======\ntheirs\n>>>>>>>\n").unwrap();
+        std::fs::write(
+            root.join("f"),
+            concat!("", "<<<<<<", "<\nours\n", "======", "=\ntheirs\n", ">>>>>>", ">\n"),
+        )
+        .unwrap();
         let repo = r(&root);
         let s = super::super::Status::read(&repo).unwrap();
         let e = s.entry(Path::new("f")).unwrap();
@@ -803,7 +807,11 @@ mod tests {
         assert!(matches!(e, Error::Conflicted), "{e}");
         let e = revert_hunk(&repo, Path::new("f"), &d, 0).unwrap_err();
         assert!(matches!(e, Error::Conflicted), "{e}");
-        assert!(std::fs::read_to_string(root.join("f")).unwrap().starts_with("<<<<<<<"));
+        assert!(
+            std::fs::read_to_string(root.join("f"))
+                .unwrap()
+                .starts_with(concat!("", "<<<<<<", "<"))
+        );
         // Staging the whole file resolves it.
         stage_file(&repo, Path::new("f")).unwrap();
         assert_eq!(git(&root, &["status", "--porcelain"]), "M  f\n");

@@ -830,7 +830,15 @@ async fn diff_edit_conflict_diff_is_read_only_on_both_sides() {
     use crate::command::MergeCommand;
     use crate::selection::{Selection, Selections};
     let (_d, root, state) = dirs();
-    let marked = "a\n<<<<<<< HEAD\nours1\nours1b\n=======\ntheirs1\n>>>>>>> main\nend\n";
+    let marked = concat!(
+        "a\n",
+        "<<<<<<",
+        "< HEAD\nours1\nours1b\n",
+        "======",
+        "=\ntheirs1\n",
+        ">>>>>>",
+        "> main\nend\n"
+    );
     let mut app = open_with(&root, &state, ORIGINAL, marked).await;
     // Compare Current Conflict from the file's tab, the cursor in the conflict.
     app.test_execute(Command::PrevTab);

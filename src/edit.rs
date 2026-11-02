@@ -825,19 +825,10 @@ mod tests {
     use super::*;
     use crate::command::Command as C;
 
-    const CONFLICTS: &str = "a\n\
-<<<<<<< HEAD\n\
-b\n\
-=======\n\
-c\n\
->>>>>>> main\n\
-d\n\
-<<<<<<< HEAD\n\
-e\n\
-=======\n\
-f\n\
->>>>>>> main\n\
-g\n";
+    const CONFLICTS: &str = concat!(
+        "a\n", "<<<<<<", "< HEAD\n", "b\n", "======", "=\n", "c\n", ">>>>>>", "> main\n", "d\n", "<<<<<<", "< HEAD\n",
+        "e\n", "======", "=\n", "f\n", ">>>>>>", "> main\n", "g\n",
+    );
 
     fn at(text: &str, needle: &str) -> ByteIdx {
         ByteIdx(text.find(needle).unwrap())
@@ -893,7 +884,15 @@ g\n";
         ));
         assert_eq!(
             buf.rope.to_string(),
-            "a\nc\nd\n<<<<<<< HEAD\ne\n=======\nf\n>>>>>>> main\ng\n"
+            concat!(
+                "a\nc\nd\n",
+                "<<<<<<",
+                "< HEAD\ne\n",
+                "======",
+                "=\nf\n",
+                ">>>>>>",
+                "> main\ng\n"
+            )
         );
         assert!(buf.has_edits());
         assert!(buf.undo().is_some(), "one step");

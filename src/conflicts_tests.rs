@@ -42,21 +42,30 @@ use crate::workspace::Workspace;
 use crate::workspace::trust::TrustStore;
 
 /// A two-way conflict, then a diff3 one: git's markers as `git merge-file` writes them.
-const CONFLICTS: &str = "a\n\
-<<<<<<< HEAD\n\
-ours1\n\
-=======\n\
-theirs1\n\
->>>>>>> main\n\
-mid\n\
-<<<<<<< HEAD\n\
-ours2\n\
-||||||| base\n\
-base2\n\
-=======\n\
-theirs2\n\
->>>>>>> main\n\
-end\n";
+const CONFLICTS: &str = concat!(
+    "a\n",
+    "<<<<<<",
+    "< HEAD\n",
+    "ours1\n",
+    "======",
+    "=\n",
+    "theirs1\n",
+    ">>>>>>",
+    "> main\n",
+    "mid\n",
+    "<<<<<<",
+    "< HEAD\n",
+    "ours2\n",
+    "||||||",
+    "| base\n",
+    "base2\n",
+    "======",
+    "=\n",
+    "theirs2\n",
+    ">>>>>>",
+    "> main\n",
+    "end\n",
+);
 
 fn open(text: &str) -> (tempfile::TempDir, App) {
     let (dir, root, state) = dirs();
@@ -167,7 +176,7 @@ async fn conflicts_draw_their_blocks_labels_and_action_row() {
     // The action row after each `<<<<<<<` line: all four buttons at this width, in order, in
     // the quick diff action colour (two conflicts: two rows).
     let g = app.hits.groups[0].clone();
-    let first = ByteIdx(at(&app, "<<<<<<< HEAD"));
+    let first = ByteIdx(at(&app, concat!("", "<<<<<<", "< HEAD")));
     let starts: std::collections::BTreeSet<_> = g.merge_buttons.iter().map(|(_, _, start)| *start).collect();
     assert_eq!(starts.len(), 2, "one row per conflict");
     let buttons: Vec<_> = g
@@ -207,7 +216,7 @@ async fn conflicts_draw_their_blocks_labels_and_action_row() {
 async fn clicking_accept_incoming_leaves_theirs_in_one_undo_step() {
     let (_dir, mut app) = open(CONFLICTS);
     let _term = draw(&mut app, 160);
-    let start = ByteIdx(at(&app, "<<<<<<< HEAD"));
+    let start = ByteIdx(at(&app, concat!("", "<<<<<<", "< HEAD")));
     let rect = app.hits.groups[0]
         .merge_buttons
         .iter()
@@ -218,7 +227,17 @@ async fn clicking_accept_incoming_leaves_theirs_in_one_undo_step() {
     // `git checkout --theirs` for the first hunk: the incoming block, markers gone.
     assert_eq!(
         text(&app),
-        "a\ntheirs1\nmid\n<<<<<<< HEAD\nours2\n||||||| base\nbase2\n=======\ntheirs2\n>>>>>>> main\nend\n"
+        concat!(
+            "a\ntheirs1\nmid\n",
+            "<<<<<<",
+            "< HEAD\nours2\n",
+            "||||||",
+            "| base\nbase2\n",
+            "======",
+            "=\ntheirs2\n",
+            ">>>>>>",
+            "> main\nend\n"
+        )
     );
     assert!(app.active_buffer().unwrap().has_edits());
     // One `EditKind::Other` step: one undo brings the markers back.
@@ -310,7 +329,15 @@ async fn the_status_bar_counts_the_conflicts() {
     assert!(status.contains("a.txt"), "beside the file: {status:?}");
 
     // A file with one conflict.
-    let (_dir, mut app) = open("<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> main\n");
+    let (_dir, mut app) = open(concat!(
+        "",
+        "<<<<<<",
+        "< HEAD\nours\n",
+        "======",
+        "=\ntheirs\n",
+        ">>>>>>",
+        "> main\n"
+    ));
     let term = draw(&mut app, 160);
     assert!(status_text(&term).contains("1 conflict "), "{:?}", status_text(&term));
 
@@ -418,7 +445,15 @@ async fn accept_commands_work_at_the_cursor_and_for_every_conflict() {
     app.test_execute(Command::Merge(MergeCommand::AcceptCurrent));
     assert_eq!(
         text(&app),
-        "a\n<<<<<<< HEAD\nours1\n=======\ntheirs1\n>>>>>>> main\nmid\nours2\nend\n"
+        concat!(
+            "a\n",
+            "<<<<<<",
+            "< HEAD\nours1\n",
+            "======",
+            "=\ntheirs1\n",
+            ">>>>>>",
+            "> main\nmid\nours2\nend\n"
+        )
     );
     app.test_execute(Command::Undo);
     assert_eq!(text(&app), CONFLICTS, "one undo step");
@@ -428,7 +463,15 @@ async fn accept_commands_work_at_the_cursor_and_for_every_conflict() {
     app.test_execute(Command::Merge(MergeCommand::AcceptNone));
     assert_eq!(
         text(&app),
-        "a\n<<<<<<< HEAD\nours1\n=======\ntheirs1\n>>>>>>> main\nmid\nbase2\nend\n"
+        concat!(
+            "a\n",
+            "<<<<<<",
+            "< HEAD\nours1\n",
+            "======",
+            "=\ntheirs1\n",
+            ">>>>>>",
+            "> main\nmid\nbase2\nend\n"
+        )
     );
     app.test_execute(Command::Undo);
 
@@ -486,7 +529,7 @@ async fn inline_blame_does_not_overwrite_the_conflict_row() {
 
     // The cursor on the `<<<<<<<` line (Next Conflict's target): the conflict label and action
     // row are drawn, not the blame.
-    let start = at(&app, "<<<<<<<");
+    let start = at(&app, concat!("", "<<<<<<", "<"));
     set_cursor(&mut app, start);
     let term = draw(&mut app, 160);
     let (text, y) = row_of(&app, 1);
@@ -566,7 +609,7 @@ fn accepted_side(text: &str, k: usize, side: &str) -> String {
         .expect("the side's text");
     let mut lines: Vec<&str> = text.lines().collect();
     lines.splice(
-        marker_line(text, "<<<<<<<", k)..=marker_line(text, ">>>>>>>", k),
+        marker_line(text, concat!("", "<<<<<<", "<"), k)..=marker_line(text, concat!("", ">>>>>>", ">"), k),
         [content],
     );
     lines.join("\n") + "\n"
@@ -577,8 +620,8 @@ async fn conflicts_done_when_a_real_merge_source_control_accept_and_stage_resolv
     let (_d, root, state) = dirs();
     merge_repo(&root, false);
     let merged = fs::read_to_string(root.join("a.txt")).unwrap();
-    assert_eq!(merged.matches("<<<<<<<").count(), 2);
-    assert_eq!(merged.matches(">>>>>>> other").count(), 2);
+    assert_eq!(merged.matches(concat!("", "<<<<<<", "<")).count(), 2);
+    assert_eq!(merged.matches(concat!("", ">>>>>>", "> other")).count(), 2);
     // git's merge stages keep the branches' whole files: the accepted hunks are exactly theirs'
     // first and ours' second region.
     assert_eq!(git(&root, &["show", ":2:a.txt"]), OURS_FILE);
@@ -622,7 +665,7 @@ async fn conflicts_done_when_a_real_merge_source_control_accept_and_stage_resolv
     let current_header = app.theme.get("merge.currentHeaderBackground").bg;
     let incoming_header = app.theme.get("merge.incomingHeaderBackground").bg;
     for k in 0..2 {
-        let line = marker_line(&merged, "<<<<<<<", k);
+        let line = marker_line(&merged, concat!("", "<<<<<<", "<"), k);
         let (text, y) = row_of(&app, line);
         assert_eq!(bg(&term, (text.x, y)), current_header, "conflict {k}'s header");
         let row = row_text(&term, text, y);
@@ -630,7 +673,7 @@ async fn conflicts_done_when_a_real_merge_source_control_accept_and_stage_resolv
             row.contains("Accept Current") && row.contains("Accept Incoming"),
             "{row:?}"
         );
-        let (text, y) = row_of(&app, marker_line(&merged, "=======", k));
+        let (text, y) = row_of(&app, marker_line(&merged, concat!("", "======", "="), k));
         assert_eq!(
             bg(&term, (text.x, y)),
             incoming_header,
@@ -672,7 +715,7 @@ async fn conflicts_done_when_a_real_merge_source_control_accept_and_stage_resolv
         .map(|(rect, ..)| *rect)
         .unwrap();
     click(&mut app, (rect.x + 1, rect.y));
-    let after_incoming = accepted_side(&merged, 0, "=======");
+    let after_incoming = accepted_side(&merged, 0, concat!("", "======", "="));
     assert_eq!(text(&app), after_incoming);
     app.test_execute(Command::Undo);
     assert_eq!(text(&app), merged, "one undo step");
@@ -682,10 +725,10 @@ async fn conflicts_done_when_a_real_merge_source_control_accept_and_stage_resolv
     // them.
     click(&mut app, (rect.x + 1, rect.y));
     assert_eq!(text(&app), after_incoming);
-    let second_start = at(&app, "<<<<<<<");
+    let second_start = at(&app, concat!("", "<<<<<<", "<"));
     set_cursor(&mut app, second_start);
     app.test_execute(Command::Merge(MergeCommand::AcceptCurrent));
-    let after_both = accepted_side(&after_incoming, 0, "<<<<<<<");
+    let after_both = accepted_side(&after_incoming, 0, concat!("", "<<<<<<", "<"));
     assert_eq!(text(&app), after_both);
     assert_eq!(text(&app), OURS_FILE.replacen("OURS ONE", "THEIRS ONE", 1));
     app.test_execute(Command::Undo);
@@ -760,7 +803,7 @@ async fn conflicts_done_when_a_diff3_merge_shows_the_base_block() {
     let (_d, root, state) = dirs();
     merge_repo(&root, true);
     let merged = fs::read_to_string(root.join("a.txt")).unwrap();
-    assert_eq!(merged.matches("|||||||").count(), 2, "{merged:?}");
+    assert_eq!(merged.matches(concat!("", "||||||", "|")).count(), 2, "{merged:?}");
     let mut app = open_file_app(&root, &state, "a.txt");
     assert!(
         settle_git(&mut app, |s| {
@@ -786,7 +829,7 @@ async fn conflicts_done_when_a_diff3_merge_shows_the_base_block() {
     let common_header = app.theme.get("merge.commonHeaderBackground").bg;
     let common_content = app.theme.get("merge.commonContentBackground").bg;
     for k in 0..2 {
-        let line = marker_line(&merged, "|||||||", k);
+        let line = marker_line(&merged, concat!("", "||||||", "|"), k);
         let (text, y) = row_of(&app, line);
         assert_eq!(bg(&term, (text.x, y)), common_header, "conflict {k}'s base header");
         let row = row_text(&term, text, y);
