@@ -53,24 +53,22 @@ impl App {
     /// scrolled the preview since; a source no tab shows marks its previews closed; a renamed
     /// source renames them.
     pub(super) fn sync_markdown(&mut self) {
+        if self.groups.markdown_tabs_mut().next().is_none() {
+            self.markdown.deadline = None;
+            return;
+        }
         let now = Instant::now();
         // The first view of each source buffer: its top line (the active tab of a group wins).
         let mut tops: HashMap<BufferId, usize> = HashMap::new();
-        let mut any = false;
         for id in self.groups.ids() {
             let Some(g) = self.groups.get(id) else { continue };
             for (i, t) in g.tabs.iter().enumerate() {
-                any |= t.markdown().is_some();
                 if let Some(t) = t.text()
                     && (i == g.active || !tops.contains_key(&t.buffer))
                 {
                     tops.insert(t.buffer, t.view.top_line());
                 }
             }
-        }
-        if !any {
-            self.markdown.deadline = None;
-            return;
         }
         let due = self.markdown.deadline.is_some_and(|d| d <= now);
         if due {

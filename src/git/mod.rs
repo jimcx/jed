@@ -181,6 +181,14 @@ impl Decoration {
     }
 }
 
+/// The status bar's `*` / `+` / `!` marks.
+#[derive(Debug, Clone, Copy, Default)]
+struct LabelFlags {
+    unstaged: bool,
+    staged: bool,
+    conflicted: bool,
+}
+
 /// A repository's state at one moment.
 #[derive(Debug, Clone)]
 pub struct Status {
@@ -194,6 +202,8 @@ pub struct Status {
     /// Absolute path → colour, for changed files and every folder above one (inside the work
     /// tree).
     decorations: HashMap<PathBuf, Decoration>,
+    /// What `label` shows, computed from `entries` when the status is built.
+    flags: LabelFlags,
     /// Whether `entries` / `decorations` reflect the real changes. `false` on a `head_only`
     /// status: only `repo` / `head` / `head_id` are known (the expensive working-tree walk
     /// hasn't run), so `entries` is empty and `decoration` / `entry` find nothing yet.
@@ -238,6 +248,7 @@ impl Status {
             head_id,
             entries: Vec::new(),
             decorations: HashMap::new(),
+            flags: LabelFlags::default(),
             loaded: false,
         }
     }
@@ -258,12 +269,19 @@ impl Status {
                 *slot = (*slot).max(d);
             }
         }
+        let any = |f: fn(&Entry) -> bool| entries.iter().any(f);
+        let flags = LabelFlags {
+            unstaged: any(|e| e.unstaged.is_some_and(|c| c != Change::Conflicted)),
+            staged: any(|e| e.staged.is_some()),
+            conflicted: any(|e| e.unstaged == Some(Change::Conflicted)),
+        };
         Status {
             repo,
             head,
             head_id: None,
             entries,
             decorations,
+            flags,
             loaded: true,
         }
     }
@@ -283,15 +301,14 @@ impl Status {
     /// The status bar's text, as VS Code: the branch, `*` with unstaged changes (untracked files
     /// too), `+` with staged ones, `!` with conflicts.
     pub fn label(&self) -> String {
-        let any = |f: fn(&Entry) -> bool| self.entries.iter().any(f);
         let mut s = self.head.name().to_string();
-        if any(|e| e.unstaged.is_some_and(|c| c != Change::Conflicted)) {
+        if self.flags.unstaged {
             s.push('*');
         }
-        if any(|e| e.staged.is_some()) {
+        if self.flags.staged {
             s.push('+');
         }
-        if any(|e| e.unstaged == Some(Change::Conflicted)) {
+        if self.flags.conflicted {
             s.push('!');
         }
         s
@@ -492,6 +509,29 @@ mod tests {
             Refreshed::Status(s) => *s,
             other => panic!("no status: {other:?}"),
         }
+    }
+
+    #[test]
+    fn label_marks_come_from_the_entries() {
+        let repo = Repo {
+            workdir: PathBuf::from("/r"),
+            git_dir: PathBuf::from("/r/.git"),
+        };
+        let e = |staged, unstaged| Entry {
+            path: PathBuf::from("f"),
+            staged,
+            unstaged,
+        };
+        let label = |entries| Status::new(repo.clone(), Head::Branch("main".into()), entries).label();
+        assert_eq!(label(vec![]), "main");
+        assert_eq!(label(vec![e(None, Some(Change::Modified))]), "main*");
+        assert_eq!(label(vec![e(Some(Change::Added), None)]), "main+");
+        assert_eq!(label(vec![e(None, Some(Change::Conflicted))]), "main!");
+        let all = vec![
+            e(Some(Change::Added), Some(Change::Modified)),
+            e(None, Some(Change::Conflicted)),
+        ];
+        assert_eq!(label(all), "main*+!");
     }
 
     #[test]

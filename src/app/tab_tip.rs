@@ -42,6 +42,12 @@ pub struct TabTip {
 }
 
 impl TabTip {
+    /// Tests: the tooltip for tab 0 of group 0 due at `at`.
+    #[cfg(test)]
+    pub fn test_arm(&mut self, at: Instant) {
+        self.rest = Some((0, 0, at));
+    }
+
     pub fn deadline(&self) -> Option<Instant> {
         self.rest.map(|(_, _, at)| at)
     }

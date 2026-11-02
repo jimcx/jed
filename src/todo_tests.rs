@@ -4457,6 +4457,8 @@ mod diff_syntax {
         assert_eq!(fg(&term, at(&term, "BETA")), comment);
     }
 
+    // FLAKE: 2026-11-03, `left: 3 right: 2` in a full parallel `scripts/check` (passes alone 7 of 7):
+    // probably the cell-count assertion below. The messages dump the cells and the diff's scroll.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_comment_opened_above_a_scrolled_view_is_coloured() {
         // Line 1 opens a comment closed 40 lines on; only the line after it changes.
@@ -4479,8 +4481,17 @@ mod diff_syntax {
             let shown = if inline { 1 } else { 2 };
             for line in ["c20", "c30", "c39"] {
                 let cells = every(&term, line);
-                assert_eq!(cells.len(), shown, "{line}");
-                assert!(cells.iter().all(|&c| fg(&term, c) == comment), "{line} inline {inline}");
+                if cells.len() != shown {
+                    eprintln!(
+                        "FLAKE a_comment_opened_above_a_scrolled_view: {line} cells {cells:?} inline {inline} w {w}"
+                    );
+                }
+                assert_eq!(cells.len(), shown, "FLAKE {line} cells {cells:?} inline {inline} w {w}");
+                assert!(
+                    cells.iter().all(|&c| fg(&term, c) == comment),
+                    "FLAKE {line} inline {inline} w {w}: fg {:?} want {comment:?}",
+                    cells.iter().map(|&c| fg(&term, c)).collect::<Vec<_>>()
+                );
             }
             // The digits of the line numbers stay plain gutter text, not comment-coloured.
             let (x, y) = every(&term, "c20")[0];

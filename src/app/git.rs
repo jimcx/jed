@@ -33,6 +33,12 @@ pub struct GitState {
 }
 
 impl GitState {
+    /// Tests: a deadline at `at`, as the module's own code would arm it.
+    #[cfg(test)]
+    pub fn test_arm(&mut self, at: Instant) {
+        self.status_deadline = Some(at);
+    }
+
     /// A refresh is running or queued (tests wait for it to end).
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn running(&self) -> bool {

@@ -33,11 +33,19 @@ fn remove_ipc_socket() {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// `set_dirty` calls on this thread (tests count them to see a loop turn skip the call).
+    pub static SET_DIRTY_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 static DIRTY: Mutex<Option<Dirty>> = Mutex::new(None);
 
 /// The dirty buffers to back up if jed panics, into `state_dir`'s backups of the workspace at
 /// `root` (the same files `backup` writes periodically).
 pub fn set_dirty(state_dir: PathBuf, root: PathBuf, snapshots: Vec<Snapshot>) {
+    #[cfg(test)]
+    SET_DIRTY_CALLS.with(|c| c.set(c.get() + 1));
     if let Ok(mut d) = DIRTY.lock() {
         *d = Some(Dirty {
             state_dir,

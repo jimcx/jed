@@ -38,6 +38,12 @@ pub struct LogTabs {
 }
 
 impl LogTabs {
+    /// Tests: a deadline at `at`, as the module's own code would arm it.
+    #[cfg(test)]
+    pub fn test_arm(&mut self, at: Instant) {
+        self.deadline = Some(at);
+    }
+
     pub fn deadline(&self) -> Option<Instant> {
         self.deadline
     }

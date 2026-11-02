@@ -627,6 +627,137 @@ mod tests {
         assert_eq!(app.search_view.deadline(), None);
     }
 
+    /// `next_timer` picks the earliest of the deadlines wherever they come from (the fs batch is
+    /// a tokio instant, the rest std ones) and a deadline that is already past wins at once.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn next_timer_picks_the_earliest_deadline() {
+        use std::time::{Duration, Instant};
+
+        use super::super::Timer;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        fs::write(root.join("a.txt"), "x\n").unwrap();
+        let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&root.join("a.txt")).unwrap());
+        let wait = async |app: &App| {
+            tokio::time::timeout(Duration::from_secs(5), app.next_timer())
+                .await
+                .unwrap()
+        };
+        let far = Duration::from_secs(60);
+        app.fs_deadline = Some(tokio::time::Instant::now() + far);
+        app.files_poll = Some(Instant::now() + Duration::from_millis(30));
+        assert_eq!(wait(&app).await, Timer::Files, "the std deadline is earlier");
+        app.files_poll = Some(Instant::now() + far);
+        app.fs_deadline = Some(tokio::time::Instant::now() + Duration::from_millis(30));
+        assert_eq!(wait(&app).await, Timer::FsChanges, "the tokio deadline is earlier");
+        app.fs_deadline = Some(tokio::time::Instant::now() + far);
+        app.search_view.edited(Instant::now() - Duration::from_secs(1));
+        assert_eq!(wait(&app).await, Timer::SearchDebounce, "a past deadline fires at once");
+    }
+
+    /// Arms only `timer`'s deadline at `at`, the way its module would.
+    fn arm(app: &mut App, timer: super::super::Timer, at: std::time::Instant) {
+        use crate::buffer::pos::ByteIdx;
+
+        use super::super::Timer::*;
+        match timer {
+            FsChanges => app.fs_deadline = Some(tokio::time::Instant::from_std(at)),
+            SearchDebounce => app.search_view.edited(at - crate::search_view::DEBOUNCE),
+            Hover => {
+                app.hover.rest = Some(crate::hover::Rest {
+                    deadline: at,
+                    group: 0,
+                    buffer: 0,
+                    at: ByteIdx(0),
+                    word: (ByteIdx(0), ByteIdx(0)),
+                })
+            }
+            TabTip => app.tab_tip.test_arm(at),
+            Completion => {
+                app.completion.quick = Some(crate::completion::Quick {
+                    deadline: at,
+                    group: 0,
+                    buffer: 0,
+                    revision: 0,
+                })
+            }
+            Bulb => {
+                let place = crate::code_action::Place {
+                    group: 0,
+                    buffer: 0,
+                    revision: 0,
+                    range: (ByteIdx(0), ByteIdx(0)),
+                };
+                app.code_actions.rest = Some((at, place));
+            }
+            Semantic => app.semantic.test_arm(0, at),
+            QuickDiff => app.quick_diff.test_arm(at),
+            Diff => app.diffs.test_arm(at),
+            Markdown => app.markdown.deadline = Some(at),
+            Blame => app.blame.test_arm(at),
+            Backup => app.backups.test_arm(at),
+            GitStatus => app.git.test_arm(at),
+            Logs => app.log_tabs.test_arm(at),
+            Files => app.files_poll = Some(at),
+        }
+    }
+
+    /// Each of the 15 deadlines, armed alone, wakes `next_timer` with its own tag; with two
+    /// armed from different modules the earlier one wins.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn next_timer_wakes_for_every_deadline_with_its_own_tag() {
+        use std::time::{Duration, Instant};
+
+        use super::super::Timer::*;
+
+        // `arm`'s match is exhaustive, so a new variant has to be added there; add it here too.
+        const ALL: [super::super::Timer; 15] = [
+            FsChanges,
+            SearchDebounce,
+            Hover,
+            TabTip,
+            Completion,
+            Bulb,
+            Semantic,
+            QuickDiff,
+            Diff,
+            Markdown,
+            Blame,
+            Backup,
+            GitStatus,
+            Logs,
+            Files,
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        fs::write(root.join("a.txt"), "x\n").unwrap();
+        let new_app = || crate::milestone_tests::test_app(&root, Buffer::open(&root.join("a.txt")).unwrap());
+        let wait = async |app: &App| {
+            tokio::time::timeout(Duration::from_secs(5), app.next_timer())
+                .await
+                .expect("the armed deadline wakes the loop")
+        };
+        for timer in ALL {
+            let mut app = new_app();
+            let idle = tokio::time::timeout(Duration::from_millis(30), app.next_timer()).await;
+            assert!(idle.is_err(), "{timer:?}: nothing armed, no wake");
+            arm(&mut app, timer, Instant::now() - Duration::from_secs(1));
+            assert_eq!(wait(&app).await, timer);
+        }
+        let far = Duration::from_secs(60);
+        for (a, b) in ALL.into_iter().zip(ALL.into_iter().cycle().skip(7)) {
+            let mut app = new_app();
+            arm(&mut app, a, Instant::now() + Duration::from_millis(20));
+            arm(&mut app, b, Instant::now() + far);
+            assert_eq!(wait(&app).await, a, "{a:?} before {b:?}");
+            let mut app = new_app();
+            arm(&mut app, a, Instant::now() + far);
+            arm(&mut app, b, Instant::now() + Duration::from_millis(20));
+            assert_eq!(wait(&app).await, b, "{b:?} before {a:?}");
+        }
+    }
+
     /// The Search view's input: seeding (escaped for a regex), the debounce, an empty query and
     /// an invalid regex.
     #[tokio::test(flavor = "multi_thread")]

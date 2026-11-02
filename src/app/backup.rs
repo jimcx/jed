@@ -43,10 +43,33 @@ pub struct BackupState {
     reported: bool,
     /// Jobs finished, for tests.
     pub jobs_done: usize,
+    /// What the panic hook's snapshot was last built from (see `update_crash_snapshot`).
+    crash_sent: Option<CrashSent>,
+}
+
+/// The inputs of the last `panic::set_dirty`: where it writes and, per dirty buffer, what its
+/// snapshot depends on. Equal inputs mean the same snapshot, so the call is skipped.
+#[derive(Debug)]
+struct CrashSent {
+    dir: std::path::PathBuf,
+    root: std::path::PathBuf,
+    buffers: Vec<(
+        BufferId,
+        u64,
+        Option<crate::buffer::file::Stamp>,
+        bool,
+        std::path::PathBuf,
+    )>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
 impl BackupState {
+    /// Tests: a deadline at `at`, as the module's own code would arm it.
+    #[cfg(test)]
+    pub fn test_arm(&mut self, at: Instant) {
+        self.deadline = Some(at);
+    }
+
     pub fn deadline(&self) -> Option<Instant> {
         self.deadline
     }
@@ -484,15 +507,39 @@ impl App {
     }
 
     /// Every loop turn: the dirty buffers the panic hook backs up (same files and format).
-    pub(super) fn update_crash_snapshot(&self) {
-        let Some(dir) = self.state_dir.clone() else { return };
-        let snapshots = self
-            .buffers
-            .iter()
-            .filter(|(_, b)| b.is_dirty() && buffer_key(b).is_some())
-            .map(|(_, b)| snapshot(b))
+    /// Skipped, without cloning or taking the hook's lock, while the state dir, the workspace
+    /// root and each dirty buffer's id, revision, path, BOM and disk stamp are as last sent.
+    pub(super) fn update_crash_snapshot(&mut self) {
+        let Some(dir) = self.state_dir.as_ref() else { return };
+        let root = &self.workspace.root;
+        let dirty = || {
+            self.buffers
+                .iter()
+                .filter(|(_, b)| b.is_dirty() && (b.has_file() || b.untitled_id().is_some()))
+        };
+        if let Some(sent) = &self.backups.crash_sent
+            && &sent.dir == dir
+            && &sent.root == root
+            && dirty().count() == sent.buffers.len()
+            && dirty().all(|(id, b)| {
+                sent.buffers
+                    .iter()
+                    .any(|s| s.0 == id && s.1 == b.revision() && s.2 == b.disk() && s.3 == b.bom && s.4 == b.path)
+            })
+        {
+            return;
+        }
+        let snapshots = dirty().map(|(_, b)| snapshot(b)).collect();
+        let buffers = dirty()
+            .map(|(id, b)| (id, b.revision(), b.disk(), b.bom, b.path.clone()))
             .collect();
-        crate::panic::set_dirty(dir, self.workspace.root.clone(), snapshots);
+        let (dir, root) = (dir.clone(), root.clone());
+        self.backups.crash_sent = Some(CrashSent {
+            dir: dir.clone(),
+            root: root.clone(),
+            buffers,
+        });
+        crate::panic::set_dirty(dir, root, snapshots);
     }
 }
 

@@ -971,68 +971,25 @@ impl App {
     /// inline blame's delays, crash backups), or forever when none is pending; `run` and `settle` both
     /// wait on it. The future borrows nothing, so it can sit in a `select!` beside `self.rx`.
     fn next_timer(&self) -> impl Future<Output = Timer> + 'static {
-        let fs = self.fs_deadline.map(|d| (d, Timer::FsChanges));
-        let search = self
-            .search_view
-            .deadline()
-            .map(|d| (tokio::time::Instant::from_std(d), Timer::SearchDebounce));
-        let hover = self
-            .hover
-            .deadline()
-            .map(|d| (tokio::time::Instant::from_std(d), Timer::Hover));
-        let tab_tip = self
-            .tab_tip
-            .deadline()
-            .map(|d| (tokio::time::Instant::from_std(d), Timer::TabTip));
-        let completion = self
-            .completion
-            .deadline()
-            .map(|d| (tokio::time::Instant::from_std(d), Timer::Completion));
-        let bulb = self
-            .code_actions
-            .deadline()
-            .map(|d| (tokio::time::Instant::from_std(d), Timer::Bulb));
-        let semantic = self
-            .semantic
-            .deadline()
-            .map(|d| (tokio::time::Instant::from_std(d), Timer::Semantic));
-        let quick_diff = self
-            .quick_diff
-            .deadline()
-            .map(|d| (tokio::time::Instant::from_std(d), Timer::QuickDiff));
-        let diff = self
-            .diffs
-            .deadline()
-            .map(|d| (tokio::time::Instant::from_std(d), Timer::Diff));
-        let markdown = self
-            .markdown
-            .deadline()
-            .map(|d| (tokio::time::Instant::from_std(d), Timer::Markdown));
-        let blame = self
-            .blame
-            .deadline()
-            .map(|d| (tokio::time::Instant::from_std(d), Timer::Blame));
-        let backup = self
-            .backups
-            .deadline()
-            .map(|d| (tokio::time::Instant::from_std(d), Timer::Backup));
-        let git_status = self
-            .git
-            .status_deadline()
-            .map(|d| (tokio::time::Instant::from_std(d), Timer::GitStatus));
-        let logs = self
-            .log_tabs
-            .deadline()
-            .map(|d| (tokio::time::Instant::from_std(d), Timer::Logs));
-        let files = self
-            .files_poll
-            .map(|d| (tokio::time::Instant::from_std(d), Timer::Files));
         let next = [
-            fs, search, hover, tab_tip, completion, bulb, semantic, quick_diff, diff, markdown, blame, backup,
-            git_status, logs, files,
+            (self.fs_deadline.map(tokio::time::Instant::into_std), Timer::FsChanges),
+            (self.search_view.deadline(), Timer::SearchDebounce),
+            (self.hover.deadline(), Timer::Hover),
+            (self.tab_tip.deadline(), Timer::TabTip),
+            (self.completion.deadline(), Timer::Completion),
+            (self.code_actions.deadline(), Timer::Bulb),
+            (self.semantic.deadline(), Timer::Semantic),
+            (self.quick_diff.deadline(), Timer::QuickDiff),
+            (self.diffs.deadline(), Timer::Diff),
+            (self.markdown.deadline(), Timer::Markdown),
+            (self.blame.deadline(), Timer::Blame),
+            (self.backups.deadline(), Timer::Backup),
+            (self.git.status_deadline(), Timer::GitStatus),
+            (self.log_tabs.deadline(), Timer::Logs),
+            (self.files_poll, Timer::Files),
         ]
         .into_iter()
-        .flatten()
+        .filter_map(|(at, timer)| Some((tokio::time::Instant::from_std(at?), timer)))
         .min_by_key(|(at, _)| *at);
         async move {
             match next {
@@ -2055,9 +2012,14 @@ impl App {
 
     /// What the panic hook backs up if jed panics now: the loop turn's crash snapshot, then the
     /// hook's own write (`panic::back_up_dirty`), returning the files written.
-    pub fn test_panic_backup(&self) -> Vec<PathBuf> {
+    pub fn test_panic_backup(&mut self) -> Vec<PathBuf> {
         self.update_crash_snapshot();
         crate::panic::back_up_dirty()
+    }
+
+    /// The loop turn's crash snapshot refresh alone (`run` ends each turn with it).
+    pub fn test_crash_snapshot(&mut self) {
+        self.update_crash_snapshot();
     }
 
     /// Fires the quick-suggestion timer as the event loop would at `now`.

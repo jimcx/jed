@@ -70,6 +70,25 @@ struct Doc {
 }
 
 impl State {
+    /// Tests: a document of buffer `id` whose tokens are due at `at`.
+    #[cfg(test)]
+    pub fn test_arm(&mut self, id: BufferId, at: Instant) {
+        self.docs.insert(
+            id,
+            Doc {
+                server: ServerId::none(),
+                language: Language::default(),
+                path: PathBuf::new(),
+                seen: 0,
+                deadline: Some(at),
+                result_id: None,
+                data: Vec::new(),
+                decoding: false,
+                again: false,
+            },
+        );
+    }
+
     pub fn deadline(&self) -> Option<Instant> {
         self.docs.values().filter_map(|d| d.deadline).min()
     }

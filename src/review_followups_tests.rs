@@ -552,3 +552,72 @@ async fn review_followups_current_match_is_only_the_exact_primary_selection() {
     assert_eq!(&b[4..6], &[current; 2], "the exactly selected match is the current one");
     assert_eq!(&b[0..2], &[other; 2]);
 }
+
+// Subtask e: the crash snapshot is rebuilt only when a dirty buffer's text changed.
+fn set_dirty_calls() -> usize {
+    crate::panic::SET_DIRTY_CALLS.with(|c| c.get())
+}
+
+async fn turn(app: &mut App) {
+    app.test_turn(std::time::Duration::from_millis(1)).await;
+    app.test_crash_snapshot();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_followups_crash_snapshot_skips_turns_without_an_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = crate::workspace::normalize(dir.path());
+    std::fs::write(root.join("a.txt"), "hello\n").unwrap();
+    let mut app = test_app(&root, Buffer::open(&root.join("a.txt")).unwrap());
+    app.state_dir = Some(root.join("state"));
+    app.test_start();
+
+    turn(&mut app).await;
+    let base = set_dirty_calls();
+    for _ in 0..5 {
+        turn(&mut app).await;
+    }
+    assert_eq!(set_dirty_calls(), base, "idle turns leave the snapshot alone");
+
+    app.type_text("x");
+    turn(&mut app).await;
+    assert_eq!(set_dirty_calls(), base + 1, "an edit refreshes it");
+    for _ in 0..3 {
+        turn(&mut app).await;
+    }
+    assert_eq!(set_dirty_calls(), base + 1, "and the next turns don't");
+
+    app.type_text("y");
+    turn(&mut app).await;
+    assert_eq!(set_dirty_calls(), base + 2, "each further edit does");
+
+    app.test_execute(crate::command::Command::Save);
+    assert!(app.settle(|a| !a.active_buffer().unwrap().is_dirty()).await);
+    turn(&mut app).await;
+    assert_eq!(set_dirty_calls(), base + 3, "a saved buffer leaves the snapshot");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_followups_crash_snapshot_follows_the_root_and_the_state_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = crate::workspace::normalize(dir.path());
+    std::fs::write(root.join("a.txt"), "hello\n").unwrap();
+    let mut app = test_app(&root, Buffer::open(&root.join("a.txt")).unwrap());
+    app.state_dir = Some(root.join("state"));
+    app.test_start();
+    app.type_text("x");
+    turn(&mut app).await;
+    let base = set_dirty_calls();
+    turn(&mut app).await;
+    assert_eq!(set_dirty_calls(), base, "nothing changed");
+
+    app.workspace.root = root.join("other");
+    turn(&mut app).await;
+    assert_eq!(set_dirty_calls(), base + 1, "a new workspace root resends the snapshot");
+    turn(&mut app).await;
+    assert_eq!(set_dirty_calls(), base + 1);
+
+    app.state_dir = Some(root.join("state2"));
+    turn(&mut app).await;
+    assert_eq!(set_dirty_calls(), base + 2, "a new state dir does too");
+}
