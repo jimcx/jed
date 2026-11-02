@@ -23,6 +23,31 @@ const COUNT_WIDTH: u16 = 14;
 const HEX_COUNT_WIDTH: u16 = 17;
 const TOGGLES: [&str; 4] = ["Aa", "ab", ".*", "0x"];
 
+/// Rows the widget takes over `area` while the editor is scrolled all the way to the top (else 0): the
+/// editor pads its top by this much so line 1 stays visible; scrolled down, the widget floats over text.
+pub fn rows(app: &App, area: Rect) -> u16 {
+    let hex = app.active_hex();
+    let has_tab = app.group().active_tab().is_some();
+    if (hex.is_none() && !has_tab) || !app.find.visible || area.width < 24 || area.height < 3 {
+        return 0;
+    }
+    let at_top = match hex {
+        Some(h) => h.top == 0,
+        None => app
+            .group()
+            .active_tab()
+            .is_some_and(|t| t.view.top_line() == 0 && t.view.top_row() == 0),
+    };
+    if !at_top {
+        return 0;
+    }
+    let error = match hex {
+        Some(_) => app.find.hex.error().is_some(),
+        None => app.find.error().is_some(),
+    };
+    1 + u16::from(app.find.replace_visible && hex.is_none()) + u16::from(error)
+}
+
 /// Draws the widget over `area` (the active group's editor) if it's open; returns where it is.
 pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
     let find = &app.find;

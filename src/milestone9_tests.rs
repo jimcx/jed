@@ -2573,8 +2573,8 @@ async fn milestone_9_hover_popup_over_the_find_widget() {
     let wide = "w".repeat(editor.width as usize - 4);
     fake.respond("textDocument/hover", json!({ "contents": wide }));
     app.press(K::Char('f'), cmd());
-    put_cursor(&mut app, text.find("line 3").unwrap());
-    let (x, y) = find_cells(&term, "line 3").unwrap();
+    put_cursor(&mut app, text.find("line 2").unwrap());
+    let (x, y) = find_cells(&term, "line 2").unwrap();
     click(&mut app, (x, y));
     assert_eq!(app.ui.focus, crate::app::Focus::Editor);
     assert!(app.find.visible);

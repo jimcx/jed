@@ -204,6 +204,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
                     Some((i + 1).to_string())
                 }
             });
+        let find_pad = if is_active && !terminal {
+            find::rows(app, editor_area).min(editor_area.height.saturating_sub(1))
+        } else {
+            0
+        };
         // Long lines wrap at the editor's width (the effective `word_wrap` setting).
         let wrapping = app.word_wrap() == WordWrap::On;
         let Some(group) = (if terminal {
@@ -235,6 +240,17 @@ pub fn render(f: &mut Frame, app: &mut App) {
             editor_area.y += 1;
             editor_area.height -= 1;
         }
+
+        // The find widget covers the active editor's top rows: start the editor below them.
+        if find_pad > 0 {
+            let pad = Rect {
+                height: find_pad,
+                ..editor_area
+            };
+            f.buffer_mut().set_style(pad, editor_bg);
+        }
+        editor_area.y += find_pad;
+        editor_area.height -= find_pad;
 
         // A text, diff, hex or shell tab keeps the editor's last column for its scroll bar.
         let mut bar = if group.tabs.is_empty() {
@@ -525,13 +541,19 @@ pub fn render(f: &mut Frame, app: &mut App) {
             let scroll = crate::scrollbar::Scroll::columns(&w, width, left);
             hscroll_hit = Some(scrollbar::render_row(out, track, scroll, hlook, editor_bg, &app.theme));
         }
+        // Hit-testing and popups use the whole editor, the find widget's rows included.
+        let full_area = Rect {
+            y: editor_area.y - find_pad,
+            height: editor_area.height + find_pad,
+            ..editor_area
+        };
         if is_active && !terminal {
-            active_editor = Some(editor_area);
+            active_editor = Some(full_area);
         }
         hits.groups.push(GroupHit {
             id,
             tab_bar,
-            editor: editor_area,
+            editor: full_area,
             text,
             tabs: tabs.tabs,
             tab_arrows: tabs.arrows,
