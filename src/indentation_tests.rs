@@ -351,13 +351,14 @@ fn milestone_indentation_budget_detect_10mb() {
     let each = start.elapsed() / runs;
     println!("indentation guess on 10 MB: {each:?}");
     let budget = if cfg!(debug_assertions) {
-        Duration::from_millis(100)
+        Duration::from_millis(400)
     } else {
         Duration::from_millis(5)
     };
-    // FLAKE: 2026-10-25, one guess took 131.6 ms (debug budget 100 ms) while another checkout's
-    // `cargo test` was running concurrently; it passes on its own. The timing is already in the
-    // failure message; dump the load so a recurrence shows whether it was contention.
+    // FLAKE: 2026-10-25, one guess took 131.6 ms, and again 107 ms on 2026-11-03 (debug budget was
+    // 100 ms) while other `cargo test` runs were going; it passes on its own. The debug budget is
+    // now 400 ms (a full 10 MB scan in debug is well over a second, so it still catches that).
+    // Dump the load so a recurrence shows whether it was contention.
     if each >= budget {
         #[cfg(target_os = "linux")]
         let load = std::fs::read_to_string("/proc/loadavg").unwrap_or_default();
