@@ -12294,3 +12294,336 @@ mod reopen_closed_tab {
         assert_eq!(open_names(&app), ["c.txt", "d.txt"]);
     }
 }
+
+/// More line commands: delete line, select line, join lines, insert line below / above, each at
+/// every selection and one undo step.
+mod more_line_commands {
+    use std::time::{Duration, Instant};
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::buffer::pos::ByteIdx;
+    use crate::command::Command;
+    use crate::config::keymap::{Keymap, Platform};
+    use crate::milestone_tests::test_app;
+    use crate::pairs::tests::show;
+    use crate::selection::{Selection, Selections};
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    /// The app on `marked`'s text (`|` cursors, `«…»` selections).
+    fn open(dir: &tempfile::TempDir, marked: &str) -> App {
+        let (mut text, mut list, mut anchor) = (String::new(), Vec::new(), None);
+        for c in marked.chars() {
+            match c {
+                '|' => list.push(Selection::cursor(ByteIdx(text.len()))),
+                '«' => anchor = Some(text.len()),
+                '»' => list.push(Selection::new(ByteIdx(anchor.take().unwrap()), ByteIdx(text.len()))),
+                c => text.push(c),
+            }
+        }
+        let mut app = test_app(dir.path(), Buffer::from_str(&text));
+        app.active_mut().unwrap().1.selections = Selections::new(list, 0);
+        app
+    }
+
+    fn shown(app: &mut App) -> String {
+        let (buf, view) = app.active_mut().unwrap();
+        show(buf, view)
+    }
+
+    fn text(app: &App) -> String {
+        app.active_buffer().unwrap().rope.to_string()
+    }
+
+    fn undo(app: &mut App) {
+        app.press(K::Char('z'), cmd());
+    }
+
+    fn delete_line(app: &mut App) {
+        app.press(K::Char('k'), cmd() | M::SHIFT);
+    }
+
+    #[test]
+    fn delete_line_removes_the_lines_and_keeps_the_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "one\nt|wo\nthree\nfour\n");
+        delete_line(&mut app);
+        assert_eq!(shown(&mut app), "one\nt|hree\nfour\n");
+        // Two cursors on one line and neighbouring lines make one block; another block below.
+        let mut app = open(&dir, "a|a\nb|b|b\nc|c\nd\ne|e\nf\n");
+        delete_line(&mut app);
+        assert_eq!(shown(&mut app), "d|\nf|\n");
+        // A selection over lines deletes each line it touches.
+        let mut app = open(&dir, "a\n«b\nc»\nd\n");
+        delete_line(&mut app);
+        assert_eq!(shown(&mut app), "a\nd|\n");
+    }
+
+    #[test]
+    fn delete_last_line_takes_the_break_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "abc\nde|f");
+        delete_line(&mut app);
+        assert_eq!(shown(&mut app), "ab|c");
+        let mut app = open(&dir, "only|");
+        delete_line(&mut app);
+        assert_eq!(shown(&mut app), "|");
+    }
+
+    #[test]
+    fn delete_line_is_one_undo_step_and_leaves_read_only_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "a|\nb|\nc\n");
+        delete_line(&mut app);
+        assert_eq!(text(&app), "c\n");
+        undo(&mut app);
+        assert_eq!(shown(&mut app), "a|\nb|\nc\n");
+        let mut app = open(&dir, "a|\nb\n");
+        app.active_mut().unwrap().0.read_only = Some("test".into());
+        delete_line(&mut app);
+        app.test_execute(Command::JoinLines);
+        app.press(K::Enter, cmd());
+        app.press(K::Enter, cmd() | M::SHIFT);
+        assert_eq!(shown(&mut app), "a|\nb\n");
+        assert!(!app.active_buffer().unwrap().is_dirty());
+    }
+
+    #[test]
+    fn select_line_grows_by_a_line_each_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "one\nt|wo\nthree\nfour");
+        app.press(K::Char('l'), cmd());
+        assert_eq!(shown(&mut app), "one\n«two\n»three\nfour");
+        app.press(K::Char('l'), cmd());
+        assert_eq!(shown(&mut app), "one\n«two\nthree\n»four");
+        app.press(K::Char('l'), cmd());
+        assert_eq!(shown(&mut app), "one\n«two\nthree\nfour»");
+        assert!(!app.active_buffer().unwrap().is_dirty());
+        // Two cursors on one line and one further down.
+        let mut app = open(&dir, "a|b|c\nd\ne|f\n");
+        app.press(K::Char('l'), cmd());
+        assert_eq!(shown(&mut app), "«abc\n»d\n«ef\n»");
+    }
+
+    #[test]
+    fn join_lines_replaces_the_break_and_indent_with_one_space() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "foo|\n    bar\nbaz\n");
+        app.test_execute(Command::JoinLines);
+        assert_eq!(shown(&mut app), "foo| bar\nbaz\n");
+        // No space before ')', after an empty line, or before an empty one.
+        for (marked, want) in [("f(a|\n  )\n", "f(a)\n"), ("|\nb\n", "b\n"), ("b|\n\nc", "b\nc")] {
+            let mut app = open(&dir, marked);
+            app.test_execute(Command::JoinLines);
+            assert_eq!(text(&app), want, "{marked:?}");
+        }
+    }
+
+    #[test]
+    fn join_lines_over_a_selection_joins_everything_it_spans() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "«a\n b\n\tc»\nd\n");
+        app.test_execute(Command::JoinLines);
+        assert_eq!(text(&app), "a b c\nd\n");
+        undo(&mut app);
+        assert_eq!(text(&app), "a\n b\n\tc\nd\n");
+        // On the last line there is nothing to join.
+        let mut app = open(&dir, "a\nb|");
+        app.test_execute(Command::JoinLines);
+        assert_eq!(shown(&mut app), "a\nb|");
+        assert!(!app.active_buffer().unwrap().is_dirty());
+    }
+
+    #[test]
+    fn join_lines_at_many_cursors_is_one_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "a|\nb\n\nc|\nd\ne\n");
+        app.test_execute(Command::JoinLines);
+        assert_eq!(shown(&mut app), "a| b\n\nc| d\ne\n");
+        undo(&mut app);
+        assert_eq!(text(&app), "a\nb\n\nc\nd\ne\n");
+    }
+
+    #[test]
+    fn insert_line_below_keeps_indentation_from_any_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "fn f() {\n    le|t x;\n}\n");
+        app.press(K::Enter, cmd());
+        assert_eq!(shown(&mut app), "fn f() {\n    let x;\n    |\n}\n");
+        undo(&mut app);
+        assert_eq!(text(&app), "fn f() {\n    let x;\n}\n");
+        // Two cursors on one line make one new line; a selection takes the line it ends on.
+        let mut app = open(&dir, "a|b|c\n«d\ne»\nf");
+        app.press(K::Enter, cmd());
+        assert_eq!(shown(&mut app), "abc\n|\nd\ne\n|\nf");
+    }
+
+    #[test]
+    fn insert_line_below_copies_indentation_with_auto_indent_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "fn f() {\n    le|t x;\n}\n");
+        app.settings.auto_indent = false;
+        app.press(K::Enter, cmd());
+        assert_eq!(shown(&mut app), "fn f() {\n    let x;\n    |\n}\n");
+        undo(&mut app);
+        assert_eq!(text(&app), "fn f() {\n    let x;\n}\n");
+        // After a bracket, auto-indent would add a level; off, only the copy.
+        let mut app = open(&dir, "a {|\n\tb|\n");
+        app.settings.auto_indent = false;
+        app.press(K::Enter, cmd());
+        assert_eq!(shown(&mut app), "a {\n|\n\tb\n\t|\n");
+    }
+
+    #[test]
+    fn select_line_edge_cases() {
+        let dir = tempfile::tempdir().unwrap();
+        // Starting mid-line and ending at a line start doesn't take that last line.
+        let mut app = open(&dir, "a«bc\n»def\n");
+        app.press(K::Char('l'), cmd());
+        assert_eq!(shown(&mut app), "«abc\n»def\n");
+        // A selection of a whole line plus its break grows by the next.
+        app.press(K::Char('l'), cmd());
+        assert_eq!(shown(&mut app), "«abc\ndef\n»");
+    }
+
+    #[test]
+    fn join_lines_adds_no_space_after_a_trailing_blank() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "a |\n  b\n");
+        app.test_execute(Command::JoinLines);
+        assert_eq!(text(&app), "a b\n");
+    }
+
+    #[test]
+    fn insert_line_below_a_selection_ending_at_line_start_skips_that_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "«a\nb\n»c\n");
+        app.press(K::Enter, cmd());
+        assert_eq!(shown(&mut app), "a\nb\n|\nc\n");
+    }
+
+    #[test]
+    fn insert_line_above_keeps_indentation_and_is_one_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open(&dir, "fn f() {\n\tle|t x;\n}\n");
+        app.press(K::Enter, cmd() | M::SHIFT);
+        assert_eq!(shown(&mut app), "fn f() {\n\t|\n\tlet x;\n}\n");
+        undo(&mut app);
+        assert_eq!(shown(&mut app), "fn f() {\n\tle|t x;\n}\n");
+        let mut app = open(&dir, "a|\nb\nc|c|\n");
+        app.press(K::Enter, cmd() | M::SHIFT);
+        assert_eq!(shown(&mut app), "|\na\nb\n|\ncc\n");
+        let mut app = open(&dir, "  x|");
+        app.press(K::Enter, cmd() | M::SHIFT);
+        assert_eq!(shown(&mut app), "  |\n  x");
+    }
+
+    #[test]
+    fn delete_line_cursor_positions_after_earlier_blocks_removed_text() {
+        let dir = tempfile::tempdir().unwrap();
+        // The last block (no line after it) lands on the line before, after the first block's removal.
+        let mut app = open(&dir, "a|\nbb\nccc\ndd|d");
+        delete_line(&mut app);
+        assert_eq!(shown(&mut app), "b|b\ncc|c");
+        // Middle blocks land on the line after, keeping the column.
+        let mut app = open(&dir, "a|\nbbb\nc|c\ndddd\ne|e\nffff");
+        delete_line(&mut app);
+        assert_eq!(shown(&mut app), "b|bb\nd|ddd\nf|fff");
+    }
+
+    #[test]
+    fn select_line_is_its_own_undo_step() {
+        let dir = tempfile::tempdir().unwrap();
+        // On an empty last line Cmd+L changes nothing in the selection, so only the seal
+        // keeps the typing before and after it apart.
+        let mut app = open(&dir, "|");
+        app.type_text("a");
+        app.press(K::Enter, M::NONE);
+        app.press(K::Char('l'), cmd());
+        app.type_text("b");
+        assert_eq!(text(&app), "a\nb");
+        undo(&mut app);
+        assert_eq!(text(&app), "a\n");
+    }
+
+    #[test]
+    fn join_lines_key_is_ctrl_j_on_mac_only() {
+        for (platform, joins) in [(Platform::MacOs, true), (Platform::Linux, false)] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = open(&dir, "a|\nb\n");
+            app.keymap = Keymap::default_for(platform);
+            app.press(K::Char('j'), M::CONTROL | M::SHIFT);
+            assert_eq!(text(&app), "a\nb\n", "{platform:?} Ctrl+Shift+J");
+            app.press(K::Char('j'), M::CONTROL);
+            assert_eq!(text(&app) == "a b\n", joins, "{platform:?} Ctrl+J");
+        }
+    }
+
+    #[test]
+    fn default_bindings() {
+        for platform in [Platform::MacOs, Platform::Linux] {
+            let km = Keymap::default_for(platform);
+            for c in [
+                Command::DeleteLine,
+                Command::SelectLine,
+                Command::InsertLineBelow,
+                Command::InsertLineAbove,
+            ] {
+                assert!(Command::all().contains(&c));
+                assert!(km.binding_for(c).is_some(), "{platform:?} {c:?}");
+            }
+        }
+        assert!(
+            Keymap::default_for(Platform::MacOs)
+                .binding_for(Command::JoinLines)
+                .is_some()
+        );
+        assert!(
+            Keymap::default_for(Platform::Linux)
+                .binding_for(Command::JoinLines)
+                .is_none()
+        );
+    }
+
+    /// Delete line, join lines and both inserts at 31k cursors (one per line) plus undo: only
+    /// catches going quadratic in debug builds.
+    #[test]
+    fn milestone_more_line_commands_scale_with_many_cursors() {
+        let dir = tempfile::tempdir().unwrap();
+        let original: String = (0..31_000).map(|i| format!("  line {i}\n")).collect();
+        let mut app = test_app(dir.path(), Buffer::from_str(&original));
+        let start = Instant::now();
+        for c in [
+            Command::DeleteLine,
+            Command::JoinLines,
+            Command::InsertLineBelow,
+            Command::InsertLineAbove,
+        ] {
+            let (buf, view) = app.active_mut().unwrap();
+            let mut at = 0;
+            let list = buf
+                .rope
+                .to_string()
+                .split_inclusive('\n')
+                .map(|l| {
+                    at += l.len();
+                    Selection::cursor(ByteIdx(at - 2))
+                })
+                .collect();
+            view.selections = Selections::new(list, 0);
+            app.test_execute(c);
+            undo(&mut app);
+            assert_eq!(text(&app), original, "{c:?}");
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "{:?}", start.elapsed());
+    }
+}

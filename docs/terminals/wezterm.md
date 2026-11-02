@@ -31,6 +31,7 @@ config.send_composed_key_when_right_alt_is_pressed = false
 local release = {
   { 'a', 'CMD' }, { 'z', 'CMD' }, { 'z', 'CMD|SHIFT' },
   { 'c', 'CMD' }, { 'x', 'CMD' }, { '/', 'CMD' }, { ']', 'CMD' }, { '[', 'CMD' },
+  { 'k', 'CMD|SHIFT' }, { 'l', 'CMD' }, { 'Enter', 'CMD' }, { 'Enter', 'CMD|SHIFT' },
   { 'i', 'CMD|ALT' }, { '.', 'CMD' }, { 'v', 'CMD|ALT' },
   { 'd', 'CMD' }, { 'l', 'CMD|SHIFT' }, { 'd', 'CMD|ALT' }, { 'u', 'CMD' },
   { 'UpArrow', 'CMD|ALT' }, { 'DownArrow', 'CMD|ALT' },

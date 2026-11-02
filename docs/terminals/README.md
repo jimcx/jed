@@ -32,6 +32,10 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+c` | Copy (whole line if nothing selected) | editor |
 | `cmd+x` | Cut (whole line if nothing selected) | editor |
 | `cmd+/` | Toggle line comment | editor |
+| `cmd+shift+k` | Delete line | editor |
+| `cmd+l` | Select line (again: the next line too) | editor |
+| `cmd+enter` | Insert line below | editor |
+| `cmd+shift+enter` | Insert line above | editor |
 | `cmd+]` | Indent lines | editor |
 | `cmd+[` | Outdent lines (also Shift+Tab) | editor |
 | `cmd+alt+i` | Show hover (VS Code: Cmd+K Cmd+I; no chords) | editor |

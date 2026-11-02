@@ -26,6 +26,10 @@ map --when-focus-on var:jed cmd+shift+z
 map --when-focus-on var:jed cmd+c
 map --when-focus-on var:jed cmd+x
 map --when-focus-on var:jed cmd+slash
+map --when-focus-on var:jed cmd+shift+k
+map --when-focus-on var:jed cmd+l
+map --when-focus-on var:jed cmd+enter
+map --when-focus-on var:jed cmd+shift+enter
 map --when-focus-on var:jed cmd+]
 map --when-focus-on var:jed cmd+[
 map --when-focus-on var:jed cmd+alt+i

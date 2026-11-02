@@ -98,6 +98,15 @@ pub enum Command {
     CopyLinesDown,
     /// Cmd+/: toggle the line comment on the lines of every selection.
     CommentLine,
+    /// Cmd+Shift+K: delete the lines of every selection.
+    DeleteLine,
+    /// Cmd+L: select the lines of every selection (again: the next line too).
+    SelectLine,
+    /// Ctrl+J (macOS): join each selection's lines with the next line.
+    JoinLines,
+    /// Cmd+Enter / Cmd+Shift+Enter: a new line below / above every selection's lines.
+    InsertLineBelow,
+    InsertLineAbove,
     /// Cmd+]: indent the lines of every selection by one level (Tab over lines does too).
     IndentLines,
     /// Cmd+[ / Shift+Tab: outdent the lines of every selection by one level.
@@ -973,6 +982,11 @@ impl Command {
             Command::CopyLinesUp,
             Command::CopyLinesDown,
             Command::CommentLine,
+            Command::DeleteLine,
+            Command::SelectLine,
+            Command::JoinLines,
+            Command::InsertLineBelow,
+            Command::InsertLineAbove,
             Command::IndentLines,
             Command::OutdentLines,
             Command::Undo,
@@ -1154,6 +1168,11 @@ impl Command {
             Command::CopyLinesUp => "edit.copyLinesUp".into(),
             Command::CopyLinesDown => "edit.copyLinesDown".into(),
             Command::CommentLine => "edit.commentLine".into(),
+            Command::DeleteLine => "editor.action.deleteLines".into(),
+            Command::SelectLine => "expandLineSelection".into(),
+            Command::JoinLines => "editor.action.joinLines".into(),
+            Command::InsertLineBelow => "editor.action.insertLineAfter".into(),
+            Command::InsertLineAbove => "editor.action.insertLineBefore".into(),
             Command::IndentLines => "edit.indentLines".into(),
             Command::OutdentLines => "edit.outdentLines".into(),
             Command::Undo => "edit.undo".into(),
@@ -1558,6 +1577,11 @@ impl Command {
             Command::CopyLinesUp => "Edit: Copy Line Up",
             Command::CopyLinesDown => "Edit: Copy Line Down",
             Command::CommentLine => "Edit: Toggle Line Comment",
+            Command::DeleteLine => "Edit: Delete Line",
+            Command::SelectLine => "Selection: Select Line",
+            Command::JoinLines => "Edit: Join Lines",
+            Command::InsertLineBelow => "Edit: Insert Line Below",
+            Command::InsertLineAbove => "Edit: Insert Line Above",
             Command::IndentLines => "Edit: Indent Line",
             Command::OutdentLines => "Edit: Outdent Line",
             Command::Undo => "Edit: Undo",
@@ -1950,6 +1974,11 @@ mod tests {
             Command::FindInFiles => 48,
             Command::Search(_) => 49,
             Command::CommentLine => 50,
+            Command::DeleteLine => 142,
+            Command::SelectLine => 143,
+            Command::JoinLines => 144,
+            Command::InsertLineBelow => 145,
+            Command::InsertLineAbove => 146,
             Command::OpenUserSettings => 51,
             Command::OpenWorkspaceSettings => 139,
             Command::KeyboardShortcuts => 122,

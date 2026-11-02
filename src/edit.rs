@@ -271,6 +271,23 @@ pub fn run(cmd: Command, buf: &mut Buffer, view: &mut View, s: &Settings) -> boo
         Command::CopyLinesUp => lines::copy_lines(buf, view, false),
         Command::CopyLinesDown => lines::copy_lines(buf, view, true),
         Command::CommentLine => comment::toggle(buf, view, s.tab_width),
+        Command::DeleteLine => lines::delete_lines(buf, view, s.tab_width),
+        Command::SelectLine => {
+            lines::select_lines(&buf.rope, view);
+            buf.seal_undo();
+        }
+        Command::JoinLines => lines::join_lines(buf, view),
+        Command::InsertLineBelow => {
+            buf.seal_undo();
+            lines::to_line_ends(&buf.rope, view);
+            if s.auto_indent {
+                indent::newline(buf, view, s);
+            } else {
+                lines::insert_line_below_keep_indent(buf, view);
+            }
+            buf.seal_undo();
+        }
+        Command::InsertLineAbove => lines::insert_line_above(buf, view),
         Command::Merge(m) => merge_command(buf, view, m),
         _ => return false,
     }
@@ -294,6 +311,10 @@ pub fn is_edit(cmd: Command) -> bool {
             | Command::CopyLinesUp
             | Command::CopyLinesDown
             | Command::CommentLine
+            | Command::DeleteLine
+            | Command::JoinLines
+            | Command::InsertLineBelow
+            | Command::InsertLineAbove
             | Command::IndentLines
             | Command::OutdentLines
             | Command::Merge(

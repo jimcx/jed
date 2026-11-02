@@ -756,6 +756,10 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Up, alt | shift, Command::CopyLinesUp),
         (KeyCode::Down, alt | shift, Command::CopyLinesDown),
         (KeyCode::Char('/'), cmd, Command::CommentLine),
+        (KeyCode::Char('k'), cmd | shift, Command::DeleteLine),
+        (KeyCode::Char('l'), cmd, Command::SelectLine),
+        (KeyCode::Enter, cmd, Command::InsertLineBelow),
+        (KeyCode::Enter, cmd | shift, Command::InsertLineAbove),
         (KeyCode::Char(']'), cmd, Command::IndentLines),
         (KeyCode::Char('['), cmd, Command::OutdentLines),
         // No chords, so not VS Code's Cmd+K Cmd+I.
@@ -800,6 +804,8 @@ fn defaults(platform: Platform) -> Vec<Binding> {
     editor.push((KeyCode::Char('z'), toggle, Command::ToggleWordWrap));
     if mac {
         editor.push((KeyCode::Backspace, cmd, Command::DeleteToLineStart));
+        // VS Code's join lines; on Linux Ctrl+J is the panel, so it stays unbound there.
+        editor.push((KeyCode::Char('j'), ctrl, Command::JoinLines));
         // macOS's Emacs-style keys, as VS Code binds them on macOS (after Home / End / arrows /
         // Backspace / Delete, so the palette shows those).
         // Shift selects, as VS Code's Ctrl+Shift+A / E / B / F / P / N.

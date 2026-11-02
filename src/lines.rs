@@ -177,14 +177,228 @@ pub fn copy_lines(buf: &mut Buffer, view: &mut View, down: bool) {
 }
 
 fn finish(buf: &mut Buffer, view: &mut View, before: Selections, out: Vec<Selection>, changes: ChangeSet) {
+    let (primary, newest) = (before.primary_index(), before.newest_index());
+    finish_with(buf, view, before, out, changes, primary, newest);
+}
+
+/// `finish` for commands whose result has a different number of selections than before.
+fn finish_with(
+    buf: &mut Buffer,
+    view: &mut View,
+    before: Selections,
+    out: Vec<Selection>,
+    changes: ChangeSet,
+    primary: usize,
+    newest: usize,
+) {
     if changes.is_empty() {
         buf.seal_undo();
         return;
     }
-    let after = Selections::with_newest(out, before.primary_index(), before.newest_index());
+    let after = Selections::with_newest(out, primary, newest);
     buf.edit(changes, before, after.clone(), EditKind::Other);
     view.selections = after;
     view.reveal_cursor = true;
+}
+
+/// Cmd+Shift+K: deletes the lines of every selection (a block of neighbouring lines at once).
+/// Each block leaves a cursor at the same column of the line that followed it (of the one
+/// before for the last line, whose preceding break goes too).
+pub fn delete_lines(buf: &mut Buffer, view: &mut View, tab_width: usize) {
+    let rope = &buf.rope;
+    let last_line = pos::line_count(rope) - 1;
+    let before = view.selections.clone();
+    let sels = before.as_slice();
+    let blocks = blocks(rope, sels, true);
+    let mut walk = LineWalker::new(rope);
+    let mut changes = ChangeSet::with_capacity(blocks.len(), 0);
+    let mut out = Vec::with_capacity(blocks.len());
+    let (mut primary, mut newest) = (0, 0);
+    let (p, n) = (before.primary_index(), before.newest_index());
+    // Bytes removed by the blocks so far.
+    let mut removed = 0;
+    for b in blocks {
+        let head = sels[b.sels.end - 1].head;
+        let col = walk.line_at(head).col(head, tab_width);
+        let (cut_start, land) = if b.last < last_line {
+            let at = walk.line(b.last + 1).byte_at_col(col, tab_width).0;
+            (b.start, at - (b.next - b.start) - removed)
+        } else if b.first > 0 {
+            let prev = walk.line(b.first - 1);
+            (prev.end().0, prev.byte_at_col(col, tab_width).0 - removed)
+        } else {
+            (b.start, 0)
+        };
+        changes.push(ByteIdx(cut_start), ByteIdx(b.next), "");
+        removed += b.next - cut_start;
+        if b.sels.contains(&p) {
+            primary = out.len();
+        }
+        if b.sels.contains(&n) {
+            newest = out.len();
+        }
+        out.push(Selection::cursor(ByteIdx(land)));
+    }
+    finish_with(buf, view, before, out, changes, primary, newest);
+}
+
+/// Cmd+L: each selection becomes the whole lines it touches, line break included. One already
+/// covering whole lines grows by the next line. A selection that starts mid-line and ends at a
+/// line start doesn't take that last line.
+pub fn select_lines(rope: &Rope, view: &mut View) {
+    let mut walk = LineWalker::new(rope);
+    view.selections.transform(|s| {
+        let first = walk.line_at(s.start());
+        let (start, whole_start) = (first.start(), first.start() == s.start());
+        let end = walk.line_at(s.end());
+        let head = if !s.is_empty() && end.start() == s.end() && !whole_start {
+            end.start()
+        } else {
+            end.next()
+        };
+        Selection::new(start, head)
+    });
+    view.reveal_cursor = true;
+}
+
+/// Ctrl+J: joins each selection's lines with the next one (a cursor, or a selection within one
+/// line) or all the lines it spans: the break and the next line's leading whitespace become one
+/// space, none if either side is empty or the next line starts with `)`. The selections of a
+/// block become one cursor at its last join.
+pub fn join_lines(buf: &mut Buffer, view: &mut View) {
+    let rope = &buf.rope;
+    let last_line = pos::line_count(rope) - 1;
+    let before = view.selections.clone();
+    let sels = before.as_slice();
+    let blocks = blocks(rope, sels, true);
+    let mut walk = LineWalker::new(rope);
+    let mut changes = ChangeSet::with_capacity(blocks.len(), 0);
+    let mut out = Vec::with_capacity(sels.len());
+    let (mut primary, mut newest) = (0, 0);
+    let (p, n) = (before.primary_index(), before.newest_index());
+    let mut removed = 0;
+    for b in blocks {
+        let single = sels[b.sels.end - 1].start().0 >= walk.line(b.last).start().0;
+        let hi = (b.last + usize::from(single)).min(last_line);
+        if hi <= b.first {
+            // Nothing to join: the selections just shift.
+            if b.sels.contains(&p) {
+                primary = out.len() + p - b.sels.start;
+            }
+            if b.sels.contains(&n) {
+                newest = out.len() + n - b.sels.start;
+            }
+            out.extend(
+                sels[b.sels.clone()]
+                    .iter()
+                    .map(|s| shift(s, |p| ByteIdx(p.0 - removed))),
+            );
+            continue;
+        }
+        let first = walk.line(b.first);
+        let (mut cur_end, mut blank) = (first.end().0, first.text().is_empty());
+        let mut ends_ws = first.text().ends_with([' ', '\t']);
+        let mut join_at = 0;
+        for k in b.first + 1..=hi {
+            let l = walk.line(k);
+            let text = l.text();
+            let trimmed = text.trim_start_matches([' ', '\t']);
+            let to = l.start().0 + text.len() - trimmed.len();
+            let space = !trimmed.is_empty() && !blank && !ends_ws && !trimmed.starts_with(')');
+            changes.push(ByteIdx(cur_end), ByteIdx(to), if space { " " } else { "" });
+            join_at = cur_end - removed;
+            removed += to - cur_end - usize::from(space);
+            cur_end = l.end().0;
+            if !trimmed.is_empty() {
+                blank = false;
+                ends_ws = text.ends_with([' ', '\t']);
+            }
+        }
+        if b.sels.contains(&p) {
+            primary = out.len();
+        }
+        if b.sels.contains(&n) {
+            newest = out.len();
+        }
+        out.push(Selection::cursor(ByteIdx(join_at)));
+    }
+    finish_with(buf, view, before, out, changes, primary, newest);
+}
+
+/// Cmd+Enter, step one: every selection becomes a cursor at the end of the last line it
+/// touches (a selection ending at a line start doesn't take that line), for Enter to run.
+pub fn to_line_ends(rope: &Rope, view: &mut View) {
+    let mut walk = LineWalker::new(rope);
+    view.selections.transform(|s| {
+        let end = walk.line_at(s.end());
+        let at = if !s.is_empty() && end.start() == s.end() && end.index > 0 {
+            let index = end.index - 1;
+            walk.line(index).end()
+        } else {
+            end.end()
+        };
+        Selection::cursor(at)
+    });
+}
+
+/// Cmd+Enter with auto-indent off, after `to_line_ends`: a line break and a copy of the line's
+/// indentation at every cursor (what VS Code does whatever the setting).
+pub fn insert_line_below_keep_indent(buf: &mut Buffer, view: &mut View) {
+    let rope = &buf.rope;
+    let eol = buf.eol.as_str();
+    let before = view.selections.clone();
+    let mut walk = LineWalker::new(rope);
+    let mut changes = ChangeSet::with_capacity(before.len(), 0);
+    let mut out = Vec::with_capacity(before.len());
+    let mut text = String::new();
+    let mut delta = 0;
+    for s in before.iter() {
+        let line = walk.line_at(s.head);
+        let content = line.text();
+        let indent = &content[..content.len() - content.trim_start_matches([' ', '\t']).len()];
+        text.clear();
+        text.extend([eol, indent]);
+        changes.push(s.head, s.head, &text);
+        delta += text.len();
+        out.push(Selection::cursor(ByteIdx(s.head.0 + delta)));
+    }
+    finish(buf, view, before, out, changes);
+}
+
+/// Cmd+Shift+Enter: a new line above each selection's first line, with that line's indentation,
+/// and a cursor on it.
+pub fn insert_line_above(buf: &mut Buffer, view: &mut View) {
+    let rope = &buf.rope;
+    let eol = buf.eol.as_str();
+    let before = view.selections.clone();
+    let sels = before.as_slice();
+    let mut walk = LineWalker::new(rope);
+    let mut changes = ChangeSet::with_capacity(sels.len(), 0);
+    let mut out = Vec::with_capacity(sels.len());
+    let mut text = String::new();
+    // Bytes inserted so far, and the line last given a new one above (cursors sharing a line).
+    let mut delta = 0;
+    let mut done: Option<(usize, usize)> = None;
+    for s in sels {
+        let line = walk.line_at(s.start());
+        if let Some((index, land)) = done
+            && index == line.index
+        {
+            out.push(Selection::cursor(ByteIdx(land)));
+            continue;
+        }
+        let start = line.start().0;
+        let content = line.text();
+        let indent = &content[..content.len() - content.trim_start_matches([' ', '\t']).len()];
+        text.clear();
+        text.extend([indent, eol]);
+        changes.push(ByteIdx(start), ByteIdx(start), &text);
+        let land = start + delta + indent.len();
+        done = Some((line.index, land));
+        delta += text.len();
+        out.push(Selection::cursor(ByteIdx(land)));
+    }
+    finish(buf, view, before, out, changes);
 }
 
 #[cfg(test)]
@@ -248,6 +462,23 @@ mod tests {
             st("a\r\nb\nc", &[(3, 5)]),
             "the breaks stay where they were"
         );
+    }
+
+    #[test]
+    fn delete_join_and_insert_above_with_crlf() {
+        let (mut b, mut v) = setup("a\r\nb\r\nc", vec![(0, 0)]);
+        delete_lines(&mut b, &mut v, 4);
+        assert_eq!(state(&b, &v), st("b\r\nc", &[(0, 0)]));
+        let (mut b, mut v) = setup("a  \r\n  b\r\nc", vec![(0, 0)]);
+        join_lines(&mut b, &mut v);
+        assert_eq!(
+            state(&b, &v),
+            st("a  b\r\nc", &[(3, 3)]),
+            "no space after trailing blanks"
+        );
+        let (mut b, mut v) = setup(" a\r\nb", vec![(2, 2)]);
+        insert_line_above(&mut b, &mut v);
+        assert_eq!(state(&b, &v), st(" \r\n a\r\nb", &[(1, 1)]));
     }
 
     #[test]
