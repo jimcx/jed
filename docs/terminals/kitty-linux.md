@@ -24,6 +24,7 @@ map --when-focus-on var:jed ctrl+shift+l
 map --when-focus-on var:jed ctrl+shift+m
 map --when-focus-on var:jed ctrl+shift+p
 map --when-focus-on var:jed ctrl+shift+s
+map --when-focus-on var:jed ctrl+shift+t
 map --when-focus-on var:jed ctrl+shift+u
 map --when-focus-on var:jed ctrl+shift+z
 map --when-focus-on var:jed ctrl+shift+left

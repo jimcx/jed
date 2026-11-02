@@ -65,6 +65,7 @@ keybind = cmd+shift+s=unbind
 keybind = cmd+alt+s=unbind
 keybind = cmd+q=unbind
 keybind = cmd+w=unbind
+keybind = cmd+shift+t=unbind
 keybind = cmd+k=unbind
 keybind = cmd+b=unbind
 keybind = cmd+shift+e=unbind

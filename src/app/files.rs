@@ -125,7 +125,7 @@ impl App {
 
     pub(super) fn opened(&mut self, path: PathBuf, result: Result<Loaded, LoadError>) {
         let opened_path = path.clone();
-        if self.nav_opened(&path, &result) {
+        if self.nav_opened(&path, &result) || self.reopen_opened(&path, &result) {
             return;
         }
         // Recently used only once the load succeeded; a failed open must not land in the list.
@@ -405,6 +405,8 @@ impl App {
         if index >= g.tabs.len() {
             return;
         }
+        self.remember_closed(group, index);
+        let Some(g) = self.any_group_mut(group) else { return };
         let tab = g.close(index);
         let now_empty = g.tabs.is_empty();
         if let Some(buffer) = tab.buffer()

@@ -59,7 +59,7 @@ local release = {
   { 'PageUp', 'CMD|SHIFT' }, { 'PageDown', 'CMD|SHIFT' },
   { 'p', 'CMD|SHIFT' }, { ',', 'CMD' }, { ',', 'CMD|ALT' }, { 'p', 'CMD' },
   { 'j', 'CMD' }, { 'm', 'CMD|SHIFT' },
-  { 'u', 'CMD|SHIFT' },
+  { 'u', 'CMD|SHIFT' }, { 't', 'CMD|SHIFT' },
   { 'z', 'CMD|ALT' },
 }
 config.keys = config.keys or {}

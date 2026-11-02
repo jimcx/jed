@@ -12045,3 +12045,252 @@ mod tabs_at_bottom {
         assert_eq!(bottom.tab_bar.height, 1);
     }
 }
+
+mod reopen_closed_tab {
+    use std::path::{Path, PathBuf};
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::command::Command;
+
+    fn write(root: &Path, name: &str, text: &str) -> PathBuf {
+        let p = root.join(name);
+        std::fs::write(&p, text).unwrap();
+        p
+    }
+
+    fn lines() -> String {
+        (0..100).map(|i| format!("line {i}\n")).collect()
+    }
+
+    /// An app on `a.txt`, with `b.txt` and `c.txt` opened too (c active).
+    async fn app3(root: &Path) -> App {
+        let a = write(root, "a.txt", &lines());
+        let b = write(root, "b.txt", &lines());
+        let c = write(root, "c.txt", &lines());
+        let mut app = crate::milestone_tests::test_app(root, Buffer::open(&a).unwrap());
+        app.test_start();
+        for p in [b, c] {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            app.test_open_file(p);
+            assert!(app.settle(|a| active_name(a) == name).await);
+        }
+        app
+    }
+
+    fn draw(app: &mut App) {
+        let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+    }
+
+    fn open_names(app: &App) -> Vec<String> {
+        app.group()
+            .tabs
+            .iter()
+            .filter_map(|t| t.text())
+            .filter_map(|t| app.buffers.get(t.buffer))
+            .map(|b| b.name().to_string())
+            .collect()
+    }
+
+    fn active_name(app: &App) -> String {
+        match app.group().active_tab() {
+            Some(t) => app.buffers.get(t.buffer).unwrap().name().to_string(),
+            None => String::new(),
+        }
+    }
+
+    fn message(app: &App) -> String {
+        app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
+    }
+
+    fn cmd() -> M {
+        if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn close_then_reopen_restores_file_cursor_and_scroll() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        let mut app = app3(&root).await;
+        draw(&mut app);
+        app.press_file_end();
+        draw(&mut app);
+        let (head, top) = {
+            let t = app.group().active_tab().unwrap();
+            (t.view.selections.primary().head, t.view.top_line())
+        };
+        assert!(top > 0);
+        app.test_execute(Command::CloseTab);
+        assert_eq!(open_names(&app), ["a.txt", "b.txt"]);
+        // Cmd+Shift+T (Ctrl+Shift+T on Linux).
+        app.press(K::Char('t'), cmd() | M::SHIFT);
+        assert!(app.settle(|a| open_names(a).len() == 3).await);
+        assert_eq!(active_name(&app), "c.txt");
+        let t = app.group().active_tab().unwrap();
+        assert_eq!(t.view.selections.primary().head, head);
+        assert_eq!(t.view.top_line(), top);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reopens_newest_first_and_skips_deleted_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        let mut app = app3(&root).await;
+        app.test_execute(Command::CloseTab); // c
+        app.test_execute(Command::CloseTab); // b
+        app.test_execute(Command::CloseTab); // a
+        assert_eq!(app.closed.len(), 3);
+        // The newest is a; b (gone) is skipped when it comes up.
+        std::fs::remove_file(root.join("b.txt")).unwrap();
+        app.test_execute(Command::ReopenClosedTab);
+        assert!(app.settle(|a| open_names(a) == ["a.txt"]).await);
+        app.test_execute(Command::ReopenClosedTab);
+        assert!(app.settle(|a| open_names(a) == ["a.txt", "c.txt"]).await);
+        assert_eq!(app.closed.len(), 0);
+        app.test_execute(Command::ReopenClosedTab);
+        assert_eq!(message(&app), "No closed editors to reopen");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_stack_notifies() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        let a = write(&root, "a.txt", "x\n");
+        let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&a).unwrap());
+        app.test_start();
+        app.test_execute(Command::ReopenClosedTab);
+        assert_eq!(message(&app), "No closed editors to reopen");
+        assert_eq!(open_names(&app), ["a.txt"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn closing_through_the_save_prompt_is_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        let mut app = app3(&root).await;
+        app.type_text("zz");
+        app.test_execute(Command::CloseTab);
+        assert!(matches!(app.prompt, Some(crate::app::Prompt::SaveBeforeClose { .. })));
+        assert_eq!(app.closed.len(), 0);
+        // Discard.
+        app.press(K::Char('d'), M::NONE);
+        assert_eq!(open_names(&app), ["a.txt", "b.txt"]);
+        assert_eq!(app.closed.len(), 1);
+        app.test_execute(Command::ReopenClosedTab);
+        assert!(app.settle(|a| open_names(a).len() == 3).await);
+        // From disk: the discarded edit is gone.
+        let t = app.group().active_tab().unwrap();
+        assert!(!app.buffers.get(t.buffer).unwrap().rope.to_string().contains("zz"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn untitled_tabs_are_not_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        let a = write(&root, "a.txt", "x\n");
+        let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&a).unwrap());
+        app.test_start();
+        app.test_execute(Command::NewUntitledFile);
+        app.test_execute(Command::CloseTab);
+        assert_eq!(app.closed.len(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_open_file_is_only_activated() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        let mut app = app3(&root).await;
+        app.test_execute(Command::CloseTab); // c
+        app.test_open_file(root.join("c.txt"));
+        assert!(app.settle(|a| open_names(a).len() == 3).await);
+        app.test_execute(Command::ReopenClosedTab);
+        assert_eq!(open_names(&app), ["a.txt", "b.txt", "c.txt"]);
+        assert_eq!(active_name(&app), "c.txt");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn palette_command_reopens() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        let mut app = app3(&root).await;
+        app.test_execute(Command::CloseTab);
+        app.press(K::Char('p'), cmd() | M::SHIFT);
+        app.type_text("Reopen Closed Editor");
+        let p = app.palette.as_ref().unwrap();
+        assert_eq!(p.rows[p.selected].label, "View: Reopen Closed Editor");
+        app.press(K::Enter, M::NONE);
+        assert!(app.settle(|a| open_names(a).len() == 3).await);
+        assert_eq!(active_name(&app), "c.txt");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn closing_a_file_twice_keeps_one_entry_and_the_newest_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        let mut app = app3(&root).await;
+        app.test_execute(Command::CloseTab); // c
+        app.test_open_file(root.join("c.txt"));
+        assert!(app.settle(|a| active_name(a) == "c.txt").await);
+        app.press(K::Down, M::NONE);
+        app.press(K::Down, M::NONE);
+        let head = app.group().active_tab().unwrap().view.selections.primary().head;
+        app.test_execute(Command::CloseTab); // c again
+        assert_eq!(app.closed.len(), 1);
+        app.test_execute(Command::ReopenClosedTab);
+        assert!(app.settle(|a| open_names(a).len() == 3).await);
+        let t = app.group().active_tab().unwrap();
+        assert_eq!(t.view.selections.primary().head, head);
+        assert_eq!(app.closed.len(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_tabs_are_not_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        let a = write(&root, "a.txt", "x\n");
+        let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&a).unwrap());
+        let bytes = vec![0x7f, b'E', b'L', b'F', 0, 1, 2, 3];
+        let bin = root.join("x.bin");
+        std::fs::write(&bin, &bytes).unwrap();
+        app.open_initial_hex(bin, crate::hex::HexDoc::new(bytes));
+        app.test_start();
+        assert!(matches!(
+            app.group().tabs[app.group().active],
+            crate::group::Tab::Hex(_)
+        ));
+        let n = app.group().tabs.len();
+        app.test_execute(Command::CloseTab);
+        assert_eq!(app.group().tabs.len(), n - 1);
+        assert_eq!(app.closed.len(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reopens_in_its_group_when_it_still_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        let mut app = app3(&root).await;
+        app.test_execute(Command::SplitRight);
+        let other = app.groups.active;
+        // A second tab, so the right group survives closing it.
+        write(&root, "d.txt", &lines());
+        app.test_open_file(root.join("d.txt"));
+        assert!(app.settle(|a| active_name(a) == "d.txt").await);
+        app.test_execute(Command::CloseTab);
+        assert_eq!(app.closed.len(), 1);
+        app.test_execute(Command::FocusGroup(1));
+        assert_ne!(app.groups.active, other);
+        app.test_execute(Command::ReopenClosedTab);
+        assert!(app.settle(|a| active_name(a) == "d.txt").await);
+        assert_eq!(app.groups.active, other);
+        assert_eq!(open_names(&app), ["c.txt", "d.txt"]);
+    }
+}

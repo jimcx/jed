@@ -853,6 +853,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         // Works in any terminal, even without the kitty protocol.
         (KeyCode::Char('q'), ctrl, Command::Quit),
         (KeyCode::Char('w'), cmd, Command::CloseTab),
+        (KeyCode::Char('t'), cmd | shift, Command::ReopenClosedTab),
         (KeyCode::Char('b'), cmd, Command::ToggleSidebar),
         (KeyCode::Char('e'), cmd | shift, Command::FocusExplorer),
         // Ctrl on macOS too, as in VS Code.

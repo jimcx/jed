@@ -37,6 +37,7 @@ mod prompt;
 mod quick_diff;
 mod recent;
 mod rename;
+mod reopen;
 mod replace;
 mod scm;
 mod scrollbar;
@@ -599,6 +600,8 @@ pub struct App {
     pub grammars: Vec<(String, crate::tools_view::GrammarState)>,
     /// Back / forward navigation's history (`app/navigation.rs`).
     pub nav: navigation::NavState,
+    /// Closed file tabs for Reopen Closed Editor (`app/reopen.rs`).
+    pub closed: reopen::ClosedTabs,
     /// The last command `execute` ran, for tests.
     #[cfg(test)]
     pub last_command: Option<Command>,
@@ -763,6 +766,7 @@ impl App {
             syntax_plugins: Vec::new(),
             grammars: Vec::new(),
             nav: Default::default(),
+            closed: Default::default(),
             #[cfg(test)]
             last_command: None,
             #[cfg(test)]
@@ -1459,6 +1463,7 @@ impl App {
                 let (g, i) = (self.tab_groups().active, self.tab_groups().active_group().active);
                 self.close_tab(g, i)
             }
+            Command::ReopenClosedTab => self.reopen_closed_tab(),
             Command::NextTab => self.cycle_tab(1),
             Command::PrevTab => self.cycle_tab(-1),
             Command::ToggleSidebar => {

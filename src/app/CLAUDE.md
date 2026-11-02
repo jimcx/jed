@@ -10,6 +10,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `prompt.rs` — `Prompt`, the modal dialogs (save before close / quit / stage, trust, input, confirm delete / replace / stage-a-conflicted-file, restore backups, the shell integration wizard)
 - `side.rs` — explorer commands, directory listings, file ops, fs-change batching (`flush_fs_changes`, which also reloads `.workspace`, `settings.toml` and `keybindings.toml`), the side panel
 - `navigation.rs` — back / forward (`app.nav`): `nav_begin` / `nav_end`, `nav_jump`, Go Back / Forward
+- `reopen.rs` — Reopen Closed Editor: the stack of closed file tabs (`app.closed`), reopening with cursor and scroll
 - `palette.rs` — opening, keys and accepting the command palette and its pickers; a command picked there is recorded in `mru` (`App::mru.commands`), and an empty query lists the recent commands and files first (`palette::command_rows_with_recent` / `file_rows_with_recent`)
 - `cheatsheet.rs` — the keyboard cheat sheet overlay (`app.cheat_sheet`): toggle, its keys (all swallowed) and mouse
 - `keys.rs` — the Keyboard Shortcuts view (`app.keys`, model `crate::keys`): toggle, its search (typed keys, Backspace) and record-keys mode (Alt+K; the next combo filters), Enter's `keybindings.toml` stub (written off-thread, then opened), the selection keys, and the mouse (wheel, scroll bar, a press outside closes)
