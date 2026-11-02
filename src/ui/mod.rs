@@ -167,13 +167,20 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let bulb = app.bulb_line();
     app.code_actions.bulb_hit = None;
     for (id, rect) in cells {
+        let bar_h = rect.height.min(1);
+        let at_bottom = app.settings.tabs_at_bottom;
         let tab_bar = Rect {
-            height: rect.height.min(1),
+            y: if at_bottom {
+                rect.y + rect.height - bar_h
+            } else {
+                rect.y
+            },
+            height: bar_h,
             ..rect
         };
         let mut editor_area = Rect {
-            y: rect.y + tab_bar.height,
-            height: rect.height - tab_bar.height,
+            y: if at_bottom { rect.y } else { rect.y + bar_h },
+            height: rect.height - bar_h,
             ..rect
         };
         let terminal = crate::group::is_terminal_group(id);

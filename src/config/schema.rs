@@ -167,6 +167,11 @@ const SETTINGS_KEYS: &[KeySchema] = &[
         ValueKind::Enum(WRAP),
         "Wrap long lines at the editor's width",
     ),
+    key(
+        "tabs_at_bottom",
+        ValueKind::Bool,
+        "Dock each group's tab bar at the bottom of the group",
+    ),
     key("cursor_style", ValueKind::Enum(CURSOR_STYLES), "The cursor's shape"),
     key("cursor_blinking", ValueKind::Bool, "The cursor blinks"),
     key(

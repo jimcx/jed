@@ -55,6 +55,8 @@ pub struct Settings {
     /// Whether lines wider than the editor wrap onto screen rows (`wrap`): `[settings]
     /// word_wrap`. "View: Toggle Word Wrap" overrides it for the session (`App::word_wrap`).
     pub word_wrap: WordWrap,
+    /// Dock each group's tab bar at the bottom of the group instead of the top: `[settings] tabs_at_bottom`.
+    pub tabs_at_bottom: bool,
     /// The terminal cursor's shape (DECSCUSR, sent by `terminal::enter` and again when it
     /// changes) and secondary cursors' look (`ui::editor`): `[settings] cursor_style`.
     pub cursor_style: CursorStyle,
@@ -141,6 +143,7 @@ impl Default for Settings {
             quick_suggestions: true,
             render_whitespace: RenderWhitespace::All,
             word_wrap: WordWrap::Off,
+            tabs_at_bottom: false,
             cursor_style: CursorStyle::Line,
             cursor_blinking: true,
             hex_bytes_per_line: 32,

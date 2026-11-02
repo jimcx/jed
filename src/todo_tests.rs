@@ -12013,3 +12013,35 @@ PROFILE = "--release"
         assert!(app.message.as_ref().unwrap().text.contains("[environments."));
     }
 }
+
+/// `tabs_at_bottom`: the group's tab bar is drawn on the group's last row, the editor above it.
+mod tabs_at_bottom {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::buffer::Buffer;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tab_bar_docks_at_the_bottom_of_the_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        let path = root.join("a.txt");
+        std::fs::write(&path, "hello\n").unwrap();
+        let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&path).unwrap());
+        app.test_start();
+        let draw = |app: &mut crate::app::App| {
+            let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
+            term.draw(|f| crate::ui::render(f, app)).unwrap();
+            app.hits.group(app.groups.active).unwrap().clone()
+        };
+        let top = draw(&mut app);
+        assert_eq!(top.tab_bar.y, 0);
+        assert_eq!(top.editor.y, 1);
+
+        app.settings.tabs_at_bottom = true;
+        let bottom = draw(&mut app);
+        assert_eq!(bottom.editor.y, 0);
+        assert_eq!(bottom.tab_bar.y, bottom.editor.y + bottom.editor.height);
+        assert_eq!(bottom.tab_bar.height, 1);
+    }
+}

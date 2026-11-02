@@ -5,6 +5,7 @@
 //! |--------------------|------|-----------|----------------------------------------------------------------|
 //! | `tab_width`        | int  | 4         | Columns per tab stop (0 is ignored)                            |
 //! | `insert_spaces`    | bool | true      | Tab inserts spaces                                             |
+//! | `tabs_at_bottom`  | bool | false     | Dock each group's tab bar at the bottom of the group           |
 //! | `detect_indentation` | bool | true    | A file's own indentation (spaces / tabs, size) overrides the two above |
 //! | `syntax_max_bytes` | int  | 8388608   | No parse tree (no highlighting) past this size; 0: never parse |
 //! | `auto_close_pairs` | bool | true      | Brackets/quotes auto-close, type over, delete in pairs, wrap   |
@@ -68,6 +69,8 @@ pub struct SettingsOverrides {
     pub render_whitespace: Option<RenderWhitespace>,
     /// Whether long lines wrap at the editor's width (VS Code's `editor.wordWrap`).
     pub word_wrap: Option<WordWrap>,
+    /// Dock each group's tab bar at the bottom of the group.
+    pub tabs_at_bottom: Option<bool>,
     /// The cursor's shape (VS Code's `editor.cursorStyle`; `line` is its default bar).
     pub cursor_style: Option<CursorStyle>,
     /// The cursor blinks (VS Code's `editor.cursorBlinking`, here only on or off).
@@ -127,6 +130,9 @@ impl SettingsOverrides {
         }
         if let Some(mode) = self.render_whitespace {
             s.render_whitespace = mode;
+        }
+        if let Some(on) = self.tabs_at_bottom {
+            s.tabs_at_bottom = on;
         }
         if let Some(mode) = self.word_wrap {
             s.word_wrap = mode;
@@ -323,6 +329,7 @@ pub const TEMPLATE: &str = "\
 # quick_suggestions = true
 # render_whitespace = \"all\"  # none, boundary, selection, trailing or all
 # word_wrap = \"off\"  # off or on
+# tabs_at_bottom = false  # dock each group's tab bar at the bottom
 # cursor_style = \"line\"  # line, block or underline
 # cursor_blinking = true
 # rulers = []  # columns that get a vertical line, e.g. [80, 120]; unset, git commit messages get 72 (set, even [], replaces it)
@@ -393,7 +400,7 @@ mod tests {
              detect_indentation = false\nauto_indent = false\nmatch_brackets = false\nsemantic_highlighting = \"off\"\nquick_suggestions = false\n\
              render_whitespace = \"trailing\"\n\
              cursor_style = \"block\"\ncursor_blinking = false\nhex_bytes_per_line = 16\nrulers = [80, 100]\n\
-             scrollback = 50\nword_wrap = \"on\"\n",
+             scrollback = 50\nword_wrap = \"on\"\ntabs_at_bottom = true\n",
         );
         assert_eq!(
             o,
@@ -414,6 +421,7 @@ mod tests {
                 rulers: Some(vec![80, 100]),
                 scrollback: Some(50),
                 word_wrap: Some(WordWrap::On),
+                tabs_at_bottom: Some(true),
             }
         );
     }
@@ -670,6 +678,7 @@ mod tests {
             rulers: Some(Vec::new()),
             scrollback: Some(5_000),
             word_wrap: Some(WordWrap::Off),
+            tabs_at_bottom: Some(false),
         };
         let fields = toml::Table::try_from(&every).unwrap();
         assert_eq!(
@@ -713,6 +722,7 @@ mod tests {
         );
         assert!(parse(TEMPLATE).errors.is_empty());
         assert_eq!(s.word_wrap, d.word_wrap);
+        assert_eq!(s.tabs_at_bottom, d.tabs_at_bottom);
     }
 
     #[test]
