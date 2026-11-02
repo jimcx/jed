@@ -292,8 +292,9 @@ impl App {
             };
             mouse::encode(&cell, s.mouse_protocol_mode(), s.mouse_protocol_encoding())
         };
-        if let Some(bytes) = &bytes {
-            run.write(bytes);
+        if let Some(bytes) = bytes {
+            let motion = matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Drag(_));
+            run.write_mouse(bytes, motion);
         }
         if m.kind == MouseEventKind::Down(MouseButton::Left) {
             match hit {

@@ -205,13 +205,23 @@ struct Shared {
     notify: tokio::sync::Notify,
 }
 
+/// What the writer thread is sent.
+enum Input {
+    /// Keys, a paste: always written.
+    Bytes(Vec<u8>),
+    /// A mouse report (`motion`: a move or drag, of which only the latest matters): written only
+    /// while the program still asks for the mouse, so reports queued behind a slow writer never
+    /// reach the shell after the program reset the mode.
+    Mouse { bytes: Vec<u8>, motion: bool },
+}
+
 struct State {
     status: Status,
     /// The process (group) id while it can be signalled: set when spawned, until reaped.
     pid: Option<i32>,
     master: Option<Box<dyn MasterPty + Send>>,
     /// To the writer thread (the PTY's input), while the process runs.
-    input: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    input: Option<std::sync::mpsc::Sender<Input>>,
     /// Input written while starting, sent once the writer thread exists.
     queued: Vec<u8>,
     /// The process group (= the first process's pid), kept after reaping: background processes
@@ -316,11 +326,22 @@ impl Run {
     pub fn write(&self, bytes: &[u8]) -> bool {
         let mut state = lock(&self.shared.state);
         match (&state.status, &state.input) {
-            (Status::Running, Some(input)) => input.send(bytes.to_vec()).is_ok(),
+            (Status::Running, Some(input)) => input.send(Input::Bytes(bytes.to_vec())).is_ok(),
             (Status::Starting, _) => {
                 state.queued.extend_from_slice(bytes);
                 true
             }
+            _ => false,
+        }
+    }
+
+    /// Sends a mouse report (`tasks::mouse::encode`) to the process. Unlike `write` it is dropped
+    /// when the program no longer asks for the mouse by the time it would be written, and while
+    /// the writer is behind a `motion` report is replaced by a newer one. Nothing while starting.
+    pub fn write_mouse(&self, bytes: Vec<u8>, motion: bool) -> bool {
+        let state = lock(&self.shared.state);
+        match (&state.status, &state.input) {
+            (Status::Running, Some(input)) => input.send(Input::Mouse { bytes, motion }).is_ok(),
             _ => false,
         }
     }
@@ -678,11 +699,12 @@ fn spawn(shared: Arc<Shared>, spec: Spec, sink: Sink) {
         let (input, keys) = std::sync::mpsc::channel();
         let queued = std::mem::take(&mut state.queued);
         if !queued.is_empty() {
-            let _ = input.send(queued);
+            let _ = input.send(Input::Bytes(queued));
         }
+        let weak = Arc::downgrade(&shared);
         let spawned = std::thread::Builder::new()
             .name(format!("task-{}-in", shared.id.0))
-            .spawn(move || write_input(writer, keys));
+            .spawn(move || write_input(writer, keys, weak));
         match spawned {
             Ok(_) => state.input = Some(input),
             Err(e) => tracing::error!("task writer thread: {e}"),
@@ -755,13 +777,62 @@ fn read_output(shared: Arc<Shared>, mut reader: Box<dyn Read + Send>) {
     shared.notify.notify_one();
 }
 
-/// Writer thread: input into the PTY until the run is dropped (or the terminal is gone).
-fn write_input(mut writer: Box<dyn Write + Send>, input: std::sync::mpsc::Receiver<Vec<u8>>) {
-    while let Ok(bytes) = input.recv() {
-        if writer.write_all(&bytes).and_then(|()| writer.flush()).is_err() {
+/// Writer thread: input into the PTY until the run is dropped (or the terminal is gone). Whatever
+/// is queued is taken at once: a mouse move followed by a newer one is dropped, and mouse reports
+/// are written only while the screen's mouse mode is on (checked here, at write time).
+fn write_input(
+    mut writer: Box<dyn Write + Send>,
+    input: std::sync::mpsc::Receiver<Input>,
+    shared: std::sync::Weak<Shared>,
+) {
+    let mouse_on = || {
+        shared
+            .upgrade()
+            .is_some_and(|s| lock(&s.parser).screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None)
+    };
+    while let Ok(first) = input.recv() {
+        let mut batch = vec![first];
+        batch.extend(input.try_iter());
+        let out = merge(batch, mouse_on);
+        if !out.is_empty() && writer.write_all(&out).and_then(|()| writer.flush()).is_err() {
             return;
         }
     }
+}
+
+/// The bytes for `batch`: a mouse move directly followed by a newer one is dropped, and mouse
+/// reports all go when `mouse_on` (asked once, lazily) says the program no longer wants them.
+fn merge(batch: Vec<Input>, mouse_on: impl FnOnce() -> bool) -> Vec<u8> {
+    let mut mouse_on = Some(mouse_on);
+    let mut on = true;
+    let mut out: Vec<u8> = Vec::new();
+    let mut last_motion: Option<usize> = None;
+    for item in batch {
+        match item {
+            Input::Bytes(bytes) => {
+                out.extend_from_slice(&bytes);
+                last_motion = None;
+            }
+            Input::Mouse { bytes, motion } => {
+                if let Some(f) = mouse_on.take() {
+                    on = f();
+                }
+                if !on {
+                    continue;
+                }
+                if motion {
+                    if let Some(at) = last_motion {
+                        out.truncate(at);
+                    }
+                    last_motion = Some(out.len());
+                } else {
+                    last_motion = None;
+                }
+                out.extend_from_slice(&bytes);
+            }
+        }
+    }
+    out
 }
 
 /// Waiter thread: blocks until the process exits, lets the reader finish, reaps it.
@@ -939,5 +1010,32 @@ mod tests {
         let (mut parser, events) = title_parser("zsh");
         parser.process(b"\x1b]133;A\x07\x1b]133;C\x07");
         assert!(lock(&events).is_empty(), "only `133;B` and `133;D` change the title");
+    }
+
+    fn mouse(bytes: &str, motion: bool) -> Input {
+        Input::Mouse {
+            bytes: bytes.as_bytes().to_vec(),
+            motion,
+        }
+    }
+
+    #[test]
+    fn queued_mouse_moves_collapse_to_the_latest() {
+        let batch = vec![
+            mouse("a", true),
+            mouse("b", true),
+            mouse("P", false),
+            mouse("c", true),
+            Input::Bytes(b"k".to_vec()),
+            mouse("d", true),
+            mouse("e", true),
+        ];
+        assert_eq!(merge(batch, || true), b"bPcke");
+    }
+
+    #[test]
+    fn mouse_reports_are_dropped_once_the_program_reset_the_mouse() {
+        let batch = vec![mouse("a", true), Input::Bytes(b"k".to_vec()), mouse("P", false)];
+        assert_eq!(merge(batch, || false), b"k");
     }
 }
