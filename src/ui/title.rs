@@ -37,7 +37,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Vec<(Rect, usize)> {
         hits.push((Rect::new(x, area.y, w, 1), i));
         x -= 1;
     }
-    let title = format!(" {}", app.identity.title_text());
+    // Experiment: the leading "jed" is drawn as "jᵉᵈ".
+    let text = app.identity.title_text();
+    let text = match text.strip_prefix("jed") {
+        Some(rest) => format!("j\u{1d49}\u{1d48}{rest}"),
+        None => text,
+    };
+    let title = format!(" {text}");
     let title: String = title.chars().filter(|c| !c.is_control()).collect();
     out.set_stringn(area.x, area.y, &title, x.saturating_sub(area.x) as usize, style);
     hits
