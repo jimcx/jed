@@ -137,6 +137,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             (side.explorer_rows, side.search, side.scm, side.tools);
         hits.side_scrollbar = side.scrollbar;
         hits.history = side.history;
+        hits.file_history = side.file_history;
         side_rules = side.rules;
         hits.history_scrollbar = side.history_scrollbar;
     }

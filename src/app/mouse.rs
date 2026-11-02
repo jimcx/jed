@@ -118,6 +118,8 @@ pub enum Drag {
     },
     /// The Explorer view's Git History divider (its row sets the section's height).
     HistoryDivider,
+    /// The "File History" section's divider.
+    FileHistoryDivider,
     /// Selecting bytes in a group's hex tab (`app/hex.rs`).
     Hex(crate::layout::GroupId),
     /// Selecting text in a group's Markdown preview (`app/markdown.rs`).
@@ -191,7 +193,9 @@ impl App {
         };
         match &self.drag {
             Some(Drag::SideBorder) => Pointer::ColResize,
-            Some(Drag::PanelBorder | Drag::TerminalBorder | Drag::HistoryDivider) => Pointer::RowResize,
+            Some(Drag::PanelBorder | Drag::TerminalBorder | Drag::HistoryDivider | Drag::FileHistoryDivider) => {
+                Pointer::RowResize
+            }
             Some(Drag::Divider(d)) => divider(d),
             // Selecting text keeps the I-beam wherever the pointer goes.
             Some(Drag::Text { .. } | Drag::AddedText { .. } | Drag::Column) => Pointer::Text,
@@ -204,7 +208,9 @@ impl App {
             }
             None => match self.hits.hit(x, y) {
                 Hit::SideBorder => Pointer::ColResize,
-                Hit::PanelBorder | Hit::TerminalBorder | Hit::HistoryDivider => Pointer::RowResize,
+                Hit::PanelBorder | Hit::TerminalBorder | Hit::HistoryDivider | Hit::FileHistoryDivider => {
+                    Pointer::RowResize
+                }
                 Hit::Divider(i) => self.hits.dividers.get(i).map_or(Pointer::Default, divider),
                 Hit::Editor(g) => self.text_pointer_if(self.editor_text_at(g, p)),
                 Hit::SidePanel => {
@@ -636,15 +642,8 @@ impl App {
                 Some(Drag::Hex(_) | Drag::Diff(_) | Drag::Markdown(_)) => {}
                 // Taken by `terminal_select`.
                 Some(Drag::Terminal { .. }) => {}
-                Some(Drag::HistoryDivider) => {
-                    // The divider's row is the section's top; the section reaches the body's end
-                    // (the side panel's last row, above the status bar).
-                    if let Some(side) = self.hits.regions.side {
-                        let bottom = side.y + side.height;
-                        let body = bottom.saturating_sub(side.y + 2);
-                        self.git_history.set_section_height(bottom.saturating_sub(m.row), body);
-                    }
-                }
+                Some(Drag::FileHistoryDivider) => self.drag_side_section(0, m.row),
+                Some(Drag::HistoryDivider) => self.drag_side_section(1, m.row),
                 None => {}
             },
             MouseEventKind::Up(MouseButton::Left) => {
@@ -680,6 +679,7 @@ impl App {
             Hit::ExplorerRow(row) if self.ui.side_panel == SidePanel::Explorer => {
                 self.ui.focus = Focus::SidePanel;
                 self.git_history.set_focused(false);
+                self.file_history_view.set_focused(false);
                 let index = self.explorer.scroll + row as usize;
                 let rows = self.explorer.rows();
                 let Some(entry) = rows.get(index).map(|r| (r.entry.path.clone(), r.entry.is_dir)) else {
@@ -696,13 +696,22 @@ impl App {
             Hit::SidePanel if self.ui.side_panel == SidePanel::SourceControl => self.scm_click(m, count),
             Hit::SidePanel if self.ui.side_panel == SidePanel::Tools => self.tools_click(m),
             // The history's header toggles the collapse; a commit row selects it.
+            Hit::FileHistoryHeader => {
+                self.ui.focus = Focus::SidePanel;
+                self.git_history.set_focused(false);
+                self.file_history_view.set_focused(true);
+                self.file_history_view.toggle_collapsed();
+            }
+            Hit::FileHistoryDivider => self.drag = Some(Drag::FileHistoryDivider),
             Hit::HistoryHeader => {
                 self.ui.focus = Focus::SidePanel;
+                self.file_history_view.set_focused(false);
                 self.git_history.set_focused(true);
                 self.git_history.toggle_collapsed();
             }
             Hit::HistoryRow(row) => {
                 self.ui.focus = Focus::SidePanel;
+                self.file_history_view.set_focused(false);
                 self.git_history.set_focused(true);
                 let top = self.hits.history.map_or(0, |h| h.top);
                 self.git_history.select_row(top + row as usize);
@@ -717,6 +726,7 @@ impl App {
                 self.ui.focus = Focus::SidePanel;
                 if self.ui.side_panel == SidePanel::Explorer {
                     self.git_history.set_focused(false);
+                    self.file_history_view.set_focused(false);
                 }
             }
             Hit::Divider(i) => self.drag = self.hits.dividers.get(i).cloned().map(Drag::Divider),

@@ -1212,6 +1212,9 @@ pub(crate) mod side_scroll_bars {
         let mut app = open_app(&root, &state).await;
         assert!(app.settle(|a| a.explorer.row_count() == 60).await);
         app.explorer.selected = Some(root.join("f02.txt"));
+        // The sections under the tree would leave it three rows: collapse them.
+        app.file_history_view.toggle_collapsed();
+        app.git_history.toggle_collapsed();
         let _ = draw(&mut app);
         let side = app.hits.regions.side.unwrap();
         let track = bar(&app, explorer_list().target).track;

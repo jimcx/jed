@@ -33,6 +33,7 @@ mod drag_tabs_tests;
 mod edit;
 mod explorer;
 mod field;
+mod file_history_view;
 mod find;
 #[cfg(test)]
 mod fixes_tests;
@@ -55,6 +56,8 @@ mod hex;
 #[cfg(test)]
 mod hex_tests;
 mod history;
+#[cfg(test)]
+mod history_view_tests;
 mod hover;
 #[cfg(test)]
 mod hscroll_tests;
@@ -133,6 +136,7 @@ mod shell_integration;
 #[cfg(test)]
 mod shell_tests;
 mod shift;
+mod side_sections;
 #[cfg(test)]
 mod soft_wrap_tests;
 mod syntax;

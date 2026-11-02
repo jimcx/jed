@@ -186,7 +186,7 @@ async fn borders_join_with_junction_glyphs() {
     let root = workspace::normalize(dir.path());
     fs::write(root.join("a.txt"), "one\ntwo\n").unwrap();
     let mut app = open_app(&root, "a.txt");
-    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    let mut term = Terminal::new(TestBackend::new(100, 40)).unwrap();
     app.press(K::Char('\\'), cmd() | M::ALT);
     draw(&mut app, &mut term);
     let side = app.hits.regions.side.expect("the side panel is shown");

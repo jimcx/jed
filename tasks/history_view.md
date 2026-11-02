@@ -2,7 +2,7 @@
 id: history_view
 name: File History section in the Explorer
 summary: the active file's snapshots as a third Explorer section
-status: open
+status: in-progress
 priority: 0
 dependencies: []
 ---
@@ -18,6 +18,7 @@ See [File history](../PLAN.md#file-history). The active file's saved snapshots a
   - Needs: the Explorer's Git History section (`git_history.rs`, `git_history::split`), `history.rs`, the diff view's `Pair::history`, `Scrollable`, sessions' `SideState`
   - Done when: the tests above pass
   - Subtasks (one agent and one commit each):
-    - history_view-a: `git_history::split` generalised to N sections (heights, collapsed states, dividers, the tree's minimum) with an empty "FILE HISTORY" section drawn above "GIT HISTORY"; Git History unchanged (its tests still pass)
+    - ✅ history_view-a: `git_history::split` generalised to N sections (heights, collapsed states, dividers, the tree's minimum) with an empty "FILE HISTORY" section drawn above "GIT HISTORY"; Git History unchanged (its tests still pass)
+      - Changed: `src/side_sections.rs` (pure `split(body, &[Section])`, `dragged_height`) replaced `GitHistory::split` / `set_section_height`; `src/file_history_view.rs` (`FileHistoryView`: collapsed, height 6, focus; `app.file_history_view`); `App::side_sections()` / `drag_side_section(i, row)`; `Hit::FileHistoryDivider` / `FileHistoryHeader`, `Drag::FileHistoryDivider`; the section shows "No history" for now. `FileHistoryView::focused` has an `expect(dead_code)` until -c reads it. Tests in `src/history_view_tests.rs`. Test terminals grew (milestone10 `draw` 100x28, etc.) for the extra section.
     - history_view-b: the rows: following the active file, entries read off-thread and re-read after `HistoryDone`, "No history" cases, drawing and theme keys, selection / scrolling / the scroll bar
     - history_view-c: `Context::FileHistory` keys, Enter / click opens Compare, Restore Entry, "File History: Show" and the picker decision, sessions; the remaining tests, gaps and hand checks; marks the task ✅

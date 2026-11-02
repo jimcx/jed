@@ -585,6 +585,8 @@ pub struct App {
     /// The Explorer view's "Git History" section: the active file's commits and the section's
     /// state (`app/git_history.rs`).
     pub git_history: crate::git_history::GitHistory,
+    /// The Explorer's "File History" section above it.
+    pub file_history_view: crate::file_history_view::FileHistoryView,
     /// Stage All waiting for these buffers' saves to end.
     stage_all_after_save: Option<HashSet<BufferId>>,
     /// Task templates from `tasks.toml` and the task runs (`app/tasks.rs`).
@@ -760,6 +762,7 @@ impl App {
             scm: Default::default(),
             tools_view: Default::default(),
             git_history: Default::default(),
+            file_history_view: Default::default(),
             stage_all_after_save: None,
             tasks: Default::default(),
             environment: None,
@@ -1747,6 +1750,7 @@ impl App {
         if panel == SidePanel::Explorer {
             // Focusing the Explorer gives the keys to the tree, not the history section.
             self.git_history.set_focused(false);
+            self.file_history_view.set_focused(false);
             if self.explorer.selected.is_none() {
                 self.explorer.select_index(0);
             }

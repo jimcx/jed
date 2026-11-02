@@ -14,6 +14,7 @@ use crate::git::Repo;
 use crate::git::log;
 use crate::layout::SidePanel;
 use crate::scrollbar::Scrollable;
+use crate::side_sections::{Section, dragged_height, split};
 
 impl App {
     /// Each loop turn (`start`, `run`, `pump` / `settle`): follows the active file, reloads the
@@ -191,6 +192,38 @@ impl App {
         let path = self.git_history.path.as_ref()?;
         let (_, rel) = self.history_repo(path)?;
         Some(rel.to_string_lossy().into_owned())
+    }
+
+    /// The Explorer's sections under the tree, top to bottom (File History, Git History), as
+    /// `side_sections::split` takes them.
+    pub fn side_sections(&self) -> [Section; 2] {
+        [
+            Section {
+                height: self.file_history_view.section_height,
+                collapsed: self.file_history_view.collapsed(),
+            },
+            Section {
+                height: self.git_history.section_height,
+                collapsed: self.git_history.collapsed(),
+            },
+        ]
+    }
+
+    /// A divider drag of section `i` (see `side_sections`) with the pointer on `row`: the
+    /// section reaches the body's end (the side panel's last row, above the status bar), less the
+    /// sections below it.
+    pub(super) fn drag_side_section(&mut self, i: usize, row: u16) {
+        let Some(side) = self.hits.regions.side else { return };
+        let bottom = side.y + side.height;
+        let body = bottom.saturating_sub(side.y + 2);
+        let (_, heights) = split(body, &self.side_sections());
+        let below: u16 = heights[i + 1..].iter().sum();
+        let want = bottom.saturating_sub(below).saturating_sub(row);
+        let height = dragged_height(body, &heights, i, want);
+        match i {
+            0 => self.file_history_view.section_height = height,
+            _ => self.git_history.section_height = height,
+        }
     }
 
     /// The history section has the keys (the side panel shows the Explorer and the section was

@@ -14,10 +14,6 @@ use crate::scrollbar::{Scroll, Scrollable};
 
 /// The section's height (divider, header and rows) before it is dragged.
 pub const DEFAULT_SECTION_HEIGHT: u16 = 10;
-/// Rows the tree keeps when the section shows.
-pub const MIN_TREE_HEIGHT: u16 = 3;
-/// The section's own smallest height: its divider and header.
-pub const MIN_SECTION_HEIGHT: u16 = 2;
 
 #[derive(Debug, Clone)]
 pub struct GitHistory {
@@ -236,30 +232,6 @@ impl GitHistory {
         self.selected = None;
         self.generation += 1;
     }
-
-    /// Splits a body of `height` rows into the tree's rows and the section's (divider, header
-    /// and commits): `section_height`, clamped so the tree keeps [`MIN_TREE_HEIGHT`] rows (only
-    /// for this body: a taller one gets the dragged height back). `None` when not both fit: the
-    /// tree takes the body. A collapsed section is just its divider and header.
-    pub fn split(&self, height: u16) -> Option<(u16, u16)> {
-        if height < MIN_TREE_HEIGHT + MIN_SECTION_HEIGHT {
-            return None;
-        }
-        if self.collapsed {
-            return Some((height - MIN_SECTION_HEIGHT, MIN_SECTION_HEIGHT));
-        }
-        let section = self.section_height.clamp(MIN_SECTION_HEIGHT, height - MIN_TREE_HEIGHT);
-        Some((height - section, section))
-    }
-
-    /// Sets the section's height from a divider drag: `want` rows for a body of `body` rows,
-    /// clamped so the tree keeps [`MIN_TREE_HEIGHT`].
-    pub fn set_section_height(&mut self, want: u16, body: u16) {
-        if body < MIN_TREE_HEIGHT + MIN_SECTION_HEIGHT {
-            return;
-        }
-        self.section_height = want.clamp(MIN_SECTION_HEIGHT, body - MIN_TREE_HEIGHT);
-    }
 }
 
 #[cfg(test)]
@@ -321,34 +293,6 @@ mod tests {
         // Nothing selected: the first row, the top unchanged where it shows.
         h.move_selection(1);
         assert_eq!((h.selected_row(), h.scroll()), (Some(0), 0));
-    }
-
-    #[test]
-    fn collapsing_and_the_divider_split_the_body() {
-        let mut h = model(20);
-        assert_eq!(h.split(20), Some((10, 10)), "the default 10");
-        assert_eq!(h.section_height, 10);
-        // Too short for both: the tree gets it all.
-        assert_eq!(h.split(4), None);
-        // The tree keeps at least three rows: the section is clamped, for that body only.
-        assert_eq!(h.split(8), Some((3, 5)));
-        assert_eq!(h.section_height, 10);
-        assert_eq!(h.split(20), Some((10, 10)), "a taller body: the height back");
-        // A dragged height is clamped both ways.
-        h.set_section_height(100, 20);
-        assert_eq!(h.section_height, 17);
-        h.set_section_height(0, 20);
-        assert_eq!(h.section_height, 2);
-        h.set_section_height(9, 20);
-        assert_eq!(h.split(20), Some((11, 9)));
-        // Collapsed: just the divider and header; the dragged height comes back.
-        h.toggle_collapsed();
-        assert_eq!(h.split(20), Some((18, 2)));
-        assert_eq!(h.section_height, 9);
-        h.toggle_collapsed();
-        assert_eq!(h.split(20), Some((11, 9)));
-        // A body too short for both while collapsed is hidden too.
-        assert_eq!(h.split(3), None);
     }
 
     #[test]

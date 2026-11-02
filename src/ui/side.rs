@@ -15,6 +15,7 @@ use crate::git::log::Commit;
 use crate::history;
 use crate::layout::{HistoryHit, ScmHit, ScrollBarHit, ScrollTarget, SearchHit, SidePanel, ToolsHit};
 use crate::scrollbar::{Scroll, Scrollable};
+use crate::side_sections::split;
 use crate::theme::Theme;
 
 /// The summary keeps at least this many cells before the author is dropped from the suffix.
@@ -30,6 +31,8 @@ pub struct SideHits {
     pub tools: Option<ToolsHit>,
     /// The Explorer's "Git History" section, when shown.
     pub history: Option<HistoryHit>,
+    /// The "File History" section above it, when shown (no rows yet: its `list` is empty).
+    pub file_history: Option<HistoryHit>,
     /// Horizontal rules across the panel's body (a section's divider row, left blank here): `mod.rs` hands
     /// them to the border layer (`borders`), which draws them and joins their ends to the panel's edge.
     /// A new section pushes its divider here.
@@ -103,17 +106,17 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
 
     // The body splits into the tree and the "Git History" section (which hides when there's no
     // room for both).
-    let (mut tree, section) = match app.git_history.split(body.height) {
-        Some((tree_h, section_h)) => (
-            Rect { height: tree_h, ..body },
-            Some(Rect {
-                y: body.y + tree_h,
-                height: section_h,
-                ..body
-            }),
-        ),
-        None => (body, None),
-    };
+    let (tree_h, heights) = split(body.height, &app.side_sections());
+    let mut tree = Rect { height: tree_h, ..body };
+    let mut y = body.y + tree_h;
+    let mut sections = [None, None];
+    for (slot, h) in sections.iter_mut().zip(&heights) {
+        if *h > 0 {
+            *slot = Some(Rect { y, height: *h, ..body });
+            y += h;
+        }
+    }
+    let [file_section, section] = sections;
     // The rows keep their last column for the scroll bar.
     let bar = scrollbar::take_column(&mut tree);
     let look = scrollbar::look(app, ScrollTarget::Side(SidePanel::Explorer));
@@ -175,14 +178,56 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
         Some(section) => render_history(f, section, app),
         None => (None, None),
     };
-    let rules = history.iter().map(|h| h.divider).collect();
+    let file_history = file_section.map(|s| render_file_history(f, s, app));
+    let rules = file_history.iter().chain(&history).map(|h| h.divider).collect();
     SideHits {
         rules,
         explorer_rows: tree,
         scrollbar: bar.map(|b| (ScrollTarget::Side(SidePanel::Explorer), b)),
         history,
+        file_history,
         history_scrollbar,
         ..SideHits::default()
+    }
+}
+
+/// The "File History" section: the divider row (left blank: a border), the collapsible header,
+/// then "No history" (the rows come later).
+fn render_file_history(f: &mut Frame, section: Rect, app: &App) -> HistoryHit {
+    let theme = &app.theme;
+    let base = theme.get("sideBar");
+    let out = f.buffer_mut();
+    let divider = Rect { height: 1, ..section };
+    let header = Rect {
+        y: section.y + 1,
+        height: 1,
+        ..section
+    };
+    let marker = if app.file_history_view.collapsed() {
+        "▸"
+    } else {
+        "▾"
+    };
+    out.set_stringn(
+        header.x,
+        header.y,
+        format!(" {marker} FILE HISTORY"),
+        header.width as usize,
+        base.patch(theme.get("sideBar.header")),
+    );
+    if !app.file_history_view.collapsed() && section.height > 2 {
+        out.set_stringn(
+            section.x,
+            section.y + 2,
+            "  No history",
+            section.width as usize,
+            base.patch(theme.get("explorer.ignored")),
+        );
+    }
+    HistoryHit {
+        divider,
+        header,
+        ..HistoryHit::default()
     }
 }
 

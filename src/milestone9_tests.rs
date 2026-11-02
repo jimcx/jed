@@ -2699,9 +2699,13 @@ async fn milestone_9_hover_on_mouse_rest() {
     let (ix, iy) = find_cells(&term, "int x").unwrap();
     app.mouse(E::Moved, ix + 1, iy);
     app.test_hover_tick(Instant::now() + crate::hover::DELAY);
+    // FLAKE: 2026-11-02, failed once under load (loadavg ~14): `pending_requests()` was
+    // [("lightbulb", 0), ("mouse hover", 123)] — the lightbulb's code-action request was still pending.
     assert_eq!(
         app.pending_requests(),
-        [("mouse hover", text.find("int x").unwrap() + 1)]
+        [("mouse hover", text.find("int x").unwrap() + 1)],
+        "FLAKE milestone_9_hover_on_mouse_rest: pending requests include a lightbulb request; hover ids {:?}",
+        request_ids(&fake, "textDocument/hover")
     );
     assert!(
         app.settle(|_| request_ids(&fake, "textDocument/hover").len() == 2)

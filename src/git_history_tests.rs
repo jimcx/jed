@@ -448,7 +448,11 @@ async fn git_history_collapses_and_drags_its_divider() {
     app.mouse(MouseEventKind::Drag(MouseButton::Left), divider.x + 2, side.y);
     app.mouse(MouseEventKind::Up(MouseButton::Left), divider.x + 2, side.y);
     let body = bottom - (side.y + 2);
-    assert_eq!(app.git_history.section_height, body - 3);
+    assert_eq!(
+        app.git_history.section_height,
+        body - 3 - 2,
+        "File History gives way to its header"
+    );
     let _term = draw(&mut app);
     assert!(app.hits.explorer_rows.height >= 3);
 }
@@ -1917,7 +1921,7 @@ async fn git_history_uses_theme_colours_and_fits_small_panels() {
 
     // A narrow panel: the summary gives way to the short id; the tree keeps three rows.
     app.ui.side_width = 20;
-    let term = draw_sized(&mut app, 70, 12);
+    let term = draw_sized(&mut app, 70, 14);
     let hit = app.hits.history.unwrap();
     assert_eq!(hit.list.width, 18, "the body less the border and the bar");
     assert_eq!(hit.list.height, 4);

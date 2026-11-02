@@ -83,7 +83,7 @@ pub(crate) fn dirs() -> (tempfile::TempDir, PathBuf, PathBuf) {
 }
 
 fn draw(app: &mut App) -> Terminal<TestBackend> {
-    let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    let mut term = Terminal::new(TestBackend::new(100, 28)).unwrap();
     term.draw(|f| crate::ui::render(f, app)).unwrap();
     term
 }

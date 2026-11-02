@@ -469,6 +469,8 @@ pub struct HitMap {
     pub tools: Option<ToolsHit>,
     /// The Explorer view's "Git History" section, when shown.
     pub history: Option<HistoryHit>,
+    /// The "File History" section above it, when shown (no rows yet: its `list` is empty).
+    pub file_history: Option<HistoryHit>,
     /// Its list's scroll bar (its last column), when drawn.
     pub history_scrollbar: Option<ScrollBarHit>,
     /// The bottom panel's tab labels.
@@ -769,6 +771,8 @@ pub enum Hit {
     ExplorerRow(u16),
     /// The Explorer view's "Git History" divider (dragging it resizes the section).
     HistoryDivider,
+    FileHistoryDivider,
+    FileHistoryHeader,
     /// Its header row (a click toggles the collapse).
     HistoryHeader,
     /// A commit row on screen (add `HistoryHit::top` for the list row).
@@ -861,6 +865,14 @@ impl HitMap {
                 && s.track.contains(p)
             {
                 return Hit::ScrollBar(ScrollTarget::History);
+            }
+            if let Some(h) = &self.file_history {
+                if h.divider.contains(p) {
+                    return Hit::FileHistoryDivider;
+                }
+                if h.header.contains(p) {
+                    return Hit::FileHistoryHeader;
+                }
             }
             if let Some(h) = &self.history {
                 if h.divider.contains(p) {
@@ -1161,6 +1173,7 @@ mod tests {
             scm: None,
             tools: None,
             // The history section under the tree: divider, header, then rows.
+            file_history: None,
             history: Some(HistoryHit {
                 divider: Rect::new(3, 22, 24, 1),
                 header: Rect::new(3, 23, 24, 1),
