@@ -3,7 +3,7 @@
 //! Cmd+D borrows), replace one / all and select all matches. It searches the active tab: on a
 //! hex tab its bytes (`find::HexFind`): the `0x` toggle (`find_options.hex`, converting the
 //! query), case only, no replace or select all, next / previous from the cursor, highlights drawn
-//! from the visible bytes, and the whole file's count off the UI thread (`AppEvent::HexCount`).
+//! from the visible bytes, and the whole file's count off the UI thread (`AppEvent::View(ViewEvent::HexCount)`).
 
 use crossterm::event::{KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
@@ -420,7 +420,7 @@ impl App {
 
     /// Keeps the hex search current for the active hex tab: the query read again when it, the
     /// options or the tab changed, and then its count started off the UI thread (a whole-file
-    /// scan, `hex::count` up to `HEX_MAX_COUNT`) → `AppEvent::HexCount` → `hex_counted`.
+    /// scan, `hex::count` up to `HEX_MAX_COUNT`) → `AppEvent::View(ViewEvent::HexCount)` → `hex_counted`.
     fn refresh_hex_find(&mut self) {
         // No replace input on a hex tab.
         self.find.field = Field::Find;
@@ -449,11 +449,11 @@ impl App {
                 elapsed_us = t.elapsed().as_micros() as u64,
                 "hex count"
             );
-            let _ = tx.send(AppEvent::HexCount {
+            let _ = tx.send(AppEvent::View(super::hex::ViewEvent::HexCount {
                 tab,
                 generation: job.generation,
                 count,
-            });
+            }));
         });
     }
 

@@ -10,7 +10,7 @@
 //! - One request per buffer at a time (decoding included); edits meanwhile ask again after it.
 //!   The request is `full/delta` while there is a `resultId`, else `full`.
 //! - An answer is never dropped for a newer revision: the tokens are read in the text of the
-//!   version it was asked for (`Manager::text_at`) on a worker (`AppEvent::SemanticDecoded`), then
+//!   version it was asked for (`Manager::text_at`) on a worker (`AppEvent::Syntax(SyntaxEvent::Semantic)`), then
 //!   mapped through the change sets since (`Manager::since`) and replace the buffer's.
 //! - `semantic_highlighting = off` treats every server as having none: nothing is asked, tokens and
 //!   inactive regions are dropped (a clangd reparse sends the regions again once it is on).
@@ -350,12 +350,12 @@ impl App {
                 elapsed_us = t.elapsed().as_micros() as u64,
                 "semantic tokens decoded"
             );
-            let _ = tx.send(AppEvent::SemanticDecoded {
+            let _ = tx.send(AppEvent::Syntax(super::syntax::SyntaxEvent::Semantic {
                 buffer,
                 server,
                 version,
                 tokens,
-            });
+            }));
         });
     }
 

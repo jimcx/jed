@@ -158,7 +158,7 @@ impl App {
     }
 
     /// Fills the Locations list and shows it (panel focused, its first place selected); files not
-    /// open are read off the UI thread for their previews (`AppEvent::LocationsRead`).
+    /// open are read off the UI thread for their previews (`AppEvent::Search(SearchEvent::Locations)`).
     fn show_locations(&mut self, title: String, places: Vec<Location>, encoding: crate::buffer::pos::PosEncoding) {
         self.locations_generation += 1;
         let generation = self.locations_generation;
@@ -185,7 +185,10 @@ impl App {
                     Some((path, text))
                 })
                 .collect();
-            let _ = tx.send(AppEvent::LocationsRead { generation, files });
+            let _ = tx.send(AppEvent::Search(super::workspace_search::SearchEvent::Locations {
+                generation,
+                files,
+            }));
         });
     }
 

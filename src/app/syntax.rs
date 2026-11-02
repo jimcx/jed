@@ -9,6 +9,52 @@ use crate::syntax::{self, Associations, Language, Parsed};
 
 use super::{App, AppEvent, Level};
 
+/// Results of syntax background work (`AppEvent::Syntax`).
+pub(super) enum SyntaxEvent {
+    /// A background parse finished (`Syntax::parsed` drops a superseded one).
+    Parsed { buffer: BufferId, parsed: Parsed },
+    /// A syntax plugin's grammar was loaded (or why not) by `load_grammars`.
+    Grammar {
+        language: Language,
+        /// What building did (none: nothing to build, or the plugin was only loaded).
+        build: Option<syntax::build::Build>,
+        /// A forced rebuild of a grammar this process already uses: the new library is used from
+        /// the next start.
+        replaced_in_use: bool,
+        result: Result<(), String>,
+    },
+    /// `load_grammars` starts on this plugin: its build is running.
+    GrammarBuilding(PluginId),
+    /// A semantic tokens answer decoded in `version`'s text (`app::semantic`).
+    Semantic {
+        buffer: BufferId,
+        server: crate::lsp::ServerId,
+        version: i32,
+        tokens: Vec<crate::semantic::Token>,
+    },
+}
+
+impl App {
+    pub(super) fn handle_syntax_event(&mut self, ev: SyntaxEvent) {
+        match ev {
+            SyntaxEvent::Parsed { buffer, parsed } => self.parsed(buffer, parsed),
+            SyntaxEvent::Grammar {
+                language,
+                build,
+                replaced_in_use,
+                result,
+            } => self.grammar_loaded(language, build, replaced_in_use, result),
+            SyntaxEvent::GrammarBuilding(p) => self.grammar_building(p),
+            SyntaxEvent::Semantic {
+                buffer,
+                server,
+                version,
+                tokens,
+            } => self.semantic_decoded(buffer, server, version, tokens),
+        }
+    }
+}
+
 impl App {
     /// The language of `buf`: the one picked for it ("Change Language Mode"), else
     /// `.workspace` associations, then its name, then its shebang.
@@ -92,7 +138,7 @@ impl App {
     }
 
     /// Brings every buffer's parse tree up to date: small edits are re-parsed here, first parses
-    /// and big edits are started off-thread (→ `AppEvent::Parsed`). The event loop calls it once
+    /// and big edits are started off-thread (→ `AppEvent::Syntax(SyntaxEvent::Parsed)`). The event loop calls it once
     /// per turn, before drawing. Without a runtime (`App::new`, plain unit tests) it waits.
     pub(super) fn sync_syntax(&mut self) {
         if tokio::runtime::Handle::try_current().is_err() {
@@ -103,18 +149,18 @@ impl App {
             if let Some(job) = buf.syntax.update(&buf.rope, max) {
                 let tx = self.tx.clone();
                 tokio::task::spawn_blocking(move || {
-                    let _ = tx.send(AppEvent::Parsed {
+                    let _ = tx.send(AppEvent::Syntax(SyntaxEvent::Parsed {
                         buffer: id,
                         parsed: job.run(),
-                    });
+                    }));
                 });
             }
         }
     }
 
     /// Builds (from `src/`, when stale) and loads the grammar of each of `self.syntax_plugins`,
-    /// in one background task: one build at a time, each reported as `AppEvent::GrammarBuilding`
-    /// then `AppEvent::Grammar` (an installed grammar answers `Ok` at once; a failure is reported
+    /// in one background task: one build at a time, each reported as `AppEvent::Syntax(SyntaxEvent::GrammarBuilding)`
+    /// then `AppEvent::Syntax(SyntaxEvent::Grammar)` (an installed grammar answers `Ok` at once; a failure is reported
     /// to this app and tried again by the next load). `main` sets the list to the registry,
     /// which only holds plugins from the user's own config directory (never a `.workspace`'s).
     pub(super) fn load_grammars(&mut self) {
@@ -152,7 +198,7 @@ impl App {
         tokio::task::spawn_blocking(move || {
             let tools = build::Toolchain::from_env();
             for p in plugins {
-                let _ = tx.send(AppEvent::GrammarBuilding(p));
+                let _ = tx.send(AppEvent::Syntax(SyntaxEvent::GrammarBuilding(p)));
                 let plugin = p.get();
                 let was_loaded = p.loaded();
                 let built = plugin.buildable().then(|| build::build(&plugin.dir, &tools, force));
@@ -165,12 +211,12 @@ impl App {
                     None => Err(format!("{}: no src/parser.c and no {}", plugin.dir.display(), LIBRARY)),
                 };
                 let replaced_in_use = was_loaded && built.as_ref().is_some_and(|b| b.outcome == Outcome::Built);
-                let _ = tx.send(AppEvent::Grammar {
+                let _ = tx.send(AppEvent::Syntax(SyntaxEvent::Grammar {
                     language: Language::Plugin(p),
                     build: built,
                     replaced_in_use,
                     result,
-                });
+                }));
             }
         });
     }

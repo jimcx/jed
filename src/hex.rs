@@ -653,7 +653,7 @@ pub fn count(bytes: &[u8], q: &Query, limit: usize) -> Count {
 #[derive(Debug, Clone)]
 pub struct HexTab {
     /// Unique per tab opened (a process-wide counter; a split's copy keeps it: same bytes), for results
-    /// computed off the UI thread (find's count, `AppEvent::HexCount`).
+    /// computed off the UI thread (find's count, `AppEvent::View(ViewEvent::HexCount)`).
     pub id: u64,
     pub path: PathBuf,
     pub doc: HexDoc,

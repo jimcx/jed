@@ -108,12 +108,15 @@ impl App {
                 if t.elapsed() > super::SLOW_TASK {
                     tracing::warn!(elapsed_ms = t.elapsed().as_millis() as u64, "slow git blame");
                 }
-                let _ = tx.send(AppEvent::Blame { buffer, computed });
+                let _ = tx.send(AppEvent::Gutter(super::quick_diff::GutterEvent::Blame {
+                    buffer,
+                    computed,
+                }));
             });
         }
     }
 
-    /// `AppEvent::Blame`: a buffer's blame was computed.
+    /// `AppEvent::Gutter(GutterEvent::Blame)`: a buffer's blame was computed.
     pub(super) fn blame_done(&mut self, buffer: BufferId, computed: Computed) {
         if let Some(buf) = self.buffers.get_mut(buffer) {
             buf.blame.finish(computed);

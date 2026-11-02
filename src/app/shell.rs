@@ -16,6 +16,47 @@ use crate::shell::{self, ShellTab};
 use crate::tasks::{self, Event, Run, Sink};
 use crate::{paths, shell_integration};
 
+/// Results of terminal and task background work (`AppEvent::Terminal`).
+pub(super) enum TerminalEvent {
+    /// A Cmd/Ctrl+clicked terminal link resolved off-thread (`app::term_link`): the one file it
+    /// names, or `None` and the text for quick open.
+    Link {
+        found: Option<PathBuf>,
+        goto: Option<super::files::Goto>,
+        query: String,
+        /// The editor group the clicked shell is in.
+        from: Option<crate::layout::GroupId>,
+    },
+    /// A task run started, has new output (throttled) or ended (`app/tasks.rs`).
+    Task(Event),
+    /// A shell tab's run started, has new output (throttled) or ended.
+    Shell(Event),
+    /// The shell integration snippets were written into the state dir.
+    IntegrationWritten(Result<(), String>),
+    /// The shell integration's source line was appended to a shell's init file.
+    IntegrationInstalled(Result<PathBuf, String>),
+    /// A focus or launch of another jed ended (`app/recent.rs`).
+    TermCtl(Box<super::recent::TermDone>),
+}
+
+impl App {
+    pub(super) fn handle_terminal_event(&mut self, ev: TerminalEvent) {
+        match ev {
+            TerminalEvent::Link {
+                found,
+                goto,
+                query,
+                from,
+            } => self.terminal_link_resolved(found, goto, query, from),
+            TerminalEvent::Task(ev) => self.task_event(ev),
+            TerminalEvent::Shell(ev) => self.shell_event(ev),
+            TerminalEvent::IntegrationWritten(result) => self.shell_integration_written(result),
+            TerminalEvent::IntegrationInstalled(result) => self.shell_integration_installed(result),
+            TerminalEvent::TermCtl(done) => self.termctl_done(*done),
+        }
+    }
+}
+
 impl App {
     /// "Terminal: New Shell" (`terminal.newShell`, Ctrl+`): the user's `$SHELL` (else
     /// `/bin/sh`) in a new tab of the terminal area (shown and focused), interactive in the workspace root, with
@@ -71,7 +112,7 @@ impl App {
         let id = self.tasks.new_run_id();
         let tx = self.tx.clone();
         let sink: Sink = Arc::new(move |ev| {
-            let _ = tx.send(AppEvent::Shell(ev));
+            let _ = tx.send(AppEvent::Terminal(TerminalEvent::Shell(ev)));
         });
         let tab = ShellTab::new(id, spec, rows, cols, sink, self.settings.scrollback, number);
         tracing::info!(shell = %base, run = id.0, "opened a shell tab");
@@ -262,7 +303,7 @@ impl App {
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let result = shell_integration::write_snippets(&dir);
-            let _ = tx.send(AppEvent::ShellIntegrationWritten(result));
+            let _ = tx.send(AppEvent::Terminal(TerminalEvent::IntegrationWritten(result)));
         });
         self.prompt = Some(Prompt::InstallShellIntegration {
             snippet: init.snippet,
@@ -316,7 +357,7 @@ impl App {
         send_paste(&shell.run, text);
     }
 
-    /// `AppEvent::Shell`: output and starts only need a redraw (`handle_app_event` asks for one);
+    /// `AppEvent::Terminal(TerminalEvent::Shell)`: output and starts only need a redraw (`handle_app_event` asks for one);
     /// new output clears the mouse selection (the rows moved). A title change renames the tab (its
     /// glyph says running from idle, red when the command failed); an ended shell keeps its tab,
     /// its output and a note below it ("Shell 'zsh' exited with code 3"), also in the status bar.
@@ -350,7 +391,7 @@ impl App {
         }
     }
 
-    /// `AppEvent::ShellIntegrationWritten`: only a failure needs saying (the wizard still opens:
+    /// `AppEvent::Terminal(TerminalEvent::IntegrationWritten)`: only a failure needs saying (the wizard still opens:
     /// copying works, and a later install writes the files again).
     pub(super) fn shell_integration_written(&mut self, result: Result<(), String>) {
         match result {
@@ -359,7 +400,7 @@ impl App {
         }
     }
 
-    /// `AppEvent::ShellIntegrationInstalled`: the line is in the init file — a new shell tab picks
+    /// `AppEvent::Terminal(TerminalEvent::IntegrationInstalled)`: the line is in the init file — a new shell tab picks
     /// it up from there — or the append failed.
     pub(super) fn shell_integration_installed(&mut self, result: Result<PathBuf, String>) {
         match result {

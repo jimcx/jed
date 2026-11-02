@@ -80,6 +80,33 @@ pub struct Peek {
     pub mark: Mark,
 }
 
+/// Results of gutter background work (`AppEvent::Gutter`).
+pub(super) enum GutterEvent {
+    /// A buffer's gutter markers were computed.
+    Markers { buffer: BufferId, computed: Computed },
+    /// A buffer's inline blame was computed (`app/blame.rs`).
+    Blame {
+        buffer: BufferId,
+        computed: crate::blame::Computed,
+    },
+    /// A change was staged or unstaged (or wasn't).
+    Staged {
+        at: StageAt,
+        unstage: bool,
+        result: Result<Option<Hunk>, String>,
+    },
+}
+
+impl App {
+    pub(super) fn handle_gutter_event(&mut self, ev: GutterEvent) {
+        match ev {
+            GutterEvent::Markers { buffer, computed } => self.quick_diff_done(buffer, computed),
+            GutterEvent::Blame { buffer, computed } => self.blame_done(buffer, computed),
+            GutterEvent::Staged { at, unstage, result } => self.staged(at, unstage, result),
+        }
+    }
+}
+
 impl App {
     /// Each loop turn: starts the computations due (new buffers, a changed index; edited
     /// buffers once the delay passed) and sets the delay's deadline for the others.
@@ -132,12 +159,12 @@ impl App {
             let tx = self.tx.clone();
             tokio::task::spawn_blocking(move || {
                 let computed = quick_diff::compute(job);
-                let _ = tx.send(AppEvent::QuickDiff { buffer, computed });
+                let _ = tx.send(AppEvent::Gutter(GutterEvent::Markers { buffer, computed }));
             });
         }
     }
 
-    /// `AppEvent::QuickDiff`: a buffer's new markers.
+    /// `AppEvent::Gutter(GutterEvent::Markers)`: a buffer's new markers.
     pub(super) fn quick_diff_done(&mut self, buffer: BufferId, computed: Computed) {
         if let Some(buf) = self.buffers.get_mut(buffer) {
             buf.quick_diff.finish(computed);
@@ -307,11 +334,11 @@ impl App {
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let result = work().map_err(|e| e.to_string());
-            let _ = tx.send(AppEvent::Staged { at, unstage, result });
+            let _ = tx.send(AppEvent::Gutter(GutterEvent::Staged { at, unstage, result }));
         });
     }
 
-    /// `AppEvent::Staged`: says what happened; the markers and the status are read again.
+    /// `AppEvent::Gutter(GutterEvent::Staged)`: says what happened; the markers and the status are read again.
     pub(super) fn staged(&mut self, at: StageAt, unstage: bool, result: Result<Option<Hunk>, String>) {
         self.quick_diff.staging -= 1;
         let line = at.line + 1;

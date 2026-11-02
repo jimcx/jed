@@ -35,9 +35,38 @@ impl SessionState {
     }
 }
 
+/// Results of session, crash backup and recent workspace background work (`AppEvent::Session`).
+pub(super) enum SessionEvent {
+    /// The workspace's session was read, with its text tabs' files.
+    Read(Box<Result<Option<Restore>, String>>),
+    /// The workspace's crash backups were looked for at start (`app/backup.rs`).
+    BackupsFound(Vec<crate::backup::Backup>),
+    /// A backup job (removals, writes) ended.
+    BackupDone(super::backup::Done),
+    /// A backup was diffed against its buffer, to restore it.
+    BackupRestore(Box<super::backup::Restoring>),
+    /// The workspace was recorded in the recent workspaces list (`app/recent.rs`).
+    RecentRecorded(Result<(), String>),
+    /// The recent workspaces were read for "Open Recent Workspace".
+    RecentListed(Box<super::recent::Listed>),
+}
+
+impl App {
+    pub(super) fn handle_session_event(&mut self, ev: SessionEvent) {
+        match ev {
+            SessionEvent::Read(result) => self.session_read(*result),
+            SessionEvent::BackupsFound(found) => self.backups_found(found),
+            SessionEvent::BackupDone(done) => self.backup_done(done),
+            SessionEvent::BackupRestore(r) => self.backup_restored(*r),
+            SessionEvent::RecentRecorded(result) => self.recent_recorded(result),
+            SessionEvent::RecentListed(listed) => self.recent_listed(*listed),
+        }
+    }
+}
+
 impl App {
     /// Reads the workspace's session off-thread (`start`), with every text tab's file, →
-    /// `AppEvent::SessionRead` → `session_read`. Nothing without a state dir (tests).
+    /// `AppEvent::Session(SessionEvent::Read)` → `session_read`. Nothing without a state dir (tests).
     pub(super) fn restore_session(&mut self) {
         let Some(dir) = self.state_dir.clone() else { return };
         let root = self.workspace.root.clone();
@@ -48,7 +77,7 @@ impl App {
         let indentation = self.settings.indentation();
         tokio::task::spawn_blocking(move || {
             let result = session::read(&dir, &root, &open, &open_hex, indentation);
-            let _ = tx.send(AppEvent::SessionRead(Box::new(result)));
+            let _ = tx.send(AppEvent::Session(SessionEvent::Read(Box::new(result))));
         });
     }
 

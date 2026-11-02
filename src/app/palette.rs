@@ -587,7 +587,9 @@ impl App {
         let dir = self.log_dir.clone();
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
-            let _ = tx.send(AppEvent::LogFileFound(logging::newest_log(&dir)));
+            let _ = tx.send(AppEvent::Logs(super::tools::LogEvent::FileFound(logging::newest_log(
+                &dir,
+            ))));
         });
     }
 

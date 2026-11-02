@@ -209,146 +209,30 @@ enum AppEvent {
     Config(config::ConfigEvent),
     /// Git status, HEAD and the Explorer's Git History page.
     Git(git::GitEvent),
-    /// A Cmd/Ctrl+clicked terminal link resolved off-thread (`app::term_link`): the one file it
-    /// names, or `None` and the text for quick open.
-    TerminalLink {
-        found: Option<PathBuf>,
-        goto: Option<files::Goto>,
-        query: String,
-        /// The editor group the clicked shell is in.
-        from: Option<crate::layout::GroupId>,
-    },
-    /// A semantic tokens answer decoded in `version`'s text (`app::semantic`).
-    SemanticDecoded {
-        buffer: BufferId,
-        server: crate::lsp::ServerId,
-        version: i32,
-        tokens: Vec<crate::semantic::Token>,
-    },
-    /// Find's whole-file count on a hex tab (`HexTab::id`) for one query generation
-    /// (`find::HexFind`); an older generation's is dropped.
-    HexCount {
-        tab: u64,
-        generation: u64,
-        count: crate::hex::Count,
-    },
-    /// A big document's Markdown render (`MarkdownTab::id`, the generation asked for, the width
-    /// and source revision it is for); an older generation's is dropped.
-    MarkdownRendered {
-        tab: u64,
-        generation: u64,
-        width: usize,
-        revision: u64,
-        text: std::sync::Arc<str>,
-        doc: crate::markdown::Doc,
-    },
-    /// A file history task (a save's snapshot, a rename's move) ended; `Err` = the message.
-    HistoryDone(Result<(), String>),
-    /// A file's history entries were read for the picker.
-    HistoryListed(Box<history::Listed>),
-    /// A history entry was read and diffed against its buffer, to restore it.
-    HistoryRestore(Box<history::Restore>),
-    /// A client of the task socket asks to open a file (`app/ipc.rs`).
-    Ipc(crate::ipc::Request, crate::ipc::Responder),
-    /// The task socket is listening, or why not.
-    IpcStarted(Result<crate::ipc::Server, String>),
-    LogFileFound(Option<PathBuf>),
-    /// Workspace search results; any generation (stale ones are dropped).
-    SearchResults(crate::workspace_search::Batch),
-    /// The Search view's Replace rewrote the files that aren't open (`app/replace.rs`).
-    Replaced(Box<replace::FilesDone>),
-    /// A background parse finished (`Syntax::parsed` drops a superseded one).
-    Parsed {
-        buffer: BufferId,
-        parsed: crate::syntax::Parsed,
-    },
-    /// A syntax plugin's grammar was loaded (or why not) by `load_grammars`.
-    Grammar {
-        language: crate::syntax::Language,
-        /// What building did (none: nothing to build, or the plugin was only loaded).
-        build: Option<crate::syntax::build::Build>,
-        /// A forced rebuild of a grammar this process already uses: the new library is used from
-        /// the next start.
-        replaced_in_use: bool,
-        result: Result<(), String>,
-    },
-    /// `load_grammars` starts on this plugin: its build is running.
-    GrammarBuilding(crate::syntax::plugin::PluginId),
     /// From a language server's task.
     Lsp(crate::lsp::Event),
-    /// Files read for the Locations list's previews (`generation`: the list they're for).
-    LocationsRead {
-        generation: u64,
-        files: Vec<(PathBuf, ropey::Rope)>,
-    },
-    /// The active file's history entries were read for the Explorer's File History section
-    /// (`app/history.rs`).
-    FileHistoryEntries {
-        path: PathBuf,
-        generation: u64,
-        result: Result<Vec<crate::history::Entry>, String>,
-    },
-    /// An open file was read to see whether it changed on disk (`app/disk.rs`).
-    DiskChecked(Box<disk::Checked>),
-    /// A hex tab's file was read to see whether it changed on disk (`app/disk.rs`).
-    HexChecked {
-        path: PathBuf,
-        result: std::io::Result<crate::hex::OnDisk>,
-    },
-    /// A buffer's gutter markers were computed (`app/quick_diff.rs`).
-    QuickDiff {
-        buffer: BufferId,
-        computed: crate::quick_diff::Computed,
-    },
-    /// A buffer's inline blame was computed (`app/blame.rs`).
-    Blame {
-        buffer: BufferId,
-        computed: crate::blame::Computed,
-    },
-    /// A change was staged or unstaged (or wasn't).
-    Staged {
-        at: quick_diff::StageAt,
-        unstage: bool,
-        result: Result<Option<crate::git::Hunk>, String>,
-    },
-    /// A diff tab's texts were read and diffed (`app/diff_view.rs`).
-    DiffLoaded {
-        id: u64,
-        generation: u64,
-        result: Box<Result<crate::diff_view::Doc, String>>,
-    },
-    /// A stage / unstage from a diff tab (or of a whole file) ended: the message to show.
-    DiffStaged(Result<String, String>),
-    /// A discard of working tree changes ended (`app/discard.rs`).
-    Discarded(Box<discard::Done>),
-    /// A commit tab's `git show` was read (`app/commit_tabs.rs`).
-    CommitLoaded {
-        commit: String,
-        result: Result<crate::git::show::Show, String>,
-    },
-    /// A task run started, has new output (throttled) or ended (`app/tasks.rs`).
-    Task(crate::tasks::Event),
-    /// A shell tab's run started, has new output (throttled) or ended (`app/shell.rs`).
-    Shell(crate::tasks::Event),
-    /// The workspace's session was read, with its text tabs' files (`app/session.rs`).
-    SessionRead(Box<Result<Option<crate::session::Restore>, String>>),
-    /// The workspace's crash backups were looked for at start (`app/backup.rs`).
-    BackupsFound(Vec<crate::backup::Backup>),
-    /// A backup job (removals, writes) ended.
-    BackupDone(backup::Done),
-    /// A backup was diffed against its buffer, to restore it.
-    BackupRestore(Box<backup::Restoring>),
-    /// The workspace was recorded in the recent workspaces list (`app/recent.rs`).
-    RecentRecorded(Result<(), String>),
-    /// The recent workspaces were read for "Open Recent Workspace".
-    RecentListed(Box<recent::Listed>),
-    TermCtlDone(Box<recent::TermDone>),
-    /// The shell integration snippets were written into the state dir (`app/shell.rs`).
-    ShellIntegrationWritten(Result<(), String>),
-    /// The shell integration's source line was appended to a shell's init file.
-    ShellIntegrationInstalled(Result<PathBuf, String>),
-    /// A tool log got lines since the app last rearmed the store's waker (`app/tools.rs`).
-    LogsChanged,
+    /// File history: snapshots, the picker's entries, a restore, the Explorer's File History.
+    History(history::HistoryEvent),
+    /// Workspace search, the Search view's replace and the Locations list's previews.
+    Search(workspace_search::SearchEvent),
+    /// Parses, syntax plugins' grammars and decoded semantic tokens.
+    Syntax(syntax::SyntaxEvent),
+    /// Find's hex count and big Markdown renders.
+    View(hex::ViewEvent),
+    /// Open files and hex tabs read to see whether they changed on disk.
+    Disk(disk::DiskEvent),
+    /// The task socket: its start and the requests of its clients.
+    Ipc(ipc::IpcEvent),
+    /// Task runs, shell tabs, shell integration, terminal links and recent-workspace launches.
+    Terminal(shell::TerminalEvent),
+    /// Tool logs: new lines and the newest log file.
+    Logs(tools::LogEvent),
+    /// A buffer's gutter markers, inline blame and a stage from the gutter.
+    Gutter(quick_diff::GutterEvent),
+    /// Diff tabs, stage / unstage from them, discards and commit tabs.
+    Diff(diff_view::DiffEvent),
+    /// The session, crash backups and the recent workspaces list.
+    Session(session::SessionEvent),
 }
 
 /// The file to open at startup, with an optional 1-based line and column.
@@ -766,7 +650,7 @@ impl App {
         }));
         let tx = self.tx.clone();
         self.tasks.start(Arc::new(move |ev| {
-            let _ = tx.send(AppEvent::Task(ev));
+            let _ = tx.send(AppEvent::Terminal(shell::TerminalEvent::Task(ev)));
         }));
         let tx = self.tx.clone();
         if self.watch_files {
@@ -1678,7 +1562,7 @@ impl App {
     fn handle_app_event(&mut self, ev: AppEvent) {
         // New log lines redraw only what shows them: log tabs take them in at the turn's
         // `sync_logs`; the Tools view only when its error badges changed.
-        if let AppEvent::LogsChanged = ev {
+        if let AppEvent::Logs(tools::LogEvent::Changed) = ev {
             if self.logs_changed() {
                 self.needs_redraw = true;
             }
@@ -1687,78 +1571,25 @@ impl App {
         self.needs_redraw = true;
         // A session's restore replaces the layout: not a jump.
         let here = match ev {
-            AppEvent::SessionRead(_) => None,
+            AppEvent::Session(session::SessionEvent::Read(_)) => None,
             _ => self.nav_begin(),
         };
         match ev {
             AppEvent::Files(ev) => self.handle_file_event(ev),
             AppEvent::Config(ev) => self.handle_config_event(ev),
             AppEvent::Git(ev) => self.handle_git_event(ev),
-            AppEvent::TerminalLink {
-                found,
-                goto,
-                query,
-                from,
-            } => self.terminal_link_resolved(found, goto, query, from),
-            AppEvent::SemanticDecoded {
-                buffer,
-                server,
-                version,
-                tokens,
-            } => self.semantic_decoded(buffer, server, version, tokens),
-            AppEvent::HexCount { tab, generation, count } => self.hex_counted(tab, generation, count),
-            AppEvent::MarkdownRendered {
-                tab,
-                generation,
-                width,
-                revision,
-                text,
-                doc,
-            } => self.markdown_rendered(tab, generation, width, revision, text, doc),
-            AppEvent::HistoryDone(result) => self.history_done(result),
-            AppEvent::FileHistoryEntries {
-                path,
-                generation,
-                result,
-            } => self.file_history_entries(path, generation, result),
-            AppEvent::HistoryListed(listed) => self.history_listed(*listed),
-            AppEvent::HistoryRestore(restore) => self.history_restored(*restore),
-            AppEvent::LogFileFound(path) => self.log_file_found(path),
-            AppEvent::SearchResults(batch) => self.search_results(batch),
-            AppEvent::Replaced(done) => self.files_replaced(*done),
-            AppEvent::Parsed { buffer, parsed } => self.parsed(buffer, parsed),
-            AppEvent::Grammar {
-                language,
-                build,
-                replaced_in_use,
-                result,
-            } => self.grammar_loaded(language, build, replaced_in_use, result),
-            AppEvent::GrammarBuilding(p) => self.grammar_building(p),
             AppEvent::Lsp(ev) => self.lsp_event(ev),
-            AppEvent::LocationsRead { generation, files } => self.locations_read(generation, files),
-            AppEvent::DiskChecked(checked) => self.disk_checked(*checked),
-            AppEvent::HexChecked { path, result } => self.hex_checked(path, result),
-            AppEvent::QuickDiff { buffer, computed } => self.quick_diff_done(buffer, computed),
-            AppEvent::Blame { buffer, computed } => self.blame_done(buffer, computed),
-            AppEvent::Staged { at, unstage, result } => self.staged(at, unstage, result),
-            AppEvent::DiffLoaded { id, generation, result } => self.diff_loaded(id, generation, *result),
-            AppEvent::DiffStaged(message) => self.diff_staged(message),
-            AppEvent::Discarded(done) => self.discard_done(*done),
-            AppEvent::CommitLoaded { commit, result } => self.commit_loaded(commit, result),
-            AppEvent::Task(ev) => self.task_event(ev),
-            AppEvent::Shell(ev) => self.shell_event(ev),
-            AppEvent::Ipc(request, responder) => self.ipc_request(request, responder),
-            AppEvent::IpcStarted(result) => self.ipc_started(result),
-            AppEvent::SessionRead(result) => self.session_read(*result),
-            AppEvent::BackupsFound(found) => self.backups_found(found),
-            AppEvent::BackupDone(done) => self.backup_done(done),
-            AppEvent::BackupRestore(r) => self.backup_restored(*r),
-            AppEvent::RecentRecorded(result) => self.recent_recorded(result),
-            AppEvent::RecentListed(listed) => self.recent_listed(*listed),
-            AppEvent::TermCtlDone(done) => self.termctl_done(*done),
-            AppEvent::ShellIntegrationWritten(result) => self.shell_integration_written(result),
-            AppEvent::ShellIntegrationInstalled(result) => self.shell_integration_installed(result),
-            AppEvent::LogsChanged => {} // handled above: no redraw, no navigation
+            AppEvent::History(ev) => self.handle_history_event(ev),
+            AppEvent::Search(ev) => self.handle_search_event(ev),
+            AppEvent::Syntax(ev) => self.handle_syntax_event(ev),
+            AppEvent::View(ev) => self.handle_view_event(ev),
+            AppEvent::Disk(ev) => self.handle_disk_event(ev),
+            AppEvent::Ipc(ev) => self.handle_ipc_event(ev),
+            AppEvent::Terminal(ev) => self.handle_terminal_event(ev),
+            AppEvent::Logs(ev) => self.handle_log_event(ev),
+            AppEvent::Gutter(ev) => self.handle_gutter_event(ev),
+            AppEvent::Diff(ev) => self.handle_diff_event(ev),
+            AppEvent::Session(ev) => self.handle_session_event(ev),
         }
         self.nav_end(here, false);
         self.refresh_find();
@@ -1882,7 +1713,7 @@ impl App {
 
     /// Takes in a workspace search batch as if the running search had sent it.
     pub fn test_search_batch(&mut self, batch: crate::workspace_search::Batch) {
-        self.handle_app_event(AppEvent::SearchResults(batch));
+        self.handle_app_event(AppEvent::Search(workspace_search::SearchEvent::Results(batch)));
     }
 
     /// Fires the hover resting timer as the event loop would at `now` (no sleeping in tests).
@@ -1927,7 +1758,10 @@ impl App {
     /// Takes in file texts read for the Locations list `generation`, as if the background read
     /// had sent them (to test that a replaced list's reads are dropped).
     pub fn test_locations_read(&mut self, generation: u64, files: Vec<(PathBuf, ropey::Rope)>) {
-        self.handle_app_event(AppEvent::LocationsRead { generation, files });
+        self.handle_app_event(AppEvent::Search(workspace_search::SearchEvent::Locations {
+            generation,
+            files,
+        }));
     }
 
     /// Takes in a page of a file's commits for `path` and `generation`, as if the background
@@ -2004,24 +1838,24 @@ impl App {
         self.handle_app_event(AppEvent::Lsp(event));
     }
 
-    /// Takes in a hex find count as if it had come through the channel (`AppEvent::HexCount`):
+    /// Takes in a hex find count as if it had come through the channel (`AppEvent::View(ViewEvent::HexCount)`):
     /// for tests of stale counts.
     pub fn test_hex_count(&mut self, tab: u64, generation: u64, count: crate::hex::Count) {
-        self.handle_app_event(AppEvent::HexCount { tab, generation, count });
+        self.handle_app_event(AppEvent::View(hex::ViewEvent::HexCount { tab, generation, count }));
     }
 
     /// Takes in a Markdown render as if it had come through the channel
-    /// (`AppEvent::MarkdownRendered`): for tests of stale results.
+    /// (`AppEvent::View(ViewEvent::MarkdownRendered)`): for tests of stale results.
     pub fn test_markdown_rendered(&mut self, tab: u64, generation: u64, width: usize, revision: u64, text: &str) {
         let doc = crate::markdown::render(text, width);
-        self.handle_app_event(AppEvent::MarkdownRendered {
+        self.handle_app_event(AppEvent::View(hex::ViewEvent::MarkdownRendered {
             tab,
             generation,
             width,
             revision,
             text: text.into(),
             doc,
-        });
+        }));
     }
 
     /// Handles every background result already queued, without waiting (as the event loop
@@ -2115,8 +1949,8 @@ impl App {
                 _ = tokio::time::sleep_until(deadline) => return false,
             };
             let (is_session, is_scan) = (
-                matches!(msg, AppEvent::SessionRead(_)),
-                matches!(msg, AppEvent::BackupsFound(_)),
+                matches!(msg, AppEvent::Session(session::SessionEvent::Read(_))),
+                matches!(msg, AppEvent::Session(session::SessionEvent::BackupsFound(_))),
             );
             let is_first = if session_first { is_session } else { is_scan };
             if (is_session || is_scan) && !is_first {

@@ -47,7 +47,7 @@ const WHEEL_COLS: isize = 4;
 impl App {
     /// Keeps the previews in step with their sources, once per loop turn and after a frame:
     /// a changed source restarts the debounce; when it is due the stale previews render again
-    /// (small documents here, big ones in the background → `AppEvent::MarkdownRendered`, only
+    /// (small documents here, big ones in the background → `AppEvent::View(ViewEvent::MarkdownRendered)`, only
     /// the newest result is taken); a width the document was not laid out at renders at once;
     /// a source scrolled moves its previews (proportionally to the rows) unless the user
     /// scrolled the preview since; a source no tab shows marks its previews closed; a renamed
@@ -142,14 +142,14 @@ impl App {
                 let tx = tx.clone();
                 tokio::task::spawn_blocking(move || {
                     let doc = markdown::render(&text, width);
-                    let _ = tx.send(AppEvent::MarkdownRendered {
+                    let _ = tx.send(AppEvent::View(super::hex::ViewEvent::MarkdownRendered {
                         tab,
                         generation,
                         width,
                         revision: target,
                         text,
                         doc,
-                    });
+                    }));
                 });
             }
         }

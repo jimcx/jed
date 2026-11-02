@@ -56,12 +56,12 @@ impl App {
         let (root, tx) = (self.workspace.root.clone(), self.tx.clone());
         tokio::task::spawn_blocking(move || {
             let found = resolve(&path, &cwd, &root);
-            let _ = tx.send(AppEvent::TerminalLink {
+            let _ = tx.send(AppEvent::Terminal(super::shell::TerminalEvent::Link {
                 found,
                 goto,
                 query,
                 from,
-            });
+            }));
         });
         true
     }

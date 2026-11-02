@@ -300,7 +300,9 @@ impl App {
                     let tx = self.tx.clone();
                     tokio::task::spawn_blocking(move || {
                         let result = crate::shell_integration::append_line(&init, &line).map(|()| init);
-                        let _ = tx.send(AppEvent::ShellIntegrationInstalled(result));
+                        let _ = tx.send(AppEvent::Terminal(super::shell::TerminalEvent::IntegrationInstalled(
+                            result,
+                        )));
                     });
                 }
                 _ if esc => self.close_prompt(),

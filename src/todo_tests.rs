@@ -8870,7 +8870,19 @@ mod discard_changes {
         assert!(settle_stage(&mut app).await);
         assert_eq!(read(&root, "c.txt"), "c2\n");
         assert_eq!(read(&root, "d.txt"), "d\n");
-        assert_eq!(app.buffers.iter().next().unwrap().1.rope.to_string(), "a\n");
+        // FLAKE: 2026-11-03, failed once in a full run under load (left "a2\n", right "a\n": the
+        // open buffer of a.txt still had the changed text); passed on 3 isolated reruns. Not
+        // debugged: the message dumps the state around the assertion if it happens again.
+        let buffer_text = app.buffers.iter().next().unwrap().1.rope.to_string();
+        assert_eq!(
+            buffer_text,
+            "a\n",
+            "FLAKE dump: a.txt on disk {:?}, message {:?}, prompt open {}, git status {:?}",
+            read(&root, "a.txt"),
+            message(&app),
+            app.prompt.is_some(),
+            app.git.status
+        );
         assert!(!root.join("sub/e.txt").exists(), "{}", message(&app));
         assert_eq!(read(&root, "b.txt"), "b\n", "the staged-only file is not touched");
     }
@@ -12866,5 +12878,51 @@ mod blame_hash {
         go_to_line(&mut app, 6);
         draw(&mut app);
         assert!(hash_hit(&app).is_none());
+    }
+}
+
+/// review_followups-i: "Open Log File" goes through `AppEvent::Logs(LogEvent::FileFound)`: the
+/// newest `jed.*.log` opens in a tab; none says so.
+mod log_file_found_event {
+    use std::fs;
+
+    use crate::app::App;
+    use crate::command::Command;
+    use crate::workspace::Workspace;
+    use crate::workspace::trust::TrustStore;
+
+    fn app(root: &std::path::Path, state: &std::path::Path, log_dir: &std::path::Path) -> App {
+        let ws = Workspace::load(root.to_path_buf());
+        let trust = TrustStore::load(state.join("trust.toml"));
+        let mut app = App::new(ws, trust, None, true);
+        app.log_dir = log_dir.to_path_buf();
+        app.test_start();
+        app
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_newest_log_opens_and_none_is_a_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, state, logs) = (dir.path().join("w"), dir.path().join("s"), dir.path().join("logs"));
+        for d in [&root, &state, &logs] {
+            fs::create_dir_all(d).unwrap();
+        }
+        let mut app = app(&root, &state, &logs);
+        app.test_execute(Command::OpenLogFile);
+        assert!(
+            app.settle(|a| a.message.as_ref().is_some_and(|m| m.text.contains("No log file")))
+                .await
+        );
+        assert!(app.active_buffer().is_none());
+
+        fs::write(logs.join("jed.2026-11-01.log"), "old\n").unwrap();
+        fs::write(logs.join("jed.2026-11-02.log"), "new\n").unwrap();
+        app.test_execute(Command::OpenLogFile);
+        assert!(
+            app.settle(|a| a
+                .active_buffer()
+                .is_some_and(|b| b.path.ends_with("jed.2026-11-02.log")))
+                .await
+        );
     }
 }

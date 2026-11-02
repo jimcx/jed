@@ -1,7 +1,7 @@
 //! Language detection and tree-sitter parse trees, one `Syntax` per buffer (`Buffer::syntax`).
 //!
 //! The first parse of a buffer, and re-parses after big edits, run off the UI thread (`ParseJob`,
-//! reported as `AppEvent::Parsed`); a small edit is re-parsed incrementally on the UI thread by
+//! reported as `AppEvent::Syntax(SyntaxEvent::Parsed)`); a small edit is re-parsed incrementally on the UI thread by
 //! `Syntax::update`, which the event loop calls once per turn. Every change set the buffer applies
 //! reaches `Syntax::edit` (from `Buffer::edit` / `undo` / `redo`), which turns it into tree-sitter
 //! `InputEdit`s. `tree()` is only `Some` when the tree matches the text exactly.

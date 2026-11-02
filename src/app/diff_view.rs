@@ -56,6 +56,36 @@ impl DiffViews {
     }
 }
 
+/// Results of diff and commit tab background work (`AppEvent::Diff`).
+pub(super) enum DiffEvent {
+    /// A diff tab's texts were read and diffed.
+    Loaded {
+        id: u64,
+        generation: u64,
+        result: Box<Result<Doc, String>>,
+    },
+    /// A stage / unstage from a diff tab (or of a whole file) ended: the message to show.
+    Staged(Result<String, String>),
+    /// A discard of working tree changes ended (`app/discard.rs`).
+    Discarded(Box<super::discard::Done>),
+    /// A commit tab's `git show` was read (`app/commit_tabs.rs`).
+    Commit {
+        commit: String,
+        result: Result<crate::git::show::Show, String>,
+    },
+}
+
+impl App {
+    pub(super) fn handle_diff_event(&mut self, ev: DiffEvent) {
+        match ev {
+            DiffEvent::Loaded { id, generation, result } => self.diff_loaded(id, generation, *result),
+            DiffEvent::Staged(message) => self.diff_staged(message),
+            DiffEvent::Discarded(done) => self.discard_done(*done),
+            DiffEvent::Commit { commit, result } => self.commit_loaded(commit, result),
+        }
+    }
+}
+
 impl App {
     pub(super) fn next_diff_id(&mut self) -> u64 {
         self.diffs.next_id += 1;
@@ -465,12 +495,12 @@ impl App {
             let tx = self.tx.clone();
             tokio::task::spawn_blocking(move || {
                 let result = Box::new(diff_view::load(job));
-                let _ = tx.send(AppEvent::DiffLoaded { id, generation, result });
+                let _ = tx.send(AppEvent::Diff(DiffEvent::Loaded { id, generation, result }));
             });
         }
     }
 
-    /// `AppEvent::DiffLoaded`: the tab's new diff (dropped when it closed or a newer load runs).
+    /// `AppEvent::Diff(DiffEvent::Loaded)`: the tab's new diff (dropped when it closed or a newer load runs).
     pub(super) fn diff_loaded(&mut self, id: u64, generation: u64, result: Result<Doc, String>) {
         if let Some((_, d)) = self.groups.diff_tabs_mut().find(|(_, d)| d.id == id) {
             d.finish(generation, result);
@@ -696,7 +726,7 @@ impl App {
                 Err(stage::Error::Stale) => Err(refused(&name, "the file changed, try again")),
                 Err(e) => Err(refused(&name, &e.to_string())),
             };
-            let _ = tx.send(AppEvent::DiffStaged(message));
+            let _ = tx.send(AppEvent::Diff(DiffEvent::Staged(message)));
         });
     }
 
@@ -826,11 +856,11 @@ impl App {
                 Err(stage::Error::Stale) => Err(format!("{failed}: the file changed, try again")),
                 Err(e) => Err(format!("{failed}: {e}")),
             };
-            let _ = tx.send(AppEvent::DiffStaged(message));
+            let _ = tx.send(AppEvent::Diff(DiffEvent::Staged(message)));
         });
     }
 
-    /// `AppEvent::DiffStaged`: says what happened; the status (and so every diff and gutter)
+    /// `AppEvent::Diff(DiffEvent::Staged)`: says what happened; the status (and so every diff and gutter)
     /// is read again.
     pub(super) fn diff_staged(&mut self, message: Result<String, String>) {
         self.diffs.staging -= 1;

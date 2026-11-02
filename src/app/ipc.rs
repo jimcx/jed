@@ -1,5 +1,5 @@
 //! The socket tasks reach this jed by (`src/ipc.rs`; PLAN.md, Git editor, "From a task
-//! terminal"): started from `start`, requests arrive as `AppEvent::Ipc`, and a `wait` request is
+//! terminal"): started from `start`, requests arrive as `AppEvent::Ipc(IpcEvent::Request)`, and a `wait` request is
 //! answered when its file's last tab closes (`ipc_sweep`, called wherever a tab or a load ends).
 
 use std::path::{Path, PathBuf};
@@ -31,8 +31,25 @@ pub struct Ipc {
     queued_shells: Vec<(bool, bool)>,
 }
 
+/// Results of the task socket's background work (`AppEvent::Ipc(IpcEvent::Request)`).
+pub(super) enum IpcEvent {
+    /// A client of the task socket asks to open a file.
+    Request(Request, Responder),
+    /// The task socket is listening, or why not.
+    Started(Result<Server, String>),
+}
+
 impl App {
-    /// Prepares the socket directory off-thread, then listens (`AppEvent::IpcStarted`). Only
+    pub(super) fn handle_ipc_event(&mut self, ev: IpcEvent) {
+        match ev {
+            IpcEvent::Request(request, responder) => self.ipc_request(request, responder),
+            IpcEvent::Started(result) => self.ipc_started(result),
+        }
+    }
+}
+
+impl App {
+    /// Prepares the socket directory off-thread, then listens (`AppEvent::Ipc(IpcEvent::Started)`). Only
     /// with an `ipc_dir` (not in tests unless set).
     pub(super) fn start_ipc(&mut self) {
         let Some(dir) = self.ipc_dir.clone() else { return };
@@ -46,7 +63,7 @@ impl App {
                 Ok(Err(e)) => Err(e.to_string()),
                 Err(e) => Err(e.to_string()),
             };
-            let _ = tx.send(AppEvent::IpcStarted(result));
+            let _ = tx.send(AppEvent::Ipc(IpcEvent::Started(result)));
         });
     }
 
@@ -140,7 +157,7 @@ impl App {
 
 fn start_server(path: &Path, tx: UnboundedSender<AppEvent>) -> Result<Server, String> {
     Server::start(path, move |request, responder| {
-        let _ = tx.send(AppEvent::Ipc(request, responder));
+        let _ = tx.send(AppEvent::Ipc(IpcEvent::Request(request, responder)));
     })
     .map_err(|e| e.to_string())
 }

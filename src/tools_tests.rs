@@ -598,7 +598,7 @@ async fn tools_jed_events_show_in_the_jed_log_tab() {
         "{:?}",
         tab_lines(&app)
     );
-    // New lines wake the loop (`AppEvent::LogsChanged`, which sets the rearm deadline), at
+    // New lines wake the loop (`AppEvent::Logs(LogEvent::Changed)`, which sets the rearm deadline), at
     // most once per `LOG_FRAME`: the timer rearms the store.
     assert!(app.settle(|a| a.log_tabs.deadline().is_none()).await);
     tracing::info!(target: "jed::test", "wake up");

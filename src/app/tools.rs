@@ -49,10 +49,28 @@ impl LogTabs {
     }
 }
 
+/// Results of tool log background work (`AppEvent::Logs`).
+pub(super) enum LogEvent {
+    /// The newest log file was found (`app/palette.rs`).
+    FileFound(Option<std::path::PathBuf>),
+    /// A tool log got lines since the app last rearmed the store's waker.
+    Changed,
+}
+
+impl App {
+    pub(super) fn handle_log_event(&mut self, ev: LogEvent) {
+        match ev {
+            LogEvent::FileFound(path) => self.log_file_found(path),
+            // Handled in `handle_app_event`'s preamble: no redraw, no navigation.
+            LogEvent::Changed => {}
+        }
+    }
+}
+
 impl App {
     /// From `start`: language servers log into `self.logs`, which writes to
     /// `<state dir>/logs/tools` (nothing without a `state_dir`: tests unless set), and wakes the
-    /// loop for log tabs (`AppEvent::LogsChanged`).
+    /// loop for log tabs (`AppEvent::Logs(LogEvent::Changed)`).
     pub(super) fn start_tool_logs(&mut self) {
         self.lsp.logs = self.logs.clone();
         if let Some(state) = &self.state_dir {
@@ -61,7 +79,7 @@ impl App {
         }
         let tx = self.tx.clone();
         self.logs.set_waker(Arc::new(move || {
-            let _ = tx.send(AppEvent::LogsChanged);
+            let _ = tx.send(AppEvent::Logs(LogEvent::Changed));
         }));
     }
 
@@ -88,7 +106,7 @@ impl App {
         self.has_log_tabs() || self.tools_shown()
     }
 
-    /// `AppEvent::LogsChanged`: the turn it ends reads the new lines (`sync_logs`); the store
+    /// `AppEvent::Logs(LogEvent::Changed)`: the turn it ends reads the new lines (`sync_logs`); the store
     /// may wake the loop again `LOG_FRAME` later. With neither log tabs nor the Tools view it
     /// stays unarmed: nothing wakes the loop until one shows. Returns whether the Tools view
     /// needs a redraw (an error badge changed); log tabs redraw from `sync_logs`.

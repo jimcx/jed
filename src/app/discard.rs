@@ -5,7 +5,7 @@
 //! "File History: Restore" can bring it back. Open buffers then reload from disk (one undo step,
 //! clean). An untracked file goes to the Trash and its open tabs are marked deleted. Conflicted
 //! files, staged-only ones and files with a save in flight are refused. Everything ends in
-//! `AppEvent::Discarded`.
+//! `AppEvent::Diff(DiffEvent::Discarded)`.
 
 use std::path::PathBuf;
 
@@ -40,7 +40,7 @@ impl Plan {
     }
 }
 
-/// `AppEvent::Discarded`'s payload.
+/// `AppEvent::Diff(DiffEvent::Discarded)`'s payload.
 pub struct Done {
     /// Open buffers' files, written on disk (the buffers reload).
     opened: Vec<PathBuf>,
@@ -234,11 +234,11 @@ impl App {
                     Err(e) => done.errors.push(fail(&path, e.to_string())),
                 }
             }
-            let _ = tx.send(AppEvent::Discarded(Box::new(done)));
+            let _ = tx.send(AppEvent::Diff(super::diff_view::DiffEvent::Discarded(Box::new(done))));
         });
     }
 
-    /// `AppEvent::Discarded`: open buffers reload from disk (one undo step, clean), trashed
+    /// `AppEvent::Diff(DiffEvent::Discarded)`: open buffers reload from disk (one undo step, clean), trashed
     /// files' tabs are marked deleted, the result is said and the status read again.
     pub(super) fn discard_done(&mut self, done: Done) {
         self.diffs.staging -= 1;

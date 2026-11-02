@@ -29,7 +29,7 @@ pub struct RecentState {
     pub opening_running: usize,
 }
 
-/// The recent workspaces read for the picker (`AppEvent::RecentListed`).
+/// The recent workspaces read for the picker (`AppEvent::Session(SessionEvent::RecentListed)`).
 pub(super) struct Listed {
     listing: u64,
     result: Result<Vec<PathBuf>, String>,
@@ -37,7 +37,7 @@ pub(super) struct Listed {
     windows: Vec<Window>,
 }
 
-/// A focus or launch finished (`AppEvent::TermCtlDone`).
+/// A focus or launch finished (`AppEvent::Terminal(TerminalEvent::TermCtl)`).
 pub(super) struct TermDone {
     focus: bool,
     path: PathBuf,
@@ -68,7 +68,7 @@ impl App {
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let result = recent::record(&state, &root).map_err(|e| e.to_string());
-            let _ = tx.send(AppEvent::RecentRecorded(result));
+            let _ = tx.send(AppEvent::Session(super::session::SessionEvent::RecentRecorded(result)));
         });
     }
 
@@ -103,15 +103,17 @@ impl App {
                     }
                 })
                 .unwrap_or_default();
-            let _ = tx.send(AppEvent::RecentListed(Box::new(Listed {
-                listing,
-                result,
-                windows,
-            })));
+            let _ = tx.send(AppEvent::Session(super::session::SessionEvent::RecentListed(Box::new(
+                Listed {
+                    listing,
+                    result,
+                    windows,
+                },
+            ))));
         });
     }
 
-    /// `AppEvent::RecentListed`: the picker opens with the workspaces (none: a message).
+    /// `AppEvent::Session(SessionEvent::RecentListed)`: the picker opens with the workspaces (none: a message).
     pub(super) fn recent_listed(&mut self, listed: Listed) {
         self.recent.listing_running -= 1;
         if listed.listing != self.recent.listing {
@@ -168,11 +170,13 @@ impl App {
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let result = call(&*backend, &path);
-            let _ = tx.send(AppEvent::TermCtlDone(Box::new(TermDone { focus, path, result })));
+            let _ = tx.send(AppEvent::Terminal(super::shell::TerminalEvent::TermCtl(Box::new(
+                TermDone { focus, path, result },
+            ))));
         });
     }
 
-    /// `AppEvent::TermCtlDone`: says what happened; a failure is logged and falls back to the
+    /// `AppEvent::Terminal(TerminalEvent::TermCtl)`: says what happened; a failure is logged and falls back to the
     /// message with the command.
     pub(super) fn termctl_done(&mut self, done: TermDone) {
         self.recent.opening_running -= 1;

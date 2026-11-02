@@ -89,14 +89,14 @@ impl BackupState {
     }
 }
 
-/// A finished backup job (`AppEvent::BackupDone`).
+/// A finished backup job (`AppEvent::Session(SessionEvent::BackupDone)`).
 pub struct Done {
     /// Buffers whose write failed: due again.
     failed: Vec<BufferId>,
     errors: Vec<String>,
 }
 
-/// A backup diffed against its buffer, to restore it (`AppEvent::BackupRestore`).
+/// A backup diffed against its buffer, to restore it (`AppEvent::Session(SessionEvent::BackupRestore)`).
 pub struct Restoring {
     buffer: BufferId,
     revision: u64,
@@ -106,14 +106,16 @@ pub struct Restoring {
 
 impl App {
     /// Looks for backups a killed or crashed jed left for this workspace (`start`) →
-    /// `AppEvent::BackupsFound` → `backups_found`. Nothing without a state dir.
+    /// `AppEvent::Session(SessionEvent::BackupsFound)` → `backups_found`. Nothing without a state dir.
     pub(super) fn scan_backups(&mut self) {
         let Some(dir) = self.state_dir.clone() else { return };
         let root = self.workspace.root.clone();
         self.backups.scanning = true;
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
-            let _ = tx.send(AppEvent::BackupsFound(backup::list(&dir, &root)));
+            let _ = tx.send(AppEvent::Session(super::session::SessionEvent::BackupsFound(
+                backup::list(&dir, &root),
+            )));
         });
     }
 
@@ -196,7 +198,7 @@ impl App {
         );
     }
 
-    /// Diffs `b` against its buffer off-thread (→ `AppEvent::BackupRestore`); a file not open
+    /// Diffs `b` against its buffer off-thread (→ `AppEvent::Session(SessionEvent::BackupRestore)`); a file not open
     /// is opened first (`OpenRequest::backup`, restored once `opened`).
     pub(super) fn restore_backup(&mut self, b: Backup) {
         if let Some(uid) = b.untitled.clone() {
@@ -234,7 +236,9 @@ impl App {
                 backup: b,
                 changes,
             };
-            let _ = tx.send(AppEvent::BackupRestore(Box::new(r)));
+            let _ = tx.send(AppEvent::Session(super::session::SessionEvent::BackupRestore(
+                Box::new(r),
+            )));
         });
     }
 
@@ -265,7 +269,7 @@ impl App {
         self.backup_restore_ended();
     }
 
-    /// `AppEvent::BackupRestore`: the backup's text replaces the buffer's as one undo step
+    /// `AppEvent::Session(SessionEvent::BackupRestore)`: the backup's text replaces the buffer's as one undo step
     /// (`apply_changes`), left dirty, nothing written. A buffer edited meanwhile is diffed
     /// again. A file changed on disk since the backup was taken: the buffer is based on the
     /// backup's version (`Buffer::set_disk_base`), so a disk check shows the banner and a save
@@ -383,7 +387,7 @@ impl App {
     }
 
     /// Starts a job: the queued removals, then (with `write`) every buffer due, in
-    /// `spawn_blocking` → `AppEvent::BackupDone`. Nothing to do: nothing starts.
+    /// `spawn_blocking` → `AppEvent::Session(SessionEvent::BackupDone)`. Nothing to do: nothing starts.
     fn start_backup_job(&mut self, write: bool) {
         let Some(dir) = self.state_dir.clone() else { return };
         let mut writes = Vec::new();
@@ -428,11 +432,11 @@ impl App {
                     }
                 }
             }
-            let _ = tx.send(AppEvent::BackupDone(done));
+            let _ = tx.send(AppEvent::Session(super::session::SessionEvent::BackupDone(done)));
         }));
     }
 
-    /// `AppEvent::BackupDone`: failed writes are due again (reported once); an overdue write
+    /// `AppEvent::Session(SessionEvent::BackupDone)`: failed writes are due again (reported once); an overdue write
     /// starts now.
     pub(super) fn backup_done(&mut self, done: Done) {
         self.backups.task = None;

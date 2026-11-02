@@ -39,7 +39,7 @@ pub struct HistoryPicker {
     pub entries: Vec<Entry>,
 }
 
-/// A file's entries read for the picker (`AppEvent::HistoryListed`).
+/// A file's entries read for the picker (`AppEvent::History(HistoryEvent::Listed)`).
 pub(super) struct Listed {
     listing: u64,
     path: PathBuf,
@@ -48,7 +48,7 @@ pub(super) struct Listed {
     result: Result<Vec<Entry>, String>,
 }
 
-/// An entry read and diffed against the buffer for a restore (`AppEvent::HistoryRestore`).
+/// An entry read and diffed against the buffer for a restore (`AppEvent::History(HistoryEvent::Restore)`).
 pub(super) struct Restore {
     buffer: BufferId,
     /// The buffer's revision the changes apply to.
@@ -93,6 +93,37 @@ impl Job {
     }
 }
 
+/// Results of file history background work (`AppEvent::History`).
+pub(super) enum HistoryEvent {
+    /// A file history task (a save's snapshot, a rename's move) ended; `Err` = the message.
+    Done(Result<(), String>),
+    /// A file's history entries were read for the picker.
+    Listed(Box<Listed>),
+    /// A history entry was read and diffed against its buffer, to restore it.
+    Restore(Box<Restore>),
+    /// The active file's history entries were read for the Explorer's File History section.
+    Entries {
+        path: PathBuf,
+        generation: u64,
+        result: Result<Vec<Entry>, String>,
+    },
+}
+
+impl App {
+    pub(super) fn handle_history_event(&mut self, ev: HistoryEvent) {
+        match ev {
+            HistoryEvent::Done(result) => self.history_done(result),
+            HistoryEvent::Entries {
+                path,
+                generation,
+                result,
+            } => self.file_history_entries(path, generation, result),
+            HistoryEvent::Listed(listed) => self.history_listed(*listed),
+            HistoryEvent::Restore(restore) => self.history_restored(*restore),
+        }
+    }
+}
+
 impl App {
     /// The history snapshot job for a save of `path`, if it gets one.
     pub(super) fn history_job(&self, path: &Path) -> Option<Job> {
@@ -105,14 +136,14 @@ impl App {
         Some(Job { root, rel, limits })
     }
 
-    /// A save that will send `AppEvent::HistoryDone` once its snapshot is recorded.
+    /// A save that will send `AppEvent::History(HistoryEvent::Done)` once its snapshot is recorded.
     pub(super) fn history_started(&mut self) {
         self.file_history.running += 1;
     }
 
     /// After an explorer rename of `from` to `to` (run off-thread, after the file op): the
     /// history of the file, or of every file under the folder, moves too (a delete keeps it).
-    /// Sends `AppEvent::HistoryDone`; `None` when neither path has a history.
+    /// Sends `AppEvent::History(HistoryEvent::Done)`; `None` when neither path has a history.
     pub(super) fn history_rename(
         &mut self,
         from: &Path,
@@ -180,11 +211,11 @@ impl App {
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let result = history::entries(&root, &rel);
-            let _ = tx.send(AppEvent::FileHistoryEntries {
+            let _ = tx.send(AppEvent::History(HistoryEvent::Entries {
                 path,
                 generation,
                 result,
-            });
+            }));
         });
     }
 
@@ -314,7 +345,7 @@ impl App {
         self.list_history(path, false);
     }
 
-    /// Lists `path`'s entries off-thread; the picker opens on `AppEvent::HistoryListed`.
+    /// Lists `path`'s entries off-thread; the picker opens on `AppEvent::History(HistoryEvent::Listed)`.
     fn list_history(&mut self, path: PathBuf, restore: bool) {
         let name = file_name(&path);
         let root = self.workspace.root.clone();
@@ -340,7 +371,7 @@ impl App {
                 restore,
                 result,
             };
-            let _ = tx.send(AppEvent::HistoryListed(Box::new(listed)));
+            let _ = tx.send(AppEvent::History(HistoryEvent::Listed(Box::new(listed))));
         });
     }
 
@@ -358,7 +389,7 @@ impl App {
         false
     }
 
-    /// `AppEvent::HistoryListed`: the picker opens with the entries (none: a message).
+    /// `AppEvent::History(HistoryEvent::Listed)`: the picker opens with the entries (none: a message).
     pub(super) fn history_listed(&mut self, listed: Listed) {
         if listed.listing != self.file_history.listing {
             return;
@@ -401,7 +432,7 @@ impl App {
     }
 
     /// Reads the entry and diffs it against the open buffer of `path` off-thread; the
-    /// `AppEvent::HistoryRestore` that follows applies it. Refused for a read-only buffer. A
+    /// `AppEvent::History(HistoryEvent::Restore)` that follows applies it. Refused for a read-only buffer. A
     /// file that isn't open opens in a tab first (`OpenRequest::restore`), then restores.
     pub(super) fn restore_history(&mut self, path: PathBuf, rel: PathBuf, snapshot: Snapshot) {
         let Some(buffer) = self.buffer_of(&path) else {
@@ -437,11 +468,11 @@ impl App {
                 snapshot,
                 result,
             };
-            let _ = tx.send(AppEvent::HistoryRestore(Box::new(restore)));
+            let _ = tx.send(AppEvent::History(HistoryEvent::Restore(Box::new(restore))));
         });
     }
 
-    /// `AppEvent::HistoryRestore`: the entry's text replaces the buffer's as one undo step
+    /// `AppEvent::History(HistoryEvent::Restore)`: the entry's text replaces the buffer's as one undo step
     /// (`apply_changes`: cursors in unchanged lines stay), not saved. A buffer edited meanwhile
     /// is diffed again.
     pub(super) fn history_restored(&mut self, r: Restore) {
@@ -480,5 +511,5 @@ fn file_name(path: &Path) -> String {
 
 /// Sends a history task's result.
 pub(super) fn send_done(tx: &tokio::sync::mpsc::UnboundedSender<AppEvent>, result: Result<(), String>) {
-    let _ = tx.send(AppEvent::HistoryDone(result));
+    let _ = tx.send(AppEvent::History(HistoryEvent::Done(result)));
 }

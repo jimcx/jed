@@ -65,6 +65,43 @@ fn binary(bytes: Vec<u8>) -> Result<Loaded, LoadError> {
     Ok(Loaded::Binary(HexDoc::new(bytes)))
 }
 
+/// Results of hex and Markdown tab background work (`AppEvent::View`).
+pub(super) enum ViewEvent {
+    /// Find's whole-file count on a hex tab (`HexTab::id`) for one query generation
+    /// (`find::HexFind`); an older generation's is dropped.
+    HexCount {
+        tab: u64,
+        generation: u64,
+        count: hex::Count,
+    },
+    /// A big document's Markdown render (`MarkdownTab::id`, the generation asked for, the width
+    /// and source revision it is for); an older generation's is dropped.
+    MarkdownRendered {
+        tab: u64,
+        generation: u64,
+        width: usize,
+        revision: u64,
+        text: std::sync::Arc<str>,
+        doc: crate::markdown::Doc,
+    },
+}
+
+impl App {
+    pub(super) fn handle_view_event(&mut self, ev: ViewEvent) {
+        match ev {
+            ViewEvent::HexCount { tab, generation, count } => self.hex_counted(tab, generation, count),
+            ViewEvent::MarkdownRendered {
+                tab,
+                generation,
+                width,
+                revision,
+                text,
+                doc,
+            } => self.markdown_rendered(tab, generation, width, revision, text, doc),
+        }
+    }
+}
+
 impl App {
     /// The active tab's hex view, if it is one.
     pub fn active_hex(&self) -> Option<&HexTab> {

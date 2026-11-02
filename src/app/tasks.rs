@@ -324,7 +324,7 @@ impl App {
         }
     }
 
-    /// `AppEvent::Task`: output and starts only need a redraw (`handle_app_event` asks for one).
+    /// `AppEvent::Terminal(TerminalEvent::Task)`: output and starts only need a redraw (`handle_app_event` asks for one).
     /// The mouse selection follows new output in the run's reader (`tasks::select::follow`). An
     /// ended run gets its end note below its output ("Task 'build' exited with code 2"), also
     /// shown in the status bar.

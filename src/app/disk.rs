@@ -46,7 +46,7 @@ impl DiskChecks {
     }
 }
 
-/// The result of one check, as `AppEvent::DiskChecked` carries it.
+/// The result of one check, as `AppEvent::Disk(DiskEvent::File)` carries it.
 pub(super) struct Checked {
     pub buffer: BufferId,
     /// The buffer's revision and save epoch when the check started.
@@ -54,6 +54,26 @@ pub(super) struct Checked {
     pub epoch: u64,
     pub force: bool,
     pub result: std::io::Result<OnDisk>,
+}
+
+/// Results of changed-on-disk checks (`AppEvent::Disk`).
+pub(super) enum DiskEvent {
+    /// An open file was read to see whether it changed on disk.
+    File(Box<Checked>),
+    /// A hex tab's file was read to see whether it changed on disk.
+    Hex {
+        path: PathBuf,
+        result: std::io::Result<hex::OnDisk>,
+    },
+}
+
+impl App {
+    pub(super) fn handle_disk_event(&mut self, ev: DiskEvent) {
+        match ev {
+            DiskEvent::File(checked) => self.disk_checked(*checked),
+            DiskEvent::Hex { path, result } => self.hex_checked(path, result),
+        }
+    }
 }
 
 impl App {
@@ -82,7 +102,7 @@ impl App {
     }
 
     /// Reads a hex tab's file off the UI thread (`hex::check`, against the tabs' bytes) →
-    /// `AppEvent::HexChecked` → `hex_checked`. Waits for a check of it already running.
+    /// `AppEvent::Disk(DiskEvent::Hex)` → `hex_checked`. Waits for a check of it already running.
     pub(super) fn check_hex(&mut self, path: PathBuf) {
         let mut stamps = self.groups.hex_tabs().filter(|h| h.path == path).map(|h| h.doc.stamp());
         let Some(first) = stamps.next() else { return };
@@ -95,7 +115,7 @@ impl App {
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let result = hex::check(&path, known);
-            let _ = tx.send(AppEvent::HexChecked { path, result });
+            let _ = tx.send(AppEvent::Disk(DiskEvent::Hex { path, result }));
         });
     }
 
@@ -165,13 +185,13 @@ impl App {
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let result = disk::check(&check);
-            let _ = tx.send(AppEvent::DiskChecked(Box::new(Checked {
+            let _ = tx.send(AppEvent::Disk(DiskEvent::File(Box::new(Checked {
                 buffer: id,
                 revision,
                 epoch,
                 force,
                 result,
-            })));
+            }))));
         });
     }
 

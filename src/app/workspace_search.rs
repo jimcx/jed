@@ -19,6 +19,29 @@ use crate::search::SearchError;
 use crate::search_view::{Input, Target};
 use crate::workspace_search::{self, Batch, Job, Query, Results};
 
+/// Results of search background work (`AppEvent::Search`).
+pub(super) enum SearchEvent {
+    /// Workspace search results; any generation (stale ones are dropped).
+    Results(Batch),
+    /// The Search view's Replace rewrote the files that aren't open (`app/replace.rs`).
+    Replaced(Box<super::replace::FilesDone>),
+    /// Files read for the Locations list's previews (`generation`: the list they're for).
+    Locations {
+        generation: u64,
+        files: Vec<(std::path::PathBuf, ropey::Rope)>,
+    },
+}
+
+impl App {
+    pub(super) fn handle_search_event(&mut self, ev: SearchEvent) {
+        match ev {
+            SearchEvent::Results(batch) => self.search_results(batch),
+            SearchEvent::Replaced(done) => self.files_replaced(*done),
+            SearchEvent::Locations { generation, files } => self.locations_read(generation, files),
+        }
+    }
+}
+
 impl App {
     /// The Search view's query input has the keys (context `search`).
     pub(super) fn search_focused(&self) -> bool {
@@ -509,7 +532,7 @@ impl App {
         };
         let tx = self.tx.clone();
         self.search_task = Some(workspace_search::start(job, move |batch| {
-            let _ = tx.send(AppEvent::SearchResults(batch));
+            let _ = tx.send(AppEvent::Search(SearchEvent::Results(batch)));
         }));
         self.search = Some(results);
         Ok(())

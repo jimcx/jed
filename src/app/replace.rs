@@ -149,7 +149,7 @@ pub(super) struct FileDone {
     warnings: Vec<String>,
 }
 
-/// The files of a replace rewritten (`AppEvent::Replaced`).
+/// The files of a replace rewritten (`AppEvent::Search(SearchEvent::Replaced)`).
 pub(super) struct FilesDone {
     files: Vec<FileDone>,
 }
@@ -310,11 +310,13 @@ impl App {
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let files = jobs.into_iter().map(FileJob::run).collect();
-            let _ = tx.send(AppEvent::Replaced(Box::new(FilesDone { files })));
+            let _ = tx.send(AppEvent::Search(super::workspace_search::SearchEvent::Replaced(
+                Box::new(FilesDone { files }),
+            )));
         });
     }
 
-    /// The files not open were rewritten (`AppEvent::Replaced`).
+    /// The files not open were rewritten (`AppEvent::Search(SearchEvent::Replaced)`).
     pub(super) fn files_replaced(&mut self, done: FilesDone) {
         let Some(mut run) = self.replace.running.take() else {
             return;

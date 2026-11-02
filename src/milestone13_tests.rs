@@ -1475,3 +1475,24 @@ async fn milestone_13_done_when_a_kill_loses_at_most_one_backup_interval() {
         "backups removed"
     );
 }
+
+/// review_followups-i: a session's restore replaces the layout; the `Session(Read)` event skips
+/// `nav_begin`, so the pre-restore place (the command line's file) is no Go Back entry.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_13_a_session_restore_is_not_a_jump() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, state) = dirs(&dir);
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        fs::write(root.join(name), lines(20)).unwrap();
+    }
+    let mut app = reopen(&root, &state, Some(("a.txt", None))).await;
+    open(&mut app, &root, "b.txt");
+    app.test_execute(Command::SplitRight);
+    app.test_execute(Command::FocusGroup(2));
+    quit(app).await;
+
+    let app = reopen(&root, &state, Some(("c.txt", None))).await;
+    assert_eq!(app.groups.ids().len(), 2, "the session's layout was restored");
+    assert_eq!(app.active_buffer().unwrap().name(), "c.txt");
+    assert!(app.nav.history.entries().is_empty(), "{:?}", app.nav.history.entries());
+}

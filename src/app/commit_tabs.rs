@@ -66,12 +66,12 @@ impl App {
             let tx = self.tx.clone();
             tokio::task::spawn_blocking(move || {
                 let result = git::show::read(&repo, &commit).map_err(|e| e.message().to_string());
-                let _ = tx.send(AppEvent::CommitLoaded { commit, result });
+                let _ = tx.send(AppEvent::Diff(super::diff_view::DiffEvent::Commit { commit, result }));
             });
         }
     }
 
-    /// `AppEvent::CommitLoaded`: the commit's buffer takes it, its text rendered at once.
+    /// `AppEvent::Diff(DiffEvent::Commit)`: the commit's buffer takes it, its text rendered at once.
     pub(super) fn commit_loaded(&mut self, commit: String, result: Result<Show, String>) {
         let Some(id) = self.find_commit_buffer(&commit) else {
             return;
