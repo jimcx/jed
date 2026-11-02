@@ -6,6 +6,7 @@ mod cheatsheet;
 mod code_action;
 mod commit_tabs;
 mod completion;
+mod config;
 mod conflict;
 mod context_menu;
 mod cursors;
@@ -67,7 +68,6 @@ use futures_util::StreamExt;
 use ignore::overrides::Override;
 use tokio::sync::mpsc;
 
-use crate::buffer::file::LoadError;
 use crate::buffer::{Buffer, BufferId, Buffers};
 use crate::clipboard::{self, Clipboard, Copied};
 use crate::command::Command;
@@ -86,7 +86,6 @@ use crate::theme::{self, Theme};
 use crate::view::View;
 use crate::watcher::{self, Watcher};
 use crate::workspace::Workspace;
-use crate::workspace::config::WorkspaceConfig;
 use crate::workspace::trust::{Trust, TrustStore};
 use crate::{logging, search, ui};
 
@@ -204,17 +203,12 @@ enum FileOp {
 
 /// Results from background work.
 enum AppEvent {
-    SaveDone {
-        buffer: BufferId,
-        state: u64,
-        /// What was written.
-        result: Result<crate::buffer::file::Stamp, crate::buffer::SaveError>,
-        elapsed: Duration,
-        /// A file history snapshot of it is being recorded: `HistoryDone` follows.
-        history: bool,
-        /// A Save As: the path the buffer takes when it succeeds.
-        to: Option<PathBuf>,
-    },
+    /// Files: saves, opens, listings, file operations, file system events, quick open's walk.
+    Files(files::FileEvent),
+    /// Settings, keybindings and workspace config: re-reads and the files made for editing them.
+    Config(config::ConfigEvent),
+    /// Git status, HEAD and the Explorer's Git History page.
+    Git(git::GitEvent),
     /// A Cmd/Ctrl+clicked terminal link resolved off-thread (`app::term_link`): the one file it
     /// names, or `None` and the text for quick open.
     TerminalLink {
@@ -223,10 +217,6 @@ enum AppEvent {
         query: String,
         /// The editor group the clicked shell is in.
         from: Option<crate::layout::GroupId>,
-    },
-    Opened {
-        path: PathBuf,
-        result: Result<files::Loaded, LoadError>,
     },
     /// A semantic tokens answer decoded in `version`'s text (`app::semantic`).
     SemanticDecoded {
@@ -252,49 +242,17 @@ enum AppEvent {
         text: std::sync::Arc<str>,
         doc: crate::markdown::Doc,
     },
-    Listed {
-        dir: PathBuf,
-        /// The folder was ignored when listed (`explorer::list_dir_in`'s `parent_ignored`).
-        ignored: bool,
-        result: std::io::Result<Vec<explorer::Entry>>,
-    },
-    FsChanged(Vec<PathBuf>),
     /// A file history task (a save's snapshot, a rename's move) ended; `Err` = the message.
     HistoryDone(Result<(), String>),
-    /// "Reveal in Finder" failed to launch: the message.
-    RevealFailed(String),
     /// A file's history entries were read for the picker.
     HistoryListed(Box<history::Listed>),
     /// A history entry was read and diffed against its buffer, to restore it.
     HistoryRestore(Box<history::Restore>),
-    ConfigLoaded(Result<WorkspaceConfig, String>),
-    /// `settings.toml` was re-read (it changed on disk), or why it couldn't be (the last good
-    /// settings stay).
-    SettingsLoaded(Result<UserSettings, String>),
-    /// `keybindings.toml` was re-read (it changed on disk) and a message per problem, or why it
-    /// couldn't be (the last good keymap stays).
-    KeymapLoaded(Result<(Keymap, Vec<String>), String>),
-    FileOpDone {
-        op: FileOp,
-        result: Result<(), String>,
-    },
-    /// Quick open's matcher has new results (sent at most once until handled).
-    FilesMatched,
     /// A client of the task socket asks to open a file (`app/ipc.rs`).
     Ipc(crate::ipc::Request, crate::ipc::Responder),
     /// The task socket is listening, or why not.
     IpcStarted(Result<crate::ipc::Server, String>),
-    /// Quick open's walk finished.
-    FilesWalked {
-        generation: u64,
-    },
     LogFileFound(Option<PathBuf>),
-    /// `settings.toml` exists (created from the template if it didn't), or why it couldn't be.
-    UserSettingsReady(Result<PathBuf, String>),
-    /// `.workspace` exists (created from the template if it didn't), or why it couldn't be.
-    WorkspaceSettingsReady(Result<PathBuf, String>),
-    /// `keybindings.toml` exists with the Keyboard Shortcuts view's stub appended, or why not.
-    KeybindingsReady(Result<PathBuf, String>),
     /// Workspace search results; any generation (stale ones are dropped).
     SearchResults(crate::workspace_search::Batch),
     /// The Search view's Replace rewrote the files that aren't open (`app/replace.rs`).
@@ -322,20 +280,6 @@ enum AppEvent {
     LocationsRead {
         generation: u64,
         files: Vec<(PathBuf, ropey::Rope)>,
-    },
-    /// A git status refresh finished (`app/git.rs`).
-    GitRefreshed {
-        result: Result<crate::git::Refreshed, String>,
-        elapsed: Duration,
-    },
-    /// The cheap HEAD read finished (`app/git.rs`): the branch, before the full status walk.
-    GitHead(Option<crate::git::Status>),
-    /// A page of the active file's commits was read (`app/git_history.rs`).
-    GitHistory {
-        path: PathBuf,
-        skip: usize,
-        generation: u64,
-        result: Result<crate::git::log::Page, String>,
     },
     /// The active file's history entries were read for the Explorer's File History section
     /// (`app/history.rs`).
@@ -447,7 +391,7 @@ pub struct App {
     pub keys: Option<crate::keys::KeysView>,
     /// Quick open's file list; kept between openings so its threads are reused.
     files: Option<FileMatcher>,
-    /// A `FilesMatched` event is queued.
+    /// A `FileEvent::Matched` event is queued.
     files_pending: Arc<AtomicBool>,
     /// When to tick quick open's matcher again: its last tick found matching still running,
     /// and nucleo can miss the wake-up for that run (it checks `should_notify` before our
@@ -827,7 +771,7 @@ impl App {
         let tx = self.tx.clone();
         if self.watch_files {
             match watcher::start(&self.workspace.root, move |paths| {
-                let _ = tx.send(AppEvent::FsChanged(paths));
+                let _ = tx.send(AppEvent::Files(files::FileEvent::FsChanged(paths)));
             }) {
                 Ok(w) => self.watcher = Some(w),
                 Err(e) => self.notify(Level::Warning, format!("Not watching for file changes: {e}")),
@@ -863,7 +807,7 @@ impl App {
         {
             let tx = self.tx.clone();
             match watcher::start_file(&path, &self.config_dir, move |paths| {
-                let _ = tx.send(AppEvent::FsChanged(paths));
+                let _ = tx.send(AppEvent::Files(files::FileEvent::FsChanged(paths)));
             }) {
                 Ok(w) => self.watcher = Some(w),
                 Err(e) => self.notify(Level::Warning, format!("Not watching for file changes: {e}")),
@@ -1747,20 +1691,9 @@ impl App {
             _ => self.nav_begin(),
         };
         match ev {
-            AppEvent::SaveDone {
-                buffer,
-                state,
-                result,
-                elapsed,
-                history,
-                to,
-            } => {
-                if history {
-                    self.history_started();
-                }
-                self.save_done(buffer, state, result, elapsed, to)
-            }
-            AppEvent::Opened { path, result } => self.opened(path, result),
+            AppEvent::Files(ev) => self.handle_file_event(ev),
+            AppEvent::Config(ev) => self.handle_config_event(ev),
+            AppEvent::Git(ev) => self.handle_git_event(ev),
             AppEvent::TerminalLink {
                 found,
                 goto,
@@ -1782,43 +1715,15 @@ impl App {
                 text,
                 doc,
             } => self.markdown_rendered(tab, generation, width, revision, text, doc),
-            AppEvent::Listed { dir, ignored, result } => self.listed(dir, ignored, result),
-            AppEvent::FsChanged(paths) => self.fs_changed(paths),
             AppEvent::HistoryDone(result) => self.history_done(result),
             AppEvent::FileHistoryEntries {
                 path,
                 generation,
                 result,
             } => self.file_history_entries(path, generation, result),
-            AppEvent::RevealFailed(msg) => self.notify(Level::Warning, msg),
             AppEvent::HistoryListed(listed) => self.history_listed(*listed),
             AppEvent::HistoryRestore(restore) => self.history_restored(*restore),
-            AppEvent::ConfigLoaded(result) => self.config_loaded(result),
-            AppEvent::SettingsLoaded(result) => self.settings_loaded(result),
-            AppEvent::KeymapLoaded(result) => self.keymap_loaded(result),
-            AppEvent::FileOpDone { op, result } => self.file_op_done(op, result),
-            AppEvent::FilesMatched => self.files_matched(),
-            AppEvent::FilesWalked { generation } => self.files_walked(generation),
             AppEvent::LogFileFound(path) => self.log_file_found(path),
-            AppEvent::UserSettingsReady(result) => match result {
-                Ok(path) => {
-                    self.watch_config_dir();
-                    self.open_file(path, true, None);
-                }
-                Err(e) => self.notify(Level::Error, e),
-            },
-            AppEvent::WorkspaceSettingsReady(result) => match result {
-                Ok(path) => self.open_file(path, true, None),
-                Err(e) => self.notify(Level::Error, e),
-            },
-            AppEvent::KeybindingsReady(result) => match result {
-                Ok(path) => {
-                    self.watch_config_dir();
-                    self.notify(Level::Info, "Keybinding written — reloaded live".into());
-                    self.open_file(path, true, None);
-                }
-                Err(e) => self.notify(Level::Error, e),
-            },
             AppEvent::SearchResults(batch) => self.search_results(batch),
             AppEvent::Replaced(done) => self.files_replaced(*done),
             AppEvent::Parsed { buffer, parsed } => self.parsed(buffer, parsed),
@@ -1831,14 +1736,6 @@ impl App {
             AppEvent::GrammarBuilding(p) => self.grammar_building(p),
             AppEvent::Lsp(ev) => self.lsp_event(ev),
             AppEvent::LocationsRead { generation, files } => self.locations_read(generation, files),
-            AppEvent::GitRefreshed { result, elapsed } => self.git_refreshed(result, elapsed),
-            AppEvent::GitHead(status) => self.git_head_read(status),
-            AppEvent::GitHistory {
-                path,
-                skip,
-                generation,
-                result,
-            } => self.git_history_done(path, skip, generation, result),
             AppEvent::DiskChecked(checked) => self.disk_checked(*checked),
             AppEvent::HexChecked { path, result } => self.hex_checked(path, result),
             AppEvent::QuickDiff { buffer, computed } => self.quick_diff_done(buffer, computed),

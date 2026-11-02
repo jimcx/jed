@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::git::GitEvent;
 use super::{App, AppEvent};
 use crate::command::GitHistoryCommand as C;
 use crate::git::Repo;
@@ -92,12 +93,12 @@ impl App {
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let result = log::commits(&repo, &rel, skip, log::PAGE).map_err(|e| e.message().to_string());
-            let _ = tx.send(AppEvent::GitHistory {
+            let _ = tx.send(AppEvent::Git(GitEvent::History {
                 path,
                 skip,
                 generation,
                 result,
-            });
+            }));
         });
     }
 

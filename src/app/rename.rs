@@ -8,6 +8,7 @@
 use lsp_types::{OneOf, ServerCapabilities};
 use serde_json::{Value, json};
 
+use super::files::FileEvent;
 use super::files::OpenRequest;
 use super::lsp::{Pending, Request};
 use super::prompt::{Input, InputKind};
@@ -282,7 +283,7 @@ impl App {
             } else {
                 Err(crate::buffer::file::LoadError::Io(std::io::ErrorKind::NotFound.into()))
             };
-            let _ = tx.send(AppEvent::Opened { path, result });
+            let _ = tx.send(AppEvent::Files(FileEvent::Opened { path, result }));
         });
     }
 

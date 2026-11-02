@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use super::config::ConfigEvent;
+use super::files::FileEvent;
 use super::{App, AppEvent, FileOp, Focus, InputKind, Level, Prompt};
 use crate::app::prompt::Input;
 use crate::clipboard::Copied;
@@ -113,7 +115,9 @@ impl App {
                 Ok(s) => format!("{program} exited with {s}"),
                 Err(e) => format!("{program}: {e}"),
             };
-            let _ = tx.send(AppEvent::RevealFailed(format!("Can't reveal in file manager: {err}")));
+            let _ = tx.send(AppEvent::Files(FileEvent::RevealFailed(format!(
+                "Can't reveal in file manager: {err}"
+            ))));
         });
     }
 
@@ -148,7 +152,7 @@ impl App {
         let ignored = self.explorer.find(&dir).is_some_and(|e| e.ignored);
         tokio::task::spawn_blocking(move || {
             let result = explorer::list_dir_in(&dir, &excludes, ignored);
-            let _ = tx.send(AppEvent::Listed { dir, ignored, result });
+            let _ = tx.send(AppEvent::Files(FileEvent::Listed { dir, ignored, result }));
         });
     }
 
@@ -193,10 +197,10 @@ impl App {
                 FileOp::Delete(p) => explorer::ops::delete(p),
             };
             let renamed = result.is_ok();
-            let _ = tx.send(AppEvent::FileOpDone {
+            let _ = tx.send(AppEvent::Files(FileEvent::OpDone {
                 op,
                 result: result.map_err(|e| e.to_string()),
-            });
+            }));
             if let Some(move_history) = history {
                 super::history::send_done(&tx, if renamed { move_history() } else { Ok(()) });
             }
@@ -335,20 +339,25 @@ impl App {
         if reload {
             let tx = self.tx.clone();
             tokio::task::spawn_blocking(move || {
-                let _ = tx.send(AppEvent::ConfigLoaded(workspace::read_config(&config)));
+                let _ = tx.send(AppEvent::Config(ConfigEvent::Loaded(workspace::read_config(&config))));
             });
         }
         if reload_settings {
             let tx = self.tx.clone();
             tokio::task::spawn_blocking(move || {
-                let _ = tx.send(AppEvent::SettingsLoaded(settings::reload(&settings_path)));
+                let _ = tx.send(AppEvent::Config(ConfigEvent::SettingsLoaded(settings::reload(
+                    &settings_path,
+                ))));
             });
         }
         if reload_keymap {
             let tx = self.tx.clone();
             let platform = Platform::current();
             tokio::task::spawn_blocking(move || {
-                let _ = tx.send(AppEvent::KeymapLoaded(Keymap::reload(&keymap_path, platform)));
+                let _ = tx.send(AppEvent::Config(ConfigEvent::KeymapLoaded(Keymap::reload(
+                    &keymap_path,
+                    platform,
+                ))));
             });
         }
     }
@@ -448,7 +457,9 @@ mod reveal_tests {
             None,
             true,
         );
-        app.handle_app_event(AppEvent::RevealFailed("Can't reveal in file manager: boom".into()));
+        app.handle_app_event(AppEvent::Files(FileEvent::RevealFailed(
+            "Can't reveal in file manager: boom".into(),
+        )));
         let m = app.message.as_ref().unwrap();
         assert_eq!(
             (m.text.as_str(), m.level),

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use ropey::Rope;
 
 use super::prompt::{Input, InputKind};
-use super::{AfterSave, App, AppEvent, Focus, Level, Prompt, SLOW_TASK};
+use super::{AfterSave, App, AppEvent, FileOp, Focus, Level, Prompt, SLOW_TASK};
 use crate::buffer::file::{LoadError, Stamp};
 use crate::buffer::pos::{self, ByteIdx, DisplayCol};
 use crate::buffer::{Buffer, BufferId, SaveError, SaveJob};
@@ -18,6 +18,44 @@ use crate::mru;
 use crate::problems::Place;
 use crate::selection::{Selection, Selections};
 use crate::view::View;
+
+/// Results of file background work (`AppEvent::Files`).
+pub(super) enum FileEvent {
+    SaveDone {
+        buffer: BufferId,
+        state: u64,
+        /// What was written.
+        result: Result<Stamp, SaveError>,
+        elapsed: Duration,
+        /// A file history snapshot of it is being recorded: `HistoryDone` follows.
+        history: bool,
+        /// A Save As: the path the buffer takes when it succeeds.
+        to: Option<PathBuf>,
+    },
+    Opened {
+        path: PathBuf,
+        result: Result<Loaded, LoadError>,
+    },
+    Listed {
+        dir: PathBuf,
+        /// The folder was ignored when listed (`explorer::list_dir_in`'s `parent_ignored`).
+        ignored: bool,
+        result: std::io::Result<Vec<crate::explorer::Entry>>,
+    },
+    FsChanged(Vec<PathBuf>),
+    OpDone {
+        op: FileOp,
+        result: Result<(), String>,
+    },
+    /// Quick open's matcher has new results (sent at most once until handled).
+    Matched,
+    /// Quick open's walk finished.
+    Walked {
+        generation: u64,
+    },
+    /// "Reveal in Finder" failed to launch: the message.
+    RevealFailed(String),
+}
 
 /// Where to put the selection in a file being opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +105,31 @@ pub(super) struct OpenRequest {
 }
 
 impl App {
+    pub(super) fn handle_file_event(&mut self, ev: FileEvent) {
+        match ev {
+            FileEvent::SaveDone {
+                buffer,
+                state,
+                result,
+                elapsed,
+                history,
+                to,
+            } => {
+                if history {
+                    self.history_started();
+                }
+                self.save_done(buffer, state, result, elapsed, to)
+            }
+            FileEvent::Opened { path, result } => self.opened(path, result),
+            FileEvent::Listed { dir, ignored, result } => self.listed(dir, ignored, result),
+            FileEvent::FsChanged(paths) => self.fs_changed(paths),
+            FileEvent::OpDone { op, result } => self.file_op_done(op, result),
+            FileEvent::Matched => self.files_matched(),
+            FileEvent::Walked { generation } => self.files_walked(generation),
+            FileEvent::RevealFailed(msg) => self.notify(Level::Warning, msg),
+        }
+    }
+
     /// Opens `path` in a tab of the active group (or switches to its tab there), with the
     /// selection at `goto` if given. Loading happens off the UI thread; an already open buffer
     /// gets the selection at once.
@@ -471,7 +534,7 @@ impl App {
         self.spawn_save(id, job, None);
     }
 
-    /// Runs `job` off the UI thread and reports `AppEvent::SaveDone` (`to`: a Save As's path).
+    /// Runs `job` off the UI thread and reports `FileEvent::SaveDone` (`to`: a Save As's path).
     fn spawn_save(&mut self, id: BufferId, job: SaveJob, to: Option<PathBuf>) {
         let state = job.state;
         let history = self.history_job(&job.path);
@@ -485,14 +548,14 @@ impl App {
             };
             // The snapshot is taken after the rename, off the UI thread, and never fails the save.
             let history = history.zip(bytes);
-            let _ = tx.send(AppEvent::SaveDone {
+            let _ = tx.send(AppEvent::Files(FileEvent::SaveDone {
                 buffer: id,
                 state,
                 result,
                 elapsed: t.elapsed(),
                 history: history.is_some(),
                 to,
-            });
+            }));
             if let Some((history, bytes)) = history {
                 let result = tokio::task::spawn_blocking(move || history.record(&bytes))
                     .await

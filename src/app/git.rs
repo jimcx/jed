@@ -11,6 +11,24 @@ use std::time::{Duration, Instant};
 use super::{App, AppEvent, SLOW_TASK};
 use crate::git::{self, Refreshed};
 
+/// Results of git background work (`AppEvent::Git`).
+pub(super) enum GitEvent {
+    /// A git status refresh finished.
+    Refreshed {
+        result: Result<Refreshed, String>,
+        elapsed: Duration,
+    },
+    /// The cheap HEAD read finished: the branch, before the full status walk.
+    Head(Option<git::Status>),
+    /// A page of the active file's commits was read (`app/git_history.rs`).
+    History {
+        path: PathBuf,
+        skip: usize,
+        generation: u64,
+        result: Result<git::log::Page, String>,
+    },
+}
+
 /// How long after the cheap head read the full working-tree walk is deferred: the branch shows
 /// at once, and the decorations pop in this much later (in the background).
 const STATUS_DEBOUNCE: Duration = Duration::from_millis(200);
@@ -52,6 +70,19 @@ impl GitState {
 }
 
 impl App {
+    pub(super) fn handle_git_event(&mut self, ev: GitEvent) {
+        match ev {
+            GitEvent::Refreshed { result, elapsed } => self.git_refreshed(result, elapsed),
+            GitEvent::Head(status) => self.git_head_read(status),
+            GitEvent::History {
+                path,
+                skip,
+                generation,
+                result,
+            } => self.git_history_done(path, skip, generation, result),
+        }
+    }
+
     /// Reads the status again: unconditionally (`changed: None`), or if one of the changed paths
     /// can change it (not `.gitignore`d, not git's objects / logs / locks). Coalesced with a
     /// running refresh.
@@ -81,10 +112,10 @@ impl App {
             let t = Instant::now();
             let result = crate::perf::time("git.status", || git::refresh(&root, changed.as_deref()))
                 .map_err(|e| e.message().to_string());
-            let _ = tx.send(AppEvent::GitRefreshed {
+            let _ = tx.send(AppEvent::Git(GitEvent::Refreshed {
                 result,
                 elapsed: t.elapsed(),
-            });
+            }));
         });
     }
 
@@ -99,7 +130,7 @@ impl App {
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let result = crate::perf::time("git.head", || git::read_head(&root));
-            let _ = tx.send(AppEvent::GitHead(result));
+            let _ = tx.send(AppEvent::Git(GitEvent::Head(result)));
         });
     }
 
@@ -165,7 +196,7 @@ impl App {
         }
     }
 
-    /// `AppEvent::GitHead`: the cheap head read landed. It fills the status bar's branch, but
+    /// `GitEvent::Head`: the cheap head read landed. It fills the status bar's branch, but
     /// never downgrades a full status that arrived first.
     pub(super) fn git_head_read(&mut self, result: Option<git::Status>) {
         let Some(head) = result else {
@@ -248,6 +279,17 @@ mod tests {
             true,
         );
         (dir, root, app)
+    }
+
+    /// The cheap HEAD read alone fills the branch (`GitEvent::Head`), before any full status.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_head_read_sets_the_branch_before_the_full_status() {
+        let (_d, _root, mut app) = setup();
+        app.refresh_git_head();
+        assert!(app.settle(|a| a.git.status.is_some()).await);
+        let s = app.git.status.as_ref().unwrap();
+        assert_eq!(s.head.name(), "main");
+        assert!(!s.loaded, "only the head was read");
     }
 
     #[tokio::test(flavor = "multi_thread")]

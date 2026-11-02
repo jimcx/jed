@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
+use super::config::ConfigEvent;
+use super::files::FileEvent;
 use super::mouse::{Drag, FieldTarget, field_at};
 use super::{App, AppEvent, Focus, Level};
 use crate::buffer::pos;
@@ -294,7 +296,7 @@ impl App {
             // Called from nucleo's threads and the walk, once per file: send one wake-up at a time.
             FileMatcher::new(Arc::new(move || {
                 if !pending.swap(true, Ordering::AcqRel) {
-                    let _ = tx.send(AppEvent::FilesMatched);
+                    let _ = tx.send(AppEvent::Files(FileEvent::Matched));
                 }
             }))
         })
@@ -319,7 +321,7 @@ impl App {
                 injector.push(rel);
             });
             tracing::debug!(count, elapsed_ms = t.elapsed().as_millis() as u64, "quick open walk");
-            let _ = tx.send(AppEvent::FilesWalked { generation });
+            let _ = tx.send(AppEvent::Files(FileEvent::Walked { generation }));
         });
     }
 
@@ -595,8 +597,8 @@ impl App {
         let path = self.config_dir.join(crate::config::settings::FILE_NAME);
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
-            let _ = tx.send(AppEvent::UserSettingsReady(crate::config::settings::create_if_missing(
-                &path,
+            let _ = tx.send(AppEvent::Config(ConfigEvent::UserSettingsReady(
+                crate::config::settings::create_if_missing(&path),
             )));
         });
     }
@@ -607,9 +609,9 @@ impl App {
         let path = self.workspace.root.join(crate::workspace::FILE_NAME);
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
-            let _ = tx.send(AppEvent::WorkspaceSettingsReady(
+            let _ = tx.send(AppEvent::Config(ConfigEvent::WorkspaceSettingsReady(
                 crate::workspace::config::create_if_missing(&path),
-            ));
+            )));
         });
     }
 
@@ -635,10 +637,45 @@ impl App {
 #[cfg(test)]
 impl App {
     /// The palette's file list is final: the walk finished and the matcher has no more results
-    /// (no tick due, no unhandled `FilesMatched`), so its rows won't change by themselves.
+    /// (no tick due, no unhandled `FileEvent::Matched`), so its rows won't change by themselves.
     pub fn files_settled(&self) -> bool {
         self.files.as_ref().is_some_and(|f| f.walked)
             && self.files_poll.is_none()
             && !self.files_pending.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(test)]
+mod matched_tests {
+    use crate::buffer::Buffer;
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+
+    /// A query typed after the walk finished is answered only by the matcher's wake-up
+    /// (`FileEvent::Matched`): the walk's own event is long handled.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_query_typed_after_the_walk_is_matched_through_the_matched_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        for n in ["alpha.txt", "beta.txt", "gamma.txt"] {
+            std::fs::write(root.join(n), "x\n").unwrap();
+        }
+        let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&root.join("alpha.txt")).unwrap());
+        app.test_start();
+        let cmd = if cfg!(target_os = "macos") {
+            M::SUPER
+        } else {
+            M::CONTROL
+        };
+        app.press(K::Char('p'), cmd);
+        assert!(app.settle(|a| a.files_settled()).await, "walk done");
+        app.type_text("gamma");
+        assert!(
+            app.settle(|a| a
+                .palette
+                .as_ref()
+                .is_some_and(|p| p.rows.first().is_some_and(|r| r.label == "gamma.txt")))
+                .await,
+            "gamma.txt listed"
+        );
     }
 }

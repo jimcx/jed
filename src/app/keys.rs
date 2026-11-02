@@ -4,6 +4,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
+use super::config::ConfigEvent;
 use super::mouse::{Drag, WHEEL_LINES};
 use super::{App, AppEvent};
 use crate::config::keymap::KeyCombo;
@@ -108,7 +109,7 @@ impl App {
                 crate::config::keymap::append_stub(&path, &bindings)?;
                 Ok(path)
             });
-            let _ = tx.send(AppEvent::KeybindingsReady(result));
+            let _ = tx.send(AppEvent::Config(ConfigEvent::KeybindingsReady(result)));
         });
     }
 

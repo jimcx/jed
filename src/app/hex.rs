@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
-use super::files::{Loaded, OpenRequest};
+use super::files::{FileEvent, Loaded, OpenRequest};
 use super::mouse::Drag;
 use super::{App, AppEvent, Focus, Level};
 use crate::buffer::file::{self, LoadError};
@@ -79,7 +79,7 @@ impl App {
     }
 
     /// Reads `path` off the UI thread for `request` (`raw`: its bytes for a hex tab, whatever
-    /// they are) → `AppEvent::Opened` → `opened`.
+    /// they are) → `FileEvent::Opened` → `opened`.
     pub(super) fn start_open(&mut self, path: PathBuf, request: OpenRequest) {
         let raw = request.raw;
         self.opening.insert(path.clone(), request);
@@ -87,7 +87,7 @@ impl App {
         let indentation = self.settings.indentation();
         tokio::task::spawn_blocking(move || {
             let result = crate::perf::time("file.open", || load(&path, raw, indentation));
-            let _ = tx.send(AppEvent::Opened { path, result });
+            let _ = tx.send(AppEvent::Files(FileEvent::Opened { path, result }));
         });
     }
 
