@@ -1,0 +1,25 @@
+# Programming terms accepted in every language (lower case, one per line, # comments).
+args
+async
+await
+bool
+char
+enum
+env
+impl
+init
+len
+mut
+mutex
+ref
+regex
+stderr
+stdin
+stdout
+str
+struct
+tokio
+unwrap
+usize
+utf
+vec

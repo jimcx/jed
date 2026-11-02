@@ -1,0 +1,12 @@
+# C / Objective-C keywords and standard library names.
+malloc
+memcpy
+nullptr
+printf
+sizeof
+stdio
+stdlib
+strlen
+typedef
+uint
+unsigned

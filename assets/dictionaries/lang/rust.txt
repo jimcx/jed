@@ -1,0 +1,10 @@
+# Rust keywords and standard library / tooling names.
+cargo
+clippy
+crate
+deref
+rustc
+rustfmt
+serde
+trait
+unsafe
