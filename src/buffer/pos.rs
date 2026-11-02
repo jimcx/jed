@@ -267,6 +267,16 @@ pub fn line_text(rope: &Rope, line: usize) -> String {
     rope.slice(line_start(rope, line).0..line_end(rope, line).0).to_string()
 }
 
+/// The line's content without its line break: borrowed from the rope when the line sits in one
+/// chunk, copied otherwise (a long line drawn from a far scroll column isn't copied per frame).
+pub fn line_cow(rope: &Rope, line: usize) -> std::borrow::Cow<'_, str> {
+    let slice = rope.slice(line_start(rope, line).0..line_end(rope, line).0);
+    match slice.as_str() {
+        Some(s) => std::borrow::Cow::Borrowed(s),
+        None => std::borrow::Cow::Owned(slice.to_string()),
+    }
+}
+
 /// Calls `f(start, text)` with each line's content (no line break), from `line` to the end, or
 /// from `line` back to the first line when `backward`. Stops at the first `Break` and returns its
 /// value. `text` borrows the rope when the line sits in one chunk; otherwise it is copied into a
@@ -639,29 +649,47 @@ pub fn col_after(text: &str, col: DisplayCol, tab_width: usize) -> DisplayCol {
 
 /// Screen column at byte `off` of a line's `text`.
 fn col_in(text: &str, off: usize, tab_width: usize) -> DisplayCol {
-    let text = &text[..off];
-    if is_plain(text) {
-        return DisplayCol(off);
-    }
-    let mut col = DisplayCol(0);
-    for g in text.graphemes(true) {
-        col.0 += display_grapheme(g, col, tab_width).1;
-    }
-    col
+    col_after(&text[..off], DisplayCol(0), tab_width)
 }
 
-/// The offset in a line's `text` of the grapheme boundary at or before column `target`.
+/// The offset in a line's `text` of the grapheme boundary at or before column `target`. Like
+/// `col_after`, runs of printable ASCII are skipped by counting bytes, so a far column on a long
+/// line with a few other chars costs a byte scan, not a segmentation.
 fn offset_at_col(text: &str, target: DisplayCol, tab_width: usize) -> usize {
-    if is_plain(text) {
-        return target.0.min(text.len());
-    }
-    let mut col = DisplayCol(0);
-    for (off, g) in text.grapheme_indices(true) {
-        let w = display_grapheme(g, col, tab_width).1;
-        if col.0 + w > target.0 {
-            return off;
+    let bytes = text.as_bytes();
+    let plain = |b: u8| (0x20..0x7f).contains(&b);
+    let (mut col, mut i) = (0, 0);
+    while i < bytes.len() {
+        let Some(n) = bytes[i..].iter().position(|&b| !plain(b)) else {
+            // Only printable ASCII is left: one column each.
+            return if target.0 - col < bytes.len() - i {
+                i + target.0 - col
+            } else {
+                text.len()
+            };
+        };
+        let j = i + n;
+        if j > i {
+            // The run's last char may start a cluster with what follows: not skipped.
+            if col <= target.0 && target.0 - col < j - 1 - i {
+                return i + target.0 - col;
+            }
+            col += j - 1 - i;
+            i = j - 1;
         }
-        col.0 += w;
+        let mut end = i;
+        for (off, g) in text[i..].grapheme_indices(true) {
+            let w = display_grapheme(g, DisplayCol(col), tab_width).1;
+            if col + w > target.0 {
+                return i + off;
+            }
+            col += w;
+            end = i + off + g.len();
+            if end > j && bytes.get(end).is_none_or(|&b| plain(b)) {
+                break;
+            }
+        }
+        i = end;
     }
     text.len()
 }
@@ -944,6 +972,80 @@ mod tests {
                     col.0 += display_grapheme(g, col, 4).1;
                 }
                 assert_eq!(col_after(text, DisplayCol(start), 4), col, "{text:?} from {start}");
+            }
+        }
+    }
+
+    /// `col_in` and `offset_at_col` (which skip printable ASCII runs) match the plain grapheme
+    /// walk at every column and tab width: every string of up to four characters from a tricky
+    /// alphabet, then longer pseudo-random strings with long ASCII runs around the odd chars.
+    #[test]
+    fn col_in_and_offset_at_col_match_the_grapheme_walk_exhaustively() {
+        fn check(text: &str, tab: usize) {
+            let mut col = DisplayCol(0);
+            let mut marks = vec![(0, 0)];
+            let mut hit = Vec::new();
+            for (off, g) in text.grapheme_indices(true) {
+                let w = display_grapheme(g, col, tab).1;
+                for t in col.0..col.0 + w {
+                    hit.push((t, off));
+                }
+                col.0 += w;
+                marks.push((off + g.len(), col.0));
+            }
+            for &(off, c) in &marks {
+                assert_eq!(col_in(text, off, tab), DisplayCol(c), "{text:?} at {off} tab {tab}");
+            }
+            for target in 0..col.0 + 3 {
+                let want = hit.iter().find(|h| h.0 == target).map_or(text.len(), |h| h.1);
+                assert_eq!(
+                    offset_at_col(text, DisplayCol(target), tab),
+                    want,
+                    "{text:?} col {target} tab {tab}"
+                );
+            }
+        }
+        let alphabet = [
+            'a', ' ', '\t', '\u{301}', '\u{600}', '\u{200d}', '日', '\u{1}', '\r', '👨', '\u{fe0f}',
+        ];
+        let mut level = vec![String::new()];
+        for _ in 0..4 {
+            level = level
+                .iter()
+                .flat_map(|t| alphabet.iter().map(move |&c| format!("{t}{c}")))
+                .collect();
+            for text in &level {
+                for tab in [1, 2, 4, 8] {
+                    check(text, tab);
+                }
+            }
+        }
+        // Long runs of ASCII with an odd char (or a short sequence of them) in between.
+        let odd = [
+            "\u{301}",
+            "\t",
+            "日",
+            "\r\n",
+            "👨\u{200d}👩",
+            "1\u{fe0f}\u{20e3}",
+            "\u{600}",
+            "e\u{301}\u{302}",
+        ];
+        let mut seed = 12345u32;
+        let mut next = |n: usize| {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 16) as usize % n
+        };
+        for _ in 0..300 {
+            let mut text = String::new();
+            for _ in 0..1 + next(5) {
+                for _ in 0..next(9) {
+                    text.push((b'a' + next(26) as u8) as char);
+                }
+                text.push_str(odd[next(odd.len())]);
+            }
+            for tab in [2, 4, 8] {
+                check(&text, tab);
             }
         }
     }

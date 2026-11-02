@@ -180,3 +180,169 @@ async fn review_followups_the_tab_tooltip_shows_after_its_rest_and_goes_with_a_f
     assert!(app.test_take_redraw(), "moving off drops it");
     assert_eq!(drawn(&mut app), plain);
 }
+
+// Subtask b: a long unwrapped line scrolled far right is drawn from the scroll column, not from
+// column 0.
+
+/// Minified-JS-like text of one line, `size` bytes; with `multibyte`, an "é世" every 1 KB so the
+/// printable-ASCII fast paths of the column helpers don't apply to the whole line.
+fn minified_line(size: usize, multibyte: bool) -> String {
+    let mut s = String::with_capacity(size + 100);
+    let mut i = 0;
+    while s.len() < size {
+        s.push_str(&format!(
+            "function f{i}(a,b){{return a+b*{i}}};var v{i}=[1,2,3].map(x=>x*{i});"
+        ));
+        if multibyte && i % 12 == 0 {
+            s.push_str("é世");
+        }
+        i += 1;
+    }
+    s
+}
+
+/// Frames and keystrokes with the cursor at column ~900,000 of a 1 MB unwrapped line.
+async fn hscroll_budget(multibyte: bool) {
+    use crate::buffer::pos::{self, ByteIdx};
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use std::time::{Duration, Instant};
+    let size = if cfg!(debug_assertions) { 250_000 } else { 1_000_000 };
+    let at = size * 9 / 10;
+    let text = minified_line(size, multibyte);
+    assert!(!text.contains('\n'));
+    let (_d, root, state) = crate::milestone10_tests::dirs();
+    std::fs::write(root.join("a.txt"), &text).unwrap();
+    let mut app = crate::milestone10_tests::open_file_app(&root, &state, "a.txt");
+    app.ui.side_visible = false;
+    let mut term = Terminal::new(TestBackend::new(160, 50)).unwrap();
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    let at = text.floor_char_boundary(at);
+    crate::milestone9_tests::put_cursor(&mut app, at);
+    let (buf, view) = app.active_mut().unwrap();
+    let col = pos::display_col(&buf.rope, ByteIdx(at), view.tab_width).0;
+    view.left_col = col - 40;
+    let left = view.left_col;
+    term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    assert_eq!(
+        app.groups
+            .get(app.groups.active)
+            .unwrap()
+            .active_tab()
+            .unwrap()
+            .view
+            .left_col,
+        left
+    );
+
+    // Frames alone.
+    let n = 5u32;
+    let t = Instant::now();
+    for _ in 0..n {
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    }
+    let frame = t.elapsed() / n;
+    // 50 typed characters, each with the frame after it.
+    let t = Instant::now();
+    for _ in 0..50 {
+        app.press(KeyCode::Char('y'), KeyModifiers::NONE);
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+    }
+    let key = t.elapsed() / 50;
+    println!("1 MB line scrolled right (multibyte {multibyte}): frame {frame:?}, key+frame {key:?}");
+    assert!(
+        app.active_buffer().unwrap().rope.len() >= size + 50,
+        "the keys were typed"
+    );
+    assert!(key < Duration::from_secs(2), "typing too slow: {key:?}");
+    if !cfg!(debug_assertions) {
+        assert!(key < Duration::from_millis(16), "typing too slow: {key:?}");
+        assert!(frame < Duration::from_millis(16), "frame too slow: {frame:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_hscroll_budget_1mb_line_scrolled_right() {
+    hscroll_budget(false).await;
+    hscroll_budget(true).await;
+}
+
+/// A row drawn at `left_col` is the same line drawn from column 0 with its first `left_col`
+/// columns cut off: tabs, a wide CJK char and a combining mark around the left edge.
+#[tokio::test(flavor = "multi_thread")]
+async fn review_followups_hscroll_row_matches_the_line_drawn_from_column_0() {
+    let line = "ab\tcd日本語e\u{301}fg\t\th日i\u{301}\u{302}j日日kl\tmnop日qr";
+    let text = format!("{line}\nsecond\n");
+    let (_d, root, state) = crate::milestone10_tests::dirs();
+    std::fs::write(root.join("a.txt"), &text).unwrap();
+    let mut app = crate::milestone10_tests::open_file_app(&root, &state, "a.txt");
+    app.ui.side_visible = false;
+    let h = 10u16;
+    // Selections that start left of, inside and past the visible region, one ending past the line
+    // end, plus a secondary cursor at the line end and one on a wide char.
+    {
+        use crate::buffer::pos::ByteIdx;
+        use crate::selection::{Selection, Selections};
+        let wide = line.find('日').unwrap();
+        let list = vec![
+            Selection::new(ByteIdx(3), ByteIdx(wide + 3)),
+            Selection::cursor(ByteIdx(wide + 3 * '日'.len_utf8())),
+            Selection::new(ByteIdx(line.len() - 4), ByteIdx(line.len() + 3)),
+        ];
+        let (_, view) = app.active_mut().unwrap();
+        view.selections = Selections::new(list, 1);
+    }
+    let row = |app: &mut App, w: u16| -> Vec<Vec<(String, String)>> {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        let t = app.hits.group(app.groups.active).unwrap().text;
+        let buf = term.backend().buffer();
+        // The long line and the short one under it (empty once scrolled past its end).
+        (t.y..t.y + 2)
+            .map(|y| {
+                (t.x..t.x + t.width)
+                    .map(|x| {
+                        let cell = &buf[(x, y)];
+                        let s = cell.symbol().to_string();
+                        (
+                            if s.is_empty() { " ".to_string() } else { s },
+                            format!("{:?}", cell.style()),
+                        )
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    let full = row(&mut app, 120);
+    let width = crate::buffer::pos::col_after(line, crate::buffer::pos::DisplayCol(0), 4).0;
+    assert!(width > 30, "the line is wide: {width}");
+    let mut compared = 0;
+    for left in 1..width {
+        let (_, view) = app.active_mut().unwrap();
+        view.left_col = left;
+        let got = row(&mut app, 30);
+        let applied = app
+            .groups
+            .get(app.groups.active)
+            .unwrap()
+            .active_tab()
+            .unwrap()
+            .view
+            .left_col;
+        if applied != left {
+            // The scroll was clamped to the widest line.
+            continue;
+        }
+        // Not the last cell: a wide char cut by the right edge is blank there.
+        for (got, full) in got.iter().zip(&full) {
+            let n = got.len() - 1;
+            // The first cell may be the tail of a wide char cut by the left edge: drawn as a
+            // blank (with the selection colour when selected), where the full row leaves it
+            // untouched.
+            let (got, want) = (&got[..n], &full[left..left + n]);
+            assert_eq!(got[0].0, want[0].0, "left_col {left}");
+            assert_eq!(got[1..], want[1..], "left_col {left}");
+        }
+        compared += 1;
+    }
+    assert!(compared > 20, "compared {compared} scroll columns");
+}

@@ -539,12 +539,18 @@ pub fn render(
         let layout = wrapping.then(|| view.wrap.layout(rope, revision, line, view.width, tab));
         let content: Cow<'_, str> = match &layout {
             Some(layout) => Cow::Borrowed(layout.text()),
-            None => Cow::Owned(pos::line_text(rope, line)),
+            None => pos::line_cow(rope, line),
         };
         let bounds = whitespace_bounds(whitespace, &content);
-        let from = visual.start;
+        let mut from = visual.start;
         let to = if wrapping { visual.end } else { content.len() };
         let mut col = visual.col;
+        if !wrapping && left > 0 {
+            // Start at the grapheme at or before the scroll column rather than walking the
+            // line from its start; a wide char or tab cut by the edge still starts left of it.
+            from = pos::byte_at_col_in(&content, DisplayCol(left), tab);
+            col = pos::col_before_in(&content, from, tab).0;
+        }
         // Where the line ran past the right edge: the rest is only measured (`widest`).
         let mut cut = None;
         for (off, g) in content[from..to].grapheme_indices(true) {
