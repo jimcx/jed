@@ -4,7 +4,6 @@
 //! inline blame.
 
 use std::borrow::Cow;
-use std::collections::HashSet;
 
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
@@ -24,6 +23,7 @@ use crate::theme::Theme;
 use crate::view::View;
 
 use super::semantic;
+use super::walk::{PointWalk, SortedWalk};
 
 /// What else the editor shows besides the buffer.
 pub struct Overlay<'a> {
@@ -295,13 +295,7 @@ pub fn render(
         Vec::new()
     };
     let bracket_match = theme.get("editor.bracketMatch");
-    let mut bi = 0;
-    let mut is_bracket = |b: ByteIdx| {
-        while bi < bracket_marks.len() && bracket_marks[bi] < b {
-            bi += 1;
-        }
-        bracket_marks.get(bi) == Some(&b)
-    };
+    let mut brackets = PointWalk::new(&bracket_marks, |m| *m);
 
     // Syntax colours: the token's foreground, under selection / find backgrounds. From the
     // buffer's highlight cache (no query unless the tree changed or the view left the cached
@@ -314,7 +308,7 @@ pub fn render(
             .map(|(start, end, key)| (start, end, theme.get(key)))
             .collect(),
         None => {
-            let token_styles: Vec<_> = crate::syntax::KEYS.iter().map(|k| theme.get(k)).collect();
+            let token_styles = theme.token_styles();
             buf.syntax
                 .spans(rope, lines)
                 .iter()
@@ -322,33 +316,19 @@ pub fn render(
                 .collect()
         }
     };
-    let mut ki = 0;
-    let mut token_at = |b: ByteIdx| {
-        while ki < spans.len() && spans[ki].1 <= b {
-            ki += 1;
-        }
-        spans.get(ki).filter(|s| s.0 <= b).map(|s| s.2)
-    };
+    let mut tokens = SortedWalk::new(&spans, |s| s.0, |s| s.1);
 
-    let secondary: HashSet<ByteIdx> = sels.iter().map(|s| s.head).filter(|h| *h != primary).collect();
-    // Selections are sorted and bytes are visited in order, so one index walks them.
-    let mut si = 0;
-    let mut in_selection = |b: ByteIdx| {
-        while si < sels.len() && sels[si].end() <= b {
-            si += 1;
-        }
-        si < sels.len() && sels[si].start() <= b
-    };
+    // Selections are sorted and bytes are visited in order, so one index walks them (and their
+    // heads, which are sorted too: the secondary cursors are the heads but the primary's).
+    let mut heads = PointWalk::new(sels, |s| s.head);
+    let mut selected_at = SortedWalk::new(sels, |s| s.start(), |s| s.end());
     // Find matches on screen (from the widget's cache), walked the same way. The one that is
     // the primary selection is the current match.
     let view_range = visible_start..visible_end;
     let matches: &[Match] = overlay.find.map_or(&[], |f| f.matches_in(view_range.clone()));
-    let mut mi = 0;
+    let mut match_walk = SortedWalk::new(matches, |m| m.start, |m| m.end);
     let mut in_match = |b: ByteIdx| {
-        while mi < matches.len() && matches[mi].end <= b {
-            mi += 1;
-        }
-        let m = matches.get(mi).filter(|m| m.start <= b)?;
+        let m = match_walk.at(b)?;
         let sel = view.selections.primary();
         Some(m.start == sel.start() && m.end == sel.end())
     };
@@ -361,15 +341,8 @@ pub fn render(
     let mut peek = pos::Peek::new(rope);
     let marks = buf.diagnostics.overlapping(view_range.start, view_range.end);
     let runs = diagnostics::runs(marks, |m| diagnostics::extent(rope, &mut peek, m));
-    let mut ri = 0;
-    let mut squiggle_at = |b: ByteIdx| {
-        while ri < runs.len() && runs[ri].end <= b {
-            ri += 1;
-        }
-        runs.get(ri)
-            .filter(|r| r.start <= b)
-            .map(|r| squiggles[r.severity as usize])
-    };
+    let mut run_walk = SortedWalk::new(&runs, |r| r.start, |r| r.end);
+    let mut squiggle_at = |b: ByteIdx| run_walk.at(b).map(|r| squiggles[r.severity as usize]);
 
     // The language server's semantic tokens on screen (binary search, then one index; a token with
     // no theme style leaves tree-sitter's colour) and the regions it marked inactive (clangd's
@@ -384,21 +357,13 @@ pub fn render(
         (&[][..], &[][..])
     };
     let sem_styles = (!sem_tokens.is_empty()).then(|| semantic::Styles::new(theme));
-    let mut sti = 0;
+    let mut sem_walk = SortedWalk::new(sem_tokens, |t| t.start, |t| t.end);
     let mut semantic_at = |b: ByteIdx| {
-        while sti < sem_tokens.len() && sem_tokens[sti].end <= b {
-            sti += 1;
-        }
-        let t = sem_tokens.get(sti).filter(|t| t.start <= b)?;
+        let t = sem_walk.at(b)?;
         sem_styles.as_ref()?.get(t.kind, t.mods)
     };
-    let mut ii = 0;
-    let mut inactive_at = |b: ByteIdx| {
-        while ii < sem_inactive.len() && sem_inactive[ii].end <= b {
-            ii += 1;
-        }
-        sem_inactive.get(ii).is_some_and(|r| r.start <= b)
-    };
+    let mut inactive_walk = SortedWalk::new(sem_inactive, |r| r.start, |r| r.end);
+    let mut inactive_at = |b: ByteIdx| inactive_walk.at(b).is_some();
 
     // Quick diff's markers on screen (by line, increasing), in the gutter's last column.
     let markers = buf.quick_diff.visible(rope, view.top_line(), last_line);
@@ -421,12 +386,9 @@ pub fn render(
         theme.get("merge.commonHeaderBackground"),
         theme.get("merge.commonContentBackground"),
     );
-    let mut ci = 0;
+    let mut conflict_walk = SortedWalk::new(conflicts, |c| c.start, |c| c.end);
     let mut merge_at = |b: ByteIdx| -> Option<Style> {
-        while ci < conflicts.len() && conflicts[ci].end <= b {
-            ci += 1;
-        }
-        let c = conflicts.get(ci).filter(|c| c.start <= b)?;
+        let c = conflict_walk.at(b)?;
         Some(if b < c.current.start {
             current_header
         } else if b < c.current.end {
@@ -557,7 +519,7 @@ pub fn render(
             let off = from + off;
             let b = ByteIdx(start.0 + off);
             let (mut shown, w) = pos::display_grapheme(g, DisplayCol(col), tab);
-            let selected = in_selection(b);
+            let selected = selected_at.at(b).is_some();
             if col + w <= left {
                 col += w;
                 continue;
@@ -567,13 +529,13 @@ pub fn render(
                 break;
             }
             let mut style = row_style;
-            if let Some(token) = token_at(b) {
+            if let Some(token) = tokens.at(b).map(|t| t.2) {
                 style = style.patch(token);
             }
             if let Some(sem) = semantic_at(b) {
                 style = style.patch(sem);
             }
-            if is_bracket(b) {
+            if brackets.at(b) {
                 style = style.patch(bracket_match);
             }
             if let Some(squiggle) = squiggle_at(b) {
@@ -583,7 +545,7 @@ pub fn render(
             // colour over the token's, under backgrounds; not at a drawn cursor (a secondary's
             // reversed cell would take the dim colour as its background; the terminal cursor
             // marks the primary only when focused).
-            let secondary_here = secondary.contains(&b);
+            let secondary_here = heads.at(b) && b != primary;
             let cursor_here = secondary_here || (focused && b == primary);
             if whitespace != RenderWhitespace::None && shows_whitespace(whitespace, &content, off, g, bounds, selected)
             {
@@ -646,10 +608,11 @@ pub fn render(
         if last {
             // A selection over the line break paints one cell past the line end.
             let end = ByteIdx(start.0 + content.len());
-            let over_eol = line + 1 < total && in_selection(end);
+            let over_eol = line + 1 < total && selected_at.at(end).is_some();
             // A squiggle past the end only on an empty line (an empty range there).
             let squiggle = squiggle_at(end).filter(|_| content.is_empty());
-            if (over_eol || secondary.contains(&end) || squiggle.is_some()) && col >= left && col < left + view.width {
+            let secondary_eol = heads.at(end) && end != primary;
+            if (over_eol || secondary_eol || squiggle.is_some()) && col >= left && col < left + view.width {
                 let mut style = row_style;
                 if let Some(squiggle) = squiggle {
                     style = style.patch(squiggle);
@@ -657,7 +620,7 @@ pub fn render(
                 if over_eol {
                     style = style.patch(selection);
                 }
-                if secondary.contains(&end) {
+                if secondary_eol {
                     style = style.patch(secondary_cursor);
                 }
                 out.set_stringn(text.x + (col - left) as u16, y, " ", 1, style);

@@ -31,6 +31,7 @@ mod tabs;
 mod task;
 mod title;
 mod tools;
+mod walk;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;

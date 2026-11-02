@@ -390,3 +390,165 @@ async fn review_followups_explorer_frames_and_keys_walk_no_tree() {
     assert_eq!(app.explorer.lookups.get(), 0, "no linear search for the selected row");
     assert_eq!(app.explorer.selected_index_for_test(), Some(9));
 }
+
+/// Subtask d: secondary cursors come from a walk over the selections' heads (no per-frame set):
+/// the cells drawn match where the cursors are, on unwrapped and wrapped rows, at a row's last char,
+/// at a line end and on an empty line; and the token style table is the theme's, not rebuilt.
+fn underlined(app: &App, term: &Terminal<TestBackend>) -> Vec<(u16, u16)> {
+    use ratatui::style::Modifier;
+    let t = app.hits.group(app.groups.active).unwrap().text;
+    let buf = term.backend().buffer();
+    let mut out = Vec::new();
+    for y in t.y..t.y + t.height {
+        for x in t.x..t.x + t.width {
+            if buf[(x, y)].modifier.contains(Modifier::UNDERLINED) {
+                out.push((x - t.x, y - t.y));
+            }
+        }
+    }
+    out
+}
+
+fn set_cursors(app: &mut App, heads: &[usize]) {
+    use crate::buffer::pos::ByteIdx;
+    use crate::selection::{Selection, Selections};
+    let list = heads.iter().map(|h| Selection::cursor(ByteIdx(*h))).collect();
+    app.active_mut().unwrap().1.selections = Selections::new(list, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_followups_secondary_cursors_are_drawn_where_the_heads_are() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = crate::workspace::normalize(dir.path());
+    let w = 100usize;
+    let long = "a".repeat(2 * w + 5);
+    std::fs::write(root.join("a.txt"), format!("abcd\n\nxy\n{long}\n")).unwrap();
+    let mut app = test_app(&root, Buffer::open(&root.join("a.txt")).unwrap());
+    app.test_start();
+    app.test_plain_whitespace();
+    app.ui.side_visible = false;
+    // Heads: abcd 0 (primary), 3, 4 (line end); empty line 5; xy: 7 (on `y`); the long line starts at 9.
+    set_cursors(&mut app, &[0, 3, 4, 5, 7]);
+    let term = draw(&mut app);
+    assert_eq!(underlined(&app, &term), vec![(3, 0), (4, 0), (0, 1), (1, 2)]);
+
+    // Wrapped: the text width decides the rows; cursors on a row's last char, the next row's first,
+    // and the line end (one past the last char).
+    app.test_execute(crate::command::Command::ToggleWordWrap);
+    draw(&mut app);
+    let tw = app.hits.group(app.groups.active).unwrap().text.width as usize;
+    let start = 9;
+    let len = long.len();
+    let last_of_first = start + tw - 1;
+    set_cursors(&mut app, &[0, last_of_first, last_of_first + 1, start + len]);
+    let term2 = draw(&mut app);
+    let got = underlined(&app, &term2);
+    let top = got.iter().map(|c| c.1).min().unwrap();
+    assert_eq!(got.len(), 3, "{got:?}");
+    assert_eq!(got[0], ((tw - 1) as u16, top), "a row's last char");
+    assert_eq!(got[1], (0, top + 1), "the next row's first char");
+    assert_eq!(got[2], ((len % tw) as u16, top + (len / tw) as u16), "the line end");
+}
+
+#[test]
+fn review_followups_token_styles_are_built_with_the_theme() {
+    let theme = crate::theme::Theme::dark_plus(true);
+    let a = theme.token_styles().as_ptr();
+    assert_eq!(theme.token_styles().len(), crate::syntax::KEYS.len());
+    assert_eq!(a, theme.token_styles().as_ptr(), "the same table every frame");
+}
+
+/// A cursor on every line, with selections (forward ones ending at the line end, backward ones headed
+/// at their start) walk in order: the underlined cells are exactly the heads but the primary's.
+#[tokio::test(flavor = "multi_thread")]
+async fn review_followups_secondary_cursors_on_every_line_with_selections() {
+    use crate::buffer::pos::ByteIdx;
+    use crate::selection::{Selection, Selections};
+    let dir = tempfile::tempdir().unwrap();
+    let root = crate::workspace::normalize(dir.path());
+    let n = 200usize;
+    std::fs::write(root.join("a.txt"), "abc\n".repeat(n)).unwrap();
+    let mut app = test_app(&root, Buffer::open(&root.join("a.txt")).unwrap());
+    app.test_start();
+    app.test_plain_whitespace();
+    app.ui.side_visible = false;
+    let list = (0..n)
+        .map(|i| {
+            let s = 4 * i;
+            if i % 2 == 0 {
+                Selection::new(ByteIdx(s + 1), ByteIdx(s + 3))
+            } else {
+                Selection::new(ByteIdx(s + 3), ByteIdx(s + 1))
+            }
+        })
+        .collect();
+    app.active_mut().unwrap().1.selections = Selections::new(list, 0);
+    let term = draw(&mut app);
+    let rows = app.hits.group(app.groups.active).unwrap().text.height as usize;
+    let want: Vec<(u16, u16)> = (1..rows).map(|i| (if i % 2 == 0 { 3 } else { 1 }, i as u16)).collect();
+    assert_eq!(underlined(&app, &term), want);
+    // The same with wrapping on (rows drawn through the wrapped path).
+    app.test_execute(crate::command::Command::ToggleWordWrap);
+    let term = draw(&mut app);
+    assert_eq!(underlined(&app, &term), want);
+    // A backward selection over the line break whose head is the line end: the end cell is the cursor.
+    let list = (0..n)
+        .filter(|i| i % 3 == 0)
+        .map(|i| Selection::new(ByteIdx(4 * i + 4), ByteIdx(4 * i + 3)))
+        .collect();
+    app.active_mut().unwrap().1.selections = Selections::new(list, 0);
+    app.test_execute(crate::command::Command::ToggleWordWrap);
+    let term = draw(&mut app);
+    let want: Vec<(u16, u16)> = (1..rows).filter(|i| i % 3 == 0).map(|i| (3, i as u16)).collect();
+    assert_eq!(underlined(&app, &term), want);
+}
+
+/// The current-match colour goes only to a match that is exactly the primary selection: a selection
+/// sharing just a match's start (here "abc" over the match "ab") is drawn as a selection, and the
+/// other match gets the ordinary highlight.
+#[tokio::test(flavor = "multi_thread")]
+async fn review_followups_current_match_is_only_the_exact_primary_selection() {
+    use crate::buffer::pos::ByteIdx;
+    use crate::selection::{Selection, Selections};
+    let dir = tempfile::tempdir().unwrap();
+    let root = crate::workspace::normalize(dir.path());
+    std::fs::write(root.join("a.txt"), "abc ab\n").unwrap();
+    let mut app = test_app(&root, Buffer::open(&root.join("a.txt")).unwrap());
+    app.test_start();
+    app.test_plain_whitespace();
+    app.ui.side_visible = false;
+    app.test_execute(crate::command::Command::OpenFind);
+    app.type_text("ab");
+    assert_eq!(app.find.query.text, "ab");
+    let set = |app: &mut App, a: usize, h: usize| {
+        app.active_mut().unwrap().1.selections = Selections::single(Selection::new(ByteIdx(a), ByteIdx(h)));
+    };
+    let (current, other, selection) = (
+        app.theme.get("editor.findMatch").bg,
+        app.theme.get("editor.findMatchHighlight").bg,
+        app.theme.get("editor.selection").bg,
+    );
+    assert!(current != selection && other != selection && current != other);
+    let bgs = |app: &App, term: &Terminal<TestBackend>| -> Vec<Option<Color>> {
+        let t = app.hits.group(app.groups.active).unwrap().text;
+        (0..6)
+            .map(|x| Some(term.backend().buffer()[(t.x + x, t.y)].bg))
+            .collect::<Vec<_>>()
+    };
+
+    set(&mut app, 0, 3);
+    let term = draw(&mut app);
+    let b = bgs(&app, &term);
+    assert_eq!(
+        &b[0..3],
+        &[selection; 3],
+        "selection \"abc\" shares only the start with the match"
+    );
+    assert_eq!(&b[4..6], &[other; 2], "the other match is the ordinary highlight");
+
+    set(&mut app, 4, 6);
+    let term = draw(&mut app);
+    let b = bgs(&app, &term);
+    assert_eq!(&b[4..6], &[current; 2], "the exactly selected match is the current one");
+    assert_eq!(&b[0..2], &[other; 2]);
+}

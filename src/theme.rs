@@ -6,6 +6,9 @@ use ratatui::style::{Color, Modifier, Style};
 
 pub struct Theme {
     styles: HashMap<&'static str, Style>,
+    /// `syntax::KEYS`' styles in order, resolved once when the theme is built (indexed by a
+    /// highlight's index); `get` would hash and look up every key every frame.
+    token_styles: Vec<Style>,
     /// Task terminals' colours (`terminal_cell`).
     terminal: TerminalColors,
 }
@@ -45,6 +48,11 @@ pub const STATUS_AUTO_SLOTS: u64 = 120;
 pub const ANSI_RESET: &str = "\x1b[0m";
 
 impl Theme {
+    /// The style of each `syntax::KEYS` entry, in order.
+    pub fn token_styles(&self) -> &[Style] {
+        &self.token_styles
+    }
+
     pub fn get(&self, key: &str) -> Style {
         self.styles.get(key).copied().unwrap_or_else(|| {
             tracing::warn!(key, "missing theme key");
@@ -578,7 +586,20 @@ impl Theme {
                 .unwrap_or(Color::Reset),
             truecolor,
         };
-        Self { styles, terminal }
+        let token_styles = crate::syntax::KEYS
+            .iter()
+            .map(|k| {
+                styles.get(k).copied().unwrap_or_else(|| {
+                    tracing::warn!(key = k, "missing theme key");
+                    Style::default()
+                })
+            })
+            .collect();
+        Self {
+            styles,
+            token_styles,
+            terminal,
+        }
     }
 }
 
@@ -663,6 +684,18 @@ mod tests {
             theme.dim(Style::new().fg(Color::Red)).fg,
             theme.get("semantic.inactive").fg
         );
+    }
+
+    /// The token style table matches `get` for every key, and is built once (the same slice each call).
+    #[test]
+    fn token_styles_match_get_and_are_built_once() {
+        let theme = Theme::dark_plus(true);
+        let t = theme.token_styles();
+        assert_eq!(t.len(), crate::syntax::KEYS.len());
+        for (k, st) in crate::syntax::KEYS.iter().zip(t) {
+            assert_eq!(theme.find(k), Some(*st), "{k}");
+        }
+        assert!(std::ptr::eq(t.as_ptr(), theme.token_styles().as_ptr()));
     }
 
     /// Every highlight key has a colour, distinct in 256-colour mode for the main token kinds.
