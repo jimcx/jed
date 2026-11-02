@@ -288,6 +288,8 @@ pub enum Command {
     Task(TaskCommand),
     /// A shell tab's keys (`Context::Shell`): scrolling through its scrollback.
     Shell(ShellCommand),
+    /// The terminal search bar (Cmd+F over a shell or task tab; `Context::TermSearch` while open).
+    TermSearch(TermSearchCommand),
     /// "Open Recent Workspace" (Ctrl+R): a picker of recent workspaces; picking one opens it in
     /// another jed (jed never switches its own workspace).
     OpenRecentWorkspace,
@@ -440,6 +442,30 @@ impl ShellCommand {
         ShellCommand::Top,
         ShellCommand::Bottom,
         ShellCommand::Clear,
+    ];
+}
+
+/// Searching a shell or task tab's output, scrollback included.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TermSearchCommand {
+    /// Opens the bar (or selects its query when open).
+    Open,
+    /// The next match towards the newest output, wrapping.
+    Next,
+    /// The previous match towards the oldest output, wrapping.
+    Previous,
+    ToggleCase,
+    /// Closes the bar, back to the terminal.
+    Close,
+}
+
+impl TermSearchCommand {
+    pub const ALL: [TermSearchCommand; 5] = [
+        TermSearchCommand::Open,
+        TermSearchCommand::Next,
+        TermSearchCommand::Previous,
+        TermSearchCommand::ToggleCase,
+        TermSearchCommand::Close,
     ];
 }
 
@@ -1045,6 +1071,7 @@ impl Command {
         ]);
         all.extend(TaskCommand::ALL.map(Command::Task));
         all.extend(ShellCommand::ALL.map(Command::Shell));
+        all.extend(TermSearchCommand::ALL.map(Command::TermSearch));
         all.push(Command::OpenRecentWorkspace);
         all.push(Command::ToggleRenderWhitespace);
         all.push(Command::ToggleWordWrap);
@@ -1461,6 +1488,16 @@ impl Command {
                     ShellCommand::Clear => "clear",
                 }
             ),
+            Command::TermSearch(c) => format!(
+                "terminal.search.{}",
+                match c {
+                    TermSearchCommand::Open => "open",
+                    TermSearchCommand::Next => "next",
+                    TermSearchCommand::Previous => "previous",
+                    TermSearchCommand::ToggleCase => "toggleCase",
+                    TermSearchCommand::Close => "close",
+                }
+            ),
         }
     }
 
@@ -1806,6 +1843,13 @@ impl Command {
                 ShellCommand::Bottom => "Terminal: Scroll to Bottom",
                 ShellCommand::Clear => "Terminal: Clear",
             },
+            Command::TermSearch(c) => match c {
+                TermSearchCommand::Open => "Terminal: Find",
+                TermSearchCommand::Next => "Terminal: Find Next",
+                TermSearchCommand::Previous => "Terminal: Find Previous",
+                TermSearchCommand::ToggleCase => "Terminal: Toggle Find Case Sensitivity",
+                TermSearchCommand::Close => "Terminal: Close Find",
+            },
         };
         s.into()
     }
@@ -1941,6 +1985,7 @@ mod tests {
             Command::CloseTask => 81,
             Command::Task(_) => 82,
             Command::Shell(_) => 120,
+            Command::TermSearch(_) => 141,
             Command::OpenRecentWorkspace => 83,
             Command::ToggleRenderWhitespace => 84,
             Command::ToggleBlame => 85,
@@ -1987,7 +2032,7 @@ mod tests {
             Command::ApplyChangeToLeft => 136,
         }
     }
-    const VARIANTS: u8 = 141;
+    const VARIANTS: u8 = 142;
 
     #[test]
     fn all_lists_every_variant() {
@@ -2013,6 +2058,7 @@ mod tests {
         assert_eq!(count(95), CommitCommand::ALL.len());
         assert_eq!(count(82), TaskCommand::ALL.len());
         assert_eq!(count(120), ShellCommand::ALL.len());
+        assert_eq!(count(141), TermSearchCommand::ALL.len());
         assert_eq!(count(91), ToolsCommand::ALL.len());
     }
 

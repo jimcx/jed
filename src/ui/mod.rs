@@ -390,7 +390,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         if let Some(shell) = group.active_shell() {
             shell.run.resize(editor_area.height, editor_area.width);
             text = editor_area;
-            task::render_shell(f, editor_area, shell, &app.theme, focused);
+            task::render_shell(f, editor_area, shell, &app.theme, focused, app.term_search.as_ref());
             if let Some(bar) = bar {
                 let base = app.theme.get("editor").patch(app.theme.get("terminal.background"));
                 scroll_hit = Some(scrollbar::render(

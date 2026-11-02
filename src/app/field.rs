@@ -19,6 +19,7 @@ impl App {
     /// the find widget's or the Search view's focused input (not its results list).
     pub(super) fn field_focused(&self) -> bool {
         self.palette.is_some()
+            || self.term_search_active()
             || self.ui.focus == Focus::Find
             || (self.search_focused() && !self.search_view.list_focused)
     }

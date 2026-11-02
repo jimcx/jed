@@ -13,7 +13,7 @@ use crate::command::{
     CodeActionCommand as Ca, ColumnMotion, Command, CommitCommand as Cc, ContextMenuCommand as Cm,
     ExplorerCommand as X, FindCommand as F, GitHistoryCommand as G, LocationsCommand as L, MergeCommand as Mg, Motion,
     PaletteCommand as P, ProblemsCommand as Pr, ScmCommand as Sc, SearchCommand as S, ShellCommand as Sh,
-    SuggestCommand as Sg, TaskCommand as T, ToolsCommand as Tl,
+    SuggestCommand as Sg, TaskCommand as T, TermSearchCommand as Ts, ToolsCommand as Tl,
 };
 
 pub const FILE_NAME: &str = "keybindings.toml";
@@ -230,10 +230,13 @@ pub enum Context {
     /// The editor has the focus and its active tab is a shell: keys bound to nothing (here or
     /// globally) go to the shell's terminal.
     Shell,
+    /// The search bar over a shell or task tab's output has the keys: unbound keys edit its
+    /// query, never reach the program.
+    TermSearch,
 }
 
 impl Context {
-    pub(crate) const ALL: [(Context, &'static str); 21] = [
+    pub(crate) const ALL: [(Context, &'static str); 22] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
@@ -255,6 +258,7 @@ impl Context {
         (Context::Hex, "hex"),
         (Context::Markdown, "markdown"),
         (Context::Shell, "shell"),
+        (Context::TermSearch, "termSearch"),
     ];
 
     fn parse(name: &str) -> Option<Context> {
@@ -285,6 +289,7 @@ impl Context {
             Context::Hex => "Hex View",
             Context::Markdown => "Markdown Preview",
             Context::Shell => "Terminal",
+            Context::TermSearch => "Terminal Find",
         }
     }
 
@@ -1118,6 +1123,33 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Char('w'), ctrl | shift, Command::CloseTab),
     ];
 
+    // Searching a terminal's output: Cmd+F on macOS; Linux keeps Ctrl+F for the shell (forward-char),
+    // so Ctrl+Shift+F. The bar's own keys: Enter / Shift+Enter (and F3) step, Esc closes.
+    let term_find = (
+        KeyCode::Char('f'),
+        if mac { cmd } else { ctrl | shift },
+        Command::TermSearch(Ts::Open),
+    );
+    let task = {
+        let mut t = task.to_vec();
+        t.push(term_find);
+        t
+    };
+    let shell = {
+        let mut t = shell.to_vec();
+        t.push(term_find);
+        t
+    };
+    let term_search = [
+        term_find,
+        (KeyCode::Enter, none, Command::TermSearch(Ts::Next)),
+        (KeyCode::Enter, shift, Command::TermSearch(Ts::Previous)),
+        (KeyCode::F(3), none, Command::TermSearch(Ts::Next)),
+        (KeyCode::F(3), shift, Command::TermSearch(Ts::Previous)),
+        (KeyCode::Char('c'), toggle, Command::TermSearch(Ts::ToggleCase)),
+        (KeyCode::Esc, none, Command::TermSearch(Ts::Close)),
+    ];
+
     let bind = |code, mods, context, command| Binding {
         combo: KeyCombo { code, mods },
         context,
@@ -1196,6 +1228,11 @@ fn defaults(platform: Platform) -> Vec<Binding> {
     out.extend(commit.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Commit), c)));
     out.extend(task.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Task), c)));
     out.extend(shell.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Shell), c)));
+    out.extend(
+        term_search
+            .into_iter()
+            .map(|(k, m, c)| bind(k, m, Some(Context::TermSearch), c)),
+    );
     out
 }
 

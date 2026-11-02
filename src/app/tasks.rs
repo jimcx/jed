@@ -367,7 +367,7 @@ impl App {
     /// The terminal Cmd+C copies: a shell tab with the editor's keys, else the shown task (with
     /// the panel's keys). Nothing elsewhere, so the editor's own copy is untouched by a task's
     /// lingering selection.
-    fn active_terminal(&self) -> Option<&Run> {
+    pub(super) fn active_terminal(&self) -> Option<&Run> {
         match self.focused_shell() {
             Some(shell) => Some(&shell.run),
             _ => self.task_focused().and_then(|id| self.tasks.get(id)),

@@ -48,6 +48,7 @@ mod syntax;
 mod tab_drag;
 pub(crate) mod tab_tip;
 mod tasks;
+mod term_search;
 mod tools;
 mod workspace_search;
 
@@ -506,6 +507,8 @@ pub struct App {
     pub find_options: search::Options,
     /// The find / replace widget; its query outlives closing it.
     pub find: FindWidget,
+    /// The search bar over a shell or task tab (`app/term_search.rs`).
+    pub term_search: Option<crate::tasks::search::TermSearch>,
     /// The running Cmd+D / Cmd+Shift+L / Cmd+Alt+D session.
     match_session: Option<cursors::MatchSession>,
     /// A match command ran during this event (its selection change keeps the session).
@@ -706,6 +709,7 @@ impl App {
             pointer: crate::terminal::Pointer::Default,
             find_options: search::Options::default(),
             find: FindWidget::default(),
+            term_search: None,
             match_session: None,
             session_changed: false,
             pre_event: None,
@@ -1180,6 +1184,9 @@ impl App {
         if self.context_menu.is_some() {
             return Context::ContextMenu;
         }
+        if self.term_search_active() {
+            return Context::TermSearch;
+        }
         match self.ui.focus {
             Focus::Editor if self.code_actions_shown() => Context::CodeActions,
             Focus::Editor if self.completion_shown() => Context::Suggest,
@@ -1275,6 +1282,8 @@ impl App {
                     self.find_key(key);
                 } else if self.search_focused() {
                     self.search_key(key);
+                } else if self.term_search_active() {
+                    self.term_search_key(key);
                 } else if self.task_focused().is_some() {
                     self.task_key(key);
                 } else if self.shell_focused() {
@@ -1314,6 +1323,8 @@ impl App {
                     self.find_paste(&text);
                 } else if self.prompt.is_none() && self.search_focused() {
                     self.search_paste(&text);
+                } else if self.prompt.is_none() && self.term_search_active() {
+                    self.term_search_paste(&text);
                 } else if self.prompt.is_none() && self.task_focused().is_some() {
                     self.task_paste(&text);
                 } else if self.prompt.is_none() && self.shell_focused() {
@@ -1578,6 +1589,7 @@ impl App {
             Command::CloseTask => self.close_shown_task(),
             Command::Task(c) => self.task_command(c),
             Command::Shell(c) => self.shell_command(c),
+            Command::TermSearch(c) => self.term_search_command(c),
             Command::NavBack => self.navigate(crate::navigation::Dir::Back),
             Command::NavForward => self.navigate(crate::navigation::Dir::Forward),
             Command::OpenToolLog => self.show_log_picker(),

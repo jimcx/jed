@@ -16,6 +16,7 @@ use crate::app::{App, Focus};
 use crate::layout::{self, PanelTab, ScrollBarHit, ScrollTarget};
 use crate::scrollbar::Scrollable;
 use crate::shell::ShellTab;
+use crate::tasks::search::{self, TermSearch};
 use crate::tasks::select::{top_row, viewport_row};
 use crate::tasks::{Run, RunId};
 use crate::theme::Theme;
@@ -113,7 +114,14 @@ impl tui_term::widget::Screen for Shifted {
 /// while `focused`, running, live and not hidden. Returns the scrollback (0 = the live screen).
 /// `status()` is read before `screen()`: the spawn holds the state lock while it takes the
 /// screen's (the reverse order deadlocks on a run that is still starting).
-fn draw_screen(f: &mut Frame, area: Rect, run: &Run, theme: &Theme, focused: bool) -> usize {
+fn draw_screen(
+    f: &mut Frame,
+    area: Rect,
+    run: &Run,
+    theme: &Theme,
+    focused: bool,
+    search: Option<&TermSearch>,
+) -> usize {
     let running = run.status().is_running();
     let parser = run.screen();
     let top = top_row(parser.screen(), area.height);
@@ -150,7 +158,10 @@ fn draw_screen(f: &mut Frame, area: Rect, run: &Run, theme: &Theme, focused: boo
         }
     }
     let back = parser.screen().scrollback();
-    if focused && running && back == 0 && !parser.screen().hide_cursor() {
+    if let Some(search) = search {
+        draw_search(f, area, parser.screen(), top, search, theme, focused);
+    }
+    if focused && search.is_none() && running && back == 0 && !parser.screen().hide_cursor() {
         let (row, col) = tui_term::widget::Screen::cursor_position(&screen);
         if row < area.height && col < area.width {
             f.set_cursor_position(Position {
@@ -160,6 +171,73 @@ fn draw_screen(f: &mut Frame, area: Rect, run: &Run, theme: &Theme, focused: boo
         }
     }
     back
+}
+
+/// The search bar's width at most (`" query  Aa  12 of 345 "`).
+const SEARCH_WIDTH: u16 = 44;
+
+/// The search's matches on the rows shown (`editor.findMatchHighlight`, the current one in
+/// `editor.findMatch`) and its bar at the top right of `area`: the query, the case toggle and
+/// "3 of 12". With the keys (`focused`) the terminal cursor sits in the query.
+fn draw_search(
+    f: &mut Frame,
+    area: Rect,
+    screen: &vt100::Screen,
+    top: u16,
+    search: &TermSearch,
+    theme: &Theme,
+    focused: bool,
+) {
+    let back = screen.scrollback();
+    let out = f.buffer_mut();
+    let (all, current) = (theme.get("editor.findMatchHighlight"), theme.get("editor.findMatch"));
+    for m in search::find_visible(screen, &search.field.text, search.case) {
+        let row = viewport_row(m.line, back) - top as isize;
+        if !(0..area.height as isize).contains(&row) {
+            continue;
+        }
+        let style = if search.current == Some(m) { current } else { all };
+        if let Some(bg) = style.bg {
+            for col in m.start..m.end.min(area.width) {
+                out[(area.x + col, area.y + row as u16)].set_bg(bg);
+            }
+        }
+    }
+    if area.width < 20 {
+        return;
+    }
+    let width = area.width.min(SEARCH_WIDTH);
+    let rect = Rect::new(area.x + area.width - width, area.y, width, 1);
+    let base = theme.get("dialog");
+    let input = base.patch(theme.get("dialog.input"));
+    let dim = base.patch(theme.get("palette.detail"));
+    f.render_widget(ratatui::widgets::Clear, rect);
+    let out = f.buffer_mut();
+    out.set_style(rect, base);
+    let count = search.label();
+    let count_w = (count.width() as u16).min(12);
+    // " [query] Aa count "
+    let field_w = width.saturating_sub(1 + 3 + count_w + 2).max(4);
+    let field = Rect::new(rect.x + 1, rect.y, field_w, 1);
+    let drawn = super::find::draw_field(
+        out,
+        field,
+        &search.field,
+        "Find in terminal",
+        input,
+        input.patch(theme.get("editor.selection")),
+        dim,
+    );
+    let toggle = if search.case {
+        "find.option.active"
+    } else {
+        "find.option"
+    };
+    out.set_stringn(field.x + field_w + 1, rect.y, "Aa", 2, base.patch(theme.get(toggle)));
+    out.set_stringn(field.x + field_w + 4, rect.y, &count, count_w as usize, dim);
+    if focused {
+        f.set_cursor_position(drawn.cursor);
+    }
 }
 
 /// Draws run `id` in the panel `panel` (border row included); `info` is what's left of the tab
@@ -189,7 +267,8 @@ pub fn render(f: &mut Frame, panel: Rect, info: Rect, app: &mut App, id: RunId) 
     f.buffer_mut()
         .set_style(below_tabs, base.patch(theme.get("terminal.background")));
 
-    let back = draw_screen(f, content, run, theme, focused);
+    let search = app.term_search.as_ref().filter(|s| s.run == id);
+    let back = draw_screen(f, content, run, theme, focused, search);
     // The scroll bar in the panel's last column (`task_area` kept it), over the terminal's
     // background.
     let look = super::scrollbar::look(app, ScrollTarget::Panel(PanelTab::Task(id)));
@@ -224,13 +303,27 @@ pub fn render(f: &mut Frame, panel: Rect, info: Rect, app: &mut App, id: RunId) 
 /// strip or info line). The caller resizes the run to `area` each frame and draws the bar;
 /// `focused` shows the terminal cursor only on the live screen, as a task tab does. No `App`: the
 /// caller still holds the group mutably.
-pub fn render_shell(f: &mut Frame, area: Rect, shell: &ShellTab, theme: &Theme, focused: bool) {
+pub fn render_shell(
+    f: &mut Frame,
+    area: Rect,
+    shell: &ShellTab,
+    theme: &Theme,
+    focused: bool,
+    search: Option<&TermSearch>,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
     f.buffer_mut()
         .set_style(area, theme.get("editor").patch(theme.get("terminal.background")));
-    draw_screen(f, area, &shell.run, theme, focused);
+    draw_screen(
+        f,
+        area,
+        &shell.run,
+        theme,
+        focused,
+        search.filter(|s| s.run == shell.run.id),
+    );
 }
 
 #[cfg(test)]
@@ -334,7 +427,7 @@ mod tests {
             s.spawn(move || {
                 let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 10)).unwrap();
                 started.send(()).unwrap();
-                term.draw(|f| render_shell(f, Rect::new(0, 0, 20, 10), draw_shell, draw_theme, true))
+                term.draw(|f| render_shell(f, Rect::new(0, 0, 20, 10), draw_shell, draw_theme, true, None))
                     .unwrap();
             });
             rx.recv_timeout(Duration::from_secs(2)).expect("the draw started");

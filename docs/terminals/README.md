@@ -58,7 +58,7 @@ Canonical spelling (the test parses the first column): modifiers in the order `c
 | `cmd+down` | File end (editor) / open (explorer) | editor, explorer |
 | `cmd+shift+down` | Select to file end | editor |
 | `cmd+backspace` | Delete to line start (editor) / delete (explorer) / dismiss a result (Search view's results) | editor, explorer, searchResults |
-| `cmd+f` | Find (opens the find widget) | editor, find |
+| `cmd+f` | Find (opens the find widget; in a shell or task tab, Terminal: Find) | editor, find, shell, task |
 | `cmd+alt+f` | Find and replace | editor, find |
 | `cmd+alt+c` | Toggle match case (find widget, Search view) | editor, find, search |
 | `cmd+alt+w` | Toggle match whole word (find widget, Search view) | editor, find, search |

@@ -14,6 +14,7 @@
 pub mod keys;
 pub mod mouse;
 pub mod run;
+pub mod search;
 pub mod select;
 pub mod templates;
 
