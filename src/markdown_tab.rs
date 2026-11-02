@@ -16,6 +16,7 @@ use crate::buffer::BufferId;
 use crate::buffer::pos::is_word_char;
 use crate::command::Motion;
 use crate::markdown::{self, Doc, Kind};
+use crate::scrollbar::ListScroll;
 
 /// A place in the rendered text: line index and display column (on a character boundary).
 pub type Place = (usize, usize);
@@ -226,7 +227,14 @@ impl MarkdownTab {
     }
 
     fn max_top(&self) -> usize {
-        self.rows().saturating_sub(self.height)
+        self.list().max_top(self.rows())
+    }
+
+    fn list(&self) -> ListScroll {
+        ListScroll {
+            top: self.top,
+            height: self.height,
+        }
     }
 
     /// Scrolls by `rows` (the wheel), the caret staying where it is.
@@ -480,6 +488,16 @@ mod tests {
         assert_eq!(t.cursor, (0, 3));
         t.motion(Motion::Left, false);
         assert_eq!(t.cursor, (0, 1));
+    }
+
+    #[test]
+    fn max_top_keeps_the_last_page_full() {
+        let text = (0..30).map(|i| format!("line {i}\n\n")).collect::<String>();
+        let mut t = tab(&text);
+        t.fit(40, 5);
+        assert_eq!(t.max_top(), t.rows() - 5);
+        t.fit(40, 0);
+        assert_eq!(t.max_top(), t.rows() - 1, "a height of 0 counts as 1");
     }
 
     #[test]

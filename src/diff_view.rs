@@ -31,6 +31,7 @@ use crate::git::diff::{self, Hunk};
 use crate::git::stage::{self, FileDiff, Side};
 use crate::history::{self, Snapshot};
 use crate::quick_diff::Want;
+use crate::scrollbar::ListScroll;
 use crate::syntax::{self, Language, Span};
 use crate::workspace_search::FileReplace;
 
@@ -1139,8 +1140,9 @@ impl DiffTab {
 
     /// Scrolls by `delta` rows, the cursor staying put (the wheel).
     pub fn scroll_by(&mut self, delta: isize) {
-        let max = self.rows().len().saturating_sub(self.height.max(1));
-        self.top = self.top.saturating_add_signed(delta).min(max);
+        let mut l = self.list();
+        l.scroll_by_raw(self.rows().len(), delta);
+        self.top = l.top;
     }
 
     /// Scrolls sideways by `delta` columns, stopping when the widest line drawn so far ends in
@@ -1166,7 +1168,14 @@ impl DiffTab {
     fn clamp(&mut self) {
         let n = self.rows().len();
         self.cursor = self.cursor.min(n.saturating_sub(1));
-        self.top = self.top.min(n.saturating_sub(self.height.max(1)));
+        self.top = self.list().scroll(n);
+    }
+
+    fn list(&self) -> ListScroll {
+        ListScroll {
+            top: self.top,
+            height: self.height,
+        }
     }
 }
 

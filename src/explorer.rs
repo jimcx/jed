@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use ignore::WalkBuilder;
 use ignore::overrides::{Override, OverrideBuilder};
 
+use crate::scrollbar::ListScroll;
+
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub name: String,
@@ -68,11 +70,15 @@ struct Cache {
 
 impl crate::scrollbar::Scrollable for Explorer {
     fn scroll(&self) -> crate::scrollbar::Scroll {
-        crate::scrollbar::Scroll::rows(self.row_count(), self.height, self.scroll)
+        self.list().scrollbar(self.row_count())
     }
 
     fn set_top(&mut self, top: usize) {
-        self.scroll = top.min(self.row_count().saturating_sub(self.height.max(1)));
+        self.scroll = ListScroll {
+            top,
+            height: self.height,
+        }
+        .scroll(self.row_count());
     }
 }
 
@@ -413,13 +419,23 @@ impl Explorer {
     }
 
     pub fn scroll_by(&mut self, delta: isize) {
-        let max = self.row_count().saturating_sub(self.height.max(1));
-        self.scroll = self.scroll.saturating_add_signed(delta).min(max);
+        let mut l = self.list();
+        l.scroll_by_raw(self.row_count(), delta);
+        self.scroll = l.top;
+    }
+
+    fn list(&self) -> ListScroll {
+        ListScroll {
+            top: self.scroll,
+            height: self.height,
+        }
     }
 
     /// The drawn height (each frame); a reveal asked for before the first draw runs now.
     pub fn set_height(&mut self, height: usize) {
-        self.height = height;
+        let mut l = self.list();
+        l.set_height(self.row_count(), height);
+        self.height = l.height;
         if self.reveal_pending && height > 0 {
             self.reveal_pending = false;
             self.scroll_to_selected();
@@ -853,6 +869,26 @@ mod tests {
         assert_eq!(x.selected.as_deref(), Some(root.join("src/deep/f.rs").as_path()));
         x.collapse(&root.join("src"));
         assert_eq!((x.row_count(), x.rows().len()), (5, 5));
+    }
+
+    /// A wheel scroll right after a collapse (before a frame clamps the top) adds to the stale top.
+    #[test]
+    fn scroll_by_adds_to_a_top_past_the_end() {
+        let (_d, root) = tree();
+        let ex = excludes(&root, &["build/".into(), "*.o".into()]);
+        let mut x = Explorer::new(root.clone());
+        let listing = list_dir(&root, &ex).unwrap();
+        x.set_children(&root, listing);
+        let n = x.row_count();
+        assert!(n >= 3, "{n}");
+        x.height = 1;
+        x.scroll = n + 5;
+        x.scroll_by(-2);
+        assert_eq!(x.scroll, n - 1, "stale top + delta, then clamped");
+        x.scroll_by(-1);
+        assert_eq!(x.scroll, n - 2);
+        x.scroll_by(100);
+        assert_eq!(x.scroll, n - 1);
     }
 
     #[test]

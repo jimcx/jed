@@ -8,7 +8,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::command::{ColumnMotion, Command, FindCommand, Motion, ProblemsCommand, SearchCommand};
 use crate::config::keymap::{Context, Keymap};
-use crate::scrollbar::{Scroll, Scrollable};
+use crate::scrollbar::{ListScroll, Scroll, Scrollable};
 
 /// Columns between a row's key and its title.
 pub const KEY_GAP: usize = 2;
@@ -62,6 +62,13 @@ impl CheatSheet {
         }
     }
 
+    fn list(&self) -> ListScroll {
+        ListScroll {
+            top: self.top,
+            height: self.height,
+        }
+    }
+
     pub fn scroll_by(&mut self, delta: isize) {
         self.set_top(self.top.saturating_add_signed(delta));
     }
@@ -69,11 +76,15 @@ impl CheatSheet {
 
 impl Scrollable for CheatSheet {
     fn scroll(&self) -> Scroll {
-        Scroll::rows(self.rows, self.height, self.top)
+        self.list().scrollbar(self.rows)
     }
 
     fn set_top(&mut self, top: usize) {
-        self.top = top.min(self.rows.saturating_sub(self.height.max(1)));
+        self.top = ListScroll {
+            top,
+            height: self.height,
+        }
+        .scroll(self.rows);
     }
 }
 

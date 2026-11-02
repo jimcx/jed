@@ -8,6 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::scrollbar::ListScroll;
+
 /// A row by what it shows: a file (by path) and the row within it (0 = the file's own row,
 /// `k` = its `k`-th item).
 pub type RowKey = (PathBuf, usize);
@@ -127,9 +129,17 @@ impl ListState {
         index_of(groups, key).unwrap_or_else(|i| i)
     }
 
+    /// The plain-list scroll with `top` as its first row and this list's drawn height.
+    fn list(&self, top: usize) -> ListScroll {
+        ListScroll {
+            top,
+            height: self.height,
+        }
+    }
+
     /// Puts row `row` (clamped so the last row can reach the bottom) at the top.
     pub fn set_scroll<G: Group>(&mut self, groups: &[G], row: usize) {
-        let row = row.min(row_count(groups).saturating_sub(self.height.max(1)));
+        let row = self.list(row).scroll(row_count(groups));
         self.top = (row > 0).then(|| key_at(groups, row));
     }
 
@@ -247,11 +257,10 @@ impl ListState {
             return;
         }
         let Some(row) = self.selected_row(groups) else { return };
-        let (top, height) = (self.scroll(groups), self.height);
-        if row < top {
-            self.set_scroll(groups, row);
-        } else if row >= top + height {
-            self.set_scroll(groups, row + 1 - height);
+        let mut l = self.list(self.scroll(groups));
+        l.reveal(row_count(groups), row);
+        if l.top != self.scroll(groups) {
+            self.set_scroll(groups, l.top);
         }
     }
 }

@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 
 use crate::history::Entry;
-use crate::scrollbar::{Scroll, Scrollable};
+use crate::scrollbar::{ListScroll, Scroll, Scrollable};
 
 /// The section's height (divider, header and rows) before it is dragged.
 pub const DEFAULT_SECTION_HEIGHT: u16 = 6;
@@ -147,12 +147,20 @@ impl FileHistoryView {
 
     /// The top row, clamped so the last row can reach the bottom.
     pub fn scroll(&self) -> usize {
-        self.top.min(self.entries.len().saturating_sub(self.height.max(1)))
+        self.list().scroll(self.entries.len())
+    }
+
+    fn list(&self) -> ListScroll {
+        ListScroll {
+            top: self.top,
+            height: self.height,
+        }
     }
 
     pub fn scroll_by(&mut self, delta: isize) {
-        self.top = self.scroll().saturating_add_signed(delta);
-        self.clamp();
+        let mut l = self.list();
+        l.scroll_by(self.entries.len(), delta);
+        self.top = l.top;
     }
 
     /// Re-clamps the scroll (the list or its height changed).
@@ -162,7 +170,9 @@ impl FileHistoryView {
 
     /// The drawn height (each frame); a reveal asked for before the first draw runs now.
     pub fn set_height(&mut self, height: usize) {
-        self.height = height;
+        let mut l = self.list();
+        l.set_height(self.entries.len(), height);
+        self.height = l.height;
         if self.reveal_pending && height > 0 {
             self.reveal_pending = false;
             self.reveal_selected();
@@ -177,12 +187,9 @@ impl FileHistoryView {
             return;
         }
         let Some(row) = self.selected_row() else { return };
-        let (top, height) = (self.scroll(), self.height);
-        if row < top {
-            self.top = row;
-        } else if row >= top + height {
-            self.top = row + 1 - height;
-        }
+        let mut l = self.list();
+        l.reveal(self.entries.len(), row);
+        self.top = l.top;
     }
 
     /// A new active file (or none): clears the list and its error, keeping the collapse, focus

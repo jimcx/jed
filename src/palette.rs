@@ -13,6 +13,7 @@ use crate::field::TextField;
 use crate::history::{self, Entry, Snapshot};
 use crate::logs::Tool;
 use crate::recent;
+use crate::scrollbar::ListScroll;
 use crate::syntax::Language;
 use crate::tasks::{NamedEnvironment, Source, Template};
 
@@ -241,8 +242,12 @@ impl Palette {
     }
 
     pub fn scroll_by(&mut self, delta: isize) {
-        let max = self.rows.len().saturating_sub(self.height.max(1));
-        self.scroll = self.scroll.saturating_add_signed(delta).min(max);
+        let mut l = ListScroll {
+            top: self.scroll,
+            height: self.height,
+        };
+        l.scroll_by_raw(self.rows.len(), delta);
+        self.scroll = l.top;
     }
 }
 
@@ -1024,6 +1029,21 @@ mod tests {
         p.move_selection(-5);
         assert_eq!((p.selected, p.scroll), (0, 0));
         assert_eq!(log_level_rows("dbg", None)[0].label, "debug");
+    }
+
+    /// The wheel adds to the scroll as it stands, clamping after (the height may have grown since).
+    #[test]
+    fn scroll_by_clamps_and_adds_to_a_stale_top() {
+        let mut p = Palette::new(Picker::LogLevel, "");
+        p.set_rows(log_level_rows("", None));
+        p.height = 2;
+        p.scroll_by(100);
+        assert_eq!(p.scroll, 4, "the last row at the bottom");
+        p.scroll_by(-100);
+        assert_eq!(p.scroll, 0);
+        p.scroll = 5;
+        p.scroll_by(-2);
+        assert_eq!(p.scroll, 3, "stale top 5 - 2, not clamped to 4 first");
     }
 
     #[test]

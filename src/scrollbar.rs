@@ -28,12 +28,25 @@ pub struct ListScroll {
 impl ListScroll {
     /// The top row, clamped so the last of `len` rows can reach the bottom.
     pub fn scroll(&self, len: usize) -> usize {
-        self.top.min(len.saturating_sub(self.height.max(1)))
+        self.top.min(self.max_top(len))
+    }
+
+    /// The largest top row: the last of `len` rows at the bottom.
+    pub fn max_top(&self, len: usize) -> usize {
+        len.saturating_sub(self.height.max(1))
     }
 
     /// Scrolls `delta` rows (either way), clamped.
     pub fn scroll_by(&mut self, len: usize, delta: isize) {
         self.top = self.scroll(len).saturating_add_signed(delta);
+        self.clamp(len);
+    }
+
+    /// Like `scroll_by`, but adds `delta` to the top as it stands (past the end after the list
+    /// shrank, until a frame clamps it), then clamps: what the explorer, the palette and diff
+    /// tabs always did.
+    pub fn scroll_by_raw(&mut self, len: usize, delta: isize) {
+        self.top = self.top.saturating_add_signed(delta);
         self.clamp(len);
     }
 
@@ -322,6 +335,25 @@ mod tests {
         assert_eq!(l.top, 15);
         l.clamp(0);
         assert_eq!(l.top, 0);
+    }
+
+    #[test]
+    fn list_scroll_by_raw_adds_to_a_top_past_the_end() {
+        // 20 rows, 5 shown: the largest top is 15; a stale top of 18 scrolling up 2 gives 16 -> 15,
+        // where `scroll_by` clamps first (15 - 2 = 13).
+        let mut l = ls(18, 5);
+        l.scroll_by_raw(20, -2);
+        assert_eq!(l.top, 15);
+        let mut l = ls(18, 5);
+        l.scroll_by(20, -2);
+        assert_eq!(l.top, 13);
+    }
+
+    #[test]
+    fn list_scroll_max_top() {
+        assert_eq!(ls(0, 5).max_top(20), 15);
+        assert_eq!(ls(0, 0).max_top(20), 19, "a height of 1 before the first draw");
+        assert_eq!(ls(0, 30).max_top(20), 0);
     }
 
     #[test]
