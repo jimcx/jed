@@ -2862,6 +2862,27 @@ mod rust_language_server {
         );
     }
 
+    /// Saves, then waits up to `secs` for `done` (rust-analyzer's `cargo check` on save),
+    /// saving again whenever 10 s pass with no answer and no work in progress: rust-analyzer
+    /// sometimes runs no check for a `didSave` (seen under load, right after a check that
+    /// followed a workspace reload: the `didSave` went out, then no `flycheck` progress and no
+    /// publish, ever). A user would save again; so does this.
+    async fn save_until_checked(app: &mut App, secs: u64, done: impl Fn(&App) -> bool) -> bool {
+        let t = Instant::now();
+        loop {
+            save(app).await;
+            let saved = Instant::now();
+            while saved.elapsed() < Duration::from_secs(10) || app.lsp.progress().is_some() {
+                if settle_for(app, 1, &done).await {
+                    return true;
+                }
+                if t.elapsed() >= Duration::from_secs(secs) {
+                    return false;
+                }
+            }
+        }
+    }
+
     /// The v1 features against the real `rust-analyzer` (the built-in command, run through the
     /// rustup proxy: the crate pins the repo's toolchain, which has the component) on a tiny
     /// crate with no dependencies: work-done progress while it loads, hover, go to definition,
@@ -2869,22 +2890,14 @@ mod rust_language_server {
     /// after the fix is saved, rename across files and format document (rustfmt). Requests
     /// answered before it's ready (nothing, ContentModified) are retried. Skipped with a note
     /// when `rust-analyzer` doesn't run there.
-    // FLAKE: 2026-10-31, once in a full run: "cleared after the fix" timed out (rustc errors
-    // stayed [""], no progress, message "Saved …/main.rs"); passed in the other runs.
-    // Seen again 2026-10-31 (while a `file_info` subtask's full `scripts/check` ran on a busy
-    // machine; re-run alone it passed). Notes for the next pass:
-    //  - the stale error is `[""]`: an EMPTY range, so a diagnostic whose range is at (or was
-    //    mapped to) a zero-width spot, not the `"s"` literal. Suspect: rust-analyzer's `cargo check`
-    //    of the SAVED-BEFORE-FIX text finishing after our fix save (a save during a check restarts
-    //    it, and the old check's push can land last), or our ranges collapsing when the undo
-    //    deletes the text they covered, leaving the old diagnostic in place until the next push.
-    //  - `progress` is None and the message is just "Saved", so rust-analyzer showed no check
-    //    in flight when we gave up: the final push may never have come (a lost/skipped
-    //    `didSave` check), not merely slow. Compare the fail dump's `since_fix_save` with the
-    //    180 s wait and the server log's last lines (`flake_dump`).
-    //  - a repeat under load but never alone points at the machine, not the editor: if the dump
-    //    shows the fix text was sent (`revision`/`dirty`) and no `rustc` publish followed, the
-    //    harness's wait (or a missing re-trigger save) is the thing to change.
+    // FLAKE (fixed 2026-11-03): "cleared after the fix" timed out in about one full run in
+    // two, never alone. A protocol trace showed rust-analyzer reloading the workspace
+    // (`cargo metadata`, re-indexing) after the first save, then running its check; the fix's
+    // `didChange` + `didSave` went out right after that check ended and rust-analyzer started
+    // no check for it (no `flycheck` progress, no publish, for 180 s). The stale `[""]` was
+    // the old error with its range collapsed by the undo. `save_until_checked` saves again
+    // when nothing came back. `flake_dump` still prints the state and the server log's tail
+    // if a wait times out.
     #[tokio::test(flavor = "multi_thread")]
     async fn real_rust_analyzer_on_a_cargo_crate() {
         let _one_at_a_time = REAL_SERVERS.lock().await;
@@ -3013,9 +3026,8 @@ mod rust_language_server {
         let line = RA_MAIN.find("    let _ = t;").unwrap();
         put_cursor(&mut app, line);
         app.type_text("let bad: u32 = \"s\";\n    ");
-        save(&mut app).await;
         assert!(
-            settle_for(&mut app, 180, |a| rustc_errors(a, &main).iter().any(|e| e == "\"s\"")).await,
+            save_until_checked(&mut app, 180, |a| rustc_errors(a, &main).iter().any(|e| e == "\"s\"")).await,
             "cargo check's error: {:?}; message {:?}",
             app.active_buffer().unwrap().diagnostics.all(),
             message(&app)
@@ -3029,10 +3041,9 @@ mod rust_language_server {
             app.lsp.progress()
         );
         undo_to(&mut app, RA_MAIN, 4);
-        save(&mut app).await;
         let fix_saved = Instant::now();
         assert!(
-            settle_for(&mut app, 180, |a| rustc_errors(a, &main).is_empty()).await,
+            save_until_checked(&mut app, 180, |a| rustc_errors(a, &main).is_empty()).await,
             "FLAKE(real_rust_analyzer): cleared after the fix: {:?}; progress {:?}; message {:?}; text {:?}\nsince_fix_save {:?}\n{}",
             rustc_errors(&app, &main),
             app.lsp.progress(),
