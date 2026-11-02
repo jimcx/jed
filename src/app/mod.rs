@@ -1244,7 +1244,12 @@ impl App {
     }
 
     fn handle_event(&mut self, ev: Event) {
-        self.needs_redraw = true;
+        // A pointer move draws nothing by itself: every handler it reaches sets `needs_redraw`
+        // when what it shows changed (hover rows, popups, tooltips, scroll bar thumbs).
+        let moved = matches!(&ev, Event::Mouse(m) if m.kind == crossterm::event::MouseEventKind::Moved);
+        if !moved {
+            self.needs_redraw = true;
+        }
         self.note_pre_event();
         let here = self.nav_begin();
         match ev {

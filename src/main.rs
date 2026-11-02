@@ -122,6 +122,8 @@ mod recent;
 mod rename;
 #[cfg(test)]
 mod replace_tests;
+#[cfg(test)]
+mod review_followups_tests;
 mod scm;
 mod scrollbar;
 mod search;

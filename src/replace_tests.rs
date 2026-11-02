@@ -69,7 +69,7 @@ fn write(root: &Path, rel: &str, text: &str) {
 }
 
 /// A small workspace with `a.txt` open.
-fn open_app(dir: &tempfile::TempDir) -> (App, PathBuf) {
+pub(crate) fn open_app(dir: &tempfile::TempDir) -> (App, PathBuf) {
     let root = crate::workspace::normalize(dir.path());
     fs::create_dir_all(root.join(".git")).unwrap();
     write(&root, "a.txt", "foo one\nfoobar two\nthe foo three\n");
@@ -82,16 +82,16 @@ fn open_app(dir: &tempfile::TempDir) -> (App, PathBuf) {
     (app, root)
 }
 
-fn term() -> Terminal<TestBackend> {
+pub(crate) fn term() -> Terminal<TestBackend> {
     Terminal::new(TestBackend::new(100, 30)).unwrap()
 }
 
-fn draw(term: &mut Terminal<TestBackend>, app: &mut App) {
+pub(crate) fn draw(term: &mut Terminal<TestBackend>, app: &mut App) {
     term.draw(|f| crate::ui::render(f, app)).unwrap();
 }
 
 /// Cmd+Shift+F, the query typed, and the search run to the end.
-async fn search_for(app: &mut App, text: &str) {
+pub(crate) async fn search_for(app: &mut App, text: &str) {
     app.press(K::Char('f'), cmd() | M::SHIFT);
     app.type_text(text);
     app.press(K::Enter, M::NONE);
@@ -146,7 +146,7 @@ fn row_y(app: &App, key: &RowKey) -> u16 {
     hit.list.y + i as u16
 }
 
-fn key(path: &str, k: usize) -> RowKey {
+pub(crate) fn key(path: &str, k: usize) -> RowKey {
     (PathBuf::from(path), k)
 }
 

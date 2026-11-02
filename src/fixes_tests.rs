@@ -50,7 +50,7 @@ const TEXT: &str = "// one\n// two\n// three\n// four\n// five\nint x = value;\n
 
 const UNDECLARED: &str = "use of undeclared identifier 'value'\nnote: did you mean 'valve'?";
 
-fn terminal() -> Terminal<TestBackend> {
+pub(crate) fn terminal() -> Terminal<TestBackend> {
     Terminal::new(TestBackend::new(100, 30)).unwrap()
 }
 
@@ -58,7 +58,7 @@ fn terminal() -> Terminal<TestBackend> {
 /// diagnostics published: on line 5 a warning over `x = value` and an error on `value` (listed
 /// after it); on line 6 an info on the two spaces; an empty-range error at line 7's end; an
 /// empty-range info on the empty line 8.
-async fn fixes_app(dir: &Path, no_hover: bool) -> (App, Arc<FakeLauncher>, PathBuf) {
+pub(crate) async fn fixes_app(dir: &Path, no_hover: bool) -> (App, Arc<FakeLauncher>, PathBuf) {
     let root = project(dir, &[("a.cpp", TEXT)]);
     let fake = FakeLauncher::new(FakeOptions {
         utf8: true,
@@ -99,14 +99,14 @@ async fn fixes_app(dir: &Path, no_hover: bool) -> (App, Arc<FakeLauncher>, PathB
 }
 
 /// The screen cell of `col` on buffer line `line` (the view unscrolled).
-fn cell(app: &App, line: u16, col: u16) -> (u16, u16) {
+pub(crate) fn cell(app: &App, line: u16, col: u16) -> (u16, u16) {
     let text = app.hits.group(app.groups.active).unwrap().text;
     (text.x + col, text.y + line)
 }
 
 /// Draws, moves the pointer to `at` and fires the resting timer: true when a rest started there
 /// (the pointer is on something to hover).
-fn rest(app: &mut App, term: &mut Terminal<TestBackend>, (x, y): (u16, u16)) -> bool {
+pub(crate) fn rest(app: &mut App, term: &mut Terminal<TestBackend>, (x, y): (u16, u16)) -> bool {
     draw(term, app);
     app.mouse(E::Moved, x, y);
     let Some(deadline) = app.hover.rest.as_ref().map(|r| r.deadline) else {

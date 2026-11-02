@@ -61,3 +61,5 @@ Helpers are `#[cfg(test)] impl App` in `app/mod.rs`.
 - Hand editing in a compare tab (`compare_files_tests`, subtask d): `moving(l, r)` (two open files compared), `caret_at(app, row, right, byte)` (draw, then `caret_click`), `caret(app)`, `settled(app)`; keys as in `diff_edit_tests`. The caret shown stays clamped to the old lines until the re-read, so assert it after `settled`.
 
 **Reveal in Finder:** tests never launch the desktop file manager (`App::reveal_in_finder` returns early under `cfg!(test)`, so sweeps over `Command::all()` are safe). The one real launch, `todo_tests::explorer_path_commands::reveal_opens_the_file_manager`: `JED_TEST_REVEAL=1 cargo test reveal_opens_the_file_manager -- --nocapture` (without the variable it returns at once).
+
+**Mouse-move redraws** (`review_followups_tests`): `app.test_take_redraw()` after `app.mouse(Moved, x, y)` says whether the move asked for a frame; draw first so `app.hits` is current. The tests reuse `fixes_tests::{fixes_app, rest, cell, terminal}` and `replace_tests::{open_app, search_for, draw, term, key}` (`pub(crate)`).

@@ -2,7 +2,7 @@
 id: review_followups
 name: Code review follow-ups
 summary: the 2026-11 code review's performance, reuse and structure fixes — no redraw on idle mouse moves, long unwrapped lines drawn from the left edge, a cached explorer tree, one list-scroll model, AppEvent nested by area
-status: open
+status: in-progress
 priority: 0
 dependencies: []
 ---
@@ -27,7 +27,8 @@ Rules for every subtask:
     - `scripts/check` and both release budget runs are green
   - Deferred (decide later, not in this task): nesting `Command` by area (`Command::Git(..)`) — it touches the keymap, the palette's names, `Command::name()` strings, `keybindings.toml` compatibility and the terminal docs table, so it needs a design note in PLAN.md first; replacing the per-turn `sync_*` reconcilers with dirty flags (only where profiling shows a cost).
   - Subtasks (one agent and one commit each):
-    - review_followups-a: mouse moves redraw only when something they show changed (review #1)
+    - ✅ review_followups-a: mouse moves redraw only when something they show changed (review #1)
+        - Done: `handle_event` skips `needs_redraw` for `Moved`; every handler a move reaches already set it only on a visible change, so none changed. Tests in `src/review_followups_tests.rs` (helpers from `fixes_tests` / `replace_tests` made `pub(crate)`). Docs: conventions "Mouse moves".
         - Today `handle_event` (`src/app/mod.rs:1234`) sets `needs_redraw = true` for every event. Crossterm's `EnableMouseCapture` (`src/terminal.rs:250`) reports every pointer move, so each move draws a full frame.
         - First, the test: put the pointer over plain editor text, call `test_take_redraw()`, send 100 `Moved` events through `App::mouse`, and assert `test_take_redraw()` is false. It fails today.
         - Change: in `handle_event`, don't set `needs_redraw` up front for `Event::Mouse` with `MouseEventKind::Moved` (every other event keeps today's behaviour). Anything that changes what is drawn on a move must then set `needs_redraw` itself.
