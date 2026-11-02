@@ -26,15 +26,18 @@ async fn show(app: &mut App, line: &str, needle: &str) -> (u16, u16) {
     let run = &app.group().active_shell().unwrap().run;
     assert!(run.write(format!("printf '{line}\\n'\n").as_bytes()));
     assert!(
-        app.settle(|a| screen_text(a).lines().any(|l| l.trim_end() == line))
+        app.settle(|a| screen_text(a).lines().any(|l| l.trim_end().ends_with(line)))
             .await,
         "{}",
         screen_text(app)
     );
     drop(draw(app, 100, 30));
-    let row = screen_text(app).lines().position(|l| l.trim_end() == line).unwrap() as u16;
+    // The output shares the prompt's line ("$ line"), so find the line's column on screen.
+    let text = screen_text(app);
+    let row = text.lines().position(|l| l.trim_end().ends_with(line)).unwrap();
+    let col = text.lines().nth(row).unwrap().find(line).unwrap() + line.find(needle).unwrap();
     let area = app.hits.group(app.groups.active).unwrap().editor;
-    (area.x + line.find(needle).unwrap() as u16, area.y + row)
+    (area.x + col as u16, area.y + row as u16)
 }
 
 fn link_click(app: &mut App, (x, y): (u16, u16)) {
@@ -119,16 +122,20 @@ async fn term_link_from_the_terminal_area_goes_to_the_group_showing_the_file() {
         app.settle(|a| {
             let run = &a.terminals.active_group().active_shell().unwrap().run;
             let text = run.screen().screen().contents();
-            text.lines().any(|l| l.trim_end() == "at lib.rs:3")
+            text.lines().any(|l| l.trim_end().ends_with("at lib.rs:3"))
         })
         .await
     );
     drop(draw(&mut app, 100, 30));
     let run = &app.terminals.active_group().active_shell().unwrap().run;
     let text = run.screen().screen().contents();
-    let row = text.lines().position(|l| l.trim_end() == "at lib.rs:3").unwrap() as u16;
+    let row = text
+        .lines()
+        .position(|l| l.trim_end().ends_with("at lib.rs:3"))
+        .unwrap();
+    let col = text.lines().nth(row).unwrap().find("lib").unwrap();
     let area = app.hits.group(app.terminals.active).unwrap().editor;
-    link_click(&mut app, (area.x + 4, area.y + row));
+    link_click(&mut app, (area.x + col as u16, area.y + row as u16));
     assert!(
         app.settle(|a| a.groups.active == g2).await,
         "focus went to the group showing lib.rs"
