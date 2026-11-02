@@ -5978,7 +5978,7 @@ mod text_field_keys {
         let (mut app, _) = open_app(&dir, "xyz\n");
         let config = dir.path().join(keymap::FILE_NAME);
         // A global binding of the editor's line start, and line end bound in the find context.
-        let toml = "[[binding]]\nkey = \"ctrl+j\"\ncommand = \"cursor.home\"\n\n\
+        let toml = "[[binding]]\nkey = \"ctrl+y\"\ncommand = \"cursor.home\"\n\n\
                     [[binding]]\nkey = \"ctrl+k\"\ncommand = \"cursor.end\"\ncontext = \"find\"\n";
         std::fs::write(&config, toml).unwrap();
         let (km, errors) = Keymap::load(&config, Platform::current());
@@ -5986,9 +5986,9 @@ mod text_field_keys {
         app.set_keymap(km, errors);
         // The editor's cursor at its line's end, so a line start run on it would show.
         app.press(K::End, M::NONE);
-        app.press(K::Char('j'), M::CONTROL);
+        app.press(K::Char('y'), M::CONTROL);
         let head = app.group().active_tab().unwrap().view.selections.primary().head;
-        assert_eq!(head.0, 0, "ctrl+j is the editor's line start too");
+        assert_eq!(head.0, 0, "ctrl+y is the editor's line start too");
         // (End lost cursor.end, rebound in the find context: Right moves the editor back.)
         for _ in 0..3 {
             app.press(K::Right, M::NONE);
@@ -5999,7 +5999,7 @@ mod text_field_keys {
         app.type_text("ab");
         app.press(K::Home, M::NONE);
         assert_eq!(query(&app), ("ab", 2), "Home lost the command");
-        app.press(K::Char('j'), M::CONTROL);
+        app.press(K::Char('y'), M::CONTROL);
         assert_eq!(query(&app), ("ab", 0));
         app.press(K::Char('k'), M::CONTROL);
         assert_eq!(query(&app), ("ab", 2));
