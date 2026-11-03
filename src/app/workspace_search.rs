@@ -722,11 +722,12 @@ mod tests {
             Backup => app.backups.test_arm(at),
             GitStatus => app.git.test_arm(at),
             Logs => app.log_tabs.test_arm(at),
+            Spell => app.spell.deadline = Some(at),
             Files => app.files_poll = Some(at),
         }
     }
 
-    /// Each of the 15 deadlines, armed alone, wakes `next_timer` with its own tag; with two
+    /// Each of the 16 deadlines, armed alone, wakes `next_timer` with its own tag; with two
     /// armed from different modules the earlier one wins.
     #[tokio::test(flavor = "multi_thread")]
     async fn next_timer_wakes_for_every_deadline_with_its_own_tag() {
@@ -735,7 +736,7 @@ mod tests {
         use super::super::Timer::*;
 
         // `arm`'s match is exhaustive, so a new variant has to be added there; add it here too.
-        const ALL: [super::super::Timer; 15] = [
+        const ALL: [super::super::Timer; 16] = [
             FsChanges,
             SearchDebounce,
             Hover,
@@ -744,6 +745,7 @@ mod tests {
             Bulb,
             Semantic,
             QuickDiff,
+            Spell,
             Diff,
             Markdown,
             Blame,

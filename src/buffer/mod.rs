@@ -78,6 +78,8 @@ pub struct Buffer {
     /// The gutter's git markers (lines changed against the index), mapped through every change
     /// set applied until the next computation (`app/quick_diff.rs`).
     pub quick_diff: QuickDiff,
+    /// The spell checker's marks and bookkeeping (`app/spell.rs`), mapped like `diagnostics`.
+    pub spell: crate::spell_state::SpellState,
     /// Inline blame's hunks (each line's last commit), mapped through every change set applied
     /// until the next computation (`app/blame.rs`, only while the toggle is on).
     pub blame: Blame,
@@ -209,6 +211,7 @@ impl Buffer {
             diagnostics: Marks::default(),
             semantic: Semantic::default(),
             quick_diff: QuickDiff::default(),
+            spell: Default::default(),
             blame: Blame::default(),
             conflicts: Conflicts::default(),
             log: None,
@@ -463,6 +466,7 @@ impl Buffer {
         self.diagnostics.map(changes);
         self.semantic.map(changes);
         self.quick_diff.map(changes);
+        self.spell.map(changes);
         self.blame.map(changes);
         self.conflicts.map(changes);
         if let Some(old) = old {

@@ -233,6 +233,8 @@ impl Theme {
             ("editorWarning.foreground", squiggle(c(0xCCA700))),
             ("editorInfo.foreground", squiggle(c(0x3794FF))),
             ("editorHint.foreground", squiggle(c(0xB0B0B0))),
+            // Spelling marks (`spell_check`): teal, apart from the error / warning / info colours.
+            ("editorSpell.foreground", squiggle(c(0x4EC9B0))),
             ("gutter", fg_bg(0x858585, 0x1E1E1E)),
             // Hex tabs: offsets dim as line numbers, the `.` stand-ins (and their bytes' hex)
             // dimmed a little, the ASCII column's `|`s.
@@ -800,6 +802,23 @@ mod tests {
                 let style = theme.styles[s.theme_key()];
                 assert!(style.add_modifier.contains(Modifier::UNDERLINED), "{s:?}");
                 assert!(style.underline_color.is_some() && style.fg.is_none() && style.bg.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn spell_check_squiggle_is_its_own_coloured_underline() {
+        for truecolor in [true, false] {
+            let theme = Theme::dark_plus(truecolor);
+            let style = theme.styles["editorSpell.foreground"];
+            assert!(style.add_modifier.contains(Modifier::UNDERLINED));
+            assert!(style.underline_color.is_some() && style.fg.is_none() && style.bg.is_none());
+            for s in crate::diagnostics::Severity::ALL {
+                assert_ne!(
+                    style.underline_color,
+                    theme.styles[s.theme_key()].underline_color,
+                    "{s:?}"
+                );
             }
         }
     }

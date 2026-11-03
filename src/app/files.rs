@@ -678,6 +678,8 @@ impl App {
             buf.quick_diff.reset();
             buf.blame.reset();
             buf.diagnostics.clear_all();
+            // The new path may mean another language: the spell marks stay until a full re-check.
+            buf.spell.want_full();
         }
         self.servers_dirty = true;
         self.needs_redraw = true;

@@ -20,6 +20,12 @@
 //! | `hex_bytes_per_line` | int | 32       | A hex tab's widest row: a power of two from 1 to 64            |
 //! | `rulers`           | int list | unset | Columns drawn as a thin vertical line behind the text; unset, `git-commit` has `[72]` (`[]` turns it off) |
 //! | `scrollback`       | int  | 5000      | Lines kept above the screen, for shell and task tabs            |
+//! | `spell_check_scope` | str | `"all"` | What the spell checker looks at: `all` (comments, strings, identifiers), `comments_and_strings` or `off` |
+//! | `spell_check_min_length` | int | 3 | Words shorter than this are not checked                    |
+//! | `spell_check_problems` | bool | false | Misspellings are listed in the Problems panel               |
+//! | `spell_check_language` | str | `"en_AU"` | The dictionary (only `en_AU` ships)                      |
+//! | `spell_check_ignore_words` | str list | `[]` | Extra words accepted everywhere (case-insensitive)   |
+//! | `spell_check_off_languages` | str list | `[]` | Language ids not spell-checked, e.g. `["log"]`       |
 //!
 //! Precedence, per key: defaults ← `settings.toml` ← `.workspace` (`layer`). `[window]` (`title`, `status_bar`) layers the same way (`WindowConfig::layered`).
 //!
@@ -38,7 +44,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::edit::{CursorStyle, RenderWhitespace, SemanticHighlighting, Settings, WordWrap};
+use crate::edit::{CursorStyle, RenderWhitespace, SemanticHighlighting, Settings, SpellLanguage, SpellScope, WordWrap};
 use crate::workspace::config::{LspServer, WindowConfig};
 
 pub const FILE_NAME: &str = "settings.toml";
@@ -84,6 +90,18 @@ pub struct SettingsOverrides {
     /// Lines kept above the screen for a shell tab or a task run (VS Code's
     /// `terminal.integrated.scrollback`), read when the run is created.
     pub scrollback: Option<usize>,
+    /// What the spell checker checks (`all` / `comments_and_strings` / `off`).
+    pub spell_check_scope: Option<SpellScope>,
+    /// Words shorter than this are not spell-checked.
+    pub spell_check_min_length: Option<usize>,
+    /// Misspellings are listed in the Problems panel.
+    pub spell_check_problems: Option<bool>,
+    /// The spell checker's dictionary (`en_AU`).
+    pub spell_check_language: Option<SpellLanguage>,
+    /// Extra words the spell checker accepts, besides the dictionary files.
+    pub spell_check_ignore_words: Option<Vec<String>>,
+    /// Language ids the spell checker skips (a `.workspace` list replaces the user's).
+    pub spell_check_off_languages: Option<Vec<String>>,
 }
 
 fn hex_bytes_per_line<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
@@ -151,6 +169,24 @@ impl SettingsOverrides {
         }
         if let Some(n) = self.scrollback {
             s.scrollback = n;
+        }
+        if let Some(scope) = self.spell_check_scope {
+            s.spell_check_scope = scope;
+        }
+        if let Some(n) = self.spell_check_min_length {
+            s.spell_check_min_length = n;
+        }
+        if let Some(on) = self.spell_check_problems {
+            s.spell_check_problems = on;
+        }
+        if let Some(language) = self.spell_check_language {
+            s.spell_check_language = language;
+        }
+        if let Some(words) = &self.spell_check_ignore_words {
+            s.spell_check_ignore_words = words.clone();
+        }
+        if let Some(ids) = &self.spell_check_off_languages {
+            s.spell_check_off_languages = ids.clone();
         }
     }
 }
@@ -335,6 +371,12 @@ pub const TEMPLATE: &str = "\
 # rulers = []  # columns that get a vertical line, e.g. [80, 120]; unset, git commit messages get 72 (set, even [], replaces it)
 # hex_bytes_per_line = 32  # a hex tab's widest row: 1, 2, 4, 8, 16, 32 or 64 bytes
 # scrollback = 5000  # lines kept above the screen, for shell and task tabs
+# spell_check_scope = \"all\"  # all (comments, strings, identifiers), comments_and_strings or off
+# spell_check_min_length = 3  # shorter words are not checked
+# spell_check_problems = false  # list misspellings in the Problems panel
+# spell_check_language = \"en_AU\"  # the dictionary; only en_AU ships
+# spell_check_ignore_words = []  # extra accepted words, e.g. [\"tokio\"]; more in dictionary.txt
+# spell_check_off_languages = []  # language ids not checked, e.g. [\"log\"]
 
 # The language server for a language id (a built-in one's, such as python, or a syntax plugin's),
 # in every workspace. A trusted .workspace [lsp.<id>] wins over this; this wins over the built-in
@@ -400,7 +442,9 @@ mod tests {
              detect_indentation = false\nauto_indent = false\nmatch_brackets = false\nsemantic_highlighting = \"off\"\nquick_suggestions = false\n\
              render_whitespace = \"trailing\"\n\
              cursor_style = \"block\"\ncursor_blinking = false\nhex_bytes_per_line = 16\nrulers = [80, 100]\n\
-             scrollback = 50\nword_wrap = \"on\"\ntabs_at_bottom = true\n",
+             scrollback = 50\nword_wrap = \"on\"\ntabs_at_bottom = true\n\
+             spell_check_scope = \"comments_and_strings\"\nspell_check_min_length = 4\nspell_check_problems = true\n\
+             spell_check_language = \"en_AU\"\nspell_check_ignore_words = [\"a\"]\nspell_check_off_languages = [\"log\"]\n",
         );
         assert_eq!(
             o,
@@ -422,6 +466,12 @@ mod tests {
                 scrollback: Some(50),
                 word_wrap: Some(WordWrap::On),
                 tabs_at_bottom: Some(true),
+                spell_check_scope: Some(SpellScope::CommentsAndStrings),
+                spell_check_min_length: Some(4),
+                spell_check_problems: Some(true),
+                spell_check_language: Some(SpellLanguage::EnAu),
+                spell_check_ignore_words: Some(vec!["a".to_string()]),
+                spell_check_off_languages: Some(vec!["log".to_string()]),
             }
         );
     }
@@ -679,6 +729,12 @@ mod tests {
             scrollback: Some(5_000),
             word_wrap: Some(WordWrap::Off),
             tabs_at_bottom: Some(false),
+            spell_check_scope: Some(SpellScope::All),
+            spell_check_min_length: Some(3),
+            spell_check_problems: Some(false),
+            spell_check_language: Some(SpellLanguage::EnAu),
+            spell_check_ignore_words: Some(Vec::new()),
+            spell_check_off_languages: Some(Vec::new()),
         };
         let fields = toml::Table::try_from(&every).unwrap();
         assert_eq!(
@@ -723,6 +779,59 @@ mod tests {
         assert!(parse(TEMPLATE).errors.is_empty());
         assert_eq!(s.word_wrap, d.word_wrap);
         assert_eq!(s.tabs_at_bottom, d.tabs_at_bottom);
+        assert_eq!(
+            (
+                s.spell_check_scope,
+                s.spell_check_min_length,
+                s.spell_check_problems,
+                s.spell_check_language
+            ),
+            (
+                d.spell_check_scope,
+                d.spell_check_min_length,
+                d.spell_check_problems,
+                d.spell_check_language
+            )
+        );
+        assert_eq!(s.spell_check_ignore_words, d.spell_check_ignore_words);
+        assert_eq!(s.spell_check_off_languages, d.spell_check_off_languages);
+    }
+
+    #[test]
+    fn spell_check_settings_parse_layer_and_report_bad_values() {
+        for (text, scope) in [
+            ("all", SpellScope::All),
+            ("comments_and_strings", SpellScope::CommentsAndStrings),
+            ("off", SpellScope::Off),
+        ] {
+            let o = set(&format!("[settings]\nspell_check_scope = \"{text}\"\n"));
+            assert_eq!(o.spell_check_scope, Some(scope));
+        }
+        assert_eq!(Settings::default().spell_check_scope, SpellScope::All);
+        let u = parse("[settings]\nspell_check_scope = \"comments\"\ntab_width = 2\n");
+        assert_eq!(u.overrides.spell_check_scope, None);
+        assert_eq!(u.overrides.tab_width, Some(2));
+        assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
+        assert!(u.errors[0].contains("`spell_check_scope`"), "{:?}", u.errors);
+        assert_eq!(parse("[settings]\nspell_check_language = \"fr\"\n").errors.len(), 1);
+        assert_eq!(parse("[settings]\nspell_check_min_length = \"3\"\n").errors.len(), 1);
+        assert_eq!(parse("[settings]\nspell_check_ignore_words = [1]\n").errors.len(), 1);
+
+        let user = set(
+            "[settings]\nspell_check_min_length = 5\nspell_check_problems = true\nspell_check_language = \"en_AU\"\n\
+             spell_check_ignore_words = [\"tokio\"]\nspell_check_off_languages = [\"log\"]\n",
+        );
+        let workspace = set("[settings]\nspell_check_scope = \"off\"\nspell_check_off_languages = [\"json\"]\n");
+        let s = layer(&user, &workspace);
+        assert_eq!(s.spell_check_scope, SpellScope::Off);
+        assert_eq!(s.spell_check_min_length, 5);
+        assert!(s.spell_check_problems);
+        assert_eq!(s.spell_check_ignore_words, ["tokio"]);
+        assert_eq!(
+            s.spell_check_off_languages,
+            ["json"],
+            "a workspace list replaces the user's"
+        );
     }
 
     #[test]

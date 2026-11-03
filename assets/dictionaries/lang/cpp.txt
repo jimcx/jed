@@ -1,0 +1,5 @@
+# C++ additions to the C list.
+constexpr
+namespace
+std
+typename

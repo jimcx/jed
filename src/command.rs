@@ -265,6 +265,8 @@ pub enum Command {
     /// A merge conflict's accept commands: at the conflicts the selections touch, or at every
     /// conflict in the file (`AcceptAll*`).
     Merge(MergeCommand),
+    /// The spell checker's commands (palette only; no default keys).
+    Spell(SpellCommand),
     /// The Explorer view's "Git History" section (`Context::GitHistory`).
     GitHistory(GitHistoryCommand),
     /// The Explorer's "File History" section's keys (`Context::FileHistory`).
@@ -801,6 +803,38 @@ impl ScmCommand {
     ];
 }
 
+/// The spell checker's commands. The word is the spelling mark under the caret (each
+/// selection's, for the add / ignore ones), else the word at the caret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SpellCommand {
+    /// The caret to the next misspelling, wrapping.
+    Next,
+    /// The caret to the previous misspelling, wrapping.
+    Previous,
+    /// Add the word to `<config dir>/dictionary.txt`.
+    AddToUser,
+    /// Add the word to `<workspace>/.jed/dictionary.txt`.
+    AddToWorkspace,
+    /// Accept the word in this buffer until it closes.
+    Ignore,
+    /// Turn the spell checker off / on for this buffer.
+    Toggle,
+    /// Open the user dictionary file (created empty when missing).
+    OpenUserDictionary,
+}
+
+impl SpellCommand {
+    pub const ALL: [SpellCommand; 7] = [
+        SpellCommand::Next,
+        SpellCommand::Previous,
+        SpellCommand::AddToUser,
+        SpellCommand::AddToWorkspace,
+        SpellCommand::Ignore,
+        SpellCommand::Toggle,
+        SpellCommand::OpenUserDictionary,
+    ];
+}
+
 /// The merge conflict commands: accept a side of the conflicts the selections touch, or of every
 /// conflict in the file (`AcceptAll*`); move the cursor between conflicts (Alt+F8 /
 /// Shift+Alt+F8); compare one against its incoming block (a read-only diff tab).
@@ -1109,6 +1143,7 @@ impl Command {
         ]);
         all.extend(ScmCommand::ALL.map(Command::Scm));
         all.extend(MergeCommand::ALL.map(Command::Merge));
+        all.extend(SpellCommand::ALL.map(Command::Spell));
         all.extend(GitHistoryCommand::ALL.map(Command::GitHistory));
         all.extend(FileHistoryCommand::ALL.map(Command::FileHistory));
         all.extend(CommitCommand::ALL.map(Command::Commit));
@@ -1462,6 +1497,18 @@ impl Command {
                     MergeCommand::Next => "nextConflict",
                     MergeCommand::Previous => "previousConflict",
                     MergeCommand::Compare => "compareCurrent",
+                }
+            ),
+            Command::Spell(c) => format!(
+                "spell.{}",
+                match c {
+                    SpellCommand::Next => "next",
+                    SpellCommand::Previous => "previous",
+                    SpellCommand::AddToUser => "addToUser",
+                    SpellCommand::AddToWorkspace => "addToWorkspace",
+                    SpellCommand::Ignore => "ignore",
+                    SpellCommand::Toggle => "toggle",
+                    SpellCommand::OpenUserDictionary => "openUserDictionary",
                 }
             ),
             Command::GitHistory(c) => format!(
@@ -1855,6 +1902,15 @@ impl Command {
                 MergeCommand::Previous => "Merge Conflict: Previous Conflict",
                 MergeCommand::Compare => "Merge Conflict: Compare Current Conflict",
             },
+            Command::Spell(c) => match c {
+                SpellCommand::Next => "Spelling: Go to Next Problem",
+                SpellCommand::Previous => "Spelling: Go to Previous Problem",
+                SpellCommand::AddToUser => "Spelling: Add Word to User Dictionary",
+                SpellCommand::AddToWorkspace => "Spelling: Add Word to Workspace Dictionary",
+                SpellCommand::Ignore => "Spelling: Ignore Word in This File",
+                SpellCommand::Toggle => "Spelling: Toggle Spell Check",
+                SpellCommand::OpenUserDictionary => "Spelling: Open User Dictionary",
+            },
             Command::GitHistory(c) => match c {
                 GitHistoryCommand::Up => "Git History: Select Previous Commit",
                 GitHistoryCommand::Down => "Git History: Select Next Commit",
@@ -2135,9 +2191,10 @@ mod tests {
             Command::CompareOpenEditors => 134,
             Command::ApplyChangeToRight => 135,
             Command::ApplyChangeToLeft => 136,
+            Command::Spell(_) => 149,
         }
     }
-    const VARIANTS: u8 = 149;
+    const VARIANTS: u8 = 150;
 
     #[test]
     fn all_lists_every_variant() {
@@ -2159,6 +2216,7 @@ mod tests {
         assert_eq!(count(104), CodeActionCommand::ALL.len());
         assert_eq!(count(76), ScmCommand::ALL.len());
         assert_eq!(count(121), MergeCommand::ALL.len());
+        assert_eq!(count(149), SpellCommand::ALL.len());
         assert_eq!(count(94), GitHistoryCommand::ALL.len());
         assert_eq!(count(148), FileHistoryCommand::ALL.len());
         assert_eq!(count(95), CommitCommand::ALL.len());

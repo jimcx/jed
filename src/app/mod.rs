@@ -46,6 +46,8 @@ mod semantic;
 mod session;
 mod shell;
 mod side;
+mod spell;
+mod spell_cmd;
 mod syntax;
 mod tab_drag;
 pub(crate) mod tab_tip;
@@ -126,6 +128,8 @@ enum Timer {
     Semantic,
     /// Edited buffers' gutter markers are due (`quick_diff::DELAY`).
     QuickDiff,
+    /// Edited buffers' spelling is due (`spell::DELAY`).
+    Spell,
     /// Diff tabs of edited buffers are due (`diff_view::DELAY`).
     Diff,
     /// Markdown previews of edited buffers are due (`markdown::DELAY`).
@@ -233,6 +237,8 @@ enum AppEvent {
     Diff(diff_view::DiffEvent),
     /// The session, crash backups and the recent workspaces list.
     Session(session::SessionEvent),
+    /// The spell checker: background checks and its dictionary / word file reads.
+    Spell(spell::SpellEvent),
 }
 
 /// The file to open at startup, with an optional 1-based line and column.
@@ -407,6 +413,8 @@ pub struct App {
     pub replace: replace::ReplaceState,
     /// The gutter markers' schedule, the peek, stages waiting for a save.
     pub quick_diff: quick_diff::QuickDiffState,
+    /// Spell check: dictionaries and the schedule (`app/spell.rs`).
+    pub spell: spell::SpellApp,
     /// Inline blame's toggle and its recompute delay.
     pub blame: blame::BlameState,
     /// Diff tabs' ids, their reload delay, stages started from them.
@@ -591,6 +599,7 @@ impl App {
             file_history: Default::default(),
             replace: Default::default(),
             quick_diff: Default::default(),
+            spell: Default::default(),
             markdown: Default::default(),
             blame: Default::default(),
             diffs: Default::default(),
@@ -675,6 +684,7 @@ impl App {
         self.sync_syntax();
         self.sync_servers();
         self.sync_quick_diff();
+        self.sync_spell();
         self.sync_blame();
         self.sync_diffs();
         self.sync_markdown();
@@ -747,6 +757,7 @@ impl App {
             self.sync_syntax();
             self.sync_servers();
             self.sync_quick_diff();
+            self.sync_spell();
             self.sync_blame();
             self.sync_diffs();
             self.sync_markdown();
@@ -808,6 +819,7 @@ impl App {
             (self.code_actions.deadline(), Timer::Bulb),
             (self.semantic.deadline(), Timer::Semantic),
             (self.quick_diff.deadline(), Timer::QuickDiff),
+            (self.spell.deadline(), Timer::Spell),
             (self.diffs.deadline(), Timer::Diff),
             (self.markdown.deadline(), Timer::Markdown),
             (self.blame.deadline(), Timer::Blame),
@@ -841,6 +853,7 @@ impl App {
             Timer::Bulb => self.bulb_tick(Instant::now()),
             Timer::Semantic => self.semantic_tick(Instant::now()),
             Timer::QuickDiff => self.sync_quick_diff(),
+            Timer::Spell => self.sync_spell(),
             Timer::Diff => self.sync_diffs(),
             Timer::Markdown => self.sync_markdown(),
             Timer::Blame => self.sync_blame(),
@@ -1359,6 +1372,7 @@ impl App {
             Command::Merge(crate::command::MergeCommand::Next) => self.go_to_conflict(true),
             Command::Merge(crate::command::MergeCommand::Previous) => self.go_to_conflict(false),
             Command::Merge(crate::command::MergeCommand::Compare) => self.compare_conflict(None),
+            Command::Spell(c) => self.spell_command(c),
             Command::CompareWithSaved => self.compare_with_saved(),
             Command::CompareActiveFileWith => self.compare_active_file_with(),
             Command::CompareOpenEditors => self.compare_open_editors(),
@@ -1590,6 +1604,7 @@ impl App {
             AppEvent::Gutter(ev) => self.handle_gutter_event(ev),
             AppEvent::Diff(ev) => self.handle_diff_event(ev),
             AppEvent::Session(ev) => self.handle_session_event(ev),
+            AppEvent::Spell(ev) => self.handle_spell_event(ev),
         }
         self.nav_end(here, false);
         self.refresh_find();
@@ -1867,6 +1882,7 @@ impl App {
         self.sync_syntax();
         self.sync_servers();
         self.sync_quick_diff();
+        self.sync_spell();
         self.sync_blame();
         self.sync_diffs();
         self.sync_markdown();
@@ -1913,6 +1929,7 @@ impl App {
             self.sync_syntax();
             self.sync_servers();
             self.sync_quick_diff();
+            self.sync_spell();
             self.sync_blame();
             self.sync_diffs();
             self.sync_markdown();

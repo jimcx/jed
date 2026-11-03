@@ -1,0 +1,11 @@
+# Python keywords and standard library names.
+argv
+asyncio
+def
+elif
+isinstance
+kwargs
+lambda
+nonlocal
+numpy
+pytest

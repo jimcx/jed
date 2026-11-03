@@ -73,6 +73,40 @@ pub struct Settings {
     /// Lines kept above the screen for a shell tab or a task run (VS Code's
     /// `terminal.integrated.scrollback`), read when the run is created: `[settings] scrollback`.
     pub scrollback: usize,
+    /// What the spell checker checks (`spell_scope`): `[settings] spell_check_scope`.
+    pub spell_check_scope: SpellScope,
+    /// Words shorter than this are not checked: `[settings] spell_check_min_length`.
+    pub spell_check_min_length: usize,
+    /// The Problems panel lists misspellings: `[settings] spell_check_problems`.
+    pub spell_check_problems: bool,
+    /// The dictionary's language: `[settings] spell_check_language`.
+    pub spell_check_language: SpellLanguage,
+    /// Extra words accepted everywhere, in the settings file itself: `[settings]
+    /// spell_check_ignore_words`. Matched case-insensitively (`spell_dict::UserWords`).
+    pub spell_check_ignore_words: Vec<String>,
+    /// Language ids (`Language::id`) that are not spell-checked: `[settings] spell_check_off_languages`.
+    pub spell_check_off_languages: Vec<String>,
+}
+
+/// What the spell checker looks at (`spell_scope`): `[settings] spell_check_scope`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpellScope {
+    /// Comments, strings and identifiers (Markdown: prose and code).
+    #[default]
+    All,
+    /// Comments and strings only (Markdown: prose only).
+    CommentsAndStrings,
+    /// Nothing.
+    Off,
+}
+
+/// The spell checker's dictionary language; only Australian English ships.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
+pub enum SpellLanguage {
+    #[default]
+    #[serde(rename = "en_AU")]
+    EnAu,
 }
 
 /// VS Code's `editor.cursorStyle`, the shapes a terminal can draw: a bar before the char, a
@@ -149,6 +183,12 @@ impl Default for Settings {
             hex_bytes_per_line: 32,
             rulers: None,
             scrollback: crate::tasks::run::SCROLLBACK,
+            spell_check_scope: SpellScope::All,
+            spell_check_min_length: 3,
+            spell_check_problems: false,
+            spell_check_language: SpellLanguage::EnAu,
+            spell_check_ignore_words: Vec::new(),
+            spell_check_off_languages: Vec::new(),
         }
     }
 }

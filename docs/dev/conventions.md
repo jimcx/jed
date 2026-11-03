@@ -40,6 +40,11 @@ Rules for one area or feature, moved out of the root `CLAUDE.md` (which keeps th
 
 - **Edits from background results** (a rename's `WorkspaceEdit`) go through `Buffer::edit` like any other; the code sets the active view's selections itself when it shows the buffer, then calls `App::follow_edits` (`sync_views` without the Cmd+U / Cmd+D tracking) so every other view follows at once. A file not open is loaded through the `opening` map (`OpenRequest { background, edits }`), never on the UI thread.
 
+## Spell check marks
+
+- Misspellings are ordinary `diagnostics::Mark`s (under the reserved `ServerId::SPELL`, `Hint`), but in their own `Marks`, `buf.spell.marks`, never in `buf.diagnostics`: they follow edits and draw like diagnostics, while everything that reads the servers' marks (code action contexts, the status bar's line message, `Marks::all`, the totals in `app.lsp.diagnostics`) never meets them and needs no filter. A reader that should show them reads both: the editor's squiggles (`ui/editor.rs`: its own colour `editorSpell.foreground`, a server's diagnostic wins where they overlap), the hover (`app/hover.rs` `marks_at`), and the Problems list through `diagnostics::Listed::of(&buf.diagnostics, spelling)` (`problems::listed`: merged only with `spell_check_problems`, else it borrows the servers' slice, so a frame costs nothing).
+- A check's result carries the buffer's `revision()` and the app's spell `generation`; one that no longer matches is dropped (the same rule as other background results). Text edits only reach the checker through `Buffer::apply` -> `buf.spell.map`.
+
 ## Logging
 
 - **Logging:** `tracing` only — never print while the UI is up. Targets are module paths (`jed::app`, `jed::buffer`, …) except explicit `target: "input"` (key/mouse/paste at trace), `target: "panic"`, `"lsp::wire"` (every JSON-RPC message in / out at trace, with `server`) and `"lsp::stderr"` (server stderr lines at debug; a crash logs the last 20 at warn). Each `execute` runs in a `command` span with the command name. User-visible messages go through `App::notify(Level, text)`, which also logs. `JED_LOG=input=trace` / `--log-level` set the filter.

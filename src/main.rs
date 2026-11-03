@@ -141,6 +141,12 @@ mod shift;
 mod side_sections;
 #[cfg(test)]
 mod soft_wrap_tests;
+#[cfg(test)]
+mod spell_check_tests;
+mod spell_dict;
+mod spell_scope;
+mod spell_state;
+mod spellcheck;
 mod syntax;
 #[cfg(test)]
 mod syntax_plugins_tests;

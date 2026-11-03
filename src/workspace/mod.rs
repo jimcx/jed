@@ -85,7 +85,20 @@ impl Workspace {
 
     /// Defaults ← user `settings.toml` ← `.workspace` `[settings]`, per key.
     pub fn settings(&self) -> Settings {
-        crate::config::settings::layer(&self.user_settings, &self.config.settings)
+        #[allow(unused_mut)]
+        let mut settings = crate::config::settings::layer(&self.user_settings, &self.config.settings);
+        // Off in tests unless a file sets it: spelling marks would show up in every other feature's
+        // hovers and squiggles. `spell_check_tests` turns it on.
+        #[cfg(test)]
+        if self
+            .user_settings
+            .spell_check_scope
+            .or(self.config.settings.spell_check_scope)
+            .is_none()
+        {
+            settings.spell_check_scope = crate::edit::SpellScope::Off;
+        }
+        settings
     }
 
     pub fn name(&self) -> String {
