@@ -78,6 +78,20 @@ pub(super) enum SpellEvent {
     Done(Box<Done>),
     /// The dictionary or word files were read.
     Loaded(Box<Loaded>),
+    /// Words were written to a dictionary file (`spell_cmd.rs`).
+    Added(Box<Added>),
+    /// "Open User Dictionary": the file exists now (or why not).
+    DictionaryReady(Result<std::path::PathBuf, String>),
+}
+
+/// The outcome of adding words to a dictionary file.
+pub struct Added {
+    pub user: bool,
+    /// Words newly written.
+    pub added: Vec<String>,
+    /// Words the file had already.
+    pub known: usize,
+    pub error: Option<String>,
 }
 
 impl App {
@@ -85,6 +99,14 @@ impl App {
         match ev {
             SpellEvent::Done(done) => self.spell_done(*done),
             SpellEvent::Loaded(loaded) => self.spell_loaded(*loaded),
+            SpellEvent::Added(added) => self.spell_words_added(*added),
+            SpellEvent::DictionaryReady(result) => match result {
+                Ok(path) => {
+                    self.watch_config_dir();
+                    self.open_file(path, true, None);
+                }
+                Err(e) => self.notify(Level::Error, e),
+            },
         }
     }
 }
@@ -318,9 +340,19 @@ impl App {
             .entry(language)
             .or_insert_with(|| Arc::new(Checker::new(dict, language, min)))
             .clone();
+        let extra = match self.buffers.get(id) {
+            Some(b) if !b.spell.ignored.is_empty() => Arc::new(
+                self.spell
+                    .extra
+                    .union(&b.spell.ignored)
+                    .cloned()
+                    .collect::<HashSet<String>>(),
+            ),
+            _ => self.spell.extra.clone(),
+        };
         let job = Job {
             checker,
-            extra: self.spell.extra.clone(),
+            extra,
             language,
             scope,
             rope,
@@ -419,6 +451,19 @@ impl App {
         }
         buf.spell.marked = buf.diagnostics.has(ServerId::SPELL);
         self.needs_redraw = true;
+    }
+
+    /// The checker for `language` (built from the loaded dictionary), `None` before it loads.
+    pub(super) fn spell_checker(&mut self, language: Language) -> Option<Arc<Checker>> {
+        let dict = self.spell.dict.clone()?;
+        let min = self.settings.spell_check_min_length;
+        Some(
+            self.spell
+                .checkers
+                .entry(language)
+                .or_insert_with(|| Arc::new(Checker::new(dict, language, min)))
+                .clone(),
+        )
     }
 
     /// Reads the dictionary (`dict`) and the user and workspace word files (`user`,

@@ -30,6 +30,8 @@ pub struct SpellState {
     pub held: Vec<Range<ByteIdx>>,
     /// Spell checking doesn't apply to this buffer (settings, size, language, toggled off).
     pub off: bool,
+    /// "Spelling: Ignore Word in This File": lower-case words accepted until the buffer closes.
+    pub ignored: std::collections::HashSet<String>,
     /// Whether the buffer has spell marks (so turning off knows to clear them).
     pub marked: bool,
 }
@@ -45,6 +47,7 @@ impl Default for SpellState {
             running: None,
             held: Vec::new(),
             off: false,
+            ignored: Default::default(),
             marked: false,
         }
     }

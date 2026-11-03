@@ -47,6 +47,7 @@ mod session;
 mod shell;
 mod side;
 mod spell;
+mod spell_cmd;
 mod syntax;
 mod tab_drag;
 pub(crate) mod tab_tip;
@@ -1371,6 +1372,7 @@ impl App {
             Command::Merge(crate::command::MergeCommand::Next) => self.go_to_conflict(true),
             Command::Merge(crate::command::MergeCommand::Previous) => self.go_to_conflict(false),
             Command::Merge(crate::command::MergeCommand::Compare) => self.compare_conflict(None),
+            Command::Spell(c) => self.spell_command(c),
             Command::CompareWithSaved => self.compare_with_saved(),
             Command::CompareActiveFileWith => self.compare_active_file_with(),
             Command::CompareOpenEditors => self.compare_open_editors(),

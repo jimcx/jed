@@ -25,9 +25,6 @@
 //! Watching and reloading are the editor's (`-c`): [`is_dictionary_path`] says whether a changed
 //! path is one of the two files.
 
-// Writing the files (`add_word`, `ensure_file`) is used by spell_check-d's commands.
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -98,6 +95,7 @@ impl UserWords {
     }
 
     /// Whether `word` (any case) is in the list.
+    #[cfg(test)]
     pub fn accepts(&self, word: &str) -> bool {
         self.words.contains(&word.to_lowercase())
     }
@@ -107,10 +105,12 @@ impl UserWords {
         &self.words
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.words.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.words.is_empty()
     }

@@ -33,7 +33,7 @@
 //! caller passes just the piece ([`Misspelling::word`]), so `recieveMessage` → `receive` replaces
 //! the piece only.
 
-// `suggest` is used by spell_check-d's quick fixes.
+// A few helpers are only used by tests.
 #![allow(dead_code)]
 
 use std::collections::HashSet;

@@ -99,23 +99,42 @@ impl App {
             .lsp
             .server_of(buffer)
             .is_some_and(|(_, _, caps)| supports_code_actions(caps));
-        let Some(buf) = self.buffers.get(buffer).filter(|_| supported) else {
-            self.notify(Level::Info, "No language server offers code actions here".into());
+        let Some(buf) = self.buffers.get(buffer) else {
             return;
         };
         let rope = &buf.rope;
         let marks: Vec<Mark> = if range.0 == range.1 {
-            buf.diagnostics.touching(rope, head).into_iter().cloned().collect()
+            buf.diagnostics
+                .touching(rope, head)
+                .into_iter()
+                .filter(|m| m.server != ServerId::SPELL)
+                .cloned()
+                .collect()
         } else {
             buf.diagnostics
                 .overlapping(range.0, range.1)
+                .filter(|m| m.server != ServerId::SPELL)
                 .filter(|m| m.start < range.1 && (m.end > range.0 || m.start == m.end))
                 .cloned()
                 .collect()
         };
-        if !self.request_code_actions(Purpose::List, (group, buffer, head), range, &marks) {
-            self.notify(Level::Info, "No language server offers code actions here".into());
+        if supported && self.request_code_actions(Purpose::List, (group, buffer, head), range, &marks) {
+            return;
         }
+        // No server to ask: the spell checker's fixes alone.
+        let actions = self.spell_actions(buffer, range);
+        if actions.is_empty() {
+            self.notify(Level::Info, "No language server offers code actions here".into());
+            return;
+        }
+        let revision = self.buffers.get(buffer).map_or(0, |b| b.revision());
+        let source = Source {
+            server: ServerId::SPELL,
+            encoding: Default::default(),
+            resolve: false,
+        };
+        self.code_actions.popup = Some(Popup::new((group, buffer, revision), head, head, source, actions));
+        self.needs_redraw = true;
     }
 
     /// Sends `textDocument/codeAction` for `range` of `buffer` with those of `marks` from the
@@ -181,7 +200,13 @@ impl App {
         range: (ByteIdx, ByteIdx),
         value: &Value,
     ) {
-        let actions = code_action::parse(value);
+        let mut actions = code_action::parse(value);
+        if purpose == Purpose::List {
+            // The spell checker's fixes come after the server's quick fixes.
+            let spell = self.spell_actions(p.buffer, range);
+            let at = actions.iter().rposition(Action::is_quick_fix).map_or(0, |i| i + 1);
+            actions.splice(at..at, spell);
+        }
         let source = Source {
             server: p.server,
             encoding: p.encoding,
@@ -271,6 +296,10 @@ impl App {
         }
         let popup = self.code_actions.popup.take().expect("checked");
         self.needs_redraw = true;
+        if let Some(fix) = action.spell {
+            self.apply_spell_fix(popup.buffer, fix);
+            return;
+        }
         let place = (popup.group, popup.buffer, popup.cursor);
         if action.needs_resolve(popup.source.resolve) {
             let s = popup.source;
@@ -441,10 +470,22 @@ impl App {
 
     /// The line the lightbulb is drawn on (in the active group), if its place has actions.
     pub fn bulb_line(&self) -> Option<(GroupId, usize)> {
-        let place = self.bulb_place()?;
-        if self.code_actions.cache.get(place.buffer, place.revision, place.range) != Some(true) {
+        let server = self
+            .bulb_place()
+            .filter(|place| self.code_actions.cache.get(place.buffer, place.revision, place.range) == Some(true));
+        // A spelling mark under the caret has fixes too, server or not.
+        if server.is_none() && !(self.action_target().is_some() && self.spell_mark_at_caret()) {
             return None;
         }
+        let place = server.or_else(|| {
+            let (group, buffer, range, _) = self.action_target()?;
+            Some(Place {
+                group,
+                buffer,
+                revision: 0,
+                range,
+            })
+        })?;
         let tab = self.group().active_tab()?;
         let rope = &self.buffers.get(place.buffer)?.rope;
         Some((place.group, pos::line_of(rope, tab.view.selections.primary().head)))

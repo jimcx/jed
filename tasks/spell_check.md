@@ -2,7 +2,7 @@
 id: spell_check
 name: Spell checker
 summary: misspelled words in comments, strings and identifiers are underlined (camelCase / snake_case split into words), with suggestions and a user dictionary for words to accept
-status: in-progress
+status: done
 priority: 0
 dependencies: []
 ---
@@ -38,4 +38,8 @@ See [Syntax highlighting](../PLAN.md#syntax-highlighting), [LSP](../PLAN.md#lsp)
       - Decisions: the checker is OFF in tests unless a settings file sets `spell_check_scope` (`Workspace::settings`, `cfg(test)`), so its marks don't leak into other features' tests; `spell_check_tests` turns it on. The status bar shows no spelling hints (a prose line would always have one). A full check never applies the half-typed rule.
       - Mutation-tested: 9 mutations, all caught (one needed a stronger half-typed-word test); 3 clean `scripts/check` runs. `forget_path_state` (Save As / rename) now asks for a full re-check, since it cleared the spell marks (no test reaches it).
       - Still to check by hand: type in a Rust file's comment and see the squiggle appear after the caret leaves the word; edit `~/.config/jed` dictionary files while the app runs.
-    - spell_check-d: commands and quick fixes: Next / Previous, Add to user / workspace dictionary, Ignore in file, Toggle, Open User Dictionary, the lightbulb / Cmd+. fixes and suggestions, many-selections behaviour; keymap / cheat sheet / palette docs and tests; docs and hand checks; marks the task ✅
+    - ✅ spell_check-d: commands and quick fixes: Next / Previous, Add to user / workspace dictionary, Ignore in file, Toggle, Open User Dictionary, the lightbulb / Cmd+. fixes and suggestions, many-selections behaviour; keymap / cheat sheet / palette docs and tests; docs and hand checks; marks the task ✅
+      - Done: `Command::Spell(SpellCommand)` (palette only, no default keys, so `docs/terminals` is untouched): "Spelling: Go to Next / Previous Problem", "Add Word to User / Workspace Dictionary", "Ignore Word in This File", "Toggle Spell Check", "Open User Dictionary"; `src/app/spell_cmd.rs` (`spell_command`, `spell_goto`, `spell_words` (≤ 256 selections), `write_spell_words` in `spawn_blocking` → `SpellEvent::Added` re-reads the files so marks refresh in every buffer; ignore is per buffer, session only); quick fixes in the Cmd+. list and the lightbulb (`spell_actions`, `apply_spell_fix`, `Action::spell`): `Replace with "…"`, add to user / workspace dictionary, `Ignore in this file`, after server fixes. Tests in `src/spell_check_tests.rs`; docs in `docs/spell-check.md`.
+      - Decisions: titles say "Problem", not "Misspelling". One quick fix replaces every selection that holds the same misspelled word as one `EditKind::Other` step (not each selection's own word). All commands but Open User Dictionary refuse on read-only buffers and diff / hex / shell tabs. The quick-fix list closes when the caret or text moves. `RECIEVE` (all caps) is an acronym and never marked; its suggestion is covered at checker level.
+      - Mutation-tested: 9 mutations, all caught; 3 clean `scripts/check` runs. One unrelated flake met: `fixes_tests::fixes_done_when_rust_analyzer` (rust-analyzer hover wait) failed once in a 95 s run under load ~7 and passed alone and in the next two full runs.
+      - Still to check by hand: Cmd+. / the lightbulb on a misspelling in a Rust comment and pick a suggestion; Add Word to User Dictionary and watch the underline vanish in a second open file; Open User Dictionary, edit by hand while the app runs; hover a misspelling; Cmd+Shift+L on a repeated typo then replace all; Next / Previous from the palette; install the real en_AU dictionary and check suggestion latency in a release build.

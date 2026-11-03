@@ -54,3 +54,23 @@ when a setting or a dictionary file changes, in the background. The word you are
 underlined until the caret leaves it or you type a separator. Misspellings are listed in the
 Problems panel (under `Spelling`) only with `spell_check_problems = true`. Diff, hex and shell tabs,
 log tabs and files over `syntax_max_bytes` are not checked.
+
+# Commands
+
+All in the palette ("Spelling: ..."), none bound to a key. The word is the misspelling under each
+selection, else the word at the caret.
+
+- Go to Next / Previous Problem: the caret to the next / previous misspelling, wrapping.
+- Add Word to User Dictionary / to Workspace Dictionary: appends to `<config dir>/dictionary.txt` /
+  `<workspace>/.jed/dictionary.txt`; the underline goes in every open file. With several selections
+  each distinct word (the first 256) is added.
+- Ignore Word in This File: accepted until the file is closed, not saved.
+- Toggle Spell Check: off / on for this file, until it is closed.
+- Open User Dictionary: opens the file, creating it empty when missing.
+
+They refuse (a notice) in a read-only file and in diff, hex and shell tabs (Open User Dictionary
+works anywhere). Ctrl+. (Cmd+. on macOS) or the lightbulb on a misspelling lists `Replace with
+"receive"` (up to 8, in the word's case; inside an identifier only the piece changes), then
+`Add "recieve" to user dictionary`, `... to workspace dictionary` and `Ignore in this file`, after
+any language server fixes. A replace changes every selection that holds the same misspelling, as one
+undo step.

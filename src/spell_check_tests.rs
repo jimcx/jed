@@ -468,3 +468,430 @@ async fn milestone_spell_check_budget_one_mb() {
     println!("frame: {:?}", t.elapsed() / 20);
     assert_eq!((e.app.spell.scanned, e.app.spell.background), (scanned, bg));
 }
+
+// spell_check-d: the commands and quick fixes.
+
+use crate::buffer::pos::ByteIdx;
+use crate::command::{Command, SpellCommand};
+use crate::selection::{Selection, Selections};
+
+fn cmd() -> M {
+    if cfg!(target_os = "macos") {
+        M::SUPER
+    } else {
+        M::CONTROL
+    }
+}
+
+fn spell(app: &mut App, c: SpellCommand) {
+    app.test_execute(Command::Spell(c));
+}
+
+/// The active editor's caret at byte `at`.
+fn caret(app: &mut App, at: usize) {
+    let (_, view) = app.active_mut().unwrap();
+    view.selections = Selections::single(Selection::cursor(ByteIdx(at)));
+}
+
+fn head(app: &App) -> usize {
+    app.group().active_tab().unwrap().view.selections.primary().head.0
+}
+
+fn text(app: &App) -> String {
+    app.active_buffer().unwrap().rope.to_string()
+}
+
+fn message(app: &App) -> String {
+    app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
+}
+
+/// The quick fix list's titles (Cmd+. at the caret).
+fn fixes(app: &mut App) -> Vec<String> {
+    app.code_actions.popup = None;
+    app.test_execute(Command::QuickFix);
+    app.code_actions
+        .popup
+        .as_ref()
+        .map(|p| p.actions.iter().map(|a| a.title.clone()).collect())
+        .unwrap_or_default()
+}
+
+/// Also teaches the dictionary `receive`, so there is something to suggest.
+fn with_receive(a: &mut App) {
+    let words = format!("{WORDS} receive").replace(' ', "\n");
+    std::fs::write(a.config_dir.join("dictionaries/en_AU.txt"), words).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spell_check_next_and_previous_go_round_the_misspellings() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut e = open(&dir, "a.txt", "recieve ok wrold\nok teh\n", |_| {});
+    idle(&mut e.app).await;
+    caret(&mut e.app, 0);
+    spell(&mut e.app, SpellCommand::Next);
+    assert_eq!(head(&e.app), 11, "wrold");
+    spell(&mut e.app, SpellCommand::Next);
+    assert_eq!(head(&e.app), 20, "teh");
+    spell(&mut e.app, SpellCommand::Next);
+    assert_eq!(head(&e.app), 0, "wraps to recieve");
+    spell(&mut e.app, SpellCommand::Previous);
+    assert_eq!(head(&e.app), 20, "and back round");
+    spell(&mut e.app, SpellCommand::Previous);
+    assert_eq!(head(&e.app), 11);
+    assert_eq!(e.app.group().active_tab().unwrap().view.selections.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spell_check_next_with_no_misspelling_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut e = open(&dir, "a.txt", "ok line\n", |_| {});
+    idle(&mut e.app).await;
+    spell(&mut e.app, SpellCommand::Next);
+    assert_eq!(message(&e.app), "No misspelled words");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spell_check_add_to_user_dictionary_unmarks_the_word_in_every_buffer() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut e = open(&dir, "a.txt", "recieve hello wrold\n", |_| {});
+    std::fs::write(e.root.join("b.txt"), "another recieve here\n").unwrap();
+    idle(&mut e.app).await;
+    e.app.press(K::Char('p'), cmd());
+    e.app.type_text("b.txt");
+    assert!(
+        e.app
+            .settle(|a| a
+                .palette
+                .as_ref()
+                .is_some_and(|p| p.rows.first().is_some_and(|r| r.label == "b.txt")))
+            .await
+    );
+    e.app.press(K::Enter, M::NONE);
+    assert!(
+        e.app
+            .settle(|a| a.active_buffer().is_some_and(|b| b.name() == "b.txt"))
+            .await
+    );
+    idle(&mut e.app).await;
+    assert_eq!(spelled(&e.app), ["recieve"]);
+    // Back on a.txt, the caret inside the word: mid-word, the mark under it.
+    e.app.press(K::Char('p'), cmd());
+    e.app.type_text("a.txt");
+    assert!(
+        e.app
+            .settle(|a| a
+                .palette
+                .as_ref()
+                .is_some_and(|p| p.rows.first().is_some_and(|r| r.label == "a.txt")))
+            .await
+    );
+    e.app.press(K::Enter, M::NONE);
+    assert!(
+        e.app
+            .settle(|a| a.active_buffer().is_some_and(|b| b.name() == "a.txt"))
+            .await
+    );
+    caret(&mut e.app, 3);
+    spell(&mut e.app, SpellCommand::AddToUser);
+    let ok = e
+        .app
+        .settle(|a| {
+            a.buffers.iter().all(|(_, b)| {
+                b.diagnostics
+                    .spelling()
+                    .iter()
+                    .all(|m| b.rope.slice(m.start.0..m.end.0) != "recieve")
+            })
+        })
+        .await;
+    assert!(ok, "gone from both buffers");
+    idle(&mut e.app).await;
+    assert_eq!(spelled(&e.app), ["wrold"]);
+    let file = std::fs::read_to_string(e.config.join("dictionary.txt")).unwrap();
+    assert!(file.lines().any(|l| l == "recieve"), "{file}");
+    assert!(!e.root.join(".jed/dictionary.txt").exists());
+    // Again: written once.
+    spell(&mut e.app, SpellCommand::AddToUser);
+    caret(&mut e.app, 0);
+    assert!(message(&e.app).contains("Added \"recieve\"") || message(&e.app).contains("No word"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spell_check_add_to_workspace_dictionary_stays_in_its_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = crate::workspace::normalize(dir.path());
+    let config = base.join("config");
+    std::fs::create_dir_all(config.join("dictionaries")).unwrap();
+    std::fs::write(config.join("dictionaries/en_AU.txt"), WORDS.replace(' ', "\n")).unwrap();
+    let (one, two) = (base.join("one"), base.join("two"));
+    std::fs::create_dir_all(&one).unwrap();
+    std::fs::create_dir_all(&two).unwrap();
+    let mut a = open_in(&base, &one, &config, "a.txt", "recieve here\n", |_| {});
+    let mut b = open_in(&base, &two, &config, "a.txt", "recieve here\n", |_| {});
+    idle(&mut a.app).await;
+    idle(&mut b.app).await;
+    spell(&mut a.app, SpellCommand::Next);
+    spell(&mut a.app, SpellCommand::AddToWorkspace);
+    assert!(a.app.settle(|x| spelled(x).is_empty()).await);
+    assert!(
+        std::fs::read_to_string(one.join(".jed/dictionary.txt"))
+            .unwrap()
+            .contains("recieve")
+    );
+    assert!(!config.join("dictionary.txt").exists(), "not the user's file");
+    assert!(!two.join(".jed/dictionary.txt").exists());
+    idle(&mut b.app).await;
+    assert_eq!(spelled(&b.app), ["recieve"], "the other workspace still marks it");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spell_check_ignore_is_for_this_buffer_and_not_saved() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut e = open(&dir, "a.txt", "recieve hello wrold\n", |_| {});
+    idle(&mut e.app).await;
+    caret(&mut e.app, 2);
+    spell(&mut e.app, SpellCommand::Ignore);
+    idle(&mut e.app).await;
+    assert_eq!(spelled(&e.app), ["wrold"]);
+    // A new occurrence typed later is ignored too.
+    e.app.press(K::End, M::CONTROL);
+    e.app.type_text(" recieve ");
+    idle(&mut e.app).await;
+    assert_eq!(spelled(&e.app), ["wrold"]);
+    assert!(!e.config.join("dictionary.txt").exists());
+    assert!(!e.root.join(".jed/dictionary.txt").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spell_check_the_word_at_the_caret_is_used_when_no_mark_is_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut e = open(&dir, "a.txt", "hello wrold\n", |_| {});
+    idle(&mut e.app).await;
+    caret(&mut e.app, 2);
+    spell(&mut e.app, SpellCommand::AddToUser);
+    assert!(e.app.settle(|_| e.config.join("dictionary.txt").exists()).await);
+    let file = std::fs::read_to_string(e.config.join("dictionary.txt")).unwrap();
+    assert!(file.lines().any(|l| l == "hello"), "{file}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spell_check_toggle_turns_this_buffer_off_and_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut e = open(&dir, "a.txt", "recieve here\n", |_| {});
+    idle(&mut e.app).await;
+    assert_eq!(spelled(&e.app).len(), 1);
+    spell(&mut e.app, SpellCommand::Toggle);
+    assert!(message(&e.app).contains("off"));
+    idle(&mut e.app).await;
+    assert!(spelled(&e.app).is_empty());
+    spell(&mut e.app, SpellCommand::Toggle);
+    idle(&mut e.app).await;
+    assert_eq!(spelled(&e.app), ["recieve"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spell_check_open_user_dictionary_creates_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut e = open(&dir, "a.txt", "ok\n", |_| {});
+    idle(&mut e.app).await;
+    let file = e.config.join("dictionary.txt");
+    assert!(!file.exists());
+    spell(&mut e.app, SpellCommand::OpenUserDictionary);
+    assert!(
+        e.app
+            .settle(|a| a.active_buffer().is_some_and(|b| b.name() == "dictionary.txt"))
+            .await
+    );
+    assert!(file.exists());
+    // An existing file is not overwritten.
+    std::fs::write(&file, "mine\n").unwrap();
+    spell(&mut e.app, SpellCommand::OpenUserDictionary);
+    e.app.settle(|_| true).await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "mine\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spell_check_quick_fix_lists_suggestions_in_the_words_case() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut e = open(&dir, "a.txt", "recieve Recieve recieveMessage\n", with_receive);
+    idle(&mut e.app).await;
+    let tail = [
+        "Add \"recieve\" to user dictionary",
+        "Add \"recieve\" to workspace dictionary",
+        "Ignore in this file",
+    ];
+    for (at, first) in [(2, "receive"), (10, "Receive"), (18, "receive")] {
+        caret(&mut e.app, at);
+        let titles = fixes(&mut e.app);
+        assert_eq!(titles[0], format!("Replace with \"{first}\""), "{titles:?}");
+        assert_eq!(titles[titles.len() - 3..], tail, "{titles:?}");
+    }
+    // Not on a clean word.
+    caret(&mut e.app, 0);
+    e.app.press(K::Esc, M::NONE);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spell_check_quick_fix_replaces_just_the_piece_in_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut e = open(&dir, "a.txt", "ok recieveMessage ok\n", with_receive);
+    idle(&mut e.app).await;
+    caret(&mut e.app, 6);
+    assert_eq!(fixes(&mut e.app)[0], "Replace with \"receive\"");
+    e.app.press(K::Enter, M::NONE);
+    assert_eq!(text(&e.app), "ok receiveMessage ok\n");
+    assert!(e.app.code_actions.popup.is_none());
+    idle(&mut e.app).await;
+    assert!(spelled(&e.app).is_empty());
+    e.app.test_execute(Command::Undo);
+    assert_eq!(text(&e.app), "ok recieveMessage ok\n", "one step");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spell_check_quick_fix_handles_several_selections() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut e = open(&dir, "a.txt", "recieve ok recieve ok recieve wrold\n", |a| {
+        with_receive(a)
+    });
+    idle(&mut e.app).await;
+    // Three carets in the three `recieve`s (primary the last) and one in the other word.
+    let (_, view) = e.app.active_mut().unwrap();
+    let c = |n: usize| Selection::cursor(ByteIdx(n));
+    view.selections = Selections::new(vec![c(2), c(13), c(23), c(32)], 2);
+    let titles = fixes(&mut e.app);
+    assert_eq!(titles[0], "Replace with \"receive\"");
+    e.app.press(K::Enter, M::NONE);
+    assert_eq!(text(&e.app), "receive ok receive ok receive wrold\n");
+    e.app.test_execute(Command::Undo);
+    assert_eq!(text(&e.app), "recieve ok recieve ok recieve wrold\n", "one undo step");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spell_check_quick_fix_add_and_ignore_rows_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut e = open(&dir, "a.txt", "recieve wrold\n", |_| {});
+    idle(&mut e.app).await;
+    caret(&mut e.app, 2);
+    let titles = fixes(&mut e.app);
+    let row = titles.iter().position(|t| t.ends_with("to user dictionary")).unwrap();
+    for _ in 0..row {
+        e.app.press(K::Down, M::NONE);
+    }
+    e.app.press(K::Enter, M::NONE);
+    assert!(e.app.settle(|a| spelled(a) == ["wrold"]).await, "{:?}", spelled(&e.app));
+    caret(&mut e.app, 9);
+    let titles = fixes(&mut e.app);
+    let row = titles.iter().position(|t| t == "Ignore in this file").unwrap();
+    for _ in 0..row {
+        e.app.press(K::Down, M::NONE);
+    }
+    e.app.press(K::Enter, M::NONE);
+    assert!(e.app.settle(|a| spelled(a).is_empty()).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spell_check_the_lightbulb_shows_on_a_spelling_mark() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut e = open(&dir, "a.txt", "ok recieve here\n", |_| {});
+    idle(&mut e.app).await;
+    caret(&mut e.app, 0);
+    assert!(e.app.bulb_line().is_none());
+    caret(&mut e.app, 5);
+    assert_eq!(e.app.bulb_line().map(|(_, l)| l), Some(0));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spell_check_commands_refuse_on_read_only_and_hex_tabs() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut e = open(&dir, "a.txt", "recieve here\n", with_receive);
+    idle(&mut e.app).await;
+    caret(&mut e.app, 2);
+    let id = e.app.group().active_tab().unwrap().buffer;
+    e.app.buffers.get_mut(id).unwrap().read_only = Some("locked".into());
+    for c in [
+        SpellCommand::AddToUser,
+        SpellCommand::AddToWorkspace,
+        SpellCommand::Ignore,
+        SpellCommand::Toggle,
+    ] {
+        spell(&mut e.app, c);
+        assert!(message(&e.app).contains("Read-only"), "{c:?}: {}", message(&e.app));
+    }
+    assert!(fixes(&mut e.app).is_empty(), "no quick fixes in a read-only buffer");
+    e.app.settle(|_| true).await;
+    assert!(!e.config.join("dictionary.txt").exists());
+    e.app.buffers.get_mut(id).unwrap().read_only = None;
+
+    // A hex tab.
+    std::fs::write(e.root.join("b.bin"), [0u8, 1, 2, 0xff, 0, 0, 7]).unwrap();
+    e.app.press(K::Char('p'), cmd());
+    e.app.type_text("b.bin");
+    assert!(
+        e.app
+            .settle(|a| a
+                .palette
+                .as_ref()
+                .is_some_and(|p| p.rows.first().is_some_and(|r| r.label == "b.bin")))
+            .await
+    );
+    e.app.press(K::Enter, M::NONE);
+    assert!(e.app.settle(|a| a.active_hex().is_some()).await);
+    for c in SpellCommand::ALL
+        .into_iter()
+        .filter(|c| *c != SpellCommand::OpenUserDictionary)
+    {
+        e.app.message = None;
+        spell(&mut e.app, c);
+        assert!(message(&e.app).contains("text editor"), "{c:?}: {}", message(&e.app));
+    }
+    e.app.settle(|_| true).await;
+    assert!(!e.config.join("dictionary.txt").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spell_check_commands_are_in_the_palette_and_unicode_words_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut e = open(&dir, "a.txt", "caf\u{e9} wrold ok\n", |_| {});
+    idle(&mut e.app).await;
+    // Byte offsets after a two-byte char: wrold starts at 6.
+    caret(&mut e.app, 0);
+    spell(&mut e.app, SpellCommand::Next);
+    assert_eq!(head(&e.app), 6);
+    spell(&mut e.app, SpellCommand::AddToUser);
+    assert!(
+        e.app.settle(|a| !spelled(a).contains(&"wrold".to_string())).await,
+        "{:?}",
+        spelled(&e.app)
+    );
+    assert_eq!(
+        std::fs::read_to_string(e.config.join("dictionary.txt"))
+            .unwrap()
+            .lines()
+            .last(),
+        Some("wrold")
+    );
+    // The palette lists all seven.
+    e.app.press(K::Char('p'), cmd() | M::SHIFT);
+    e.app.type_text("Spelling:");
+    assert!(
+        e.app
+            .settle(|a| a
+                .palette
+                .as_ref()
+                .is_some_and(|p| p.rows.len() == SpellCommand::ALL.len()))
+            .await
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spell_check_a_quick_fix_list_closes_when_the_caret_moves_and_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut e = open(&dir, "a.txt", "recieve ok recieve\n", with_receive);
+    idle(&mut e.app).await;
+    caret(&mut e.app, 2);
+    assert!(!fixes(&mut e.app).is_empty());
+    caret(&mut e.app, 11);
+    e.app.press(K::Esc, M::NONE);
+    assert!(e.app.code_actions.popup.is_none());
+    assert_eq!(text(&e.app), "recieve ok recieve\n");
+}

@@ -50,6 +50,24 @@ pub struct Action {
     pub literal: bool,
     /// As the server sent it (`codeAction/resolve`'s params).
     pub raw: Value,
+    /// A spell checker fix (applied here, no server): see [`SpellFix`].
+    pub spell: Option<SpellFix>,
+}
+
+/// What a spell checker quick fix does (the app applies it: `app/spell_cmd.rs`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpellFix {
+    /// Replaces each range (the misspelled pieces, sorted) with `text`, one undo step.
+    Replace {
+        ranges: Vec<(ByteIdx, ByteIdx)>,
+        text: String,
+    },
+    /// Adds the word to the user dictionary file.
+    AddToUser(String),
+    /// Adds the word to the workspace dictionary file.
+    AddToWorkspace(String),
+    /// Accepts the word in this buffer until it closes.
+    Ignore(String),
 }
 
 impl Action {
@@ -71,6 +89,7 @@ impl Action {
                 })),
                 literal: false,
                 raw: v.clone(),
+                spell: None,
             });
         }
         let present = |key: &str| v.get(key).filter(|x| !x.is_null()).cloned();
@@ -88,7 +107,23 @@ impl Action {
             command: present("command").filter(|c| c.get("command").and_then(Value::as_str).is_some()),
             literal: true,
             raw: v.clone(),
+            spell: None,
         })
+    }
+
+    /// A spell checker quick fix.
+    pub fn spell(title: String, fix: SpellFix) -> Action {
+        Action {
+            title,
+            kind: Some("quickfix.spell".into()),
+            preferred: false,
+            disabled: None,
+            edit: None,
+            command: None,
+            literal: false,
+            raw: Value::Null,
+            spell: Some(fix),
+        }
     }
 
     pub fn is_quick_fix(&self) -> bool {
