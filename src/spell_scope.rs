@@ -29,8 +29,6 @@
 //! The result is sorted and merged: ranges that overlap are joined, ranges that merely touch are
 //! not (two names side by side stay two words).
 
-#![allow(dead_code)]
-
 use std::ops::Range;
 
 use ropey::Rope;
@@ -75,6 +73,7 @@ pub fn enabled(
 }
 
 /// The ranges of the whole text to check. `tree` must match `rope`.
+#[cfg_attr(not(test), allow(dead_code))] // the app uses `check_ranges_in`
 pub fn check_ranges(language: Language, tree: Option<&Tree>, rope: &Rope, scope: SpellScope) -> Vec<Range<ByteIdx>> {
     check_ranges_in(language, tree, rope, scope, ByteIdx(0)..ByteIdx(rope.len()))
 }

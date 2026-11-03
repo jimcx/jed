@@ -242,7 +242,9 @@ impl App {
     /// File system events under `.jed/` (history writes) aren't changes anyone needs to see.
     pub(super) fn fs_changed(&mut self, mut paths: Vec<std::path::PathBuf>) {
         let jed = self.workspace.root.join(history::JED_DIR);
-        paths.retain(|p| !p.starts_with(&jed));
+        // The workspace dictionary is the one file under `.jed` that is watched.
+        let words = crate::spell_dict::workspace_path(&self.workspace.root);
+        paths.retain(|p| !p.starts_with(&jed) || *p == words);
         if paths.is_empty() {
             return;
         }

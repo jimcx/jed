@@ -53,6 +53,10 @@ impl ServerId {
         Self(u64::MAX)
     }
 
+    /// The pseudo server the spell checker's marks sit under (`diagnostics::Marks`). Code that
+    /// talks to a server or treats marks as a server's must skip it.
+    pub const SPELL: ServerId = ServerId(u64::MAX - 1);
+
     #[cfg(test)]
     pub fn test(n: u64) -> Self {
         Self(n)

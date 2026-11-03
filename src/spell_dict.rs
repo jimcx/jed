@@ -25,6 +25,7 @@
 //! Watching and reloading are the editor's (`-c`): [`is_dictionary_path`] says whether a changed
 //! path is one of the two files.
 
+// Writing the files (`add_word`, `ensure_file`) is used by spell_check-d's commands.
 #![allow(dead_code)]
 
 use std::collections::HashSet;

@@ -43,3 +43,14 @@ Files over `syntax_max_bytes` are not checked. Identifiers are found through eac
 highlight query (names it colours as variable, function, type, property, ...), so they are checked
 wherever the language is highlighted; Markdown prose is always checked and its code only with `all`.
 The marks use the theme key `editorSpell.foreground`.
+
+# What you see
+
+Misspelled words are underlined in their own colour (`editorSpell.foreground`), just the misspelled
+piece (`recieve` in `recieveMessage`). Hovering shows `Unknown word "recieve"`. They are hints:
+a real error or warning on the same line wins the status bar. Checking runs a moment (300 ms) after
+you stop typing and only re-reads the lines you touched; a file is checked in full when opened and
+when a setting or a dictionary file changes, in the background. The word you are typing is not
+underlined until the caret leaves it or you type a separator. Misspellings are listed in the
+Problems panel (under `Spelling`) only with `spell_check_problems = true`. Diff, hex and shell tabs,
+log tabs and files over `syntax_max_bytes` are not checked.

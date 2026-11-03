@@ -107,8 +107,11 @@ impl<'a> FileProblems<'a> {
             return Vec::new();
         }
         match self.source {
-            Source::Buffer(b) => b.diagnostics.all()[from..to]
-                .iter()
+            Source::Buffer(b) => b
+                .diagnostics
+                .listed()
+                .range(from, to)
+                .into_iter()
                 .map(|m| Problem {
                     diag: &m.diag,
                     place: Place::Text {
@@ -151,16 +154,35 @@ impl<'a> FileProblems<'a> {
 
 /// Every file with problems, sorted by path. A file open in a buffer lists the buffer's marks.
 pub fn files<'a>(store: &'a Store, buffers: &'a Buffers) -> Vec<FileProblems<'a>> {
-    store
+    let mut files: Vec<FileProblems<'a>> = store
         .files()
         .filter_map(|(path, sets)| {
             let (source, count) = match buffers.find_path(path).and_then(|id| buffers.get(id)) {
-                Some(b) => (Source::Buffer(b), b.diagnostics.all().len()),
+                Some(b) => (Source::Buffer(b), b.diagnostics.listed().len()),
                 None => (Source::Store(sets), sets.iter().map(|s| s.items.len()).sum()),
             };
             (count > 0).then_some(FileProblems { path, source, count })
         })
-        .collect()
+        .collect();
+    // Open files with listed spelling marks only (no server published anything for them).
+    let mut extra: Vec<FileProblems<'a>> = buffers
+        .iter()
+        .filter(|(_, b)| b.has_file() && b.diagnostics.has(crate::lsp::ServerId::SPELL))
+        .filter(|(_, b)| !files.iter().any(|f| f.path == b.path))
+        .filter_map(|(_, b)| {
+            let count = b.diagnostics.listed().len();
+            (count > 0).then_some(FileProblems {
+                path: &b.path,
+                source: Source::Buffer(b),
+                count,
+            })
+        })
+        .collect();
+    if !extra.is_empty() {
+        files.append(&mut extra);
+        files.sort_by(|a, b| a.path.cmp(b.path));
+    }
+    files
 }
 
 /// Who reports a problem, VS Code style: `source(code)`, the source or the code alone, or nothing.
@@ -249,7 +271,7 @@ pub fn step(files: &[FileProblems], from: Option<From>, forward: bool) -> Option
             // buffer's marks; a closed file has no cursor in it, so this is the edge anyway.
             match file.source {
                 Source::Buffer(b) => {
-                    let marks = b.diagnostics.all();
+                    let marks = b.diagnostics.listed();
                     if forward {
                         let k = marks.partition_point(|m| m.start <= from.at);
                         (k < marks.len()).then_some(k)

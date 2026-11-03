@@ -75,7 +75,7 @@ impl App {
     /// Asks for the quick fixes of the diagnostics the popup shows (its "Quick Fix…" row).
     fn request_hover_fixes_at(&mut self, group: GroupId, buffer: BufferId, at: ByteIdx, mouse: bool) {
         let marks = self.hover_marks(buffer, at, mouse);
-        if !marks.is_empty() {
+        if marks.iter().any(|m| m.server != crate::lsp::ServerId::SPELL) {
             self.request_hover_fixes(group, buffer, &marks);
         }
     }

@@ -99,6 +99,8 @@ pub struct Marks {
     /// `max_end[i]`: the largest end among `marks[..=i]` (ends aren't sorted): with it,
     /// `overlapping` finds its first candidate by binary search too.
     max_end: Vec<ByteIdx>,
+    /// Whether the Problems list includes the spell checker's marks (`spell_check_problems`).
+    list_spell: bool,
 }
 
 impl Marks {
@@ -107,9 +109,16 @@ impl Marks {
         self.marks.is_empty()
     }
 
-    /// Every mark, sorted by (start, end).
-    pub fn all(&self) -> &[Mark] {
-        &self.marks
+    /// The language servers' marks (not the spell checker's), sorted by (start, end).
+    #[cfg_attr(not(test), allow(dead_code))] // tests; the Problems list reads `listed`
+    pub fn all(&self) -> Vec<&Mark> {
+        self.marks.iter().filter(|m| m.server != ServerId::SPELL).collect()
+    }
+
+    /// The spell checker's marks, sorted by (start, end).
+    #[cfg_attr(not(test), allow(dead_code))] // tests
+    pub fn spelling(&self) -> Vec<&Mark> {
+        self.marks.iter().filter(|m| m.server == ServerId::SPELL).collect()
     }
 
     /// Replaces `server`'s marks with `marks` (any order).
@@ -118,6 +127,36 @@ impl Marks {
         self.marks.extend(marks);
         self.marks.sort_by_key(|m| (m.start, m.end));
         self.index();
+    }
+
+    /// Replaces `server`'s marks that lie within `within` with `marks` (any order, inside it):
+    /// the spell checker's re-check of a few lines.
+    pub fn splice(&mut self, server: ServerId, within: std::ops::Range<ByteIdx>, marks: Vec<Mark>) {
+        self.marks
+            .retain(|m| !(m.server == server && m.start >= within.start && m.end <= within.end));
+        self.marks.extend(marks);
+        self.marks.sort_by_key(|m| (m.start, m.end));
+        self.index();
+    }
+
+    /// Whether any mark belongs to `server`.
+    pub fn has(&self, server: ServerId) -> bool {
+        self.marks.iter().any(|m| m.server == server)
+    }
+
+    /// Sets whether `listed` includes the spell checker's marks.
+    pub fn set_list_spell(&mut self, on: bool) {
+        self.list_spell = on;
+    }
+
+    /// The marks the Problems list shows: all of them, or without the spell checker's (a vector
+    /// of references then, only while such marks exist).
+    pub fn listed(&self) -> Listed<'_> {
+        if self.list_spell || !self.has(ServerId::SPELL) {
+            Listed::All(&self.marks)
+        } else {
+            Listed::Some(self.marks.iter().filter(|m| m.server != ServerId::SPELL).collect())
+        }
     }
 
     /// Drops `server`'s marks.
@@ -155,7 +194,9 @@ impl Marks {
     /// (content bounds): the most severe touching the line, among equals one under the cursor,
     /// then the first.
     pub fn for_line(&self, start: ByteIdx, end: ByteIdx, head: ByteIdx) -> Option<&Mark> {
+        // Spelling hints stay out of the status bar: a line of prose would always show one.
         self.overlapping(start, end)
+            .filter(|m| m.server != ServerId::SPELL)
             .filter(|m| m.end > start || m.start >= start)
             .min_by_key(|m| (m.diag.severity, !(m.start <= head && head <= m.end), m.start))
     }
@@ -193,6 +234,37 @@ impl Marks {
             max = max.max(m.end);
             max
         }));
+    }
+}
+
+/// `Marks::listed`: the marks of the Problems list, sorted by (start, end).
+pub enum Listed<'a> {
+    All(&'a [Mark]),
+    Some(Vec<&'a Mark>),
+}
+
+impl<'a> Listed<'a> {
+    pub fn len(&self) -> usize {
+        match self {
+            Listed::All(m) => m.len(),
+            Listed::Some(m) => m.len(),
+        }
+    }
+
+    /// The marks `from..to`.
+    pub fn range(&self, from: usize, to: usize) -> Vec<&'a Mark> {
+        match self {
+            Listed::All(m) => m[from..to].iter().collect(),
+            Listed::Some(m) => m[from..to].to_vec(),
+        }
+    }
+
+    /// The index of the first mark `pred` is false for (marks sorted so it holds for a prefix).
+    pub fn partition_point(&self, pred: impl Fn(&Mark) -> bool) -> usize {
+        match self {
+            Listed::All(m) => m.partition_point(|x| pred(x)),
+            Listed::Some(m) => m.partition_point(|x| pred(x)),
+        }
     }
 }
 

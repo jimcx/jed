@@ -306,12 +306,18 @@ impl App {
         self.git_paths_changed(&paths);
         self.disk_paths_changed(&paths);
         self.diffs_paths_changed(&paths);
+        let mut dict_changed: Vec<crate::spell_dict::Which> = Vec::new();
         let exclude_file = self.workspace.root.join(".git/info/exclude");
         for p in paths {
             // Single file mode watches only its file: no live `.workspace` reload (deferred).
             reload |= p == config && !self.mode.is_single();
             reload_settings |= p == settings_path;
             reload_keymap |= p == keymap_path;
+            if let Some(w) = crate::spell_dict::is_dictionary_path(&p, &self.config_dir, Some(&self.workspace.root))
+                && !dict_changed.contains(&w)
+            {
+                dict_changed.push(w);
+            }
             // An ignore file changed: what is ignored below its folder may have too.
             let ignores = if p == exclude_file {
                 Some(self.workspace.root.as_path())
@@ -332,6 +338,9 @@ impl App {
                     dirs.push(d.to_path_buf());
                 }
             }
+        }
+        for w in dict_changed {
+            self.spell_dict_changed(w);
         }
         for d in dirs {
             self.request_listing(d);

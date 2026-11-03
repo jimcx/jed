@@ -678,6 +678,9 @@ impl App {
             buf.quick_diff.reset();
             buf.blame.reset();
             buf.diagnostics.clear_all();
+            // The spell marks went with them.
+            buf.spell.want_full();
+            buf.spell.marked = false;
         }
         self.servers_dirty = true;
         self.needs_redraw = true;
