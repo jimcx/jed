@@ -1,18 +1,26 @@
-//! One buffer's spell-check bookkeeping: which parts of the text changed since they were last
-//! checked (byte ranges in the current text, kept there by `Buffer::apply` through `map`), when
-//! the last edit was, and what a check in flight is for. The app's side is `app/spell.rs`.
+//! One buffer's spell-check state: its misspellings (`marks`, a `diagnostics::Marks` of their
+//! own, apart from the language servers' `Buffer::diagnostics`, so nothing that reads or sends
+//! those has to skip them), which parts of the text changed since they were last checked (byte
+//! ranges in the current text, kept there by `Buffer::apply` through `map`), when the last edit
+//! was, and what a check in flight is for. The app's side is `app/spell.rs`.
 
 use std::ops::Range;
 use std::time::Instant;
 
 use crate::buffer::change::{Assoc, ChangeSet};
 use crate::buffer::pos::ByteIdx;
+use crate::diagnostics::Marks;
 
 /// More changed ranges than this collapse into one covering them all.
 const MAX_RANGES: usize = 64;
 
 #[derive(Debug)]
 pub struct SpellState {
+    /// The misspellings, all under `ServerId::SPELL`: mapped through every edit, replaced by a
+    /// full check, spliced by a re-check of a few lines.
+    pub marks: Marks,
+    /// The Problems panel lists `marks` (`spell_check_problems`).
+    pub listed: bool,
     /// "Spelling: Toggle Spell Check" turns it off for this buffer (it reverts at close).
     pub enabled: bool,
     /// The whole text needs checking (open, a settings or dictionary change, a dropped result).
@@ -31,14 +39,15 @@ pub struct SpellState {
     /// Spell checking doesn't apply to this buffer (settings, size, language, toggled off).
     pub off: bool,
     /// "Spelling: Ignore Word in This File": lower-case words accepted until the buffer closes.
-    pub ignored: std::collections::HashSet<String>,
-    /// Whether the buffer has spell marks (so turning off knows to clear them).
-    pub marked: bool,
+    /// Shared with the checks in flight (a clone per check would copy every word).
+    pub ignored: std::sync::Arc<std::collections::HashSet<String>>,
 }
 
 impl Default for SpellState {
     fn default() -> Self {
         SpellState {
+            marks: Marks::default(),
+            listed: false,
             enabled: true,
             full: true,
             generation: 0,
@@ -48,18 +57,18 @@ impl Default for SpellState {
             held: Vec::new(),
             off: false,
             ignored: Default::default(),
-            marked: false,
         }
     }
 }
 
 impl SpellState {
-    /// Follows a change set (`Buffer::apply`): old ranges move with the text, and each change's
-    /// new text is dirty.
+    /// Follows a change set (`Buffer::apply`): the marks and old ranges move with the text, and
+    /// each change's new text is dirty.
     pub fn map(&mut self, changes: &ChangeSet) {
         if changes.is_empty() {
             return;
         }
+        self.marks.map(changes);
         self.edited_at = Some(Instant::now());
         // Many selections (Cmd+Shift+L): more ranges than are kept anyway. Not O(n log n) per edit.
         if changes.len() > MAX_RANGES {

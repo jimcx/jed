@@ -20,7 +20,7 @@ use ropey::Rope;
 
 use crate::buffer::pos::{self, ByteIdx, LspPos, PosEncoding};
 use crate::buffer::{Buffer, Buffers};
-use crate::diagnostics::Diagnostic;
+use crate::diagnostics::{Diagnostic, Listed};
 use crate::grouped::{self, Group, ListState, RowKey};
 use crate::lsp::diagnostics::{FileSet, Store};
 
@@ -107,9 +107,7 @@ impl<'a> FileProblems<'a> {
             return Vec::new();
         }
         match self.source {
-            Source::Buffer(b) => b
-                .diagnostics
-                .listed()
+            Source::Buffer(b) => listed(b)
                 .range(from, to)
                 .into_iter()
                 .map(|m| Problem {
@@ -152,13 +150,19 @@ impl<'a> FileProblems<'a> {
     }
 }
 
+/// The marks an open buffer lists: its servers', plus its spelling marks with
+/// `spell_check_problems` (merged only then; without it this borrows, so a frame costs nothing).
+fn listed(b: &Buffer) -> Listed<'_> {
+    Listed::of(&b.diagnostics, b.spell.listed.then_some(&b.spell.marks))
+}
+
 /// Every file with problems, sorted by path. A file open in a buffer lists the buffer's marks.
 pub fn files<'a>(store: &'a Store, buffers: &'a Buffers) -> Vec<FileProblems<'a>> {
     let mut files: Vec<FileProblems<'a>> = store
         .files()
         .filter_map(|(path, sets)| {
             let (source, count) = match buffers.find_path(path).and_then(|id| buffers.get(id)) {
-                Some(b) => (Source::Buffer(b), b.diagnostics.listed().len()),
+                Some(b) => (Source::Buffer(b), listed(b).len()),
                 None => (Source::Store(sets), sets.iter().map(|s| s.items.len()).sum()),
             };
             (count > 0).then_some(FileProblems { path, source, count })
@@ -167,15 +171,12 @@ pub fn files<'a>(store: &'a Store, buffers: &'a Buffers) -> Vec<FileProblems<'a>
     // Open files with listed spelling marks only (no server published anything for them).
     let mut extra: Vec<FileProblems<'a>> = buffers
         .iter()
-        .filter(|(_, b)| b.has_file() && b.diagnostics.has(crate::lsp::ServerId::SPELL))
-        .filter(|(_, b)| !files.iter().any(|f| f.path == b.path))
-        .filter_map(|(_, b)| {
-            let count = b.diagnostics.listed().len();
-            (count > 0).then_some(FileProblems {
-                path: &b.path,
-                source: Source::Buffer(b),
-                count,
-            })
+        .filter(|(_, b)| b.has_file() && b.spell.listed && !b.spell.marks.is_empty())
+        .filter(|(_, b)| store.get(&b.path).is_empty())
+        .map(|(_, b)| FileProblems {
+            path: &b.path,
+            source: Source::Buffer(b),
+            count: listed(b).len(),
         })
         .collect();
     if !extra.is_empty() {
@@ -271,7 +272,7 @@ pub fn step(files: &[FileProblems], from: Option<From>, forward: bool) -> Option
             // buffer's marks; a closed file has no cursor in it, so this is the edge anyway.
             match file.source {
                 Source::Buffer(b) => {
-                    let marks = b.diagnostics.listed();
+                    let marks = listed(b);
                     if forward {
                         let k = marks.partition_point(|m| m.start <= from.at);
                         (k < marks.len()).then_some(k)

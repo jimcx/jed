@@ -104,16 +104,10 @@ impl App {
         };
         let rope = &buf.rope;
         let marks: Vec<Mark> = if range.0 == range.1 {
-            buf.diagnostics
-                .touching(rope, head)
-                .into_iter()
-                .filter(|m| m.server != ServerId::SPELL)
-                .cloned()
-                .collect()
+            buf.diagnostics.touching(rope, head).into_iter().cloned().collect()
         } else {
             buf.diagnostics
                 .overlapping(range.0, range.1)
-                .filter(|m| m.server != ServerId::SPELL)
                 .filter(|m| m.start < range.1 && (m.end > range.0 || m.start == m.end))
                 .cloned()
                 .collect()

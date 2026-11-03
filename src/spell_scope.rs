@@ -141,9 +141,7 @@ fn code(
             }
             _ => {}
         }
-        for child in children_in(node, start, end) {
-            stack.push((child, child_ctx));
-        }
+        children_in(node, start, end, |child| stack.push((child, child_ctx)));
     }
     let wants_spans = scope == SpellScope::All || texts.iter().any(|t| t.string);
     let spans = if wants_spans {
@@ -188,15 +186,15 @@ fn code(
     out
 }
 
-/// The children of `node` that overlap `start..end`, found by seeking rather than visiting all.
-fn children_in<'t>(node: Node<'t>, start: usize, end: usize) -> Vec<Node<'t>> {
-    let mut out = Vec::new();
+/// Each child of `node` that overlaps `start..end`, found by seeking rather than visiting all,
+/// handed to `f` (the walk's stack: no list per node).
+fn children_in<'t>(node: Node<'t>, start: usize, end: usize, mut f: impl FnMut(Node<'t>)) {
     if node.end_byte() <= start || node.start_byte() >= end || node.child_count() == 0 {
-        return out;
+        return;
     }
     let mut cursor = node.walk();
     if cursor.goto_first_child_for_byte(start).is_none() {
-        return out;
+        return;
     }
     loop {
         let child = cursor.node();
@@ -204,13 +202,12 @@ fn children_in<'t>(node: Node<'t>, start: usize, end: usize) -> Vec<Node<'t>> {
             break;
         }
         if child.end_byte() > start {
-            out.push(child);
+            f(child);
         }
         if !cursor.goto_next_sibling() {
             break;
         }
     }
-    out
 }
 
 /// Block kinds of Markdown that are code (or markup), not prose.
@@ -237,7 +234,7 @@ fn markdown(tree: &Tree, rope: &Rope, scope: SpellScope, start: usize, end: usiz
                     .map(|c| c.start_byte()..c.end_byte()),
             );
         } else {
-            stack.extend(children_in(node, start, end));
+            children_in(node, start, end, |child| stack.push(child));
         }
     }
     blocks.sort_by_key(|b| b.start);

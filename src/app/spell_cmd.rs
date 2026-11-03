@@ -1,6 +1,6 @@
 //! The spell checker's commands (`Command::Spell`, palette only) and quick fixes: Go to Next /
 //! Previous Problem (the caret to a misspelling's start, wrapping), Add Word to the User /
-//! Workspace Dictionary (written in `spawn_blocking`, then the files are read again so the marks
+//! Workspace Dictionary (one rewrite in `spawn_blocking`, then the files are read again so the marks
 //! go in every open buffer), Ignore Word in This File (`buf.spell.ignored`, until the buffer
 //! closes), Toggle Spell Check (this buffer) and Open User Dictionary (the file is created when
 //! missing). Quick fixes on a spelling mark (Cmd+. and the lightbulb) are built here
@@ -20,7 +20,6 @@ use crate::buffer::change::ChangeSet;
 use crate::buffer::pos::{self, ByteIdx};
 use crate::code_action::{Action, SpellFix};
 use crate::command::SpellCommand;
-use crate::lsp::ServerId;
 use crate::selection::{Selection, Selections};
 use crate::spell_dict;
 
@@ -80,11 +79,16 @@ impl App {
     fn spell_goto(&mut self, forward: bool) {
         let Some((buf, view)) = self.active_mut() else { return };
         let head = view.selections.primary().head;
-        let marks = buf.diagnostics.spelling();
+        let marks = buf.spell.marks.all();
+        // Sorted by start: binary search, not a scan of every mark.
         let target = if forward {
-            marks.iter().find(|m| m.start > head).or(marks.first())
+            marks.get(marks.partition_point(|m| m.start <= head)).or(marks.first())
         } else {
-            marks.iter().rev().find(|m| m.start < head).or(marks.last())
+            marks
+                .partition_point(|m| m.start < head)
+                .checked_sub(1)
+                .and_then(|i| marks.get(i))
+                .or(marks.last())
         }
         .map(|m| m.start);
         let Some(at) = target else {
@@ -110,9 +114,10 @@ impl App {
         let mut words = Vec::new();
         for s in std::iter::once(sels.primary()).chain(sels.iter().take(MAX_SELECTIONS)) {
             let range = buf
-                .diagnostics
+                .spell
+                .marks
                 .overlapping(s.start(), s.end())
-                .find(|m| m.server == ServerId::SPELL)
+                .next()
                 .map(|m| (m.start, m.end))
                 .or_else(|| {
                     if s.is_empty() {
@@ -148,18 +153,12 @@ impl App {
         };
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
-            let mut added = Vec::new();
-            let (mut known, mut error) = (0, None);
-            for w in words {
-                match spell_dict::add_word(&path, &w) {
-                    Ok(true) => added.push(w),
-                    Ok(false) => known += 1,
-                    Err(e) => {
-                        error = Some(e.to_string());
-                        break;
-                    }
-                }
-            }
+            // One rewrite of the file for all the words (up to `MAX_SELECTIONS` of them).
+            let (added, error) = match spell_dict::add_words(&path, &words) {
+                Ok(added) => (added, None),
+                Err(e) => (Vec::new(), Some(e.to_string())),
+            };
+            let known = words.len() - added.len();
             let done = Added {
                 user,
                 added,
@@ -208,7 +207,7 @@ impl App {
             [w] => format!("Ignoring \"{w}\" in this file"),
             w => format!("Ignoring {} words in this file", w.len()),
         };
-        buf.spell.ignored.extend(words);
+        std::sync::Arc::make_mut(&mut buf.spell.ignored).extend(words);
         buf.spell.want_full();
         self.needs_redraw = true;
         self.notify(Level::Info, text);
@@ -222,11 +221,7 @@ impl App {
         let Some(buf) = self.buffers.get(buffer).filter(|b| b.read_only.is_none()) else {
             return Vec::new();
         };
-        let Some(first) = buf
-            .diagnostics
-            .overlapping(range.0, range.1)
-            .find(|m| m.server == ServerId::SPELL)
-        else {
+        let Some(first) = buf.spell.marks.overlapping(range.0, range.1).next() else {
             return Vec::new();
         };
         let (start, end) = (first.start, first.end);
@@ -238,11 +233,7 @@ impl App {
         if let Some(tab) = shown.filter(|t| t.buffer == buffer) {
             ranges.clear();
             for s in tab.view.selections.iter() {
-                for m in buf
-                    .diagnostics
-                    .overlapping(s.start(), s.end())
-                    .filter(|m| m.server == ServerId::SPELL)
-                {
+                for m in buf.spell.marks.overlapping(s.start(), s.end()) {
                     let fresh = ranges.last().is_none_or(|&(_, e)| e <= m.start);
                     if fresh && buf.rope.slice(m.start.0..m.end.0) == word.as_str() {
                         ranges.push((m.start, m.end));
@@ -286,12 +277,9 @@ impl App {
             return false;
         };
         let head = tab.view.selections.primary().head;
-        self.buffers.get(tab.buffer).is_some_and(|b| {
-            b.read_only.is_none()
-                && b.diagnostics
-                    .overlapping(head, head)
-                    .any(|m| m.server == ServerId::SPELL)
-        })
+        self.buffers
+            .get(tab.buffer)
+            .is_some_and(|b| b.read_only.is_none() && b.spell.marks.overlapping(head, head).next().is_some())
     }
 
     /// Applies a spell quick fix chosen in the list of `buffer`.

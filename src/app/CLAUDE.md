@@ -35,7 +35,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `git_history.rs` — the Explorer's "Git History" section: following the active file, pages, keys, opening commits
 - `disk.rs` — open files changed on disk (`app.disk`): checks, reloads, the banner's actions; hex tabs' re-reads
 - `quick_diff.rs` — gutter markers (`sync_quick_diff`), their peek, staging / unstaging from the gutter
-- `spell.rs` — the spell checker: dictionaries, background / incremental checks into `Marks` under `ServerId::SPELL`, the half-typed rule
+- `spell.rs` — the spell checker: dictionaries, background / incremental checks into `buf.spell.marks` (`ServerId::SPELL`), the half-typed rule
 - `spell_cmd.rs` — the spell checker's palette commands (Next / Previous, Add to user / workspace dictionary, Ignore, Toggle, Open User Dictionary) and its quick fixes
 - `blame.rs` — inline blame (`app.blame`): toggle, `sync_blame`
 - `conflict.rs` — merge conflicts (`app/conflict.rs`): `go_to_conflict(forward)` (Next / Previous Conflict, Alt+F8 / Shift+Alt+F8: the primary cursor to the conflict's start, one selection, revealed, undo sealed; wrapping; nothing without markers) and `compare_conflict(at)` (Compare Current Conflict, the palette and the action row's Compare button: the blocks of the conflict at the cursor, else the one at `at`, through `open_conflict_diff`; a log / untitled buffer's name titles the tab)

@@ -21,7 +21,8 @@
 //! [`Checker`] for that language, see [`language_terms`]). The list is indexed once into a
 //! `HashSet` shared by every buffer (`Arc`); a lookup lower-cases into a reused buffer,
 //! so checking allocates nothing per word. Matching is case-insensitive; contractions and the
-//! possessive `'s` are accepted. User words (`extra`) must already be lower-case.
+//! possessive `'s` are accepted. User words (`extra`: sets checked in turn, so a buffer's ignored
+//! words join the shared ones without a merged copy) must already be lower-case.
 //!
 //! **Suggestions** ([`Checker::suggest`]): a scan of the word list for entries within Damerau
 //! (optimal string alignment, so a transposition is 1) distance 2, ranked by distance, then a
@@ -181,18 +182,24 @@ fn checkable(piece: &str, min_length: usize) -> bool {
 }
 
 fn for_each_piece(text: &str, f: &mut dyn FnMut(Range<usize>)) {
+    pieces_into(text, &mut Vec::new(), f);
+}
+
+/// [`for_each_piece`] with the chunk's chars decoded into `chars`, a buffer reused across chunks
+/// (and across calls: [`Checker::check`]), so splitting allocates nothing per word.
+fn pieces_into(text: &str, chars: &mut Vec<(usize, char)>, f: &mut dyn FnMut(Range<usize>)) {
     let mut chunk_start = None;
     for (i, c) in text.char_indices() {
         if c.is_whitespace() {
             if let Some(s) = chunk_start.take() {
-                chunk(text, s, i, f);
+                chunk(text, s, i, chars, f);
             }
         } else if chunk_start.is_none() {
             chunk_start = Some(i);
         }
     }
     if let Some(s) = chunk_start {
-        chunk(text, s, text.len(), f);
+        chunk(text, s, text.len(), chars, f);
     }
 }
 
@@ -229,11 +236,13 @@ fn is_opaque(chunk: &str) -> bool {
     t.matches('/').count() >= 2 || t.matches('\\').count() >= 2
 }
 
-fn chunk(text: &str, s: usize, e: usize, f: &mut dyn FnMut(Range<usize>)) {
+fn chunk(text: &str, s: usize, e: usize, chars: &mut Vec<(usize, char)>, f: &mut dyn FnMut(Range<usize>)) {
     if is_opaque(&text[s..e]) {
         return;
     }
-    let chars: Vec<(usize, char)> = text[s..e].char_indices().map(|(i, c)| (s + i, c)).collect();
+    chars.clear();
+    chars.extend(text[s..e].char_indices().map(|(i, c)| (s + i, c)));
+    let chars = &chars[..];
     let mut i = 0;
     while i < chars.len() {
         let token_char = |k: usize| {
@@ -412,9 +421,10 @@ impl Checker {
 
     /// Whether the word is accepted: in the word list, the programming terms, `extra` (the user's
     /// words, lower-case), a contraction, or a possessive of one of those. `buf` is scratch.
-    fn accepts(&self, piece: &str, extra: &HashSet<String>, buf: &mut String) -> bool {
+    fn accepts(&self, piece: &str, extra: &[&HashSet<String>], buf: &mut String) -> bool {
         lower_into(piece, buf);
-        let known = |w: &str| self.dict.contains_lower(w) || self.terms.contains(w) || extra.contains(w);
+        let known =
+            |w: &str| self.dict.contains_lower(w) || self.terms.contains(w) || extra.iter().any(|e| e.contains(w));
         if known(buf) || CONTRACTIONS.contains(&buf.as_str()) {
             return true;
         }
@@ -422,21 +432,22 @@ impl Checker {
     }
 
     /// Whether `word` (a piece, any case) is accepted.
-    pub fn is_known(&self, word: &str, extra: &HashSet<String>) -> bool {
+    pub fn is_known(&self, word: &str, extra: &[&HashSet<String>]) -> bool {
         self.accepts(word, extra, &mut String::new())
     }
 
     /// The misspelled pieces of `text` inside `spans` (byte ranges into `text`, from the parse
-    /// tree; out-of-range or mid-char spans are skipped), in order. `extra`: accepted words,
-    /// lower-case.
-    pub fn check(&self, text: &str, spans: &[Range<ByteIdx>], extra: &HashSet<String>) -> Vec<Misspelling> {
+    /// tree; out-of-range or mid-char spans are skipped), in order. `extra`: sets of accepted
+    /// words, lower-case.
+    pub fn check(&self, text: &str, spans: &[Range<ByteIdx>], extra: &[&HashSet<String>]) -> Vec<Misspelling> {
         let mut out = Vec::new();
         let mut buf = String::new();
+        let mut chars = Vec::new();
         for span in spans {
             let Some(slice) = text.get(span.start.0..span.end.0) else {
                 continue;
             };
-            for_each_piece(slice, &mut |r| {
+            pieces_into(slice, &mut chars, &mut |r| {
                 let piece = &slice[r.clone()];
                 if checkable(piece, self.min_length) && !self.accepts(piece, extra, &mut buf) {
                     out.push(Misspelling {
@@ -540,10 +551,9 @@ mod tests {
     }
 
     fn misses(text: &str) -> Vec<String> {
-        let none = HashSet::new();
         let span = ByteIdx(0)..ByteIdx(text.len());
         checker()
-            .check(text, &[span], &none)
+            .check(text, &[span], &[])
             .into_iter()
             .map(|m| m.word)
             .collect()
@@ -623,7 +633,7 @@ mod tests {
     fn spell_check_check_marks_only_the_piece() {
         let text = "let recieveMessage = 1; // max_buffr_size";
         let span = ByteIdx(0)..ByteIdx(text.len());
-        let got = checker().check(text, &[span], &HashSet::new());
+        let got = checker().check(text, &[span], &[]);
         let words: Vec<_> = got.iter().map(|m| m.word.as_str()).collect();
         assert_eq!(words, ["recieve", "buffr"]);
         assert_eq!(&text[got[0].range.start.0..got[0].range.end.0], "recieve");
@@ -638,7 +648,7 @@ mod tests {
             ByteIdx(2)..ByteIdx(100),
             ByteIdx(1)..ByteIdx(0),
         ];
-        let got = checker().check(text, &spans, &HashSet::new());
+        let got = checker().check(text, &spans, &[]);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].range, ByteIdx(11)..ByteIdx(18));
     }
@@ -663,7 +673,7 @@ mod tests {
         assert!(misses("deref").is_empty());
         let c = Checker::new(Dictionary::bundled(), Language::C, 3);
         let t = "deref sizeof";
-        let got = c.check(t, &[ByteIdx(0)..ByteIdx(t.len())], &HashSet::new());
+        let got = c.check(t, &[ByteIdx(0)..ByteIdx(t.len())], &[]);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].word, "deref");
     }
@@ -673,9 +683,9 @@ mod tests {
         let extra: HashSet<String> = ["recieve".to_string()].into();
         let t = "Recieve RECIEVE recieve xq";
         let c = checker();
-        assert!(c.check(t, &[ByteIdx(0)..ByteIdx(t.len())], &extra).is_empty());
+        assert!(c.check(t, &[ByteIdx(0)..ByteIdx(t.len())], &[&extra]).is_empty());
         let one = Checker::new(Dictionary::bundled(), Language::Rust, 1);
-        assert_eq!(one.check(t, &[ByteIdx(0)..ByteIdx(t.len())], &extra).len(), 1);
+        assert_eq!(one.check(t, &[ByteIdx(0)..ByteIdx(t.len())], &[&extra]).len(), 1);
     }
 
     #[test]
@@ -686,7 +696,7 @@ mod tests {
         assert_eq!(c.suggest("RECIEVE")[0], "RECEIVE");
         // Inside an identifier only the piece is replaced.
         let t = "recieveMessage";
-        let m = &c.check(t, &[ByteIdx(0)..ByteIdx(t.len())], &HashSet::new())[0];
+        let m = &c.check(t, &[ByteIdx(0)..ByteIdx(t.len())], &[])[0];
         let fixed = format!(
             "{}{}{}",
             &t[..m.range.start.0],
@@ -719,7 +729,7 @@ mod tests {
         let text = "日本 naïve é recieve and recieve2 x";
         let start = text.find("é ").unwrap();
         let span = ByteIdx(start)..ByteIdx(text.len());
-        let got = checker().check(text, &[span], &HashSet::new());
+        let got = checker().check(text, &[span], &[]);
         let words: Vec<_> = got.iter().map(|m| m.word.as_str()).collect();
         assert_eq!(words, ["recieve", "recieve"]);
         for m in &got {
@@ -729,7 +739,7 @@ mod tests {
         assert_eq!(got[1].range.start.0, text.rfind("recieve").unwrap());
         // A span that cuts a multibyte char is skipped, not a panic.
         let cut = ByteIdx(1)..ByteIdx(text.len());
-        assert!(checker().check(text, &[cut], &HashSet::new()).is_empty());
+        assert!(checker().check(text, &[cut], &[]).is_empty());
     }
 
     #[test]
@@ -744,8 +754,7 @@ mod tests {
 
     #[test]
     fn spell_check_language_terms_per_language() {
-        let none = HashSet::new();
-        let known = |lang, w: &str| Checker::new(Dictionary::bundled(), lang, 3).is_known(w, &none);
+        let known = |lang, w: &str| Checker::new(Dictionary::bundled(), lang, 3).is_known(w, &[]);
         assert!(known(Language::Rust, "deref") && !known(Language::Python, "deref"));
         assert!(known(Language::Python, "elif") && !known(Language::Rust, "elif"));
         assert!(known(Language::C, "malloc") && known(Language::Cpp, "malloc") && !known(Language::Rust, "malloc"));
@@ -785,12 +794,11 @@ mod tests {
         assert!(!dict.is_placeholder());
         eprintln!("real dictionary: {} words", dict.len());
         let c = Checker::new(dict, Language::Rust, 3);
-        let none = HashSet::new();
         for w in ["colour", "centre", "organise", "parsing", "tokens", "receive", "don't"] {
-            assert!(c.is_known(w, &none), "{w} should be known");
+            assert!(c.is_known(w, &[]), "{w} should be known");
         }
         for w in ["color", "organize", "recieve", "unparsed"] {
-            assert!(!c.is_known(w, &none), "{w} should be unknown");
+            assert!(!c.is_known(w, &[]), "{w} should be unknown");
         }
         assert!(c.suggest("recieve").contains(&"receive".to_string()));
         assert_eq!(c.suggest("Recieve")[0], "Receive");

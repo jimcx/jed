@@ -41,6 +41,21 @@ fn supports_hover(caps: &ServerCapabilities) -> bool {
         .is_some_and(|h| !matches!(h, HoverProviderCapability::Simple(false)))
 }
 
+/// The marks a hover shows at `at`, most severe first: the servers', then the spell checker's
+/// (hints, kept apart in `buf.spell.marks`). `drawn`: those drawn on that cell (the mouse), else
+/// those touching a cursor there.
+fn marks_at(buf: &crate::buffer::Buffer, at: ByteIdx, drawn: bool) -> Vec<&diagnostics::Mark> {
+    let mut marks = Vec::new();
+    for m in [&buf.diagnostics, &buf.spell.marks] {
+        marks.extend(if drawn {
+            m.drawn_at(&buf.rope, at)
+        } else {
+            m.touching(&buf.rope, at)
+        });
+    }
+    marks
+}
+
 impl App {
     /// The command: the hover for the active view's cursor. The diagnostics there show at once;
     /// the server's answer is appended when it comes.
@@ -64,12 +79,7 @@ impl App {
         let Some(buf) = self.buffers.get(buffer) else {
             return Vec::new();
         };
-        let marks = if mouse {
-            buf.diagnostics.drawn_at(&buf.rope, at)
-        } else {
-            buf.diagnostics.touching(&buf.rope, at)
-        };
-        marks.into_iter().cloned().collect()
+        marks_at(buf, at, mouse).into_iter().cloned().collect()
     }
 
     /// Asks for the quick fixes of the diagnostics the popup shows (its "Quick Fix…" row).
@@ -142,11 +152,7 @@ impl App {
             return false;
         };
         let rope = &buf.rope;
-        let marks = if word.is_some() {
-            buf.diagnostics.drawn_at(rope, at)
-        } else {
-            buf.diagnostics.touching(rope, at)
-        };
+        let marks = marks_at(buf, at, word.is_some());
         if marks.is_empty() && answer.is_none() {
             return false;
         }
@@ -321,7 +327,7 @@ impl App {
             (line, l.byte_at_col(col, tab_width), col < end_col, col == end_col)
         };
         let l = pos::Line::new(rope, line);
-        let squiggled = |at| !buf.diagnostics.drawn_at(rope, at).is_empty();
+        let squiggled = |at| !marks_at(buf, at, true).is_empty();
         let at = if over {
             if pos::Peek::new(rope).after(at).is_none_or(char::is_whitespace) && !squiggled(at) {
                 return None;

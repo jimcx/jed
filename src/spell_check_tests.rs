@@ -79,8 +79,9 @@ async fn idle(app: &mut App) {
 /// The text under each spell mark of the active buffer, in order.
 fn spelled(app: &App) -> Vec<String> {
     let b = app.active_buffer().unwrap();
-    b.diagnostics
-        .spelling()
+    b.spell
+        .marks
+        .all()
         .iter()
         .map(|m| b.rope.slice(m.start.0..m.end.0).to_string())
         .collect()
@@ -94,7 +95,7 @@ async fn spell_check_marks_the_misspelled_pieces_of_a_rust_file() {
     let mut e = open(&dir, "a.rs", RUST, |_| {});
     idle(&mut e.app).await;
     assert_eq!(spelled(&e.app), ["recieve", "buffr", "wrold", "recieve"]);
-    let m = &e.app.active_buffer().unwrap().diagnostics.spelling()[0];
+    let m = &e.app.active_buffer().unwrap().spell.marks.all()[0];
     assert_eq!(m.diag.message, "Unknown word \"recieve\"");
     assert_eq!(m.diag.source.as_deref(), Some("Spelling"));
     assert_eq!(m.diag.severity, crate::diagnostics::Severity::Hint);
@@ -129,7 +130,7 @@ async fn spell_check_marks_follow_edits_and_only_the_touched_lines_are_checked()
     e.app.type_text("a ");
     // Right away the old marks have moved with the text.
     let b = e.app.active_buffer().unwrap();
-    let wrold = b.diagnostics.spelling()[1].start.0;
+    let wrold = b.spell.marks.all()[1].start.0;
     assert_eq!(b.rope.slice(wrold..wrold + 5).to_string(), "wrold");
     idle(&mut e.app).await;
     assert_eq!(spelled(&e.app), ["recieve", "wrold"]);
@@ -270,7 +271,7 @@ async fn spell_check_ignore_words_setting_and_off_languages() {
     e.app.settings.spell_check_off_languages = vec!["rust".into()];
     idle(&mut e.app).await;
     assert!(spelled(&e.app).is_empty());
-    assert!(!e.app.active_buffer().unwrap().diagnostics.has(ServerId::SPELL));
+    assert!(e.app.active_buffer().unwrap().spell.marks.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -343,12 +344,17 @@ async fn spell_check_draws_its_own_squiggle_and_hovers_the_word() {
     }
     assert_eq!((e.app.spell.scanned, e.app.spell.background), (before, bg));
 
-    // The hover rows come from the mark like any diagnostic.
-    let b = e.app.active_buffer().unwrap();
+    // Show Hover on the word: its row comes from the mark like any diagnostic's.
     let at = crate::buffer::pos::ByteIdx(8);
-    let marks = b.diagnostics.touching(&b.rope, at);
-    assert_eq!(marks.len(), 1);
-    assert_eq!(marks[0].diag.message, "Unknown word \"recieve\"");
+    e.app.active_mut().unwrap().1.selections =
+        crate::selection::Selections::single(crate::selection::Selection::cursor(at));
+    e.app.test_execute(crate::command::Command::ShowHover);
+    let popup = e.app.hover.popup.as_ref().expect("a hover");
+    assert!(
+        popup.lines.iter().any(|l| l.text.contains("Unknown word \"recieve\"")),
+        "{:?}",
+        popup.lines.iter().map(|l| &l.text).collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -357,7 +363,7 @@ async fn spell_check_marks_never_count_as_a_servers() {
     let mut e = open(&dir, "a.txt", "recieve here\n", |_| {});
     idle(&mut e.app).await;
     let b = e.app.active_buffer().unwrap();
-    assert_eq!(b.diagnostics.spelling().len(), 1, "there is a spell mark");
+    assert_eq!(b.spell.marks.all().len(), 1, "there is a spell mark");
     // The servers' view of the marks (`all`, the status bar's totals and the stores) has none.
     assert!(b.diagnostics.all().is_empty());
     let counts = e.app.lsp.diagnostics.counts();
@@ -597,8 +603,9 @@ async fn spell_check_add_to_user_dictionary_unmarks_the_word_in_every_buffer() {
         .app
         .settle(|a| {
             a.buffers.iter().all(|(_, b)| {
-                b.diagnostics
-                    .spelling()
+                b.spell
+                    .marks
+                    .all()
                     .iter()
                     .all(|m| b.rope.slice(m.start.0..m.end.0) != "recieve")
             })

@@ -1,8 +1,9 @@
 //! The spell checker in the app: dictionaries loaded off-thread, each buffer's misspellings kept
-//! as `diagnostics::Marks` under `ServerId::SPELL`, checked in full once (open, a settings or
-//! dictionary change) and afterwards only on the lines an edit touched (`Buffer::spell` collects
-//! them), `DELAY` after the last edit. Small checks run here; big ones run on a snapshot in
-//! `spawn_blocking` and report as `SpellEvent::Done`, dropped when the buffer moved on.
+//! in `buf.spell.marks` (a `diagnostics::Marks` of their own, under `ServerId::SPELL`), checked
+//! in full once (open, a settings or dictionary change) and afterwards only on the lines an edit
+//! touched (`Buffer::spell` collects them), `DELAY` after the last edit. Small checks run here;
+//! big ones run on a snapshot in `spawn_blocking` and report as `SpellEvent::Done`, dropped when
+//! the buffer moved on.
 //!
 //! The half-typed word: a misspelling touching the word the caret is in is held back after an
 //! edit-driven check (no `recieve` squiggle under every prefix of `recieveMessage`), and checked
@@ -132,6 +133,8 @@ pub struct Done {
 struct Job {
     checker: Arc<Checker>,
     extra: Arc<HashSet<String>>,
+    /// The buffer's "Ignore Word in This File" words.
+    ignored: Arc<HashSet<String>>,
     language: Language,
     scope: SpellScope,
     rope: Rope,
@@ -150,11 +153,12 @@ fn scan(job: &Job) -> Vec<Misspelling> {
         }
         let base = region.start.0;
         let text = job.rope.slice(base..region.end.0).to_string();
+        let extra = [&*job.extra, &*job.ignored];
         let local: Vec<Range<ByteIdx>> = spans
             .into_iter()
             .map(|s| ByteIdx(s.start.0.saturating_sub(base))..ByteIdx(s.end.0.saturating_sub(base)))
             .collect();
-        for mut m in job.checker.check(&text, &local, &job.extra) {
+        for mut m in job.checker.check(&text, &local, &extra) {
             m.range = ByteIdx(m.range.start.0 + base)..ByteIdx(m.range.end.0 + base);
             found.push(m);
         }
@@ -272,7 +276,7 @@ impl App {
             self.settings.syntax_max_bytes,
         );
         let buf = self.buffers.get_mut(id)?;
-        buf.diagnostics.set_list_spell(problems);
+        buf.spell.listed = problems;
         let language = buf.syntax.language();
         let applicable = buf.log.is_none()
             && buf.commit.is_none()
@@ -280,9 +284,8 @@ impl App {
             && spell_scope::enabled(scope, language, off, buf.rope.len(), max);
         buf.spell.off = !applicable;
         if !applicable {
-            if buf.spell.marked || buf.diagnostics.has(ServerId::SPELL) {
-                buf.diagnostics.clear(ServerId::SPELL);
-                buf.spell.marked = false;
+            if !buf.spell.marks.is_empty() {
+                buf.spell.marks.clear_all();
                 self.needs_redraw = true;
             }
             buf.spell.want_full();
@@ -332,27 +335,12 @@ impl App {
         let bytes: usize = regions.iter().map(|r| r.end.0 - r.start.0).sum();
         let rope = buf.rope.clone();
         let tree = buf.syntax.tree().cloned();
-        let dict = self.spell.dict.clone()?;
-        let min = self.settings.spell_check_min_length;
-        let checker = self
-            .spell
-            .checkers
-            .entry(language)
-            .or_insert_with(|| Arc::new(Checker::new(dict, language, min)))
-            .clone();
-        let extra = match self.buffers.get(id) {
-            Some(b) if !b.spell.ignored.is_empty() => Arc::new(
-                self.spell
-                    .extra
-                    .union(&b.spell.ignored)
-                    .cloned()
-                    .collect::<HashSet<String>>(),
-            ),
-            _ => self.spell.extra.clone(),
-        };
+        let ignored = buf.spell.ignored.clone();
+        let checker = self.spell_checker(language)?;
         let job = Job {
             checker,
-            extra,
+            extra: self.spell.extra.clone(),
+            ignored,
             language,
             scope,
             rope,
@@ -438,18 +426,10 @@ impl App {
             marks.push(mark_of(m));
         }
         if full {
-            buf.diagnostics.replace(ServerId::SPELL, marks);
+            buf.spell.marks.replace(ServerId::SPELL, marks);
         } else {
-            for region in regions {
-                let inside: Vec<Mark> = marks
-                    .iter()
-                    .filter(|m| m.start >= region.start && m.end <= region.end)
-                    .cloned()
-                    .collect();
-                buf.diagnostics.splice(ServerId::SPELL, region.clone(), inside);
-            }
+            buf.spell.marks.splice(ServerId::SPELL, regions, marks);
         }
-        buf.spell.marked = buf.diagnostics.has(ServerId::SPELL);
         self.needs_redraw = true;
     }
 

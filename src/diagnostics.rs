@@ -99,8 +99,6 @@ pub struct Marks {
     /// `max_end[i]`: the largest end among `marks[..=i]` (ends aren't sorted): with it,
     /// `overlapping` finds its first candidate by binary search too.
     max_end: Vec<ByteIdx>,
-    /// Whether the Problems list includes the spell checker's marks (`spell_check_problems`).
-    list_spell: bool,
 }
 
 impl Marks {
@@ -109,16 +107,9 @@ impl Marks {
         self.marks.is_empty()
     }
 
-    /// The language servers' marks (not the spell checker's), sorted by (start, end).
-    #[cfg_attr(not(test), allow(dead_code))] // tests; the Problems list reads `listed`
-    pub fn all(&self) -> Vec<&Mark> {
-        self.marks.iter().filter(|m| m.server != ServerId::SPELL).collect()
-    }
-
-    /// The spell checker's marks, sorted by (start, end).
-    #[cfg_attr(not(test), allow(dead_code))] // tests
-    pub fn spelling(&self) -> Vec<&Mark> {
-        self.marks.iter().filter(|m| m.server == ServerId::SPELL).collect()
+    /// Every mark, sorted by (start, end).
+    pub fn all(&self) -> &[Mark] {
+        &self.marks
     }
 
     /// Replaces `server`'s marks with `marks` (any order).
@@ -129,34 +120,22 @@ impl Marks {
         self.index();
     }
 
-    /// Replaces `server`'s marks that lie within `within` with `marks` (any order, inside it):
-    /// the spell checker's re-check of a few lines.
-    pub fn splice(&mut self, server: ServerId, within: std::ops::Range<ByteIdx>, marks: Vec<Mark>) {
-        self.marks
-            .retain(|m| !(m.server == server && m.start >= within.start && m.end <= within.end));
+    /// Replaces `server`'s marks that lie inside one of `regions` (sorted, not overlapping) with
+    /// `marks` (sorted, each inside a region): the spell checker's re-check of a few lines. One
+    /// pass over the marks for all the regions.
+    pub fn splice(&mut self, server: ServerId, regions: &[std::ops::Range<ByteIdx>], marks: Vec<Mark>) {
+        let mut r = 0;
+        self.marks.retain(|m| {
+            while r < regions.len() && regions[r].end < m.start {
+                r += 1;
+            }
+            let inside = regions.get(r).is_some_and(|g| m.start >= g.start && m.end <= g.end);
+            !(m.server == server && inside)
+        });
         self.marks.extend(marks);
+        // Two sorted runs: the stable sort merges them in one pass.
         self.marks.sort_by_key(|m| (m.start, m.end));
         self.index();
-    }
-
-    /// Whether any mark belongs to `server`.
-    pub fn has(&self, server: ServerId) -> bool {
-        self.marks.iter().any(|m| m.server == server)
-    }
-
-    /// Sets whether `listed` includes the spell checker's marks.
-    pub fn set_list_spell(&mut self, on: bool) {
-        self.list_spell = on;
-    }
-
-    /// The marks the Problems list shows: all of them, or without the spell checker's (a vector
-    /// of references then, only while such marks exist).
-    pub fn listed(&self) -> Listed<'_> {
-        if self.list_spell || !self.has(ServerId::SPELL) {
-            Listed::All(&self.marks)
-        } else {
-            Listed::Some(self.marks.iter().filter(|m| m.server != ServerId::SPELL).collect())
-        }
     }
 
     /// Drops `server`'s marks.
@@ -194,9 +173,7 @@ impl Marks {
     /// (content bounds): the most severe touching the line, among equals one under the cursor,
     /// then the first.
     pub fn for_line(&self, start: ByteIdx, end: ByteIdx, head: ByteIdx) -> Option<&Mark> {
-        // Spelling hints stay out of the status bar: a line of prose would always show one.
         self.overlapping(start, end)
-            .filter(|m| m.server != ServerId::SPELL)
             .filter(|m| m.end > start || m.start >= start)
             .min_by_key(|m| (m.diag.severity, !(m.start <= head && head <= m.end), m.start))
     }
@@ -237,17 +214,39 @@ impl Marks {
     }
 }
 
-/// `Marks::listed`: the marks of the Problems list, sorted by (start, end).
+/// The marks of the Problems list for one buffer, sorted by (start, end): the servers' alone
+/// (borrowed), or merged with the spell checker's when `spell_check_problems` lists them.
 pub enum Listed<'a> {
     All(&'a [Mark]),
-    Some(Vec<&'a Mark>),
+    Merged(Vec<&'a Mark>),
 }
 
 impl<'a> Listed<'a> {
+    /// `servers`' marks, plus `spelling`'s when given (merged in order; built only then).
+    pub fn of(servers: &'a Marks, spelling: Option<&'a Marks>) -> Listed<'a> {
+        let Some(spelling) = spelling.filter(|s| !s.marks.is_empty()) else {
+            return Listed::All(&servers.marks);
+        };
+        let (mut a, mut b) = (servers.marks.iter().peekable(), spelling.marks.iter().peekable());
+        let mut out = Vec::with_capacity(servers.marks.len() + spelling.marks.len());
+        loop {
+            let next = match (a.peek(), b.peek()) {
+                (Some(x), Some(y)) if (y.start, y.end) < (x.start, x.end) => b.next(),
+                (Some(_), _) => a.next(),
+                (None, _) => b.next(),
+            };
+            match next {
+                Some(m) => out.push(m),
+                None => break,
+            }
+        }
+        Listed::Merged(out)
+    }
+
     pub fn len(&self) -> usize {
         match self {
             Listed::All(m) => m.len(),
-            Listed::Some(m) => m.len(),
+            Listed::Merged(m) => m.len(),
         }
     }
 
@@ -255,7 +254,7 @@ impl<'a> Listed<'a> {
     pub fn range(&self, from: usize, to: usize) -> Vec<&'a Mark> {
         match self {
             Listed::All(m) => m[from..to].iter().collect(),
-            Listed::Some(m) => m[from..to].to_vec(),
+            Listed::Merged(m) => m[from..to].to_vec(),
         }
     }
 
@@ -263,7 +262,7 @@ impl<'a> Listed<'a> {
     pub fn partition_point(&self, pred: impl Fn(&Mark) -> bool) -> usize {
         match self {
             Listed::All(m) => m.partition_point(|x| pred(x)),
-            Listed::Some(m) => m.partition_point(|x| pred(x)),
+            Listed::Merged(m) => m.partition_point(|x| pred(x)),
         }
     }
 }
@@ -560,5 +559,47 @@ pub mod tests {
                 (30, 32, Hint)
             ]
         );
+    }
+
+    #[test]
+    fn splice_replaces_only_inside_the_regions() {
+        let mut marks = Marks::default();
+        let old = [(0, 2), (5, 7), (8, 9), (12, 20), (22, 24), (30, 31)];
+        marks.replace(
+            ServerId::test(1),
+            old.iter().map(|&(s, e)| mark(s, e, 1, Severity::Hint)).collect(),
+        );
+        marks.replace(ServerId::test(2), vec![mark(6, 6, 2, Severity::Error)]);
+        let regions = [ByteIdx(4)..ByteIdx(10), ByteIdx(14)..ByteIdx(25)];
+        marks.splice(
+            ServerId::test(1),
+            &regions,
+            vec![mark(4, 5, 1, Severity::Hint), mark(15, 16, 1, Severity::Hint)],
+        );
+        // (5,7) and (8,9) and (22,24) went; (12,20) crosses a region's edge and stays; the other
+        // server's mark inside a region stays.
+        assert_eq!(spans(&marks), [(0, 2), (4, 5), (6, 6), (12, 20), (15, 16), (30, 31)]);
+        assert_eq!(marks.overlapping(ByteIdx(17), ByteIdx(17)).count(), 1, "re-indexed");
+    }
+
+    #[test]
+    fn listed_merges_a_second_set_in_order() {
+        let mut servers = Marks::default();
+        servers.replace(
+            ServerId::test(1),
+            vec![mark(1, 2, 1, Severity::Error), mark(9, 9, 1, Severity::Warning)],
+        );
+        let mut spelling = Marks::default();
+        spelling.replace(
+            ServerId::test(2),
+            vec![mark(0, 3, 2, Severity::Hint), mark(5, 6, 2, Severity::Hint)],
+        );
+        assert!(matches!(Listed::of(&servers, None), Listed::All(m) if m.len() == 2));
+        let empty = Marks::default();
+        assert!(matches!(Listed::of(&servers, Some(&empty)), Listed::All(_)));
+        let both = Listed::of(&servers, Some(&spelling));
+        let got: Vec<_> = both.range(0, both.len()).iter().map(|m| (m.start.0, m.end.0)).collect();
+        assert_eq!(got, [(0, 3), (1, 2), (5, 6), (9, 9)]);
+        assert_eq!(both.partition_point(|m| m.start.0 < 5), 2);
     }
 }

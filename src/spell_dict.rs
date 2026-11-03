@@ -28,7 +28,6 @@
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The file's name in both places.
 pub const FILE_NAME: &str = "dictionary.txt";
@@ -187,21 +186,35 @@ pub fn load(path: &Path) -> UserWords {
     }
 }
 
-/// Blocking: call from spawn_blocking. Adds `word` to the file at `path` (created, with its
-/// directory, if missing). Returns `false` and writes nothing if the word is already there (any
-/// case); an invalid word is an `InvalidInput` error.
-///
-/// The file is rewritten, atomically (a temp file beside it, synced, renamed over it): its leading
-/// comment block, then any other comment or bad lines as they were, then the entries sorted
-/// (case-insensitively) and de-duplicated, each as its line was written.
+/// Blocking: call from spawn_blocking. Adds `word` to the file at `path` ([`add_words`] for one
+/// word): `false` if it is already there (any case).
+#[cfg(test)]
 pub fn add_word(path: &Path, word: &str) -> std::io::Result<bool> {
-    let word = word.trim();
-    let Some(lower) = normalize(word) else {
+    add_words(path, &[word]).map(|added| !added.is_empty())
+}
+
+/// Blocking: call from spawn_blocking. Adds `words` to the file at `path` (created, with its
+/// directory, if missing) in one rewrite, returning those newly written (lower-case); a word
+/// already there (any case) or given twice is skipped, and nothing is written if none is new. An
+/// invalid word (`max_size`, `x1`) is skipped; an `InvalidInput` error when every word is.
+///
+/// The file is rewritten atomically (`buffer::file::atomic_write`: through a symlink, keeping its
+/// permissions): its leading comment block, then any other comment or bad lines as they were,
+/// then the entries sorted (case-insensitively) and de-duplicated, each as its line was written.
+pub fn add_words<S: AsRef<str>>(path: &Path, words: &[S]) -> std::io::Result<Vec<String>> {
+    let new: Vec<(String, &str)> = words
+        .iter()
+        .map(|w| w.as_ref().trim())
+        .filter_map(|w| Some((normalize(w)?, w)))
+        .collect();
+    if new.is_empty()
+        && let Some(word) = words.first()
+    {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("\"{word}\" is not a word"),
+            format!("\"{}\" is not a word", word.as_ref().trim()),
         ));
-    };
+    }
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -210,32 +223,35 @@ pub fn add_word(path: &Path, word: &str) -> std::io::Result<bool> {
     let mut head = Vec::new();
     let mut other = Vec::new();
     let mut entries: Vec<(String, &str)> = Vec::new();
+    let mut seen = HashSet::new();
     for line in text.lines() {
         match line_word(line) {
             None if entries.is_empty() && other.is_empty() => head.push(line),
             None | Some(Err(())) => other.push(line),
             Some(Ok(w)) => {
                 let key = w.to_lowercase();
-                if key == lower {
-                    return Ok(false);
-                }
-                if !entries.iter().any(|(k, _)| *k == key) {
+                if seen.insert(key.clone()) {
                     entries.push((key, line.trim()));
                 }
             }
         }
     }
+    let mut added = Vec::new();
+    for (lower, word) in new {
+        if seen.insert(lower.clone()) {
+            added.push(lower.clone());
+            entries.push((lower, word));
+        }
+    }
+    if added.is_empty() {
+        return Ok(added);
+    }
     if text.is_empty() {
         head.extend(HEADER.lines());
     }
-    entries.push((lower, word));
     entries.sort();
     let mut out = String::new();
-    for line in head.iter().chain(&other) {
-        out.push_str(line);
-        out.push('\n');
-    }
-    for (_, line) in &entries {
+    for line in head.iter().chain(&other).chain(entries.iter().map(|(_, l)| l)) {
         out.push_str(line);
         out.push('\n');
     }
@@ -243,8 +259,8 @@ pub fn add_word(path: &Path, word: &str) -> std::io::Result<bool> {
         std::fs::create_dir_all(dir)?;
     }
     keep_workspace_file_tracked(path);
-    write_atomic(path, out.as_bytes())?;
-    Ok(true)
+    crate::buffer::file::atomic_write(path, out.as_bytes())?;
+    Ok(added)
 }
 
 /// Blocking: call from spawn_blocking. Creates the file at `path` with a header comment unless it
@@ -282,24 +298,6 @@ fn keep_workspace_file_tracked(path: &Path) {
     if let Err(e) = result {
         tracing::debug!(target: "jed::spellcheck", error = %e, "can't update .jed/.gitignore");
     }
-}
-
-/// A temp file beside `path`, synced, then renamed over it; removed again on failure.
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    static WRITES: AtomicU64 = AtomicU64::new(0);
-    let n = WRITES.fetch_add(1, Ordering::Relaxed);
-    let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-    let tmp = path.with_file_name(format!(".{name}.{}-{n}.tmp", std::process::id()));
-    let result = (|| {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-        std::fs::rename(&tmp, path)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
 }
 
 #[cfg(test)]
@@ -373,6 +371,40 @@ mod tests {
         let u = load(&path);
         assert!(u.accepts("apple") && u.accepts("ZEBRA") && u.errors == 0);
         assert_eq!(names(path.parent().unwrap()), [FILE_NAME], "no temp file left behind");
+    }
+
+    #[test]
+    fn spell_check_dict_add_words_one_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        assert!(add_word(&path, "mango").unwrap());
+        let added = add_words(&path, &["Zebra", "apple", "MANGO", "zebra", "not_a_word"]).unwrap();
+        assert_eq!(
+            added,
+            ["zebra", "apple"],
+            "new words only, once each; invalid ones skipped"
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        let words: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(words, ["apple", "mango", "Zebra"]);
+        assert!(add_words(&path, &["mango"]).unwrap().is_empty());
+        assert!(add_words(&path, &["x1", "a b"]).is_err());
+        assert!(add_words::<&str>(&path, &[]).unwrap().is_empty());
+        assert_eq!(names(dir.path()), [FILE_NAME]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spell_check_dict_add_word_writes_through_a_symlink() {
+        // A dotfiles setup links `~/.config/jed/dictionary.txt` elsewhere: the link stays.
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.txt");
+        std::fs::write(&real, "kept\n").unwrap();
+        let link = dir.path().join(FILE_NAME);
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(add_word(&link, "added").unwrap());
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "added\nkept\n");
     }
 
     #[test]

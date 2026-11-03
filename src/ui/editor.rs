@@ -18,7 +18,6 @@ use crate::diagnostics::{self, Severity};
 use crate::edit::{CursorStyle, RenderWhitespace, SemanticHighlighting, Settings};
 use crate::find::FindWidget;
 use crate::layout::{MergeButton, MergeButtonHit};
-use crate::lsp::ServerId;
 use crate::search::Match;
 use crate::theme::Theme;
 use crate::view::View;
@@ -341,13 +340,11 @@ pub fn render(
     let squiggles = Severity::ALL.map(|s| theme.get(s.theme_key()));
     let spell_squiggle = theme.get("editorSpell.foreground");
     let mut peek = pos::Peek::new(rope);
-    // The spell checker's marks (its own colour) are flattened apart from the servers': a real
+    // The spell checker's marks (their own colour) are flattened apart from the servers': a real
     // diagnostic wins where they overlap.
-    let (spelling, others): (Vec<&diagnostics::Mark>, Vec<&diagnostics::Mark>) = buf
-        .diagnostics
-        .overlapping(view_range.start, view_range.end)
-        .partition(|m| m.server == ServerId::SPELL);
-    let runs = diagnostics::runs(others, |m| diagnostics::extent(rope, &mut peek, m));
+    let marks = buf.diagnostics.overlapping(view_range.start, view_range.end);
+    let runs = diagnostics::runs(marks, |m| diagnostics::extent(rope, &mut peek, m));
+    let spelling = buf.spell.marks.overlapping(view_range.start, view_range.end);
     let spell_runs = diagnostics::runs(spelling, |m| diagnostics::extent(rope, &mut peek, m));
     let mut run_walk = SortedWalk::new(&runs, |r| r.start, |r| r.end);
     let mut spell_walk = SortedWalk::new(&spell_runs, |r| r.start, |r| r.end);
