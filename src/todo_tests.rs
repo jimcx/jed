@@ -8864,6 +8864,49 @@ mod discard_changes {
         assert!(message(&app).contains("being saved"), "{}", message(&app));
     }
 
+    /// The state `discard_all_from_the_header_restores_every_change` dumps when it fails.
+    fn discard_all_flake_dump(app: &App, root: &Path, since: std::time::Instant) -> String {
+        let (id, buf) = app.buffers.iter().next().unwrap();
+        let disk: Vec<(&str, String)> = ["a.txt", "b.txt", "c.txt", "d.txt", "sub/e.txt"]
+            .into_iter()
+            .map(|n| (n, read(root, n)))
+            .collect();
+        format!(
+            "FLAKE discard_all_from_the_header_restores_every_change: {:?} since confirm; buffer {:?}: \
+             text {:?}, revision {}, has_edits {}, deleted {}, disk_conflict {}, save_in_flight {}; \
+             disk check busy {}, checks done {}, reloads {}; diffs.staging {}, quick_diff.staging {}, \
+             history running {}, git running {}; message {:?}, prompt open {}; on disk {disk:?}; \
+             git status {:?}",
+            since.elapsed(),
+            buf.path,
+            buf.rope.to_string(),
+            buf.revision(),
+            buf.has_edits(),
+            buf.deleted,
+            buf.disk_conflict.is_some(),
+            buf.save_in_flight(),
+            app.disk.busy(id),
+            app.disk.checked,
+            app.disk.reloads,
+            app.diffs.staging,
+            app.quick_diff.staging,
+            app.file_history.running(),
+            app.git.running(),
+            message(app),
+            app.prompt.is_some(),
+            app.git.status
+        )
+    }
+
+    // FLAKE: 2026-11-03, failed once in a full run under load (left "a2\n", right "a\n": the
+    // open buffer of a.txt still had the changed text); passed on 3 isolated reruns.
+    // FLAKE: 2026-11-03 again (spell_check review follow-up), once in a full run under load
+    // ~8, output not captured; passed alone 3 times and in the full runs before and after.
+    // Suspect: `settle_stage` waits for the discard's task and git, not for the open buffer's
+    // reload (`discard_done` → `check_disk`, itself off-thread), so the buffer can still hold
+    // "a2\n" (see "disk check busy" / "reloads" in the dump; the sibling test
+    // `discard_an_open_buffer_writes_the_disk_and_keeps_the_text_in_history` waits on the text).
+    // Every assertion after the confirm dumps the state below.
     #[tokio::test(flavor = "multi_thread")]
     async fn discard_all_from_the_header_restores_every_change() {
         let (_d, root, state) = dirs();
@@ -8875,24 +8918,21 @@ mod discard_changes {
             _ => panic!("the discard prompt"),
         }
         confirm(&mut app);
-        assert!(settle_stage(&mut app).await);
-        assert_eq!(read(&root, "c.txt"), "c2\n");
-        assert_eq!(read(&root, "d.txt"), "d\n");
-        // FLAKE: 2026-11-03, failed once in a full run under load (left "a2\n", right "a\n": the
-        // open buffer of a.txt still had the changed text); passed on 3 isolated reruns. Not
-        // debugged: the message dumps the state around the assertion if it happens again.
+        let since = std::time::Instant::now();
+        let dump = |app: &App| discard_all_flake_dump(app, &root, since);
+        let settled = settle_stage(&mut app).await;
+        assert!(settled, "settle_stage timed out\n{}", dump(&app));
+        assert_eq!(read(&root, "c.txt"), "c2\n", "{}", dump(&app));
+        assert_eq!(read(&root, "d.txt"), "d\n", "{}", dump(&app));
         let buffer_text = app.buffers.iter().next().unwrap().1.rope.to_string();
+        assert_eq!(buffer_text, "a\n", "{}", dump(&app));
+        assert!(!root.join("sub/e.txt").exists(), "{}", dump(&app));
         assert_eq!(
-            buffer_text,
-            "a\n",
-            "FLAKE dump: a.txt on disk {:?}, message {:?}, prompt open {}, git status {:?}",
-            read(&root, "a.txt"),
-            message(&app),
-            app.prompt.is_some(),
-            app.git.status
+            read(&root, "b.txt"),
+            "b\n",
+            "the staged-only file is not touched\n{}",
+            dump(&app)
         );
-        assert!(!root.join("sub/e.txt").exists(), "{}", message(&app));
-        assert_eq!(read(&root, "b.txt"), "b\n", "the staged-only file is not touched");
     }
 
     #[tokio::test(flavor = "multi_thread")]
