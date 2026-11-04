@@ -165,6 +165,8 @@ pub enum Command {
     ManageWorkspaceTrust,
     OpenLogFile,
     SetLogLevel,
+    /// "Help: About": the version and the third-party notices in a read-only tab.
+    About,
     /// Open `~/.config/jed/settings.toml` (created from a template if missing).
     OpenUserSettings,
     /// Open the workspace's `.workspace` (created from a commented template if missing).
@@ -1100,6 +1102,7 @@ impl Command {
             Command::ManageWorkspaceTrust,
             Command::OpenLogFile,
             Command::SetLogLevel,
+            Command::About,
             Command::OpenUserSettings,
             Command::OpenWorkspaceSettings,
             Command::KeyboardShortcuts,
@@ -1313,6 +1316,7 @@ impl Command {
             Command::ManageWorkspaceTrust => "workspace.manageTrust".into(),
             Command::OpenLogFile => "log.open".into(),
             Command::SetLogLevel => "log.setLevel".into(),
+            Command::About => "help.about".into(),
             Command::OpenUserSettings => "preferences.openUserSettings".into(),
             Command::OpenWorkspaceSettings => "preferences.openWorkspaceSettings".into(),
             Command::KeyboardShortcuts => "preferences.keyboardShortcuts".into(),
@@ -1746,6 +1750,7 @@ impl Command {
             Command::ManageWorkspaceTrust => "Workspaces: Manage Workspace Trust",
             Command::OpenLogFile => "Developer: Open Log File",
             Command::SetLogLevel => "Developer: Set Log Level…",
+            Command::About => "Help: About",
             Command::OpenUserSettings => "Preferences: Open User Settings",
             Command::OpenWorkspaceSettings => "Preferences: Open Workspace Settings",
             Command::KeyboardShortcuts => "Preferences: Keyboard Shortcuts",
@@ -2080,6 +2085,7 @@ mod tests {
             Command::ManageWorkspaceTrust => 29,
             Command::OpenLogFile => 30,
             Command::SetLogLevel => 31,
+            Command::About => 150,
             Command::Palette(_) => 32,
             Command::AddNextMatch => 33,
             Command::SelectAllMatches => 34,
@@ -2194,7 +2200,7 @@ mod tests {
             Command::Spell(_) => 149,
         }
     }
-    const VARIANTS: u8 = 150;
+    const VARIANTS: u8 = 151;
 
     #[test]
     fn all_lists_every_variant() {

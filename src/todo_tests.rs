@@ -12974,3 +12974,32 @@ mod log_file_found_event {
         );
     }
 }
+
+/// "Help: About": the version and the zstd-bundled third-party notices in a read-only tab, shown
+/// again rather than opened twice.
+mod about {
+    use crate::app::App;
+    use crate::command::Command;
+    use crate::workspace::Workspace;
+    use crate::workspace::trust::TrustStore;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn about_shows_the_notices_once_in_a_read_only_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let trust = TrustStore::load(dir.path().join("trust.toml"));
+        let mut app = App::new(Workspace::load(dir.path().to_path_buf()), trust, None, true);
+        app.test_start();
+        app.test_execute(Command::About);
+        let buf = app.active_buffer().unwrap();
+        assert_eq!(buf.name(), "About jed");
+        assert!(!buf.has_file() && buf.read_only.is_some());
+        let text = buf.rope.to_string();
+        assert!(
+            text.starts_with("# jed ") && text.contains("Third-party notices"),
+            "{text}"
+        );
+        assert!(text.contains("SCOWL"));
+        app.test_execute(Command::About);
+        assert_eq!(app.group().tabs.len(), 1, "shown again, not opened twice");
+    }
+}

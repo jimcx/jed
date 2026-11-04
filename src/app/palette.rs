@@ -12,7 +12,7 @@ use super::config::ConfigEvent;
 use super::files::FileEvent;
 use super::mouse::{Drag, FieldTarget, field_at};
 use super::{App, AppEvent, Focus, Level};
-use crate::buffer::pos;
+use crate::buffer::{Buffer, pos};
 use crate::command::{Command, PaletteCommand as P};
 use crate::explorer;
 use crate::field::Outcome;
@@ -591,6 +591,19 @@ impl App {
                 &dir,
             ))));
         });
+    }
+
+    /// "Help: About": the version and the third-party notices (`assets::about`) in a read-only
+    /// tab, shown again if open.
+    pub(super) fn show_about(&mut self) {
+        const TITLE: &str = "About jed";
+        let existing = self
+            .buffers
+            .iter()
+            .find(|(_, b)| b.is_document(TITLE))
+            .map(|(id, _)| id);
+        let buffer = existing.unwrap_or_else(|| self.buffers.insert(Buffer::document(TITLE, &crate::assets::about())));
+        self.show_or_open_tab(buffer);
     }
 
     /// Opens the user's `settings.toml` in a tab, first writing the commented template (and the

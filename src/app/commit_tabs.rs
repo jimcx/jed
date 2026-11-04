@@ -114,11 +114,22 @@ impl App {
     /// work-tree-relative path of the file whose history it came from.
     pub(super) fn open_commit(&mut self, id: &str, file: Option<String>) {
         let buffer = self.commit_buffer(id, file);
+        if self.show_or_open_tab(buffer) {
+            // A loaded commit (a tab closed and opened again): its text now, at this view's width.
+            self.fit_commit(buffer, None);
+        }
+        self.sync_commit_tabs();
+    }
+
+    /// Shows a tab already showing `buffer` (in whichever group, activated), else opens one beside
+    /// the active tab; focuses the editor. Whether a tab was opened.
+    pub(super) fn show_or_open_tab(&mut self, buffer: BufferId) -> bool {
         let shown = self
             .groups
             .ids()
             .into_iter()
             .find_map(|g| Some((g, self.groups.get(g)?.find(buffer)?)));
+        let opened = shown.is_none();
         if let Some((group, index)) = shown {
             self.focus_group(group);
             self.activate_tab(index);
@@ -127,12 +138,10 @@ impl App {
                 buf.seal_undo();
             }
             self.group_mut().open(buffer, View::new());
-            // A loaded commit (a tab closed and opened again): its text now, at this view's width.
-            self.fit_commit(buffer, None);
         }
         self.ui.focus = Focus::Editor;
         self.needs_redraw = true;
-        self.sync_commit_tabs();
+        opened
     }
 
     /// The commit the active tab shows, if it's a commit tab.

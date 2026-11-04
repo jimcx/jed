@@ -106,6 +106,8 @@ pub struct Buffer {
     /// is registered and when its path changes); the settings highlighting and completion key
     /// off it.
     pub config_file: Option<crate::config::schema::ConfigFile>,
+    /// `Some(title)`: a read-only page made by the app (`Buffer::document`: About), no file.
+    document: Option<String>,
     /// `Some(n)`: an untitled buffer ("Untitled-n"): no path yet, writable, never on disk.
     untitled: Option<u32>,
     /// An untitled buffer's stable id, the key of its crash backup (kept when it is restored).
@@ -220,6 +222,7 @@ impl Buffer {
             indentation: None,
             tab_display: None,
             config_file: None,
+            document: None,
             untitled: None,
             untitled_id: None,
             language_override: None,
@@ -266,6 +269,20 @@ impl Buffer {
         buf
     }
 
+    /// A read-only page titled `title` holding `text` (About): no path, like a log's or a commit's.
+    pub fn document(title: &str, text: &str) -> Self {
+        let mut loaded = file::decode(text.as_bytes().to_vec()).expect("text decodes");
+        loaded.read_only = Some("this page can't be edited".into());
+        let mut buf = Self::from_loaded(loaded, PathBuf::new());
+        buf.document = Some(title.into());
+        buf
+    }
+
+    /// Whether this is the page `Buffer::document(title, …)` made.
+    pub fn is_document(&self, title: &str) -> bool {
+        self.document.as_deref() == Some(title)
+    }
+
     /// An empty read-only buffer with no path, so nothing keyed by a file (saves, disk checks,
     /// git, language servers, history, backups, sessions) ever takes it: a log's or a commit's.
     fn without_file(why: &str) -> Self {
@@ -284,7 +301,7 @@ impl Buffer {
     /// Whether the buffer is a file's: it has a path on disk (not a log's, a commit's or an
     /// untitled buffer's, which have none).
     pub fn has_file(&self) -> bool {
-        self.log.is_none() && self.commit.is_none() && self.untitled.is_none()
+        self.log.is_none() && self.commit.is_none() && self.document.is_none() && self.untitled.is_none()
     }
 
     /// Whether the buffer is untitled (no path yet).
@@ -304,6 +321,9 @@ impl Buffer {
         }
         if let Some(commit) = &self.commit {
             return commit.title();
+        }
+        if let Some(title) = &self.document {
+            return title.clone();
         }
         if let Some(n) = self.untitled {
             return format!("Untitled-{n}");

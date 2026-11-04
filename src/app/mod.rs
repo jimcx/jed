@@ -1338,6 +1338,7 @@ impl App {
             Command::SetLogLevel => self.open_palette(Picker::LogLevel, ""),
             Command::ManageWorkspaceTrust => self.manage_trust(),
             Command::OpenLogFile => self.open_log_file(),
+            Command::About => self.show_about(),
             Command::OpenUserSettings => self.open_user_settings(),
             Command::OpenWorkspaceSettings => self.open_workspace_settings(),
             Command::Palette(c) => self.palette_command(c),

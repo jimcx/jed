@@ -37,6 +37,11 @@ pub fn notices() -> String {
     String::from_utf8_lossy(&files[0].1).into_owned()
 }
 
+/// The About page: the version, then the notices.
+pub fn about() -> String {
+    format!("# jed {}\n\n{}", env!("JED_VERSION"), notices())
+}
+
 /// Names the packed bundle that was last written out (`Stamp::encode`), next to the files.
 const STAMP_FILE: &str = ".bundle-stamp";
 
@@ -79,6 +84,7 @@ mod tests {
         assert_eq!(names, ["README_en_AU.txt", "en_AU.aff", "en_AU.dic"]);
         assert!(dictionary_text("en_AU.dic").len() > 100_000);
         assert!(notices().contains("Third-party notices"));
+        assert!(about().starts_with("# jed "));
     }
 
     #[test]

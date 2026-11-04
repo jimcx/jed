@@ -9,5 +9,7 @@ covered by the Princeton WordNet and J Ross Beresford notices. The full copyrigh
 notices are in [`assets/dictionaries/en_AU/README_en_AU.txt`](assets/dictionaries/en_AU/README_en_AU.txt)
 and must be kept with any copy of the dictionary, including binaries.
 
+jed shows this page under "Help: About" and writes it, with the dictionary, to `~/.local/share/jed/`.
+
 Other dictionaries a user installs with `scripts/fetch-dictionary` keep their own licences and are
 not distributed with jed.
