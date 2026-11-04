@@ -283,7 +283,7 @@ fn markdown_inline(text: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
                             break;
                         }
                         j += n;
-                    } else if text[j..].starts_with("\n\n") {
+                    } else if b[j..].starts_with(b"\n\n") {
                         break;
                     } else {
                         j += 1;
@@ -446,6 +446,12 @@ mod tests {
     use super::*;
     use crate::buffer::Buffer;
     use crate::syntax::DEFAULT_MAX_BYTES;
+
+    #[test]
+    fn markdown_inline_unclosed_backtick_before_multibyte_char() {
+        let (code, _) = markdown_inline("`a … b\n\nc");
+        assert!(code.is_empty());
+    }
 
     struct Parsed {
         buf: Buffer,
