@@ -1,17 +1,18 @@
-# Installing the spell checker's dictionary
+# Dictionaries
 
-jed bundles only a tiny placeholder word list. For real checking, install the Australian English
-list yourself:
+The checker uses Hunspell dictionaries (read by the `spellbook` crate). Australian English
+(`en_AU`) is built into jed with its licence (`assets/dictionaries/en_AU/`), so it works out of the
+box. To use another language, set `spell_check_language = "de_DE"` (any Hunspell name; default
+`"en_AU"`) and install its files:
 
-1. Download `en_AU.dic`, `en_AU.aff` and `README_en_AU.txt` from the `en/` folder of the
-   LibreOffice `dictionaries` repository (SCOWL-derived; its licence terms are in
-   `README_en_AU.txt`, keep it with the files).
-2. Expand them to a plain word list (one lower-case word per line):
-   `scripts/gen-dictionary en_AU.dic en_AU.aff > en_AU.txt` (python3; run from a jed checkout).
-3. Put the result at `<config dir>/dictionaries/en_AU.txt` (the config dir is where
-   `settings.toml` lives, e.g. `~/.config/jed/`).
+    scripts/fetch-dictionary de_DE
 
-Restart jed. Without that file the checker falls back to the placeholder list and says so once.
+That downloads `de_DE.aff`, `de_DE.dic` and the dictionary's licence/readme files from the
+LibreOffice `dictionaries` repository into `<config dir>/dictionaries/de_DE/` (the config dir is
+where `settings.toml` lives). Keep the licence files with the dictionary. Run from a jed checkout;
+needs python3 and curl. `scripts/fetch-dictionary --bundled <lang>` refreshes the bundled
+`assets/dictionaries/<lang>/` instead. Changing the setting loads the new dictionary at once; if
+its files are missing jed uses `en_AU` and says so once.
 
 # Your own words
 
@@ -35,7 +36,7 @@ All under `[settings]` in `settings.toml` or `.workspace` (flat keys, like the o
 | `spell_check_scope` | `"all"` | `all` (comments, strings, identifiers), `comments_and_strings` or `off` |
 | `spell_check_min_length` | `3` | shorter words are not checked |
 | `spell_check_problems` | `false` | list misspellings in the Problems panel |
-| `spell_check_language` | `"en_AU"` | the dictionary; only `en_AU` ships |
+| `spell_check_language` | `"en_AU"` | the dictionary: a Hunspell name; `en_AU` is built in, others via `scripts/fetch-dictionary` |
 | `spell_check_ignore_words` | `[]` | extra accepted words |
 | `spell_check_off_languages` | `[]` | language ids not checked, e.g. `["log"]` |
 

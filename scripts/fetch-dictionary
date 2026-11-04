@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Download a Hunspell dictionary and its licence from LibreOffice's `dictionaries` repository.
+
+    scripts/fetch-dictionary de_DE                      # into <config dir>/dictionaries/de_DE/ (loaded at run time)
+    scripts/fetch-dictionary de_DE <dir>                # into <dir>/de_DE/
+    scripts/fetch-dictionary --bundled en_AU            # into assets/dictionaries/en_AU/ (what jed compiles in)
+
+The config dir is `$XDG_CONFIG_HOME/jed` (default `~/.config/jed`), where `settings.toml` lives.
+
+Writes `<dir>/<lang>/<lang>.aff`, `<lang>.dic` and the licence/readme files shipped next to them
+(the language's own `README_<lang>*`; only if it has none, the folder's generic `README`, `LICENSE*`,
+`COPYING*`), which must stay with the dictionary. jed's
+`spell_check_language` setting names the language. The dictionary's folder is the language
+(`en_AU`) or its two-letter prefix (`en`, `de`, ...) in the repository, and its files may carry a
+variant name (`de_DE_frami.dic`): the `.dic`/`.aff` pair whose name starts with `<lang>` (or just the two-letter prefix, `fr.dic` for `fr_FR`) is taken
+(the plain `<lang>` pair first). Needs network access; python3 standard library only.
+"""
+import json
+import os
+import re
+import sys
+import subprocess
+
+REPO = "LibreOffice/dictionaries"
+BRANCH = "master"
+GENERIC = re.compile(r"^(readme|license|licence|copying|copyright)(\.\w+)?$", re.I)
+
+
+def get(url):
+    """The body at `url`, or None for a 404 (curl: uses the system's certificates, unlike some pythons)."""
+    r = subprocess.run(["curl", "-sSL", "--max-time", "60", "-w", "%{http_code}", url], capture_output=True)
+    if r.returncode != 0:
+        sys.exit(f"curl {url}: {r.stderr.decode().strip()}")
+    body, code = r.stdout[:-3], r.stdout[-3:]
+    if code == b"404":
+        return None
+    if code != b"200":
+        sys.exit(f"{url}: HTTP {code.decode()}")
+    return body
+
+
+def listing(folder):
+    body = get(f"https://api.github.com/repos/{REPO}/contents/{folder}?ref={BRANCH}")
+    return None if body is None else [e["name"] for e in json.loads(body) if e["type"] == "file"]
+
+
+def main():
+    args = sys.argv[1:]
+    bundled = "--bundled" in args
+    args = [a for a in args if a != "--bundled"]
+    if not 1 <= len(args) <= 2 or (bundled and len(args) == 2) or not re.fullmatch(r"[A-Za-z]{2,3}(_[A-Za-z0-9]+)*", args[0]):
+        sys.exit(__doc__)
+    lang = args[0]
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    xdg = os.environ.get("XDG_CONFIG_HOME", "")
+    config = xdg if os.path.isabs(xdg) else os.path.expanduser("~/.config")
+    if bundled:
+        base = os.path.join(root, "assets", "dictionaries")
+    else:
+        base = os.path.expanduser(args[1]) if len(args) == 2 else os.path.join(config, "jed", "dictionaries")
+    prefix = lang.split("_")[0]
+    # Some are laid out as an extension (`fr_FR/dictionaries/fr.dic`, licence one level up).
+    for folder in dict.fromkeys([lang, prefix, f"{lang}/dictionaries", f"{prefix}/dictionaries"]):
+        names = listing(folder)
+        if names is None:
+            continue
+        stems = [n[:-4] for n in names if n.endswith(".dic") and n[:-4] + ".aff" in names and (n.startswith(lang) or n[:-4] == lang.split("_")[0])]
+        if stems:
+            break
+    else:
+        sys.exit(f"no {lang}.dic / {lang}.aff found in github.com/{REPO}")
+    stem = lang if lang in stems else sorted(stems)[0]
+    out = os.path.join(base, lang)
+    os.makedirs(out, exist_ok=True)
+    wanted = {f"{stem}.dic": f"{lang}.dic", f"{stem}.aff": f"{lang}.aff"}
+    # This language's own readme (`README_en_AU.txt`) and the generic licence files; not the
+    # readmes of the other languages in the same folder.
+    own = re.compile(rf"^(readme|license|licence|copying)[_-](dict[_-])?({re.escape(lang)}|{re.escape(stem)}|{re.escape(prefix)})\b", re.I)
+    sources = {n: folder for n in names}
+    if folder.endswith("/dictionaries"):
+        parent = folder.rsplit("/", 1)[0]
+        sources.update({n: parent for n in listing(parent) or []})
+    candidates = [n for n in sources if not n.endswith((".dic", ".aff"))]
+    # The generic files (`license.txt`, `README.txt`) in a shared folder often belong to another
+    # dictionary there (en/license.txt is GPL, en_AU is not): only when the language has no readme
+    # of its own are they taken as the best available licence.
+    licences = [n for n in candidates if own.match(n)] or [n for n in candidates if GENERIC.match(n)]
+    if not licences:
+        sys.exit(f"{folder}/ and its parent have no licence or readme file: not downloading a dictionary without its licence")
+    for n in [*wanted, *licences]:
+        src = sources[n]
+        data = get(f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/{src}/{n}")
+        if data is None:
+            sys.exit(f"{src}/{n}: not found")
+        with open(os.path.join(out, wanted.get(n, n)), "wb") as f:
+            f.write(data)
+        print(f"{src}/{n} -> {os.path.join(out, wanted.get(n, n))}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

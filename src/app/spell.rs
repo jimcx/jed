@@ -21,7 +21,7 @@ use super::{App, AppEvent, Level, SLOW_TASK};
 use crate::buffer::BufferId;
 use crate::buffer::pos::{self, ByteIdx};
 use crate::diagnostics::{Diagnostic, Mark, Severity};
-use crate::edit::{SpellLanguage, SpellScope};
+use crate::edit::SpellScope;
 use crate::lsp::ServerId;
 use crate::spell_dict::{self, UserWords, Which};
 use crate::spell_scope;
@@ -39,7 +39,7 @@ const INLINE_MAX: usize = 16 * 1024;
 struct Signature {
     scope: SpellScope,
     min_length: usize,
-    language: SpellLanguage,
+    language: String,
     ignore_words: Vec<String>,
     off_languages: Vec<String>,
     max_bytes: usize,
@@ -59,7 +59,7 @@ pub struct SpellApp {
     generation: u64,
     signature: Option<Signature>,
     pub(super) deadline: Option<Instant>,
-    told_placeholder: bool,
+    told_missing: Option<String>,
     /// Tests: bytes scanned on this thread / checks started in the background.
     #[cfg(test)]
     pub scanned: usize,
@@ -216,6 +216,18 @@ impl App {
             }
             return;
         }
+        if self
+            .spell
+            .signature
+            .as_ref()
+            .is_some_and(|g| g.language != self.settings.spell_check_language)
+        {
+            // Another dictionary: keep the old one until the new one is read.
+            if !self.spell.loading {
+                self.spell.loading = true;
+                self.load_spell(true, false, false);
+            }
+        }
         self.sync_spell_config();
         let now = Instant::now();
         let caret = self
@@ -249,7 +261,7 @@ impl App {
         self.spell.signature = Some(Signature {
             scope: s.spell_check_scope,
             min_length: s.spell_check_min_length,
-            language: s.spell_check_language,
+            language: s.spell_check_language.clone(),
             ignore_words: s.spell_check_ignore_words.clone(),
             off_languages: s.spell_check_off_languages.clone(),
             max_bytes: s.syntax_max_bytes,
@@ -451,10 +463,11 @@ impl App {
     pub(super) fn load_spell(&mut self, dict: bool, user: bool, workspace: bool) {
         let dir = self.config_dir.clone();
         let root = self.workspace.root.clone();
+        let language = self.settings.spell_check_language.clone();
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let loaded = Loaded {
-                dict: dict.then(|| Dictionary::load_installed(&dir.join("dictionaries"))),
+                dict: dict.then(|| Dictionary::load(&dir.join("dictionaries"), &language)),
                 user: user.then(|| spell_dict::load(&spell_dict::user_path(&dir))),
                 workspace: workspace.then(|| spell_dict::load(&spell_dict::workspace_path(&root))),
             };
@@ -465,14 +478,17 @@ impl App {
     /// `SpellEvent::Loaded`.
     pub(super) fn spell_loaded(&mut self, loaded: Loaded) {
         if let Some(dict) = loaded.dict {
-            if dict.is_placeholder() && !self.spell.told_placeholder {
-                self.spell.told_placeholder = true;
+            if let Some(lang) = dict.missing_language()
+                && self.spell.told_missing.as_deref() != Some(lang)
+            {
+                self.spell.told_missing = Some(lang.to_string());
                 // Not in tests: the message would land on every screen a test compares.
                 if !cfg!(test) {
                     self.notify(
-                        Level::Info,
-                        "Spell check uses a small placeholder word list: see docs/spell-check.md to install the full one"
-                            .into(),
+                        Level::Warning,
+                        format!(
+                            "No spell-check dictionary for {lang}: using en_AU. Install it with scripts/fetch-dictionary (docs/spell-check.md)"
+                        ),
                     );
                 }
             }

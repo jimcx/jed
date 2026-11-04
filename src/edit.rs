@@ -79,8 +79,9 @@ pub struct Settings {
     pub spell_check_min_length: usize,
     /// The Problems panel lists misspellings: `[settings] spell_check_problems`.
     pub spell_check_problems: bool,
-    /// The dictionary's language: `[settings] spell_check_language`.
-    pub spell_check_language: SpellLanguage,
+    /// The dictionary's language, a Hunspell name such as `en_AU` (`spellcheck::valid_language`):
+    /// `[settings] spell_check_language`.
+    pub spell_check_language: String,
     /// Extra words accepted everywhere, in the settings file itself: `[settings]
     /// spell_check_ignore_words`. Matched case-insensitively (`spell_dict::UserWords`).
     pub spell_check_ignore_words: Vec<String>,
@@ -102,14 +103,6 @@ pub enum SpellScope {
     CommentsAndStrings,
     /// Nothing.
     Off,
-}
-
-/// The spell checker's dictionary language; only Australian English ships.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
-pub enum SpellLanguage {
-    #[default]
-    #[serde(rename = "en_AU")]
-    EnAu,
 }
 
 /// VS Code's `editor.cursorStyle`, the shapes a terminal can draw: a bar before the char, a
@@ -199,7 +192,7 @@ impl Default for Settings {
             spell_check_scope: SpellScope::All,
             spell_check_min_length: 3,
             spell_check_problems: false,
-            spell_check_language: SpellLanguage::EnAu,
+            spell_check_language: crate::spellcheck::DEFAULT_LANGUAGE.to_string(),
             spell_check_ignore_words: Vec::new(),
             spell_check_off_languages: Vec::new(),
             scrollback_compression: false,

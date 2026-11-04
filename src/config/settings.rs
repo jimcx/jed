@@ -23,7 +23,7 @@
 //! | `spell_check_scope` | str | `"all"` | What the spell checker looks at: `all` (comments, strings, identifiers), `comments_and_strings` or `off` |
 //! | `spell_check_min_length` | int | 3 | Words shorter than this are not checked                    |
 //! | `spell_check_problems` | bool | false | Misspellings are listed in the Problems panel               |
-//! | `spell_check_language` | str | `"en_AU"` | The dictionary (only `en_AU` ships)                      |
+//! | `spell_check_language` | str | `"en_AU"` | The dictionary (Hunspell name; docs/spell-check.md)      |
 //! | `spell_check_ignore_words` | str list | `[]` | Extra words accepted everywhere (case-insensitive)   |
 //! | `spell_check_off_languages` | str list | `[]` | Language ids not spell-checked, e.g. `["log"]`       |
 //! | `scrollback_compression` | bool | false | Keep old scrollback lines zstd-compressed (less memory)     |
@@ -45,7 +45,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::edit::{CursorStyle, RenderWhitespace, SemanticHighlighting, Settings, SpellLanguage, SpellScope, WordWrap};
+use crate::edit::{CursorStyle, RenderWhitespace, SemanticHighlighting, Settings, SpellScope, WordWrap};
 use crate::workspace::config::{LspServer, WindowConfig};
 
 pub const FILE_NAME: &str = "settings.toml";
@@ -97,14 +97,26 @@ pub struct SettingsOverrides {
     pub spell_check_min_length: Option<usize>,
     /// Misspellings are listed in the Problems panel.
     pub spell_check_problems: Option<bool>,
-    /// The spell checker's dictionary (`en_AU`).
-    pub spell_check_language: Option<SpellLanguage>,
+    /// The spell checker's dictionary: a Hunspell language name (`en_AU`, `de_DE`, ...).
+    #[serde(deserialize_with = "spell_check_language")]
+    pub spell_check_language: Option<String>,
     /// Extra words the spell checker accepts, besides the dictionary files.
     pub spell_check_ignore_words: Option<Vec<String>>,
     /// Language ids the spell checker skips (a `.workspace` list replaces the user's).
     pub spell_check_off_languages: Option<Vec<String>>,
     /// Keep old scrollback lines compressed (less memory, a little CPU), read when the run is created.
     pub scrollback_compression: Option<bool>,
+}
+
+fn spell_check_language<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let name = String::deserialize(d)?;
+    if crate::spellcheck::valid_language(&name) {
+        Ok(Some(name))
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "must be a dictionary name such as \"en_AU\", not \"{name}\""
+        )))
+    }
 }
 
 fn hex_bytes_per_line<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
@@ -182,8 +194,8 @@ impl SettingsOverrides {
         if let Some(on) = self.spell_check_problems {
             s.spell_check_problems = on;
         }
-        if let Some(language) = self.spell_check_language {
-            s.spell_check_language = language;
+        if let Some(language) = &self.spell_check_language {
+            s.spell_check_language = language.clone();
         }
         if let Some(words) = &self.spell_check_ignore_words {
             s.spell_check_ignore_words = words.clone();
@@ -380,7 +392,7 @@ pub const TEMPLATE: &str = "\
 # spell_check_scope = \"all\"  # all (comments, strings, identifiers), comments_and_strings or off
 # spell_check_min_length = 3  # shorter words are not checked
 # spell_check_problems = false  # list misspellings in the Problems panel
-# spell_check_language = \"en_AU\"  # the dictionary; only en_AU ships
+# spell_check_language = \"en_AU\"  # the dictionary: en_AU ships, others via scripts/fetch-dictionary
 # spell_check_ignore_words = []  # extra accepted words, e.g. [\"tokio\"]; more in dictionary.txt
 # spell_check_off_languages = []  # language ids not checked, e.g. [\"log\"]
 # scrollback_compression = false  # keep old scrollback lines compressed: less memory, a little CPU
@@ -477,7 +489,7 @@ mod tests {
                 spell_check_scope: Some(SpellScope::CommentsAndStrings),
                 spell_check_min_length: Some(4),
                 spell_check_problems: Some(true),
-                spell_check_language: Some(SpellLanguage::EnAu),
+                spell_check_language: Some("en_AU".into()),
                 spell_check_ignore_words: Some(vec!["a".to_string()]),
                 spell_check_off_languages: Some(vec!["log".to_string()]),
             }
@@ -755,7 +767,7 @@ mod tests {
             spell_check_scope: Some(SpellScope::All),
             spell_check_min_length: Some(3),
             spell_check_problems: Some(false),
-            spell_check_language: Some(SpellLanguage::EnAu),
+            spell_check_language: Some("en_AU".into()),
             spell_check_ignore_words: Some(Vec::new()),
             spell_check_off_languages: Some(Vec::new()),
         };
@@ -807,13 +819,13 @@ mod tests {
                 s.spell_check_scope,
                 s.spell_check_min_length,
                 s.spell_check_problems,
-                s.spell_check_language
+                s.spell_check_language.clone()
             ),
             (
                 d.spell_check_scope,
                 d.spell_check_min_length,
                 d.spell_check_problems,
-                d.spell_check_language
+                d.spell_check_language.clone()
             )
         );
         assert_eq!(s.spell_check_ignore_words, d.spell_check_ignore_words);
@@ -836,7 +848,13 @@ mod tests {
         assert_eq!(u.overrides.tab_width, Some(2));
         assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
         assert!(u.errors[0].contains("`spell_check_scope`"), "{:?}", u.errors);
-        assert_eq!(parse("[settings]\nspell_check_language = \"fr\"\n").errors.len(), 1);
+        assert_eq!(
+            parse("[settings]\nspell_check_language = \"fr\"\n").errors.len(),
+            0,
+            "any installed name"
+        );
+        assert_eq!(parse("[settings]\nspell_check_language = \"../x\"\n").errors.len(), 1);
+        assert_eq!(parse("[settings]\nspell_check_language = 3\n").errors.len(), 1);
         assert_eq!(parse("[settings]\nspell_check_min_length = \"3\"\n").errors.len(), 1);
         assert_eq!(parse("[settings]\nspell_check_ignore_words = [1]\n").errors.len(), 1);
 

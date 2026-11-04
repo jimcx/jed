@@ -33,11 +33,23 @@ struct Env {
 }
 
 /// An app on `name` with `text` in a fresh workspace, a config dir with the test dictionary.
+/// An installed `en_AU` Hunspell pair (no affixes) of just these space-separated words.
+fn write_dictionary(config: &std::path::Path, words: &str) {
+    let dir = config.join("dictionaries/en_AU");
+    std::fs::create_dir_all(&dir).unwrap();
+    let words: Vec<&str> = words.split_whitespace().collect();
+    std::fs::write(dir.join("en_AU.aff"), "SET UTF-8\n").unwrap();
+    std::fs::write(
+        dir.join("en_AU.dic"),
+        format!("{}\n{}\n", words.len(), words.join("\n")),
+    )
+    .unwrap();
+}
+
 fn open(dir: &tempfile::TempDir, name: &str, text: &str, tweak: impl FnOnce(&mut App)) -> Env {
     let base = crate::workspace::normalize(dir.path());
     let config = base.join("config");
-    std::fs::create_dir_all(config.join("dictionaries")).unwrap();
-    std::fs::write(config.join("dictionaries/en_AU.txt"), WORDS.replace(' ', "\n")).unwrap();
+    write_dictionary(&config, WORDS);
     let root = base.join("ws");
     std::fs::create_dir_all(&root).unwrap();
     open_in(&base, &root, &config, name, text, tweak)
@@ -240,8 +252,7 @@ async fn spell_check_a_workspace_dictionary_stays_in_its_workspace() {
     let dir = tempfile::tempdir().unwrap();
     let base = crate::workspace::normalize(dir.path());
     let config = base.join("config");
-    std::fs::create_dir_all(config.join("dictionaries")).unwrap();
-    std::fs::write(config.join("dictionaries/en_AU.txt"), WORDS.replace(' ', "\n")).unwrap();
+    write_dictionary(&config, WORDS);
     let (one, two) = (base.join("one"), base.join("two"));
     std::fs::create_dir_all(one.join(".jed")).unwrap();
     std::fs::create_dir_all(&two).unwrap();
@@ -524,8 +535,7 @@ fn fixes(app: &mut App) -> Vec<String> {
 
 /// Also teaches the dictionary `receive`, so there is something to suggest.
 fn with_receive(a: &mut App) {
-    let words = format!("{WORDS} receive").replace(' ', "\n");
-    std::fs::write(a.config_dir.join("dictionaries/en_AU.txt"), words).unwrap();
+    write_dictionary(&a.config_dir, &format!("{WORDS} receive"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -628,8 +638,7 @@ async fn spell_check_add_to_workspace_dictionary_stays_in_its_workspace() {
     let dir = tempfile::tempdir().unwrap();
     let base = crate::workspace::normalize(dir.path());
     let config = base.join("config");
-    std::fs::create_dir_all(config.join("dictionaries")).unwrap();
-    std::fs::write(config.join("dictionaries/en_AU.txt"), WORDS.replace(' ', "\n")).unwrap();
+    write_dictionary(&config, WORDS);
     let (one, two) = (base.join("one"), base.join("two"));
     std::fs::create_dir_all(&one).unwrap();
     std::fs::create_dir_all(&two).unwrap();

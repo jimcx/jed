@@ -115,7 +115,6 @@ const CURSOR_STYLES: &[&str] = &["line", "block", "underline"];
 const ON_OFF: &[&str] = &["on", "off"];
 const WRAP: &[&str] = &["off", "on"];
 const SPELL_SCOPES: &[&str] = &["all", "comments_and_strings", "off"];
-const SPELL_LANGUAGES: &[&str] = &["en_AU"];
 const STATUS_COLORS: &[&str] = &[
     "red", "orange", "yellow", "green", "cyan", "blue", "purple", "magenta", "grey", "auto",
 ];
@@ -208,8 +207,8 @@ const SETTINGS_KEYS: &[KeySchema] = &[
     ),
     key(
         "spell_check_language",
-        ValueKind::Enum(SPELL_LANGUAGES),
-        "The spell checker's dictionary",
+        ValueKind::Str,
+        "The spell checker's dictionary, a Hunspell name such as en_AU",
     ),
     key(
         "spell_check_ignore_words",

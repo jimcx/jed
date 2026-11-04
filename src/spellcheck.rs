@@ -11,28 +11,24 @@
 //! isn't checked: pieces under `min_length` chars, ALL-CAPS pieces (acronyms) and pieces with a
 //! letter outside the Latin scripts the dictionary covers (`日本語`).
 //!
-//! **Dictionaries**: the real en_AU list is *not* bundled (its licence notices would have to ship
-//! with it): the user installs it at `<config dir>/dictionaries/en_AU.txt` (one lower-case word
-//! per line, made by `scripts/gen-dictionary`; steps in `docs/spell-check.md`) and
-//! [`Dictionary::load_installed`] reads it, falling back to the tiny placeholder
-//! `assets/dictionaries/en_AU.txt` compiled in with `include_str!` ([`Dictionary::bundled`]).
-//! [`Dictionary::is_placeholder`] says which is in use. Always bundled: `code.txt` (programming
-//! terms, every language) and `lang/*.txt` (one small list per [`Language`], read only by a
-//! [`Checker`] for that language, see [`language_terms`]). The list is indexed once into a
-//! `HashSet` shared by every buffer (`Arc`); a lookup lower-cases into a reused buffer,
-//! so checking allocates nothing per word. Matching is case-insensitive; contractions and the
-//! possessive `'s` are accepted. User words (`extra`: sets checked in turn, so a buffer's ignored
-//! words join the shared ones without a merged copy) must already be lower-case.
+//! **Dictionaries**: Hunspell `.aff` + `.dic` pairs read by the `spellbook` crate (which does the
+//! affix expansion, case rules and suggestions). Australian English (`en_AU`, [`DEFAULT_LANGUAGE`])
+//! is compiled in with its licence (`assets/dictionaries/en_AU/`, fetched by
+//! `scripts/fetch-dictionary`). The `spell_check_language` setting names another language: its
+//! pair is read from `<config dir>/dictionaries/<lang>/<lang>.{aff,dic}` (same script, given that
+//! directory), see [`Dictionary::load`]; one that is missing falls back to `en_AU`
+//! ([`Dictionary::missing_language`] says so, the app tells the user once). Always bundled:
+//! `code.txt` (programming terms, every language) and `lang/*.txt` (one small list per
+//! [`Language`], read only by a [`Checker`] for that language, see [`language_terms`]), plain
+//! lower-case word lists in a `HashSet`. The dictionary is built once and shared by every buffer
+//! (`Arc`). Programming terms and user words (`extra`: sets checked in turn, so a buffer's ignored
+//! words join the shared ones without a merged copy; they must already be lower-case) are matched
+//! case-insensitively; the dictionary follows Hunspell's case rules (`colour`, `Colour` and
+//! `COLOUR` pass; `australia` does not).
 //!
-//! **Suggestions** ([`Checker::suggest`]): a scan of the word list for entries within Damerau
-//! (optimal string alignment, so a transposition is 1) distance 2, ranked by distance, then a
-//! shared first letter, then length difference, then alphabetically (the list has no
-//! frequencies), at most [`MAX_SUGGESTIONS`], in the original's case shape. Chosen over SymSpell
-//! deletes (an index of millions of strings, built at startup) and a BK-tree (still builds an
-//! index and prunes badly at distance 2) because suggestions are asked for one word on demand,
-//! never per mark: a length-filtered scan costs a few ms and no memory. Inside an identifier the
-//! caller passes just the piece ([`Misspelling::word`]), so `recieveMessage` → `receive` replaces
-//! the piece only.
+//! **Suggestions** ([`Checker::suggest`]): spellbook's, at most [`MAX_SUGGESTIONS`]. Asked for one
+//! word on demand, never per mark. Inside an identifier the caller passes just the piece
+//! ([`Misspelling::word`]), so `recieveMessage` → `receive` replaces the piece only.
 
 // A few helpers are only used by tests.
 #![allow(dead_code)]
@@ -41,15 +37,18 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
+use std::path::Path;
+
 use crate::buffer::pos::ByteIdx;
 use crate::syntax::Language;
 
 /// The most suggestions [`Checker::suggest`] gives.
 pub const MAX_SUGGESTIONS: usize = 8;
-/// Largest edit distance of a suggestion.
-const MAX_DISTANCE: usize = 2;
+/// The language of the bundled dictionary, and the default `spell_check_language`.
+pub const DEFAULT_LANGUAGE: &str = "en_AU";
 
-const EN_AU: &str = include_str!("../assets/dictionaries/en_AU.txt");
+const EN_AU_AFF: &str = include_str!("../assets/dictionaries/en_AU/en_AU.aff");
+const EN_AU_DIC: &str = include_str!("../assets/dictionaries/en_AU/en_AU.dic");
 const CODE: &str = include_str!("../assets/dictionaries/code.txt");
 const RUST: &str = include_str!("../assets/dictionaries/lang/rust.txt");
 const PYTHON: &str = include_str!("../assets/dictionaries/lang/python.txt");
@@ -306,73 +305,92 @@ fn token(text: &str, chars: &[(usize, char)], start: usize, end: usize, f: &mut 
     }
 }
 
-/// A word list (lower-case words). Either the installed en_AU list or the bundled placeholder.
+/// Whether `name` can name a dictionary: a Hunspell language name such as `en_AU` or `de_DE`
+/// (it becomes a directory and file name, so letters, digits and `_` / `-` only).
+pub fn valid_language(name: &str) -> bool {
+    (1..=32).contains(&name.len())
+        && name.starts_with(|c: char| c.is_ascii_alphabetic())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// A Hunspell dictionary: the installed one for the configured language, or the bundled `en_AU`.
 pub struct Dictionary {
-    words: HashSet<Box<str>>,
-    placeholder: bool,
+    inner: spellbook::Dictionary,
+    /// The configured language when its files could not be used (so this is `en_AU` instead).
+    missing: Option<String>,
 }
 
 impl Dictionary {
-    /// Indexes a word list: one lower-case word per line, blank lines and `#` lines ignored.
-    pub fn from_list(list: &str) -> Dictionary {
-        Dictionary {
-            words: list_words(list).map(Box::from).collect(),
-            placeholder: false,
+    /// Builds a dictionary from the text of an `.aff` and a `.dic` file.
+    pub fn from_hunspell(aff: &str, dic: &str) -> Result<Dictionary, String> {
+        match spellbook::Dictionary::new(aff, dic) {
+            Ok(inner) => Ok(Dictionary { inner, missing: None }),
+            Err(e) => Err(e.to_string()),
         }
     }
 
-    /// The compiled-in placeholder list, built on first use and shared.
-    /// Blocking: call from spawn_blocking.
+    /// A dictionary of exactly these words (one per line, no affixes). Tests.
+    #[cfg(test)]
+    pub fn from_list(list: &str) -> Dictionary {
+        let words: Vec<&str> = list_words(list).collect();
+        let dic = format!("{}\n{}\n", words.len(), words.join("\n"));
+        Dictionary::from_hunspell("SET UTF-8\n", &dic).unwrap()
+    }
+
+    /// The compiled-in `en_AU`, built on first use and shared.
+    /// Blocking: call from spawn_blocking (parses ~550 KB).
     pub fn bundled() -> Arc<Dictionary> {
         static DICT: OnceLock<Arc<Dictionary>> = OnceLock::new();
-        DICT.get_or_init(|| {
-            let mut d = Dictionary::from_list(EN_AU);
-            d.placeholder = true;
-            Arc::new(d)
-        })
-        .clone()
+        DICT.get_or_init(|| Arc::new(Dictionary::from_hunspell(EN_AU_AFF, EN_AU_DIC).expect("bundled en_AU parses")))
+            .clone()
     }
 
-    /// `<dir>/en_AU.txt` (`dir` = `<config dir>/dictionaries`), the user-installed list, or
-    /// [`Dictionary::bundled`] when the file is missing, unreadable or empty (the caller can
-    /// tell by [`Dictionary::is_placeholder`]).
-    /// Blocking: call from spawn_blocking (reads and indexes a ~90k word file).
-    pub fn load_installed(dir: &std::path::Path) -> Arc<Dictionary> {
-        match std::fs::read_to_string(dir.join("en_AU.txt")) {
-            Ok(text) => {
-                let d = Dictionary::from_list(&text);
-                if d.words.is_empty() {
-                    tracing::warn!(target: "jed::spellcheck", "dictionary {} has no words", dir.display());
-                    Dictionary::bundled()
-                } else {
-                    Arc::new(d)
-                }
+    /// The dictionary for `language`: `<dir>/<language>/<language>.aff` and `.dic` (`dir` =
+    /// `<config dir>/dictionaries`, filled by `scripts/fetch-dictionary`), else the bundled
+    /// `en_AU` for the default language. Any other language whose files are missing or don't
+    /// parse is logged and answered by `en_AU` with [`Dictionary::missing_language`] set.
+    /// Blocking: call from spawn_blocking (reads and parses the files).
+    pub fn load(dir: &Path, language: &str) -> Arc<Dictionary> {
+        let base = dir.join(language);
+        let read = |ext: &str| std::fs::read_to_string(base.join(format!("{language}.{ext}")));
+        let installed = valid_language(language).then(|| (read("aff"), read("dic")));
+        match installed {
+            Some((Ok(aff), Ok(dic))) => match Dictionary::from_hunspell(&aff, &dic) {
+                Ok(d) => return Arc::new(d),
+                Err(e) => tracing::warn!(target: "jed::spellcheck", "dictionary {} is unusable: {e}", base.display()),
+            },
+            Some((Err(e), _) | (_, Err(e))) if language != DEFAULT_LANGUAGE => {
+                tracing::info!(target: "jed::spellcheck", "no dictionary in {} ({e})", base.display());
             }
-            Err(e) => {
-                tracing::info!(target: "jed::spellcheck", "no installed dictionary in {} ({e}): using the placeholder", dir.display());
-                Dictionary::bundled()
-            }
+            _ => {}
         }
+        let bundled = Dictionary::bundled();
+        if language == DEFAULT_LANGUAGE {
+            return bundled;
+        }
+        // The shared bundled one can't carry the name, so this is a handle with its own flag.
+        Arc::new(Dictionary {
+            inner: bundled.inner.clone(),
+            missing: Some(language.to_string()),
+        })
     }
 
-    /// Whether this is the tiny bundled fallback, not an installed dictionary: the app should
-    /// tell the user once to install one (`docs/spell-check.md`).
-    pub fn is_placeholder(&self) -> bool {
-        self.placeholder
+    /// The configured language whose dictionary could not be loaded (`en_AU` is used instead).
+    pub fn missing_language(&self) -> Option<&str> {
+        self.missing.as_deref()
     }
 
-    pub fn len(&self) -> usize {
-        self.words.len()
-    }
-
-    /// Whether the (already lower-case) word is listed.
-    pub fn contains_lower(&self, word: &str) -> bool {
-        self.words.contains(word)
-    }
-
-    /// Case-insensitive lookup (allocates only when `word` has upper-case letters).
+    /// Whether the word (any case, `'` or `’`) is spelled correctly.
     pub fn contains(&self, word: &str) -> bool {
-        self.words.contains(word) || (word.chars().any(char::is_uppercase) && self.words.contains(lower(word).as_str()))
+        if word.contains('\u{2019}') {
+            return self.inner.check(&word.replace('\u{2019}', "'"));
+        }
+        self.inner.check(word)
+    }
+
+    /// Spellbook's suggestions for `word`.
+    fn suggest(&self, word: &str, out: &mut Vec<String>) {
+        self.inner.suggest(&word.replace('\u{2019}', "'"), out);
     }
 }
 
@@ -419,16 +437,16 @@ impl Checker {
         }
     }
 
-    /// Whether the word is accepted: in the word list, the programming terms, `extra` (the user's
-    /// words, lower-case), a contraction, or a possessive of one of those. `buf` is scratch.
+    /// Whether the word is accepted: the programming terms, `extra` (the user's words,
+    /// lower-case) or a possessive of one of those, a contraction, or the dictionary. `buf` is
+    /// scratch.
     fn accepts(&self, piece: &str, extra: &[&HashSet<String>], buf: &mut String) -> bool {
         lower_into(piece, buf);
-        let known =
-            |w: &str| self.dict.contains_lower(w) || self.terms.contains(w) || extra.iter().any(|e| e.contains(w));
-        if known(buf) || CONTRACTIONS.contains(&buf.as_str()) {
+        let known = |w: &str| self.terms.contains(w) || extra.iter().any(|e| e.contains(w));
+        if known(buf) || CONTRACTIONS.contains(&buf.as_str()) || buf.strip_suffix("'s").is_some_and(known) {
             return true;
         }
-        buf.strip_suffix("'s").is_some_and(known)
+        self.dict.contains(piece)
     }
 
     /// Whether `word` (a piece, any case) is accepted.
@@ -461,81 +479,17 @@ impl Checker {
     }
 
     /// Up to [`MAX_SUGGESTIONS`] corrections for one misspelled word (a piece: pass
-    /// [`Misspelling::word`]), best first, in the word's case shape. Scans the whole list: ask
-    /// for one word on demand, never per mark.
+    /// [`Misspelling::word`]), best first. Ask for one word on demand, never per mark.
     pub fn suggest(&self, word: &str) -> Vec<String> {
-        let target: Vec<char> = lower(word).chars().collect();
-        if target.is_empty() {
-            return Vec::new();
+        let mut out = Vec::new();
+        if !word.is_empty() {
+            self.dict.suggest(word, &mut out);
         }
-        let mut cand: Vec<char> = Vec::new();
-        let mut scratch = Vec::new();
-        let mut found: Vec<(usize, bool, usize, &str)> = Vec::new();
-        for w in self.dict.words.iter().map(|w| &**w).chain(self.terms.iter().copied()) {
-            // Cheap reject on byte length (a char is up to 4 bytes) before decoding.
-            if w.len().abs_diff(target.len()) > MAX_DISTANCE * 4 + target.len() * 3 {
-                continue;
-            }
-            cand.clear();
-            cand.extend(w.chars());
-            if cand.len().abs_diff(target.len()) > MAX_DISTANCE {
-                continue;
-            }
-            let d = distance(&target, &cand, &mut scratch);
-            if (1..=MAX_DISTANCE).contains(&d) {
-                found.push((d, cand[0] != target[0], cand.len().abs_diff(target.len()), w));
-            }
-        }
-        found.sort_unstable();
-        found.dedup_by_key(|f| f.3);
-        found
-            .into_iter()
-            .take(MAX_SUGGESTIONS)
-            .map(|f| match_case(word, f.3))
-            .collect()
+        out.retain(|w| !w.eq_ignore_ascii_case(word));
+        out.dedup();
+        out.truncate(MAX_SUGGESTIONS);
+        out
     }
-}
-
-/// Damerau (optimal string alignment) distance.
-fn distance(a: &[char], b: &[char], m: &mut Vec<usize>) -> usize {
-    let w = b.len() + 1;
-    m.clear();
-    m.resize((a.len() + 1) * w, 0);
-    for (j, cell) in m.iter_mut().enumerate().take(w) {
-        *cell = j;
-    }
-    for i in 1..=a.len() {
-        m[i * w] = i;
-        for j in 1..=b.len() {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            let mut d = (m[(i - 1) * w + j] + 1)
-                .min(m[i * w + j - 1] + 1)
-                .min(m[(i - 1) * w + j - 1] + cost);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                d = d.min(m[(i - 2) * w + j - 2] + 1);
-            }
-            m[i * w + j] = d;
-        }
-    }
-    m[a.len() * w + b.len()]
-}
-
-/// `suggestion` in the case shape of `original`: ALL-CAPS, Capitalised, else as listed.
-fn match_case(original: &str, suggestion: &str) -> String {
-    let letters = original.chars().filter(|c| c.is_alphabetic());
-    let upper = letters.clone().filter(|c| c.is_uppercase()).count();
-    let total = letters.count();
-    if total > 1 && upper == total {
-        return suggestion.to_uppercase();
-    }
-    if original.chars().next().is_some_and(char::is_uppercase) {
-        let mut cs = suggestion.chars();
-        return cs
-            .next()
-            .map(|c| c.to_uppercase().chain(cs).collect())
-            .unwrap_or_default();
-    }
-    suggestion.to_string()
 }
 
 #[cfg(test)]
@@ -661,7 +615,6 @@ mod tests {
         assert_eq!(misses("color"), ["color"]);
         assert!(misses("don't it's can't").is_empty());
         assert!(misses("struct enum impl stdin mutex regex async tokio").is_empty());
-        assert!(Dictionary::bundled().len() > 100);
         assert!(Dictionary::bundled().contains("Parsing"));
     }
 
@@ -708,19 +661,13 @@ mod tests {
     }
 
     #[test]
-    fn spell_check_suggestions_limit_and_distance() {
+    fn spell_check_suggestions_limit() {
         let c = checker();
         let s = c.suggest("tet");
         assert!(!s.is_empty() && s.len() <= MAX_SUGGESTIONS);
         assert!(c.suggest("qqqqqqqqqq").is_empty());
         assert!(c.suggest("").is_empty());
-        let mut m = Vec::new();
-        let d = |a: &str, b: &str, m: &mut Vec<usize>| {
-            distance(&a.chars().collect::<Vec<_>>(), &b.chars().collect::<Vec<_>>(), m)
-        };
-        assert_eq!(d("recieve", "receive", &mut m), 1);
-        assert_eq!(d("kitten", "sitting", &mut m), 3);
-        assert_eq!(d("", "ab", &mut m), 2);
+        assert!(!c.suggest("tet").contains(&"tet".to_string()));
     }
 
     #[test]
@@ -748,7 +695,7 @@ mod tests {
         let got = misses(t);
         assert_eq!(got, ["recieve"]);
         assert!(misses("www.recieve.org mailto:recieve https://recieve.example/recieve").is_empty());
-        assert_eq!(misses("recieve.org"), ["recieve", "org"]);
+        assert_eq!(misses("recieve.org"), ["recieve"]);
         assert!(misses("it\u{2019}s server\u{2019}s").is_empty());
     }
 
@@ -768,66 +715,76 @@ mod tests {
     }
 
     #[test]
-    fn spell_check_suggestions_cap_and_order() {
-        let list: String = (b'a'..=b'l').map(|c| format!("cat{}\n", c as char)).collect::<String>() + "cart\ncat\n";
-        let c = Checker::new(Arc::new(Dictionary::from_list(&list)), Language::PlainText, 3);
-        let s = c.suggest("catz");
-        assert_eq!(s.len(), MAX_SUGGESTIONS, "{s:?}");
-        // All distance 1; equal length ranks before a shorter word, then alphabetical.
-        assert_eq!(s, ["cata", "catb", "catc", "catd", "cate", "catf", "catg", "cath"]);
-        // The word itself is never suggested.
-        assert!(!c.suggest("cat").contains(&"cat".to_string()));
-        // Distance 3 is out of range.
-        assert!(c.suggest("xxxcat").is_empty());
+    fn spell_check_word_list_dictionary() {
+        let list = "# c\nzzyx\n\nfoo\n";
+        let c = Checker::new(Arc::new(Dictionary::from_list(list)), Language::PlainText, 3);
+        assert!(c.is_known("zzyx", &[]) && c.is_known("foo", &[]) && !c.is_known("bar", &[]));
     }
 
-    /// Needs a real list: `JED_TEST_DICTIONARY=/path/to/en_AU.txt` (made by `scripts/gen-dictionary`).
+    /// A language dir under `dir` holding a tiny dictionary.
+    fn write_language(dir: &Path, lang: &str, words: &[&str]) {
+        let d = dir.join(lang);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join(format!("{lang}.aff")), "SET UTF-8\n").unwrap();
+        std::fs::write(
+            d.join(format!("{lang}.dic")),
+            format!("{}\n{}\n", words.len(), words.join("\n")),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn spell_check_load_picks_the_configured_language() {
+        let dir = tempfile::tempdir().unwrap();
+        // The default language needs no files; an installed one wins over the bundled.
+        let d = Dictionary::load(dir.path(), "en_AU");
+        assert!(d.missing_language().is_none() && d.contains("colour"));
+        write_language(dir.path(), "de_DE", &["Haus", "Maus"]);
+        let de = Dictionary::load(dir.path(), "de_DE");
+        assert!(de.missing_language().is_none());
+        assert!(de.contains("Haus") && !de.contains("colour"));
+        write_language(dir.path(), "en_AU", &["zzyx"]);
+        assert!(
+            Dictionary::load(dir.path(), "en_AU").contains("zzyx"),
+            "installed en_AU overrides"
+        );
+    }
+
+    #[test]
+    fn spell_check_load_falls_back_to_en_au() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = Dictionary::load(dir.path(), "fr_FR");
+        assert_eq!(d.missing_language(), Some("fr_FR"));
+        assert!(d.contains("colour"));
+        // Unparseable files and unsafe names fall back too.
+        std::fs::create_dir_all(dir.path().join("xx")).unwrap();
+        std::fs::write(dir.path().join("xx/xx.aff"), "FLAG nonsense\n").unwrap();
+        std::fs::write(dir.path().join("xx/xx.dic"), "x\n").unwrap();
+        assert_eq!(Dictionary::load(dir.path(), "xx").missing_language(), Some("xx"));
+        assert_eq!(Dictionary::load(dir.path(), "../xx").missing_language(), Some("../xx"));
+        assert!(
+            !valid_language("../xx") && !valid_language("") && valid_language("en_AU") && valid_language("sr-Latn")
+        );
+    }
+
     #[test]
     fn spell_check_real_dictionary() {
-        let Some(path) = std::env::var_os("JED_TEST_DICTIONARY") else {
-            eprintln!("spell_check_real_dictionary: JED_TEST_DICTIONARY not set, skipped");
-            return;
-        };
-        let path = std::path::PathBuf::from(path);
-        let dir = tempdir_with(&path);
-        let dict = Dictionary::load_installed(&dir);
-        assert!(!dict.is_placeholder());
-        eprintln!("real dictionary: {} words", dict.len());
-        let c = Checker::new(dict, Language::Rust, 3);
-        for w in ["colour", "centre", "organise", "parsing", "tokens", "receive", "don't"] {
+        let c = checker();
+        for w in [
+            "colour",
+            "centre",
+            "organise",
+            "parsing",
+            "tokens",
+            "receive",
+            "don't",
+            "Australia",
+        ] {
             assert!(c.is_known(w, &[]), "{w} should be known");
         }
         for w in ["color", "organize", "recieve", "unparsed"] {
             assert!(!c.is_known(w, &[]), "{w} should be unknown");
         }
         assert!(c.suggest("recieve").contains(&"receive".to_string()));
-        assert_eq!(c.suggest("Recieve")[0], "Receive");
-        let t = std::time::Instant::now();
-        let _ = c.suggest("buffr");
-        eprintln!("suggest over the real list: {:?}", t.elapsed());
-    }
-
-    /// A temp dir holding `file` as `en_AU.txt`.
-    fn tempdir_with(file: &std::path::Path) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("jed-spell-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::copy(file, dir.join("en_AU.txt")).unwrap();
-        dir
-    }
-
-    #[test]
-    fn spell_check_load_installed_falls_back() {
-        let dir = std::env::temp_dir().join(format!("jed-spell-missing-{}", std::process::id()));
-        assert!(Dictionary::load_installed(&dir).is_placeholder());
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("en_AU.txt"), "# c\nzzyx\n\nfoo\n").unwrap();
-        let d = Dictionary::load_installed(&dir);
-        assert!(!d.is_placeholder());
-        assert_eq!(d.len(), 2);
-        assert!(d.contains("ZZYX"));
-        std::fs::write(dir.join("en_AU.txt"), "").unwrap();
-        assert!(Dictionary::load_installed(&dir).is_placeholder());
-        std::fs::remove_dir_all(&dir).ok();
-        assert!(Dictionary::bundled().is_placeholder());
     }
 }
