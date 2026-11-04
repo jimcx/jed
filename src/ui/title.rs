@@ -13,8 +13,13 @@ const MIN_TITLE: u16 = 12;
 /// Draws the bar in `area` (one row); returns each button drawn with its index in
 /// `[window] buttons`. Buttons that don't fit (counting from the right-hand end) are left out.
 pub fn render(f: &mut Frame, area: Rect, app: &App) -> Vec<(Rect, usize)> {
-    let style = app.theme.get("titleBar");
-    let button_style = app.theme.get("titleBar.button");
+    let (bar, button) = if app.window_focused {
+        ("titleBar", "titleBar.button")
+    } else {
+        ("titleBar.inactive", "titleBar.inactive.button")
+    };
+    let style = app.theme.get(bar);
+    let button_style = app.theme.get(button);
     let out = f.buffer_mut();
     out.set_style(area, style);
 

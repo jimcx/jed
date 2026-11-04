@@ -346,6 +346,9 @@ pub struct App {
     opening: HashMap<PathBuf, files::OpenRequest>,
     clicks: ClickTracker,
     drag: Option<mouse::Drag>,
+    /// Whether the terminal window has the focus (`Event::FocusGained` / `FocusLost`; true until the
+    /// terminal says otherwise, and always so on terminals that don't report focus). The title bar greys out.
+    pub window_focused: bool,
     /// The mouse pointer's shape wanted (`run` sends it when it changes).
     pub pointer: crate::terminal::Pointer,
     /// The cursor shape the terminal has (`terminal::enter` sent the settings'; `run` sends a
@@ -568,6 +571,7 @@ impl App {
             opening: HashMap::new(),
             clicks: ClickTracker::default(),
             drag: None,
+            window_focused: true,
             pointer: crate::terminal::Pointer::Default,
             find_options: search::Options::default(),
             find: FindWidget::default(),
@@ -1142,7 +1146,11 @@ impl App {
                     self.completion_typed(c);
                 }
             }
-            Event::FocusLost => self.close_context_menu(),
+            Event::FocusLost => {
+                self.window_focused = false;
+                self.close_context_menu();
+            }
+            Event::FocusGained => self.window_focused = true,
             Event::Paste(text) => {
                 tracing::trace!(target: "input", len = text.len(), "paste");
                 if self.context_menu.is_some() {
@@ -1744,6 +1752,11 @@ impl App {
     /// The terminal reporting that it lost the focus.
     pub fn test_focus_lost(&mut self) {
         self.handle_event(Event::FocusLost);
+    }
+
+    /// The terminal reporting that it got the focus back.
+    pub fn test_focus_gained(&mut self) {
+        self.handle_event(Event::FocusGained);
     }
 
     /// Fires the tab tooltip's resting timer as the event loop would at `now`.

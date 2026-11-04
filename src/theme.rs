@@ -297,6 +297,9 @@ impl Theme {
             // The title bar (`[window] title_bar`): indigo, a hue none of the status bar's colours use.
             ("titleBar", fg_bg(0xFFFFFF, 0x35359A)),
             ("titleBar.button", fg_bg(0xFFFFFF, 0x5454C4)),
+            // The same while the terminal window has lost the focus.
+            ("titleBar.inactive", fg_bg(0xB0B0B0, 0x3A3A3A)),
+            ("titleBar.inactive.button", fg_bg(0xB0B0B0, 0x4A4A4A)),
             ("statusBar.warning", fg_bg(0x1E1E1E, 0xCCA700)),
             ("statusBar.error", fg_bg(0xFFFFFF, 0xC72E0F)),
             ("dialog", fg_bg(0xCCCCCC, 0x252526)),

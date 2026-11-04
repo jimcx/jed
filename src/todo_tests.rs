@@ -11985,6 +11985,19 @@ mod title_bar {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn title_bar_greys_while_the_window_is_unfocused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(&dir, "[window]\ntitle_bar = true\n");
+        let bg = |app: &mut App| draw(app).backend().buffer()[(0, 0)].bg;
+        assert_eq!(bg(&mut app), app.theme.get("titleBar").bg.unwrap());
+        app.test_focus_lost();
+        assert!(!app.window_focused);
+        assert_eq!(bg(&mut app), app.theme.get("titleBar.inactive").bg.unwrap());
+        app.test_focus_gained();
+        assert_eq!(bg(&mut app), app.theme.get("titleBar").bg.unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn title_override_and_click_run_the_command() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = open_app(
