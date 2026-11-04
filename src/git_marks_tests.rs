@@ -599,3 +599,124 @@ async fn git_marks_hex_shell_and_single_file_tabs_have_none() {
         "no marks in single file mode: {cells:?}"
     );
 }
+
+/// The marks column as drawn: each cell's background.
+fn drawn_marks(app: &mut App, height: u16) -> Vec<Option<Color>> {
+    let term = draw_sized(app, 100, height);
+    column(&term, marks_col(app))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn git_marks_scattered_changes_do_not_move_as_the_view_scrolls() {
+    for (height, wrap) in [(24, false), (41, false), (24, true), (41, true)] {
+        let (_d, root, state) = dirs();
+        let long = "word ".repeat(60);
+        let original: String = (0..500)
+            .map(|i| {
+                if i % 9 == 0 {
+                    format!("line {i} {long}\n")
+                } else {
+                    format!("line {i}\n")
+                }
+            })
+            .collect();
+        // 10 line changes and 10 additions scattered through the file.
+        let mut changed = String::new();
+        for i in 0..500 {
+            let orig = original.lines().nth(i).unwrap();
+            if i % 50 == 7 {
+                changed.push_str(&format!("{orig} changed\n"));
+            } else if i % 50 == 19 {
+                // deleted
+            } else if i % 50 == 31 {
+                changed.push_str(&format!("{orig}\nadded after {i}\n"));
+            } else {
+                changed.push_str(&format!("{orig}\n"));
+            }
+        }
+        repo(&root, &original, &changed);
+        let mut app = open_file_app(&root, &state, "f.txt");
+        assert!(settle_markers(&mut app).await);
+        if wrap {
+            app.test_execute(crate::command::Command::ToggleWordWrap);
+        }
+        let first = drawn_marks(&mut app, height);
+        let colours = gutter_colours(&app);
+        assert!(
+            first.iter().any(|c| c.is_some_and(|c| colours.contains(&c))),
+            "marks drawn"
+        );
+        for step in 1..=40 {
+            wheel_down(&mut app, 1);
+            assert!(settle_markers(&mut app).await);
+            let now = drawn_marks(&mut app, height);
+            let view = &app.group().active_tab().unwrap().view;
+            assert!(view.top_line() > 0 || view.top_row() > 0, "scrolled");
+            assert_eq!(
+                now, first,
+                "height {height}: marks moved after scroll step {step} (wrap {wrap})"
+            );
+        }
+    }
+}
+
+/// A diff tab's marks don't move when a long line scrolling into view brings the horizontal bar's
+/// row (the marks column keeps its full height under it; only its last cell, the corner, is
+/// blanked).
+#[tokio::test(flavor = "multi_thread")]
+async fn git_marks_diff_tab_marks_do_not_move_with_the_horizontal_bar() {
+    let (_d, root, state) = dirs();
+    let long = "word ".repeat(60);
+    let original: String = (0..500)
+        .map(|i| {
+            if i >= 60 && i % 9 == 0 {
+                format!("line {i} {long}\n")
+            } else {
+                format!("line {i}\n")
+            }
+        })
+        .collect();
+    let changed: String = original
+        .lines()
+        .enumerate()
+        .map(|(i, l)| match i % 50 {
+            7 => format!("{l} changed\n"),
+            19 => String::new(),
+            31 => format!("{l}\nadded after {i}\n"),
+            _ => format!("{l}\n"),
+        })
+        .collect();
+    repo(&root, &original, &changed);
+    let mut app = open_file_app(&root, &state, "f.txt");
+    assert!(
+        settle_git(&mut app, |s| s.entry(Path::new("f.txt")).is_some()).await,
+        "the status knows f.txt"
+    );
+    app.open_diff(root.join("f.txt"), Pair::UNSTAGED);
+    assert!(
+        app.settle(|a| a.diffs_settled() && a.git.status.is_some()).await,
+        "the diff is loaded"
+    );
+    // Without the corner cell, which the horizontal bar may blank.
+    let sample = |app: &mut App| {
+        let term = draw_sized(app, 100, 24);
+        let mut cells = column(&term, marks_col(app));
+        cells.pop();
+        (cells, bar(app).track.height)
+    };
+    let (first, _) = sample(&mut app);
+    let colours = gutter_colours(&app);
+    assert!(
+        first.iter().any(|c| c.is_some_and(|c| colours.contains(&c))),
+        "marks drawn"
+    );
+    let mut heights = std::collections::HashSet::new();
+    for step in 1..=60 {
+        let rows = app.hits.group(app.groups.active).unwrap().diff.as_ref().unwrap().rows;
+        app.mouse(MouseEventKind::ScrollDown, rows.x + 2, rows.y + 1);
+        let (now, height) = sample(&mut app);
+        heights.insert(height);
+        assert_eq!(now, first, "diff marks moved after scroll step {step}");
+    }
+    assert!(heights.len() > 1, "the horizontal bar came and went: {heights:?}");
+}

@@ -264,8 +264,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         // A text or diff tab keeps a second column, one cell left of the bar, for its changed
         // lines' marks (always, so nothing reflows when they appear or go); a hex tab has none,
         // and single file mode has no git status to mark.
-        let mut marks_col = if !app.mode.is_single() && (group.active_tab().is_some() || group.active_diff().is_some())
-        {
+        let marks_col = if !app.mode.is_single() && (group.active_tab().is_some() || group.active_diff().is_some()) {
             scrollbar::take_column(&mut editor_area)
         } else {
             None
@@ -293,11 +292,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
         {
             b.height -= 1;
         }
-        if hrow.is_some()
-            && let Some(m) = &mut marks_col
-        {
-            m.height -= 1;
-        }
+        // The marks column keeps its full height whether or not the horizontal bar's row is
+        // there (it covers the column's last cell), so a mark's cell doesn't depend on which
+        // lines are drawn: see `render_marks`' caller for the text tab.
         // The sideways scroll's state as drawn, and the cells its bar may take.
         let mut hscroll = None;
         let mut text = Rect::default();
@@ -502,7 +499,13 @@ pub fn render(f: &mut Frame, app: &mut App) {
                         .collect();
                     if let Some(m) = marks_col {
                         let out = f.buffer_mut();
-                        scrollbar::render_marks(out, m, scroll, editor_bg, &app.theme, &marks);
+                        // The track is the full column; the view is a row shorter under the
+                        // horizontal bar, so count that row back in to keep the projection fixed.
+                        let full = crate::scrollbar::Scroll {
+                            height: scroll.height + usize::from(hrow.is_some()),
+                            ..scroll
+                        };
+                        scrollbar::render_marks(out, m, full, editor_bg, &app.theme, &marks);
                         marks_hit = Some(m);
                     }
                     scroll_hit = Some(scrollbar::render(
