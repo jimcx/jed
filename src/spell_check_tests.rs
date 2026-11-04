@@ -187,7 +187,7 @@ async fn spell_check_a_half_typed_word_is_not_flagged() {
     let dir = tempfile::tempdir().unwrap();
     let mut e = open(&dir, "a.txt", "ok\n", |_| {});
     idle(&mut e.app).await;
-    e.app.press(K::End, M::CONTROL);
+    e.app.press(K::Down, M::NONE); // onto the empty last line (Ctrl+End is not bound on macOS)
     e.app.type_text("recieveMessage");
     idle(&mut e.app).await;
     assert!(spelled(&e.app).is_empty(), "no mark while the caret is in the word");
