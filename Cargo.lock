@@ -960,6 +960,7 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "vt100",
+ "zstd",
 ]
 
 [[package]]

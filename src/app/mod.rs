@@ -301,6 +301,9 @@ pub struct App {
     /// Where the session file goes (`paths::state_dir()`); `None` turns sessions off (tests,
     /// unless set before `test_start`).
     pub state_dir: Option<PathBuf>,
+    /// Where the bundled dictionary and the notices are written out (`paths::data_dir()`,
+    /// `assets::sync`, with the dictionary's first load); `None` in tests.
+    pub data_dir: Option<PathBuf>,
     /// Where the task socket goes (`ipc::default_socket_dir()`); `None` (tests unless set) means
     /// no socket. `start` listens there.
     pub ipc_dir: Option<PathBuf>,
@@ -541,6 +544,7 @@ impl App {
             state_dir: Some(crate::paths::state_dir()),
             #[cfg(test)]
             state_dir: None,
+            data_dir: (!cfg!(test)).then(crate::paths::data_dir),
             ipc_dir: (!cfg!(test)).then(crate::ipc::default_socket_dir),
             ipc: Default::default(),
             session: Default::default(),

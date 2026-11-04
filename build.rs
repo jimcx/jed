@@ -5,13 +5,42 @@
 use std::path::Path;
 use std::process::Command;
 
+#[path = "src/bundle.rs"]
+mod bundle;
+
 fn git(args: &[&str]) -> Option<String> {
     let out = Command::new("git").args(args).output().ok()?;
     let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
     (out.status.success() && !s.is_empty()).then_some(s)
 }
 
+/// Packs the files of `dir` (or `files`) into `$OUT_DIR/<out>` with `bundle::pack`.
+fn pack(out: &str, files: Vec<std::path::PathBuf>) {
+    let mut entries = Vec::new();
+    for path in files {
+        println!("cargo:rerun-if-changed={}", path.display());
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        entries.push((
+            name,
+            std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())),
+        ));
+    }
+    entries.sort();
+    let dest = Path::new(&std::env::var_os("OUT_DIR").unwrap()).join(out);
+    std::fs::write(dest, bundle::pack(&entries).unwrap()).unwrap();
+}
+
+/// `assets/dictionaries/en_AU/` and `NOTICES.md`, zstd-packed for `src/assets.rs`.
+fn pack_assets() {
+    let dir = Path::new("assets/dictionaries/en_AU");
+    println!("cargo:rerun-if-changed={}", dir.display());
+    let files = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
+    pack("en_AU.zst", files);
+    pack("notices.zst", vec!["NOTICES.md".into()]);
+}
+
 fn main() {
+    pack_assets();
     // Rebuild when HEAD moves (checkout, commit) or tags change.
     if let Some(dir) = git(&["rev-parse", "--git-dir"]) {
         println!("cargo:rerun-if-changed={dir}/HEAD");

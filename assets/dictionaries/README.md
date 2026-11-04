@@ -1,6 +1,6 @@
 # Bundled dictionaries
 
-Used by `src/spellcheck.rs` (`include_str!`).
+Used by `src/spellcheck.rs`; `build.rs` zstd-packs `en_AU/` into the binary (`src/assets.rs`), so a refreshed dictionary needs a rebuild.
 
 - `en_AU/` — the Australian English Hunspell dictionary (`en_AU.aff`, `en_AU.dic`) with its
   licence file (`README_en_AU.txt`: the SCOWL, Ispell and WordNet notices; the folder's generic

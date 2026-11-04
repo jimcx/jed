@@ -1,10 +1,12 @@
 mod app;
 #[cfg(test)]
 mod apple_langs_tests;
+mod assets;
 mod backup;
 mod blame;
 mod brackets;
 mod buffer;
+mod bundle;
 mod cheatsheet;
 #[cfg(test)]
 mod clear_scrollback_tests;

@@ -7,6 +7,12 @@ pub fn state_dir() -> PathBuf {
     xdg_dir("XDG_STATE_HOME", ".local/state")
 }
 
+/// `$XDG_DATA_HOME/jed`, defaulting to `~/.local/share/jed`: files jed ships and writes out
+/// (the bundled dictionary and the notices), not state to keep.
+pub fn data_dir() -> PathBuf {
+    xdg_dir("XDG_DATA_HOME", ".local/share")
+}
+
 /// `$XDG_CONFIG_HOME/jed`, defaulting to `~/.config/jed` (on macOS too).
 pub fn config_dir() -> PathBuf {
     xdg_dir("XDG_CONFIG_HOME", ".config")

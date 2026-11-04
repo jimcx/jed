@@ -464,8 +464,20 @@ impl App {
         let dir = self.config_dir.clone();
         let root = self.workspace.root.clone();
         let language = self.settings.spell_check_language.clone();
+        let data_dir = self.data_dir.clone().filter(|_| dict);
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
+            if let Some(data) = data_dir {
+                match crate::assets::sync(&data) {
+                    Ok(0) => {}
+                    Ok(n) => {
+                        tracing::info!(target: "jed::spell", n, dir = %data.display(), "wrote the bundled dictionary")
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: "jed::spell", dir = %data.display(), "writing the bundled dictionary: {e}")
+                    }
+                }
+            }
             let loaded = Loaded {
                 dict: dict.then(|| Dictionary::load(&dir.join("dictionaries"), &language)),
                 user: user.then(|| spell_dict::load(&spell_dict::user_path(&dir))),

@@ -13,8 +13,8 @@
 //!
 //! **Dictionaries**: Hunspell `.aff` + `.dic` pairs read by the `spellbook` crate (which does the
 //! affix expansion, case rules and suggestions). Australian English (`en_AU`, [`DEFAULT_LANGUAGE`])
-//! is compiled in with its licence (`assets/dictionaries/en_AU/`, fetched by
-//! `scripts/fetch-dictionary`). The `spell_check_language` setting names another language: its
+//! is compiled in zstd-packed with its licence (`assets/dictionaries/en_AU/`, fetched by
+//! `scripts/fetch-dictionary`, packed by `build.rs`, see `assets.rs`). The `spell_check_language` setting names another language: its
 //! pair is read from `<config dir>/dictionaries/<lang>/<lang>.{aff,dic}` (same script, given that
 //! directory), see [`Dictionary::load`]; one that is missing falls back to `en_AU`
 //! ([`Dictionary::missing_language`] says so, the app tells the user once). Always bundled:
@@ -39,6 +39,7 @@ use std::sync::{Arc, OnceLock};
 
 use std::path::Path;
 
+use crate::assets;
 use crate::buffer::pos::ByteIdx;
 use crate::syntax::Language;
 
@@ -47,8 +48,6 @@ pub const MAX_SUGGESTIONS: usize = 8;
 /// The language of the bundled dictionary, and the default `spell_check_language`.
 pub const DEFAULT_LANGUAGE: &str = "en_AU";
 
-const EN_AU_AFF: &str = include_str!("../assets/dictionaries/en_AU/en_AU.aff");
-const EN_AU_DIC: &str = include_str!("../assets/dictionaries/en_AU/en_AU.dic");
 const CODE: &str = include_str!("../assets/dictionaries/code.txt");
 const RUST: &str = include_str!("../assets/dictionaries/lang/rust.txt");
 const PYTHON: &str = include_str!("../assets/dictionaries/lang/python.txt");
@@ -341,8 +340,16 @@ impl Dictionary {
     /// Blocking: call from spawn_blocking (parses ~550 KB).
     pub fn bundled() -> Arc<Dictionary> {
         static DICT: OnceLock<Arc<Dictionary>> = OnceLock::new();
-        DICT.get_or_init(|| Arc::new(Dictionary::from_hunspell(EN_AU_AFF, EN_AU_DIC).expect("bundled en_AU parses")))
-            .clone()
+        DICT.get_or_init(|| {
+            Arc::new(
+                Dictionary::from_hunspell(
+                    assets::dictionary_text("en_AU.aff"),
+                    assets::dictionary_text("en_AU.dic"),
+                )
+                .expect("bundled en_AU parses"),
+            )
+        })
+        .clone()
     }
 
     /// The dictionary for `language`: `<dir>/<language>/<language>.aff` and `.dic` (`dir` =
