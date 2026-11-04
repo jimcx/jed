@@ -114,7 +114,7 @@ impl App {
         let sink: Sink = Arc::new(move |ev| {
             let _ = tx.send(AppEvent::Terminal(TerminalEvent::Shell(ev)));
         });
-        let tab = ShellTab::new(id, spec, rows, cols, sink, self.settings.scrollback, number);
+        let tab = ShellTab::new(id, spec, rows, cols, sink, self.settings.scrollback_options(), number);
         tracing::info!(shell = %base, run = id.0, "opened a shell tab");
         if in_terminal {
             self.terminals.active_group_mut().open_tab(Tab::Shell(Box::new(tab)));

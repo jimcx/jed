@@ -221,6 +221,11 @@ const SETTINGS_KEYS: &[KeySchema] = &[
         ValueKind::StrList,
         "Language ids that are not spell-checked",
     ),
+    key(
+        "scrollback_compression",
+        ValueKind::Bool,
+        "Keep old scrollback lines compressed (less memory, a little CPU)",
+    ),
 ];
 
 const WINDOW_KEYS: &[KeySchema] = &[

@@ -54,7 +54,7 @@ tree-sitter-yaml = "0.7.2"
 tui-term = { version = "0.3.4", default-features = false }
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
-vt100 = "0.18.1"
+vt100 = { version = "0.18.1", features = ["compress"] }
 pulldown-cmark = { version = "0.13.6", default-features = false }
 
 [dev-dependencies]
@@ -71,9 +71,10 @@ strip = true
 crossterm = { git = "https://github.com/jimcx/crossterm.git", tag = "0.29+fwdback" }
 # jed's vt100 fork (based on 0.18.1): adds `Screen::mark_prompt` / `clear_before_prompt` and
 # `Screen::scrolled_lines` (lines ever pushed into the scrollback, for the terminal selection to
-# follow its text). On a vt100 upgrade, rebase the fork's `jed` changes onto the new release and
+# follow its text) and the `compress` feature (zstd-compressed old scrollback rows, `Screen::set_scrollback_compression`;
+# rows evicted while compressed skip the `on_row` callback). On a vt100 upgrade, rebase the fork's `jed` changes onto the new release and
 # re-tag.
-vt100 = { git = "https://github.com/jimcx/vt100-rust.git", tag = "v0.18.1+jed2" }
+vt100 = { git = "https://github.com/jimcx/vt100-rust.git", tag = "v0.18.1+jed3" }
 
 # Dependencies (ropey, ratatui, tree-sitter and its C grammars, regex, …) build optimised and
 # without their debug assertions in dev and test builds: the tests spent most of their CPU in

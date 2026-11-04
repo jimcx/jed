@@ -9,6 +9,7 @@
 
 use std::path::Path;
 
+use crate::tasks::run::Scrollback;
 use crate::tasks::templates::{self, Spec};
 use crate::tasks::{Run, RunId, Sink};
 
@@ -35,7 +36,15 @@ pub struct ShellTab {
 impl ShellTab {
     /// Starts `spec` in a `rows` × `cols` PTY, the `number`th shell of its program (`App::new_shell`
     /// picks the number). The run's parser captures the shell's OSC codes for the title.
-    pub fn new(id: RunId, spec: Spec, rows: u16, cols: u16, sink: Sink, scrollback: usize, number: usize) -> ShellTab {
+    pub fn new(
+        id: RunId,
+        spec: Spec,
+        rows: u16,
+        cols: u16,
+        sink: Sink,
+        scrollback: impl Into<Scrollback>,
+        number: usize,
+    ) -> ShellTab {
         let base = spec.name.clone();
         let run = Run::start(id, spec, rows, cols, sink, scrollback);
         ShellTab {

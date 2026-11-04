@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use run::{Event, Exit, Run, RunId, Sink, Status, TerminalScroll};
+pub use run::{Event, Exit, Run, RunId, Scrollback, Sink, Status, TerminalScroll};
 pub use templates::{Environment, NamedEnvironment, Source, Task, Template};
 
 /// How long quitting waits for SIGHUP'd tasks before SIGKILLing what's left.
@@ -110,7 +110,7 @@ impl Tasks {
         template: &Template,
         root: &Path,
         vars: &Environment,
-        scrollback: usize,
+        scrollback: impl Into<Scrollback>,
     ) -> Result<RunId, String> {
         let mut spec = template.resolve(root, &self.shell, vars)?;
         let id = self.new_run_id();
@@ -127,7 +127,7 @@ impl Tasks {
 
     /// [`run_with`](Self::run_with) with no variables (tests; a template using `{{NAME}}` panics).
     #[cfg(test)]
-    pub fn run(&mut self, template: &Template, root: &Path, scrollback: usize) -> RunId {
+    pub fn run(&mut self, template: &Template, root: &Path, scrollback: impl Into<Scrollback>) -> RunId {
         self.run_with(template, root, &Environment::new(), scrollback).unwrap()
     }
 

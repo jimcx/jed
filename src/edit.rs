@@ -86,6 +86,9 @@ pub struct Settings {
     pub spell_check_ignore_words: Vec<String>,
     /// Language ids (`Language::id`) that are not spell-checked: `[settings] spell_check_off_languages`.
     pub spell_check_off_languages: Vec<String>,
+    /// Keep a terminal's old scrollback lines zstd-compressed, read when the run is created:
+    /// `[settings] scrollback_compression`.
+    pub scrollback_compression: bool,
 }
 
 /// What the spell checker looks at (`spell_scope`): `[settings] spell_check_scope`.
@@ -162,6 +165,16 @@ pub enum RenderWhitespace {
     All,
 }
 
+impl Settings {
+    /// What a new shell or task run keeps above its screen.
+    pub fn scrollback_options(&self) -> crate::tasks::run::Scrollback {
+        crate::tasks::run::Scrollback {
+            lines: self.scrollback,
+            compress: self.scrollback_compression,
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -189,6 +202,7 @@ impl Default for Settings {
             spell_check_language: SpellLanguage::EnAu,
             spell_check_ignore_words: Vec::new(),
             spell_check_off_languages: Vec::new(),
+            scrollback_compression: false,
         }
     }
 }

@@ -39,6 +39,21 @@ use crate::scrollbar::{Scroll, Scrollable};
 
 /// Lines of output kept above the screen unless the `scrollback` setting says otherwise.
 pub const SCROLLBACK: usize = 5_000;
+
+/// How a run keeps its output above the screen (the `scrollback` and `scrollback_compression`
+/// settings, read when the run is created). A bare line count means no compression.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Scrollback {
+    pub lines: usize,
+    /// Keep old lines zstd-compressed (`vt100`'s `compress` feature).
+    pub compress: bool,
+}
+
+impl From<usize> for Scrollback {
+    fn from(lines: usize) -> Self {
+        Self { lines, compress: false }
+    }
+}
 /// At most one `Event::Output` per run this often.
 pub const FRAME: Duration = Duration::from_millis(20);
 /// `kill`: SIGHUP first, SIGKILL if the process is still there this much later.
@@ -241,17 +256,20 @@ impl Run {
     /// Starts `spec` in a `rows` × `cols` PTY, off the UI thread (needs a tokio runtime; without
     /// one the run fails at once). `sink` hears about it from other threads; `scrollback` is the
     /// lines kept above the screen (the `scrollback` setting, read when the run is created).
-    pub fn start(id: RunId, spec: Spec, rows: u16, cols: u16, sink: Sink, scrollback: usize) -> Run {
+    pub fn start(id: RunId, spec: Spec, rows: u16, cols: u16, sink: Sink, scrollback: impl Into<Scrollback>) -> Run {
+        let scrollback = scrollback.into();
         let (rows, cols) = (rows.max(1), cols.max(1));
         let callbacks = TitleCallback::new(id, sink.clone(), spec.name.clone());
         let shared = Arc::new(Shared {
             id,
-            parser: Mutex::new(vt100::Parser::new_with_callbacks(
-                nonzero(rows),
-                nonzero(cols),
-                scrollback,
-                callbacks,
-            )),
+            parser: Mutex::new({
+                let mut parser =
+                    vt100::Parser::new_with_callbacks(nonzero(rows), nonzero(cols), scrollback.lines, callbacks);
+                if scrollback.compress {
+                    parser.screen_mut().set_scrollback_compression(true);
+                }
+                parser
+            }),
             selection: Mutex::new(None),
             dragging: AtomicBool::new(false),
             drag_lines: AtomicUsize::new(0),

@@ -162,10 +162,12 @@ impl App {
             }
         }
         let vars = self.environment_vars();
-        match self
-            .tasks
-            .run_with(template, &self.workspace.root, &vars, self.settings.scrollback)
-        {
+        match self.tasks.run_with(
+            template,
+            &self.workspace.root,
+            &vars,
+            self.settings.scrollback_options(),
+        ) {
             Ok(id) => Some(id),
             Err(name) => {
                 let hint = match &self.environment {

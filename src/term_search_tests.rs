@@ -79,3 +79,34 @@ async fn term_search_finds_in_the_scrollback_and_steps() {
     app.press(KeyCode::Esc, KeyModifiers::NONE);
     assert!(app.term_search.is_none(), "Esc closed the bar");
 }
+
+/// With `scrollback_compression` on, old lines are kept compressed (`scrollback_compressed`), and
+/// searching still finds and scrolls to a line that has been compressed.
+#[tokio::test(flavor = "multi_thread")]
+async fn term_search_finds_lines_in_compressed_scrollback() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    app.settings.scrollback_compression = true;
+    app.tasks.shell = "/bin/sh".into();
+    app.new_shell_in_editor();
+    assert!(app.settle(|a| !screen_text(a).trim().is_empty()).await);
+    drop(draw(&mut app, 100, 30));
+    app.group().active_shell().unwrap().run.write(b"seq 1 3000\n");
+    assert!(
+        app.settle(|a| screen_text(a).lines().any(|l| l.trim_end() == "3000"))
+            .await
+    );
+    {
+        let run = &app.group().active_shell().unwrap().run;
+        assert!(
+            run.screen().screen().scrollback_compressed(),
+            "old lines were compressed"
+        );
+    }
+
+    app.press(KeyCode::Char('f'), find_mods());
+    app.type_text("1234");
+    assert_eq!(label(&app), "1 of 1");
+    assert!(screen_text(&app).lines().any(|l| l.trim_end() == "1234"));
+    assert!(scrollback(&app) > 0);
+}

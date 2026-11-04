@@ -26,6 +26,7 @@
 //! | `spell_check_language` | str | `"en_AU"` | The dictionary (only `en_AU` ships)                      |
 //! | `spell_check_ignore_words` | str list | `[]` | Extra words accepted everywhere (case-insensitive)   |
 //! | `spell_check_off_languages` | str list | `[]` | Language ids not spell-checked, e.g. `["log"]`       |
+//! | `scrollback_compression` | bool | false | Keep old scrollback lines zstd-compressed (less memory)     |
 //!
 //! Precedence, per key: defaults ← `settings.toml` ← `.workspace` (`layer`). `[window]` (`title`, `status_bar`) layers the same way (`WindowConfig::layered`).
 //!
@@ -102,6 +103,8 @@ pub struct SettingsOverrides {
     pub spell_check_ignore_words: Option<Vec<String>>,
     /// Language ids the spell checker skips (a `.workspace` list replaces the user's).
     pub spell_check_off_languages: Option<Vec<String>>,
+    /// Keep old scrollback lines compressed (less memory, a little CPU), read when the run is created.
+    pub scrollback_compression: Option<bool>,
 }
 
 fn hex_bytes_per_line<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
@@ -187,6 +190,9 @@ impl SettingsOverrides {
         }
         if let Some(ids) = &self.spell_check_off_languages {
             s.spell_check_off_languages = ids.clone();
+        }
+        if let Some(on) = self.scrollback_compression {
+            s.scrollback_compression = on;
         }
     }
 }
@@ -377,6 +383,7 @@ pub const TEMPLATE: &str = "\
 # spell_check_language = \"en_AU\"  # the dictionary; only en_AU ships
 # spell_check_ignore_words = []  # extra accepted words, e.g. [\"tokio\"]; more in dictionary.txt
 # spell_check_off_languages = []  # language ids not checked, e.g. [\"log\"]
+# scrollback_compression = false  # keep old scrollback lines compressed: less memory, a little CPU
 
 # The language server for a language id (a built-in one's, such as python, or a syntax plugin's),
 # in every workspace. A trusted .workspace [lsp.<id>] wins over this; this wins over the built-in
@@ -464,6 +471,7 @@ mod tests {
                 hex_bytes_per_line: Some(16),
                 rulers: Some(vec![80, 100]),
                 scrollback: Some(50),
+                scrollback_compression: None,
                 word_wrap: Some(WordWrap::On),
                 tabs_at_bottom: Some(true),
                 spell_check_scope: Some(SpellScope::CommentsAndStrings),
@@ -534,6 +542,20 @@ mod tests {
         assert_eq!(u.overrides.cursor_blinking, Some(false), "the other key still applies");
         assert_eq!(u.errors.len(), 1, "{:?}", u.errors);
         assert!(u.errors[0].contains("`cursor_style`"), "{:?}", u.errors);
+    }
+
+    #[test]
+    fn scrollback_compression_is_off_unless_asked_and_the_workspace_wins() {
+        assert!(!Settings::default().scrollback_compression);
+        let user = set("[settings]\nscrollback_compression = true\n");
+        assert!(layer(&user, &SettingsOverrides::default()).scrollback_compression);
+        let ws = set("[settings]\nscrollback_compression = false\n");
+        assert!(
+            !layer(&user, &ws).scrollback_compression,
+            "the workspace overrides the user"
+        );
+        let ws_on = set("[settings]\nscrollback_compression = true\n");
+        assert!(layer(&SettingsOverrides::default(), &ws_on).scrollback_compression);
     }
 
     #[test]
@@ -727,6 +749,7 @@ mod tests {
             hex_bytes_per_line: Some(1),
             rulers: Some(Vec::new()),
             scrollback: Some(5_000),
+            scrollback_compression: Some(false),
             word_wrap: Some(WordWrap::Off),
             tabs_at_bottom: Some(false),
             spell_check_scope: Some(SpellScope::All),
