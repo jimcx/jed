@@ -733,6 +733,8 @@ async fn milestone_10_gutter_markers_follow_edits_and_the_index() {
     repo_with(&root, &[("a.txt", &text), ("new.txt", "n\n")], &[("a.txt", &changed)]);
     fs::write(root.join("untracked.txt"), "u\n").unwrap();
     let mut app = open_file_app(&root, &state, "a.txt");
+    // Typing would open a word list over the gutter.
+    app.settings.word_based_suggestions = false;
     assert!(settle_markers(&mut app).await);
     let (added, modified, deleted) = (
         marker_colour(&app, "editorGutter.addedBackground"),

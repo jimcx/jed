@@ -196,6 +196,7 @@ mod untitled_tests;
 mod url;
 mod view;
 mod watcher;
+mod word_completion;
 mod workspace;
 mod workspace_search;
 mod wrap;

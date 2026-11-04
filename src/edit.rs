@@ -51,6 +51,8 @@ pub struct Settings {
     /// Typing a word char asks the language server for completions (outside strings and
     /// comments): `[settings] quick_suggestions`.
     pub quick_suggestions: bool,
+    /// Words of the open buffers are offered where no language server answers: `[settings] word_based_suggestions`.
+    pub word_based_suggestions: bool,
     /// Which spaces and tabs the editor draws as `·` / `→` (`ui::editor`, drawing only):
     /// `[settings] render_whitespace`. "View: Toggle Render Whitespace" overrides it for the
     /// session (`App::render_whitespace`).
@@ -189,6 +191,7 @@ impl Default for Settings {
             selection_highlight: true,
             semantic_highlighting: SemanticHighlighting::On,
             quick_suggestions: true,
+            word_based_suggestions: true,
             render_whitespace: RenderWhitespace::All,
             word_wrap: WordWrap::Off,
             tabs_at_bottom: false,

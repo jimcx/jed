@@ -20,22 +20,26 @@
 //!   edits, a resolve goes out after inserting it and its additional edits (auto-imports) are
 //!   applied when it answers, as their own undo step, if the buffer is still as the insert left it.
 
+use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use lsp_types::ServerCapabilities;
 use serde_json::{Value, json};
 
+use super::hex::ViewEvent;
 use super::lsp::{Pending, Request};
-use super::{App, Focus, Level};
+use super::{App, AppEvent, Focus, Level};
 use crate::buffer::BufferId;
 use crate::buffer::change::{Assoc, ChangeSet};
-use crate::buffer::pos::{self, ByteIdx, LspPos};
+use crate::buffer::pos::{self, ByteIdx, LspPos, PosEncoding};
 use crate::buffer::undo::EditKind;
 use crate::command::SuggestCommand;
 use crate::completion::{self, Anchor, Ask, Insertion, Popup, Quick, Trigger};
 use crate::config::complete;
 use crate::layout::{GroupId, Hit};
+use crate::lsp::ServerId;
 use crate::syntax::Scope;
 
 /// Lines scanned upward for a config file's table header.
@@ -78,6 +82,7 @@ impl App {
     /// False when no running server with completion has the document.
     fn ask_completion(&mut self, trigger: Trigger) -> bool {
         self.completion.quick = None;
+        self.completion.word_ask = None;
         let Some((group, buffer, at)) = self.editor_cursor() else {
             return false;
         };
@@ -105,7 +110,7 @@ impl App {
             extra,
         ) {
             self.completion.ask = None;
-            return false;
+            return self.word_completion(group, buffer, at, trigger);
         }
         let (Some((server, encoding, _)), Some(buf)) = (self.lsp.server_of(buffer), self.buffers.get(buffer)) else {
             return false;
@@ -118,6 +123,144 @@ impl App {
             trigger,
         });
         true
+    }
+
+    /// The open buffers whose words are offered in `buffer`: it first, then the others of its
+    /// language (VS Code's `matchingDocuments`), by id.
+    fn word_buffers(&self, buffer: BufferId) -> Vec<BufferId> {
+        let Some(lang) = self.buffers.get(buffer).map(|b| b.syntax.language()) else {
+            return Vec::new();
+        };
+        let mut others: Vec<BufferId> = self
+            .buffers
+            .iter()
+            .filter(|(id, b)| *id != buffer && b.syntax.language() == lang && b.config_file.is_none())
+            .map(|(id, _)| id)
+            .collect();
+        others.sort_unstable();
+        others.insert(0, buffer);
+        others
+    }
+
+    /// No server answers at `at`: the list of the open buffers' words (`word_based_suggestions`).
+    /// Buffers whose words aren't cached for their revision are collected off-thread (the list
+    /// opens in `words_collected`); else the list is built at once. True when the list is shown
+    /// or pending.
+    fn word_completion(&mut self, group: GroupId, buffer: BufferId, at: ByteIdx, trigger: Trigger) -> bool {
+        if !self.settings.word_based_suggestions {
+            return false;
+        }
+        let Some(buf) = self.buffers.get(buffer) else {
+            return false;
+        };
+        let word = completion::word_before(&buf.rope, at);
+        let anchor = Anchor::new(
+            (group, buffer),
+            (ServerId::none(), PosEncoding::Utf8),
+            (buf.rope.clone(), buf.sets_applied()),
+            at,
+            word,
+        );
+        self.completion.generation += 1;
+        let generation = self.completion.generation;
+        let ask = Ask {
+            generation,
+            anchor,
+            trigger,
+        };
+        let stale: Vec<_> = self
+            .word_buffers(buffer)
+            .into_iter()
+            .filter_map(|id| self.buffers.get(id).map(|b| (id, b.revision(), b.rope.clone())))
+            .filter(|(id, rev, _)| self.completion.words.get(*id, *rev).is_none())
+            .collect();
+        if stale.is_empty() {
+            return self.show_words(ask);
+        }
+        self.completion.word_ask = Some(ask);
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let results = stale
+                .into_iter()
+                .map(|(id, rev, rope)| {
+                    let words = crate::word_completion::collect(
+                        &rope,
+                        crate::word_completion::MAX_BYTES,
+                        crate::word_completion::MAX_WORDS,
+                    );
+                    (id, rev, Arc::new(words))
+                })
+                .collect();
+            let _ = tx.send(AppEvent::View(ViewEvent::Words { generation, results }));
+        });
+        true
+    }
+
+    /// Opens the list of the cached words for `ask` (all the buffers' words are in the cache);
+    /// false (nothing opened) when none matches what is typed.
+    fn show_words(&mut self, ask: Ask) -> bool {
+        let Some((_, buffer, head)) = self.editor_cursor() else {
+            return false;
+        };
+        let Some(buf) = self.buffers.get(buffer).filter(|_| buffer == ask.anchor.buffer) else {
+            return false;
+        };
+        if head < ask.anchor.start || head.0 > buf.rope.len() {
+            return false;
+        }
+        let typed = buf.rope.slice(ask.anchor.start.0..head.0).to_string();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let lists: Vec<_> = self
+            .word_buffers(buffer)
+            .into_iter()
+            .filter_map(|id| self.completion.words.latest(id))
+            .collect();
+        let mut items = Vec::new();
+        for w in lists.iter().flat_map(|l| l.iter()) {
+            if *w != typed && seen.insert(w.as_str()) {
+                items.push(completion::Item::word(w.clone(), items.len()));
+            }
+        }
+        let mut popup = Popup::new(ask.anchor, ask.generation, items, false, typed);
+        popup.refilter(&buf.rope, head, &mut self.completion.filter, true);
+        if popup.shown.is_empty() {
+            return false;
+        }
+        self.completion.popup = Some(popup);
+        self.needs_redraw = true;
+        true
+    }
+
+    /// The words collected off-thread for `generation` (cached whatever the generation): opens
+    /// the list if that request is still wanted.
+    pub(super) fn words_collected(&mut self, generation: u64, results: Vec<(BufferId, u64, Arc<Vec<String>>)>) {
+        for (id, revision, words) in results {
+            self.completion.words.put(id, revision, words);
+        }
+        let buffers = &self.buffers;
+        self.completion.words.prune(|id| buffers.get(id).is_some());
+        let Some(ask) = self.completion.word_ask.take_if(|a| a.generation == generation) else {
+            return;
+        };
+        if self.completion.popup.is_some() || !self.ask_in_word(&ask) {
+            return;
+        }
+        if !self.show_words(Ask {
+            generation,
+            anchor: ask.anchor,
+            trigger: ask.trigger,
+        }) && ask.trigger == Trigger::Invoked
+        {
+            self.notify(Level::Info, "No suggestions.".into());
+        }
+    }
+
+    /// The editor's cursor is still in the word `ask` was made in.
+    fn ask_in_word(&self, ask: &Ask) -> bool {
+        let a = &ask.anchor;
+        self.editor_cursor().is_some_and(|(g, b, head)| {
+            (g, b) == (a.group, a.buffer) && self.buffers.get(b).is_some_and(|buf| a.in_word(&buf.rope, head))
+        })
     }
 
     /// The list for a config file (`settings.toml`, `.workspace`, `keybindings.toml`), built here
@@ -185,7 +328,7 @@ impl App {
         let Some(ask) = self.completion.ask.take_if(|a| a.generation == generation) else {
             return;
         };
-        let Some((_, buffer, head)) = self.editor_cursor() else {
+        let Some((group, buffer, head)) = self.editor_cursor() else {
             return;
         };
         let (items, incomplete) = completion::parse(value);
@@ -210,10 +353,14 @@ impl App {
         let Some(buf) = self.buffers.get(buffer) else { return };
         popup.refilter(&buf.rope, head, &mut self.completion.filter, true);
         if popup.shown.is_empty() {
-            if ask.trigger == Trigger::Invoked {
+            // The server had nothing: the open buffers' words instead.
+            let words = !popup.incomplete && self.word_completion(group, buffer, head, ask.trigger);
+            if !words && ask.trigger == Trigger::Invoked {
                 self.notify(Level::Info, "No suggestions.".into());
             }
-            self.completion.popup = popup.incomplete.then_some(popup);
+            if !words {
+                self.completion.popup = popup.incomplete.then_some(popup);
+            }
             return;
         }
         self.completion.popup = Some(popup);
@@ -236,6 +383,11 @@ impl App {
             && !self.completion_ask_current(ask.generation)
         {
             self.completion.ask = None;
+        }
+        if let Some(ask) = &self.completion.word_ask
+            && !self.ask_in_word(ask)
+        {
+            self.completion.word_ask = None;
         }
         let Some(p) = &self.completion.popup else { return };
         let head = cursor
@@ -274,6 +426,7 @@ impl App {
             self.needs_redraw = true;
         }
         self.completion.ask = None;
+        self.completion.word_ask = None;
         self.completion.quick = None;
         self.cancel_requests(|p| {
             matches!(
@@ -304,12 +457,13 @@ impl App {
             }
             return;
         }
-        let Some(triggers) = self
+        let triggers = self
             .lsp
             .server_of(buffer)
             .and_then(|(_, _, caps)| caps.completion_provider.as_ref())
-            .map(|p| p.trigger_characters.clone().unwrap_or_default())
-        else {
+            .map(|p| p.trigger_characters.clone().unwrap_or_default());
+        // No server with completion: the words of the open buffers, if wanted.
+        let Some(triggers) = triggers.or_else(|| self.settings.word_based_suggestions.then(Vec::new)) else {
             return;
         };
         if triggers.iter().any(|t| t.chars().eq([c])) {
@@ -317,7 +471,7 @@ impl App {
             self.ask_completion(Trigger::Character(c));
             return;
         }
-        let pending = self.completion.ask.is_some();
+        let pending = self.completion.ask.is_some() || self.completion.word_ask.is_some();
         if pos::is_word_char(c) && self.completion.popup.is_none() && !pending && self.settings.quick_suggestions {
             let revision = self.buffers.get(buffer).map_or(0, |b| b.revision());
             self.completion.quick = Some(Quick {
@@ -345,6 +499,7 @@ impl App {
             || buf.revision() != q.revision
             || self.completion.popup.is_some()
             || self.completion.ask.is_some()
+            || self.completion.word_ask.is_some()
             || (buf.config_file.is_none()
                 && (buf.syntax.scope_before(head).is_some_and(|s| s != Scope::Code)
                     || completion::word_before(&buf.rope, head) == 0))

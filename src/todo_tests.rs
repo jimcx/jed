@@ -11625,6 +11625,8 @@ mod settings_completion {
         let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&path).unwrap());
         app.config_dir = cfg.clone();
         app.test_start();
+        // These are about the config files; words would be offered in other files.
+        app.settings.word_based_suggestions = false;
         Env {
             app,
             root,
@@ -13814,5 +13816,220 @@ mod live_diagnostics {
         assert_eq!(asked[2]["textDocument"]["uri"], json!(uri(&paths[0])));
         assert_eq!(asked[3]["textDocument"]["uri"], json!(uri(&paths[1])));
         app.shutdown_servers().await;
+    }
+}
+
+/// Word-based completion (word_completion): with no language server, Ctrl+Space and quick
+/// suggestions offer the words of the open buffers (the current one first, then others of the
+/// same language), collected off-thread and cached by revision; `word_based_suggestions = false`
+/// turns it off.
+mod word_completion {
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::buffer::pos::ByteIdx;
+    use crate::selection::{Selection, Selections};
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+
+    struct Env {
+        app: App,
+        root: std::path::PathBuf,
+        _dir: tempfile::TempDir,
+    }
+
+    /// An app on `plain.txt` with `text`, the cursor at its end.
+    fn env(text: &str) -> Env {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workspace::normalize(dir.path());
+        let path = root.join("plain.txt");
+        std::fs::write(&path, text).unwrap();
+        let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&path).unwrap());
+        app.test_start();
+        let (_, view) = app.active_mut().unwrap();
+        view.selections = Selections::single(Selection::cursor(ByteIdx(text.len())));
+        Env { app, root, _dir: dir }
+    }
+
+    /// Opens `name` with `text` as the active buffer (cursor at its end).
+    fn open_other(e: &mut Env, name: &str, text: &str) {
+        let path = e.root.join(name);
+        std::fs::write(&path, text).unwrap();
+        e.app.test_open(Buffer::open(&path).unwrap());
+        let (_, view) = e.app.active_mut().unwrap();
+        view.selections = Selections::single(Selection::cursor(ByteIdx(text.len())));
+    }
+
+    fn labels(app: &App) -> Vec<String> {
+        app.completion.popup.as_ref().map_or_else(Vec::new, |p| {
+            p.shown.iter().map(|&i| p.items[i].label.clone()).collect()
+        })
+    }
+
+    fn ctrl_space(app: &mut App) {
+        app.press(K::Char(' '), M::CONTROL);
+    }
+
+    fn message(app: &App) -> Option<String> {
+        app.message.as_ref().map(|m| m.text.clone())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ctrl_space_offers_the_current_buffers_words() {
+        let mut e = env("alpha_one beta_two\nalp");
+        let app = &mut e.app;
+        ctrl_space(app);
+        assert!(app.settle(|a| a.completion.popup.is_some()).await);
+        // The word being typed is not offered; the other words match by prefix.
+        assert_eq!(labels(app), ["alpha_one"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn words_of_other_open_buffers_follow_the_current_ones() {
+        let mut e = env("gamma_far\n");
+        open_other(&mut e, "b.txt", "gamma_near\ngam");
+        let app = &mut e.app;
+        ctrl_space(app);
+        assert!(app.settle(|a| a.completion.popup.is_some()).await);
+        assert_eq!(labels(app), ["gamma_near", "gamma_far"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn only_buffers_of_the_same_language_are_used() {
+        let mut e = env("gamma_text\n");
+        open_other(&mut e, "b.rs", "fn main() {}\ngam");
+        let app = &mut e.app;
+        ctrl_space(app);
+        assert!(app.settle(|a| message(a).is_some()).await);
+        assert_eq!(message(app).as_deref(), Some("No suggestions."));
+        assert!(app.completion.popup.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn accepting_replaces_the_word_before_the_cursor() {
+        let mut e = env("gamma_word\ngam");
+        let app = &mut e.app;
+        ctrl_space(app);
+        assert!(app.settle(|a| a.completion.popup.is_some()).await);
+        app.press(K::Tab, M::NONE);
+        assert_eq!(app.active_buffer().unwrap().rope.to_string(), "gamma_word\ngamma_word");
+        assert!(app.completion.popup.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn typing_narrows_the_list() {
+        let mut e = env("alpha_one alpha_two albatross\nal");
+        let app = &mut e.app;
+        ctrl_space(app);
+        assert!(app.settle(|a| a.completion.popup.is_some()).await);
+        assert_eq!(labels(app).len(), 3);
+        app.type_text("ph");
+        let got = labels(app);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got.iter().all(|l| l.starts_with("alpha")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_setting_turns_it_off() {
+        let mut e = env("alpha_one\nalp");
+        let app = &mut e.app;
+        app.settings.word_based_suggestions = false;
+        ctrl_space(app);
+        assert_eq!(message(app).as_deref(), Some("No suggestions."));
+        assert!(app.completion.popup.is_none() && app.completion.word_ask.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn nothing_found_says_so() {
+        let mut e = env("zzz\nqqq");
+        let app = &mut e.app;
+        ctrl_space(app);
+        assert!(app.settle(|a| message(a).is_some()).await);
+        assert_eq!(message(app).as_deref(), Some("No suggestions."));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_result_after_the_cursor_left_the_word_is_dropped() {
+        let mut e = env("alpha_one\nalp");
+        let app = &mut e.app;
+        ctrl_space(app);
+        assert!(app.completion.word_ask.is_some());
+        app.press(K::Up, M::NONE);
+        assert!(
+            app.completion.word_ask.is_none(),
+            "dropped when the cursor left the word"
+        );
+        assert!(app.settle(|a| a.completion.words.len() > 0).await);
+        app.pump();
+        assert!(app.completion.popup.is_none());
+        assert!(message(app).is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn quick_suggestions_open_the_list_with_no_server() {
+        let mut e = env("alpha_one\n");
+        let app = &mut e.app;
+        app.type_text("alp");
+        assert!(app.settle(|a| a.completion.popup.is_some()).await);
+        assert_eq!(labels(app), ["alpha_one"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_result_of_an_old_generation_is_ignored() {
+        let mut e = env("alpha_one\nalp");
+        let app = &mut e.app;
+        ctrl_space(app);
+        let generation = app.completion.generation;
+        let id = app.completion.word_ask.as_ref().expect("collecting").anchor.buffer;
+        let rev = app.buffers.get(id).unwrap().revision();
+        let words = std::sync::Arc::new(vec!["alpha_one".to_string()]);
+        // Same cursor, same word: only the generation differs.
+        app.test_words_collected(generation - 1, vec![(id, rev, words.clone())]);
+        assert!(app.completion.popup.is_none(), "an old generation opens nothing");
+        assert!(app.completion.word_ask.is_some(), "and leaves the pending ask alone");
+        app.test_words_collected(generation, vec![(id, rev, words)]);
+        assert_eq!(labels(app), ["alpha_one"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unchanged_buffer_reuses_its_cached_words() {
+        let mut e = env("alpha_one\nalp");
+        let app = &mut e.app;
+        ctrl_space(app);
+        assert!(app.settle(|a| a.completion.popup.is_some()).await);
+        app.press(K::Esc, M::NONE);
+        assert!(app.completion.popup.is_none());
+        // Same revision: the list opens at once, with no collection pending.
+        ctrl_space(app);
+        assert!(app.completion.word_ask.is_none());
+        assert_eq!(labels(app), ["alpha_one"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn closed_buffers_leave_the_cache() {
+        let mut e = env("gamma_far\n");
+        open_other(&mut e, "b.txt", "gamma_near\ngam");
+        let app = &mut e.app;
+        ctrl_space(app);
+        assert!(app.settle(|a| a.completion.popup.is_some()).await);
+        assert_eq!(app.completion.words.len(), 2);
+        app.press(K::Esc, M::NONE);
+        app.test_execute(crate::command::Command::CloseTab);
+        // The next collection (any ask) prunes the closed buffer's entry.
+        let (_, view) = app.active_mut().unwrap();
+        view.selections = Selections::single(Selection::cursor(ByteIdx(10)));
+        app.type_text("x");
+        ctrl_space(app);
+        assert!(app.settle(|a| a.completion.words.len() == 1).await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn edited_text_is_collected_again() {
+        let mut e = env("alpha_one\nbet");
+        let app = &mut e.app;
+        ctrl_space(app);
+        assert!(app.settle(|a| message(a).is_some()).await);
+        app.type_text("a_new beta_late\nbeta");
+        ctrl_space(app);
+        assert!(app.settle(|a| a.completion.popup.is_some()).await);
+        assert_eq!(labels(app), ["beta_new", "beta_late"]);
     }
 }

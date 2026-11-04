@@ -14,6 +14,7 @@
 //! | `selection_highlight` | bool | true   | Highlight the selected text's other occurrences; count them in the status bar |
 //! | `semantic_highlighting` | str | `"on"` | The language server's semantic colours (and clangd's dimmed inactive code) over tree-sitter's: `on` or `off` |
 //! | `quick_suggestions`| bool | true      | Typing a word asks the language server for completions         |
+//! | `word_based_suggestions` | bool | true | Ctrl+Space and quick suggestions offer the words of open buffers (same language) where no language server answers |
 //! | `render_whitespace`| str  | `"all"`   | Draw spaces `·` / tabs `→`: `none` `boundary` `selection` `trailing` `all` |
 //! | `word_wrap`       | str  | `"off"`   | Wrap long lines at the editor's width: `off` or `on`             |
 //! | `cursor_style`     | str  | `"line"`  | The cursor's shape: `line` (a bar), `block` or `underline`     |
@@ -77,6 +78,8 @@ pub struct SettingsOverrides {
     pub semantic_highlighting: Option<SemanticHighlighting>,
     /// Typing a word char asks for completions (VS Code's `editor.quickSuggestions`, code only).
     pub quick_suggestions: Option<bool>,
+    /// Words of the open buffers as completions without a server (VS Code's `editor.wordBasedSuggestions`).
+    pub word_based_suggestions: Option<bool>,
     /// Which whitespace is drawn as `·` / `→` (VS Code's `editor.renderWhitespace`).
     pub render_whitespace: Option<RenderWhitespace>,
     /// Whether long lines wrap at the editor's width (VS Code's `editor.wordWrap`).
@@ -181,6 +184,9 @@ impl SettingsOverrides {
         }
         if let Some(on) = self.quick_suggestions {
             s.quick_suggestions = on;
+        }
+        if let Some(on) = self.word_based_suggestions {
+            s.word_based_suggestions = on;
         }
         if let Some(mode) = self.render_whitespace {
             s.render_whitespace = mode;
@@ -409,6 +415,7 @@ pub const TEMPLATE: &str = "\
 # selection_highlight = true  # highlight the selected text's other occurrences
 # semantic_highlighting = \"on\"  # on or off
 # quick_suggestions = true
+# word_based_suggestions = true  # words of open buffers where no language server answers
 # render_whitespace = \"all\"  # none, boundary, selection, trailing or all
 # word_wrap = \"off\"  # off or on
 # tabs_at_bottom = false  # dock each group's tab bar at the bottom
@@ -488,7 +495,7 @@ mod tests {
     fn parses_every_key() {
         let o = set(
             "[settings]\ntab_width = 2\ninsert_spaces = false\nsyntax_max_bytes = 10\nauto_close_pairs = false\n\
-             detect_indentation = false\nauto_indent = false\nmatch_brackets = false\nselection_highlight = false\nsemantic_highlighting = \"off\"\nquick_suggestions = false\n\
+             detect_indentation = false\nauto_indent = false\nmatch_brackets = false\nselection_highlight = false\nsemantic_highlighting = \"off\"\nquick_suggestions = false\nword_based_suggestions = false\n\
              render_whitespace = \"trailing\"\n\
              cursor_style = \"block\"\ncursor_blinking = false\nhex_bytes_per_line = 16\nhex_group_bytes = 4\nhex_byte_order = \"big\"\nrulers = [80, 100]\n\
              scrollback = 50\nword_wrap = \"on\"\ntabs_at_bottom = true\n\
@@ -508,6 +515,7 @@ mod tests {
                 selection_highlight: Some(false),
                 semantic_highlighting: Some(SemanticHighlighting::Off),
                 quick_suggestions: Some(false),
+                word_based_suggestions: Some(false),
                 render_whitespace: Some(RenderWhitespace::Trailing),
                 cursor_style: Some(CursorStyle::Block),
                 cursor_blinking: Some(false),
@@ -789,6 +797,7 @@ mod tests {
             selection_highlight: Some(true),
             semantic_highlighting: Some(SemanticHighlighting::On),
             quick_suggestions: Some(true),
+            word_based_suggestions: Some(true),
             render_whitespace: Some(RenderWhitespace::All),
             cursor_style: Some(CursorStyle::Line),
             cursor_blinking: Some(true),
@@ -827,6 +836,7 @@ mod tests {
                 s.selection_highlight,
                 s.semantic_highlighting,
                 s.quick_suggestions,
+                s.word_based_suggestions,
                 s.render_whitespace,
                 s.cursor_style,
                 s.cursor_blinking,
@@ -841,6 +851,7 @@ mod tests {
                 d.selection_highlight,
                 d.semantic_highlighting,
                 d.quick_suggestions,
+                d.word_based_suggestions,
                 d.render_whitespace,
                 d.cursor_style,
                 d.cursor_blinking,

@@ -3315,6 +3315,43 @@ fn last_context(fake: &FakeLauncher) -> Value {
     fake.requests("textDocument/completion").last().expect("a request")["context"].clone()
 }
 
+/// Word-based completion next to a server: a non-empty answer is the whole list (no words of the
+/// buffer mixed in); an empty one falls back to the open buffers' words.
+#[tokio::test(flavor = "multi_thread")]
+async fn milestone_9_completion_words_only_when_the_server_has_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = "int alphabetical_word;\nal";
+    let (mut app, fake, _root) = lsp_project(dir.path(), &[("a.cpp", src)], false).await;
+    put_cursor(&mut app, src.len());
+    fake.respond(
+        "textDocument/completion",
+        completion_list(json!([{ "label": "alpha_from_server" }]), false),
+    );
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    assert_eq!(
+        shown(&app),
+        ["alpha_from_server"],
+        "no words next to the server's items"
+    );
+    assert!(app.completion.word_ask.is_none());
+    app.press(K::Esc, M::NONE);
+    assert!(app.completion.popup.is_none());
+
+    fake.respond("textDocument/completion", completion_list(json!([]), false));
+    ctrl_space(&mut app);
+    assert!(app.settle(list_shown).await);
+    assert_eq!(
+        shown(&app),
+        ["alphabetical_word"],
+        "the server had nothing: the buffer's words"
+    );
+    assert_eq!(fake.requests("textDocument/completion").len(), 2);
+    app.press(K::Tab, M::NONE);
+    assert_eq!(text(&app), "int alphabetical_word;\nalphabetical_word");
+    app.shutdown_servers().await;
+}
+
 /// Typing a word asks once the quick-suggestion timer fires (code, not before it), at the cursor;
 /// the list is drawn under the word, labels lined up with it, kind icons in their colours, the
 /// typed chars highlighted, the selected row with its detail. Typing on filters it (no new
@@ -3718,7 +3755,8 @@ async fn milestone_9_completion_requests_superseded_and_stale() {
             .await
     );
     assert!(app.completion.popup.is_none());
-    // A plain text buffer has no server.
+    // A plain text buffer has no server (and words off: they would be offered).
+    app.settings.word_based_suggestions = false;
     app.test_open(Buffer::from_str("plain\n"));
     ctrl_space(&mut app);
     assert_eq!(app.message.as_ref().map(|m| m.text.as_str()), Some("No suggestions."));

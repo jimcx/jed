@@ -111,6 +111,12 @@ pub struct Item {
 }
 
 impl Item {
+    /// A word of an open buffer: replaces the word before the cursor; `order` keeps the
+    /// current buffer's words first among equal scores.
+    pub fn word(label: String, order: usize) -> Self {
+        Self::local(label.clone(), String::new(), 1, label, (order, 0))
+    }
+
     /// An item from the config files' local source (`config::complete`): replaces the text from
     /// the anchor's start to the cursor, and `after` bytes past it.
     pub fn local(label: String, detail: String, kind: u64, text: String, (order, after): (usize, usize)) -> Self {
@@ -119,7 +125,7 @@ impl Item {
             kind: Some(kind),
             detail: (!detail.is_empty()).then_some(detail),
             filter: None,
-            sort: Some(format!("{order:05}")),
+            sort: Some(format!("{order:07}")),
             preselect: false,
             text,
             select: None,
@@ -814,6 +820,10 @@ pub struct Completion {
     pub popup: Option<Popup>,
     /// The pending request's place (its `Pending` in `App::requests` has the same generation).
     pub ask: Option<Ask>,
+    /// The pending word collection (no server answered): same shape as `ask`.
+    pub word_ask: Option<Ask>,
+    /// Open buffers' words by revision.
+    pub words: crate::word_completion::WordCache,
     /// Typing a word char asks once this passes, if nothing changed.
     pub quick: Option<Quick>,
     /// Numbers requests.
@@ -851,6 +861,12 @@ impl Completion {
             && !a.anchor.follow(changes, applied)
         {
             self.ask = None;
+        }
+        if let Some(a) = &mut self.word_ask
+            && a.anchor.buffer == buffer
+            && !a.anchor.follow(changes, applied)
+        {
+            self.word_ask = None;
         }
     }
 

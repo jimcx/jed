@@ -53,6 +53,12 @@ fn open_hex(path: &Path) -> Result<Loaded, LoadError> {
 
 /// Results of hex and Markdown tab background work (`AppEvent::View`).
 pub(super) enum ViewEvent {
+    /// Word-based completion's collection for request `generation`: each stale buffer's
+    /// words at the revision collected (`completion::words_collected`).
+    Words {
+        generation: u64,
+        results: Vec<(crate::buffer::BufferId, u64, std::sync::Arc<Vec<String>>)>,
+    },
     /// Find's whole-file count on a hex tab (`HexTab::id`) for one query generation
     /// (`find::HexFind`); an older generation's is dropped.
     HexCount {
@@ -93,6 +99,7 @@ pub(super) enum ViewEvent {
 impl App {
     pub(super) fn handle_view_event(&mut self, ev: ViewEvent) {
         match ev {
+            ViewEvent::Words { generation, results } => self.words_collected(generation, results),
             ViewEvent::HexCount { tab, generation, count } => self.hex_counted(tab, generation, count),
             ViewEvent::HexPages { id, version, pages } => self.hex_pages_read(id, version, pages),
             ViewEvent::HexFound { tab, generation, range } => self.hex_found(tab, generation, range),

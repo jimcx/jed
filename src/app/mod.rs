@@ -236,7 +236,7 @@ enum AppEvent {
     Search(workspace_search::SearchEvent),
     /// Parses, syntax plugins' grammars and decoded semantic tokens.
     Syntax(syntax::SyntaxEvent),
-    /// Find's hex count and big Markdown renders.
+    /// Find's hex count, big Markdown renders and word completion's collected words.
     View(hex::ViewEvent),
     /// Open files and hex tabs read to see whether they changed on disk.
     Disk(disk::DiskEvent),
@@ -2022,6 +2022,16 @@ impl App {
     /// (`AppEvent::View(ViewEvent::HexFound)`): for tests of stale results.
     pub fn test_hex_found(&mut self, tab: u64, generation: u64, range: Option<std::ops::Range<u64>>) {
         self.handle_app_event(AppEvent::View(hex::ViewEvent::HexFound { tab, generation, range }));
+    }
+
+    /// Takes in a word collection as if it had come through the channel
+    /// (`ViewEvent::Words`): for tests of stale results.
+    pub fn test_words_collected(
+        &mut self,
+        generation: u64,
+        results: Vec<(crate::buffer::BufferId, u64, Arc<Vec<String>>)>,
+    ) {
+        self.handle_app_event(AppEvent::View(hex::ViewEvent::Words { generation, results }));
     }
 
     /// Takes in a Markdown render as if it had come through the channel

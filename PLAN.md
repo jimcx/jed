@@ -717,7 +717,6 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Transform, sort and dedupe lines** (`transform_sort_dedupe`): change case, sort, and deduplicate lines — [tasks/transform_sort_dedupe.md](tasks/transform_sort_dedupe.md)
 - **VHDL: tree-sitter and VHDL-LS** (`vhdl`): VHDL files get syntax colours, comment / pair / indent behaviour and a language server (`vhdl_ls` from rust_hdl), as C++ / Python / Rust do — [tasks/vhdl.md](tasks/vhdl.md)
 - **Warn when the shell integration is missing or stale** (`shell_integration_check`): when a shell tab opens, warn the user if their shell's integration isn't installed or is an older version than the one jed embeds, pointing at the wizard that fixes it. — [tasks/shell_integration_check.md](tasks/shell_integration_check.md)
-- **Word-based completion** (`word_completion`): offer words from open buffers when no server suggests — [tasks/word_completion.md](tasks/word_completion.md)
 - **Multiple git repos in one workspace** (`multi_repo` [p-10]): source control, quick diff marks, blame, history and the git tools work with several repositories under one workspace folder, as VS Code does — [tasks/multi_repo.md](tasks/multi_repo.md)
 - ✅ **Back / forward navigation** (`back_forward`): `nav.back` / `nav.forward` on Ctrl+- / Ctrl+Shift+- (Ctrl+Alt+- on Linux), VS Code's Go Back / Go Forward — [tasks/back_forward.md](tasks/back_forward.md)
 - ✅ **Basic file information** (`file_info`): a path tooltip on hovered tabs, and a minimal, extensible right-click context menu (copy relative / full path, open in the file manager, file history) on tabs and the editor — [tasks/file_info.md](tasks/file_info.md)
@@ -803,6 +802,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - ✅ **TypeScript and JavaScript** (`typescript`): JavaScript, JSX, TypeScript and TSX files get syntax colours, comment / pair / indent behaviour and a language server (`typescript-language-server`) — [tasks/typescript.md](tasks/typescript.md)
 - ✅ **Untitled files and Save As** (`untitled`): new untitled buffers, Save As and Save All — [tasks/untitled.md](tasks/untitled.md)
 - ✅ **Window identity from `.workspace`** (`window_identity`): `[window]` `title` and `status_bar` name the window and tint the status bar — [tasks/window_identity.md](tasks/window_identity.md)
+- ✅ **Word-based completion** (`word_completion`): offer words from open buffers when no server suggests — [tasks/word_completion.md](tasks/word_completion.md)
 - ✅ **Word-wise selection on double-click drag** (`word_drag_select`): double-click and drag selects whole words, the end rounded out to the word under the pointer, in editors, shells and task tabs — [tasks/word_drag_select.md](tasks/word_drag_select.md)
 <!-- tasks:index:end -->
 

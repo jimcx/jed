@@ -165,6 +165,11 @@ const SETTINGS_KEYS: &[KeySchema] = &[
         "Typing a word asks the language server for completions",
     ),
     key(
+        "word_based_suggestions",
+        ValueKind::Bool,
+        "Completions from the words of open buffers where no language server answers",
+    ),
+    key(
         "render_whitespace",
         ValueKind::Enum(WHITESPACE),
         "Which whitespace is drawn",
