@@ -156,7 +156,7 @@ impl Language {
     /// The tree-sitter grammar, if the language has one (a plugin's is installed by `plugin::load`: none until then).
     pub fn grammar(self) -> Option<tree_sitter::Language> {
         Some(match self {
-            Language::PlainText | Language::GitRebase => return None,
+            Language::PlainText => return None,
             Language::Plugin(p) => return p.get().grammar.get().cloned(),
             Language::C => tree_sitter_c::LANGUAGE.into(),
             Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
@@ -175,7 +175,9 @@ impl Language {
             Language::CMake => tree_sitter_cmake::LANGUAGE.into(),
             Language::Makefile => tree_sitter_make::LANGUAGE.into(),
             Language::Dockerfile => tree_sitter_containerfile::LANGUAGE.into(),
-            Language::GitCommit => tree_sitter_gitcommit::LANGUAGE.into(),
+            // git-rebase has no grammar of its own: gitcommit's parses the `#` comments and
+            // `highlight::git_rebase_lines` paints the todo lines.
+            Language::GitCommit | Language::GitRebase => tree_sitter_gitcommit::LANGUAGE.into(),
         })
     }
 
@@ -203,9 +205,11 @@ impl Language {
         const CMAKE: &str = include_str!("queries/cmake.scm");
         const MAKE: &str = include_str!("queries/make.scm");
         const DOCKER: &str = include_str!("queries/dockerfile.scm");
+        const GIT_REBASE: &str = include_str!("queries/git-rebase.scm");
         const GIT_COMMIT: &str = include_str!("queries/git-commit.scm");
         match self {
-            Language::PlainText | Language::GitRebase | Language::Plugin(_) => &[],
+            Language::PlainText | Language::Plugin(_) => &[],
+            Language::GitRebase => &[GIT_REBASE],
             Language::C => &[tree_sitter_c::HIGHLIGHT_QUERY, C],
             Language::Cpp => &[tree_sitter_c::HIGHLIGHT_QUERY, tree_sitter_cpp::HIGHLIGHT_QUERY, C, CPP],
             Language::ObjC | Language::ObjCpp => &[
@@ -486,9 +490,9 @@ mod tests {
         assert_eq!(Language::from_id("rust"), Some(Language::Rust));
         assert_eq!(Language::from_id("shellscript"), Some(Language::ShellScript));
         assert_eq!(Language::from_id("bash"), None);
-        // Every language but plain text and git-rebase has a grammar and a query.
+        // Every language but plain text has a grammar and a query.
         for l in Language::BUILT_IN {
-            let none = matches!(l, Language::PlainText | Language::GitRebase);
+            let none = matches!(l, Language::PlainText);
             assert_eq!(l.grammar().is_some(), !none, "{l:?}");
             assert_eq!(l.highlight_queries().is_empty(), none, "{l:?}");
         }

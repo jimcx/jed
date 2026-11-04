@@ -266,6 +266,9 @@ pub fn compute_in(
     if language == Language::Ini {
         ini_lines(rope, start, end, &mut paint);
     }
+    if language == Language::GitRebase {
+        git_rebase_lines(rope, start, end, &mut paint);
+    }
     let mut spans = Vec::new();
     let mut i = 0;
     while i < paint.len() {
@@ -492,6 +495,101 @@ fn ini_lines(rope: &Rope, start: ByteIdx, end: ByteIdx, paint: &mut [u8]) {
                 }
                 i += n;
             }
+        }
+    }
+}
+
+/// The line pass for a `git-rebase-todo`: the todo list is not a grammar (the tree-sitter-gitcommit
+/// tree only supplies the pipeline), so every line in the range is painted from its text, over
+/// the query's colours: `#` comments, the command (`drop` red, `exec` / `break` / `label` / … as
+/// control keywords, the rest keywords), its options (`-C`), the commit hash (`constant`) and the
+/// label of `label` / `reset` / `merge` / `update-ref` (`variable`). The subject is plain. O(range).
+fn git_rebase_lines(rope: &Rope, start: ByteIdx, end: ByteIdx, paint: &mut [u8]) {
+    let key = |k: &str| highlight_for(k).expect("key in KEYS").0;
+    let (comment, keyword, control, deleted, option, hash, label) = (
+        key("comment"),
+        key("keyword"),
+        key("keyword.control"),
+        key("diff.deleted"),
+        key("variable.parameter"),
+        key("constant"),
+        key("variable"),
+    );
+    let mut put = |from: usize, to: usize, h: u8| {
+        let (from, to) = (from.max(start.0), to.min(end.0));
+        if from < to {
+            paint[from - start.0..to - start.0].fill(h);
+        }
+    };
+    let lines = pos::line_count(rope);
+    let mut line = pos::line_of(rope, start);
+    while line < lines {
+        let (ls, le, _) = pos::line_bounds(rope, line);
+        line += 1;
+        if ls >= end {
+            break;
+        }
+        let le = floor(rope, le.0.min(ls.0 + INI_LINE_MAX));
+        let text = rope.slice(ls.0..le.0).to_string();
+        // The newline too: the grammar's comment nodes include it.
+        put(ls.0, le.0 + 1, u8::MAX);
+        let t = text.trim_start();
+        let base = ls.0 + (text.len() - t.len());
+        let t = t.trim_end();
+        if t.starts_with('#') {
+            put(base, base + t.len(), comment);
+            continue;
+        }
+        let mut words = {
+            let mut i = 0;
+            std::iter::from_fn(move || {
+                let rest = &t[i..];
+                let skip = rest.len() - rest.trim_start().len();
+                let rest = &rest[skip..];
+                if rest.is_empty() {
+                    return None;
+                }
+                let n = rest.find(char::is_whitespace).unwrap_or(rest.len());
+                let from = i + skip;
+                i = from + n;
+                Some((from, &t[from..from + n]))
+            })
+        };
+        let Some((cs, cmd)) = words.next() else {
+            continue;
+        };
+        let (h, kind) = match cmd {
+            "pick" | "p" | "reword" | "r" | "edit" | "e" | "squash" | "s" | "fixup" | "f" => (keyword, 'c'),
+            "drop" | "d" => (deleted, 'c'),
+            "merge" | "m" => (control, 'm'),
+            "label" | "l" | "reset" | "t" | "update-ref" | "u" => (control, 'l'),
+            "exec" | "x" | "break" | "b" => (control, 'x'),
+            _ => continue,
+        };
+        put(base + cs, base + cs + cmd.len(), h);
+        let mut after_option = false;
+        for (ws, w) in words {
+            let (a, b) = (base + ws, base + ws + w.len());
+            match kind {
+                'x' => break,
+                _ if w.starts_with('#') => {
+                    put(a, base + t.len(), comment);
+                    break;
+                }
+                _ if w.starts_with('-') && w.len() <= 3 => {
+                    put(a, b, option);
+                    after_option = true;
+                    continue;
+                }
+                'l' => put(a, b, label),
+                'm' if !after_option => put(a, b, label),
+                _ if (4..=40).contains(&w.len()) && w.bytes().all(|c| c.is_ascii_hexdigit()) => put(a, b, hash),
+                _ => {}
+            }
+            if kind != 'm' {
+                break;
+            }
+            after_option = false;
         }
     }
 }
@@ -968,6 +1066,32 @@ mod tests {
                 ("'x'", "string"),
                 ("broken", "type"),
                 ("not", "property"),
+            ],
+        );
+    }
+
+    #[test]
+    fn git_rebase_spans() {
+        let text = "pick 1a2b3c4 Add a thing\nf -C abcdef0 fix\ndrop deadbeef Old\nexec make test\nlabel onto\nmerge -C 1234abc topic # Merge topic\nbreak\n# Rebase 1..2\n";
+        assert_has(
+            Language::GitRebase,
+            text,
+            &[
+                ("pick", "keyword"),
+                ("1a2b3c4", "constant"),
+                ("f", "keyword"),
+                ("-C", "variable.parameter"),
+                ("abcdef0", "constant"),
+                ("drop", "diff.deleted"),
+                ("deadbeef", "constant"),
+                ("exec", "keyword.control"),
+                ("onto", "variable"),
+                ("merge", "keyword.control"),
+                ("1234abc", "constant"),
+                ("topic", "variable"),
+                ("# Merge topic", "comment"),
+                ("break", "keyword.control"),
+                ("# Rebase 1..2", "comment"),
             ],
         );
     }

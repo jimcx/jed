@@ -91,9 +91,14 @@ fn grammars_load_and_queries_compile() {
         );
         let source = l.highlight_queries().join("\n");
         let query = Query::new(&grammar, &source).unwrap_or_else(|e| panic!("{l:?}: {e}"));
-        // INI's colours come from the line pass: its query is just `@comment`.
+        // INI's and git-rebase's colours come from line passes: their query is just `@comment`.
         assert!(
-            query.capture_names().len() > if l == Language::Ini { 0 } else { 5 },
+            query.capture_names().len()
+                > if matches!(l, Language::Ini | Language::GitRebase) {
+                    0
+                } else {
+                    5
+                },
             "{l:?}"
         );
     }
