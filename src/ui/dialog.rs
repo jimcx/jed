@@ -205,7 +205,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) -> Option<R
             let title = match &input.kind {
                 InputKind::NewFile { dir } => format!(" New file in {}/", rel(dir)),
                 InputKind::NewFolder { dir } => format!(" New folder in {}/", rel(dir)),
-                InputKind::Rename { from } => format!(" Rename {}", rel(from)),
                 InputKind::SaveAs { buffer } => format!(" Save {} as", name_of(*buffer)),
                 InputKind::RenameSymbol { old, .. } => format!(" Rename '{old}' to"),
             };

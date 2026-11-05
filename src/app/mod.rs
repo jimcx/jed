@@ -14,6 +14,7 @@ mod diff_edit;
 mod diff_view;
 mod discard;
 mod disk;
+mod explorer_drag;
 mod field;
 mod files;
 mod find;
@@ -24,6 +25,7 @@ mod hex;
 mod history;
 mod hover;
 mod indentation;
+mod inline_rename;
 mod ipc;
 mod keys;
 mod locations;
@@ -264,6 +266,8 @@ pub struct App {
     pub ui: UiState,
     /// Where things were drawn in the last frame, for mouse hit-testing.
     pub hits: HitMap,
+    /// The Explorer row being renamed in place (`app/inline_rename.rs`).
+    pub inline_rename: Option<inline_rename::InlineRename>,
     /// The border layer's resolved cells, kept until the layout changes.
     pub borders: crate::ui::borders::Borders,
     pub keymap: Keymap,
@@ -524,6 +528,7 @@ impl App {
                 scrollbar_hover: None,
             },
             hits: HitMap::default(),
+            inline_rename: None,
             borders: Default::default(),
             keymap: Keymap::default_for(Platform::current()),
             theme: Theme::dark_plus(theme::terminal_has_truecolor()),
@@ -1084,7 +1089,7 @@ impl App {
                     self.close_peek();
                 }
                 if esc
-                    && matches!(self.drag, Some(mouse::Drag::Tab(_)))
+                    && matches!(self.drag, Some(mouse::Drag::Tab(_) | mouse::Drag::Explorer(_)))
                     && self.prompt.is_none()
                     && self.cheat_sheet.is_none()
                     && self.keys.is_none()
@@ -1110,6 +1115,8 @@ impl App {
                     } else {
                         self.close_peek();
                     }
+                } else if self.inline_rename.is_some() && self.palette.is_none() {
+                    self.inline_rename_key(key);
                 } else if let Some(cmd) = self.keymap.lookup(&key, self.context())
                     && !(self.field_focused() && field::has_field_meaning(cmd))
                 {
@@ -1165,6 +1172,8 @@ impl App {
                     // Swallowed.
                 } else if self.prompt.is_none() && self.palette.is_some() {
                     self.palette_paste(&text);
+                } else if self.prompt.is_none() && self.inline_rename.is_some() {
+                    self.inline_rename_paste(&text);
                 } else if self.prompt.is_none() && self.ui.focus == Focus::Find {
                     self.find_paste(&text);
                 } else if self.prompt.is_none() && self.search_focused() {

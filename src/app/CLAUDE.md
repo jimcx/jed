@@ -15,6 +15,8 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `palette.rs` — opening, keys and accepting the command palette and its pickers; a command picked there is recorded in `mru` (`App::mru.commands`), and an empty query lists the recent commands and files first (`palette::command_rows_with_recent` / `file_rows_with_recent`)
 - `cheatsheet.rs` — the keyboard cheat sheet overlay (`app.cheat_sheet`): toggle, its keys (all swallowed) and mouse
 - `keys.rs` — the Keyboard Shortcuts view (`app.keys`, model `crate::keys`): toggle, its search (typed keys, Backspace) and record-keys mode (Alt+K; the next combo filters), Enter's `keybindings.toml` stub (written off-thread, then opened), the selection keys, and the mouse (wheel, scroll bar, a press outside closes)
+- `explorer_drag.rs` — dragging an Explorer row onto a folder (`Drag::Explorer`): the folder under the pointer shaded (`list.dropBackground`), a release moves it through `FileOp::Rename`, Esc cancels
+- `inline_rename.rs` — F2 in the Explorer edits the row's name in place (`app.inline_rename`, a `TextField`): Enter or a click elsewhere commits through `FileOp::Rename`, Esc cancels
 - `cursors.rs` — Cmd+D / Cmd+Shift+L / Cmd+Alt+D sessions, Cmd+U (`cursor_undo`), `track_selections`
 - `find.rs` — the find / replace widget (`app.find`): open, incremental search, next / previous, replace (all); on a hex tab byte search (`find.hex`, the count off-thread via `AppEvent::View(ViewEvent::HexCount)`)
 - `workspace_search.rs` — the Search view (`app.search_view`): focus, debounce, starting searches, results, opening matches

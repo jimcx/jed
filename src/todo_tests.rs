@@ -5845,7 +5845,7 @@ mod text_field_keys {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    use crate::app::{App, InputKind, Prompt};
+    use crate::app::App;
     use crate::buffer::Buffer;
     use crate::config::keymap::{self, Keymap, Platform};
 
@@ -6073,31 +6073,22 @@ mod text_field_keys {
         assert!(app.settle(|a| !a.explorer.rows().is_empty()).await);
         app.press(K::Home, M::NONE);
         app.press(K::F(2), M::NONE);
-        assert!(matches!(&app.prompt, Some(Prompt::Input(i)) if matches!(i.kind, InputKind::Rename { .. })));
+        assert!(
+            app.prompt.is_none() && app.inline_rename.is_some(),
+            "the row's name is edited in place"
+        );
         app.press(K::Home, M::NONE);
         app.press(K::Right, M::SHIFT);
         app.type_text("b");
         app.press(K::Right, word());
         app.press(K::Right, word());
         app.press(K::End, M::SHIFT);
-        assert!(
-            matches!(&app.prompt, Some(Prompt::Input(i)) if i.field.text == "b.txt" && i.field.selection().is_none())
-        );
+        let field = || app.inline_rename.as_ref().unwrap().field.clone();
+        assert!(field().text == "b.txt" && field().selection().is_none());
         app.press(K::Left, word());
         app.press(K::End, M::SHIFT);
         app.press(K::Backspace, M::NONE);
-        assert!(
-            matches!(&app.prompt, Some(Prompt::Input(i)) if i.field.text == "b."),
-            "{}",
-            prompt_text(&app)
-        );
-    }
-
-    fn prompt_text(app: &App) -> String {
-        match &app.prompt {
-            Some(Prompt::Input(i)) => i.field.text.clone(),
-            _ => "no input prompt".into(),
-        }
+        assert_eq!(app.inline_rename.as_ref().unwrap().field.text, "b.");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -6214,17 +6205,16 @@ mod text_field_keys {
         let mut term = Terminal::new(TestBackend::new(80, 20)).unwrap();
         term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
         let buf = term.backend().buffer();
-        // The dialog's input: two rows below its title (other rows show `a.txt` too).
-        let title = rows(&term)
+        // The field is drawn in the row, after the two-column marker indent: find the row.
+        let (y, row) = rows(&term)
             .iter()
-            .position(|r| r.contains("Rename ws/a.txt"))
-            .expect("the prompt");
-        let y = title as u16 + 2;
-        let row: Vec<&str> = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
-        let x = row
-            .windows(5)
-            .position(|w| w.concat() == "a.txt")
-            .expect("the prompt's field drawn") as u16;
+            .enumerate()
+            .skip(app.hits.explorer_rows.y as usize)
+            .find(|(_, r)| r.contains("a.txt"))
+            .map(|(y, r)| (y as u16, r.clone()))
+            .expect("the renamed row");
+        let col = row.find("a.txt").unwrap();
+        let x = row[..col].chars().count() as u16;
         let selection = app.theme.get("editor.selection").bg.unwrap();
         let selected: Vec<bool> = (0..5).map(|i| buf[(x + i, y)].bg == selection).collect();
         assert_eq!(selected, [true, false, false, false, false], "\"a\" selected");
@@ -13051,5 +13041,103 @@ mod about {
         assert!(text.contains("SCOWL"));
         app.test_execute(Command::About);
         assert_eq!(app.group().tabs.len(), 1, "shown again, not opened twice");
+    }
+}
+
+mod explorer_drag_drop {
+    use crate::app::App;
+    use crate::workspace::Workspace;
+    use crate::workspace::trust::TrustStore;
+    use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn setup() -> (tempfile::TempDir, App) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        let trust = TrustStore::load(dir.path().join("trust.toml"));
+        let app = App::new(Workspace::load(dir.path().to_path_buf()), trust, None, true);
+        (dir, app)
+    }
+
+    fn draw(app: &mut App) {
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+    }
+
+    fn row_of(app: &App, name: &str) -> u16 {
+        app.hits.explorer_rows.y + app.explorer.rows().iter().position(|r| r.entry.name == name).unwrap() as u16
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dragging_a_file_onto_a_folder_moves_it() {
+        let (dir, mut app) = setup();
+        app.test_start();
+        assert!(app.settle(|a| a.explorer.row_count() >= 2).await);
+        draw(&mut app);
+        let x = app.hits.explorer_rows.x + 4;
+        let (from, to) = (row_of(&app, "a.txt"), row_of(&app, "sub"));
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, from);
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), x, to);
+        assert_eq!(app.explorer_drop_target(), Some(dir.path().join("sub")));
+        app.mouse(MouseEventKind::Up(MouseButton::Left), x, to);
+        assert!(app.settle(|_| dir.path().join("sub/a.txt").exists()).await);
+        assert!(!dir.path().join("a.txt").exists());
+        assert_eq!(app.explorer_drop_target(), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn drops_that_do_not_apply_move_nothing() {
+        let (dir, mut app) = setup();
+        app.test_start();
+        assert!(app.settle(|a| a.explorer.row_count() >= 2).await);
+        draw(&mut app);
+        let x = app.hits.explorer_rows.x + 4;
+        let (file, sub) = (row_of(&app, "a.txt"), row_of(&app, "sub"));
+        // A folder onto itself, and a file onto a sibling file (its own folder): no target.
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, sub);
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), x, sub);
+        assert_eq!(app.explorer_drop_target(), None);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), x, sub);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, file);
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), x, sub);
+        assert!(app.explorer_drop_target().is_some());
+        // Esc cancels: the release moves nothing.
+        app.press(KeyCode::Esc, KeyModifiers::NONE);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), x, sub);
+        assert!(dir.path().join("a.txt").exists());
+        assert!(!dir.path().join("sub/a.txt").exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn f2_renames_in_place_and_esc_or_a_bad_name_keeps_the_file() {
+        let (dir, mut app) = setup();
+        app.test_start();
+        assert!(app.settle(|a| a.explorer.row_count() >= 2).await);
+        draw(&mut app);
+        app.press(KeyCode::Char('e'), KeyModifiers::SUPER | KeyModifiers::SHIFT);
+        app.explorer.selected = Some(dir.path().join("a.txt"));
+        // Esc cancels.
+        app.press(KeyCode::F(2), KeyModifiers::NONE);
+        assert!(app.inline_rename.is_some() && app.prompt.is_none());
+        app.type_text("zz");
+        app.press(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.inline_rename.is_none() && dir.path().join("a.txt").exists());
+        // A name with a slash is refused and the field stays.
+        app.press(KeyCode::F(2), KeyModifiers::NONE);
+        app.type_text("/x");
+        app.press(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.inline_rename.is_some());
+        app.press(KeyCode::Backspace, KeyModifiers::NONE);
+        app.press(KeyCode::Backspace, KeyModifiers::NONE);
+        for _ in 0.."a.txt".len() {
+            app.press(KeyCode::Backspace, KeyModifiers::NONE);
+        }
+        app.type_text("b.txt");
+        app.press(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.inline_rename.is_none());
+        assert!(app.settle(|_| dir.path().join("b.txt").exists()).await);
+        assert!(!dir.path().join("a.txt").exists());
     }
 }

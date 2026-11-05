@@ -42,12 +42,7 @@ impl App {
                 let dir = self.explorer.target_dir();
                 self.prompt = Some(Prompt::Input(Input::new(InputKind::NewFolder { dir }, String::new())));
             }
-            X::Rename => {
-                if let Some(from) = self.explorer.selected.clone() {
-                    let name = from.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                    self.prompt = Some(Prompt::Input(Input::new(InputKind::Rename { from }, name)));
-                }
-            }
+            X::Rename => self.start_inline_rename(),
             X::Delete => {
                 if let Some(path) = self.explorer.selected.clone() {
                     let is_dir = self.explorer.find(&path).is_some_and(|e| e.is_dir);

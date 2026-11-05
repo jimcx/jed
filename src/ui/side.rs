@@ -122,6 +122,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
     // The rows keep their last column for the scroll bar.
     let bar = scrollbar::take_column(&mut tree);
     let look = scrollbar::look(app, ScrollTarget::Side(SidePanel::Explorer));
+    let drop_target = app.explorer_drop_target();
+    let rename = app.inline_rename.clone();
     let explorer = &mut app.explorer;
     explorer.set_height(tree.height.max(1) as usize);
     let count = explorer.row_count();
@@ -136,12 +138,20 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
         base.patch(theme.get("list.inactive"))
     };
 
+    let mut rename_cursor = None;
     for (i, row) in rows.iter().enumerate() {
         let y = tree.y + i as u16;
         let e = row.entry;
         let is_selected = explorer.selected.as_ref() == Some(&e.path);
-        let style = if is_selected { base.patch(selected_style) } else { base };
-        if is_selected {
+        let dropping = drop_target.as_ref() == Some(&e.path);
+        let style = if dropping {
+            base.patch(theme.get("list.dropBackground"))
+        } else if is_selected {
+            base.patch(selected_style)
+        } else {
+            base
+        };
+        if is_selected || dropping {
             out.set_style(
                 Rect {
                     x: tree.x,
@@ -173,8 +183,61 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
             room -= 3;
             out.set_stringn(tree.x + tree.width - 2, y, d.letter().to_string(), 1, style);
         }
-        let text = format!("{}{marker}{}", "  ".repeat(row.depth + 1), e.name);
+        let prefix = format!("{}{marker}", "  ".repeat(row.depth + 1));
+        let text = format!("{prefix}{}", e.name);
         out.set_stringn(tree.x, y, text, room, style);
+        if let Some(r) = rename.as_ref().filter(|r| r.from == e.path) {
+            let x = tree.x + prefix.width() as u16;
+            let width = (tree.x + tree.width).saturating_sub(x) as usize;
+            let input = base.patch(theme.get("dialog.input"));
+            out.set_style(
+                Rect {
+                    x,
+                    y,
+                    width: width as u16,
+                    height: 1,
+                },
+                input,
+            );
+            out.set_stringn(x, y, " ".repeat(width), width, input);
+            // Scroll so the cursor stays inside the field.
+            let before = r.field.text[..r.field.cursor].width();
+            let skip_cols = (before + 1).saturating_sub(width);
+            let mut cols = 0;
+            let shown: String = r
+                .field
+                .text
+                .chars()
+                .filter(|c| {
+                    let w = c.width().unwrap_or(0);
+                    cols += w;
+                    cols > skip_cols
+                })
+                .collect();
+            out.set_stringn(x, y, shown, width, input);
+            if let Some(sel) = r.field.selection() {
+                let a = r.field.text[..sel.start].width().saturating_sub(skip_cols);
+                let b = r.field.text[..sel.end].width().saturating_sub(skip_cols).min(width);
+                if b > a {
+                    let rect = Rect {
+                        x: x + a as u16,
+                        y,
+                        width: (b - a) as u16,
+                        height: 1,
+                    };
+                    out.set_style(rect, input.patch(theme.get("editor.selection")));
+                }
+            }
+            if focused {
+                rename_cursor = Some(ratatui::layout::Position {
+                    x: x + (before - skip_cols) as u16,
+                    y,
+                });
+            }
+        }
+    }
+    if let Some(p) = rename_cursor {
+        f.set_cursor_position(p);
     }
     let (history, history_scrollbar) = match section {
         Some(section) => render_history(f, section, app),

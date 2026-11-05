@@ -187,6 +187,7 @@ Go back to any earlier save of a file, independent of git.
 - Skip if identical to the newest snapshot (content hash)
 - Written off the UI thread, after the save's rename completes; a history failure never fails the save (log + status message)
 - Explorer rename: history moves with the file; delete: history kept
+- Explorer rename (F2) edits the name in place; dragging a row onto a folder moves it (same file operation, so tabs and history follow)
 
 **Limits** (`.workspace` `[history]`)
 - `max_entries` per file (default 50; oldest dropped)

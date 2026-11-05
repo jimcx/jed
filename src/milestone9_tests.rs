@@ -4412,10 +4412,7 @@ async fn milestone_9_rename_across_files() {
     // The explorer's F2 is still the file rename.
     app.press(K::Char('e'), cmd() | M::SHIFT);
     app.press(K::F(2), M::NONE);
-    assert!(matches!(
-        rename_prompt(&app),
-        Some((crate::app::InputKind::Rename { .. }, _, _))
-    ));
+    assert!(app.prompt.is_none() && app.inline_rename.is_some());
     app.press(K::Esc, M::NONE);
     app.press(K::Char('1'), cmd());
     assert_eq!(app.ui.focus, crate::app::Focus::Editor);

@@ -116,6 +116,8 @@ pub enum Drag {
         target: ScrollTarget,
         grab: u16,
     },
+    /// An Explorer row being dragged onto a folder (`app/explorer_drag.rs`).
+    Explorer(super::explorer_drag::ExplorerDrag),
     /// The Explorer view's Git History divider (its row sets the section's height).
     HistoryDivider,
     /// The "File History" section's divider.
@@ -582,6 +584,9 @@ impl App {
                 // drag is stale, and the marker / shade it left must go. `left_click` re-arms a
                 // fresh drag where the press starts one.
                 self.drag = None;
+                if self.inline_rename.is_some() {
+                    self.commit_inline_rename();
+                }
                 let count = self.clicks.click(Instant::now(), m.column, m.row);
                 self.left_click(hit, m, count);
             }
@@ -654,6 +659,7 @@ impl App {
                 }
                 Some(Drag::ScrollBar { target, grab }) => self.scrollbar_drag(target, m.column, m.row, grab),
                 Some(Drag::Tab(_)) => self.tab_drag_to(m.column, m.row),
+                Some(Drag::Explorer(_)) => self.explorer_drag_to(m.column, m.row),
                 // Taken by `hex_mouse`.
                 Some(Drag::Hex(_) | Drag::Diff(_) | Drag::Markdown(_)) => {}
                 // Taken by `terminal_select`.
@@ -665,6 +671,9 @@ impl App {
             MouseEventKind::Up(MouseButton::Left) => {
                 if matches!(self.drag, Some(Drag::Tab(_))) {
                     self.finish_tab_drag(m.column, m.row);
+                }
+                if matches!(self.drag, Some(Drag::Explorer(_))) {
+                    self.finish_explorer_drag(m.column, m.row);
                 }
                 self.drag = None;
                 // No moves arrive during a drag: the thumb released away from the pointer
@@ -703,6 +712,7 @@ impl App {
                 };
                 drop(rows);
                 self.explorer.selected = Some(entry.0.clone());
+                self.explorer_drag_start(entry.0.clone());
                 // Folders toggle on a single click; files open on a double click.
                 if entry.1 || count >= 2 {
                     self.toggle_or_open(&entry.0, count >= 2);

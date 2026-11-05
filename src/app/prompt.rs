@@ -84,9 +84,6 @@ pub enum InputKind {
     NewFolder {
         dir: PathBuf,
     },
-    Rename {
-        from: PathBuf,
-    },
     /// Save As (and Save on an untitled buffer): the path for `buffer`, relative to the root or
     /// absolute.
     SaveAs {
@@ -357,8 +354,7 @@ impl App {
             return;
         }
         let name = input.field.text.trim().to_string();
-        let nested = !matches!(input.kind, InputKind::Rename { .. });
-        if let Err(e) = explorer::validate_name(&name, nested) {
+        if let Err(e) = explorer::validate_name(&name, true) {
             input.error = Some(e);
             self.prompt = Some(Prompt::Input(input));
             return;
@@ -368,13 +364,6 @@ impl App {
             InputKind::NewFile { dir } => FileOp::NewFile(dir.join(&name)),
             InputKind::NewFolder { dir } => FileOp::NewFolder(dir.join(&name)),
             InputKind::RenameSymbol { .. } | InputKind::SaveAs { .. } => return,
-            InputKind::Rename { from } => {
-                let to = from.with_file_name(&name);
-                if to == from {
-                    return;
-                }
-                FileOp::Rename { from, to }
-            }
         };
         self.run_file_op(op);
     }
