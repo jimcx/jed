@@ -14,7 +14,7 @@
 //!   tabs): the thumb sized to the screen's share and placed at the top line, none for a text
 //!   that fits; pressing the thumb and dragging scrolls (also with the pointer off the bar, until
 //!   release), a press on the track centres the thumb there, neither moving a cursor nor focusing
-//!   the group; the wheel over it scrolls; hover / drag colours (no hover left after a release
+//!   the group; the wheel over it scrolls; a press reported past the right edge grabs it; hover / drag colours (no hover left after a release
 //!   elsewhere); text clicks unchanged; below the changed-on-disk banner, none for a group
 //!   without tabs, the find widget left of it, tiny editors.
 //! - `side_scroll_bars`: the same bar in the last column of the explorer tree, the Search view's
@@ -1012,6 +1012,43 @@ mod scroll_bars {
             }
             assert!(thumbs >= 4, "tab {tab}: {thumbs} thumbs drawn");
         }
+    }
+
+    /// The bar is the screen's last column, so the pointer easily overshoots it: a press the
+    /// terminal reports past the right edge (in its padding) grabs the bar, as the edge's cell,
+    /// and a drag past the edge keeps scrolling.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_press_past_the_right_edge_grabs_the_bar() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _term) = open_app(&dir, &numbered(8000));
+        let t = track(&app, app.groups.active);
+        assert_eq!(t.x, 79, "the bar is the last column");
+        let mid = t.y + t.height / 2;
+
+        // Reported one and more columns past the edge.
+        for x in [80, 85] {
+            app.press(K::Home, M::CONTROL);
+            draw(&mut app);
+            assert_eq!(top(&app), 0);
+            app.mouse(DOWN, x, mid);
+            app.mouse(UP, x, mid);
+            assert!(
+                top(&app) > 3000,
+                "a press at column {x} jumps the view: top {}",
+                top(&app)
+            );
+            assert_eq!(selections(&app).primary().head.0, 0, "no cursor moved");
+            draw(&mut app);
+        }
+
+        // Pressed past the edge, dragged down past it.
+        app.press(K::Home, M::CONTROL);
+        draw(&mut app);
+        app.mouse(DOWN, 82, mid);
+        let at_mid = top(&app);
+        app.mouse(DRAG, 85, mid + 3);
+        assert!(top(&app) > at_mid, "the drag scrolls on: {at_mid} → {}", top(&app));
+        app.mouse(UP, 85, mid + 3);
     }
 }
 

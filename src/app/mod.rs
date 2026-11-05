@@ -1058,6 +1058,10 @@ impl App {
         }
         self.note_pre_event();
         let here = self.nav_begin();
+        let ev = match ev {
+            Event::Mouse(m) => Event::Mouse(self.clamp_to_screen(m)),
+            ev => ev,
+        };
         match ev {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 tracing::trace!(target: "input", ?key);

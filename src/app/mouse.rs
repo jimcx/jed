@@ -175,6 +175,20 @@ fn border_height(row: u16, bottom: u16, min: u16) -> u16 {
 }
 
 impl App {
+    /// `m` with its cell clamped to the last frame's screen. A terminal can report the pointer
+    /// past the window's edge (in its padding, or dragged outside it): there it still means the
+    /// edge's cell, so a press just past the right edge lands on the scroll bars in the last
+    /// column.
+    pub(super) fn clamp_to_screen(&self, mut m: MouseEvent) -> MouseEvent {
+        let status = self.hits.regions.status;
+        let (right, bottom) = (status.x + status.width, status.y + status.height);
+        if right > 0 && bottom > 0 {
+            m.column = m.column.min(right - 1);
+            m.row = m.row.min(bottom - 1);
+        }
+        m
+    }
+
     pub(super) fn handle_mouse(&mut self, m: MouseEvent) {
         let hit = self.hits.hit(m.column, m.row);
         self.tab_tip_mouse(&m, hit);
