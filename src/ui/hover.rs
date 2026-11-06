@@ -16,6 +16,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::popup::{self, Side};
 use crate::app::App;
+use crate::buffer::pos;
 use crate::hover::{self, Kind};
 use crate::layout::GroupHit;
 
@@ -23,18 +24,29 @@ use crate::layout::GroupHit;
 pub fn render(f: &mut Frame, app: &mut App, groups: &[GroupHit]) -> Option<Rect> {
     let popup = app.hover.popup.as_mut()?;
     let hit = groups.iter().find(|g| g.id == popup.group)?;
-    let tab = app.groups.get_mut(popup.group)?.active_tab_mut()?;
-    if tab.buffer != popup.buffer {
-        return None;
-    }
+    let group = app.groups.get_mut(popup.group)?;
     let buf = app.buffers.get(popup.buffer)?;
-    let anchor = popup::cell_of(
-        &buf.rope,
-        &mut tab.view,
-        hit.text,
-        popup.anchor,
-        app.settings.for_buffer(buf).tab_width,
-    )?;
+    let tab_width = app.settings.for_buffer(buf).tab_width;
+    let anchor = match group.active_tab_mut() {
+        Some(tab) => {
+            if tab.buffer != popup.buffer {
+                return None;
+            }
+            popup::cell_of(&buf.rope, &mut tab.view, hit.text, popup.anchor, tab_width)?
+        }
+        // A review diff: the row showing the anchor's line, in the right side's text column.
+        None => {
+            let d = group.active_diff()?;
+            let h = hit.diff.as_ref()?;
+            let rope = &buf.rope;
+            let line = pos::line_of(rope, popup.anchor);
+            let shown = d.rows().get(d.top..)?.iter().take(h.rows.height as usize);
+            let row = shown.map(|r| r.right).position(|r| r == Some(line))?;
+            let col = pos::display_col(rope, popup.anchor, tab_width).0;
+            let x = (col.saturating_sub(d.left_col) as u16).min(h.rows.width.saturating_sub(1));
+            (h.text_x[1] + x, h.rows.y + row as u16)
+        }
+    };
     let area = hit.editor;
     // Border and a column of padding on each side.
     let width = hover::width(&popup.lines)

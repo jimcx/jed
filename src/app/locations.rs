@@ -40,6 +40,16 @@ pub(super) fn no_references(word: &str) -> String {
     }
 }
 
+/// What a language server request from the active tab is about.
+pub(super) enum Spot {
+    At(GroupId, BufferId, ByteIdx),
+    /// A review diff's caret on a deleted line.
+    Deleted,
+}
+
+/// Said when a request is asked of a deleted line.
+pub(super) const DELETED_LINE: &str = "Deleted lines have no language server";
+
 /// The status bar's text when there's no definition (VS Code's).
 pub(super) fn no_definition(word: &str) -> String {
     if word.is_empty() {
@@ -50,12 +60,50 @@ pub(super) fn no_definition(word: &str) -> String {
 }
 
 impl App {
-    /// The active group, buffer and primary cursor of the active tab, and the word there (empty
-    /// when none); seals the buffer's undo step (a request isn't an edit).
-    pub(super) fn cursor_word(&mut self) -> Option<(GroupId, BufferId, ByteIdx, String)> {
+    /// Where a language server request from the active tab points: a text tab's primary cursor,
+    /// or a review diff's caret on a right-side line ("Deleted" on a left-only one). `None`: any
+    /// other tab, or a diff whose lines aren't its file's buffer's (yet).
+    pub(super) fn lsp_spot(&self) -> Option<Spot> {
         let group = self.groups.active;
-        let tab = self.group().active_tab()?;
-        let (buffer, at) = (tab.buffer, tab.view.selections.primary().head);
+        let g = self.group();
+        if let Some(tab) = g.active_tab() {
+            return Some(Spot::At(group, tab.buffer, tab.view.selections.primary().head));
+        }
+        let d = g.active_diff().filter(|d| d.pair.is_review())?;
+        if !d.caret.right {
+            return Some(Spot::Deleted);
+        }
+        let buffer = self.buffer_of(&d.path)?;
+        let rope = &self.buffers.get(buffer)?.rope;
+        let (line, byte) = d.caret.head;
+        let (start, end) = super::diff_edit::shown_line(d, rope, true, line)?;
+        (byte <= end.0 - start.0).then(|| Spot::At(group, buffer, ByteIdx(start.0 + byte)))
+    }
+
+    /// The group, buffer and position a request from the active tab is about (`lsp_spot`).
+    pub(super) fn lsp_target(&self) -> Option<(GroupId, BufferId, ByteIdx)> {
+        match self.lsp_spot()? {
+            Spot::At(g, b, at) => Some((g, b, at)),
+            Spot::Deleted => None,
+        }
+    }
+
+    /// `lsp_target`, saying why not on a deleted line of a review diff.
+    pub(super) fn lsp_target_noted(&mut self) -> Option<(GroupId, BufferId, ByteIdx)> {
+        match self.lsp_spot()? {
+            Spot::At(g, b, at) => Some((g, b, at)),
+            Spot::Deleted => {
+                self.notify(Level::Info, DELETED_LINE.into());
+                None
+            }
+        }
+    }
+
+    /// The active group, buffer and primary cursor of the active tab (a review diff's caret),
+    /// and the word there (empty when none); seals the buffer's undo step (a request isn't an
+    /// edit).
+    pub(super) fn cursor_word(&mut self) -> Option<(GroupId, BufferId, ByteIdx, String)> {
+        let (group, buffer, at) = self.lsp_target_noted()?;
         let word = self
             .buffers
             .get(buffer)

@@ -941,3 +941,29 @@ async fn diff_history_tab_restore_button_restores_the_entry() {
             .is_none()
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn diff_edit_inline_click_lands_at_the_clicked_column_on_added_and_removed_rows() {
+    let (_d, root, state) = dirs();
+    let mut app = open(&root, &state).await;
+    term(&mut app, 70);
+    assert!(diff(&app).inline);
+    let h = app.hits.group(app.groups.active).unwrap().diff.clone().unwrap();
+    let rows = diff(&app).rows().to_vec();
+    // An added row (`beta TWO`, right line 1): the caret goes to the column clicked.
+    let y = h.rows.y + rows.iter().position(|r| r.right == Some(1)).unwrap() as u16;
+    click(&mut app, (h.text_x[1] + 5, y));
+    assert_eq!((diff(&app).caret.right, diff(&app).caret.head), (true, (1, 5)));
+    // A context row (`gamma three`, right line 2).
+    let y = h.rows.y + rows.iter().position(|r| r.right == Some(2)).unwrap() as u16;
+    click(&mut app, (h.text_x[1] + 3, y));
+    assert_eq!((diff(&app).caret.right, diff(&app).caret.head), (true, (2, 3)));
+    // A removed row (`beta two`, left line 1) reads from the left side.
+    let y = h.rows.y
+        + rows
+            .iter()
+            .position(|r| r.left == Some(1) && r.right.is_none())
+            .unwrap() as u16;
+    click(&mut app, (h.text_x[0] + 4, y));
+    assert_eq!((diff(&app).caret.right, diff(&app).caret.head), (false, (1, 4)));
+}

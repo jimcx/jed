@@ -941,7 +941,13 @@ impl App {
                         if on_action {
                             d.cursor = row;
                         } else {
-                            let right = !d.inline && h.divider.is_some_and(|x| m.column > x);
+                            // Inline, the one column holds the right side's lines and the removed
+                            // rows' left ones.
+                            let right = if d.inline {
+                                d.rows()[row].right.is_some()
+                            } else {
+                                h.divider.is_some_and(|x| m.column > x)
+                            };
                             let col = diff_col(d, &h, right, m.column);
                             let extend = m.modifiers.contains(KeyModifiers::SHIFT);
                             d.caret_click(row, right, col, extend);
@@ -954,6 +960,18 @@ impl App {
                                 }
                             }
                             self.drag = Some(Drag::Diff(g));
+                            // Cmd+Click (Ctrl+Click on Linux) on a review's code: go to definition.
+                            let go = m.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER);
+                            if go
+                                && !extend
+                                && count == 1
+                                && self.group().active_diff().is_some_and(|d| d.pair.is_review())
+                            {
+                                self.drag = None;
+                                self.focus_group(g);
+                                self.go_to_definition();
+                                return true;
+                            }
                         }
                     }
                 }

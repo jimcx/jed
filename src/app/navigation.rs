@@ -131,6 +131,9 @@ impl App {
                 (Some(p), Some(q)) if (p.anchor, p.head) != (q.anchor, q.head) && a.revision == before.revision => {
                     jump || (input && self.lines_apart(p.head, q.head) >= MIN_LINES)
                 }
+                // A diff, hex or preview tab to a text tab of the same file (F12 on a review's
+                // diff finding its definition in the same file).
+                (None, Some(_)) => jump,
                 _ => false,
             },
         };

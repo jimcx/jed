@@ -60,9 +60,9 @@ impl App {
     /// The command: the hover for the active view's cursor. The diagnostics there show at once;
     /// the server's answer is appended when it comes.
     pub(super) fn show_hover(&mut self) {
-        let group = self.groups.active;
-        let Some(tab) = self.group().active_tab() else { return };
-        let (buffer, at) = (tab.buffer, tab.view.selections.primary().head);
+        let Some((group, buffer, at)) = self.lsp_target_noted() else {
+            return;
+        };
         self.close_hover();
         let shown = self.hover_popup(group, buffer, at, None, None);
         if shown {
@@ -71,6 +71,18 @@ impl App {
         if !self.request_hover(group, buffer, at, None) && !shown {
             self.notify(super::Level::Info, "No hover information".into());
         }
+    }
+
+    /// The scroll (top line, its sub-row, left column) of the view `group`'s active tab shows
+    /// `buffer` in: a text tab's, or a review diff's (rows from its top, no sub-row) of that
+    /// buffer's file. `None`: the group shows something else.
+    fn scroll_of(&self, group: GroupId, buffer: BufferId) -> Option<(usize, usize, usize)> {
+        let g = self.groups.get(group)?;
+        if let Some(t) = g.active_tab() {
+            return (t.buffer == buffer).then(|| (t.view.top_line(), t.view.top_row(), t.view.left_col));
+        }
+        let d = g.active_diff().filter(|d| d.pair.is_review())?;
+        (self.buffer_of(&d.path) == Some(buffer)).then_some((d.top, 0, d.left_col))
     }
 
     /// The diagnostics the popup shows at `at` (drawn on that cell for the mouse, else touching
@@ -142,13 +154,7 @@ impl App {
         let Some(buf) = self.buffers.get(buffer) else {
             return false;
         };
-        let Some(view) = self
-            .groups
-            .get(group)
-            .and_then(|g| g.active_tab())
-            .filter(|t| t.buffer == buffer)
-            .map(|t| &t.view)
-        else {
+        let Some(scroll) = self.scroll_of(group, buffer) else {
             return false;
         };
         let rope = &buf.rope;
@@ -194,7 +200,7 @@ impl App {
             group,
             buffer,
             revision,
-            scroll: (view.top_line(), view.top_row(), view.left_col),
+            scroll,
             anchor: about.0,
             range,
             lines,
@@ -294,6 +300,9 @@ impl App {
         let Hit::Editor(g) = self.hits.hit(x, y) else {
             return None;
         };
+        if self.groups.get(g).is_some_and(|g| g.active_diff().is_some()) {
+            return self.diff_hover_target(g, x, y);
+        }
         let text = self.hits.group(g)?.text;
         if !text.contains(ratatui::layout::Position { x, y }) {
             return None;
@@ -341,6 +350,39 @@ impl App {
         Some((g, tab.buffer, at, pos::word_range(rope, at)))
     }
 
+    /// `hover_target` over a review diff: the word on a right-side line under the cell (a
+    /// deleted line has no language server, so no hover).
+    fn diff_hover_target(
+        &self,
+        g: GroupId,
+        x: u16,
+        y: u16,
+    ) -> Option<(GroupId, BufferId, ByteIdx, (ByteIdx, ByteIdx))> {
+        let d = self.groups.get(g)?.active_diff().filter(|d| d.pair.is_review())?;
+        let h = self.hits.group(g)?.diff.as_ref()?;
+        let p = ratatui::layout::Position { x, y };
+        let text_x = h.text_x[1];
+        if !h.rows.contains(p) || x < text_x {
+            return None;
+        }
+        let line = d.rows().get(d.top + (y - h.rows.y) as usize)?.right?;
+        let buffer = self.buffer_of(&d.path)?;
+        let buf = self.buffers.get(buffer)?;
+        let rope = &buf.rope;
+        super::diff_edit::shown_line(d, rope, true, line)?;
+        let l = pos::Line::new(rope, line);
+        let tab_width = self.settings.for_buffer(buf).tab_width;
+        let col = DisplayCol(d.left_col + (x - text_x) as usize);
+        if col >= l.col(l.end(), tab_width) {
+            return None;
+        }
+        let at = l.byte_at_col(col, tab_width);
+        if pos::Peek::new(rope).after(at).is_none_or(char::is_whitespace) {
+            return None;
+        }
+        Some((g, buffer, at, pos::word_range(rope, at)))
+    }
+
     /// The resting timer's deadline passed (`now`): the hover for where the mouse rests.
     pub(super) fn hover_tick(&mut self, now: Instant) {
         let Some(r) = self.hover.rest.clone() else { return };
@@ -348,12 +390,7 @@ impl App {
             return;
         }
         self.hover.rest = None;
-        let shows = self
-            .groups
-            .get(r.group)
-            .and_then(|g| g.active_tab())
-            .is_some_and(|t| t.buffer == r.buffer);
-        if shows {
+        if self.scroll_of(r.group, r.buffer).is_some() {
             // The diagnostics there at once; the server's answer follows.
             if self.hover_popup(r.group, r.buffer, r.at, Some(r.word), None) {
                 self.request_hover_fixes_at(r.group, r.buffer, r.at, true);
@@ -366,9 +403,8 @@ impl App {
     /// its view scrolled.
     pub(super) fn check_hover(&mut self) {
         let Some(p) = &self.hover.popup else { return };
-        let fits = self.groups.get(p.group).and_then(|g| g.active_tab()).is_some_and(|t| {
-            t.buffer == p.buffer && (t.view.top_line(), t.view.top_row(), t.view.left_col) == p.scroll
-        }) && self.buffers.get(p.buffer).is_some_and(|b| b.revision() == p.revision);
+        let fits = self.scroll_of(p.group, p.buffer) == Some(p.scroll)
+            && self.buffers.get(p.buffer).is_some_and(|b| b.revision() == p.revision);
         if !fits {
             self.hover.popup = None;
             self.needs_redraw = true;

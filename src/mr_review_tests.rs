@@ -625,3 +625,232 @@ async fn mr_review_edits_on_the_right_side_go_through_the_buffer() {
     app.test_execute(Command::Undo);
     assert_eq!(text(&app), "m1\nm2 changed\nm3\n");
 }
+
+// ---- mr_review-d: definition, references and hover on a review's diff tab ----
+
+mod lsp {
+    use super::*;
+    use crate::lsp::fake::{FakeLauncher, FakeOptions};
+    use crate::milestone9_tests::{cmd, draw, find_cells, idle, location, popup_rows, terminal, uri};
+    use serde_json::json;
+
+    /// `main` with `a.cpp` / `b.cpp`, then `feature` renaming `value` to `target` in `a.cpp`.
+    fn make_cpp_repo(base: &Path) -> (PathBuf, String) {
+        let root = base.join("proj");
+        fs::create_dir_all(&root).unwrap();
+        init(&root);
+        fs::write(root.join("a.cpp"), "int value = 1;\nint use = value;\nint gone = 0;\n").unwrap();
+        fs::write(root.join("b.cpp"), "int other = 1;\nint more = 2;\n").unwrap();
+        commit_all(&root, "base");
+        let main = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        git(&root, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        git(&root, &["remote", "add", "origin", REMOTE]);
+        git(&root, &["checkout", "-q", "-b", "feature"]);
+        fs::write(root.join("a.cpp"), "int target = 1;\nint use = target;\n").unwrap();
+        commit_all(&root, "work");
+        (root, main)
+    }
+
+    /// The panel's app with a fake language server, `a.cpp`'s review diff open and its buffer
+    /// synced with the server.
+    async fn review_app(dir: &Path) -> (App, Arc<FakeLauncher>, PathBuf, FakeServer) {
+        let (root, main) = make_cpp_repo(dir);
+        let server = one_mr(&main);
+        let fake = FakeLauncher::new(FakeOptions::default());
+        let base = workspace::normalize(&root);
+        let trust = TrustStore::load(base.join("trust.toml"));
+        let mut app = App::new(Workspace::load(base.clone()), trust, None, true);
+        app.lsp.set_launcher(fake.clone());
+        app.review.config = Some(Arc::new(config_for(&server)));
+        app.review.env = Arc::new(|n| (n == "FAKE_TOKEN").then(|| "secret".to_string()));
+        app.review.auto = true;
+        app.test_start();
+        assert!(app.settle(loaded).await);
+        app.test_execute(Command::ShowReview);
+        idle(&mut app).await;
+        screen(&mut app);
+        open_file(&mut app, "a.cpp").await;
+        let a = base.join("a.cpp");
+        assert!(app.settle(|_| fake.document(&uri(&a)).is_some()).await);
+        (app, fake, a, server)
+    }
+
+    /// Puts the diff's caret on a line of the right side (or a deleted line of the left) at
+    /// display column `col`.
+    fn caret_at(app: &mut App, right: bool, line: usize, col: usize) {
+        let d = app.group_mut().active_diff_mut().unwrap();
+        let row = d
+            .rows()
+            .iter()
+            .position(|r| if right { r.right } else { r.left } == Some(line) && (right || r.right.is_none()))
+            .expect("a row");
+        d.caret_click(row, right, col, false);
+    }
+
+    fn position(fake: &FakeLauncher, method: &str) -> (u64, u64) {
+        let p = fake.requests(method).last().expect("a request").clone();
+        (
+            p["position"]["line"].as_u64().unwrap(),
+            p["position"]["character"].as_u64().unwrap(),
+        )
+    }
+
+    fn message(app: &App) -> String {
+        app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_f12_on_a_right_side_line_asks_for_the_definition_and_back_returns() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, fake, a, _server) = review_app(dir.path()).await;
+        let b = a.parent().unwrap().join("b.cpp");
+        caret_at(&mut app, true, 1, 12);
+        // Same file: the buffer's text tab, with the cursor at the answer.
+        fake.respond("textDocument/definition", location(&a, 0, 4, 10));
+        app.press(KeyCode::F(12), KeyModifiers::NONE);
+        assert!(
+            app.settle(|a| a.group().active_tab().is_some()).await,
+            "{}",
+            message(&app)
+        );
+        assert_eq!(position(&fake, "textDocument/definition"), (1, 12));
+        assert_eq!(
+            fake.requests("textDocument/definition")[0]["textDocument"]["uri"],
+            json!(uri(&a))
+        );
+        assert_eq!(app.active_buffer().unwrap().path, a);
+        app.test_execute(Command::NavBack);
+        assert!(app.group().active_diff().is_some(), "Back returns to the diff");
+        // Another file.
+        fake.respond("textDocument/definition", location(&b, 1, 4, 8));
+        app.press(KeyCode::F(12), KeyModifiers::NONE);
+        assert!(
+            app.settle(|a| a.active_buffer().is_some_and(|b2| b2.path == b)).await,
+            "{}",
+            message(&app)
+        );
+        app.test_execute(Command::NavBack);
+        assert!(app.group().active_diff().is_some(), "Back returns to the diff");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_shift_f12_lists_references_from_the_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, fake, a, _server) = review_app(dir.path()).await;
+        caret_at(&mut app, true, 0, 5);
+        fake.respond(
+            "textDocument/references",
+            json!([location(&a, 0, 4, 10), location(&a, 1, 11, 17)]),
+        );
+        app.press(KeyCode::F(12), KeyModifiers::SHIFT);
+        assert!(
+            app.settle(|_| !fake.requests("textDocument/references").is_empty())
+                .await,
+            "{}",
+            message(&app)
+        );
+        assert_eq!(position(&fake, "textDocument/references"), (0, 5));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_deleted_lines_have_no_language_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, fake, _a, _server) = review_app(dir.path()).await;
+        caret_at(&mut app, false, 2, 5);
+        assert!(!diff(&app).caret.right);
+        for keys in [
+            (KeyCode::F(12), KeyModifiers::NONE),
+            (KeyCode::F(12), KeyModifiers::SHIFT),
+            (KeyCode::Char('i'), cmd() | KeyModifiers::ALT),
+        ] {
+            app.message = None;
+            app.press(keys.0, keys.1);
+            assert_eq!(message(&app), "Deleted lines have no language server", "{keys:?}");
+        }
+        idle(&mut app).await;
+        for m in [
+            "textDocument/definition",
+            "textDocument/references",
+            "textDocument/hover",
+        ] {
+            assert!(fake.requests(m).is_empty(), "{m}");
+        }
+        assert!(app.group().active_diff().is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_hover_by_keyboard_and_mouse_shows_a_popup_over_the_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, fake, _a, _server) = review_app(dir.path()).await;
+        let range = json!({ "start": { "line": 1, "character": 11 }, "end": { "line": 1, "character": 17 } });
+        fake.respond(
+            "textDocument/hover",
+            json!({ "contents": { "kind": "plaintext", "value": "int target" }, "range": range }),
+        );
+        let mut term = terminal();
+        caret_at(&mut app, true, 1, 12);
+        draw(&mut term, &mut app);
+        let (x, y) = find_cells(&term, "use = target;").unwrap();
+        app.press(KeyCode::Char('i'), cmd() | KeyModifiers::ALT);
+        assert!(app.settle(|a| a.hover.popup.is_some()).await, "{}", message(&app));
+        assert_eq!(position(&fake, "textDocument/hover"), (1, 12));
+        draw(&mut term, &mut app);
+        let r = app.hits.hover.expect("popup drawn");
+        assert_eq!(popup_rows(&term, &app), vec!["int target"]);
+        assert_eq!(r.y + r.height, y, "just above the hovered row");
+        // The mouse resting on the word.
+        app.hover.popup = None;
+        draw(&mut term, &mut app);
+        app.mouse(crossterm::event::MouseEventKind::Moved, x + 7, y);
+        app.test_hover_tick(std::time::Instant::now() + crate::hover::DELAY);
+        assert!(app.settle(|a| a.hover.popup.is_some()).await, "{}", message(&app));
+        assert!(app.hover.popup.as_ref().unwrap().mouse);
+        assert_eq!(position(&fake, "textDocument/hover"), (1, 11));
+        // Resting over a deleted line starts nothing.
+        app.hover.popup = None;
+        let before = fake.requests("textDocument/hover").len();
+        draw(&mut term, &mut app);
+        let (dx, dy) = find_cells(&term, "int gone = 0;").unwrap();
+        app.mouse(crossterm::event::MouseEventKind::Moved, dx + 7, dy);
+        assert!(app.hover.rest.is_none());
+        idle(&mut app).await;
+        assert_eq!(fake.requests("textDocument/hover").len(), before);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_ctrl_click_on_a_right_side_word_goes_to_its_definition() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, fake, a, _server) = review_app(dir.path()).await;
+        fake.respond("textDocument/definition", location(&a, 0, 4, 10));
+        let mut term = terminal();
+        draw(&mut term, &mut app);
+        let (x, y) = find_cells(&term, "use = target;").unwrap();
+        app.mouse_with(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            x + 7,
+            y,
+            cmd(),
+        );
+        assert!(
+            app.settle(|a| a.group().active_tab().is_some()).await,
+            "{}",
+            message(&app)
+        );
+        assert_eq!(position(&fake, "textDocument/definition"), (1, 11));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_other_diff_tabs_have_no_language_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, fake, a, _server) = review_app(dir.path()).await;
+        app.open_diff(a, crate::diff_view::Pair::UNSTAGED);
+        assert!(app.settle(|a| a.diffs_settled()).await);
+        app.message = None;
+        app.press(KeyCode::F(12), KeyModifiers::NONE);
+        app.press(KeyCode::Char('i'), cmd() | KeyModifiers::ALT);
+        idle(&mut app).await;
+        assert!(fake.requests("textDocument/definition").is_empty());
+        assert!(fake.requests("textDocument/hover").is_empty());
+        assert!(message(&app).is_empty(), "{}", message(&app));
+    }
+}

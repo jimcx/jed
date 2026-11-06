@@ -361,13 +361,7 @@ impl App {
         }
         match &p.request {
             Request::Hover { word: Some(word) } => self.hover.mouse == Some((p.group, p.buffer, *word)),
-            _ => {
-                self.groups.active == p.group
-                    && self
-                        .group()
-                        .active_tab()
-                        .is_some_and(|t| t.buffer == p.buffer && t.view.selections.primary().head == p.at)
-            }
+            _ => self.groups.active == p.group && self.lsp_target() == Some((p.group, p.buffer, p.at)),
         }
     }
 

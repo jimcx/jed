@@ -117,6 +117,16 @@ impl App {
     }
 }
 
+/// The start and end in `rope` of `line`, when it is the line `d` shows on that side (`None`:
+/// no such line, or the buffer has changed since the diff was read).
+pub(super) fn shown_line(d: &DiffTab, rope: &ropey::Rope, right: bool, line: usize) -> Option<(ByteIdx, ByteIdx)> {
+    if line >= pos::line_count(rope) {
+        return None;
+    }
+    let (start, end) = (pos::line_start(rope, line), pos::line_end(rope, line));
+    (rope.slice(start.0..end.0) == d.side_text(right, line)).then_some((start, end))
+}
+
 /// The caret of `d` as a selection of `buf`, `edit` applied, the caret back in the diff. The
 /// diff's lines must be the buffer's (a changed buffer not read yet: refused), unless an edit
 /// here is waiting for its reload (the caret is then in the buffer's text already).
