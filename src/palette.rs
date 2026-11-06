@@ -596,6 +596,7 @@ pub fn log_rows(query: &str, tools: &[Tool]) -> Vec<Row> {
                 Tool::Jed => "jed's own log",
                 Tool::Server(_) => "language server",
                 Tool::Grammar(_) => "syntax plugin build",
+                Tool::Review => "code review requests",
             };
             Some((
                 score,

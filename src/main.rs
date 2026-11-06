@@ -41,7 +41,6 @@ mod find;
 mod fixes_tests;
 #[cfg(test)]
 mod focus_groups_tests;
-#[allow(dead_code)] // nothing drives the forge layer until the review panel (mr_review-b)
 mod forge;
 mod format;
 mod git;
@@ -111,6 +110,8 @@ mod milestone8_tests;
 mod milestone9_tests;
 #[cfg(test)]
 mod milestone_tests;
+#[cfg(test)]
+mod mr_review_tests;
 mod mru;
 mod multicursor;
 mod navigation;
@@ -126,6 +127,7 @@ mod recent;
 mod rename;
 #[cfg(test)]
 mod replace_tests;
+mod review;
 #[cfg(test)]
 mod review_followups_tests;
 mod scm;

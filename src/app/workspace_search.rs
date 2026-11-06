@@ -724,10 +724,15 @@ mod tests {
             Logs => app.log_tabs.test_arm(at),
             Spell => app.spell.deadline = Some(at),
             Files => app.files_poll = Some(at),
+            Review => {
+                app.ui.side_visible = true;
+                app.ui.side_panel = crate::layout::SidePanel::Review;
+                app.review.next_poll = Some(at);
+            }
         }
     }
 
-    /// Each of the 16 deadlines, armed alone, wakes `next_timer` with its own tag; with two
+    /// Each of the 17 deadlines, armed alone, wakes `next_timer` with its own tag; with two
     /// armed from different modules the earlier one wins.
     #[tokio::test(flavor = "multi_thread")]
     async fn next_timer_wakes_for_every_deadline_with_its_own_tag() {
@@ -736,7 +741,7 @@ mod tests {
         use super::super::Timer::*;
 
         // `arm`'s match is exhaustive, so a new variant has to be added there; add it here too.
-        const ALL: [super::super::Timer; 16] = [
+        const ALL: [super::super::Timer; 17] = [
             FsChanges,
             SearchDebounce,
             Hover,
@@ -753,6 +758,7 @@ mod tests {
             GitStatus,
             Logs,
             Files,
+            Review,
         ];
         let dir = tempfile::tempdir().unwrap();
         let root = crate::workspace::normalize(dir.path());

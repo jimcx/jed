@@ -13,13 +13,15 @@
 //! comes from a server is run through `http::clean_line` / `http::clean_text` before it reaches
 //! these types, so nothing downstream can draw a control sequence from a remote.
 
+#![allow(dead_code)] // threads, comments and writes are used by the later code-review subtasks
+
 pub mod config;
 pub mod gitea;
 pub mod http;
 pub mod url;
 
 #[cfg(test)]
-mod fake;
+pub mod fake;
 
 use std::fmt;
 
@@ -247,11 +249,15 @@ pub trait Forge: Send + Sync {
 /// implemented so far.
 ///
 /// Blocking: reads the environment and builds a TLS config; call from spawn_blocking.
-pub fn connect(config: &config::ForgeConfig, host: &str) -> Result<Box<dyn Forge>> {
+pub fn connect(
+    config: &config::ForgeConfig,
+    host: &str,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<Box<dyn Forge>> {
     let resolved = config
         .resolve(host)
         .ok_or_else(|| ForgeError::Config(format!("no forge configured for {host}: add it to forges.toml")))?;
-    let client = http::Client::new(&resolved, |name| std::env::var(name).ok())?;
+    let client = http::Client::new(&resolved, env)?;
     match resolved.kind {
         Kind::Gitea => Ok(Box::new(gitea::Gitea::new(client))),
         other => Err(ForgeError::Config(format!("{} is not supported yet", other.name()))),

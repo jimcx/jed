@@ -46,6 +46,8 @@ pub enum Tool {
     Server(String),
     /// A syntax plugin's grammar build, by the plugin's id.
     Grammar(String),
+    /// The Code Review panel's forge requests ("code review").
+    Review,
 }
 
 impl Tool {
@@ -54,6 +56,7 @@ impl Tool {
             Tool::Jed => "jed",
             Tool::Server(name) => name,
             Tool::Grammar(id) => id,
+            Tool::Review => "code review",
         }
     }
 
@@ -64,6 +67,7 @@ impl Tool {
             Tool::Jed => None,
             Tool::Server(name) => Some(disk::file_stem(name)),
             Tool::Grammar(id) => Some(format!("grammar-{}", disk::file_stem(id))),
+            Tool::Review => Some("code-review".into()),
         }
     }
 }

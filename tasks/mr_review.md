@@ -107,7 +107,7 @@ dependencies: []
   - Hand checks: on a self-hosted Gitea server with `GITEA_TOKEN` and a throwaway MR: open the panel and a file; F12 on an added line, then Back; add a multi-line draft, restart jed, submit; see how it looks on Gitea's web page; apply a suggestion and undo it. The same on GitHub and GitLab test repositories
   - Subtasks (one agent and one commit each):
     - ✅ mr_review-a: forge types, config, URL mapping, HTTP layer, a local fake server, Gitea reads. First verify Gitea's behaviour and record it in this file. Built: `src/forge/` (types, `Forge` trait, `forges.toml`, `parse_remote`, ureq `Client`, `FakeServer`, `gitea.rs` reads; the `mod forge` has `#[allow(dead_code)]` until b). Gitea thread side/outdated/resolver semantics still need a hand check on a throwaway MR
-    - mr_review-b: activity icon, panel, MR lookup, merge base, FILES, viewed state, refresh and empty states
+    - ✅ mr_review-b: activity icon, panel, MR lookup, merge base, FILES, viewed state, refresh and empty states. Built: `SidePanel::Review`, `review.rs` / `app/review.rs` / `ui/review.rs`, `git/range.rs`, viewed marks in `review-viewed.json`, `Tool::Review` log; Enter on a file only selects (c opens the diff). Open: `FileChange.status` is a `char` (an enum would need git/show.rs too); `ReviewHit.rows` clones a path per visible row per frame
     - mr_review-c: the forced inline review diff tab, opened from the panel
     - mr_review-d: definition, references and hover on right-side lines
     - mr_review-e: thread blocks (read-only), anchoring and outdated threads, CONVERSATIONS, next / previous thread

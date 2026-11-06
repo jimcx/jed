@@ -548,6 +548,7 @@ impl App {
                 match hit {
                     Hit::SidePanel if self.ui.side_panel == SidePanel::Search => self.search_scroll(delta, &m),
                     Hit::SidePanel if self.ui.side_panel == SidePanel::SourceControl => self.scm_scroll(delta),
+                    Hit::SidePanel if self.ui.side_panel == SidePanel::Review => self.review_scroll(delta),
                     Hit::SidePanel if self.ui.side_panel == SidePanel::Tools => self.tools_scroll(delta),
                     Hit::HistoryRow(_) | Hit::HistoryHeader => self.git_history.scroll_by(delta),
                     Hit::FileHistoryRow(_) | Hit::FileHistoryHeader => self.file_history_view.scroll_by(delta),
@@ -723,6 +724,7 @@ impl App {
             }
             Hit::SidePanel if self.ui.side_panel == SidePanel::Search => self.search_click(m, count),
             Hit::SidePanel if self.ui.side_panel == SidePanel::SourceControl => self.scm_click(m, count),
+            Hit::SidePanel if self.ui.side_panel == SidePanel::Review => self.review_click(m),
             Hit::SidePanel if self.ui.side_panel == SidePanel::Tools => self.tools_click(m),
             // The history's header toggles the collapse; a commit row selects it.
             Hit::FileHistoryHeader => {
@@ -896,6 +898,7 @@ impl App {
                 self.open_tab_menu(g, i, at);
             }
             Hit::Editor(g) => self.open_editor_menu(g, at),
+            Hit::SidePanel if self.ui.side_panel == SidePanel::Review => self.review_menu(at),
             Hit::ExplorerRow(row) if self.ui.side_panel == SidePanel::Explorer => {
                 let index = self.explorer.scroll + row as usize;
                 let Some(path) = self.explorer.rows().get(index).map(|r| r.entry.path.clone()) else {

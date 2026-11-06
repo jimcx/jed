@@ -41,6 +41,10 @@ impl Mode {
                     | Command::FileHistory(_)
                     | Command::ShowTools
                     | Command::Tools(_)
+                    | Command::ShowReview
+                    | Command::ReviewRefresh
+                    | Command::ReviewSwitch
+                    | Command::Review(_)
                     | Command::TogglePanel
                     | Command::ToggleProblems
                     | Command::Problems(_)
@@ -91,6 +95,7 @@ fn view_command(panel: SidePanel) -> Command {
         SidePanel::Explorer => Command::FocusExplorer,
         SidePanel::Search => Command::FindInFiles,
         SidePanel::SourceControl => Command::FocusScm,
+        SidePanel::Review => Command::ShowReview,
         SidePanel::Tools => Command::ShowTools,
     }
 }
@@ -136,6 +141,8 @@ mod tests {
             Command::Shell(crate::command::ShellCommand::ScrollUp),
             Command::NewUntitledFile,
             Command::SaveAs,
+            Command::ShowReview,
+            Command::ReviewRefresh,
         ] {
             assert!(!single.allows(c), "{}", c.name());
         }

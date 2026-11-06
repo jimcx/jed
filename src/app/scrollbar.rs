@@ -88,6 +88,10 @@ impl App {
                 let rows = self.scm.rows(self.git.status.as_ref()?);
                 Some(f(&mut self.scm.scrollable(&rows)))
             }
+            ScrollTarget::Side(SidePanel::Review) => {
+                let rows = self.review.file_count();
+                Some(f(&mut self.review.view.scrollable(rows)))
+            }
             ScrollTarget::Side(SidePanel::Tools) => {
                 let rows = self.tools_rows().len();
                 Some(f(&mut self.tools_view.scrollable(rows)))

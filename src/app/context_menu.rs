@@ -29,12 +29,24 @@ pub enum MenuTarget {
     /// The text of an editor group (the active tab); `has_file` as for `Tab`. The place later
     /// editor items (cut / copy / paste) join.
     Editor { has_file: bool },
+    /// The Code Review panel (a right-click on a file row or the summary).
+    Review,
 }
 
 /// The items of the menu for `target`. They are the active file's commands, so whoever opens the
 /// menu makes the target's tab the active one first.
 pub fn menu_for(target: MenuTarget) -> Vec<MenuItem> {
-    let (MenuTarget::Tab { has_file } | MenuTarget::Editor { has_file }) = target;
+    let (MenuTarget::Tab { has_file } | MenuTarget::Editor { has_file }) = target else {
+        return vec![
+            MenuItem::new(
+                "Toggle Viewed",
+                Command::Review(crate::command::ReviewCommand::ToggleViewed),
+            ),
+            MenuItem::Separator,
+            MenuItem::new("Refresh", Command::ReviewRefresh),
+            MenuItem::new("Switch Merge Request", Command::ReviewSwitch),
+        ];
+    };
     let reveal = if cfg!(target_os = "macos") {
         "Reveal in Finder"
     } else {

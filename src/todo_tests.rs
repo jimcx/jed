@@ -6880,7 +6880,7 @@ mod single_file {
         // The icons do nothing when clicked.
         draw(&mut app, 80, 20);
         let icons = app.hits.icons.clone();
-        assert_eq!(icons.len(), 4);
+        assert_eq!(icons.len(), 5);
         for (y, _) in icons {
             app.mouse(Mouse::Down(MouseButton::Left), 0, y);
             app.mouse(Mouse::Up(MouseButton::Left), 0, y);
@@ -6924,7 +6924,7 @@ mod single_file {
             .patch(app.theme.get("activityBar.disabled"));
         assert_ne!(disabled.fg, app.theme.get("activityBar").fg);
         let buf = term.backend().buffer();
-        assert_eq!(app.hits.icons.len(), 4);
+        assert_eq!(app.hits.icons.len(), 5);
         for (y, panel) in app.hits.icons.clone() {
             let cell = &buf[(1, y)];
             assert_ne!(cell.symbol(), " ", "{panel:?}'s icon drawn");

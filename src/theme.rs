@@ -355,6 +355,13 @@ impl Theme {
             ("scm.deleted", Style::new().add_modifier(Modifier::CROSSED_OUT)),
             // The Tools view: a language server's state mark, its log's error badge
             // (`activityErrorBadge`).
+            // The Code Review panel: file status letters, +/- counts, the viewed mark, an error.
+            ("review.added", Style::new().fg(c(0x81B88B))),
+            ("review.modified", Style::new().fg(c(0xE2C08D))),
+            ("review.deleted", Style::new().fg(c(0xC74E39))),
+            ("review.renamed", Style::new().fg(c(0x73C991))),
+            ("review.viewed", Style::new().fg(c(0x89D185))),
+            ("review.error", Style::new().fg(c(0xF14C4C))),
             ("tools.starting", Style::new().fg(c(0xCCA700))),
             ("tools.running", Style::new().fg(c(0x89D185))),
             ("tools.failed", Style::new().fg(c(0xF14C4C))),

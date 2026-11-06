@@ -367,6 +367,14 @@ pub enum Command {
     ShowTools,
     /// The Tools view's list (`Context::Tools`).
     Tools(ToolsCommand),
+    /// "Code Review: Show" (unbound): shows the Code Review panel and gives it the keys.
+    ShowReview,
+    /// "Code Review: Refresh" (unbound): looks the merge request up again.
+    ReviewRefresh,
+    /// "Code Review: Switch Merge Request" (unbound): the next open merge request of the branch.
+    ReviewSwitch,
+    /// The Code Review panel's list (`Context::Review`).
+    Review(ReviewCommand),
     /// "Tools: Toggle Protocol Trace": the selected (or the active file's) language server's
     /// JSON-RPC messages into its log, or off again.
     ToggleToolTrace,
@@ -392,6 +400,37 @@ pub enum ToolsCommand {
     Open,
     /// Esc: back to the editor.
     FocusEditor,
+}
+
+/// The Code Review panel's file list (`Context::Review`, while it has the keys).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReviewCommand {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    First,
+    Last,
+    /// Enter: selects the row (the file's review tab comes with the diff tabs).
+    Open,
+    /// Space: marks the file viewed, or not.
+    ToggleViewed,
+    /// Esc: back to the editor.
+    FocusEditor,
+}
+
+impl ReviewCommand {
+    pub const ALL: [ReviewCommand; 9] = [
+        ReviewCommand::Up,
+        ReviewCommand::Down,
+        ReviewCommand::PageUp,
+        ReviewCommand::PageDown,
+        ReviewCommand::First,
+        ReviewCommand::Last,
+        ReviewCommand::Open,
+        ReviewCommand::ToggleViewed,
+        ReviewCommand::FocusEditor,
+    ];
 }
 
 impl ToolsCommand {
@@ -1193,6 +1232,8 @@ impl Command {
             Command::RebuildSyntaxPlugins,
         ]);
         all.extend(ToolsCommand::ALL.map(Command::Tools));
+        all.extend([Command::ShowReview, Command::ReviewRefresh, Command::ReviewSwitch]);
+        all.extend(ReviewCommand::ALL.map(Command::Review));
         all
     }
 
@@ -1577,6 +1618,23 @@ impl Command {
             Command::OpenToolLog => "tools.openLog".into(),
             Command::ClearToolLog => "tools.clearLog".into(),
             Command::ShowTools => "tools.show".into(),
+            Command::ShowReview => "review.show".into(),
+            Command::ReviewRefresh => "review.refresh".into(),
+            Command::ReviewSwitch => "review.switch".into(),
+            Command::Review(c) => format!(
+                "reviewView.{}",
+                match c {
+                    ReviewCommand::Up => "up",
+                    ReviewCommand::Down => "down",
+                    ReviewCommand::PageUp => "pageUp",
+                    ReviewCommand::PageDown => "pageDown",
+                    ReviewCommand::First => "first",
+                    ReviewCommand::Last => "last",
+                    ReviewCommand::Open => "open",
+                    ReviewCommand::ToggleViewed => "toggleViewed",
+                    ReviewCommand::FocusEditor => "focusEditor",
+                }
+            ),
             Command::ToggleToolTrace => "tools.toggleTrace".into(),
             Command::RestartServer => "tools.restartServer".into(),
             Command::RebuildSyntaxPlugins => "languages.rebuildSyntaxPlugins".into(),
@@ -1969,6 +2027,20 @@ impl Command {
             Command::OpenToolLog => "Tools: Open Log",
             Command::ClearToolLog => "Tools: Clear Log",
             Command::ShowTools => "Tools: Show",
+            Command::ShowReview => "Code Review: Show",
+            Command::ReviewRefresh => "Code Review: Refresh",
+            Command::ReviewSwitch => "Code Review: Switch Merge Request",
+            Command::Review(c) => match c {
+                ReviewCommand::Up => "Code Review: Select Previous File",
+                ReviewCommand::Down => "Code Review: Select Next File",
+                ReviewCommand::PageUp => "Code Review: Select File a Page Up",
+                ReviewCommand::PageDown => "Code Review: Select File a Page Down",
+                ReviewCommand::First => "Code Review: Select First File",
+                ReviewCommand::Last => "Code Review: Select Last File",
+                ReviewCommand::Open => "Code Review: Open the Selected File",
+                ReviewCommand::ToggleViewed => "Code Review: Toggle Viewed",
+                ReviewCommand::FocusEditor => "Code Review: Back to Editor",
+            },
             Command::ToggleToolTrace => "Tools: Toggle Protocol Trace",
             Command::RestartServer => "Tools: Restart Server",
             Command::RebuildSyntaxPlugins => "Languages: Rebuild Syntax Plugins",
@@ -2161,6 +2233,10 @@ mod tests {
             Command::ClearToolLog => 89,
             Command::ShowTools => 90,
             Command::Tools(_) => 91,
+            Command::ShowReview => 151,
+            Command::ReviewRefresh => 152,
+            Command::ReviewSwitch => 153,
+            Command::Review(_) => 154,
             Command::ToggleToolTrace => 92,
             Command::RestartServer => 93,
             Command::RebuildSyntaxPlugins => 114,
@@ -2200,7 +2276,7 @@ mod tests {
             Command::Spell(_) => 149,
         }
     }
-    const VARIANTS: u8 = 151;
+    const VARIANTS: u8 = 155;
 
     #[test]
     fn all_lists_every_variant() {
@@ -2230,6 +2306,7 @@ mod tests {
         assert_eq!(count(120), ShellCommand::ALL.len());
         assert_eq!(count(141), TermSearchCommand::ALL.len());
         assert_eq!(count(91), ToolsCommand::ALL.len());
+        assert_eq!(count(154), ReviewCommand::ALL.len());
     }
 
     #[test]

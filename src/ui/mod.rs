@@ -19,6 +19,7 @@ mod palette;
 mod panel;
 mod popup;
 mod quick_diff;
+mod review;
 mod scm;
 mod scrollbar;
 mod search;
@@ -134,8 +135,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let mut side_rules = Vec::new();
     if let Some(side) = regions.side {
         let side = side::render(f, side, app);
-        (hits.explorer_rows, hits.search, hits.scm, hits.tools) =
-            (side.explorer_rows, side.search, side.scm, side.tools);
+        (hits.explorer_rows, hits.search, hits.scm, hits.tools, hits.review) =
+            (side.explorer_rows, side.search, side.scm, side.tools, side.review);
         hits.side_scrollbar = side.scrollbar;
         hits.history = side.history;
         hits.file_history = side.file_history;

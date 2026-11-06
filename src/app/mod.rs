@@ -42,6 +42,7 @@ mod recent;
 mod rename;
 mod reopen;
 mod replace;
+mod review;
 mod scm;
 mod scrollbar;
 mod semantic;
@@ -146,6 +147,8 @@ enum Timer {
     Logs,
     /// Quick open's matching was still running at the last tick (`FILES_POLL`).
     Files,
+    /// A visible Code Review panel is due to look again (`review::POLL`).
+    Review,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,6 +244,8 @@ enum AppEvent {
     Session(session::SessionEvent),
     /// The spell checker: background checks and its dictionary / word file reads.
     Spell(spell::SpellEvent),
+    /// The Code Review panel's lookups.
+    Review(review::ReviewEvent),
 }
 
 /// The file to open at startup, with an optional 1-based line and column.
@@ -435,6 +440,8 @@ pub struct App {
     pub scm: crate::scm::ScmView,
     /// The Tools view's list (`app/tools.rs`, drawn by `ui::tools`).
     pub tools_view: crate::tools_view::ToolsView,
+    /// The Code Review panel (`app/review.rs`, drawn by `ui::review`).
+    pub review: crate::review::ReviewState,
     /// The Explorer view's "Git History" section: the active file's commits and the section's
     /// state (`app/git_history.rs`).
     pub git_history: crate::git_history::GitHistory,
@@ -618,6 +625,7 @@ impl App {
             diffs: Default::default(),
             scm: Default::default(),
             tools_view: Default::default(),
+            review: Default::default(),
             git_history: Default::default(),
             file_history_view: Default::default(),
             stage_all_after_save: None,
@@ -840,6 +848,7 @@ impl App {
             (self.git.status_deadline(), Timer::GitStatus),
             (self.log_tabs.deadline(), Timer::Logs),
             (self.files_poll, Timer::Files),
+            (self.review_deadline(), Timer::Review),
         ]
         .into_iter()
         .filter_map(|(at, timer)| Some((tokio::time::Instant::from_std(at?), timer)))
@@ -874,6 +883,7 @@ impl App {
             Timer::GitStatus => self.ensure_status_loaded(),
             Timer::Logs => self.logs_tick(),
             Timer::Files => self.files_matched(),
+            Timer::Review => self.review_refresh(),
         }
     }
 
@@ -1040,6 +1050,7 @@ impl App {
             Focus::SidePanel if self.ui.side_panel == SidePanel::Search => Context::Search,
             Focus::SidePanel if self.ui.side_panel == SidePanel::SourceControl => Context::Scm,
             Focus::SidePanel if self.ui.side_panel == SidePanel::Tools => Context::Tools,
+            Focus::SidePanel if self.ui.side_panel == SidePanel::Review => Context::Review,
             // The history section (in the Explorer) comes before the tree's context.
             Focus::SidePanel if self.git_history_focused() => Context::GitHistory,
             Focus::SidePanel if self.file_history_focused() => Context::FileHistory,
@@ -1456,6 +1467,10 @@ impl App {
             Command::ClearToolLog => self.clear_tool_log(),
             Command::ShowTools => self.focus_side(SidePanel::Tools),
             Command::Tools(c) => self.tools_command(c),
+            Command::ShowReview => self.focus_side(SidePanel::Review),
+            Command::ReviewRefresh => self.review_refresh(),
+            Command::ReviewSwitch => self.review_switch(),
+            Command::Review(c) => self.review_command(c),
             Command::ToggleToolTrace => self.toggle_tool_trace(),
             Command::RestartServer => self.restart_server(),
             Command::RebuildSyntaxPlugins => self.rebuild_grammars(),
@@ -1589,6 +1604,9 @@ impl App {
         if panel == SidePanel::Tools {
             self.tools_select_first();
         }
+        if panel == SidePanel::Review {
+            self.review_shown_now();
+        }
         if panel == SidePanel::Explorer {
             // Focusing the Explorer gives the keys to the tree, not the history section.
             self.git_history.set_focused(false);
@@ -1631,6 +1649,7 @@ impl App {
             AppEvent::Diff(ev) => self.handle_diff_event(ev),
             AppEvent::Session(ev) => self.handle_session_event(ev),
             AppEvent::Spell(ev) => self.handle_spell_event(ev),
+            AppEvent::Review(ev) => self.handle_review_event(ev),
         }
         self.nav_end(here, false);
         self.refresh_find();
@@ -1644,6 +1663,16 @@ impl App {
 
 #[cfg(test)]
 impl App {
+    /// A git status refresh now (after the test changed the repository).
+    pub fn test_refresh_git(&mut self) {
+        self.refresh_git(None);
+    }
+
+    /// When the visible Code Review panel looks again.
+    pub fn test_review_deadline(&self) -> Option<Instant> {
+        self.review_deadline()
+    }
+
     pub fn test_start(&mut self) {
         self.start();
         // Production defers the full status walk until it's wanted; tests want it eagerly so

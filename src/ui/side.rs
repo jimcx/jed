@@ -13,7 +13,7 @@ use super::scrollbar;
 use crate::app::{App, Focus};
 use crate::git::log::Commit;
 use crate::history;
-use crate::layout::{HistoryHit, ScmHit, ScrollBarHit, ScrollTarget, SearchHit, SidePanel, ToolsHit};
+use crate::layout::{HistoryHit, ReviewHit, ScmHit, ScrollBarHit, ScrollTarget, SearchHit, SidePanel, ToolsHit};
 use crate::scrollbar::{Scroll, Scrollable};
 use crate::side_sections::split;
 use crate::theme::Theme;
@@ -29,6 +29,7 @@ pub struct SideHits {
     pub search: Option<SearchHit>,
     pub scm: Option<ScmHit>,
     pub tools: Option<ToolsHit>,
+    pub review: Option<ReviewHit>,
     /// The Explorer's "Git History" section, when shown.
     pub history: Option<HistoryHit>,
     /// The "File History" section above it, when shown.
@@ -88,6 +89,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
             return SideHits {
                 scm,
                 scrollbar: bar.map(|b| (ScrollTarget::Side(SidePanel::SourceControl), b)),
+                ..SideHits::default()
+            };
+        }
+        SidePanel::Review => {
+            let (review, bar) = super::review::render(f, view, app);
+            return SideHits {
+                review,
+                scrollbar: bar.map(|b| (ScrollTarget::Side(SidePanel::Review), b)),
                 ..SideHits::default()
             };
         }

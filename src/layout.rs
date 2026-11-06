@@ -24,15 +24,18 @@ pub enum SidePanel {
     Explorer,
     Search,
     SourceControl,
+    /// The open merge request of the checked-out branch and its changed files.
+    Review,
     /// Every tool jed runs (language servers, task runs, jed itself) with its state.
     Tools,
 }
 
 impl SidePanel {
-    pub const ALL: [SidePanel; 4] = [
+    pub const ALL: [SidePanel; 5] = [
         SidePanel::Explorer,
         SidePanel::Search,
         SidePanel::SourceControl,
+        SidePanel::Review,
         SidePanel::Tools,
     ];
 
@@ -41,6 +44,7 @@ impl SidePanel {
             SidePanel::Explorer => "EXPLORER",
             SidePanel::Search => "SEARCH",
             SidePanel::SourceControl => "SOURCE CONTROL",
+            SidePanel::Review => "CODE REVIEW",
             SidePanel::Tools => "TOOLS",
         }
     }
@@ -467,6 +471,8 @@ pub struct HitMap {
     pub scm: Option<ScmHit>,
     /// The Tools view, when shown.
     pub tools: Option<ToolsHit>,
+    /// The Code Review panel, when shown.
+    pub review: Option<ReviewHit>,
     /// The Explorer view's "Git History" section, when shown.
     pub history: Option<HistoryHit>,
     /// The "File History" section above it, when shown.
@@ -607,6 +613,15 @@ pub struct HistoryHit {
     /// The commit rows (`Rect::default()` while collapsed); its last column is the scroll bar.
     pub list: Rect,
     pub top: usize,
+}
+
+/// The Code Review panel as drawn: the list's rect and the path each line shows (`rows[i]` is
+/// at `list.y + i`), and the summary's rect (a click switches merge request).
+#[derive(Debug, Clone, Default)]
+pub struct ReviewHit {
+    pub list: Rect,
+    pub rows: Vec<String>,
+    pub summary: Rect,
 }
 
 /// The find widget: its box, the query and replace input rects and their draw-time sideways
@@ -1186,6 +1201,7 @@ mod tests {
             search: None,
             scm: None,
             tools: None,
+            review: None,
             // The history section under the tree: divider, header, then rows.
             file_history: None,
             file_history_scrollbar: None,
