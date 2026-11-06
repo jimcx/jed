@@ -17,18 +17,33 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::diff_view::Aligned;
 
-/// Rows under a thread's comments for buttons (Reply / Resolve / Apply, added by later subtasks).
-fn button_rows(_: &ThreadBlock) -> usize {
-    0
+/// Rows under a block's comments for buttons (a composer's; Reply / Resolve / Apply come with
+/// later subtasks).
+fn button_rows(t: &ThreadBlock) -> usize {
+    usize::from(matches!(t.role, Role::Composer { .. }))
 }
 
 /// Columns the blocks are indented by (under the line numbers) and kept free on the right.
 pub const INDENT: usize = 3;
 const MARGIN: usize = 1;
 
+/// What a block is: a forge thread, a comment written here and not posted yet, or the box the
+/// comment is being written in (its one comment holds the heading and the text so far).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Role {
+    #[default]
+    Thread,
+    Draft,
+    /// `caret`: the byte of the text the caret is at.
+    Composer {
+        caret: usize,
+    },
+}
+
 /// A review thread as the tab shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadBlock {
+    pub role: Role,
     /// The forge's thread id (the collapse state is kept by it).
     pub id: String,
     /// The side the lines belong to (`true`: the work tree's).
@@ -216,6 +231,9 @@ impl Iterator for Walk<'_> {
     }
 }
 
+/// What the block heights were built for: anchors, width, collapses, thread list.
+type SizeKey = ((usize, u64, u64), usize, u64, u64);
+
 /// The threads of a review tab and the layout built from them.
 #[derive(Debug, Clone, Default)]
 pub struct Threads {
@@ -223,19 +241,30 @@ pub struct Threads {
     /// Threads whose collapse differs from the default (resolved ones start collapsed).
     toggled: HashSet<String>,
     list_version: u64,
+    /// Changes when a thread's side or line does (not its text): what the anchors depend on.
+    pos_version: u64,
     toggle_version: u64,
-    /// The review generation `list` was read from (`App::sync_review_threads`).
-    pub synced: Option<u64>,
+    /// The review generation and loaded diff `list` was read for (`App::sync_review_threads`).
+    pub synced: Option<(u64, (usize, u64))>,
     anchors_key: Option<(usize, u64, u64)>,
     /// The aligned row each thread's block follows (`None`: its line isn't in the diff).
     anchors: Vec<Option<usize>>,
-    size_key: Option<((usize, u64, u64), usize, u64)>,
+    size_key: Option<SizeKey>,
     blocks: Blocks,
 }
 
 impl Threads {
     pub fn set(&mut self, list: Vec<ThreadBlock>) {
         if *self.list != list {
+            let same_places = self.list.len() == list.len()
+                && self
+                    .list
+                    .iter()
+                    .zip(&list)
+                    .all(|(a, b)| (a.right, a.line) == (b.right, b.line));
+            if !same_places {
+                self.pos_version += 1;
+            }
             self.list = Arc::new(list);
             self.list_version += 1;
         }
@@ -251,7 +280,7 @@ impl Threads {
 
     pub fn is_collapsed(&self, thread: usize) -> bool {
         let t = &self.list[thread];
-        t.resolved != self.toggled.contains(&t.id)
+        !matches!(t.role, Role::Composer { .. }) && t.resolved != self.toggled.contains(&t.id)
     }
 
     /// Collapses / expands thread `thread`.
@@ -274,7 +303,7 @@ impl Threads {
             self.size_key = None;
             return;
         }
-        let akey = (doc.0, doc.1, self.list_version);
+        let akey = (doc.0, doc.1, self.pos_version);
         if self.anchors_key != Some(akey) {
             self.anchors_key = Some(akey);
             self.size_key = None;
@@ -299,7 +328,7 @@ impl Threads {
                 .map(|t| if t.right { right.get(&t.line) } else { left.get(&t.line) }.copied())
                 .collect();
         }
-        let skey = (akey, width, self.toggle_version);
+        let skey = (akey, width, self.toggle_version, self.list_version);
         if self.size_key != Some(skey) {
             self.size_key = Some(skey);
             let list = self
@@ -355,6 +384,10 @@ pub fn height(t: &ThreadBlock, collapsed: bool, width: usize) -> usize {
     if collapsed {
         return 1;
     }
+    if let Role::Composer { .. } = t.role {
+        let body = t.comments.first().map_or("", |c| c.1.as_str());
+        return 1 + composer_rows(body, width.saturating_sub(2)).len() + button_rows(t) + 1;
+    }
     let mut h = 1 + button_rows(t) + 1;
     for (i, (_, body)) in t.comments.iter().enumerate() {
         h += usize::from(i > 0) + wrap(body, width.saturating_sub(2)).len();
@@ -364,6 +397,9 @@ pub fn height(t: &ThreadBlock, collapsed: bool, width: usize) -> usize {
 
 /// A thread's lines at `width`.
 pub fn lines(t: &ThreadBlock, collapsed: bool, width: usize) -> Vec<BlockLine> {
+    if let Role::Composer { .. } = t.role {
+        return composer_lines(t, width);
+    }
     let mark = if collapsed { "▸" } else { "▾" };
     let first = t.comments.first();
     let author = first.map_or("", |c| c.0.as_str());
@@ -408,6 +444,106 @@ pub fn lines(t: &ThreadBlock, collapsed: bool, width: usize) -> Vec<BlockLine> {
         text: format!("└{}", "─".repeat(width.saturating_sub(1))),
     });
     out
+}
+
+/// The composer's buttons: labels and their columns from the block's left edge on the buttons row
+/// (`│ [Comment Ctrl+Enter] [Cancel Esc]`).
+pub const SUBMIT_LABEL: &str = "[Comment Ctrl+Enter]";
+pub const CANCEL_LABEL: &str = "[Cancel Esc]";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerButton {
+    Submit,
+    Cancel,
+}
+
+pub fn composer_button_cols() -> [(std::ops::Range<usize>, ComposerButton); 2] {
+    let submit = 2..2 + SUBMIT_LABEL.width();
+    let cancel = submit.end + 1..submit.end + 1 + CANCEL_LABEL.width();
+    [(submit, ComposerButton::Submit), (cancel, ComposerButton::Cancel)]
+}
+
+fn composer_lines(t: &ThreadBlock, width: usize) -> Vec<BlockLine> {
+    let (heading, body) = t.comments.first().map_or(("", ""), |c| (c.0.as_str(), c.1.as_str()));
+    let mut out = vec![BlockLine {
+        kind: Kind::Header,
+        text: rule(&format!("┌ {heading}"), "", width),
+    }];
+    for r in composer_rows(body, width.saturating_sub(2)) {
+        out.push(BlockLine {
+            kind: Kind::Body,
+            text: format!("│ {}", body[r].replace('\t', "    ")),
+        });
+    }
+    out.push(BlockLine {
+        kind: Kind::Buttons,
+        text: format!("│ {SUBMIT_LABEL} {CANCEL_LABEL}"),
+    });
+    out.push(BlockLine {
+        kind: Kind::Footer,
+        text: format!("└{}", "─".repeat(width.saturating_sub(1))),
+    });
+    out
+}
+
+fn char_width(c: char) -> usize {
+    if c == '\t' { 4 } else { c.width().unwrap_or(0) }
+}
+
+/// The byte ranges of the display rows of a composer's `text` at `width` columns: each line break
+/// starts a row, and a line longer than the width continues on the next (cut between characters,
+/// so a position maps both ways). At least one row.
+pub fn composer_rows(text: &str, width: usize) -> Vec<std::ops::Range<usize>> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    let mut start = 0;
+    let mut w = 0;
+    for (i, c) in text.char_indices() {
+        if c == '\n' {
+            rows.push(start..i);
+            start = i + 1;
+            w = 0;
+            continue;
+        }
+        let cw = char_width(c);
+        if w > 0 && w + cw > width {
+            rows.push(start..i);
+            start = i;
+            w = 0;
+        }
+        w += cw;
+    }
+    rows.push(start..text.len());
+    rows
+}
+
+/// The row and column the byte `caret` of `text` is drawn at.
+pub fn composer_caret(text: &str, caret: usize, width: usize) -> (usize, usize) {
+    let rows = composer_rows(text, width);
+    let caret = caret.min(text.len());
+    let row = rows.iter().rposition(|r| r.start <= caret).unwrap_or(0);
+    let col = text[rows[row].start..caret].chars().map(char_width).sum();
+    (row, col)
+}
+
+/// The byte of `text` shown at row `row`, column `col` (clamped to the row's end).
+pub fn composer_byte(text: &str, row: usize, col: usize, width: usize) -> usize {
+    let rows = composer_rows(text, width);
+    let r = rows[row.min(rows.len() - 1)].clone();
+    let mut w = 0;
+    for (i, c) in text[r.clone()].char_indices() {
+        let cw = char_width(c);
+        if w + cw > col {
+            // Past the middle of a wide character goes after it.
+            return if (col - w) * 2 >= cw {
+                r.start + i + c.len_utf8()
+            } else {
+                r.start + i
+            };
+        }
+        w += cw;
+    }
+    r.end
 }
 
 /// `left` (cut with `…` to fit), then `─` up to `right` at the end, exactly `width` columns.
@@ -507,6 +643,7 @@ mod tests {
 
     fn thread(id: &str, resolved: bool, body: &str) -> ThreadBlock {
         ThreadBlock {
+            role: Role::Thread,
             id: id.into(),
             right: true,
             line: 0,
@@ -642,5 +779,58 @@ mod tests {
         assert!(ts.is_collapsed(1));
         ts.toggle(1);
         assert!(!ts.is_collapsed(1));
+    }
+
+    #[test]
+    fn composer_rows_cut_lines_and_map_positions_both_ways() {
+        let text = "ab\nlonger line\n";
+        let rows = composer_rows(text, 6);
+        let shown: Vec<_> = rows.iter().map(|r| &text[r.clone()]).collect();
+        assert_eq!(shown, vec!["ab", "longer", " line", ""]);
+        assert_eq!(composer_rows("", 5), vec![0..0]);
+        // The caret at a wrap point is on the row that continues.
+        assert_eq!(composer_caret(text, 3, 6), (1, 0));
+        assert_eq!(composer_caret(text, 8, 6), (1, 5));
+        assert_eq!(composer_caret(text, 9, 6), (2, 0));
+        assert_eq!(composer_caret(text, text.len(), 6), (3, 0));
+        assert_eq!(composer_caret("a\tb", 2, 20), (0, 5), "a tab is four columns");
+        assert_eq!(composer_byte(text, 1, 3, 6), 6);
+        assert_eq!(composer_byte(text, 0, 9, 6), 2, "past the end clamps");
+        assert_eq!(composer_byte(text, 9, 0, 6), text.len(), "a row past the last clamps");
+        // Wide characters are never split.
+        assert_eq!(composer_rows("日本語", 4), vec![0..6, 6..9]);
+        for b in [0, 3, 6, 9] {
+            let (row, col) = composer_caret("日本語", b, 4);
+            assert_eq!(composer_byte("日本語", row, col, 4), b);
+        }
+    }
+
+    #[test]
+    fn a_composer_has_a_header_body_buttons_and_footer_and_never_collapses() {
+        let t = ThreadBlock {
+            role: Role::Composer { caret: 0 },
+            id: "composer".into(),
+            right: true,
+            line: 2,
+            resolved: false,
+            comments: vec![("Comment on lines 3–4".into(), "one\ntwo".into())],
+        };
+        let ls = lines(&t, false, 40);
+        let kinds: Vec<_> = ls.iter().map(|l| l.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![Kind::Header, Kind::Body, Kind::Body, Kind::Buttons, Kind::Footer]
+        );
+        assert_eq!(ls.len(), height(&t, false, 40));
+        assert!(ls[0].text.starts_with("┌ Comment on lines 3–4 ─"));
+        assert!(ls[3].text.contains("[Comment Ctrl+Enter] [Cancel Esc]"));
+        let [(submit, _), (cancel, _)] = composer_button_cols();
+        let at = |r: std::ops::Range<usize>| ls[3].text.chars().skip(r.start).take(r.len()).collect::<String>();
+        assert_eq!(at(submit), SUBMIT_LABEL);
+        assert_eq!(at(cancel), CANCEL_LABEL);
+        let mut ts = Threads::default();
+        ts.set(vec![t]);
+        ts.toggle(0);
+        assert!(!ts.is_collapsed(0));
     }
 }

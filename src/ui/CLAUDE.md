@@ -19,7 +19,7 @@ One line per widget or editor layer; [docs/dev/ui.md](../../docs/dev/ui.md) has 
 - `search.rs` — the Search view: inputs, toggles, details, results list
 - `scm.rs` — the Source Control view: branch line, sections, rows, `+` / `−` buttons on the hovered row
 - `tools.rs` — the Tools view: server / task / jed rows, state marks, error badges
-- `review.rs` — the Code Review panel: summary, FILES rows (viewed mark, status letter, `+a -d`), empty states, errors
+- `review.rs` — the Code Review panel: summary, FILES rows (viewed mark, status letter, `+a -d`), CONVERSATIONS, PENDING (drafts, held back ones named), empty states, errors
 - `palette.rs` — the palette (input, hint, ≤ 14 rows with match highlights and bindings)
 - `cheatsheet.rs` — the keyboard cheat sheet overlay over the editor area (columns, scroll bar, `cheatSheet.heading`)
 - `keys.rs` — the Keyboard Shortcuts view overlay: search box (or the `Press key combination…` record hint), rows in key / title / context / source columns, selection, scroll bar (`ScrollTarget::Keys`)

@@ -46,6 +46,11 @@ impl Mode {
                     | Command::ReviewSwitch
                     | Command::ReviewNextThread
                     | Command::ReviewPrevThread
+                    | Command::ReviewComment
+                    | Command::ReviewSaveComment
+                    | Command::ReviewCancelComment
+                    | Command::ReviewEditDraft
+                    | Command::ReviewDeleteDraft
                     | Command::Review(_)
                     | Command::TogglePanel
                     | Command::ToggleProblems

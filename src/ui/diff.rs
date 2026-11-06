@@ -244,6 +244,13 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
     let starts = &aligned.starts;
     let mut next_start = starts.partition_point(|&r| r < first_row);
     let mut cursor_cell = None;
+    // The comment box's caret, when one is open (it has the keys: the diff's caret is hidden).
+    let mut composer_cell = None;
+    let composing = d
+        .threads
+        .list()
+        .iter()
+        .any(|t| matches!(t.role, review_blocks::Role::Composer { .. }));
     let (mut left_walk, mut right_walk) = (Walk::new(&doc.left), Walk::new(&doc.right));
     // The text's columns (as `draw_inline` / `draw_half` lay them out; side by side the narrower
     // side) and the widest line drawn, for sideways scrolling.
@@ -274,18 +281,30 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
                     }
                 };
                 let Some(line) = lines.get(offset) else { continue };
-                draw_block_line(out, body, y, line, d.threads.list()[t].resolved, block_width, theme);
+                let block = &d.threads.list()[t];
+                draw_block_line(out, body, y, line, block, block_width, theme);
                 let x = body.x + review_blocks::INDENT as u16;
                 let w = (block_width as u16).min(body.width.saturating_sub(review_blocks::INDENT as u16));
+                if let review_blocks::Role::Composer { caret } = block.role
+                    && line.kind == BlockKind::Body
+                {
+                    // The caret in the box: its row is body row `offset - 1`.
+                    let text = block.comments.first().map_or("", |c| c.1.as_str());
+                    let (row, col) = review_blocks::composer_caret(text, caret, block_width.saturating_sub(2));
+                    if row + 1 == offset {
+                        composer_cell = Some((x + 2 + col as u16, y));
+                    }
+                }
                 match hit.blocks.last_mut() {
                     Some(b) if b.thread == t && b.rect.y + b.rect.height == y => b.rect.height += 1,
                     _ => hit.blocks.push(BlockHit {
                         thread: t,
                         rect: Rect::new(x, y, w, 1),
                         toggle: None,
+                        first: offset,
                     }),
                 }
-                if line.kind == BlockKind::Header {
+                if line.kind == BlockKind::Header && !matches!(block.role, review_blocks::Role::Composer { .. }) {
                     let cols = review_blocks::toggle_cols(block_width);
                     let tw = (cols.end.min(w as usize)).saturating_sub(cols.start) as u16;
                     if let Some(b) = hit.blocks.last_mut() {
@@ -426,7 +445,7 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
         }
     }
     d.scroll_width.measure(widest);
-    if focused && let Some((x, y)) = cursor_cell {
+    if focused && let Some((x, y)) = composer_cell.or(cursor_cell.filter(|_| !composing)) {
         f.set_cursor_position(Position { x, y });
     }
     hit
@@ -434,20 +453,36 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
 
 /// One row of a thread block: the frame in `review.thread.border`, headers in
 /// `review.thread.header` (`review.thread.resolved` for a resolved thread), comments in
-/// `review.thread.text`.
-fn draw_block_line(out: &mut Cells, body: Rect, y: u16, line: &BlockLine, resolved: bool, width: usize, theme: &Theme) {
+/// `review.thread.text`. A draft's frame and header are `review.draft.*`; a comment box's frame is
+/// `review.composer.border` and its buttons `review.composer.button`.
+fn draw_block_line(
+    out: &mut Cells,
+    body: Rect,
+    y: u16,
+    line: &BlockLine,
+    block: &review_blocks::ThreadBlock,
+    width: usize,
+    theme: &Theme,
+) {
+    use review_blocks::Role;
     let x = body.x + review_blocks::INDENT as u16;
     let room = body
         .width
         .saturating_sub(review_blocks::INDENT as u16)
         .min(width as u16) as usize;
     let text = theme.get("review.thread.text");
-    let border = theme.get("review.thread.border");
-    let head = theme.get(if resolved {
-        "review.thread.resolved"
-    } else {
-        "review.thread.header"
-    });
+    let (border, head) = match block.role {
+        Role::Thread => (
+            theme.get("review.thread.border"),
+            theme.get(if block.resolved {
+                "review.thread.resolved"
+            } else {
+                "review.thread.header"
+            }),
+        ),
+        Role::Draft => (theme.get("review.draft.border"), theme.get("review.draft.header")),
+        Role::Composer { .. } => (theme.get("review.composer.border"), theme.get("review.thread.header")),
+    };
     out.set_style(Rect::new(x, y, room as u16, 1), text);
     match line.kind {
         BlockKind::Header | BlockKind::Reply => {
@@ -462,6 +497,13 @@ fn draw_block_line(out: &mut Cells, body: Rect, y: u16, line: &BlockLine, resolv
         BlockKind::Body | BlockKind::Buttons => {
             out.set_stringn(x, y, &line.text, room, text);
             out.set_stringn(x, y, "│", 1.min(room), border);
+            if line.kind == BlockKind::Buttons && matches!(block.role, Role::Composer { .. }) {
+                let style = theme.get("review.composer.button");
+                for (cols, _) in review_blocks::composer_button_cols() {
+                    let w = cols.len().min(room.saturating_sub(cols.start));
+                    out.set_style(Rect::new(x + cols.start as u16, y, w as u16, 1), style);
+                }
+            }
         }
     }
 }

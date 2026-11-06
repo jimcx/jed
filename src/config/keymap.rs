@@ -237,10 +237,13 @@ pub enum Context {
     /// The search bar over a shell or task tab's output has the keys: unbound keys edit its
     /// query, never reach the program.
     TermSearch,
+    /// The comment box under a review diff's selection is open: its submit and cancel; the rest
+    /// comes from `Editor` and works on the box's text.
+    Composer,
 }
 
 impl Context {
-    pub(crate) const ALL: [(Context, &'static str); 24] = [
+    pub(crate) const ALL: [(Context, &'static str); 25] = [
         (Context::Editor, "editor"),
         (Context::Explorer, "explorer"),
         (Context::Palette, "palette"),
@@ -265,6 +268,7 @@ impl Context {
         (Context::Markdown, "markdown"),
         (Context::Shell, "shell"),
         (Context::TermSearch, "termSearch"),
+        (Context::Composer, "composer"),
     ];
 
     fn parse(name: &str) -> Option<Context> {
@@ -298,6 +302,7 @@ impl Context {
             Context::Markdown => "Markdown Preview",
             Context::Shell => "Terminal",
             Context::TermSearch => "Terminal Find",
+            Context::Composer => "Review Comment",
         }
     }
 
@@ -323,6 +328,7 @@ impl Context {
             Context::Suggest
             | Context::CodeActions
             | Context::Diff
+            | Context::Composer
             | Context::Commit
             | Context::Hex
             | Context::Markdown => Some(Context::Editor),
@@ -1135,6 +1141,16 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::Enter, none, Rv::Open),
         (KeyCode::Char(' '), none, Rv::ToggleViewed),
         (KeyCode::Esc, none, Rv::FocusEditor),
+        (KeyCode::Delete, none, Rv::Delete),
+    ];
+
+    // The comment box under a review diff's selection: its own submit and cancel; the editor's
+    // keys (moves, deletes, copy, paste) work on its text. No Cmd key, so no terminal setup:
+    // Ctrl+Enter where the terminal tells it from Enter, Alt+Enter everywhere.
+    let composer = [
+        (KeyCode::Enter, ctrl, Command::ReviewSaveComment),
+        (KeyCode::Enter, alt, Command::ReviewSaveComment),
+        (KeyCode::Esc, none, Command::ReviewCancelComment),
     ];
 
     // A task tab: scrolling through its output (VS Code's terminal keys, Ctrl rather than Cmd on
@@ -1284,6 +1300,11 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         term_search
             .into_iter()
             .map(|(k, m, c)| bind(k, m, Some(Context::TermSearch), c)),
+    );
+    out.extend(
+        composer
+            .into_iter()
+            .map(|(k, m, c)| bind(k, m, Some(Context::Composer), c)),
     );
     out
 }
@@ -1707,6 +1728,37 @@ mod tests {
                 km.binding_for(Command::TogglePanel).map(|k| k.label()),
                 Some(if platform == Platform::MacOs { "Cmd+J" } else { "Ctrl+J" }.to_string())
             );
+        }
+    }
+
+    #[test]
+    fn the_review_comment_box_binds_only_its_submit_and_cancel() {
+        for platform in [Platform::MacOs, Platform::Linux] {
+            let km = Keymap::default_for(platform);
+            let c = Context::Composer;
+            assert_eq!(
+                km.lookup(&key(KeyCode::Enter, KeyModifiers::CONTROL), c),
+                Some(Command::ReviewSaveComment)
+            );
+            assert_eq!(
+                km.lookup(&key(KeyCode::Enter, KeyModifiers::ALT), c),
+                Some(Command::ReviewSaveComment)
+            );
+            assert_eq!(
+                km.lookup(&key(KeyCode::Esc, KeyModifiers::NONE), c),
+                Some(Command::ReviewCancelComment)
+            );
+            // Everything else is the editor's (Enter types a line break), and the submit is
+            // nowhere else.
+            assert_eq!(
+                km.lookup(&key(KeyCode::Enter, KeyModifiers::NONE), c),
+                Some(Command::InsertNewline)
+            );
+            assert_ne!(
+                km.lookup(&key(KeyCode::Enter, KeyModifiers::ALT), Context::Diff),
+                Some(Command::ReviewSaveComment)
+            );
+            assert_eq!(km.binding_for(Command::ReviewComment), None, "unbound by default");
         }
     }
 

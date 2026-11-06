@@ -25,6 +25,10 @@ use crate::side_sections::{Section, dragged_height, split};
 /// Results of the panel's background work.
 pub(super) enum ReviewEvent {
     Looked(Outcome),
+    /// The saved drafts, read.
+    Drafts(crate::review_drafts::DraftStore),
+    /// Which drafts the files on disk hold back (by id).
+    DraftsChecked(Vec<(String, Option<String>)>),
 }
 
 impl App {
@@ -87,6 +91,7 @@ impl App {
             return;
         }
         self.review.next_poll = None;
+        self.load_drafts();
         let Some(status) = &self.git.status else {
             self.review.content = Content::Empty(Empty::NoRepo);
             self.review.error = None;
@@ -118,7 +123,11 @@ impl App {
 
     pub(super) fn handle_review_event(&mut self, ev: ReviewEvent) {
         self.review.generation += 1;
-        let ReviewEvent::Looked(outcome) = ev;
+        let outcome = match ev {
+            ReviewEvent::Looked(outcome) => outcome,
+            ReviewEvent::Drafts(loaded) => return self.drafts_loaded(loaded),
+            ReviewEvent::DraftsChecked(held) => return self.drafts_checked(held),
+        };
         let r = &mut self.review;
         r.loading = false;
         r.next_poll = Some(std::time::Instant::now() + r.interval);
@@ -159,6 +168,7 @@ impl App {
         }
         let (view, files) = self.review.split();
         view.settle(files);
+        self.check_drafts();
         if std::mem::take(&mut self.review.queued) {
             self.review_refresh();
         }
@@ -214,18 +224,28 @@ impl App {
     pub(super) fn review_command(&mut self, cmd: C) {
         let count = self.review.file_count();
         let len = self.review.review().map_or(0, |r| r.conv_len());
+        if self.review.view.pending.focused {
+            return self.review_pending_command(cmd);
+        }
         if self.review.view.conv.focused {
             return self.review_conv_command(cmd, len);
         }
         let page = self.review.view.height.max(1) as isize;
+        let pending = self.review.draft_rows().len();
         let (view, files) = self.review.split();
-        // Down from the last file enters the conversations.
-        let enter = !view.conv.collapsed && len > 0 && view.selected_row(files).is_some_and(|i| i + 1 == files.len());
+        // Down from the last file enters the conversations, else the pending drafts.
+        let last = view.selected_row(files).is_some_and(|i| i + 1 == files.len());
+        let enter = !view.conv.collapsed && len > 0 && last;
         match cmd {
             C::Down if enter => {
                 view.conv.focused = true;
                 view.conv.select(len, 0);
             }
+            C::Down if last && len == 0 && pending > 0 => {
+                view.pending.focused = true;
+                view.pending.select(pending, 0);
+            }
+            C::Delete => {}
             C::Up => view.move_selection(files, -1),
             C::Down => view.move_selection(files, 1),
             C::PageUp => view.move_selection(files, -page),
@@ -244,12 +264,19 @@ impl App {
 
     /// The keys while the CONVERSATIONS list has them (`len` rows).
     fn review_conv_command(&mut self, cmd: C, len: usize) {
+        let page = self.review.view.conv.height.max(1) as isize;
+        let pending = self.review.draft_rows().len();
         let conv = &mut self.review.view.conv;
-        let page = conv.height.max(1) as isize;
         match cmd {
             C::Up if conv.selected(len).unwrap_or(0) == 0 => conv.focused = false,
             C::Up => conv.move_selection(len, -1),
+            C::Down if pending > 0 && conv.selected(len).is_some_and(|i| i + 1 == len) => {
+                conv.focused = false;
+                self.review.view.pending.focused = true;
+                self.review.view.pending.select(pending, 0);
+            }
             C::Down => conv.move_selection(len, 1),
+            C::Delete => {}
             C::PageUp => conv.move_selection(len, -page),
             C::PageDown => conv.move_selection(len, page),
             C::First => conv.select(len, 0),
@@ -310,16 +337,38 @@ impl App {
     /// shown in the diff (CONVERSATIONS lists them).
     pub(super) fn sync_review_threads(&mut self) {
         let generation = self.review.generation;
-        let Some(workdir) = self.git.status.as_ref().map(|s| &s.repo.workdir) else {
+        let Some(workdir) = self.git.status.as_ref().map(|s| s.repo.workdir.clone()) else {
             return;
         };
+        // The comment box of a tab that closed goes with it.
+        if let Some(c) = &self.composer
+            && !self.groups.diff_tabs_mut().any(|(_, d)| d.id == c.tab)
+        {
+            self.composer = None;
+        }
+        // Called after every diff event: nothing to build (or clone) while every tab is current.
+        if !self
+            .groups
+            .diff_tabs_mut()
+            .any(|(_, d)| d.pair.is_review() && d.threads.synced != Some((generation, d.doc_key())))
+        {
+            return;
+        }
+        let drafts: &[crate::review_drafts::Draft] = match (&self.review.drafts.store, self.review.drafts_key()) {
+            (Some(store), Some(key)) => store.get(&key),
+            _ => &[],
+        };
+        let composer = self.composer.as_ref().map(|c| (c.tab, c.block()));
+        let editing = self.composer.as_ref().and_then(|c| c.editing.clone());
+        let mut live = Vec::new();
         let review = self.review.review();
         for (_, d) in self.groups.diff_tabs_mut() {
-            if !d.pair.is_review() || d.threads.synced == Some(generation) {
+            let stamp = (generation, d.doc_key());
+            if !d.pair.is_review() || d.threads.synced == Some(stamp) {
                 continue;
             }
-            d.threads.synced = Some(generation);
-            let blocks = review
+            d.threads.synced = Some(stamp);
+            let mut blocks: Vec<crate::review_blocks::ThreadBlock> = review
                 .map(|r| {
                     r.threads
                         .iter()
@@ -329,6 +378,7 @@ impl App {
                                 return None;
                             };
                             Some(crate::review_blocks::ThreadBlock {
+                                role: crate::review_blocks::Role::Thread,
                                 id: t.thread.id.clone(),
                                 right: *side == Side::Right,
                                 line: lines.end.saturating_sub(1).max(lines.start),
@@ -344,9 +394,29 @@ impl App {
                         .collect()
                 })
                 .unwrap_or_default();
+            // Drafts of this file whose lines still read as they did; the others are held back
+            // (PENDING names them). A diff not loaded yet judges nothing.
+            if let Some(doc) = &d.doc {
+                for draft in drafts.iter().filter(|x| workdir.join(&x.path) == d.path) {
+                    let lines = if draft.right { &doc.right } else { &doc.left };
+                    let held = draft
+                        .drift(|i| (i < lines.len()).then(|| lines.line(i)))
+                        .map(String::from);
+                    live.push((draft.id.clone(), held.clone()));
+                    if held.is_none() && editing.as_deref() != Some(draft.id.as_str()) {
+                        blocks.push(super::review_comment::draft_block(draft));
+                    }
+                }
+            }
+            if let Some((tab, block)) = &composer
+                && *tab == d.id
+            {
+                blocks.push(block.clone());
+            }
             d.threads.set(blocks);
             self.needs_redraw = true;
         }
+        self.review.drafts.live.extend(live);
     }
 
     /// Next / Previous Thread: the caret to the next / previous thread's line in the active
@@ -413,9 +483,21 @@ impl App {
         } else if hit.conv_list.contains(at) {
             let row = hit.conv_top + ((at.y - hit.conv_list.y) / 2) as usize;
             if row < hit.conv_len {
+                self.review.view.pending.focused = false;
                 self.review.view.conv.focused = true;
                 self.review.view.conv.select(hit.conv_len, row);
                 self.review_open_conv();
+            }
+        } else if hit.pending_header.contains(at) {
+            self.review.view.conv.focused = false;
+            self.review.view.pending.focused = true;
+        } else if hit.pending_list.contains(at) {
+            let row = hit.pending_top + (at.y - hit.pending_list.y) as usize;
+            if row < hit.pending_len {
+                self.review.view.conv.focused = false;
+                self.review.view.pending.focused = true;
+                self.review.view.pending.select(hit.pending_len, row);
+                self.review_open_draft();
             }
         } else {
             self.review_click_row((m.column, m.row));
@@ -440,6 +522,7 @@ impl App {
         {
             let path = path.clone();
             self.review.view.conv.focused = false;
+            self.review.view.pending.focused = false;
             let (view, files) = self.review.split();
             view.select_path(files, &path);
             self.review_open_file(&path);

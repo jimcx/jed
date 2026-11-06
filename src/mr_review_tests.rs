@@ -1674,3 +1674,403 @@ mod threads {
         assert!(rewrap < ms(200 * slack), "rewrap {rewrap:?}");
     }
 }
+
+/// mr_review-f1: the comment box under the selection, drafts kept in the state directory (across
+/// a restart), the PENDING list and drafts held back when their lines change.
+mod drafts {
+    use super::*;
+    use crate::diff_caret::Caret;
+    use crossterm::event::{MouseButton, MouseEventKind};
+
+    const FILE: &str = "review-drafts.json";
+
+    fn lines(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        let buf = term.backend().buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+            .collect()
+    }
+
+    fn screen_text(app: &mut App) -> String {
+        lines(app, 120, 30).join("\n")
+    }
+
+    fn row_of(l: &[String], needle: &str) -> usize {
+        l.iter()
+            .position(|x| x.contains(needle))
+            .unwrap_or_else(|| panic!("no `{needle}` in\n{}", l.join("\n")))
+    }
+
+    fn col_of(line: &str, needle: &str) -> u16 {
+        line.split(needle).next().unwrap().chars().count() as u16
+    }
+
+    fn message(app: &App) -> String {
+        app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
+    }
+
+    /// The repository and a fake forge with one merge request without comments.
+    fn world(dir: &Path) -> (PathBuf, String, FakeServer) {
+        let (root, main) = make_repo(dir);
+        let server = threads::with_comments(&main, "[]");
+        (root, main, server)
+    }
+
+    /// An app on the world with `mod.txt`'s review diff open.
+    async fn boot(root: &Path, server: &FakeServer, state: Option<PathBuf>) -> App {
+        let mut app = open_app(root, state, config_for(server), true);
+        assert!(app.settle(loaded).await);
+        app.test_execute(Command::ShowReview);
+        idle(&mut app).await;
+        assert!(app.settle(|a| a.review.drafts.store.is_some()).await);
+        screen(&mut app);
+        open_file(&mut app, "mod.txt").await;
+        draw_wide(&mut app, 120);
+        app
+    }
+
+    /// The caret from `(first, 0)` to `(last, col)` of a side.
+    fn select(app: &mut App, right: bool, first: usize, last: usize, col: usize) {
+        app.group_mut().active_diff_mut().unwrap().go_to_side_line(right, last);
+        draw_wide(app, 120);
+        app.group_mut().active_diff_mut().unwrap().caret = Caret {
+            right,
+            anchor: (first, 0),
+            head: (last, col),
+            col: None,
+        };
+    }
+
+    /// Lines 2-3 of the right side ("m2 changed", "m3") selected and a comment written.
+    fn write_comment(app: &mut App, text: &str) {
+        select(app, true, 1, 2, 2);
+        app.test_execute(Command::ReviewComment);
+        app.type_text(text);
+        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    }
+
+    fn store_text(state: &Path) -> String {
+        fs::read_to_string(state.join(FILE)).unwrap_or_default()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_the_comment_box_shows_the_typed_text_and_esc_drops_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let (root, _main, server) = world(dir.path());
+        let mut app = boot(&root, &server, Some(state.clone())).await;
+        select(&mut app, true, 1, 2, 2);
+        app.test_execute(Command::ReviewComment);
+        assert_eq!(app.test_composer_text().as_deref(), Some(""));
+        app.type_text("Why?");
+        app.press(KeyCode::Enter, KeyModifiers::NONE);
+        app.type_text("Really");
+        let l = lines(&mut app, 120, 30);
+        assert!(l.iter().any(|x| x.contains("┌ Comment on lines 2–3 ─")), "{l:#?}");
+        assert!(l.iter().any(|x| x.contains("│ Why?")), "{l:#?}");
+        assert!(l.iter().any(|x| x.contains("│ Really")), "{l:#?}");
+        assert!(l.iter().any(|x| x.contains("[Comment Ctrl+Enter] [Cancel Esc]")));
+        // The box sits right under the last selected line, and grows with its text.
+        let (m3, head) = (row_of(&l, "m3"), row_of(&l, "Comment on lines"));
+        assert_eq!(head, m3 + 1, "{l:#?}");
+        // Esc: gone, nothing kept.
+        app.press(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.test_composer_text(), None);
+        let text = screen_text(&mut app);
+        assert!(
+            !text.contains("Comment on lines") && !text.contains("PENDING"),
+            "{text}"
+        );
+        assert!(app.review.draft_rows().is_empty());
+        idle(&mut app).await;
+        assert_eq!(store_text(&state), "", "nothing was written");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_ctrl_enter_keeps_a_draft_in_the_diff_the_pending_list_and_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let (root, _main, server) = world(dir.path());
+        let mut app = boot(&root, &server, Some(state.clone())).await;
+        write_comment(&mut app, "This can underflow.");
+        assert_eq!(app.test_composer_text(), None);
+        let rows = app.review.draft_rows();
+        assert_eq!(rows.len(), 1);
+        let d = &rows[0].draft;
+        assert_eq!((d.path.as_str(), d.right, d.start, d.end), ("mod.txt", true, 2, 3));
+        assert_eq!((d.commit.as_str(), d.body.as_str()), ("h0", "This can underflow."));
+        assert_eq!(d.lines, vec!["m2 changed", "m3"]);
+        assert_eq!(rows[0].held, None);
+        let l = lines(&mut app, 120, 30);
+        assert!(l.iter().any(|x| x.contains("┌ Draft · lines 2–3")), "{l:#?}");
+        assert!(l.iter().any(|x| x.contains("│ This can underflow.")), "{l:#?}");
+        assert!(l.iter().any(|x| x.contains("PENDING (1)")), "{l:#?}");
+        assert!(l.iter().any(|x| x.contains("● mod.txt:2  This can unde")), "{l:#?}");
+        assert!(app.settle(|_| store_text(&state).contains("This can underflow.")).await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_a_draft_is_kept_across_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let (root, _main, server) = world(dir.path());
+        let mut app = boot(&root, &server, Some(state.clone())).await;
+        write_comment(&mut app, "Keep me");
+        assert!(app.settle(|_| store_text(&state).contains("Keep me")).await);
+        drop(app);
+        let mut app = boot(&root, &server, Some(state.clone())).await;
+        assert!(app.settle(|a| !a.review.draft_rows().is_empty()).await);
+        assert_eq!(app.review.draft_rows()[0].draft.body, "Keep me");
+        let l = lines(&mut app, 120, 30);
+        assert!(l.iter().any(|x| x.contains("┌ Draft · lines 2–3")), "{l:#?}");
+        assert!(l.iter().any(|x| x.contains("PENDING (1)")), "{l:#?}");
+        // Another merge request's drafts are not these.
+        assert_eq!(app.review.draft_rows().len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_a_left_side_comment_is_anchored_to_the_merge_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main, server) = world(dir.path());
+        let mut app = boot(&root, &server, None).await;
+        // The deleted line "m2" (line 2 of the old file).
+        select(&mut app, false, 1, 1, 2);
+        app.test_execute(Command::ReviewComment);
+        app.type_text("Why remove this?");
+        app.press(KeyCode::Enter, KeyModifiers::ALT);
+        let rows = app.review.draft_rows();
+        let d = &rows[0].draft;
+        assert_eq!(
+            (d.right, d.start, d.end, d.commit.as_str()),
+            (false, 2, 2, main.as_str())
+        );
+        assert_eq!(d.lines, vec!["m2"]);
+        let l = lines(&mut app, 120, 30);
+        let (removed, draft) = (row_of(&l, "m2 "), row_of(&l, "Draft · line 2"));
+        assert!(draft > removed, "{l:#?}");
+        assert!(l[draft + 1].contains("Why remove this?"), "{l:#?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_a_selection_ending_at_a_line_start_leaves_that_line_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _main, server) = world(dir.path());
+        let mut app = boot(&root, &server, None).await;
+        select(&mut app, true, 0, 2, 0);
+        app.test_execute(Command::ReviewComment);
+        app.type_text("x");
+        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        let d = app.review.draft_rows()[0].draft.clone();
+        assert_eq!((d.start, d.end), (1, 2));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_an_empty_comment_is_not_saved_and_other_tabs_refuse_the_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _main, server) = world(dir.path());
+        let mut app = boot(&root, &server, None).await;
+        select(&mut app, true, 1, 1, 0);
+        app.test_execute(Command::ReviewComment);
+        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        assert!(app.test_composer_text().is_some(), "still open");
+        assert!(message(&app).contains("empty"), "{}", message(&app));
+        app.press(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.review.draft_rows().is_empty());
+        // An ordinary diff tab is not a review's.
+        app.open_diff(root.join("mod.txt"), crate::diff_view::Pair::UNSTAGED);
+        app.test_execute(Command::ReviewComment);
+        assert_eq!(app.test_composer_text(), None);
+        assert!(
+            message(&app).contains("Not in a code review's diff"),
+            "{}",
+            message(&app)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_a_local_edit_of_the_lines_holds_the_draft_back_and_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _main, server) = world(dir.path());
+        let mut app = boot(&root, &server, None).await;
+        write_comment(&mut app, "Check this");
+        assert!(screen_text(&mut app).contains("Draft · lines 2–3"));
+        // Typing in the diff edits line 2 of the file.
+        select(&mut app, true, 1, 1, 0);
+        app.type_text("X");
+        assert!(app.settle(|a| a.review.draft_rows()[0].held.is_some()).await);
+        let text = screen_text(&mut app);
+        // The side panel is narrow: the reason is cut (`draft_rows` has it whole).
+        assert_eq!(app.review.draft_rows()[0].held, Some("lines changed"));
+        assert!(text.contains("held back: li"), "{text}");
+        assert!(text.contains("mod.txt:2"), "{text}");
+        assert!(
+            !text.contains("Draft · lines 2–3"),
+            "not drawn at a guessed place:\n{text}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_the_files_on_disk_hold_back_a_draft_after_a_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _main, server) = world(dir.path());
+        let mut app = boot(&root, &server, None).await;
+        write_comment(&mut app, "Check this");
+        assert_eq!(app.review.draft_rows()[0].held, None);
+        // No tab judges the file now; the next lookup reads it from disk.
+        app.test_execute(Command::CloseTab);
+        fs::write(root.join("mod.txt"), "m1\nm2 changed\nCHANGED\n").unwrap();
+        app.test_execute(Command::ReviewRefresh);
+        assert!(app.settle(|a| a.review.draft_rows()[0].held.is_some()).await);
+        assert_eq!(app.review.draft_rows()[0].held, Some("lines changed"));
+        let text = screen_text(&mut app);
+        assert!(text.contains("held back: li"), "{text}");
+        // A line that still reads the same stays placed.
+        fs::write(root.join("mod.txt"), "m1\nm2 changed\nm3\n").unwrap();
+        app.test_execute(Command::ReviewRefresh);
+        assert!(app.settle(|a| a.review.draft_rows()[0].held.is_none()).await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_delete_draft_removes_it_from_the_diff_the_list_and_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let (root, _main, server) = world(dir.path());
+        let mut app = boot(&root, &server, Some(state.clone())).await;
+        write_comment(&mut app, "Remove me");
+        assert!(app.settle(|_| store_text(&state).contains("Remove me")).await);
+        select(&mut app, true, 2, 2, 1);
+        app.test_execute(Command::ReviewDeleteDraft);
+        assert!(app.review.draft_rows().is_empty());
+        let text = screen_text(&mut app);
+        assert!(!text.contains("Draft ·") && !text.contains("PENDING"), "{text}");
+        assert!(app.settle(|_| !store_text(&state).contains("Remove me")).await);
+        // Nothing under the caret: said, nothing else happens.
+        app.test_execute(Command::ReviewDeleteDraft);
+        assert!(message(&app).contains("No draft here"), "{}", message(&app));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_the_pending_list_has_keys_to_open_and_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _main, server) = world(dir.path());
+        let mut app = boot(&root, &server, None).await;
+        write_comment(&mut app, "Pending one");
+        app.test_execute(Command::CloseTab);
+        app.ui.focus = crate::app::Focus::SidePanel;
+        app.press(KeyCode::End, KeyModifiers::NONE);
+        // Down from the last file: the one conversation, then PENDING.
+        app.press(KeyCode::Down, KeyModifiers::NONE);
+        assert!(app.review.view.conv.focused);
+        app.press(KeyCode::Down, KeyModifiers::NONE);
+        assert!(app.review.view.pending.focused && !app.review.view.conv.focused);
+        // Enter opens the file at the draft's first line.
+        app.press(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.settle(|a| a.diffs_settled()).await);
+        let d = diff(&app);
+        assert!(d.path.ends_with("mod.txt"));
+        assert_eq!(d.rows()[d.cursor].right, Some(1));
+        // Delete removes it and gives the keys back to the files.
+        app.ui.focus = crate::app::Focus::SidePanel;
+        app.press(KeyCode::Delete, KeyModifiers::NONE);
+        assert!(app.review.draft_rows().is_empty());
+        assert!(!app.review.view.pending.focused);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_edit_draft_reopens_it_and_saving_replaces_its_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _main, server) = world(dir.path());
+        let mut app = boot(&root, &server, None).await;
+        write_comment(&mut app, "first");
+        let id = app.review.draft_rows()[0].draft.id.clone();
+        select(&mut app, true, 1, 1, 0);
+        app.test_execute(Command::ReviewEditDraft);
+        assert_eq!(app.test_composer_text().as_deref(), Some("first"));
+        let l = lines(&mut app, 120, 30);
+        assert!(l.iter().any(|x| x.contains("Edit comment on lines 2–3")), "{l:#?}");
+        assert!(
+            !l.iter().any(|x| x.contains("Draft ·")),
+            "the draft is hidden while edited"
+        );
+        // Esc keeps the draft as it was.
+        app.type_text(" and more");
+        app.press(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.review.draft_rows()[0].draft.body, "first");
+        app.test_execute(Command::ReviewEditDraft);
+        app.type_text(" and more");
+        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        let rows = app.review.draft_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (rows[0].draft.id.as_str(), rows[0].draft.body.as_str()),
+            (id.as_str(), "first and more")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_clicks_in_the_box_place_the_caret_and_press_its_buttons() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _main, server) = world(dir.path());
+        let mut app = boot(&root, &server, None).await;
+        select(&mut app, true, 1, 1, 0);
+        app.test_execute(Command::ReviewComment);
+        app.type_text("hello world");
+        let l = lines(&mut app, 120, 30);
+        let y = row_of(&l, "│ hello world");
+        let x = col_of(&l[y], "world");
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y as u16);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), x, y as u16);
+        app.type_text("X");
+        assert_eq!(app.test_composer_text().as_deref(), Some("hello Xworld"));
+        // Submit by its button.
+        let l = lines(&mut app, 120, 30);
+        let y = row_of(&l, "[Comment Ctrl+Enter]");
+        let x = col_of(&l[y], "[Comment") + 2;
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y as u16);
+        assert_eq!(app.test_composer_text(), None);
+        assert_eq!(app.review.draft_rows()[0].draft.body, "hello Xworld");
+        // Cancel by its button.
+        select(&mut app, true, 0, 0, 0);
+        app.test_execute(Command::ReviewComment);
+        let l = lines(&mut app, 120, 30);
+        let y = row_of(&l, "[Cancel Esc]");
+        let x = col_of(&l[y], "[Cancel") + 2;
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y as u16);
+        assert_eq!(app.test_composer_text(), None);
+        assert_eq!(app.review.draft_rows().len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_the_box_takes_moves_paste_and_the_editor_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _main, server) = world(dir.path());
+        let mut app = boot(&root, &server, None).await;
+        select(&mut app, true, 0, 0, 0);
+        app.test_execute(Command::ReviewComment);
+        app.type_text("abc");
+        app.press(KeyCode::Left, KeyModifiers::NONE);
+        app.press(KeyCode::Backspace, KeyModifiers::NONE);
+        app.press(KeyCode::Home, KeyModifiers::NONE);
+        app.press(KeyCode::Char('z'), KeyModifiers::NONE);
+        app.handle_test_event(crossterm::event::Event::Paste("PASTED".into()));
+        assert_eq!(app.test_composer_text().as_deref(), Some("zPASTEDac"));
+        // The file's own text and caret were not touched.
+        let (_, right) = left_right(&app);
+        assert_eq!(right, "m1\nm2 changed\nm3\n");
+        app.press(KeyCode::Esc, KeyModifiers::NONE);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_a_corrupt_drafts_file_is_ignored_and_said_in_the_tool_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        fs::create_dir_all(&state).unwrap();
+        fs::write(state.join(FILE), "{ nope").unwrap();
+        let (root, _main, server) = world(dir.path());
+        let app = boot(&root, &server, Some(state)).await;
+        assert!(app.review.draft_rows().is_empty());
+        assert!(app.logs.texts(&Tool::Review).iter().any(|l| l.contains("unreadable")));
+    }
+}

@@ -938,6 +938,15 @@ impl App {
                 let on_action = button.is_some() || revert.is_some() || apply.is_some();
                 // A thread block: its header's toggle collapses it; the rest is not text.
                 if let Some(b) = h.blocks.iter().find(|b| b.rect.contains(p)) {
+                    let composer = matches!(
+                        d.threads.list()[b.thread].role,
+                        crate::review_blocks::Role::Composer { .. }
+                    );
+                    if composer {
+                        self.focus_group(g);
+                        self.composer_click(g, b, m.column, m.row);
+                        return true;
+                    }
                     if b.toggle.is_some_and(|r| r.contains(p)) {
                         d.threads.toggle(b.thread);
                     }

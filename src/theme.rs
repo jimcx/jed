@@ -370,6 +370,13 @@ impl Theme {
             ("review.thread.header", fg_bg(0x9CDCFE, 0x1E2A33)),
             ("review.thread.resolved", fg_bg(0x808080, 0x1E2A33)),
             ("review.thread.text", fg_bg(0xD4D4D4, 0x1E2A33)),
+            // Draft comments (a dimmed frame, text like a thread's), the comment box being written
+            // (a bright frame, its buttons) and a held-back draft in the PENDING list.
+            ("review.draft.border", fg_bg(0x7A6A3E, 0x1E2A33)),
+            ("review.draft.header", fg_bg(0xE2C08D, 0x1E2A33)),
+            ("review.composer.border", fg_bg(0x4FC1FF, 0x1E2A33)),
+            ("review.composer.button", fg_bg(0xFFFFFF, 0x0E639C)),
+            ("review.pending.held", Style::new().fg(c(0xCCA700))),
             ("tools.starting", Style::new().fg(c(0xCCA700))),
             ("tools.running", Style::new().fg(c(0x89D185))),
             ("tools.failed", Style::new().fg(c(0xF14C4C))),

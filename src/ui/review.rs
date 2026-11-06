@@ -102,9 +102,20 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
     if y >= end {
         return (Some(hit), None);
     }
+    // PENDING (the drafts) takes the panel's last rows while there are any and room is left.
+    let drafts = match &state.content {
+        crate::review::Content::Loaded(r) => state.drafts.rows(r),
+        _ => Vec::new(),
+    };
+    let pending_h = if !drafts.is_empty() && end - y >= 8 {
+        1 + drafts.len().min(4) as u16
+    } else {
+        0
+    };
+    state.view.pending.height = 0;
     let region = Rect {
         y,
-        height: end - y,
+        height: end - y - pending_h,
         ..area
     };
     hit.body = region;
@@ -318,6 +329,68 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
                 text_room,
                 row_style.patch(dim),
             );
+        }
+    }
+    if pending_h > 0 {
+        let py = region.y + region.height;
+        let len = drafts.len();
+        hit.pending_header = Rect {
+            y: py,
+            height: 1,
+            ..area
+        };
+        out.set_stringn(area.x, py, format!(" ▾ PENDING ({len})"), width, header);
+        let rows = (pending_h - 1) as usize;
+        let p = &mut state.view.pending;
+        p.height = rows;
+        let top = p.top(len);
+        let selected = p.selected(len);
+        hit.pending_list = Rect {
+            y: py + 1,
+            height: rows as u16,
+            ..area
+        };
+        hit.pending_top = top;
+        hit.pending_len = len;
+        for (k, row) in drafts.iter().enumerate().skip(top).take(rows) {
+            let ry = py + 1 + (k - top) as u16;
+            let mut row_style = base;
+            if selected == Some(k) {
+                row_style = base.patch(if p.focused { selected_style } else { inactive });
+                out.set_style(
+                    Rect {
+                        y: ry,
+                        height: 1,
+                        ..area
+                    },
+                    row_style,
+                );
+            }
+            out.set_stringn(area.x + 1, ry, "●", 1, row_style.patch(theme.get("review.unresolved")));
+            let place = row.draft.place();
+            let room = width.saturating_sub(4);
+            let place = truncate(&place, room);
+            out.set_stringn(area.x + 3, ry, &place, room, row_style);
+            let used = place.width() + 2;
+            if used < room {
+                let (text, style) = match row.held {
+                    Some(why) => (
+                        format!("held back: {why}"),
+                        row_style.patch(theme.get("review.pending.held")),
+                    ),
+                    None => (
+                        row.draft.body.lines().next().unwrap_or("").trim().to_string(),
+                        row_style.patch(dim),
+                    ),
+                };
+                out.set_stringn(
+                    area.x + 3 + used as u16,
+                    ry,
+                    truncate(&text, room - used),
+                    room - used,
+                    style,
+                );
+            }
         }
     }
     (Some(hit), bar)

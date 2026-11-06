@@ -378,6 +378,18 @@ pub enum Command {
     ReviewNextThread,
     /// "Code Review: Previous Thread" (unbound).
     ReviewPrevThread,
+    /// "Code Review: Add Comment" (unbound): a comment box under the selected lines of a review
+    /// diff.
+    ReviewComment,
+    /// "Code Review: Comment as Draft" (Ctrl+Enter / Alt+Enter in `Context::Composer`).
+    ReviewSaveComment,
+    /// "Code Review: Cancel Comment" (Esc in `Context::Composer`).
+    ReviewCancelComment,
+    /// "Code Review: Edit Draft" (unbound): the draft at the caret, or the PENDING list's selected
+    /// one, in the comment box again.
+    ReviewEditDraft,
+    /// "Code Review: Delete Draft" (unbound): likewise.
+    ReviewDeleteDraft,
     /// The Code Review panel's list (`Context::Review`).
     Review(ReviewCommand),
     /// "Tools: Toggle Protocol Trace": the selected (or the active file's) language server's
@@ -422,10 +434,13 @@ pub enum ReviewCommand {
     ToggleViewed,
     /// Esc: back to the editor.
     FocusEditor,
+    /// Delete: the selected PENDING draft goes.
+    Delete,
 }
 
 impl ReviewCommand {
-    pub const ALL: [ReviewCommand; 9] = [
+    pub const ALL: [ReviewCommand; 10] = [
+        ReviewCommand::Delete,
         ReviewCommand::Up,
         ReviewCommand::Down,
         ReviewCommand::PageUp,
@@ -1243,6 +1258,11 @@ impl Command {
             Command::ReviewSwitch,
             Command::ReviewNextThread,
             Command::ReviewPrevThread,
+            Command::ReviewComment,
+            Command::ReviewSaveComment,
+            Command::ReviewCancelComment,
+            Command::ReviewEditDraft,
+            Command::ReviewDeleteDraft,
         ]);
         all.extend(ReviewCommand::ALL.map(Command::Review));
         all
@@ -1634,6 +1654,11 @@ impl Command {
             Command::ReviewSwitch => "review.switch".into(),
             Command::ReviewNextThread => "review.nextThread".into(),
             Command::ReviewPrevThread => "review.previousThread".into(),
+            Command::ReviewComment => "review.comment".into(),
+            Command::ReviewSaveComment => "review.saveComment".into(),
+            Command::ReviewCancelComment => "review.cancelComment".into(),
+            Command::ReviewEditDraft => "review.editDraft".into(),
+            Command::ReviewDeleteDraft => "review.deleteDraft".into(),
             Command::Review(c) => format!(
                 "reviewView.{}",
                 match c {
@@ -1646,6 +1671,7 @@ impl Command {
                     ReviewCommand::Open => "open",
                     ReviewCommand::ToggleViewed => "toggleViewed",
                     ReviewCommand::FocusEditor => "focusEditor",
+                    ReviewCommand::Delete => "delete",
                 }
             ),
             Command::ToggleToolTrace => "tools.toggleTrace".into(),
@@ -2045,6 +2071,11 @@ impl Command {
             Command::ReviewSwitch => "Code Review: Switch Merge Request",
             Command::ReviewNextThread => "Code Review: Next Thread",
             Command::ReviewPrevThread => "Code Review: Previous Thread",
+            Command::ReviewComment => "Code Review: Add Comment",
+            Command::ReviewSaveComment => "Code Review: Comment as Draft",
+            Command::ReviewCancelComment => "Code Review: Cancel Comment",
+            Command::ReviewEditDraft => "Code Review: Edit Draft",
+            Command::ReviewDeleteDraft => "Code Review: Delete Draft",
             Command::Review(c) => match c {
                 ReviewCommand::Up => "Code Review: Select Previous File",
                 ReviewCommand::Down => "Code Review: Select Next File",
@@ -2055,6 +2086,7 @@ impl Command {
                 ReviewCommand::Open => "Code Review: Open the Selected File",
                 ReviewCommand::ToggleViewed => "Code Review: Toggle Viewed",
                 ReviewCommand::FocusEditor => "Code Review: Back to Editor",
+                ReviewCommand::Delete => "Code Review: Delete the Selected Draft",
             },
             Command::ToggleToolTrace => "Tools: Toggle Protocol Trace",
             Command::RestartServer => "Tools: Restart Server",
@@ -2253,6 +2285,11 @@ mod tests {
             Command::ReviewSwitch => 153,
             Command::ReviewNextThread => 155,
             Command::ReviewPrevThread => 156,
+            Command::ReviewComment => 157,
+            Command::ReviewSaveComment => 158,
+            Command::ReviewCancelComment => 159,
+            Command::ReviewEditDraft => 160,
+            Command::ReviewDeleteDraft => 161,
             Command::Review(_) => 154,
             Command::ToggleToolTrace => 92,
             Command::RestartServer => 93,

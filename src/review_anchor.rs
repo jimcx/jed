@@ -146,7 +146,7 @@ fn compare(
     Ok(Compared::new(&anchored, &target))
 }
 
-fn blob_at(git: &Repository, commit: &git2::Commit, path: &str) -> Option<Vec<u8>> {
+pub(crate) fn blob_at(git: &Repository, commit: &git2::Commit, path: &str) -> Option<Vec<u8>> {
     let entry = commit.tree().ok()?.get_path(std::path::Path::new(path)).ok()?;
     Some(git.find_blob(entry.id()).ok()?.content().to_vec())
 }

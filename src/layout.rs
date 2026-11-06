@@ -631,6 +631,11 @@ pub struct ReviewHit {
     pub conv_list: Rect,
     pub conv_top: usize,
     pub conv_len: usize,
+    /// The PENDING section's header and its one-line rows (row `pending_top` first).
+    pub pending_header: Rect,
+    pub pending_list: Rect,
+    pub pending_top: usize,
+    pub pending_len: usize,
 }
 
 /// The find widget: its box, the query and replace input rects and their draw-time sideways
@@ -777,6 +782,8 @@ pub struct BlockHit {
     pub thread: usize,
     pub rect: Rect,
     pub toggle: Option<Rect>,
+    /// The block's row `rect`'s first row shows (0: its header).
+    pub first: usize,
 }
 
 /// The changed-on-disk banner: its row and each button.

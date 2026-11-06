@@ -11,7 +11,7 @@
 //! The viewed marks are local ([`Viewed`], `review-viewed.json` in the state directory): a file is
 //! viewed while its current content hash is the one stored when it was marked.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -22,6 +22,7 @@ use crate::git::Repo;
 use crate::git::range::{self, FileChange, RangeError};
 use crate::logs::ToolLog;
 use crate::review_anchor::{self, Placement};
+use crate::review_drafts::{DraftRow, DraftStore};
 use crate::scrollbar::ListScroll;
 
 /// Reads an environment variable (the tests give their own).
@@ -331,8 +332,54 @@ pub struct ReviewState {
     pub env: Env,
     /// Look up at launch and when HEAD moves (off in tests, which opt in).
     pub auto: bool,
-    /// Counts the lookups' results: review diff tabs copy their threads when it changed.
+    /// Counts what review diff tabs show besides their text (a lookup's result, a draft or the
+    /// comment box changing): they copy their blocks when it changed.
     pub generation: u64,
+    pub drafts: Drafts,
+}
+
+impl Drafts {
+    /// `review`'s drafts in file and line order, borrowed (a field of the state, so a caller can
+    /// hold the rows while changing another field: `ReviewState::draft_rows` is the shorthand).
+    pub fn rows<'a>(&'a self, review: &Review) -> Vec<DraftRow<'a>> {
+        let Some(store) = &self.store else {
+            return Vec::new();
+        };
+        let key = DraftStore::key(&review.repo, review.mr.number);
+        let mut rows: Vec<DraftRow> = store
+            .get(&key)
+            .iter()
+            .map(|d| DraftRow {
+                held: self
+                    .live
+                    .get(&d.id)
+                    .or_else(|| self.drift.get(&d.id))
+                    .and_then(|h| h.as_deref()),
+                draft: d,
+            })
+            .collect();
+        rows.sort_by(|a, b| {
+            (&a.draft.path, a.draft.right, a.draft.start, a.draft.created).cmp(&(
+                &b.draft.path,
+                b.draft.right,
+                b.draft.start,
+                b.draft.created,
+            ))
+        });
+        rows
+    }
+}
+
+/// The drafts as the app holds them (`app/review_comment.rs` changes them).
+#[derive(Debug, Default)]
+pub struct Drafts {
+    /// Every merge request's drafts, once read (`None` until then).
+    pub store: Option<DraftStore>,
+    pub loading: bool,
+    /// Why a draft is held back, by id, as of the last check against the files on disk.
+    pub drift: HashMap<String, Option<String>>,
+    /// The same as the open review diff tabs see their file's text now (it wins over `drift`).
+    pub live: HashMap<String, Option<String>>,
 }
 
 impl Default for ReviewState {
@@ -351,6 +398,7 @@ impl Default for ReviewState {
             config: cfg!(test).then(|| Arc::new(ForgeConfig::default())),
             auto: !cfg!(test),
             generation: 0,
+            drafts: Drafts::default(),
             env: Arc::new(|name| std::env::var(name).ok()),
         }
     }
@@ -379,6 +427,21 @@ impl ReviewState {
             _ => &[],
         };
         (&mut self.view, files)
+    }
+
+    /// The key of the shown merge request's drafts.
+    pub fn drafts_key(&self) -> Option<String> {
+        let r = self.review()?;
+        Some(DraftStore::key(&r.repo, r.mr.number))
+    }
+
+    /// The shown merge request's drafts by file and line, each with why it is held back (if it
+    /// is): what Submit Review will consume (it posts the ones not held back).
+    pub fn draft_rows(&self) -> Vec<DraftRow<'_>> {
+        match &self.content {
+            Content::Loaded(r) => self.drafts.rows(r),
+            _ => Vec::new(),
+        }
     }
 
     /// The viewed-state key of `file` in the shown merge request.
@@ -412,6 +475,8 @@ pub struct ReviewView {
     top: usize,
     /// The CONVERSATIONS section.
     pub conv: Conversations,
+    /// The PENDING section's selection, scroll and focus (its height and collapse are unused).
+    pub pending: Conversations,
     selected: Option<(String, usize)>,
     /// Rows drawn in the last frame (0 until the first draw).
     pub height: usize,

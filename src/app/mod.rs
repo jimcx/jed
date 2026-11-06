@@ -43,6 +43,7 @@ mod rename;
 mod reopen;
 mod replace;
 mod review;
+mod review_comment;
 mod scm;
 mod scrollbar;
 mod semantic;
@@ -442,6 +443,8 @@ pub struct App {
     pub tools_view: crate::tools_view::ToolsView,
     /// The Code Review panel (`app/review.rs`, drawn by `ui::review`).
     pub review: crate::review::ReviewState,
+    /// The review comment box being written (`app/review_comment.rs`).
+    composer: Option<review_comment::Composer>,
     /// The Explorer view's "Git History" section: the active file's commits and the section's
     /// state (`app/git_history.rs`).
     pub git_history: crate::git_history::GitHistory,
@@ -626,6 +629,7 @@ impl App {
             scm: Default::default(),
             tools_view: Default::default(),
             review: Default::default(),
+            composer: None,
             git_history: Default::default(),
             file_history_view: Default::default(),
             stage_all_after_save: None,
@@ -1037,6 +1041,7 @@ impl App {
         match self.ui.focus {
             Focus::Editor if self.code_actions_shown() => Context::CodeActions,
             Focus::Editor if self.completion_shown() => Context::Suggest,
+            Focus::Editor if self.composer_active() => Context::Composer,
             Focus::Editor if self.group().active_diff().is_some() => Context::Diff,
             Focus::Editor if self.group().active_hex().is_some() => Context::Hex,
             Focus::Editor if self.group().active_markdown().is_some() => Context::Markdown,
@@ -1148,6 +1153,11 @@ impl App {
                     self.task_key(key);
                 } else if self.shell_focused() {
                     self.shell_key(key);
+                } else if let KeyCode::Char(c) = key.code
+                    && (key.modifiers - KeyModifiers::SHIFT).is_empty()
+                    && self.composer_active()
+                {
+                    self.composer_char(c);
                 } else if let KeyCode::Char(c) = key.code
                     && (key.modifiers - KeyModifiers::SHIFT).is_empty()
                     && self.ui.focus == Focus::Editor
@@ -1298,6 +1308,8 @@ impl App {
             self.nav_jump();
         }
         match cmd {
+            // The review comment box's text: moves and edits.
+            _ if self.composer_command(cmd) => {}
             Command::Save => {
                 // A diff tab saves its file's buffer.
                 if let Some(id) = self.active_savable_buffer() {
@@ -1472,6 +1484,11 @@ impl App {
             Command::ReviewSwitch => self.review_switch(),
             Command::ReviewNextThread => self.review_step_thread(true),
             Command::ReviewPrevThread => self.review_step_thread(false),
+            Command::ReviewComment => self.review_comment(),
+            Command::ReviewSaveComment => self.composer_save(),
+            Command::ReviewCancelComment => self.composer_cancel(),
+            Command::ReviewEditDraft => self.review_edit_draft(),
+            Command::ReviewDeleteDraft => self.review_delete_draft(),
             Command::Review(c) => self.review_command(c),
             Command::ToggleToolTrace => self.toggle_tool_trace(),
             Command::RestartServer => self.restart_server(),
@@ -1497,7 +1514,7 @@ impl App {
 
     /// Copies (or cuts) the active view's selections to the clipboard.
     fn copy(&mut self, cut: bool) {
-        if self.diff_copy(cut) {
+        if self.composer_copy(cut) || self.diff_copy(cut) {
             return;
         }
         if !cut && (self.hex_copy() || self.markdown_copy()) {
@@ -1567,6 +1584,9 @@ impl App {
     /// Pastes into the active view: a whole-line copy goes above the cursor's line, and jed's
     /// own copy of several selections spreads one per cursor when the counts match.
     fn paste(&mut self, text: &str) {
+        if self.composer_paste(text) {
+            return;
+        }
         if self.group().active_diff().is_some() {
             self.diff_edit(diff_edit::DiffEdit::Paste(text.to_string()));
             return;
