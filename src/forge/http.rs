@@ -21,6 +21,10 @@ use super::{ForgeError, Kind, Result};
 const PAGE_SIZE: usize = 50;
 /// Stop paging after this many pages (50 000 items): a server that never ends can't hang jed.
 const MAX_PAGES: usize = 1000;
+/// GitHub pages hold up to 100 items.
+const GITHUB_PAGE_SIZE: usize = 100;
+/// The REST API version GitHub is asked for (`X-GitHub-Api-Version`).
+const GITHUB_API_VERSION: &str = "2022-11-28";
 
 #[derive(Clone)]
 pub struct Client {
@@ -45,6 +49,8 @@ pub struct Response {
     pub body: String,
     /// `X-Total-Count`, when the server sends it.
     pub total: Option<usize>,
+    /// The URL of a `Link: <…>; rel="next"` header, when there is one (GitHub's paging).
+    pub next: Option<String>,
 }
 
 impl Client {
@@ -124,7 +130,12 @@ impl Client {
 
     /// `Accept` and the forge's own token header.
     fn headers<B>(&self, mut request: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
-        request = request.header("Accept", "application/json");
+        request = match self.kind {
+            Kind::GitHub => request
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", GITHUB_API_VERSION),
+            _ => request.header("Accept", "application/json"),
+        };
         if let Some(token) = &self.token {
             let (name, value) = match self.kind {
                 Kind::Gitea => ("Authorization", format!("token {token}")),
@@ -144,6 +155,17 @@ impl Client {
             .get("x-total-count")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse().ok());
+        let next = response
+            .headers()
+            .get("link")
+            .and_then(|v| v.to_str().ok())
+            .and_then(next_link);
+        let rate_limited = matches!(status, 403 | 429)
+            && response
+                .headers()
+                .get("x-ratelimit-remaining")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.trim() == "0");
         if (300..400).contains(&status) {
             return Err(ForgeError::Transport(format!(
                 "the server redirected ({status}); redirects are not followed"
@@ -154,12 +176,13 @@ impl Client {
             .read_to_string()
             .map_err(|e| ForgeError::Transport(self.scrub(&e.to_string())))?;
         if status >= 400 {
-            return Err(ForgeError::Status {
-                status,
-                message: self.scrub(&error_message(&body)),
-            });
+            let mut message = self.scrub(&error_message(&body));
+            if rate_limited {
+                message = format!("rate limit exceeded; {message}").trim().to_string();
+            }
+            return Err(ForgeError::Status { status, message });
         }
-        Ok(Response { body, total })
+        Ok(Response { body, total, next })
     }
 
     /// GET and parse the JSON body.
@@ -174,6 +197,9 @@ impl Client {
     ///
     /// Blocking: call from spawn_blocking.
     pub fn get_all<T: DeserializeOwned>(&self, path: &str) -> Result<Vec<T>> {
+        if self.kind == Kind::GitHub {
+            return self.get_all_linked(path);
+        }
         let sep = if path.contains('?') { '&' } else { '?' };
         let mut all = Vec::new();
         for page in 1..=MAX_PAGES {
@@ -192,6 +218,62 @@ impl Client {
         Ok(all)
     }
 
+    /// GitHub's paging: 100 per page, then the `rel="next"` link until there is none. Only the
+    /// link's query is used, on `path`'s own address, so a link naming another host is never
+    /// requested (with the token).
+    fn get_all_linked<T: DeserializeOwned>(&self, path: &str) -> Result<Vec<T>> {
+        let base = path.split('?').next().unwrap_or(path);
+        let sep = if path.contains('?') { '&' } else { '?' };
+        let mut target = format!("{path}{sep}per_page={GITHUB_PAGE_SIZE}");
+        let mut all = Vec::new();
+        for _ in 0..MAX_PAGES {
+            let response = self.get(&target)?;
+            let items: Vec<T> = parse_json(&response.body)?;
+            all.extend(items);
+            let Some(next) = response.next else { break };
+            let Some((_, query)) = next.split_once('?') else { break };
+            let next_target = format!("{base}?{query}");
+            if next_target == target {
+                break; // a link to the page just read
+            }
+            target = next_target;
+        }
+        Ok(all)
+    }
+
+    /// POST a GraphQL query to the API's GraphQL endpoint (`/graphql` beside `/api/v3` on an
+    /// Enterprise server, beside the REST root on github.com) and returns its `data`. GraphQL
+    /// answers 200 with an `errors` array on failure, which becomes an error here.
+    ///
+    /// Blocking: call from spawn_blocking.
+    pub fn graphql(&self, query: &str, variables: serde_json::Value) -> Result<serde_json::Value> {
+        let root = self.api_url.strip_suffix("/v3").unwrap_or(&self.api_url);
+        let request = self.headers(self.agent.post(format!("{root}/graphql")));
+        let body = serde_json::json!({ "query": query, "variables": variables }).to_string();
+        let response = self.finish(request.content_type("application/json").send(body.as_str()))?;
+        let mut answer: serde_json::Value = parse_json(&response.body)?;
+        if let Some(errors) = answer
+            .get("errors")
+            .and_then(|e| e.as_array())
+            .filter(|e| !e.is_empty())
+        {
+            let messages: Vec<String> = errors
+                .iter()
+                .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+                .map(|m| self.scrub(m))
+                .collect();
+            return Err(ForgeError::Status {
+                status: 200,
+                message: messages.join("; "),
+            });
+        }
+        answer
+            .get_mut("data")
+            .map(serde_json::Value::take)
+            .filter(|d| !d.is_null())
+            .ok_or_else(|| ForgeError::Parse("no data in the GraphQL answer".into()))
+    }
+
     /// Removes the token from text that might echo a request.
     fn scrub(&self, text: &str) -> String {
         let text = clean_line(text);
@@ -200,6 +282,19 @@ impl Client {
             None => text,
         }
     }
+}
+
+/// The URL of the `rel="next"` entry of a `Link` header.
+fn next_link(header: &str) -> Option<String> {
+    header.split(',').find_map(|part| {
+        let (url, params) = part.split_once(';')?;
+        let is_next = params.split(';').any(|p| {
+            let p = p.trim().replace(' ', "");
+            p == "rel=\"next\"" || p == "rel=next"
+        });
+        let url = url.trim().strip_prefix('<')?.strip_suffix('>')?;
+        is_next.then(|| url.to_string())
+    })
 }
 
 fn parse_json<T: DeserializeOwned>(body: &str) -> Result<T> {
@@ -341,6 +436,60 @@ mod tests {
         let got: Vec<u32> = client(&server, None).get_all("/l").unwrap();
         assert_eq!(got, [1, 2, 3]);
         assert_eq!(server.requests().len(), 2);
+    }
+
+    #[test]
+    fn github_requests_carry_the_api_headers_and_page_by_link() {
+        let link = "<https://elsewhere.invalid/l?page=2&per_page=100>; rel=\"next\", <https://elsewhere.invalid/l?page=9>; rel=\"last\"";
+        let server = FakeServer::start(vec![
+            ("/l?per_page=100".into(), Reply::json("[1,2]").with_header("Link", link)),
+            ("/l?page=2&per_page=100".into(), Reply::json("[3]")),
+        ]);
+        let c = Client::new(&resolved(&server.url(), Kind::GitHub, true), |_| Some("sekrit".into())).unwrap();
+        let got: Vec<u32> = c.get_all("/l").unwrap();
+        assert_eq!(got, [1, 2, 3]);
+        let seen = server.requests();
+        assert_eq!(seen.len(), 2, "the link's host is never contacted");
+        assert_eq!(seen[0].header("accept"), Some("application/vnd.github+json"));
+        assert_eq!(seen[0].header("x-github-api-version"), Some("2022-11-28"));
+        assert_eq!(seen[0].header("user-agent"), Some("jed"));
+        assert_eq!(seen[0].header("authorization"), Some("Bearer sekrit"));
+    }
+
+    #[test]
+    fn a_link_that_repeats_the_page_stops_the_paging() {
+        let server = FakeServer::start(vec![(
+            "/l".into(),
+            Reply::json("[1]").with_header("Link", "<http://x.invalid/l?per_page=100>; rel=\"next\""),
+        )]);
+        let c = Client::new(&resolved(&server.url(), Kind::GitHub, true), |_| None).unwrap();
+        let got: Vec<u32> = c.get_all("/l").unwrap();
+        assert_eq!(got, [1]);
+    }
+
+    #[test]
+    fn graphql_errors_surface_and_rate_limits_are_named() {
+        let server = FakeServer::start(vec![
+            (
+                "POST /graphql".into(),
+                Reply::json("{\"data\":null,\"errors\":[{\"message\":\"bad \\u001b[1mthing sekrit\"}]}"),
+            ),
+            (
+                "/limited".into(),
+                Reply::status(403)
+                    .with_header("X-RateLimit-Remaining", "0")
+                    .with_body("{\"message\":\"API rate limit exceeded\"}"),
+            ),
+        ]);
+        let c = Client::new(&resolved(&server.url(), Kind::GitHub, true), |_| Some("sekrit".into())).unwrap();
+        let err = c.graphql("query { x }", serde_json::json!({})).unwrap_err();
+        assert_eq!(err.to_string(), "server answered 200: bad [1mthing <token>");
+        let err = c.get("/limited").unwrap_err();
+        assert!(
+            err.to_string().contains("rate limit exceeded; API rate limit exceeded"),
+            "{err}"
+        );
+        assert_eq!(next_link("<a>; rel=\"prev\""), None);
     }
 
     #[test]

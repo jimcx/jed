@@ -444,18 +444,7 @@ impl Forge for Gitea {
             "comments": comments,
         });
         let url = format!("{}/{number}/reviews", Self::pulls(repo));
-        match self.client.post(&url, &body.to_string()) {
-            Ok(_) => SubmitOutcome {
-                posted: (0..review.comments.len()).collect(),
-                failed: Vec::new(),
-                error: None,
-            },
-            Err(e) => SubmitOutcome {
-                posted: Vec::new(),
-                failed: (0..review.comments.len()).map(|i| (i, e.to_string())).collect(),
-                error: Some(e.to_string()),
-            },
-        }
+        SubmitOutcome::atomic(review.comments.len(), self.client.post(&url, &body.to_string()))
     }
 
     /// Blocking: call from spawn_blocking.

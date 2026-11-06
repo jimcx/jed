@@ -9,6 +9,7 @@
 //! lookup keeping the last result under its error and in the tool log; lookups at launch, when
 //! HEAD moves and on a timer that only runs while the panel is shown.
 
+mod github;
 mod suggest;
 
 use std::fs;

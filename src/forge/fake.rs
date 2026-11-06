@@ -75,12 +75,13 @@ impl FakeServer {
         let stop = Arc::new(AtomicBool::new(false));
         let (seen2, stop2) = (seen.clone(), stop.clone());
         std::thread::spawn(move || {
+            let hits = Hits::default();
             for stream in listener.incoming() {
                 if stop2.load(Ordering::Relaxed) {
                     break;
                 }
                 if let Ok(stream) = stream {
-                    let _ = serve(stream, &routes, &seen2);
+                    let _ = serve(stream, &routes, &seen2, &hits);
                 }
             }
         });
@@ -104,7 +105,14 @@ impl Drop for FakeServer {
     }
 }
 
-fn serve(stream: TcpStream, routes: &[(String, Reply)], seen: &Mutex<Vec<Request>>) -> std::io::Result<()> {
+type Hits = Mutex<std::collections::HashMap<String, usize>>;
+
+fn serve(
+    stream: TcpStream,
+    routes: &[(String, Reply)],
+    seen: &Mutex<Vec<Request>>,
+    hits: &Hits,
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
     reader.read_line(&mut line)?;
@@ -134,10 +142,28 @@ fn serve(stream: TcpStream, routes: &[(String, Reply)], seen: &Mutex<Vec<Request
     let path = target.split('?').next().unwrap_or(&target).to_string();
     // A route may start with a method (`POST /path`); it then matches that method only.
     let (with_target, with_path) = (format!("{method} {target}"), format!("{method} {path}"));
+    // A route may end with ` ~needle` and then matches only a body containing it; routes with the
+    // same key answer in turn (the last one repeats).
+    let matching = |k: &String| -> Vec<(String, &Reply)> {
+        routes
+            .iter()
+            .filter_map(|(t, r)| {
+                let (key, needle) = t.split_once(" ~").unwrap_or((t, ""));
+                (key == k.as_str() && body.contains(needle)).then(|| (t.clone(), r))
+            })
+            .collect()
+    };
     let reply = [&with_target, &with_path, &target, &path]
         .iter()
-        .find_map(|k| routes.iter().find(|(t, _)| t == *k))
-        .map(|(_, r)| r.clone())
+        .map(|k| matching(k))
+        .find(|m| !m.is_empty())
+        .map(|m| {
+            let mut hits = hits.lock().unwrap();
+            let n = hits.entry(m[0].0.clone()).or_insert(0);
+            let reply = m[(*n).min(m.len() - 1)].1.clone();
+            *n += 1;
+            reply
+        })
         .unwrap_or_else(|| Reply::status(404).with_body("{\"message\":\"not found\"}"));
     seen.lock().unwrap().push(Request {
         method,

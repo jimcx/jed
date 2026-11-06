@@ -6,17 +6,19 @@
 //! - `config`: `~/.config/jed/forges.toml` (hosts, kinds, API URLs, token variables); the only
 //!   place a host or token variable can come from.
 //! - `http`: the blocking HTTP client (`ureq` + rustls + the platform certificate verifier).
-//! - `gitea`: the Gitea adapter (reads).
+//! - `gitea`: the Gitea adapter.
+//! - `github`: the GitHub adapter (REST, and GraphQL for threads, replies and resolving).
 //! - `fake` (tests): a local HTTP server serving canned JSON.
 //!
 //! Every function that talks to a server is `Blocking: call from spawn_blocking`. All text that
 //! comes from a server is run through `http::clean_line` / `http::clean_text` before it reaches
 //! these types, so nothing downstream can draw a control sequence from a remote.
 
-#![allow(dead_code)] // changed files, `kind` and `has_token` are used by later code-review subtasks
+#![allow(dead_code)] // changed files (`files`, `ChangedFile`, `FileStatus`) and `kind` are used by later code-review subtasks
 
 pub mod config;
 pub mod gitea;
+pub mod github;
 pub mod http;
 pub mod url;
 
@@ -213,6 +215,25 @@ pub struct SubmitOutcome {
     pub error: Option<String>,
 }
 
+impl SubmitOutcome {
+    /// The outcome of one request carrying all `count` comments: all posted, or all failed with
+    /// the request's error.
+    pub fn atomic<T>(count: usize, result: Result<T>) -> SubmitOutcome {
+        match result {
+            Ok(_) => SubmitOutcome {
+                posted: (0..count).collect(),
+                failed: Vec::new(),
+                error: None,
+            },
+            Err(e) => SubmitOutcome {
+                posted: Vec::new(),
+                failed: (0..count).map(|i| (i, e.to_string())).collect(),
+                error: Some(e.to_string()),
+            },
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ForgeError {
     /// Missing or invalid configuration (no entry for the host, no token, a bad URL).
@@ -267,8 +288,8 @@ pub trait Forge: Send + Sync {
 }
 
 /// The `Forge` for a host: looks the host up in `config` (then the detected `github.com` /
-/// `gitlab.com`), reads its token from the environment and builds the client. Only Gitea is
-/// implemented so far.
+/// `gitlab.com`), reads its token from the environment and builds the client. Gitea and GitHub
+/// are implemented so far.
 ///
 /// Blocking: reads the environment and builds a TLS config; call from spawn_blocking.
 pub fn connect(
@@ -282,6 +303,7 @@ pub fn connect(
     let client = http::Client::new(&resolved, env)?;
     match resolved.kind {
         Kind::Gitea => Ok(Box::new(gitea::Gitea::new(client))),
+        Kind::GitHub => Ok(Box::new(github::GitHub::new(client))),
         other => Err(ForgeError::Config(format!("{} is not supported yet", other.name()))),
     }
 }
