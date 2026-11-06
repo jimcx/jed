@@ -2,7 +2,7 @@
 id: mr_review
 name: Code review
 summary: review a Gitea, GitHub or GitLab merge request in jed — changed files, inline diffs with language server navigation, comments, drafts and suggestions
-status: open
+status: in-progress
 priority: 0
 dependencies: []
 ---
@@ -56,7 +56,7 @@ dependencies: []
     - A `Forge` trait with `gitea.rs`, `github.rs` and `gitlab.rs`, on shared types: `MergeRequest`, `Thread`, `Comment`, `Anchor { path, side, start_line, end_line, commit }`, `Suggestion`, `DraftReview`
     - HTTP: `ureq` with rustls and the platform certificate verifier (so a private CA works). Blocking calls run in `spawn_blocking` and report through a new `AppEvent::Review`. GitHub GraphQL is a plain JSON POST
     - Config: a user-only `~/.config/jed/forges.toml` with `host`, `kind`, optional `api_url`, optional `token_env`. `github.com` and `gitlab.com` are detected; self-hosted servers need an entry. Tokens come from environment variables, by default `GITEA_TOKEN`, `GITHUB_TOKEN` or `GITLAB_TOKEN`
-    - Remote URL mapping: as `scripts/mr` does, the SSH user and port are dropped (`ssh://git@git.example.com:2200/jim/jed.git` → `https://git.example.com`)
+    - Remote URL mapping: as `scripts/mr` does, the SSH user and port are dropped (`ssh://git@git.example.com:2200/alice/project.git` → `https://git.example.com`)
     - Security: `.workspace` can never set a host, API URL or token variable; HTTPS only, unless an entry explicitly gives an `http://` URL; redirects are not followed with the token attached; tokens are never logged; control characters are stripped from all remote text before drawing
   - Finding the MR and its files (`src/review.rs`, `app/review.rs`, `ui/review.rs`):
     - `SidePanel::Review` between Source Control and Tools, icon `✎`; disabled in single file mode (`Mode::allows_view`)
@@ -94,13 +94,19 @@ dependencies: []
     - A successful apply is one `EditKind::Other` undo step through `Buffer::edit`. It does not commit or resolve the thread (the "no commit" non-goal)
     - Insert Suggestion pre-fills the selected lines
   - Forge differences:
-    - Gitea (provisional: mr_review-a checks this against the server's own version and API, then records the result here): the API fields found are single-line (`new_position` / `old_position`), so jed anchors on the last line and adds a hidden range marker, which only means something to jed (Gitea's web page shows the comment on one line). No suggestion support was found: the fence is treated as text, and jed applies it. Threads and resolve: to check
+    - Gitea (verified in mr_review-a against a self-hosted server's own `/swagger.v1.json`, plus read-only calls on a repository with no review comments; the review-comment shapes below come from the swagger, not from live data, so check them on a throwaway MR):
+      - Single-line only: creating a review comment takes `path`, `body`, `new_position` (line in the new file, else 0) and `old_position` (line in the old file, else 0); there is no start line, end line or side. jed anchors on the last line and adds a hidden range marker, which only means something to jed (the web page shows the comment on one line)
+      - Reading a review comment (`GET /pulls/{n}/reviews/{id}/comments`): `id`, `path`, `body`, `position` (current line; 0 once outdated), `original_position`, `commit_id`, `original_commit_id`, `diff_hunk`, `resolver` (a user when resolved), `user`, timestamps, `html_url`. There is no side field (jed reads it from the last line of `diff_hunk`: `-` is the old file) and no reply-to field
+      - Threads: not first-class. Comments on the same path, line and side form a conversation; `POST /pulls/{n}/comments/{id}/replies` replies to a comment, `POST /pulls/comments/{id}/resolve` and `/unresolve` take the first comment's id (jed uses it as the thread id and reads resolved from the first comment's `resolver`; unverified whether replies carry it too)
+      - Suggestions: none in the API; the fence is treated as text, and jed applies it
+      - Merge request: `GET /pulls/{n}` has `merge_base` (the merge base commit), `base` / `head` (`ref`, `sha`, `repo.full_name`), `draft`, `merged`, `state`; `GET /pulls/{n}/files` has `filename`, `previous_filename`, `status` (`added`, `changed`, `deleted`, `renamed`, ...), `additions`, `deletions`. The list endpoint (`GET /pulls?state=open`) cannot filter by head branch, so jed filters `head.ref` itself; the head `ref` of a closed MR whose branch is gone is `refs/pull/N/head`
+      - Lists are paged with `page` and `limit` and send `X-Total-Count`; MR-level comments are `GET /issues/{n}/comments`; a review's summary is its `body`; a user's unsent review has state `PENDING`
     - GitHub: native multi-line anchors and suggestions; thread resolved state and resolve actions appear to need GraphQL (mostly community sources: check the schema reference)
     - GitLab: unverified. mr_review-i starts by checking the official API docs (`line_range`, suggestion syntax, discussions)
   - Done when: on a repository with an open MR, the Code Review view lists the MR and its files since the merge base; a file opens in an inline diff tab; F12 and hover work on right-side lines and say why not on deleted ones; other people's threads show inline, or under CONVERSATIONS when outdated; a comment on selected lines is kept as a draft across a restart and a failed submit, then posted by Submit Review; a suggestion applies as one undo step and refuses when out of date; `.workspace` can't set a host or token; and all of it works on Gitea, GitHub and GitLab
-  - Hand checks: on `git.example.com` with `GITEA_TOKEN` and a throwaway MR: open the panel and a file; F12 on an added line, then Back; add a multi-line draft, restart jed, submit; see how it looks on Gitea's web page; apply a suggestion and undo it. The same on GitHub and GitLab test repositories
+  - Hand checks: on a self-hosted Gitea server with `GITEA_TOKEN` and a throwaway MR: open the panel and a file; F12 on an added line, then Back; add a multi-line draft, restart jed, submit; see how it looks on Gitea's web page; apply a suggestion and undo it. The same on GitHub and GitLab test repositories
   - Subtasks (one agent and one commit each):
-    - mr_review-a: forge types, config, URL mapping, HTTP layer, a local fake server, Gitea reads. First verify Gitea's behaviour and record it in this file
+    - ✅ mr_review-a: forge types, config, URL mapping, HTTP layer, a local fake server, Gitea reads. First verify Gitea's behaviour and record it in this file. Built: `src/forge/` (types, `Forge` trait, `forges.toml`, `parse_remote`, ureq `Client`, `FakeServer`, `gitea.rs` reads; the `mod forge` has `#[allow(dead_code)]` until b). Gitea thread side/outdated/resolver semantics still need a hand check on a throwaway MR
     - mr_review-b: activity icon, panel, MR lookup, merge base, FILES, viewed state, refresh and empty states
     - mr_review-c: the forced inline review diff tab, opened from the panel
     - mr_review-d: definition, references and hover on right-side lines

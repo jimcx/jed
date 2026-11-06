@@ -84,6 +84,7 @@ This is `/task` with its mutation testing swapped for a code review (steps 7–8
 9. **Check and commit (you):**
    - Run `scripts/check` once yourself; don't re-read files the agents already reported on. A failing test follows [Failing tests](#failing-tests).
    - Make sure the diff includes the doc updates (CLAUDE.md files, `docs/dev/`).
+   - Anonymise: the diff, task files and commit message must not contain the user's real server hostnames, IPs, usernames or private repo paths (CLAUDE.md "No private hosts"). Grep the diff for any you know of and replace them with `git.example.com` / `alice/project` before committing. Tell every subagent this rule in its prompt.
    - Check no test binaries are left running (`pgrep -fl deps/jed-`); kill any strays.
    - Update `tasks/<id>.md` (and regenerate PLAN.md's index) in the same commit:
      - A subtask that isn't the last: mark its line ✅, with notes on what it changed for later subtasks.

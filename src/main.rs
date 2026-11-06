@@ -41,6 +41,8 @@ mod find;
 mod fixes_tests;
 #[cfg(test)]
 mod focus_groups_tests;
+#[allow(dead_code)] // nothing drives the forge layer until the review panel (mr_review-b)
+mod forge;
 mod format;
 mod git;
 mod git_editor;

@@ -58,6 +58,7 @@ vt100 = { version = "0.18.1", features = ["compress"] }
 pulldown-cmark = { version = "0.13.6", default-features = false }
 spellbook = "0.4.2"
 zstd = "0.13.3"
+ureq = { version = "3.5.1", default-features = false, features = ["rustls", "platform-verifier", "json"] }
 
 [build-dependencies]
 zstd = "0.13.3"
