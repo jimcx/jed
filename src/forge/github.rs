@@ -17,8 +17,8 @@ use serde_json::{Value, json};
 
 use super::http::{Client, clean_line, clean_text, encode_segment};
 use super::{
-    Anchor, BranchRef, ChangedFile, Comment, DraftReview, FileStatus, Forge, ForgeError, Kind, MergeRequest,
-    MrComments, MrState, RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread,
+    Anchor, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments, MrState, RepoRef, Result,
+    ReviewEvent, Side, SubmitOutcome, Thread,
 };
 
 /// Stop a GraphQL connection after this many pages of 100 (a malicious server can't loop us).
@@ -132,18 +132,6 @@ struct Pull {
     base: Branch,
     #[serde(default)]
     head: Branch,
-}
-
-#[derive(Deserialize)]
-struct File {
-    filename: String,
-    previous_filename: Option<String>,
-    #[serde(default)]
-    status: String,
-    #[serde(default)]
-    additions: u32,
-    #[serde(default)]
-    deletions: u32,
 }
 
 #[derive(Deserialize, Default)]
@@ -263,17 +251,6 @@ fn merge_request(p: Pull) -> MergeRequest {
     }
 }
 
-fn file_status(s: &str) -> FileStatus {
-    match s {
-        "added" => FileStatus::Added,
-        "modified" | "changed" => FileStatus::Modified,
-        "removed" => FileStatus::Deleted,
-        "renamed" => FileStatus::Renamed,
-        "copied" => FileStatus::Copied,
-        _ => FileStatus::Other,
-    }
-}
-
 fn event_name(e: ReviewEvent) -> &'static str {
     match e {
         ReviewEvent::Comment => "COMMENT",
@@ -357,10 +334,6 @@ fn numeric_id(id: &str) -> Result<u64> {
 }
 
 impl Forge for GitHub {
-    fn kind(&self) -> Kind {
-        Kind::GitHub
-    }
-
     /// GitHub filters by head (`owner:branch`); the result is filtered again by branch name, so a
     /// fork's pull request on the same branch name also shows.
     ///
@@ -403,21 +376,6 @@ impl Forge for GitHub {
             }
         }
         Ok(mr)
-    }
-
-    /// Blocking: call from spawn_blocking.
-    fn files(&self, repo: &RepoRef, number: u64) -> Result<Vec<ChangedFile>> {
-        let files: Vec<File> = self.client.get_all(&format!("{}/{number}/files", Self::pulls(repo)))?;
-        Ok(files
-            .into_iter()
-            .map(|f| ChangedFile {
-                path: clean_line(&f.filename),
-                old_path: f.previous_filename.map(|p| clean_line(&p)).filter(|p| !p.is_empty()),
-                status: file_status(&f.status),
-                additions: f.additions,
-                deletions: f.deletions,
-            })
-            .collect())
     }
 
     /// Review threads (GraphQL, with resolved and outdated state), submitted reviews' summaries
@@ -538,6 +496,7 @@ impl Forge for GitHub {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Kind;
     use super::super::config::Resolved;
     use super::super::fake::{FakeServer, Reply};
     use super::*;
@@ -625,45 +584,6 @@ mod tests {
             gh.merge_request(&repo, 9),
             Err(ForgeError::Status { status: 404, .. })
         ));
-    }
-
-    #[test]
-    fn lists_changed_files_across_link_pages() {
-        let (server, gh, repo) = setup(vec![
-            (
-                "/api/v3/repos/o/r/pulls/7/files?per_page=100",
-                Reply::json(
-                    r#"[{"filename":"a.rs","status":"modified","additions":3,"deletions":1},
-                    {"filename":"b.rs","previous_filename":"old.rs","status":"renamed","additions":0,"deletions":0}]"#,
-                )
-                .with_header(
-                    "Link",
-                    "<https://api.example.com/repositories/1/pulls/7/files?per_page=100&page=2>; rel=\"next\"",
-                ),
-            ),
-            (
-                "/api/v3/repos/o/r/pulls/7/files?per_page=100&page=2",
-                Reply::json(
-                    r#"[{"filename":"c.rs","status":"removed","additions":0,"deletions":9},
-                    {"filename":"d.rs","status":"added","additions":4,"deletions":0}]"#,
-                ),
-            ),
-        ]);
-        let files = gh.files(&repo, 7).unwrap();
-        let got: Vec<_> = files
-            .iter()
-            .map(|f| (f.path.as_str(), f.old_path.as_deref(), f.status))
-            .collect();
-        assert_eq!(
-            got,
-            [
-                ("a.rs", None, FileStatus::Modified),
-                ("b.rs", Some("old.rs"), FileStatus::Renamed),
-                ("c.rs", None, FileStatus::Deleted),
-                ("d.rs", None, FileStatus::Added),
-            ]
-        );
-        assert_eq!(server.requests().len(), 2);
     }
 
     const THREADS: &str = r#"[

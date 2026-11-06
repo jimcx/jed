@@ -9,7 +9,9 @@
 //! lookup keeping the last result under its error and in the tool log; lookups at launch, when
 //! HEAD moves and on a timer that only runs while the panel is shown.
 
+mod done_when;
 mod github;
+mod gitlab;
 mod suggest;
 
 use std::fs;
@@ -794,6 +796,40 @@ mod lsp {
             assert!(fake.requests(m).is_empty(), "{m}");
         }
         assert!(app.group().active_diff().is_some());
+    }
+
+    /// The Done-when walk's language part (it does not depend on the forge): the panel lists the
+    /// merge request and its file, which opens as an inline diff; F12 and hover work on a
+    /// right-side line (Back returns), and a deleted line says why not.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_done_when_gitea_language_navigation_from_the_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, fake, a, _server) = review_app_with(dir.path(), Some(("bob", "Please check"))).await;
+        let panel = screen(&mut app);
+        assert!(panel.contains("Add review panel") && panel.contains("a.cpp"), "{panel}");
+        assert!(app.group().active_diff().is_some());
+        let mut term = terminal();
+        draw(&mut term, &mut app);
+        assert!(find_cells(&term, "Please check").is_some(), "the thread shows inline");
+        caret_at(&mut app, true, 1, 12);
+        fake.respond("textDocument/definition", location(&a, 0, 4, 10));
+        app.press(KeyCode::F(12), KeyModifiers::NONE);
+        assert!(app.settle(|a| a.active_buffer().is_some()).await, "{}", message(&app));
+        app.test_execute(Command::NavBack);
+        assert!(app.group().active_diff().is_some(), "Back returns to the diff");
+        let range = json!({ "start": { "line": 1, "character": 11 }, "end": { "line": 1, "character": 17 } });
+        fake.respond(
+            "textDocument/hover",
+            json!({ "contents": { "kind": "plaintext", "value": "int target" }, "range": range }),
+        );
+        caret_at(&mut app, true, 1, 12);
+        app.press(KeyCode::Char('i'), cmd() | KeyModifiers::ALT);
+        assert!(app.settle(|a| a.hover.popup.is_some()).await, "{}", message(&app));
+        app.hover.popup = None;
+        caret_at(&mut app, false, 2, 5);
+        app.message = None;
+        app.press(KeyCode::F(12), KeyModifiers::NONE);
+        assert_eq!(message(&app), "Deleted lines have no language server");
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -303,3 +303,21 @@ async fn mr_review_the_undo_key_works_with_the_caret_on_the_left_side() {
     app.press(KeyCode::Char('z'), KeyModifiers::CONTROL);
     assert_eq!(text(&app, &root), "m1\nm2 changed\nm3\n", "{}", message(&app));
 }
+
+/// The Done-when walk's suggestion part: Apply is one undo step, and a second Apply (or one over
+/// an edited line) is refused as out of date.
+#[tokio::test(flavor = "multi_thread")]
+async fn mr_review_done_when_a_suggestion_applies_as_one_undo_step_and_refuses_when_out_of_date() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, server) = world(dir.path(), false, on_line3(ONE));
+    let mut app = boot(&root, &server).await;
+    apply(&mut app).await;
+    assert_eq!(text(&app, &root), "m1\nm2 changed\nm3 fixed\nm4\n");
+    undo(&mut app, &root);
+    assert_eq!(text(&app, &root), "m1\nm2 changed\nm3\n", "one undo step");
+    apply(&mut app).await;
+    app.message = None;
+    apply(&mut app).await;
+    assert!(message(&app).contains("out of date"), "{}", message(&app));
+    assert_eq!(text(&app, &root), "m1\nm2 changed\nm3 fixed\nm4\n");
+}

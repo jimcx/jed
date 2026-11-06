@@ -13,8 +13,8 @@ use serde::Deserialize;
 
 use super::http::{Client, clean_line, clean_text, encode_segment};
 use super::{
-    Anchor, BranchRef, ChangedFile, Comment, DraftReview, FileStatus, Forge, ForgeError, Kind, MergeRequest,
-    MrComments, MrState, RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread,
+    Anchor, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments, MrState, RepoRef, Result,
+    ReviewEvent, Side, SubmitOutcome, Thread,
 };
 
 pub struct Gitea {
@@ -83,19 +83,6 @@ struct Pull {
     #[serde(default)]
     head: Branch,
     merge_base: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct File {
-    filename: String,
-    #[serde(default)]
-    previous_filename: String,
-    #[serde(default)]
-    status: String,
-    #[serde(default)]
-    additions: u32,
-    #[serde(default)]
-    deletions: u32,
 }
 
 #[derive(Deserialize, Default)]
@@ -193,17 +180,6 @@ fn merge_request(p: Pull) -> MergeRequest {
         head,
         head_repo,
         merge_base: p.merge_base.map(|s| clean_line(&s)).filter(|s| !s.is_empty()),
-    }
-}
-
-fn file_status(s: &str) -> FileStatus {
-    match s {
-        "added" => FileStatus::Added,
-        "modified" | "changed" => FileStatus::Modified,
-        "deleted" | "removed" => FileStatus::Deleted,
-        "renamed" => FileStatus::Renamed,
-        "copied" => FileStatus::Copied,
-        _ => FileStatus::Other,
     }
 }
 
@@ -319,10 +295,6 @@ fn threads(mut comments: Vec<ReviewComment>) -> Vec<Thread> {
 }
 
 impl Forge for Gitea {
-    fn kind(&self) -> Kind {
-        Kind::Gitea
-    }
-
     /// Gitea cannot filter by head branch, so this lists the open pull requests and filters.
     ///
     /// Blocking: call from spawn_blocking.
@@ -340,21 +312,6 @@ impl Forge for Gitea {
         Ok(merge_request(
             self.client.get_json(&format!("{}/{number}", Self::pulls(repo)))?,
         ))
-    }
-
-    /// Blocking: call from spawn_blocking.
-    fn files(&self, repo: &RepoRef, number: u64) -> Result<Vec<ChangedFile>> {
-        let files: Vec<File> = self.client.get_all(&format!("{}/{number}/files", Self::pulls(repo)))?;
-        Ok(files
-            .into_iter()
-            .map(|f| ChangedFile {
-                path: clean_line(&f.filename),
-                old_path: Some(clean_line(&f.previous_filename)).filter(|p| !p.is_empty()),
-                status: file_status(&f.status),
-                additions: f.additions,
-                deletions: f.deletions,
-            })
-            .collect())
     }
 
     /// Submitted reviews' line comments become threads and their summaries join the plain comments
@@ -484,6 +441,7 @@ impl Forge for Gitea {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Kind;
     use super::super::config::Resolved;
     use super::super::fake::{FakeServer, Reply};
     use super::*;
@@ -547,30 +505,6 @@ mod tests {
             gitea.merge_request(&repo, 9),
             Err(super::super::ForgeError::Status { status: 404, .. })
         ));
-    }
-
-    #[test]
-    fn lists_changed_files() {
-        let files = r#"[{"filename":"a.rs","status":"changed","additions":3,"deletions":1},
-            {"filename":"b.rs","previous_filename":"old.rs","status":"renamed","additions":0,"deletions":0},
-            {"filename":"c.rs","status":"added","additions":9,"deletions":0},
-            {"filename":"d.rs","status":"deleted","additions":0,"deletions":4}]"#;
-        let (_s, gitea, repo) = setup(vec![(
-            "/api/v1/repos/o/r/pulls/7/files?page=1&limit=50",
-            Reply::json(files),
-        )]);
-        let f = gitea.files(&repo, 7).unwrap();
-        assert_eq!(f.len(), 4);
-        assert_eq!(
-            (f[0].status, f[0].additions, f[0].deletions),
-            (FileStatus::Modified, 3, 1)
-        );
-        assert_eq!(
-            (f[1].status, f[1].old_path.as_deref()),
-            (FileStatus::Renamed, Some("old.rs"))
-        );
-        assert_eq!((f[2].status, f[2].old_path.clone()), (FileStatus::Added, None));
-        assert_eq!(f[3].status, FileStatus::Deleted);
     }
 
     fn draft(path: &str, side: Side, start: u32, end: u32, body: &str) -> super::super::DraftComment {

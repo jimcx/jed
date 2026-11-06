@@ -51,6 +51,8 @@ pub struct Response {
     pub total: Option<usize>,
     /// The URL of a `Link: <…>; rel="next"` header, when there is one (GitHub's paging).
     pub next: Option<String>,
+    /// GitLab's `X-Next-Page` (empty or absent on the last page).
+    pub next_page: Option<u32>,
 }
 
 impl Client {
@@ -92,10 +94,6 @@ impl Client {
         })
     }
 
-    pub fn has_token(&self) -> bool {
-        self.token.is_some()
-    }
-
     /// GET `api_url + path` (`path` starts with `/` and carries its query).
     ///
     /// Blocking: call from spawn_blocking.
@@ -117,6 +115,14 @@ impl Client {
     /// Blocking: call from spawn_blocking.
     pub fn patch(&self, path: &str, body: &str) -> Result<Response> {
         let request = self.headers(self.agent.patch(format!("{}{}", self.api_url, path)));
+        self.finish(request.content_type("application/json").send(body))
+    }
+
+    /// PUT `body` (JSON text) to `api_url + path`.
+    ///
+    /// Blocking: call from spawn_blocking.
+    pub fn put(&self, path: &str, body: &str) -> Result<Response> {
+        let request = self.headers(self.agent.put(format!("{}{}", self.api_url, path)));
         self.finish(request.content_type("application/json").send(body))
     }
 
@@ -160,6 +166,11 @@ impl Client {
             .get("link")
             .and_then(|v| v.to_str().ok())
             .and_then(next_link);
+        let next_page = response
+            .headers()
+            .get("x-next-page")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse().ok());
         let rate_limited = matches!(status, 403 | 429)
             && response
                 .headers()
@@ -182,7 +193,12 @@ impl Client {
             }
             return Err(ForgeError::Status { status, message });
         }
-        Ok(Response { body, total, next })
+        Ok(Response {
+            body,
+            total,
+            next,
+            next_page,
+        })
     }
 
     /// GET and parse the JSON body.
@@ -200,6 +216,9 @@ impl Client {
         if self.kind == Kind::GitHub {
             return self.get_all_linked(path);
         }
+        if self.kind == Kind::GitLab {
+            return self.get_all_numbered(path);
+        }
         let sep = if path.contains('?') { '&' } else { '?' };
         let mut all = Vec::new();
         for page in 1..=MAX_PAGES {
@@ -213,6 +232,27 @@ impl Client {
                 || (response.total.is_none() && got < PAGE_SIZE)
             {
                 break;
+            }
+        }
+        Ok(all)
+    }
+
+    /// GitLab's paging: `per_page=100` and the page number `X-Next-Page` names (a full page
+    /// without the header is followed by one more request, which ends the list when empty).
+    fn get_all_numbered<T: DeserializeOwned>(&self, path: &str) -> Result<Vec<T>> {
+        let sep = if path.contains('?') { '&' } else { '?' };
+        let mut all = Vec::new();
+        let mut page = 1;
+        for _ in 0..MAX_PAGES {
+            let response = self.get(&format!("{path}{sep}per_page={GITHUB_PAGE_SIZE}&page={page}"))?;
+            let items: Vec<T> = parse_json(&response.body)?;
+            let got = items.len();
+            all.extend(items);
+            match response.next_page {
+                Some(n) if n > page => page = n,
+                Some(_) => break,
+                None if got >= GITHUB_PAGE_SIZE => page += 1,
+                None => break,
             }
         }
         Ok(all)

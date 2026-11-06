@@ -48,13 +48,6 @@ fn strip_port(host: &str) -> &str {
     }
 }
 
-impl RepoRef {
-    /// `https://host`: where the web pages and, by default, the API live.
-    pub fn web_base(&self) -> String {
-        format!("https://{}", self.host)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,10 +107,5 @@ mod tests {
         assert_eq!(parse_remote("file:///srv/repo.git"), None);
         assert_eq!(parse_remote("https://host/onlyone"), None);
         assert_eq!(parse_remote(""), None);
-    }
-
-    #[test]
-    fn web_base_is_https() {
-        assert_eq!(parse_remote("ssh://git@h:2200/o/r").unwrap().web_base(), "https://h");
     }
 }

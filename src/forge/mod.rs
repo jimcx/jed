@@ -8,17 +8,17 @@
 //! - `http`: the blocking HTTP client (`ureq` + rustls + the platform certificate verifier).
 //! - `gitea`: the Gitea adapter.
 //! - `github`: the GitHub adapter (REST, and GraphQL for threads, replies and resolving).
+//! - `gitlab`: the GitLab adapter (REST v4; draft notes for reviews).
 //! - `fake` (tests): a local HTTP server serving canned JSON.
 //!
 //! Every function that talks to a server is `Blocking: call from spawn_blocking`. All text that
 //! comes from a server is run through `http::clean_line` / `http::clean_text` before it reaches
 //! these types, so nothing downstream can draw a control sequence from a remote.
 
-#![allow(dead_code)] // changed files (`files`, `ChangedFile`, `FileStatus`) and `kind` are used by later code-review subtasks
-
 pub mod config;
 pub mod gitea;
 pub mod github;
+pub mod gitlab;
 pub mod http;
 pub mod url;
 
@@ -36,15 +36,6 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// The name used in `forges.toml`.
-    pub fn name(self) -> &'static str {
-        match self {
-            Kind::Gitea => "gitea",
-            Kind::GitHub => "github",
-            Kind::GitLab => "gitlab",
-        }
-    }
-
     pub fn from_name(s: &str) -> Option<Kind> {
         match s.to_ascii_lowercase().as_str() {
             "gitea" | "forgejo" => Some(Kind::Gitea),
@@ -102,26 +93,6 @@ pub struct MergeRequest {
     /// The commit the diff is taken against; `None` when the forge doesn't say (the caller then
     /// computes it from the local clone).
     pub merge_base: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FileStatus {
-    Added,
-    Modified,
-    Deleted,
-    Renamed,
-    Copied,
-    Other,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ChangedFile {
-    pub path: String,
-    /// The old path of a renamed or copied file.
-    pub old_path: Option<String>,
-    pub status: FileStatus,
-    pub additions: u32,
-    pub deletions: u32,
 }
 
 /// Which side of the diff a line number refers to. Comments on deleted lines are on the left
@@ -265,12 +236,9 @@ pub type Result<T> = std::result::Result<T, ForgeError>;
 /// One forge's merge request API. Every method is `Blocking: call from spawn_blocking`. Writes
 /// (drafts, submit, resolve) are added by the review-writing subtask.
 pub trait Forge: Send + Sync {
-    fn kind(&self) -> Kind;
     /// The open merge requests whose head branch is `head_branch`.
     fn find_open(&self, repo: &RepoRef, head_branch: &str) -> Result<Vec<MergeRequest>>;
     fn merge_request(&self, repo: &RepoRef, number: u64) -> Result<MergeRequest>;
-    /// The files changed since the merge base.
-    fn files(&self, repo: &RepoRef, number: u64) -> Result<Vec<ChangedFile>>;
     /// Others' (and the user's own submitted) comments.
     fn comments(&self, repo: &RepoRef, number: u64) -> Result<MrComments>;
     /// The token's user (to tell which comments are the user's own).
@@ -288,8 +256,7 @@ pub trait Forge: Send + Sync {
 }
 
 /// The `Forge` for a host: looks the host up in `config` (then the detected `github.com` /
-/// `gitlab.com`), reads its token from the environment and builds the client. Gitea and GitHub
-/// are implemented so far.
+/// `gitlab.com`), reads its token from the environment and builds the client.
 ///
 /// Blocking: reads the environment and builds a TLS config; call from spawn_blocking.
 pub fn connect(
@@ -304,6 +271,6 @@ pub fn connect(
     match resolved.kind {
         Kind::Gitea => Ok(Box::new(gitea::Gitea::new(client))),
         Kind::GitHub => Ok(Box::new(github::GitHub::new(client))),
-        other => Err(ForgeError::Config(format!("{} is not supported yet", other.name()))),
+        Kind::GitLab => Ok(Box::new(gitlab::GitLab::new(client))),
     }
 }
