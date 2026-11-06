@@ -494,6 +494,21 @@ fn draw_block_line(
         BlockKind::Footer => {
             out.set_stringn(x, y, &line.text, room, border);
         }
+        BlockKind::Code => {
+            // A suggestion's line: the inserted lines' background.
+            out.set_style(
+                Rect::new(x, y, room as u16, 1),
+                theme.get("diffEditor.insertedLineBackground"),
+            );
+            out.set_stringn(
+                x,
+                y,
+                &line.text,
+                room,
+                text.patch(theme.get("diffEditor.insertedLineBackground")),
+            );
+            out.set_stringn(x, y, "│", 1.min(room), border);
+        }
         BlockKind::Body | BlockKind::Buttons => {
             out.set_stringn(x, y, &line.text, room, text);
             out.set_stringn(x, y, "│", 1.min(room), border);

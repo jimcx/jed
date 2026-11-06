@@ -157,6 +157,7 @@ mod spell_dict;
 mod spell_scope;
 mod spell_state;
 mod spellcheck;
+mod suggestion;
 mod syntax;
 #[cfg(test)]
 mod syntax_plugins_tests;

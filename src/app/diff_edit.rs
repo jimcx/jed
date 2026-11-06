@@ -67,7 +67,15 @@ impl App {
     pub(super) fn diff_edit(&mut self, edit: DiffEdit) {
         let Some(d) = self.group().active_diff() else { return };
         let (tab, right) = (d.id, d.caret.right);
+        let history = matches!(edit, DiffEdit::Command(Command::Undo | Command::Redo));
         match self.edit_target(d, right) {
+            None if history && d.compare.is_none() => {
+                if let Some(id) = self.buffer_of(&d.path) {
+                    let DiffEdit::Command(cmd) = edit else { return };
+                    self.diff_history(id, cmd);
+                    self.needs_redraw = true;
+                }
+            }
             None => {
                 let side = if right { "right" } else { "left" };
                 self.notify(Level::Error, format!("The {side} side is read-only"));
@@ -90,6 +98,19 @@ impl App {
         }
     }
 
+    /// Undo / Redo of the file's buffer when the caret's own edit path can't run it (the caret is
+    /// on a read-only side, or the diff hasn't reloaded since an edit that did not come from it,
+    /// e.g. an applied review suggestion): the buffer steps back or forward all the same, the diff
+    /// reloads after.
+    fn diff_history(&mut self, id: BufferId, cmd: Command) {
+        let settings = self.settings.clone();
+        let Some(buf) = self.buffers.get_mut(id) else { return };
+        if let Some(reason) = buf.read_only.clone() {
+            return self.notify(Level::Error, format!("Read-only: {reason}"));
+        }
+        edit::run(cmd, buf, &mut View::new(), &settings);
+    }
+
     /// A file finished opening: the key that waited for it applies (or is dropped when the file
     /// didn't open as text; its error was said).
     pub(super) fn diff_edit_opened(&mut self, path: &Path) {
@@ -110,8 +131,15 @@ impl App {
         ) else {
             return;
         };
+        let history = match &edit {
+            DiffEdit::Command(c @ (Command::Undo | Command::Redo)) if d.compare.is_none() => Some(*c),
+            _ => None,
+        };
         if let Err(e) = edit_buffer(d, buf, &mut self.clipboard, &settings, edit) {
-            self.notify(Level::Error, e);
+            match history {
+                Some(cmd) => self.diff_history(id, cmd),
+                None => self.notify(Level::Error, e),
+            }
         }
         self.needs_redraw = true;
     }

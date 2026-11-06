@@ -80,6 +80,7 @@ pub(super) fn draft_block(d: &Draft) -> ThreadBlock {
         line: (d.end.max(d.start) - 1) as usize,
         resolved: false,
         mine: false,
+        apply: false,
         comments: vec![(format!("Draft · {}", range_label(d.start, d.end)), d.body.clone())],
     }
 }
@@ -105,6 +106,7 @@ impl Composer {
             line: (self.end.max(self.start) - 1) as usize,
             resolved: false,
             mine: false,
+            apply: false,
             comments: vec![(format!("{verb} on {}", range_label(self.start, self.end)), self.text())],
         }
     }
@@ -129,7 +131,7 @@ impl App {
 
     /// The box's text or caret changed (per keystroke): only its own tab shows it, so only that tab
     /// rebuilds its blocks (the other review tabs and the drafts are untouched).
-    fn composer_changed(&mut self) {
+    pub(super) fn composer_changed(&mut self) {
         if let Some(tab) = self.composer.as_ref().map(|c| c.tab)
             && let Some((_, d)) = self.groups.diff_tabs_mut().find(|(_, d)| d.id == tab)
         {
@@ -433,6 +435,7 @@ impl App {
                     match button {
                         review_blocks::ComposerButton::Submit => self.composer_save(),
                         review_blocks::ComposerButton::Cancel => self.composer_cancel(),
+                        review_blocks::ComposerButton::Insert => self.review_insert_suggestion(),
                     }
                     return;
                 }

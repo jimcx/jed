@@ -191,7 +191,7 @@ impl App {
 
     /// The thread the command is about: the selected CONVERSATIONS row, else the thread block at
     /// the active review diff's caret.
-    fn review_target(&mut self) -> Option<ThreadRow> {
+    pub(super) fn review_target(&mut self) -> Option<ThreadRow> {
         let review = self.review.review()?;
         if self.review.view.conv.focused {
             let i = self.review.view.conv.selected(review.conv_len())?;
@@ -206,7 +206,7 @@ impl App {
         review.threads.iter().find(|r| &r.thread.id == id).cloned()
     }
 
-    fn review_need_target(&mut self) -> Option<ThreadRow> {
+    pub(super) fn review_need_target(&mut self) -> Option<ThreadRow> {
         let row = self.review_target();
         if row.is_none() {
             self.notify(Level::Info, "No comment thread here".into());
@@ -401,6 +401,7 @@ impl App {
         match button {
             ThreadButton::Reply => self.reply_to(thread),
             ThreadButton::Resolve => self.resolve_thread(thread),
+            ThreadButton::Apply => self.apply_suggestion_of(thread),
             ThreadButton::Edit => self.edit_in(thread),
             ThreadButton::Delete => self.delete_in(thread),
         }

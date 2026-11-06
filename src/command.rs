@@ -406,6 +406,13 @@ pub enum Command {
     ReviewEditComment,
     /// "Code Review: Delete Comment" (unbound): your last comment in that thread.
     ReviewDeleteComment,
+    /// "Code Review: Apply Suggestion" (unbound): the first suggestion in that thread replaces its
+    /// lines in the file's buffer (one undo step; refused when the lines changed). Nothing is
+    /// committed, saved or resolved.
+    ReviewApplySuggestion,
+    /// "Code Review: Insert Suggestion" (unbound): while a comment box is open, a suggestion
+    /// fence round the diff's lines it is on.
+    ReviewInsertSuggestion,
     /// The Code Review panel's list (`Context::Review`).
     Review(ReviewCommand),
     /// "Tools: Toggle Protocol Trace": the selected (or the active file's) language server's
@@ -1286,6 +1293,8 @@ impl Command {
             Command::ReviewResolve,
             Command::ReviewEditComment,
             Command::ReviewDeleteComment,
+            Command::ReviewApplySuggestion,
+            Command::ReviewInsertSuggestion,
         ]);
         all.extend(ReviewCommand::ALL.map(Command::Review));
         all
@@ -1689,6 +1698,8 @@ impl Command {
             Command::ReviewResolve => "review.resolve".into(),
             Command::ReviewEditComment => "review.editComment".into(),
             Command::ReviewDeleteComment => "review.deleteComment".into(),
+            Command::ReviewApplySuggestion => "review.applySuggestion".into(),
+            Command::ReviewInsertSuggestion => "review.insertSuggestion".into(),
             Command::Review(c) => format!(
                 "reviewView.{}",
                 match c {
@@ -2113,6 +2124,8 @@ impl Command {
             Command::ReviewResolve => "Code Review: Resolve / Unresolve Thread",
             Command::ReviewEditComment => "Code Review: Edit Comment",
             Command::ReviewDeleteComment => "Code Review: Delete Comment",
+            Command::ReviewApplySuggestion => "Code Review: Apply Suggestion",
+            Command::ReviewInsertSuggestion => "Code Review: Insert Suggestion",
             Command::Review(c) => match c {
                 ReviewCommand::Up => "Code Review: Select Previous File",
                 ReviewCommand::Down => "Code Review: Select Next File",
@@ -2334,6 +2347,8 @@ mod tests {
             Command::ReviewResolve => 166,
             Command::ReviewEditComment => 167,
             Command::ReviewDeleteComment => 168,
+            Command::ReviewApplySuggestion => 169,
+            Command::ReviewInsertSuggestion => 170,
             Command::Review(_) => 154,
             Command::ToggleToolTrace => 92,
             Command::RestartServer => 93,

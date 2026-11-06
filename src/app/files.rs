@@ -275,6 +275,7 @@ impl App {
             self.backup_not_opened(*b, e);
         }
         self.diff_edit_opened(&opened_path);
+        self.suggestion_opened(&opened_path);
         self.ipc_sweep();
     }
 

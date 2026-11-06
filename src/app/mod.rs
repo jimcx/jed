@@ -44,6 +44,7 @@ mod reopen;
 mod replace;
 mod review;
 mod review_comment;
+mod review_suggest;
 mod review_write;
 mod scm;
 mod scrollbar;
@@ -446,6 +447,8 @@ pub struct App {
     pub review: crate::review::ReviewState,
     /// The review comment box being written (`app/review_comment.rs`).
     composer: Option<review_comment::Composer>,
+    /// A suggestion waiting for its file to open (`review_suggest`).
+    suggest: Option<review_suggest::Staged>,
     /// The Explorer view's "Git History" section: the active file's commits and the section's
     /// state (`app/git_history.rs`).
     pub git_history: crate::git_history::GitHistory,
@@ -631,6 +634,7 @@ impl App {
             tools_view: Default::default(),
             review: Default::default(),
             composer: None,
+            suggest: None,
             git_history: Default::default(),
             file_history_view: Default::default(),
             stage_all_after_save: None,
@@ -1497,6 +1501,8 @@ impl App {
             Command::ReviewResolve => self.review_resolve(),
             Command::ReviewEditComment => self.review_edit_comment(),
             Command::ReviewDeleteComment => self.review_delete_comment(),
+            Command::ReviewApplySuggestion => self.review_apply_suggestion(),
+            Command::ReviewInsertSuggestion => self.review_insert_suggestion(),
             Command::Review(c) => self.review_command(c),
             Command::ToggleToolTrace => self.toggle_tool_trace(),
             Command::RestartServer => self.restart_server(),

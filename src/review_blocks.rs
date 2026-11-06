@@ -18,7 +18,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::diff_view::Aligned;
 
 /// Rows under a block's comments for buttons: a composer's Comment / Cancel, a forge thread's
-/// Reply / Resolve / Edit / Delete (Apply Suggestion comes with a later subtask).
+/// Reply / Resolve / [Apply Suggestion] / Edit / Delete.
 fn button_rows(t: &ThreadBlock) -> usize {
     usize::from(matches!(t.role, Role::Composer { .. } | Role::Thread))
 }
@@ -53,6 +53,8 @@ pub struct ThreadBlock {
     pub resolved: bool,
     /// The user wrote a comment in the thread (Edit and Delete buttons).
     pub mine: bool,
+    /// A comment holds a suggestion that can be applied (the [Apply Suggestion] button).
+    pub apply: bool,
     /// `(author, body)` of each comment, in order.
     pub comments: Vec<(String, String)>,
 }
@@ -62,6 +64,7 @@ pub struct ThreadBlock {
 pub enum ThreadButton {
     Reply,
     Resolve,
+    Apply,
     Edit,
     Delete,
 }
@@ -75,6 +78,9 @@ pub fn thread_buttons(t: &ThreadBlock) -> Vec<(std::ops::Range<usize>, ThreadBut
             if t.resolved { "[Unresolve]" } else { "[Resolve]" },
         ),
     ];
+    if t.apply {
+        list.push((ThreadButton::Apply, "[Apply Suggestion]"));
+    }
     if t.mine {
         list.push((ThreadButton::Edit, "[Edit]"));
         list.push((ThreadButton::Delete, "[Delete]"));
@@ -397,8 +403,10 @@ pub enum Kind {
     /// `├ author ────` before a reply.
     Reply,
     Body,
-    /// Room for the buttons (drawn by later subtasks).
+    /// Room for the buttons.
     Buttons,
+    /// A line inside a suggestion fence.
+    Code,
     Footer,
 }
 
@@ -424,9 +432,26 @@ pub fn height(t: &ThreadBlock, collapsed: bool, width: usize) -> usize {
     }
     let mut h = 1 + button_rows(t) + 1;
     for (i, (_, body)) in t.comments.iter().enumerate() {
-        h += usize::from(i > 0) + wrap(body, width.saturating_sub(2)).len();
+        h += usize::from(i > 0) + body_rows(body, width.saturating_sub(2)).len();
     }
     h
+}
+
+/// A comment's rows at `width`: wrapped text, and the lines inside suggestion fences (cut, `true`).
+fn body_rows(body: &str, width: usize) -> Vec<(bool, String)> {
+    let fences = crate::suggestion::fences(body);
+    if fences.is_empty() {
+        return wrap(body, width).into_iter().map(|l| (false, l)).collect();
+    }
+    let mut out = Vec::new();
+    for (i, line) in body.split('\n').enumerate() {
+        if fences.iter().any(|f| i > f.open && i < f.close) {
+            out.push((true, cut(&line.trim_end_matches('\r').replace('\t', "    "), width)));
+        } else {
+            out.extend(wrap(line, width).into_iter().map(|l| (false, l)));
+        }
+    }
+    out
 }
 
 /// A thread's lines at `width`.
@@ -462,9 +487,9 @@ pub fn lines(t: &ThreadBlock, collapsed: bool, width: usize) -> Vec<BlockLine> {
                 text: rule(&format!("├ {who}"), "", width),
             });
         }
-        for l in wrap(body, width.saturating_sub(2)) {
+        for (code, l) in body_rows(body, width.saturating_sub(2)) {
             out.push(BlockLine {
-                kind: Kind::Body,
+                kind: if code { Kind::Code } else { Kind::Body },
                 text: format!("│ {l}"),
             });
         }
@@ -488,18 +513,25 @@ pub fn lines(t: &ThreadBlock, collapsed: bool, width: usize) -> Vec<BlockLine> {
 /// The composer's buttons: labels and their columns from the block's left edge on the buttons row
 /// (`│ [Comment Ctrl+Enter] [Cancel Esc]`).
 pub const SUBMIT_LABEL: &str = "[Comment Ctrl+Enter]";
+pub const INSERT_LABEL: &str = "[Insert Suggestion]";
 pub const CANCEL_LABEL: &str = "[Cancel Esc]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComposerButton {
     Submit,
     Cancel,
+    Insert,
 }
 
-pub fn composer_button_cols() -> [(std::ops::Range<usize>, ComposerButton); 2] {
+pub fn composer_button_cols() -> [(std::ops::Range<usize>, ComposerButton); 3] {
     let submit = 2..2 + SUBMIT_LABEL.width();
     let cancel = submit.end + 1..submit.end + 1 + CANCEL_LABEL.width();
-    [(submit, ComposerButton::Submit), (cancel, ComposerButton::Cancel)]
+    let insert = cancel.end + 1..cancel.end + 1 + INSERT_LABEL.width();
+    [
+        (submit, ComposerButton::Submit),
+        (cancel, ComposerButton::Cancel),
+        (insert, ComposerButton::Insert),
+    ]
 }
 
 fn composer_lines(t: &ThreadBlock, width: usize) -> Vec<BlockLine> {
@@ -516,7 +548,7 @@ fn composer_lines(t: &ThreadBlock, width: usize) -> Vec<BlockLine> {
     }
     out.push(BlockLine {
         kind: Kind::Buttons,
-        text: format!("│ {SUBMIT_LABEL} {CANCEL_LABEL}"),
+        text: format!("│ {SUBMIT_LABEL} {CANCEL_LABEL} {INSERT_LABEL}"),
     });
     out.push(BlockLine {
         kind: Kind::Footer,
@@ -688,6 +720,7 @@ mod tests {
             line: 0,
             resolved,
             mine: false,
+            apply: false,
             comments: vec![("sam".into(), body.into())],
         }
     }
@@ -808,6 +841,23 @@ mod tests {
     }
 
     #[test]
+    fn suggestion_lines_are_code_and_the_apply_button_follows_resolve() {
+        let mut t = thread("1", false, "Try\n```suggestion\nlet very_long_name = 1;\n\n```\nok");
+        t.apply = true;
+        for width in [12, 30] {
+            let ls = lines(&t, false, width);
+            assert_eq!(ls.len(), height(&t, false, width));
+            let code: Vec<_> = ls.iter().filter(|l| l.kind == Kind::Code).collect();
+            assert_eq!(code.len(), 2, "{ls:?}");
+            assert!(code.iter().all(|l| l.text.width() <= width));
+        }
+        let b: Vec<_> = thread_buttons(&t).iter().map(|b| b.2).collect();
+        assert_eq!(b, ["[Reply]", "[Resolve]", "[Apply Suggestion]"]);
+        t.apply = false;
+        assert_eq!(thread_buttons(&t).len(), 2);
+    }
+
+    #[test]
     fn resolved_threads_start_collapsed_and_toggle() {
         let mut ts = Threads::default();
         ts.set(vec![thread("a", true, "x"), thread("b", false, "y")]);
@@ -854,6 +904,7 @@ mod tests {
             line: 2,
             resolved: false,
             mine: false,
+            apply: false,
             comments: vec![("Comment on lines 3–4".into(), "one\ntwo".into())],
         };
         let ls = lines(&t, false, 40);
@@ -865,7 +916,7 @@ mod tests {
         assert_eq!(ls.len(), height(&t, false, 40));
         assert!(ls[0].text.starts_with("┌ Comment on lines 3–4 ─"));
         assert!(ls[3].text.contains("[Comment Ctrl+Enter] [Cancel Esc]"));
-        let [(submit, _), (cancel, _)] = composer_button_cols();
+        let [(submit, _), (cancel, _), _] = composer_button_cols();
         let at = |r: std::ops::Range<usize>| ls[3].text.chars().skip(r.start).take(r.len()).collect::<String>();
         assert_eq!(at(submit), SUBMIT_LABEL);
         assert_eq!(at(cancel), CANCEL_LABEL);

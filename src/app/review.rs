@@ -31,6 +31,8 @@ pub(super) enum ReviewEvent {
     DraftsChecked(Vec<(String, Option<String>)>),
     /// A write to the forge finished (`app/review_write.rs`).
     Wrote(crate::review_write::Done),
+    /// The commit's text under a suggestion (`app/review_suggest.rs`).
+    Suggestion(super::review_suggest::Staged),
 }
 
 impl App {
@@ -130,6 +132,7 @@ impl App {
             ReviewEvent::Drafts(loaded) => return self.drafts_loaded(loaded),
             ReviewEvent::DraftsChecked(held) => return self.drafts_checked(held),
             ReviewEvent::Wrote(done) => return self.review_wrote(done),
+            ReviewEvent::Suggestion(staged) => return self.suggestion_read(staged),
         };
         let r = &mut self.review;
         r.loading = false;
@@ -391,6 +394,12 @@ impl App {
                                 mine: user.is_some_and(|u| {
                                     t.thread.comments.iter().any(|c| c.author.eq_ignore_ascii_case(u))
                                 }),
+                                apply: *side == Side::Right
+                                    && !t.thread.resolved
+                                    && t.thread
+                                        .comments
+                                        .iter()
+                                        .any(|c| !crate::suggestion::parse(&c.body, &t.thread.anchor).is_empty()),
                                 comments: t
                                     .thread
                                     .comments

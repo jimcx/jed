@@ -13,7 +13,7 @@
 //! comes from a server is run through `http::clean_line` / `http::clean_text` before it reaches
 //! these types, so nothing downstream can draw a control sequence from a remote.
 
-#![allow(dead_code)] // changed files, suggestions, `kind` and `has_token` are used by later code-review subtasks
+#![allow(dead_code)] // changed files, `kind` and `has_token` are used by later code-review subtasks
 
 pub mod config;
 pub mod gitea;
@@ -172,13 +172,14 @@ pub struct MrComments {
     pub conversation: Vec<Comment>,
 }
 
-/// A suggested replacement for the lines of a comment's anchor: `replacement` is the new text of
-/// lines `start_line - before ..= end_line + after` (the lines the fence covers; usually 0 and 0).
+/// A suggested replacement (`crate::suggestion::parse`): lines `start_line..=end_line` (1-based,
+/// the right side's, as of the comment's commit) become `replacement` (every line ended by `\n`;
+/// empty: the lines go).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Suggestion {
+    pub start_line: u32,
+    pub end_line: u32,
     pub replacement: String,
-    pub before: u32,
-    pub after: u32,
 }
 
 /// One comment of a draft review.

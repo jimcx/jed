@@ -57,6 +57,7 @@ pub fn menu_for(target: MenuTarget) -> Vec<MenuItem> {
             MenuItem::new("Resolve / Unresolve Thread", Command::ReviewResolve),
             MenuItem::new("Edit Comment", Command::ReviewEditComment),
             MenuItem::new("Delete Comment", Command::ReviewDeleteComment),
+            MenuItem::new("Apply Suggestion", Command::ReviewApplySuggestion),
             MenuItem::Separator,
             MenuItem::new("Submit Review (Comment)", Command::ReviewSubmitComment),
             MenuItem::new("Submit Review (Approve)", Command::ReviewSubmitApprove),
