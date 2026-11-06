@@ -48,6 +48,8 @@ pub struct Request {
     pub method: String,
     /// Path and query, as sent.
     pub target: String,
+    /// The request body as text (empty for a GET).
+    pub body: String,
     headers: Vec<(String, String)>,
 }
 
@@ -121,17 +123,27 @@ fn serve(stream: TcpStream, routes: &[(String, Reply)], seen: &Mutex<Vec<Request
             headers.push((n.trim().to_ascii_lowercase(), v.trim().to_string()));
         }
     }
-    let path = target.split('?').next().unwrap_or(&target).to_string();
-    let reply = routes
+    let length: usize = headers
         .iter()
-        .find(|(t, _)| *t == target)
-        .or_else(|| routes.iter().find(|(t, _)| *t == path))
+        .find(|(n, _)| n == "content-length")
+        .and_then(|(_, v)| v.parse().ok())
+        .unwrap_or(0);
+    let mut raw = vec![0u8; length];
+    std::io::Read::read_exact(&mut reader, &mut raw)?;
+    let body = String::from_utf8_lossy(&raw).into_owned();
+    let path = target.split('?').next().unwrap_or(&target).to_string();
+    // A route may start with a method (`POST /path`); it then matches that method only.
+    let (with_target, with_path) = (format!("{method} {target}"), format!("{method} {path}"));
+    let reply = [&with_target, &with_path, &target, &path]
+        .iter()
+        .find_map(|k| routes.iter().find(|(t, _)| t == *k))
         .map(|(_, r)| r.clone())
         .unwrap_or_else(|| Reply::status(404).with_body("{\"message\":\"not found\"}"));
     seen.lock().unwrap().push(Request {
         method,
         target,
         headers,
+        body,
     });
     let mut out = format!(
         "HTTP/1.1 {} X\r\nConnection: close\r\nContent-Length: {}\r\n",

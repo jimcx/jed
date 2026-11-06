@@ -17,10 +17,10 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::diff_view::Aligned;
 
-/// Rows under a block's comments for buttons (a composer's; Reply / Resolve / Apply come with
-/// later subtasks).
+/// Rows under a block's comments for buttons: a composer's Comment / Cancel, a forge thread's
+/// Reply / Resolve / Edit / Delete (Apply Suggestion comes with a later subtask).
 fn button_rows(t: &ThreadBlock) -> usize {
-    usize::from(matches!(t.role, Role::Composer { .. }))
+    usize::from(matches!(t.role, Role::Composer { .. } | Role::Thread))
 }
 
 /// Columns the blocks are indented by (under the line numbers) and kept free on the right.
@@ -51,8 +51,42 @@ pub struct ThreadBlock {
     /// The thread's last line (0-based) on that side: the block goes under its row.
     pub line: usize,
     pub resolved: bool,
+    /// The user wrote a comment in the thread (Edit and Delete buttons).
+    pub mine: bool,
     /// `(author, body)` of each comment, in order.
     pub comments: Vec<(String, String)>,
+}
+
+/// A button on a forge thread's last row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadButton {
+    Reply,
+    Resolve,
+    Edit,
+    Delete,
+}
+
+/// A thread's buttons and their columns from the block's left edge (`│ [Reply] [Resolve]`).
+pub fn thread_buttons(t: &ThreadBlock) -> Vec<(std::ops::Range<usize>, ThreadButton, &'static str)> {
+    let mut list = vec![
+        (ThreadButton::Reply, "[Reply]"),
+        (
+            ThreadButton::Resolve,
+            if t.resolved { "[Unresolve]" } else { "[Resolve]" },
+        ),
+    ];
+    if t.mine {
+        list.push((ThreadButton::Edit, "[Edit]"));
+        list.push((ThreadButton::Delete, "[Delete]"));
+    }
+    let mut col = 2;
+    list.into_iter()
+        .map(|(b, label)| {
+            let range = col..col + label.chars().count();
+            col = range.end + 1;
+            (range, b, label)
+        })
+        .collect()
 }
 
 /// A block of `height` rows shown after aligned row `after_row`; `thread` indexes
@@ -437,7 +471,12 @@ pub fn lines(t: &ThreadBlock, collapsed: bool, width: usize) -> Vec<BlockLine> {
     }
     out.extend((0..button_rows(t)).map(|_| BlockLine {
         kind: Kind::Buttons,
-        text: "│".into(),
+        text: if t.role == Role::Thread {
+            let labels: Vec<&str> = thread_buttons(t).iter().map(|b| b.2).collect();
+            cut(&format!("│ {}", labels.join(" ")), width)
+        } else {
+            "│".into()
+        },
     }));
     out.push(BlockLine {
         kind: Kind::Footer,
@@ -648,6 +687,7 @@ mod tests {
             right: true,
             line: 0,
             resolved,
+            mine: false,
             comments: vec![("sam".into(), body.into())],
         }
     }
@@ -813,6 +853,7 @@ mod tests {
             right: true,
             line: 2,
             resolved: false,
+            mine: false,
             comments: vec![("Comment on lines 3–4".into(), "one\ntwo".into())],
         };
         let ls = lines(&t, false, 40);

@@ -52,6 +52,15 @@ pub fn menu_for(target: MenuTarget) -> Vec<MenuItem> {
             MenuItem::new("Add Comment", Command::ReviewComment),
             MenuItem::new("Edit Draft", Command::ReviewEditDraft),
             MenuItem::new("Delete Draft", Command::ReviewDeleteDraft),
+            MenuItem::Separator,
+            MenuItem::new("Reply", Command::ReviewReply),
+            MenuItem::new("Resolve / Unresolve Thread", Command::ReviewResolve),
+            MenuItem::new("Edit Comment", Command::ReviewEditComment),
+            MenuItem::new("Delete Comment", Command::ReviewDeleteComment),
+            MenuItem::Separator,
+            MenuItem::new("Submit Review (Comment)", Command::ReviewSubmitComment),
+            MenuItem::new("Submit Review (Approve)", Command::ReviewSubmitApprove),
+            MenuItem::new("Submit Review (Request Changes)", Command::ReviewSubmitRequestChanges),
         ];
     };
     let reveal = if cfg!(target_os = "macos") {

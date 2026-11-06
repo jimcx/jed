@@ -13,7 +13,7 @@
 //! comes from a server is run through `http::clean_line` / `http::clean_text` before it reaches
 //! these types, so nothing downstream can draw a control sequence from a remote.
 
-#![allow(dead_code)] // threads, comments and writes are used by the later code-review subtasks
+#![allow(dead_code)] // changed files, suggestions, `kind` and `has_token` are used by later code-review subtasks
 
 pub mod config;
 pub mod gitea;
@@ -203,6 +203,15 @@ pub struct DraftReview {
     pub comments: Vec<DraftComment>,
 }
 
+/// What a submit did, per comment (indices into `DraftReview::comments`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SubmitOutcome {
+    pub posted: Vec<usize>,
+    pub failed: Vec<(usize, String)>,
+    /// The review itself failed (set whenever nothing was posted because of one error).
+    pub error: Option<String>,
+}
+
 #[derive(Debug)]
 pub enum ForgeError {
     /// Missing or invalid configuration (no entry for the host, no token, a bad URL).
@@ -242,6 +251,18 @@ pub trait Forge: Send + Sync {
     fn files(&self, repo: &RepoRef, number: u64) -> Result<Vec<ChangedFile>>;
     /// Others' (and the user's own submitted) comments.
     fn comments(&self, repo: &RepoRef, number: u64) -> Result<MrComments>;
+    /// The token's user (to tell which comments are the user's own).
+    fn current_user(&self) -> Result<String>;
+    /// Posts the review: its comments at their anchors (on `head_sha`) and the verdict. The
+    /// outcome says which comments the forge took; the others stay drafts.
+    fn submit_review(&self, repo: &RepoRef, number: u64, head_sha: &str, review: &DraftReview) -> SubmitOutcome;
+    /// Replies in the thread (`thread_id` is `Thread::id`); posted at once.
+    fn reply(&self, repo: &RepoRef, number: u64, thread_id: &str, body: &str) -> Result<()>;
+    fn set_resolved(&self, repo: &RepoRef, thread_id: &str, resolved: bool) -> Result<()>;
+    /// `range`: the lines of the thread's first comment, for adapters that keep a multi-line range
+    /// in the body (Gitea).
+    fn edit_comment(&self, repo: &RepoRef, comment_id: &str, body: &str, range: Option<(u32, u32)>) -> Result<()>;
+    fn delete_comment(&self, repo: &RepoRef, comment_id: &str) -> Result<()>;
 }
 
 /// The `Forge` for a host: looks the host up in `config` (then the detected `github.com` /

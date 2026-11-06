@@ -133,6 +133,7 @@ mod review_blocks;
 mod review_drafts;
 #[cfg(test)]
 mod review_followups_tests;
+mod review_write;
 mod scm;
 mod scrollbar;
 mod search;

@@ -50,6 +50,8 @@ pub struct Review {
     pub conversation: Vec<Comment>,
     /// Why the comments couldn't be read (the rest of the review is still shown).
     pub comments_error: Option<String>,
+    /// How local HEAD related to the merge request's head when this was looked up.
+    pub relation: range::HeadRelation,
 }
 
 /// A thread and where [`review_anchor`] put it.
@@ -131,6 +133,16 @@ pub struct Request {
     pub log: ToolLog,
 }
 
+/// The given `forges.toml`, else the user's file.
+///
+/// Blocking (file): call from spawn_blocking.
+pub fn forge_config(given: &Option<Arc<ForgeConfig>>) -> Arc<ForgeConfig> {
+    match given {
+        Some(c) => c.clone(),
+        None => Arc::new(forge::config::load_default()),
+    }
+}
+
 /// Blocking (git, files, network): the whole pipeline; call from spawn_blocking.
 pub fn lookup(req: Request) -> Outcome {
     let log = &req.log;
@@ -144,10 +156,7 @@ pub fn lookup(req: Request) -> Outcome {
     let Some(repo_ref) = info.remote_url.as_deref().and_then(forge::url::parse_remote) else {
         return Outcome::Empty(Empty::NoRemote);
     };
-    let config = match &req.config {
-        Some(c) => c.clone(),
-        None => Arc::new(forge::config::load_default()),
-    };
+    let config = forge_config(&req.config);
     for e in &config.errors {
         log.error(e);
     }
@@ -220,6 +229,7 @@ pub fn lookup(req: Request) -> Outcome {
         }
     };
     let viewed = req.viewed_from.as_deref().map(Viewed::load);
+    let relation = range::head_relation(&req.repo, &mr.head.sha);
     Outcome::Loaded(
         Box::new(Review {
             repo: repo_ref,
@@ -231,6 +241,7 @@ pub fn lookup(req: Request) -> Outcome {
             threads,
             conversation,
             comments_error,
+            relation,
         }),
         viewed,
     )
@@ -336,6 +347,29 @@ pub struct ReviewState {
     /// comment box changing): they copy their blocks when it changed.
     pub generation: u64,
     pub drafts: Drafts,
+    /// The token's user, once the forge said (to find the user's own comments).
+    pub user: Option<String>,
+    pub user_loading: bool,
+    /// A write (submit, reply, resolve, edit, delete) is on its way: one at a time.
+    pub writing: bool,
+}
+
+impl Review {
+    /// Why local HEAD can't be submitted from, when it isn't the merge request's head: the
+    /// banner's text.
+    pub fn head_banner(&self, local_head: Option<&str>) -> Option<&'static str> {
+        use range::HeadRelation as R;
+        if local_head.is_some_and(|h| h == self.mr.head.sha) {
+            return None;
+        }
+        Some(match self.relation {
+            R::Ahead => "local is ahead of the merge request: push",
+            R::Behind => "local is behind the merge request: pull",
+            R::Diverged => "local and the merge request have diverged",
+            // Looked up when HEAD was the same, but it moved since.
+            R::Same | R::Unknown => "local is not at the merge request's head",
+        })
+    }
 }
 
 impl Drafts {
@@ -380,6 +414,8 @@ pub struct Drafts {
     pub drift: HashMap<String, Option<String>>,
     /// The same as the open review diff tabs see their file's text now (it wins over `drift`).
     pub live: HashMap<String, Option<String>>,
+    /// Why the forge refused a draft at the last submit, by id (until the next submit).
+    pub errors: HashMap<String, String>,
 }
 
 impl Default for ReviewState {
@@ -399,6 +435,9 @@ impl Default for ReviewState {
             auto: !cfg!(test),
             generation: 0,
             drafts: Drafts::default(),
+            user: None,
+            user_loading: false,
+            writing: false,
             env: Arc::new(|name| std::env::var(name).ok()),
         }
     }

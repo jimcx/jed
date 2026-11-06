@@ -13,8 +13,8 @@ use serde::Deserialize;
 
 use super::http::{Client, clean_line, clean_text, encode_segment};
 use super::{
-    Anchor, BranchRef, ChangedFile, Comment, FileStatus, Forge, Kind, MergeRequest, MrComments, MrState, RepoRef,
-    Result, Side, Thread,
+    Anchor, BranchRef, ChangedFile, Comment, DraftReview, FileStatus, Forge, ForgeError, Kind, MergeRequest,
+    MrComments, MrState, RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread,
 };
 
 pub struct Gitea {
@@ -226,11 +226,49 @@ fn make_comment(id: String, user: &Option<User>, body: &str, created_at: &str, u
     }
 }
 
+const MARKER_START: &str = "<!-- jed:range=";
+
+/// jed writes a multi-line comment on its last line and ends the body with this marker (an HTML
+/// comment: Gitea's page doesn't show it).
+pub fn range_marker(start: u32, end: u32) -> String {
+    format!("{MARKER_START}{start}-{end} -->")
+}
+
+/// A body as it is posted: the marker after the text when the comment spans lines.
+pub fn with_marker(body: &str, range: Option<(u32, u32)>) -> String {
+    match range {
+        Some((s, e)) if s < e => format!("{}\n\n{}", body.trim_end(), range_marker(s, e)),
+        _ => body.to_string(),
+    }
+}
+
+/// The body without a trailing range marker, and the range it named.
+pub fn split_marker(body: &str) -> (String, Option<(u32, u32)>) {
+    let trimmed = body.trim_end();
+    if let Some(i) = trimmed.rfind(MARKER_START)
+        && let Some(inner) = trimmed[i + MARKER_START.len()..].strip_suffix(" -->")
+        && let Some((s, e)) = inner.split_once('-')
+        && let (Ok(s), Ok(e)) = (s.parse::<u32>(), e.parse::<u32>())
+        && s <= e
+    {
+        return (trimmed[..i].trim_end().to_string(), Some((s, e)));
+    }
+    (body.to_string(), None)
+}
+
+fn event_name(e: ReviewEvent) -> &'static str {
+    match e {
+        ReviewEvent::Comment => "COMMENT",
+        ReviewEvent::Approve => "APPROVED",
+        ReviewEvent::RequestChanges => "REQUEST_CHANGES",
+    }
+}
+
 fn comment(c: &ReviewComment) -> Comment {
     make_comment(
         c.id.to_string(),
         &c.user,
-        &c.body,
+        &split_marker(&clean_text(&c.body)).0,
         &c.created_at,
         &c.updated_at,
         &c.html_url,
@@ -253,6 +291,7 @@ fn threads(mut comments: Vec<ReviewComment>) -> Vec<Thread> {
         } else {
             &c.commit_id
         };
+        let range = split_marker(&clean_text(&c.body)).1.filter(|r| r.1 == line);
         let i = *index.entry(key).or_insert_with(|| {
             out.push(Thread {
                 id: c.id.to_string(),
@@ -269,6 +308,11 @@ fn threads(mut comments: Vec<ReviewComment>) -> Vec<Thread> {
             });
             out.len() - 1
         });
+        if let Some((start, _)) = range
+            && out[i].comments.is_empty()
+        {
+            out[i].anchor.start_line = start;
+        }
         out[i].comments.push(comment(c));
     }
     out
@@ -359,6 +403,93 @@ impl Forge for Gitea {
             threads: threads(line_comments),
             conversation,
         })
+    }
+
+    /// Blocking: call from spawn_blocking.
+    fn current_user(&self) -> Result<String> {
+        let user: User = self.client.get_json("/user")?;
+        let login = clean_line(&user.login);
+        if login.is_empty() {
+            return Err(ForgeError::Parse("no login in the answer".into()));
+        }
+        Ok(login)
+    }
+
+    /// One review holding every comment (Gitea takes them together, so they all succeed or all
+    /// fail). A multi-line comment is posted on its last line with the range marker.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn submit_review(&self, repo: &RepoRef, number: u64, head_sha: &str, review: &DraftReview) -> SubmitOutcome {
+        let comments: Vec<serde_json::Value> = review
+            .comments
+            .iter()
+            .map(|c| {
+                let a = &c.anchor;
+                let (new, old) = match a.side {
+                    Side::Right => (a.end_line, 0),
+                    Side::Left => (0, a.end_line),
+                };
+                serde_json::json!({
+                    "path": a.path,
+                    "body": with_marker(&c.body, Some((a.start_line, a.end_line))),
+                    "new_position": new,
+                    "old_position": old,
+                })
+            })
+            .collect();
+        let body = serde_json::json!({
+            "body": review.body,
+            "event": event_name(review.event),
+            "commit_id": head_sha,
+            "comments": comments,
+        });
+        let url = format!("{}/{number}/reviews", Self::pulls(repo));
+        match self.client.post(&url, &body.to_string()) {
+            Ok(_) => SubmitOutcome {
+                posted: (0..review.comments.len()).collect(),
+                failed: Vec::new(),
+                error: None,
+            },
+            Err(e) => SubmitOutcome {
+                posted: Vec::new(),
+                failed: (0..review.comments.len()).map(|i| (i, e.to_string())).collect(),
+                error: Some(e.to_string()),
+            },
+        }
+    }
+
+    /// Blocking: call from spawn_blocking.
+    fn reply(&self, repo: &RepoRef, number: u64, thread_id: &str, body: &str) -> Result<()> {
+        let url = format!(
+            "{}/{number}/comments/{}/replies",
+            Self::pulls(repo),
+            encode_segment(thread_id)
+        );
+        self.client
+            .post(&url, &serde_json::json!({ "body": body }).to_string())
+            .map(|_| ())
+    }
+
+    /// Blocking: call from spawn_blocking.
+    fn set_resolved(&self, repo: &RepoRef, thread_id: &str, resolved: bool) -> Result<()> {
+        let verb = if resolved { "resolve" } else { "unresolve" };
+        let url = format!("{}/comments/{}/{verb}", Self::pulls(repo), encode_segment(thread_id));
+        self.client.post(&url, "{}").map(|_| ())
+    }
+
+    /// Review comments are issue comments on Gitea.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn edit_comment(&self, repo: &RepoRef, comment_id: &str, body: &str, range: Option<(u32, u32)>) -> Result<()> {
+        let url = format!("{}/comments/{}", Self::issues(repo), encode_segment(comment_id));
+        let body = serde_json::json!({ "body": with_marker(body, range) });
+        self.client.patch(&url, &body.to_string()).map(|_| ())
+    }
+
+    /// Blocking: call from spawn_blocking.
+    fn delete_comment(&self, repo: &RepoRef, comment_id: &str) -> Result<()> {
+        let url = format!("{}/comments/{}", Self::issues(repo), encode_segment(comment_id));
+        self.client.delete(&url).map(|_| ())
     }
 }
 
@@ -451,6 +582,150 @@ mod tests {
         );
         assert_eq!((f[2].status, f[2].old_path.clone()), (FileStatus::Added, None));
         assert_eq!(f[3].status, FileStatus::Deleted);
+    }
+
+    fn draft(path: &str, side: Side, start: u32, end: u32, body: &str) -> super::super::DraftComment {
+        super::super::DraftComment {
+            anchor: Anchor {
+                path: path.into(),
+                side,
+                start_line: start,
+                end_line: end,
+                commit: "h0".into(),
+            },
+            body: body.into(),
+        }
+    }
+
+    #[test]
+    fn range_marker_round_trips() {
+        let posted = with_marker("fix this\n", Some((41, 42)));
+        assert_eq!(posted, "fix this\n\n<!-- jed:range=41-42 -->");
+        assert_eq!(split_marker(&posted), ("fix this".to_string(), Some((41, 42))));
+        assert_eq!(with_marker("one", Some((5, 5))), "one");
+        assert_eq!(split_marker("plain"), ("plain".to_string(), None));
+        assert_eq!(
+            split_marker("x <!-- jed:range=9-3 -->").1,
+            None,
+            "end before start is text"
+        );
+    }
+
+    #[test]
+    fn a_forged_marker_never_panics_and_only_a_well_formed_trailing_one_counts() {
+        for bad in [
+            "x <!-- jed:range=1-99999999999999999999 -->",
+            "x <!-- jed:range=-5-3 -->",
+            "x <!-- jed:range=a-b -->",
+            "x <!-- jed:range=1-2 --> trailing",
+            "x <!-- jed:range=1-2-3 -->",
+            "<!-- jed:range=",
+            "<!-- jed:range=- -->",
+        ] {
+            assert_eq!(split_marker(bad), (bad.to_string(), None), "{bad}");
+        }
+        let (text, range) = split_marker("x <!-- jed:range=0-4294967295 -->");
+        assert_eq!((text.as_str(), range), ("x", Some((0, u32::MAX))));
+        // An edit re-appends the marker once, never twice.
+        let once = with_marker(&split_marker("a\n\n<!-- jed:range=2-3 -->").0, Some((2, 3)));
+        assert_eq!(once.matches("jed:range").count(), 1);
+    }
+
+    #[test]
+    fn submit_sends_one_review_with_anchors_and_the_marker() {
+        let (server, gitea, repo) = setup(vec![(
+            "POST /api/v1/repos/o/r/pulls/7/reviews",
+            Reply::json("{\"id\":5}"),
+        )]);
+        let review = DraftReview {
+            body: "overall".into(),
+            event: ReviewEvent::RequestChanges,
+            comments: vec![
+                draft("a.rs", Side::Right, 3, 5, "multi"),
+                draft("b.rs", Side::Left, 8, 8, "gone"),
+            ],
+        };
+        let out = gitea.submit_review(&repo, 7, "h0", &review);
+        assert_eq!((out.posted.clone(), out.failed.len()), (vec![0, 1], 0));
+        let reqs = server.requests();
+        assert_eq!(
+            (reqs[0].method.as_str(), reqs[0].header("authorization")),
+            ("POST", Some("token tok"))
+        );
+        let v: serde_json::Value = serde_json::from_str(&reqs[0].body).unwrap();
+        assert_eq!(v["event"], "REQUEST_CHANGES");
+        assert_eq!(v["body"], "overall");
+        assert_eq!(v["commit_id"], "h0");
+        assert_eq!(v["comments"][0]["path"], "a.rs");
+        assert_eq!(v["comments"][0]["new_position"], 5);
+        assert_eq!(v["comments"][0]["old_position"], 0);
+        assert_eq!(v["comments"][0]["body"], "multi\n\n<!-- jed:range=3-5 -->");
+        assert_eq!(v["comments"][1]["new_position"], 0);
+        assert_eq!(v["comments"][1]["old_position"], 8);
+        assert_eq!(v["comments"][1]["body"], "gone");
+    }
+
+    #[test]
+    fn a_failed_submit_fails_every_comment_without_the_token() {
+        let (_s, gitea, repo) = setup(vec![(
+            "POST /api/v1/repos/o/r/pulls/7/reviews",
+            Reply::status(500).with_body("{\"message\":\"boom tok\"}"),
+        )]);
+        let review = DraftReview {
+            body: String::new(),
+            event: ReviewEvent::Comment,
+            comments: vec![draft("a.rs", Side::Right, 1, 1, "x")],
+        };
+        let out = gitea.submit_review(&repo, 7, "h0", &review);
+        assert!(out.posted.is_empty());
+        assert_eq!(out.failed.len(), 1);
+        assert!(
+            out.failed[0].1.contains("500") && !out.failed[0].1.contains("boom tok"),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn replies_resolves_edits_and_deletes() {
+        let (server, gitea, repo) = setup(vec![
+            ("POST /api/v1/repos/o/r/pulls/7/comments/11/replies", Reply::json("{}")),
+            ("POST /api/v1/repos/o/r/pulls/comments/11/resolve", Reply::status(204)),
+            ("POST /api/v1/repos/o/r/pulls/comments/11/unresolve", Reply::status(204)),
+            ("PATCH /api/v1/repos/o/r/issues/comments/11", Reply::json("{}")),
+            ("DELETE /api/v1/repos/o/r/issues/comments/11", Reply::status(204)),
+            ("/api/v1/user", Reply::json("{\"login\":\"me\"}")),
+        ]);
+        gitea.reply(&repo, 7, "11", "hi").unwrap();
+        gitea.set_resolved(&repo, "11", true).unwrap();
+        gitea.set_resolved(&repo, "11", false).unwrap();
+        gitea.edit_comment(&repo, "11", "new", Some((2, 4))).unwrap();
+        gitea.delete_comment(&repo, "11").unwrap();
+        assert_eq!(gitea.current_user().unwrap(), "me");
+        let reqs = server.requests();
+        let ms: Vec<&str> = reqs.iter().map(|r| r.method.as_str()).collect();
+        assert_eq!(ms, ["POST", "POST", "POST", "PATCH", "DELETE", "GET"]);
+        assert_eq!(reqs[0].body, "{\"body\":\"hi\"}");
+        assert_eq!(reqs[3].body, "{\"body\":\"new\\n\\n<!-- jed:range=2-4 -->\"}");
+        assert!(reqs[1].target.ends_with("/resolve") && reqs[2].target.ends_with("/unresolve"));
+        assert!(gitea.reply(&repo, 7, "99", "x").is_err(), "an unknown route is a 404");
+    }
+
+    #[test]
+    fn a_multi_line_thread_reads_back_its_range_and_hides_the_marker() {
+        let reviews = r#"[{"id":1,"user":{"login":"me"},"body":"","state":"COMMENT","comments_count":1}]"#;
+        let comments = r#"[{"id":21,"user":{"login":"me"},"body":"multi\n\n<!-- jed:range=3-5 -->","path":"a.rs","position":5,"original_position":5,"commit_id":"c1","original_commit_id":"c1","diff_hunk":"@@ -1 +1 @@\n+y"}]"#;
+        let (_s, gitea, repo) = setup(vec![
+            (
+                "/api/v1/repos/o/r/pulls/7/reviews?page=1&limit=50",
+                Reply::json(reviews),
+            ),
+            ("/api/v1/repos/o/r/pulls/7/reviews/1/comments", Reply::json(comments)),
+            ("/api/v1/repos/o/r/issues/7/comments?page=1&limit=50", Reply::json("[]")),
+        ]);
+        let c = gitea.comments(&repo, 7).unwrap();
+        let t = &c.threads[0];
+        assert_eq!((t.anchor.start_line, t.anchor.end_line), (3, 5));
+        assert_eq!(t.comments[0].body, "multi");
     }
 
     #[test]

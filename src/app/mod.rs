@@ -44,6 +44,7 @@ mod reopen;
 mod replace;
 mod review;
 mod review_comment;
+mod review_write;
 mod scm;
 mod scrollbar;
 mod semantic;
@@ -1489,6 +1490,13 @@ impl App {
             Command::ReviewCancelComment => self.composer_cancel(),
             Command::ReviewEditDraft => self.review_edit_draft(),
             Command::ReviewDeleteDraft => self.review_delete_draft(),
+            Command::ReviewSubmitComment => self.review_submit(crate::forge::ReviewEvent::Comment),
+            Command::ReviewSubmitApprove => self.review_submit(crate::forge::ReviewEvent::Approve),
+            Command::ReviewSubmitRequestChanges => self.review_submit(crate::forge::ReviewEvent::RequestChanges),
+            Command::ReviewReply => self.review_reply(),
+            Command::ReviewResolve => self.review_resolve(),
+            Command::ReviewEditComment => self.review_edit_comment(),
+            Command::ReviewDeleteComment => self.review_delete_comment(),
             Command::Review(c) => self.review_command(c),
             Command::ToggleToolTrace => self.toggle_tool_trace(),
             Command::RestartServer => self.restart_server(),

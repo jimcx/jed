@@ -29,6 +29,8 @@ pub(super) enum ReviewEvent {
     Drafts(crate::review_drafts::DraftStore),
     /// Which drafts the files on disk hold back (by id).
     DraftsChecked(Vec<(String, Option<String>)>),
+    /// A write to the forge finished (`app/review_write.rs`).
+    Wrote(crate::review_write::Done),
 }
 
 impl App {
@@ -127,6 +129,7 @@ impl App {
             ReviewEvent::Looked(outcome) => outcome,
             ReviewEvent::Drafts(loaded) => return self.drafts_loaded(loaded),
             ReviewEvent::DraftsChecked(held) => return self.drafts_checked(held),
+            ReviewEvent::Wrote(done) => return self.review_wrote(done),
         };
         let r = &mut self.review;
         r.loading = false;
@@ -169,6 +172,7 @@ impl App {
         let (view, files) = self.review.split();
         view.settle(files);
         self.check_drafts();
+        self.review_fetch_user();
         if std::mem::take(&mut self.review.queued) {
             self.review_refresh();
         }
@@ -294,7 +298,7 @@ impl App {
     /// Opens the selected conversation: a thread's file at its line (the mapped one when placed,
     /// else the nearest to where it was written; a file the review doesn't list just shows the
     /// thread in the status bar), a merge request comment shows its text there.
-    fn review_open_conv(&mut self) {
+    pub(super) fn review_open_conv(&mut self) {
         let Some(review) = self.review.review() else { return };
         let Some(i) = self.review.view.conv.selected(review.conv_len()) else {
             return;
@@ -362,6 +366,7 @@ impl App {
         let editing = self.composer.as_ref().and_then(|c| c.editing.clone());
         let mut live = Vec::new();
         let review = self.review.review();
+        let user = self.review.user.as_deref();
         for (_, d) in self.groups.diff_tabs_mut() {
             let stamp = (generation, d.doc_key());
             if !d.pair.is_review() || d.threads.synced == Some(stamp) {
@@ -383,6 +388,9 @@ impl App {
                                 right: *side == Side::Right,
                                 line: lines.end.saturating_sub(1).max(lines.start),
                                 resolved: t.thread.resolved,
+                                mine: user.is_some_and(|u| {
+                                    t.thread.comments.iter().any(|c| c.author.eq_ignore_ascii_case(u))
+                                }),
                                 comments: t
                                     .thread
                                     .comments

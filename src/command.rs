@@ -390,6 +390,22 @@ pub enum Command {
     ReviewEditDraft,
     /// "Code Review: Delete Draft" (unbound): likewise.
     ReviewDeleteDraft,
+    /// "Code Review: Submit Review (Comment)" (unbound): posts the drafts that aren't held back,
+    /// with a Comment verdict. Needs local HEAD to be the merge request's head.
+    ReviewSubmitComment,
+    /// "Code Review: Submit Review (Approve)" (unbound).
+    ReviewSubmitApprove,
+    /// "Code Review: Submit Review (Request Changes)" (unbound).
+    ReviewSubmitRequestChanges,
+    /// "Code Review: Reply" (unbound): the comment box as a reply to the thread under the caret
+    /// (or the selected CONVERSATIONS row); Ctrl+Enter posts it at once.
+    ReviewReply,
+    /// "Code Review: Resolve / Unresolve Thread" (unbound): toggles the same thread.
+    ReviewResolve,
+    /// "Code Review: Edit Comment" (unbound): your last comment in that thread, in the box.
+    ReviewEditComment,
+    /// "Code Review: Delete Comment" (unbound): your last comment in that thread.
+    ReviewDeleteComment,
     /// The Code Review panel's list (`Context::Review`).
     Review(ReviewCommand),
     /// "Tools: Toggle Protocol Trace": the selected (or the active file's) language server's
@@ -1263,6 +1279,13 @@ impl Command {
             Command::ReviewCancelComment,
             Command::ReviewEditDraft,
             Command::ReviewDeleteDraft,
+            Command::ReviewSubmitComment,
+            Command::ReviewSubmitApprove,
+            Command::ReviewSubmitRequestChanges,
+            Command::ReviewReply,
+            Command::ReviewResolve,
+            Command::ReviewEditComment,
+            Command::ReviewDeleteComment,
         ]);
         all.extend(ReviewCommand::ALL.map(Command::Review));
         all
@@ -1659,6 +1682,13 @@ impl Command {
             Command::ReviewCancelComment => "review.cancelComment".into(),
             Command::ReviewEditDraft => "review.editDraft".into(),
             Command::ReviewDeleteDraft => "review.deleteDraft".into(),
+            Command::ReviewSubmitComment => "review.submitComment".into(),
+            Command::ReviewSubmitApprove => "review.submitApprove".into(),
+            Command::ReviewSubmitRequestChanges => "review.submitRequestChanges".into(),
+            Command::ReviewReply => "review.reply".into(),
+            Command::ReviewResolve => "review.resolve".into(),
+            Command::ReviewEditComment => "review.editComment".into(),
+            Command::ReviewDeleteComment => "review.deleteComment".into(),
             Command::Review(c) => format!(
                 "reviewView.{}",
                 match c {
@@ -2076,6 +2106,13 @@ impl Command {
             Command::ReviewCancelComment => "Code Review: Cancel Comment",
             Command::ReviewEditDraft => "Code Review: Edit Draft",
             Command::ReviewDeleteDraft => "Code Review: Delete Draft",
+            Command::ReviewSubmitComment => "Code Review: Submit Review (Comment)",
+            Command::ReviewSubmitApprove => "Code Review: Submit Review (Approve)",
+            Command::ReviewSubmitRequestChanges => "Code Review: Submit Review (Request Changes)",
+            Command::ReviewReply => "Code Review: Reply",
+            Command::ReviewResolve => "Code Review: Resolve / Unresolve Thread",
+            Command::ReviewEditComment => "Code Review: Edit Comment",
+            Command::ReviewDeleteComment => "Code Review: Delete Comment",
             Command::Review(c) => match c {
                 ReviewCommand::Up => "Code Review: Select Previous File",
                 ReviewCommand::Down => "Code Review: Select Next File",
@@ -2290,6 +2327,13 @@ mod tests {
             Command::ReviewCancelComment => 159,
             Command::ReviewEditDraft => 160,
             Command::ReviewDeleteDraft => 161,
+            Command::ReviewSubmitComment => 162,
+            Command::ReviewSubmitApprove => 163,
+            Command::ReviewSubmitRequestChanges => 164,
+            Command::ReviewReply => 165,
+            Command::ReviewResolve => 166,
+            Command::ReviewEditComment => 167,
+            Command::ReviewDeleteComment => 168,
             Command::Review(_) => 154,
             Command::ToggleToolTrace => 92,
             Command::RestartServer => 93,

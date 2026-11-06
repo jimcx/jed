@@ -67,6 +67,12 @@ pub enum Prompt {
     ConfirmStageConflict {
         path: PathBuf,
     },
+    /// Deleting the user's own review comment (sent to the forge, can't be undone): Delete / Cancel.
+    ConfirmDeleteComment {
+        comment_id: String,
+        /// `path:line`, as the question names it.
+        place: String,
+    },
     /// "Terminal: Install Shell Integration": the snippet to source, the shell's init file and the
     /// line that sources it; C copies the line, A appends it, Esc closes.
     InstallShellIntegration {
@@ -282,6 +288,14 @@ impl App {
                 }
                 _ if esc || ch == Some('c') => self.close_prompt(),
                 _ => self.prompt = Some(Prompt::ConfirmStageConflict { path }),
+            },
+            Prompt::ConfirmDeleteComment { comment_id, place } => match ch {
+                _ if enter || ch == Some('d') => {
+                    self.close_prompt();
+                    self.review_delete_confirmed(comment_id);
+                }
+                _ if esc || ch == Some('c') => self.close_prompt(),
+                _ => self.prompt = Some(Prompt::ConfirmDeleteComment { comment_id, place }),
             },
             Prompt::InstallShellIntegration { snippet, init, line } => match ch {
                 Some('c') => {

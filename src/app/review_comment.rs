@@ -42,6 +42,24 @@ pub(super) struct Composer {
     pub commit: String,
     /// The draft being edited (it stays as it was until saved).
     pub editing: Option<String>,
+    /// What saving does: a draft (the default), or a reply / an edit posted at once.
+    pub kind: ComposerKind,
+}
+
+/// What a comment box writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ComposerKind {
+    Draft,
+    /// A reply in the thread `thread_id`.
+    Reply {
+        thread_id: String,
+    },
+    /// A new text for the user's comment `comment_id`; `range` is its thread's lines when it is
+    /// the thread's first comment (some forges keep the range in the body).
+    Edit {
+        comment_id: String,
+        range: Option<(u32, u32)>,
+    },
 }
 
 /// `line 4` / `lines 4–6`.
@@ -61,6 +79,7 @@ pub(super) fn draft_block(d: &Draft) -> ThreadBlock {
         right: d.right,
         line: (d.end.max(d.start) - 1) as usize,
         resolved: false,
+        mine: false,
         comments: vec![(format!("Draft · {}", range_label(d.start, d.end)), d.body.clone())],
     }
 }
@@ -71,10 +90,11 @@ impl Composer {
     }
 
     pub fn block(&self) -> ThreadBlock {
-        let verb = if self.editing.is_some() {
-            "Edit comment"
-        } else {
-            "Comment"
+        let verb = match (&self.kind, self.editing.is_some()) {
+            (ComposerKind::Reply { .. }, _) => "Reply (posted at once)",
+            (ComposerKind::Edit { .. }, _) => "Edit your comment (saved at once)",
+            (_, true) => "Edit comment",
+            _ => "Comment",
         };
         ThreadBlock {
             role: Role::Composer {
@@ -84,6 +104,7 @@ impl Composer {
             right: self.right,
             line: (self.end.max(self.start) - 1) as usize,
             resolved: false,
+            mine: false,
             comments: vec![(format!("{verb} on {}", range_label(self.start, self.end)), self.text())],
         }
     }
@@ -100,7 +121,7 @@ impl App {
     }
 
     /// Something the review diffs draw changed (a draft, the box).
-    fn review_blocks_changed(&mut self) {
+    pub(super) fn review_blocks_changed(&mut self) {
         self.review.generation += 1;
         self.sync_review_threads();
         self.needs_redraw = true;
@@ -171,10 +192,11 @@ impl App {
             lines,
             commit,
             editing: None,
+            kind: ComposerKind::Draft,
         });
     }
 
-    fn start_composer(&mut self, c: Composer) {
+    pub(super) fn start_composer(&mut self, c: Composer) {
         self.composer = Some(c);
         self.ui.focus = Focus::Editor;
         if let Some(d) = self.group_mut().active_diff_mut() {
@@ -211,6 +233,9 @@ impl App {
         if self.composer.is_some() {
             return self.notify(Level::Info, "Finish the open comment first".into());
         }
+        if self.review.writing {
+            return self.notify(Level::Info, "A change is on its way: edit the draft after it".into());
+        }
         let Some(draft) = self.target_draft() else {
             return self.notify(Level::Info, "No draft here".into());
         };
@@ -241,6 +266,7 @@ impl App {
             lines: draft.lines,
             commit: draft.commit,
             editing: Some(draft.id),
+            kind: ComposerKind::Draft,
         });
     }
 
@@ -331,9 +357,16 @@ impl App {
     /// one's new body) and the box closes. An empty comment is not saved.
     pub(super) fn composer_save(&mut self) {
         let Some(c) = &self.composer else { return };
+        if c.kind != ComposerKind::Draft {
+            return self.composer_post();
+        }
         let body = c.text().trim().to_string();
         if body.is_empty() {
             return self.notify(Level::Info, "The comment is empty: write something, or Esc".into());
+        }
+        // A submit in flight removes its drafts by id once confirmed: an edit now would be lost.
+        if c.editing.is_some() && self.review.writing {
+            return self.notify(Level::Info, "A change is on its way: save the edit after it".into());
         }
         let Some(key) = self.review.drafts_key() else {
             return self.notify(
@@ -470,7 +503,7 @@ impl App {
     }
 
     /// Writes the drafts to the state directory, off-thread (nothing without one).
-    fn save_drafts(&self) {
+    pub(super) fn save_drafts(&self) {
         let (Some(dir), Some(store)) = (self.state_dir.clone(), self.review.drafts.store.clone()) else {
             return;
         };

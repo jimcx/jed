@@ -1305,13 +1305,13 @@ mod threads {
             l[sam].contains("▾") && l[sam + 1].contains("Can this overflow"),
             "{l:#?}"
         );
-        assert_eq!(foot, sam + 2);
+        assert_eq!(foot, sam + 3);
         let d = diff(&app);
         assert_eq!(d.threads.blocks().list().len(), 2);
         assert_eq!(d.threads.blocks().list()[0].after_row, 1, "after the removed row");
         // The scroll bar counts the blocks' rows.
         assert_eq!(d.visual_len(), d.rows().len() + block_rows(&app));
-        assert_eq!(block_rows(&app), 1 + 3);
+        assert_eq!(block_rows(&app), 1 + 4);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1324,7 +1324,7 @@ mod threads {
         let t = hit.blocks[0].toggle.expect("header in view");
         app.mouse(MouseEventKind::Down(MouseButton::Left), t.x + 1, t.y);
         let l = lines_at(&mut app, 120);
-        assert_eq!(block_rows(&app), 3 + 3);
+        assert_eq!(block_rows(&app), 4 + 4);
         assert!(l[row_of(&l, "bob")].contains("▾"), "{l:#?}");
         // And fold the open one.
         let hit = diff_hit(&app);
@@ -1332,7 +1332,7 @@ mod threads {
         app.mouse(MouseEventKind::Down(MouseButton::Left), t.x + 1, t.y);
         let l = lines_at(&mut app, 120);
         assert!(l[row_of(&l, "sam")].contains("▸"), "{l:#?}");
-        assert_eq!(block_rows(&app), 3 + 1);
+        assert_eq!(block_rows(&app), 4 + 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2072,5 +2072,381 @@ mod drafts {
         let app = boot(&root, &server, Some(state)).await;
         assert!(app.review.draft_rows().is_empty());
         assert!(app.logs.texts(&Tool::Review).iter().any(|l| l.contains("unreadable")));
+    }
+}
+
+/// mr_review-f2: Submit Review, reply, resolve, edit and delete against the fake forge's canned
+/// POST / PATCH / DELETE replies.
+mod write {
+    use super::*;
+    use crate::diff_caret::Caret;
+    use crossterm::event::{MouseButton, MouseEventKind};
+
+    const FILE: &str = "review-drafts.json";
+    const REVIEWS: &str = "/api/v1/repos/alice/project/pulls/7/reviews";
+
+    fn lines(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        let buf = term.backend().buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+            .collect()
+    }
+
+    fn message(app: &App) -> String {
+        app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
+    }
+
+    fn store_text(state: &Path) -> String {
+        fs::read_to_string(state.join(FILE)).unwrap_or_default()
+    }
+
+    /// The fake forge: `!7` whose head is `mr_head`, sam's thread (11, line 3) and bob's resolved
+    /// one (12, deleted line 2), the token's user `sam`, and `review` as the answer to a submit.
+    fn server(main: &str, head: &str, mr_head: &str, review: Reply) -> FakeServer {
+        let pr = pr_json(7, "Add review panel", main).replace(
+            r#""ref":"feature","sha":"h0""#,
+            &format!(r#""ref":"feature","sha":"{mr_head}""#),
+        );
+        let comments = format!(
+            "[{},{}]",
+            threads::rc(11, "sam", "Can this overflow", "mod.txt", 3, head, "+m3", false),
+            threads::rc(12, "bob", "Why was this removed", "mod.txt", 2, main, "-m2", true)
+        );
+        FakeServer::start(vec![
+            (
+                format!("{PULLS}?state=open&page=1&limit=50"),
+                Reply::json(&format!("[{pr}]")),
+            ),
+            (format!("{PULLS}/7"), Reply::json(&pr)),
+            (
+                format!("{PULLS}/7/reviews?page=1&limit=50"),
+                Reply::json(r#"[{"id":1,"user":{"login":"bob"},"body":"","state":"COMMENT","comments_count":9}]"#),
+            ),
+            (format!("{PULLS}/7/reviews/1/comments"), Reply::json(&comments)),
+            (
+                "/api/v1/repos/alice/project/issues/7/comments?page=1&limit=50".into(),
+                Reply::json("[]"),
+            ),
+            ("/api/v1/user".into(), Reply::json(r#"{"login":"sam"}"#)),
+            (format!("POST {REVIEWS}"), review),
+            (format!("POST {PULLS}/7/comments/11/replies"), Reply::json("{}")),
+            (format!("POST {PULLS}/comments/11/resolve"), Reply::status(204)),
+            (format!("POST {PULLS}/comments/12/unresolve"), Reply::status(204)),
+            (
+                "PATCH /api/v1/repos/alice/project/issues/comments/11".into(),
+                Reply::json("{}"),
+            ),
+            (
+                "DELETE /api/v1/repos/alice/project/issues/comments/11".into(),
+                Reply::status(204),
+            ),
+        ])
+    }
+
+    /// The repository, its HEAD and main's commit.
+    fn repo(dir: &Path) -> (PathBuf, String, String) {
+        let (root, main) = make_repo(dir);
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        (root, head, main)
+    }
+
+    async fn boot(root: &Path, server: &FakeServer, state: Option<PathBuf>) -> App {
+        let mut app = open_app(root, state, config_for(server), true);
+        assert!(app.settle(loaded).await);
+        assert!(app.settle(|a| a.git.status.is_some()).await);
+        app.test_execute(Command::ShowReview);
+        idle(&mut app).await;
+        assert!(app.settle(|a| a.review.drafts.store.is_some()).await);
+        assert!(app.settle(|a| a.review.user.is_some()).await);
+        screen(&mut app);
+        open_file(&mut app, "mod.txt").await;
+        draw_wide(&mut app, 120);
+        app
+    }
+
+    /// The caret on `first..=last` of a side.
+    fn select(app: &mut App, right: bool, first: usize, last: usize) {
+        app.group_mut().active_diff_mut().unwrap().go_to_side_line(right, last);
+        draw_wide(app, 120);
+        app.group_mut().active_diff_mut().unwrap().caret = Caret {
+            right,
+            anchor: (first, 0),
+            head: (last, 1),
+            col: None,
+        };
+    }
+
+    fn comment(app: &mut App, first: usize, last: usize, text: &str) {
+        select(app, true, first, last);
+        app.test_execute(Command::ReviewComment);
+        app.type_text(text);
+        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    }
+
+    fn requests(server: &FakeServer, method: &str) -> Vec<crate::forge::fake::Request> {
+        server.requests().into_iter().filter(|r| r.method == method).collect()
+    }
+
+    fn review_post(server: &FakeServer) -> Option<crate::forge::fake::Request> {
+        requests(server, "POST").into_iter().find(|r| r.target == REVIEWS)
+    }
+
+    fn json(r: &crate::forge::fake::Request) -> serde_json::Value {
+        serde_json::from_str(&r.body).unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_submit_posts_one_review_and_removes_the_confirmed_drafts() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let (root, head, main) = repo(dir.path());
+        let server = server(&main, &head, &head, Reply::json("{}"));
+        let mut app = boot(&root, &server, Some(state.clone())).await;
+        comment(&mut app, 1, 2, "Fix this range");
+        assert!(app.settle(|_| store_text(&state).contains("Fix this range")).await);
+        let before = lookups(&server);
+        app.test_execute(Command::ReviewSubmitApprove);
+        assert!(
+            app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
+                .await
+        );
+        idle(&mut app).await;
+        let sent = review_post(&server).unwrap();
+        assert_eq!(sent.header("authorization"), Some("token secret"));
+        let v = json(&sent);
+        assert_eq!(v["event"], "APPROVED");
+        assert_eq!(v["commit_id"], head.as_str());
+        assert_eq!(v["comments"].as_array().unwrap().len(), 1);
+        let c = &v["comments"][0];
+        assert_eq!(
+            (c["path"].as_str(), c["new_position"].as_u64()),
+            (Some("mod.txt"), Some(3))
+        );
+        assert_eq!(c["old_position"].as_u64(), Some(0));
+        assert_eq!(c["body"], "Fix this range\n\n<!-- jed:range=2-3 -->");
+        assert!(lookups(&server) > before, "the panel looks again");
+        assert!(app.settle(|_| !store_text(&state).contains("Fix this range")).await);
+        let screen = lines(&mut app, 120, 30).join("\n");
+        assert!(!screen.contains("secret") && !screen.contains("PENDING"), "{screen}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_a_failed_submit_keeps_the_draft_over_a_restart_and_a_later_submit_posts_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let (root, head, main) = repo(dir.path());
+        let failing = Reply::status(500).with_body(r#"{"message":"boom secret"}"#);
+        let server1 = server(&main, &head, &head, failing);
+        let mut app = boot(&root, &server1, Some(state.clone())).await;
+        comment(&mut app, 1, 2, "Keep me");
+        assert!(app.settle(|_| store_text(&state).contains("Keep me")).await);
+        app.test_execute(Command::ReviewSubmitComment);
+        assert!(
+            app.settle(|a| !a.review.writing && !a.review.drafts.errors.is_empty())
+                .await
+        );
+        assert_eq!(app.review.draft_rows().len(), 1);
+        let l = lines(&mut app, 160, 30).join("\n");
+        assert!(l.contains("failed: serve"), "{l}");
+        assert_eq!(
+            app.review.drafts.errors.values().next().map(String::as_str),
+            Some("server answered 500: boom <token>")
+        );
+        assert!(!l.contains("secret"), "{l}");
+        assert!(!message(&app).contains("secret"));
+        let log = app.logs.texts(&Tool::Review);
+        assert!(log.iter().all(|t| !t.contains("secret")), "{log:?}");
+        assert!(log.iter().any(|t| t.contains("500")), "{log:?}");
+        assert!(store_text(&state).contains("Keep me"));
+        drop(app);
+        // A restart: the draft is still there, and a working server takes it.
+        let server2 = server(&main, &head, &head, Reply::json("{}"));
+        let mut app = boot(&root, &server2, Some(state.clone())).await;
+        assert!(app.settle(|a| !a.review.draft_rows().is_empty()).await);
+        app.test_execute(Command::ReviewSubmitComment);
+        assert!(app.settle(|a| a.review.draft_rows().is_empty()).await);
+        let v = json(&review_post(&server2).unwrap());
+        assert_eq!(v["event"], "COMMENT");
+        assert_eq!(v["comments"][0]["body"], "Keep me\n\n<!-- jed:range=2-3 -->");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_held_back_drafts_are_not_sent_and_a_verdict_alone_can_be_submitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, head, main) = repo(dir.path());
+        let server = server(&main, &head, &head, Reply::json("{}"));
+        let mut app = boot(&root, &server, None).await;
+        comment(&mut app, 1, 2, "held");
+        comment(&mut app, 0, 0, "sent");
+        let held = app
+            .review
+            .draft_rows()
+            .iter()
+            .find(|r| r.draft.body == "held")
+            .unwrap()
+            .draft
+            .id
+            .clone();
+        app.review.drafts.live.insert(held, Some("the lines changed".into()));
+        app.test_execute(Command::ReviewSubmitRequestChanges);
+        assert!(
+            app.settle(|a| !a.review.writing && a.review.draft_rows().len() == 1)
+                .await
+        );
+        let v = json(&review_post(&server).unwrap());
+        assert_eq!(v["event"], "REQUEST_CHANGES");
+        assert_eq!(v["comments"].as_array().unwrap().len(), 1);
+        assert_eq!(v["comments"][0]["body"], "sent");
+        assert_eq!(app.review.draft_rows()[0].draft.body, "held");
+        // Only a held back draft is left: Comment has nothing to send.
+        idle(&mut app).await;
+        let left = app.review.draft_rows()[0].draft.id.clone();
+        app.review.drafts.live.insert(left, Some("the lines changed".into()));
+        app.test_execute(Command::ReviewSubmitComment);
+        assert!(message(&app).contains("held back"), "{}", message(&app));
+        assert_eq!(
+            requests(&server, "POST").iter().filter(|r| r.target == REVIEWS).count(),
+            1
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_submit_refuses_when_local_head_is_not_the_merge_request_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, head, main) = repo(dir.path());
+        // The merge request is at main's commit: local is ahead of it.
+        let server = server(&main, &head, &main, Reply::json("{}"));
+        let mut app = boot(&root, &server, None).await;
+        comment(&mut app, 1, 2, "x");
+        app.test_execute(Command::ReviewSubmitComment);
+        assert!(message(&app).contains("Can't submit"), "{}", message(&app));
+        let l = lines(&mut app, 120, 30).join("\n");
+        assert!(l.contains("local is ahead of the merge request: push"), "{l}");
+        assert!(requests(&server, "POST").is_empty());
+        assert_eq!(app.review.draft_rows().len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_reply_posts_at_once_and_resolve_toggles_the_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, head, main) = repo(dir.path());
+        let server = server(&main, &head, &head, Reply::json("{}"));
+        let mut app = boot(&root, &server, None).await;
+        select(&mut app, true, 2, 2);
+        app.test_execute(Command::ReviewReply);
+        assert!(app.test_composer_text().is_some());
+        app.type_text("Yes, fixed");
+        let l = lines(&mut app, 120, 30).join("\n");
+        assert!(l.contains("Reply (posted at once)"), "{l}");
+        let before = lookups(&server);
+        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        assert!(
+            app.settle(|a| a.test_composer_text().is_none() && !a.review.writing)
+                .await
+        );
+        let reply = requests(&server, "POST")
+            .into_iter()
+            .find(|r| r.target.ends_with("/comments/11/replies"))
+            .unwrap();
+        assert_eq!(reply.body, r#"{"body":"Yes, fixed"}"#);
+        assert!(app.review.draft_rows().is_empty(), "a reply is not a draft");
+        assert!(app.settle(|_| lookups(&server) > before).await);
+        idle(&mut app).await;
+        // Resolve: sam's thread is open; bob's (12, on the left) is resolved.
+        select(&mut app, true, 2, 2);
+        app.test_execute(Command::ReviewResolve);
+        assert!(app.settle(|a| !a.review.writing).await);
+        assert!(
+            requests(&server, "POST")
+                .iter()
+                .any(|r| r.target.ends_with("/comments/11/resolve"))
+        );
+        idle(&mut app).await;
+        select(&mut app, false, 1, 1);
+        app.test_execute(Command::ReviewResolve);
+        assert!(app.settle(|a| !a.review.writing).await);
+        assert!(
+            requests(&server, "POST")
+                .iter()
+                .any(|r| r.target.ends_with("/comments/12/unresolve"))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_only_your_own_comments_can_be_edited_or_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, head, main) = repo(dir.path());
+        let server = server(&main, &head, &head, Reply::json("{}"));
+        let mut app = boot(&root, &server, None).await;
+        // bob's thread: refused, no request.
+        select(&mut app, false, 1, 1);
+        app.test_execute(Command::ReviewDeleteComment);
+        assert!(message(&app).contains("own comments"), "{}", message(&app));
+        app.test_execute(Command::ReviewEditComment);
+        assert_eq!(app.test_composer_text(), None);
+        assert!(requests(&server, "DELETE").is_empty() && requests(&server, "PATCH").is_empty());
+        // sam's: edit shows the text, saving patches the comment.
+        select(&mut app, true, 2, 2);
+        app.test_execute(Command::ReviewEditComment);
+        assert_eq!(app.test_composer_text().as_deref(), Some("Can this overflow"));
+        app.type_text("?");
+        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        assert!(
+            app.settle(|a| a.test_composer_text().is_none() && !a.review.writing)
+                .await
+        );
+        assert_eq!(requests(&server, "PATCH")[0].body, r#"{"body":"Can this overflow?"}"#);
+        idle(&mut app).await;
+        select(&mut app, true, 2, 2);
+        app.test_execute(Command::ReviewDeleteComment);
+        assert!(matches!(
+            app.prompt,
+            Some(crate::app::Prompt::ConfirmDeleteComment { .. })
+        ));
+        // Declined: nothing is sent.
+        app.press(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.prompt.is_none());
+        idle(&mut app).await;
+        assert!(requests(&server, "DELETE").is_empty());
+        app.test_execute(Command::ReviewDeleteComment);
+        app.press(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.settle(|_| !requests(&server, "DELETE").is_empty()).await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_threads_show_buttons_and_a_click_on_reply_opens_the_box() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, head, main) = repo(dir.path());
+        let server = server(&main, &head, &head, Reply::json("{}"));
+        let mut app = boot(&root, &server, None).await;
+        let l = lines(&mut app, 120, 30);
+        let row = l
+            .iter()
+            .position(|x| x.contains("[Reply] [Resolve] [Edit] [Delete]"))
+            .unwrap_or_else(|| panic!("{l:#?}"));
+        let col = l[row].split("[Reply]").next().unwrap().chars().count() as u16;
+        app.mouse(MouseEventKind::Down(MouseButton::Left), col + 2, row as u16);
+        assert!(app.test_composer_text().is_some());
+        let l = lines(&mut app, 120, 30).join("\n");
+        assert!(l.contains("Reply (posted at once)"), "{l}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_a_forge_error_on_a_reply_keeps_the_box_and_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, head, main) = repo(dir.path());
+        let server = server(&main, &head, &head, Reply::json("{}"));
+        let mut app = boot(&root, &server, None).await;
+        // bob's thread has no reply route on the fake: a 404.
+        select(&mut app, false, 1, 1);
+        app.test_execute(Command::ReviewReply);
+        app.type_text("hello");
+        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        assert!(app.settle(|a| a.review.error.is_some()).await);
+        assert_eq!(app.test_composer_text().as_deref(), Some("hello"), "the text is kept");
+        assert!(message(&app).contains("404"), "{}", message(&app));
+        assert!(!app.review.writing);
     }
 }

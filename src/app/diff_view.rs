@@ -951,6 +951,7 @@ impl App {
                         d.threads.toggle(b.thread);
                     }
                     self.focus_group(g);
+                    self.thread_click(g, b, m.column, m.row);
                     return true;
                 }
                 if h.rows.contains(p) {

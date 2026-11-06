@@ -94,8 +94,37 @@ impl Client {
     ///
     /// Blocking: call from spawn_blocking.
     pub fn get(&self, path: &str) -> Result<Response> {
-        let url = format!("{}{}", self.api_url, path);
-        let mut request = self.agent.get(&url).header("Accept", "application/json");
+        let request = self.headers(self.agent.get(format!("{}{}", self.api_url, path)));
+        self.finish(request.call())
+    }
+
+    /// POST `body` (JSON text) to `api_url + path`.
+    ///
+    /// Blocking: call from spawn_blocking.
+    pub fn post(&self, path: &str, body: &str) -> Result<Response> {
+        let request = self.headers(self.agent.post(format!("{}{}", self.api_url, path)));
+        self.finish(request.content_type("application/json").send(body))
+    }
+
+    /// PATCH `body` (JSON text) to `api_url + path`.
+    ///
+    /// Blocking: call from spawn_blocking.
+    pub fn patch(&self, path: &str, body: &str) -> Result<Response> {
+        let request = self.headers(self.agent.patch(format!("{}{}", self.api_url, path)));
+        self.finish(request.content_type("application/json").send(body))
+    }
+
+    /// DELETE `api_url + path`.
+    ///
+    /// Blocking: call from spawn_blocking.
+    pub fn delete(&self, path: &str) -> Result<Response> {
+        let request = self.headers(self.agent.delete(format!("{}{}", self.api_url, path)));
+        self.finish(request.call())
+    }
+
+    /// `Accept` and the forge's own token header.
+    fn headers<B>(&self, mut request: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
+        request = request.header("Accept", "application/json");
         if let Some(token) = &self.token {
             let (name, value) = match self.kind {
                 Kind::Gitea => ("Authorization", format!("token {token}")),
@@ -104,9 +133,11 @@ impl Client {
             };
             request = request.header(name, &value);
         }
-        let mut response = request
-            .call()
-            .map_err(|e| ForgeError::Transport(self.scrub(&e.to_string())))?;
+        request
+    }
+
+    fn finish(&self, sent: std::result::Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<Response> {
+        let mut response = sent.map_err(|e| ForgeError::Transport(self.scrub(&e.to_string())))?;
         let status = response.status().as_u16();
         let total = response
             .headers()

@@ -22,6 +22,42 @@ pub struct LocalInfo {
     pub remote_url: Option<String>,
 }
 
+/// How local HEAD relates to the merge request's head commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HeadRelation {
+    #[default]
+    Same,
+    /// Local has commits the merge request lacks: push.
+    Ahead,
+    /// The merge request has commits local lacks: pull.
+    Behind,
+    Diverged,
+    /// The merge request's head isn't in the clone (or the repository can't say).
+    Unknown,
+}
+
+/// Blocking: how HEAD relates to `mr_head`.
+pub fn head_relation(repo: &Repo, mr_head: &str) -> HeadRelation {
+    let Ok(r) = repo.open() else {
+        return HeadRelation::Unknown;
+    };
+    let (Ok(head), Ok(theirs)) = (
+        r.head().and_then(|h| h.peel_to_commit()).map(|c| c.id()),
+        Oid::from_str(mr_head),
+    ) else {
+        return HeadRelation::Unknown;
+    };
+    if head == theirs {
+        return HeadRelation::Same;
+    }
+    match r.graph_ahead_behind(head, theirs) {
+        Ok((0, _)) => HeadRelation::Behind,
+        Ok((_, 0)) => HeadRelation::Ahead,
+        Ok(_) => HeadRelation::Diverged,
+        Err(_) => HeadRelation::Unknown,
+    }
+}
+
 /// Why the range can't be computed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RangeError {

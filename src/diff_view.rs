@@ -1275,6 +1275,27 @@ impl DiffTab {
         true
     }
 
+    /// The forge thread (index into `threads.list()`) whose block follows the caret's row, the
+    /// caret's side first.
+    pub fn thread_at_caret(&self) -> Option<usize> {
+        let list = self.threads.list();
+        let mut here = self
+            .threads
+            .blocks()
+            .list()
+            .iter()
+            .filter(|b| b.after_row == self.cursor && list[b.thread].role == crate::review_blocks::Role::Thread)
+            .map(|b| b.thread);
+        let first = here.next()?;
+        Some(
+            [first]
+                .into_iter()
+                .chain(here)
+                .find(|&t| list[t].right == self.caret.right)
+                .unwrap_or(first),
+        )
+    }
+
     fn list(&self) -> ListScroll {
         ListScroll {
             top: self.top,

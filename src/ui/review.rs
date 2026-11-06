@@ -98,6 +98,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
     }
     counts.push_str(&format!(" · {mr_state}"));
     text(out, &mut y, end, &truncate(&counts, width - 2), dim);
+    // Submit Review needs local HEAD to be the merge request's head.
+    if let Some(banner) = review.head_banner(app.git.status.as_ref().and_then(|s| s.head_id.as_deref())) {
+        text(out, &mut y, end, banner, error);
+    }
     // FILES and CONVERSATIONS share the rest of the panel.
     if y >= end {
         return (Some(hit), None);
@@ -373,7 +377,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
             out.set_stringn(area.x + 3, ry, &place, room, row_style);
             let used = place.width() + 2;
             if used < room {
+                let failed = state.drafts.errors.get(&row.draft.id);
                 let (text, style) = match row.held {
+                    _ if failed.is_some() => (
+                        format!("failed: {}", failed.map_or("", |e| e.as_str())),
+                        row_style.patch(error),
+                    ),
                     Some(why) => (
                         format!("held back: {why}"),
                         row_style.patch(theme.get("review.pending.held")),

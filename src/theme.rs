@@ -376,6 +376,7 @@ impl Theme {
             ("review.draft.header", fg_bg(0xE2C08D, 0x1E2A33)),
             ("review.composer.border", fg_bg(0x4FC1FF, 0x1E2A33)),
             ("review.composer.button", fg_bg(0xFFFFFF, 0x0E639C)),
+            ("review.thread.button", fg_bg(0xFFFFFF, 0x3A3D41)),
             ("review.pending.held", Style::new().fg(c(0xCCA700))),
             ("tools.starting", Style::new().fg(c(0xCCA700))),
             ("tools.running", Style::new().fg(c(0x89D185))),

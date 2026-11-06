@@ -182,6 +182,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) -> Option<R
             lines.push(Line::raw(""));
             lines.push(buttons(&[("T", "rash"), ("C", "ancel")]));
         }
+        Prompt::ConfirmDeleteComment { place, .. } => {
+            lines.push(Line::raw(format!(" Delete your comment on {place}?")));
+            lines.push(Line::raw(" It is removed from the forge; this can't be undone."));
+            lines.push(Line::raw(""));
+            lines.push(buttons(&[("D", "elete"), ("C", "ancel")]));
+        }
         Prompt::InstallShellIntegration { snippet, init, line } => {
             let home = crate::paths::home();
             let short = |p: &std::path::Path| match p.strip_prefix(&home) {
