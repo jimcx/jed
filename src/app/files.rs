@@ -219,6 +219,8 @@ impl App {
                     format!("{what} not applied to {}: binary file", path.display()),
                 )
             }
+            // Opened behind a diff tab (review, diff edit): the diff shows the binary state itself.
+            Ok(Loaded::Binary(_)) if background => {}
             Ok(Loaded::Binary(doc)) => {
                 if restore.is_some() {
                     let text = format!("{}: binary file, its history entry not restored", path.display());

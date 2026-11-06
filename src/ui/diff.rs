@@ -123,7 +123,7 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
     if area.height == 0 || area.width < 4 {
         return hit;
     }
-    let inline = area.width < diff_view::SIDE_BY_SIDE_MIN;
+    let inline = d.forced_inline() || area.width < diff_view::SIDE_BY_SIDE_MIN;
     d.set_layout(inline);
     d.tab_width = tab_width;
     d.sync_caret();

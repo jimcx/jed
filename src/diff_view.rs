@@ -155,6 +155,26 @@ impl Pair {
         }
     }
 
+    /// A code review's file: the merge base's text against the work tree's (always inline, see
+    /// `is_review`).
+    pub fn review(base: Oid) -> Pair {
+        Pair {
+            left: Text::Commit(base),
+            right: Text::WorkTree,
+        }
+    }
+
+    /// Whether this is a `Pair::review`.
+    pub fn is_review(self) -> bool {
+        matches!(
+            self,
+            Pair {
+                left: Text::Commit(_),
+                right: Text::WorkTree
+            }
+        )
+    }
+
     /// Two arbitrary texts (`DiffTab::compare`); no staging.
     pub const COMPARE: Pair = Pair {
         left: Text::CompareLeft,
@@ -642,18 +662,21 @@ pub struct Job {
     pub replace: Option<Arc<FileReplace>>,
     /// A `Pair::conflict()`'s current and incoming blocks (`None`: not a conflict compare).
     pub conflict: Option<(Vec<u8>, Vec<u8>)>,
+    /// Where the left side's file is when it isn't `path` (a review's renamed file), absolute.
+    pub left_path: Option<PathBuf>,
 }
 
 /// Blocking: reads both sides of `job` and diffs them.
 pub fn load(job: Job) -> Result<Doc, String> {
-    let left = read(&job, job.pair.left).map_err(|e| e.to_string())?;
-    let right = read(&job, job.pair.right).map_err(|e| e.to_string())?;
+    let left = read(&job, job.pair.left, job.left_path.as_deref()).map_err(|e| e.to_string())?;
+    let right = read(&job, job.pair.right, None).map_err(|e| e.to_string())?;
     let mut doc = Doc::new(left, right)?;
     doc.highlight(job.language, job.syntax_max_bytes);
     Ok(doc)
 }
 
-fn read(job: &Job, text: Text) -> Result<Vec<u8>, stage::Error> {
+/// `path`: where the side's file is when not `job.path` (a review's renamed file on its left).
+fn read(job: &Job, text: Text, path: Option<&Path>) -> Result<Vec<u8>, stage::Error> {
     let block = match text {
         Text::ConflictCurrent => Some(job.conflict.as_ref().map(|(current, _)| current.clone())),
         Text::ConflictIncoming => Some(job.conflict.as_ref().map(|(_, incoming)| incoming.clone())),
@@ -663,7 +686,7 @@ fn read(job: &Job, text: Text) -> Result<Vec<u8>, stage::Error> {
         return block.ok_or_else(|| not_found("no conflict in this diff"));
     }
     if text == Text::Replaced {
-        let bytes = read(job, Text::Buffer)?;
+        let bytes = read(job, Text::Buffer, None)?;
         let replaced = job.replace.as_ref().and_then(|r| r.apply(&bytes));
         return Ok(replaced.unwrap_or(bytes));
     }
@@ -682,7 +705,7 @@ fn read(job: &Job, text: Text) -> Result<Vec<u8>, stage::Error> {
     let rel = || -> Result<(&Repo, PathBuf), stage::Error> {
         let repo = job.repo.as_ref().ok_or_else(|| not_found("not in a git repository"))?;
         let rel = repo
-            .relative(&job.path)
+            .relative(path.unwrap_or(&job.path))
             .ok_or_else(|| not_found("outside the repository"))?;
         Ok((repo, rel))
     };
@@ -779,6 +802,8 @@ pub struct DiffTab {
     pub replace: Option<Arc<FileReplace>>,
     /// A `Pair::conflict()`'s current and incoming blocks (Compare Current Conflict).
     pub conflict: Option<(Vec<u8>, Vec<u8>)>,
+    /// A review tab's renamed file: where the left side's file was, absolute.
+    pub left_path: Option<PathBuf>,
     /// A compare tab's sides (`Pair::COMPARE`).
     pub compare: Option<Compare>,
     /// The caret and selection in one side's text (`diff_caret`); its row is `cursor`.
@@ -830,6 +855,7 @@ impl DiffTab {
             stale: false,
             replace: None,
             conflict: None,
+            left_path: None,
             compare: None,
             caret: Default::default(),
             edited: None,
@@ -917,6 +943,7 @@ impl DiffTab {
             stale: self.stale || self.running.is_some(),
             replace: self.replace.clone(),
             conflict: self.conflict.clone(),
+            left_path: self.left_path.clone(),
             compare: self.compare.clone(),
             caret: self.caret,
             edited: self.edited,
@@ -933,6 +960,19 @@ impl DiffTab {
             return c.sides.each_ref().map(|s| matches!(s.source, Source::Open(_)));
         }
         [false, matches!(self.pair.right, Text::WorkTree | Text::Buffer)]
+    }
+
+    /// A review tab's layout is one column at any width (comments go between the code's rows).
+    pub fn forced_inline(&self) -> bool {
+        self.pair.is_review()
+    }
+
+    /// A tab for a code review's file (`Pair::review`); `old` is a renamed file's old path.
+    pub fn review(id: u64, path: PathBuf, base: Oid, old: Option<PathBuf>) -> DiffTab {
+        DiffTab {
+            left_path: old,
+            ..DiffTab::new(id, path, Pair::review(base))
+        }
     }
 
     /// The file's name for the tab bar.
@@ -1538,6 +1578,7 @@ mod tests {
             syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
             replace: None,
             conflict: None,
+            left_path: None,
             compare: None,
         };
         let doc = load(job(Some("new\n"))).unwrap();
@@ -1592,6 +1633,7 @@ mod tests {
             syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
             replace,
             conflict: None,
+            left_path: None,
             compare: None,
         };
         let lines = |l: &Lines| (0..l.len()).map(|i| l.line(i).to_string()).collect::<Vec<_>>();
@@ -1630,6 +1672,7 @@ mod tests {
             syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
             replace: None,
             conflict,
+            left_path: None,
             compare: None,
         };
         let doc = load(job(Some((b"ours\n".to_vec(), b"theirs\n".to_vec())))).unwrap();
@@ -1709,6 +1752,7 @@ mod tests {
             syntax_max_bytes: crate::syntax::DEFAULT_MAX_BYTES,
             replace: None,
             conflict: None,
+            left_path: None,
             compare: None,
         };
         let pair = Pair::commit(id(&second), Some(id(&first)));

@@ -449,3 +449,179 @@ async fn mr_review_right_click_opens_the_panels_menu() {
     let files: Vec<String> = app.review.files().iter().map(|f| f.path.clone()).collect();
     assert_eq!(app.review.view.selected_path(), Some(files[1].as_str()));
 }
+
+/// An app with the panel shown and loaded on the standard repository.
+async fn shown(dir: &Path) -> (App, FakeServer, String) {
+    let (root, main) = make_repo(dir);
+    let server = one_mr(&main);
+    let mut app = open_app(&root, None, config_for(&server), true);
+    assert!(app.settle(loaded).await);
+    app.test_execute(Command::ShowReview);
+    idle(&mut app).await;
+    screen(&mut app);
+    (app, server, main)
+}
+
+/// Selects `path` in the panel and opens it with Enter; the diff tab loaded.
+async fn open_file(app: &mut App, path: &str) {
+    let (view, files) = app.review.split();
+    view.select_path(files, path);
+    app.ui.focus = crate::app::Focus::SidePanel;
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+}
+
+fn diff(app: &App) -> &crate::diff_view::DiffTab {
+    app.group().active_diff().expect("a diff tab")
+}
+
+fn draw_wide(app: &mut App, width: u16) {
+    let mut term = Terminal::new(TestBackend::new(width, 24)).unwrap();
+    term.draw(|f| crate::ui::render(f, app)).unwrap();
+}
+
+fn left_right(app: &App) -> (String, String) {
+    let doc = diff(app).doc.as_ref().unwrap();
+    let all = |l: &crate::diff_view::Lines| (0..l.len()).map(|i| format!("{}\n", l.line(i))).collect::<String>();
+    (all(&doc.left), all(&doc.right))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mr_review_enter_opens_an_inline_diff_of_the_merge_base_and_the_work_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _server, main) = shown(dir.path()).await;
+    open_file(&mut app, "mod.txt").await;
+    let base = git2::Oid::from_str(&main).unwrap();
+    let d = diff(&app);
+    assert_eq!(d.pair, crate::diff_view::Pair::review(base));
+    assert!(d.path.ends_with("mod.txt"));
+    let (left, right) = left_right(&app);
+    assert_eq!((left.as_str(), right.as_str()), ("m1\nm2\n", "m1\nm2 changed\nm3\n"));
+    // Inline at any width: a 200-column draw would be side by side for any other diff tab.
+    draw_wide(&mut app, 200);
+    assert!(diff(&app).inline);
+    assert!(diff(&app).forced_inline());
+    // The buffer opened behind the tab.
+    assert!(app.settle(|a| a.buffers.iter().any(|(_, b)| b.has_file())).await);
+    // A second Enter reuses the tab.
+    let tabs = app.group().tabs.len();
+    app.ui.focus = crate::app::Focus::SidePanel;
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(app.group().tabs.len(), tabs);
+    open_file(&mut app, "new.txt").await;
+    let diffs = |app: &App| app.group().tabs.iter().filter(|t| t.diff().is_some()).count();
+    assert_eq!(diffs(&app), 2);
+    open_file(&mut app, "mod.txt").await;
+    assert_eq!(diffs(&app), 2);
+    assert!(diff(&app).path.ends_with("mod.txt"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mr_review_click_opens_and_other_diff_tabs_stay_side_by_side() {
+    use crossterm::event::{MouseButton, MouseEventKind};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _server, _main) = shown(dir.path()).await;
+    let list = app.hits.review.clone().unwrap().list;
+    let paths = app.hits.review.clone().unwrap().rows;
+    let row = paths.iter().position(|p| p == "new.txt").unwrap() as u16;
+    app.mouse(MouseEventKind::Down(MouseButton::Left), list.x + 8, list.y + row);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    assert!(diff(&app).path.ends_with("new.txt"));
+    let (left, right) = left_right(&app);
+    assert_eq!((left.as_str(), right.as_str()), ("", "n\n"));
+    // A diff of another kind of the same file is not forced inline.
+    let path = diff(&app).path.clone();
+    app.open_diff(path, crate::diff_view::Pair::UNSTAGED);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    draw_wide(&mut app, 200);
+    assert!(!diff(&app).inline);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mr_review_deleted_and_renamed_files_read_the_right_blobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _server, _main) = shown(dir.path()).await;
+    open_file(&mut app, "gone.txt").await;
+    let (left, right) = left_right(&app);
+    assert_eq!((left.as_str(), right.as_str()), ("x\n", ""));
+    // No buffer for a file that is gone.
+    assert!(
+        !app.buffers
+            .iter()
+            .any(|(_, b)| b.has_file() && b.path.ends_with("gone.txt"))
+    );
+    open_file(&mut app, "renamed.txt").await;
+    let (left, right) = left_right(&app);
+    assert_eq!(left, "one\ntwo\nthree\nfour\nfive\nsix\n");
+    assert_eq!(right, "one\ntwo\nthree\nfour\nfive\nsix\nseven\n");
+    draw_wide(&mut app, 120);
+    assert!(diff(&app).inline);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mr_review_a_binary_file_shows_the_binary_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, main) = make_repo(dir.path());
+    fs::write(root.join("blob.bin"), b"a\0b\0c").unwrap();
+    commit_all(&root, "binary");
+    let server = one_mr(&main);
+    let mut app = open_app(&root, None, config_for(&server), true);
+    assert!(app.settle(loaded).await);
+    app.test_execute(Command::ShowReview);
+    idle(&mut app).await;
+    screen(&mut app);
+    open_file(&mut app, "blob.bin").await;
+    assert!(diff(&app).doc.as_ref().unwrap().binary);
+    // The background open of the binary file is dropped: no hex tab, and the diff keeps focus.
+    let path = diff(&app).path.clone();
+    idle(&mut app).await;
+    assert!(app.group().find_hex(&path).is_none());
+    assert!(app.group().tabs.iter().all(|t| t.diff().is_some()));
+    assert!(app.group().active_diff().is_some());
+}
+
+/// Opening a binary file normally still gives a hex tab (the dropped case is background-only).
+#[tokio::test(flavor = "multi_thread")]
+async fn mr_review_a_normal_open_of_a_binary_file_is_still_a_hex_tab() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, main) = make_repo(dir.path());
+    fs::write(root.join("blob.bin"), b"a\0b\0c").unwrap();
+    commit_all(&root, "binary");
+    let server = one_mr(&main);
+    let mut app = open_app(&root, None, config_for(&server), true);
+    app.test_open_file(root.join("blob.bin"));
+    assert!(
+        app.settle(|a| a.group().find_hex(&root.join("blob.bin")).is_some())
+            .await
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mr_review_edits_on_the_right_side_go_through_the_buffer() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _server, _main) = shown(dir.path()).await;
+    open_file(&mut app, "mod.txt").await;
+    assert!(app.settle(|a| a.buffers.iter().any(|(_, b)| b.has_file())).await);
+    draw_wide(&mut app, 200);
+    // Rows: m1, -m2, +m2 changed, +m3. Down onto an added row, then type.
+    app.press(KeyCode::Down, KeyModifiers::NONE);
+    draw_wide(&mut app, 200);
+    app.type_text("X");
+    let text = |app: &App| {
+        app.buffers
+            .iter()
+            .find(|(_, b)| b.has_file())
+            .unwrap()
+            .1
+            .rope
+            .to_string()
+    };
+    assert!(text(&app).contains('X'), "{}", text(&app));
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    assert!(left_right(&app).1.contains('X'));
+    // The merge base side is untouched and undo reverts the buffer.
+    assert_eq!(left_right(&app).0, "m1\nm2\n");
+    app.test_execute(Command::Undo);
+    assert_eq!(text(&app), "m1\nm2 changed\nm3\n");
+}

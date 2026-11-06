@@ -95,6 +95,16 @@ impl App {
     /// Opens the diff of `path` (absolute) comparing `pair` in the active group, or shows the
     /// group's tab already showing it, and focuses it. The Source Control panel's entry point.
     pub fn open_diff(&mut self, path: PathBuf, pair: Pair) {
+        self.open_diff_tab(path, pair, DiffTab::new);
+    }
+
+    /// `open_diff` with the new tab made by `make(id, path, pair)` (a review's tab carries more).
+    pub(super) fn open_diff_tab(
+        &mut self,
+        path: PathBuf,
+        pair: Pair,
+        make: impl FnOnce(u64, PathBuf, Pair) -> DiffTab,
+    ) {
         if let Some((buf, _)) = self.active_mut() {
             buf.seal_undo();
         }
@@ -107,8 +117,7 @@ impl App {
             Some(i) => self.group_mut().active = i,
             None => {
                 let id = self.next_diff_id();
-                self.group_mut()
-                    .open_tab(Tab::Diff(Box::new(DiffTab::new(id, path, pair))));
+                self.group_mut().open_tab(Tab::Diff(Box::new(make(id, path, pair))));
             }
         }
         self.ui.focus = Focus::Editor;
@@ -485,6 +494,7 @@ impl App {
                 syntax_max_bytes: self.settings.syntax_max_bytes,
                 replace: d.replace.clone(),
                 conflict: d.conflict.clone(),
+                left_path: d.left_path.clone(),
             };
             jobs.push((d.id, generation, job));
         }

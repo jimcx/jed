@@ -13,6 +13,7 @@ use ratatui::layout::Position;
 
 use super::{App, AppEvent, Focus, Level};
 use crate::command::ReviewCommand as C;
+use crate::diff_view::{DiffTab, Pair};
 use crate::git::Head;
 use crate::layout::SidePanel;
 use crate::logs::Tool;
@@ -209,14 +210,49 @@ impl App {
             C::PageDown => view.move_selection(files, page),
             C::First => view.select(files, 0),
             C::Last => view.select(files, count.saturating_sub(1)),
-            // The file's review tab comes with the diff tabs.
-            C::Open => {}
+            C::Open => self.review_open_selected(),
             C::ToggleViewed => self.review_toggle_viewed(),
             C::FocusEditor => {
                 if !self.group().tabs.is_empty() {
                     self.ui.focus = Focus::Editor;
                 }
             }
+        }
+    }
+
+    /// Opens the selected file's review tab.
+    fn review_open_selected(&mut self) {
+        if let Some(path) = self.review.view.selected_path().map(String::from) {
+            self.review_open_file(&path);
+        }
+    }
+
+    /// Opens the inline diff of `path` (relative to the work tree, one of the review's files):
+    /// the merge base on the left, the work tree on the right; the group's tab already showing it
+    /// is focused instead. The file's buffer opens behind the tab (a deleted file has none), so
+    /// the language servers know it and edits go through it.
+    pub(super) fn review_open_file(&mut self, path: &str) {
+        let Some(workdir) = self.git.status.as_ref().map(|s| s.repo.workdir.clone()) else {
+            return;
+        };
+        let Some(review) = self.review.review() else { return };
+        let Some(file) = review.files.iter().find(|f| f.path == path) else {
+            return;
+        };
+        let Some(base) = review.merge_base.as_deref().and_then(|b| git2::Oid::from_str(b).ok()) else {
+            return self.notify(Level::Error, "The merge base is not known: run git fetch".into());
+        };
+        let abs = workdir.join(&file.path);
+        let old = file.old_path.as_ref().map(|o| workdir.join(o));
+        let deleted = file.status == 'D';
+        let pair = Pair::review(base);
+        self.open_diff_tab(abs.clone(), pair, |id, path, _| DiffTab::review(id, path, base, old));
+        if !deleted && self.buffer_of(&abs).is_none() && !self.opening.contains_key(&abs) {
+            let request = super::files::OpenRequest {
+                background: true,
+                ..Default::default()
+            };
+            self.start_open(abs, request);
         }
     }
 
@@ -248,8 +284,10 @@ impl App {
         if hit.list.contains(at)
             && let Some(path) = hit.rows.get((at.y - hit.list.y) as usize)
         {
+            let path = path.clone();
             let (view, files) = self.review.split();
-            view.select_path(files, path);
+            view.select_path(files, &path);
+            self.review_open_file(&path);
         }
     }
 
