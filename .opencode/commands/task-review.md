@@ -1,0 +1,128 @@
+---
+description: Like /task, with a code review instead of mutation testing — build a PLAN.md task in a worktree with subagents; implement, validate, review performance, code re-use and language effectiveness, commit, then open a merge request in Gitea
+agent: task
+---
+
+Build one task from PLAN.md's `## Tasks` list with subagents. The task: $ARGUMENTS
+
+A task is either **single** (one implementer, one validator, one reviewer, one commit) or **has subtasks** (a short id like `soft_wrap`, "Needs", "Done when" and a `Subtasks (one agent and one commit each):` list of `<id>-a: …` lines). A task with subtasks is built one subtask at a time, in order, each going through the same steps as a single task, all in one run: the workflow doesn't stop between subtasks, only after the last one.
+
+Each task runs in its own git worktree, on its own branch. All the work and commits happen there; main is untouched; when the task is done the branch is pushed and a Gitea merge request opened (via `scripts/mr`) for the user to merge.
+
+## Harness
+
+- Use the `subagent` tool. Run every subagent in the foreground (omit `background`) and wait for its result. Never launch two at once: the workflow is sequential.
+- Agent IDs: `task-implementer` (Sonnet analog), `task-validator` (Opus analog), `task-reviewer` (Opus analog). Their models and permissions are fixed in `opencode.jsonc`; you cannot override them per call, and you may launch only these three.
+- To continue an agent that has already run, call `subagent` again with the same `agent` and the `sessionID` it returned. That is the equivalent of Claude Code's `SendMessage` and keeps the agent's context.
+- `CLAUDE.md` is loaded as project instructions by `opencode.jsonc`. Nested `CLAUDE.md` files are not auto-loaded; tell every agent to read the nested one for each directory it edits.
+- Scratchpad: `/tmp/opencode/jed-task/<task id or slug>/`. Create it yourself with `mkdir -p` once you have picked the task, and give every agent its absolute path. Briefs and reviews are throwaway, so use `/tmp`, not the repo.
+- This is `/task` with its mutation testing swapped for a code review (steps 7–8), no flake runs, and a lighter rule for failing tests ([Failing tests](#failing-tests)); every other step matches, and a change to one belongs in `.opencode/commands/task.md` too. The Claude Code twin of this workflow is `.claude/commands/task-review.md`; a change to the steps belongs in both.
+- Worktrees and session moves use the `opencode` Code Mode namespace, reached through the `execute` tool: `tools.opencode.worktree_create({ name })`, `.worktree_list()`, `.worktree_remove({ directory })`, `.session_move({ directory })`. These are the only way to create, list, move into, and remove a task's worktree — use them, not raw `git worktree` commands.
+
+## Find where we are
+
+1. `git log --oneline -15`, `git status`, and the task list without its bodies: `scripts/tasks list` (and `scripts/tasks list --status done` for finished ones); `scripts/tasks check` is the sanity check. Also list the project's worktrees with `execute` → `tools.opencode.worktree_list()`, to see whether this task already has one. Then read the chosen task's entry with `scripts/tasks show <id>` (and read `tasks/<id>.md`). Tasks have **no order**; ✅ marks finished ones (and finished subtasks).
+   - Also check that the MR can be opened at the end: `command -v tea >/dev/null || [ -n "$GITEA_TOKEN" ]`. If neither holds, ask the user now (before any work) to export `GITEA_TOKEN` (a Gitea access token with repository write access) in the environment this session runs in, or install and log in `tea`, and wait for their answer; the check is repeated before step 11. Never ask for the token's value in chat or write it to a file.
+2. The task: the one named in the arguments (by name or id); else one with some subtasks ✅ but not all (work in progress); else list the open tasks (`scripts/tasks list --status open`) in a few lines, those with subtasks marked, and ask the user which. Stop until they answer.
+   - Subtask commits are named `<Task name> (<id>-a): …`; the last one shows the last finished subtask.
+3. Interrupted work or resume:
+   - If `worktree_list()` shows a worktree for this task, it's a resume: `session_move` into its directory and continue from there (steps 5–11 as appropriate to what's left).
+   - Else, if main has uncommitted changes, earlier work was interrupted (pre-worktree). Handle as before: if it's this task's (or its current subtask's) work and looks complete, run the validator and reviewer (steps 7–8) and commit it in main; if it's partial, have an implementer finish it; if it's something else, or broken beyond repair, stop and tell the user. Don't stash or discard it yourself.
+
+## Spin up the worktree
+
+4. Create the task's worktree and move into it:
+   - Pick a worktree name: the task's id (`soft_wrap`), or a short slug of its name (`render-whitespace`). Reuse it on a later resume.
+   - `execute` → `tools.opencode.worktree_create({ name })`, then `tools.opencode.session_move({ directory })` into the returned directory. Note the main checkout's absolute path in the scratchpad before moving.
+   - In the worktree, record the branch with `git branch --show-current`, and note it in the scratchpad too. Confirm the branch sits at main's current tip (`git log --oneline -1` matches main's); if the tool branched from a stale ref, `git rebase main` before starting.
+   - All later `git`, shell, edit and subagent work happens in this worktree until the task is done.
+
+## Check the size first (a task without subtasks yet)
+
+5. Skip this for a task that already has a subtask list: follow it. Otherwise check whether the task is one commit's work:
+   - Read the task, every PLAN.md section it links, and enough of the code it touches (CLAUDE.md's module map says where) to judge the work.
+   - It's too big when it would touch more than ~6 files or 2 subsystems (an agent's cost grows with the square of its turns: two 50-call subtasks cost far less than one 100-call one), touches many unrelated areas, needs a groundwork refactor before the feature, has parts that are each a feature on their own, or would leave fmt, clippy or tests red partway through. Example: soft wrap (the view's one-row-per-line assumption, up / down, mouse hits, scroll).
+   - It's not ready when the plan leaves a design decision open that would be costly to reverse, or it needs something the agents can't get (tools to install, credentials, a terminal that isn't on this machine). Stop and report that to the user, with the open question.
+   - If it fits, tell the user in a line or two what the task will cover, then go on to step 6.
+   - For a task with a subtask list, still read enough of the code its current subtask touches to write the brief below.
+   - Write a **brief** to `<scratchpad>/brief.md` (≤ ~60 lines) so the implementer doesn't re-explore: the files and functions to change (`path:line`), existing helpers to reuse, similar code to copy from, the test helpers (from docs/dev/testing.md) and the test file. Use the ranges you've already read for this; don't read more just for it.
+   - If it's too big, **stop and report to the user** why, and offer both ways forward, saying which you'd pick:
+     - **Subtasks** — better when the parts build on each other towards one feature with a clear "Done when" (e.g. soft wrap). Draft: a short id, "Needs", the feature bullets (from the task and the code you read), "Done when", and 3–5 subtasks, each leaving fmt, clippy and tests green, the last one doing the done-when tests, gaps and hand checks and marking the task ✅.
+     - **Separate tasks** — better when the parts are independent: 2–5 smaller single tasks that each leave the checks green.
+
+     If they agree, edit `tasks/<id>.md` (the task's entry gains its id, "Needs", "Done when" and a `Subtasks (one agent and one commit each):` list; or new `tasks/<id>.md` files replace it), move any design detail into the right Features section of PLAN.md, regenerate the index with `scripts/tasks index --write`, and commit it as a plan-only change. Then build the first subtask (or the first new task) if they asked, else stop.
+   - If you stop here without building anything (not ready, or the user declines), move the session back with `session_move` and remove the worktree with `worktree_remove` first.
+
+## Each task or subtask
+
+6. **Implementer** — launch the `task-implementer` subagent, foreground, and wait. Its prompt says:
+   - `CLAUDE.md` is loaded as project instructions; read the nested `CLAUDE.md` of any directory it edits. PLAN.md is the source of truth for design.
+   - The plan text pasted into the prompt (you, the orchestrator, paste it): the task in full and every PLAN.md section it links. For a subtask: every subtask, which one is its own, and what's already done. It doesn't re-read PLAN.md.
+   - Start from the brief at `<scratchpad>/brief.md` (give the absolute path) rather than a fresh tour of the codebase.
+   - **Read narrowly** (every tool result stays in its context and is paid for again on each later call): find code with `grep -n` or the LSP tool (definition, references), then read ranges of ≤ 150 lines. Never `cat` a file over ~300 lines or read big ranges of `src/app/mod.rs`; grep the module's entry in `docs/dev/app.md` / `modules.md` instead. Make independent reads and greps in one message.
+   - Build only this task (or subtask). Unit tests go in modules. End-to-end tests: a single task's go in `src/todo_tests.rs` (one `mod <task>` block, tests named after the behaviour); a task with subtasks' go in `src/<id>_tests.rs`, named `<id>_*` (create the file with a `//!` doc and register it in `main.rs` if it doesn't exist). Tests go through real code paths (docs/dev/testing.md: driving the app headlessly, then the feature's helpers).
+   - Any new Cmd binding also updates `docs/terminals/`; any new setting follows CLAUDE.md's "Settings layer per key"; any new colour goes through `Theme`.
+   - `scripts/check` must pass (fmt, clippy, tests, with quiet output). Iterate with `scripts/check test <filter>` (or `scripts/check clippy`) and run the full `scripts/check` once at the end, not after each change. If it touches editing, drawing or search hot paths, also the release `milestone` / `search` budget runs from CLAUDE.md (through `tail -40`).
+   - Update the docs for what it adds (module map, conventions, test helpers, background-work patterns), within the budget in CLAUDE.md's "Keeping these files current": at most a line or two in the root CLAUDE.md, the detail in `docs/dev/` or the directory's nested CLAUDE.md.
+   - Don't commit (permissions also block `git commit`, `git push`, `git stash`), and don't edit PLAN.md or `tasks/` (permissions block both).
+   - Failing-test rule: a test that fails but passes alone (`scripts/check test <its name>`) is noted in the report and left alone.
+   - Report concisely: what it built, files changed with the key entry points (`path:line` of the main new functions and tests, for the validator), CLAUDE.md changes, deviations, deferrals, hand checks, and check results.
+7. **Validator** — launch the `task-validator` subagent after the implementer finishes: the judgement half. Its prompt includes the implementer's report verbatim and says:
+   - `CLAUDE.md` is loaded as instructions. The task (or subtask) text is pasted into the prompt, as for the implementer; it doesn't re-read PLAN.md. Start from `git status` / `git diff --stat` and the report's entry points; read the changed code and its tests, not a fresh tour of the codebase.
+   - Read narrowly, as the implementer does: diff one file or hunk at a time (`git diff <file>`, never a whole multi-file diff), ranges of ≤ 150 lines, no `cat` of files over ~300 lines; independent reads in one message.
+   - Judge whether the tests are useful and actually test the code. Look for tautologies, assertions that can't fail, checks against test-only hooks instead of real effects, missing negative cases, and flakiness.
+   - Check coverage against every part of the task — for a subtask, its line in the subtask list, and the task's "Done when" on the last subtask.
+   - Add or strengthen weak tests and rewrite worthless ones. Fix real bugs minimally and report them.
+   - Run `scripts/check` once (all three checks) after its own changes. Random or property-style tests cap their iterations and output sizes, so a bug fails them quickly instead of eating CPU and RAM.
+   - Don't commit (permissions block it) and don't edit PLAN.md or `tasks/` (permissions block both). Update the docs if it changes helpers or conventions (CLAUDE.md's budget applies).
+   - Report: verdict, test changes, bugs fixed, check results.
+8. **Reviewer** — launch the `task-reviewer` subagent after the validator, so the tests it strengthened guard the fixes. Its prompt includes the implementer's and validator's reports verbatim and says:
+   - `CLAUDE.md` is loaded as instructions. The task (or subtask) text is pasted into the prompt, as for the implementer; it doesn't re-read PLAN.md. Start from `git status` / `git diff --stat` and the reports' entry points. Review the diff, not the code around it: look further only to grep for an existing helper or to see how hot a path is.
+   - Read narrowly, as the implementer does: diff one file or hunk at a time (`git diff <file>`, never a whole multi-file diff), ranges of ≤ 150 lines, no `cat` of files over ~300 lines; independent reads in one message.
+   - Review the changed code through three lenses, and only those (correctness and test quality were the validator's):
+     - **Performance:** work per edit, per frame or per selection against CLAUDE.md's "Many selections" and "Never block the UI thread" rules; rope lookups or allocations in a loop, needless `clone` / `collect` / `to_string`, quadratic scans, work repeated that could be cached or moved out of a loop. Say why the path is hot: on a cold path, the clearer code wins.
+     - **Code re-use:** new code that duplicates an existing helper (grep for the obvious names; `docs/dev/modules.md`, `buffer::pos`, the helpers in `docs/dev/testing.md`), and logic or test setup repeated within the diff. Extract a helper only for callers that exist now; no abstractions for later.
+     - **Language effectiveness:** Rust used to its strengths: enums and newtypes over flag `bool`s, strings and raw `usize`s, so bad states can't be represented; exhaustive `match` over a `_` arm that would hide a new variant; borrowing over cloning; `?` and let-chains over nesting; iterator adapters and std APIs over hand-rolled loops, where they read better; no `unwrap` that real input can reach; visibility no wider than needed. Not what rustfmt or clippy already catch, and not matters of taste.
+   - Findings are concrete: each has a location, the problem and the fix. A lens with no findings is a fine result; don't pad.
+   - Write the findings to `<scratchpad>/review.md` (the absolute path you gave it). Each: an id, the lens, `path:line`, the problem, the fix, and its status (fixed, or left open and why).
+   - Fix what is local and keeps behaviour. Leave open, without doing it, anything that would change behaviour, reach well outside the diff, or be costly to reverse. Don't weaken or delete tests; change them only to follow a rename or signature change. A real bug found along the way gets a minimal fix and a test, and is reported.
+   - Run `scripts/check` once (all three checks) after its fixes. If they touch editing, drawing or search hot paths, also the release `milestone` / `search` budget runs from CLAUDE.md (through `tail -40`).
+   - Don't commit (permissions block it) and don't edit PLAN.md or `tasks/` (permissions block both). Update the docs if it changes helpers or conventions (CLAUDE.md's budget applies).
+   - Report: what it fixed and what it left open, per lens; the review's path; check results.
+
+   Then (you, not in the reviewer's prompt): decide each finding left open. One that belongs in this task goes back to the reviewer, by calling `subagent` with `agent: "task-reviewer"` and the `sessionID` it returned, so it keeps its context, to fix then and there; a design decision that's costly to reverse goes to the user; the rest go under "Deferred:" (or the subtask's notes) in step 9.
+9. **Check and commit (you):**
+   - Run `scripts/check` once yourself; don't re-read files the agents already reported on. A failing test follows [Failing tests](#failing-tests).
+   - Make sure the diff includes the doc updates (CLAUDE.md files, `docs/dev/`).
+   - Check no test binaries are left running (`pgrep -fl deps/jed-`); kill any strays.
+   - Update `tasks/<id>.md` (and regenerate PLAN.md's index) in the same commit:
+     - A subtask that isn't the last: mark its line ✅, with notes on what it changed for later subtasks.
+     - A single task, or a task's last subtask: mark the task ✅ with short sub-bullets — what it changed (for later work), "Also:", "Deferred:" and "Still to check by hand:" — then set `status: in-progress` after the first subtask and `status: done` after the last, and update `summary`; regenerate the index with `scripts/tasks index --write`. The full entry already lives in `tasks/<id>.md`; nothing moves.
+     - Fix other tasks or plan sections if this work changed them.
+   - Commit everything. Subject: a single task's is a short imperative naming the feature (e.g. `Add render whitespace`); a subtask's is `<Task name> (<id>-a): <summary>`. Then a blank line and `- ` bullets of behaviour and notable internals. Do not add a `Co-Authored-By:` trailer.
+10. Give the user a short update after each commit: what landed, anything deferred, the hand checks. For a task with subtasks, go straight on to the next subtask (still in the worktree) without stopping or asking: keep going until every subtask is committed and the task is marked done, pausing only for a "Stop and ask the user when" case. When the task is done, go to step 11.
+
+## Hand over for review
+
+11. When the whole task is done (a single task, or its last subtask is committed), open a merge request in Gitea instead of merging:
+    - Re-run the token check from step 1. If it fails, don't ask: push the branch with `git push --force-with-lease -u origin <branch>` (the script would have done the same), skip `scripts/mr`, and say in the final summary that no MR was opened (no token, no `tea`) and give the branch name.
+    - Run `scripts/mr <branch>` from the task's worktree (clean, on the branch). It pushes the branch to `origin` and opens a MR against `main` through Gitea's API (needs `GITEA_TOKEN` in the environment; it uses `tea` instead when that is installed), printing the MR's URL. It never touches local `main`. If it can't open the MR (no token), the branch is still pushed: tell the user and give them the branch name.
+    - Keep the worktree while the MR is open: review feedback is addressed by resuming the worktree, committing, and re-running `scripts/mr`, which force-pushes the branch with a lease (the existing MR updates itself; the script's "already exists" error is expected).
+    - Report the MR URL, the task's hand checks, the findings the reviewer left open, and the tests that failed in a run but passed alone (test, how it failed), then stop: don't start another task unless asked. Once the user has merged the MR in Gitea they pull `main`, and the worktree and branch can be removed (`tools.opencode.worktree_remove({ directory })`, `git branch -D <branch>`).
+    - A later task branches from local `main`, so it won't contain a task whose MR is still open; if it depends on one, say so and wait for the merge.
+
+## Failing tests
+
+When a test fails in any run (an agent's or your own), re-run it alone with `scripts/check test <its name>`:
+
+- **It passes alone:** note it (the test and how it failed) in the report and move on. It counts as passing: don't re-run the suite, debug it or add debugging to it.
+- **It fails alone:** it's a real failure; fix it like any other (see "Stop and ask the user when").
+- Include this rule in every subagent's prompt (implementer, validator, reviewer), and have them report the tests they noted back to you.
+
+## Stop and ask the user when
+
+- The task is too big or not ready (step 5).
+- A subtask needs something the agents can't get, such as tools to install or credentials.
+- A design decision isn't settled by PLAN.md and would be costly to reverse.
+- Checks still fail after an agent says it's done, and a second attempt doesn't fix them.
+- A subagent is blocked by an OpenCode permission rule and the block is not one of the intended guards (commit, push, stash, PLAN.md edits).

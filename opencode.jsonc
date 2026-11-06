@@ -14,8 +14,8 @@
       "mode": "primary"
     },
 
-    // Orchestrator for `.opencode/commands/task.md`. It plans, judges and
-    // commits; the three subagents below do the work.
+    // Orchestrator for `.opencode/commands/task.md` and `task-review.md`. It
+    // plans, judges and commits; the subagents below do the work.
     "task": {
       "description": "Builds one PLAN.md task in a worktree with subagents: implement, validate, mutation-test, commit, then rebase/ff-merge back to main",
       "mode": "primary",
@@ -23,6 +23,7 @@
         { "action": "subagent", "resource": "*", "effect": "deny" },
         { "action": "subagent", "resource": "task-implementer", "effect": "allow" },
         { "action": "subagent", "resource": "task-validator", "effect": "allow" },
+        { "action": "subagent", "resource": "task-reviewer", "effect": "allow" },
         { "action": "subagent", "resource": "task-runner", "effect": "allow" },
         { "action": "shell", "resource": "git push *", "effect": "deny" }
       ]
@@ -43,6 +44,19 @@
 
     "task-validator": {
       "description": "Reviews one task's diff and tests, strengthens tests, writes a mutation plan, does not commit",
+      "mode": "subagent",
+      "model": "ollama-cloud/deepseek-v4-pro:0813#high",
+      "permissions": [
+        { "action": "shell", "resource": "git commit *", "effect": "deny" },
+        { "action": "shell", "resource": "git push *", "effect": "deny" },
+        { "action": "shell", "resource": "git stash *", "effect": "deny" },
+        { "action": "edit", "resource": "PLAN.md", "effect": "deny" },
+        { "action": "edit", "resource": "tasks/**", "effect": "deny" }
+      ]
+    },
+
+    "task-reviewer": {
+      "description": "Reviews one task's diff for performance, code re-use and language effectiveness, fixes what is local, does not commit",
       "mode": "subagent",
       "model": "ollama-cloud/deepseek-v4-pro:0813#high",
       "permissions": [
