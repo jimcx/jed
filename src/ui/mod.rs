@@ -694,8 +694,10 @@ fn diff_marks(d: &DiffTab) -> Vec<scrollbar::Mark> {
                 HunkKind::Deleted => "editorGutter.deletedBackground",
                 HunkKind::Modified => "editorGutter.modifiedBackground",
             };
+            // Review tabs: the bar counts the thread blocks' rows too.
+            let v = d.threads.blocks();
             Some(scrollbar::Mark {
-                lines: start..start + rows,
+                lines: v.visual_of_row(start)..v.visual_of_row(start + rows),
                 key,
             })
         })

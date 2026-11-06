@@ -364,6 +364,12 @@ impl Theme {
             ("review.unresolved", Style::new().fg(c(0xE2C08D))),
             ("review.resolved", Style::new().fg(c(0x89D185))),
             ("review.error", Style::new().fg(c(0xF14C4C))),
+            // Thread blocks in a review diff: the frame, the header row, a resolved thread's header
+            // and the comment text.
+            ("review.thread.border", fg_bg(0x6A9FB5, 0x1E2A33)),
+            ("review.thread.header", fg_bg(0x9CDCFE, 0x1E2A33)),
+            ("review.thread.resolved", fg_bg(0x808080, 0x1E2A33)),
+            ("review.thread.text", fg_bg(0xD4D4D4, 0x1E2A33)),
             ("tools.starting", Style::new().fg(c(0xCCA700))),
             ("tools.running", Style::new().fg(c(0x89D185))),
             ("tools.failed", Style::new().fg(c(0xF14C4C))),

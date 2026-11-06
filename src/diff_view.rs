@@ -814,6 +814,11 @@ pub struct DiffTab {
     pub edited: Option<(crate::diff_caret::Caret, u64)>,
     /// Written by drawing: the tab width the text is laid out with (column maths of the caret).
     pub tab_width: usize,
+    /// A review tab's comment threads and the blocks they take between the rows. With blocks,
+    /// `top` counts visual rows (the rows plus the blocks'); without, they are the rows.
+    pub threads: crate::review_blocks::Threads,
+    /// Rows under the cursor's row `reveal` also brings into view (a thread's block).
+    pub reveal_rows: usize,
 }
 
 /// The open buffers (with their revisions) a load reads its live sides from.
@@ -821,7 +826,7 @@ pub type Live = [Option<(BufferId, u64)>; 2];
 
 impl crate::scrollbar::Scrollable for DiffTab {
     fn scroll(&self) -> crate::scrollbar::Scroll {
-        crate::scrollbar::Scroll::rows(self.rows().len(), self.height, self.top)
+        crate::scrollbar::Scroll::rows(self.visual_len(), self.height, self.top)
     }
 
     /// The pointer decides where the view is: no reveal of the cursor's row.
@@ -860,6 +865,8 @@ impl DiffTab {
             caret: Default::default(),
             edited: None,
             tab_width: 4,
+            threads: Default::default(),
+            reveal_rows: 0,
         }
     }
 
@@ -948,6 +955,8 @@ impl DiffTab {
             caret: self.caret,
             edited: self.edited,
             tab_width: self.tab_width,
+            threads: self.threads.clone(),
+            reveal_rows: 0,
         }
     }
 
@@ -1127,6 +1136,7 @@ impl DiffTab {
         }
         let cursor = self.rows().get(self.cursor).map(Row::line);
         let start = self.aligned().starts.binary_search(&self.cursor).ok();
+        // Blocks only exist in review tabs, which never change layout after the first.
         let top = self.rows().get(self.top).map(Row::line);
         self.inline = inline;
         if let Some(k) = start {
@@ -1134,7 +1144,9 @@ impl DiffTab {
         } else if let Some((right, line)) = cursor {
             self.cursor = self.aligned().row_of(right, line);
         }
-        if let Some((right, line)) = top {
+        if let Some((right, line)) = top
+            && self.threads.blocks().is_empty()
+        {
             self.top = self.aligned().row_of(right, line);
         }
         self.clamp();
@@ -1186,7 +1198,7 @@ impl DiffTab {
     /// Scrolls by `delta` rows, the cursor staying put (the wheel).
     pub fn scroll_by(&mut self, delta: isize) {
         let mut l = self.list();
-        l.scroll_by_raw(self.rows().len(), delta);
+        l.scroll_by_raw(self.visual_len(), delta);
         self.top = l.top;
     }
 
@@ -1203,9 +1215,16 @@ impl DiffTab {
         let height = height.max(1);
         if self.reveal {
             self.reveal = false;
-            if self.cursor < self.top || self.cursor >= self.top + height {
-                self.top = self.cursor.saturating_sub(height / 2);
+            let v = self.visual_of_cursor();
+            if v < self.top || v >= self.top + height {
+                self.top = v.saturating_sub(height / 2);
             }
+            // A thread's block under the cursor's row is brought in too, when it fits.
+            let end = v + self.reveal_rows;
+            if end >= self.top + height {
+                self.top = (end + 1 - height).min(v);
+            }
+            self.reveal_rows = 0;
         }
         self.clamp();
     }
@@ -1213,7 +1232,47 @@ impl DiffTab {
     fn clamp(&mut self) {
         let n = self.rows().len();
         self.cursor = self.cursor.min(n.saturating_sub(1));
-        self.top = self.list().scroll(n);
+        self.top = self.list().scroll(self.visual_len());
+    }
+
+    /// The rows on screen when scrolling: the aligned rows plus the blocks'.
+    pub fn visual_len(&self) -> usize {
+        self.threads.blocks().visual_len(self.rows().len())
+    }
+
+    /// What the thread layout is keyed by: the loaded doc and the load.
+    pub fn doc_key(&self) -> (usize, u64) {
+        (
+            self.doc.as_ref().map_or(0, |d| Arc::as_ptr(d) as usize),
+            self.generation,
+        )
+    }
+
+    /// The visual row the cursor's aligned row is on.
+    pub fn visual_of_cursor(&self) -> usize {
+        self.threads.blocks().visual_of_row(self.cursor)
+    }
+
+    /// The aligned row shown on visual row `v` (`None`: a thread block's row).
+    pub fn row_at(&self, v: usize) -> Option<usize> {
+        match self.threads.blocks().locate(v) {
+            crate::review_blocks::Spot::Row(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// The cursor to the row of the next / previous thread's block (wrapping), its block revealed.
+    /// False without threads in the diff.
+    pub fn step_thread(&mut self, forward: bool) -> bool {
+        let blocks = self.threads.blocks();
+        let Some(i) = blocks.step(self.cursor, forward) else {
+            return false;
+        };
+        let b = blocks.list()[i];
+        self.cursor = b.after_row;
+        self.reveal = true;
+        self.reveal_rows = b.height;
+        true
     }
 
     fn list(&self) -> ListScroll {

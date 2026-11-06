@@ -365,7 +365,7 @@ impl App {
         if !h.rows.contains(p) || x < text_x {
             return None;
         }
-        let line = d.rows().get(d.top + (y - h.rows.y) as usize)?.right?;
+        let line = d.rows().get(d.row_at(d.top + (y - h.rows.y) as usize)?)?.right?;
         let buffer = self.buffer_of(&d.path)?;
         let buf = self.buffers.get(buffer)?;
         let rope = &buf.rope;

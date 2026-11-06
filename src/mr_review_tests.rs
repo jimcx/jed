@@ -654,8 +654,23 @@ mod lsp {
     /// The panel's app with a fake language server, `a.cpp`'s review diff open and its buffer
     /// synced with the server.
     async fn review_app(dir: &Path) -> (App, Arc<FakeLauncher>, PathBuf, FakeServer) {
+        review_app_with(dir, None).await
+    }
+
+    /// `review_app`, with a thread (author, body) on `a.cpp`'s first right line when given.
+    async fn review_app_with(
+        dir: &Path,
+        thread: Option<(&str, &str)>,
+    ) -> (App, Arc<FakeLauncher>, PathBuf, FakeServer) {
         let (root, main) = make_cpp_repo(dir);
-        let server = one_mr(&main);
+        let server = match thread {
+            None => one_mr(&main),
+            Some((who, body)) => {
+                let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+                let c = super::threads::rc(11, who, body, "a.cpp", 1, &head, "+int target = 1;", false);
+                super::threads::with_comments(&main, &format!("[{c}]"))
+            }
+        };
         let fake = FakeLauncher::new(FakeOptions::default());
         let base = workspace::normalize(&root);
         let trust = TrustStore::load(base.join("trust.toml"));
@@ -817,6 +832,75 @@ mod lsp {
         assert_eq!(fake.requests("textDocument/hover").len(), before);
     }
 
+    /// A thread block between two code rows: Ctrl+click, F12 and a hover rest on the row below
+    /// it reach the buffer position of that row, and the popup is drawn just above that row.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_rows_below_a_thread_block_still_hit_the_right_position() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, fake, a, _server) = review_app_with(dir.path(), Some(("sam", "Why this name"))).await;
+        let mut term = terminal();
+        draw(&mut term, &mut app);
+        assert_eq!(diff(&app).threads.blocks().list().len(), 1, "the thread is placed");
+        let (_, by) = find_cells(&term, "Why this name").expect("the block is drawn");
+        let (x, y) = find_cells(&term, "use = target;").unwrap();
+        assert!(y > by + 1, "the code row is below the block's footer: {by} {y}");
+        // Ctrl+click on the word.
+        fake.respond("textDocument/definition", location(&a, 0, 4, 10));
+        app.mouse_with(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            x + 7,
+            y,
+            cmd(),
+        );
+        assert!(
+            app.settle(|_| !fake.requests("textDocument/definition").is_empty())
+                .await
+        );
+        assert_eq!(position(&fake, "textDocument/definition"), (1, 11));
+        // The answer opens the buffer's text tab; Back returns to the diff.
+        assert!(app.settle(|a| a.group().active_diff().is_none()).await);
+        app.test_execute(Command::NavBack);
+        assert!(app.group().active_diff().is_some());
+        // F12 from a caret placed on that row.
+        caret_at(&mut app, true, 1, 12);
+        let before = fake.requests("textDocument/definition").len();
+        app.press(KeyCode::F(12), KeyModifiers::NONE);
+        assert!(
+            app.settle(|_| fake.requests("textDocument/definition").len() > before)
+                .await
+        );
+        assert_eq!(position(&fake, "textDocument/definition"), (1, 12));
+        assert!(app.settle(|a| a.group().active_diff().is_none()).await);
+        app.test_execute(Command::NavBack);
+        assert!(app.group().active_diff().is_some());
+        // The mouse resting on the word.
+        let range = json!({ "start": { "line": 1, "character": 11 }, "end": { "line": 1, "character": 17 } });
+        fake.respond(
+            "textDocument/hover",
+            json!({ "contents": { "kind": "plaintext", "value": "int target" }, "range": range }),
+        );
+        app.hover.popup = None;
+        draw(&mut term, &mut app);
+        let (x, y) = find_cells(&term, "use = target;").unwrap();
+        app.mouse(crossterm::event::MouseEventKind::Moved, x + 7, y);
+        app.test_hover_tick(std::time::Instant::now() + crate::hover::DELAY);
+        assert!(app.settle(|a| a.hover.popup.is_some()).await, "{}", message(&app));
+        assert_eq!(position(&fake, "textDocument/hover"), (1, 11));
+        draw(&mut term, &mut app);
+        let r = app.hits.hover.expect("popup drawn");
+        assert_eq!(popup_rows(&term, &app), vec!["int target"]);
+        assert_eq!(r.y + r.height, y, "just above the hovered row, under the block");
+        // Resting on the block's text starts nothing.
+        app.hover.popup = None;
+        let before = fake.requests("textDocument/hover").len();
+        draw(&mut term, &mut app);
+        let (bx, by) = find_cells(&term, "Why this name").unwrap();
+        app.mouse(crossterm::event::MouseEventKind::Moved, bx + 2, by);
+        assert!(app.hover.rest.is_none());
+        idle(&mut app).await;
+        assert_eq!(fake.requests("textDocument/hover").len(), before);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn mr_review_ctrl_click_on_a_right_side_word_goes_to_its_definition() {
         let dir = tempfile::tempdir().unwrap();
@@ -867,7 +951,7 @@ mod threads {
     const ISSUES: &str = "/api/v1/repos/alice/project/issues/7/comments?page=1&limit=50";
 
     #[allow(clippy::too_many_arguments)]
-    fn rc(
+    pub(super) fn rc(
         id: u64,
         user: &str,
         body: &str,
@@ -886,7 +970,7 @@ mod threads {
     }
 
     /// A fake forge whose review has these line comments (a JSON array) and one plain comment.
-    fn with_comments(main: &str, comments: &str) -> FakeServer {
+    pub(super) fn with_comments(main: &str, comments: &str) -> FakeServer {
         FakeServer::start(vec![
             (
                 format!("{PULLS}?state=open&page=1&limit=50"),
@@ -1159,5 +1243,434 @@ mod threads {
             text.contains("CONVERSATIONS (0)") && text.contains("comments:"),
             "{text}"
         );
+    }
+
+    /// The drawn screen as lines (width `w`, 30 rows).
+    fn lines_at(app: &mut App, w: u16) -> Vec<String> {
+        lines_sized(app, w, 30)
+    }
+
+    fn lines_sized(app: &mut App, w: u16, h: u16) -> Vec<String> {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        let buf = term.backend().buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+            .collect()
+    }
+
+    fn row_of(lines: &[String], needle: &str) -> usize {
+        lines
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no `{needle}` in\n{}", lines.join("\n")))
+    }
+
+    fn diff_hit(app: &App) -> crate::layout::DiffHit {
+        app.hits.groups.iter().find_map(|g| g.diff.clone()).expect("a diff hit")
+    }
+
+    fn block_rows(app: &App) -> usize {
+        diff(app).threads.blocks().list().iter().map(|b| b.height).sum()
+    }
+
+    async fn opened() -> (App, FakeServer, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, server) = loaded_app(dir.path(), None).await;
+        open_file(&mut app, "mod.txt").await;
+        (app, server, dir)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_thread_blocks_sit_under_their_lines_and_the_resolved_one_is_collapsed() {
+        let (mut app, _server, _dir) = opened().await;
+        let l = lines_at(&mut app, 120);
+        // m1, -m2, the resolved (left side) thread folded to one row, +m2 changed, +m3, the open one.
+        let (m2, bob, changed, m3, sam, foot) = (
+            row_of(&l, "m2"),
+            row_of(&l, "bob"),
+            row_of(&l, "m2 changed"),
+            row_of(&l, "m3"),
+            row_of(&l, "sam"),
+            row_of(&l, "└"),
+        );
+        assert!(m2 < bob && bob < changed && changed < m3 && m3 < sam, "{l:#?}");
+        assert_eq!((bob, sam), (m2 + 1, m3 + 1));
+        assert!(
+            l[bob].contains("✓") && l[bob].contains("Why was this removed") && l[bob].contains("▸"),
+            "{}",
+            l[bob]
+        );
+        assert!(
+            l[sam].contains("▾") && l[sam + 1].contains("Can this overflow"),
+            "{l:#?}"
+        );
+        assert_eq!(foot, sam + 2);
+        let d = diff(&app);
+        assert_eq!(d.threads.blocks().list().len(), 2);
+        assert_eq!(d.threads.blocks().list()[0].after_row, 1, "after the removed row");
+        // The scroll bar counts the blocks' rows.
+        assert_eq!(d.visual_len(), d.rows().len() + block_rows(&app));
+        assert_eq!(block_rows(&app), 1 + 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_the_toggle_collapses_and_expands_a_block() {
+        let (mut app, _server, _dir) = opened().await;
+        lines_at(&mut app, 120);
+        let hit = diff_hit(&app);
+        assert_eq!(hit.blocks.len(), 2);
+        // Expand the resolved one by its toggle.
+        let t = hit.blocks[0].toggle.expect("header in view");
+        app.mouse(MouseEventKind::Down(MouseButton::Left), t.x + 1, t.y);
+        let l = lines_at(&mut app, 120);
+        assert_eq!(block_rows(&app), 3 + 3);
+        assert!(l[row_of(&l, "bob")].contains("▾"), "{l:#?}");
+        // And fold the open one.
+        let hit = diff_hit(&app);
+        let t = hit.blocks[1].toggle.unwrap();
+        app.mouse(MouseEventKind::Down(MouseButton::Left), t.x + 1, t.y);
+        let l = lines_at(&mut app, 120);
+        assert!(l[row_of(&l, "sam")].contains("▸"), "{l:#?}");
+        assert_eq!(block_rows(&app), 3 + 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_the_caret_steps_over_blocks_and_clicks_map_through_them() {
+        let (mut app, _server, _dir) = opened().await;
+        lines_at(&mut app, 120);
+        // Down from the removed row lands on the next code row, not on the block.
+        app.group_mut().active_diff_mut().unwrap().cursor = 1;
+        app.press(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(diff(&app).cursor, 2);
+        app.press(KeyCode::Down, KeyModifiers::NONE);
+        app.press(KeyCode::Up, KeyModifiers::NONE);
+        app.press(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(diff(&app).cursor, 1);
+        // A click on the line under the folded block lands on that row, one screen row lower
+        // than the row index says; a click inside the block moves nothing.
+        let l = lines_at(&mut app, 120);
+        let hit = diff_hit(&app);
+        let y = row_of(&l, "m2 changed") as u16;
+        assert_eq!(y, hit.rows.y + 3);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), hit.text_x[1] + 1, y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), hit.text_x[1] + 1, y);
+        assert_eq!(diff(&app).cursor, 2);
+        let y = row_of(&l, "+ m3").max(row_of(&l, "m3")) as u16;
+        app.mouse(MouseEventKind::Down(MouseButton::Left), hit.text_x[1] + 1, y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), hit.text_x[1] + 1, y);
+        assert_eq!(diff(&app).cursor, 3);
+        app.group_mut().active_diff_mut().unwrap().cursor = 0;
+        let block_y = row_of(&l, "Can this overflow") as u16;
+        app.mouse(MouseEventKind::Down(MouseButton::Left), hit.text_x[1] + 4, block_y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), hit.text_x[1] + 4, block_y);
+        assert_eq!(diff(&app).cursor, 0, "a block is not text");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_next_and_previous_thread_wrap() {
+        let (mut app, _server, _dir) = opened().await;
+        lines_at(&mut app, 120);
+        app.group_mut().active_diff_mut().unwrap().cursor = 0;
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            app.test_execute(Command::ReviewNextThread);
+            seen.push(diff(&app).cursor);
+        }
+        assert_eq!(seen, [1, 3, 1]);
+        app.test_execute(Command::ReviewPrevThread);
+        assert_eq!(diff(&app).cursor, 3);
+        app.test_execute(Command::ReviewPrevThread);
+        assert_eq!(diff(&app).cursor, 1);
+        assert_eq!(Command::ReviewNextThread.title(), "Code Review: Next Thread");
+        assert!(Command::all().contains(&Command::ReviewPrevThread));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_a_narrower_view_rewraps_the_blocks() {
+        let (mut app, _server, _dir) = opened().await;
+        lines_at(&mut app, 120);
+        let wide = block_rows(&app);
+        let l = lines_at(&mut app, 50);
+        let narrow = block_rows(&app);
+        assert!(narrow > wide, "{narrow} > {wide}\n{l:#?}");
+        for line in &l {
+            assert!(line.chars().count() <= 50);
+        }
+        lines_at(&mut app, 120);
+        assert_eq!(block_rows(&app), wide);
+    }
+
+    /// `mod.txt`'s review diff with a tall thread on its first row (taller than a short
+    /// terminal) and a short one on its last.
+    async fn tall() -> (App, FakeServer, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main) = make_repo(dir.path());
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let long = "alpha beta gamma delta ".repeat(20);
+        let comments = format!(
+            "[{},{}]",
+            rc(21, "sam", long.trim(), "mod.txt", 1, &head, "+m1", false),
+            rc(22, "cy", "short", "mod.txt", 3, &head, "+m3", false)
+        );
+        let server = with_comments(&main, &comments);
+        let mut app = open_app(&root, None, config_for(&server), true);
+        assert!(app.settle(loaded).await);
+        app.test_execute(Command::ShowReview);
+        idle(&mut app).await;
+        screen(&mut app);
+        open_file(&mut app, "mod.txt").await;
+        (app, server, dir)
+    }
+
+    /// The first body row of the last frame.
+    fn first_body_row(app: &App, l: &[String]) -> String {
+        l[diff_hit(app).rows.y as usize].clone()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_scrolling_one_row_at_a_time_through_a_block_taller_than_the_view() {
+        let (mut app, _server, _dir) = tall().await;
+        let l = lines_sized(&mut app, 40, 14);
+        let h = diff_hit(&app).rows.height as usize;
+        let d = diff(&app);
+        assert_eq!(d.threads.blocks().list().len(), 2, "{l:#?}");
+        let tall_h = d.threads.blocks().list()[0].height;
+        assert!(tall_h > h, "block {tall_h} taller than the view {h}\n{l:#?}");
+        let total = d.visual_len();
+        let thread = d.threads.list()[d.threads.blocks().list()[0].thread].clone();
+        let lines = crate::review_blocks::lines(
+            &thread,
+            false,
+            crate::review_blocks::block_width(diff_hit(&app).rows.width as usize),
+        );
+        assert_eq!(lines.len(), tall_h);
+        let mut last_top = 0;
+        loop {
+            let top = diff(&app).top;
+            let l = lines_sized(&mut app, 40, 14);
+            let first = first_body_row(&app, &l);
+            // Visual row 0 is `m1`; 1..=tall_h the block's lines; then the code again.
+            if top == 0 {
+                assert!(first.contains("m1"), "{first}");
+            } else if top <= tall_h {
+                let want = lines[top - 1].text.trim_end();
+                assert!(first.contains(want), "top {top}: {first:?} lacks {want:?}");
+            } else {
+                assert!(!first.contains('│') && !first.contains('└'), "top {top}: {first:?}");
+            }
+            // Every visible block row is a block line, never code text (no row drawn twice).
+            assert_eq!(
+                l.iter().filter(|s| s.contains("m1")).count(),
+                usize::from(top == 0),
+                "top {top}"
+            );
+            assert!(diff(&app).top >= last_top);
+            last_top = diff(&app).top;
+            let before = diff(&app).top;
+            app.group_mut().active_diff_mut().unwrap().scroll_by(1);
+            if diff(&app).top == before {
+                break;
+            }
+        }
+        // Scrolled to the end: the bar's maximum, the last row is the last code row.
+        let l = lines_sized(&mut app, 40, 14);
+        let d = diff(&app);
+        assert_eq!(
+            (d.visual_len(), d.top),
+            (total, total - diff_hit(&app).rows.height as usize),
+            "the last row at the bottom"
+        );
+        assert!(l.iter().any(|s| s.contains("short")), "{l:#?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_next_thread_reveals_a_tall_block_and_the_caret_stays_on_screen() {
+        let (mut app, _server, _dir) = tall().await;
+        lines_sized(&mut app, 40, 14);
+        app.group_mut().active_diff_mut().unwrap().cursor = 2;
+        // 2 -> the block under row 3 (short) -> wraps to the tall one under row 0.
+        app.test_execute(Command::ReviewNextThread);
+        let l = lines_sized(&mut app, 40, 14);
+        assert_eq!(diff(&app).cursor, 3);
+        assert!(l.iter().any(|s| s.contains("short")), "{l:#?}");
+        app.test_execute(Command::ReviewNextThread);
+        let l = lines_sized(&mut app, 40, 14);
+        assert_eq!(diff(&app).cursor, 0);
+        assert_eq!(diff(&app).top, 0, "the cursor row first, the block as far as it fits");
+        assert!(first_body_row(&app, &l).contains("m1"), "{l:#?}");
+        // Down from the cursor above the tall block: the next code row, which scrolls into view.
+        app.press(KeyCode::Down, KeyModifiers::NONE);
+        let l = lines_sized(&mut app, 40, 14);
+        assert_eq!(diff(&app).cursor, 1);
+        assert!(l.iter().any(|s| s.contains("m2")), "the caret row is on screen\n{l:#?}");
+        // And back up to row 0 from far below.
+        app.press(KeyCode::Up, KeyModifiers::NONE);
+        let l = lines_sized(&mut app, 40, 14);
+        assert!(l.iter().any(|s| s.contains("m1")), "{l:#?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_tiny_views_a_width_change_while_scrolled_and_a_fold_do_not_panic() {
+        let (mut app, _server, _dir) = tall().await;
+        lines_sized(&mut app, 40, 14);
+        app.group_mut().active_diff_mut().unwrap().scroll_by(5);
+        // A view with no body rows, then one row.
+        for h in [1, 2, 3, 4, 5] {
+            lines_sized(&mut app, 40, h);
+            lines_sized(&mut app, 3, h);
+        }
+        // Wider while the window starts inside the block: still within the new total.
+        lines_sized(&mut app, 40, 14);
+        app.group_mut().active_diff_mut().unwrap().scroll_by(5);
+        lines_sized(&mut app, 200, 14);
+        let d = diff(&app);
+        assert!(d.top < d.visual_len(), "{} {}", d.top, d.visual_len());
+        // Folding the block under a window that starts inside it keeps the window valid.
+        lines_sized(&mut app, 40, 14);
+        app.group_mut().active_diff_mut().unwrap().scroll_by(6);
+        app.group_mut().active_diff_mut().unwrap().threads.toggle(0);
+        let l = lines_sized(&mut app, 40, 14);
+        let d = diff(&app);
+        assert!(d.top < d.visual_len(), "{l:#?}");
+        assert!(l.iter().any(|s| s.contains("▸")) || d.top > 1, "{l:#?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_odd_comment_text_stays_inside_the_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main) = make_repo(dir.path());
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let body = "tab\\there 日本語日本語日本語日本語日本語日本語 😀😀😀😀😀😀😀😀😀😀😀😀 \
+                    Supercalifragilisticexpialidocious_Supercalifragilisticexpialidocious";
+        let comments = format!(
+            "[{},{}]",
+            rc(21, "sam", body, "mod.txt", 1, &head, "+m1", false),
+            rc(22, "cy", "", "mod.txt", 3, &head, "+m3", false)
+        );
+        let server = with_comments(&main, &comments);
+        let mut app = open_app(&root, None, config_for(&server), true);
+        assert!(app.settle(loaded).await);
+        app.test_execute(Command::ShowReview);
+        idle(&mut app).await;
+        screen(&mut app);
+        open_file(&mut app, "mod.txt").await;
+        let l = lines_sized(&mut app, 100, 30);
+        assert_eq!(diff(&app).threads.blocks().list().len(), 2, "{l:#?}");
+        let hit = diff_hit(&app);
+        assert!(l.iter().any(|s| s.contains("tab    here")), "{l:#?}");
+        // The footer's rule ends where the block does: nothing is drawn past it.
+        let r = hit.blocks[0].rect;
+        let foot = l.iter().find(|s| s.contains('└')).unwrap();
+        assert!(foot.chars().filter(|c| *c == '─').count() >= 10);
+        // No block row has text past the block's right edge (its 3-column indent plus width).
+        for y in r.y..r.y + r.height {
+            let right: String = l[y as usize]
+                .chars()
+                .skip((r.x + r.width) as usize)
+                .take(96usize.saturating_sub((r.x + r.width) as usize))
+                .collect();
+            assert!(right.trim().is_empty(), "{:?}", l[y as usize]);
+        }
+        // The empty comment still has its header and footer.
+        assert!(l.iter().filter(|s| s.contains('└')).count() == 2, "{l:#?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_a_new_lookup_updates_the_blocks() {
+        let (mut app, _server, _dir) = opened().await;
+        lines_at(&mut app, 120);
+        assert_eq!(diff(&app).threads.list().len(), 2);
+        if let crate::review::Content::Loaded(r) = &mut app.review.content {
+            r.threads.clear();
+        }
+        app.review.generation += 1;
+        app.pump();
+        lines_at(&mut app, 120);
+        assert!(diff(&app).threads.list().is_empty());
+        assert!(diff(&app).threads.blocks().list().is_empty());
+    }
+
+    /// 20k lines, 500 changed ones with a thread each: drawing, wheel scrolling and caret moves
+    /// stay cheap (a frame draws only the visible rows; the mapping is a binary search).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn milestone_mr_review_threads_budget_20k_lines_500_threads() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        fs::create_dir_all(&root).unwrap();
+        init(&root);
+        let text = |changed: bool| {
+            (0..20_000)
+                .map(|i| {
+                    if changed && i % 40 == 0 {
+                        format!("changed {i}\n")
+                    } else {
+                        format!("line {i}\n")
+                    }
+                })
+                .collect::<String>()
+        };
+        fs::write(root.join("big.txt"), text(false)).unwrap();
+        commit_all(&root, "base");
+        let main = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        git(&root, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        git(&root, &["remote", "add", "origin", REMOTE]);
+        git(&root, &["checkout", "-q", "-b", "feature"]);
+        fs::write(root.join("big.txt"), text(true)).unwrap();
+        commit_all(&root, "work");
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let comments = (0..500)
+            .map(|k| {
+                let body = "Check this line, it may be wrong when narrow";
+                rc(
+                    1000 + k,
+                    "sam",
+                    body,
+                    "big.txt",
+                    (k * 40 + 1) as u32,
+                    &head,
+                    "+x",
+                    false,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let server = with_comments(&main, &format!("[{comments}]"));
+        let mut app = open_app(&root, None, config_for(&server), true);
+        assert!(app.settle(loaded).await);
+        app.test_execute(Command::ShowReview);
+        idle(&mut app).await;
+        screen(&mut app);
+        open_file(&mut app, "big.txt").await;
+        lines_at(&mut app, 120);
+        assert_eq!(diff(&app).threads.blocks().list().len(), 500);
+        let slack = if cfg!(debug_assertions) { 20 } else { 1 };
+        let start = std::time::Instant::now();
+        for _ in 0..50 {
+            lines_at(&mut app, 120);
+        }
+        let draw = start.elapsed() / 50;
+        let start = std::time::Instant::now();
+        for _ in 0..300 {
+            app.mouse(MouseEventKind::ScrollDown, 60, 10);
+            lines_at(&mut app, 120);
+        }
+        let scroll = start.elapsed() / 300;
+        let start = std::time::Instant::now();
+        for _ in 0..300 {
+            app.press(KeyCode::Down, KeyModifiers::NONE);
+            app.test_execute(Command::ReviewNextThread);
+        }
+        let moves = start.elapsed() / 600;
+        // A width change recomputes the heights of all 500 blocks once.
+        let start = std::time::Instant::now();
+        lines_at(&mut app, 80);
+        let rewrap = start.elapsed();
+        eprintln!("threads budget: draw {draw:?}, scroll+draw {scroll:?}, move {moves:?}, rewrap {rewrap:?}");
+        let ms = std::time::Duration::from_millis;
+        assert!(draw < ms(60 * slack), "draw {draw:?}");
+        assert!(scroll < ms(80 * slack), "scroll {scroll:?}");
+        assert!(moves < ms(10 * slack), "moves {moves:?}");
+        assert!(rewrap < ms(200 * slack), "rewrap {rewrap:?}");
     }
 }

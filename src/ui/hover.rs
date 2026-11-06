@@ -40,8 +40,10 @@ pub fn render(f: &mut Frame, app: &mut App, groups: &[GroupHit]) -> Option<Rect>
             let h = hit.diff.as_ref()?;
             let rope = &buf.rope;
             let line = pos::line_of(rope, popup.anchor);
-            let shown = d.rows().get(d.top..)?.iter().take(h.rows.height as usize);
-            let row = shown.map(|r| r.right).position(|r| r == Some(line))?;
+            let rows = d.rows();
+            let mut shown = d.threads.blocks().walk(d.top, h.rows.height as usize, rows.len());
+            let row =
+                shown.position(|s| matches!(s, crate::review_blocks::Spot::Row(r) if rows[r].right == Some(line)))?;
             let col = pos::display_col(rope, popup.anchor, tab_width).0;
             let x = (col.saturating_sub(d.left_col) as u16).min(h.rows.width.saturating_sub(1));
             (h.text_x[1] + x, h.rows.y + row as u16)

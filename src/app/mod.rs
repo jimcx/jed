@@ -1470,6 +1470,8 @@ impl App {
             Command::ShowReview => self.focus_side(SidePanel::Review),
             Command::ReviewRefresh => self.review_refresh(),
             Command::ReviewSwitch => self.review_switch(),
+            Command::ReviewNextThread => self.review_step_thread(true),
+            Command::ReviewPrevThread => self.review_step_thread(false),
             Command::Review(c) => self.review_command(c),
             Command::ToggleToolTrace => self.toggle_tool_trace(),
             Command::RestartServer => self.restart_server(),

@@ -24,7 +24,8 @@ use unicode_width::UnicodeWidthStr;
 use crate::buffer::pos::{self, DisplayCol};
 use crate::diff_view::{self, DiffTab, Kind, Lines, Row};
 use crate::git::stage::Side;
-use crate::layout::DiffHit;
+use crate::layout::{BlockHit, DiffHit};
+use crate::review_blocks::{self, BlockLine, Kind as BlockKind, Spot};
 use crate::syntax::Span;
 use crate::theme::Theme;
 
@@ -133,6 +134,11 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
         height: area.height - 1,
         ..area
     };
+    if let Some(doc) = d.doc.clone() {
+        let width = crate::review_blocks::block_width(body.width as usize);
+        let key = d.doc_key();
+        d.threads.fit(doc.aligned(inline), key, width);
+    }
     d.scroll_to_cursor(body.height as usize);
     hit.rows = body;
 
@@ -218,7 +224,14 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
         return hit;
     }
     let top = d.top;
-    let shown = &aligned.rows[top..(top + body.height as usize).min(aligned.rows.len())];
+    let blocks = d.threads.blocks();
+    // The first aligned row in view (a window starting inside a block starts below it).
+    let first_row = match blocks.locate(top) {
+        Spot::Row(r) => r,
+        Spot::Block { index, .. } => blocks.list()[index].after_row + 1,
+    };
+    let block_width = crate::review_blocks::block_width(body.width as usize);
+    let mut block_lines: Option<(usize, Vec<BlockLine>)> = None;
     let digits = doc.left.len().max(doc.right.len()).to_string().len().max(3);
     let button = match d.pair.staging() {
         Some(Side::Unstaged) => Some(" Stage "),
@@ -229,7 +242,7 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
     let revertible = d.pair == diff_view::Pair::UNSTAGED;
     let compare = d.compare.is_some();
     let starts = &aligned.starts;
-    let mut next_start = starts.partition_point(|&r| r < top);
+    let mut next_start = starts.partition_point(|&r| r < first_row);
     let mut cursor_cell = None;
     let (mut left_walk, mut right_walk) = (Walk::new(&doc.left), Walk::new(&doc.right));
     // The text's columns (as `draw_inline` / `draw_half` lay them out; side by side the narrower
@@ -247,9 +260,42 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
     };
     hit.divider = (!inline).then_some(body.x + half);
     let mut widest = 0;
-    for (i, row) in shown.iter().enumerate() {
-        let index = top + i;
+    for (i, spot) in blocks.walk(top, body.height as usize, aligned.rows.len()).enumerate() {
         let y = body.y + i as u16;
+        let index = match spot {
+            Spot::Row(r) => r,
+            Spot::Block { index: bi, offset } => {
+                let t = blocks.list()[bi].thread;
+                let lines = match &mut block_lines {
+                    Some((b, lines)) if *b == bi => lines,
+                    slot => {
+                        let fresh = review_blocks::lines(&d.threads.list()[t], d.threads.is_collapsed(t), block_width);
+                        &mut slot.insert((bi, fresh)).1
+                    }
+                };
+                let Some(line) = lines.get(offset) else { continue };
+                draw_block_line(out, body, y, line, d.threads.list()[t].resolved, block_width, theme);
+                let x = body.x + review_blocks::INDENT as u16;
+                let w = (block_width as u16).min(body.width.saturating_sub(review_blocks::INDENT as u16));
+                match hit.blocks.last_mut() {
+                    Some(b) if b.thread == t && b.rect.y + b.rect.height == y => b.rect.height += 1,
+                    _ => hit.blocks.push(BlockHit {
+                        thread: t,
+                        rect: Rect::new(x, y, w, 1),
+                        toggle: None,
+                    }),
+                }
+                if line.kind == BlockKind::Header {
+                    let cols = review_blocks::toggle_cols(block_width);
+                    let tw = (cols.end.min(w as usize)).saturating_sub(cols.start) as u16;
+                    if let Some(b) = hit.blocks.last_mut() {
+                        b.toggle = Some(Rect::new(x + cols.start as u16, y, tw, 1));
+                    }
+                }
+                continue;
+            }
+        };
+        let row = &aligned.rows[index];
         let current = index == d.cursor;
         let at_caret;
         let parts = (row.kind() == Kind::Changed)
@@ -384,6 +430,40 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
         f.set_cursor_position(Position { x, y });
     }
     hit
+}
+
+/// One row of a thread block: the frame in `review.thread.border`, headers in
+/// `review.thread.header` (`review.thread.resolved` for a resolved thread), comments in
+/// `review.thread.text`.
+fn draw_block_line(out: &mut Cells, body: Rect, y: u16, line: &BlockLine, resolved: bool, width: usize, theme: &Theme) {
+    let x = body.x + review_blocks::INDENT as u16;
+    let room = body
+        .width
+        .saturating_sub(review_blocks::INDENT as u16)
+        .min(width as u16) as usize;
+    let text = theme.get("review.thread.text");
+    let border = theme.get("review.thread.border");
+    let head = theme.get(if resolved {
+        "review.thread.resolved"
+    } else {
+        "review.thread.header"
+    });
+    out.set_style(Rect::new(x, y, room as u16, 1), text);
+    match line.kind {
+        BlockKind::Header | BlockKind::Reply => {
+            out.set_stringn(x, y, &line.text, room, head);
+            // The corner in the frame's colour (the text starts with `┌` / `├`).
+            let corner = if line.kind == BlockKind::Header { "┌" } else { "├" };
+            out.set_stringn(x, y, corner, 1.min(room), border);
+        }
+        BlockKind::Footer => {
+            out.set_stringn(x, y, &line.text, room, border);
+        }
+        BlockKind::Body | BlockKind::Buttons => {
+            out.set_stringn(x, y, &line.text, room, text);
+            out.set_stringn(x, y, "│", 1.min(room), border);
+        }
+    }
 }
 
 /// One side of a side-by-side row.

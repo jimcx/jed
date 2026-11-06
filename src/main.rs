@@ -129,6 +129,7 @@ mod rename;
 mod replace_tests;
 mod review;
 mod review_anchor;
+mod review_blocks;
 #[cfg(test)]
 mod review_followups_tests;
 mod scm;

@@ -117,6 +117,7 @@ impl App {
     }
 
     pub(super) fn handle_review_event(&mut self, ev: ReviewEvent) {
+        self.review.generation += 1;
         let ReviewEvent::Looked(outcome) = ev;
         let r = &mut self.review;
         r.loading = false;
@@ -302,6 +303,62 @@ impl App {
             d.go_to_side_line(right, line);
             self.needs_redraw = true;
         }
+    }
+
+    /// Gives each review diff tab the placed threads of its file (a lookup finished, or the tab
+    /// is new): plain data, so drawing needs no app state. Outdated and missing threads aren't
+    /// shown in the diff (CONVERSATIONS lists them).
+    pub(super) fn sync_review_threads(&mut self) {
+        let generation = self.review.generation;
+        let Some(workdir) = self.git.status.as_ref().map(|s| &s.repo.workdir) else {
+            return;
+        };
+        let review = self.review.review();
+        for (_, d) in self.groups.diff_tabs_mut() {
+            if !d.pair.is_review() || d.threads.synced == Some(generation) {
+                continue;
+            }
+            d.threads.synced = Some(generation);
+            let blocks = review
+                .map(|r| {
+                    r.threads
+                        .iter()
+                        .filter(|t| workdir.join(&t.thread.anchor.path) == d.path)
+                        .filter_map(|t| {
+                            let Placement::Placed { side, lines } = &t.place else {
+                                return None;
+                            };
+                            Some(crate::review_blocks::ThreadBlock {
+                                id: t.thread.id.clone(),
+                                right: *side == Side::Right,
+                                line: lines.end.saturating_sub(1).max(lines.start),
+                                resolved: t.thread.resolved,
+                                comments: t
+                                    .thread
+                                    .comments
+                                    .iter()
+                                    .map(|c| (c.author.clone(), c.body.clone()))
+                                    .collect(),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            d.threads.set(blocks);
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Next / Previous Thread: the caret to the next / previous thread's line in the active
+    /// review diff tab (wrapping), its block in view.
+    pub(super) fn review_step_thread(&mut self, forward: bool) {
+        let Some(d) = self.group_mut().active_diff_mut().filter(|d| d.pair.is_review()) else {
+            return self.notify(Level::Info, "Not in a code review's diff".into());
+        };
+        if !d.step_thread(forward) {
+            self.notify(Level::Info, "No comments on this file".into());
+        }
+        self.needs_redraw = true;
     }
 
     /// Opens the selected file's review tab.

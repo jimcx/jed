@@ -766,6 +766,17 @@ pub struct DiffHit {
     /// divider: the mouse maps a cell to a side and a display column.
     pub text_x: [u16; 2],
     pub divider: Option<u16>,
+    /// A review tab's thread blocks on screen (the part in view), in order.
+    pub blocks: Vec<BlockHit>,
+}
+
+/// A thread block's rows in view and its collapse toggle (when its header is in view).
+#[derive(Debug, Clone)]
+pub struct BlockHit {
+    /// Index into `DiffTab::threads.list()`.
+    pub thread: usize,
+    pub rect: Rect,
+    pub toggle: Option<Rect>,
 }
 
 /// The changed-on-disk banner: its row and each button.

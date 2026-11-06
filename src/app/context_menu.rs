@@ -45,6 +45,9 @@ pub fn menu_for(target: MenuTarget) -> Vec<MenuItem> {
             MenuItem::Separator,
             MenuItem::new("Refresh", Command::ReviewRefresh),
             MenuItem::new("Switch Merge Request", Command::ReviewSwitch),
+            MenuItem::Separator,
+            MenuItem::new("Next Thread", Command::ReviewNextThread),
+            MenuItem::new("Previous Thread", Command::ReviewPrevThread),
         ];
     };
     let reveal = if cfg!(target_os = "macos") {

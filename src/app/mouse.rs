@@ -274,6 +274,7 @@ impl App {
                 d.rows.contains(p)
                     && !d.buttons.iter().chain(&d.reverts).any(|(r, _)| r.contains(p))
                     && !d.moves.iter().any(|(r, _, _)| r.contains(p))
+                    && !d.blocks.iter().any(|b| b.rect.contains(p))
                     && hit.scrollbar.is_none_or(|s| !s.track.contains(p))
             }
             _ => false,

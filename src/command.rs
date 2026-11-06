@@ -373,6 +373,11 @@ pub enum Command {
     ReviewRefresh,
     /// "Code Review: Switch Merge Request" (unbound): the next open merge request of the branch.
     ReviewSwitch,
+    /// "Code Review: Next Thread" (unbound): in a review diff, the caret to the next comment
+    /// thread (wrapping).
+    ReviewNextThread,
+    /// "Code Review: Previous Thread" (unbound).
+    ReviewPrevThread,
     /// The Code Review panel's list (`Context::Review`).
     Review(ReviewCommand),
     /// "Tools: Toggle Protocol Trace": the selected (or the active file's) language server's
@@ -1232,7 +1237,13 @@ impl Command {
             Command::RebuildSyntaxPlugins,
         ]);
         all.extend(ToolsCommand::ALL.map(Command::Tools));
-        all.extend([Command::ShowReview, Command::ReviewRefresh, Command::ReviewSwitch]);
+        all.extend([
+            Command::ShowReview,
+            Command::ReviewRefresh,
+            Command::ReviewSwitch,
+            Command::ReviewNextThread,
+            Command::ReviewPrevThread,
+        ]);
         all.extend(ReviewCommand::ALL.map(Command::Review));
         all
     }
@@ -1621,6 +1632,8 @@ impl Command {
             Command::ShowReview => "review.show".into(),
             Command::ReviewRefresh => "review.refresh".into(),
             Command::ReviewSwitch => "review.switch".into(),
+            Command::ReviewNextThread => "review.nextThread".into(),
+            Command::ReviewPrevThread => "review.previousThread".into(),
             Command::Review(c) => format!(
                 "reviewView.{}",
                 match c {
@@ -2030,6 +2043,8 @@ impl Command {
             Command::ShowReview => "Code Review: Show",
             Command::ReviewRefresh => "Code Review: Refresh",
             Command::ReviewSwitch => "Code Review: Switch Merge Request",
+            Command::ReviewNextThread => "Code Review: Next Thread",
+            Command::ReviewPrevThread => "Code Review: Previous Thread",
             Command::Review(c) => match c {
                 ReviewCommand::Up => "Code Review: Select Previous File",
                 ReviewCommand::Down => "Code Review: Select Next File",
@@ -2236,6 +2251,8 @@ mod tests {
             Command::ShowReview => 151,
             Command::ReviewRefresh => 152,
             Command::ReviewSwitch => 153,
+            Command::ReviewNextThread => 155,
+            Command::ReviewPrevThread => 156,
             Command::Review(_) => 154,
             Command::ToggleToolTrace => 92,
             Command::RestartServer => 93,

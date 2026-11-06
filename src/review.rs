@@ -331,6 +331,8 @@ pub struct ReviewState {
     pub env: Env,
     /// Look up at launch and when HEAD moves (off in tests, which opt in).
     pub auto: bool,
+    /// Counts the lookups' results: review diff tabs copy their threads when it changed.
+    pub generation: u64,
 }
 
 impl Default for ReviewState {
@@ -348,6 +350,7 @@ impl Default for ReviewState {
             interval: POLL,
             config: cfg!(test).then(|| Arc::new(ForgeConfig::default())),
             auto: !cfg!(test),
+            generation: 0,
             env: Arc::new(|name| std::env::var(name).ok()),
         }
     }

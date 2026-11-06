@@ -44,6 +44,8 @@ impl Mode {
                     | Command::ShowReview
                     | Command::ReviewRefresh
                     | Command::ReviewSwitch
+                    | Command::ReviewNextThread
+                    | Command::ReviewPrevThread
                     | Command::Review(_)
                     | Command::TogglePanel
                     | Command::ToggleProblems

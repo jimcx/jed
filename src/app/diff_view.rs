@@ -433,6 +433,7 @@ impl App {
         if tokio::runtime::Handle::try_current().is_err() {
             return;
         }
+        self.sync_review_threads();
         let due = self.diffs.deadline.is_some_and(|d| d <= Instant::now());
         if due {
             self.diffs.deadline = None;
@@ -897,7 +898,7 @@ impl App {
                 // sideways scroll while dragging.
                 let right = d.caret.right;
                 let col = diff_col(d, &h, right, m.column).min(d.left_col + d.text_width);
-                d.caret_click(d.top + row, right, col, true);
+                d.caret_click(d.threads.blocks().row_near(d.top + row), right, col, true);
             }
             return true;
         }
@@ -935,8 +936,16 @@ impl App {
                     .find(|(r, _, _)| r.contains(p))
                     .map(|(_, k, right)| (*k, *right));
                 let on_action = button.is_some() || revert.is_some() || apply.is_some();
+                // A thread block: its header's toggle collapses it; the rest is not text.
+                if let Some(b) = h.blocks.iter().find(|b| b.rect.contains(p)) {
+                    if b.toggle.is_some_and(|r| r.contains(p)) {
+                        d.threads.toggle(b.thread);
+                    }
+                    self.focus_group(g);
+                    return true;
+                }
                 if h.rows.contains(p) {
-                    let row = d.top + (m.row - h.rows.y) as usize;
+                    let row = d.row_at(d.top + (m.row - h.rows.y) as usize).unwrap_or(usize::MAX);
                     if row < d.rows().len() {
                         if on_action {
                             d.cursor = row;
