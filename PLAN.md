@@ -15,7 +15,7 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
 - A general plugin system (scripted commands, UI, keymaps or themes as code): the one kind of plugin is a syntax plugin — a tree-sitter grammar built and loaded from `~/.config/jed/languages/` (see [Syntax plugins](#syntax-plugins)), which is native code through tree-sitter's C ABI, never Rust types across a library boundary
 - Windows support
 - Code folding
-- Git beyond viewing and staging (commit, branch, push, …)
+- Git beyond viewing and staging (commit, branch, push, …). [Code review](#code-review) talks to a forge's API but stays inside this: it never commits, fetches or pushes
 - Chorded keybindings (e.g. Cmd+K Cmd+D); every binding is a single key combo
 - Terminals without the kitty keyboard protocol (stretch goal)
 - _TBD_
@@ -32,6 +32,7 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
 | Syntax plugins | `libloading` + the system C compiler | grammars from `~/.config/jed/languages/` built to a shared library and `dlopen`ed (the [Syntax plugins](tasks/syntax_plugins.md) task) |
 | LSP | `lsp-types` + `tokio` | JSON-RPC over stdio |
 | Git | `git2` | mature libgit2 bindings |
+| Forge APIs | `ureq` (rustls, platform certificate verifier) | Gitea, GitHub and GitLab, blocking calls in `spawn_blocking` (the [Code review](tasks/mr_review.md) task) |
 | Diff | `imara-diff` | buffer/file diffs for the diff view |
 | File watching | `notify` | |
 | Config | TOML via `serde` | `~/.config/jed/` |
@@ -58,7 +59,7 @@ A terminal text editor with a VS Code-style layout and keybindings. Not modal, n
 │ Status bar: branch · diagnostics · Ln/Col · lang · encoding │
 └─────────────────────────────────────────────────────────────┘
 ```
-- **Activity bar** (left edge): icons for Explorer, Search, Source Control, Tools
+- **Activity bar** (left edge): icons for Explorer, Search, Source Control, Code Review, Tools
 - **Side panel**: switches with the activity bar; can be toggled and resized
 - **Editor area**: groups with tabs, split horizontally or vertically
 - **Bottom panel**: Problems list, task terminals
@@ -458,6 +459,15 @@ jed as git's editor (the [Git editor](tasks/git_editor.md) task): `git config --
   - A stale or refused socket (jed gone, another user's) falls back to starting jed normally, logged
   - Deferred: a global registry (`jed <file>` from any shell opening in an already running jed of that workspace, as `code` does): terminal editors open where they're started, and Recent Workspaces' kitty integration already finds a running jed
 
+### Code review
+Review a Gitea, GitHub or GitLab merge request (MR) on its checked-out branch (the [Code review](tasks/mr_review.md) task). git itself stays on the command line: jed talks to the forge's API and never commits, fetches or pushes.
+- A Code Review view in the activity bar: the MR's summary, the files changed since the merge base, and its conversations
+- Clicking a file opens an inline diff in a new tab; its new side is the file's own buffer, so definition, references and hover work on every line that isn't deleted
+- Other people's comments appear between the code lines; comments on lines changed since are listed as outdated
+- Selecting lines starts a comment in an inline box; comments stay as drafts until Submit Review (Comment, Approve or Request Changes)
+- Apply Suggestion edits the buffer as one undo step, without committing; it refuses when the lines have changed
+- Hosts and token variables come only from `~/.config/jed/forges.toml`, never from a workspace
+
 ### Tasks (throwaway terminals)
 - A terminal is spawned for one task, then thrown away when it finishes
 - Templates: name, command, cwd, env — in `.workspace` and/or `~/.config/jed/tasks.toml` (see [Workspace](#workspace))
@@ -681,6 +691,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Cheap merge-conflict scan** (`conflict_scan`): the conflict-marker scan stops costing a full line walk of the buffer on the first frame after every edit — [tasks/conflict_scan.md](tasks/conflict_scan.md)
 - **Claude Code IDE integration** (`claude_ide`): let `claude` running in a jed terminal auto-connect to jed and share the editor's context, by implementing Claude Code's editor-agnostic IDE protocol on jed's side — no upstream change — [tasks/claude_ide.md](tasks/claude_ide.md)
 - **Close tabs and go to the Nth tab** (`close_tabs_nth`): close all / others / saved tabs, and go to the Nth tab in a group — [tasks/close_tabs_nth.md](tasks/close_tabs_nth.md)
+- **Code review** (`mr_review`): review a Gitea, GitHub or GitLab merge request in jed — changed files, inline diffs with language server navigation, comments, drafts and suggestions — [tasks/mr_review.md](tasks/mr_review.md)
 - **Expand / shrink selection** (`expand_shrink_selection`): grow / shrink each selection to enclosing syntax nodes — [tasks/expand_shrink_selection.md](tasks/expand_shrink_selection.md)
 - **Feature-based end-to-end test files** (`feature_test_files`): reorganize milestone test files into per-feature files — [tasks/feature_test_files.md](tasks/feature_test_files.md)
 - **Keyboard resize of splits** (`keyboard_resize_splits`): resize the active group's split by keyboard — [tasks/keyboard_resize_splits.md](tasks/keyboard_resize_splits.md)
