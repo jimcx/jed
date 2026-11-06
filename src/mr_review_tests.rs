@@ -854,3 +854,310 @@ mod lsp {
         assert!(message(&app).is_empty(), "{}", message(&app));
     }
 }
+
+/// mr_review-e1: threads loaded with the lookup, placed against the live text, the unresolved
+/// count and the CONVERSATIONS section (a divider that drags, a collapsing header, Enter / a
+/// click opening the file at the thread's line).
+mod threads {
+    use super::*;
+    use crate::forge::Side;
+    use crate::review_anchor::Placement;
+    use crossterm::event::{MouseButton, MouseEventKind};
+
+    const ISSUES: &str = "/api/v1/repos/alice/project/issues/7/comments?page=1&limit=50";
+
+    #[allow(clippy::too_many_arguments)]
+    fn rc(
+        id: u64,
+        user: &str,
+        body: &str,
+        path: &str,
+        line: u32,
+        commit: &str,
+        hunk_last: &str,
+        resolved: bool,
+    ) -> String {
+        format!(
+            r#"{{"id":{id},"user":{{"login":"{user}"}},"body":"{body}","path":"{path}","position":{line},
+            "original_position":{line},"commit_id":"{commit}","original_commit_id":"{commit}",
+            "diff_hunk":"@@ -1 +1 @@\n{hunk_last}","resolver":{}}}"#,
+            if resolved { r#"{"login":"bob"}"# } else { "null" }
+        )
+    }
+
+    /// A fake forge whose review has these line comments (a JSON array) and one plain comment.
+    fn with_comments(main: &str, comments: &str) -> FakeServer {
+        FakeServer::start(vec![
+            (
+                format!("{PULLS}?state=open&page=1&limit=50"),
+                Reply::json(&format!("[{}]", pr_json(7, "Add review panel", main))),
+            ),
+            (format!("{PULLS}/7"), Reply::json(&pr_json(7, "Add review panel", main))),
+            (
+                format!("{PULLS}/7/reviews?page=1&limit=50"),
+                Reply::json(
+                    r#"[{"id":1,"user":{"login":"bob"},"body":"","state":"COMMENT","comments_count":9,
+                    "submitted_at":"2026-01-02T10:00:00Z","html_url":"u"}]"#,
+                ),
+            ),
+            (format!("{PULLS}/7/reviews/1/comments"), Reply::json(comments)),
+            (
+                ISSUES.to_string(),
+                Reply::json(
+                    r#"[{"id":99,"user":{"login":"ann"},"body":"Thanks for\nlooking","created_at":"2026-01-01T10:00:00Z",
+                    "updated_at":"","html_url":"u99"}]"#,
+                ),
+            ),
+        ])
+    }
+
+    fn standard(head: &str, main: &str) -> String {
+        format!(
+            "[{},{},{}]",
+            rc(
+                11,
+                "sam",
+                "Can this overflow on a narrow terminal",
+                "mod.txt",
+                3,
+                head,
+                "+m3",
+                false
+            ),
+            rc(12, "bob", "Why was this removed", "mod.txt", 2, main, "-m2", true),
+            rc(13, "cy", "Old commit", "mod.txt", 1, &"d".repeat(40), "+m1", false),
+        )
+    }
+
+    async fn loaded_app(dir: &Path, edit: Option<(&str, &str)>) -> (App, FakeServer) {
+        let (root, main) = make_repo(dir);
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        if let Some((file, text)) = edit {
+            fs::write(root.join(file), text).unwrap();
+        }
+        let server = with_comments(&main, &standard(&head, &main));
+        let mut app = open_app(&root, None, config_for(&server), true);
+        assert!(app.settle(loaded).await);
+        app.test_execute(Command::ShowReview);
+        idle(&mut app).await;
+        app.review.view.conv.section_height = 16;
+        screen(&mut app);
+        (app, server)
+    }
+
+    fn places(app: &App) -> Vec<(String, Placement)> {
+        app.review
+            .review()
+            .unwrap()
+            .threads
+            .iter()
+            .map(|t| (t.thread.id.clone(), t.place.clone()))
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_threads_are_placed_outdated_or_missing_and_counted() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server) = loaded_app(dir.path(), None).await;
+        let r = app.review.review().unwrap();
+        assert_eq!((r.unresolved(), r.threads.len(), r.conversation.len()), (2, 3, 1));
+        assert!(r.comments_error.is_none());
+        // Sorted by path and line: the missing commit's line 1, the deleted line 2, the new line 3.
+        let p = places(&app);
+        assert_eq!(p[0], ("13".into(), Placement::Missing));
+        assert_eq!(
+            p[1],
+            (
+                "12".into(),
+                Placement::Placed {
+                    side: Side::Left,
+                    lines: 1..2
+                }
+            )
+        );
+        assert_eq!(
+            p[2],
+            (
+                "11".into(),
+                Placement::Placed {
+                    side: Side::Right,
+                    lines: 2..3
+                }
+            )
+        );
+        let text = screen(&mut app);
+        assert!(text.contains("2 unresolved"), "{text}");
+        assert!(text.contains("CONVERSATIONS (4)"), "{text}");
+        assert!(text.contains("mod.txt:3  sam"), "{text}");
+        assert!(text.contains("Can this overflow"), "{text}");
+        assert!(text.contains("no commit"), "{text}");
+        assert!(text.contains("ann  (merge request)"), "{text}");
+        assert!(text.contains("Thanks for"), "{text}");
+        assert!(!text.contains("looking"), "only the first line shows");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_a_local_edit_outdates_the_thread_on_that_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server) = loaded_app(dir.path(), Some(("mod.txt", "m1\nm2 changed\nm3 edited\n"))).await;
+        let p = places(&app);
+        assert_eq!(p[2], ("11".into(), Placement::Outdated));
+        // The deleted line is judged against the merge base: still placed.
+        assert!(matches!(p[1].1, Placement::Placed { side: Side::Left, .. }));
+        let text = screen(&mut app);
+        assert!(text.contains("outdated"), "{text}");
+        // Enter opens the file near where the thread was written (line 3).
+        let conv = &mut app.review.view.conv;
+        conv.focused = true;
+        conv.select(4, 2);
+        app.ui.focus = crate::app::Focus::SidePanel;
+        app.press(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.settle(|a| a.diffs_settled()).await);
+        assert!(diff(&app).path.ends_with("mod.txt"));
+        assert_eq!(diff(&app).cursor_line(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_a_deleted_line_thread_opens_on_the_left_side() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server) = loaded_app(dir.path(), None).await;
+        // The rows: 0 the missing commit, 1 the deleted line, 2 the new line, 3 the MR comment.
+        let hit = app.hits.review.clone().unwrap();
+        app.mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hit.conv_list.x + 6,
+            hit.conv_list.y + 2,
+        );
+        assert!(app.settle(|a| a.diffs_settled()).await);
+        let d = diff(&app);
+        assert!(d.path.ends_with("mod.txt"));
+        let row = d.rows()[d.cursor];
+        assert_eq!(row.left, Some(1), "the line m2 of the merge base");
+        // A placed right-side thread goes to its line.
+        app.ui.focus = crate::app::Focus::SidePanel;
+        app.review.view.conv.focused = true;
+        app.review.view.conv.select(4, 2);
+        app.press(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.settle(|a| a.diffs_settled()).await);
+        assert_eq!(diff(&app).cursor_line(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_a_thread_on_a_line_with_no_right_counterpart_opens_a_left_only_row() {
+        let dir = tempfile::tempdir().unwrap();
+        // m2 is deleted outright (no replacement line); the right-side thread on line 3 is now
+        // past the end of the file.
+        let (mut app, _server) = loaded_app(dir.path(), Some(("mod.txt", "m1\n"))).await;
+        let p = places(&app);
+        assert_eq!(
+            p[1],
+            (
+                "12".into(),
+                Placement::Placed {
+                    side: Side::Left,
+                    lines: 1..2
+                }
+            )
+        );
+        assert_eq!(p[2], ("11".into(), Placement::Outdated));
+        let hit = app.hits.review.clone().unwrap();
+        app.mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hit.conv_list.x + 6,
+            hit.conv_list.y + 2,
+        );
+        assert!(app.settle(|a| a.diffs_settled()).await);
+        let d = diff(&app);
+        assert!(d.path.ends_with("mod.txt"));
+        let row = d.rows()[d.cursor];
+        assert_eq!(
+            (row.left, row.right),
+            (Some(1), None),
+            "the removed m2, a left-only row"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_the_divider_drags_and_the_header_collapses() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server) = loaded_app(dir.path(), None).await;
+        app.review.view.conv.section_height = 10;
+        screen(&mut app);
+        let hit = app.hits.review.clone().unwrap();
+        assert!(hit.divider.height == 1 && hit.conv_list.height > 0);
+        let before = app.review.view.conv.section_height;
+        // Dragging the divider up by two rows makes the section two rows taller.
+        app.mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hit.divider.x + 5,
+            hit.divider.y,
+        );
+        app.mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            hit.divider.x + 5,
+            hit.divider.y - 2,
+        );
+        app.mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            hit.divider.x + 5,
+            hit.divider.y - 2,
+        );
+        assert_eq!(app.review.view.conv.section_height, before + 2);
+        screen(&mut app);
+        let again = app.hits.review.clone().unwrap();
+        assert_eq!(again.divider.y, hit.divider.y - 2);
+        // The header collapses the list.
+        app.mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            again.conv_header.x + 5,
+            again.conv_header.y,
+        );
+        let text = screen(&mut app);
+        assert!(app.review.view.conv.collapsed);
+        assert!(
+            text.contains("CONVERSATIONS (4)") && !text.contains("Can this overflow"),
+            "{text}"
+        );
+        assert_eq!(app.hits.review.clone().unwrap().conv_list.height, 0);
+        // And opens it again.
+        let h = app.hits.review.clone().unwrap();
+        app.mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            h.conv_header.x + 5,
+            h.conv_header.y,
+        );
+        assert!(!app.review.view.conv.collapsed);
+        // Down from the last file enters the list; Up from its first row leaves it.
+        app.review.view.conv.focused = false;
+        screen(&mut app);
+        app.press(KeyCode::End, KeyModifiers::NONE);
+        app.press(KeyCode::Down, KeyModifiers::NONE);
+        assert!(app.review.view.conv.focused);
+        app.press(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.review.view.conv.selected(4), Some(1));
+        app.press(KeyCode::Up, KeyModifiers::NONE);
+        app.press(KeyCode::Up, KeyModifiers::NONE);
+        assert!(!app.review.view.conv.focused);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_a_comments_failure_keeps_the_merge_request_and_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main) = make_repo(dir.path());
+        // The plain fake has no review routes: the comments 404.
+        let server = one_mr(&main);
+        let mut app = open_app(&root, None, config_for(&server), true);
+        assert!(app.settle(loaded).await);
+        app.test_execute(Command::ShowReview);
+        idle(&mut app).await;
+        let r = app.review.review().unwrap();
+        assert_eq!(r.files.len(), 4);
+        assert!(r.comments_error.as_deref().is_some_and(|e| e.starts_with("comments:")));
+        assert!(app.review.error.is_none());
+        let text = screen(&mut app);
+        assert!(
+            text.contains("CONVERSATIONS (0)") && text.contains("comments:"),
+            "{text}"
+        );
+    }
+}

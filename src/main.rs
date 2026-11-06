@@ -128,6 +128,7 @@ mod rename;
 #[cfg(test)]
 mod replace_tests;
 mod review;
+mod review_anchor;
 #[cfg(test)]
 mod review_followups_tests;
 mod scm;

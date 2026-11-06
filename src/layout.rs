@@ -622,6 +622,15 @@ pub struct ReviewHit {
     pub list: Rect,
     pub rows: Vec<String>,
     pub summary: Rect,
+    /// The files and conversations' share of the panel (what a divider drag measures against).
+    pub body: Rect,
+    /// The CONVERSATIONS section's divider row (empty while the section is hidden) and header.
+    pub divider: Rect,
+    pub conv_header: Rect,
+    /// Its rows, two lines each from `conv_list.y`, the first being list row `conv_top`.
+    pub conv_list: Rect,
+    pub conv_top: usize,
+    pub conv_len: usize,
 }
 
 /// The find widget: its box, the query and replace input rects and their draw-time sideways

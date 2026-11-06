@@ -122,6 +122,8 @@ pub enum Drag {
     HistoryDivider,
     /// The "File History" section's divider.
     FileHistoryDivider,
+    /// The Code Review panel's CONVERSATIONS divider.
+    ReviewDivider,
     /// Selecting bytes in a group's hex tab (`app/hex.rs`).
     Hex(crate::layout::GroupId),
     /// Selecting text in a group's Markdown preview (`app/markdown.rs`).
@@ -209,9 +211,13 @@ impl App {
         };
         match &self.drag {
             Some(Drag::SideBorder) => Pointer::ColResize,
-            Some(Drag::PanelBorder | Drag::TerminalBorder | Drag::HistoryDivider | Drag::FileHistoryDivider) => {
-                Pointer::RowResize
-            }
+            Some(
+                Drag::PanelBorder
+                | Drag::TerminalBorder
+                | Drag::HistoryDivider
+                | Drag::FileHistoryDivider
+                | Drag::ReviewDivider,
+            ) => Pointer::RowResize,
             Some(Drag::Divider(d)) => divider(d),
             // Selecting text keeps the I-beam wherever the pointer goes: in an editor, a diff
             // view's panes or a one-line input (where the I-beam showed before the press).
@@ -548,7 +554,9 @@ impl App {
                 match hit {
                     Hit::SidePanel if self.ui.side_panel == SidePanel::Search => self.search_scroll(delta, &m),
                     Hit::SidePanel if self.ui.side_panel == SidePanel::SourceControl => self.scm_scroll(delta),
-                    Hit::SidePanel if self.ui.side_panel == SidePanel::Review => self.review_scroll(delta),
+                    Hit::SidePanel if self.ui.side_panel == SidePanel::Review => {
+                        self.review_scroll(delta, (m.column, m.row))
+                    }
                     Hit::SidePanel if self.ui.side_panel == SidePanel::Tools => self.tools_scroll(delta),
                     Hit::HistoryRow(_) | Hit::HistoryHeader => self.git_history.scroll_by(delta),
                     Hit::FileHistoryRow(_) | Hit::FileHistoryHeader => self.file_history_view.scroll_by(delta),
@@ -670,6 +678,7 @@ impl App {
                 Some(Drag::Terminal { .. }) => {}
                 Some(Drag::FileHistoryDivider) => self.drag_side_section(0, m.row),
                 Some(Drag::HistoryDivider) => self.drag_side_section(1, m.row),
+                Some(Drag::ReviewDivider) => self.drag_review_divider(m.row),
                 None => {}
             },
             MouseEventKind::Up(MouseButton::Left) => {

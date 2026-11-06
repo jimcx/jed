@@ -361,6 +361,8 @@ impl Theme {
             ("review.deleted", Style::new().fg(c(0xC74E39))),
             ("review.renamed", Style::new().fg(c(0x73C991))),
             ("review.viewed", Style::new().fg(c(0x89D185))),
+            ("review.unresolved", Style::new().fg(c(0xE2C08D))),
+            ("review.resolved", Style::new().fg(c(0x89D185))),
             ("review.error", Style::new().fg(c(0xF14C4C))),
             ("tools.starting", Style::new().fg(c(0xCCA700))),
             ("tools.running", Style::new().fg(c(0x89D185))),

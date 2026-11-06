@@ -94,8 +94,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
         }
         SidePanel::Review => {
             let (review, bar) = super::review::render(f, view, app);
+            let rules = review.iter().map(|h| h.divider).filter(|r| r.height > 0).collect();
             return SideHits {
                 review,
+                rules,
                 scrollbar: bar.map(|b| (ScrollTarget::Side(SidePanel::Review), b)),
                 ..SideHits::default()
             };

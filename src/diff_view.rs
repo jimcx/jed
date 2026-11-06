@@ -790,7 +790,7 @@ pub struct DiffTab {
     pub reveal: bool,
     /// Where the first load puts the cursor instead of the first change: the row of this line
     /// of the right side (`go_to_line` before the diff arrived).
-    line: Option<usize>,
+    line: Option<(bool, usize)>,
     generation: u64,
     running: Option<u64>,
     /// What the last load read the live sides from (per side `None`: the disk, else that buffer
@@ -1070,8 +1070,8 @@ impl DiffTab {
                 }
                 if first {
                     // Opening goes to the line asked for, else the first change (VS Code).
-                    if let Some(line) = self.line.take() {
-                        self.cursor = self.aligned().row_of(true, line);
+                    if let Some((right, line)) = self.line.take() {
+                        self.cursor = self.aligned().row_of(right, line);
                     } else if let Some(&row) = self.aligned().starts.first() {
                         self.cursor = row;
                     }
@@ -1155,11 +1155,16 @@ impl DiffTab {
     /// The cursor to the row of the right side's line `line` (else the nearest before it),
     /// scrolled into view; before the first load, where that load puts it.
     pub fn go_to_line(&mut self, line: usize) {
+        self.go_to_side_line(true, line);
+    }
+
+    /// [`Self::go_to_line`] on either side (`right`: the work tree's, else the merge base's).
+    pub fn go_to_side_line(&mut self, right: bool, line: usize) {
         if self.doc.is_none() {
-            self.line = Some(line);
+            self.line = Some((right, line));
             return;
         }
-        self.cursor = self.aligned().row_of(true, line);
+        self.cursor = self.aligned().row_of(right, line);
         self.reveal = true;
     }
 

@@ -14,6 +14,8 @@ use crate::app::{App, Focus};
 use crate::forge::MrState;
 use crate::layout::{ReviewHit, ScrollBarHit, ScrollTarget, SidePanel};
 use crate::review::Content;
+use crate::review_anchor::Placement;
+use crate::side_sections::{Section, split};
 
 /// Draws the panel in `area` (the side panel below its title, without its border), the file
 /// list's scroll bar in its last column. Sets the list's height and keeps its selection on its file.
@@ -28,20 +30,17 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
     let header = base.patch(theme.get("sideBar.header"));
     let error = base.patch(theme.get("review.error"));
     let focused = app.ui.focus == Focus::SidePanel && app.prompt.is_none() && app.palette.is_none();
-    let selected_style = if focused {
-        theme.get("list.active")
-    } else {
-        base.patch(theme.get("list.inactive"))
-    };
+    let inactive = base.patch(theme.get("list.inactive"));
+    let selected_style = if focused { theme.get("list.active") } else { inactive };
     let out = f.buffer_mut();
     let width = area.width as usize;
     let mut y = area.y;
     let end = area.y + area.height;
     let state = &mut app.review;
     // Lines of text, wrapped, until the area's end.
-    let text = |out: &mut ratatui::buffer::Buffer, y: &mut u16, s: &str, style| {
+    let text = |out: &mut ratatui::buffer::Buffer, y: &mut u16, limit: u16, s: &str, style| {
         for line in wrap(s, width.saturating_sub(2)) {
-            if *y >= end {
+            if *y >= limit {
                 return;
             }
             out.set_stringn(area.x + 1, *y, &line, width - 1, style);
@@ -49,12 +48,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
         }
     };
     if let Some(e) = &state.error {
-        text(out, &mut y, e, error);
+        text(out, &mut y, end, e, error);
     }
     let mut hit = ReviewHit {
         list: Rect::default(),
         rows: Vec::new(),
         summary: Rect::default(),
+        ..ReviewHit::default()
     };
     let Content::Loaded(review) = &state.content else {
         let message = match &state.content {
@@ -63,7 +63,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
             _ if state.error.is_some() => String::new(),
             _ => "No merge request looked up yet.".into(),
         };
-        text(out, &mut y, &message, dim);
+        text(out, &mut y, end, &message, dim);
         return (Some(hit), None);
     };
 
@@ -77,11 +77,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
     let draft = if review.mr.draft { "Draft: " } else { "" };
     let title = format!("!{} {draft}{}{mark}", review.mr.number, review.mr.title);
     hit.summary = Rect { y, height: 1, ..area };
-    text(out, &mut y, &truncate(&title, width - 2), header);
+    text(out, &mut y, end, &truncate(&title, width - 2), header);
     let branches = format!("{} → {}", review.mr.head.name, review.mr.base.name);
-    text(out, &mut y, &truncate(&branches, width - 2), dim);
+    text(out, &mut y, end, &truncate(&branches, width - 2), dim);
     let viewed = state.viewed_count();
     let review = state.review().expect("loaded above");
+    let unresolved = review.unresolved();
     let files = review.files.len();
     let mr_state = match review.mr.state {
         MrState::Open => "open",
@@ -92,97 +93,232 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
     if viewed > 0 {
         counts.push_str(&format!(" · {viewed} viewed"));
     }
+    if unresolved > 0 {
+        counts.push_str(&format!(" · {unresolved} unresolved"));
+    }
     counts.push_str(&format!(" · {mr_state}"));
-    text(out, &mut y, &truncate(&counts, width - 2), dim);
-    if y < end {
-        out.set_stringn(area.x, y, " ▾ FILES", width, header);
-        y += 1;
-    }
-    if let Some(e) = &review.files_error {
-        text(out, &mut y, e, error);
-    }
+    text(out, &mut y, end, &truncate(&counts, width - 2), dim);
+    // FILES and CONVERSATIONS share the rest of the panel.
     if y >= end {
         return (Some(hit), None);
     }
-
-    // The file list.
-    let mut list = Rect {
+    let region = Rect {
         y,
         height: end - y,
         ..area
     };
-    let bar = scrollbar::take_column(&mut list);
-    let state = &mut app.review;
+    hit.body = region;
     let Content::Loaded(review) = &state.content else {
         unreachable!()
     };
-    let files = &review.files;
-    state.view.set_height(files, list.height as usize);
-    state.view.settle(files);
-    state.view.clamp(files.len());
-    let top = state.view.scroll(files.len());
-    let selected = state.view.selected_row(files);
-    let scroll = state.view.scrollable(files.len());
-    let bar = bar.map(|track| {
-        let scroll = crate::scrollbar::Scrollable::scroll(&scroll);
-        scrollbar::render(out, track, scroll, look, base, theme)
-    });
-    hit.list = list;
-    for (i, file) in files.iter().enumerate().skip(top).take(list.height as usize) {
-        let row_y = list.y + (i - top) as u16;
-        let style = if selected == Some(i) {
-            let s = base.patch(selected_style);
-            out.set_style(
-                Rect {
-                    y: row_y,
-                    height: 1,
-                    ..list
-                },
-                s,
-            );
-            s
-        } else {
-            base
-        };
-        let is_viewed = state.viewed.as_ref().is_some_and(|v| {
-            let key = crate::review::Viewed::key(&review.repo, review.mr.number, &file.path);
-            v.is_viewed(&key, &file.hash)
-        });
-        if is_viewed {
-            out.set_stringn(list.x + 1, row_y, "✓", 1, style.patch(theme.get("review.viewed")));
-        }
-        let key = match file.status {
-            'A' => "review.added",
-            'D' => "review.deleted",
-            'R' | 'C' => "review.renamed",
-            _ => "review.modified",
-        };
-        out.set_stringn(
-            list.x + 3,
-            row_y,
-            file.status.encode_utf8(&mut [0; 4]),
-            1,
-            style.patch(theme.get(key)),
+    let has_conv = review.conv_len() > 0 || review.comments_error.is_some();
+    let (files_h, conv_h) = if has_conv {
+        let conv = &state.view.conv;
+        let (rest, h) = split(
+            region.height,
+            &[Section {
+                height: conv.section_height,
+                collapsed: conv.collapsed,
+            }],
         );
-        // The counts at the right edge.
-        let mut right = list.x + list.width;
-        let mut put = |s: String, key: &str, right: &mut u16| {
-            let w = s.width() as u16;
-            if *right >= list.x + 5 + w {
-                *right -= w;
-                out.set_stringn(*right, row_y, &s, w as usize, style.patch(theme.get(key)));
-                *right = right.saturating_sub(1);
-            }
+        (rest, h[0])
+    } else {
+        (region.height, 0)
+    };
+    let files_end = y + files_h;
+    out.set_stringn(area.x, y, " ▾ FILES", width, header);
+    y += 1;
+    if let Some(e) = &review.files_error {
+        text(out, &mut y, files_end, e, error);
+    }
+    let mut bar = None;
+    if y < files_end {
+        let mut list = Rect {
+            y,
+            height: files_end - y,
+            ..area
         };
-        if file.deletions > 0 {
-            put(format!("-{}", file.deletions), "review.deleted", &mut right);
+        let track = scrollbar::take_column(&mut list);
+        let files = &review.files;
+        state.view.set_height(files, list.height as usize);
+        state.view.settle(files);
+        state.view.clamp(files.len());
+        let top = state.view.scroll(files.len());
+        let selected = state.view.selected_row(files);
+        let scroll = state.view.scrollable(files.len());
+        bar = track.map(|track| {
+            let scroll = crate::scrollbar::Scrollable::scroll(&scroll);
+            scrollbar::render(out, track, scroll, look, base, theme)
+        });
+        hit.list = list;
+        let files_style = if state.view.conv.focused {
+            inactive
+        } else {
+            selected_style
+        };
+        for (i, file) in files.iter().enumerate().skip(top).take(list.height as usize) {
+            let row_y = list.y + (i - top) as u16;
+            let style = if selected == Some(i) {
+                let s = base.patch(files_style);
+                out.set_style(
+                    Rect {
+                        y: row_y,
+                        height: 1,
+                        ..list
+                    },
+                    s,
+                );
+                s
+            } else {
+                base
+            };
+            let is_viewed = state.viewed.as_ref().is_some_and(|v| {
+                let key = crate::review::Viewed::key(&review.repo, review.mr.number, &file.path);
+                v.is_viewed(&key, &file.hash)
+            });
+            if is_viewed {
+                out.set_stringn(list.x + 1, row_y, "✓", 1, style.patch(theme.get("review.viewed")));
+            }
+            let key = match file.status {
+                'A' => "review.added",
+                'D' => "review.deleted",
+                'R' | 'C' => "review.renamed",
+                _ => "review.modified",
+            };
+            out.set_stringn(
+                list.x + 3,
+                row_y,
+                file.status.encode_utf8(&mut [0; 4]),
+                1,
+                style.patch(theme.get(key)),
+            );
+            // The counts at the right edge.
+            let mut right = list.x + list.width;
+            let mut put = |s: String, key: &str, right: &mut u16| {
+                let w = s.width() as u16;
+                if *right >= list.x + 5 + w {
+                    *right -= w;
+                    out.set_stringn(*right, row_y, &s, w as usize, style.patch(theme.get(key)));
+                    *right = right.saturating_sub(1);
+                }
+            };
+            if file.deletions > 0 {
+                put(format!("-{}", file.deletions), "review.deleted", &mut right);
+            }
+            if file.additions > 0 {
+                put(format!("+{}", file.additions), "review.added", &mut right);
+            }
+            let room = right.saturating_sub(list.x + 5) as usize;
+            out.set_stringn(list.x + 5, row_y, truncate(&file.path, room), room, style);
+            hit.rows.push(file.path.clone());
         }
-        if file.additions > 0 {
-            put(format!("+{}", file.additions), "review.added", &mut right);
+    }
+
+    // CONVERSATIONS: a divider row (a border, left blank), the header, two-line rows.
+    state.view.conv.height = 0;
+    if conv_h > 0 {
+        let divider_y = files_end;
+        hit.divider = Rect {
+            y: divider_y,
+            height: 1,
+            ..area
+        };
+        hit.conv_header = Rect {
+            y: divider_y + 1,
+            height: 1,
+            ..area
+        };
+        let len = review.conv_len();
+        let conv = &mut state.view.conv;
+        let label = format!(" {} CONVERSATIONS ({len})", if conv.collapsed { '▸' } else { '▾' });
+        out.set_stringn(area.x, divider_y + 1, &label, width, header);
+        let mut by = divider_y + 2;
+        let body_end = divider_y + conv_h;
+        if by < body_end
+            && let Some(e) = &review.comments_error
+        {
+            out.set_stringn(area.x + 1, by, truncate(e, width - 2), width - 1, error);
+            by += 1;
         }
-        let room = right.saturating_sub(list.x + 5) as usize;
-        out.set_stringn(list.x + 5, row_y, truncate(&file.path, room), room, style);
-        hit.rows.push(file.path.clone());
+        let rows = (body_end.saturating_sub(by) / 2) as usize;
+        conv.height = rows;
+        let top = conv.top(len);
+        let selected = conv.selected(len);
+        hit.conv_list = Rect {
+            y: by,
+            height: rows as u16 * 2,
+            ..area
+        };
+        hit.conv_top = top;
+        hit.conv_len = len;
+        for i in top..(top + rows).min(len) {
+            let y1 = by + ((i - top) * 2) as u16;
+            let mut row_style = base;
+            if selected == Some(i) {
+                row_style = base.patch(if conv.focused { selected_style } else { inactive });
+                out.set_style(
+                    Rect {
+                        y: y1,
+                        height: 2,
+                        ..area
+                    },
+                    row_style,
+                );
+            }
+            let (glyph, glyph_key, label, tag, first, faded) = match review.threads.get(i) {
+                Some(t) => {
+                    let c = t.thread.comments.first();
+                    let (glyph, key) = if t.thread.resolved {
+                        ("✓", "review.resolved")
+                    } else {
+                        ("●", "review.unresolved")
+                    };
+                    let a = &t.thread.anchor;
+                    let (tag, faded) = match t.place {
+                        Placement::Placed { .. } => ("", false),
+                        Placement::Outdated => ("outdated", true),
+                        Placement::Missing => ("no commit", true),
+                    };
+                    (
+                        glyph,
+                        key,
+                        format!("{}:{}  {}", a.path, a.start_line, c.map_or("", |c| c.author.as_str())),
+                        tag,
+                        c.map_or("", |c| c.body.as_str()),
+                        faded,
+                    )
+                }
+                None => {
+                    let c = &review.conversation[i - review.threads.len()];
+                    (
+                        "○",
+                        "review.resolved",
+                        format!("{}  (merge request)", c.author),
+                        "",
+                        c.body.as_str(),
+                        false,
+                    )
+                }
+            };
+            let fade = if faded { dim } else { base };
+            out.set_stringn(area.x + 1, y1, glyph, 1, row_style.patch(theme.get(glyph_key)));
+            let tag_w = if tag.is_empty() { 0 } else { tag.width() + 1 };
+            let room = width.saturating_sub(4 + tag_w);
+            out.set_stringn(area.x + 3, y1, truncate(&label, room), room, row_style.patch(fade));
+            if !tag.is_empty() {
+                let x = area.x + (width - tag.width() - 1) as u16;
+                out.set_stringn(x, y1, tag, tag.width(), row_style.patch(dim));
+            }
+            let text_room = width.saturating_sub(4);
+            let line = first.lines().next().unwrap_or("").trim();
+            out.set_stringn(
+                area.x + 3,
+                y1 + 1,
+                truncate(line, text_room),
+                text_room,
+                row_style.patch(dim),
+            );
+        }
     }
     (Some(hit), bar)
 }

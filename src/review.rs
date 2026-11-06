@@ -17,10 +17,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::forge::config::ForgeConfig;
-use crate::forge::{self, MergeRequest, RepoRef};
+use crate::forge::{self, Comment, MergeRequest, RepoRef, Thread};
 use crate::git::Repo;
 use crate::git::range::{self, FileChange, RangeError};
 use crate::logs::ToolLog;
+use crate::review_anchor::{self, Placement};
 use crate::scrollbar::ListScroll;
 
 /// Reads an environment variable (the tests give their own).
@@ -42,9 +43,32 @@ pub struct Review {
     pub files: Vec<FileChange>,
     /// Why `files` is empty although the merge request has changes (`run git fetch`).
     pub files_error: Option<String>,
+    /// The line threads, by path and line, each with where it sits now.
+    pub threads: Vec<ThreadRow>,
+    /// The merge request's own conversation (plain comments, review summaries), read-only.
+    pub conversation: Vec<Comment>,
+    /// Why the comments couldn't be read (the rest of the review is still shown).
+    pub comments_error: Option<String>,
+}
+
+/// A thread and where [`review_anchor`] put it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThreadRow {
+    pub thread: Thread,
+    pub place: Placement,
 }
 
 impl Review {
+    /// Threads nobody resolved.
+    pub fn unresolved(&self) -> usize {
+        self.threads.iter().filter(|t| !t.thread.resolved).count()
+    }
+
+    /// Rows of the CONVERSATIONS list: the threads, then the conversation's comments.
+    pub fn conv_len(&self) -> usize {
+        self.threads.len() + self.conversation.len()
+    }
+
     /// This merge request's place in the switcher (1-based) and the number of candidates.
     pub fn position(&self) -> (usize, usize) {
         let i = self.candidates.iter().position(|n| *n == self.mr.number).unwrap_or(0);
@@ -173,6 +197,27 @@ pub fn lookup(req: Request) -> Outcome {
     if let Some(e) = &files_error {
         log.error(e);
     }
+    let (threads, conversation, comments_error) = match api.comments(&repo_ref, number) {
+        Ok(c) => {
+            let places = review_anchor::place_all(&req.repo, &c.threads, merge_base.as_deref(), &files);
+            let mut rows: Vec<ThreadRow> = c
+                .threads
+                .into_iter()
+                .zip(places)
+                .map(|(thread, place)| ThreadRow { thread, place })
+                .collect();
+            rows.sort_by(|a, b| {
+                let (a, b) = (&a.thread.anchor, &b.thread.anchor);
+                (&a.path, a.start_line).cmp(&(&b.path, b.start_line))
+            });
+            (rows, c.conversation, None)
+        }
+        Err(e) => {
+            let e = format!("comments: {e}");
+            log.error(&e);
+            (Vec::new(), Vec::new(), Some(e))
+        }
+    };
     let viewed = req.viewed_from.as_deref().map(Viewed::load);
     Outcome::Loaded(
         Box::new(Review {
@@ -182,6 +227,9 @@ pub fn lookup(req: Request) -> Outcome {
             merge_base,
             files,
             files_error,
+            threads,
+            conversation,
+            comments_error,
         }),
         viewed,
     )
@@ -359,10 +407,80 @@ impl ReviewState {
 #[derive(Debug, Default)]
 pub struct ReviewView {
     top: usize,
+    /// The CONVERSATIONS section.
+    pub conv: Conversations,
     selected: Option<(String, usize)>,
     /// Rows drawn in the last frame (0 until the first draw).
     pub height: usize,
     reveal_pending: bool,
+}
+
+/// The CONVERSATIONS section's state: its dragged height (divider and header included), whether
+/// it is collapsed, whether it has the keys, and its list's selection (an index into
+/// `Review::threads` then `Review::conversation`) and scroll. A row is two lines tall.
+#[derive(Debug)]
+pub struct Conversations {
+    pub section_height: u16,
+    pub collapsed: bool,
+    pub focused: bool,
+    selected: usize,
+    top: usize,
+    /// Rows (not lines) drawn in the last frame.
+    pub height: usize,
+}
+
+impl Default for Conversations {
+    fn default() -> Self {
+        Conversations {
+            section_height: 8,
+            collapsed: false,
+            focused: false,
+            selected: 0,
+            top: 0,
+            height: 0,
+        }
+    }
+}
+
+impl Conversations {
+    fn list(&self) -> ListScroll {
+        ListScroll {
+            top: self.top,
+            height: self.height,
+        }
+    }
+
+    /// The selected row, clamped to a list of `len`.
+    pub fn selected(&self, len: usize) -> Option<usize> {
+        (len > 0).then(|| self.selected.min(len - 1))
+    }
+
+    pub fn select(&mut self, len: usize, row: usize) {
+        if len == 0 {
+            return;
+        }
+        self.selected = row.min(len - 1);
+        if self.height > 0 {
+            let mut l = self.list();
+            l.reveal(len, self.selected);
+            self.top = l.top;
+        }
+    }
+
+    pub fn move_selection(&mut self, len: usize, delta: isize) {
+        let at = self.selected(len).unwrap_or(0);
+        self.select(len, at.saturating_add_signed(delta));
+    }
+
+    pub fn top(&self, len: usize) -> usize {
+        self.list().scroll(len)
+    }
+
+    pub fn scroll_by(&mut self, len: usize, delta: isize) {
+        let mut l = self.list();
+        l.scroll_by(len, delta);
+        self.top = l.top;
+    }
 }
 
 /// The list's scroll bar (`ReviewView::scrollable`).

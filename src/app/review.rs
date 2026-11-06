@@ -14,10 +14,13 @@ use ratatui::layout::Position;
 use super::{App, AppEvent, Focus, Level};
 use crate::command::ReviewCommand as C;
 use crate::diff_view::{DiffTab, Pair};
+use crate::forge::Side;
 use crate::git::Head;
 use crate::layout::SidePanel;
 use crate::logs::Tool;
 use crate::review::{Content, Empty, Outcome, Request};
+use crate::review_anchor::Placement;
+use crate::side_sections::{Section, dragged_height, split};
 
 /// Results of the panel's background work.
 pub(super) enum ReviewEvent {
@@ -129,7 +132,15 @@ impl App {
                 tracing::warn!("code review: {message}");
                 r.error = Some(message);
             }
-            Outcome::Loaded(review, viewed) => {
+            Outcome::Loaded(mut review, viewed) => {
+                // Comments that couldn't be read this time: the last ones of this request stay.
+                if review.comments_error.is_some()
+                    && let Content::Loaded(old) = &r.content
+                    && old.mr.number == review.mr.number
+                {
+                    review.threads = old.threads.clone();
+                    review.conversation = old.conversation.clone();
+                }
                 if r.viewed.is_none() {
                     r.viewed = Some(viewed.unwrap_or_default());
                 }
@@ -201,9 +212,19 @@ impl App {
 
     pub(super) fn review_command(&mut self, cmd: C) {
         let count = self.review.file_count();
+        let len = self.review.review().map_or(0, |r| r.conv_len());
+        if self.review.view.conv.focused {
+            return self.review_conv_command(cmd, len);
+        }
         let page = self.review.view.height.max(1) as isize;
         let (view, files) = self.review.split();
+        // Down from the last file enters the conversations.
+        let enter = !view.conv.collapsed && len > 0 && view.selected_row(files).is_some_and(|i| i + 1 == files.len());
         match cmd {
+            C::Down if enter => {
+                view.conv.focused = true;
+                view.conv.select(len, 0);
+            }
             C::Up => view.move_selection(files, -1),
             C::Down => view.move_selection(files, 1),
             C::PageUp => view.move_selection(files, -page),
@@ -217,6 +238,69 @@ impl App {
                     self.ui.focus = Focus::Editor;
                 }
             }
+        }
+    }
+
+    /// The keys while the CONVERSATIONS list has them (`len` rows).
+    fn review_conv_command(&mut self, cmd: C, len: usize) {
+        let conv = &mut self.review.view.conv;
+        let page = conv.height.max(1) as isize;
+        match cmd {
+            C::Up if conv.selected(len).unwrap_or(0) == 0 => conv.focused = false,
+            C::Up => conv.move_selection(len, -1),
+            C::Down => conv.move_selection(len, 1),
+            C::PageUp => conv.move_selection(len, -page),
+            C::PageDown => conv.move_selection(len, page),
+            C::First => conv.select(len, 0),
+            C::Last => conv.select(len, len.saturating_sub(1)),
+            C::Open => self.review_open_conv(),
+            C::ToggleViewed => {}
+            C::FocusEditor => {
+                if !self.group().tabs.is_empty() {
+                    self.ui.focus = Focus::Editor;
+                }
+            }
+        }
+    }
+
+    /// Opens the selected conversation: a thread's file at its line (the mapped one when placed,
+    /// else the nearest to where it was written; a file the review doesn't list just shows the
+    /// thread in the status bar), a merge request comment shows its text there.
+    fn review_open_conv(&mut self) {
+        let Some(review) = self.review.review() else { return };
+        let Some(i) = self.review.view.conv.selected(review.conv_len()) else {
+            return;
+        };
+        let Some(t) = review.threads.get(i) else {
+            let c = &review.conversation[i - review.threads.len()];
+            let line = c.body.lines().next().unwrap_or("");
+            let text = format!("{}: {line}", c.author);
+            return self.notify(Level::Info, text);
+        };
+        let a = &t.thread.anchor;
+        let (right, line) = match &t.place {
+            Placement::Placed { side, lines } => (*side == Side::Right, lines.start),
+            _ => (a.side == Side::Right, a.start_line.saturating_sub(1) as usize),
+        };
+        let first = t.thread.comments.first();
+        let text = format!(
+            "{}:{} {}: {}",
+            a.path,
+            a.start_line,
+            first.map_or("", |c| c.author.as_str()),
+            first.and_then(|c| c.body.lines().next()).unwrap_or("")
+        );
+        let path = a.path.clone();
+        if !review.files.iter().any(|f| f.path == path) {
+            return self.notify(Level::Info, text);
+        }
+        self.review_open_file(&path);
+        if let Some(workdir) = self.git.status.as_ref().map(|s| s.repo.workdir.clone())
+            && let Some(d) = self.group_mut().active_diff_mut()
+            && d.path == workdir.join(&path)
+        {
+            d.go_to_side_line(right, line);
+            self.needs_redraw = true;
         }
     }
 
@@ -263,6 +347,19 @@ impl App {
         let at = Position { x: m.column, y: m.row };
         if hit.summary.contains(at) {
             self.review_switch();
+        } else if hit.divider.contains(at) {
+            self.drag = Some(super::mouse::Drag::ReviewDivider);
+        } else if hit.conv_header.contains(at) {
+            let conv = &mut self.review.view.conv;
+            conv.focused = true;
+            conv.collapsed = !conv.collapsed;
+        } else if hit.conv_list.contains(at) {
+            let row = hit.conv_top + ((at.y - hit.conv_list.y) / 2) as usize;
+            if row < hit.conv_len {
+                self.review.view.conv.focused = true;
+                self.review.view.conv.select(hit.conv_len, row);
+                self.review_open_conv();
+            }
         } else {
             self.review_click_row((m.column, m.row));
         }
@@ -285,15 +382,47 @@ impl App {
             && let Some(path) = hit.rows.get((at.y - hit.list.y) as usize)
         {
             let path = path.clone();
+            self.review.view.conv.focused = false;
             let (view, files) = self.review.split();
             view.select_path(files, &path);
             self.review_open_file(&path);
         }
     }
 
-    /// The wheel over the panel.
-    pub(super) fn review_scroll(&mut self, delta: isize) {
-        let count = self.review.file_count();
-        self.review.view.scroll_by(count, delta);
+    /// A drag of the CONVERSATIONS divider with the pointer on `row`: the section reaches the
+    /// panel's end (stored as its height, clamped to what the files keep).
+    pub(super) fn drag_review_divider(&mut self, row: u16) {
+        let Some(body) = self.hits.review.as_ref().map(|h| h.body) else {
+            return;
+        };
+        let conv = &self.review.view.conv;
+        let (_, heights) = split(
+            body.height,
+            &[Section {
+                height: conv.section_height,
+                collapsed: conv.collapsed,
+            }],
+        );
+        let want = (body.y + body.height).saturating_sub(row);
+        let height = dragged_height(body.height, &heights, 0, want);
+        let conv = &mut self.review.view.conv;
+        conv.section_height = height;
+        conv.collapsed = false;
+    }
+
+    /// The wheel over the panel, with the pointer at `at`: the conversations or the files.
+    pub(super) fn review_scroll(&mut self, delta: isize, at: (u16, u16)) {
+        let over_conv = self
+            .hits
+            .review
+            .as_ref()
+            .is_some_and(|h| h.conv_list.contains(Position { x: at.0, y: at.1 }));
+        if over_conv {
+            let len = self.review.review().map_or(0, |r| r.conv_len());
+            self.review.view.conv.scroll_by(len, delta.signum());
+        } else {
+            let count = self.review.file_count();
+            self.review.view.scroll_by(count, delta);
+        }
     }
 }
