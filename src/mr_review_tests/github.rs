@@ -17,6 +17,7 @@ fn config_github(server: &FakeServer) -> ForgeConfig {
             api_url: Some(format!("{}/api/v3", server.url())),
             token_env: Some("FAKE_TOKEN".into()),
             token: None,
+            mcp_read_only: false,
         }],
         errors: Vec::new(),
     }
@@ -38,6 +39,11 @@ fn graphql(connection: &str, nodes: &str) -> String {
 }
 
 fn server(main: &str, head: &str) -> FakeServer {
+    server_with(main, head, true)
+}
+
+/// `replies`: the fake takes a reply and a resolve mutation (else both are 404s).
+fn server_with(main: &str, head: &str, replies: bool) -> FakeServer {
     let pr = format!(
         r#"{{"number":7,"title":"Add review panel","body":null,"state":"open","draft":false,
         "user":{{"login":"ann"}},"html_url":"https://git.example.com/alice/project/pull/7",
@@ -51,7 +57,18 @@ fn server(main: &str, head: &str) -> FakeServer {
         "updatedAt":"2026-01-01T00:00:00Z","url":"","author":{{"login":"bob"}},
         "commit":{{"oid":"{head}"}},"originalCommit":{{"oid":"{head}"}}}}]}}}}]"#
     );
-    FakeServer::start(vec![
+    let mut routes = Vec::new();
+    if replies {
+        routes.push((
+            "POST /api/graphql ~addPullRequestReviewThreadReply".to_string(),
+            Reply::json(r#"{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"x"}}}}"#),
+        ));
+        routes.push((
+            "POST /api/graphql ~resolveReviewThread".to_string(),
+            Reply::json(r#"{"data":{"resolveReviewThread":{"thread":{"id":"PRRT_1"}}}}"#),
+        ));
+    }
+    routes.extend(vec![
         (
             format!("{API}/pulls?state=open&head=alice:feature&per_page=100"),
             Reply::json(&format!("[{pr}]")),
@@ -76,7 +93,79 @@ fn server(main: &str, head: &str) -> FakeServer {
             Reply::json(&graphql("comments", "[]")),
         ),
         (format!("POST {API}/pulls/7/reviews"), Reply::json("{}")),
-    ])
+    ]);
+    FakeServer::start(routes)
+}
+
+/// Claude's reply draft to `thread`, as the MCP tool stores it.
+fn claude_reply(app: &mut App, thread: &str, body: &str, resolve: bool) {
+    let key = app.review.drafts_key().unwrap();
+    let mut d = crate::review_drafts::Draft::reply("mod.txt".into(), true, (2, 3), thread.into(), body.into(), resolve);
+    d.by_claude = true;
+    app.review.drafts.store.as_mut().unwrap().set_reply(&key, d);
+    assert!(!app.review.draft_rows().is_empty());
+}
+
+async fn boot_github(root: &Path, server: &FakeServer) -> App {
+    let mut app = open_app(root, None, config_github(server), true);
+    assert!(app.settle(loaded).await);
+    assert!(app.settle(|a| a.git.status.is_some()).await);
+    app.test_execute(Command::ShowReview);
+    idle(&mut app).await;
+    assert!(app.settle(|a| a.review.drafts.store.is_some()).await);
+    app
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_ide_github_posts_a_reply_draft_and_resolves_at_submit_without_a_review() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, main) = make_repo(dir.path());
+    let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+    let server = server(&main, &head);
+    let mut app = boot_github(&root, &server).await;
+    claude_reply(&mut app, "PRRT_1", "Done in abc", true);
+    let writes = |s: &FakeServer| {
+        s.requests()
+            .into_iter()
+            .filter(|r| r.body.contains("mutation") || r.target.ends_with("/reviews"))
+            .collect::<Vec<_>>()
+    };
+    assert!(writes(&server).is_empty(), "drafting posts nothing");
+    app.test_execute(Command::ReviewSubmitComment);
+    assert!(
+        app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
+            .await
+    );
+    // The graphql reads are POSTs too: a write is a mutation or a review post.
+    let sent = writes(&server);
+    assert_eq!(sent.len(), 2, "{:?}", sent.iter().map(|r| &r.body).collect::<Vec<_>>());
+    assert!(sent[0].body.contains("addPullRequestReviewThreadReply") && sent[0].body.contains("Done in abc"));
+    assert!(sent[0].body.contains("PRRT_1"));
+    assert!(sent[1].body.contains("resolveReviewThread") && sent[1].body.contains("PRRT_1"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_ide_github_keeps_a_reply_draft_whose_post_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, main) = make_repo(dir.path());
+    let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+    let server = server_with(&main, &head, false);
+    let mut app = boot_github(&root, &server).await;
+    claude_reply(&mut app, "PRRT_1", "Will fail", true);
+    app.test_execute(Command::ReviewSubmitComment);
+    assert!(
+        app.settle(|a| !a.review.writing && !a.review.drafts.errors.is_empty())
+            .await
+    );
+    assert_eq!(app.review.draft_rows().len(), 1, "kept for another try");
+    assert!(lines(&mut app, 140, 30).join("\n").contains("failed:"));
+    let writes: Vec<_> = server.requests().into_iter().filter(|r| r.method != "GET").collect();
+    assert!(
+        writes
+            .iter()
+            .all(|r| !r.body.contains("resolveReviewThread") && !r.target.ends_with("/reviews")),
+        "a failed reply neither resolves nor reviews"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

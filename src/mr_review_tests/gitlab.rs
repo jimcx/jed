@@ -18,6 +18,7 @@ pub(super) fn config_gitlab(server: &FakeServer) -> ForgeConfig {
             api_url: Some(format!("{}/api/v4", server.url())),
             token_env: Some("FAKE_TOKEN".into()),
             token: None,
+            mcp_read_only: false,
         }],
         errors: Vec::new(),
     }
@@ -64,6 +65,14 @@ pub(super) fn server(main: &str, head: &str, publish: Reply) -> FakeServer {
         ),
         (format!("POST {API}/merge_requests/7/draft_notes/bulk_publish"), publish),
         (format!("POST {API}/merge_requests/7/approve"), Reply::json("{}")),
+        (
+            format!("POST {API}/merge_requests/7/discussions/aa11/notes"),
+            Reply::status(201).with_body("{}"),
+        ),
+        (
+            format!("PUT {API}/merge_requests/7/discussions/aa11"),
+            Reply::json("{}"),
+        ),
     ])
 }
 
@@ -168,4 +177,72 @@ async fn mr_review_gitlab_shows_a_multi_line_discussion_and_submits_in_gitlab_sh
     assert_eq!(order, ["draft_notes", "bulk_publish", "approve"]);
     let approve = posts.iter().find(|r| r.target.ends_with("/approve")).unwrap();
     assert_eq!(approve.body, format!(r#"{{"sha":"{head}"}}"#));
+}
+
+/// Claude's reply draft to `thread`, as the MCP tool stores it.
+fn claude_reply(app: &mut App, thread: &str, body: &str, resolve: bool) {
+    let key = app.review.drafts_key().unwrap();
+    let mut d = crate::review_drafts::Draft::reply("mod.txt".into(), true, (2, 3), thread.into(), body.into(), resolve);
+    d.by_claude = true;
+    app.review.drafts.store.as_mut().unwrap().set_reply(&key, d);
+    assert!(!app.review.draft_rows().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_ide_gitlab_posts_a_reply_draft_and_resolves_at_submit_without_a_review() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, main) = make_repo(dir.path());
+    let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+    let server = server(&main, &head, Reply::status(204));
+    let mut app = boot(&root, &server, None).await;
+    claude_reply(&mut app, "7:aa11", "Done in abc", true);
+    let writes = |s: &FakeServer| {
+        s.requests()
+            .into_iter()
+            .filter(|r| r.method != "GET")
+            .collect::<Vec<_>>()
+    };
+    assert!(writes(&server).is_empty(), "drafting posts nothing");
+    app.test_execute(Command::ReviewSubmitComment);
+    assert!(
+        app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
+            .await
+    );
+    let sent = writes(&server);
+    let targets: Vec<_> = sent.iter().map(|r| format!("{} {}", r.method, r.target)).collect();
+    assert_eq!(
+        targets,
+        vec![
+            format!("POST {API}/merge_requests/7/discussions/aa11/notes"),
+            format!("PUT {API}/merge_requests/7/discussions/aa11"),
+        ],
+        "no draft note, publish or approval was forged"
+    );
+    assert_eq!(sent[0].body, r#"{"body":"Done in abc"}"#);
+    assert_eq!(sent[1].body, r#"{"resolved":true}"#);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_ide_gitlab_keeps_a_reply_draft_whose_post_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, main) = make_repo(dir.path());
+    let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+    let server = server(&main, &head, Reply::status(204));
+    let mut app = boot(&root, &server, None).await;
+    // Thread bb22 has no reply route on the fake: a 404.
+    claude_reply(&mut app, "7:bb22", "Will fail", true);
+    app.test_execute(Command::ReviewSubmitComment);
+    assert!(
+        app.settle(|a| !a.review.writing && !a.review.drafts.errors.is_empty())
+            .await
+    );
+    assert_eq!(app.review.draft_rows().len(), 1, "kept for another try");
+    assert!(lines(&mut app, 140, 30).contains("failed:"));
+    let sent: Vec<_> = server.requests().into_iter().filter(|r| r.method != "GET").collect();
+    assert!(
+        sent.iter()
+            .all(|r| r.method == "POST" && r.target.ends_with("/discussions/bb22/notes")),
+        "only the failed reply was tried, nothing resolved: {:?}",
+        sent.iter().map(|r| &r.target).collect::<Vec<_>>()
+    );
 }

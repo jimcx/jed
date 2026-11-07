@@ -5,6 +5,7 @@ mod blame;
 mod cheatsheet;
 mod claude;
 mod claude_log;
+mod claude_review;
 mod code_action;
 mod commit_tabs;
 mod completion;
@@ -451,6 +452,8 @@ pub struct App {
     composer: Option<review_comment::Composer>,
     /// A suggestion waiting for its file to open (`review_suggest`).
     suggest: Option<review_suggest::Staged>,
+    /// A `review_apply_suggestion` tool call waiting for its answer (`claude_review`).
+    claude_apply: Option<claude_review::Apply>,
     /// The Explorer view's "Git History" section: the active file's commits and the section's
     /// state (`app/git_history.rs`).
     pub git_history: crate::git_history::GitHistory,
@@ -637,6 +640,7 @@ impl App {
             review: Default::default(),
             composer: None,
             suggest: None,
+            claude_apply: None,
             git_history: Default::default(),
             file_history_view: Default::default(),
             stage_all_after_save: None,

@@ -79,18 +79,18 @@ impl App {
     }
 
     /// Applies the first suggestion of `row`'s thread.
-    pub(super) fn apply_suggestion_of(&mut self, row: crate::review::ThreadRow) {
+    pub(super) fn apply_suggestion_of(&mut self, row: crate::review::ThreadRow) -> bool {
         let Placement::Placed { side, lines } = &row.place else {
-            return self.notify(
+            return self.suggest_refuse(
                 Level::Info,
                 "This thread is outdated: its suggestion can't be applied".into(),
             );
         };
         if *side != Side::Right {
-            return self.notify(Level::Info, "Suggestions apply to the new side".into());
+            return self.suggest_refuse(Level::Info, "Suggestions apply to the new side".into());
         }
         if row.thread.resolved {
-            return self.notify(Level::Info, "The thread is resolved".into());
+            return self.suggest_refuse(Level::Info, "The thread is resolved".into());
         }
         let a = &row.thread.anchor;
         let Some(s) = row
@@ -99,7 +99,7 @@ impl App {
             .iter()
             .find_map(|c| suggestion::parse(&c.body, a).into_iter().next())
         else {
-            return self.notify(Level::Info, "No suggestion in this thread".into());
+            return self.suggest_refuse(Level::Info, "No suggestion in this thread".into());
         };
         // Where the thread's lines are now, against where the comment had them.
         let shift = lines.start as i64 - (a.start_line as i64 - 1);
@@ -109,13 +109,13 @@ impl App {
             self.git.status.as_ref().map(|s| s.repo.clone()),
             self.git.status.as_ref().map(|s| s.repo.workdir.clone()),
         ) else {
-            return;
+            return false;
         };
         if first < 0 || end <= first {
-            return self.notify(Level::Error, "Suggestion is out of date".into());
+            return self.suggest_refuse(Level::Error, "Suggestion is out of date".into());
         }
         if tokio::runtime::Handle::try_current().is_err() {
-            return;
+            return false;
         }
         let path = workdir.join(&a.path);
         let revision = self
@@ -135,24 +135,25 @@ impl App {
             staged.base = read_base(&repo, &commit, &rel, s.start_line, s.end_line);
             let _ = tx.send(AppEvent::Review(ReviewEvent::Suggestion(staged)));
         });
+        true
     }
 
     /// The commit's lines were read: the file's buffer is found (opened first when needed).
     pub(super) fn suggestion_read(&mut self, staged: Staged) {
         let Some(base) = &staged.base else {
-            return self.notify(
+            return self.suggest_notify(
                 Level::Error,
                 "Suggestion is out of date: the commit's text is not readable".into(),
             );
         };
         if base.len() != staged.lines.len() {
-            return self.notify(Level::Error, "Suggestion is out of date".into());
+            return self.suggest_notify(Level::Error, "Suggestion is out of date".into());
         }
         if self.buffer_of(&staged.path).is_some() {
             return self.suggestion_apply(staged);
         }
         if self.suggest.is_some() {
-            return self.notify(Level::Info, "Another suggestion is waiting for its file".into());
+            return self.suggest_notify(Level::Info, "Another suggestion is waiting for its file".into());
         }
         if !self.opening.contains_key(&staged.path) {
             let request = super::files::OpenRequest {
@@ -173,7 +174,7 @@ impl App {
             if self.buffer_of(path).is_some() {
                 self.suggestion_apply(s);
             } else {
-                self.notify(
+                self.suggest_notify(
                     Level::Error,
                     "The file did not open: the suggestion was not applied".into(),
                 );
@@ -182,13 +183,15 @@ impl App {
     }
 
     fn suggestion_apply(&mut self, s: Staged) {
-        let Some(id) = self.buffer_of(&s.path) else { return };
+        let Some(id) = self.buffer_of(&s.path) else {
+            return self.suggest_notify(Level::Error, "The file is no longer open: nothing applied".into());
+        };
         let settings_free = self.buffers.get(id).map(|b| (b.revision(), b.read_only.clone()));
         let Some((revision, read_only)) = settings_free else {
-            return;
+            return self.suggest_notify(Level::Error, "The file is no longer open: nothing applied".into());
         };
         if let Some(reason) = read_only {
-            return self.notify(Level::Error, format!("Read-only: {reason}"));
+            return self.suggest_notify(Level::Error, format!("Read-only: {reason}"));
         }
         let stale = s.revision.is_some_and(|r| r != revision);
         let Some(buf) = self.buffers.get_mut(id) else { return };
@@ -202,7 +205,7 @@ impl App {
                 have.strip_suffix('\r').unwrap_or(&have) == want
             });
         if !same {
-            return self.notify(Level::Error, "Suggestion is out of date".into());
+            return self.suggest_notify(Level::Error, "Suggestion is out of date".into());
         }
         let n = pos::line_count(rope);
         let from = pos::line_start(rope, s.lines.start);
@@ -228,6 +231,7 @@ impl App {
             Level::Info,
             "Suggestion applied (not saved or committed; undo reverts it)".into(),
         );
+        self.suggest_applied(id);
     }
 
     /// "Code Review: Insert Suggestion": the open comment box gets the fence.

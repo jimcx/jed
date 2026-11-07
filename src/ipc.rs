@@ -125,6 +125,26 @@ pub enum Query {
     Screen { terminal: u64 },
     /// Version, workspace, git, open files, servers, tasks, shells.
     Environment,
+    /// The loaded code review: the merge request, files, pending drafts (no forge call).
+    Review,
+    /// The review's threads (`path`: one file's; unresolved ones unless `resolved`).
+    ReviewThreads {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default)]
+        resolved: bool,
+    },
+    /// Looks the merge request up again (answered at once).
+    ReviewRefresh,
+    /// Applies a thread's first suggestion and saves the file; answered when that is done.
+    ReviewApply { thread: String },
+    /// Adds (or replaces) the reply draft of a thread; posts nothing.
+    ReviewReply {
+        thread: String,
+        body: String,
+        #[serde(default)]
+        resolve: bool,
+    },
     /// Open a file in the active group, as quick open does.
     Open {
         path: PathBuf,
@@ -276,6 +296,11 @@ pub struct Responder(oneshot::Sender<Reply>);
 impl Responder {
     pub fn answer(self, reply: Reply) {
         let _ = self.0.send(reply);
+    }
+
+    /// Nobody waits for the answer any more (the client timed out or went away).
+    pub fn is_closed(&self) -> bool {
+        self.0.is_closed()
     }
 }
 

@@ -34,6 +34,7 @@ pub struct Ipc {
 }
 
 /// Results of the task socket's background work (`AppEvent::Ipc(IpcEvent::Request)`).
+#[allow(clippy::large_enum_variant)] // one event per request: boxing buys nothing
 pub(super) enum IpcEvent {
     /// A client of the task socket asks to open a file.
     Request(Request, Responder),
@@ -112,6 +113,9 @@ impl App {
                     Reply::opened()
                 }
                 Query::Open { .. } => Reply::error("open needs an absolute path"),
+                Query::ReviewRefresh | Query::ReviewReply { .. } | Query::ReviewApply { .. } => {
+                    return self.claude_review_act(query, responder);
+                }
                 query => self.claude_answer(query, request.terminal),
             };
             responder.answer(reply);

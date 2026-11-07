@@ -709,7 +709,10 @@ impl App {
         if elapsed > SLOW_TASK {
             tracing::warn!(elapsed_ms = elapsed.as_millis() as u64, "slow save");
         }
-        let Some(buf) = self.buffers.get_mut(id) else { return };
+        let Some(buf) = self.buffers.get_mut(id) else {
+            self.claude_apply_saved(id, Some("the buffer was closed"));
+            return;
+        };
         match (&result, &to) {
             (Ok(stamp), Some(to)) => {
                 buf.finish_save_as(state, *stamp, to.clone());
@@ -728,6 +731,12 @@ impl App {
         // A stage waiting for this save goes ahead (or is dropped if it failed).
         self.stage_save_done(id, result.is_ok());
         self.stage_all_save_done(id, result.is_ok());
+        let why = match &result {
+            Ok(_) => None,
+            Err(SaveError::Conflict) => Some("the file changed on disk"),
+            Err(_) => Some("the save failed"),
+        };
+        self.claude_apply_saved(id, why);
         match result {
             Ok(_) => {
                 self.disk_save_done(id);

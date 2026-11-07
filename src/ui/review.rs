@@ -430,7 +430,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
                         row_style.patch(theme.get("review.pending.held")),
                     ),
                     None => (
-                        row.draft.body.lines().next().unwrap_or("").trim().to_string(),
+                        format!(
+                            "{}{}",
+                            row.draft.tags(),
+                            row.draft.body.lines().next().unwrap_or("").trim()
+                        ),
                         row_style.patch(dim_fg),
                     ),
                 };

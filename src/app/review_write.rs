@@ -132,7 +132,11 @@ impl App {
             let first = error
                 .or_else(|| failed.first().map(|f| f.1.clone()))
                 .unwrap_or_default();
-            let text = format!("{} draft(s) not posted, kept: {first}", failed.len());
+            let text = if failed.is_empty() {
+                first
+            } else {
+                format!("{} draft(s) not posted, kept: {first}", failed.len())
+            };
             self.review.error = Some(text.clone());
             self.notify(Level::Error, text);
             if !posted.is_empty() {
@@ -152,8 +156,11 @@ impl App {
         }
         let rows = self.review.draft_rows();
         let held = rows.iter().filter(|r| r.held.is_some()).count();
-        let sent: Vec<_> = rows.iter().filter(|r| r.held.is_none()).collect();
-        if sent.is_empty() && event == forge::ReviewEvent::Comment {
+        let (replies, sent): (Vec<_>, Vec<_>) = rows
+            .iter()
+            .filter(|r| r.held.is_none())
+            .partition(|r| r.draft.reply_to.is_some());
+        if sent.is_empty() && replies.is_empty() && event == forge::ReviewEvent::Comment {
             let why = if held > 0 {
                 format!("{held} draft(s) are held back: their lines changed")
             } else {
@@ -176,8 +183,19 @@ impl App {
                     .collect(),
             },
             ids: sent.iter().map(|r| r.draft.id.clone()).collect(),
+            replies: replies
+                .iter()
+                .filter_map(|r| {
+                    Some(review_write::ReplyDraft {
+                        id: r.draft.id.clone(),
+                        thread_id: r.draft.reply_to.clone()?,
+                        body: r.draft.body.clone(),
+                        resolve: r.draft.resolve,
+                    })
+                })
+                .collect(),
         };
-        let n = sent.len();
+        let n = sent.len() + replies.len();
         let held_note = if held > 0 {
             format!(", {held} held back")
         } else {
@@ -401,7 +419,9 @@ impl App {
         match button {
             ThreadButton::Reply => self.reply_to(thread),
             ThreadButton::Resolve => self.resolve_thread(thread),
-            ThreadButton::Apply => self.apply_suggestion_of(thread),
+            ThreadButton::Apply => {
+                self.apply_suggestion_of(thread);
+            }
             ThreadButton::Edit => self.edit_in(thread),
             ThreadButton::Delete => self.delete_in(thread),
         }

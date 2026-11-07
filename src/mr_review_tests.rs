@@ -9,6 +9,7 @@
 //! lookup keeping the last result under its error and in the tool log; lookups at launch, when
 //! HEAD moves and on a timer that only runs while the panel is shown.
 
+mod claude;
 mod done_when;
 mod github;
 mod gitlab;
@@ -80,6 +81,7 @@ fn config_for(server: &FakeServer) -> ForgeConfig {
             api_url: Some(format!("{}/api/v1", server.url())),
             token_env: Some("FAKE_TOKEN".into()),
             token: None,
+            mcp_read_only: false,
         }],
         errors: Vec::new(),
     }

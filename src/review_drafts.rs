@@ -51,6 +51,17 @@ pub struct Draft {
     pub body: String,
     /// Seconds since the epoch.
     pub created: u64,
+    /// A reply to this forge thread (a reply draft: no line anchor of its own, so it is never
+    /// held back and never part of the review's line comments; Submit Review posts it after the
+    /// review). Old store files have none.
+    #[serde(default)]
+    pub reply_to: Option<String>,
+    /// A reply draft: resolve the thread once the reply is posted.
+    #[serde(default)]
+    pub resolve: bool,
+    /// Written by Claude through the MCP tool (PENDING tags it `claude`).
+    #[serde(default)]
+    pub by_claude: bool,
 }
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -79,6 +90,19 @@ impl Draft {
             lines,
             body,
             created: now.as_secs(),
+            reply_to: None,
+            resolve: false,
+            by_claude: false,
+        }
+    }
+
+    /// A reply draft to thread `thread` (`path` and the thread's lines `start..=end` are only
+    /// there so the panel can sort and show it).
+    pub fn reply(path: String, right: bool, lines: (u32, u32), thread: String, body: String, resolve: bool) -> Draft {
+        Draft {
+            reply_to: Some(thread),
+            resolve,
+            ..Draft::new(path, right, lines.0, lines.1, String::new(), Vec::new(), body)
         }
     }
 
@@ -96,12 +120,31 @@ impl Draft {
 
     /// `path:line` (the first line).
     pub fn place(&self) -> String {
+        if self.reply_to.is_some() {
+            return format!("reply {}:{}", self.path, self.start);
+        }
         format!("{}:{}", self.path, self.start)
+    }
+
+    /// What PENDING shows before the body: `[claude]` for Claude's, `+ resolve` for a reply that
+    /// resolves its thread.
+    pub fn tags(&self) -> String {
+        let mut tags = String::new();
+        if self.by_claude {
+            tags.push_str("[claude] ");
+        }
+        if self.resolve {
+            tags.push_str("+ resolve ");
+        }
+        tags
     }
 
     /// Why the draft can't be placed where it was written, given the lines `line` (0-based, on
     /// the draft's side) reads now; `None`: unchanged.
     pub fn drift<'a>(&self, line: impl Fn(usize) -> Option<&'a str>) -> Option<&'static str> {
+        if self.reply_to.is_some() {
+            return None;
+        }
         let first = (self.start.max(1) - 1) as usize;
         let same = self
             .lines
@@ -119,6 +162,9 @@ impl Draft {
 
     /// `drift` against a whole file's bytes (`None`: the file is gone).
     pub fn drift_in(&self, text: Option<&[u8]>) -> Option<&'static str> {
+        if self.reply_to.is_some() {
+            return None;
+        }
         let Some(text) = text else { return Some(FILE_CHANGED) };
         let text = String::from_utf8_lossy(text);
         let lines: Vec<&str> = text.lines().collect();
@@ -160,6 +206,28 @@ impl DraftStore {
 
     pub fn add(&mut self, key: &str, draft: Draft) {
         self.map.entry(key.to_string()).or_default().push(draft);
+    }
+
+    /// The reply draft to thread `thread` of merge request `key`, if there is one.
+    pub fn reply_for(&self, key: &str, thread: &str) -> Option<&Draft> {
+        self.get(key).iter().find(|d| d.reply_to.as_deref() == Some(thread))
+    }
+
+    /// Adds reply draft `draft`, or replaces the body of the one its thread already has (a
+    /// thread holds one, which keeps its id); whether it replaced.
+    pub fn set_reply(&mut self, key: &str, draft: Draft) -> bool {
+        let list = self.map.entry(key.to_string()).or_default();
+        if let Some(old) = list
+            .iter_mut()
+            .find(|d| d.reply_to.is_some() && d.reply_to == draft.reply_to)
+        {
+            old.body = draft.body;
+            old.resolve = draft.resolve;
+            old.by_claude = draft.by_claude;
+            return true;
+        }
+        list.push(draft);
+        false
     }
 
     /// Sets the body of draft `id`; whether it exists.
@@ -317,6 +385,27 @@ mod tests {
         assert_eq!(store.get(&a)[0].body, "changed");
         assert!(store.remove(&a, &id).is_some());
         assert!(store.get(&a).is_empty() && !store.is_empty());
+    }
+
+    #[test]
+    fn an_old_store_without_reply_fields_loads_and_a_reply_draft_is_never_held_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = r#"{"k":[{"id":"a","path":"p.rs","right":true,"start":1,"end":1,"commit":"c","lines":["x"],"body":"b","created":1}]}"#;
+        std::fs::write(dir.path().join(FILE), old).unwrap();
+        let logs = Logs::default();
+        let store = DraftStore::load(dir.path(), &logs.tool(Tool::Review));
+        let d = &store.get("k")[0];
+        assert_eq!((d.reply_to.clone(), d.resolve, d.by_claude), (None, false, false));
+        let mut r = Draft::reply("p.rs".into(), true, (3, 3), "t1".into(), "ok".into(), true);
+        r.by_claude = true;
+        assert_eq!(r.drift_in(None), None);
+        assert_eq!(r.drift(|_| None), None);
+        let mut store = store;
+        assert!(!store.set_reply("k", r.clone()));
+        r.body = "again".into();
+        assert!(store.set_reply("k", r));
+        assert_eq!(store.get("k").len(), 2);
+        assert_eq!(store.reply_for("k", "t1").unwrap().body, "again");
     }
 
     #[test]

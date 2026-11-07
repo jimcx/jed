@@ -150,6 +150,7 @@ impl App {
                 r.error = Some(message);
             }
             Outcome::Loaded(mut review, viewed) => {
+                r.fetched_at = Some(std::time::SystemTime::now());
                 // Comments that couldn't be read this time: the last ones of this request stay.
                 if review.comments_error.is_some()
                     && let Content::Loaded(old) = &r.content
@@ -416,6 +417,26 @@ impl App {
             // (PENDING names them). A diff not loaded yet judges nothing.
             if let Some(doc) = &d.doc {
                 for draft in drafts.iter().filter(|x| workdir.join(&x.path) == d.path) {
+                    if draft.reply_to.is_some() {
+                        // Under its thread's block, wherever the thread is placed now.
+                        let placed = review.and_then(|r| {
+                            r.threads.iter().find_map(|t| match &t.place {
+                                Placement::Placed { side, lines } if Some(&t.thread.id) == draft.reply_to.as_ref() => {
+                                    Some((*side, lines.end.saturating_sub(1).max(lines.start)))
+                                }
+                                _ => None,
+                            })
+                        });
+                        if let Some((side, line)) = placed
+                            && editing.as_deref() != Some(draft.id.as_str())
+                        {
+                            let mut b = super::review_comment::draft_block(draft);
+                            b.right = side == Side::Right;
+                            b.line = line;
+                            blocks.push(b);
+                        }
+                        continue;
+                    }
                     let lines = if draft.right { &doc.right } else { &doc.left };
                     let held = draft
                         .drift(|i| (i < lines.len()).then(|| lines.line(i)))

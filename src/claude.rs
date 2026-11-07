@@ -215,6 +215,52 @@ pub fn tools() -> Vec<Value> {
             }),
             &["path"],
         ),
+        tool(
+            "get_review",
+            "The code review of the checked-out branch's merge request, as jed last loaded it (no forge call): number, title, \
+             URL, branches, state, unresolved count, whether local is ahead / behind / diverged, the files with +/-, the user's \
+             pending drafts (yours are marked by_claude), when it was fetched, and why there is none. Start here to deal with \
+             review feedback. `read_only: true` means the user forbids the write tools below (mcp_read_only in forges.toml).",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "get_review_threads",
+            "The review threads to act on, so you can fix the code yourself: for each unresolved thread its id, file, side, \
+             live 1-based line range in the file on disk (or outdated / missing with the original lines), every comment \
+             (author, time, body), parsed suggestions (the lines replaced and the new lines), whether the user wrote the last \
+             comment, and your reply draft if any. Edit the files with your own tools, then draft a reply per thread.",
+            json!({
+                "path": {"type": "string", "description": "only this file's threads (relative to the repository)"},
+                "resolved": {"type": "boolean", "description": "also list resolved threads (default false)"},
+            }),
+            &[],
+        ),
+        tool(
+            "review_refresh",
+            "Ask jed to look the merge request up again (new comments, a push). Returns at once: call get_review afterwards.",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "review_apply_suggestion",
+            "Apply a thread's suggested change to the file and save it (one undo step in jed). Refused when the file has unsaved \
+             changes in jed, the suggestion is out of date, or the review is read-only for you. Nothing is sent to the forge.",
+            json!({"thread": {"type": "string", "description": "thread id, from get_review_threads"}}),
+            &["thread"],
+        ),
+        tool(
+            "review_draft_reply",
+            "Queue a reply to a review thread as a draft in jed's PENDING list, tagged claude (optionally also resolving the \
+             thread). It is NOT posted: only the user's own Submit Review in jed sends it. One draft per thread: a second call \
+             replaces it. Refused when the review is read-only for you.",
+            json!({
+                "thread": {"type": "string", "description": "thread id, from get_review_threads"},
+                "body": {"type": "string", "description": "the reply text"},
+                "resolve": {"type": "boolean", "description": "also resolve the thread when the user submits (default false)"},
+            }),
+            &["thread", "body"],
+        ),
     ]
 }
 
@@ -232,6 +278,13 @@ fn need_u64(args: &Value, key: &str) -> Result<u64, String> {
     arg_u64(args, key)?.ok_or(format!("`{key}` is required"))
 }
 
+fn arg_bool(args: &Value, key: &str) -> Result<Option<bool>, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_bool().map(Some).ok_or(format!("`{key}` must be true or false")),
+    }
+}
+
 fn arg_str<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, String> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -241,7 +294,7 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, String> {
 
 /// The query a tool call asks: `None` for an unknown tool, `Err` for bad arguments. Relative
 /// paths are made absolute against `cwd`.
-fn tool_query(name: &str, args: &Value, cwd: &Path) -> Option<Result<Query, String>> {
+pub(crate) fn tool_query(name: &str, args: &Value, cwd: &Path) -> Option<Result<Query, String>> {
     let absolute = |p: &str| {
         let p = Path::new(p);
         if p.is_absolute() { p.to_path_buf() } else { cwd.join(p) }
@@ -271,6 +324,20 @@ fn tool_query(name: &str, args: &Value, cwd: &Path) -> Option<Result<Query, Stri
                 path: absolute(arg_str(args, "path")?.ok_or("`path` is required")?),
                 line: arg_u64(args, "line")?.map(|n| n as usize),
                 col: arg_u64(args, "col")?.map(|n| n as usize),
+            },
+            "get_review" => Query::Review,
+            "get_review_threads" => Query::ReviewThreads {
+                path: arg_str(args, "path")?.map(String::from),
+                resolved: arg_bool(args, "resolved")?.unwrap_or(false),
+            },
+            "review_refresh" => Query::ReviewRefresh,
+            "review_apply_suggestion" => Query::ReviewApply {
+                thread: arg_str(args, "thread")?.ok_or("`thread` is required")?.to_string(),
+            },
+            "review_draft_reply" => Query::ReviewReply {
+                thread: arg_str(args, "thread")?.ok_or("`thread` is required")?.to_string(),
+                body: arg_str(args, "body")?.ok_or("`body` is required")?.to_string(),
+                resolve: arg_bool(args, "resolve")?.unwrap_or(false),
             },
             _ => return Ok(None),
         }))
@@ -432,7 +499,9 @@ fn session_start(jed: &mut dyn Jed) -> Result<String, String> {
     }
     out.push_str(
         "The jed MCP tools show the editor's state (active file, selection, diagnostics, open tabs) and the \
-         other terminals' commands and output, and open files in the editor.\n",
+         other terminals' commands and output, and open files in the editor. The review tools (get_review, \
+         get_review_threads, review_apply_suggestion, review_draft_reply) deal with a merge request's feedback: fix the code \
+         yourself; replies are only drafts the user submits in jed.\n",
     );
     Ok(out)
 }
@@ -466,6 +535,19 @@ fn prompt(jed: &mut dyn Jed) -> Result<String, String> {
         {
             out.push_str(&format!("Selected text:\n{text}\n"));
         }
+    }
+    let review = &context["review"];
+    if review.is_object() {
+        let n = |k: &str| review[k].as_u64().unwrap_or(0);
+        out.push_str(&format!(
+            "Review: !{} \"{}\", {} unresolved thread{}, {} pending draft{}\n",
+            review["number"],
+            review["title"].as_str().unwrap_or(""),
+            n("unresolved"),
+            if n("unresolved") == 1 { "" } else { "s" },
+            n("pending"),
+            if n("pending") == 1 { "" } else { "s" },
+        ));
     }
     let query = Query::Commands {
         terminal: None,
@@ -616,7 +698,12 @@ pub(crate) mod tests {
                 "get_recent_commands",
                 "get_command_output",
                 "get_terminal_screen",
-                "open_file"
+                "open_file",
+                "get_review",
+                "get_review_threads",
+                "review_refresh",
+                "review_apply_suggestion",
+                "review_draft_reply"
             ]
         );
         assert_eq!(out[3]["error"]["code"], -32601);
@@ -856,5 +943,58 @@ pub(crate) mod tests {
         assert!(text.contains("Selected text:\nlet x;"));
         assert!(text.contains("Terminal 3 (sh) last command: cargo test (exit 101)"));
         assert!(!text.contains("Terminal 4"));
+    }
+
+    #[test]
+    fn review_tools_map_to_queries_and_the_prompt_hook_has_a_counts_only_review_line() {
+        let cwd = Path::new("/w");
+        let q = |name: &str, args: Value| tool_query(name, &args, cwd).unwrap().unwrap();
+        assert_eq!(q("get_review", json!({})), Query::Review);
+        assert_eq!(
+            q("get_review_threads", json!({"path": "a.rs", "resolved": true})),
+            Query::ReviewThreads {
+                path: Some("a.rs".into()),
+                resolved: true
+            }
+        );
+        assert_eq!(q("review_refresh", json!({})), Query::ReviewRefresh);
+        assert_eq!(
+            q("review_apply_suggestion", json!({"thread": "11"})),
+            Query::ReviewApply { thread: "11".into() }
+        );
+        assert_eq!(
+            q(
+                "review_draft_reply",
+                json!({"thread": "11", "body": "Done", "resolve": true})
+            ),
+            Query::ReviewReply {
+                thread: "11".into(),
+                body: "Done".into(),
+                resolve: true
+            }
+        );
+        assert!(
+            tool_query("review_draft_reply", &json!({"thread": "1"}), cwd)
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            tool_query("review_submit", &json!({}), cwd).is_none(),
+            "there is no submit tool"
+        );
+        let mut jed = Fake {
+            answers: vec![(
+                Query::Context,
+                Ok(
+                    json!({"editor": null, "review": {"number": 42, "title": "Add review panel", "unresolved": 3, "pending": 1}}),
+                ),
+            )],
+            ..Fake::default()
+        };
+        let text = hook_text(HookKind::Prompt, &mut jed);
+        assert!(
+            text.contains("Review: !42 \"Add review panel\", 3 unresolved threads, 1 pending draft"),
+            "{text}"
+        );
     }
 }

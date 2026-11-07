@@ -52,6 +52,9 @@ pub struct Review {
     pub comments_error: Option<String>,
     /// How local HEAD related to the merge request's head when this was looked up.
     pub relation: range::HeadRelation,
+    /// The host's entry in `forges.toml` sets `mcp_read_only`: Claude's tools may not apply
+    /// suggestions or draft replies.
+    pub mcp_read_only: bool,
 }
 
 /// A thread and where [`review_anchor`] put it.
@@ -230,6 +233,7 @@ pub fn lookup(req: Request) -> Outcome {
     };
     let viewed = req.viewed_from.as_deref().map(Viewed::load);
     let relation = range::head_relation(&req.repo, &mr.head.sha);
+    let mcp_read_only = config.mcp_read_only(&repo_ref.host);
     Outcome::Loaded(
         Box::new(Review {
             repo: repo_ref,
@@ -242,6 +246,7 @@ pub fn lookup(req: Request) -> Outcome {
             conversation,
             comments_error,
             relation,
+            mcp_read_only,
         }),
         viewed,
     )
@@ -352,6 +357,8 @@ pub struct ReviewState {
     pub user_loading: bool,
     /// A write (submit, reply, resolve, edit, delete) is on its way: one at a time.
     pub writing: bool,
+    /// When the loaded review was looked up.
+    pub fetched_at: Option<std::time::SystemTime>,
 }
 
 impl Review {
@@ -438,6 +445,7 @@ impl Default for ReviewState {
             user: None,
             user_loading: false,
             writing: false,
+            fetched_at: None,
             env: Arc::new(|name| std::env::var(name).ok()),
         }
     }
@@ -508,6 +516,15 @@ impl ReviewState {
             Content::Loaded(r) => self.drafts.rows(r),
             _ => Vec::new(),
         }
+    }
+
+    /// How many drafts the shown merge request has (`draft_rows().len()` without building and
+    /// sorting the rows: the prompt hook asks per prompt).
+    pub fn draft_count(&self) -> usize {
+        let (Some(store), Some(key)) = (&self.drafts.store, self.drafts_key()) else {
+            return 0;
+        };
+        store.get(&key).len()
     }
 
     /// The viewed-state key of `file` in the shown merge request.

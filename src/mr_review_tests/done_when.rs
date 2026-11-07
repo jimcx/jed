@@ -122,6 +122,7 @@ fn config_github(server: &FakeServer) -> ForgeConfig {
             api_url: Some(format!("{}/api/v3", server.url())),
             token_env: Some("FAKE_TOKEN".into()),
             token: None,
+            mcp_read_only: false,
         }],
         errors: Vec::new(),
     }

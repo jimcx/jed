@@ -73,6 +73,20 @@ fn range_label(start: u32, end: u32) -> String {
 
 /// A draft as a block under its last line.
 pub(super) fn draft_block(d: &Draft) -> ThreadBlock {
+    if d.reply_to.is_some() {
+        let tag = if d.by_claude { " · claude" } else { "" };
+        let resolve = if d.resolve { " · + resolve" } else { "" };
+        return ThreadBlock {
+            role: Role::Draft,
+            id: d.id.clone(),
+            right: d.right,
+            line: (d.end.max(d.start) - 1) as usize,
+            resolved: false,
+            mine: false,
+            apply: false,
+            comments: vec![(format!("Reply draft{tag}{resolve}"), d.body.clone())],
+        };
+    }
     ThreadBlock {
         role: Role::Draft,
         id: d.id.clone(),

@@ -46,7 +46,7 @@ const MAX_SCREEN: usize = 32 * 1024;
 const MAX_LIST: usize = 100;
 
 /// `text` cut to at most `max` bytes at a char boundary, keeping the start.
-fn clip_head(text: &str, max: usize) -> (&str, bool) {
+pub(super) fn clip_head(text: &str, max: usize) -> (&str, bool) {
     let end = text.floor_char_boundary(max);
     (&text[..end], end < text.len())
 }
@@ -96,7 +96,16 @@ impl App {
     /// changes state, so `ipc_request` handles it before this.
     pub(super) fn claude_answer(&self, query: &Query, caller: Option<u64>) -> Reply {
         match query {
-            Query::Context => Reply::data(self.claude_context()),
+            Query::Context => {
+                let mut v = self.claude_context();
+                v["review"] = self.claude_review_summary();
+                Reply::data(v)
+            }
+            Query::Review => Reply::data(self.claude_review()),
+            Query::ReviewThreads { path, resolved } => self.claude_review_threads(path.as_deref(), *resolved),
+            Query::ReviewRefresh | Query::ReviewReply { .. } | Query::ReviewApply { .. } => {
+                Reply::error("a review action, not a read")
+            }
             Query::Editors => Reply::data(self.claude_editors()),
             Query::Diagnostics { path } => self.claude_diagnostics(path.as_deref()),
             Query::Terminals => Reply::data(self.claude_terminals(caller)),

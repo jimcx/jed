@@ -23,6 +23,8 @@ pub enum Job {
         head_sha: String,
         review: DraftReview,
         ids: Vec<String>,
+        /// Reply drafts, posted after the review (`posted` / `failed` name them too).
+        replies: Vec<ReplyDraft>,
     },
     Reply {
         number: u64,
@@ -41,6 +43,16 @@ pub enum Job {
     Delete {
         comment_id: String,
     },
+}
+
+/// A reply draft as Submit Review posts it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyDraft {
+    /// The draft's id.
+    pub id: String,
+    pub thread_id: String,
+    pub body: String,
+    pub resolve: bool,
 }
 
 impl Job {
@@ -120,22 +132,46 @@ pub fn run(req: Request, job: Job) -> Done {
             head_sha,
             review,
             ids,
+            replies,
         } => {
             log.info(&format!(
-                "Submitting {} comment(s) to !{number} ({:?})",
+                "Submitting {} comment(s) and {} reply(ies) to !{number} ({:?})",
                 review.comments.len(),
+                replies.len(),
                 review.event
             ));
-            let out = api.submit_review(repo, *number, head_sha, review);
             let id = |i: usize| ids.get(i).cloned().unwrap_or_default();
-            for (i, e) in &out.failed {
-                log.error(&format!("draft {}: {e}", id(*i)));
+            // Replies only (no verdict, no line comments): there is no review to post.
+            let (mut posted, mut failed, mut error) = (Vec::new(), Vec::new(), None);
+            if !review.comments.is_empty() || review.event != forge::ReviewEvent::Comment {
+                let out = api.submit_review(repo, *number, head_sha, review);
+                for (i, e) in &out.failed {
+                    log.error(&format!("draft {}: {e}", id(*i)));
+                }
+                posted = out.posted.iter().map(|&i| id(i)).collect();
+                failed = out.failed.iter().map(|(i, e)| (id(*i), e.clone())).collect();
+                error = out.error;
             }
-            return Done::Submitted {
-                posted: out.posted.iter().map(|&i| id(i)).collect(),
-                failed: out.failed.iter().map(|(i, e)| (id(*i), e.clone())).collect(),
-                error: out.error,
-            };
+            // Each reply has its own outcome. One whose thread resolve fails was posted: it is
+            // confirmed (a retry would post it twice) and the failure is the submit's `error`.
+            for r in replies {
+                match api.reply(repo, *number, &r.thread_id, &r.body) {
+                    Err(e) => {
+                        log.error(&format!("reply {}: {e}", r.id));
+                        failed.push((r.id.clone(), e.to_string()));
+                    }
+                    Ok(()) => {
+                        posted.push(r.id.clone());
+                        if r.resolve
+                            && let Err(e) = api.set_resolved(repo, &r.thread_id, true)
+                        {
+                            log.error(&format!("resolving {}: {e}", r.thread_id));
+                            error.get_or_insert(format!("replied, but resolving the thread failed: {e}"));
+                        }
+                    }
+                }
+            }
+            return Done::Submitted { posted, failed, error };
         }
         Job::Reply {
             number,

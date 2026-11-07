@@ -8,6 +8,7 @@
 //! api_url = "https://git.example.com/api/v1"   # optional; http:// only if written out here
 //! token_env = "GITEA_TOKEN"            # optional; default GITEA_TOKEN / GITHUB_TOKEN / GITLAB_TOKEN
 //! token = "…"                          # optional; used instead of the environment variable
+//! mcp_read_only = true                 # optional (default false): Claude's review tools may read, not apply or draft
 //! ```
 //!
 //! `github.com` and `gitlab.com` need no entry. This file is the only source of a host, API URL
@@ -32,6 +33,8 @@ struct RawEntry {
     api_url: Option<String>,
     token_env: Option<String>,
     token: Option<Secret>,
+    /// Checked by hand in `entry` (a wrong type is that entry's error, not the whole file's).
+    mcp_read_only: Option<toml::Value>,
 }
 
 /// A token written in the file. `Debug` shows `Secret(…)`, so it never reaches a log.
@@ -68,6 +71,8 @@ pub struct Entry {
     pub token_env: Option<String>,
     /// The entry's own token (else the environment variable's).
     pub token: Option<Secret>,
+    /// The code review is read-only for Claude's MCP tools (no apply, no reply drafts).
+    pub mcp_read_only: bool,
 }
 
 /// An entry (or a detected host) with every default filled in.
@@ -196,12 +201,18 @@ fn entry(e: RawEntry) -> Result<Entry, String> {
         .token
         .filter(|t| !t.0.trim().is_empty())
         .map(|t| Secret(t.0.trim().to_string()));
+    let mcp_read_only = match e.mcp_read_only {
+        None => false,
+        Some(toml::Value::Boolean(b)) => b,
+        Some(v) => return Err(format!("`mcp_read_only` must be true or false, got `{v}`")),
+    };
     Ok(Entry {
         host,
         kind,
         api_url,
         token_env,
         token,
+        mcp_read_only,
     })
 }
 
@@ -210,6 +221,17 @@ impl ForgeConfig {
         ForgeConfig {
             entries: Vec::new(),
             errors: vec![message],
+        }
+    }
+
+    /// Whether the review is read-only for Claude on `host`: its entry sets `mcp_read_only`. A host
+    /// without a valid entry is read-only when the file had problems (an unreadable file, or an
+    /// entry skipped for a mistyped `mcp_read_only`), so a typo never opens the write tools.
+    pub fn mcp_read_only(&self, host: &str) -> bool {
+        let host = host.to_ascii_lowercase();
+        match self.entries.iter().find(|e| e.host == host) {
+            Some(e) => e.mcp_read_only,
+            None => !self.errors.is_empty(),
         }
     }
 
@@ -255,6 +277,7 @@ fn detected(host: &str) -> Option<Entry> {
         api_url: None,
         token_env: None,
         token: None,
+        mcp_read_only: false,
     })
 }
 
@@ -304,6 +327,24 @@ mod tests {
         assert!(c.resolve("localhost:3000").unwrap().allow_http);
         let c = parse("[[forge]]\nhost = \"localhost:3000\"\nkind = \"gitea\"\n");
         assert!(!c.resolve("localhost:3000").unwrap().allow_http);
+    }
+
+    #[test]
+    fn mcp_read_only_is_a_per_host_boolean() {
+        let c = parse(
+            "[[forge]]\nhost = \"a\"\nkind = \"gitea\"\nmcp_read_only = true\n\
+             [[forge]]\nhost = \"b\"\nkind = \"gitea\"\nmcp_read_only = false\n\
+             [[forge]]\nhost = \"c\"\nkind = \"gitea\"\n",
+        );
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert!(c.mcp_read_only("A"));
+        assert!(!c.mcp_read_only("b") && !c.mcp_read_only("c") && !c.mcp_read_only("github.com"));
+        let c = parse("[[forge]]\nhost = \"a\"\nkind = \"gitea\"\nmcp_read_only = \"yes\"\n");
+        assert!(c.entries.is_empty() && c.errors.len() == 1, "{:?}", c.errors);
+        assert!(c.errors[0].contains("mcp_read_only"), "{:?}", c.errors);
+        // The mistake fails closed, also for the built-in hosts; a file that does not parse too.
+        assert!(c.mcp_read_only("a") && c.mcp_read_only("github.com"));
+        assert!(parse("[[forge").mcp_read_only("github.com"));
     }
 
     #[test]
