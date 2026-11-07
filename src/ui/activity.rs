@@ -12,7 +12,7 @@ fn icon(panel: SidePanel) -> &'static str {
         SidePanel::Explorer => "▤",
         SidePanel::Search => "⌕",
         SidePanel::SourceControl => "⑂",
-        SidePanel::Review => "✎",
+        SidePanel::Review => "⇄",
         SidePanel::Tools => "≡",
     }
 }

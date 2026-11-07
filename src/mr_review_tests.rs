@@ -165,7 +165,7 @@ async fn mr_review_finds_the_merge_request_and_lists_its_files() {
     idle(&mut app).await;
     let text = screen(&mut app);
     assert!(text.contains("CODE REVIEW"), "{text}");
-    assert!(text.contains("✎"), "the activity bar's icon: {text}");
+    assert!(text.contains("⇄"), "the activity bar's icon: {text}");
     assert!(text.contains("!7 Add review panel"), "{text}");
     assert!(text.contains("feature → main"), "{text}");
     assert!(text.contains("4 files · open"), "{text}");
