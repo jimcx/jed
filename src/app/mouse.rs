@@ -213,8 +213,11 @@ impl App {
                 Pointer::RowResize
             }
             Some(Drag::Divider(d)) => divider(d),
-            // Selecting text keeps the I-beam wherever the pointer goes.
-            Some(Drag::Text { .. } | Drag::AddedText { .. } | Drag::Column) => Pointer::Text,
+            // Selecting text keeps the I-beam wherever the pointer goes: in an editor, a diff
+            // view's panes or a one-line input (where the I-beam showed before the press).
+            Some(Drag::Text { .. } | Drag::AddedText { .. } | Drag::Column | Drag::Diff(_) | Drag::Field(_)) => {
+                Pointer::Text
+            }
             Some(_) => Pointer::Default,
             None if self.prompt.is_some() => {
                 self.text_pointer_if(self.hits.prompt_input.is_some_and(|r| r.contains(p)))

@@ -8509,6 +8509,12 @@ mod text_pointer {
         let r = f.replace.unwrap();
         assert_eq!(pointer_at(&mut app, r.x + 1, r.y), Pointer::Text);
         assert_eq!(pointer_at(&mut app, f.toggles[0].x, f.toggles[0].y), Pointer::Default);
+        // Selecting in an input keeps the I-beam, even over its toggles.
+        app.mouse(K::Down(MouseButton::Left), f.query.x + 1, f.query.y);
+        app.mouse(K::Drag(MouseButton::Left), f.toggles[0].x, f.toggles[0].y);
+        assert_eq!(app.pointer, Pointer::Text, "selecting in the find input");
+        app.mouse(K::Up(MouseButton::Left), f.toggles[0].x, f.toggles[0].y);
+        assert_eq!(app.pointer, Pointer::Default, "released over a toggle");
 
         // The Search view's inputs.
         app.test_execute(Command::Search(crate::command::SearchCommand::ReplaceInFiles));
@@ -8600,6 +8606,14 @@ mod text_pointer {
             Pointer::Default,
             "tab"
         );
+        // Selecting in a pane keeps the I-beam, even off the text.
+        app.mouse(K::Down(MouseButton::Left), rows.x + 8, rows.y + 1);
+        app.mouse(K::Drag(MouseButton::Left), rows.x + 10, rows.y + 1);
+        assert_eq!(app.pointer, Pointer::Text, "selecting in the diff");
+        app.mouse(K::Drag(MouseButton::Left), g.tab_bar.x + 2, g.tab_bar.y);
+        assert_eq!(app.pointer, Pointer::Text, "still selecting");
+        app.mouse(K::Up(MouseButton::Left), g.tab_bar.x + 2, g.tab_bar.y);
+        assert_eq!(app.pointer, Pointer::Default, "released over the tab bar");
     }
 
     /// A merge conflict's action-row buttons are buttons, not text.
