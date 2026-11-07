@@ -1963,3 +1963,64 @@ async fn git_history_shows_loading_and_errors() {
     let term = draw(&mut app);
     assert!(list_row(&term, hit.list, 0).contains("boom"));
 }
+
+/// The Source Control view's commit pane: the branch's commits (every file's, newest first)
+/// under the changes, a click opens the commit tab, the header collapses it, a commit made
+/// outside jed appears.
+#[tokio::test(flavor = "multi_thread")]
+async fn scm_branch_history_pane() {
+    let (_d, root, state) = dirs();
+    init(&root);
+    write(&root, "a.txt", "a\n");
+    commit_all(&root, "first: a");
+    write(&root, "b.txt", "b\n");
+    commit_all(&root, "second: b");
+    write(&root, "a.txt", "a2\n");
+    let mut app = open_state_app_watched(&root, &state, Some("a.txt"));
+    app.test_execute(Command::FocusScm);
+    assert_eq!(app.ui.side_panel, SidePanel::SourceControl);
+    let _ = draw(&mut app);
+    let expected: Vec<String> = git(&root, &["log", "--format=%H"])
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert!(
+        app.settle(|a| !a.git.running() && !a.branch_history.loading && a.branch_history.commits.len() == 2)
+            .await
+    );
+    let term = draw(&mut app);
+    let ids: Vec<_> = app.branch_history.rows().iter().map(|c| c.id.clone()).collect();
+    assert_eq!(ids, expected, "git log, not one file's");
+    let hit = app.hits.history.expect("the pane is drawn");
+    assert!(list_row(&term, hit.list, 0).contains("second: b"));
+    assert!(list_row(&term, hit.list, 1).contains("first: a"));
+    assert!(app.hits.scm.is_some(), "the changes stay above it");
+
+    // A click on the older commit opens its tab.
+    click_history_row(&mut app, 1);
+    assert_eq!(app.branch_history.selected(), Some(expected[1].as_str()));
+    assert!(
+        app.settle(|a| a.active_commit().is_some_and(|c| c.show.is_some()))
+            .await
+    );
+    assert_eq!(commit_of(&app, app.groups.active).commit, expected[1]);
+
+    // A commit outside jed shows at the top once HEAD moves.
+    write(&root, "c.txt", "c\n");
+    commit_all(&root, "third: c");
+    app.test_execute(Command::FocusScm);
+    assert!(
+        app.settle(|a| { a.branch_history.commits.len() == 3 && !a.branch_history.loading })
+            .await
+    );
+    assert_eq!(app.branch_history.rows()[0].summary, "third: c");
+
+    // The header collapses the pane; the changes get the room back.
+    let _ = draw(&mut app);
+    let header = app.hits.history.unwrap().header;
+    app.mouse(MouseEventKind::Down(MouseButton::Left), header.x + 2, header.y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), header.x + 2, header.y);
+    assert!(app.branch_history.collapsed());
+    assert!(!app.git_history.collapsed(), "the Explorer's section is its own");
+    quit(app).await;
+}

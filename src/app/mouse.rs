@@ -560,7 +560,7 @@ impl App {
                         self.review_scroll(delta, (m.column, m.row))
                     }
                     Hit::SidePanel if self.ui.side_panel == SidePanel::Tools => self.tools_scroll(delta),
-                    Hit::HistoryRow(_) | Hit::HistoryHeader => self.git_history.scroll_by(delta),
+                    Hit::HistoryRow(_) | Hit::HistoryHeader => self.side_history().scroll_by(delta),
                     Hit::FileHistoryRow(_) | Hit::FileHistoryHeader => self.file_history_view.scroll_by(delta),
                     Hit::ExplorerRow(_) | Hit::SidePanel => self.explorer.scroll_by(delta),
                     // The wheel over the tab bar moves it a tab at a time (never focusing it).
@@ -683,6 +683,9 @@ impl App {
                 // Taken by `terminal_select`.
                 Some(Drag::Terminal { .. }) => {}
                 Some(Drag::FileHistoryDivider) => self.drag_side_section(0, m.row),
+                Some(Drag::HistoryDivider) if self.ui.side_panel == SidePanel::SourceControl => {
+                    self.drag_scm_section(m.row)
+                }
                 Some(Drag::HistoryDivider) => self.drag_side_section(1, m.row),
                 Some(Drag::ReviewDivider(pane)) => self.drag_review_divider(pane, m.row),
                 None => {}
@@ -761,18 +764,20 @@ impl App {
             Hit::HistoryHeader => {
                 self.ui.focus = Focus::SidePanel;
                 self.file_history_view.set_focused(false);
-                self.git_history.set_focused(true);
-                self.git_history.toggle_collapsed();
+                self.side_history().set_focused(true);
+                self.side_history().toggle_collapsed();
             }
             Hit::HistoryRow(row) => {
                 self.ui.focus = Focus::SidePanel;
                 self.file_history_view.set_focused(false);
-                self.git_history.set_focused(true);
+                let branch = self.ui.side_panel == SidePanel::SourceControl;
+                self.side_history().set_focused(true);
                 let top = self.hits.history.map_or(0, |h| h.top);
-                self.git_history.select_row(top + row as usize);
+                self.side_history().select_row(top + row as usize);
                 // A single click opens the commit (Enter's too).
-                if let Some(id) = self.git_history.selected().map(str::to_string) {
-                    let file = self.git_history_file();
+                if let Some(id) = self.side_history().selected().map(str::to_string) {
+                    // The branch's commits have no file to highlight or open first.
+                    let file = if branch { None } else { self.git_history_file() };
                     self.open_commit(&id, file);
                 }
             }

@@ -2,6 +2,7 @@
 
 mod backup;
 mod blame;
+mod branch_history;
 mod cheatsheet;
 mod claude;
 mod claude_log;
@@ -457,6 +458,8 @@ pub struct App {
     /// The Explorer view's "Git History" section: the active file's commits and the section's
     /// state (`app/git_history.rs`).
     pub git_history: crate::git_history::GitHistory,
+    /// The Source Control view's commit history pane (`app/branch_history.rs`).
+    pub branch_history: crate::git_history::GitHistory,
     /// The Explorer's "File History" section above it.
     pub file_history_view: crate::file_history_view::FileHistoryView,
     /// Stage All waiting for these buffers' saves to end.
@@ -642,6 +645,11 @@ impl App {
             suggest: None,
             claude_apply: None,
             git_history: Default::default(),
+            branch_history: {
+                let mut h = crate::git_history::GitHistory::default();
+                h.stale = true;
+                h
+            },
             file_history_view: Default::default(),
             stage_all_after_save: None,
             tasks: Default::default(),
@@ -726,6 +734,7 @@ impl App {
         self.sync_markdown();
         self.sync_commit_tabs();
         self.sync_git_history();
+        self.sync_branch_history();
         self.sync_file_history();
     }
 
@@ -799,6 +808,7 @@ impl App {
             self.sync_markdown();
             self.sync_commit_tabs();
             self.sync_git_history();
+            self.sync_branch_history();
             self.sync_file_history();
             self.sync_backups();
             self.report_log_errors();
@@ -1995,6 +2005,7 @@ impl App {
         self.sync_markdown();
         self.sync_commit_tabs();
         self.sync_git_history();
+        self.sync_branch_history();
         self.sync_file_history();
         self.sync_backups();
         self.report_log_errors();
@@ -2042,6 +2053,7 @@ impl App {
             self.sync_markdown();
             self.sync_commit_tabs();
             self.sync_git_history();
+            self.sync_branch_history();
             self.sync_file_history();
             self.sync_backups();
             self.report_log_errors();

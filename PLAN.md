@@ -781,6 +781,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - ✅ **Show ignored files** (`search_ignored_files`): gitignored files always visible in the explorer (dimmer), and an "Ig" toggle in workspace search to include them — [tasks/search_ignored_files.md](tasks/search_ignored_files.md)
 - ✅ **Single file mode** (`single_file_mode`): a lean one-file editor (`jed -s <file>`) — [tasks/single_file_mode.md](tasks/single_file_mode.md)
 - ✅ **Soft wrap** (`soft_wrap`): wrap long lines at the editor's width, with movement, scrolling and the mouse on screen rows — [tasks/soft_wrap.md](tasks/soft_wrap.md)
+- ✅ **Source Control branch history** (`scm_branch_history`): a commits pane under the Source Control view listing the current branch's history; a click opens the commit tab — [tasks/scm_branch_history.md](tasks/scm_branch_history.md)
 - ✅ **Spell checker** (`spell_check`): misspelled words in comments, strings and identifiers are underlined (camelCase / snake_case split into words), with suggestions and a user dictionary for words to accept — [tasks/spell_check.md](tasks/spell_check.md)
 - ✅ **Syntax highlighting in the diff view** (`diff_syntax`): diff tabs draw both sides with the file's syntax colours — [tasks/diff_syntax.md](tasks/diff_syntax.md)
 - ✅ **Syntax plugins** (`syntax_plugins`): tree-sitter grammars from `~/.config/jed/languages/<id>/`, built with the system C compiler and loaded at runtime — [tasks/syntax_plugins.md](tasks/syntax_plugins.md)

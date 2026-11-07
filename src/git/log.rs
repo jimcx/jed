@@ -69,6 +69,33 @@ pub fn commits(repo: &Repo, path: &Path, skip: usize, limit: usize) -> Result<Pa
     .page(tip, skip, limit)
 }
 
+/// Blocking: the commits reachable from HEAD (`git log`, no path), newest first by committer
+/// date, from `skip` on, at most `limit` of them; `more` when the walk goes on. The Source
+/// Control view's branch history. An unborn HEAD: an empty page.
+pub fn branch(repo: &Repo, skip: usize, limit: usize) -> Result<Page, git2::Error> {
+    let r = repo.open()?;
+    match r.head() {
+        Ok(_) => {}
+        Err(e) if e.code() == ErrorCode::UnbornBranch || e.code() == ErrorCode::NotFound => {
+            return Ok(Page::default());
+        }
+        Err(e) => return Err(e),
+    }
+    let mut walk = r.revwalk()?;
+    walk.push_head()?;
+    walk.set_sorting(git2::Sort::TIME)?;
+    let mut commits = Vec::new();
+    let mut more = false;
+    for (i, id) in walk.enumerate().skip(skip) {
+        if i >= skip.saturating_add(limit) {
+            more = true;
+            break;
+        }
+        commits.push(describe(&r.find_commit(id?)?)?);
+    }
+    Ok(Page { commits, more })
+}
+
 struct Walk<'a> {
     repo: &'a Repository,
     path: &'a Path,
@@ -528,5 +555,27 @@ mod tests {
         let past = commits(&repo, Path::new("a.txt"), 20, 3).unwrap();
         assert_eq!(past, Page::default());
         assert!(!past.more);
+    }
+
+    #[test]
+    fn branch_lists_every_commit_in_pages() {
+        let (_d, root) = tmp();
+        for (i, name) in ["a.txt", "b.txt", "c.txt"].iter().enumerate() {
+            write(&root, name, "x\n");
+            commit_at(
+                &root,
+                &format!("2024-01-0{} 12:00:00 +0000", i + 1),
+                &format!("add {name}"),
+            );
+        }
+        let repo = Repo::discover(&root).unwrap();
+        let all = branch(&repo, 0, 10).unwrap();
+        let summaries: Vec<_> = all.commits.iter().map(|c| c.summary.as_str()).collect();
+        assert_eq!(summaries, ["add c.txt", "add b.txt", "add a.txt"]);
+        assert!(!all.more);
+        let page = branch(&repo, 1, 1).unwrap();
+        assert_eq!(page.commits.len(), 1);
+        assert_eq!(page.commits[0].summary, "add b.txt");
+        assert!(page.more);
     }
 }

@@ -27,6 +27,12 @@ pub(super) enum GitEvent {
         generation: u64,
         result: Result<git::log::Page, String>,
     },
+    /// A page of the branch's commits was read (`app/branch_history.rs`).
+    BranchHistory {
+        skip: usize,
+        generation: u64,
+        result: Result<git::log::Page, String>,
+    },
 }
 
 /// How long after the cheap head read the full working-tree walk is deferred: the branch shows
@@ -80,6 +86,11 @@ impl App {
                 generation,
                 result,
             } => self.git_history_done(path, skip, generation, result),
+            GitEvent::BranchHistory {
+                skip,
+                generation,
+                result,
+            } => self.branch_history_done(skip, generation, result),
         }
     }
 
@@ -190,6 +201,7 @@ impl App {
         // are the staged markers (they compare the index against HEAD).
         if self.git_head() != head_before {
             self.git_history_head_changed();
+            self.branch_history_head_changed();
             self.quick_diff_head_changed();
         }
         if let Some(changed) = self.git.queued.take() {
@@ -214,6 +226,7 @@ impl App {
         self.review_head_check();
         if self.git_head() != head_before {
             self.git_history_head_changed();
+            self.branch_history_head_changed();
         }
     }
 

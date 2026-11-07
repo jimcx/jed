@@ -108,8 +108,13 @@ impl App {
             ScrollTarget::Panel(PanelTab::Task(id)) => Some(f(&mut TerminalScroll {
                 run: self.tasks.get(id)?,
             })),
-            ScrollTarget::History if !self.ui.side_visible || self.ui.side_panel != SidePanel::Explorer => None,
-            ScrollTarget::History => Some(f(&mut self.git_history.scrollable())),
+            ScrollTarget::History
+                if !self.ui.side_visible
+                    || !matches!(self.ui.side_panel, SidePanel::Explorer | SidePanel::SourceControl) =>
+            {
+                None
+            }
+            ScrollTarget::History => Some(f(&mut self.side_history().scrollable())),
             ScrollTarget::FileHistory if !self.ui.side_visible || self.ui.side_panel != SidePanel::Explorer => None,
             ScrollTarget::FileHistory => Some(f(&mut self.file_history_view.scrollable())),
             ScrollTarget::CheatSheet => Some(f(self.cheat_sheet.as_mut()?)),

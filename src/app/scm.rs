@@ -253,6 +253,7 @@ impl App {
     /// focuses the editor). The view takes the keys.
     pub(super) fn scm_click(&mut self, m: MouseEvent, count: u8) {
         self.ui.focus = Focus::SidePanel;
+        self.branch_history.set_focused(false);
         let Some(hit) = self.hits.scm.clone() else { return };
         let Some(status) = self.git.status.as_ref() else { return };
         let at = Position { x: m.column, y: m.row };

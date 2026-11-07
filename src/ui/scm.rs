@@ -16,13 +16,44 @@ use unicode_width::UnicodeWidthStr;
 use super::scrollbar;
 use crate::app::{App, Focus};
 use crate::git::Change;
-use crate::layout::{ScmHit, ScrollBarHit, ScrollTarget, SidePanel};
+use crate::layout::{HistoryHit, ScmHit, ScrollBarHit, ScrollTarget, SidePanel};
 use crate::scm::{Row, Section};
 use crate::scrollbar::Scrollable;
+use crate::side_sections::split;
 
-/// Draws the view in `area` (the side panel below its title, without its border), and the
-/// list's scroll bar in its last column.
-pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ScmHit>, Option<ScrollBarHit>) {
+/// The commit history pane under the list: its hits and scroll bar.
+pub type HistoryPane = (Option<HistoryHit>, Option<ScrollBarHit>);
+
+/// Draws the view in `area` (the side panel below its title, without its border): the changes
+/// with their scroll bar, and under them the branch's commit history pane (`ui::side`'s
+/// history rows) when there is a repository and room.
+pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ScmHit>, Option<ScrollBarHit>, Option<HistoryPane>) {
+    if area.width < 8 || area.height < 2 {
+        return (None, None, None);
+    }
+    if app.git.status.is_none() {
+        let (hit, bar) = render_list(f, area, app);
+        return (hit, bar, None);
+    }
+    // The branch line stays above the split; the rest divides between the list and the pane.
+    let (list_h, heights) = split(area.height - 1, &app.scm_sections());
+    let top = Rect {
+        height: list_h + 1,
+        ..area
+    };
+    let (hit, bar) = render_list(f, top, app);
+    let pane = (heights[0] > 0).then(|| {
+        let section = Rect {
+            y: area.y + top.height,
+            height: heights[0],
+            ..area
+        };
+        super::side::render_history(f, section, app, true)
+    });
+    (hit, bar, pane)
+}
+
+fn render_list(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ScmHit>, Option<ScrollBarHit>) {
     if area.width < 8 || area.height < 2 {
         return (None, None);
     }

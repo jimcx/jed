@@ -85,9 +85,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
             };
         }
         SidePanel::SourceControl => {
-            let (scm, bar) = super::scm::render(f, view, app);
+            let (scm, bar, history) = super::scm::render(f, view, app);
+            let (history, history_scrollbar) = history.unwrap_or_default();
             return SideHits {
                 scm,
+                rules: history.iter().map(|h| h.divider).collect(),
+                history,
+                history_scrollbar,
                 scrollbar: bar.map(|b| (ScrollTarget::Side(SidePanel::SourceControl), b)),
                 ..SideHits::default()
             };
@@ -251,7 +255,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
         f.set_cursor_position(p);
     }
     let (history, history_scrollbar) = match section {
-        Some(section) => render_history(f, section, app),
+        Some(section) => render_history(f, section, app, false),
         None => (None, None),
     };
     let (file_history, file_history_scrollbar) = match file_section {
@@ -378,7 +382,23 @@ fn render_file_history(f: &mut Frame, section: Rect, app: &mut App) -> (HistoryH
 /// The "Git History" section: the divider row (left blank: a border), the collapsible header,
 /// then the commit rows — summary, author, relative date and short id as space allows — or
 /// "Reading history…", an error, or "No history".
-fn render_history(f: &mut Frame, section: Rect, app: &mut App) -> (Option<HistoryHit>, Option<ScrollBarHit>) {
+pub(super) fn render_history(
+    f: &mut Frame,
+    section: Rect,
+    app: &mut App,
+    branch: bool,
+) -> (Option<HistoryHit>, Option<ScrollBarHit>) {
+    // The Source Control view's pane (`branch`) or the Explorer's section: the same rows.
+    macro_rules! hist {
+        () => {
+            if branch {
+                &mut app.branch_history
+            } else {
+                &mut app.git_history
+            }
+        };
+    }
+    let title = if branch { "COMMITS" } else { "GIT HISTORY" };
     let theme = &app.theme;
     let base = theme.get("sideBar");
     let out = f.buffer_mut();
@@ -392,11 +412,11 @@ fn render_history(f: &mut Frame, section: Rect, app: &mut App) -> (Option<Histor
         height: 1,
         ..section
     };
-    let marker = if app.git_history.collapsed() { "▸" } else { "▾" };
+    let marker = if hist!().collapsed() { "▸" } else { "▾" };
     out.set_stringn(
         header.x,
         header.y,
-        format!(" {marker} GIT HISTORY"),
+        format!(" {marker} {title}"),
         header.width as usize,
         base.patch(theme.get("sideBar.header")),
     );
@@ -405,7 +425,7 @@ fn render_history(f: &mut Frame, section: Rect, app: &mut App) -> (Option<Histor
         header,
         ..HistoryHit::default()
     };
-    if app.git_history.collapsed() || section.height <= 2 {
+    if hist!().collapsed() || section.height <= 2 {
         return (Some(hit), None);
     }
 
@@ -419,7 +439,7 @@ fn render_history(f: &mut Frame, section: Rect, app: &mut App) -> (Option<Histor
         return (Some(hit), None);
     }
     let look = scrollbar::look(app, ScrollTarget::History);
-    let history = &mut app.git_history;
+    let history = hist!();
     history.set_height(list.height as usize);
     history.clamp();
     let top = history.scroll();
