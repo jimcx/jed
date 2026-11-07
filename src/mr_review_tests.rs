@@ -446,14 +446,43 @@ async fn mr_review_right_click_opens_the_panels_menu() {
     app.test_execute(Command::ShowReview);
     idle(&mut app).await;
     screen(&mut app);
-    let list = app.hits.review.clone().unwrap().list;
-    app.mouse(MouseEventKind::Down(MouseButton::Right), list.x + 8, list.y + 1);
-    let text = screen(&mut app);
-    for item in ["Toggle Viewed", "Refresh", "Switch Merge Request"] {
-        assert!(text.contains(item), "{text}");
-    }
+    let hit = app.hits.review.clone().unwrap();
+    // A file row: only what applies to a file.
+    app.mouse(MouseEventKind::Down(MouseButton::Right), hit.list.x + 8, hit.list.y + 1);
+    assert_eq!(menu_labels(&app), ["Toggle Viewed: on"]);
     let files: Vec<String> = app.review.files().iter().map(|f| f.path.clone()).collect();
     assert_eq!(app.review.view.selected_path(), Some(files[1].as_str()));
+    // The summary: the merge request's own.
+    screen(&mut app);
+    app.mouse(
+        MouseEventKind::Down(MouseButton::Right),
+        hit.summary.x + 2,
+        hit.summary.y,
+    );
+    let labels = menu_labels(&app);
+    assert_eq!(labels[..2], ["Refresh: on", "Switch Merge Request: on"]);
+    assert!(
+        !labels
+            .iter()
+            .any(|l| l.contains("Toggle Viewed") || l.contains("Draft")),
+        "{labels:?}"
+    );
+}
+
+/// The open context menu's items as `label: on` / `label: off` (separators left out).
+fn menu_labels(app: &App) -> Vec<String> {
+    app.context_menu
+        .as_ref()
+        .expect("a menu is open")
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            crate::context_menu::MenuItem::Item { label, enabled, .. } => {
+                Some(format!("{label}: {}", if *enabled { "on" } else { "off" }))
+            }
+            crate::context_menu::MenuItem::Separator => None,
+        })
+        .collect()
 }
 
 /// An app with the panel shown and loaded on the standard repository.
@@ -1226,6 +1255,33 @@ mod threads {
                 );
             }
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_a_thread_rows_menu_has_its_own_items() {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server) = loaded_app(dir.path(), None).await;
+        app.review.user = Some("nobody".into());
+        let hit = app.hits.review.clone().unwrap();
+        app.mouse(
+            MouseEventKind::Down(MouseButton::Right),
+            hit.conv_list.x + 4,
+            hit.conv_list.y,
+        );
+        assert!(app.review.view.conv.focused);
+        assert_eq!(app.review.view.conv.selected(hit.conv_len), Some(0));
+        assert_eq!(
+            super::menu_labels(&app),
+            [
+                "Go to Thread: on",
+                "Reply: on",
+                "Resolve / Unresolve Thread: on",
+                "Edit Comment: off",
+                "Delete Comment: off",
+                "Apply Suggestion: off",
+            ]
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2038,6 +2094,40 @@ mod drafts {
         app.press(KeyCode::Delete, KeyModifiers::NONE);
         assert!(app.review.draft_rows().is_empty());
         assert!(!app.review.view.pending.focused);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_right_click_menus_fit_the_row_and_delete_a_pending_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _main, server) = world(dir.path());
+        let mut app = boot(&root, &server, None).await;
+        write_comment(&mut app, "Pending one");
+        // The caret leaves the draft's lines: the menu must act on the row clicked.
+        select(&mut app, true, 5, 5, 0);
+        lines(&mut app, 120, 30);
+        let hit = app.hits.review.clone().unwrap();
+        let right = MouseEventKind::Down(MouseButton::Right);
+        // A draft: its own items only.
+        app.mouse(right, hit.pending_list.x + 4, hit.pending_list.y);
+        assert_eq!(
+            super::menu_labels(&app),
+            ["Go to Draft: on", "Edit Draft: on", "Delete Draft: on"]
+        );
+        assert!(app.review.view.pending.focused && !app.review.view.conv.focused);
+        // Clicking Delete Draft (the fourth row, after a separator) deletes it.
+        lines(&mut app, 120, 30);
+        let menu = app.hits.context_menu.expect("menu drawn").rect;
+        app.mouse(MouseEventKind::Down(MouseButton::Left), menu.x + 2, menu.y + 3);
+        assert!(app.review.draft_rows().is_empty(), "{}", message(&app));
+        assert!(message(&app).contains("Draft deleted"), "{}", message(&app));
+        // A merge request comment under CONVERSATIONS: thread items, none available.
+        lines(&mut app, 120, 30);
+        let hit = app.hits.review.clone().unwrap();
+        app.mouse(right, hit.conv_list.x + 4, hit.conv_list.y);
+        let labels = super::menu_labels(&app);
+        assert!(labels.iter().all(|l| l.ends_with(": off")), "{labels:?}");
+        assert!(labels.contains(&"Reply: off".to_string()), "{labels:?}");
+        assert!(app.review.view.conv.focused);
     }
 
     #[tokio::test(flavor = "multi_thread")]

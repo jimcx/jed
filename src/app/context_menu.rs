@@ -29,40 +29,88 @@ pub enum MenuTarget {
     /// The text of an editor group (the active tab); `has_file` as for `Tab`. The place later
     /// editor items (cut / copy / paste) join.
     Editor { has_file: bool },
-    /// The Code Review panel (a right-click on a file row or the summary).
-    Review,
+    /// The Code Review panel: what the right-click is on.
+    Review(ReviewSpot),
+}
+
+/// What a right-click in the Code Review panel is on (the opener selects and focuses that row
+/// first, so the items' commands act on it). Each lists only what applies to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewSpot {
+    /// A file row.
+    File,
+    /// A CONVERSATIONS thread: `own` when the user has a comment in it (or isn't known yet),
+    /// `suggestion` when it has one that can be applied.
+    Thread { own: bool, suggestion: bool },
+    /// A merge request comment under CONVERSATIONS (read-only here).
+    Comment,
+    /// A PENDING draft.
+    Draft,
+    /// The PENDING header or its buttons.
+    Pending,
+    /// The summary or anywhere else: the merge request itself.
+    Panel,
+}
+
+fn review_items(spot: ReviewSpot) -> Vec<MenuItem> {
+    use crate::command::ReviewCommand as R;
+    let submit = || {
+        vec![
+            MenuItem::new("Submit Review (Comment)", Command::ReviewSubmitComment),
+            MenuItem::new("Submit Review (Approve)", Command::ReviewSubmitApprove),
+            MenuItem::new("Submit Review (Request Changes)", Command::ReviewSubmitRequestChanges),
+        ]
+    };
+    let enabled = |item: MenuItem, on: bool| if on { item } else { item.disabled() };
+    let thread = |thread: bool, own: bool, suggestion: bool| {
+        vec![
+            enabled(MenuItem::new("Go to Thread", Command::Review(R::Open)), thread),
+            MenuItem::Separator,
+            enabled(MenuItem::new("Reply", Command::ReviewReply), thread),
+            enabled(
+                MenuItem::new("Resolve / Unresolve Thread", Command::ReviewResolve),
+                thread,
+            ),
+            enabled(MenuItem::new("Edit Comment", Command::ReviewEditComment), thread && own),
+            enabled(
+                MenuItem::new("Delete Comment", Command::ReviewDeleteComment),
+                thread && own,
+            ),
+            enabled(
+                MenuItem::new("Apply Suggestion", Command::ReviewApplySuggestion),
+                thread && suggestion,
+            ),
+        ]
+    };
+    match spot {
+        ReviewSpot::File => vec![MenuItem::new("Toggle Viewed", Command::Review(R::ToggleViewed))],
+        ReviewSpot::Thread { own, suggestion } => thread(true, own, suggestion),
+        ReviewSpot::Comment => thread(false, false, false),
+        ReviewSpot::Draft => vec![
+            MenuItem::new("Go to Draft", Command::Review(R::Open)),
+            MenuItem::Separator,
+            MenuItem::new("Edit Draft", Command::ReviewEditDraft),
+            MenuItem::new("Delete Draft", Command::ReviewDeleteDraft),
+        ],
+        ReviewSpot::Pending => submit(),
+        ReviewSpot::Panel => {
+            let mut items = vec![
+                MenuItem::new("Refresh", Command::ReviewRefresh),
+                MenuItem::new("Switch Merge Request", Command::ReviewSwitch),
+                MenuItem::Separator,
+            ];
+            items.extend(submit());
+            items
+        }
+    }
 }
 
 /// The items of the menu for `target`. They are the active file's commands, so whoever opens the
 /// menu makes the target's tab the active one first.
 pub fn menu_for(target: MenuTarget) -> Vec<MenuItem> {
-    let (MenuTarget::Tab { has_file } | MenuTarget::Editor { has_file }) = target else {
-        return vec![
-            MenuItem::new(
-                "Toggle Viewed",
-                Command::Review(crate::command::ReviewCommand::ToggleViewed),
-            ),
-            MenuItem::Separator,
-            MenuItem::new("Refresh", Command::ReviewRefresh),
-            MenuItem::new("Switch Merge Request", Command::ReviewSwitch),
-            MenuItem::Separator,
-            MenuItem::new("Next Thread", Command::ReviewNextThread),
-            MenuItem::new("Previous Thread", Command::ReviewPrevThread),
-            MenuItem::Separator,
-            MenuItem::new("Add Comment", Command::ReviewComment),
-            MenuItem::new("Edit Draft", Command::ReviewEditDraft),
-            MenuItem::new("Delete Draft", Command::ReviewDeleteDraft),
-            MenuItem::Separator,
-            MenuItem::new("Reply", Command::ReviewReply),
-            MenuItem::new("Resolve / Unresolve Thread", Command::ReviewResolve),
-            MenuItem::new("Edit Comment", Command::ReviewEditComment),
-            MenuItem::new("Delete Comment", Command::ReviewDeleteComment),
-            MenuItem::new("Apply Suggestion", Command::ReviewApplySuggestion),
-            MenuItem::Separator,
-            MenuItem::new("Submit Review (Comment)", Command::ReviewSubmitComment),
-            MenuItem::new("Submit Review (Approve)", Command::ReviewSubmitApprove),
-            MenuItem::new("Submit Review (Request Changes)", Command::ReviewSubmitRequestChanges),
-        ];
+    let has_file = match target {
+        MenuTarget::Tab { has_file } | MenuTarget::Editor { has_file } => has_file,
+        MenuTarget::Review(spot) => return review_items(spot),
     };
     let reveal = if cfg!(target_os = "macos") {
         "Reveal in Finder"

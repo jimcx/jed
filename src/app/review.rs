@@ -11,6 +11,7 @@
 use crossterm::event::MouseEvent;
 use ratatui::layout::Position;
 
+use super::context_menu::ReviewSpot;
 use super::{App, AppEvent, Focus, Level};
 use crate::command::ReviewCommand as C;
 use crate::diff_view::{DiffTab, Pair};
@@ -525,14 +526,72 @@ impl App {
         }
     }
 
-    /// A right-click in the panel: the row under it is selected and the panel's menu opens.
+    /// A right-click in the panel: the row under it is selected and focused (nothing opens but a
+    /// file row's diff, as a click does) and the menu for what it is opens.
     pub(super) fn review_menu(&mut self, at: (u16, u16)) {
-        self.review_click_row(at);
+        let spot = self.review_spot(at);
         self.ui.focus = Focus::SidePanel;
         self.open_context_menu(
             (at.0, at.1.saturating_add(1)),
-            super::context_menu::menu_for(super::context_menu::MenuTarget::Review),
+            super::context_menu::menu_for(super::context_menu::MenuTarget::Review(spot)),
         );
+    }
+
+    /// What is at `at` in the panel, that row selected and given the keys.
+    fn review_spot(&mut self, at: (u16, u16)) -> ReviewSpot {
+        let Some(hit) = self.hits.review.clone() else {
+            return ReviewSpot::Panel;
+        };
+        let p = Position { x: at.0, y: at.1 };
+        if hit.list.contains(p) && hit.rows.get((p.y - hit.list.y) as usize).is_some() {
+            self.review_click_row(at);
+            return ReviewSpot::File;
+        }
+        if hit.conv_list.contains(p) {
+            let row = hit.conv_top + ((p.y - hit.conv_list.y) / 2) as usize;
+            if row < hit.conv_len {
+                let view = &mut self.review.view;
+                view.pending.focused = false;
+                view.conv.focused = true;
+                view.conv.select(hit.conv_len, row);
+                return self.conv_spot(row);
+            }
+        }
+        if hit.pending_list.contains(p) {
+            let row = hit.pending_top + (p.y - hit.pending_list.y) as usize;
+            if row < hit.pending_len {
+                let view = &mut self.review.view;
+                view.conv.focused = false;
+                view.pending.focused = true;
+                view.pending.select(hit.pending_len, row);
+                return ReviewSpot::Draft;
+            }
+        }
+        if hit.pending_header.contains(p) || hit.pending_buttons.iter().any(|b| b.0.contains(p)) {
+            return ReviewSpot::Pending;
+        }
+        ReviewSpot::Panel
+    }
+
+    /// CONVERSATIONS row `row`: a thread (with whether the user wrote in it and whether its
+    /// suggestion can be applied) or a merge request comment.
+    fn conv_spot(&self, row: usize) -> ReviewSpot {
+        let Some(t) = self.review.review().and_then(|r| r.threads.get(row)) else {
+            return ReviewSpot::Comment;
+        };
+        let own = self
+            .review
+            .user
+            .as_ref()
+            .is_none_or(|user| t.thread.comments.iter().any(|c| c.author.eq_ignore_ascii_case(user)));
+        let placed_right = matches!(&t.place, Placement::Placed { side: Side::Right, .. });
+        let suggestion = placed_right
+            && !t.thread.resolved
+            && t.thread
+                .comments
+                .iter()
+                .any(|c| !crate::suggestion::parse(&c.body, &t.thread.anchor).is_empty());
+        ReviewSpot::Thread { own, suggestion }
     }
 
     fn review_click_row(&mut self, at: (u16, u16)) {
