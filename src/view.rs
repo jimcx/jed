@@ -363,6 +363,13 @@ impl View {
     /// Follows edits made through another view on the same buffer: selections and the
     /// viewport move with the text. `changes` are in the order applied; `rope` is the result
     /// and `revision` its buffer revision (for the wrap cache).
+    /// Keeps a pending reveal inside `rope` (the editing view isn't mapped: whoever edited set it).
+    pub fn clamp_reveals(&mut self, rope: &Rope) {
+        let fit = |p: ByteIdx| ByteIdx(rope.floor_char_boundary(p.0.min(rope.len())));
+        self.reveal_pos = self.reveal_pos.map(fit);
+        self.reveal_range = self.reveal_range.map(|(a, b)| (fit(a), fit(b)));
+    }
+
     pub fn map_through(&mut self, changes: &[Arc<ChangeSet>], rope: &Rope, revision: u64) {
         let len = rope.len();
         let mappers: Vec<_> = changes.iter().map(|c| c.mapper()).collect();
@@ -387,6 +394,9 @@ impl View {
                 goal: s.goal,
             }
         });
+        // A reveal asked for before this edit and not yet drawn follows the text too.
+        self.reveal_pos = self.reveal_pos.map(map);
+        self.reveal_range = self.reveal_range.map(|(a, b)| (map(a), map(b)));
         let top = map(self.top_byte);
         self.set_top_line(rope, pos::line_of(rope, top));
         self.wrap.map(changes, rope, revision);
@@ -514,6 +524,21 @@ mod tests {
         b.map_through(&buf.take_applied(), &buf.rope, buf.revision());
         assert_eq!(b.selections.primary().head, ByteIdx(1));
         assert_eq!(a.selections.primary().head, ByteIdx(2));
+    }
+
+    #[test]
+    fn map_through_moves_a_pending_reveal_with_the_text() {
+        let mut buf = Buffer::from_str("hello world\n");
+        let mut a = View::new();
+        let mut b = View::new();
+        a.selections = cursor(0);
+        b.selections = cursor(0);
+        b.reveal_pos = Some(ByteIdx(6));
+        b.reveal_range = Some((ByteIdx(6), ByteIdx(11)));
+        edit::paste(&mut buf, &mut a, "zz", false, &[]);
+        b.map_through(&buf.take_applied(), &buf.rope, buf.revision());
+        assert_eq!(b.reveal_pos, Some(ByteIdx(8)));
+        assert_eq!(b.reveal_range, Some((ByteIdx(8), ByteIdx(13))));
     }
 
     #[test]

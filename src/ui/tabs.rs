@@ -50,9 +50,11 @@ pub fn render(
     drop: Option<usize>,
     number: Option<String>,
 ) -> TabBarHit {
+    // A group squeezed out of a tiny window can lie outside the frame.
+    let area = area.intersection(f.area());
     let out = f.buffer_mut();
     out.set_style(area, theme.get("tabBar"));
-    if area.width == 0 {
+    if area.width == 0 || area.height == 0 {
         return TabBarHit::default();
     }
 

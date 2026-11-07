@@ -1270,9 +1270,13 @@ impl App {
                         // The editing view: keep its viewport anchor current.
                         tab.view.wrap.map(&changes, &buf.rope, buf.revision());
                         tab.view.set_top_line(&buf.rope, tab.view.top_line());
+                        tab.view.clamp_reveals(&buf.rope);
                     } else {
                         tab.view.map_through(&changes, &buf.rope, buf.revision());
                     }
+                    // Wrap layouts are keyed by it: mouse hits before the next frame must not
+                    // reuse the old text's.
+                    tab.view.revision = buf.revision();
                 }
             }
         }

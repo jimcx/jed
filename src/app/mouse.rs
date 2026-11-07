@@ -636,6 +636,9 @@ impl App {
                 Some(Drag::Text { anchor, word }) => {
                     let at = self.text_position(m.column, m.row, true);
                     if let (Some(at), Some((buf, view))) = (at, self.active_mut()) {
+                        // The buffer may have changed since the press (a background edit, a reload).
+                        let fit = |p: ByteIdx| ByteIdx(buf.rope.floor_char_boundary(p.0.min(buf.rope.len())));
+                        let anchor = (fit(anchor.0), fit(anchor.1));
                         // Dragging back past the anchor keeps the whole anchor word/line selected;
                         // after a double-click the pointer rounds out to whole words.
                         let (a, h) = if word {
@@ -651,7 +654,8 @@ impl App {
                 }
                 Some(Drag::AddedText { anchor }) => {
                     let at = self.text_position(m.column, m.row, true);
-                    if let (Some(at), Some((_, view))) = (at, self.active_mut()) {
+                    if let (Some(at), Some((buf, view))) = (at, self.active_mut()) {
+                        let anchor = ByteIdx(buf.rope.floor_char_boundary(anchor.0.min(buf.rope.len())));
                         let mut list = view.selections.as_slice().to_vec();
                         let newest = view.selections.newest_index();
                         list[newest] = Selection::new(anchor, at);

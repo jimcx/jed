@@ -238,7 +238,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) -> Option<R
     }
 
     let content_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
-    let width = (content_w + 4).clamp(44, area.width);
+    let width = (content_w + 4).clamp(44.min(area.width), area.width);
     let height = (lines.len() as u16 + 3).min(area.height);
     let rect = Rect {
         x: area.x + (area.width - width) / 2,

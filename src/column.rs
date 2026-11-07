@@ -30,6 +30,9 @@ pub struct ColumnBox {
 pub fn current(rope: &Rope, view: &View, tab_width: usize) -> (Cell, Cell) {
     if let Some(b) = &view.column
         && b.made == view.selections
+        // Same selections after an edit (a cut that leaves the cursors where they were) can
+        // still leave the box's lines past the end.
+        && b.from.0.max(b.to.0) < pos::line_count(rope)
     {
         return (b.from, b.to);
     }
@@ -284,6 +287,19 @@ mod tests {
         let mut v = view_with(vec![cur(1), cur(5)]);
         cursors_at_line_ends(&rope, &mut v);
         assert_eq!(ranges(&v), vec![(1, 1), (5, 5)]);
+    }
+
+    #[test]
+    fn a_stored_box_past_the_end_is_not_reused() {
+        let mut rope = Rope::from_str("aaa\nbbb\nccc\n");
+        let mut v = view_with(vec![cur(0)]);
+        select(&rope, &mut v, (0, DisplayCol(0)), (2, DisplayCol(0)), 4);
+        let made = v.selections.clone();
+        // The text shrinks to one line but the selections happen to be what they were.
+        rope = Rope::from_str("a\n");
+        v.selections = made;
+        let (from, to) = current(&rope, &v, 4);
+        assert!(from.0 < pos::line_count(&rope) && to.0 < pos::line_count(&rope));
     }
 
     #[test]

@@ -18,6 +18,10 @@ Helpers are `#[cfg(test)] impl App` in `app/mod.rs`.
 - Under `cfg(test)` the app uses `Clipboard::memory()` — read it with `app.clipboard.read()`.
 - Feature-specific helpers: [below](#by-feature).
 
+## Fuzzing
+
+`src/fuzz_tests.rs` (`#[ignore]`d): seeded random keys, text, pastes, mouse events, terminal rebuilds + resizes and palette commands through the real event path, checking no panic, selections in bounds on char boundaries and step time. Random commands write user files (spell dictionary, `keybindings.toml`), so it refuses to run without `JED_FUZZ_SANDBOX=1` and a scratch `HOME` / `XDG_*_HOME` (the module doc has the command line). `JED_FUZZ_SEEDS` / `JED_FUZZ_STEPS` / `JED_FUZZ_FIRST` pick the run; a failure prints the seed, step and the last events.
+
 ## By feature
 
 - Single file mode (`todo_tests::single_file`): `App::new_in(Mode::SingleFile, ws, trust, Some(InitialFile { buffer, goto }), App::start_identity(&ws, mode, initial.as_ref()), true)` with `ws = Workspace::load(workspace::root_for_file(path))` and `Buffer::open_with` (or `Buffer::new_file(path)` for a missing file), as `main` does (`open_single`, which also plugs in a fake server to check none starts); `app.hits.icons` for the greyed activity bar; `app.fs_flushed` shows only the file's events arrive.

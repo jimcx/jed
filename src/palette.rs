@@ -768,7 +768,8 @@ impl FileMatcher {
                     .parent()
                     .map_or_else(String::new, |p| p.to_string_lossy().into_owned());
                 // The haystack is `detail/label`: split the hits between them.
-                let label_start = item.matcher_columns[0].len() - label.chars().count();
+                // nucleo folds some names (CR LF) to fewer chars than the path has.
+                let label_start = item.matcher_columns[0].len().saturating_sub(label.chars().count());
                 Row {
                     label_hits: hits
                         .iter()

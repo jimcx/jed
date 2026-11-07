@@ -422,7 +422,7 @@ fn split_rect(area: Rect, dir: SplitDir, ratio: f32) -> (Rect, Rect, Rect) {
                 ..area
             },
             Rect {
-                x: area.x + first + 1,
+                x: area.x + first + len.min(1),
                 width: second,
                 ..area
             },
@@ -435,7 +435,7 @@ fn split_rect(area: Rect, dir: SplitDir, ratio: f32) -> (Rect, Rect, Rect) {
                 ..area
             },
             Rect {
-                y: area.y + first + 1,
+                y: area.y + first + len.min(1),
                 height: second,
                 ..area
             },
@@ -1350,5 +1350,16 @@ mod tests {
         assert_eq!(map.hit(90, 1), Hit::Banner(8, None));
         assert_eq!(map.hit(50, 1), Hit::Editor(7), "no banner there");
         assert_eq!(map.hit(60, 29), Hit::Status);
+    }
+
+    #[test]
+    fn splitting_an_empty_area_stays_inside_it() {
+        for dir in [SplitDir::Right, SplitDir::Down] {
+            let area = Rect::new(3, 4, 0, 0);
+            let (a, d, b) = split_rect(area, dir, 0.5);
+            for r in [a, d, b] {
+                assert!(r.x <= area.x && r.y <= area.y, "{dir:?}: {r:?}");
+            }
+        }
     }
 }

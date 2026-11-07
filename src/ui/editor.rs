@@ -544,7 +544,7 @@ pub fn render(
                 col += w;
                 continue;
             }
-            if !wrapping && col >= left + view.width {
+            if !wrapping && col >= left + view.width.min(text.width as usize) {
                 cut = Some(off);
                 break;
             }
@@ -606,7 +606,7 @@ pub fn render(
                 let visible = col + w - left;
                 out.set_stringn(x, y, " ".repeat(visible), visible, style);
             } else {
-                out.set_stringn(x, y, &shown, (right - x) as usize, style);
+                out.set_stringn(x, y, &shown, right.saturating_sub(x) as usize, style);
             }
             col += w;
         }

@@ -43,6 +43,8 @@ mod fixes_tests;
 mod focus_groups_tests;
 mod forge;
 mod format;
+#[cfg(test)]
+mod fuzz_tests;
 mod git;
 mod git_editor;
 #[cfg(test)]

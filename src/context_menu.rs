@@ -114,7 +114,8 @@ pub fn place(anchor: (u16, u16), width: u16, height: u16, screen: Rect) -> Rect 
         if at + size <= end {
             at
         } else if at >= start + size {
-            at - size
+            // An anchor outside the screen (it shrank since the menu opened) still ends up inside.
+            (at - size).min(end - size)
         } else {
             end - size
         }
@@ -179,6 +180,14 @@ mod tests {
         );
         m.move_by(1);
         assert_eq!(m.selected_command(), None);
+    }
+
+    #[test]
+    fn place_pulls_an_anchor_outside_the_screen_back_in() {
+        // The terminal shrank after the menu opened at (100, 30).
+        let screen = Rect::new(0, 0, 60, 26);
+        let r = place((100, 30), 10, 4, screen);
+        assert!(r.right() <= screen.right() && r.bottom() <= screen.bottom(), "{r:?}");
     }
 
     #[test]
