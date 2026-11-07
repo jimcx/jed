@@ -1,0 +1,8 @@
+{
+  "name": "jed",
+  "description": "Gives Claude Code in a jed terminal the active file and selection, the open editors, diagnostics, other shells' commands and output, and the open merge request's review threads",
+  "version": "0.1.0",
+  "author": { "name": "jimcx" },
+  "homepage": "https://github.com/jimcx/jed/blob/main/docs/claude.md",
+  "repository": "https://github.com/jimcx/jed"
+}

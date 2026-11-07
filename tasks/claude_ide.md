@@ -2,7 +2,7 @@
 id: claude_ide
 name: Claude Code integration
 summary: "`claude` in a jed shell sees the active file, recent shell commands and output, the environment and the open merge request's review threads (queuing replies and resolves as drafts for the user to submit), via a Claude Code plugin (stdio MCP server + hooks) found by `$JED_IPC` with no state files; MCP traffic logged in the Tools view"
-status: in-progress
+status: done
 priority: 0
 dependencies: []
 ---
@@ -89,4 +89,6 @@ dependencies: []
       - Also: Claude can never post (no query / tool reaches the forge write calls or a `review_write::Job`; test walks every tool against the fake and sees GETs only). New in forges.toml: per-host `mcp_read_only` (default false; read only from forges.toml, captured into `Review::mcp_read_only` at lookup, fails closed when the file has errors); apply and reply draft are refused, reads still work
       - Deferred: no diff hunk for outdated threads (`Thread` holds none); a user-triggered apply failing while a Claude apply waits answers the waiter with the user's error; `Draft`'s reply fields as an enum (stored format); O(threads × drafts) `reply_for` scans per rebuild
       - For f: hand check with real `claude` on a throwaway MR, once with `mcp_read_only = true` to see the refusal text; docs/claude.md should explain `mcp_read_only` and that Claude only drafts
-    - claude_ide-f: the plugin and done-when: `claude-plugin/` and the marketplace manifest, `docs/claude.md`, `claude.newSession` (the adding-a-command checklist), the module map and conventions lines, `src/claude_ide_tests.rs` for the done-when, a real-`claude` smoke test (skipped with a note when the CLI is absent), gaps and hand checks; marks the task ✅
+    - ✅ claude_ide-f: the plugin and done-when: `claude-plugin/` and the marketplace manifest, `docs/claude.md`, `claude.newSession` (the adding-a-command checklist), the module map and conventions lines, `src/claude_ide_tests.rs` for the done-when, a real-`claude` smoke test (skipped with a note when the CLI is absent), gaps and hand checks; marks the task ✅
+      - Done: `claude-plugin/` (`plugin.json`, `.mcp.json` with the `mcpServers` wrapper, nested `hooks/hooks.json`) and the root `.claude-plugin/marketplace.json` (both pass `claude plugin validate`), `docs/claude.md`, `claude.newSession` (opens a shell tab and types `claude`; `ShellRequest` replaces the shell-open arguments), `claude_ide_tests.rs` for the done-when
+- Also: `claude` can never post to a forge; per-host `mcp_read_only` in forges.toml. Deferred: Claude Code's IDE protocol, diff accept / reject, pushed output tails, Claude posting or starting comments, more than one reply draft per thread; no plugin icon or licence file. Still to check by hand: the plan's real-`claude` hand check after `/plugin install` (explain this file, why did my build fail, session-start context, "deal with the review feedback" on a throwaway MR, once with `mcp_read_only = true`), and the zsh / fish snippets in a real PTY; smoke-test again when Claude Code's version changes

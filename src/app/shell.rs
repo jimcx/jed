@@ -16,6 +16,25 @@ use crate::shell::{self, ShellTab};
 use crate::tasks::{self, Event, Run, Sink};
 use crate::{paths, shell_integration};
 
+/// Where a new shell opens and what is typed at its prompt (queued behind the socket as is).
+#[derive(Clone, Copy)]
+pub(super) struct ShellRequest {
+    /// The terminal area (shown and focused) rather than the active editor group.
+    in_terminal: bool,
+    /// Leave the focus where it was.
+    keep_focus: bool,
+    /// Typed into the shell once it prompts (`claude\r`).
+    input: Option<&'static str>,
+}
+
+impl ShellRequest {
+    const TERMINAL: Self = Self {
+        in_terminal: true,
+        keep_focus: false,
+        input: None,
+    };
+}
+
 /// Results of terminal and task background work (`AppEvent::Terminal`).
 pub(super) enum TerminalEvent {
     /// A Cmd/Ctrl+clicked terminal link resolved off-thread (`app::term_link`): the one file it
@@ -62,25 +81,43 @@ impl App {
     /// `/bin/sh`) in a new tab of the terminal area (shown and focused), interactive in the workspace root, with
     /// `JED_IPC` when the socket listens. The title counts open shells of the same program.
     pub(super) fn new_shell(&mut self) {
-        self.open_shell(true, false);
+        self.open_shell(ShellRequest::TERMINAL);
+    }
+
+    /// "Claude: New Session" (`claude.newSession`): a new shell like "Terminal: New Shell" with `claude` typed
+    /// and entered at its prompt, so the shell's own init runs first, the shell integration and `JED_IPC` /
+    /// `JED_TERMINAL` are there as in any shell, and quitting `claude` leaves the shell.
+    pub(super) fn new_claude_session(&mut self) {
+        self.open_shell(ShellRequest {
+            input: Some("claude\r"),
+            ..ShellRequest::TERMINAL
+        });
     }
 
     /// Opens a shell tab in the active editor group instead of the terminal area (a shell tab
     /// can live in either; the tests of editor-group shell tabs use this).
     #[cfg(test)]
     pub(crate) fn new_shell_in_editor(&mut self) {
-        self.open_shell(false, false);
+        self.open_shell(ShellRequest {
+            in_terminal: false,
+            ..ShellRequest::TERMINAL
+        });
     }
 
     /// A new shell in the terminal area (showing it, `Focus::Terminal`), or in the active editor
     /// group (`Focus::Editor`). While the socket is still starting the shell waits for it
     /// (`ipc_started` opens it), so it never starts without `JED_IPC`; `keep_focus` leaves the focus
     /// where it was.
-    fn open_shell(&mut self, in_terminal: bool, keep_focus: bool) {
+    fn open_shell(&mut self, request: ShellRequest) {
         if self.ipc_starting() {
-            self.ipc_queue_shell(in_terminal, keep_focus);
+            self.ipc_queue_shell(request);
             return;
         }
+        let ShellRequest {
+            in_terminal,
+            keep_focus,
+            input,
+        } = request;
         let focus = self.ui.focus;
         let program = self.tasks.shell.clone();
         let root = self.workspace.root.clone();
@@ -116,6 +153,10 @@ impl App {
         });
         let tab = ShellTab::new(id, spec, rows, cols, sink, self.settings.scrollback_options(), number);
         tracing::info!(shell = %base, run = id.0, "opened a shell tab");
+        if let Some(input) = input {
+            // Queued while the shell starts, read by it once it prompts.
+            tab.run.write(input.as_bytes());
+        }
         if in_terminal {
             self.terminals.active_group_mut().open_tab(Tab::Shell(Box::new(tab)));
             self.ui.terminal_visible = true;
@@ -131,8 +172,8 @@ impl App {
     }
 
     /// Opens a shell queued behind the socket (`ipc_started`).
-    pub(super) fn open_queued_shell(&mut self, in_terminal: bool, keep_focus: bool) {
-        self.open_shell(in_terminal, keep_focus);
+    pub(super) fn open_queued_shell(&mut self, request: ShellRequest) {
+        self.open_shell(request);
     }
 
     /// The PTY size (rows, columns) for a new shell: the terminal area's active group as last
@@ -249,7 +290,10 @@ impl App {
         if !self.startup_terminal {
             return;
         }
-        self.open_shell(true, true);
+        self.open_shell(ShellRequest {
+            keep_focus: true,
+            ..ShellRequest::TERMINAL
+        });
     }
 
     /// "Terminal: Move Terminal into Editor Area" (`to_area` false: the terminal area's active

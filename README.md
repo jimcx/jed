@@ -90,6 +90,7 @@ For users:
 - [docs/terminals/](docs/terminals/README.md) — terminal setup (start here)
 - [docs/tasks.md](docs/tasks.md) — configuring tasks
 - [docs/git-editor.md](docs/git-editor.md) — jed as git's `core.editor`
+- [docs/claude.md](docs/claude.md) — Claude Code in a jed terminal: the plugin, its tools and code review
 - [docs/syntax-plugins.md](docs/syntax-plugins.md) — adding languages with tree-sitter grammars
 - [docs/clangd.md](docs/clangd.md), [docs/ty.md](docs/ty.md), [docs/sourcekit-lsp.md](docs/sourcekit-lsp.md) — language servers
 

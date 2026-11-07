@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "jed": {
+      "command": "jed",
+      "args": ["claude", "mcp"]
+    }
+  }
+}

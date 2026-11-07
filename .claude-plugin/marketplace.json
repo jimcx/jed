@@ -1,0 +1,12 @@
+{
+  "name": "jed",
+  "description": "Plugins for using Claude Code with the jed terminal editor",
+  "owner": { "name": "jimcx" },
+  "plugins": [
+    {
+      "name": "jed",
+      "source": "./claude-plugin",
+      "description": "Claude Code inside a jed terminal: the active file, open editors, diagnostics, shell commands and output, and merge request review threads"
+    }
+  ]
+}

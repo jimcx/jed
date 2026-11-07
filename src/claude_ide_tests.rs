@@ -1,9 +1,17 @@
-//! End-to-end tests for the Claude Code integration's IPC queries (claude_ide-b): a blocking
-//! client (`ipc::client::Connection`) against a headless app listening on the task socket gets
-//! the context (file, language, cursor, selection and its capped text), editors, diagnostics
-//! (errors first, capped), terminals (the caller flagged `self`), commands and their output, a
-//! terminal's screen and the environment; many requests share one connection and old `open`
-//! requests still work; log lines are acked, bad requests close the connection.
+//! End-to-end tests for the Claude Code integration (`claude_ide`). Covers the done-when:
+//!
+//! - the IPC queries (claude_ide-b): a blocking client (`ipc::client::Connection`) against a
+//!   headless app on the task socket gets the context (file, language, cursor, selection and its
+//!   capped text), editors, diagnostics, terminals (the caller flagged `self`), commands and their
+//!   output, a terminal's screen and the environment; many requests share one connection; old
+//!   `open` requests still work; log lines are acked, bad requests close the connection
+//! - the CLI modes (claude_ide-c, f): a scripted MCP client over a real socket reads the editor
+//!   state and `open_file` opens a tab; the prompt hook prints the active file line; outside jed
+//!   the hooks print nothing and the tools say "not inside a jed terminal"
+//! - the MCP log (claude_ide-d): the Tools row, `→` / `←` lines, sessions, the error badge
+//! - nothing is written for discovery (only the tool log), "Claude: New Session", the plugin's
+//!   manifests against the CLI, and `claude plugin validate` (skipped without `claude`)
+//! - the review tools (claude_ide-e) are tested in `mr_review_tests/claude.rs`
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -815,4 +823,210 @@ async fn claude_ide_mcp_log_sessions_are_per_connection_and_text_is_clean() {
     go.store(2, Ordering::SeqCst);
     assert!(app.settle(|a| a.claude_sessions() == 0).await);
     client.join().unwrap();
+}
+
+// ---- claude_ide-f: the plugin and the done-when ----
+
+/// Every file under `dir`, relative, sorted.
+fn tree(dir: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, base: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, base, out);
+            } else {
+                out.push(path.strip_prefix(base).unwrap().to_path_buf());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out.sort();
+    out
+}
+
+/// A whole session (handshake, tools, both hooks, `open_file`) leaves no file behind for
+/// discovery: the only new files are tool logs under the state directory.
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_ide_a_session_writes_nothing_for_discovery_and_open_file_opens_a_tab() {
+    use crate::claude::{self, HookKind, Socket};
+    let (d, mut app, socket, _path) = with_file(SOURCE).await;
+    let other = app.workspace.root.join("b.rs");
+    std::fs::write(&other, "// b\n").unwrap();
+    let before = tree(d.path());
+    let target = other.clone();
+    let worker = std::thread::spawn(move || {
+        let mut jed = Socket::new(Some(socket.into_os_string()), None);
+        let out = claude::tests::run_mcp(
+            &[
+                serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+                serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+                claude::tests::call(3, "list_terminals", serde_json::json!({})),
+                claude::tests::call(4, "open_file", serde_json::json!({"path": target, "line": 1})),
+            ],
+            &mut jed,
+        );
+        let hooks = (
+            claude::hook_text(HookKind::SessionStart, &mut jed),
+            claude::hook_text(HookKind::Prompt, &mut jed),
+        );
+        (out, hooks)
+    });
+    assert!(app.settle(|_| worker.is_finished()).await, "no answer");
+    let (out, (start, prompt)) = worker.join().unwrap();
+    assert_eq!(out[3]["result"]["isError"], false, "{out:?}");
+    assert!(!start.is_empty() && !prompt.is_empty());
+    assert!(app.settle(|a| a.active_buffer().is_some_and(|b| b.path == other)).await);
+    let _ = app.settle(|_| false).await;
+    let new: Vec<_> = tree(d.path()).into_iter().filter(|f| !before.contains(f)).collect();
+    for file in &new {
+        assert!(
+            file.starts_with("state/logs/tools"),
+            "{} written outside the tool logs: {new:?}",
+            file.display()
+        );
+    }
+}
+
+/// Outside jed (no `JED_IPC`, or a socket nobody listens on) the hooks print nothing and the
+/// tools answer an error result.
+#[test]
+fn claude_ide_outside_jed_hooks_are_silent_and_tools_report_it() {
+    use crate::claude::{self, HookKind, Socket};
+    let dead = tempfile::tempdir().unwrap().path().join("gone.sock");
+    for socket in [None, Some(dead.into_os_string())] {
+        let mut jed = Socket::new(socket, None);
+        assert_eq!(claude::hook_text(HookKind::SessionStart, &mut jed), "");
+        assert_eq!(claude::hook_text(HookKind::Prompt, &mut jed), "");
+        let out = claude::tests::run_mcp(
+            &[claude::tests::call(1, "get_active_editor", serde_json::json!({}))],
+            &mut jed,
+        );
+        assert_eq!(out[0]["result"]["isError"], true);
+        assert!(
+            out[0]["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("not inside a jed")
+        );
+    }
+}
+
+/// "Claude: New Session" opens a shell that runs `claude` at its prompt, with `JED_IPC` and
+/// `JED_TERMINAL` set as in any shell (a stand-in `claude` on the `PATH`, never the real one).
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_ide_new_session_runs_claude_in_a_jed_shell() {
+    use crate::command::Command;
+    use std::os::unix::fs::PermissionsExt;
+    let (d, root, state) = dirs();
+    let (mut app, _socket) = listening_app(&root, &state, &d).await;
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("claude");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\ntest -S \"$JED_IPC\" && echo FAKE_CLAUDE_SOCKET_OK term=$JED_TERMINAL\n",
+    )
+    .unwrap();
+    let wrapper = bin.join("wrapper");
+    std::fs::write(
+        &wrapper,
+        format!("#!/bin/sh\nPATH={}:$PATH exec /bin/sh\n", bin.display()),
+    )
+    .unwrap();
+    for f in [&fake, &wrapper] {
+        std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    app.tasks.shell = wrapper;
+    assert_eq!(Command::ClaudeNewSession.name(), "claude.newSession");
+    assert_eq!(Command::ClaudeNewSession.title(), "Claude: New Session");
+    assert!(Command::all().contains(&Command::ClaudeNewSession));
+    app.test_execute(Command::ClaudeNewSession);
+    let seen = |a: &App| {
+        a.groups.shell_tabs().chain(a.terminals.shell_tabs()).any(|s| {
+            s.run
+                .screen()
+                .screen()
+                .contents()
+                .contains("FAKE_CLAUDE_SOCKET_OK term=")
+        })
+    };
+    assert!(app.settle(seen).await, "the shell never ran claude");
+}
+
+fn plugin_file(rel: &str) -> Value {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+    serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{rel}: {e}")))
+        .unwrap_or_else(|e| panic!("{rel}: {e}"))
+}
+
+/// The `jed claude ...` words of a plugin command, as `parse_cli` sees them.
+fn cli_of(command: &str) -> crate::claude::Cli {
+    let words: Vec<String> = command.split_whitespace().map(String::from).collect();
+    assert_eq!(&words[..2], ["jed", "claude"], "{command}");
+    crate::claude::parse_cli(&words[2..]).unwrap_or_else(|e| panic!("{command}: {e}"))
+}
+
+/// The plugin's manifests are valid JSON and name subcommands the CLI has.
+#[test]
+fn claude_ide_manifests_match_the_cli() {
+    use crate::claude::{Cli, HookKind};
+    let plugin = plugin_file("claude-plugin/.claude-plugin/plugin.json");
+    assert_eq!(plugin["name"], "jed");
+    let mcp = plugin_file("claude-plugin/.mcp.json");
+    let server = &mcp["mcpServers"]["jed"];
+    assert_eq!(server["command"], "jed");
+    let args: Vec<&str> = server["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    assert_eq!(cli_of(&format!("jed {}", args.join(" "))), Cli::Mcp);
+    let hooks = plugin_file("claude-plugin/hooks/hooks.json");
+    let command = |event: &str| {
+        let list = hooks["hooks"][event]
+            .as_array()
+            .unwrap_or_else(|| panic!("no {event} hook"));
+        assert_eq!(list.len(), 1);
+        let inner = list[0]["hooks"].as_array().unwrap();
+        assert_eq!(inner.len(), 1);
+        assert_eq!(inner[0]["type"], "command");
+        inner[0]["command"].as_str().unwrap().to_string()
+    };
+    assert_eq!(cli_of(&command("SessionStart")), Cli::Hook(HookKind::SessionStart));
+    assert_eq!(cli_of(&command("UserPromptSubmit")), Cli::Hook(HookKind::Prompt));
+    assert_eq!(hooks["hooks"].as_object().unwrap().len(), 2);
+    let market = plugin_file(".claude-plugin/marketplace.json");
+    let entry = &market["plugins"][0];
+    assert_eq!(entry["name"], plugin["name"]);
+    assert_eq!(entry["source"], "./claude-plugin");
+}
+
+/// With the real `claude` CLI: it accepts both manifests (`claude plugin validate`, local and
+/// free, with a scratch config directory). Never runs a prompt. Skipped when `claude` is absent.
+#[test]
+fn claude_ide_real_claude_validates_the_plugin() {
+    let config = tempfile::tempdir().unwrap();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for target in ["claude-plugin", "."] {
+        let out = match std::process::Command::new("claude")
+            .args(["plugin", "validate", target])
+            .current_dir(root)
+            .env("CLAUDE_CONFIG_DIR", config.path())
+            .output()
+        {
+            Ok(out) => out,
+            Err(e) => {
+                eprintln!("SKIPPED claude_ide_real_claude_validates_the_plugin: no `claude` ({e})");
+                return;
+            }
+        };
+        let text = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+        if text.contains("unknown command") {
+            eprintln!("SKIPPED claude_ide_real_claude_validates_the_plugin: no `plugin validate` in this claude");
+            return;
+        }
+        assert!(out.status.success(), "claude plugin validate {target}: {text}");
+    }
 }

@@ -1465,6 +1465,7 @@ impl App {
             Command::RunTask => self.show_run_task(),
             Command::SelectEnvironment => self.show_select_environment(),
             Command::NewShell => self.new_shell(),
+            Command::ClaudeNewSession => self.new_claude_session(),
             Command::MoveTerminalToEditor => self.move_terminal(false),
             Command::MoveTerminalToArea => self.move_terminal(true),
             Command::InstallShellIntegration => self.install_shell_integration(),

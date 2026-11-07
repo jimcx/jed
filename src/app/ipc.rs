@@ -27,8 +27,8 @@ pub struct Ipc {
     waiters: Vec<Waiter>,
     /// `start_ipc` has spawned the socket and `ipc_started` hasn't answered yet.
     starting: bool,
-    /// Shells asked for meanwhile: `(in_terminal, keep_focus)`, opened by `ipc_started`.
-    queued_shells: Vec<(bool, bool)>,
+    /// Shells asked for meanwhile: `ShellRequest`s, opened by `ipc_started`.
+    queued_shells: Vec<super::shell::ShellRequest>,
     /// The `jed claude mcp` processes connected (`claude_log.rs`).
     pub(super) sessions: Vec<super::claude_log::Session>,
 }
@@ -75,8 +75,8 @@ impl App {
         self.ipc.starting
     }
 
-    pub(super) fn ipc_queue_shell(&mut self, in_terminal: bool, keep_focus: bool) {
-        self.ipc.queued_shells.push((in_terminal, keep_focus));
+    pub(super) fn ipc_queue_shell(&mut self, request: super::shell::ShellRequest) {
+        self.ipc.queued_shells.push(request);
     }
 
     pub(super) fn ipc_started(&mut self, result: Result<Server, String>) {
@@ -92,8 +92,8 @@ impl App {
             Err(e) => tracing::warn!(error = %e, "not listening for task clients"),
         }
         // Either way the waiting shells start now (without `JED_IPC` after a failure).
-        for (in_terminal, keep_focus) in std::mem::take(&mut self.ipc.queued_shells) {
-            self.open_queued_shell(in_terminal, keep_focus);
+        for request in std::mem::take(&mut self.ipc.queued_shells) {
+            self.open_queued_shell(request);
         }
     }
 

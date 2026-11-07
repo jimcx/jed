@@ -290,6 +290,8 @@ pub enum Command {
     SelectEnvironment,
     /// "Terminal: New Shell": the user's `$SHELL` in a new tab of the terminal area.
     NewShell,
+    /// "Claude: New Session": a new shell tab that starts with `claude` typed at its prompt.
+    ClaudeNewSession,
     /// "Terminal: Move Terminal into Editor Area": the terminal area's active terminal into the active editor group.
     MoveTerminalToEditor,
     /// "Terminal: Move Terminal into Terminal Area": the active editor group's shell tab into the
@@ -1241,6 +1243,7 @@ impl Command {
             Command::RunTask,
             Command::SelectEnvironment,
             Command::NewShell,
+            Command::ClaudeNewSession,
             Command::MoveTerminalToEditor,
             Command::MoveTerminalToArea,
             Command::InstallShellIntegration,
@@ -1656,6 +1659,7 @@ impl Command {
             Command::RunTask => "task.run".into(),
             Command::SelectEnvironment => "task.selectEnvironment".into(),
             Command::NewShell => "terminal.newShell".into(),
+            Command::ClaudeNewSession => "claude.newSession".into(),
             Command::MoveTerminalToEditor => "terminal.moveToEditor".into(),
             Command::MoveTerminalToArea => "terminal.moveToTerminal".into(),
             Command::InstallShellIntegration => "terminal.installShellIntegration".into(),
@@ -2082,6 +2086,7 @@ impl Command {
             Command::RunTask => "Tasks: Run Task",
             Command::SelectEnvironment => "Tasks: Select Environment…",
             Command::NewShell => "Terminal: New Shell",
+            Command::ClaudeNewSession => "Claude: New Session",
             Command::MoveTerminalToEditor => "Terminal: Move Terminal into Editor Area",
             Command::MoveTerminalToArea => "Terminal: Move Terminal into Terminal Area",
             Command::InstallShellIntegration => "Terminal: Install Shell Integration",
@@ -2315,6 +2320,7 @@ mod tests {
             Command::RunTask => 79,
             Command::SelectEnvironment => 140,
             Command::NewShell => 119,
+            Command::ClaudeNewSession => 171,
             Command::InstallShellIntegration => 125,
             Command::KillTask => 80,
             Command::CloseTask => 81,
