@@ -8,6 +8,7 @@ mod brackets;
 mod buffer;
 mod bundle;
 mod cheatsheet;
+mod claude;
 #[cfg(test)]
 mod claude_ide_tests;
 #[cfg(test)]
@@ -203,7 +204,8 @@ use workspace::trust::TrustStore;
 const USAGE: &str = "usage: jed [--log-level <filter>] [--perf] [<folder> | <file>[:<line>[:<col>]]]\n       \
                      jed [--log-level <filter>] [--perf] -s | --single | --wait <file>[:<line>[:<col>]]   (single file mode)\n       \
                      jed --new-language <id>   (start a syntax plugin in ~/.config/jed/languages/<id>)\n       \
-                     jed --check-language <id> [--sample <file>]   (build, load and check a syntax plugin)";
+                     jed --check-language <id> [--sample <file>]   (build, load and check a syntax plugin)\n       \
+                     jed claude mcp | hook session-start | hook prompt   (Claude Code integration)";
 
 /// A syntax plugin authoring command (`syntax::authoring`): prints and exits.
 #[derive(Debug, PartialEq)]
@@ -225,6 +227,8 @@ struct Args {
     authoring: Option<Authoring>,
     /// `--perf`: log timings around file opens and git reads (target `perf`).
     perf: bool,
+    /// `jed claude …`: run instead of the editor.
+    claude: Option<claude::Cli>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -239,7 +243,19 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
     let mut authoring = None;
     let mut sample = None;
     let mut perf = false;
-    let mut args = args.into_iter();
+    let mut args = args.into_iter().peekable();
+    if args.peek().map(String::as_str) == Some("claude") {
+        let rest: Vec<String> = args.skip(1).collect();
+        return Ok(Args {
+            target: None,
+            log_level: None,
+            single: false,
+            wait: false,
+            authoring: None,
+            perf: false,
+            claude: Some(claude::parse_cli(&rest)?),
+        });
+    }
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Err(USAGE.into()),
@@ -280,6 +296,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
         wait,
         authoring,
         perf,
+        claude: None,
     })
 }
 
@@ -431,6 +448,9 @@ fn main() -> ExitCode {
     };
     if let Some(command) = args.authoring {
         return run_authoring(command);
+    }
+    if let Some(cli) = args.claude {
+        return claude::run(cli);
     }
     if args.perf {
         perf::enable();
@@ -639,6 +659,16 @@ mod tests {
             ipc_request(&parse(&[&target(tmp.path())]).unwrap(), env()).is_none(),
             "a folder"
         );
+    }
+
+    #[test]
+    fn claude_subcommands() {
+        assert_eq!(parse(&["claude", "mcp"]).unwrap().claude, Some(claude::Cli::Mcp));
+        let hook = parse(&["claude", "hook", "prompt"]).unwrap().claude;
+        assert_eq!(hook, Some(claude::Cli::Hook(claude::HookKind::Prompt)));
+        assert!(parse(&["claude"]).is_err());
+        assert!(parse(&["claude", "hook", "x"]).is_err());
+        assert!(parse(&["a.rs"]).unwrap().claude.is_none());
     }
 
     #[test]

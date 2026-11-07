@@ -555,3 +555,34 @@ async fn claude_ide_output_of_a_running_command_and_line_caps() {
     assert_eq!(running["running"], true);
     assert!(running["text"].as_str().unwrap().contains("partial"));
 }
+
+/// The CLI modes (claude_ide-c) against a real headless app: the MCP server and both hooks
+/// over a real `claude::Socket`, with the terminal number in the environment value.
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_ide_cli_modes_over_a_real_socket() {
+    use crate::claude::{self, HookKind, Socket};
+    let (_d, mut app, socket, _path) = with_file(SOURCE).await;
+    select(&mut app, 16, 21);
+    let worker = std::thread::spawn(move || {
+        let mut jed = Socket::new(Some(socket.into_os_string()), Some("99".into()));
+        let out = claude::tests::run_mcp(
+            &[
+                serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+                claude::tests::call(2, "get_active_editor", serde_json::json!({})),
+                claude::tests::call(3, "get_environment", serde_json::json!({})),
+            ],
+            &mut jed,
+        );
+        let start = claude::hook_text(HookKind::SessionStart, &mut jed);
+        let prompt = claude::hook_text(HookKind::Prompt, &mut jed);
+        (out, start, prompt)
+    });
+    assert!(app.settle(|_| worker.is_finished()).await, "no answer");
+    let (out, start, prompt) = worker.join().unwrap();
+    assert_eq!(out[0]["result"]["serverInfo"]["name"], "jed");
+    let editor: Value = serde_json::from_str(out[1]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(editor["editor"]["relative"], "a.rs");
+    assert_eq!(out[2]["result"]["isError"], false);
+    assert!(start.contains("Workspace:") && start.contains("a.rs"), "{start}");
+    assert!(prompt.starts_with("Active file: a.rs:2:10"), "{prompt}");
+}

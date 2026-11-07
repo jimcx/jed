@@ -32,7 +32,6 @@ const MAX_LINE: u64 = 64 * 1024;
 /// `app/claude.rs` cap their data well below it).
 pub const MAX_REPLY: usize = 256 * 1024;
 /// Longest reply line the client reads.
-#[cfg_attr(not(test), allow(dead_code))] // read by `client::Connection` (claude_ide-c)
 const MAX_REPLY_LINE: u64 = 1024 * 1024;
 
 /// Name of the environment variable task processes find the socket path in.
@@ -67,7 +66,6 @@ pub struct Request {
 
 impl Request {
     /// A query from the terminal numbered `terminal`.
-    #[cfg_attr(not(test), allow(dead_code))] // used by the CLI modes (claude_ide-c)
     pub fn query(query: Query, terminal: Option<u64>) -> Request {
         Request {
             query: Some(query),
@@ -385,13 +383,11 @@ pub mod client {
     }
 
     /// One connection for many requests: connect once, then [`Connection::request`] per query.
-    #[cfg_attr(not(test), allow(dead_code))] // used by the CLI modes (claude_ide-c)
     pub struct Connection {
         stream: std::os::unix::net::UnixStream,
         reader: BufReader<std::os::unix::net::UnixStream>,
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     impl Connection {
         /// Blocking: connects to the jed listening on `socket`; `timeout` bounds each request's
         /// wait for its answer (`None`: as long as jed takes).
