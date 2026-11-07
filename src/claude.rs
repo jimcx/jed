@@ -140,6 +140,10 @@ impl Jed for Socket {
 
 /// The MCP revision answered when the client names none.
 const PROTOCOL_VERSION: &str = "2025-06-18";
+/// The stateless protocol revision (no `initialize`; every request carries its version in `_meta`). Every method
+/// here already works without a handshake, so `server/discover` can offer it.
+const STATELESS_VERSION: &str = "2026-07-28";
+const VERSION_META: &str = "io.modelcontextprotocol/protocolVersion";
 
 fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
     json!({
@@ -370,6 +374,30 @@ pub fn handle(msg: &Value, jed: &mut dyn Jed, cwd: &Path) -> Option<Value> {
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "jed", "version": env!("JED_VERSION")},
             }))
+        }
+        "server/discover" => {
+            let supported = [STATELESS_VERSION, PROTOCOL_VERSION];
+            match params
+                .pointer("/_meta")
+                .and_then(|m| m.get(VERSION_META))
+                .and_then(Value::as_str)
+            {
+                Some(v) if !supported.contains(&v) => Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {
+                        "code": -32022,
+                        "message": "Unsupported protocol version",
+                        "data": {"supported": supported, "requested": v},
+                    },
+                })),
+                _ => ok(json!({
+                    "resultType": "complete",
+                    "supportedVersions": supported,
+                    "capabilities": {"tools": {}},
+                    "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "jed", "version": env!("JED_VERSION")}},
+                })),
+            }
         }
         "ping" => ok(json!({})),
         "tools/list" => ok(json!({"tools": tools()})),
@@ -708,6 +736,26 @@ pub(crate) mod tests {
         );
         assert_eq!(out[3]["error"]["code"], -32601);
         assert!(jed.asked.is_empty(), "the handshake asks jed nothing");
+    }
+
+    #[test]
+    fn server_discover_lists_versions_and_rejects_an_unknown_one() {
+        let mut jed = Fake::default();
+        let req = |id: u64, v: &str| json!({"jsonrpc": "2.0", "id": id, "method": "server/discover", "params": {"_meta": {VERSION_META: v}}});
+        let out = run_mcp(&[req(1, STATELESS_VERSION), req(2, "1900-01-01")], &mut jed);
+        assert_eq!(out[0]["result"]["resultType"], "complete");
+        assert_eq!(
+            out[0]["result"]["supportedVersions"],
+            json!([STATELESS_VERSION, PROTOCOL_VERSION])
+        );
+        assert!(out[0]["result"]["capabilities"]["tools"].is_object());
+        assert_eq!(
+            out[0]["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            "jed"
+        );
+        assert_eq!(out[1]["error"]["code"], -32022);
+        assert_eq!(out[1]["error"]["data"]["requested"], "1900-01-01");
+        assert!(jed.asked.is_empty());
     }
 
     #[test]
