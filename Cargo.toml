@@ -5,18 +5,18 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
-arboard = { version = "3.6.1", default-features = false }
+arboard = { version = "3.7.0", default-features = false }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 futures-util = "0.3.34"
 git2 = { version = "0.21", default-features = false }
-globset = "0.4.20"
+globset = "0.4.21"
 grep-matcher = "0.1.9"
 grep-searcher = "0.1.17"
-ignore = "0.4.33"
-libc = "0.2.190"
+ignore = "0.4.34"
+libc = "0.2.191"
 lsp-types = "0.97.0"
 memchr = "2.8.3"
-notify = "9.0.0-rc.6"
+notify = "9.0.0-rc.7"
 nucleo = "0.5.0"
 portable-pty = "0.9.0"
 ratatui = "0.30.2"
@@ -26,16 +26,16 @@ libloading = "0.9.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
-tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "io-util", "net"] }
-toml = "1.1.8"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "io-util", "net"] }
+toml = "1.2.1"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-trash = "5.2.9"
-tree-sitter = "0.27.1"
+trash = "5.3.0"
+tree-sitter = "0.27.2"
 tree-sitter-bash = "0.25.1"
 tree-sitter-c = "0.24.2"
-tree-sitter-cmake = "0.7.5"
+tree-sitter-cmake = "0.7.6"
 tree-sitter-containerfile = "0.9.2"
 tree-sitter-cpp = "0.23.4"
 tree-sitter-gitcommit = "0.5.0"
@@ -43,7 +43,7 @@ tree-sitter-ini = "1.4.0"
 tree-sitter-json = "0.24.8"
 tree-sitter-language = "0.1.9"
 tree-sitter-make = "1.1.1"
-tree-sitter-md = "0.5.3"
+tree-sitter-md = "0.5.4"
 tree-sitter-objc = "3.0.2"
 tree-sitter-python = "0.25.0"
 tree-sitter-rust = "0.24.2"
@@ -53,15 +53,15 @@ tree-sitter-xml = "0.7.0"
 tree-sitter-yaml = "0.7.2"
 tui-term = { version = "0.3.4", default-features = false }
 unicode-segmentation = "1.13.3"
-unicode-width = "0.2.2"
+unicode-width = "0.2.3"
 vt100 = { version = "0.18.1", features = ["compress"] }
 pulldown-cmark = { version = "0.13.6", default-features = false }
 spellbook = "0.4.2"
-zstd = "0.13.3"
+zstd = "0.14.3"
 ureq = { version = "3.5.1", default-features = false, features = ["rustls", "platform-verifier", "json"] }
 
 [build-dependencies]
-zstd = "0.13.3"
+zstd = "0.14.3"
 
 [dev-dependencies]
 tempfile = "3.27.0"
@@ -80,7 +80,7 @@ crossterm = { git = "https://github.com/jimcx/crossterm.git", tag = "0.29+fwdbac
 # follow its text) and the `compress` feature (zstd-compressed old scrollback rows, `Screen::set_scrollback_compression`;
 # rows evicted while compressed skip the `on_row` callback). On a vt100 upgrade, rebase the fork's `jed` changes onto the new release and
 # re-tag.
-vt100 = { git = "https://github.com/jimcx/vt100-rust.git", tag = "v0.18.1+jed3" }
+vt100 = { git = "https://github.com/jimcx/vt100-rust.git", tag = "v0.18.1+jed4" }
 
 # Dependencies (ropey, ratatui, tree-sitter and its C grammars, regex, …) build optimised and
 # without their debug assertions in dev and test builds: the tests spent most of their CPU in
