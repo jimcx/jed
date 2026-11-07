@@ -906,6 +906,10 @@ fn pty_size(rows: u16, cols: u16) -> PtySize {
     }
 }
 
+/// Test-only switch: while set, every run fails at the spawn instead of starting its process.
+#[cfg(test)]
+pub static NO_SPAWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Blocking: opens the PTY and spawns the process, then starts the reader and the waiter.
 fn spawn(shared: Arc<Shared>, spec: Spec, sink: Sink) {
     // Test-only: hold the run `Starting` until the test releases it, so a quit-while-starting
@@ -913,6 +917,11 @@ fn spawn(shared: Arc<Shared>, spec: Spec, sink: Sink) {
     #[cfg(test)]
     if let Some(gate) = &spec.start_gate {
         gate.wait();
+    }
+    // Test-only: the fuzzer sets this so no random command, key or click starts a real process.
+    #[cfg(test)]
+    if NO_SPAWN.load(std::sync::atomic::Ordering::Relaxed) {
+        return shared.fail("spawning is disabled in this test".into(), &sink);
     }
     if !spec.cwd.is_dir() {
         return shared.fail(format!("{}: no such folder", spec.cwd.display()), &sink);

@@ -230,6 +230,8 @@ async fn fuzz_random_input() {
         );
     }
     assert!(!home.join(".config/jed").exists(), "HOME looks like a real home");
+    // Shells and tasks open their tabs but fail at the spawn: nothing the fuzzer does runs a process.
+    crate::tasks::run::NO_SPAWN.store(true, std::sync::atomic::Ordering::Relaxed);
     let n = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let (seeds, steps, first) = (
         n("JED_FUZZ_SEEDS", 20),
@@ -237,8 +239,7 @@ async fn fuzz_random_input() {
         n("JED_FUZZ_FIRST", 1),
     );
     let skip = [
-        "Quit", "Shell", "Terminal", "RunTask", "Restart", "Install", "Reload", "Update", "Release", "Push", "Pull",
-        "Fetch", "Clone", "Sign",
+        "Quit", "Restart", "Install", "Reload", "Update", "Release", "Push", "Pull", "Fetch", "Clone", "Sign",
     ];
     let cmds: Vec<Command> = Command::all()
         .into_iter()
