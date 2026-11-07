@@ -42,6 +42,9 @@ pub struct Settings {
     /// Highlight the bracket next to each cursor and its partner (`brackets`):
     /// `[settings] match_brackets`.
     pub match_brackets: bool,
+    /// Highlight the other occurrences of the selected text and count them in the status bar
+    /// (`occurrences`): `[settings] selection_highlight`.
+    pub selection_highlight: bool,
     /// The language server's semantic tokens and inactive regions drawn over tree-sitter's
     /// colours (`ui::editor`, and none requested when off): `[settings] semantic_highlighting`.
     pub semantic_highlighting: SemanticHighlighting,
@@ -179,6 +182,7 @@ impl Default for Settings {
             auto_close_pairs: true,
             auto_indent: true,
             match_brackets: true,
+            selection_highlight: true,
             semantic_highlighting: SemanticHighlighting::On,
             quick_suggestions: true,
             render_whitespace: RenderWhitespace::All,

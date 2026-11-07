@@ -235,6 +235,7 @@ Go back to any earlier save of a file, independent of git.
   - Alt+Enter turns every match into a selection (as VS Code)
 - Auto-indent, bracket matching, auto-close of pairs
 - Line numbers, current-line highlight
+- Selection highlight (the [Selection highlight](tasks/selection_highlight.md) task, VS Code's `editor.selectionHighlight`): the selected text's other occurrences highlighted, their count in the status bar while the find widget is closed
 - Soft wrap (the [Soft wrap](tasks/soft_wrap.md) task), VS Code's `editor.wordWrap`:
   - A `word_wrap` setting (`off` / `on`, default `off`) and "View: Toggle Word Wrap" (`view.toggleWordWrap`, Alt+Z as VS Code; session-only like the render whitespace toggle)
   - Lines wrap at the editor's width (left of the scroll bar), breaking after spaces, else between graphemes (wide chars and tabs never split); continuation rows keep the line's indentation (VS Code's `wrappingIndent: same`); the line number only on a line's first row; no horizontal scroll while wrapping
@@ -773,6 +774,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - ✅ **Scroll bars in the side bar's lists** (`sidebar_scrollbars`): the one-column scroll bar on the explorer, Search results and Source Control lists — [tasks/sidebar_scrollbars.md](tasks/sidebar_scrollbars.md)
 - ✅ **Search and replace** (`replace`): replace across files from the Search view, plus its whole-word toggle and collapsing / dismissing results — [tasks/replace.md](tasks/replace.md)
 - ✅ **Selection and editing in diff tabs** (`diff_edit`): select text on either side of a diff tab and edit the file's working-tree text in place — [tasks/diff_edit.md](tasks/diff_edit.md)
+- ✅ **Selection highlight** (`selection_highlight`): every other occurrence of the selected text is highlighted in the editor, and the status bar counts them (unless the find widget is open) — [tasks/selection_highlight.md](tasks/selection_highlight.md)
 - ✅ **Settings files** (`settings`): "Preferences: Open User / Workspace Settings" (Cmd+, / Cmd+Alt+,) open `settings.toml` and `.workspace`; `invalid` highlighting and local completion from a schema, also for `keybindings.toml` — [tasks/settings.md](tasks/settings.md)
 - ✅ **Shell integration and OSC titles** (`shell_integration`): the shell tab's title follows the shell through OSC codes and an opt-in shell integration, replacing the `/proc` foreground watcher — [tasks/shell_integration.md](tasks/shell_integration.md)
 - ✅ **Shell tab shows the foreground process** (`shell_title`): the tab name follows what runs in the shell, as tmux's `automatic-rename` — [tasks/shell_title.md](tasks/shell_title.md)

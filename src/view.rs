@@ -46,6 +46,9 @@ pub struct View {
     pub auto_closed: AutoClosed,
     /// The brackets drawn highlighted, cached between frames (`brackets::Matches`).
     pub brackets: crate::brackets::Matches,
+    /// The primary selection's text elsewhere in the buffer, drawn highlighted, cached between
+    /// frames (`occurrences::Occurrences`).
+    pub occurrences: crate::occurrences::Occurrences,
     /// The lines' screen rows at the view's width, kept across edits (`wrap::Wrap`).
     pub wrap: Wrap,
 }
@@ -188,6 +191,7 @@ impl View {
             column: None,
             auto_closed: AutoClosed::default(),
             brackets: Default::default(),
+            occurrences: Default::default(),
             wrap: Wrap::default(),
         }
     }

@@ -149,6 +149,11 @@ const SETTINGS_KEYS: &[KeySchema] = &[
         "Highlight the bracket pair at the cursor",
     ),
     key(
+        "selection_highlight",
+        ValueKind::Bool,
+        "Highlight the selected text's other occurrences",
+    ),
+    key(
         "semantic_highlighting",
         ValueKind::Enum(ON_OFF),
         "The language server's semantic colours",

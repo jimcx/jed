@@ -1,7 +1,7 @@
 //! The text area: gutter (line numbers, quick diff's markers), text (syntax colours), matched
-//! brackets, diagnostics' squiggles, selections, find matches, cursors, rendered whitespace,
-//! merge conflicts (block backgrounds, marker labels, the action row) and the cursor line's
-//! inline blame.
+//! brackets, diagnostics' squiggles, selections, the selected text's other occurrences, find
+//! matches, cursors, rendered whitespace, merge conflicts (block backgrounds, marker labels, the
+//! action row) and the cursor line's inline blame.
 
 use std::borrow::Cow;
 
@@ -285,6 +285,12 @@ pub fn render(
     } else {
         (pos::line_start(rope, view.top_line()), pos::line_end(rope, last_line))
     };
+    // The primary selection's text elsewhere (cached: searched only when it or the text changes).
+    let needle = s
+        .selection_highlight
+        .then(|| crate::occurrences::needle(rope, view.selections.primary()))
+        .flatten();
+    view.occurrences.refresh(rope, revision, needle);
     let sels = view.selections.overlapping(visible_start, visible_end);
     // Matched brackets at the cursors on screen (cached in the view: recomputed only when the
     // text or those cursors change).
@@ -327,6 +333,9 @@ pub fn render(
     let view_range = visible_start..visible_end;
     let matches: &[Match] = overlay.find.map_or(&[], |f| f.matches_in(view_range.clone()));
     let mut match_walk = SortedWalk::new(matches, |m| m.start, |m| m.end);
+    let occurrences = view.occurrences.matches_in(view_range.clone());
+    let mut occurrence_walk = SortedWalk::new(occurrences, |m| m.start, |m| m.end);
+    let occurrence_highlight = theme.get("editor.selectionHighlight");
     let mut in_match = |b: ByteIdx| {
         let m = match_walk.at(b)?;
         let sel = view.selections.primary();
@@ -568,6 +577,9 @@ pub fn render(
                 if !cursor_here {
                     style = style.patch(whitespace_fg);
                 }
+            }
+            if occurrence_walk.at(b).is_some() {
+                style = style.patch(occurrence_highlight);
             }
             let found = in_match(b);
             if found.is_some() {

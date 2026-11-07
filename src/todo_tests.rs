@@ -146,6 +146,10 @@
 //!   `.workspace` per key (a `.workspace` reload re-layers the same values), a new binding works
 //!   without a restart, a `[lsp.<id>]` change replaces the user's servers, and a file that can't
 //!   be read or parsed is reported while the last good settings / keymap stay.
+//! - `selection_highlight`: the selected text's other occurrences drawn in
+//!   `editor.selectionHighlight` (literal, case-sensitive, one line, not blank), `N occurrences`
+//!   in the status bar unless the find widget is open, re-searched after an edit, off with the
+//!   `selection_highlight` setting.
 
 mod render_whitespace {
     use std::fs;
@@ -13153,5 +13157,116 @@ mod explorer_drag_drop {
         assert!(app.inline_rename.is_none());
         assert!(app.settle(|_| dir.path().join("b.txt").exists()).await);
         assert!(!dir.path().join("a.txt").exists());
+    }
+}
+
+mod selection_highlight {
+    use std::fs;
+
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+
+    use crate::app::App;
+    use crate::buffer::Buffer;
+    use crate::command::Command;
+
+    const TEXT: &str = "foo bar foo\nxfoox Foo\n";
+
+    /// An app on `dir` whose `.workspace` holds `workspace`, with `a.txt` (`TEXT`) open and
+    /// its first `foo` selected with Shift+Right.
+    fn open_app(dir: &tempfile::TempDir, workspace: &str) -> App {
+        let root = crate::workspace::normalize(dir.path());
+        fs::write(root.join(".workspace"), workspace).unwrap();
+        let path = root.join("a.txt");
+        fs::write(&path, TEXT).unwrap();
+        let mut app = crate::milestone_tests::test_app(&root, Buffer::open(&path).unwrap());
+        app.test_plain_whitespace();
+        app.test_start();
+        for _ in 0..3 {
+            app.press(K::Right, M::SHIFT);
+        }
+        app
+    }
+
+    /// Draws a frame: each text cell's background on lines 0 and 1, and the status bar row.
+    fn draw(app: &mut App) -> (Vec<Vec<Color>>, String) {
+        let mut term = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        let text = app.hits.groups[0].text;
+        let buf = term.backend().buffer();
+        let bgs = (0..2)
+            .map(|y| (0..11).map(|x| buf[(text.x + x, text.y + y)].bg).collect())
+            .collect();
+        (bgs, (0..80).map(|x| buf[(x, 9)].symbol()).collect())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn selection_highlight_marks_other_occurrences_and_counts_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(&dir, "");
+        let hl = app.theme.get("editor.selectionHighlight").bg.unwrap();
+        let sel = app.theme.get("editor.selection").bg.unwrap();
+        let (bgs, status) = draw(&mut app);
+        // The selection itself, then `foo` at 8 and inside `xfoox`; `Foo` (case) isn't one.
+        assert!(bgs[0][0..3].iter().all(|&c| c == sel), "{bgs:?}");
+        assert!(bgs[0][3..8].iter().all(|&c| c != hl && c != sel));
+        assert!(bgs[0][8..11].iter().all(|&c| c == hl));
+        assert!(bgs[1][1..4].iter().all(|&c| c == hl));
+        assert!(bgs[1][0] != hl && bgs[1][4..9].iter().all(|&c| c != hl));
+        assert!(status.contains("3 occurrences   Ln 1, Col 4"), "{status}");
+
+        // One more char: `foo ` occurs once.
+        app.press(K::Right, M::SHIFT);
+        let (bgs, status) = draw(&mut app);
+        assert!(bgs.iter().flatten().all(|&c| c != hl));
+        assert!(status.contains("1 occurrence   Ln 1"), "{status}");
+
+        // The find widget open: its count, not ours (its own highlights stay as they were).
+        app.test_execute(Command::OpenFind);
+        let (_, status) = draw(&mut app);
+        assert!(!status.contains("occurrence"), "{status}");
+        app.test_execute(Command::Find(crate::command::FindCommand::Close));
+        let (_, status) = draw(&mut app);
+        assert!(status.contains("1 occurrence"), "{status}");
+
+        // No selection, or one over a line break: nothing.
+        app.press(K::Right, M::NONE);
+        let (bgs, status) = draw(&mut app);
+        assert!(bgs.iter().flatten().all(|&c| c != hl));
+        assert!(!status.contains("occurrence"), "{status}");
+        app.press(K::Down, M::SHIFT);
+        let (bgs, status) = draw(&mut app);
+        assert!(bgs.iter().flatten().all(|&c| c != hl));
+        assert!(!status.contains("occurrence"), "{status}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn selection_highlight_follows_edits_and_its_setting() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(&dir, "");
+        let hl = app.theme.get("editor.selectionHighlight").bg.unwrap();
+        assert!(draw(&mut app).1.contains("3 occurrences"));
+        // A `foo` typed at the end, then the first one selected again: the new text is searched.
+        for k in [K::Down, K::Down] {
+            app.press(k, M::NONE);
+        }
+        app.type_text("foo");
+        for k in [K::Up, K::Up, K::Home] {
+            app.press(k, M::NONE);
+        }
+        for _ in 0..3 {
+            app.press(K::Right, M::SHIFT);
+        }
+        let (bgs, status) = draw(&mut app);
+        assert!(status.contains("4 occurrences"), "{status}");
+        assert!(bgs[0][8..11].iter().all(|&c| c == hl));
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(&dir, "[settings]\nselection_highlight = false\n");
+        let (bgs, status) = draw(&mut app);
+        assert!(bgs.iter().flatten().all(|&c| c != hl));
+        assert!(!status.contains("occurrence"), "{status}");
     }
 }

@@ -115,6 +115,7 @@ mod mr_review_tests;
 mod mru;
 mod multicursor;
 mod navigation;
+mod occurrences;
 mod pairs;
 mod palette;
 mod panic;

@@ -184,6 +184,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> StatusHit {
             let col = pos::display_col(&buf.rope, head, app.settings.for_buffer(buf).tab_width).0 + 1;
             format!("Ln {line}, Col {col}")
         };
+        // The selected text's occurrences (the editor refreshed them earlier in this frame),
+        // unless the find widget is open: it shows its own count.
+        let position = match tab.view.occurrences.count() {
+            Some(n) if !app.find.visible => {
+                format!("{n} occurrence{}   {position}", if n == 1 { "" } else { "s" })
+            }
+            _ => position,
+        };
         let settings = app.settings.for_buffer(buf);
         let indent = if settings.insert_spaces {
             format!("Spaces: {}", settings.indent_size())
