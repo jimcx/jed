@@ -690,7 +690,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Bug reporter** (`bug_report`): write a self-contained bug report with app state — [tasks/bug_report.md](tasks/bug_report.md)
 - **Change End of Line Sequence** (`change_eol`): change a buffer's line endings to LF or CRLF — [tasks/change_eol.md](tasks/change_eol.md)
 - **Cheap merge-conflict scan** (`conflict_scan`): the conflict-marker scan stops costing a full line walk of the buffer on the first frame after every edit — [tasks/conflict_scan.md](tasks/conflict_scan.md)
-- **Claude Code IDE integration** (`claude_ide`): let `claude` running in a jed terminal auto-connect to jed and share the editor's context, by implementing Claude Code's editor-agnostic IDE protocol on jed's side — no upstream change — [tasks/claude_ide.md](tasks/claude_ide.md)
+- **Claude Code integration** (`claude_ide`): `claude` in a jed shell sees the active file, recent shell commands and output, and the environment, via a Claude Code plugin (stdio MCP server + hooks) found by `$JED_IPC` with no state files; MCP traffic logged in the Tools view — [tasks/claude_ide.md](tasks/claude_ide.md)
 - **Close tabs and go to the Nth tab** (`close_tabs_nth`): close all / others / saved tabs, and go to the Nth tab in a group — [tasks/close_tabs_nth.md](tasks/close_tabs_nth.md)
 - **Code review** (`mr_review`): review a Gitea, GitHub or GitLab merge request in jed — changed files, inline diffs with language server navigation, comments, drafts and suggestions — [tasks/mr_review.md](tasks/mr_review.md)
 - **Expand / shrink selection** (`expand_shrink_selection`): grow / shrink each selection to enclosing syntax nodes — [tasks/expand_shrink_selection.md](tasks/expand_shrink_selection.md)
