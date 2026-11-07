@@ -9,7 +9,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::files::Goto;
 use super::{App, AppEvent, Focus, Level};
 use crate::buffer::BufferId;
-use crate::ipc::{self, Reply, Request, Responder, Server};
+use crate::ipc::{self, Query, Reply, Request, Responder, Server};
 
 /// A client waiting for `path` to be closed.
 struct Waiter {
@@ -94,11 +94,27 @@ impl App {
         }
     }
 
-    /// A client asks to open a file: as quick open does, with the cursor at `line:col` (1:1).
+    /// A client's request: a log line (acked), a query (answered from loaded state; `Open` opens
+    /// a file), or a file to open, as quick open does, with the cursor at `line:col` (1:1).
     pub(super) fn ipc_request(&mut self, request: Request, responder: Responder) {
-        let goto = Goto::Cursor(request.line.unwrap_or(1), request.col.unwrap_or(1));
-        self.open_file(request.open.clone(), true, Some(goto));
-        self.ui.focus = Focus::Editor;
+        if let Some(log) = &request.log {
+            tracing::debug!(dir = %log.dir, "ipc log line");
+            responder.answer(Reply::default());
+            return;
+        }
+        if let Some(query) = &request.query {
+            let reply = match query {
+                Query::Open { path, line, col } if path.is_absolute() => {
+                    self.ipc_open(path.clone(), *line, *col);
+                    Reply::opened()
+                }
+                Query::Open { .. } => Reply::error("open needs an absolute path"),
+                query => self.claude_answer(query, request.terminal),
+            };
+            responder.answer(reply);
+            return;
+        }
+        self.ipc_open(request.open.clone(), request.line, request.col);
         if !request.wait {
             responder.answer(Reply::opened());
             return;
@@ -109,6 +125,12 @@ impl App {
             buffer: None,
         });
         self.ipc_sweep();
+    }
+
+    fn ipc_open(&mut self, path: PathBuf, line: Option<usize>, col: Option<usize>) {
+        let goto = Goto::Cursor(line.unwrap_or(1), col.unwrap_or(1));
+        self.open_file(path, true, Some(goto));
+        self.ui.focus = Focus::Editor;
     }
 
     /// Answers the clients whose file has no tab left, and drops those whose load failed.

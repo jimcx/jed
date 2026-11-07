@@ -513,6 +513,7 @@ mod socket {
             line: None,
             col: None,
             wait,
+            ..Default::default()
         };
         std::thread::spawn(move || client::open(&socket, &request))
     }
@@ -714,7 +715,8 @@ mod socket {
                     open: msg,
                     line: None,
                     col: None,
-                    wait: true
+                    wait: true,
+                    ..Default::default()
                 }
             ),
             client::Outcome::Fallback(_)

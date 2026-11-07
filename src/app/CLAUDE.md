@@ -7,6 +7,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `mod.rs` — the `App` struct, `new` / `start` / `run`, `handle_event`, `execute`, `sync_views`, copy / paste, `handle_app_event`, `render_whitespace()`, and the `#[cfg(test)]` driving helpers (`test_start`, `press`, `type_text`, `mouse`, `settle`, `pump`, `test_execute`, the `test_*_tick`s, …: listed in docs/dev/app.md)
 - `config.rs` — `ConfigEvent` (`AppEvent::Config`: the workspace config / settings / keymap re-reads and the `*Ready` files made for editing them) and `handle_config_event`.
 - `field.rs` — `field_key`: keys in a text field (find widget, Search view inputs, palette, prompts) — typed, else the editor context's moves / deletes / select all / copy / cut / paste run on the field (`has_field_meaning`)
+- `claude.rs` — answers to the Claude Code integration's IPC queries (`claude_answer`: context, editors, diagnostics, terminals, commands, output, screen, environment), capped, from loaded state only
 - `files.rs` — opening (off-thread, `opening` map of `OpenRequest`s, `open_file(path, focus, goto)`, which records a successfully opened file in `mru`), saving, closing tabs, `add_buffer`
 - `prompt.rs` — `Prompt`, the modal dialogs (save before close / quit / stage, trust, input, confirm delete / replace / stage-a-conflicted-file, restore backups, the shell integration wizard)
 - `side.rs` — explorer commands, directory listings, file ops, fs-change batching (`flush_fs_changes`, which also reloads `.workspace`, `settings.toml` and `keybindings.toml`), the side panel

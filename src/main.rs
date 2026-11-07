@@ -9,6 +9,8 @@ mod buffer;
 mod bundle;
 mod cheatsheet;
 #[cfg(test)]
+mod claude_ide_tests;
+#[cfg(test)]
 mod clear_scrollback_tests;
 mod clipboard;
 mod code_action;
@@ -414,6 +416,7 @@ fn ipc_request(args: &Args, jed_ipc: Option<std::ffi::OsString>) -> Option<(Path
         line: at.map(|(l, _)| l),
         col: at.map(|(_, c)| c),
         wait: args.wait,
+        ..Default::default()
     };
     Some((socket, request))
 }
@@ -617,6 +620,7 @@ mod tests {
             line: None,
             col: None,
             wait: true,
+            ..Default::default()
         };
         assert_eq!(req, want);
         let with_pos = format!("{}:4:2", target(&file));

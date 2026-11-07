@@ -1,14 +1,17 @@
 //! Talking to a running jed over a Unix socket (PLAN.md, Git editor, "From a task terminal").
 //!
-//! Protocol: one JSON line each way. The client sends a [`Request`]
-//! (`{"open": "/abs/path", "line": 3, "col": 1, "wait": true}`); the server answers with one
-//! [`Reply`] line: `{"closed": true}` once the file's last tab is closed (with `wait`), or
-//! `{"opened": true}` at once (without). A connection closed with no reply means jed quit first.
+//! Protocol: one JSON line each way, any number of requests per connection, answered in order.
+//! The client sends a [`Request`] (`{"open": "/abs/path", "line": 3, "col": 1, "wait": true}`);
+//! the server answers with one [`Reply`] line: `{"closed": true}` once the file's last tab is
+//! closed (with `wait`), or `{"opened": true}` at once (without). A connection closed with no
+//! reply means jed quit first. A request may carry a [`Query`] instead of `open` (the answer is
+//! in the reply's `data`, or its `error`), or a [`LogLine`] (a log-only line, acked with `{}`).
+//! Old requests (`open` alone) decode and behave as before.
 //!
 //! The server side (`Server`, tokio) hands each request to a callback together with a
 //! [`Responder`]; the app answers it when it is time, or drops it to close the connection. The
-//! client side ([`client::open`]) is blocking std I/O for `main`, before logging, the runtime
-//! and raw mode.
+//! client side ([`client::open`], [`client::Connection`]) is blocking std I/O for `main`, before
+//! logging, the runtime and raw mode.
 //!
 //! The socket is `<socket_dir>/<pid>.sock` in a `0700` directory ([`prepare_dir`]); [`Server`]
 //! removes it on drop and [`remove_socket`] does the same from the panic hook.
@@ -25,15 +28,22 @@ use tokio::sync::oneshot;
 
 /// Longest request line the server reads.
 const MAX_LINE: u64 = 64 * 1024;
+/// Largest reply line the server sends: a bigger answer is replaced by an error (the builders in
+/// `app/claude.rs` cap their data well below it).
+pub const MAX_REPLY: usize = 256 * 1024;
+/// Longest reply line the client reads.
+#[cfg_attr(not(test), allow(dead_code))] // read by `client::Connection` (claude_ide-c)
+const MAX_REPLY_LINE: u64 = 1024 * 1024;
 
 /// Name of the environment variable task processes find the socket path in.
 pub const ENV: &str = "JED_IPC";
 /// The number of the terminal (`tasks::RunId`) a process runs in, set next to `JED_IPC`.
 pub const TERMINAL_ENV: &str = "JED_TERMINAL";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Request {
-    /// Absolute path of the file to open.
+    /// Absolute path of the file to open (empty in a query or a log line).
+    #[serde(default, skip_serializing_if = "is_empty_path")]
     pub open: PathBuf,
     /// 1-based position, if given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -43,6 +53,88 @@ pub struct Request {
     /// Answer only when the buffer's last tab closes.
     #[serde(default)]
     pub wait: bool,
+    /// Ask jed about its state instead of opening a file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<Query>,
+    /// A line for jed's logs; nothing is answered but an ack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<LogLine>,
+    /// The caller's `JED_TERMINAL` (the number of the terminal it runs in), so the terminals
+    /// list can flag it as `self`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<u64>,
+}
+
+impl Request {
+    /// A query from the terminal numbered `terminal`.
+    #[cfg_attr(not(test), allow(dead_code))] // used by the CLI modes (claude_ide-c)
+    pub fn query(query: Query, terminal: Option<u64>) -> Request {
+        Request {
+            query: Some(query),
+            terminal,
+            ..Request::default()
+        }
+    }
+
+    /// Asks for something: a file to open, a query or a log line.
+    fn is_valid(&self) -> bool {
+        !self.open.as_os_str().is_empty() || self.query.is_some() || self.log.is_some()
+    }
+}
+
+fn is_empty_path(p: &Path) -> bool {
+    p.as_os_str().is_empty()
+}
+
+/// What a client can ask jed. Terminals and commands are named by their numbers
+/// (`tasks::RunId`, `CommandRecord::id`), as the `terminals` / `commands` answers list them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Query {
+    /// The active editor: file, language, cursor, the primary selection and its text.
+    Context,
+    /// Every group's tabs.
+    Editors,
+    /// Diagnostics of one open file (`path`), else of every open file, errors first.
+    Diagnostics {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<PathBuf>,
+    },
+    /// Shell tabs and task runs.
+    Terminals,
+    /// The last `n` commands (default 10) of one terminal, else of every shell but the caller's.
+    Commands {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        terminal: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        n: Option<usize>,
+    },
+    /// One command's output, at most `max_lines` (default 200) of its last lines.
+    Output {
+        terminal: u64,
+        command: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_lines: Option<usize>,
+    },
+    /// A terminal's visible screen.
+    Screen { terminal: u64 },
+    /// Version, workspace, git, open files, servers, tasks, shells.
+    Environment,
+    /// Open a file in the active group, as quick open does.
+    Open {
+        path: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        line: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        col: Option<usize>,
+    },
+}
+
+/// A line for the logs: `dir` is "in" or "out" for a protocol message, `msg` the message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogLine {
+    pub dir: String,
+    pub msg: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -51,6 +143,12 @@ pub struct Reply {
     pub closed: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub opened: bool,
+    /// A query's answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+    /// Why a query got no answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 impl Reply {
@@ -58,15 +156,31 @@ impl Reply {
     pub fn closed() -> Reply {
         Reply {
             closed: true,
-            opened: false,
+            ..Reply::default()
         }
     }
 
     /// Opened, not waiting.
     pub fn opened() -> Reply {
         Reply {
-            closed: false,
             opened: true,
+            ..Reply::default()
+        }
+    }
+
+    /// A query's answer.
+    pub fn data(value: serde_json::Value) -> Reply {
+        Reply {
+            data: Some(value),
+            ..Reply::default()
+        }
+    }
+
+    /// A query that can't be answered.
+    pub fn error(why: impl Into<String>) -> Reply {
+        Reply {
+            error: Some(why.into()),
+            ..Reply::default()
         }
     }
 }
@@ -200,37 +314,54 @@ impl Drop for Server {
 
 async fn serve_connection(stream: UnixStream, on_request: &(dyn Fn(Request, Responder) + Send + Sync)) {
     let (read, mut write) = stream.into_split();
+    let mut reader = BufReader::new(read);
     let mut line = String::new();
-    // `take` caps the line; an overlong one has no newline and fails to decode.
-    let mut reader = BufReader::new(tokio::io::AsyncReadExt::take(read, MAX_LINE));
-    match reader.read_line(&mut line).await {
-        Ok(n) if n > 0 && line.ends_with('\n') => {}
-        other => {
-            tracing::debug!(?other, "ipc: no complete request line");
-            return;
+    loop {
+        line.clear();
+        // `take` caps each line; an overlong one has no newline and ends the connection.
+        match tokio::io::AsyncReadExt::take(&mut reader, MAX_LINE)
+            .read_line(&mut line)
+            .await
+        {
+            Ok(n) if n > 0 && line.ends_with('\n') => {}
+            // The client is done (or never sent a whole line).
+            other => {
+                tracing::debug!(?other, "ipc: no complete request line");
+                break;
+            }
+        }
+        let request: Request = match decode(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "ipc: bad request");
+                break;
+            }
+        };
+        if !request.is_valid() {
+            tracing::warn!("ipc: request asks for nothing");
+            break;
+        }
+        let (tx, rx) = oneshot::channel();
+        on_request(request, Responder(tx));
+        // A dropped responder closes the connection.
+        let Ok(reply) = rx.await else { break };
+        let mut out = encode(&reply);
+        if out.len() > MAX_REPLY {
+            tracing::warn!(bytes = out.len(), "ipc: reply too large");
+            out = encode(&Reply::error("reply too large"));
+        }
+        if write.write_all(out.as_bytes()).await.is_err() {
+            break;
         }
     }
-    let request: Request = match decode(&line) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(error = %e, "ipc: bad request");
-            return;
-        }
-    };
-    let (tx, rx) = oneshot::channel();
-    on_request(request, Responder(tx));
-    // A dropped responder closes the connection.
-    if let Ok(reply) = rx.await {
-        let _ = write.write_all(encode(&reply).as_bytes()).await;
-        let _ = write.shutdown().await;
-    }
+    let _ = write.shutdown().await;
 }
 
 pub mod client {
     //! The blocking client, for `main` before logging, the runtime and raw mode.
 
     use super::*;
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::time::Duration;
 
     #[derive(Debug, PartialEq, Eq)]
@@ -251,6 +382,40 @@ pub mod client {
     /// closes); one without gives up after [`NO_WAIT_TIMEOUT`].
     pub fn open(socket: &Path, request: &Request) -> Outcome {
         open_with(socket, request, NO_WAIT_TIMEOUT)
+    }
+
+    /// One connection for many requests: connect once, then [`Connection::request`] per query.
+    #[cfg_attr(not(test), allow(dead_code))] // used by the CLI modes (claude_ide-c)
+    pub struct Connection {
+        stream: std::os::unix::net::UnixStream,
+        reader: BufReader<std::os::unix::net::UnixStream>,
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    impl Connection {
+        /// Blocking: connects to the jed listening on `socket`; `timeout` bounds each request's
+        /// wait for its answer (`None`: as long as jed takes).
+        pub fn connect(socket: &Path, timeout: Option<Duration>) -> io::Result<Connection> {
+            let stream = std::os::unix::net::UnixStream::connect(socket)?;
+            stream.set_read_timeout(timeout)?;
+            let reader = BufReader::new(stream.try_clone()?);
+            Ok(Connection { stream, reader })
+        }
+
+        /// Blocking: sends `request` and reads its answer. An error (closed, timed out, a reply
+        /// that isn't one) leaves the connection unusable.
+        pub fn request(&mut self, request: &Request) -> io::Result<Reply> {
+            self.stream.write_all(encode(request).as_bytes())?;
+            let mut line = String::new();
+            let n = (&mut self.reader).take(MAX_REPLY_LINE).read_line(&mut line)?;
+            if n == 0 || !line.ends_with('\n') {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "jed closed the connection",
+                ));
+            }
+            decode(&line).map_err(io::Error::other)
+        }
     }
 
     pub(super) fn open_with(socket: &Path, request: &Request, no_wait_timeout: Duration) -> Outcome {
@@ -286,6 +451,7 @@ mod tests {
             line: Some(3),
             col: Some(2),
             wait,
+            ..Request::default()
         }
     }
 
@@ -300,6 +466,7 @@ mod tests {
             line: None,
             col: None,
             wait: false,
+            ..Request::default()
         };
         assert_eq!(encode(&bare), "{\"open\":\"/x\",\"wait\":false}\n");
         assert_eq!(decode::<Request>("{\"open\":\"/x\"}").unwrap(), bare);
@@ -308,11 +475,47 @@ mod tests {
     }
 
     #[test]
+    fn queries_and_log_lines_round_trip_and_old_replies_still_decode() {
+        let q = Request::query(
+            Query::Output {
+                terminal: 2,
+                command: 14,
+                max_lines: None,
+            },
+            Some(2),
+        );
+        assert_eq!(
+            encode(&q),
+            "{\"wait\":false,\"query\":{\"type\":\"output\",\"terminal\":2,\"command\":14},\"terminal\":2}\n"
+        );
+        assert_eq!(decode::<Request>(&encode(&q)).unwrap(), q);
+        assert!(q.is_valid());
+        let q: Request = decode("{\"query\":{\"type\":\"commands\"}}").unwrap();
+        assert_eq!(
+            q.query,
+            Some(Query::Commands {
+                terminal: None,
+                n: None
+            })
+        );
+        let log: Request = decode("{\"log\":{\"dir\":\"in\",\"msg\":{\"a\":1}}}").unwrap();
+        assert!(log.is_valid() && log.open.as_os_str().is_empty());
+        // An old client's reply line has no data / error; a query's has no `opened`.
+        assert_eq!(decode::<Reply>("{\"opened\":true}").unwrap(), Reply::opened());
+        assert_eq!(
+            encode(&Reply::data(serde_json::json!({"a": 1}))),
+            "{\"data\":{\"a\":1}}\n"
+        );
+        assert_eq!(encode(&Reply::default()), "{}\n");
+    }
+
+    #[test]
     fn decode_ignores_unknown_fields_and_rejects_bad_lines() {
         let r: Request = decode("{\"open\":\"/x\",\"future\":[1],\"wait\":true}\n").unwrap();
         assert!(r.wait);
         assert!(decode::<Request>("not json").is_err());
-        assert!(decode::<Request>("{\"wait\":true}").is_err());
+        // Decodes, but asks for nothing: the server refuses it.
+        assert!(!decode::<Request>("{\"wait\":true}").unwrap().is_valid());
         assert!(decode::<Request>("").is_err());
     }
 

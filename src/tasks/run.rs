@@ -562,7 +562,6 @@ impl Run {
     }
 
     /// The remembered commands (a shell with the integration), oldest first.
-    #[allow(dead_code)] // read by the IPC queries (claude_ide-b)
     pub fn commands(&self) -> Vec<CommandRecord> {
         self.screen().callbacks().commands().iter().cloned().collect()
     }
@@ -570,7 +569,6 @@ impl Run {
     /// Command `id`'s output read back from the screen and scrollback, at most the last
     /// `max_lines` lines; `None` for an id that's gone from the ring. A command still running
     /// returns what's on screen so far (up to the cursor).
-    #[allow(dead_code)] // read by the IPC queries (claude_ide-b)
     pub fn command_output(&self, id: u64, max_lines: usize) -> Option<CommandOutput> {
         command_text(&mut self.screen(), id, max_lines)
     }
