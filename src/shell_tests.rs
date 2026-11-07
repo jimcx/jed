@@ -493,6 +493,68 @@ async fn shell_bash_snippet_titles_a_real_shell() {
     );
 }
 
+/// The real bash snippet feeds the command ring: the typed line (`;` and `\\` escaped on the wire),
+/// the directory from OSC 7 (a path with a space), the exit code and the output read back, and the
+/// shell's `JED_TERMINAL` is its run's number.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_bash_snippet_records_commands() {
+    let Some(bash) = bash_or_skip("shell_bash_snippet_records_commands") else {
+        return;
+    };
+    let (_d, root, state) = dirs();
+    let sockets = tempfile::tempdir().unwrap();
+    let (mut app, _socket) = listening_app(&root, &state, &sockets).await;
+    let wrapper = shell_script(
+        &root,
+        "myshell",
+        &format!("exec {} --norc --noprofile\n", bash.display()),
+    );
+    app.tasks.shell = wrapper;
+    app.new_shell_in_editor();
+    crate::shell_integration::write_snippets(&state).unwrap();
+    let snippet = state.join("shell-integration.bash");
+    run_in_shell(&mut app, &format!("source '{}'", snippet.display()));
+    std::fs::create_dir_all(root.join("a dir")).unwrap();
+    run_in_shell(&mut app, "cd 'a dir'");
+    run_in_shell(&mut app, "echo \"term=$JED_TERMINAL\"");
+    run_in_shell(&mut app, "echo 'a;b\\c'; (exit 3)");
+    let run_id = app.group().active_shell().unwrap().run.id;
+    let commands = |a: &App| a.group().active_shell().unwrap().run.commands();
+    assert!(
+        app.settle(|a| commands(a).iter().any(|c| c.exit == Some(3))).await,
+        "{:?}\n{}",
+        commands(&app),
+        shell_text(&app)
+    );
+    let cmds = commands(&app);
+    let term = cmds
+        .iter()
+        .find(|c| c.command.as_deref() == Some("echo \"term=$JED_TERMINAL\""))
+        .unwrap_or_else(|| panic!("{cmds:?}"));
+    let out = app
+        .group()
+        .active_shell()
+        .unwrap()
+        .run
+        .command_output(term.id, 100)
+        .unwrap();
+    assert_eq!(out.text, format!("term={}\n", run_id.0));
+    assert_eq!(term.cwd.as_deref(), Some(root.join("a dir").as_path()));
+    let echo = cmds
+        .iter()
+        .find(|c| c.command.as_deref() == Some("echo 'a;b\\c'"))
+        .unwrap_or_else(|| panic!("{cmds:?}"));
+    let out = app
+        .group()
+        .active_shell()
+        .unwrap()
+        .run
+        .command_output(echo.id, 100)
+        .unwrap();
+    assert_eq!(out.text, "a;b\\c\n");
+    assert!(!out.truncated && !out.running);
+}
+
 /// Another shell's PROMPT_COMMAND hook (bash ≥ 5.1 keeps `PROMPT_COMMAND` as an array; systemd's
 /// `/etc/profile.d/80-systemd-osc-context.sh` appends `__systemd_osc_context_precmdline` this way):
 /// the snippet's scalar `PROMPT_COMMAND=_jed_precmd` only overwrites index 0, so the DEBUG trap

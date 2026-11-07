@@ -19,12 +19,16 @@
 //! A shell's tab follows the OSC codes its terminal sends: `133;B` (a command starts) and
 //! `133;D;<code>` (it finished) from the shell integration, and a program's own window title
 //! (OSC 0 / 2, vim's for one) while it runs. `TitleCallback` turns them into
-//! `Event::Foreground`.
+//! `Event::Foreground`. The same codes (plus `633;E`, the command line, and OSC 7, the directory)
+//! fill a ring of the last `COMMAND_RING` `CommandRecord`s, each anchored to absolute rows so
+//! `Run::command_output` can read its text back while the scrollback still holds it. A run with
+//! `JED_IPC` also gets `JED_TERMINAL=<RunId>` (set in `Run::start`).
 //!
 //! The scroll bar (`TerminalScroll`, `Run::scrollable`) is the scrollback as a `Scrollable` in
 //! rows; the kept-line count the bar needs as `max_top` is `Screen::scrollback_len()`
 //! (`scrollbar_extent`).
 
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -102,6 +106,44 @@ pub struct TitleCallback {
     running: bool,
     /// The last command finished with a non-zero exit code.
     error: bool,
+    /// The last [`COMMAND_RING`] commands, oldest first.
+    commands: VecDeque<CommandRecord>,
+    /// The id the next command gets.
+    next_command: u64,
+    /// The directory the shell last reported (OSC 7), the cwd of the next command.
+    cwd: Option<PathBuf>,
+}
+
+/// How many finished commands a run remembers.
+pub const COMMAND_RING: usize = 50;
+
+/// One command a shell with the integration ran: what it typed (`633;E`, `None` from a snippet
+/// that doesn't send it), where, when, how it ended, and where its output sits in the terminal as
+/// absolute rows (`Screen::scrolled_lines` + the row on screen) so the text can be read back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandRecord {
+    /// Counts up per run, from 1.
+    pub id: u64,
+    pub command: Option<String>,
+    pub cwd: Option<PathBuf>,
+    pub started: Instant,
+    /// `None` while it runs.
+    pub finished: Option<Instant>,
+    pub exit: Option<i32>,
+    /// The first row of its output.
+    pub start_row: u64,
+    /// One past the last row of its output (not known while it runs).
+    pub end_row: u64,
+}
+
+/// A command's output as read back from the terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandOutput {
+    pub text: String,
+    /// Lines were dropped: the scrollback no longer holds the start, or `max_lines` cut it (the
+    /// last lines are kept).
+    pub truncated: bool,
+    pub running: bool,
 }
 
 impl TitleCallback {
@@ -113,6 +155,58 @@ impl TitleCallback {
             title: None,
             running: false,
             error: false,
+            commands: VecDeque::new(),
+            next_command: 1,
+            cwd: None,
+        }
+    }
+
+    /// The remembered commands, oldest first.
+    pub fn commands(&self) -> &VecDeque<CommandRecord> {
+        &self.commands
+    }
+
+    /// Starts a record at the cursor's row, unless one is running: a second `133;B` is bash's DEBUG
+    /// trap firing for the next simple command of the same line (it changes nothing).
+    fn start_command(&mut self, screen: &vt100::Screen) {
+        let row = absolute_cursor_row(screen);
+        if self.commands.back().is_some_and(|c| c.finished.is_none()) {
+            return;
+        }
+        if self.commands.len() == COMMAND_RING {
+            self.commands.pop_front();
+        }
+        self.commands.push_back(CommandRecord {
+            id: self.next_command,
+            command: None,
+            cwd: self.cwd.clone(),
+            started: Instant::now(),
+            finished: None,
+            exit: None,
+            start_row: row,
+            end_row: row,
+        });
+        self.next_command += 1;
+    }
+
+    /// A `133;C`: the running command's output starts at the cursor, where its command line ended.
+    fn reanchor_command(&mut self, screen: &vt100::Screen) {
+        let row = absolute_cursor_row(screen);
+        if let Some(c) = self.commands.back_mut().filter(|c| c.finished.is_none()) {
+            c.start_row = row;
+        } else {
+            self.start_command(screen);
+        }
+    }
+
+    fn finish_command(&mut self, screen: &vt100::Screen, exit: Option<i32>) {
+        let (row, col) = screen.cursor_position();
+        // Output that ended without a newline leaves its last line under the cursor.
+        let end = screen.scrolled_lines() + u64::from(row) + u64::from(col > 0);
+        if let Some(c) = self.commands.back_mut().filter(|c| c.finished.is_none()) {
+            c.finished = Some(Instant::now());
+            c.exit = exit;
+            c.end_row = end.max(c.start_row);
         }
     }
 
@@ -141,14 +235,36 @@ impl vt100::Callbacks for TitleCallback {
         match params {
             [b"133", b"A", ..] => screen.mark_prompt(),
             [b"133", b"B"] => {
+                self.start_command(screen);
                 self.running = true;
                 self.error = false;
                 // The snippet's OSC 0 with the command's first word comes next.
                 self.title = None;
                 self.report();
             }
+            // The command's output starts here (the snippets send only `B`).
+            [b"133", b"C"] => self.reanchor_command(screen),
+            // `633;E;<command line>` (VS Code's): what was typed, escaped (`\\`, `\xNN`).
+            [b"633", b"E", rest @ ..] => {
+                let line = rest.join(&b';');
+                // The first one wins: bash sends one per simple command of a line.
+                if let Some(c) = self
+                    .commands
+                    .back_mut()
+                    .filter(|c| c.finished.is_none() && c.command.is_none())
+                {
+                    c.command = Some(unescape_command(&line));
+                }
+            }
+            // OSC 7 `file://host/path`: the shell's directory (a `;` in it split the params).
+            [b"7", rest @ ..] => self.cwd = file_url_path(&rest.join(&b';')),
             // `133;D;<code>`; FinalTerm also allows `133;D` with no code, a success.
             [b"133", b"D", rest @ ..] => {
+                let code = match rest {
+                    [] => Some(0),
+                    [c, ..] => std::str::from_utf8(c).ok().and_then(|c| c.parse().ok()),
+                };
+                self.finish_command(screen, code);
                 self.running = false;
                 self.error = !matches!(rest, [] | [b"0"]);
                 self.title = None;
@@ -157,6 +273,119 @@ impl vt100::Callbacks for TitleCallback {
             _ => {}
         }
     }
+}
+
+/// The cursor's row counted from the first row the terminal ever had.
+fn absolute_cursor_row(screen: &vt100::Screen) -> u64 {
+    screen.scrolled_lines() + u64::from(screen.cursor_position().0)
+}
+
+/// Undoes `633;E`'s escaping: `\\` is a backslash and `\xNN` a byte.
+fn unescape_command(raw: &[u8]) -> String {
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == b'\\' {
+            if raw.get(i + 1) == Some(&b'\\') {
+                out.push(b'\\');
+                i += 2;
+                continue;
+            }
+            if raw.get(i + 1) == Some(&b'x')
+                && let Some(b) = raw.get(i + 2..i + 4).and_then(hex_byte)
+            {
+                out.push(b);
+                i += 4;
+                continue;
+            }
+        }
+        out.push(raw[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_byte(two: &[u8]) -> Option<u8> {
+    // `from_str_radix` alone would take a sign (`+f`).
+    if !two.iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    u8::from_str_radix(std::str::from_utf8(two).ok()?, 16).ok()
+}
+
+/// The path of a `file://host/path` URL, percent-decoded; `None` for anything else.
+fn file_url_path(url: &[u8]) -> Option<PathBuf> {
+    let rest = url.strip_prefix(b"file://")?;
+    let path = &rest[rest.iter().position(|&b| b == b'/')?..];
+    let mut out = Vec::with_capacity(path.len());
+    let mut i = 0;
+    while i < path.len() {
+        if path[i] == b'%'
+            && let Some(b) = path.get(i + 1..i + 3).and_then(hex_byte)
+        {
+            out.push(b);
+            i += 3;
+        } else {
+            out.push(path[i]);
+            i += 1;
+        }
+    }
+    // Paths are bytes on Unix: a non-UTF-8 name must survive.
+    #[cfg(unix)]
+    let path = PathBuf::from(<std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(out));
+    #[cfg(not(unix))]
+    let path = PathBuf::from(String::from_utf8_lossy(&out).into_owned());
+    (!path.as_os_str().as_encoded_bytes().contains(&0)).then_some(path)
+}
+
+/// [`Run::command_output`] on a parser.
+fn command_text(parser: &mut vt100::Parser<TitleCallback>, id: u64, max_lines: usize) -> Option<CommandOutput> {
+    let rec = parser.callbacks().commands().iter().find(|c| c.id == id)?.clone();
+    let screen = parser.screen_mut();
+    let running = rec.finished.is_none();
+    let top = screen.scrolled_lines();
+    let (rows, cols) = screen.size();
+    let (cursor_row, cursor_col) = screen.cursor_position();
+    let end = if running {
+        top + u64::from(cursor_row) + u64::from(cursor_col > 0)
+    } else {
+        rec.end_row
+    };
+    let oldest = top - screen.scrollback_len() as u64;
+    let mut truncated = rec.start_row < oldest;
+    let mut start = rec.start_row.max(oldest);
+    let wanted = max_lines.max(1) as u64;
+    if end.saturating_sub(start) > wanted {
+        start = end - wanted;
+        truncated = true;
+    }
+    let saved = screen.scrollback();
+    let mut text = String::new();
+    let mut row = start;
+    while row < end {
+        // Scroll so `row` is the top line (rows on the live screen: no scrolling, skip down).
+        screen.set_scrollback(top.saturating_sub(row) as usize);
+        let skip = row - (top - screen.scrollback() as u64);
+        let shown = (end - row).min(u64::from(rows.get()) - skip);
+        for (i, line) in screen
+            .rows(0, cols.get())
+            .enumerate()
+            .skip(skip as usize)
+            .take(shown as usize)
+        {
+            text.push_str(&line);
+            if !screen.row_wrapped(i as u16) {
+                text.push('\n');
+            }
+        }
+        row += shown;
+    }
+    screen.set_scrollback(saved);
+    Some(CommandOutput {
+        text,
+        truncated,
+        running,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -256,7 +485,19 @@ impl Run {
     /// Starts `spec` in a `rows` × `cols` PTY, off the UI thread (needs a tokio runtime; without
     /// one the run fails at once). `sink` hears about it from other threads; `scrollback` is the
     /// lines kept above the screen (the `scrollback` setting, read when the run is created).
-    pub fn start(id: RunId, spec: Spec, rows: u16, cols: u16, sink: Sink, scrollback: impl Into<Scrollback>) -> Run {
+    pub fn start(
+        id: RunId,
+        mut spec: Spec,
+        rows: u16,
+        cols: u16,
+        sink: Sink,
+        scrollback: impl Into<Scrollback>,
+    ) -> Run {
+        // A run that can reach this jed (it has `JED_IPC`) says which terminal it is.
+        if spec.env.iter().any(|(k, _)| k == crate::ipc::ENV) {
+            spec.env.retain(|(k, _)| k != crate::ipc::TERMINAL_ENV);
+            spec.env.push((crate::ipc::TERMINAL_ENV.into(), id.0.to_string()));
+        }
         let scrollback = scrollback.into();
         let (rows, cols) = (rows.max(1), cols.max(1));
         let callbacks = TitleCallback::new(id, sink.clone(), spec.name.clone());
@@ -318,6 +559,20 @@ impl Run {
     /// `screen_mut().set_scrollback(n)`. Held briefly: the reader waits on it.
     pub fn screen(&self) -> MutexGuard<'_, vt100::Parser<TitleCallback>> {
         lock(&self.shared.parser)
+    }
+
+    /// The remembered commands (a shell with the integration), oldest first.
+    #[allow(dead_code)] // read by the IPC queries (claude_ide-b)
+    pub fn commands(&self) -> Vec<CommandRecord> {
+        self.screen().callbacks().commands().iter().cloned().collect()
+    }
+
+    /// Command `id`'s output read back from the screen and scrollback, at most the last
+    /// `max_lines` lines; `None` for an id that's gone from the ring. A command still running
+    /// returns what's on screen so far (up to the cursor).
+    #[allow(dead_code)] // read by the IPC queries (claude_ide-b)
+    pub fn command_output(&self, id: u64, max_lines: usize) -> Option<CommandOutput> {
+        command_text(&mut self.screen(), id, max_lines)
     }
 
     /// Resizes the screen and the PTY (the process gets SIGWINCH). Zero is taken as one. A size
@@ -688,6 +943,7 @@ fn spawn(shared: Arc<Shared>, spec: Spec, sink: Sink) {
     // `shell::spec`). Never inherit one leaked from a parent process — a jed started inside
     // another jed's shell would otherwise hand its own tasks the outer jed's socket.
     cmd.env_remove(crate::ipc::ENV);
+    cmd.env_remove(crate::ipc::TERMINAL_ENV);
     for (k, v) in &spec.env {
         cmd.env(k, v);
     }
@@ -1055,5 +1311,122 @@ mod tests {
     fn mouse_reports_are_dropped_once_the_program_reset_the_mouse() {
         let batch = vec![mouse("a", true), Input::Bytes(b"k".to_vec()), mouse("P", false)];
         assert_eq!(merge(batch, || false), b"k");
+    }
+
+    /// `633;E` and OSC 7 fill the command ring: id, escaped command line (`\\`, `\xNN`, a `;`
+    /// inside), cwd (percent-decoded, host dropped), exit code, and no command from a snippet
+    /// that sends no `633;E`.
+    #[test]
+    fn command_ring_records_commands_cwds_and_exits() {
+        let (mut parser, _) = title_parser("bash");
+        parser.process(b"\x1b]7;file://box/home/a%20b\x07\x1b]133;B\x07\x1b]633;E;echo a\\x3bb \\\\ \\x0a\x07out\r\n");
+        parser.process(b"\x1b]133;D;3\x07\x1b]133;B\x07old snippet\r\n\x1b]133;D\x07");
+        let cmds: Vec<_> = parser.callbacks().commands().iter().cloned().collect();
+        assert_eq!(cmds.len(), 2);
+        assert_eq!((cmds[0].id, cmds[1].id), (1, 2));
+        assert_eq!(cmds[0].command.as_deref(), Some("echo a;b \\ \n"));
+        assert_eq!(cmds[0].cwd, Some(PathBuf::from("/home/a b")));
+        assert_eq!(cmds[0].exit, Some(3));
+        assert_eq!(cmds[1].command, None);
+        assert_eq!(cmds[1].exit, Some(0));
+        assert!(cmds.iter().all(|c| c.finished.is_some()));
+        // Garbage OSC 7 and a `633;E` with no command running change nothing.
+        parser.process(b"\x1b]7;http://x/y\x07\x1b]633;E;stray\x07");
+        assert_eq!(parser.callbacks().commands().len(), 2);
+    }
+
+    /// The ring keeps the last `COMMAND_RING` commands, ids still counting up.
+    #[test]
+    fn command_ring_is_bounded() {
+        let (mut parser, _) = title_parser("bash");
+        for _ in 0..COMMAND_RING + 5 {
+            parser.process(b"\x1b]133;B\x07x\r\n\x1b]133;D;0\x07");
+        }
+        let cmds = parser.callbacks().commands();
+        assert_eq!(cmds.len(), COMMAND_RING);
+        assert_eq!(cmds.front().unwrap().id, 6);
+        assert_eq!(cmds.back().unwrap().id, COMMAND_RING as u64 + 5);
+    }
+
+    /// Output is read back by absolute row, across the scrollback; rows scrolled off are
+    /// `truncated`, `max_lines` keeps the tail, and a partial last line counts.
+    #[test]
+    fn command_output_reads_the_scrollback() {
+        let sink: Sink = Arc::new(|_| {});
+        let mut parser = vt100::Parser::new_with_callbacks(
+            nonzero(5),
+            nonzero(20),
+            12,
+            TitleCallback::new(RunId(7), sink, "t".into()),
+        );
+        parser.process(b"$ seq\r\n\x1b]133;B\x07");
+        for n in 1..=12 {
+            parser.process(format!("line{n}\r\n").as_bytes());
+        }
+        parser.process(b"tail\x1b]133;D;0\x07\r\n$ ");
+        let out = command_text(&mut parser, 1, 100).unwrap();
+        let mut want: String = (1..=12).map(|n| format!("line{n}\n")).collect();
+        want.push_str("tail\n");
+        assert_eq!(
+            out,
+            CommandOutput {
+                text: want,
+                truncated: false,
+                running: false
+            }
+        );
+        assert_eq!(parser.screen().scrollback(), 0, "the view is restored");
+        let out = command_text(&mut parser, 1, 3).unwrap();
+        assert_eq!(out.text, "line11\nline12\ntail\n");
+        assert!(out.truncated);
+        assert!(command_text(&mut parser, 99, 3).is_none());
+        // A running command with more output than the 12-line scrollback holds.
+        parser.process(b"\x1b]133;B\x07");
+        for n in 1..=30 {
+            parser.process(format!("n{n}\r\n").as_bytes());
+        }
+        let running = command_text(&mut parser, 2, 100).unwrap();
+        assert!(running.running && running.truncated, "{running:?}");
+        assert!(running.text.ends_with("n30\n"), "{running:?}");
+        assert!(!running.text.contains("n1\n"), "{running:?}");
+        let old = command_text(&mut parser, 1, 100).unwrap();
+        assert!(old.truncated, "the first command's start is gone too");
+    }
+
+    /// Malformed input: bad escapes stay literal, a `133;D` or `633;E` with no `133;B` make
+    /// no record, an unparsable exit code is `None`, a repeated `633;E` / `133;B` changes nothing,
+    /// and `133;C` moves the output's start to the cursor.
+    #[test]
+    fn command_ring_survives_malformed_osc() {
+        let same = b"a\\xZZ \\x4 \\x+f \\q end\\";
+        assert_eq!(unescape_command(same).as_bytes(), same);
+        assert_eq!(unescape_command(b"\\x41\\\\x41"), "A\\x41");
+        assert_eq!(unescape_command(b"\\xc3\\xa9"), "\u{e9}");
+        assert_eq!(file_url_path(b"file://h/a%2"), Some(PathBuf::from("/a%2")));
+        assert_eq!(file_url_path(b"file://h/a%+f"), Some(PathBuf::from("/a%+f")));
+        assert_eq!(file_url_path(b"file://nopath"), None);
+        assert_eq!(file_url_path(b"file://h/a%00b"), None);
+        let (mut parser, _) = title_parser("bash");
+        parser.process(b"\x1b]133;D;1\x07\x1b]633;E;x\x07");
+        assert!(parser.callbacks().commands().is_empty());
+        parser.process(b"\x1b]133;B\x07\x1b]633;E;first\x07\x1b]633;E;second\x07\x1b]133;B\x07\x1b]633;E\x07");
+        parser.process(b"$ first\r\n\x1b]133;C\x07o\r\n\x1b]133;D;abc\x07");
+        let cmds = parser.callbacks().commands();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].command.as_deref(), Some("first"));
+        assert_eq!(cmds[0].exit, None);
+        assert!(cmds[0].finished.is_some());
+        assert_eq!((cmds[0].start_row, cmds[0].end_row), (1, 2));
+    }
+
+    /// Soft-wrapped rows are joined into one line.
+    #[test]
+    fn command_output_joins_wrapped_rows() {
+        let sink: Sink = Arc::new(|_| {});
+        let cb = TitleCallback::new(RunId(1), sink, "t".into());
+        let mut parser = vt100::Parser::new_with_callbacks(nonzero(5), nonzero(10), 12, cb);
+        parser.process(b"\x1b]133;B\x07abcdefghijklmnopq\r\nz\r\n\x1b]133;D;0\x07");
+        let out = command_text(&mut parser, 1, 100).unwrap();
+        assert_eq!(out.text, "abcdefghijklmnopq\nz\n");
     }
 }

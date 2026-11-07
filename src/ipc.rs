@@ -28,6 +28,8 @@ const MAX_LINE: u64 = 64 * 1024;
 
 /// Name of the environment variable task processes find the socket path in.
 pub const ENV: &str = "JED_IPC";
+/// The number of the terminal (`tasks::RunId`) a process runs in, set next to `JED_IPC`.
+pub const TERMINAL_ENV: &str = "JED_TERMINAL";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {

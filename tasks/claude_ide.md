@@ -2,7 +2,7 @@
 id: claude_ide
 name: Claude Code integration
 summary: "`claude` in a jed shell sees the active file, recent shell commands and output, the environment and the open merge request's review threads (queuing replies and resolves as drafts for the user to submit), via a Claude Code plugin (stdio MCP server + hooks) found by `$JED_IPC` with no state files; MCP traffic logged in the Tools view"
-status: open
+status: in-progress
 priority: 0
 dependencies: []
 ---
@@ -72,7 +72,9 @@ dependencies: []
     - nothing is written for discovery (only the tool log, as for every tool)
     - hand check with real `claude` after `/plugin install`: "explain this file" uses the active editor, "why did my last build fail" calls `get_command_output` on the other shell, the session-start context names the workspace and branch, and on a throwaway MR "deal with the review feedback" reads the threads, fixes the code, and leaves reply drafts in PENDING for Submit Review. Smoke-test it again when Claude Code's version changes
   - Subtasks (one agent and one commit each):
-    - claude_ide-a: command capture: `633;E` and OSC 7 in the three snippets, the per-run command ring with its row anchors and output extraction, `JED_TERMINAL` injection; `run.rs` unit tests feeding OSC sequences and a real `bash --norc --noprofile` PTY test in `shell_tests.rs` (as `shell_bash_snippet_titles_a_real_shell`)
+    - ✅ claude_ide-a: command capture: `633;E` and OSC 7 in the three snippets, the per-run command ring with its row anchors and output extraction, `JED_TERMINAL` injection; `run.rs` unit tests feeding OSC sequences and a real `bash --norc --noprofile` PTY test in `shell_tests.rs` (as `shell_bash_snippet_titles_a_real_shell`)
+      - Done: `TitleCallback` ring of 50 `CommandRecord`s (`id: u64` per run), `Run::commands()` / `Run::command_output(id, max_lines)` (`#[allow(dead_code)]` until b uses them), `ipc::TERMINAL_ENV` set in `Run::start` (not `Tasks::run_with`: shells don't use it). bash `a; b` records only `a` (first `633;E` wins)
+      - For later subtasks: b must cap `max_lines` (`command_text` holds the parser lock while paging the scrollback); consider a `CommandId` newtype for the query API; `lsp::uri::to_path` and `run.rs::file_url_path` both percent-decode (share if a third caller appears). zsh / fish snippets were only read and syntax-checked (zsh -n), not run in a PTY
     - claude_ide-b: IPC queries: `query` / `data` / `log` in `ipc.rs`, backward compatible, many requests per connection; the app's answers (`app/ipc.rs`, `app/claude.rs`) with their size caps; tests: a client against a headless app gets the context, editors, diagnostics, terminals and commands, and old `open` requests still work
     - claude_ide-c: the CLI modes: `jed claude mcp` and the two hooks in `claude.rs` (formatting plus the stdio loop, tested with an in-memory reader / writer), the forwarding of log-only lines; tests: the MCP handshake, `tools/list` / `tools/call` against a fake socket, and the hooks' silent no-`JED_IPC` path
     - claude_ide-d: the MCP log: `Tool::Claude`, `Row::Claude` / `RowKey::Claude` and its drawing, and the app's request / response / lifecycle / hook lines; `tools_tests.rs`-style tests of the row, the log's `→` / `←` lines and the error badge

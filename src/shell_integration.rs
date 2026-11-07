@@ -1,8 +1,9 @@
 //! Opt-in shell integration: the zsh / bash / fish snippets written into the state dir, and the
 //! line that sources one from a shell's init file. Each snippet opens with a `JED_IPC` guard, so
 //! sourcing it anywhere else is a no-op; inside jed its preexec hook sends `133;B` and the
-//! command's first word as `OSC 0`, and its precmd hook `133;D;<exit code>` — what
-//! `tasks::run::TitleCallback` turns into the tab's title and glyph. `133;A` goes at the very
+//! command's first word as `OSC 0` (after `633;E;<command line>`, VS Code's escaping), and its
+//! precmd hook `133;D;<exit code>` and OSC 7 (`file://host/<cwd>`) — what
+//! `tasks::run::TitleCallback` turns into the tab's title and glyph and a ring of commands. `133;A` goes at the very
 //! start of the prompt (zsh: the precmd hook puts it at the start of `PS1`; bash: a hook at the
 //! end of `PROMPT_COMMAND` does; fish: a `fish_prompt` wrapper), so Terminal: Clear keeps the
 //! whole prompt, all its lines. The bash precmd hook is prepended to the user's `PROMPT_COMMAND`,
@@ -18,10 +19,30 @@ use std::path::{Path, PathBuf};
 
 const ZSH: &str = r#"# jed shell integration (sourced from ~/.zshrc)
 [ -n "$JED_IPC" ] || return
-_jed_preexec() { printf '\033]133;B\007'; printf '\033]0;%s\007' "${1%% *}"; }
+# 633;E carries the command line, \ ; and control bytes escaped (\\ and \xNN).
+_jed_esc() {
+  local s=$1 c i
+  _jed_e=$s
+  case "$s" in *[\\\;[:cntrl:]]*) ;; *) return;; esac
+  _jed_e=
+  for ((i=1;i<=${#s};i++)); do
+    c=${s[i]}
+    case $c in
+      \\) _jed_e+='\\';;
+      ';'|[[:cntrl:]]) printf -v c '\\x%02x' "'$c"; _jed_e+=$c;;
+      *) _jed_e+=$c;;
+    esac
+  done
+}
+_jed_preexec() {
+  printf '\033]133;B\007'
+  _jed_esc "$1"; printf '\033]633;E;%s\007' "$_jed_e"
+  printf '\033]0;%s\007' "${1%% *}"
+}
 _jed_precmd() {
-  local s=$?
+  local s=$? p=${PWD//\%/%25}
   printf '\033]133;D;%s\007' "$s"
+  p=${p// /%20}; printf '\033]7;file://%s%s\007' "${HOST:-localhost}" "$p"
   # 133;A starts PS1, so every line of the prompt follows it (added again if a theme rebuilt PS1).
   case "$PS1" in *'133;A'*) ;; *) PS1=$'%{\033]133;A\007%}'"$PS1";; esac
   return $s
@@ -31,6 +52,21 @@ autoload -Uz add-zsh-hook; add-zsh-hook preexec _jed_preexec; add-zsh-hook precm
 
 const BASH: &str = r#"# jed shell integration (sourced from ~/.bashrc)
 [ -n "$JED_IPC" ] || return
+# 633;E carries the command line, \ ; and control bytes escaped (\\ and \xNN).
+_jed_esc() {
+  local s=$1 c i
+  _jed_e=$s
+  case "$s" in *[\\\;[:cntrl:]]*) ;; *) return;; esac
+  _jed_e=
+  for ((i=0;i<${#s};i++)); do
+    c=${s:i:1}
+    case $c in
+      \\) _jed_e+='\\';;
+      ';'|[[:cntrl:]]) printf -v c '\\x%02x' "'$c"; _jed_e+=$c;;
+      *) _jed_e+=$c;;
+    esac
+  done
+}
 _jed_preexec() {
   case "$1" in PROMPT_COMMAND=*|_jed_precmd|_jed_mark) return;; esac
   local pc p rest nl=$'\n'
@@ -44,9 +80,16 @@ _jed_preexec() {
       [ "$1" = "$p" ] && return
     done
   done
-  printf '\033]133;B\007'; printf '\033]0;%s\007' "${1%% *}"
+  printf '\033]133;B\007'
+  _jed_esc "$1"; printf '\033]633;E;%s\007' "$_jed_e"
+  printf '\033]0;%s\007' "${1%% *}"
 }
-_jed_precmd() { local s=$?; printf '\033]133;D;%s\007' "$s"; return $s; }
+_jed_precmd() {
+  local s=$? p=${PWD//\%/%25}
+  printf '\033]133;D;%s\007' "$s"
+  p=${p// /%20}; printf '\033]7;file://%s%s\007' "${HOSTNAME:-localhost}" "$p"
+  return $s
+}
 # 133;A starts PS1, so every line of the prompt follows it; \[ \] keep readline's width right.
 _jed_mark() { local s=$?; case "$PS1" in *'133;A'*) ;; *) PS1='\[\e]133;A\a\]'"$PS1";; esac; return $s; }
 # _jed_precmd runs first, so the user's own PROMPT_COMMAND (a string, or an array in bash 5.1+)
@@ -62,10 +105,15 @@ trap '_jed_preexec "$BASH_COMMAND"' DEBUG
 const FISH: &str = r#"# jed shell integration (sourced from ~/.config/fish/config.fish)
 set -q JED_IPC; or return
 function _jed_preexec --on-event fish_preexec
-  printf '\033]133;B\007'; printf '\033]0;%s\007' (string split -m1 ' ' $argv)[1]
+  printf '\033]133;B\007'
+  # 633;E: the command line with \ ; and newlines escaped (\\ and \xNN).
+  set -l c (string replace -a '\\' '\\\\' -- $argv[1] | string replace -a ';' '\\x3b' | string join '\\x0a')
+  printf '\033]633;E;%s\007' $c
+  printf '\033]0;%s\007' (string split -m1 ' ' $argv)[1]
 end
 function _jed_precmd --on-event fish_postexec
   printf '\033]133;D;%s\007' $status
+  printf '\033]7;file://%s%s\007' (hostname) (string escape --style=url -- $PWD)
 end
 # 133;A before the whole prompt: wrap fish_prompt (once), handing it the status it was called with.
 function _jed_status; return $argv[1]; end
@@ -206,6 +254,11 @@ mod tests {
             assert!(
                 text.contains("133;A"),
                 "{}: sends 133;A before the prompt",
+                snippet.file
+            );
+            assert!(
+                text.contains("633;E;") && text.contains("]7;file://"),
+                "{}: sends the command line and the directory",
                 snippet.file
             );
             assert!(text.ends_with('\n'), "{}: a whole file", snippet.file);
