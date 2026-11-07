@@ -514,6 +514,7 @@ mod tests {
             kind: Kind::GitHub,
             api_url: format!("{}/api/v3", server.url()),
             token_env: "T".into(),
+            token: None,
             allow_http: true,
         };
         let client = Client::new(&resolved, |_| Some("tok".into())).unwrap();

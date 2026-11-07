@@ -122,8 +122,8 @@ pub enum Drag {
     HistoryDivider,
     /// The "File History" section's divider.
     FileHistoryDivider,
-    /// The Code Review panel's CONVERSATIONS divider.
-    ReviewDivider,
+    /// A Code Review panel section's divider (CONVERSATIONS or PENDING).
+    ReviewDivider(crate::review::Pane),
     /// Selecting bytes in a group's hex tab (`app/hex.rs`).
     Hex(crate::layout::GroupId),
     /// Selecting text in a group's Markdown preview (`app/markdown.rs`).
@@ -216,7 +216,7 @@ impl App {
                 | Drag::TerminalBorder
                 | Drag::HistoryDivider
                 | Drag::FileHistoryDivider
-                | Drag::ReviewDivider,
+                | Drag::ReviewDivider(_),
             ) => Pointer::RowResize,
             Some(Drag::Divider(d)) => divider(d),
             // Selecting text keeps the I-beam wherever the pointer goes: in an editor, a diff
@@ -238,6 +238,7 @@ impl App {
                 }
                 Hit::Divider(i) => self.hits.dividers.get(i).map_or(Pointer::Default, divider),
                 Hit::Editor(g) => self.text_pointer_if(self.editor_text_at(g, p)),
+                Hit::SidePanel if self.review_divider_at(p) => Pointer::RowResize,
                 Hit::SidePanel => {
                     let s = self.hits.search.as_ref();
                     self.text_pointer_if(
@@ -679,7 +680,7 @@ impl App {
                 Some(Drag::Terminal { .. }) => {}
                 Some(Drag::FileHistoryDivider) => self.drag_side_section(0, m.row),
                 Some(Drag::HistoryDivider) => self.drag_side_section(1, m.row),
-                Some(Drag::ReviewDivider) => self.drag_review_divider(m.row),
+                Some(Drag::ReviewDivider(pane)) => self.drag_review_divider(pane, m.row),
                 None => {}
             },
             MouseEventKind::Up(MouseButton::Left) => {

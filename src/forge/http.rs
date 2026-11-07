@@ -72,7 +72,8 @@ impl Client {
         if !api_url.starts_with("https://") && !api_url.starts_with("http://") {
             return Err(ForgeError::Config(format!("{}: bad API URL", resolved.host)));
         }
-        let token = lookup(&resolved.token_env)
+        let token = (resolved.token.as_ref().map(|t| t.expose().to_string()))
+            .or_else(|| lookup(&resolved.token_env))
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty());
         let tls = ureq::tls::TlsConfig::builder()
@@ -397,6 +398,7 @@ mod tests {
             kind,
             api_url: base.into(),
             token_env: "FAKE_TOKEN".into(),
+            token: None,
             allow_http,
         }
     }

@@ -7,12 +7,14 @@
 //! kind = "gitea"                       # gitea | github | gitlab
 //! api_url = "https://git.example.com/api/v1"   # optional; http:// only if written out here
 //! token_env = "GITEA_TOKEN"            # optional; default GITEA_TOKEN / GITHUB_TOKEN / GITLAB_TOKEN
+//! token = "…"                          # optional; used instead of the environment variable
 //! ```
 //!
 //! `github.com` and `gitlab.com` need no entry. This file is the only source of a host, API URL
 //! or token variable: `.workspace` and the settings never are, since a repository must not be
 //! able to point jed's token at a server it picks. The file is ignored (with an error shown)
-//! when group or other can write to it. The token itself is never in the file.
+//! when group or other can write to it, and also when it holds a `token` and group or other can
+//! read it (`chmod 600`). A `token` is a [`Secret`]: its `Debug` never shows it.
 
 use std::path::Path;
 
@@ -29,6 +31,24 @@ struct RawEntry {
     kind: String,
     api_url: Option<String>,
     token_env: Option<String>,
+    token: Option<Secret>,
+}
+
+/// A token written in the file. `Debug` shows `Secret(…)`, so it never reaches a log.
+#[derive(Deserialize, Clone, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(…)")
+    }
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -46,6 +66,8 @@ pub struct Entry {
     /// Without a trailing slash.
     pub api_url: Option<String>,
     pub token_env: Option<String>,
+    /// The entry's own token (else the environment variable's).
+    pub token: Option<Secret>,
 }
 
 /// An entry (or a detected host) with every default filled in.
@@ -56,6 +78,8 @@ pub struct Resolved {
     /// The API root, without a trailing slash.
     pub api_url: String,
     pub token_env: String,
+    /// The entry's own token, used instead of `token_env`'s.
+    pub token: Option<Secret>,
     /// The entry wrote an `http://` API URL: the only way to talk unencrypted.
     pub allow_http: bool,
 }
@@ -84,7 +108,25 @@ pub fn load(path: &Path) -> ForgeConfig {
     if let Some(problem) = unsafe_permissions(path) {
         return ForgeConfig::error(format!("{FILE_NAME}: ignored, {problem}"));
     }
-    parse(&text)
+    let config = parse(&text);
+    if config.entries.iter().any(|e| e.token.is_some())
+        && let Some(problem) = readable_by_others(path)
+    {
+        return ForgeConfig::error(format!("{FILE_NAME}: ignored, it holds a token but {problem}"));
+    }
+    config
+}
+
+#[cfg(unix)]
+fn readable_by_others(path: &Path) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(path).ok()?;
+    (meta.mode() & 0o044 != 0).then(|| "group or others can read it (chmod 600)".into())
+}
+
+#[cfg(not(unix))]
+fn readable_by_others(_: &Path) -> Option<String> {
+    None
 }
 
 #[cfg(unix)]
@@ -150,11 +192,16 @@ fn entry(e: RawEntry) -> Result<Entry, String> {
             Some(v)
         }
     };
+    let token = e
+        .token
+        .filter(|t| !t.0.trim().is_empty())
+        .map(|t| Secret(t.0.trim().to_string()));
     Ok(Entry {
         host,
         kind,
         api_url,
         token_env,
+        token,
     })
 }
 
@@ -188,6 +235,7 @@ impl ForgeConfig {
             token_env: found
                 .token_env
                 .unwrap_or_else(|| found.kind.default_token_env().to_string()),
+            token: found.token,
             host,
             kind: found.kind,
             api_url,
@@ -206,6 +254,7 @@ fn detected(host: &str) -> Option<Entry> {
         kind,
         api_url: None,
         token_env: None,
+        token: None,
     })
 }
 
@@ -265,12 +314,23 @@ mod tests {
         );
         assert_eq!(c.errors.len(), 3, "{:?}", c.errors);
         assert_eq!(c.entries.len(), 1);
-        let c = parse("[[forge]]\nhost = \"a\"\nkind = \"gitea\"\ntoken = \"secret\"\n");
+        let c = parse("[[forge]]\nhost = \"a\"\nkind = \"gitea\"\ntokn = \"x\"\n");
         assert!(
             c.entries.is_empty() && c.errors.len() == 1,
-            "unknown keys (a token) are refused: {:?}",
+            "unknown keys are refused: {:?}",
             c.errors
         );
+    }
+
+    #[test]
+    fn a_token_in_the_file_is_used_and_never_shown() {
+        let c = parse("[[forge]]\nhost = \"a\"\nkind = \"gitea\"\ntoken = \" s3cret \"\n");
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        let r = c.resolve("a").unwrap();
+        assert_eq!(r.token.as_ref().map(Secret::expose), Some("s3cret"));
+        assert!(!format!("{c:?} {r:?}").contains("s3cret"));
+        let c = parse("[[forge]]\nhost = \"a\"\nkind = \"gitea\"\ntoken = \"  \"\n");
+        assert!(c.resolve("a").unwrap().token.is_none(), "a blank token is no token");
     }
 
     #[test]
@@ -316,6 +376,17 @@ mod tests {
             c.errors
         );
         assert!(load(&dir.join("missing.toml")).errors.is_empty());
+        // A token: only while the file is the user's alone.
+        std::fs::write(&path, "[[forge]]\nhost = \"a\"\nkind = \"gitea\"\ntoken = \"t\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let c = load(&path);
+        assert!(
+            c.entries.is_empty() && c.errors[0].contains("chmod 600"),
+            "{:?}",
+            c.errors
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(load(&path).entries.len(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

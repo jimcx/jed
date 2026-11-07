@@ -55,7 +55,7 @@ dependencies: []
   - Forge layer (`src/forge/`: no app state, no drawing):
     - A `Forge` trait with `gitea.rs`, `github.rs` and `gitlab.rs`, on shared types: `MergeRequest`, `Thread`, `Comment`, `Anchor { path, side, start_line, end_line, commit }`, `Suggestion`, `DraftReview`
     - HTTP: `ureq` with rustls and the platform certificate verifier (so a private CA works). Blocking calls run in `spawn_blocking` and report through a new `AppEvent::Review`. GitHub GraphQL is a plain JSON POST
-    - Config: a user-only `~/.config/jed/forges.toml` with `host`, `kind`, optional `api_url`, optional `token_env`. `github.com` and `gitlab.com` are detected; self-hosted servers need an entry. Tokens come from environment variables, by default `GITEA_TOKEN`, `GITHUB_TOKEN` or `GITLAB_TOKEN`
+    - Config: a user-only `~/.config/jed/forges.toml` with `host`, `kind`, optional `api_url`, optional `token_env`. `github.com` and `gitlab.com` are detected; self-hosted servers need an entry. Tokens come from the entry's optional `token` (the file must then be `chmod 600`) or environment variables, by default `GITEA_TOKEN`, `GITHUB_TOKEN` or `GITLAB_TOKEN`
     - Remote URL mapping: as `scripts/mr` does, the SSH user and port are dropped (`ssh://git@git.example.com:2200/alice/project.git` → `https://git.example.com`)
     - Security: `.workspace` can never set a host, API URL or token variable; HTTPS only, unless an entry explicitly gives an `http://` URL; redirects are not followed with the token attached; tokens are never logged; control characters are stripped from all remote text before drawing
   - Finding the MR and its files (`src/review.rs`, `app/review.rs`, `ui/review.rs`):

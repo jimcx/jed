@@ -105,7 +105,7 @@ impl Empty {
             Empty::NoRepo => "No git repository.".into(),
             Empty::NoRemote => "The repository has no remote on a known forge.".into(),
             Empty::UnknownHost(h) => format!("{h} is not a configured forge: add it to forges.toml."),
-            Empty::NoToken(var) => format!("No token: set {var} in the environment."),
+            Empty::NoToken(var) => format!("No token: set {var} in the environment, or token in forges.toml."),
             Empty::Detached => "No branch is checked out.".into(),
             Empty::NoMr(b) => format!("No open merge request for {b}."),
         }
@@ -163,7 +163,7 @@ pub fn lookup(req: Request) -> Outcome {
     let Some(resolved) = config.resolve(&repo_ref.host) else {
         return Outcome::Empty(Empty::UnknownHost(repo_ref.host));
     };
-    if (req.env)(&resolved.token_env).is_none_or(|t| t.trim().is_empty()) {
+    if resolved.token.is_none() && (req.env)(&resolved.token_env).is_none_or(|t| t.trim().is_empty()) {
         return Outcome::Empty(Empty::NoToken(resolved.token_env));
     }
     let env = req.env.clone();
@@ -443,7 +443,34 @@ impl Default for ReviewState {
     }
 }
 
+/// A section under FILES in the Code Review panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    Conversations,
+    Pending,
+}
+
 impl ReviewState {
+    /// The sections under FILES, top to bottom, with their wishes (for `side_sections::split`):
+    /// CONVERSATIONS while there are any (or their error), PENDING while there are drafts.
+    pub fn sections(&self) -> Vec<(Pane, crate::side_sections::Section)> {
+        let Some(review) = self.review() else {
+            return Vec::new();
+        };
+        let section = |c: &Conversations| crate::side_sections::Section {
+            height: c.section_height,
+            collapsed: c.collapsed,
+        };
+        let mut out = Vec::new();
+        if review.conv_len() > 0 || review.comments_error.is_some() {
+            out.push((Pane::Conversations, section(&self.view.conv)));
+        }
+        if !self.drafts.rows(review).is_empty() {
+            out.push((Pane::Pending, section(&self.view.pending)));
+        }
+        out
+    }
+
     pub fn review(&self) -> Option<&Review> {
         match &self.content {
             Content::Loaded(r) => Some(r),
@@ -514,7 +541,7 @@ pub struct ReviewView {
     top: usize,
     /// The CONVERSATIONS section.
     pub conv: Conversations,
-    /// The PENDING section's selection, scroll and focus (its height and collapse are unused).
+    /// The PENDING section: likewise (its rows are one line tall).
     pub pending: Conversations,
     selected: Option<(String, usize)>,
     /// Rows drawn in the last frame (0 until the first draw).

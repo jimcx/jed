@@ -94,7 +94,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> SideHits {
         }
         SidePanel::Review => {
             let (review, bar) = super::review::render(f, view, app);
-            let rules = review.iter().map(|h| h.divider).filter(|r| r.height > 0).collect();
+            let rules = review.iter().flat_map(|h| h.dividers.iter().map(|d| d.0)).collect();
             return SideHits {
                 review,
                 rules,

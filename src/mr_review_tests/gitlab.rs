@@ -17,6 +17,7 @@ pub(super) fn config_gitlab(server: &FakeServer) -> ForgeConfig {
             kind: Kind::GitLab,
             api_url: Some(format!("{}/api/v4", server.url())),
             token_env: Some("FAKE_TOKEN".into()),
+            token: None,
         }],
         errors: Vec::new(),
     }

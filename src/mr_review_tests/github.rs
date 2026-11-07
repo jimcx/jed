@@ -16,6 +16,7 @@ fn config_github(server: &FakeServer) -> ForgeConfig {
             kind: Kind::GitHub,
             api_url: Some(format!("{}/api/v3", server.url())),
             token_env: Some("FAKE_TOKEN".into()),
+            token: None,
         }],
         errors: Vec::new(),
     }

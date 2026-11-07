@@ -458,6 +458,7 @@ mod tests {
             kind: Kind::Gitea,
             api_url: format!("{}/api/v1", server.url()),
             token_env: "T".into(),
+            token: None,
             allow_http: true,
         };
         let client = Client::new(&resolved, |_| Some("tok".into())).unwrap();

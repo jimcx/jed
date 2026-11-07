@@ -79,6 +79,7 @@ fn config_for(server: &FakeServer) -> ForgeConfig {
             kind: Kind::Gitea,
             api_url: Some(format!("{}/api/v1", server.url())),
             token_env: Some("FAKE_TOKEN".into()),
+            token: None,
         }],
         errors: Vec::new(),
     }
@@ -1201,34 +1202,56 @@ mod threads {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_the_selected_conversation_is_highlighted_behind_its_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server) = loaded_app(dir.path(), None).await;
+        app.review.view.conv.section_height = 10;
+        app.review.view.conv.focused = true;
+        screen(&mut app);
+        let mut term = Terminal::new(TestBackend::new(70, 24)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let hit = app.hits.review.clone().unwrap();
+        let buf = term.backend().buffer();
+        let row = hit.conv_list;
+        let want = app.theme.get("list.active").bg;
+        // Both lines of the selected row, under the text as well as past it (the side border's
+        // column aside).
+        for y in [row.y, row.y + 1] {
+            for x in row.x..row.x + row.width - 1 {
+                assert_eq!(
+                    buf[(x, y)].bg,
+                    want.unwrap(),
+                    "at ({x}, {y}) `{}`",
+                    buf[(x, y)].symbol()
+                );
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn mr_review_the_divider_drags_and_the_header_collapses() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _server) = loaded_app(dir.path(), None).await;
         app.review.view.conv.section_height = 10;
         screen(&mut app);
         let hit = app.hits.review.clone().unwrap();
-        assert!(hit.divider.height == 1 && hit.conv_list.height > 0);
+        let divider = hit.dividers[0].0;
+        assert!(divider.height == 1 && hit.conv_list.height > 0);
+        assert_eq!(hit.dividers.len(), 1, "no PENDING without drafts");
+        // The pointer shows a resize over it.
+        app.mouse(MouseEventKind::Moved, divider.x + 5, divider.y);
+        assert_eq!(app.pointer, crate::terminal::Pointer::RowResize);
+        app.mouse(MouseEventKind::Moved, divider.x + 5, divider.y + 1);
+        assert_eq!(app.pointer, crate::terminal::Pointer::Default);
         let before = app.review.view.conv.section_height;
         // Dragging the divider up by two rows makes the section two rows taller.
-        app.mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            hit.divider.x + 5,
-            hit.divider.y,
-        );
-        app.mouse(
-            MouseEventKind::Drag(MouseButton::Left),
-            hit.divider.x + 5,
-            hit.divider.y - 2,
-        );
-        app.mouse(
-            MouseEventKind::Up(MouseButton::Left),
-            hit.divider.x + 5,
-            hit.divider.y - 2,
-        );
+        app.mouse(MouseEventKind::Down(MouseButton::Left), divider.x + 5, divider.y);
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), divider.x + 5, divider.y - 2);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), divider.x + 5, divider.y - 2);
         assert_eq!(app.review.view.conv.section_height, before + 2);
         screen(&mut app);
         let again = app.hits.review.clone().unwrap();
-        assert_eq!(again.divider.y, hit.divider.y - 2);
+        assert_eq!(again.dividers[0].0.y, divider.y - 2);
         // The header collapses the list.
         app.mouse(
             MouseEventKind::Down(MouseButton::Left),
@@ -2015,6 +2038,67 @@ mod drafts {
         app.press(KeyCode::Delete, KeyModifiers::NONE);
         assert!(app.review.draft_rows().is_empty());
         assert!(!app.review.view.pending.focused);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mr_review_pending_is_a_section_with_a_divider_buttons_and_a_collapsing_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _main, server) = world(dir.path());
+        let mut app = boot(&root, &server, None).await;
+        write_comment(&mut app, "Pending one");
+        app.test_execute(Command::CloseTab);
+        let l = lines(&mut app, 120, 30);
+        let hit = app.hits.review.clone().unwrap();
+        let (divider, pane) = *hit.dividers.last().unwrap();
+        assert_eq!(pane, crate::review::Pane::Pending);
+        assert_eq!(hit.pending_header.y, divider.y + 1);
+        // The buttons wrap in a narrow panel: Request Changes on its own row.
+        let first = &l[hit.pending_header.y as usize + 1];
+        let second = &l[hit.pending_header.y as usize + 2];
+        assert!(first.contains(" Submit ") && first.contains(" Approve "), "{l:#?}");
+        assert!(second.contains(" Request Changes "), "{l:#?}");
+        assert_eq!(hit.pending_list.y, hit.pending_header.y + 3);
+        let commands: Vec<Command> = hit.pending_buttons.iter().map(|b| b.1).collect();
+        assert_eq!(
+            commands,
+            [
+                Command::ReviewSubmitComment,
+                Command::ReviewSubmitApprove,
+                Command::ReviewSubmitRequestChanges
+            ]
+        );
+        assert_eq!(hit.pending_list.height as usize, app.review.view.pending.height);
+        assert!(hit.pending_list.height >= 1);
+        // A resize pointer over its divider; a drag up by two rows makes it two rows taller.
+        app.mouse(MouseEventKind::Moved, divider.x + 5, divider.y);
+        assert_eq!(app.pointer, crate::terminal::Pointer::RowResize);
+        let before = hit.pending_list.height;
+        app.mouse(MouseEventKind::Down(MouseButton::Left), divider.x + 5, divider.y);
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), divider.x + 5, divider.y - 2);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), divider.x + 5, divider.y - 2);
+        lines(&mut app, 120, 30);
+        let hit = app.hits.review.clone().unwrap();
+        assert_eq!(hit.pending_list.height, before + 2);
+        // The header collapses it to its divider and header, and opens it again.
+        let header = hit.pending_header;
+        app.mouse(MouseEventKind::Down(MouseButton::Left), header.x + 5, header.y);
+        let text = lines(&mut app, 120, 30).join("\n");
+        assert!(app.review.view.pending.collapsed);
+        assert!(text.contains("▸ PENDING (1)") && !text.contains(" Submit "), "{text}");
+        let hit = app.hits.review.clone().unwrap();
+        assert!(hit.pending_buttons.is_empty() && hit.pending_list.height == 0);
+        app.mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            header.x + 5,
+            hit.pending_header.y,
+        );
+        lines(&mut app, 120, 30);
+        assert!(!app.review.view.pending.collapsed);
+        // Submit runs Submit Review (Comment): here local HEAD is not the merge request's head.
+        let hit = app.hits.review.clone().unwrap();
+        let rect = hit.pending_buttons[0].0;
+        app.mouse(MouseEventKind::Down(MouseButton::Left), rect.x + 1, rect.y);
+        assert!(message(&app).starts_with("Can't submit"), "{}", message(&app));
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -624,15 +624,18 @@ pub struct ReviewHit {
     pub summary: Rect,
     /// The files and conversations' share of the panel (what a divider drag measures against).
     pub body: Rect,
-    /// The CONVERSATIONS section's divider row (empty while the section is hidden) and header.
-    pub divider: Rect,
+    /// Each shown section's divider row (a drag resizes it), top to bottom.
+    pub dividers: Vec<(Rect, crate::review::Pane)>,
+    /// The CONVERSATIONS section's header (a click collapses it).
     pub conv_header: Rect,
     /// Its rows, two lines each from `conv_list.y`, the first being list row `conv_top`.
     pub conv_list: Rect,
     pub conv_top: usize,
     pub conv_len: usize,
-    /// The PENDING section's header and its one-line rows (row `pending_top` first).
+    /// The PENDING section's header (a click collapses it), its buttons and its one-line rows
+    /// (row `pending_top` first).
     pub pending_header: Rect,
+    pub pending_buttons: Vec<(Rect, crate::command::Command)>,
     pub pending_list: Rect,
     pub pending_top: usize,
     pub pending_len: usize,

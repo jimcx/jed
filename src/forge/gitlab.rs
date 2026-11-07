@@ -635,6 +635,7 @@ mod tests {
             kind: Kind::GitLab,
             api_url: format!("{}/api/v4", server.url()),
             token_env: "T".into(),
+            token: None,
             allow_http: true,
         };
         let client = Client::new(&resolved, |_| Some("tok".into())).unwrap();

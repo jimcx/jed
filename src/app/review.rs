@@ -18,9 +18,9 @@ use crate::forge::Side;
 use crate::git::Head;
 use crate::layout::SidePanel;
 use crate::logs::Tool;
-use crate::review::{Content, Empty, Outcome, Request};
+use crate::review::{Content, Empty, Outcome, Pane, Request};
 use crate::review_anchor::Placement;
-use crate::side_sections::{Section, dragged_height, split};
+use crate::side_sections::{dragged_height, split};
 
 /// Results of the panel's background work.
 pub(super) enum ReviewEvent {
@@ -491,8 +491,10 @@ impl App {
         let at = Position { x: m.column, y: m.row };
         if hit.summary.contains(at) {
             self.review_switch();
-        } else if hit.divider.contains(at) {
-            self.drag = Some(super::mouse::Drag::ReviewDivider);
+        } else if let Some((_, pane)) = hit.dividers.iter().find(|d| d.0.contains(at)) {
+            self.drag = Some(super::mouse::Drag::ReviewDivider(*pane));
+        } else if let Some((_, command)) = hit.pending_buttons.iter().find(|b| b.0.contains(at)) {
+            self.execute(*command);
         } else if hit.conv_header.contains(at) {
             let conv = &mut self.review.view.conv;
             conv.focused = true;
@@ -507,7 +509,9 @@ impl App {
             }
         } else if hit.pending_header.contains(at) {
             self.review.view.conv.focused = false;
-            self.review.view.pending.focused = true;
+            let pending = &mut self.review.view.pending;
+            pending.focused = true;
+            pending.collapsed = !pending.collapsed;
         } else if hit.pending_list.contains(at) {
             let row = hit.pending_top + (at.y - hit.pending_list.y) as usize;
             if row < hit.pending_len {
@@ -546,25 +550,34 @@ impl App {
         }
     }
 
-    /// A drag of the CONVERSATIONS divider with the pointer on `row`: the section reaches the
-    /// panel's end (stored as its height, clamped to what the files keep).
-    pub(super) fn drag_review_divider(&mut self, row: u16) {
+    /// A drag of `pane`'s divider with the pointer on `row`: the section's top moves to `row`
+    /// (stored as its height, clamped so the files and the other section keep their rows).
+    pub(super) fn drag_review_divider(&mut self, pane: Pane, row: u16) {
         let Some(body) = self.hits.review.as_ref().map(|h| h.body) else {
             return;
         };
-        let conv = &self.review.view.conv;
-        let (_, heights) = split(
-            body.height,
-            &[Section {
-                height: conv.section_height,
-                collapsed: conv.collapsed,
-            }],
-        );
-        let want = (body.y + body.height).saturating_sub(row);
-        let height = dragged_height(body.height, &heights, 0, want);
-        let conv = &mut self.review.view.conv;
-        conv.section_height = height;
-        conv.collapsed = false;
+        let sections = self.review.sections();
+        let Some(i) = sections.iter().position(|s| s.0 == pane) else {
+            return;
+        };
+        let (_, heights) = split(body.height, &sections.iter().map(|s| s.1).collect::<Vec<_>>());
+        let below: u16 = heights[i + 1..].iter().sum();
+        let want = (body.y + body.height).saturating_sub(below).saturating_sub(row);
+        let height = dragged_height(body.height, &heights, i, want);
+        let section = match pane {
+            Pane::Conversations => &mut self.review.view.conv,
+            Pane::Pending => &mut self.review.view.pending,
+        };
+        section.section_height = height;
+        section.collapsed = false;
+    }
+
+    /// Whether `at` is on one of the panel's section dividers (the pointer shows a resize).
+    pub(super) fn review_divider_at(&self, at: Position) -> bool {
+        self.hits
+            .review
+            .as_ref()
+            .is_some_and(|h| h.dividers.iter().any(|d| d.0.contains(at)))
     }
 
     /// The wheel over the panel, with the pointer at `at`: the conversations or the files.
