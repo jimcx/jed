@@ -19,6 +19,8 @@ pub enum RowKey {
     Task(RunId),
     /// A syntax plugin's grammar by its id.
     Grammar(String),
+    /// The MCP log's row.
+    Claude,
     Jed,
 }
 
@@ -128,6 +130,11 @@ pub enum Row {
         state: GrammarState,
         errors: u64,
     },
+    /// Claude Code's MCP sessions: listed while one is connected or its log exists.
+    Claude {
+        sessions: usize,
+        errors: u64,
+    },
     Jed {
         errors: u64,
     },
@@ -139,6 +146,7 @@ impl Row {
             Row::Server(s) => RowKey::Server(s.name.clone()),
             Row::Task { id, .. } => RowKey::Task(*id),
             Row::Grammar { id, .. } => RowKey::Grammar(id.clone()),
+            Row::Claude { .. } => RowKey::Claude,
             Row::Jed { .. } => RowKey::Jed,
         }
     }
@@ -149,6 +157,7 @@ impl Row {
             (Row::Server(s), RowKey::Server(name)) => s.name == *name,
             (Row::Task { id, .. }, RowKey::Task(k)) => id == k,
             (Row::Grammar { id, .. }, RowKey::Grammar(k)) => id == k,
+            (Row::Claude { .. }, RowKey::Claude) => true,
             (Row::Jed { .. }, RowKey::Jed) => true,
             _ => false,
         }
@@ -160,6 +169,7 @@ impl Row {
             Row::Server(s) => Some(Tool::Server(s.name.clone())),
             Row::Task { .. } => None,
             Row::Grammar { id, .. } => Some(Tool::Grammar(id.clone())),
+            Row::Claude { .. } => Some(Tool::Claude),
             Row::Jed { .. } => Some(Tool::Jed),
         }
     }
@@ -170,7 +180,7 @@ impl Row {
             Row::Server(s) => s.errors,
             Row::Task { .. } => 0,
             Row::Grammar { errors, .. } => *errors,
-            Row::Jed { errors } => *errors,
+            Row::Claude { errors, .. } | Row::Jed { errors } => *errors,
         }
     }
 }
@@ -263,11 +273,19 @@ pub fn rows(
     grammars: &[(String, GrammarState)],
     errors: &[(Tool, u64)],
     workspace_root: &Path,
+    claude_sessions: usize,
 ) -> Vec<Row> {
     let mut rows: Vec<Row> = server_rows(manager, errors, workspace_root)
         .into_iter()
         .map(Row::Server)
         .collect();
+    let claude = errors.iter().find(|(t, _)| *t == Tool::Claude);
+    if claude_sessions > 0 || claude.is_some() {
+        rows.push(Row::Claude {
+            sessions: claude_sessions,
+            errors: claude.map_or(0, |(_, n)| *n),
+        });
+    }
     rows.extend(runs.iter().map(|r| Row::Task {
         id: r.id,
         name: r.name.clone(),

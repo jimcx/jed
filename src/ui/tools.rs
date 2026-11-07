@@ -24,7 +24,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ToolsHit>, Op
     }
     let look = scrollbar::look(app, ScrollTarget::Side(SidePanel::Tools));
     let errors = app.logs.error_counts();
-    let rows = tools_view::rows(&app.lsp, app.tasks.runs(), &app.grammars, &errors, &app.workspace.root);
+    let rows = tools_view::rows(
+        &app.lsp,
+        app.tasks.runs(),
+        &app.grammars,
+        &errors,
+        &app.workspace.root,
+        app.claude_sessions(),
+    );
     app.tools_view.errors_drawn = errors;
 
     let theme = &app.theme;
@@ -94,6 +101,19 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ToolsHit>, Op
                 id.as_str(),
                 format!("syntax plugin · {}", state.label()),
             ),
+            Row::Claude { sessions, .. } => {
+                let state = if *sessions > 0 {
+                    ServerState::Running
+                } else {
+                    ServerState::Exited
+                };
+                let detail = match sessions {
+                    0 => "claude code · no sessions".to_string(),
+                    1 => "claude code · 1 session".to_string(),
+                    n => format!("claude code · {n} sessions"),
+                };
+                (state.glyph().to_string(), state.theme_key(), "claude (mcp)", detail)
+            }
             Row::Jed { .. } => ("≡".to_string(), "sideBar.dim", "jed", "jed's own log".to_string()),
         };
         // The error badge at the right edge.

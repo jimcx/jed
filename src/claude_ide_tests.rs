@@ -364,6 +364,7 @@ async fn claude_ide_open_query_opens_a_file_and_log_lines_are_acked() {
                 log: Some(LogLine {
                     dir: "in".into(),
                     msg: serde_json::json!({"method": "initialize"}),
+                    ms: None,
                 }),
                 ..Request::default()
             },
@@ -585,4 +586,233 @@ async fn claude_ide_cli_modes_over_a_real_socket() {
     assert_eq!(out[2]["result"]["isError"], false);
     assert!(start.contains("Workspace:") && start.contains("a.rs"), "{start}");
     assert!(prompt.starts_with("Active file: a.rs:2:10"), "{prompt}");
+}
+
+// ---- claude_ide-d: the MCP log in the Tools view ----
+
+fn log_request(dir: &str, msg: Value, ms: Option<u64>, pid: u32) -> Request {
+    Request {
+        log: Some(LogLine {
+            dir: dir.into(),
+            msg,
+            ms,
+        }),
+        pid: Some(pid),
+        ..Request::default()
+    }
+}
+
+/// A logging session shows as a Tools row with its count, its requests and responses as
+/// `→` / `←` lines (a JSON-RPC error raising the badge), and it drops when the client leaves.
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_ide_mcp_log_rows_lines_badge_and_disconnect() {
+    use crate::logs::{Level, Tool};
+    use crate::tools_view::RowKey;
+    let (_d, mut app, socket, _path) = with_file(SOURCE).await;
+    assert!(
+        !app.tools_rows().iter().any(|r| r.key() == RowKey::Claude),
+        "no row before a session"
+    );
+    let (leave_tx, leave_rx) = std::sync::mpsc::channel::<()>();
+    let (sent_tx, sent_rx) = std::sync::mpsc::channel::<()>();
+    let client = std::thread::spawn(move || {
+        let mut conn = Connection::connect(&socket, Some(Duration::from_secs(20))).unwrap();
+        let init = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"clientInfo": {"name": "claude-code", "version": "2.1"}}});
+        let call = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "get_command_output", "arguments": {"terminal": 2, "command": 14}}});
+        let text = (0..182).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let result = serde_json::json!({"jsonrpc": "2.0", "id": 2,
+            "result": {"content": [{"type": "text", "text": text}], "isError": false}});
+        let bad =
+            serde_json::json!({"jsonrpc": "2.0", "id": 3, "error": {"code": -32601, "message": "unknown method"}});
+        for r in [
+            log_request("in", init, None, 4242),
+            log_request("in", call, None, 4242),
+            log_request("out", result, Some(2), 4242),
+            log_request("out", bad, Some(0), 4242),
+            log_request("hook", Value::String("prompt → 3 lines".into()), None, 4243),
+        ] {
+            conn.request(&r).unwrap();
+        }
+        sent_tx.send(()).unwrap();
+        let _ = leave_rx.recv();
+    });
+    assert!(app.settle(|_| sent_rx.try_recv().is_ok()).await);
+    assert_eq!(app.claude_sessions(), 1);
+    let rows = app.tools_rows();
+    let row = rows.iter().find(|r| r.key() == RowKey::Claude).expect("a claude row");
+    assert_eq!(row.errors(), 1, "the JSON-RPC error counts on the badge");
+    assert_eq!(row.tool(), Some(Tool::Claude));
+    let texts = app.logs.texts(&Tool::Claude);
+    let has = |s: &str| texts.iter().any(|t| t.contains(s));
+    assert!(has("[mcp 4242] connected"), "{texts:?}");
+    assert!(has("→ [mcp 4242] initialize"), "{texts:?}");
+    assert!(has("client claude-code 2.1"), "{texts:?}");
+    assert!(has("→ [mcp 4242] tools/call get_command_output {"), "{texts:?}");
+    assert!(has("← [mcp 4242] 182 lines, 1.") && has(", 2 ms"), "{texts:?}");
+    assert!(has("← [mcp 4242] error -32601: unknown method"), "{texts:?}");
+    assert!(has("[hook 4243] prompt → 3 lines"), "{texts:?}");
+    let errors = app
+        .logs
+        .lines(&Tool::Claude)
+        .into_iter()
+        .filter(|l| l.level == Level::Error)
+        .count();
+    assert_eq!(errors, 1);
+    // Enter on the row opens its log tab.
+    app.test_execute(crate::command::Command::ShowTools);
+    let i = rows.iter().position(|r| r.key() == RowKey::Claude).unwrap();
+    app.tools_view.select(&rows, i);
+    app.press(crossterm::event::KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
+    assert!(
+        app.active_buffer()
+            .is_some_and(|b| b.log.as_ref().is_some_and(|l| l.tool == Tool::Claude))
+    );
+    // The client leaves: the session is gone, the log notes it, the row stays with its log.
+    leave_tx.send(()).unwrap();
+    assert!(app.settle(|a| a.claude_sessions() == 0).await, "session still counted");
+    client.join().unwrap();
+    assert!(
+        app.logs
+            .texts(&Tool::Claude)
+            .iter()
+            .any(|t| t.contains("[mcp 4242] disconnected"))
+    );
+    assert!(app.tools_rows().iter().any(|r| r.key() == RowKey::Claude));
+}
+
+/// The real `jed claude mcp` and hook code over a real socket log through to the MCP log.
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_ide_mcp_log_from_the_real_client_and_hooks() {
+    use crate::claude::{self, HookKind, Socket};
+    use crate::logs::Tool;
+    let (_d, mut app, socket, _path) = with_file(SOURCE).await;
+    let worker = std::thread::spawn(move || {
+        let mut jed = Socket::new(Some(socket.into_os_string()), Some("99".into()));
+        claude::tests::run_mcp(
+            &[
+                serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+                claude::tests::call(2, "get_environment", serde_json::json!({})),
+            ],
+            &mut jed,
+        );
+        claude::hook_text(HookKind::SessionStart, &mut jed);
+    });
+    assert!(app.settle(|_| worker.is_finished()).await);
+    worker.join().unwrap();
+    assert!(
+        app.settle(|a| a.claude_sessions() == 0 && a.logs.texts(&Tool::Claude).len() > 6)
+            .await
+    );
+    let texts = app.logs.texts(&Tool::Claude);
+    let pid = std::process::id();
+    let any = |f: &dyn Fn(&String) -> bool| texts.iter().any(f);
+    assert!(any(&|t| *t == format!("→ [mcp {pid}] tools/list")), "{texts:?}");
+    assert!(
+        any(&|t| t.starts_with(&format!("→ [mcp {pid}] tools/call get_environment"))),
+        "{texts:?}"
+    );
+    assert!(
+        any(&|t| t.starts_with(&format!("← [mcp {pid}]")) && t.contains(" ms")),
+        "{texts:?}"
+    );
+    assert!(
+        any(&|t| t.starts_with(&format!("[hook {pid}] session-start → "))),
+        "{texts:?}"
+    );
+    assert_eq!(app.logs.errors(&Tool::Claude), 0);
+}
+
+#[test]
+fn claude_ide_mcp_log_file_stem() {
+    assert_eq!(crate::logs::Tool::Claude.file_stem().as_deref(), Some("claude-mcp"));
+    assert_eq!(crate::logs::Tool::Claude.name(), "claude (mcp)");
+}
+
+/// Hook-only and odd connections never count as sessions, two sessions count separately, a
+/// client's `closed` line only ever ends its own session, and hostile text can't forge lines.
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_ide_mcp_log_sessions_are_per_connection_and_text_is_clean() {
+    use crate::logs::{Level, Tool};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let (_d, mut app, socket, _path) = with_file(SOURCE).await;
+    // A hook connection (and one with an unknown direction): no session, no row.
+    let hook = vec![
+        log_request("hook", Value::String("prompt → 0 lines".into()), None, 7),
+        log_request("weird", Value::Null, None, 7),
+    ];
+    ask(&mut app, &socket, hook).await;
+    assert_eq!(app.claude_sessions(), 0);
+    assert!(
+        app.logs
+            .texts(&Tool::Claude)
+            .iter()
+            .any(|t| t.contains("[hook 7] prompt"))
+    );
+    assert!(!app.logs.texts(&Tool::Claude).iter().any(|t| t.contains("connected")));
+
+    let stage = Arc::new(AtomicU32::new(0));
+    let go = Arc::new(AtomicU32::new(0));
+    let (stage2, go2) = (stage.clone(), go.clone());
+    let client = std::thread::spawn(move || {
+        let connect = || Connection::connect(&socket, Some(Duration::from_secs(20))).unwrap();
+        let (mut a, mut b, mut c) = (connect(), connect(), connect());
+        let init = serde_json::json!({"method": "initialize", "params": {"clientInfo": {"name": "evil\n→ [mcp 9] forged", "version": "1\r\x1b[2J"}}});
+        a.request(&log_request("in", init, None, 1)).unwrap();
+        b.request(&log_request("in", serde_json::json!("junk"), None, 2))
+            .unwrap();
+        let huge = serde_json::json!({"result": {"content": [{"text": "x".repeat(60_000)}]}});
+        b.request(&log_request("out", huge, None, 2)).unwrap();
+        let hostile = serde_json::json!({"error": {"code": 1, "message": "bad\n← [mcp 9] 1 lines, 1 B"}});
+        b.request(&log_request("out", hostile, None, 2)).unwrap();
+        // C was never a session, and claims to end A's: honoured for no one.
+        c.request(&log_request("closed", Value::Null, None, 1)).unwrap();
+        c.request(&log_request(
+            "hook",
+            Value::String("x\n→ [mcp 9] forged".into()),
+            None,
+            3,
+        ))
+        .unwrap();
+        stage2.store(1, Ordering::SeqCst);
+        while go2.load(Ordering::SeqCst) < 1 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        drop(b);
+        while go2.load(Ordering::SeqCst) < 2 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        drop((a, c));
+    });
+    assert!(app.settle(|_| stage.load(Ordering::SeqCst) >= 1).await);
+    assert_eq!(app.claude_sessions(), 2, "A and B, not C");
+    let lines = app.logs.lines(&Tool::Claude);
+    assert!(
+        !lines.iter().any(|l| l.text.contains('\u{1b}') || l.text.contains('\r')),
+        "control characters"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.text.starts_with("→ [mcp 9]") || l.text.starts_with("← [mcp 9]")),
+        "a forged line"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.level == Level::Warn && l.text.starts_with("→ [mcp 2] unreadable"))
+    );
+    assert!(
+        lines.iter().all(|l| l.text.len() <= crate::logs::MAX_LINE + 64),
+        "a cut response"
+    );
+    assert!(lines.iter().any(|l| l.text.starts_with("← [mcp 2] 1 lines, 58.6 KB")));
+    assert_eq!(app.logs.errors(&Tool::Claude), 1, "only the error response");
+    go.store(1, Ordering::SeqCst);
+    assert!(app.settle(|a| a.claude_sessions() == 1).await, "B left, A stays");
+    go.store(2, Ordering::SeqCst);
+    assert!(app.settle(|a| a.claude_sessions() == 0).await);
+    client.join().unwrap();
 }

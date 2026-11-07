@@ -29,6 +29,8 @@ pub struct Ipc {
     starting: bool,
     /// Shells asked for meanwhile: `(in_terminal, keep_focus)`, opened by `ipc_started`.
     queued_shells: Vec<(bool, bool)>,
+    /// The `jed claude mcp` processes connected (`claude_log.rs`).
+    pub(super) sessions: Vec<super::claude_log::Session>,
 }
 
 /// Results of the task socket's background work (`AppEvent::Ipc(IpcEvent::Request)`).
@@ -99,6 +101,7 @@ impl App {
     pub(super) fn ipc_request(&mut self, request: Request, responder: Responder) {
         if let Some(log) = &request.log {
             tracing::debug!(dir = %log.dir, "ipc log line");
+            self.claude_log(log, request.conn, request.pid);
             responder.answer(Reply::default());
             return;
         }
@@ -170,6 +173,7 @@ impl App {
     /// On quit: the waiting clients' connections close (they exit 1) and the socket goes.
     pub(super) fn ipc_shutdown(&mut self) {
         self.ipc.waiters.clear();
+        self.ipc.sessions.clear();
         self.ipc.queued_shells.clear();
         self.ipc.server = None;
         self.tasks.ipc = None;

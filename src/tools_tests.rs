@@ -1947,3 +1947,49 @@ async fn tools_restart_drops_the_old_instances_diagnostics_and_requests() {
     assert_eq!(after.iter().filter(|t| t.starts_with("Starting: clangd")).count(), 2);
     app.shutdown_servers().await;
 }
+
+/// The MCP log's row ("claude (mcp)", listed while its log has errors or a session exists)
+/// is drawn with its detail, and its log opens and clears through the palette like any tool's.
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_claude_row_is_drawn_and_its_log_opens_and_clears() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let (mut app, _root) = tools_app(dir.path(), &fake, false);
+    app.logs.push(&Tool::Claude, Level::Error, "← [mcp 7] error -1: boom");
+    app.test_execute(crate::command::Command::ShowTools);
+    let mut term = terminal();
+    let rows = tools_rows(&mut app, &mut term);
+    let row = rows
+        .iter()
+        .find(|r| r.contains("claude (mcp)"))
+        .expect("the claude row");
+    assert!(row.contains("claude code · no"), "{row}");
+    assert!(row.trim_end().ends_with('1'), "the error badge: {row}");
+
+    let labels = open_log(&mut app, "claude (mcp)");
+    assert!(labels.iter().any(|l| l == "claude (mcp)"), "{labels:?}");
+    let buf = app.active_buffer().unwrap();
+    assert_eq!(buf.name(), "claude (mcp) (log)");
+    assert!(buf.log.as_ref().is_some_and(|l| l.tool == Tool::Claude));
+    assert!(tab_lines(&app).iter().any(|l| l.contains("boom")));
+    run_command(&mut app, "Tools: Clear Log");
+    assert_eq!(app.active_buffer().unwrap().rope.to_string(), "");
+    assert!(app.logs.texts(&Tool::Claude).is_empty());
+}
+
+/// The selection on the MCP row follows its key when the rows around it change.
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_claude_selection_survives_the_row_list_changing() {
+    use crate::tools_view::{GrammarState, RowKey, rows};
+    let dir = tempfile::tempdir().unwrap();
+    let fake = FakeLauncher::new(FakeOptions::default());
+    let (mut app, root) = tools_app(dir.path(), &fake, false);
+    let grammars = [("zig".to_string(), GrammarState::Ready)];
+    let before = rows(&app.lsp, &[], &[], &[], &root, 1);
+    assert!(app.tools_view.select_key(&before, &RowKey::Claude));
+    let i = app.tools_view.selected_row(&before).unwrap();
+    assert_eq!(before[i].key(), RowKey::Claude);
+    let after = rows(&app.lsp, &[], &grammars, &[], &root, 1);
+    let i = app.tools_view.selected_row(&after).unwrap();
+    assert_eq!(after[i].key(), RowKey::Claude);
+}

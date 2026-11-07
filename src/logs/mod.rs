@@ -48,6 +48,8 @@ pub enum Tool {
     Grammar(String),
     /// The Code Review panel's forge requests ("code review").
     Review,
+    /// Claude Code's MCP sessions and hooks ("claude (mcp)").
+    Claude,
 }
 
 impl Tool {
@@ -57,6 +59,7 @@ impl Tool {
             Tool::Server(name) => name,
             Tool::Grammar(id) => id,
             Tool::Review => "code review",
+            Tool::Claude => "claude (mcp)",
         }
     }
 
@@ -68,6 +71,7 @@ impl Tool {
             Tool::Server(name) => Some(disk::file_stem(name)),
             Tool::Grammar(id) => Some(format!("grammar-{}", disk::file_stem(id))),
             Tool::Review => Some("code-review".into()),
+            Tool::Claude => Some("claude-mcp".into()),
         }
     }
 }

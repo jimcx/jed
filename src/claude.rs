@@ -48,8 +48,9 @@ pub fn parse_cli(args: &[String]) -> Result<Cli, String> {
 pub trait Jed {
     /// A query's answer data, or why there is none (including "not inside a jed terminal").
     fn ask(&mut self, query: Query) -> Result<Value, String>;
-    /// Forwards a protocol message to jed's log; best effort.
-    fn log(&mut self, dir: &str, msg: Value);
+    /// Forwards a protocol message to jed's log (`ms`: the time spent answering, on "out"), or
+    /// a hook's result as `dir` "hook"; best effort.
+    fn log(&mut self, dir: &str, msg: Value, ms: Option<u64>);
 }
 
 const NOT_IN_JED: &str = "not inside a jed terminal (JED_IPC is not set or jed is gone)";
@@ -117,13 +118,18 @@ impl Jed for Socket {
         }
     }
 
-    fn log(&mut self, dir: &str, msg: Value) {
+    fn log(&mut self, dir: &str, msg: Value, ms: Option<u64>) {
         if !self.inside_jed() {
             return;
         }
         let request = Request {
-            log: Some(LogLine { dir: dir.into(), msg }),
+            log: Some(LogLine {
+                dir: dir.into(),
+                msg,
+                ms,
+            }),
             terminal: self.terminal,
+            pid: Some(std::process::id()),
             ..Request::default()
         };
         let _ = self.send(&request);
@@ -323,9 +329,12 @@ pub fn serve(input: impl BufRead, mut output: impl Write, jed: &mut dyn Jed, cwd
         if line.trim().is_empty() {
             continue;
         }
+        let mut ms = 0;
         let (msg, response) = match serde_json::from_str::<Value>(&line) {
             Ok(msg) => {
+                let started = std::time::Instant::now();
                 let response = handle(&msg, jed, cwd);
+                ms = started.elapsed().as_millis() as u64;
                 (msg, response)
             }
             Err(e) => (
@@ -338,9 +347,9 @@ pub fn serve(input: impl BufRead, mut output: impl Write, jed: &mut dyn Jed, cwd
             writeln!(output, "{response}")?;
             output.flush()?;
         }
-        jed.log("in", msg);
+        jed.log("in", msg, None);
         if let Some(response) = response {
-            jed.log("out", response);
+            jed.log("out", response, Some(ms));
         }
     }
     Ok(())
@@ -350,11 +359,16 @@ pub fn serve(input: impl BufRead, mut output: impl Write, jed: &mut dyn Jed, cwd
 
 /// A hook's stdout: nothing on any failure.
 pub fn hook_text(kind: HookKind, jed: &mut dyn Jed) -> String {
-    match kind {
-        HookKind::SessionStart => session_start(jed),
-        HookKind::Prompt => prompt(jed),
-    }
-    .unwrap_or_default()
+    let (name, text) = match kind {
+        HookKind::SessionStart => ("session-start", session_start(jed)),
+        HookKind::Prompt => ("prompt", prompt(jed)),
+    };
+    let note = match &text {
+        Ok(t) => format!("{name} → {} lines", t.lines().count()),
+        Err(e) => format!("{name} → nothing ({e})"),
+    };
+    jed.log("hook", Value::String(note), None);
+    text.unwrap_or_default()
 }
 
 fn strings(v: &Value) -> Vec<&str> {
@@ -534,7 +548,7 @@ pub(crate) mod tests {
                 .map(|(_, r)| r.clone())
                 .unwrap_or(Err(NOT_IN_JED.into()))
         }
-        fn log(&mut self, dir: &str, msg: Value) {
+        fn log(&mut self, dir: &str, msg: Value, _ms: Option<u64>) {
             self.logs.push((dir.into(), msg));
         }
     }

@@ -4,6 +4,7 @@ mod backup;
 mod blame;
 mod cheatsheet;
 mod claude;
+mod claude_log;
 mod code_action;
 mod commit_tabs;
 mod completion;

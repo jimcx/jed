@@ -337,6 +337,7 @@ impl App {
             &self.grammars,
             &self.logs.error_counts(),
             &self.workspace.root,
+            self.claude_sessions(),
         )
     }
 

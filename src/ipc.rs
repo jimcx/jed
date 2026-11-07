@@ -62,6 +62,13 @@ pub struct Request {
     /// list can flag it as `self`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<u64>,
+    /// The caller's process id (a log line's `[mcp <pid>]` in the Tools view).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// Which connection it came from, set by the server (never on the wire; 0 for a request
+    /// that didn't come through [`Server`]).
+    #[serde(skip)]
+    pub conn: u64,
 }
 
 impl Request {
@@ -128,12 +135,20 @@ pub enum Query {
     },
 }
 
-/// A line for the logs: `dir` is "in" or "out" for a protocol message, `msg` the message.
+/// A line for the logs: `dir` is "in" or "out" for a protocol message, `msg` the message
+/// (`ms`: how long the client took to answer, on "out"), or "hook" for what a hook returned
+/// (`msg` a string). The server itself sends [`CLOSED`] for a connection that sent log lines
+/// and is gone (never on the wire).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogLine {
     pub dir: String,
     pub msg: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ms: Option<u64>,
 }
+
+/// `LogLine::dir` of the server's note that a logging connection closed.
+pub const CLOSED: &str = "closed";
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Reply {
@@ -311,6 +326,9 @@ impl Drop for Server {
 }
 
 async fn serve_connection(stream: UnixStream, on_request: &(dyn Fn(Request, Responder) + Send + Sync)) {
+    static NEXT_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let conn = NEXT_CONN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (mut pid, mut logged) = (None, false);
     let (read, mut write) = stream.into_split();
     let mut reader = BufReader::new(read);
     let mut line = String::new();
@@ -339,6 +357,11 @@ async fn serve_connection(stream: UnixStream, on_request: &(dyn Fn(Request, Resp
             tracing::warn!("ipc: request asks for nothing");
             break;
         }
+        let mut request = request;
+        request.conn = conn;
+        if request.log.is_some() {
+            (logged, pid) = (true, request.pid.or(pid));
+        }
         let (tx, rx) = oneshot::channel();
         on_request(request, Responder(tx));
         // A dropped responder closes the connection.
@@ -353,6 +376,22 @@ async fn serve_connection(stream: UnixStream, on_request: &(dyn Fn(Request, Resp
         }
     }
     let _ = write.shutdown().await;
+    if logged {
+        // Tell the app the logging client is gone (nobody reads this answer).
+        let log = LogLine {
+            dir: CLOSED.into(),
+            msg: serde_json::Value::Null,
+            ms: None,
+        };
+        let (tx, _rx) = oneshot::channel();
+        let gone = Request {
+            log: Some(log),
+            pid,
+            conn,
+            ..Request::default()
+        };
+        on_request(gone, Responder(tx));
+    }
 }
 
 pub mod client {
@@ -581,7 +620,16 @@ mod tests {
         let path = tmp.path().join("s.sock");
         let (_server, seen) = serve(&path, Some(Reply::closed()));
         assert_eq!(client(&path, request(true)).await, Outcome::Done(0));
-        assert_eq!(*seen.lock().unwrap(), vec![request(true)]);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].conn > 0, "the server numbers connections");
+        assert_eq!(
+            Request {
+                conn: 0,
+                ..seen[0].clone()
+            },
+            request(true)
+        );
     }
 
     #[tokio::test]
