@@ -257,6 +257,8 @@ pub struct Manager {
     /// Where jed writes files for servers (`scons`: ty's SCons builtins); `None` (tests'
     /// default): nothing written.
     pub support_dir: Option<PathBuf>,
+    /// `.workspace`'s `[scons]` as last seen by `sync`; a change restarts the SCons-aware servers.
+    scons: crate::workspace::config::SconsConfig,
     /// The tool logs: each server's task writes its stderr, lifecycle and messages to the
     /// ring of its name (`App::start` sets the app's store).
     pub logs: crate::logs::Logs,
@@ -276,6 +278,7 @@ impl Manager {
             diagnostics: diagnostics::Store::default(),
             cleared: Vec::new(),
             support_dir: None,
+            scons: Default::default(),
             logs: crate::logs::Logs::default(),
         }
     }
@@ -383,6 +386,7 @@ impl Manager {
                 sink,
                 next_id: next_id.clone(),
                 support_dir: self.support_dir.clone(),
+                scons: self.scons.clone(),
                 log: self.logs.tool(crate::logs::Tool::Server(config.name.clone())),
                 trace: trace.clone(),
             }
@@ -409,6 +413,21 @@ impl Manager {
     pub fn sync(&mut self, root: &Path, languages: &[Language], workspace: &WorkspaceConfig, trust: Trust) {
         if self.sink.is_none() || self.launcher.is_none() {
             return;
+        }
+        if self.scons != *workspace.scons {
+            self.scons = (*workspace.scons).clone();
+            // Running ones read it at launch: restart those that use it (stopped ones pick it
+            // up when they next start).
+            let names: Vec<String> = self
+                .servers
+                .iter()
+                .filter(|s| scons::applies(&s.config.name))
+                .map(|s| s.config.name.clone())
+                .collect();
+            for name in names {
+                tracing::info!(server = %name, "[scons] changed: restarting the language server");
+                self.restart(&name);
+            }
         }
         // A clone, so `resolve` doesn't borrow `self` while a server starts below.
         let builtins = self.builtins.clone();

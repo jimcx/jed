@@ -19,6 +19,22 @@ pub struct WorkspaceConfig {
     pub environments: BTreeMap<String, Environment>,
     pub history: HistoryConfig,
     pub window: WindowConfig,
+    pub scons: Box<SconsConfig>,
+}
+
+/// `[scons]`: where ty finds an SCons project's pieces (`lsp::scons`). Names no commands: no trust.
+#[derive(Debug, Default, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SconsConfig {
+    /// The build file when it isn't at the root (relative to the root, or absolute).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sconstruct: Option<String>,
+    /// A folder containing the `SCons` package (`~` expanded), added to ty's `extra-paths`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scons_path: Option<String>,
+    /// `false` turns the SCons stub off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 /// `[window]`: the workspace's name in the window title and the status bar's colour, so several
@@ -279,6 +295,13 @@ pub const TEMPLATE: &str = "\
 # command = \"pyright-langserver\"
 # args = [\"--stdio\"]
 
+# SCons projects (ty): the build file when it isn't at the root, a folder containing the SCons
+# package (for site_scons helpers), or false to turn the SCons globals off.
+# [scons]
+# sconstruct = \"build/SConstruct\"
+# scons_path = \"/usr/lib/python3/dist-packages\"
+# enabled = false
+
 # A task (Run Task): command, and optionally cwd and env.
 # [tasks.build]
 # command = \"cargo build\"
@@ -364,6 +387,19 @@ fn join_command(command: &str, args: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scons_table_parses_and_needs_no_trust() {
+        let c: WorkspaceConfig =
+            toml::from_str("[scons]\nsconstruct = \"build/SConstruct\"\nscons_path = \"~/s\"\nenabled = false\n")
+                .unwrap();
+        assert_eq!(c.scons.sconstruct.as_deref(), Some("build/SConstruct"));
+        assert_eq!(c.scons.scons_path.as_deref(), Some("~/s"));
+        assert_eq!(c.scons.enabled, Some(false));
+        assert!(!c.has_commands());
+        assert_eq!(c.commands_hash(), WorkspaceConfig::default().commands_hash());
+        assert!(toml::from_str::<WorkspaceConfig>("[scons]\nbogus = 1\n").is_err());
+    }
 
     const SAMPLE: &str = r#"
 [settings]

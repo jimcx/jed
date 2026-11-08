@@ -191,6 +191,8 @@ pub struct Task {
     pub next_id: Arc<AtomicI64>,
     /// Where jed writes files servers read (`Manager::support_dir`): ty's SCons builtins.
     pub support_dir: Option<PathBuf>,
+    /// `.workspace`'s `[scons]` when the task started.
+    pub scons: crate::workspace::config::SconsConfig,
     /// Its tool log: stderr, lifecycle, `window/logMessage` / `showMessage`, the protocol trace.
     pub log: ToolLog,
     /// The protocol trace is on (`Server::set_trace`).
@@ -215,9 +217,13 @@ impl Task {
             && super::scons::applies(&name)
         {
             let root = self.root.clone();
-            if let Ok(Some(stub)) = tokio::task::spawn_blocking(move || super::scons::prepare(&root, &dir)).await {
-                tracing::info!(server = %name, stub = %stub.display(), "SCons workspace: builtins stub on ty's search path");
-                config.init_options = Some(super::scons::with_extra_path(config.init_options.take(), &stub));
+            let scons = self.scons.clone();
+            let found = tokio::task::spawn_blocking(move || super::scons::prepare(&root, &dir, &scons)).await;
+            if let Ok(paths) = found
+                && !paths.is_empty()
+            {
+                tracing::info!(server = %name, ?paths, "SCons workspace: folders on ty's search path");
+                config.init_options = Some(super::scons::with_extra_path(config.init_options.take(), &paths));
             }
         }
         let log = self.log.clone();

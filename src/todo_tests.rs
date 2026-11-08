@@ -13279,3 +13279,176 @@ mod selection_highlight {
         assert!(!status.contains("occurrence"), "{status}");
     }
 }
+
+/// `scons_settings`: `.workspace`'s `[scons]` (`sconstruct`, `scons_path`, `enabled`) shapes ty's
+/// `extra-paths` in `initialize` (fake server); a reload changing it restarts ty, an unrelated
+/// one doesn't. The real-ty test (skipped without ty) resolves `SCons.Script` in a `site_scons`
+/// helper beside a subfolder `SConstruct`.
+mod scons_settings {
+    use std::fs;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use serde_json::{Value, json};
+
+    use crate::app::App;
+    use crate::lsp::ProcessLauncher;
+    use crate::lsp::config::ServerConfig;
+    use crate::lsp::fake::{FakeLauncher, FakeOptions};
+    use crate::milestone9_tests::{REAL_SERVERS, idle, open, open_app_watched, project, settle_for, which};
+
+    fn extra_paths(init: &Value) -> Value {
+        init["initializationOptions"]["configuration"]["environment"]["extra-paths"].clone()
+    }
+
+    async fn initializes(app: &mut App, fake: &FakeLauncher, n: usize) -> bool {
+        settle_for(app, 10, |_| fake.requests("initialize").len() >= n).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn workspace_scons_table_sets_ty_paths_and_a_reload_restarts_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(
+            dir.path(),
+            &[
+                ("build/SConstruct", ""),
+                ("build/site_scons/helpers.py", ""),
+                ("build/tool.py", "x = 1\n"),
+                (".workspace", "[scons]\nsconstruct = \"build/SConstruct\"\n"),
+            ],
+        );
+        let support = dir.path().join("support");
+        let fake = FakeLauncher::new(FakeOptions::default());
+        let mut app = open_app_watched(&root, fake.clone());
+        app.lsp.support_dir = Some(support.clone());
+        open(&mut app, &root.join("build/tool.py"));
+        assert!(initializes(&mut app, &fake, 1).await);
+        let init = fake.requests("initialize").pop().unwrap();
+        assert_eq!(
+            extra_paths(&init),
+            json!([support.join("scons"), root.join("build/site_scons")])
+        );
+
+        // A changed [scons] restarts ty with the new paths, and the old ty's requests go.
+        let old = app.lsp.servers()[0].id;
+        app.test_track_request(old);
+        assert_eq!(app.pending_requests().len(), 1);
+        let scratch = dir.path().join("scons-install");
+        fs::write(
+            root.join(".workspace"),
+            format!(
+                "[scons]\nsconstruct = \"build/SConstruct\"\nscons_path = {:?}\n",
+                scratch.to_str().unwrap()
+            ),
+        )
+        .unwrap();
+        assert!(initializes(&mut app, &fake, 2).await, "ty restarted");
+        assert!(
+            app.pending_requests().is_empty(),
+            "the old server's requests were dropped"
+        );
+        let init = fake.requests("initialize").pop().unwrap();
+        assert_eq!(
+            extra_paths(&init),
+            json!([support.join("scons"), root.join("build/site_scons"), scratch])
+        );
+
+        // A reload that leaves [scons] alone doesn't.
+        fs::write(
+            root.join(".workspace"),
+            format!(
+                "[settings]\ntab_width = 2\n[scons]\nsconstruct = \"build/SConstruct\"\nscons_path = {:?}\n",
+                scratch.to_str().unwrap()
+            ),
+        )
+        .unwrap();
+        assert!(app.settle(|a| a.settings.tab_width == 2).await);
+        idle(&mut app).await;
+        assert_eq!(fake.requests("initialize").len(), 2);
+
+        // enabled = false: ty restarts with no SCons paths at all.
+        fs::write(
+            root.join(".workspace"),
+            "[scons]\nenabled = false\nscons_path = \"/x\"\n",
+        )
+        .unwrap();
+        assert!(initializes(&mut app, &fake, 3).await);
+        let init = fake.requests("initialize").pop().unwrap();
+        assert_eq!(extra_paths(&init), Value::Null);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn disabled_scons_workspace_gets_no_stub() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = project(
+            dir.path(),
+            &[
+                ("SConstruct", ""),
+                ("a.py", "x = 1\n"),
+                (".workspace", "[scons]\nenabled = false\n"),
+            ],
+        );
+        let support = dir.path().join("support");
+        let fake = FakeLauncher::new(FakeOptions::default());
+        let mut app = open_app_watched(&root, fake.clone());
+        app.lsp.support_dir = Some(support.clone());
+        open(&mut app, &root.join("a.py"));
+        assert!(initializes(&mut app, &fake, 1).await);
+        assert_eq!(extra_paths(&fake.requests("initialize")[0]), Value::Null);
+        assert!(!support.exists());
+    }
+
+    const HELPERS: &str = "from SCons.Script import Environment\n\ndef make():\n    return Environment()\n\nzz + 1\n";
+
+    /// Real ty: a subfolder `SConstruct`, a `site_scons` helper importing `SCons.Script`, found
+    /// through `scons_path` (a scratch install). Skipped without ty.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn real_ty_resolves_scons_in_a_site_scons_helper() {
+        let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv/bin/ty");
+        let Some(ty) = which("ty").or_else(|| venv.is_file().then_some(venv)) else {
+            eprintln!("real_ty_resolves_scons_in_a_site_scons_helper: skipped, ty isn't on PATH or in .venv/bin");
+            return;
+        };
+        let _one_at_a_time = REAL_SERVERS.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let install = dir.path().join("install");
+        fs::create_dir_all(install.join("SCons/Script")).unwrap();
+        fs::write(install.join("SCons/__init__.py"), "").unwrap();
+        fs::write(install.join("SCons/Script/__init__.py"), "class Environment: ...\n").unwrap();
+        let ws = format!(
+            "[scons]\nsconstruct = \"build/SConstruct\"\nscons_path = {:?}\n",
+            install.to_str().unwrap()
+        );
+        let root = project(
+            dir.path(),
+            &[
+                ("build/SConstruct", "import helpers\n"),
+                ("build/site_scons/helpers.py", HELPERS),
+                (".workspace", &ws),
+            ],
+        );
+        let path = root.join("build/site_scons/helpers.py");
+        let mut app = open_app_watched(&root, Arc::new(ProcessLauncher));
+        app.lsp.builtins.ty = ServerConfig::new(ty.to_str().unwrap(), &["server"]);
+        app.lsp.support_dir = Some(dir.path().join("support"));
+        open(&mut app, &path);
+        // ty reports the deliberate `zz`; by then it has resolved the imports too.
+        let reported = settle_for(&mut app, 60, |a| {
+            a.lsp
+                .diagnostics
+                .get(&path)
+                .iter()
+                .any(|s| s.items.iter().any(|i| i.diag.message.contains("zz")))
+        })
+        .await;
+        assert!(reported, "ty never reported the undefined name");
+        let messages: Vec<String> = app
+            .lsp
+            .diagnostics
+            .get(&path)
+            .iter()
+            .flat_map(|s| s.items.iter().map(|i| i.diag.message.clone()))
+            .collect();
+        assert!(!messages.iter().any(|m| m.contains("SCons")), "{messages:?}");
+    }
+}

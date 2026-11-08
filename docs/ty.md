@@ -84,20 +84,22 @@ env.Library("util", ["util.cpp"])
 
 Here ty still reports two errors: `import helpers` can't be resolved, and `env` in `lib/SConscript` is undefined. To fix both:
 
-1. **`site_scons/` on ty's search path.** Put this in `ty.toml` at the root:
+1. **`site_scons/` on ty's search path.** With the `SConstruct` at the root, jed adds `site_scons/` itself (SCons puts it on `sys.path`), so `import helpers` resolves with no setting. For a build in a subfolder, name the build file in `.workspace`; `site_scons/` beside it is added the same way:
 
    ```toml
-   # ty.toml
-   [environment]
-   extra-paths = ["site_scons"]
+   # .workspace
+   [scons]
+   sconstruct = "build/SConstruct"      # relative to the root, or absolute
    ```
 
-   Or, to keep it out of the repository, put it in `.workspace` as in section 2:
+   If your `site_scons` helpers import SCons itself (`from SCons.Script import Environment`), point `scons_path` at a folder containing the `SCons` package. `~` is expanded; a folder without `SCons/__init__.py` is still passed, with a warning in the log. jed's stub stays, because it covers the run-time globals the real package can't:
 
    ```toml
-   [lsp.python.init_options.configuration.environment]
-   extra-paths = ["site_scons"]
+   [scons]
+   scons_path = "/usr/lib/python3/dist-packages"
    ```
+
+   Both go after the `extra-paths` your own `ty.toml` or `[lsp.python]` set. `enabled = false` turns jed's stub off, for a workspace that isn't an SCons one but has a file named `SConstruct`. `[scons]` names no commands, so it needs no trust, and a change to it restarts ty. For the command line or CI, put `extra-paths = ["site_scons"]` in `ty.toml` instead.
 
 2. **The names your `SConscript` files `Import()`.** Use your own `__builtins__.pyi` at the workspace root. When that file exists, jed doesn't add its stub, because ty would resolve only one `__builtins__` module. So start from jed's stub and add your names at the end:
 
@@ -116,7 +118,7 @@ Here ty still reports two errors: `import helpers` can't be resolved, and `env` 
 
 Notes:
 
-- jed only adds its stub when the `SConstruct` is at the workspace root. For a build in a subfolder, open that folder, or use your own `__builtins__.pyi` as above.
+- jed adds its stub when the `SConstruct` is at the workspace root, or where `[scons] sconstruct` says.
 - A root `__builtins__.pyi` applies to every Python file in the workspace, not only the SCons ones. That doesn't matter for a build-only folder. In a mixed project, ty won't flag a misspelled `env` in ordinary modules either.
 - Outside jed, `ty check` checks extensionless files only when you name them: `ty check SConstruct lib/SConscript`. It uses the same `ty.toml` and `__builtins__.pyi`, but not jed's stub. That makes the root `__builtins__.pyi` the way to get the same result from the command line or CI.
 
@@ -129,5 +131,5 @@ Notes:
 |---|---|---|
 | `Cannot resolve imported module` for an installed package | ty is using another environment | `[environment] python = ".venv"` in `ty.toml` |
 | A row `✗ ty` and "Can't start" in its log | Not on `PATH` | Install it, or `command = ".venv/bin/ty"` |
-| `Name 'Environment' used when not defined` in `SConstruct` | The `SConstruct` isn't at the workspace root | Open its folder, or use your own `__builtins__.pyi` |
+| `Name 'Environment' used when not defined` in `SConstruct` | The `SConstruct` isn't at the workspace root | Set `[scons] sconstruct` in `.workspace` |
 | `Name 'env' used when not defined` in an `SConscript` | The name comes from `Import()` | Add it to your own `__builtins__.pyi` (section 3) |

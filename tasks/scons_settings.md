@@ -2,7 +2,7 @@
 id: scons_settings
 name: SCons settings in `.workspace`
 summary: a `[scons]` table for `sconstruct`, `scons_path` and `enabled`
-status: open
+status: done
 priority: 0
 dependencies: []
 ---
@@ -14,3 +14,10 @@ See [LSP](../PLAN.md#lsp). A `[scons]` table, read with the rest of `.workspace`
   - `enabled = false` turns the stub off (for a workspace that isn't an SCons one but has a file named `SConstruct`)
   - No trust prompt: these name no commands (as `[settings]`); `docs/ty.md` section 3 updated to use them in place of the "open the subfolder" note; `docs/dev/conventions.md` if a rule comes of it
   - Tests: `prepare` / `with_extra_path` unit tests for each key (a subfolder `SConstruct`, its `site_scons`, `scons_path` merged after the project's own `extra-paths` and the stub's, `enabled = false` → nothing written); the `initialize` params through the fake server with a `.workspace` reload changing them; one real-ty test (skipped when absent, the `.venv/bin/ty` lookup) on a subfolder `SConstruct` with a `site_scons` helper importing `SCons.Script` and `scons_path` pointing at a scratch install
+
+✅ Done:
+  - `WorkspaceConfig.scons` (`Box<SconsConfig>`: unboxed it tipped `AppEvent::Config` over clippy's `large_enum_variant`), in `TEMPLATE` and `config::schema`; not in the trust hash. `scons::prepare(root, support_dir, &SconsConfig) -> Vec<PathBuf>`: stub dir, then `site_scons/` beside the build file, then `scons_path`; a root `__builtins__.pyi` or a failed stub write skips only the stub; no build file (or `enabled = false`) → nothing. `with_extra_path(init, &[PathBuf])` appends after the project's own paths
+  - `Manager::scons` (last seen); `sync` restarts running / failed ty when `[scons]` changes (`restart`); stopped ones read it at their next launch. `app/lsp.rs start_servers` drops pending requests of servers no longer running after `sync`
+  - Tests: unit tests in `lsp/scons.rs` and `workspace/config.rs`; `todo_tests.rs` `mod scons_settings` (fake-server `initialize` across four `.workspace` reloads, a disabled workspace, the real-ty test)
+  - Deferred: a shared `~` expansion helper (`lsp::scons::expand_home` and `app/term_link.rs` each have their own; `paths::home()` falls back to `.`)
+  - Still to check by hand: the real-ty test (`scripts/check test real_ty_resolves_scons`) on a machine with ty — it skipped here; and a real SCons project with `build/SConstruct` + `site_scons` in jed

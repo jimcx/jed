@@ -126,6 +126,24 @@ impl App {
         }
         self.lsp
             .sync(&self.workspace.root, &languages, &self.workspace.config, self.trust);
+        // A server `sync` restarted or stopped answers none of its requests.
+        let servers = self.lsp.servers();
+        self.requests.retain(|(id, _), _| servers.iter().any(|s| s.id == *id));
+    }
+
+    /// Records a hover request to `server` that is never answered.
+    #[cfg(test)]
+    pub fn test_track_request(&mut self, server: ServerId) {
+        let (group, buffer) = (
+            self.groups.ids()[0],
+            self.groups.active_group().active_tab().unwrap().buffer,
+        );
+        let sent = Sent {
+            server,
+            id: 1,
+            encoding: Default::default(),
+        };
+        self.track_request(sent, Request::Hover { word: None }, (group, buffer, ByteIdx::default()));
     }
 
     pub(super) fn lsp_event(&mut self, event: Event) {

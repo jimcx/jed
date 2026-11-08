@@ -278,6 +278,12 @@ const HISTORY_KEYS: &[KeySchema] = &[
     key("max_file_size", NONNEG, "Larger files (bytes) aren't snapshotted"),
 ];
 
+const SCONS_KEYS: &[KeySchema] = &[
+    key("sconstruct", ValueKind::Str, "The build file when it isn't at the root"),
+    key("scons_path", ValueKind::Str, "A folder containing the SCons package"),
+    key("enabled", ValueKind::Bool, "false turns the SCons globals off"),
+];
+
 const BINDING_KEYS: &[KeySchema] = &[
     key("key", ValueKind::Key, "The key combination, e.g. ctrl+shift+p"),
     key("command", ValueKind::Command, "The command's name"),
@@ -327,6 +333,7 @@ const WORKSPACE_TABLES: &[TableSchema] = &[
     // Any NAME = "value": the variables are the user's own.
     table("environments.*", &[]),
     table("history", HISTORY_KEYS),
+    table("scons", SCONS_KEYS),
 ];
 
 const KEYBINDING_TABLES: &[TableSchema] = &[TableSchema {
@@ -774,7 +781,7 @@ mod tests {
     #[test]
     fn schema_keys_are_exactly_the_struct_fields() {
         use crate::config::settings::SettingsOverrides;
-        use crate::workspace::config::{FilesConfig, HistoryConfig, LspServer, Task, WindowConfig};
+        use crate::workspace::config::{FilesConfig, HistoryConfig, LspServer, SconsConfig, Task, WindowConfig};
         let keys = |pattern: &str| {
             table_at(ConfigFile::Workspace, &header(pattern).split('.').collect::<Vec<_>>())
                 .unwrap()
@@ -784,6 +791,7 @@ mod tests {
         assert_eq!(serde_fields::<WindowConfig>(), schema_names(keys("window")));
         assert_eq!(serde_fields::<FilesConfig>(), schema_names(keys("files")));
         assert_eq!(serde_fields::<HistoryConfig>(), schema_names(keys("history")));
+        assert_eq!(serde_fields::<SconsConfig>(), schema_names(keys("scons")));
         assert_eq!(serde_fields::<LspServer>(), schema_names(keys("lsp.*")));
         assert_eq!(serde_fields::<Task>(), schema_names(keys("tasks.*")));
         // `.workspace`'s top-level tables are `WorkspaceConfig`'s fields.
