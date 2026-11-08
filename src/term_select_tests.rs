@@ -1232,3 +1232,29 @@ async fn term_select_keep_resize_click_clear_shell() {
 async fn term_select_keep_resize_click_clear_task() {
     keep_other_clears(true).await;
 }
+
+/// A resize mid-drag drops the selection, and the next drag event must not rebuild one from the
+/// drag's stale anchor (a column past the narrower screen made copying panic; found by the fuzzer).
+async fn resize_mid_drag(task: bool) {
+    let (_d, mut app, id, area) = count_run(None, task).await;
+    let (rows, cols) = crate::tasks::select::size(run_of(&app, id).screen().screen());
+    app.mouse(MouseEventKind::Down(MouseButton::Left), area.x + cols - 1, area.y + 2);
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), area.x + 3, area.y + 4);
+    assert!(selection_of(&app, id).is_some(), "the drag selects");
+    run_of(&app, id).resize(rows, cols / 2);
+    assert_eq!(selection_of(&app, id), None, "a resize clears it");
+    app.mouse(MouseEventKind::Drag(MouseButton::Left), area.x + 2, area.y + 5);
+    assert_eq!(selection_of(&app, id), None, "the stale drag selects nothing");
+    assert_eq!(run_of(&app, id).copy_selection(), None);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), area.x + 2, area.y + 5);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_resize_mid_drag_shell() {
+    resize_mid_drag(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_select_resize_mid_drag_task() {
+    resize_mid_drag(true).await;
+}

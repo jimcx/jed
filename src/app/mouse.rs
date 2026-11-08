@@ -420,6 +420,15 @@ impl App {
             // The screen is held from taking the lines output scrolled to setting the selection,
             // so no chunk's shift of the anchor is lost in between.
             let screen = run.screen();
+            // The selection was dropped meanwhile (a resize, Clear, output that changed its
+            // text): our copy of the anchor is stale (possibly past the new width), so the drag
+            // ends instead of rebuilding a selection from it.
+            if run.selection().is_none() {
+                drop(screen);
+                run.set_dragging(false);
+                self.drag = None;
+                return true;
+            }
             // Output scrolled meanwhile: the anchor followed its text, so must our copy.
             let moved = run.take_drag_lines() as isize;
             let anchor = (shift_drag_cell(anchor.0, moved), shift_drag_cell(anchor.1, moved));
