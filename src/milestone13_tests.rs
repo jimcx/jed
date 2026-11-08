@@ -1176,13 +1176,15 @@ fn palette_command(app: &mut App, title: &str) {
     app.press(KeyCode::Enter, KeyModifiers::NONE);
 }
 
-/// Everything a frame shows has arrived: the session, the git status, every diff tab, the gutter
+/// Everything a frame shows has arrived: the session, the git status, the Source Control view's branch history, every diff tab, the gutter
 /// markers and each buffer's parse tree.
 fn screen_settled(a: &App) -> bool {
     !a.session.loading()
         && a.git.status.is_some()
         && !a.git.running()
         && a.diffs_settled()
+        && !a.branch_history.loading
+        && !(a.branch_history.stale && a.ui.side_visible && a.ui.side_panel == SidePanel::SourceControl)
         && a.buffers.iter().all(|(_, b)| {
             b.syntax.tree().is_some()
                 && !b.quick_diff.running()
