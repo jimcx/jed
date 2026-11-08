@@ -21,7 +21,7 @@ use crate::app::{App, Focus, InitialFile};
 use crate::buffer::Buffer;
 use crate::command::{Command, ExplorerCommand, GitHistoryCommand as G};
 use crate::diff_view::{Pair, Text};
-use crate::git::log::{Commit, Page};
+use crate::git::log::{Chunk, Commit};
 use crate::git::test_repo::{commit_all, git, init};
 use crate::group::Tab;
 use crate::history;
@@ -770,7 +770,7 @@ async fn git_history_drops_pages_for_another_file_or_an_older_list() {
     assert!(settle_history(&mut app, &b, 2).await);
     let generation = app.git_history.generation;
     let before = summaries(&app);
-    let late = |summary: &str| Page {
+    let late = |summary: &str, done: bool| Chunk {
         commits: vec![Commit {
             id: "f".repeat(40),
             short: "fffffff".into(),
@@ -778,30 +778,19 @@ async fn git_history_drops_pages_for_another_file_or_an_older_list() {
             author: "x".into(),
             time: 0,
         }],
-        more: true,
+        done,
     };
 
-    // The old file's page, at this list's generation: dropped.
-    app.test_git_history_page(a.clone(), 0, generation, Ok(late("other file")));
+    // The old file's chunk, at this list's generation: dropped.
+    app.test_git_history_chunk(a.clone(), generation, Ok(late("other file", false)));
     assert_eq!(summaries(&app), before);
-    // A page started before the file changed (an older generation): dropped.
-    app.test_git_history_page(b.clone(), 0, generation - 1, Ok(late("older list")));
+    // A chunk from before the file changed (an older generation): dropped.
+    app.test_git_history_chunk(b.clone(), generation - 1, Ok(late("older list", false)));
     assert_eq!(summaries(&app), before);
-    // A later page that doesn't follow the loaded list: dropped (no duplicates).
-    app.test_git_history_page(b.clone(), 1, generation, Ok(late("not the next page")));
-    assert_eq!(summaries(&app), before);
-    // The page after the loaded ones: appended.
-    app.test_git_history_page(
-        b.clone(),
-        2,
-        generation,
-        Ok(Page {
-            more: false,
-            ..late("the next page")
-        }),
-    );
-    assert_eq!(summaries(&app), ["b", "both", "the next page"]);
-    assert!(!app.git_history.more, "the empty page ends the list");
+    // The current list's next chunk: appended.
+    app.test_git_history_chunk(b.clone(), generation, Ok(late("the next chunk", true)));
+    assert_eq!(summaries(&app), ["b", "both", "the next chunk"]);
+    assert!(!app.git_history.more, "the done chunk ends the list");
 }
 
 /// Two commits, the second changing a line of `a.txt` (a `+` and a `-` in its stat) and adding

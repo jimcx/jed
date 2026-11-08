@@ -782,6 +782,10 @@ impl App {
                 let branch = self.ui.side_panel == SidePanel::SourceControl;
                 self.side_history().set_focused(true);
                 let top = self.hits.history.map_or(0, |h| h.top);
+                // The "Reading history…" row under the commits is no commit.
+                if top + row as usize >= self.side_history().commits.len() {
+                    return;
+                }
                 self.side_history().select_row(top + row as usize);
                 // A single click opens the commit (Enter's too).
                 if let Some(id) = self.side_history().selected().map(str::to_string) {

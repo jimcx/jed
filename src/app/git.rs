@@ -20,18 +20,11 @@ pub(super) enum GitEvent {
     },
     /// The cheap HEAD read finished: the branch, before the full status walk.
     Head(Option<git::Status>),
-    /// A page of the active file's commits was read (`app/git_history.rs`).
-    History {
-        path: PathBuf,
-        skip: usize,
+    /// A chunk of a history list's walk (`app/git_history.rs`'s `history_chunk`).
+    HistoryChunk {
+        list: crate::git_history::HistoryList,
         generation: u64,
-        result: Result<git::log::Page, String>,
-    },
-    /// A page of the branch's commits was read (`app/branch_history.rs`).
-    BranchHistory {
-        skip: usize,
-        generation: u64,
-        result: Result<git::log::Page, String>,
+        result: Result<git::log::Chunk, String>,
     },
 }
 
@@ -80,17 +73,11 @@ impl App {
         match ev {
             GitEvent::Refreshed { result, elapsed } => self.git_refreshed(result, elapsed),
             GitEvent::Head(status) => self.git_head_read(status),
-            GitEvent::History {
-                path,
-                skip,
+            GitEvent::HistoryChunk {
+                list,
                 generation,
                 result,
-            } => self.git_history_done(path, skip, generation, result),
-            GitEvent::BranchHistory {
-                skip,
-                generation,
-                result,
-            } => self.branch_history_done(skip, generation, result),
+            } => self.history_chunk(list, generation, result),
         }
     }
 

@@ -485,6 +485,9 @@ pub struct App {
     /// Every path `flush_fs_changes` handled, for tests.
     #[cfg(test)]
     pub fs_flushed: Vec<PathBuf>,
+    /// Hooks on the history walk jobs, for tests.
+    #[cfg(test)]
+    pub stream_probe: std::sync::Arc<git_history::StreamProbe>,
 }
 
 impl App {
@@ -662,6 +665,8 @@ impl App {
             last_command: None,
             #[cfg(test)]
             fs_flushed: Vec::new(),
+            #[cfg(test)]
+            stream_probe: Default::default(),
         };
         app.load_associations();
         match initial {
@@ -1896,16 +1901,16 @@ impl App {
         }));
     }
 
-    /// Takes in a page of a file's commits for `path` and `generation`, as if the background
-    /// read had sent it (to test that another file's or a replaced list's pages are dropped).
-    pub fn test_git_history_page(
+    /// Takes in a chunk of a file's history walk for `path` and `generation`, as if the
+    /// background job had sent it (to test that another file's or a replaced list's chunks are
+    /// dropped).
+    pub fn test_git_history_chunk(
         &mut self,
         path: PathBuf,
-        skip: usize,
         generation: u64,
-        result: Result<crate::git::log::Page, String>,
+        result: Result<crate::git::log::Chunk, String>,
     ) {
-        self.git_history_done(path, skip, generation, result);
+        self.history_chunk(crate::git_history::HistoryList::File(path), generation, result);
     }
 
     /// Takes in a finished history task, as if the background one had sent `HistoryDone`.

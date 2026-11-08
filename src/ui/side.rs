@@ -467,8 +467,20 @@ pub(super) fn render_history(
         out.set_stringn(list.x + 1, list.y, &text, list.width.saturating_sub(1) as usize, dim);
     } else {
         let now = history::now_ms();
-        for i in top..(top + list.height as usize).min(len) {
+        for i in top..(top + list.height as usize).min(history.row_count()) {
             let y = list.y + (i - top) as u16;
+            if i == len {
+                // The walk goes on: its row under the commits.
+                let dim = base.patch(theme.get("sideBar.dim"));
+                out.set_stringn(
+                    list.x + 1,
+                    y,
+                    "Reading history…",
+                    list.width.saturating_sub(1) as usize,
+                    dim,
+                );
+                continue;
+            }
             let style = if selected == Some(i) {
                 base.patch(selected_style)
             } else {

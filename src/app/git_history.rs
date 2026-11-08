@@ -7,19 +7,80 @@
 //! "No history".
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 
 use super::git::GitEvent;
 use super::{App, AppEvent};
 use crate::command::GitHistoryCommand as C;
 use crate::git::Repo;
 use crate::git::log;
+use crate::git_history::{GitHistory, HistoryList, HistoryStream};
 use crate::layout::SidePanel;
 use crate::scrollbar::Scrollable;
 use crate::side_sections::{Section, dragged_height, split};
 
+/// A fresh list's staged commits become the rows (see `App::history_chunk` for the selection and
+/// top rules).
+fn replace_rows(h: &mut GitHistory, list: &HistoryList) {
+    let old_first = h.commits.first().map(|c| c.id.clone());
+    let reload = !h.commits.is_empty();
+    let selected = h.selected().map(str::to_string);
+    h.commits = std::mem::take(&mut h.staged);
+    h.fresh = false;
+    let first = h.commits.first().map(|c| c.id.clone());
+    let there = selected
+        .as_deref()
+        .is_some_and(|id| h.commits.iter().any(|c| c.id == id));
+    if reload {
+        match (list, there) {
+            (_, true) => {}
+            (HistoryList::Branch, false) => h.set_selected(None),
+            (HistoryList::File(_), false) => h.set_selected(first.clone()),
+        }
+        if old_first != first {
+            h.scrollable().set_top(0);
+        }
+    } else {
+        h.set_selected(None);
+        h.scrollable().set_top(0);
+    }
+}
+
+/// Test hooks on the walk jobs: counts walks started and jobs exited, and holds a job after each
+/// chunk it sends until released (so a test sees a list mid-walk without timing luck).
+#[cfg(test)]
+#[derive(Default)]
+pub struct StreamProbe {
+    pub walks: std::sync::atomic::AtomicUsize,
+    pub exited: std::sync::atomic::AtomicUsize,
+    /// Chunks the jobs sent.
+    pub sent: std::sync::atomic::AtomicUsize,
+    held: std::sync::Mutex<bool>,
+    released: std::sync::Condvar,
+}
+
+#[cfg(test)]
+impl StreamProbe {
+    /// Jobs stop after each chunk they send until `hold(false)`.
+    pub fn hold(&self, on: bool) {
+        *self.held.lock().unwrap() = on;
+        self.released.notify_all();
+    }
+
+    fn wait_if_held(&self) {
+        let mut held = self.held.lock().unwrap();
+        while *held {
+            held = self.released.wait(held).unwrap();
+        }
+    }
+}
+
 impl App {
-    /// Each loop turn (`start`, `run`, `pump` / `settle`): follows the active file, reloads the
-    /// history after HEAD moved, and reads the next page once the list is near its end. Only
+    /// Each loop turn (`start`, `run`, `pump` / `settle`): follows the active file, restarts the
+    /// walk after HEAD moved, and asks it for another page once the list is near its end. Only
     /// while the section is on screen: hidden or collapsed, a new file or HEAD only marks it
     /// `stale`, read when it shows again. Nothing without a tokio runtime.
     pub(super) fn sync_git_history(&mut self) {
@@ -30,48 +91,32 @@ impl App {
         let shown = self.ui.side_visible && self.ui.side_panel == SidePanel::Explorer && !self.git_history.collapsed();
         if path != self.git_history.path {
             let found = path.as_deref().and_then(|p| self.history_repo(p));
-            self.git_history.reset(path);
-            match found {
-                Some((repo, rel)) if shown => self.history_page(repo, rel, 0),
-                Some(_) => self.git_history.stale = true,
-                None => {}
+            self.git_history.reset(path.clone());
+            match (found, path) {
+                (Some((repo, rel)), Some(path)) if shown => {
+                    self.start_history(HistoryList::File(path), repo, Some(rel))
+                }
+                (Some(_), _) => self.git_history.stale = true,
+                (None, _) => {}
             }
             return;
         }
         if !shown {
             return;
         }
-        if self.git_history.stale && !self.git_history.loading {
+        if self.git_history.stale {
             self.git_history.stale = false;
             let Some(path) = self.git_history.path.clone() else {
                 return;
             };
             match self.history_repo(&path) {
-                // The old rows stay up until the first page replaces them.
-                Some((repo, rel)) => self.history_page(repo, rel, 0),
+                // The old rows stay up until the new walk has covered them.
+                Some((repo, rel)) => self.start_history(HistoryList::File(path), repo, Some(rel)),
                 None => self.git_history.reset(Some(path)),
             }
             return;
         }
-        if self.git_history.loading || self.git_history.error.is_some() || !self.git_history.more {
-            return;
-        }
-        // The next page when the end of the list is on screen (or a page didn't fill it).
-        let len = self.git_history.commits.len();
-        if len == 0 {
-            return;
-        }
-        let height = self.git_history.height.max(1);
-        if self.git_history.scroll() + height + 1 < len {
-            return;
-        }
-        let Some(path) = self.git_history.path.clone() else {
-            return;
-        };
-        match self.history_repo(&path) {
-            Some((repo, rel)) => self.history_page(repo, rel, len),
-            None => self.git_history.reset(Some(path)),
-        }
+        self.git_history.want_more();
     }
 
     /// The repository and `path` relative to its work tree (`None`: no repository yet, or the
@@ -82,76 +127,101 @@ impl App {
         Some((status.repo.clone(), rel))
     }
 
-    /// Reads `skip`'s page of the active file's commits off the UI thread. Older generations'
-    /// results are dropped (`git_history_done`).
-    fn history_page(&mut self, repo: Repo, rel: PathBuf, skip: usize) {
-        let Some(path) = self.git_history.path.clone() else {
-            return;
+    /// Starts `list`'s walk (`rel`: the file, work-tree relative; `None`: the branch) in one
+    /// kept-alive job, replacing a running one (its flag is set, and its in-flight chunks are
+    /// dropped: the generation changes). The job sends `GitEvent::HistoryChunk`s and, once it has
+    /// sent what the list asked for, waits for `GitHistory::want_more`'s requests. The old rows
+    /// stay up until the new commits hold the selected one (else the first) or reach a page (`history_chunk`).
+    pub(super) fn start_history(&mut self, list: HistoryList, repo: Repo, rel: Option<PathBuf>) {
+        let h = match list {
+            HistoryList::File(_) => &mut self.git_history,
+            HistoryList::Branch => &mut self.branch_history,
         };
-        let generation = self.git_history.generation;
-        self.git_history.loading = true;
+        h.stream = None;
+        h.generation += 1;
+        h.fresh = true;
+        h.staged.clear();
+        h.loading = true;
+        let generation = h.generation;
+        let wanted = log::PAGE.max(h.commits.len());
+        let (want_tx, want_rx) = std::sync::mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        h.stream = Some(HistoryStream::new(cancel.clone(), want_tx, wanted));
         let tx = self.tx.clone();
+        #[cfg(test)]
+        let probe = self.stream_probe.clone();
         tokio::task::spawn_blocking(move || {
-            let result = log::commits(&repo, &rel, skip, log::PAGE).map_err(|e| e.message().to_string());
-            let _ = tx.send(AppEvent::Git(GitEvent::History {
-                path,
-                skip,
-                generation,
-                result,
-            }));
+            #[cfg(test)]
+            probe.walks.fetch_add(1, Ordering::SeqCst);
+            let send = |result: Result<log::Chunk, String>| {
+                let sent = tx
+                    .send(AppEvent::Git(GitEvent::HistoryChunk {
+                        list: list.clone(),
+                        generation,
+                        result,
+                    }))
+                    .is_ok();
+                #[cfg(test)]
+                {
+                    probe.sent.fetch_add(1, Ordering::SeqCst);
+                    probe.wait_if_held();
+                }
+                sent
+            };
+            match log::Walker::new(&repo, rel.as_deref()) {
+                Ok(walker) => log::stream(walker, wanted, &want_rx, &cancel, send),
+                Err(e) => {
+                    send(Err(e.message().to_string()));
+                }
+            }
+            #[cfg(test)]
+            probe.exited.fetch_add(1, Ordering::SeqCst);
         });
     }
 
-    /// A page arrived: the first replaces the list (keeping the selected commit when it is still
-    /// there, else selecting the first; the top only goes back to 0 when the first commit
-    /// changed, so a commit made outside jed shows), later ones append.
-    pub(super) fn git_history_done(
-        &mut self,
-        path: PathBuf,
-        skip: usize,
-        generation: u64,
-        result: Result<log::Page, String>,
-    ) {
-        if generation != self.git_history.generation || self.git_history.path.as_ref() != Some(&path) {
+    /// A chunk of a list's walk arrived. The first replaces the list once it covers the rows
+    /// that were there (a reload; at once for an empty list): keeping the selected commit while
+    /// it is still there — the Explorer's section selects the first otherwise, so a commit made
+    /// outside jed shows; the branch pane selects nothing — and the top only going back to 0
+    /// when the first commit changed. A file's first list selects nothing. Later chunks append.
+    pub(super) fn history_chunk(&mut self, list: HistoryList, generation: u64, result: Result<log::Chunk, String>) {
+        let h = match &list {
+            HistoryList::File(path) if self.git_history.path.as_ref() == Some(path) => &mut self.git_history,
+            HistoryList::File(_) => return,
+            HistoryList::Branch => &mut self.branch_history,
+        };
+        if generation != h.generation {
             return;
         }
-        self.git_history.loading = false;
+        let wanted = h.stream.as_ref().map_or(0, HistoryStream::wanted);
         match result {
-            Ok(page) => {
-                self.git_history.error = None;
-                if skip == 0 {
-                    let old_first = self.git_history.commits.first().map(|c| c.id.clone());
-                    let reload = !self.git_history.commits.is_empty();
-                    let selected = self.git_history.selected().map(str::to_string);
-                    self.git_history.commits = page.commits;
-                    let first = self.git_history.commits.first().map(|c| c.id.clone());
-                    if reload {
-                        // Keep the selection while its commit is still there (it may have
-                        // moved down); else the first, so a commit made outside jed shows.
-                        let there = selected
-                            .as_deref()
-                            .is_some_and(|id| self.git_history.commits.iter().any(|c| c.id == id));
-                        self.git_history
-                            .set_selected(if there { selected } else { first.clone() });
-                        if old_first != first {
-                            // A new top commit: show it (and the top of the list).
-                            self.git_history.scrollable().set_top(0);
-                        }
-                    } else {
-                        // A file's first page: nothing selected until a click or a key.
-                        self.git_history.set_selected(None);
-                        self.git_history.scrollable().set_top(0);
+            Ok(chunk) => {
+                h.error = None;
+                h.more = !chunk.done;
+                if h.fresh {
+                    h.staged.extend(chunk.commits);
+                    // Swap once the new rows hold the commit the selection / top rules look for
+                    // (the selected, else the first of the old list), or fill a page.
+                    let anchor = h.selected().or_else(|| h.commits.first().map(|c| c.id.as_str()));
+                    let covered = anchor.is_none_or(|id| h.staged.iter().any(|c| c.id == id));
+                    if chunk.done || covered || h.staged.len() >= log::PAGE {
+                        replace_rows(h, &list);
                     }
-                    self.git_history.more = page.more;
-                } else if skip == self.git_history.commits.len() {
-                    // Pages only ever follow the loaded list: no overlap, no duplicates.
-                    self.git_history.commits.extend(page.commits);
-                    self.git_history.more = page.more;
+                } else {
+                    h.commits.extend(chunk.commits);
+                }
+                h.loading = h.fresh || (!chunk.done && h.commits.len() < wanted);
+                if chunk.done {
+                    h.stream = None;
                 }
             }
             Err(e) => {
-                self.git_history.error = Some(e);
-                self.git_history.more = false;
+                h.error = Some(e);
+                h.more = false;
+                h.loading = false;
+                h.fresh = false;
+                h.staged.clear();
+                h.stream = None;
             }
         }
     }

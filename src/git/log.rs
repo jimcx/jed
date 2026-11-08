@@ -21,6 +21,8 @@ use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use git2::{ErrorCode, Oid, Repository, Tree};
@@ -29,6 +31,10 @@ use super::Repo;
 
 /// The commits one page holds (the app reads history this many at a time).
 pub const PAGE: usize = 200;
+
+/// The longest a stream holds commits it has found before it sends them (the first find of a walk
+/// goes out at once).
+pub const FLUSH: Duration = Duration::from_millis(200);
 
 /// How long one [`Walker::step`] runs before it returns what it has found.
 pub const SLICE: Duration = Duration::from_millis(50);
@@ -48,7 +54,8 @@ pub struct Commit {
     pub time: i64,
 }
 
-/// One page of a file's history.
+/// One page of a file's history (tests: the one-call pages).
+#[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Page {
     pub commits: Vec<Commit>,
@@ -62,6 +69,14 @@ pub struct Step {
     /// The commits shown since the last step, newest first.
     pub found: Vec<Commit>,
     /// The history has ended: no further step finds anything.
+    pub done: bool,
+}
+
+/// What a [`stream`] sends: commits found since the last chunk.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Chunk {
+    pub commits: Vec<Commit>,
+    /// The history has ended: no further chunk follows.
     pub done: bool,
 }
 
@@ -89,7 +104,10 @@ impl Walker {
     pub fn new(repo: &Repo, path: Option<&Path>) -> Result<Walker, git2::Error> {
         let r = repo.open()?;
         let tip = match r.head() {
-            Ok(head) => Some(head.peel_to_commit()?.id()),
+            Ok(head) => {
+                let tip = head.peel_to_commit()?;
+                Some((tip.id(), tip.time().seconds()))
+            }
             Err(e) if e.code() == ErrorCode::UnbornBranch || e.code() == ErrorCode::NotFound => None,
             Err(e) => return Err(e),
         };
@@ -103,22 +121,22 @@ impl Walker {
             slice: SLICE,
             visited: 0,
         };
-        if let Some(tip) = tip {
-            walker.queue(tip)?;
+        if let Some((tip, time)) = tip {
+            walker.queue(tip, time);
         }
         Ok(walker)
     }
 
     /// The longest one [`Self::step`] runs before returning what it has (at least one commit is
     /// always visited).
-    #[allow(dead_code)] // no caller yet: the streaming jobs (history_stream-b) use it
+    #[cfg_attr(not(test), allow(dead_code))] // tests shorten the slice
     pub fn with_slice(mut self, slice: Duration) -> Walker {
         self.slice = slice;
         self
     }
 
     /// How many commits the walk has taken off its queue so far (shown or not).
-    #[allow(dead_code)] // no caller yet: the streaming jobs (history_stream-b) use it
+    #[cfg_attr(not(test), allow(dead_code))] // tests count the walk's work
     pub fn visited(&self) -> u64 {
         self.visited
     }
@@ -136,8 +154,8 @@ impl Walker {
                 let (walk, show) = self.simplify(&commit)?;
                 (walk, if show { Some(describe(&commit)?) } else { None })
             };
-            for parent in walk {
-                self.queue(parent)?;
+            for (parent, time) in walk {
+                self.queue(parent, time);
             }
             if let Some(shown) = shown {
                 found.push(shown);
@@ -155,19 +173,19 @@ impl Walker {
         })
     }
 
-    fn queue(&mut self, id: Oid) -> Result<(), git2::Error> {
+    /// Queues `id` (committed at `time`, which the caller has from the parsed commit) once.
+    fn queue(&mut self, id: Oid, time: i64) {
         if self.queued.insert(id) {
-            let time = self.repo.find_commit(id)?.time().seconds();
             self.heap.push((time, Reverse(self.seq), id));
             self.seq += 1;
         }
-        Ok(())
     }
 
-    /// Whether git shows this commit, and the parents the walk goes on through.
-    fn simplify(&self, commit: &git2::Commit) -> Result<(Vec<Oid>, bool), git2::Error> {
+    /// Whether git shows this commit, and the parents (with their commit times) the walk goes on
+    /// through.
+    fn simplify(&self, commit: &git2::Commit) -> Result<(Vec<(Oid, i64)>, bool), git2::Error> {
         if self.path.is_none() {
-            return Ok((commit.parent_ids().collect(), true));
+            return Ok((commit.parents().map(|p| (p.id(), p.time().seconds())).collect(), true));
         }
         if commit.parent_count() == 0 {
             let tree = commit.tree()?;
@@ -177,7 +195,7 @@ impl Walker {
         let mut treesame = None;
         let mut parents = Vec::with_capacity(commit.parent_count());
         for parent in commit.parents() {
-            let id = parent.id();
+            let id = (parent.id(), parent.time().seconds());
             if treesame.is_none() && self.entry(&parent)? == own {
                 treesame = Some(id);
             }
@@ -213,6 +231,7 @@ impl Walker {
         }
     }
 
+    #[cfg(test)]
     /// One page as a single call: steps until `skip + limit + 1` commits are shown or the history
     /// ends.
     fn page(mut self, skip: usize, limit: usize) -> Result<Page, git2::Error> {
@@ -233,18 +252,83 @@ impl Walker {
     }
 }
 
+#[cfg(test)]
 /// Blocking: the commits of HEAD that touched `path` (work-tree relative), newest first, from
 /// `skip` on, at most `limit` of them, with git's default history simplification. No commits (an
 /// unborn HEAD): an empty page.
-pub fn commits(repo: &Repo, path: &Path, skip: usize, limit: usize) -> Result<Page, git2::Error> {
+fn commits(repo: &Repo, path: &Path, skip: usize, limit: usize) -> Result<Page, git2::Error> {
     Walker::new(repo, Some(path))?.page(skip, limit)
 }
 
+#[cfg(test)]
 /// Blocking: the commits reachable from HEAD (`git log`, no path), newest first by committer
 /// date, from `skip` on, at most `limit` of them; `more` when the walk goes on. The Source
 /// Control view's branch history. An unborn HEAD: an empty page.
-pub fn branch(repo: &Repo, skip: usize, limit: usize) -> Result<Page, git2::Error> {
+fn branch(repo: &Repo, skip: usize, limit: usize) -> Result<Page, git2::Error> {
     Walker::new(repo, None)?.page(skip, limit)
+}
+
+/// Blocking, for `spawn_blocking`: drives `walker` until `wanted` commits are sent, then waits on
+/// `want` for a larger count (no polling: dropping the sender ends it). Found commits go out as
+/// `send` chunks: the first find of the walk at once, the rest when `wanted` is reached, the walk
+/// ends or [`FLUSH`] passed. Ends on done, an error (sent as `Err`), `cancel`, or `send`
+/// returning false.
+pub fn stream(
+    mut walker: Walker,
+    mut wanted: usize,
+    want: &Receiver<usize>,
+    cancel: &AtomicBool,
+    mut send: impl FnMut(Result<Chunk, String>) -> bool,
+) {
+    let mut pending: Vec<Commit> = Vec::new();
+    let mut sent = 0;
+    let mut first = true;
+    let mut flushed = Instant::now();
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        if sent + pending.len() >= wanted {
+            if !pending.is_empty() {
+                sent += pending.len();
+                let commits = std::mem::take(&mut pending);
+                if !send(Ok(Chunk { commits, done: false })) {
+                    return;
+                }
+            }
+            // Idle until the list asks for more (or is dropped).
+            let Ok(n) = want.recv() else { return };
+            wanted = wanted.max(n);
+            while let Ok(n) = want.try_recv() {
+                wanted = wanted.max(n);
+            }
+            flushed = Instant::now();
+            continue;
+        }
+        let budget = if first { 1 } else { wanted - sent - pending.len() };
+        let step = match walker.step(budget) {
+            Ok(step) => step,
+            Err(e) => {
+                send(Err(e.message().to_string()));
+                return;
+            }
+        };
+        pending.extend(step.found);
+        let reached = sent + pending.len() >= wanted;
+        let due = !pending.is_empty() && (first || flushed.elapsed() >= FLUSH);
+        if (step.done || reached || due) && (step.done || !pending.is_empty()) {
+            first = false;
+            flushed = Instant::now();
+            sent += pending.len();
+            let chunk = Chunk {
+                commits: std::mem::take(&mut pending),
+                done: step.done,
+            };
+            if !send(Ok(chunk)) || step.done {
+                return;
+            }
+        }
+    }
 }
 
 fn describe(commit: &git2::Commit) -> Result<Commit, git2::Error> {

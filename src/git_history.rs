@@ -1,5 +1,5 @@
 //! The Explorer's "Git History" section's model (no drawing; `app/git_history.rs` drives it,
-//! `ui/side.rs` draws it): the active file's commits, newest first, as pages of
+//! `ui/side.rs` draws it): the active file's commits, newest first, streamed in chunks (pages of
 //! [`git::log::PAGE`](crate::git::log::PAGE) — the scroll, selection, collapse and divider
 //! state live here, the rows are the loaded commits.
 //!
@@ -8,14 +8,60 @@
 //! ever appends, so loading a page never moves them.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 
-use crate::git::log::Commit;
+use crate::git::log::{Commit, PAGE};
 use crate::scrollbar::{ListScroll, Scroll, Scrollable};
 
 /// The section's height (divider, header and rows) before it is dragged.
 pub const DEFAULT_SECTION_HEIGHT: u16 = 10;
 
-#[derive(Debug, Clone)]
+/// Which list a streamed chunk is for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HistoryList {
+    /// The Explorer section's file (absolute path).
+    File(PathBuf),
+    /// The Source Control view's branch pane.
+    Branch,
+}
+
+/// The app's end of a running history walk (`git::log::stream` in a `spawn_blocking` job): asks
+/// it for more and, dropped, tells it to stop (the flag, and the closed request channel wakes it
+/// from its wait).
+#[derive(Debug)]
+pub struct HistoryStream {
+    cancel: Arc<AtomicBool>,
+    want: Sender<usize>,
+    /// How many commits the job was asked for so far.
+    wanted: usize,
+}
+
+impl HistoryStream {
+    pub fn new(cancel: Arc<AtomicBool>, want: Sender<usize>, wanted: usize) -> Self {
+        Self { cancel, want, wanted }
+    }
+
+    /// The commits asked for.
+    pub fn wanted(&self) -> usize {
+        self.wanted
+    }
+
+    /// Asks for `n` commits in all; false when the job is gone.
+    fn ask(&mut self, n: usize) -> bool {
+        self.wanted = self.wanted.max(n);
+        self.want.send(n).is_ok()
+    }
+}
+
+impl Drop for HistoryStream {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug)]
 pub struct GitHistory {
     /// The file the list is for (absolute); `None`: no file is open (or it's a log tab).
     pub path: Option<PathBuf>,
@@ -23,8 +69,17 @@ pub struct GitHistory {
     pub commits: Vec<Commit>,
     /// The history goes on after the loaded commits.
     pub more: bool,
-    /// A page is being read.
+    /// The walk is running and the list waits on it (it has fewer commits than it asked for and
+    /// the history goes on): drawn as a "Reading history…" row under the commits.
     pub loading: bool,
+    /// The running walk (`None`: none started, or it ended).
+    pub stream: Option<HistoryStream>,
+    /// A reload's first chunk hasn't been taken in: the next chunks replace the rows (staged in
+    /// `staged` until they hold the old selected commit, fill a page or end).
+    pub fresh: bool,
+    /// A reload's commits so far, shown instead of the old rows once they hold the old selected
+    /// commit (else the old first), fill a page, or the history ends.
+    pub staged: Vec<Commit>,
     /// The last page's error (drawn instead of the rows).
     pub error: Option<String>,
     /// Numbers the file's history and its page reads: a reset or a refresh drops older
@@ -55,6 +110,9 @@ impl Default for GitHistory {
             commits: Vec::new(),
             more: false,
             loading: false,
+            stream: None,
+            fresh: false,
+            staged: Vec::new(),
             error: None,
             generation: 0,
             stale: false,
@@ -76,7 +134,7 @@ pub struct HistoryScroll<'a> {
 
 impl Scrollable for HistoryScroll<'_> {
     fn scroll(&self) -> Scroll {
-        Scroll::rows(self.history.commits.len(), self.history.height, self.history.scroll())
+        Scroll::rows(self.history.row_count(), self.history.height, self.history.scroll())
     }
 
     fn set_top(&mut self, top: usize) {
@@ -89,6 +147,29 @@ impl GitHistory {
     /// The loaded commits.
     pub fn rows(&self) -> &[Commit] {
         &self.commits
+    }
+
+    /// The rows the list scrolls over: the commits and, while the walk runs, its loading row.
+    pub fn row_count(&self) -> usize {
+        self.commits.len() + usize::from(self.loading)
+    }
+
+    /// The list is near its end and the walk has handed over everything asked for: asks it for
+    /// another page.
+    pub fn want_more(&mut self) {
+        let len = self.commits.len();
+        if self.loading || self.fresh || self.error.is_some() || !self.more || len == 0 {
+            return;
+        }
+        if self.scroll() + self.height.max(1) + 1 < len {
+            return;
+        }
+        let Some(stream) = &mut self.stream else { return };
+        if stream.ask(len + PAGE) {
+            self.loading = true;
+        } else {
+            self.more = false;
+        }
     }
 
     /// The section's scroll bar over the loaded commits.
@@ -181,7 +262,7 @@ impl GitHistory {
 
     /// The top row, clamped so the last row can reach the bottom.
     pub fn scroll(&self) -> usize {
-        self.list().scroll(self.commits.len())
+        self.list().scroll(self.row_count())
     }
 
     fn list(&self) -> ListScroll {
@@ -193,7 +274,7 @@ impl GitHistory {
 
     pub fn scroll_by(&mut self, delta: isize) {
         let mut l = self.list();
-        l.scroll_by(self.commits.len(), delta);
+        l.scroll_by(self.row_count(), delta);
         self.top = l.top;
     }
 
@@ -205,7 +286,7 @@ impl GitHistory {
     /// The drawn height (each frame); a reveal asked for before the first draw runs now.
     pub fn set_height(&mut self, height: usize) {
         let mut l = self.list();
-        l.set_height(self.commits.len(), height);
+        l.set_height(self.row_count(), height);
         self.height = l.height;
         if self.reveal_pending && height > 0 {
             self.reveal_pending = false;
@@ -233,6 +314,9 @@ impl GitHistory {
         self.commits.clear();
         self.more = false;
         self.loading = false;
+        self.stream = None;
+        self.fresh = false;
+        self.staged.clear();
         self.error = None;
         self.stale = false;
         self.top = 0;
