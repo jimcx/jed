@@ -1018,6 +1018,15 @@ mod scroll_bars {
         }
     }
 
+    /// Cursor to the document start: Cmd+Up on macOS, Ctrl+Home elsewhere.
+    fn doc_start(app: &mut App) {
+        if cfg!(target_os = "macos") {
+            app.press(K::Up, M::SUPER);
+        } else {
+            app.press(K::Home, M::CONTROL);
+        }
+    }
+
     /// The bar is the screen's last column, so the pointer easily overshoots it: a press the
     /// terminal reports past the right edge (in its padding) grabs the bar, as the edge's cell,
     /// and a drag past the edge keeps scrolling.
@@ -1031,7 +1040,7 @@ mod scroll_bars {
 
         // Reported one and more columns past the edge.
         for x in [80, 85] {
-            app.press(K::Home, M::CONTROL);
+            doc_start(&mut app);
             draw(&mut app);
             assert_eq!(top(&app), 0);
             app.mouse(DOWN, x, mid);
@@ -1046,7 +1055,7 @@ mod scroll_bars {
         }
 
         // Pressed past the edge, dragged down past it.
-        app.press(K::Home, M::CONTROL);
+        doc_start(&mut app);
         draw(&mut app);
         app.mouse(DOWN, 82, mid);
         let at_mid = top(&app);

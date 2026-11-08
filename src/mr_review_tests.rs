@@ -52,7 +52,8 @@ fn pr_json(number: u64, title: &str, merge_base: &str) -> String {
 /// `a.txt`, editing `mod.txt`, adding `new.txt`, deleting `gone.txt`. Returns the repository and
 /// main's commit id.
 fn make_repo(base: &Path) -> (PathBuf, String) {
-    let root = base.join("proj");
+    // Canonical, so paths built from it match the app's (macOS's temp dir is behind /var → /private/var).
+    let root = base.canonicalize().unwrap().join("proj");
     fs::create_dir_all(&root).unwrap();
     init(&root);
     fs::write(root.join("a.txt"), "one\ntwo\nthree\nfour\nfive\nsix\n").unwrap();
