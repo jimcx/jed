@@ -712,6 +712,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Snippets** (`snippets`): LSP snippet completions with tab stops, mirrors and choices — [tasks/snippets.md](tasks/snippets.md)
 - **Stage / unstage / revert selected lines** (`stage_selected_lines`): stage, unstage or revert just the selected lines — [tasks/stage_selected_lines.md](tasks/stage_selected_lines.md)
 - **Stale cargo check diagnostics** (`stale_cargo_check`): dim cargo-check diagnostics until the next save — [tasks/stale_cargo_check.md](tasks/stale_cargo_check.md)
+- **Streamed git history** (`history_stream`): the Explorer's Git History and the Source Control view's commits pane show their first commits at once and fill in as a resumable walk goes on, instead of waiting for the whole history on every page — [tasks/history_stream.md](tasks/history_stream.md)
 - **Themes** (`themes`): a built-in Light+, a `theme` setting, a picker with live preview and theme files — [tasks/themes.md](tasks/themes.md)
 - **Transform, sort and dedupe lines** (`transform_sort_dedupe`): change case, sort, and deduplicate lines — [tasks/transform_sort_dedupe.md](tasks/transform_sort_dedupe.md)
 - **VHDL: tree-sitter and VHDL-LS** (`vhdl`): VHDL files get syntax colours, comment / pair / indent behaviour and a language server (`vhdl_ls` from rust_hdl), as C++ / Python / Rust do — [tasks/vhdl.md](tasks/vhdl.md)
