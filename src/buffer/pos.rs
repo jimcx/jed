@@ -54,6 +54,94 @@ pub fn bytes_in(rope: &Rope, start: usize, end: usize) -> impl Iterator<Item = &
     })
 }
 
+/// Whether a line whose first byte is not a line break starts right after the byte `prev`
+/// (`None` at the text's start): after LF, or after a CR (a CRLF's CR is followed by the LF, which
+/// is not this line's first byte).
+fn starts_line_after(prev: Option<u8>) -> bool {
+    matches!(prev, None | Some(b'\n' | b'\r'))
+}
+
+/// Calls `f(at, prefix index)` for each place in `bytes` where a prefix starts right after a line
+/// break (or `before` for `at == 0`), by searching for the prefixes' first bytes (`groups`, up to
+/// three each, one `memchr` pass per group) and checking the line start and the rest only there.
+fn search_prefixes(
+    bytes: &[u8],
+    before: Option<u8>,
+    groups: &[Vec<u8>],
+    prefixes: &[&str],
+    mut f: impl FnMut(usize, usize),
+) {
+    for group in groups {
+        let mut from = 0;
+        while from < bytes.len() {
+            let hit = match group[..] {
+                [a] => memchr::memchr(a, &bytes[from..]),
+                [a, b] => memchr::memchr2(a, b, &bytes[from..]),
+                [a, b, c] => memchr::memchr3(a, b, c, &bytes[from..]),
+                _ => unreachable!(),
+            };
+            let Some(hit) = hit else { break };
+            let at = from + hit;
+            from = at + 1;
+            let prev = if at > 0 { Some(bytes[at - 1]) } else { before };
+            if starts_line_after(prev)
+                && let Some(index) = prefixes.iter().position(|p| bytes[at..].starts_with(p.as_bytes()))
+            {
+                f(at, index);
+            }
+        }
+    }
+}
+
+/// The lines that start with one of `prefixes` (none empty, none starting with CR or LF), as
+/// (line start, index of the prefix), in increasing start order. Searches the chunks' bytes for
+/// the prefixes' first bytes (`memchr`) instead of visiting each line, so a text with few matches
+/// costs a SIMD scan, not a walk over every line; a prefix split across two chunks is found
+/// through a small window around the boundary. Lines are `LINE_TYPE`'s: LF, CRLF and lone CR.
+pub fn lines_starting_with(rope: &Rope, prefixes: &[&str]) -> Vec<(ByteIdx, usize)> {
+    debug_assert!(prefixes.iter().all(|p| !p.is_empty() && !p.starts_with(['\n', '\r'])));
+    if prefixes.is_empty() {
+        return Vec::new();
+    }
+    let mut firsts: Vec<u8> = prefixes.iter().map(|p| p.as_bytes()[0]).collect();
+    firsts.sort_unstable();
+    firsts.dedup();
+    let groups: Vec<Vec<u8>> = firsts.chunks(3).map(<[u8]>::to_vec).collect();
+    let longest = prefixes.iter().map(|p| p.len()).max().unwrap_or(1);
+    let mut found = Vec::new();
+    let mut base = 0;
+    let mut prev_last: Option<u8> = None;
+    let mut window = Vec::new();
+    for chunk in rope.chunks() {
+        let bytes = chunk.as_bytes();
+        let end = base + bytes.len();
+        search_prefixes(bytes, prev_last, &groups, prefixes, |at, index| {
+            found.push((ByteIdx(base + at), index));
+        });
+        // Matches starting in this chunk and ending in a later one: search a window around its end.
+        let tail = &bytes[bytes.len().saturating_sub(longest - 1)..];
+        if end < rope.len() && tail.iter().any(|b| firsts.contains(b)) {
+            let from = end.saturating_sub(longest);
+            let to = (end + longest - 1).min(rope.len());
+            window.clear();
+            bytes_in(rope, from, to).for_each(|c| window.extend_from_slice(c));
+            search_prefixes(&window, None, &groups, prefixes, |at, index| {
+                let start = from + at;
+                // Only those starting in this chunk and reaching past it (the rest are found
+                // within a chunk). `start > end - len >= from`, so a byte precedes it in the
+                // window unless the window starts the text.
+                if start >= base && start + prefixes[index].len() > end {
+                    found.push((ByteIdx(start), index));
+                }
+            });
+        }
+        prev_last = bytes.last().copied().or(prev_last);
+        base = end;
+    }
+    found.sort_unstable_by_key(|&(start, _)| start);
+    found
+}
+
 /// `bytes_in` backwards: the chunks of `start..end` (clamped to the text) from the last to the
 /// first (bracket matching scans back from a closing bracket).
 pub fn bytes_in_rev(rope: &Rope, start: usize, end: usize) -> impl Iterator<Item = &[u8]> {
@@ -1171,6 +1259,135 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `lines_starting_with` as the old scan did it: every line via `each_line`, tested with `starts_with`.
+    fn lines_by_walk(r: &Rope, prefixes: &[&str]) -> Vec<(ByteIdx, usize)> {
+        let mut out = Vec::new();
+        each_line::<()>(r, 0, false, |start, text| {
+            if let Some(i) = prefixes.iter().position(|p| text.starts_with(p)) {
+                out.push((start, i));
+            }
+            ControlFlow::Continue(())
+        });
+        out
+    }
+
+    /// A seeded generator: each call gives a number below `n`.
+    fn lcg(mut seed: u32) -> impl FnMut(usize) -> usize {
+        move |n| {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 16) as usize % n
+        }
+    }
+
+    const MARKS: [&str; 4] = [
+        concat!("<<<<<<", "<"),
+        concat!("||||||", "|"),
+        concat!("======", "="),
+        concat!(">>>>>>", ">"),
+    ];
+
+    fn marks(r: &Rope) -> Vec<(usize, usize)> {
+        lines_starting_with(r, &MARKS)
+            .into_iter()
+            .map(|(b, i)| (b.0, i))
+            .collect()
+    }
+
+    #[test]
+    fn lines_starting_with_finds_markers_at_the_edges_and_only_at_line_starts() {
+        let (a, b, c, d) = (MARKS[0], MARKS[1], MARKS[2], MARKS[3]);
+        assert_eq!(marks(&rope("")), vec![]);
+        assert_eq!(marks(&rope(&format!("{a} x\nmid\n{d}"))), vec![(0, 0), (14, 3)]);
+        assert_eq!(marks(&rope(&format!("x{a}\n y{c}\nx {d}"))), vec![]);
+        assert_eq!(marks(&rope(a)), vec![(0, 0)]);
+        // CRLF, lone CR and a CR before the marker at the very start of a later line.
+        assert_eq!(
+            marks(&rope(&format!("a\r\n{b}\r\n{c}\r{d}\r"))),
+            vec![(3, 1), (12, 2), (20, 3)]
+        );
+        assert_eq!(marks(&rope(&format!("a\r{a}"))), vec![(2, 0)]);
+        // Longer than a prefix is still a match (`Kind::of` uses `starts_with`); shorter is not.
+        assert_eq!(marks(&rope(&format!("{a}<<<\n{}\n", &a[1..]))), vec![(0, 0)]);
+    }
+
+    #[test]
+    fn lines_starting_with_finds_markers_split_across_chunks() {
+        let (a, c) = (MARKS[0], MARKS[2]);
+        for n in 1990..2110 {
+            for (pad, tail) in [("x", "\n"), ("é", "\r\n"), ("x", "\r"), ("x", "\n\n")] {
+                for lead in ["", "\n", "\r"] {
+                    let head = format!("{lead}{}", pad.repeat(n / pad.len()));
+                    let text = format!("{head}{tail}{a} one\n{c}\n{head}{tail}{a}");
+                    let r = rope(&text);
+                    assert_eq!(
+                        lines_starting_with(&r, &MARKS),
+                        lines_by_walk(&r, &MARKS),
+                        "n {n} pad {pad:?} tail {tail:?}"
+                    );
+                    assert!(marks(&r).len() >= 3);
+                }
+            }
+        }
+        // A chunked rope with a marker straddling every possible boundary.
+        let text = format!("{}\n{a}\n{}", "x".repeat(3000), "y".repeat(3000));
+        for cut in 3001..3010 {
+            let mut b = ropey::RopeBuilder::new();
+            b.append(&text[..cut]);
+            b.append(&text[cut..]);
+            let r = b.finish();
+            assert_eq!(marks(&r), vec![(3001, 0)], "cut {cut}");
+        }
+    }
+
+    #[test]
+    fn lines_starting_with_matches_the_line_walk_on_random_text() {
+        let pieces = [
+            MARKS[0], MARKS[1], MARKS[2], MARKS[3], "<", "=", "|", ">", "\n", "\r", "\r\n", "ab", " ", "é", "<<<<<<",
+            "=======x",
+        ];
+        let mut next = lcg(99);
+        for round in 0..300 {
+            let mut text = String::new();
+            for _ in 0..next(if round % 10 == 0 { 3000 } else { 60 }) {
+                text.push_str(pieces[next(pieces.len())]);
+            }
+            let r = rope(&text);
+            assert_eq!(lines_starting_with(&r, &MARKS), lines_by_walk(&r, &MARKS), "{text:?}");
+        }
+    }
+
+    /// Dense marker-like text in ropes built from several appended parts cut at random char
+    /// boundaries (inside markers, between CR and LF), so chunk edges fall everywhere.
+    #[test]
+    fn lines_starting_with_matches_the_line_walk_on_randomly_chunked_ropes() {
+        let pieces = [
+            MARKS[0], MARKS[1], MARKS[2], MARKS[3], "<", "=", "|", ">", "\n", "\r", "\r\n", "\n", "x", "é", "<<<<<<",
+            "=======x",
+        ];
+        let mut next = lcg(7);
+        let mut split_seen = false;
+        for round in 0..200 {
+            let mut text = String::new();
+            for _ in 0..next(if round % 4 == 0 { 3000 } else { 400 }) {
+                text.push_str(pieces[next(pieces.len())]);
+            }
+            let mut b = ropey::RopeBuilder::new();
+            let mut at = 0;
+            while at < text.len() {
+                let mut cut = (at + 1 + next(40)).min(text.len());
+                while !text.is_char_boundary(cut) {
+                    cut += 1;
+                }
+                b.append(&text[at..cut]);
+                at = cut;
+            }
+            let r = b.finish();
+            split_seen |= r.chunks().count() > 2;
+            assert_eq!(lines_starting_with(&r, &MARKS), lines_by_walk(&r, &MARKS), "{text:?}");
+        }
+        assert!(split_seen, "the builder never produced a rope of 3+ chunks");
     }
 
     #[test]

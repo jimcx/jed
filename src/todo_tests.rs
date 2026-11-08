@@ -13452,3 +13452,92 @@ mod scons_settings {
         assert!(!messages.iter().any(|m| m.contains("SCons")), "{messages:?}");
     }
 }
+
+/// Done when (conflict_scan): the conflict-marker scan after an edit costs a chunk search, not a
+/// walk over every line of the buffer.
+mod conflict_scan {
+    use std::fs;
+    use std::time::{Duration, Instant};
+
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::app::{App, InitialFile};
+    use crate::buffer::Buffer;
+    use crate::workspace::Workspace;
+    use crate::workspace::trust::TrustStore;
+
+    fn open(text: &str) -> (tempfile::TempDir, App) {
+        let (dir, root, state) = crate::milestone10_tests::dirs();
+        fs::write(root.join("a.txt"), text).unwrap();
+        let buffer = Buffer::open(&root.join("a.txt")).unwrap();
+        let ws = Workspace::load(root);
+        let trust = TrustStore::load(state.join("trust.toml"));
+        let mut app = App::new(ws, trust, Some(InitialFile { buffer, goto: None }), true);
+        app.test_start();
+        app.test_plain_whitespace();
+        (dir, app)
+    }
+
+    /// About 1 MB of lines; with `conflicts`, a conflict every ~100 KB.
+    fn big(conflicts: bool) -> (String, usize) {
+        let mut text = String::with_capacity(1_100_000);
+        let (mut i, mut next, mut count) = (0, 100_000, 0);
+        while text.len() < 1_000_000 {
+            if conflicts && text.len() >= next {
+                text.push_str(concat!("<<<<<<", "< HEAD\n"));
+                text.push_str("ours\n");
+                text.push_str(concat!("======", "=\n"));
+                text.push_str("theirs\n");
+                text.push_str(concat!(">>>>>>", "> main\n"));
+                next += 100_000;
+                count += 1;
+            }
+            text.push_str(&format!("line {i} of a big file with nothing to merge here\n"));
+            i += 1;
+        }
+        (text, count)
+    }
+
+    /// Types 50 characters; returns the average scan right after an edit.
+    fn run(what: &str, conflicts: bool) -> Duration {
+        let (text, count) = big(conflicts);
+        let (_dir, mut app) = open(&text);
+        let mut term = Terminal::new(TestBackend::new(160, 50)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let (mut scan, mut frame) = (Duration::ZERO, Duration::ZERO);
+        let n = 50;
+        for k in 0..n {
+            app.press(KeyCode::Char((b'a' + (k % 26) as u8) as char), KeyModifiers::NONE);
+            app.pump();
+            // The scan alone, right after the edit (the revision changed: not cached).
+            let (buf, _) = app.active_mut().unwrap();
+            let revision = buf.revision();
+            let t = Instant::now();
+            let found = buf.conflicts.scan(&buf.rope, revision).len();
+            scan += t.elapsed();
+            assert_eq!(found, count);
+            // The frame after another edit, as M1 does.
+            app.press(KeyCode::Char('x'), KeyModifiers::NONE);
+            app.pump();
+            let t = Instant::now();
+            term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+            frame += t.elapsed();
+        }
+        let (scan, frame) = (scan / n, frame / n);
+        println!("conflict scan ({what}): scan {scan:?} per edit, frame {frame:?}");
+        scan
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn milestone_conflict_scan_budget_typing_in_a_1mb_file() {
+        let none = run("no markers", false);
+        let some = run("a conflict every 100 KB", true);
+        if !cfg!(debug_assertions) {
+            let budget = Duration::from_micros(100);
+            assert!(none < budget, "marker-free scan took {none:?}, over {budget:?}");
+            assert!(some < budget * 2, "scan with markers took {some:?}");
+        }
+    }
+}
