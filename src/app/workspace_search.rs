@@ -77,7 +77,7 @@ impl App {
     /// non-empty and on one line (escaped for a regex).
     fn seed_search(&mut self) {
         let regex = self.search_view.options.regex;
-        let seed = self
+        let editor_seed = self
             .active_buffer()
             .zip(self.group().active_tab())
             .and_then(|(buf, tab)| {
@@ -86,6 +86,14 @@ impl App {
                 let one_line = pos::line_of(rope, sel.start()) == pos::line_of(rope, sel.end());
                 (!sel.is_empty() && one_line).then(|| rope.slice(sel.start().0..sel.end().0).to_string())
             });
+        // A diff view's or a terminal's selection seeds it too (one line, non-empty).
+        let seed = editor_seed.or_else(|| {
+            let text = match self.group_mut().active_diff_mut() {
+                Some(d) => d.selection_text(),
+                None => self.active_terminal().and_then(|run| run.copy_selection()),
+            };
+            text.filter(|t| !t.is_empty() && !t.contains('\n'))
+        });
         if let Some(text) = seed {
             self.search_view.query = TextField::new(if regex { regex::escape(&text) } else { text });
         }
