@@ -864,7 +864,7 @@ async fn milestone_12_kill_and_close_task_tabs() {
 use ratatui::style::Modifier;
 
 /// A cell of `reference`'s screen: the char, its foreground (`Reset`, `Indexed`, `Rgb`, as
-/// `tui-term` gives it before the theme) and bold.
+/// `ui::task` draws it before the theme) and bold.
 type RefCell = (char, Color, bool);
 
 /// What a terminal shows for `text`, modelled independently of `vt100` and only as far as the

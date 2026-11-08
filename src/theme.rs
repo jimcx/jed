@@ -159,7 +159,7 @@ impl Theme {
         }
     }
 
-    /// Maps a task terminal's cell as `tui-term` drew it from the `vt100` screen (`Reset` for
+    /// Maps a task terminal's cell as `ui::task` draws it from the `vt100` screen (`Reset` for
     /// the defaults, `Indexed` for palette colours, `Rgb`) to the theme: the defaults to
     /// `terminal.foreground` / `.background`, ANSI 0–15 to `terminal.ansi*` (0–7 drawn bright
     /// when bold, VS Code's `drawBoldTextInBrightColors`), 16–255 kept, RGB to the nearest

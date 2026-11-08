@@ -555,7 +555,7 @@ impl Run {
         lock(&self.shared.state).pid.map(|p| p as u32)
     }
 
-    /// The terminal: `screen()` for drawing (`tui-term`), `screen().contents()`, scrollback via
+    /// The terminal: `screen()` for drawing (`ui::task`), `screen().contents()`, scrollback via
     /// `screen_mut().set_scrollback(n)`. Held briefly: the reader waits on it.
     pub fn screen(&self) -> MutexGuard<'_, vt100::Parser<TitleCallback>> {
         lock(&self.shared.parser)
