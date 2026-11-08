@@ -11,13 +11,17 @@
 //! first, parents added to the queue when their child is taken (equal dates keep the order they
 //! were added in), each commit once.
 //!
-//! A page is one blocking call: [`commits`] takes a skip and a limit (the app uses [`PAGE`]) and
-//! stops the walk once it has one commit past the page, so a long history costs only the commits
-//! before it.
+//! A [`Walker`] is resumable: [`Walker::step`] walks until it has shown a budget of commits, a
+//! time slice runs out or the history ends, and the next step goes on from there, so a list can
+//! show the first commits at once and ask for more as it scrolls. [`commits`] and [`branch`] are
+//! one-call pages over a fresh walker (libgit2's revwalk is not used: its sorting walks the whole
+//! history before the first commit). No path: every commit is shown, as `git log` does.
 
+use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use git2::{ErrorCode, Oid, Repository, Tree};
 
@@ -25,6 +29,9 @@ use super::Repo;
 
 /// The commits one page holds (the app reads history this many at a time).
 pub const PAGE: usize = 200;
+
+/// How long one [`Walker::step`] runs before it returns what it has found.
+pub const SLICE: Duration = Duration::from_millis(50);
 
 /// One commit as the history list shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,109 +56,129 @@ pub struct Page {
     pub more: bool,
 }
 
-/// Blocking: the commits of HEAD that touched `path` (work-tree relative), newest first, from
-/// `skip` on, at most `limit` of them, with git's default history simplification. No commits (an
-/// unborn HEAD): an empty page.
-pub fn commits(repo: &Repo, path: &Path, skip: usize, limit: usize) -> Result<Page, git2::Error> {
-    let r = repo.open()?;
-    let tip = match r.head() {
-        Ok(head) => head.peel_to_commit()?.id(),
-        Err(e) if e.code() == ErrorCode::UnbornBranch || e.code() == ErrorCode::NotFound => {
-            return Ok(Page::default());
-        }
-        Err(e) => return Err(e),
-    };
-    Walk {
-        repo: &r,
-        path,
-        entries: HashMap::new(),
-    }
-    .page(tip, skip, limit)
+/// One chunk of a [`Walker`]'s walk.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Step {
+    /// The commits shown since the last step, newest first.
+    pub found: Vec<Commit>,
+    /// The history has ended: no further step finds anything.
+    pub done: bool,
 }
 
-/// Blocking: the commits reachable from HEAD (`git log`, no path), newest first by committer
-/// date, from `skip` on, at most `limit` of them; `more` when the walk goes on. The Source
-/// Control view's branch history. An unborn HEAD: an empty page.
-pub fn branch(repo: &Repo, skip: usize, limit: usize) -> Result<Page, git2::Error> {
-    let r = repo.open()?;
-    match r.head() {
-        Ok(_) => {}
-        Err(e) if e.code() == ErrorCode::UnbornBranch || e.code() == ErrorCode::NotFound => {
-            return Ok(Page::default());
-        }
-        Err(e) => return Err(e),
-    }
-    let mut walk = r.revwalk()?;
-    walk.push_head()?;
-    walk.set_sorting(git2::Sort::TIME)?;
-    let mut commits = Vec::new();
-    let mut more = false;
-    for (i, id) in walk.enumerate().skip(skip) {
-        if i >= skip.saturating_add(limit) {
-            more = true;
-            break;
-        }
-        commits.push(describe(&r.find_commit(id?)?)?);
-    }
-    Ok(Page { commits, more })
-}
-
-struct Walk<'a> {
-    repo: &'a Repository,
-    path: &'a Path,
+/// A resumable walk of HEAD's history, optionally simplified to one path. Blocking: [`Self::new`]
+/// opens the repository and [`Self::step`] reads objects, so call both from `spawn_blocking`.
+pub struct Walker {
+    repo: Repository,
+    /// `None`: every commit is shown and every parent walked (`git log`).
+    path: Option<PathBuf>,
+    /// git's `revs->commits`: by date, newest first; an item added later goes after the items of
+    /// its date, so a parent is never taken before its child at equal dates.
+    heap: BinaryHeap<(i64, Reverse<u64>, Oid)>,
+    queued: HashSet<Oid>,
+    seq: u64,
     /// Each parsed commit's path entry, so a parent shared by several children reads its tree
     /// once.
-    entries: HashMap<Oid, Option<(i32, Oid)>>,
+    entries: RefCell<HashMap<Oid, Option<(i32, Oid)>>>,
+    slice: Duration,
+    visited: u64,
 }
 
-impl Walk<'_> {
-    fn page(&mut self, tip: Oid, skip: usize, limit: usize) -> Result<Page, git2::Error> {
-        let want = skip.saturating_add(limit).saturating_add(1);
-        // git's `revs->commits`: by date, newest first; an item added later goes after the
-        // items of its date, so a parent is never taken before its child at equal dates.
-        let mut heap: BinaryHeap<(i64, Reverse<u64>, Oid)> = BinaryHeap::new();
-        let mut queued: HashSet<Oid> = HashSet::new();
-        let mut seq = 0u64;
-        let mut shown: Vec<Commit> = Vec::new();
-        heap.push((self.repo.find_commit(tip)?.time().seconds(), Reverse(seq), tip));
-        queued.insert(tip);
-        seq += 1;
-        while let Some((_, _, id)) = heap.pop() {
-            let commit = self.repo.find_commit(id)?;
-            let (walk, show) = self.simplify(&commit)?;
+impl Walker {
+    /// Blocking: a walker at HEAD for `path` (work-tree relative) or, with `None`, for every
+    /// commit. An unborn HEAD: a walker whose first step is done and empty.
+    pub fn new(repo: &Repo, path: Option<&Path>) -> Result<Walker, git2::Error> {
+        let r = repo.open()?;
+        let tip = match r.head() {
+            Ok(head) => Some(head.peel_to_commit()?.id()),
+            Err(e) if e.code() == ErrorCode::UnbornBranch || e.code() == ErrorCode::NotFound => None,
+            Err(e) => return Err(e),
+        };
+        let mut walker = Walker {
+            repo: r,
+            path: path.map(Path::to_path_buf),
+            heap: BinaryHeap::new(),
+            queued: HashSet::new(),
+            seq: 0,
+            entries: RefCell::default(),
+            slice: SLICE,
+            visited: 0,
+        };
+        if let Some(tip) = tip {
+            walker.queue(tip)?;
+        }
+        Ok(walker)
+    }
+
+    /// The longest one [`Self::step`] runs before returning what it has (at least one commit is
+    /// always visited).
+    #[allow(dead_code)] // no caller yet: the streaming jobs (history_stream-b) use it
+    pub fn with_slice(mut self, slice: Duration) -> Walker {
+        self.slice = slice;
+        self
+    }
+
+    /// How many commits the walk has taken off its queue so far (shown or not).
+    #[allow(dead_code)] // no caller yet: the streaming jobs (history_stream-b) use it
+    pub fn visited(&self) -> u64 {
+        self.visited
+    }
+
+    /// Blocking: walks on until `budget` commits are shown (at least one), the time slice runs
+    /// out or the history ends. Resumes where the last step stopped.
+    pub fn step(&mut self, budget: usize) -> Result<Step, git2::Error> {
+        let budget = budget.max(1);
+        let start = Instant::now();
+        let mut found = Vec::new();
+        while let Some((_, _, id)) = self.heap.pop() {
+            self.visited += 1;
+            let (walk, shown) = {
+                let commit = self.repo.find_commit(id)?;
+                let (walk, show) = self.simplify(&commit)?;
+                (walk, if show { Some(describe(&commit)?) } else { None })
+            };
             for parent in walk {
-                if queued.insert(parent) {
-                    let time = self.repo.find_commit(parent)?.time().seconds();
-                    heap.push((time, Reverse(seq), parent));
-                    seq += 1;
-                }
+                self.queue(parent)?;
             }
-            if show {
-                shown.push(describe(&commit)?);
-                if shown.len() >= want {
+            if let Some(shown) = shown {
+                found.push(shown);
+                if found.len() >= budget {
                     break;
                 }
             }
+            if start.elapsed() >= self.slice {
+                break;
+            }
         }
-        let more = shown.len() > skip.saturating_add(limit);
-        Ok(Page {
-            commits: shown.into_iter().skip(skip).take(limit).collect(),
-            more,
+        Ok(Step {
+            found,
+            done: self.heap.is_empty(),
         })
     }
 
+    fn queue(&mut self, id: Oid) -> Result<(), git2::Error> {
+        if self.queued.insert(id) {
+            let time = self.repo.find_commit(id)?.time().seconds();
+            self.heap.push((time, Reverse(self.seq), id));
+            self.seq += 1;
+        }
+        Ok(())
+    }
+
     /// Whether git shows this commit, and the parents the walk goes on through.
-    fn simplify(&mut self, commit: &git2::Commit) -> Result<(Vec<Oid>, bool), git2::Error> {
+    fn simplify(&self, commit: &git2::Commit) -> Result<(Vec<Oid>, bool), git2::Error> {
+        if self.path.is_none() {
+            return Ok((commit.parent_ids().collect(), true));
+        }
         if commit.parent_count() == 0 {
             let tree = commit.tree()?;
             return Ok((Vec::new(), self.entry_of(&tree)?.is_some()));
         }
-        let own = self.entry(commit.id())?;
+        let own = self.entry(commit)?;
         let mut treesame = None;
         let mut parents = Vec::with_capacity(commit.parent_count());
         for parent in commit.parents() {
             let id = parent.id();
-            if treesame.is_none() && self.entry(id)? == own {
+            if treesame.is_none() && self.entry(&parent)? == own {
                 treesame = Some(id);
             }
             parents.push(id);
@@ -165,23 +192,59 @@ impl Walk<'_> {
         }
     }
 
-    fn entry(&mut self, id: Oid) -> Result<Option<(i32, Oid)>, git2::Error> {
-        if let Some(entry) = self.entries.get(&id) {
+    /// The path's entry in `commit`, from the cache or its tree (the commit is already parsed, so
+    /// no second lookup).
+    fn entry(&self, commit: &git2::Commit) -> Result<Option<(i32, Oid)>, git2::Error> {
+        let id = commit.id();
+        if let Some(entry) = self.entries.borrow().get(&id) {
             return Ok(*entry);
         }
-        let tree = self.repo.find_commit(id)?.tree()?;
-        let entry = self.entry_of(&tree)?;
-        self.entries.insert(id, entry);
+        let entry = self.entry_of(&commit.tree()?)?;
+        self.entries.borrow_mut().insert(id, entry);
         Ok(entry)
     }
 
     /// The path's tree entry as (mode, blob id); `None` when the tree doesn't have it.
     fn entry_of(&self, tree: &Tree) -> Result<Option<(i32, Oid)>, git2::Error> {
-        match tree.get_path(self.path) {
+        let Some(path) = &self.path else { return Ok(None) };
+        match tree.get_path(path) {
             Ok(entry) => Ok(Some((entry.filemode(), entry.id()))),
             Err(_) => Ok(None),
         }
     }
+
+    /// One page as a single call: steps until `skip + limit + 1` commits are shown or the history
+    /// ends.
+    fn page(mut self, skip: usize, limit: usize) -> Result<Page, git2::Error> {
+        let want = skip.saturating_add(limit).saturating_add(1);
+        let mut shown: Vec<Commit> = Vec::new();
+        loop {
+            let step = self.step(want - shown.len())?;
+            shown.extend(step.found);
+            if shown.len() >= want || step.done {
+                break;
+            }
+        }
+        let more = shown.len() > skip.saturating_add(limit);
+        Ok(Page {
+            commits: shown.into_iter().skip(skip).take(limit).collect(),
+            more,
+        })
+    }
+}
+
+/// Blocking: the commits of HEAD that touched `path` (work-tree relative), newest first, from
+/// `skip` on, at most `limit` of them, with git's default history simplification. No commits (an
+/// unborn HEAD): an empty page.
+pub fn commits(repo: &Repo, path: &Path, skip: usize, limit: usize) -> Result<Page, git2::Error> {
+    Walker::new(repo, Some(path))?.page(skip, limit)
+}
+
+/// Blocking: the commits reachable from HEAD (`git log`, no path), newest first by committer
+/// date, from `skip` on, at most `limit` of them; `more` when the walk goes on. The Source
+/// Control view's branch history. An unborn HEAD: an empty page.
+pub fn branch(repo: &Repo, skip: usize, limit: usize) -> Result<Page, git2::Error> {
+    Walker::new(repo, None)?.page(skip, limit)
 }
 
 fn describe(commit: &git2::Commit) -> Result<Commit, git2::Error> {
@@ -201,30 +264,13 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
 
-    use super::super::test_repo::{git, init};
+    use super::super::test_repo::{fast_import, git, init};
     use super::*;
 
     /// `git commit` with fixed author and committer dates (the order tests need distinct ones).
     fn commit_at(dir: &Path, date: &str, message: &str) {
         git(dir, &["add", "-A"]);
-        let out = Command::new("git")
-            .args(["commit", "-q", "-m", message])
-            .current_dir(dir)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_AUTHOR_NAME", "t")
-            .env("GIT_AUTHOR_EMAIL", "t@example.com")
-            .env("GIT_COMMITTER_NAME", "t")
-            .env("GIT_COMMITTER_EMAIL", "t@example.com")
-            .env("GIT_AUTHOR_DATE", date)
-            .env("GIT_COMMITTER_DATE", date)
-            .output()
-            .expect("git runs");
-        assert!(
-            out.status.success(),
-            "git commit failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        git_at(dir, date, &["commit", "-q", "-m", message]);
     }
 
     fn tmp() -> (tempfile::TempDir, PathBuf) {
@@ -271,8 +317,43 @@ mod tests {
             .collect()
     }
 
-    /// Every page of the path's history, as the app would read it.
+    /// The ids a walker yields by repeated `step(limit)`, whatever the time slice.
+    fn stepped(mut walker: Walker, limit: usize) -> Vec<String> {
+        let mut got = Vec::new();
+        loop {
+            let step = walker.step(limit).unwrap();
+            assert!(step.found.len() <= limit);
+            got.extend(step.found.into_iter().map(|c| c.id));
+            if step.done {
+                return got;
+            }
+        }
+    }
+
+    /// Every page of the path's history, taken by repeated `step`s on one walker (and, with
+    /// time slices too short to find more than a commit per step, by the same walker again); the
+    /// one-call `commits` pages must agree.
     fn pages(repo: &Repo, path: &str, limit: usize) -> Vec<String> {
+        let got = stepped(Walker::new(repo, Some(Path::new(path))).unwrap(), limit);
+        let tiny = Walker::new(repo, Some(Path::new(path)))
+            .unwrap()
+            .with_slice(Duration::ZERO);
+        assert_eq!(stepped(tiny, limit), got, "{path}: tiny slices");
+        assert_eq!(
+            stepped(Walker::new(repo, Some(Path::new(path))).unwrap(), usize::MAX),
+            got
+        );
+        assert_eq!(
+            stepped(Walker::new(repo, Some(Path::new(path))).unwrap(), 1),
+            got,
+            "{path}: one commit per step"
+        );
+        assert_eq!(wrapper_pages(repo, path, limit), got, "{path}: commits pages");
+        got
+    }
+
+    /// Every page of the path's history through `commits`, as the app reads it today.
+    fn wrapper_pages(repo: &Repo, path: &str, limit: usize) -> Vec<String> {
         let mut got = Vec::new();
         let mut skip = 0;
         loop {
@@ -577,5 +658,126 @@ mod tests {
         assert_eq!(page.commits.len(), 1);
         assert_eq!(page.commits[0].summary, "add b.txt");
         assert!(page.more);
+    }
+
+    /// Every commit the branch walk shows, as `git log` lists them.
+    fn branch_ids(repo: &Repo, limit: usize) -> Vec<String> {
+        let got = stepped(Walker::new(repo, None).unwrap(), limit);
+        let tiny = Walker::new(repo, None).unwrap().with_slice(Duration::ZERO);
+        assert_eq!(stepped(tiny, limit), got, "tiny slices");
+        let mut paged = Vec::new();
+        while paged.len() < got.len() + 1 {
+            let page = branch(repo, paged.len(), limit).unwrap();
+            paged.extend(page.commits.into_iter().map(|c| c.id));
+            if !page.more {
+                break;
+            }
+        }
+        assert_eq!(paged, got, "branch pages");
+        got
+    }
+
+    fn cli_all(root: &Path) -> Vec<String> {
+        git(root, &["log", "--format=%H"]).lines().map(str::to_string).collect()
+    }
+
+    /// No path: merges and equal dates come out in `git log`'s order.
+    #[test]
+    fn the_branch_walk_matches_git_log_with_merges_and_equal_dates() {
+        let (_d, root) = tmp();
+        let date = "2026-01-01T00:00:00+0000";
+        write(&root, "a.txt", "a\n");
+        write(&root, "f.txt", "f\n");
+        commit_at(&root, date, "root");
+        git(&root, &["checkout", "-q", "-b", "side"]);
+        write(&root, "a.txt", "a\nside\n");
+        commit_at(&root, date, "side");
+        write(&root, "a.txt", "a\nside\nside2\n");
+        commit_at(&root, "2026-01-05T00:00:00+0000", "side2");
+        git(&root, &["checkout", "-q", "main"]);
+        write(&root, "f.txt", "f\nmain\n");
+        commit_at(&root, date, "main");
+        git_at(&root, date, &["merge", "-q", "--no-ff", "side", "-m", "merge side"]);
+        write(&root, "f.txt", "f\nmain\nmore\n");
+        commit_at(&root, "2026-01-02T00:00:00+0000", "after");
+        let repo = Repo::discover(&root).unwrap();
+        let want = cli_all(&root);
+        assert_eq!(want.len(), 6);
+        for limit in [1, 2, 4, PAGE] {
+            assert_eq!(branch_ids(&repo, limit), want, "limit {limit}");
+        }
+    }
+
+    /// An unborn HEAD: the first step is done and empty.
+    #[test]
+    fn an_unborn_head_is_done_at_once() {
+        let (_d, root) = tmp();
+        let repo = Repo::discover(&root).unwrap();
+        for path in [None, Some(Path::new("a.txt"))] {
+            let step = Walker::new(&repo, path).unwrap().step(PAGE).unwrap();
+            assert_eq!(
+                step,
+                Step {
+                    found: Vec::new(),
+                    done: true
+                }
+            );
+        }
+        assert_eq!(branch(&repo, 0, PAGE).unwrap(), Page::default());
+    }
+
+    /// A step stops at its budget, resumes, and the walk is `Send`.
+    #[test]
+    fn a_step_stops_at_its_budget_and_resumes() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Walker>();
+        let (_d, root) = tmp();
+        fast_import(&root, 10, |_| true);
+        let repo = Repo::discover(&root).unwrap();
+        let mut walker = Walker::new(&repo, Some(Path::new("target.txt"))).unwrap();
+        let first = walker.step(3).unwrap();
+        assert_eq!(first.found.len(), 3);
+        assert!(!first.done);
+        assert_eq!(first.found[0].summary, "c9");
+        let rest = walker.step(100).unwrap();
+        assert_eq!(rest.found.len(), 7);
+        assert!(rest.done);
+        assert_eq!(rest.found[0].summary, "c6");
+        assert!(walker.step(1).unwrap().found.is_empty());
+    }
+
+    /// 5,000 commits where the file is touched by the first and last only: the first step
+    /// returns the newest commit before the walk reaches the root.
+    #[test]
+    fn the_first_step_returns_before_the_root_is_reached() {
+        let (_d, root) = tmp();
+        let n = 5_000;
+        fast_import(&root, n, |i| i == 0 || i == n - 1);
+        let repo = Repo::discover(&root).unwrap();
+        let mut walker = Walker::new(&repo, Some(Path::new("target.txt"))).unwrap();
+        let first = walker.step(1).unwrap();
+        assert_eq!(first.found.len(), 1);
+        assert_eq!(first.found[0].summary, format!("c{}", n - 1));
+        assert!(!first.done);
+        assert!(walker.visited() < n as u64 / 2, "visited {}", walker.visited());
+        // The rest: the root commit, found by going on from where the walk stopped.
+        let mut got = first.found;
+        loop {
+            let step = walker.step(PAGE).unwrap();
+            got.extend(step.found);
+            if step.done {
+                break;
+            }
+        }
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[1].summary, "c0");
+        assert_eq!(walker.visited(), n as u64);
+        // A time slice also ends a step that has found nothing.
+        let mut walker = Walker::new(&repo, Some(Path::new("target.txt")))
+            .unwrap()
+            .with_slice(Duration::ZERO);
+        let step = walker.step(PAGE).unwrap();
+        assert!(step.found.len() <= 1 && !step.done);
+        assert_eq!(walker.visited(), 1);
     }
 }

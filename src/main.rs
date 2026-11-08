@@ -65,6 +65,8 @@ mod hex;
 mod hex_tests;
 mod history;
 #[cfg(test)]
+mod history_stream_tests;
+#[cfg(test)]
 mod history_view_tests;
 mod hover;
 #[cfg(test)]

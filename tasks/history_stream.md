@@ -2,7 +2,7 @@
 id: history_stream
 name: Streamed git history
 summary: the Explorer's Git History and the Source Control view's commits pane show their first commits at once and fill in as a resumable walk goes on, instead of waiting for the whole history on every page
-status: open
+status: in-progress
 priority: 0
 dependencies: [git_history, scm_branch_history]
 ---
@@ -28,6 +28,9 @@ The fix: a resumable walk that reports what it has found in pieces as it goes, k
     - A release budget test `milestone_history_stream_budget_first_chunk` (keeps `milestone` in its name, per CLAUDE.md) builds a 20,000-commit repository with `git fast-import`. It reports the time to the first chunk for the branch list and for a file touched once near HEAD, before and after the change, with a budget on the "after" numbers (aim for < 100 ms each in release).
     - `scripts/check` is green, and `git_history_tests` / `git/log.rs`'s tests pass with only the API changes they need.
   - Subtasks (one agent and one commit each):
-    - history_stream-a: `git::log::Walker` (path or none, `step` with a found-commit budget and a time slice, resumable), `branch` / `commits` rebuilt on it or removed, the CLI comparison tests over `Walker` (pages taken by repeated `step`s match one full walk and `git log`), a unit test that a 5,000-commit walk's first `step` returns before the root is reached, and the release budget test's "before" numbers measured on the old code and recorded in this file
+    - ✅ history_stream-a: `git::log::Walker` (path or none, `step` with a found-commit budget and a time slice, resumable), `branch` / `commits` rebuilt on it or removed, the CLI comparison tests over `Walker` (pages taken by repeated `step`s match one full walk and `git log`), a unit test that a 5,000-commit walk's first `step` returns before the root is reached, and the release budget test's "before" numbers measured on the old code and recorded in this file
+      - Done: `Walker::new(&Repo, Option<&Path>)`, `step(budget) -> Step { found, done }` (always visits ≥ 1 commit; budget 0 = 1), `with_slice` (default `SLICE` 50 ms), `visited()`; `commits` / `branch` kept as one-call wrappers over a fresh walker for the app until b (no more libgit2 revwalk). Test helper `git::test_repo::fast_import(dir, n, touches)`. `src/history_stream_tests.rs` holds the budget test, timing `Walker::new` + the first `step(PAGE)` for now.
+      - Budget (release, 20,000 commits, time to the first commits): before (old `branch` / `commits` at `PAGE`) branch 65.5 ms, file touched once near HEAD 110.8 ms; after (first `step(PAGE)`) branch 1.0 ms, file 50.1 ms. The file case is exactly the slice, since `step(PAGE)` keeps walking for 200: b should flush the first chunk as soon as the walk has found anything (a short first slice or a budget of 1), or it waits for the ~200 ms flush.
+      - Left open for b: a queued parent is parsed for its time and again when popped (pass the time through); `entries` grows one tuple per commit over a long walk. Drop the `#[allow(dead_code)]` on `with_slice` / `visited` once they're used.
     - history_stream-b: the streaming jobs for both lists (cancel flag, want-more requests, chunk events, ~200 ms flushes), `GitHistory` / `sync_git_history` / `sync_branch_history` / `*_done` turned into chunk handlers, the loading row while the walk runs, the done-when app tests in `src/history_stream_tests.rs`, the budget test's "after" numbers, docs (docs/dev/app.md's `git_history.rs` / `branch_history.rs` entries, docs/dev/modules.md's `git::log` line)
   - Still to check by hand: in a large real repository (e.g. a clone of the Linux kernel or of rust-lang/rust), open a rarely changed file: its newest commits show at once, the loading row stays until the walk ends, and scrolling while it walks doesn't stutter. Open the Source Control view: its commits show at once. Switch files quickly while a walk runs: no stale rows, and one walk at a time (watch the CPU).

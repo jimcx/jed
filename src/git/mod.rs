@@ -488,6 +488,28 @@ pub mod test_repo {
         git(dir, &["init", "-q", "-b", "main"]);
     }
 
+    /// Builds `n` linear commits on `main` with `git fast-import` (fast: 20,000 in well under a
+    /// second): commit `i` has committer time `1_600_000_000 + 60 * i`, message `c{i}`, changes
+    /// `other.txt` and, when `touches(i)`, `target.txt`. `dir` must be an `init`ed repository.
+    pub fn fast_import(dir: &Path, n: usize, touches: impl Fn(usize) -> bool) {
+        let mut s = String::new();
+        for i in 0..n {
+            let msg = format!("c{i}");
+            let time = 1_600_000_000 + 60 * i;
+            // No `from`: a commit continues the branch's tip within one stream.
+            s.push_str(&format!(
+                "commit refs/heads/main\ncommitter t <t@example.com> {time} +0000\ndata {}\n{msg}\n",
+                msg.len()
+            ));
+            let body = format!("{i}\n");
+            s.push_str(&format!("M 100644 inline other.txt\ndata {}\n{body}\n", body.len()));
+            if touches(i) {
+                s.push_str(&format!("M 100644 inline target.txt\ndata {}\n{body}\n", body.len()));
+            }
+        }
+        git_with_input(dir, &["fast-import", "--quiet"], Some(&s));
+    }
+
     /// Stages everything and commits.
     pub fn commit_all(dir: &Path, message: &str) {
         git(dir, &["add", "-A"]);
