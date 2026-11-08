@@ -312,13 +312,43 @@ mod keys {
         app.mouse(Mouse::ScrollDown, x, y);
         let top = app.keys.as_ref().unwrap().top;
         assert!(top > 0);
-        app.mouse(Mouse::Down(MouseButton::Left), x, y);
-        assert_eq!(app.keys.as_ref().unwrap().selected, top + 2);
+        // (A different row: the same cell twice in a row would be a double-click.)
+        app.mouse(Mouse::Down(MouseButton::Left), x, y + 1);
+        assert_eq!(app.keys.as_ref().unwrap().selected, top + 3);
         // An empty result list: a click does nothing and doesn't move the selection.
         app.type_text("zzznotacommand");
         assert!(app.keys.as_ref().unwrap().rows.is_empty());
         app.mouse(Mouse::Down(MouseButton::Left), x, y);
         assert_eq!(app.keys.as_ref().unwrap().selected, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn keys_d_a_double_click_writes_the_stub_like_enter() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = open_app(&dir);
+        let path = app.config_dir.join(crate::config::keymap::FILE_NAME);
+        app.test_execute(Command::KeyboardShortcuts);
+        let _term = draw(&mut app, 100, 24);
+        let hit = app.hits.keys.expect("the view is drawn");
+        let (x, y) = (hit.rows.x + 1, hit.rows.y + 2);
+        // One press only selects.
+        app.mouse(Mouse::Down(MouseButton::Left), x, y);
+        app.mouse(Mouse::Up(MouseButton::Left), x, y);
+        assert!(app.keys.is_some(), "a single click leaves the view open");
+        assert!(!path.exists());
+        let row = app.keys.as_ref().unwrap().selected_row().unwrap().clone();
+        // The second press on the same cell activates the row.
+        app.mouse(Mouse::Down(MouseButton::Left), x, y);
+        assert!(app.keys.is_none(), "the view closes for the file");
+        assert!(
+            app.settle(|a| a.active_buffer().is_some_and(|b| b.path == path)).await,
+            "keybindings.toml opens in a tab"
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains(&format!("command = \"{}\"", row.command.name())),
+            "{text}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

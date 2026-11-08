@@ -114,7 +114,7 @@ impl App {
     }
 
     /// A mouse event while it's open: the wheel scrolls it, its bar drags, a press on a row
-    /// selects it, a press outside it closes it (and does nothing else).
+    /// selects it (a double-click does what Enter does), a press outside it closes it (and does nothing else).
     pub(super) fn keyboard_shortcuts_mouse(&mut self, m: MouseEvent) {
         self.pointer = Pointer::Default;
         let target = ScrollTarget::Keys;
@@ -141,11 +141,18 @@ impl App {
             MouseEventKind::Down(_) if !hit.rect.contains(p) => self.keys = None,
             MouseEventKind::Down(MouseButton::Left) if on_bar => self.scrollbar_click(target, m.column, m.row),
             MouseEventKind::Down(MouseButton::Left) if hit.rows.contains(p) => {
+                let count = self.clicks.click(std::time::Instant::now(), m.column, m.row);
+                let mut activate = false;
                 if let Some(view) = &mut self.keys {
                     let index = view.top + (p.y - hit.rows.y) as usize;
                     if index < view.rows.len() {
                         view.select(index);
+                        activate = count == 2;
                     }
+                }
+                // A double-click is Enter on the row: the `keybindings.toml` stub.
+                if activate {
+                    self.open_keybinding_stub();
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
