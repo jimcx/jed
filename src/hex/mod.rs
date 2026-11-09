@@ -35,9 +35,11 @@ use memchr::memmem;
 
 use crate::command::Motion;
 
+mod inspect;
 mod page;
 mod stream;
 
+pub use inspect::*;
 pub use page::*;
 pub use stream::*;
 
@@ -889,6 +891,9 @@ pub struct HexTab {
     pub reveal: bool,
     /// The file is gone from disk (the explorer deleted it): `(deleted)` in the tab bar.
     pub deleted: bool,
+    /// The data inspector row a click selected, and the offset it read from (valid only while the
+    /// inspected offset is still that one: `HexTab::inspect`).
+    pub inspected_row: Option<(RowKind, usize)>,
 }
 
 impl HexTab {
@@ -907,6 +912,7 @@ impl HexTab {
             height: 1,
             reveal: false,
             deleted: false,
+            inspected_row: None,
         }
     }
 

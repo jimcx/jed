@@ -474,6 +474,11 @@ pub struct App {
     /// The environment tasks fill their `{{NAME}}`s from (`task_environments`); kept in the session.
     /// Not checked against the list until a task runs, so a missing one is just "none" then.
     pub environment: Option<String>,
+    /// The hex data inspector is shown (`Command::HexToggleInspector`; kept in the session).
+    pub hex_inspector: bool,
+    /// The byte order chosen with `Command::HexToggleByteOrder` (kept in the session); `None`: the
+    /// `hex_byte_order` setting's (`App::hex_order`).
+    pub hex_byte_order: Option<crate::hex::ByteOrder>,
     /// The syntax plugins whose grammars `start` loads (`app/syntax.rs`): `main` sets every
     /// registered one; tests name their own (the registry is global). Empty by default.
     pub syntax_plugins: Vec<crate::syntax::plugin::PluginId>,
@@ -663,6 +668,8 @@ impl App {
             stage_all_after_save: None,
             tasks: Default::default(),
             environment: None,
+            hex_inspector: true,
+            hex_byte_order: None,
             syntax_plugins: Vec::new(),
             grammars: Vec::new(),
             nav: Default::default(),
@@ -1507,6 +1514,9 @@ impl App {
             Command::ConvertIndentationToTabs => self.convert_indentation(false),
             Command::ReopenAsHex => self.reopen_as_hex(),
             Command::ReopenAsText => self.reopen_as_text(),
+            Command::HexToggleInspector => self.hex_toggle_inspector(),
+            Command::HexToggleByteOrder => self.hex_toggle_byte_order(),
+            Command::HexCopyValue => self.hex_copy_value(),
             Command::OpenMarkdownPreview => self.open_markdown_preview(),
             Command::NewUntitledFile => self.new_untitled_file(),
             Command::ChangeLanguageMode => self.change_language_mode(),

@@ -350,6 +350,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             }
         }
         let mut hex_drawn = false;
+        let mut hex_hit = None;
         let shell_drawn = group.active_shell().is_some();
         if let Some(h) = group.active_hex_mut() {
             hex_drawn = true;
@@ -357,8 +358,16 @@ pub fn render(f: &mut Frame, app: &mut App) {
             let find = (is_active && app.find.visible && app.find.hex.tab() == Some(h.id))
                 .then(|| app.find.hex.query())
                 .flatten();
-            let overlay = hex::Overlay { focused, find };
-            text = hex::render(f, editor_area, h, &app.theme, app.settings.hex_bytes_per_line, overlay);
+            // (Not `app.hex_order()`: `group` borrows part of `app` mutably here.)
+            let inspector = app
+                .hex_inspector
+                .then_some(app.hex_byte_order.unwrap_or(app.settings.hex_byte_order));
+            let overlay = hex::Overlay {
+                focused,
+                find,
+                inspector,
+            };
+            (text, hex_hit) = hex::render(f, editor_area, h, &app.theme, app.settings.hex_bytes_per_line, overlay);
             if let Some(bar) = bar {
                 scroll_hit = Some(scrollbar::render(
                     f.buffer_mut(),
@@ -573,6 +582,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
             marks: marks_hit,
             scrollbar: scroll_hit,
             hscrollbar: hscroll_hit,
+            hex: hex_hit,
         });
     }
     // The zone a dragged tab would snap to, over what was drawn: the target editor, or the half

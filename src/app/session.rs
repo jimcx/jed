@@ -113,9 +113,12 @@ impl App {
             groups,
             mut active_group,
             environment,
+            hex: hex_state,
             ..
         } = session;
         self.environment = environment;
+        self.hex_inspector = hex_state.inspector;
+        self.hex_byte_order = hex_state.byte_order;
         let ids: Vec<_> = groups.iter().map(|g| g.id).collect();
         if let Err(e) = group::check_restore(&tree, &ids, active_group) {
             tracing::warn!("session not restored: {e}");
@@ -474,6 +477,10 @@ impl App {
             groups,
             active_group: self.groups.active,
             environment: self.environment.clone(),
+            hex: crate::session::HexState {
+                inspector: self.hex_inspector,
+                byte_order: self.hex_byte_order,
+            },
         }
     }
 
@@ -604,6 +611,7 @@ mod tests {
             }],
             active_group: 0,
             environment: None,
+            hex: Default::default(),
         };
         session::save(&state, &s).unwrap();
 

@@ -68,6 +68,8 @@ pub struct Settings {
     /// A hex tab's widest row, in bytes (a power of two from 1 to 64: `hex::Layout::fit` takes
     /// the largest power of two up to this that fits): `[settings] hex_bytes_per_line`.
     pub hex_bytes_per_line: usize,
+    /// The data inspector's starting byte order: `[settings] hex_byte_order`.
+    pub hex_byte_order: crate::hex::ByteOrder,
     /// Columns drawn as a thin vertical line behind the text (VS Code's `editor.rulers`):
     /// `[settings] rulers`. `None` (not set) takes the language's `LanguageConfig::rulers`
     /// (`for_buffer`; `git-commit`: 72); a set list, even `[]`, wins over it: jed has no
@@ -191,6 +193,7 @@ impl Default for Settings {
             cursor_style: CursorStyle::Line,
             cursor_blinking: true,
             hex_bytes_per_line: 32,
+            hex_byte_order: crate::hex::ByteOrder::Little,
             rulers: None,
             scrollback: crate::tasks::run::SCROLLBACK,
             spell_check_scope: SpellScope::All,

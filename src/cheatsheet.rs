@@ -411,8 +411,10 @@ mod tests {
             let s = sections(&km, Context::Diff);
             assert_eq!(s[0].title, "Diff View");
             assert!(s[0].rows.iter().any(|r| r.key == "F7"));
-            // No keys of its own (a hex tab takes the editor's): no section.
-            assert_eq!(sections(&km, Context::Hex)[0].title, "Cursor Movement");
+            let s = sections(&km, Context::Hex);
+            assert_eq!(s[0].title, "Hex View");
+            assert!(s[0].rows.iter().any(|r| r.key == "Alt+E"), "{:?}", s[0]);
+            assert_eq!(s[1].title, "Cursor Movement");
             // A shell tab's own keys are its scrollback, under "Terminal".
             let s = sections(&km, Context::Shell);
             assert_eq!(s[0].title, "Terminal");

@@ -709,6 +709,17 @@ pub struct GroupHit {
     /// The horizontal scroll bar on the editor's last row, while the view's lines are wider
     /// than it (its track is one row; `ScrollTarget::Columns`).
     pub hscrollbar: Option<ScrollBarHit>,
+    /// The hex tab's data inspector, when drawn.
+    pub hex: Option<HexHit>,
+}
+
+/// A hex tab's data inspector: the header's byte order toggle and each row, with the offset the
+/// values were read from (a click on a row selects it for Copy Value).
+#[derive(Debug, Clone, Default)]
+pub struct HexHit {
+    pub toggle: Rect,
+    pub rows: Vec<(Rect, crate::hex::RowKind)>,
+    pub offset: usize,
 }
 
 /// What a scroll bar scrolls: a group's active tab, the side bar's list (by the view showing
@@ -1179,6 +1190,7 @@ mod tests {
                     ..*r
                 },
                 text: Rect::default(),
+                hex: None,
                 tab_arrows: (*id == 8).then_some(TabArrows {
                     back: r.x,
                     forward: r.x + r.width - 1,

@@ -1072,6 +1072,10 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         (KeyCode::F(7), shift, Command::PreviousChange),
     ];
 
+    // A hex tab (falls back to the editor's keys): Alt+E flips the data inspector's byte order
+    // (no Cmd key, so no terminal setup).
+    let hex = [(KeyCode::Char('e'), alt, Command::HexToggleByteOrder)];
+
     // The Source Control view's list: the explorer's keys (Space too).
     let scm = [
         (KeyCode::Up, none, Sc::Up),
@@ -1269,6 +1273,7 @@ fn defaults(platform: Platform) -> Vec<Binding> {
             .map(|(k, m, c)| bind(k, m, Some(Context::ContextMenu), Command::ContextMenu(c))),
     );
     out.extend(diff.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Diff), c)));
+    out.extend(hex.into_iter().map(|(k, m, c)| bind(k, m, Some(Context::Hex), c)));
     out.extend(
         scm.into_iter()
             .map(|(k, m, c)| bind(k, m, Some(Context::Scm), Command::Scm(c))),

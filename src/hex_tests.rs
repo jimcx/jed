@@ -55,7 +55,7 @@ pub(crate) fn data() -> Vec<u8> {
 
 /// An app on a workspace with `bin.dat` (`data()`) and `notes.txt`, no file open, the side bar
 /// hidden (so the editor's width is the terminal's less the activity bar and the scroll bar).
-async fn hex_app() -> (tempfile::TempDir, PathBuf, App) {
+pub(crate) async fn hex_app() -> (tempfile::TempDir, PathBuf, App) {
     hex_app_inner(false).await
 }
 
@@ -78,6 +78,8 @@ async fn hex_app_inner(watch: bool) -> (tempfile::TempDir, PathBuf, App) {
         app.enable_file_watching();
     }
     app.test_start();
+    // The data inspector (`hex_more_c_*` tests turn it on) would narrow the rows.
+    app.hex_inspector = false;
     app.ui.side_visible = false;
     app.ui.focus = Focus::Editor;
     (dir, root, app)
@@ -905,6 +907,8 @@ async fn find_app(bytes: &[u8]) -> (tempfile::TempDir, App) {
         true,
     );
     app.test_start();
+    // The data inspector (`hex_more_c_*` tests turn it on) would narrow the rows.
+    app.hex_inspector = false;
     app.ui.side_visible = false;
     app.ui.focus = Focus::Editor;
     quick_open(&mut app, "find.bin").await;
@@ -938,7 +942,11 @@ pub(crate) fn widget_rows(app: &App, term: &Terminal<TestBackend>) -> Vec<String
 }
 
 /// The background of byte `at`'s hex digits and of its ASCII char, as drawn (on screen).
-fn byte_bgs(app: &App, term: &Terminal<TestBackend>, at: usize) -> (ratatui::style::Color, ratatui::style::Color) {
+pub(crate) fn byte_bgs(
+    app: &App,
+    term: &Terminal<TestBackend>,
+    at: usize,
+) -> (ratatui::style::Color, ratatui::style::Color) {
     let h = hex(app);
     let rect = rows_rect(app);
     let n = h.layout.bytes_per_row();
@@ -951,7 +959,7 @@ fn byte_bgs(app: &App, term: &Terminal<TestBackend>, at: usize) -> (ratatui::sty
     )
 }
 
-fn bg(app: &App, key: &str) -> ratatui::style::Color {
+pub(crate) fn bg(app: &App, key: &str) -> ratatui::style::Color {
     app.theme.get(key).bg.expect(key)
 }
 
@@ -1589,6 +1597,8 @@ async fn state_app_inner(root: &Path, state: &Path, watch: bool) -> App {
     if watch {
         app.enable_file_watching();
     }
+    // Off like `hex_app`'s, until a session (written by an app that had it on) says otherwise.
+    app.hex_inspector = false;
     app.test_start();
     assert!(app.settle(|a| !a.session.loading()).await, "the session is read");
     app.ui.side_visible = false;

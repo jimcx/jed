@@ -52,6 +52,28 @@ pub struct Session {
     /// The selected task environment (older sessions: none).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<String>,
+    /// The hex data inspector's toggles (older sessions: shown, the setting's byte order).
+    #[serde(default)]
+    pub hex: HexState,
+}
+
+/// The hex data inspector's session state (`App::hex_inspector`, `App::hex_byte_order`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HexState {
+    pub inspector: bool,
+    /// `None`: the `hex_byte_order` setting's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_order: Option<crate::hex::ByteOrder>,
+}
+
+impl Default for HexState {
+    fn default() -> Self {
+        Self {
+            inspector: true,
+            byte_order: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -555,6 +577,7 @@ mod tests {
             ],
             active_group: 3,
             environment: None,
+            hex: HexState::default(),
         }
     }
 

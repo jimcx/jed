@@ -243,6 +243,23 @@ impl Theme {
             ("hexEditor.nonPrintable", Style::new().fg(c(0x8C8C8C))),
             ("hexEditor.border", Style::new().fg(c(0x5A5A5A))),
             ("hexEditor.pending", Style::new().fg(c(0x6A6A6A))),
+            // The data inspector: its header, labels (dim), values, the row(s) whose bytes are
+            // outlined, and those bytes (`inspected`: a box of colour, underlined so it shows
+            // over the selection).
+            (
+                "hexEditor.inspector.header",
+                Style::new().fg(c(0xBBBBBB)).add_modifier(Modifier::BOLD),
+            ),
+            ("hexEditor.inspector.label", Style::new().fg(c(0x858585))),
+            ("hexEditor.inspector.value", Style::new().fg(c(0xD4D4D4))),
+            ("hexEditor.inspector.active", fg_bg(0xFFFFFF, 0x04395E)),
+            (
+                "hexEditor.inspected",
+                Style::new()
+                    .fg(c(0xFFFFFF))
+                    .bg(c(0x0B5A8E))
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
             ("editorRuler.foreground", Style::new().fg(c(0x5A5A5A))),
             ("gutter.active", Style::new().fg(c(0xC6C6C6))),
             // Quick diff's gutter markers (Dark+'s `editorGutter.*Background`; a bar or a line in

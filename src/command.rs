@@ -347,6 +347,12 @@ pub enum Command {
     OpenMarkdownPreview,
     /// "View: Reopen as Text": a hex tab's file in a text tab in its place, unless it's binary.
     ReopenAsText,
+    /// "Hex: Toggle Data Inspector": shows / hides the data inspector panel on hex tabs.
+    HexToggleInspector,
+    /// "Hex: Toggle Byte Order": the inspector reads little- or big-endian.
+    HexToggleByteOrder,
+    /// "Hex: Copy Value": the clicked / highlighted inspector row's value.
+    HexCopyValue,
     /// "File: New Untitled File": a new empty tab "Untitled-N" (the lowest free N) with no
     /// path, Plain Text.
     NewUntitledFile,
@@ -1265,6 +1271,11 @@ impl Command {
             Command::ConvertIndentationToTabs,
         ]);
         all.extend([Command::ReopenAsHex, Command::ReopenAsText]);
+        all.extend([
+            Command::HexToggleInspector,
+            Command::HexToggleByteOrder,
+            Command::HexCopyValue,
+        ]);
         all.push(Command::OpenMarkdownPreview);
         all.extend([Command::NewUntitledFile, Command::ChangeLanguageMode]);
         all.push(Command::ToggleBlame);
@@ -1677,6 +1688,9 @@ impl Command {
             Command::ReopenAsHex => "view.reopenAsHex".into(),
             Command::OpenMarkdownPreview => "markdown.openPreview".into(),
             Command::ReopenAsText => "view.reopenAsText".into(),
+            Command::HexToggleInspector => "hex.toggleInspector".into(),
+            Command::HexToggleByteOrder => "hex.toggleEndianness".into(),
+            Command::HexCopyValue => "hex.copyValue".into(),
             Command::NewUntitledFile => "file.newUntitled".into(),
             Command::ChangeLanguageMode => "editor.changeLanguageMode".into(),
             Command::ToggleBlame => "git.toggleBlame".into(),
@@ -2104,6 +2118,9 @@ impl Command {
             Command::ReopenAsHex => "View: Reopen as Hex",
             Command::OpenMarkdownPreview => "Markdown: Open Preview to the Side",
             Command::ReopenAsText => "View: Reopen as Text",
+            Command::HexToggleInspector => "Hex: Toggle Data Inspector",
+            Command::HexToggleByteOrder => "Hex: Toggle Byte Order",
+            Command::HexCopyValue => "Hex: Copy Value",
             Command::NewUntitledFile => "File: New Untitled File",
             Command::ChangeLanguageMode => "Change Language Mode",
             Command::ToggleBlame => "Git: Toggle Inline Blame",
@@ -2375,6 +2392,9 @@ mod tests {
             Command::ReopenAsHex => 105,
             Command::OpenMarkdownPreview => 139,
             Command::ReopenAsText => 106,
+            Command::HexToggleInspector => 172,
+            Command::HexToggleByteOrder => 173,
+            Command::HexCopyValue => 174,
             Command::NewUntitledFile => 115,
             Command::ChangeLanguageMode => 116,
             Command::IndentUsingSpaces => 107,

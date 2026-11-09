@@ -53,6 +53,8 @@ async fn big_app(len: u64, marks: &[(u64, &[u8])], watch: bool) -> (tempfile::Te
         app.enable_file_watching();
     }
     app.test_start();
+    // The data inspector (`hex_more_c_*` tests turn it on) would narrow the rows.
+    app.hex_inspector = false;
     app.ui.side_visible = false;
     app.ui.focus = Focus::Editor;
     (dir, root, app)
@@ -379,4 +381,350 @@ async fn hex_more_closing_the_widget_or_the_tab_ends_the_running_search() {
     quick_open(&mut app, "t.txt").await;
     assert!(app.active_hex().is_none());
     assert!(app.find.hex.query().is_none(), "no hex search behind a text tab");
+}
+
+// hex_more-c: the data inspector and byte order.
+
+mod inspector {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    use ratatui::layout::Rect;
+
+    use super::*;
+    use crate::command::Command;
+    use crate::hex::{ByteOrder, HexDoc, RowKind};
+    use crate::hex_tests::{bg, byte_bgs, hex_app, line};
+
+    /// An app with the inspector on and a hex tab (`x.bin`) of `bytes`.
+    async fn ins_app(bytes: &[u8]) -> (tempfile::TempDir, App) {
+        let (dir, root, mut app) = hex_app().await;
+        app.hex_inspector = true;
+        app.open_initial_hex(root.join("x.bin"), HexDoc::new(bytes.to_vec()));
+        (dir, app)
+    }
+
+    fn hit(app: &App) -> crate::layout::HexHit {
+        app.hits
+            .group(app.groups.active)
+            .unwrap()
+            .hex
+            .clone()
+            .expect("the panel is drawn")
+    }
+
+    /// The panel's rows as drawn, whitespace collapsed: `u16 513`, `i32 int 67305985`.
+    fn panel(app: &App, term: &Terminal<TestBackend>) -> Vec<String> {
+        hit(app)
+            .rows
+            .iter()
+            .map(|(r, _)| {
+                line(term, r.x, r.y, r.width)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect()
+    }
+
+    /// The value shown for `label` (`u16`, `i32 int`).
+    fn shown(app: &App, term: &Terminal<TestBackend>, label: &str) -> String {
+        let prefix = format!("{label} ");
+        panel(app, term)
+            .into_iter()
+            .find_map(|r| r.strip_prefix(&prefix).map(str::to_owned))
+            .unwrap_or_else(|| panic!("no row {label}"))
+    }
+
+    fn wide(app: &mut App) -> Terminal<TestBackend> {
+        crate::hex_tests::draw(app, 120, 30)
+    }
+
+    fn click(app: &mut App, x: u16, y: u16) {
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    }
+
+    fn line_has(term: &Terminal<TestBackend>, r: Rect, text: &str) -> bool {
+        line(term, r.x, r.y, r.width).contains(text)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_c_the_panel_is_beside_the_rows_when_wide_and_under_them_at_80_columns() {
+        let bytes: Vec<u8> = (0..=255u8).cycle().take(300).collect();
+        let (_d, mut app) = ins_app(&bytes).await;
+        let term = wide(&mut app);
+        let g = app.hits.group(app.groups.active).unwrap();
+        let (rows, h) = (g.text, hit(&app));
+        assert!(h.rows[0].0.x >= rows.x + rows.width, "beside");
+        assert_eq!(h.rows.len(), 14);
+        assert_eq!(h.rows[0].0.y, rows.y + 1, "the header is above the first row");
+        assert!(line_has(&term, h.toggle, "LE"));
+        assert_eq!(rows.height, g.editor.height, "the rows keep the whole height");
+
+        // At 80 columns 8-byte rows and the panel don't fit side by side: it goes under them.
+        let term = crate::hex_tests::draw(&mut app, 80, 30);
+        let g = app.hits.group(app.groups.active).unwrap();
+        let (rows, h) = (g.text, hit(&app));
+        assert!(h.rows[0].0.y >= rows.y + rows.height, "under");
+        assert!(rows.height < g.editor.height);
+        assert_eq!(shown(&app, &term, "u8"), "0");
+
+        // Off: no panel, the whole area for the rows.
+        app.test_execute(Command::HexToggleInspector);
+        crate::hex_tests::draw(&mut app, 80, 30);
+        let g = app.hits.group(app.groups.active).unwrap();
+        assert!(g.hex.is_none());
+        assert_eq!(g.text.height, g.editor.height);
+    }
+
+    /// With the panel on (the default users get), byte clicks still map to the right offsets, the
+    /// rows are not overdrawn by the panel and the scroll bar stays on the editor's right edge.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_c_with_the_panel_on_byte_clicks_rows_and_scroll_bar_stay_right() {
+        let bytes: Vec<u8> = (0..=255u8).cycle().take(2000).collect();
+        let (_d, mut app) = ins_app(&bytes).await;
+        for (w, beside) in [(120u16, true), (80, false)] {
+            let term = crate::hex_tests::draw(&mut app, w, 30);
+            let g = app.hits.group(app.groups.active).unwrap();
+            let (rows, editor, bar) = (g.text, g.editor, g.scrollbar.expect("scroll bar"));
+            let ph = hit(&app);
+            if beside {
+                assert!(rows.x + rows.width <= ph.toggle.x, "{w}: rows end before the panel");
+            } else {
+                assert!(rows.y + rows.height <= ph.toggle.y, "{w}: rows end above the panel");
+            }
+            assert!(
+                bar.track.x >= rows.x + rows.width - 1 && bar.track.x < w,
+                "{w}: bar at the right"
+            );
+            assert!(
+                bar.track.x + bar.track.width <= editor.x + editor.width + 1,
+                "{w}: bar in the editor"
+            );
+            let l = hex(&app).layout;
+            let n = l.bytes_per_row();
+            assert!(n >= 8, "{w}: at least 8-byte rows");
+            assert!(
+                l.ascii_col(n - 1) < rows.width as usize,
+                "{w}: the last ASCII cell is inside"
+            );
+            // The first row shows its last byte's hex digits uncut.
+            let first = line(&term, rows.x, rows.y, rows.width);
+            let last = format!("{:02x}", n - 1);
+            assert!(first.contains(&last), "{w}: row 0 `{first}` has byte {last}");
+            // Clicking bytes of rows 1 and 2 selects the matching offsets.
+            click(&mut app, rows.x + l.hex_col(5) as u16 + 1, rows.y + 1);
+            assert_eq!(hex(&app).cursor, n + 5, "{w}");
+            click(&mut app, rows.x + l.ascii_col(n - 1) as u16, rows.y + 2);
+            assert_eq!(hex(&app).cursor, 3 * n - 1, "{w}: last byte of row 2");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_c_values_in_both_byte_orders_by_command_key_and_header_click() {
+        let (_d, mut app) = ins_app(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]).await;
+        let term = wide(&mut app);
+        assert_eq!(shown(&app, &term, "u16"), "513");
+        assert_eq!(shown(&app, &term, "u32"), "67305985");
+        assert_eq!(shown(&app, &term, "u64"), "578437695752307201");
+        assert_eq!(shown(&app, &term, "binary"), "00000001");
+
+        app.test_execute(Command::HexToggleByteOrder);
+        let term = wide(&mut app);
+        assert_eq!(app.hex_order(), ByteOrder::Big);
+        assert_eq!(shown(&app, &term, "u16"), "258");
+        assert_eq!(shown(&app, &term, "u32"), "16909060");
+        assert_eq!(shown(&app, &term, "u64"), "72623859790382856");
+        let toggle = hit(&app).toggle;
+        assert!(line_has(&term, toggle, "BE"));
+
+        // Alt+E (bound on a hex tab) and a click on the header flip it back and forth.
+        app.press(KeyCode::Char('e'), M::ALT);
+        assert_eq!(app.hex_order(), ByteOrder::Little);
+        wide(&mut app);
+        click(&mut app, toggle.x + 1, toggle.y);
+        assert_eq!(app.hex_order(), ByteOrder::Big);
+        let term = wide(&mut app);
+        assert_eq!(shown(&app, &term, "u16"), "258");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_c_floats_and_text_rows() {
+        let (_d, mut app) = ins_app(&[0, 0, 0x80, 0x3f, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f]).await;
+        let term = wide(&mut app);
+        assert_eq!(shown(&app, &term, "f32 float"), "1");
+        assert_eq!(shown(&app, &term, "char"), "\\0");
+        // 8 bytes on from 4: 00 00 00 00 00 00 f0 3f.
+        go_to_offset(&mut app, "4");
+        let term = wide(&mut app);
+        assert_eq!(shown(&app, &term, "f64 double"), "1");
+        assert_eq!(shown(&app, &term, "f32 float"), "0");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_c_a_selection_reads_from_its_start_highlights_its_width_and_outlines_its_bytes() {
+        let bytes: Vec<u8> = (1..=40).collect();
+        let (_d, mut app) = ins_app(&bytes).await;
+        go_to_offset(&mut app, "4");
+        for _ in 0..3 {
+            app.press(KeyCode::Right, M::SHIFT);
+        }
+        let term = wide(&mut app);
+        assert_eq!(hex(&app).selection(), Some(4..8));
+        assert_eq!(
+            shown(&app, &term, "u32"),
+            "134678021",
+            "read from the selection's start"
+        );
+        let active = bg(&app, "hexEditor.inspector.active");
+        let lit: Vec<RowKind> = hit(&app)
+            .rows
+            .iter()
+            .filter(|(r, _)| term.backend().buffer()[(r.x, r.y)].bg == active)
+            .map(|&(_, k)| k)
+            .collect();
+        assert_eq!(lit, [RowKind::I32, RowKind::U32, RowKind::F32]);
+        // Those four bytes (and only they) are outlined, in both columns.
+        let inspected = bg(&app, "hexEditor.inspected");
+        for at in 0..16 {
+            let (h, a) = byte_bgs(&app, &term, at);
+            let on = (4..8).contains(&at);
+            assert_eq!((h == inspected, a == inspected), (on, on), "byte {at}");
+        }
+        // A selection of 3 bytes marks nothing.
+        app.press(KeyCode::Left, M::SHIFT);
+        let term = wide(&mut app);
+        assert!(
+            hit(&app)
+                .rows
+                .iter()
+                .all(|(r, _)| term.backend().buffer()[(r.x, r.y)].bg != active)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_c_values_past_the_end_are_blank() {
+        let (_d, mut app) = ins_app(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]).await;
+        go_to_offset(&mut app, "9");
+        let term = wide(&mut app);
+        assert_eq!(shown(&app, &term, "u16"), "2826");
+        for label in ["i32 int", "u32", "i64 long", "u64", "f32 float", "f64 double"] {
+            assert_eq!(shown(&app, &term, label), "—", "{label}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_c_copy_value_copies_the_clicked_or_highlighted_row() {
+        let (_d, mut app) = ins_app(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]).await;
+        wide(&mut app);
+        let (u32_row, _) = *hit(&app).rows.iter().find(|(_, k)| *k == RowKind::U32).unwrap();
+        click(&mut app, u32_row.x + 2, u32_row.y);
+        let term = wide(&mut app);
+        assert_eq!(hex(&app).cursor, 0, "a row click doesn't move the cursor");
+        let active = bg(&app, "hexEditor.inspector.active");
+        assert_eq!(term.backend().buffer()[(u32_row.x, u32_row.y)].bg, active);
+        // Its four bytes are outlined.
+        let inspected = bg(&app, "hexEditor.inspected");
+        assert_eq!(byte_bgs(&app, &term, 3).0, inspected);
+        assert_ne!(byte_bgs(&app, &term, 4).0, inspected);
+        app.test_execute(Command::HexCopyValue);
+        assert_eq!(app.clipboard.read().unwrap(), "67305985");
+        // Moving the cursor drops the clicked row; with nothing marked nothing is copied.
+        app.press(KeyCode::Right, M::NONE);
+        wide(&mut app);
+        app.clipboard.write(crate::clipboard::Copied {
+            text: "keep".into(),
+            whole_line: false,
+            pieces: Vec::new(),
+        });
+        app.test_execute(Command::HexCopyValue);
+        assert_eq!(app.clipboard.read().unwrap(), "keep");
+        // A 2-byte selection highlights `i16` first: Copy Value copies it.
+        app.press(KeyCode::Right, M::SHIFT);
+        wide(&mut app);
+        app.test_execute(Command::HexCopyValue);
+        assert_eq!(app.clipboard.read().unwrap(), "770");
+        // A 1-byte selection copies `i8` (the first integer row, not `binary`).
+        app.groups.active_group_mut().active_hex_mut().unwrap().select(5..6);
+        wide(&mut app);
+        app.test_execute(Command::HexCopyValue);
+        assert_eq!(app.clipboard.read().unwrap(), "6");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_c_the_toggles_and_the_byte_order_survive_quit_and_reopen() {
+        let (_d, root, state) = dirs();
+        fs::write(root.join("a.bin"), [0u8, 1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        let mut app = state_app(&root, &state).await;
+        app.hex_inspector = true;
+        quick_open(&mut app, "a.bin").await;
+        app.test_execute(Command::HexToggleByteOrder);
+        app.test_execute(Command::HexToggleInspector);
+        assert!(!app.hex_inspector);
+        quit(app).await;
+        let mut app = state_app(&root, &state).await;
+        assert!(app.settle(|a| a.active_hex().is_some()).await, "restored");
+        assert!(!app.hex_inspector);
+        assert_eq!(app.hex_byte_order, Some(ByteOrder::Big));
+        app.test_execute(Command::HexToggleInspector);
+        quit(app).await;
+        let mut app = state_app(&root, &state).await;
+        assert!(app.settle(|a| a.active_hex().is_some()).await, "restored");
+        assert!(app.hex_inspector);
+    }
+
+    #[test]
+    fn hex_more_c_an_older_session_without_the_fields_loads_with_the_defaults() {
+        let none: crate::session::HexState = serde_json::from_str(r#"{"inspector":false}"#).unwrap();
+        assert_eq!((none.inspector, none.byte_order), (false, None));
+        let only: crate::session::HexState = serde_json::from_str(r#"{"byte_order":"big"}"#).unwrap();
+        assert_eq!((only.inspector, only.byte_order), (true, Some(ByteOrder::Big)));
+        let both: crate::session::HexState = serde_json::from_str(r#"{"inspector":true,"byte_order":"big"}"#).unwrap();
+        assert_eq!(both.byte_order, Some(ByteOrder::Big));
+        let d = crate::session::HexState::default();
+        assert_eq!((d.inspector, d.byte_order), (true, None));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_c_the_setting_sets_the_starting_order_and_a_chosen_one_wins() {
+        let (_d, mut app) = ins_app(&[1, 2, 3, 4]).await;
+        app.settings.hex_byte_order = ByteOrder::Big;
+        let term = wide(&mut app);
+        assert_eq!(shown(&app, &term, "u16"), "258");
+        app.test_execute(Command::HexToggleByteOrder);
+        let term = wide(&mut app);
+        assert_eq!(shown(&app, &term, "u16"), "513", "toggling flips the setting's order");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_c_a_paged_doc_shows_pending_values_until_its_page_loads() {
+        let (_d, _root, mut app) = big_app(BIG, &[(0x10, &[1, 2, 3, 4, 5, 6, 7, 8])], false).await;
+        app.hex_inspector = true;
+        quick_open(&mut app, "big.bin").await;
+        go_to_offset(&mut app, "0x10");
+        let term = wide(&mut app);
+        assert_eq!(shown(&app, &term, "u32"), "…");
+        assert_eq!(shown(&app, &term, "u8"), "…");
+        for _ in 0..100 {
+            let term = wide(&mut app);
+            if shown(&app, &term, "u32") != "…" {
+                assert_eq!(shown(&app, &term, "u32"), "67305985");
+                return;
+            }
+            app.needs_redraw = false;
+            assert!(app.settle(|a| a.needs_redraw).await, "the page arrives");
+        }
+        panic!("the page never loaded");
+    }
+
+    #[test]
+    fn hex_more_c_commands_are_named() {
+        for (c, name) in [
+            (Command::HexToggleInspector, "hex.toggleInspector"),
+            (Command::HexToggleByteOrder, "hex.toggleEndianness"),
+            (Command::HexCopyValue, "hex.copyValue"),
+        ] {
+            assert_eq!(c.name(), name);
+            assert_eq!(Command::from_name(name), Some(c));
+        }
+    }
 }

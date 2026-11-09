@@ -334,6 +334,45 @@ impl App {
         true
     }
 
+    /// The byte order the data inspector reads in: the chosen one, else the setting's.
+    pub fn hex_order(&self) -> hex::ByteOrder {
+        self.hex_byte_order.unwrap_or(self.settings.hex_byte_order)
+    }
+
+    /// "Hex: Toggle Data Inspector" (does nothing on another kind of tab).
+    pub(super) fn hex_toggle_inspector(&mut self) {
+        if self.active_hex().is_none() {
+            return tracing::debug!("not in a hex view");
+        }
+        self.hex_inspector = !self.hex_inspector;
+        self.needs_redraw = true;
+    }
+
+    /// "Hex: Toggle Byte Order" and a click on the panel's header; per session, not per tab.
+    pub(super) fn hex_toggle_byte_order(&mut self) {
+        if self.active_hex().is_none() {
+            return tracing::debug!("not in a hex view");
+        }
+        self.hex_byte_order = Some(self.hex_order().toggle());
+        self.needs_redraw = true;
+    }
+
+    /// "Hex: Copy Value": the marked inspector row's value (nothing when no row is marked).
+    pub(super) fn hex_copy_value(&mut self) {
+        let Some(h) = self.active_hex() else {
+            return tracing::debug!("not in a hex view");
+        };
+        let text = h.inspect(self.hex_order()).and_then(|i| i.value().map(str::to_owned));
+        match text {
+            Some(text) if self.hex_inspector => self.clipboard.write(Copied {
+                text,
+                whole_line: false,
+                pieces: Vec::new(),
+            }),
+            _ => self.notify(Level::Info, "Select a data inspector row to copy its value".into()),
+        }
+    }
+
     /// Cmd+C on a hex tab: the selection (else the cursor's byte) as its column shows it. A
     /// paged doc's bytes are read off the UI thread (`ViewEvent::HexCopied`), up to
     /// `HEX_COPY_MAX`; a bigger selection is a message. False when the active tab isn't a hex view.
@@ -469,6 +508,8 @@ impl App {
         }
         let Hit::Editor(g) = hit else { return false };
         let rows = self.hits.group(g).map(|h| h.text).unwrap_or_default();
+        let panel = self.hits.group(g).and_then(|h| h.hex.clone());
+        let order = self.hex_order();
         let Some(h) = self.groups.get_mut(g).and_then(|g| g.active_hex_mut()) else {
             return false;
         };
@@ -477,6 +518,14 @@ impl App {
             MouseEventKind::ScrollDown => h.scroll_by(WHEEL_ROWS),
             MouseEventKind::Down(MouseButton::Left) => {
                 let p = ratatui::layout::Position { x: m.column, y: m.row };
+                if let Some(panel) = &panel {
+                    // The data inspector: the header's byte order, a row (selected for Copy Value).
+                    if panel.toggle.contains(p) {
+                        self.hex_byte_order = Some(order.toggle());
+                    } else if let Some((_, kind)) = panel.rows.iter().find(|(r, _)| r.contains(p)) {
+                        h.inspected_row = Some((*kind, panel.offset));
+                    }
+                }
                 if rows.contains(p)
                     && let Some((offset, column)) =
                         h.offset_at((m.row - rows.y) as usize, (m.column - rows.x) as usize, false)

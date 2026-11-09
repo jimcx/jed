@@ -10,6 +10,13 @@
 //! widget's query, `hex::find_in` over the visible bytes that are loaded) in both columns, under the
 //! selection as `editor.findMatchHighlight`, the selected one over it as `editor.findMatch`, as
 //! the editor layers them; a match over a row break shows on both rows.
+//!
+//! The data inspector (`HexTab::inspect`, `Overlay::inspector`) is a panel of label / value rows
+//! (`hexEditor.inspector.*`) right of the rows when the area fits 8-byte rows beside it, else
+//! under them (when there's height for it; otherwise it isn't drawn); the rows get the width
+//! (height) left over. Its header shows the byte order, a click target (`HexHit::toggle`); the
+//! marked rows are `hexEditor.inspector.active` and their bytes `hexEditor.inspected` in both
+//! columns.
 
 use std::ops::Range;
 
@@ -18,7 +25,8 @@ use ratatui::buffer::Buffer as Cells;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
-use crate::hex::{self, Column, HexTab};
+use crate::hex::{self, ByteOrder, Column, HexTab, Inspected};
+use crate::layout::HexHit;
 use crate::theme::Theme;
 
 /// How a tab is drawn besides its bytes.
@@ -27,12 +35,130 @@ pub struct Overlay<'a> {
     pub focused: bool,
     /// The find widget's query, when it's shown over this tab.
     pub find: Option<&'a hex::Query>,
+    /// The data inspector, when shown: the byte order it reads in.
+    pub inspector: Option<ByteOrder>,
+}
+
+/// The inspector's width beside the rows (its separator column included).
+const PANEL_WIDTH: u16 = 36;
+/// Its height under the rows: the header and one row per type.
+const PANEL_HEIGHT: u16 = 15;
+/// Rows of bytes kept when the panel goes under them.
+const MIN_BYTE_ROWS: u16 = 3;
+/// Columns of a row's label.
+const LABEL_WIDTH: u16 = 12;
+
+/// Where the inspector sits relative to the byte rows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Placement {
+    Beside,
+    Below,
+}
+
+/// Splits `area` into the byte rows' rect and the inspector's.
+fn split(area: Rect, len: usize, max: usize) -> (Rect, Option<(Rect, Placement)>) {
+    let want = max.clamp(1, 8);
+    if area.width > PANEL_WIDTH
+        && hex::Layout::fit((area.width - PANEL_WIDTH) as usize, want, len as u64).bytes_per_row() >= want
+    {
+        let rows = Rect {
+            width: area.width - PANEL_WIDTH,
+            ..area
+        };
+        let panel = Rect {
+            x: area.x + rows.width,
+            width: PANEL_WIDTH,
+            ..area
+        };
+        return (rows, Some((panel, Placement::Beside)));
+    }
+    if area.height >= PANEL_HEIGHT + MIN_BYTE_ROWS {
+        let rows = Rect {
+            height: area.height - PANEL_HEIGHT,
+            ..area
+        };
+        let panel = Rect {
+            y: area.y + rows.height,
+            height: PANEL_HEIGHT,
+            ..area
+        };
+        return (rows, Some((panel, Placement::Below)));
+    }
+    (area, None)
+}
+
+/// Draws the panel in `panel`; returns what the mouse can hit.
+fn render_panel(
+    out: &mut Cells,
+    panel: Rect,
+    placement: Placement,
+    order: ByteOrder,
+    inspected: Option<&Inspected>,
+    theme: &Theme,
+) -> HexHit {
+    let base = theme.get("editor");
+    let header = base.patch(theme.get("hexEditor.inspector.header"));
+    let label = base.patch(theme.get("hexEditor.inspector.label"));
+    let value = base.patch(theme.get("hexEditor.inspector.value"));
+    let active = theme.get("hexEditor.inspector.active");
+    let mut c = panel;
+    if placement == Placement::Beside {
+        let border = base.patch(theme.get("hexEditor.border"));
+        for y in panel.y..panel.y + panel.height {
+            out.set_stringn(panel.x, y, "│", 1, border);
+        }
+        c.x += 1;
+        c.width -= 1;
+    }
+    let mut hit = HexHit {
+        offset: inspected.map_or(0, |i| i.offset),
+        ..HexHit::default()
+    };
+    out.set_stringn(c.x, c.y, " Data Inspector", c.width as usize, header);
+    let tag = format!(" {} ", order.label());
+    let tag_w = tag.chars().count() as u16;
+    if c.width >= tag_w {
+        let at = Rect::new(c.x + c.width - tag_w, c.y, tag_w, 1);
+        out.set_stringn(at.x, at.y, &tag, tag_w as usize, header);
+        hit.toggle = at;
+    }
+    let Some(inspected) = inspected else { return hit };
+    for (i, row) in inspected.rows.iter().enumerate() {
+        let y = c.y + 1 + i as u16;
+        if y >= c.y + c.height {
+            break;
+        }
+        let r = Rect::new(c.x, y, c.width, 1);
+        let marked = inspected.marked.contains(&i);
+        if marked {
+            out.set_style(r, active);
+        }
+        let (l, v) = if marked { (active, active) } else { (label, value) };
+        let lw = LABEL_WIDTH.min(c.width);
+        out.set_stringn(c.x + 1, y, row.label, lw.saturating_sub(1) as usize, l);
+        if c.width > lw {
+            out.set_stringn(c.x + lw, y, &row.value, (c.width - lw) as usize, v);
+        }
+        hit.rows.push((r, row.kind));
+    }
+    hit
 }
 
 /// Draws `tab` in `area` (`max`: the `hex_bytes_per_line` setting); returns the rows' rect
 /// (`GroupHit::text`, for the mouse).
-pub fn render(f: &mut Frame, area: Rect, tab: &mut HexTab, theme: &Theme, max: usize, overlay: Overlay) -> Rect {
+pub fn render(
+    f: &mut Frame,
+    full: Rect,
+    tab: &mut HexTab,
+    theme: &Theme,
+    max: usize,
+    overlay: Overlay,
+) -> (Rect, Option<HexHit>) {
     let focused = overlay.focused;
+    let (area, panel) = match overlay.inspector {
+        Some(_) => split(full, tab.len(), max),
+        None => (full, None),
+    };
     tab.fit(area.width as usize, area.height as usize, max);
     let base = theme.get("editor");
     let offset_style = base.patch(theme.get("hexEditor.offset"));
@@ -44,7 +170,13 @@ pub fn render(f: &mut Frame, area: Rect, tab: &mut HexTab, theme: &Theme, max: u
     let find_match = theme.get("editor.findMatch");
     let pending = theme.get("hexEditor.pending");
     let out = f.buffer_mut();
-    out.set_style(area, base);
+    out.set_style(full, base);
+    let inspected = overlay
+        .inspector
+        .and_then(|o| tab.inspect(o))
+        .filter(|_| panel.is_some());
+    let outlined: Vec<Range<usize>> = inspected.iter().flat_map(Inspected::outlines).collect();
+    let inspected_style = theme.get("hexEditor.inspected");
 
     let layout = tab.layout;
     let n = layout.bytes_per_row();
@@ -106,10 +238,11 @@ pub fn render(f: &mut Frame, area: Rect, tab: &mut HexTab, theme: &Theme, max: u
             }
             // Find matches, the selection, the selected match: each run of bytes painted through
             // the gaps between their hex cells, so a run is one block.
-            let layers: [(&dyn Fn(usize) -> bool, Style); 3] = [
+            let layers: [(&dyn Fn(usize) -> bool, Style); 4] = [
                 (&|b| found.covers(b), find_highlight),
                 (&|b| selected.contains(&b), selection),
                 (&|b| found.current.contains(&b), find_match),
+                (&|b| outlined.iter().any(|r| r.contains(&b)), inspected_style),
             ];
             for (has, style) in layers {
                 if has(at) {
@@ -139,7 +272,10 @@ pub fn render(f: &mut Frame, area: Rect, tab: &mut HexTab, theme: &Theme, max: u
     if let Some((x, y)) = cursor_cell {
         f.set_cursor_position(Position { x, y });
     }
-    area
+    let hit = panel.zip(overlay.inspector).map(|((rect, placement), order)| {
+        render_panel(f.buffer_mut(), rect, placement, order, inspected.as_ref(), theme)
+    });
+    (area, hit)
 }
 
 /// Find's matches over the visible bytes: how many cover each one, and the selected match.

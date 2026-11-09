@@ -113,6 +113,7 @@ const NONNEG: ValueKind = ValueKind::Int {
 const WHITESPACE: &[&str] = &["none", "boundary", "selection", "trailing", "all"];
 const CURSOR_STYLES: &[&str] = &["line", "block", "underline"];
 const ON_OFF: &[&str] = &["on", "off"];
+const BYTE_ORDERS: &[&str] = &["little", "big"];
 const WRAP: &[&str] = &["off", "on"];
 const SPELL_SCOPES: &[&str] = &["all", "comments_and_strings", "off"];
 const STATUS_COLORS: &[&str] = &[
@@ -188,6 +189,11 @@ const SETTINGS_KEYS: &[KeySchema] = &[
             pow2: true,
         },
         "A hex tab's widest row: a power of two from 1 to 64",
+    ),
+    key(
+        "hex_byte_order",
+        ValueKind::Enum(BYTE_ORDERS),
+        "The hex data inspector's starting byte order",
     ),
     key("rulers", ValueKind::IntList, "Columns that get a vertical line"),
     key(

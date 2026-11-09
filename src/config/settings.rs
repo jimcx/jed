@@ -19,6 +19,7 @@
 //! | `cursor_style`     | str  | `"line"`  | The cursor's shape: `line` (a bar), `block` or `underline`     |
 //! | `cursor_blinking`  | bool | true      | The cursor blinks                                              |
 //! | `hex_bytes_per_line` | int | 32       | A hex tab's widest row: a power of two from 1 to 64            |
+//! | `hex_byte_order`   | str  | `"little"` | The hex data inspector's starting byte order: `little` or `big` |
 //! | `rulers`           | int list | unset | Columns drawn as a thin vertical line behind the text; unset, `git-commit` has `[72]` (`[]` turns it off) |
 //! | `scrollback`       | int  | 5000      | Lines kept above the screen, for shell and task tabs            |
 //! | `spell_check_scope` | str | `"all"` | What the spell checker looks at: `all` (comments, strings, identifiers), `comments_and_strings` or `off` |
@@ -88,6 +89,8 @@ pub struct SettingsOverrides {
     /// A hex tab's widest row in bytes; anything but a power of two from 1 to 64 is an error.
     #[serde(deserialize_with = "hex_bytes_per_line")]
     pub hex_bytes_per_line: Option<usize>,
+    /// The hex data inspector's starting byte order: `little` or `big`.
+    pub hex_byte_order: Option<crate::hex::ByteOrder>,
     /// Columns that get a vertical ruler line (VS Code's `editor.rulers`); set, even to `[]`, it
     /// replaces a language's own default (`git-commit`: 72).
     pub rulers: Option<Vec<usize>>,
@@ -187,6 +190,9 @@ impl SettingsOverrides {
         }
         if let Some(n) = self.hex_bytes_per_line {
             s.hex_bytes_per_line = n;
+        }
+        if let Some(o) = self.hex_byte_order {
+            s.hex_byte_order = o;
         }
         if let Some(n) = self.scrollback {
             s.scrollback = n;
@@ -395,6 +401,7 @@ pub const TEMPLATE: &str = "\
 # cursor_blinking = true
 # rulers = []  # columns that get a vertical line, e.g. [80, 120]; unset, git commit messages get 72 (set, even [], replaces it)
 # hex_bytes_per_line = 32  # a hex tab's widest row: 1, 2, 4, 8, 16, 32 or 64 bytes
+# hex_byte_order = \"little\"  # the hex data inspector's starting byte order: little or big
 # scrollback = 5000  # lines kept above the screen, for shell and task tabs
 # spell_check_scope = \"all\"  # all (comments, strings, identifiers), comments_and_strings or off
 # spell_check_min_length = 3  # shorter words are not checked
@@ -467,7 +474,7 @@ mod tests {
             "[settings]\ntab_width = 2\ninsert_spaces = false\nsyntax_max_bytes = 10\nauto_close_pairs = false\n\
              detect_indentation = false\nauto_indent = false\nmatch_brackets = false\nselection_highlight = false\nsemantic_highlighting = \"off\"\nquick_suggestions = false\n\
              render_whitespace = \"trailing\"\n\
-             cursor_style = \"block\"\ncursor_blinking = false\nhex_bytes_per_line = 16\nrulers = [80, 100]\n\
+             cursor_style = \"block\"\ncursor_blinking = false\nhex_bytes_per_line = 16\nhex_byte_order = \"big\"\nrulers = [80, 100]\n\
              scrollback = 50\nword_wrap = \"on\"\ntabs_at_bottom = true\n\
              spell_check_scope = \"comments_and_strings\"\nspell_check_min_length = 4\nspell_check_problems = true\n\
              spell_check_language = \"en_AU\"\nspell_check_ignore_words = [\"a\"]\nspell_check_off_languages = [\"log\"]\n",
@@ -489,6 +496,7 @@ mod tests {
                 cursor_style: Some(CursorStyle::Block),
                 cursor_blinking: Some(false),
                 hex_bytes_per_line: Some(16),
+                hex_byte_order: Some(crate::hex::ByteOrder::Big),
                 rulers: Some(vec![80, 100]),
                 scrollback: Some(50),
                 scrollback_compression: None,
@@ -768,6 +776,7 @@ mod tests {
             cursor_style: Some(CursorStyle::Line),
             cursor_blinking: Some(true),
             hex_bytes_per_line: Some(1),
+            hex_byte_order: Some(crate::hex::ByteOrder::Big),
             rulers: Some(Vec::new()),
             scrollback: Some(5_000),
             scrollback_compression: Some(false),
@@ -824,6 +833,7 @@ mod tests {
         );
         assert!(parse(TEMPLATE).errors.is_empty());
         assert_eq!(s.word_wrap, d.word_wrap);
+        assert_eq!(s.hex_byte_order, d.hex_byte_order);
         assert_eq!(s.tabs_at_bottom, d.tabs_at_bottom);
         assert_eq!(
             (
