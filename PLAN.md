@@ -693,6 +693,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Close tabs and go to the Nth tab** (`close_tabs_nth`): close all / others / saved tabs, and go to the Nth tab in a group — [tasks/close_tabs_nth.md](tasks/close_tabs_nth.md)
 - **Expand / shrink selection** (`expand_shrink_selection`): grow / shrink each selection to enclosing syntax nodes — [tasks/expand_shrink_selection.md](tasks/expand_shrink_selection.md)
 - **Feature-based end-to-end test files** (`feature_test_files`): reorganize milestone test files into per-feature files — [tasks/feature_test_files.md](tasks/feature_test_files.md)
+- **Hex view: large files and a data inspector** (`hex_more`): hex tabs open files of any size by reading only the pages on screen; a data inspector shows the bytes at the cursor as char / short / int / long / float values in either byte order, with word grouping, follow pointer and copy as C / Rust / Python / base64 — [tasks/hex_more.md](tasks/hex_more.md)
 - **Keyboard resize of splits** (`keyboard_resize_splits`): resize the active group's split by keyboard — [tasks/keyboard_resize_splits.md](tasks/keyboard_resize_splits.md)
 - **Language features** (`lang`): go to symbol, signature help and breadcrumbs / sticky scroll — [tasks/lang.md](tasks/lang.md)
 - **Language server setup docs** (`language_server_docs`): docs for installing and configuring language servers — [tasks/language_server_docs.md](tasks/language_server_docs.md)
