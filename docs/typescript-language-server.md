@@ -1,6 +1,6 @@
 # Configuring typescript-language-server
 
-jed starts [typescript-language-server](https://github.com/typescript-language-server/typescript-language-server) for JavaScript, JSX, TypeScript and TSX files with no configuration: it runs `typescript-language-server --stdio` in the workspace root, one server for all four languages (`languageId`s `javascript`, `javascriptreact`, `typescript`, `typescriptreact`). It wraps TypeScript's own `tsserver` and gives diagnostics, completion (with details resolved on selection), signature help, hover, go to definition / type definition / implementation, references, rename (also of the other files that use the name), formatting, code actions and quick fixes (including "Organize Imports") and semantic highlighting. Everything below is optional.
+jed starts [typescript-language-server](https://github.com/typescript-language-server/typescript-language-server) for JavaScript, JSX, TypeScript and TSX files with no configuration: it runs `typescript-language-server --stdio` in the workspace root, one server for all four languages (`languageId`s `javascript`, `javascriptreact`, `typescript`, `typescriptreact`). It wraps TypeScript's own `tsserver`, and in jed gives diagnostics, completion (with details resolved on selection), hover, go to definition, references, rename (also of the other files that use the name), formatting, code actions and quick fixes (including "Organize Imports") and semantic highlighting. Everything below is optional.
 
 ## 1. Installing it
 
@@ -15,7 +15,7 @@ A project that has both as dev dependencies (`npm i -D typescript typescript-lan
 - When `<workspace>/node_modules/.bin/typescript-language-server` exists, jed runs that instead of the one on `PATH` (the tool log says "Using the workspace's …").
 - When `<workspace>/node_modules/typescript/lib/tsserver.js` exists, jed sends `initializationOptions.tsserver.path` pointing at that folder, so the language service is the project's TypeScript version, as in VS Code. (The server also finds a workspace's TypeScript itself; the explicit path makes it certain.) An `initializationOptions.tsserver.path` you set yourself is kept.
 
-Only the bare built-in command gets this; a `command` from `.workspace` / `settings.toml` runs as written. If the binary isn't found, jed says "Language server typescript-language-server not found"; if it starts and then fails, the message ends with its last stderr line. The Tools view has its log. To use another server or path, set it in `.workspace` (used once you trust the workspace) or in `~/.config/jed/settings.toml` (always); each language id has its own entry:
+Only a bare `typescript-language-server` command gets this (the built-in's, or a `.workspace` / `settings.toml` `command` set to just that name); a path or another command runs as written. If the binary isn't found, jed says "Language server typescript-language-server not found"; if it starts and then fails, the message ends with its last stderr line. The Tools view has its log. To use another server or path, set it in `.workspace` (used once you trust the workspace) or in `~/.config/jed/settings.toml` (always); each language id has its own entry:
 
 ```toml
 [lsp.typescript]
@@ -37,7 +37,7 @@ A lone file with no `tsconfig.json` / `jsconfig.json` is an *inferred project*: 
 
 ## 3. Formatting and progress
 
-Format Document sends jed's tab size and "insert spaces" for the buffer (its own detected / `.editorconfig` / settings values), not the server's defaults of 4 spaces. tsserver's own formatter settings (braces, semicolons) are its defaults. `$/typescriptVersion` and `window/logMessage` go to the tool log; project loading shows as progress in the status bar when the server reports it.
+Format Document sends jed's tab size and "insert spaces" for the buffer (its own detected / `.editorconfig` / settings values), not the server's defaults of 4 spaces. tsserver's own formatter settings (braces, semicolons) are its defaults. `window/logMessage` goes to the tool log (its "Initialized:" line names the server's version); `$/typescriptVersion` is only in the debug log and the protocol trace; project loading shows as progress in the status bar when the server reports it.
 
 ## 4. Alternatives
 

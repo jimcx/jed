@@ -13,13 +13,14 @@ pub(crate) const SERVER: &str = "typescript-language-server";
 /// What to launch differently for the workspace at `root`.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Prepared {
-    /// The workspace's `node_modules/.bin/typescript-language-server`, when the command is the bare built-in.
+    /// The workspace's `node_modules/.bin/typescript-language-server`, when the command is that bare name.
     pub command: Option<PathBuf>,
     /// The workspace's `node_modules/typescript/lib`, for `initializationOptions.tsserver.path`.
     pub tsserver: Option<PathBuf>,
 }
 
-/// Decide from file checks (`is_file`, `is_dir`): only for the bare built-in command; never overrides an
+/// Decide from file checks (`is_file`, `is_dir`): only for a bare `typescript-language-server` command (the
+/// built-in's, or a configured one of that name); never overrides an
 /// `initializationOptions.tsserver.path` the user set.
 fn decide(
     command: &str,
