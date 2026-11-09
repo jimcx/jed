@@ -16,6 +16,9 @@
 //! Matches are byte ranges `start..start + query.len()` and may overlap (`aa` is found 3 times in
 //! `aaaa`): that makes the matches in a window independent of where the window starts, so a frame
 //! can search only its visible bytes and agree with `count` over the whole file.
+//!
+//! `page` (a file's bytes resident or paged, and the page cache) and `stream` (`find_next` and friends over
+//! a paged file) are the model for files too big to hold; the tab doesn't use them yet.
 
 use std::borrow::Cow;
 use std::fmt::{self, Write as _};
@@ -28,6 +31,18 @@ use memchr::memmem;
 
 use crate::buffer::file::{self, Stamp};
 use crate::command::Motion;
+
+mod page;
+mod stream;
+
+#[allow(unused_imports)]
+pub use page::*;
+#[allow(unused_imports)]
+pub use stream::*;
+
+// Byte offsets are `u64` (files of any size) while `HexTab`'s cursor and scroll stay `usize`
+// until the tab is paged: on a 64-bit target the casts between them are lossless.
+const _: () = assert!(usize::BITS == 64);
 
 /// Files bigger than this aren't opened in a hex tab (paged reads are a TODO).
 pub const HEX_MAX_BYTES: usize = 256 << 20;
@@ -176,7 +191,7 @@ impl Layout {
     /// 1..=`MAX_BYTES_PER_ROW`) whose row fits `width` columns, or 1 when none does (the row is
     /// then cut); offsets as wide as `len` (the file's size, which the last row prints) needs,
     /// at least 8 digits.
-    pub fn fit(width: usize, max: usize, len: usize) -> Self {
+    pub fn fit(width: usize, max: usize, len: u64) -> Self {
         let digits = offset_digits(len);
         let mut n = floor_pow2(max.clamp(1, MAX_BYTES_PER_ROW));
         while n > 1 && row_width(n, digits) > width {
@@ -204,22 +219,22 @@ impl Layout {
 
     /// Rows in a `len`-byte file: one per `bytes_per_row` bytes plus the end offset's; none when
     /// it's empty.
-    pub fn rows(&self, len: usize) -> usize {
+    pub fn rows(&self, len: u64) -> usize {
         if len == 0 {
             0
         } else {
-            len.div_ceil(self.bytes_per_row) + 1
+            len.div_ceil(self.bytes_per_row as u64) as usize + 1
         }
     }
 
     /// The offset row `row` prints: its first byte, or `len` for the last (end) row.
-    pub fn row_offset(&self, row: usize, len: usize) -> usize {
-        (row * self.bytes_per_row).min(len)
+    pub fn row_offset(&self, row: usize, len: u64) -> u64 {
+        (row as u64 * self.bytes_per_row as u64).min(len)
     }
 
     /// The row a byte is on.
-    pub fn row_of(&self, offset: usize) -> usize {
-        offset / self.bytes_per_row
+    pub fn row_of(&self, offset: u64) -> usize {
+        (offset / self.bytes_per_row as u64) as usize
     }
 
     /// The offset's columns.
@@ -282,8 +297,8 @@ fn row_width(n: usize, digits: usize) -> usize {
     digits + 2 + 3 * n + n.div_ceil(8) + 1 + n + 1
 }
 
-fn offset_digits(len: usize) -> usize {
-    let bits = usize::BITS - len.leading_zeros();
+fn offset_digits(len: u64) -> usize {
+    let bits = u64::BITS - len.leading_zeros();
     (bits as usize).div_ceil(4).max(8)
 }
 
@@ -302,16 +317,16 @@ pub fn is_printable(b: u8) -> bool {
 
 /// The row starting at `offset` (a multiple of `bytes_per_row`, or `doc.len()` for the end row)
 /// exactly as `hexdump -C -v` prints it, without the newline.
-pub fn row(doc: &HexDoc, layout: &Layout, offset: usize) -> String {
-    let len = doc.len();
-    debug_assert!(offset == len || (offset < len && offset.is_multiple_of(layout.bytes_per_row)));
+pub fn row(doc: &HexDoc, layout: &Layout, offset: u64) -> String {
+    let len = doc.len() as u64;
+    debug_assert!(offset == len || (offset < len && offset.is_multiple_of(layout.bytes_per_row as u64)));
     let digits = layout.offset_digits;
     let mut s = String::with_capacity(layout.width());
     let _ = write!(s, "{offset:0digits$x}");
     if offset >= len {
         return s;
     }
-    let bytes = &doc.bytes()[offset..len.min(offset + layout.bytes_per_row)];
+    let bytes = &doc.bytes()[offset as usize..len.min(offset + layout.bytes_per_row as u64) as usize];
     s.push_str("  ");
     for (i, b) in bytes.iter().enumerate() {
         let _ = write!(s, "{b:02x} ");
@@ -356,7 +371,7 @@ pub fn printable_text(bytes: &[u8]) -> Option<String> {
 
 /// Go to Offset's input: hex as `0x1f0` / `1f0h` (either case), else decimal (`496`); spaces
 /// around it are ignored. `None` if it's neither. Past the end is the caller's to clamp.
-pub fn parse_offset(text: &str) -> Option<usize> {
+pub fn parse_offset(text: &str) -> Option<u64> {
     let t = text.trim();
     let hex = t
         .strip_prefix("0x")
@@ -364,7 +379,7 @@ pub fn parse_offset(text: &str) -> Option<usize> {
         .or_else(|| t.strip_suffix('h'))
         .or_else(|| t.strip_suffix('H'));
     match hex {
-        Some(h) if !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit()) => usize::from_str_radix(h, 16).ok(),
+        Some(h) if !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit()) => u64::from_str_radix(h, 16).ok(),
         Some(_) => None,
         None if !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()) => t.parse().ok(),
         None => None,
@@ -678,7 +693,7 @@ pub struct HexTab {
 
 impl HexTab {
     pub fn new(path: PathBuf, doc: HexDoc) -> Self {
-        let layout = Layout::fit(row_width(16, 8), 16, doc.len());
+        let layout = Layout::fit(row_width(16, 8), 16, doc.len() as u64);
         static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -739,7 +754,7 @@ impl HexTab {
 
     /// Rows at the current layout, the end offset's row included.
     pub fn rows(&self) -> usize {
-        self.layout.rows(self.len())
+        self.layout.rows(self.len() as u64)
     }
 
     pub fn top_row(&self) -> usize {
@@ -762,7 +777,7 @@ impl HexTab {
     /// reveals the cursor; the top is clamped to the rows; a pending `reveal` is done.
     pub fn fit(&mut self, width: usize, height: usize, max: usize) {
         self.height = height.max(1);
-        let layout = Layout::fit(width, max, self.len());
+        let layout = Layout::fit(width, max, self.len() as u64);
         if layout != self.layout {
             self.layout = layout;
             self.top -= self.top % layout.bytes_per_row();
@@ -770,7 +785,7 @@ impl HexTab {
         }
         self.set_top_row(self.top_row());
         if std::mem::take(&mut self.reveal) {
-            let row = self.layout.row_of(self.cursor);
+            let row = self.layout.row_of(self.cursor as u64);
             // On the last bytes' row, the end offset's row below it comes into view too.
             let bottom = if row + 2 == self.rows() { row + 1 } else { row };
             let top = self.top_row();
@@ -834,7 +849,7 @@ impl HexTab {
         self.anchor = Some(range.start);
         self.cursor = range.end - 1;
         self.reveal = true;
-        let first = self.layout.row_of(range.start);
+        let first = self.layout.row_of(range.start as u64);
         if first < self.top_row() {
             self.set_top_row(first);
         }
@@ -917,8 +932,8 @@ mod tests {
 
     fn dump(doc: &HexDoc, layout: &Layout) -> String {
         let mut out = String::new();
-        for r in 0..layout.rows(doc.len()) {
-            out.push_str(&row(doc, layout, layout.row_offset(r, doc.len())));
+        for r in 0..layout.rows(doc.len() as u64) {
+            out.push_str(&row(doc, layout, layout.row_offset(r, doc.len() as u64)));
             out.push('\n');
         }
         out
@@ -972,7 +987,7 @@ mod tests {
     }
 
     fn layout16(len: usize) -> Layout {
-        let l = Layout::fit(78, 32, len);
+        let l = Layout::fit(78, 32, len as u64);
         assert_eq!(l.bytes_per_row(), 16);
         l
     }
@@ -1002,6 +1017,21 @@ mod tests {
             let doc = HexDoc::new(bytes);
             assert_eq!(dump(&doc, &layout16(doc.len())), want, "{} bytes", doc.len());
         }
+    }
+
+    #[test]
+    fn layout_and_offsets_past_4_gib() {
+        let len: u64 = (6 << 30) + 5;
+        let l = Layout::fit(200, 16, len);
+        assert_eq!((l.offset_digits(), l.bytes_per_row()), (9, 16));
+        assert_eq!(l.rows(len), (len.div_ceil(16) + 1) as usize);
+        assert_eq!(l.row_offset(l.rows(len) - 1, len), len);
+        assert_eq!(l.row_offset(1 << 28, len), 1 << 32);
+        assert_eq!(l.row_of(len - 1), (len / 16) as usize);
+        assert_eq!(parse_offset("0x180000005"), Some(len));
+        assert_eq!(parse_offset("6442450949"), Some(len));
+        assert_eq!(parse_offset("ffffffffffffffffh"), Some(u64::MAX));
+        assert_eq!(parse_offset("10000000000000000h"), None);
     }
 
     #[test]
@@ -1036,23 +1066,23 @@ mod tests {
     #[test]
     fn other_widths() {
         let doc = HexDoc::new(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".to_vec());
-        let l = Layout::fit(144, 64, doc.len());
+        let l = Layout::fit(144, 64, doc.len() as u64);
         assert_eq!((l.bytes_per_row(), l.width()), (32, 144));
         let full = "00000000  41 42 43 44 45 46 47 48  49 4a 4b 4c 4d 4e 4f 50  51 52 53 54 55 56 57 58  \
                     59 5a 30 31 32 33 34 35  |ABCDEFGHIJKLMNOPQRSTUVWXYZ012345|";
         let short = format!("00000020  36 37 38 39{}|6789|", " ".repeat(110 - 21));
         assert_eq!(dump(&doc, &l), format!("{full}\n{short}\n00000024\n"));
-        let l = Layout::fit(77, 64, doc.len());
+        let l = Layout::fit(77, 64, doc.len() as u64);
         assert_eq!((l.bytes_per_row(), l.width()), (8, 45));
         assert_eq!(row(&doc, &l, 8), "00000008  49 4a 4b 4c 4d 4e 4f 50  |IJKLMNOP|");
-        let l = Layout::fit(43, 64, doc.len());
+        let l = Layout::fit(43, 64, doc.len() as u64);
         assert_eq!((l.bytes_per_row(), l.width()), (4, 29));
         assert_eq!(row(&doc, &l, 4), "00000004  45 46 47 48  |EFGH|");
         assert_eq!(row(&doc, &l, 36), "00000024");
-        let l = Layout::fit(28, 64, doc.len());
+        let l = Layout::fit(28, 64, doc.len() as u64);
         assert_eq!((l.bytes_per_row(), l.width()), (2, 21));
         assert_eq!(row(&doc, &l, 2), "00000002  43 44  |CD|");
-        let l = Layout::fit(10, 64, doc.len());
+        let l = Layout::fit(10, 64, doc.len() as u64);
         assert_eq!((l.bytes_per_row(), l.width()), (1, 17), "below one byte's width: cut");
         assert_eq!(row(&doc, &l, 0), "00000000  41  |A|");
         let l = Layout::fit(1000, 64, 100);
@@ -1092,7 +1122,7 @@ mod tests {
         let bytes: Vec<u8> = (0..64u8).map(|i| b'a' + i % 26).collect();
         let doc = HexDoc::new(bytes.clone());
         for max in [1, 2, 4, 8, 16, 32, 64] {
-            let l = Layout::fit(1000, max, doc.len());
+            let l = Layout::fit(1000, max, doc.len() as u64);
             let n = l.bytes_per_row();
             let text: Vec<char> = row(&doc, &l, 0).chars().collect();
             assert_eq!(text.len(), l.width());
@@ -1532,7 +1562,7 @@ mod tests {
         assert_eq!((tab.cursor, tab.anchor), (399, Some(399)));
         tab.fit(row_width(16, 8), 10, 16);
         assert_eq!(tab.top_row(), tab.rows() - 10, "the last page");
-        assert!(tab.top_row() <= tab.layout.row_of(tab.cursor));
+        assert!(tab.top_row() <= tab.layout.row_of(tab.cursor as u64));
         tab.deleted = true;
         tab.set_doc(HexDoc::new(Vec::new()));
         assert_eq!((tab.cursor, tab.anchor, tab.top, tab.deleted), (0, None, 0, false));

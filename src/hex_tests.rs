@@ -169,7 +169,7 @@ fn hexdump(path: &Path) -> Option<Vec<String>> {
 fn assert_cursor_shown(app: &App, term: &Terminal<TestBackend>) {
     let h = hex(app);
     let rect = rows_rect(app);
-    let row = h.layout.row_of(h.cursor);
+    let row = h.layout.row_of(h.cursor as u64);
     assert!(
         (h.top_row()..h.top_row() + rect.height as usize).contains(&row),
         "cursor row {row} not in view from {}",
@@ -203,7 +203,7 @@ async fn hex_rows_are_hexdumps_and_resizing_keeps_a_power_of_two() {
         "00000000  7f 45 4c 46 02 01 01 00  00 01 02 03 04 05 06 07  |.ELF............|"
     );
     for (i, drawn) in rows.iter().enumerate() {
-        assert_eq!(drawn, &hex::row(&h.doc, &h.layout, i * 16), "row {i}");
+        assert_eq!(drawn, &hex::row(&h.doc, &h.layout, i as u64 * 16), "row {i}");
     }
     if let Some(dump) = hexdump(&root.join("bin.dat")) {
         assert_eq!(rows[..], dump[..rows.len()]);
@@ -253,7 +253,7 @@ async fn hex_rows_are_hexdumps_and_resizing_keeps_a_power_of_two() {
             let start = (h.top_row() + i) * per_row;
             assert_eq!(
                 drawn,
-                &hex::row(&h.doc, &h.layout, start.min(h.len())),
+                &hex::row(&h.doc, &h.layout, start.min(h.len()) as u64),
                 "{width}: row {i}"
             );
         }
@@ -817,13 +817,17 @@ async fn hex_empty_file_and_narrow_rows() {
         let rect = rows_rect(&app);
         let h = hex(&app);
         let per_row = h.layout.bytes_per_row();
-        assert_eq!(h.layout, hex::Layout::fit(rect.width as usize, 32, h.len()), "{width}");
+        assert_eq!(
+            h.layout,
+            hex::Layout::fit(rect.width as usize, 32, h.len() as u64),
+            "{width}"
+        );
         assert_eq!(h.cursor, 0x20);
         let rows = drawn_rows(&term, rect);
         assert_eq!(rows.len(), rect.height as usize, "{width}");
         for (i, drawn) in rows.iter().enumerate() {
             let start = ((h.top_row() + i) * per_row).min(h.len());
-            let full = hex::row(&h.doc, &h.layout, start);
+            let full = hex::row(&h.doc, &h.layout, start as u64);
             assert!(
                 full.starts_with(drawn.as_str()),
                 "{width}: row {i}: {drawn:?} of {full:?}"
@@ -1280,7 +1284,7 @@ async fn hex_find_count_is_capped() {
 /// The cursor's row is on screen (the terminal cursor is in the find input).
 fn assert_cursor_shown_unfocused(app: &App) {
     let h = hex(app);
-    let row = h.layout.row_of(h.cursor);
+    let row = h.layout.row_of(h.cursor as u64);
     assert!((h.top_row()..h.top_row() + h.height).contains(&row));
 }
 
@@ -1636,7 +1640,7 @@ async fn hex_done_when() {
     // Every row the tab would draw, scrolled through: the first and last pages as drawn.
     let h = hex(&app);
     let all: Vec<String> = (0..h.rows())
-        .map(|r| hex::row(&h.doc, &h.layout, h.layout.row_offset(r, h.len())))
+        .map(|r| hex::row(&h.doc, &h.layout, h.layout.row_offset(r, h.len() as u64)))
         .collect();
     assert_eq!(all[..start.len()], start[..]);
     assert_eq!(all[all.len() - end.len()..], end[..]);

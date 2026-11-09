@@ -62,15 +62,21 @@ pub fn render(f: &mut Frame, area: Rect, tab: &mut HexTab, theme: &Theme, max: u
             out.set_style(rect, style);
         }
     };
-    let rows = layout.rows(len);
+    let rows = layout.rows(len as u64);
     for screen in 0..area.height {
         let row = tab.top_row() + screen as usize;
         if row >= rows {
             break;
         }
         let y = area.y + screen;
-        let start = layout.row_offset(row, len);
-        out.set_stringn(area.x, y, hex::row(&tab.doc, &layout, start), area.width as usize, base);
+        let start = layout.row_offset(row, len as u64) as usize;
+        out.set_stringn(
+            area.x,
+            y,
+            hex::row(&tab.doc, &layout, start as u64),
+            area.width as usize,
+            base,
+        );
         paint(out, y, layout.offset_cols(), offset_style);
         if start >= len {
             // The end offset's row.

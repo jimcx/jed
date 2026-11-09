@@ -338,7 +338,7 @@ impl App {
         };
         self.nav_jump();
         if let Some(h) = self.group_mut().active_hex_mut() {
-            h.move_to(offset, false);
+            h.move_to(offset as usize, false);
         }
         self.ui.focus = Focus::Editor;
         true

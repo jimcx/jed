@@ -35,7 +35,7 @@ impl Eol {
 
 /// What a file held, to tell whether it changed since jed last read or wrote it: its length and
 /// a SHA-256 of its bytes (BOM included). Compared, never ordered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Stamp {
     len: u64,
     hash: [u8; 32],
