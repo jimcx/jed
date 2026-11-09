@@ -712,6 +712,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Stale cargo check diagnostics** (`stale_cargo_check`): dim cargo-check diagnostics until the next save — [tasks/stale_cargo_check.md](tasks/stale_cargo_check.md)
 - **Themes** (`themes`): a built-in Light+, a `theme` setting, a picker with live preview and theme files — [tasks/themes.md](tasks/themes.md)
 - **Transform, sort and dedupe lines** (`transform_sort_dedupe`): change case, sort, and deduplicate lines — [tasks/transform_sort_dedupe.md](tasks/transform_sort_dedupe.md)
+- **TypeScript and JavaScript** (`typescript`): JavaScript, JSX, TypeScript and TSX files get syntax colours, comment / pair / indent behaviour and a language server (`typescript-language-server`) — [tasks/typescript.md](tasks/typescript.md)
 - **VHDL: tree-sitter and VHDL-LS** (`vhdl`): VHDL files get syntax colours, comment / pair / indent behaviour and a language server (`vhdl_ls` from rust_hdl), as C++ / Python / Rust do — [tasks/vhdl.md](tasks/vhdl.md)
 - **Warn when the shell integration is missing or stale** (`shell_integration_check`): when a shell tab opens, warn the user if their shell's integration isn't installed or is an older version than the one jed embeds, pointing at the wizard that fixes it. — [tasks/shell_integration_check.md](tasks/shell_integration_check.md)
 - **Word-based completion** (`word_completion`): offer words from open buffers when no server suggests — [tasks/word_completion.md](tasks/word_completion.md)
