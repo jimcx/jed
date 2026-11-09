@@ -421,6 +421,8 @@ mod inspector {
                     .split_whitespace()
                     .collect::<Vec<_>>()
                     .join(" ")
+                    .trim_end_matches(" →")
+                    .to_owned()
             })
             .collect()
     }
@@ -1030,5 +1032,315 @@ mod hex_more_d {
         assert_eq!(Command::HexCycleGrouping.name(), "hex.cycleGrouping");
         assert_eq!(Command::from_name("hex.cycleGrouping"), Some(Command::HexCycleGrouping));
         assert_eq!(Command::HexCycleGrouping.title(), "Hex: Cycle Byte Grouping");
+    }
+}
+
+/// hex_more-e: Follow Pointer (offsets in navigation entries, the inspector's `→`) and Copy As.
+mod follow_copy {
+    use crossterm::event::{MouseButton, MouseEventKind};
+
+    use super::*;
+    use crate::command::Command;
+    use crate::hex::{HexDoc, RowKind};
+    use crate::hex_tests::{draw, hex_app};
+
+    /// A hex tab (`x.bin`) of `bytes`, the inspector on.
+    async fn app_of(bytes: &[u8]) -> (tempfile::TempDir, App) {
+        let (dir, root, mut app) = hex_app().await;
+        app.hex_inspector = true;
+        app.open_initial_hex(root.join("x.bin"), HexDoc::new(bytes.to_vec()));
+        (dir, app)
+    }
+
+    fn file_with(first: &[u8], len: usize) -> Vec<u8> {
+        let mut v = vec![0u8; len];
+        v[..first.len()].copy_from_slice(first);
+        v
+    }
+
+    fn said(app: &App) -> String {
+        app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
+    }
+
+    fn cursor(app: &App) -> usize {
+        hex(app).cursor
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_e_follow_pointer_jumps_and_back_forward_return() {
+        let (_d, mut app) = app_of(&file_with(&[0x10, 0, 0, 0], 0x20)).await;
+        draw(&mut app, 120, 30);
+        app.press(KeyCode::Char('p'), M::ALT);
+        assert_eq!(cursor(&app), 0x10);
+        draw(&mut app, 120, 30);
+        app.test_execute(Command::NavBack);
+        assert_eq!(cursor(&app), 0);
+        app.test_execute(Command::NavForward);
+        assert_eq!(cursor(&app), 0x10);
+        app.test_execute(Command::NavBack);
+        assert_eq!(cursor(&app), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_e_a_pointer_past_the_end_is_a_message_and_nothing_moves() {
+        let (_d, mut app) = app_of(&file_with(&[0xff; 4], 0x20)).await;
+        app.test_execute(Command::HexFollowPointer);
+        assert_eq!(cursor(&app), 0);
+        assert!(said(&app).contains("past the end"), "{}", said(&app));
+        // Too few bytes left for a pointer.
+        go_to_offset(&mut app, "0x1e");
+        app.test_execute(Command::HexFollowPointer);
+        assert_eq!(cursor(&app), 0x1e);
+        assert!(said(&app).contains("file ends first"), "{}", said(&app));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_e_big_endian_and_an_eight_byte_selection_read_a_u64() {
+        let (_d, mut app) = app_of(&file_with(&[0, 0, 0, 0x18], 0x20)).await;
+        app.test_execute(Command::HexToggleByteOrder);
+        app.test_execute(Command::HexFollowPointer);
+        assert_eq!(cursor(&app), 0x18);
+        // The high half non-zero tells a u64 from a u32 apart: a u32 reads 4, a u64 is past the end.
+        let mut bytes = file_with(&[], 0x20);
+        bytes[8] = 4;
+        bytes[12] = 1;
+        let (_d2, mut app) = app_of(&bytes).await;
+        go_to_offset(&mut app, "8");
+        app.test_execute(Command::HexFollowPointer);
+        assert_eq!(cursor(&app), 4, "no selection: a u32");
+        app.groups.active_group_mut().active_hex_mut().unwrap().select(8..16);
+        app.test_execute(Command::HexFollowPointer);
+        assert!(said(&app).contains("past the end"), "{}", said(&app));
+        assert_eq!(hex(&app).selection(), Some(8..16), "nothing moved");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_e_the_inspector_arrow_follows_that_row() {
+        let mut bytes = file_with(&[0x10, 0, 0, 0], 0x40);
+        bytes[8] = 0x30;
+        let (_d, mut app) = app_of(&bytes).await;
+        draw(&mut app, 120, 30);
+        let panel = app.hits.group(app.groups.active).unwrap().hex.clone().unwrap();
+        let kinds: Vec<_> = panel.follow.iter().map(|(_, k)| *k).collect();
+        assert_eq!(kinds, [RowKind::I32, RowKind::U32, RowKind::I64, RowKind::U64]);
+        let (r, _) = panel.follow[1];
+        app.mouse(MouseEventKind::Down(MouseButton::Left), r.x, r.y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), r.x, r.y);
+        assert_eq!(cursor(&app), 0x10);
+        app.test_execute(Command::NavBack);
+        assert_eq!(cursor(&app), 0);
+        // The u64 row's arrow reads 8 bytes: 0x10 here too (the high half is zero).
+        draw(&mut app, 120, 30);
+        let panel = app.hits.group(app.groups.active).unwrap().hex.clone().unwrap();
+        let (r, _) = panel.follow[3];
+        app.mouse(MouseEventKind::Down(MouseButton::Left), r.x, r.y);
+        assert_eq!(cursor(&app), 0x10);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_e_a_sixty_four_bit_row_marked_at_the_cursor_makes_a_u64_pointer() {
+        let mut bytes = file_with(&[0x10, 0, 0, 0], 0x20);
+        bytes[4] = 1;
+        let (_d, mut app) = app_of(&bytes).await;
+        app.groups.active_group_mut().active_hex_mut().unwrap().inspected_row = Some((RowKind::U64, 0));
+        app.test_execute(Command::HexFollowPointer);
+        assert!(said(&app).contains("past the end"), "{}", said(&app));
+        assert_eq!(cursor(&app), 0);
+        app.groups.active_group_mut().active_hex_mut().unwrap().inspected_row = None;
+        app.test_execute(Command::HexFollowPointer);
+        assert_eq!(cursor(&app), 0x10, "a u32 by default");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_e_a_pointer_whose_page_is_not_loaded_says_so_then_follows() {
+        let (_d, _root, mut app) = big_app(BIG, &[(0, &[0x10, 0, 0, 0])], false).await;
+        quick_open(&mut app, "big.bin").await;
+        // Before any page is read.
+        app.test_execute(Command::HexFollowPointer);
+        if hex(&app).doc.loaded_bytes(0..4).is_none() {
+            assert!(said(&app).contains("not loaded yet"), "{}", said(&app));
+            assert_eq!(cursor(&app), 0);
+        }
+        draw_loaded(&mut app).await;
+        app.test_execute(Command::HexFollowPointer);
+        assert_eq!(cursor(&app), 0x10);
+    }
+
+    fn copy_as(app: &mut App, filter: &str) {
+        app.test_execute(Command::HexCopyAs);
+        assert!(app.palette.is_some());
+        app.type_text(filter);
+        // "Hex" lists both hex formats: the second is with spaces.
+        if filter == "Hex" {
+            app.press(KeyCode::Down, M::NONE);
+        }
+        app.press(KeyCode::Enter, M::NONE);
+        assert!(app.palette.is_none());
+    }
+
+    fn pick_rows(app: &mut App) -> Vec<String> {
+        app.test_execute(Command::HexCopyAs);
+        let rows = app
+            .palette
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| r.label.clone())
+            .collect();
+        app.press(KeyCode::Esc, M::NONE);
+        rows
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_e_copy_as_through_the_picker_for_each_format() {
+        let (_d, mut app) = app_of(&[0x7f, 0x45, 0x4c, 0x46, 1, 2]).await;
+        app.groups.active_group_mut().active_hex_mut().unwrap().select(0..4);
+        let cases = [
+            ("without", "7f454c46"),
+            ("Hex", "7f 45 4c 46"),
+            ("C array", "{ 0x7f, 0x45, 0x4c, 0x46 }"),
+            ("Rust", "[0x7f, 0x45, 0x4c, 0x46]"),
+            ("Python", "b'\\x7fELF'"),
+            ("Base64", "f0VMRg=="),
+            ("Value", "1179403647"),
+        ];
+        for (filter, want) in cases {
+            copy_as(&mut app, filter);
+            assert_eq!(app.clipboard.read().unwrap(), want, "{filter}");
+        }
+        app.test_execute(Command::HexToggleByteOrder);
+        copy_as(&mut app, "Value");
+        assert_eq!(app.clipboard.read().unwrap(), "2135247942");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_e_the_value_row_is_offered_for_one_two_four_or_eight_bytes_only() {
+        let (_d, mut app) = app_of(&[0u8; 16]).await;
+        // No selection: the cursor's byte, 1 byte.
+        assert_eq!(pick_rows(&mut app).len(), 7);
+        for len in 1..=9usize {
+            app.groups.active_group_mut().active_hex_mut().unwrap().select(0..len);
+            let has = pick_rows(&mut app).iter().any(|l| l == "Value");
+            assert_eq!(has, matches!(len, 1 | 2 | 4 | 8), "{len} bytes");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_e_copy_as_on_a_paged_doc_reads_off_thread_and_honours_the_cap() {
+        let len = 20 << 20;
+        let (_d, _root, mut app) = big_app(len, &[(1, b"COPYME")], false).await;
+        quick_open(&mut app, "big.bin").await;
+        app.groups.active_group_mut().active_hex_mut().unwrap().select(1..7);
+        copy_as(&mut app, "Python");
+        assert_eq!(wait_copied(&mut app, "").await, "b'COPYME'");
+        copy_as(&mut app, "Base64");
+        assert_eq!(wait_copied(&mut app, "b'COPYME'").await, "Q09QWU1F");
+        // Over the cap: a message, the clipboard unchanged.
+        app.press(KeyCode::Char('a'), cmd());
+        copy_as(&mut app, "without");
+        assert_eq!(said(&app), "Selection too big to copy (20 MB, at most 16 MB)");
+        assert_eq!(app.clipboard.read().unwrap(), "Q09QWU1F");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_e_value_copies_one_two_and_eight_bytes_and_ignores_the_column() {
+        let (_d, mut app) = app_of(&[0x01, 0x02, 0, 0, 0, 0, 0, 0, 0xff, 0xff]).await;
+        for (r, want) in [(0..1, "1"), (0..2, "513"), (0..8, "513"), (8..10, "-1")] {
+            app.groups
+                .active_group_mut()
+                .active_hex_mut()
+                .unwrap()
+                .select(r.clone());
+            copy_as(&mut app, "Value");
+            assert_eq!(app.clipboard.read().unwrap(), want, "{r:?}");
+        }
+        // The format doesn't depend on the focused column.
+        app.press(KeyCode::Tab, M::NONE);
+        assert_eq!(hex(&app).column, crate::hex::Column::Ascii);
+        copy_as(&mut app, "without");
+        assert_eq!(app.clipboard.read().unwrap(), "ffff");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_e_a_two_byte_selection_follows_a_u32_from_its_start() {
+        let (_d, mut app) = app_of(&file_with(&[0x10, 0, 0, 0], 0x20)).await;
+        app.groups.active_group_mut().active_hex_mut().unwrap().select(0..2);
+        app.test_execute(Command::HexFollowPointer);
+        assert_eq!(cursor(&app), 0x10);
+        // Three bytes left: no u32.
+        go_to_offset(&mut app, "0x1d");
+        app.test_execute(Command::HexFollowPointer);
+        assert_eq!(cursor(&app), 0x1d);
+        assert!(said(&app).contains("file ends first"), "{}", said(&app));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_e_back_walks_two_follows() {
+        let mut bytes = file_with(&[0x10, 0, 0, 0], 0x30);
+        bytes[0x10] = 0x20;
+        let (_d, mut app) = app_of(&bytes).await;
+        app.test_execute(Command::HexFollowPointer);
+        assert_eq!(cursor(&app), 0x10);
+        app.test_execute(Command::HexFollowPointer);
+        assert_eq!(cursor(&app), 0x20);
+        app.test_execute(Command::NavBack);
+        assert_eq!(cursor(&app), 0x10);
+        app.test_execute(Command::NavBack);
+        assert_eq!(cursor(&app), 0);
+        app.test_execute(Command::NavForward);
+        app.test_execute(Command::NavForward);
+        assert_eq!(cursor(&app), 0x20);
+    }
+
+    /// Waits until the active tab is a hex tab (Back reopening a closed one is asynchronous).
+    async fn wait_hex(app: &mut App) {
+        assert!(app.settle(|a| a.active_hex().is_some()).await, "the hex tab arrives");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_e_back_and_forward_between_a_hex_offset_and_a_text_tab() {
+        let (_d, _root, mut app) = hex_app().await;
+        quick_open(&mut app, "bin.dat").await;
+        go_to_offset(&mut app, "0x20");
+        assert_eq!(cursor(&app), 0x20);
+        quick_open(&mut app, "notes.txt").await;
+        assert!(app.active_hex().is_none());
+        app.test_execute(Command::NavBack);
+        assert_eq!(cursor(&app), 0x20, "back to the hex tab at its offset");
+        app.test_execute(Command::NavForward);
+        assert!(app.active_hex().is_none(), "forward to the text tab");
+        assert!(app.active_buffer().is_some());
+        app.test_execute(Command::NavBack);
+        assert_eq!(cursor(&app), 0x20);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_e_back_to_a_closed_hex_tab_reopens_it_at_the_recorded_offset() {
+        let (_d, _root, mut app) = hex_app().await;
+        quick_open(&mut app, "bin.dat").await;
+        go_to_offset(&mut app, "0x20");
+        quick_open(&mut app, "notes.txt").await;
+        // Close the hex tab (not the active one).
+        app.groups.active_group_mut().active = 0;
+        app.test_execute(Command::CloseTab);
+        assert!(
+            app.groups
+                .active_group_mut()
+                .tabs
+                .iter()
+                .all(|t| !matches!(t, crate::group::Tab::Hex(_)))
+        );
+        app.test_execute(Command::NavBack);
+        wait_hex(&mut app).await;
+        assert_eq!(cursor(&app), 0x20, "reopened at the recorded offset");
+    }
+
+    #[test]
+    fn hex_more_e_the_commands_are_named() {
+        assert_eq!(Command::HexFollowPointer.name(), "hex.followPointer");
+        assert_eq!(Command::HexCopyAs.name(), "hex.copyAs");
+        assert_eq!(Command::from_name("hex.copyAs"), Some(Command::HexCopyAs));
+        assert_eq!(Command::HexCopyAs.title(), "Hex: Copy As…");
     }
 }

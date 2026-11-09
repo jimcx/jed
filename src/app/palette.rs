@@ -181,6 +181,16 @@ impl App {
                 });
                 rows
             }
+            Mode::HexCopyAs => {
+                let value = matches!(p.picker, Picker::HexCopyAs { value: true });
+                let rows = palette::copy_as_rows(&query, value);
+                hint = Some(if rows.is_empty() {
+                    "No matching formats".into()
+                } else {
+                    "Select the format to copy the bytes in".into()
+                });
+                rows
+            }
             Mode::IndentSize => {
                 let (rows, text) = self.indent_size_rows(&query);
                 hint = Some(text);
@@ -457,6 +467,10 @@ impl App {
             (_, Some(Action::RunTask(name))) => {
                 self.close_palette();
                 self.run_task(&name);
+            }
+            (_, Some(Action::HexCopyAs(format))) => {
+                self.close_palette();
+                self.hex_copy_as(format);
             }
             (_, Some(Action::OpenLog(tool))) => {
                 self.close_palette();

@@ -19,6 +19,7 @@ use crate::group::{Tab, TextTab};
 use crate::hex::{self, HexDoc, HexTab};
 use crate::indentation::Indentation;
 use crate::layout::Hit;
+use crate::palette::Picker;
 use crate::view::View;
 
 /// Rows the wheel scrolls.
@@ -394,8 +395,92 @@ impl App {
     /// paged doc's bytes are read off the UI thread (`ViewEvent::HexCopied`), up to
     /// `HEX_COPY_MAX`; a bigger selection is a message. False when the active tab isn't a hex view.
     pub(super) fn hex_copy(&mut self) -> bool {
+        self.hex_copy_with(None)
+    }
+
+    /// "Hex: Copy As…": opens the format quick pick (the value row only for a selection of 1 / 2 /
+    /// 4 / 8 bytes).
+    pub(super) fn hex_copy_as_picker(&mut self) {
+        let Some(len) = self.active_hex().map(|h| h.copy_range().map_or(0, |r| r.len())) else {
+            return tracing::debug!("not in a hex view");
+        };
+        if len == 0 {
+            return self.notify(Level::Info, "Nothing to copy".into());
+        }
+        let value = hex::CopyFormat::Value.allows(len);
+        self.open_palette(Picker::HexCopyAs { value }, "");
+    }
+
+    /// A format picked in the quick pick: the copy path of Cmd+C with that format.
+    pub(super) fn hex_copy_as(&mut self, format: hex::CopyFormat) {
+        self.hex_copy_with(Some(format));
+    }
+
+    /// "Hex: Follow Pointer" (Alt+P): the integer at the cursor (the selection's start) is an
+    /// offset to go to.
+    pub(super) fn hex_follow_pointer(&mut self) {
+        self.hex_follow(None);
+    }
+
+    /// Follow Pointer; `kind`: the inspector row whose `→` was clicked (its width), else 8 bytes
+    /// (u64) for an 8-byte selection or a 64-bit inspector row marked at the cursor, else 4 (u32),
+    /// in the byte order. Reads loaded bytes only (a page not loaded is queued and a message says
+    /// to try again: never blocks); an offset past the end, or too few bytes left, is a message
+    /// and nothing moves. The jump is recorded for back / forward.
+    pub(super) fn hex_follow(&mut self, kind: Option<hex::RowKind>) {
+        let order = self.hex_order();
+        let Some(h) = self.active_hex() else {
+            return tracing::debug!("not in a hex view");
+        };
+        let len = h.len();
+        let sel = h.selection();
+        let at = sel.as_ref().map_or(h.cursor, |s| s.start);
+        let kind = kind.or(h.inspected_row.filter(|&(_, o)| o == at).map(|(k, _)| k));
+        let width = match (&sel, kind) {
+            (_, Some(k)) => hex::pointer_width(k),
+            (Some(s), None) if s.len() == 8 => 8,
+            _ => 4,
+        };
+        if at + width > len {
+            return self.notify(
+                Level::Warning,
+                format!("No {width}-byte pointer at 0x{at:x}: the file ends first"),
+            );
+        }
+        let range = at as u64..(at + width) as u64;
+        let Some(bytes) = h.doc.loaded_bytes(range.clone()) else {
+            // Queues the page(s) for the next frame's reads.
+            h.doc.window(range);
+            return self.notify(
+                Level::Info,
+                format!("The bytes at 0x{at:x} are not loaded yet, try again"),
+            );
+        };
+        let target = hex::pointer_value(&bytes, order);
+        if target >= len as u64 {
+            return self.notify(
+                Level::Warning,
+                format!("Pointer 0x{target:x} is past the end of the file (0x{len:x} bytes)"),
+            );
+        }
+        self.nav_jump();
+        if let Some(h) = self.group_mut().active_hex_mut() {
+            h.move_to(target as usize, false);
+        }
+        self.ui.focus = Focus::Editor;
+        self.needs_redraw = true;
+    }
+
+    /// The copy path: `format` `None` is Cmd+C's (the column as shown), else `hex::format_as`.
+    fn hex_copy_with(&mut self, format: Option<hex::CopyFormat>) -> bool {
+        let order = self.hex_order();
         let Some(h) = self.active_hex() else { return false };
-        if let Some(text) = h.copy_text() {
+        let resident = match (format, h.doc.resident_bytes(), h.copy_range()) {
+            (None, ..) => h.copy_text(),
+            (Some(f), Some(bytes), Some(r)) => hex::format_as(&bytes[r], f, order),
+            _ => None,
+        };
+        if let Some(text) = resident {
             self.clipboard.write(Copied {
                 text,
                 whole_line: false,
@@ -423,7 +508,12 @@ impl App {
             let mut bytes = vec![0u8; size as usize];
             let text = source
                 .read_exact_at(range.start as u64, &mut bytes)
-                .map(|()| hex::format_bytes(column, &bytes, range.start as u64, grouping));
+                .and_then(|()| match format {
+                    None => Ok(hex::format_bytes(column, &bytes, range.start as u64, grouping)),
+                    Some(f) => {
+                        hex::format_as(&bytes, f, order).ok_or_else(|| std::io::Error::other("no value of that width"))
+                    }
+                });
             let _ = tx.send(AppEvent::View(ViewEvent::HexCopied { text }));
         });
         true
@@ -537,6 +627,13 @@ impl App {
                 let p = ratatui::layout::Position { x: m.column, y: m.row };
                 if let Some(panel) = &panel {
                     // The data inspector: the header's byte order, a row (selected for Copy Value).
+                    if let Some((_, kind)) = panel.follow.iter().find(|(r, _)| r.contains(p)) {
+                        let (kind, at) = (*kind, panel.offset);
+                        h.inspected_row = Some((kind, at));
+                        self.focus_group(g);
+                        self.hex_follow(Some(kind));
+                        return true;
+                    }
                     if panel.toggle.contains(p) {
                         self.hex_byte_order = Some(order.toggle());
                     } else if let Some((_, kind)) = panel.rows.iter().find(|(r, _)| r.contains(p)) {

@@ -1884,7 +1884,7 @@ async fn hex_back_and_forward_to_a_hex_tab() {
     quick_open(&mut app, "notes.txt").await;
     let entries = app.nav.history.entries();
     let last = entries.last().unwrap();
-    assert_eq!((last.path.as_path(), last.pos), (path.as_path(), None), "path only");
+    assert_eq!((last.path.as_path(), last.pos()), (path.as_path(), None), "path only");
 
     // Back: the hex tab shown, as it was; forward: the text again.
     app.test_execute(Command::NavBack);

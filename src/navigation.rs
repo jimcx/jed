@@ -35,22 +35,57 @@ pub struct Pos {
     pub left_col: usize,
 }
 
+/// A hex tab's place in its file: the cursor's offset and the first shown row's (kept as
+/// recorded; clamped when used: the file may have changed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HexPlace {
+    pub cursor: usize,
+    pub top: usize,
+}
+
+/// Where in a tab an `Entry` was: a text editor's selection and scroll, or a hex tab's cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    Text(Pos),
+    Hex(HexPlace),
+}
+
 /// A place to go back to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub group: GroupId,
     /// The file, absolute.
     pub path: PathBuf,
-    /// `None`: a diff tab of the file (it counts as the file, without a position).
-    pub pos: Option<Pos>,
+    /// `None`: a diff or preview tab of the file (it counts as the file, without a position).
+    pub place: Option<Place>,
 }
 
 impl Entry {
-    /// The same place: group, file and selection (the scroll doesn't count).
+    /// The same place: group, file and selection or hex cursor (the scroll doesn't count).
     pub fn same(&self, other: &Entry) -> bool {
         self.group == other.group
             && self.path == other.path
-            && self.pos.map(|p| (p.anchor, p.head)) == other.pos.map(|p| (p.anchor, p.head))
+            && match (self.place, other.place) {
+                (Some(Place::Text(a)), Some(Place::Text(b))) => (a.anchor, a.head) == (b.anchor, b.head),
+                (Some(Place::Hex(a)), Some(Place::Hex(b))) => a.cursor == b.cursor,
+                (a, b) => a.is_none() && b.is_none(),
+            }
+    }
+
+    /// The text selection, if this is a text tab's.
+    pub fn pos(&self) -> Option<Pos> {
+        match self.place {
+            Some(Place::Text(p)) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// The hex cursor, if this is a hex tab's.
+    pub fn hex(&self) -> Option<HexPlace> {
+        match self.place {
+            Some(Place::Hex(h)) => Some(h),
+            _ => None,
+        }
     }
 }
 
@@ -134,14 +169,14 @@ impl History {
 
     /// Follows edits to `path`'s buffer: `changes` in the order applied.
     pub fn map(&mut self, path: &Path, changes: &[Arc<ChangeSet>]) {
-        if changes.is_empty() || !self.entries.iter().any(|e| e.pos.is_some() && e.path == path) {
+        if changes.is_empty() || !self.entries.iter().any(|e| e.pos().is_some() && e.path == path) {
             return;
         }
         let mappers: Vec<_> = changes.iter().map(|c| c.mapper()).collect();
         let map = |p: ByteIdx| mappers.iter().fold(p, |p, m| m.map(p, Assoc::Before));
         for e in &mut self.entries {
             if e.path == path
-                && let Some(p) = &mut e.pos
+                && let Some(Place::Text(p)) = &mut e.place
             {
                 p.anchor = map(p.anchor);
                 p.head = map(p.head);
@@ -173,24 +208,31 @@ mod tests {
         Entry {
             group: 1,
             path: PathBuf::from(path),
-            pos: Some(Pos {
+            place: Some(Place::Text(Pos {
                 anchor: ByteIdx(head),
                 head: ByteIdx(head),
                 top: ByteIdx(0),
                 left_col: 0,
-            }),
+            })),
+        }
+    }
+
+    fn text_mut(e: &mut Entry) -> &mut Pos {
+        match &mut e.place {
+            Some(Place::Text(p)) => p,
+            _ => panic!("not a text place"),
         }
     }
 
     fn heads(h: &History) -> Vec<(String, usize)> {
         h.entries()
             .iter()
-            .map(|e| (e.path.display().to_string(), e.pos.map_or(usize::MAX, |p| p.head.0)))
+            .map(|e| (e.path.display().to_string(), e.pos().map_or(usize::MAX, |p| p.head.0)))
             .collect()
     }
 
     fn head(e: Option<Entry>) -> Option<(String, usize)> {
-        e.map(|e| (e.path.display().to_string(), e.pos.unwrap().head.0))
+        e.map(|e| (e.path.display().to_string(), e.pos().unwrap().head.0))
     }
 
     fn s(path: &str, head: usize) -> Option<(String, usize)> {
@@ -246,7 +288,7 @@ mod tests {
         let mut h = History::default();
         h.record(at("a", 0));
         let mut scrolled = at("a", 0);
-        scrolled.pos.as_mut().unwrap().top = ByteIdx(9);
+        text_mut(&mut scrolled).top = ByteIdx(9);
         h.record(scrolled.clone());
         assert_eq!(h.entries(), [scrolled], "the newer scroll kept");
         // Another group is another place.
@@ -258,14 +300,14 @@ mod tests {
         let diff = Entry {
             group: 2,
             path: PathBuf::from("a"),
-            pos: None,
+            place: None,
         };
         h.record(diff.clone());
         h.record(diff.clone());
         assert_eq!(h.entries().len(), 3);
         // Going back from the last place doesn't add it again.
         let back = h.back(Some(diff)).unwrap();
-        assert_eq!((back.group, back.pos.is_some()), (2, true));
+        assert_eq!((back.group, back.pos().is_some()), (2, true));
         assert_eq!(h.entries().len(), 3);
         assert_eq!(h.index(), 1);
     }
@@ -277,11 +319,11 @@ mod tests {
             h.record(at("a", i));
         }
         assert_eq!(h.entries().len(), MAX);
-        assert_eq!(h.entries()[0].pos.unwrap().head, ByteIdx(7));
+        assert_eq!(h.entries()[0].pos().unwrap().head, ByteIdx(7));
         // Going back from the head stores the current place, dropping one more.
         assert_eq!(head(h.back(Some(at("b", 0)))), s("a", MAX + 6));
         assert_eq!(h.entries().len(), MAX);
-        assert_eq!(h.entries()[0].pos.unwrap().head, ByteIdx(8));
+        assert_eq!(h.entries()[0].pos().unwrap().head, ByteIdx(8));
         let mut back = 1;
         while h.back(None).is_some() {
             back += 1;
@@ -323,8 +365,8 @@ mod tests {
         h.record(at("a", 10));
         h.record(at("b", 10));
         let mut sel = at("a", 20);
-        sel.pos.as_mut().unwrap().anchor = ByteIdx(15);
-        sel.pos.as_mut().unwrap().top = ByteIdx(12);
+        text_mut(&mut sel).anchor = ByteIdx(15);
+        text_mut(&mut sel).top = ByteIdx(12);
         h.record(sel);
         // Insert 5 bytes at 0, then delete 2..4 (in the text after the first).
         let insert = Arc::new(ChangeSet::new(vec![Change {
@@ -339,9 +381,9 @@ mod tests {
         }]));
         h.map(Path::new("a"), &[insert, delete]);
         let e = h.entries();
-        assert_eq!(e[0].pos.unwrap().head, ByteIdx(13));
-        assert_eq!(e[1].pos.unwrap().head, ByteIdx(10), "another file");
-        let p = e[2].pos.unwrap();
+        assert_eq!(e[0].pos().unwrap().head, ByteIdx(13));
+        assert_eq!(e[1].pos().unwrap().head, ByteIdx(10), "another file");
+        let p = e[2].pos().unwrap();
         assert_eq!((p.anchor, p.head, p.top), (ByteIdx(18), ByteIdx(23), ByteIdx(15)));
     }
 }

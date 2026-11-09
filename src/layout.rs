@@ -719,6 +719,8 @@ pub struct GroupHit {
 pub struct HexHit {
     pub toggle: Rect,
     pub rows: Vec<(Rect, crate::hex::RowKind)>,
+    /// The `→` after a pointer-wide integer row's value (Follow Pointer on that row).
+    pub follow: Vec<(Rect, crate::hex::RowKind)>,
     pub offset: usize,
 }
 

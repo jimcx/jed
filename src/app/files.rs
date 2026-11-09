@@ -226,7 +226,8 @@ impl App {
                     let text = format!("{}: binary file, its history entry not restored", path.display());
                     self.notify(Level::Error, text);
                 }
-                self.add_hex_tab(path, doc, focus, reopen);
+                self.add_hex_tab(path.clone(), doc, focus, reopen);
+                self.nav_hex_arrived(&path);
             }
             Ok(Loaded::Text(buffer)) => {
                 if let Some(reason) = &buffer.read_only

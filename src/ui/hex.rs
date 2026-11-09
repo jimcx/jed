@@ -143,6 +143,17 @@ fn render_panel(
             out.set_stringn(c.x + lw, y, &row.value, (c.width - lw) as usize, v);
         }
         hit.rows.push((r, row.kind));
+        // `→` at the row's right end follows an integer of a pointer's width as an offset.
+        if row.kind.is_integer()
+            && matches!(row.width, 4 | 8)
+            && row.value != hex::BLANK
+            && row.value != hex::PENDING
+            && c.width > lw + 2
+        {
+            let at = Rect::new(c.x + c.width - 2, y, 2, 1);
+            out.set_stringn(at.x, at.y, "→", 1, if marked { active } else { label });
+            hit.follow.push((at, row.kind));
+        }
     }
     hit
 }

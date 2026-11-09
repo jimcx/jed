@@ -57,6 +57,9 @@ pub enum Picker {
     /// "File: Compare Open Editors…": an open text (`compare_rows`). The first pick (`first`
     /// `None`) reopens the picker for the second; the first pick is the left side.
     CompareEditors { first: Option<crate::buffer::BufferId> },
+    /// "Hex: Copy As…": the `hex::CopyFormat`s (`copy_as_rows`; `value`: the selection is 1 / 2 / 4 / 8
+    /// bytes, so the value row is offered); accepting copies the selection in the pick.
+    HexCopyAs { value: bool },
 }
 
 /// What an indent size picked sets (`Picker::IndentSize`).
@@ -97,6 +100,7 @@ pub enum Mode {
     IndentSize,
     Language,
     Compare,
+    HexCopyAs,
 }
 
 pub const COMMANDS_PREFIX: char = '>';
@@ -125,6 +129,8 @@ pub enum Action {
     Language(Language),
     /// An open text to compare (`Picker::Compare`, `Picker::CompareEditors`).
     CompareBuffer(crate::buffer::BufferId),
+    /// A format to copy a hex selection in (`Picker::HexCopyAs`).
+    HexCopyAs(crate::hex::CopyFormat),
 }
 
 /// One line in the list. Hits are char indices to highlight.
@@ -186,6 +192,7 @@ impl Palette {
             Picker::IndentSize { .. } => Mode::IndentSize,
             Picker::Language { .. } => Mode::Language,
             Picker::Compare { .. } | Picker::CompareEditors { .. } => Mode::Compare,
+            Picker::HexCopyAs { .. } => Mode::HexCopyAs,
             Picker::QuickOpen => match self.field.text.chars().next() {
                 Some(COMMANDS_PREFIX) => Mode::Commands,
                 Some(LINE_PREFIX) => Mode::GoToLine,
@@ -208,7 +215,8 @@ impl Palette {
             | Mode::Indentation
             | Mode::IndentSize
             | Mode::Language
-            | Mode::Compare => &self.field.text,
+            | Mode::Compare
+            | Mode::HexCopyAs => &self.field.text,
         }
     }
 
@@ -364,6 +372,30 @@ pub fn size_rows(query: &str, current: usize, configured: usize) -> Vec<Row> {
                 detail_hits: Vec::new(),
                 keys: None,
                 action: Action::IndentSize(n),
+            })
+        })
+        .collect()
+}
+
+/// Rows for "Hex: Copy As…": the formats matching `query` by title, in order (the value one only
+/// when `value`), each with an example dimmed after it.
+pub fn copy_as_rows(query: &str, value: bool) -> Vec<Row> {
+    let pattern = pattern(query);
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let mut buf = Vec::new();
+    crate::hex::CopyFormat::ALL
+        .into_iter()
+        .filter(|&f| value || f != crate::hex::CopyFormat::Value)
+        .filter_map(|f| {
+            let mut hits = Vec::new();
+            pattern.indices(Utf32Str::new(f.title(), &mut buf), &mut matcher, &mut hits)?;
+            Some(Row {
+                label: f.title().into(),
+                label_hits: sorted(hits),
+                detail: f.example().into(),
+                detail_hits: Vec::new(),
+                keys: None,
+                action: Action::HexCopyAs(f),
             })
         })
         .collect()

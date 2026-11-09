@@ -1073,8 +1073,11 @@ fn defaults(platform: Platform) -> Vec<Binding> {
     ];
 
     // A hex tab (falls back to the editor's keys): Alt+E flips the data inspector's byte order
-    // (no Cmd key, so no terminal setup).
-    let hex = [(KeyCode::Char('e'), alt, Command::HexToggleByteOrder)];
+    // (no Cmd key, so no terminal setup); Alt+P follows the pointer at the cursor.
+    let hex = [
+        (KeyCode::Char('e'), alt, Command::HexToggleByteOrder),
+        (KeyCode::Char('p'), alt, Command::HexFollowPointer),
+    ];
 
     // The Source Control view's list: the explorer's keys (Space too).
     let scm = [

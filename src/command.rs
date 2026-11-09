@@ -355,6 +355,10 @@ pub enum Command {
     HexCycleGrouping,
     /// "Hex: Copy Value": the clicked / highlighted inspector row's value.
     HexCopyValue,
+    /// "Hex: Follow Pointer": the u32 (u64: an 8-byte selection or a 64-bit inspector row) at the cursor, as an offset to go to.
+    HexFollowPointer,
+    /// "Hex: Copy As…": a quick pick of formats for the selection (else the cursor's byte).
+    HexCopyAs,
     /// "File: New Untitled File": a new empty tab "Untitled-N" (the lowest free N) with no
     /// path, Plain Text.
     NewUntitledFile,
@@ -1278,6 +1282,8 @@ impl Command {
             Command::HexToggleByteOrder,
             Command::HexCycleGrouping,
             Command::HexCopyValue,
+            Command::HexFollowPointer,
+            Command::HexCopyAs,
         ]);
         all.push(Command::OpenMarkdownPreview);
         all.extend([Command::NewUntitledFile, Command::ChangeLanguageMode]);
@@ -1694,6 +1700,8 @@ impl Command {
             Command::HexToggleInspector => "hex.toggleInspector".into(),
             Command::HexToggleByteOrder => "hex.toggleEndianness".into(),
             Command::HexCycleGrouping => "hex.cycleGrouping".into(),
+            Command::HexFollowPointer => "hex.followPointer".into(),
+            Command::HexCopyAs => "hex.copyAs".into(),
             Command::HexCopyValue => "hex.copyValue".into(),
             Command::NewUntitledFile => "file.newUntitled".into(),
             Command::ChangeLanguageMode => "editor.changeLanguageMode".into(),
@@ -2125,6 +2133,8 @@ impl Command {
             Command::HexToggleInspector => "Hex: Toggle Data Inspector",
             Command::HexToggleByteOrder => "Hex: Toggle Byte Order",
             Command::HexCycleGrouping => "Hex: Cycle Byte Grouping",
+            Command::HexFollowPointer => "Hex: Follow Pointer",
+            Command::HexCopyAs => "Hex: Copy As…",
             Command::HexCopyValue => "Hex: Copy Value",
             Command::NewUntitledFile => "File: New Untitled File",
             Command::ChangeLanguageMode => "Change Language Mode",
@@ -2401,6 +2411,8 @@ mod tests {
             Command::HexToggleByteOrder => 173,
             Command::HexCopyValue => 174,
             Command::HexCycleGrouping => 175,
+            Command::HexFollowPointer => 176,
+            Command::HexCopyAs => 177,
             Command::NewUntitledFile => 115,
             Command::ChangeLanguageMode => 116,
             Command::IndentUsingSpaces => 107,

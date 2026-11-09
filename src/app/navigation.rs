@@ -22,7 +22,7 @@ use super::files::Goto;
 use crate::buffer::file::LoadError;
 use crate::buffer::pos::{self, ByteIdx};
 use crate::group::Tab;
-use crate::navigation::{Dir, Entry, History, MIN_LINES, Pos};
+use crate::navigation::{Dir, Entry, HexPlace, History, MIN_LINES, Place, Pos};
 use crate::selection::{Selection, Selections};
 use crate::view::View;
 
@@ -36,6 +36,8 @@ pub struct NavState {
     /// A file Go Back / Go Forward is reopening, the way it went and the history's index then:
     /// skipped if it's gone from disk.
     pending: Option<(PathBuf, Dir, usize)>,
+    /// The hex place of the file that reopening is bringing back (applied when its tab arrives).
+    hex_place: Option<(PathBuf, HexPlace)>,
 }
 
 /// The active editor's place before an event.
@@ -64,7 +66,7 @@ impl App {
                     entry: Entry {
                         group: self.groups.active,
                         path: buf.path.clone(),
-                        pos: Some(pos),
+                        place: Some(Place::Text(pos)),
                     },
                     revision: buf.revision(),
                 })
@@ -73,16 +75,19 @@ impl App {
                 entry: Entry {
                     group: self.groups.active,
                     path: d.path.clone(),
-                    pos: None,
+                    place: None,
                 },
                 revision: 0,
             }),
-            // Path only, as a diff tab.
+            // The cursor and scroll.
             Tab::Hex(h) => Some(Here {
                 entry: Entry {
                     group: self.groups.active,
                     path: h.path.clone(),
-                    pos: None,
+                    place: Some(Place::Hex(HexPlace {
+                        cursor: h.cursor,
+                        top: h.top,
+                    })),
                 },
                 revision: 0,
             }),
@@ -91,7 +96,7 @@ impl App {
                 entry: Entry {
                     group: self.groups.active,
                     path,
-                    pos: None,
+                    place: None,
                 },
                 revision: 0,
             }),
@@ -126,7 +131,7 @@ impl App {
             // The last tab closed.
             None => true,
             Some(a) if a.entry.group != before.entry.group || a.entry.path != before.entry.path => true,
-            Some(a) => match (before.entry.pos, a.entry.pos) {
+            Some(a) => match (before.entry.pos(), a.entry.pos()) {
                 // Not moved by an edit (typing, undo, a rename's edits).
                 (Some(p), Some(q)) if (p.anchor, p.head) != (q.anchor, q.head) && a.revision == before.revision => {
                     jump || (input && self.lines_apart(p.head, q.head) >= MIN_LINES)
@@ -134,7 +139,8 @@ impl App {
                 // A diff, hex or preview tab to a text tab of the same file (F12 on a review's
                 // diff finding its definition in the same file).
                 (None, Some(_)) => jump,
-                _ => false,
+                // A hex tab's cursor moved by a jump (Go to Offset, Follow Pointer).
+                _ => jump && before.entry.hex().map(|h| h.cursor) != a.entry.hex().map(|h| h.cursor),
             },
         };
         if record {
@@ -187,7 +193,7 @@ impl App {
                     .is_some_and(|m| m.path.as_deref() == Some(entry.path.as_path()))
             });
             // A diff, hex or preview tab counts as its file.
-            if entry.pos.is_some() {
+            if entry.pos().is_some() {
                 text.or(hex).or(diff)
             } else {
                 diff.or(hex).or(preview).or(text)
@@ -203,14 +209,36 @@ impl App {
             self.reveal_active();
         } else {
             self.nav.pending = Some((entry.path.clone(), dir, self.nav.history.index()));
-            self.open_file(entry.path, true, entry.pos.map(Goto::Place));
+            self.nav.hex_place = entry.hex().map(|p| (entry.path.clone(), p));
+            let goto = entry.pos().map(Goto::Place);
+            self.open_file(entry.path, true, goto);
             return;
         }
-        if let Some(p) = entry.pos
+        if let Some(p) = entry.hex()
+            && let Some(h) = self.group_mut().active_hex_mut()
+        {
+            let column = h.column;
+            h.place(p.cursor, column, p.top);
+            h.reveal = true;
+        }
+        if let Some(p) = entry.pos()
             && let Some((buf, view)) = self.active_mut()
         {
             buf.seal_undo();
             place_view(view, &buf.rope, &p);
+        }
+    }
+
+    /// From `opened`: a hex tab of `path` arrived; if Go Back / Go Forward reopened it, it
+    /// takes the recorded cursor and scroll.
+    pub(super) fn nav_hex_arrived(&mut self, path: &std::path::Path) {
+        let Some((_, p)) = self.nav.hex_place.take_if(|(q, _)| q.as_path() == path) else {
+            return;
+        };
+        if let Some(h) = self.group_mut().active_hex_mut() {
+            let column = h.column;
+            h.place(p.cursor, column, p.top);
+            h.reveal = true;
         }
     }
 

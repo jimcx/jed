@@ -14,7 +14,7 @@ use super::{App, Level};
 use crate::buffer::file::LoadError;
 use crate::group::{Tab, is_terminal_group};
 use crate::layout::GroupId;
-use crate::navigation::{Entry, Pos};
+use crate::navigation::{Entry, Place, Pos};
 
 /// Closed tabs kept.
 const MAX_CLOSED: usize = 50;
@@ -58,12 +58,12 @@ impl App {
         let entry = Entry {
             group,
             path: buf.path.clone(),
-            pos: Some(Pos {
+            place: Some(Place::Text(Pos {
                 anchor: primary.anchor,
                 head: primary.head,
                 top: t.view.top_byte(),
                 left_col: t.view.left_col,
-            }),
+            })),
         };
         self.closed.push(entry);
     }
@@ -84,7 +84,8 @@ impl App {
         if self.buffers.find_path(&entry.path).is_none() {
             self.closed.pending = Some(entry.path.clone());
         }
-        self.open_file(entry.path, true, entry.pos.map(Goto::Place));
+        let goto = entry.pos().map(Goto::Place);
+        self.open_file(entry.path, true, goto);
     }
 
     /// From `opened`: a file Reopen Closed Editor loaded. If it's gone from disk (or failed to

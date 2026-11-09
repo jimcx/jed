@@ -1522,6 +1522,8 @@ impl App {
             Command::HexToggleByteOrder => self.hex_toggle_byte_order(),
             Command::HexCycleGrouping => self.hex_cycle_grouping(),
             Command::HexCopyValue => self.hex_copy_value(),
+            Command::HexFollowPointer => self.hex_follow_pointer(),
+            Command::HexCopyAs => self.hex_copy_as_picker(),
             Command::OpenMarkdownPreview => self.open_markdown_preview(),
             Command::NewUntitledFile => self.new_untitled_file(),
             Command::ChangeLanguageMode => self.change_language_mode(),

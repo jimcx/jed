@@ -35,10 +35,12 @@ use memchr::memmem;
 
 use crate::command::Motion;
 
+mod copy;
 mod inspect;
 mod page;
 mod stream;
 
+pub use copy::*;
 pub use inspect::*;
 pub use page::*;
 pub use stream::*;

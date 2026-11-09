@@ -3648,7 +3648,7 @@ mod back_forward {
             .iter()
             .map(|e| {
                 let name = e.path.file_name().unwrap().to_string_lossy().into_owned();
-                let line = match (e.pos, app.buffers.find_path(&e.path)) {
+                let line = match (e.pos(), app.buffers.find_path(&e.path)) {
                     (Some(p), Some(id)) => pos::line_of(&app.buffers.get(id).unwrap().rope, p.head),
                     _ => usize::MAX,
                 };
