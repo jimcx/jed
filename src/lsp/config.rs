@@ -1,4 +1,4 @@
-//! Which language server runs for a language: the built-ins (`clangd`, `ty`, `rust-analyzer`, `sourcekit-lsp`), or
+//! Which language server runs for a language: the built-ins (`clangd`, `ty`, `rust-analyzer`, `sourcekit-lsp`, `typescript-language-server`), or
 //! `.workspace` `[lsp.<language id>]` when the workspace is trusted, or the user's `settings.toml`
 //! `[lsp.<language id>]` (always trusted: the user's own file).
 
@@ -48,13 +48,15 @@ fn command_name(command: &str) -> String {
 /// `rust-analyzer` for Rust (no `initializationOptions`: it finds the cargo workspace under the
 /// root itself, and checks with `cargo check` on save), `sourcekit-lsp` for Swift (no arguments: it
 /// reads `Package.swift` / `compile_commands.json` / `buildServer.json` under the root; off `PATH` on
-/// macOS it is found with `xcrun --find`, see `server.rs`).
+/// macOS it is found with `xcrun --find`, see `server.rs`), and `typescript-language-server --stdio` for JavaScript,
+/// JSX, TypeScript and TSX (one shared server; the workspace's `node_modules` copy is preferred, see `typescript.rs`).
 #[derive(Debug, Clone)]
 pub struct Builtins {
     pub clangd: ServerConfig,
     pub ty: ServerConfig,
     pub rust_analyzer: ServerConfig,
     pub sourcekit_lsp: ServerConfig,
+    pub typescript_language_server: ServerConfig,
     /// The user's `settings.toml` `[lsp.<id>]` servers by language id: they beat the four above.
     pub user: BTreeMap<String, ServerConfig>,
 }
@@ -66,6 +68,7 @@ impl Default for Builtins {
             ty: ServerConfig::new("ty", &["server"]),
             rust_analyzer: ServerConfig::new("rust-analyzer", &[]),
             sourcekit_lsp: ServerConfig::new("sourcekit-lsp", &[]),
+            typescript_language_server: ServerConfig::new("typescript-language-server", &["--stdio"]),
             user: BTreeMap::new(),
         }
     }
@@ -81,6 +84,9 @@ impl Builtins {
             Language::Python => Some(&self.ty),
             Language::Rust => Some(&self.rust_analyzer),
             Language::Swift => Some(&self.sourcekit_lsp),
+            Language::JavaScript | Language::JavaScriptReact | Language::TypeScript | Language::TypeScriptReact => {
+                Some(&self.typescript_language_server)
+            }
             _ => None,
         }
     }
@@ -265,6 +271,35 @@ init_options = { python = { venv = ".venv" } }
         assert_eq!(
             resolve(Language::Rust, &ws, Trust::Undecided, &b),
             Resolved::AwaitingTrust
+        );
+    }
+
+    #[test]
+    fn typescript_language_server_is_built_in_for_the_four_languages() {
+        let b = Builtins::default();
+        let none = WorkspaceConfig::default();
+        for lang in [
+            Language::JavaScript,
+            Language::JavaScriptReact,
+            Language::TypeScript,
+            Language::TypeScriptReact,
+        ] {
+            let Resolved::Server(s) = resolve(lang, &none, Trust::NotNeeded, &b) else {
+                panic!("{lang:?}")
+            };
+            assert_eq!(s, b.typescript_language_server);
+            assert_eq!(s.name, "typescript-language-server");
+            assert_eq!(s.args, ["--stdio"]);
+        }
+        let ws = WorkspaceConfig::parse("[lsp.typescript]\ncommand = \"vtsls\"\n").unwrap();
+        let Resolved::Server(s) = resolve(Language::TypeScript, &ws, Trust::Trusted, &b) else {
+            panic!()
+        };
+        assert_eq!((s.command.as_str(), s.from_workspace), ("vtsls", true));
+        // Another id isn't touched by it.
+        assert_eq!(
+            resolve(Language::JavaScript, &ws, Trust::Trusted, &b),
+            Resolved::Server(b.typescript_language_server.clone())
         );
     }
 

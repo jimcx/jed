@@ -12,6 +12,7 @@ pub mod progress;
 pub mod rpc;
 pub mod scons;
 mod server;
+mod typescript;
 pub mod uri;
 
 use std::path::{Path, PathBuf};

@@ -1059,7 +1059,7 @@ pub(crate) fn diag(line: u32, from: u32, to: u32, severity: u8, message: &str) -
 }
 
 /// The buffer's marks as (text under it, severity, message).
-fn marks(app: &App, path: &Path) -> Vec<(String, Severity, String)> {
+pub(crate) fn marks(app: &App, path: &Path) -> Vec<(String, Severity, String)> {
     let buf = app.buffers.get(buffer_id(app, path)).unwrap();
     let text = buf.rope.to_string();
     buf.diagnostics
@@ -3186,10 +3186,20 @@ pub(crate) async fn real_hover_and_definition(
         assert!(rows.contains(part), "{process} hover: {rows}");
     }
 
-    app.press(K::F(12), M::NONE);
     let def = root.join(def_file);
+    // A server still loading the project may answer with the symbol's use in this file (tsserver: the
+    // import alias): ask again from the use until it answers with the definition.
+    let t = Instant::now();
+    let mut at_def = false;
+    while !at_def && t.elapsed() < Duration::from_secs(60) {
+        app.press(K::F(12), M::NONE);
+        at_def = settle_for(&mut app, 5, |a| active_path(a).as_deref() == Some(def.as_path())).await;
+        if !at_def && active_path(&app).as_deref() == Some(a.as_path()) {
+            put_cursor(&mut app, at);
+        }
+    }
     assert!(
-        settle_for(&mut app, 60, |a| active_path(a).as_deref() == Some(def.as_path())).await,
+        at_def,
         "{process} went to the definition; message {:?}",
         app.message.as_ref().map(|m| &m.text)
     );
@@ -4841,7 +4851,7 @@ async fn milestone_9_rename_files_not_open() {
 /// A real server: Shift+F12 on `word`'s use in the first file lists its references in both
 /// files; F2 renames it to `new`, the first file edited and the other (not open) loaded with
 /// its edit, unsaved: `expect` is each file's text after.
-async fn real_references_and_rename(
+pub(crate) async fn real_references_and_rename(
     files: &[(&str, &str)],
     word: &str,
     new: &str,

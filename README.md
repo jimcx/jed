@@ -77,6 +77,7 @@ Language servers:
 - [docs/clangd.md](docs/clangd.md) — C and C++ with clangd
 - [docs/ty.md](docs/ty.md) — Python with ty (including SCons projects)
 - [docs/sourcekit-lsp.md](docs/sourcekit-lsp.md) — Swift with sourcekit-lsp
+- [docs/typescript-language-server.md](docs/typescript-language-server.md) — JavaScript and TypeScript with typescript-language-server
 
 ## Keybindings
 
@@ -92,7 +93,7 @@ For users:
 - [docs/git-editor.md](docs/git-editor.md) — jed as git's `core.editor`
 - [docs/claude.md](docs/claude.md) — Claude Code in a jed terminal: the plugin, its tools and code review
 - [docs/syntax-plugins.md](docs/syntax-plugins.md) — adding languages with tree-sitter grammars
-- [docs/clangd.md](docs/clangd.md), [docs/ty.md](docs/ty.md), [docs/sourcekit-lsp.md](docs/sourcekit-lsp.md) — language servers
+- [docs/clangd.md](docs/clangd.md), [docs/ty.md](docs/ty.md), [docs/sourcekit-lsp.md](docs/sourcekit-lsp.md), [docs/typescript-language-server.md](docs/typescript-language-server.md) — language servers
 
 For contributors:
 

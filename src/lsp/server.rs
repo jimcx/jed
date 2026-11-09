@@ -227,6 +227,21 @@ impl Task {
             }
         }
         let log = self.log.clone();
+        let mut launch_command = None;
+        if name == super::typescript::SERVER {
+            let (command, init, root) = (config.command.clone(), config.init_options.clone(), self.root.clone());
+            let found = tokio::task::spawn_blocking(move || super::typescript::prepare(&command, init.as_ref(), &root));
+            if let Ok(found) = found.await {
+                if let Some(lib) = found.tsserver {
+                    log.info(&format!("Using the workspace's TypeScript: {}", lib.display()));
+                    config.init_options = Some(super::typescript::with_tsserver_path(config.init_options.take(), &lib));
+                }
+                if let Some(bin) = found.command {
+                    log.info(&format!("Using the workspace's {}", bin.display()));
+                    launch_command = Some(bin.to_string_lossy().into_owned());
+                }
+            }
+        }
         log.info(&format!(
             "Starting: {} (in {})",
             command_line(&self.config),
@@ -234,6 +249,9 @@ impl Task {
         ));
         // `sourcekit-lsp` is often not on PATH on macOS (it lives in the Xcode toolchain).
         let mut launch_config = self.config.clone();
+        if let Some(command) = launch_command {
+            launch_config.command = command;
+        }
         if launch_config.command == XCRUN_TOOL {
             let launcher = self.launcher.clone();
             let found = tokio::task::spawn_blocking(move || launcher.locate(XCRUN_TOOL)).await;
