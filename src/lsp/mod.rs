@@ -58,10 +58,40 @@ impl ServerId {
     /// talks to a server or treats marks as a server's must skip it.
     pub const SPELL: ServerId = ServerId(u64::MAX - 1);
 
+    /// Marks under a pull set's key (`Source::Pull`) carry this bit.
+    const PULL_BIT: u64 = 1 << 62;
+
+    /// The key a server's diagnostics of `source` are kept under (`Marks`, `Store`, `applied`):
+    /// a server's published and pulled sets replace each other never, as in VS Code.
+    pub fn source(self, source: Source) -> Self {
+        match source {
+            Source::Push => self,
+            Source::Pull => Self(self.0 | Self::PULL_BIT),
+        }
+    }
+
+    /// The server a diagnostics key belongs to (`source` undone; the pseudo servers as they are).
+    pub fn base(self) -> Self {
+        if self.0 >= u64::MAX - 1 {
+            self
+        } else {
+            Self(self.0 & !Self::PULL_BIT)
+        }
+    }
+
     #[cfg(test)]
     pub fn test(n: u64) -> Self {
         Self(n)
     }
+}
+
+/// How a server's diagnostics came: `textDocument/publishDiagnostics` or a `textDocument/diagnostic`
+/// answer. Each is its own set per server and file (rust-analyzer pushes `cargo check`'s and
+/// answers pulls with its native ones).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Push,
+    Pull,
 }
 
 /// Where server tasks send their events. Called on runtime threads.
@@ -255,6 +285,9 @@ pub struct Manager {
     /// Servers whose diagnostics were dropped since the last `take_cleared` (they stopped,
     /// failed or crashed): the app drops their marks from the buffers.
     cleared: Vec<ServerId>,
+    /// The newest document version each server's diagnostics (published or pulled) were applied
+    /// for, per open file: an older answer is dropped (`publish`).
+    applied: std::collections::HashMap<(PathBuf, ServerId), i32>,
     /// Where jed writes files for servers (`scons`: ty's SCons builtins); `None` (tests'
     /// default): nothing written.
     pub support_dir: Option<PathBuf>,
@@ -278,6 +311,7 @@ impl Manager {
             docs: Documents::default(),
             diagnostics: diagnostics::Store::default(),
             cleared: Vec::new(),
+            applied: Default::default(),
             support_dir: None,
             scons: Default::default(),
             logs: crate::logs::Logs::default(),
@@ -471,6 +505,16 @@ impl Manager {
     /// turn: `documents::Documents::sync`).
     pub fn sync_documents(&mut self, buffers: &mut Buffers) {
         self.docs.sync(&self.servers, buffers);
+        if !self.applied.is_empty() {
+            // A closed (or reopened elsewhere) document restarts its versions.
+            let docs = &self.docs;
+            self.applied.retain(|(path, server), _| {
+                buffers
+                    .find_path(path)
+                    .and_then(|id| docs.document(id))
+                    .is_some_and(|(s, ..)| s == server.base())
+            });
+        }
     }
 
     /// `buffer` was saved: `didSave` to its server, if it has it open and wants it.
@@ -618,25 +662,59 @@ impl Manager {
     /// changes so the newest version is the buffer's text) and mapped through the edits since;
     /// without a version (or one no longer kept), against the current text. Dropped when the
     /// server isn't running (stopped, replaced, failed). True if it was taken.
-    pub fn publish(&mut self, server: ServerId, published: diagnostics::Published, buffers: &mut Buffers) -> bool {
+    pub fn publish(
+        &mut self,
+        server: ServerId,
+        source: Source,
+        published: diagnostics::Published,
+        buffers: &mut Buffers,
+    ) -> bool {
+        let key = server.source(source);
         let Some(encoding) = self.servers.iter().find(|s| s.id == server).and_then(Server::encoding) else {
             tracing::debug!("diagnostics from a language server that isn't running");
             return false;
         };
         if let Some(id) = buffers.find_path(&published.path) {
             self.docs.sync(&self.servers, buffers);
+            if let Some(v) = published.version {
+                let newest = self.applied.entry((published.path.clone(), key)).or_insert(v);
+                if *newest > v {
+                    tracing::debug!(
+                        version = v,
+                        newest = *newest,
+                        "diagnostics older than the ones shown: dropped"
+                    );
+                    return false;
+                }
+                *newest = v;
+            }
             let kept = published.version.and_then(|v| self.docs.since(id, server, v));
             if kept.is_none() && published.version.is_some() {
                 tracing::debug!(version = published.version, path = %published.path.display(), "diagnostics for a version no longer kept: read against the current text");
             }
             let buf = buffers.get_mut(id).expect("found");
             let marks = match &kept {
-                Some((text, since)) => diagnostics::resolve(server, &published.items, text, encoding, since),
-                None => diagnostics::resolve(server, &published.items, &buf.rope, encoding, &[]),
+                Some((text, since)) => diagnostics::resolve(key, &published.items, text, encoding, since),
+                None => diagnostics::resolve(key, &published.items, &buf.rope, encoding, &[]),
             };
-            buf.diagnostics.replace(server, marks);
+            buf.diagnostics.replace(key, marks);
         }
-        self.diagnostics.publish(server, encoding, published);
+        self.diagnostics.publish(key, encoding, published);
+        true
+    }
+
+    /// A pull answer said nothing changed for the document at `version`: the marks stay, and the
+    /// version they are for moves up (an older publish after it is dropped). False for an older
+    /// version than the newest applied.
+    pub fn applied_unchanged(&mut self, server: ServerId, path: &Path, version: i32) -> bool {
+        let newest = self
+            .applied
+            .entry((path.to_path_buf(), server.source(Source::Pull)))
+            .or_insert(version);
+        if *newest > version {
+            return false;
+        }
+        *newest = version;
         true
     }
 
@@ -958,6 +1036,18 @@ mod tests {
         m.shutdown().await;
     }
 
+    #[test]
+    fn pull_versions_are_kept_per_source() {
+        let mut m = Manager::new(None);
+        let (id, path) = (ServerId::test(1), Path::new("/a"));
+        assert!(m.applied_unchanged(id, path, 3));
+        assert!(!m.applied_unchanged(id, path, 1), "older than the pulled set's");
+        assert!(m.applied_unchanged(id, path, 3));
+        assert_ne!(id.source(Source::Pull), id.source(Source::Push));
+        assert_eq!(id.source(Source::Pull).base(), id);
+        assert_eq!(ServerId::SPELL.base(), ServerId::SPELL);
+    }
+
     /// Before `start` (as in `App::new`, which may run outside the runtime) nothing is spawned.
     #[test]
     fn nothing_starts_before_start() {
@@ -991,7 +1081,7 @@ mod tests {
         let mut buf = crate::buffer::Buffer::from_str("x = abc\n");
         buf.path = PathBuf::from("/ws/a.py");
         let b = buffers.insert(buf);
-        assert!(m.publish(id, published(), &mut buffers));
+        assert!(m.publish(id, Source::Push, published(), &mut buffers));
         let marks = buffers.get(b).unwrap().diagnostics.all();
         assert_eq!((marks.len(), marks[0].start.0, marks[0].end.0), (1, 4, 7));
         assert_eq!(m.diagnostics.files().count(), 1);
@@ -1001,7 +1091,10 @@ mod tests {
         m.sync(Path::new("/ws"), &[Language::Python], &ws, Trust::Trusted);
         assert_eq!(m.take_cleared(), [id]);
         assert_eq!(m.diagnostics.files().count(), 0);
-        assert!(!m.publish(id, published(), &mut buffers), "from a stopped server");
+        assert!(
+            !m.publish(id, Source::Push, published(), &mut buffers),
+            "from a stopped server"
+        );
         assert_eq!(m.diagnostics.files().count(), 0);
         m.shutdown().await;
     }

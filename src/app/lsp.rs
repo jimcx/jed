@@ -18,7 +18,7 @@ use crate::buffer::pos::{ByteIdx, PosEncoding};
 use crate::code_action::Purpose;
 use crate::layout::GroupId;
 use crate::lsp::rpc::RpcError;
-use crate::lsp::{Event, Sent, ServerId};
+use crate::lsp::{Event, Sent, ServerId, Source};
 use crate::syntax::Language;
 
 /// What a pending request is for.
@@ -68,6 +68,14 @@ pub(super) enum Request {
         version: i32,
         delta: bool,
     },
+    /// `textDocument/diagnostic` of `buffer`'s document as sent in `version`: never stale (the
+    /// marks are read in that version's text and mapped forward); `trigger`: an edit or opening
+    /// asked, so the server's other documents are asked again when it has file dependencies.
+    Diagnostics {
+        buffer: BufferId,
+        version: i32,
+        trigger: super::diagnostics_pull::Trigger,
+    },
 }
 
 impl Request {
@@ -75,6 +83,7 @@ impl Request {
         match (self, other) {
             (Request::CodeActions { purpose: a, .. }, Request::CodeActions { purpose: b, .. }) => a == b,
             (Request::SemanticTokens { buffer: a, .. }, Request::SemanticTokens { buffer: b, .. }) => a == b,
+            (Request::Diagnostics { buffer: a, .. }, Request::Diagnostics { buffer: b, .. }) => a == b,
             _ => std::mem::discriminant(self) == std::mem::discriminant(other),
         }
     }
@@ -113,6 +122,7 @@ impl App {
         self.drop_cleared_diagnostics();
         // Each turn: a document just opened (or a server just running) is due at once.
         self.check_semantic();
+        self.check_pull();
     }
 
     fn start_servers(&mut self) {
@@ -150,7 +160,7 @@ impl App {
         match event {
             Event::Diagnostics { server, published } => {
                 let buffer = self.buffers.find_path(&published.path);
-                if self.lsp.publish(server, *published, &mut self.buffers) {
+                if self.lsp.publish(server, Source::Push, *published, &mut self.buffers) {
                     self.needs_redraw = true;
                     if let Some(id) = buffer {
                         self.diagnostics_changed(id);
@@ -169,6 +179,9 @@ impl App {
             },
             Event::Notification { server, method, .. } if method == super::semantic::REFRESH => {
                 self.semantic_refresh(server);
+            }
+            Event::Notification { server, method, .. } if method == super::diagnostics_pull::REFRESH => {
+                self.pull_refresh(server);
             }
             Event::Notification { server, method, params } if method == super::semantic::INACTIVE => {
                 self.semantic_inactive(server, &params);
@@ -192,6 +205,7 @@ impl App {
         for server in self.lsp.take_cleared() {
             for (_, buf) in self.buffers.iter_mut() {
                 buf.diagnostics.clear(server);
+                buf.diagnostics.clear(server.source(Source::Pull));
             }
             self.needs_redraw = true;
         }
@@ -361,7 +375,9 @@ impl App {
                 ..
             } => return self.buffers.get(p.buffer).is_some_and(|b| b.revision() == *revision),
             Request::ExecuteCommand { .. } => return true,
-            Request::SemanticTokens { buffer, .. } => return self.buffers.get(*buffer).is_some(),
+            Request::SemanticTokens { buffer, .. } | Request::Diagnostics { buffer, .. } => {
+                return self.buffers.get(*buffer).is_some();
+            }
             Request::CodeActions {
                 purpose: Purpose::Hover,
                 ..
@@ -408,6 +424,9 @@ impl App {
                     if let Request::SemanticTokens { buffer, .. } = p.request {
                         self.semantic_failed(buffer);
                     }
+                    if let Request::Diagnostics { buffer, .. } = p.request {
+                        self.pull_retry(buffer);
+                    }
                     return;
                 }
                 match &p.request {
@@ -446,6 +465,7 @@ impl App {
                         self.notify(super::Level::Error, format!("'{title}' failed: {}", e.message));
                     }
                     Request::SemanticTokens { buffer, .. } => self.semantic_failed(*buffer),
+                    Request::Diagnostics { .. } => tracing::debug!("pull diagnostics failed"),
                     _ => {}
                 }
                 return;
@@ -469,6 +489,7 @@ impl App {
             Request::ResolveAction => self.resolve_action_answer(&p, &value),
             Request::ExecuteCommand { .. } => {}
             Request::SemanticTokens { version, .. } => self.semantic_answer(&p, version, &value),
+            Request::Diagnostics { version, trigger, .. } => self.pull_answer(&p, version, trigger, value),
         }
     }
 

@@ -158,7 +158,7 @@ impl App {
         };
         let diagnostics: Vec<Value> = marks
             .iter()
-            .filter(|m| m.server == server)
+            .filter(|m| m.server.base() == server)
             .map(|m| {
                 let mut raw = match &m.diag.raw {
                     Value::Object(_) => m.diag.raw.clone(),

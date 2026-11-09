@@ -43,7 +43,6 @@ pub struct Published {
 /// Reads `publishDiagnostics` params; `Err` for something that isn't one, or a URI that isn't
 /// a local file.
 pub fn parse(mut params: Value) -> Result<Published, String> {
-    use serde::Deserialize;
     // Each diagnostic is kept as sent too (`Diagnostic::raw`), so they're read one by one.
     let raw = match params.get_mut("diagnostics").map(Value::take) {
         Some(Value::Array(raw)) => raw,
@@ -52,6 +51,17 @@ pub fn parse(mut params: Value) -> Result<Published, String> {
     params["diagnostics"] = Value::Array(Vec::new());
     let p: PublishDiagnosticsParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
     let path = uri::to_path(&p.uri).ok_or_else(|| format!("not a file URI: {}", p.uri.as_str()))?;
+    let items = parse_items(raw)?;
+    Ok(Published {
+        path,
+        version: p.version,
+        items,
+    })
+}
+
+/// Reads diagnostics as sent (each kept as `Diagnostic::raw`), sorted by start.
+pub fn parse_items(raw: Vec<Value>) -> Result<Vec<Item>, String> {
+    use serde::Deserialize;
     let pos = |p: lsp_types::Position| LspPos {
         line: p.line,
         character: p.character,
@@ -76,10 +86,57 @@ pub fn parse(mut params: Value) -> Result<Published, String> {
         });
     }
     items.sort_by_key(|i| i.start);
-    Ok(Published {
-        path,
-        version: p.version,
-        items,
+    Ok(items)
+}
+
+/// A `textDocument/diagnostic` (pull) report for one document.
+#[derive(Debug)]
+pub enum Report {
+    Full {
+        result_id: Option<String>,
+        items: Vec<Item>,
+    },
+    /// Nothing changed since `previousResultId`.
+    Unchanged { result_id: Option<String> },
+}
+
+/// A pull answer: the document's report and the `relatedDocuments` (by path; other URIs dropped).
+#[derive(Debug)]
+pub struct Pulled {
+    pub report: Report,
+    pub related: Vec<(PathBuf, Report)>,
+}
+
+fn parse_report(mut v: Value) -> Result<Report, String> {
+    let result_id = v.get("resultId").and_then(Value::as_str).map(String::from);
+    match v.get("kind").and_then(Value::as_str) {
+        Some("unchanged") => Ok(Report::Unchanged { result_id }),
+        Some("full") => match v.get_mut("items").map(Value::take) {
+            Some(Value::Array(raw)) => Ok(Report::Full {
+                result_id,
+                items: parse_items(raw)?,
+            }),
+            _ => Err("no items list".into()),
+        },
+        other => Err(format!("unknown report kind {other:?}")),
+    }
+}
+
+/// Reads a `textDocument/diagnostic` result.
+pub fn parse_pulled(mut v: Value) -> Result<Pulled, String> {
+    let related = match v.get_mut("relatedDocuments").map(Value::take) {
+        Some(Value::Object(map)) => map
+            .into_iter()
+            .filter_map(|(uri, r)| {
+                let path = uri.parse::<lsp_types::Uri>().ok().and_then(|u| uri::to_path(&u))?;
+                Some(parse_report(r).map(|r| (path, r)))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => Vec::new(),
+    };
+    Ok(Pulled {
+        report: parse_report(v)?,
+        related,
     })
 }
 
@@ -172,7 +229,7 @@ impl Store {
         let mut any = false;
         self.files.retain(|_, sets| {
             sets.retain(|s| {
-                let keep = s.server != server;
+                let keep = s.server.base() != server;
                 if !keep {
                     self.counts.add(&s.items, -1);
                     any = true;

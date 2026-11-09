@@ -13541,3 +13541,278 @@ mod conflict_scan {
         }
     }
 }
+
+/// `live_diagnostics`: pull diagnostics (`textDocument/diagnostic`) against the fake server: asked
+/// at open and (once, after the typing rests) after an edit with `previousResultId`; the answer's
+/// marks show; `unchanged` keeps them; an answer for an older version than the marks shown is
+/// dropped; `workspace/diagnostic/refresh` asks every open document again; related documents and
+/// `interFileDependencies` reach the other files.
+mod live_diagnostics {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use serde_json::{Value, json};
+
+    use crate::app::App;
+    use crate::diagnostics::Severity;
+    use crate::lsp::fake::{FakeLauncher, FakeOptions};
+    use crate::milestone9_tests::{buffer_id, diag, idle, marks, open_app, open_synced, project, publish, uri};
+    use crate::syntax::Language;
+
+    const PULL: &str = "textDocument/diagnostic";
+    const TEXT: &str = "int foo;\nbar();\n";
+
+    fn full(id: &str, items: Value) -> Value {
+        json!({ "kind": "full", "resultId": id, "items": items })
+    }
+
+    async fn pull_app(
+        inter_file: bool,
+        files: &[&str],
+        answer: Option<Value>,
+    ) -> (App, Arc<FakeLauncher>, Vec<PathBuf>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let list: Vec<(&str, &str)> = files.iter().map(|f| (*f, TEXT)).collect();
+        let root = project(dir.path(), &list);
+        let fake = FakeLauncher::new(FakeOptions {
+            utf8: true,
+            pull_diagnostics: true,
+            pull_inter_file: inter_file,
+            ..Default::default()
+        });
+        if let Some(a) = answer {
+            fake.respond(PULL, a);
+        }
+        let mut app = open_app(&root, fake.clone());
+        let paths: Vec<PathBuf> = files.iter().map(|f| root.join(f)).collect();
+        for p in &paths {
+            open_synced(&mut app, &fake, p).await;
+        }
+        (app, fake, paths, dir)
+    }
+
+    fn msgs(app: &App, path: &std::path::Path) -> Vec<String> {
+        marks(app, path).into_iter().map(|m| m.2).collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_asks_at_once_with_the_providers_identifier_and_shows_the_answer() {
+        let report = full("r1", json!([diag(0, 0, 3, 1, "bad int")]));
+        let (mut app, fake, paths, _dir) = pull_app(false, &["a.cpp"], Some(report)).await;
+        assert!(app.settle(|_| !fake.requests(PULL).is_empty()).await);
+        let first = &fake.requests(PULL)[0];
+        assert_eq!(first["textDocument"]["uri"], json!(uri(&paths[0])));
+        assert_eq!(first["identifier"], json!("fake"));
+        assert!(first.get("previousResultId").is_none());
+        assert!(app.settle(|a| !marks(a, &paths[0]).is_empty()).await);
+        assert_eq!(
+            marks(&app, &paths[0]),
+            vec![("int".to_string(), Severity::Error, "bad int".to_string())]
+        );
+        assert_eq!(app.lsp.diagnostics.counts().of(Severity::Error), 1);
+        assert_eq!(app.test_pull_result_id(buffer_id(&app, &paths[0])), Some("r1"));
+        app.shutdown_servers().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_burst_of_typing_asks_once_after_the_rest_with_the_previous_result_id() {
+        let report = full("r1", json!([diag(0, 0, 3, 1, "first")]));
+        let (mut app, fake, paths, _dir) = pull_app(false, &["a.cpp"], Some(report)).await;
+        assert!(app.settle(|a| !marks(a, &paths[0]).is_empty()).await);
+        fake.respond(PULL, full("r2", json!([diag(0, 0, 3, 2, "second")])));
+        app.press_file_end();
+        app.type_text("// a comment");
+        assert!(app.settle(|_| fake.requests(PULL).len() >= 2).await);
+        assert!(app.settle(|a| msgs(a, &paths[0]) == ["second"]).await);
+        idle(&mut app).await;
+        assert_eq!(fake.requests(PULL).len(), 2, "one request for the whole burst");
+        assert_eq!(fake.requests(PULL)[1]["previousResultId"], json!("r1"));
+        // It was asked for the version the server had, so the document the mark was computed in
+        // is the one it holds now.
+        let id = buffer_id(&app, &paths[0]);
+        let u = uri(&paths[0]);
+        let text = app.buffers.get(id).unwrap().rope.to_string();
+        assert_eq!(fake.document(&u).unwrap().text, text);
+        assert_eq!(marks(&app, &paths[0])[0].0, "int");
+        app.shutdown_servers().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unchanged_keeps_the_marks() {
+        let report = full("r1", json!([diag(0, 0, 3, 1, "kept")]));
+        let (mut app, fake, paths, _dir) = pull_app(false, &["a.cpp"], Some(report)).await;
+        assert!(app.settle(|a| !marks(a, &paths[0]).is_empty()).await);
+        fake.respond(PULL, json!({ "kind": "unchanged", "resultId": "r1" }));
+        app.press_file_end();
+        app.type_text("x");
+        assert!(app.settle(|_| fake.requests(PULL).len() >= 2).await);
+        idle(&mut app).await;
+        assert_eq!(msgs(&app, &paths[0]), ["kept"]);
+        assert_eq!(app.test_pull_result_id(buffer_id(&app, &paths[0])), Some("r1"));
+        app.shutdown_servers().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn published_and_pulled_sets_are_both_shown_and_replace_only_their_own() {
+        let report = full("p1", json!([diag(0, 0, 3, 1, "pulled")]));
+        let (mut app, fake, paths, _dir) = pull_app(false, &["a.cpp"], Some(report)).await;
+        let path = &paths[0];
+        assert!(app.settle(|a| msgs(a, path) == ["pulled"]).await);
+        publish(&app, Language::Cpp, path, None, json!([diag(1, 0, 3, 2, "pushed")]));
+        assert!(app.settle(|a| msgs(a, path).len() == 2).await);
+        assert_eq!(
+            msgs(&app, path),
+            ["pulled", "pushed"],
+            "the publish didn't remove the pulled mark"
+        );
+        assert_eq!(app.lsp.diagnostics.counts().of(Severity::Error), 1);
+        assert_eq!(app.lsp.diagnostics.counts().of(Severity::Warning), 1);
+        // A new pull replaces only the pulled set.
+        fake.respond(PULL, full("p2", json!([diag(0, 4, 7, 1, "pulled again")])));
+        app.lsp
+            .server_for(Language::Cpp)
+            .unwrap()
+            .notify("test/diag_refresh", Value::Null);
+        assert!(
+            app.settle(|a| msgs(a, path).contains(&"pulled again".to_string()))
+                .await
+        );
+        assert_eq!(msgs(&app, path), ["pulled again", "pushed"]);
+        // A new publish replaces only the published set (and the pull is not asked again).
+        let asked = fake.requests(PULL).len();
+        publish(&app, Language::Cpp, path, None, json!([]));
+        assert!(app.settle(|a| msgs(a, path) == ["pulled again"]).await);
+        idle(&mut app).await;
+        assert_eq!(fake.requests(PULL).len(), asked);
+        app.shutdown_servers().await;
+    }
+
+    /// The pulled answer is drawn as a squiggle under the words it names, and nowhere else.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_pulled_answer_is_drawn_as_a_squiggle() {
+        use crate::milestone9_tests::{draw, find_cells, squiggle, terminal};
+        let report = full("r1", json!([diag(0, 0, 3, 1, "bad int")]));
+        let (mut app, fake, paths, _dir) = pull_app(false, &["a.cpp"], Some(report)).await;
+        assert!(app.settle(|a| !marks(a, &paths[0]).is_empty()).await);
+        let mut term = terminal();
+        draw(&mut term, &mut app);
+        let (x, y) = find_cells(&term, "int foo;").expect("the text is drawn");
+        assert!((0..3).all(|i| squiggle(&term, x + i, y).is_some()), "under `int`");
+        assert!(squiggle(&term, x + 4, y).is_none(), "not under `foo`");
+        // After typing and resting, the new answer's squiggle replaces the old one.
+        fake.respond(PULL, full("r2", json!([diag(0, 4, 7, 1, "bad foo")])));
+        app.press_file_end();
+        app.type_text("// c");
+        assert!(app.settle(|_| fake.requests(PULL).len() >= 2).await);
+        assert!(app.settle(|a| msgs(a, &paths[0]) == ["bad foo"]).await);
+        draw(&mut term, &mut app);
+        let (x, y) = find_cells(&term, "int foo;").unwrap();
+        assert!(squiggle(&term, x, y).is_none(), "`int` is clean again");
+        assert!((4..7).all(|i| squiggle(&term, x + i, y).is_some()), "under `foo`");
+        app.shutdown_servers().await;
+    }
+
+    /// A request still waiting when the document changes again is cancelled by the next one, so
+    /// its (older) answer never reaches the marks: only the newest request's does.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_older_request_is_cancelled_and_only_the_newest_answer_is_shown() {
+        let (mut app, fake, paths, _dir) = pull_app(false, &["a.cpp"], Some(full("r0", json!([])))).await;
+        assert!(app.settle(|_| fake.requests(PULL).len() == 1).await);
+        idle(&mut app).await;
+        fake.hold(PULL, true);
+        fake.respond(PULL, full("old", json!([diag(0, 0, 3, 1, "old answer")])));
+        app.press_file_end();
+        app.type_text("a");
+        assert!(app.settle(|_| fake.requests(PULL).len() == 2).await);
+        fake.respond(PULL, full("new", json!([diag(1, 0, 3, 2, "new answer")])));
+        app.type_text("b");
+        assert!(app.settle(|_| fake.requests(PULL).len() == 3).await);
+        assert!(
+            app.settle(|_| fake.cancelled().len() == 1).await,
+            "the older was cancelled"
+        );
+        assert!(msgs(&app, &paths[0]).is_empty(), "nothing answered yet");
+        app.lsp
+            .server_for(Language::Cpp)
+            .unwrap()
+            .notify("test/flush", Value::Null);
+        assert!(app.settle(|a| msgs(a, &paths[0]) == ["new answer"]).await);
+        idle(&mut app).await;
+        assert_eq!(msgs(&app, &paths[0]), ["new answer"]);
+        assert_eq!(fake.requests(PULL).len(), 3, "the cancellation isn't retried");
+        assert_eq!(app.test_pull_result_id(buffer_id(&app, &paths[0])), Some("new"));
+        app.shutdown_servers().await;
+    }
+
+    /// Quick fixes ask with the server's published and pulled diagnostics both.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn code_actions_send_the_published_and_the_pulled_diagnostics() {
+        use crate::command::Command;
+        let report = full("p1", json!([diag(0, 0, 3, 1, "pulled")]));
+        let (mut app, fake, paths, _dir) = pull_app(false, &["a.cpp"], Some(report)).await;
+        let path = &paths[0];
+        publish(&app, Language::Cpp, path, None, json!([diag(0, 0, 8, 2, "pushed")]));
+        assert!(app.settle(|a| msgs(a, path).len() == 2).await);
+        crate::milestone9_tests::put_cursor(&mut app, 1);
+        app.test_execute(Command::QuickFix);
+        assert!(
+            app.settle(|_| !fake.requests("textDocument/codeAction").is_empty())
+                .await
+        );
+        let sent: Vec<String> = fake.requests("textDocument/codeAction")[0]["context"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["message"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert!(sent.contains(&"pulled".to_string()) && sent.contains(&"pushed".to_string()));
+        app.shutdown_servers().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refresh_is_answered_and_every_open_document_asks_again() {
+        let report = full("r1", json!([diag(0, 0, 3, 1, "one")]));
+        let (mut app, fake, paths, _dir) = pull_app(false, &["a.cpp", "b.cpp"], Some(report)).await;
+        assert!(app.settle(|_| fake.requests(PULL).len() == 2).await);
+        fake.respond(PULL, full("r2", json!([diag(0, 0, 3, 1, "two")])));
+        app.lsp
+            .server_for(Language::Cpp)
+            .unwrap()
+            .notify("test/diag_refresh", Value::Null);
+        assert!(app.settle(|_| fake.requests(PULL).len() == 4).await);
+        assert!(app.settle(|_| fake.answers().contains_key("diag_refresh")).await);
+        assert!(
+            app.settle(|a| msgs(a, &paths[0]) == ["two"] && msgs(a, &paths[1]) == ["two"])
+                .await
+        );
+        let asked: Vec<Value> = fake.requests(PULL)[2..]
+            .iter()
+            .map(|r| r["textDocument"]["uri"].clone())
+            .collect();
+        assert!(asked.contains(&json!(uri(&paths[0]))) && asked.contains(&json!(uri(&paths[1]))));
+        app.shutdown_servers().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn related_documents_and_file_dependencies_reach_the_other_files() {
+        let (mut app, fake, paths, _dir) = pull_app(true, &["a.cpp", "b.cpp"], Some(full("r1", json!([])))).await;
+        assert!(app.settle(|_| fake.requests(PULL).len() == 2).await);
+        let b = uri(&paths[1]);
+        let mut report = full("r2", json!([diag(0, 0, 3, 1, "in a")]));
+        report["relatedDocuments"] = json!({ b.clone(): full("b1", json!([diag(1, 0, 3, 2, "in b")])) });
+        fake.respond(PULL, report);
+        app.press_file_end();
+        app.type_text("x");
+        assert!(app.settle(|a| msgs(a, &paths[1]) == ["in b"]).await);
+        // The edited file asked (3rd request); its answer made the other open file due (4th), and
+        // that one's answer doesn't spread back: no ping-pong.
+        assert!(app.settle(|_| fake.requests(PULL).len() >= 4).await);
+        idle(&mut app).await;
+        let asked = fake.requests(PULL);
+        assert_eq!(asked.len(), 4);
+        assert_eq!(asked[2]["textDocument"]["uri"], json!(uri(&paths[0])));
+        assert_eq!(asked[3]["textDocument"]["uri"], json!(uri(&paths[1])));
+        app.shutdown_servers().await;
+    }
+}

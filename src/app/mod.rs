@@ -14,6 +14,7 @@ mod config;
 mod conflict;
 mod context_menu;
 mod cursors;
+mod diagnostics_pull;
 mod diff_edit;
 mod diff_view;
 mod discard;
@@ -136,6 +137,8 @@ enum Timer {
     Bulb,
     /// A buffer's semantic tokens are due (`app::semantic::DELAY` after its last edit).
     Semantic,
+    /// A buffer's pull diagnostics are due (`app::diagnostics_pull::DELAY` after its last edit).
+    PullDiagnostics,
     /// Edited buffers' gutter markers are due (`quick_diff::DELAY`).
     QuickDiff,
     /// Edited buffers' spelling is due (`spell::DELAY`).
@@ -421,6 +424,8 @@ pub struct App {
     pub context_menu: Option<crate::context_menu::ContextMenu>,
     /// Semantic tokens per buffer: result ids, raw arrays and the debounce (`app::semantic`).
     semantic: semantic::State,
+    /// Pull diagnostics per buffer: result ids and the debounce (`app::diagnostics_pull`).
+    pull: diagnostics_pull::State,
     /// The Locations list (go to definition's places), while there is one.
     pub locations: Option<crate::locations::Locations>,
     /// Numbers Locations lists, so file reads for a replaced one are dropped.
@@ -630,6 +635,7 @@ impl App {
             code_actions: Default::default(),
             context_menu: None,
             semantic: Default::default(),
+            pull: Default::default(),
             locations: None,
             locations_generation: 0,
             git: Default::default(),
@@ -869,6 +875,7 @@ impl App {
             (self.completion.deadline(), Timer::Completion),
             (self.code_actions.deadline(), Timer::Bulb),
             (self.semantic.deadline(), Timer::Semantic),
+            (self.pull.deadline(), Timer::PullDiagnostics),
             (self.quick_diff.deadline(), Timer::QuickDiff),
             (self.spell.deadline(), Timer::Spell),
             (self.diffs.deadline(), Timer::Diff),
@@ -904,6 +911,7 @@ impl App {
             Timer::Completion => self.completion_tick(Instant::now()),
             Timer::Bulb => self.bulb_tick(Instant::now()),
             Timer::Semantic => self.semantic_tick(Instant::now()),
+            Timer::PullDiagnostics => self.pull_tick(Instant::now()),
             Timer::QuickDiff => self.sync_quick_diff(),
             Timer::Spell => self.sync_spell(),
             Timer::Diff => self.sync_diffs(),
@@ -1254,6 +1262,7 @@ impl App {
         self.check_hover();
         self.check_code_actions();
         self.check_semantic();
+        self.check_pull();
         self.check_peek();
     }
 
@@ -1719,6 +1728,7 @@ impl App {
         self.check_hover();
         self.check_code_actions();
         self.check_semantic();
+        self.check_pull();
         self.check_peek();
     }
 }
@@ -1812,6 +1822,7 @@ impl App {
         self.check_hover();
         self.check_code_actions();
         self.check_semantic();
+        self.check_pull();
         self.check_peek();
     }
 
@@ -1846,6 +1857,11 @@ impl App {
     /// Takes in a workspace search batch as if the running search had sent it.
     pub fn test_search_batch(&mut self, batch: crate::workspace_search::Batch) {
         self.handle_app_event(AppEvent::Search(workspace_search::SearchEvent::Results(batch)));
+    }
+
+    /// The `resultId` kept for `buffer`'s pull diagnostics.
+    pub fn test_pull_result_id(&self, buffer: crate::buffer::BufferId) -> Option<&str> {
+        self.pull.result_id(buffer)
     }
 
     /// Fires the hover resting timer as the event loop would at `now` (no sleeping in tests).
@@ -1947,6 +1963,7 @@ impl App {
                     lsp::Request::Rename { .. } => "rename",
                     lsp::Request::Format => "format",
                     lsp::Request::SemanticTokens { .. } => "semantic tokens",
+                    lsp::Request::Diagnostics { .. } => "pull diagnostics",
                     lsp::Request::CodeActions {
                         purpose: crate::code_action::Purpose::List,
                         ..

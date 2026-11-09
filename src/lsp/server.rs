@@ -12,14 +12,14 @@ use std::time::Duration;
 use lsp_types::{
     ClientCapabilities, ClientInfo, CodeActionCapabilityResolveSupport, CodeActionClientCapabilities,
     CodeActionKindLiteralSupport, CodeActionLiteralSupport, CompletionClientCapabilities, CompletionItemCapability,
-    CompletionItemCapabilityResolveSupport, CompletionListCapability, DocumentFormattingClientCapabilities,
-    DynamicRegistrationClientCapabilities, GeneralClientCapabilities, GotoCapability, HoverClientCapabilities,
-    InitializeParams, MarkupKind, PositionEncodingKind, PrepareSupportDefaultBehavior,
-    PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities, RenameClientCapabilities, SemanticTokenModifier,
-    SemanticTokenType, SemanticTokensClientCapabilities, SemanticTokensClientCapabilitiesRequests,
-    SemanticTokensFullOptions, SemanticTokensWorkspaceClientCapabilities, ServerCapabilities,
-    TextDocumentClientCapabilities, TokenFormat, WindowClientCapabilities, WorkspaceClientCapabilities,
-    WorkspaceEditClientCapabilities, WorkspaceFolder,
+    CompletionItemCapabilityResolveSupport, CompletionListCapability, DiagnosticClientCapabilities,
+    DiagnosticWorkspaceClientCapabilities, DocumentFormattingClientCapabilities, DynamicRegistrationClientCapabilities,
+    GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, InitializeParams, MarkupKind,
+    PositionEncodingKind, PrepareSupportDefaultBehavior, PublishDiagnosticsClientCapabilities,
+    ReferenceClientCapabilities, RenameClientCapabilities, SemanticTokenModifier, SemanticTokenType,
+    SemanticTokensClientCapabilities, SemanticTokensClientCapabilitiesRequests, SemanticTokensFullOptions,
+    SemanticTokensWorkspaceClientCapabilities, ServerCapabilities, TextDocumentClientCapabilities, TokenFormat,
+    WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceEditClientCapabilities, WorkspaceFolder,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -572,7 +572,7 @@ impl Conn {
                 let result = self.answer(&method, &params);
                 self.send(&Message::Response { id, result });
                 // Answered here; the app asks for the tokens again.
-                if method == "workspace/semanticTokens/refresh" {
+                if method == "workspace/semanticTokens/refresh" || method == "workspace/diagnostic/refresh" {
                     (self.sink)(Event::Notification {
                         server: self.id,
                         method,
@@ -745,8 +745,8 @@ impl Conn {
 
 /// What jed tells servers it can do: UTF-8 positions first (UTF-16 is the fallback every server
 /// must support), work-done progress, pushed diagnostics (with the document version they're
-/// for, so jed can map them through the edits made since; no pull diagnostics: ty and clangd
-/// push when the client doesn't declare `textDocument.diagnostic`), hover (markdown first),
+/// for, so jed can map them through the edits made since) and pulled ones
+/// (`textDocument.diagnostic`, `workspace.diagnostic.refreshSupport`), hover (markdown first),
 /// go to definition (`LocationLink`s welcome), completion, references, rename (with
 /// `prepareRename` and versioned `WorkspaceEdit`s), code actions and `workspace/applyEdit`.
 fn client_capabilities() -> ClientCapabilities {
@@ -761,6 +761,11 @@ fn client_capabilities() -> ClientCapabilities {
                 // Kept and sent back with code action requests (`Diagnostic::raw`).
                 data_support: Some(true),
                 ..Default::default()
+            }),
+            // Pull diagnostics (`app/diagnostics_pull.rs`); related documents are applied too.
+            diagnostic: Some(DiagnosticClientCapabilities {
+                dynamic_registration: None,
+                related_document_support: Some(true),
             }),
             hover: Some(HoverClientCapabilities {
                 dynamic_registration: None,
@@ -861,6 +866,10 @@ fn client_capabilities() -> ClientCapabilities {
         workspace: Some(WorkspaceClientCapabilities {
             apply_edit: Some(true),
             execute_command: Some(DynamicRegistrationClientCapabilities::default()),
+            // `workspace/diagnostic/refresh`: every open document is pulled again.
+            diagnostic: Some(DiagnosticWorkspaceClientCapabilities {
+                refresh_support: Some(true),
+            }),
             // `workspace/semanticTokens/refresh`: the tokens are asked for again.
             semantic_tokens: Some(SemanticTokensWorkspaceClientCapabilities {
                 refresh_support: Some(true),
@@ -997,7 +1006,8 @@ mod tests {
         let v = serde_json::to_value(client_capabilities()).unwrap();
         assert_eq!(v["general"]["positionEncodings"], json!(["utf-8", "utf-16"]));
         assert_eq!(v["textDocument"]["publishDiagnostics"]["versionSupport"], json!(true));
-        assert!(v["textDocument"].get("diagnostic").is_none(), "no pull diagnostics");
+        assert_eq!(v["textDocument"]["diagnostic"]["relatedDocumentSupport"], json!(true));
+        assert_eq!(v["workspace"]["diagnostic"]["refreshSupport"], json!(true));
         assert_eq!(v["window"]["workDoneProgress"], json!(true));
         assert_eq!(v["textDocument"]["rename"]["prepareSupport"], json!(true));
         assert_eq!(v["textDocument"]["rename"]["prepareSupportDefaultBehavior"], json!(1));

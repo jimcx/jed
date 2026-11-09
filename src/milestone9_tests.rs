@@ -1349,12 +1349,11 @@ async fn milestone_9_diagnostics_follow_edits_until_republished() {
     publish(&app, Language::Cpp, &path, None, json!([diag(2, 7, 10, 3, "now")]));
     assert!(app.settle(|a| marks(a, &path).iter().any(|m| m.2 == "now")).await);
     assert_eq!(marks(&app, &path), [mark("foo", Severity::Info, "now")]);
-    // Version 1 after version 2's publish: still kept (a publish drops no versions, since a
-    // semantic tokens request may be out for an older one), so read in its own text (`foo` on
-    // line 1 at 2..5) and mapped forward.
+    // Version 1 after version 2's publish: dropped (the marks shown are for a newer version;
+    // `live_diagnostics` has the same rule for pull answers).
     publish(&app, Language::Cpp, &path, Some(1), json!([diag(1, 2, 5, 3, "old")]));
-    assert!(app.settle(|a| marks(a, &path).iter().any(|m| m.2 == "old")).await);
-    assert_eq!(marks(&app, &path), [mark("foo", Severity::Info, "old")]);
+    idle(&mut app).await;
+    assert_eq!(marks(&app, &path), [mark("foo", Severity::Info, "now")]);
 
     // A publish handled in the same loop turn as a key not yet sent (both come before the
     // turn's `sync_servers`): the key is sent first, so the publish (for the version before

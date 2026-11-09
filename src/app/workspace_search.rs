@@ -723,6 +723,7 @@ mod tests {
                 app.code_actions.rest = Some((at, place));
             }
             Semantic => app.semantic.test_arm(0, at),
+            PullDiagnostics => app.pull.test_arm(0, at),
             QuickDiff => app.quick_diff.test_arm(at),
             Diff => app.diffs.test_arm(at),
             Markdown => app.markdown.deadline = Some(at),
@@ -749,7 +750,7 @@ mod tests {
         use super::super::Timer::*;
 
         // `arm`'s match is exhaustive, so a new variant has to be added there; add it here too.
-        const ALL: [super::super::Timer; 17] = [
+        const ALL: [super::super::Timer; 18] = [
             FsChanges,
             SearchDebounce,
             Hover,
@@ -757,6 +758,7 @@ mod tests {
             Completion,
             Bulb,
             Semantic,
+            PullDiagnostics,
             QuickDiff,
             Spell,
             Diff,

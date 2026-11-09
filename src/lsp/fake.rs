@@ -15,7 +15,11 @@
 //! `text` param as a stderr line, `test/log` / `test/show` send `window/logMessage` /
 //! `window/showMessage` with their params; `test/inactive` sends `textDocument/inactiveRegions`
 //! with its params; `test/refresh` sends a `workspace/semanticTokens/refresh` request (id
-//! `"refresh"`; the client's answer in `answers()`).
+//! `"refresh"`; the client's answer in `answers()`); `test/diag_refresh` the same for
+//! `workspace/diagnostic/refresh` (id `"diag_refresh"`). `FakeOptions::pull_diagnostics`
+//! advertises `diagnosticProvider` (identifier `fake`; `pull_inter_file`: `interFileDependencies`);
+//! its reports are scripted with `respond("textDocument/diagnostic", { kind: "full" | "unchanged",
+//! resultId, items, relatedDocuments })`, the requests' params read with `requests`.
 //!
 //! Scripted answers: `respond(method, result)` makes it answer every `method` request (e.g.
 //! `textDocument/hover`) with `result`; `hold(method, true)` keeps those answers until a
@@ -78,6 +82,11 @@ pub struct FakeOptions {
     /// Advertise `semanticTokensProvider` (legend: types `variable`, `class`, `function`;
     /// modifiers `declaration`, `constructorOrDestructor`; `full` with `delta`, no `range`).
     pub semantic_tokens: bool,
+    /// Advertise `diagnosticProvider` (`identifier: "fake"`, no workspace diagnostics): scripted
+    /// `textDocument/diagnostic` reports via `respond`.
+    pub pull_diagnostics: bool,
+    /// With `pull_diagnostics`: `interFileDependencies: true`.
+    pub pull_inter_file: bool,
 }
 
 /// The fake's copy of an open document.
@@ -355,6 +364,13 @@ async fn serve(
                                 "range": false,
                             });
                         }
+                        if options.pull_diagnostics {
+                            caps["diagnosticProvider"] = json!({
+                                "identifier": "fake",
+                                "interFileDependencies": options.pull_inter_file,
+                                "workspaceDiagnostics": false,
+                            });
+                        }
                         if options.utf8 {
                             caps["positionEncoding"] = json!("utf-8");
                         }
@@ -432,6 +448,11 @@ async fn serve(
                     "test/refresh" => out.push(Message::Request {
                         id: Id::Str("refresh".into()),
                         method: "workspace/semanticTokens/refresh".into(),
+                        params: Value::Null,
+                    }),
+                    "test/diag_refresh" => out.push(Message::Request {
+                        id: Id::Str("diag_refresh".into()),
+                        method: "workspace/diagnostic/refresh".into(),
                         params: Value::Null,
                     }),
                     "test/flush" => {
