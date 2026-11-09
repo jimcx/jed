@@ -351,6 +351,8 @@ pub enum Command {
     HexToggleInspector,
     /// "Hex: Toggle Byte Order": the inspector reads little- or big-endian.
     HexToggleByteOrder,
+    /// "Hex: Cycle Byte Grouping": the hex column's groups of 1, 2, 4, 8 bytes, then 1 again.
+    HexCycleGrouping,
     /// "Hex: Copy Value": the clicked / highlighted inspector row's value.
     HexCopyValue,
     /// "File: New Untitled File": a new empty tab "Untitled-N" (the lowest free N) with no
@@ -1274,6 +1276,7 @@ impl Command {
         all.extend([
             Command::HexToggleInspector,
             Command::HexToggleByteOrder,
+            Command::HexCycleGrouping,
             Command::HexCopyValue,
         ]);
         all.push(Command::OpenMarkdownPreview);
@@ -1690,6 +1693,7 @@ impl Command {
             Command::ReopenAsText => "view.reopenAsText".into(),
             Command::HexToggleInspector => "hex.toggleInspector".into(),
             Command::HexToggleByteOrder => "hex.toggleEndianness".into(),
+            Command::HexCycleGrouping => "hex.cycleGrouping".into(),
             Command::HexCopyValue => "hex.copyValue".into(),
             Command::NewUntitledFile => "file.newUntitled".into(),
             Command::ChangeLanguageMode => "editor.changeLanguageMode".into(),
@@ -2120,6 +2124,7 @@ impl Command {
             Command::ReopenAsText => "View: Reopen as Text",
             Command::HexToggleInspector => "Hex: Toggle Data Inspector",
             Command::HexToggleByteOrder => "Hex: Toggle Byte Order",
+            Command::HexCycleGrouping => "Hex: Cycle Byte Grouping",
             Command::HexCopyValue => "Hex: Copy Value",
             Command::NewUntitledFile => "File: New Untitled File",
             Command::ChangeLanguageMode => "Change Language Mode",
@@ -2395,6 +2400,7 @@ mod tests {
             Command::HexToggleInspector => 172,
             Command::HexToggleByteOrder => 173,
             Command::HexCopyValue => 174,
+            Command::HexCycleGrouping => 175,
             Command::NewUntitledFile => 115,
             Command::ChangeLanguageMode => 116,
             Command::IndentUsingSpaces => 107,

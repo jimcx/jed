@@ -476,6 +476,9 @@ pub struct App {
     pub environment: Option<String>,
     /// The hex data inspector is shown (`Command::HexToggleInspector`; kept in the session).
     pub hex_inspector: bool,
+    /// The hex column's grouping chosen with `Command::HexCycleGrouping` (kept in the session);
+    /// `None`: the `hex_group_bytes` setting's (`App::hex_grouping`).
+    pub hex_group: Option<usize>,
     /// The byte order chosen with `Command::HexToggleByteOrder` (kept in the session); `None`: the
     /// `hex_byte_order` setting's (`App::hex_order`).
     pub hex_byte_order: Option<crate::hex::ByteOrder>,
@@ -669,6 +672,7 @@ impl App {
             tasks: Default::default(),
             environment: None,
             hex_inspector: true,
+            hex_group: None,
             hex_byte_order: None,
             syntax_plugins: Vec::new(),
             grammars: Vec::new(),
@@ -1516,6 +1520,7 @@ impl App {
             Command::ReopenAsText => self.reopen_as_text(),
             Command::HexToggleInspector => self.hex_toggle_inspector(),
             Command::HexToggleByteOrder => self.hex_toggle_byte_order(),
+            Command::HexCycleGrouping => self.hex_cycle_grouping(),
             Command::HexCopyValue => self.hex_copy_value(),
             Command::OpenMarkdownPreview => self.open_markdown_preview(),
             Command::NewUntitledFile => self.new_untitled_file(),

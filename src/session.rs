@@ -65,6 +65,9 @@ pub struct HexState {
     /// `None`: the `hex_byte_order` setting's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub byte_order: Option<crate::hex::ByteOrder>,
+    /// The hex column's byte grouping; `None`: the `hex_group_bytes` setting's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<usize>,
 }
 
 impl Default for HexState {
@@ -72,6 +75,7 @@ impl Default for HexState {
         Self {
             inspector: true,
             byte_order: None,
+            group: None,
         }
     }
 }

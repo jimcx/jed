@@ -366,6 +366,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 focused,
                 find,
                 inspector,
+                grouping: crate::hex::Grouping::new(
+                    app.hex_group.unwrap_or(app.settings.hex_group_bytes),
+                    app.hex_byte_order.unwrap_or(app.settings.hex_byte_order),
+                ),
             };
             (text, hex_hit) = hex::render(f, editor_area, h, &app.theme, app.settings.hex_bytes_per_line, overlay);
             if let Some(bar) = bar {

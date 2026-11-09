@@ -339,6 +339,23 @@ impl App {
         self.hex_byte_order.unwrap_or(self.settings.hex_byte_order)
     }
 
+    /// How the hex column groups its bytes: the chosen size, else the setting's, in the byte order.
+    pub fn hex_grouping(&self) -> hex::Grouping {
+        hex::Grouping::new(
+            self.hex_group.unwrap_or(self.settings.hex_group_bytes),
+            self.hex_order(),
+        )
+    }
+
+    /// "Hex: Cycle Byte Grouping": 1 -> 2 -> 4 -> 8 -> 1; per session, not per tab.
+    pub(super) fn hex_cycle_grouping(&mut self) {
+        if self.active_hex().is_none() {
+            return tracing::debug!("not in a hex view");
+        }
+        self.hex_group = Some(hex::Grouping::next_size(self.hex_grouping().size()));
+        self.needs_redraw = true;
+    }
+
     /// "Hex: Toggle Data Inspector" (does nothing on another kind of tab).
     pub(super) fn hex_toggle_inspector(&mut self) {
         if self.active_hex().is_none() {
@@ -400,13 +417,13 @@ impl App {
         let Ok(rt) = tokio::runtime::Handle::try_current() else {
             return true;
         };
-        let (source, column) = (h.doc.source().clone(), h.column);
+        let (source, column, grouping) = (h.doc.source().clone(), h.column, h.layout.grouping());
         let tx = self.tx.clone();
         rt.spawn_blocking(move || {
             let mut bytes = vec![0u8; size as usize];
             let text = source
                 .read_exact_at(range.start as u64, &mut bytes)
-                .map(|()| hex::format_bytes(column, &bytes));
+                .map(|()| hex::format_bytes(column, &bytes, range.start as u64, grouping));
             let _ = tx.send(AppEvent::View(ViewEvent::HexCopied { text }));
         });
         true

@@ -360,7 +360,90 @@ pub struct Hit {
 pub struct Layout {
     bytes_per_row: usize,
     offset_digits: usize,
+    grouping: Grouping,
 }
+
+/// How the hex column groups its bytes (`xxd -g`): `size` bytes (1, 2, 4 or 8) run their digits
+/// together, one space between groups; in little-endian order a group's bytes print reversed
+/// (`xxd -e`), so a u32 reads as its value. The ASCII column never reorders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Grouping {
+    size: usize,
+    order: ByteOrder,
+}
+
+impl Default for Grouping {
+    /// Single bytes (`hexdump -C`).
+    fn default() -> Self {
+        Self::new(1, ByteOrder::Little)
+    }
+}
+
+impl Grouping {
+    /// `size` is floored to a power of two in 1..=8.
+    pub fn new(size: usize, order: ByteOrder) -> Self {
+        Self {
+            size: floor_pow2(size.clamp(1, MAX_GROUP)),
+            order,
+        }
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// The next size in "Hex: Cycle Byte Grouping": 1, 2, 4, 8, then 1 again.
+    pub fn next_size(size: usize) -> usize {
+        if size >= MAX_GROUP {
+            1
+        } else {
+            floor_pow2(size.max(1)) * 2
+        }
+    }
+
+    /// Whether a group's bytes print last-first.
+    pub fn reversed(&self) -> bool {
+        self.size > 1 && self.order == ByteOrder::Little
+    }
+
+    /// The slot (0 = leftmost) in its group where the byte at `pos` in the group is drawn.
+    fn slot(&self, pos: usize) -> usize {
+        if self.reversed() { self.size - 1 - pos } else { pos }
+    }
+
+    /// The hex text as the column shows it, for `bytes` starting at file offset `start`: groups are
+    /// the file's (so a selection not aligned to them starts and ends with partial ones, which
+    /// print only their selected bytes), separated by a space. Single bytes: `hex_pairs`
+    /// (which is this with the default grouping).
+    pub fn format(&self, bytes: &[u8], start: u64) -> String {
+        let g = self.size as u64;
+        let mut s = String::with_capacity(bytes.len() * 2 + bytes.len() / self.size + 1);
+        let mut i = 0;
+        while i < bytes.len() {
+            let end = ((start + i as u64) / g * g + g - start).min(bytes.len() as u64) as usize;
+            if i > 0 {
+                s.push(' ');
+            }
+            let chunk = &bytes[i..end];
+            let mut push = |b: &u8| {
+                s.push(char::from(DIGITS[usize::from(b >> 4)]));
+                s.push(char::from(DIGITS[usize::from(b & 15)]));
+            };
+            if self.reversed() {
+                chunk.iter().rev().for_each(&mut push);
+            } else {
+                chunk.iter().for_each(&mut push);
+            }
+            i = end;
+        }
+        s
+    }
+}
+
+const DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+/// The widest group, in bytes.
+pub const MAX_GROUP: usize = 8;
 
 impl Layout {
     /// The largest power of two up to `max` (itself floored to a power of two in
@@ -368,15 +451,27 @@ impl Layout {
     /// then cut); offsets as wide as `len` (the file's size, which the last row prints) needs,
     /// at least 8 digits.
     pub fn fit(width: usize, max: usize, len: u64) -> Self {
+        Self::fit_grouped(width, max, len, Grouping::default())
+    }
+
+    /// `fit` for a grouped hex column: a row is never narrower than one group (when even that
+    /// doesn't fit, the row is cut like the one-byte row), so rows stay a multiple of the group.
+    pub fn fit_grouped(width: usize, max: usize, len: u64, grouping: Grouping) -> Self {
         let digits = offset_digits(len);
-        let mut n = floor_pow2(max.clamp(1, MAX_BYTES_PER_ROW));
-        while n > 1 && row_width(n, digits) > width {
+        let g = grouping.size;
+        let mut n = floor_pow2(max.clamp(1, MAX_BYTES_PER_ROW)).max(g);
+        while n > g && row_width(n, digits, g) > width {
             n /= 2;
         }
         Self {
             bytes_per_row: n,
             offset_digits: digits,
+            grouping,
         }
+    }
+
+    pub fn grouping(&self) -> Grouping {
+        self.grouping
     }
 
     pub fn bytes_per_row(&self) -> usize {
@@ -390,7 +485,7 @@ impl Layout {
 
     /// A full row's width in columns (16 bytes: hexdump's 78).
     pub fn width(&self) -> usize {
-        row_width(self.bytes_per_row, self.offset_digits)
+        row_width(self.bytes_per_row, self.offset_digits, self.grouping.size)
     }
 
     /// Rows in a `len`-byte file: one per `bytes_per_row` bytes plus the end offset's; none when
@@ -418,15 +513,17 @@ impl Layout {
         0..self.offset_digits
     }
 
-    /// The column of the first hex digit of the row's `index`th byte (two digits wide);
-    /// `hex_col(bytes_per_row)` is just past the hex part (its trailing spaces included).
+    /// The column of the first hex digit of the row's `index`th byte (two digits wide; inside a
+    /// reversed group the bytes sit last-first); `hex_col(bytes_per_row)` is just past the hex
+    /// part (its trailing spaces included).
     pub fn hex_col(&self, index: usize) -> usize {
-        let extra = if index == self.bytes_per_row && self.bytes_per_row < 8 {
-            1
-        } else {
-            index / 8
-        };
-        self.offset_digits + 2 + 3 * index + extra
+        let g = self.grouping.size;
+        let start = self.offset_digits + 2;
+        if index == self.bytes_per_row {
+            return start + index / g * (2 * g + 1) + index.div_ceil(8);
+        }
+        let (group, pos) = (index / g, index % g);
+        start + group * (2 * g + 1) + 2 * self.grouping.slot(pos) + group * g / 8
     }
 
     /// The column of the opening `|`.
@@ -445,15 +542,20 @@ impl Layout {
     /// first byte, the `|`s and anything past the row are `None`.
     pub fn hit(&self, col: usize) -> Option<Hit> {
         let n = self.bytes_per_row;
-        let start = self.hex_col(0);
+        let start = self.offset_digits + 2;
         if col < start {
             return None;
         }
         if col < self.bar_col() {
-            // The 8-byte groups are 25 columns apart (with fewer than 8 bytes there's one group).
+            // The 8-byte blocks are `17 + 8 / g` columns apart (with fewer than 8 bytes there's one
+            // block); a group's trailing space is its last digit's.
+            let g = self.grouping.size;
             let rel = col - start;
-            let (group, within) = (rel / 25, rel % 25);
-            let index = (group * 8 + (within / 3).min(7)).min(n - 1);
+            let (block, within) = (rel / (17 + 8 / g), rel % (17 + 8 / g));
+            let group = (within / (2 * g + 1)).min(8 / g - 1);
+            let slot = ((within - group * (2 * g + 1)) / 2).min(g - 1);
+            let pos = if self.grouping.reversed() { g - 1 - slot } else { slot };
+            let index = (block * 8 + group * g + pos).min(n - 1);
             return Some(Hit {
                 index,
                 column: Column::Hex,
@@ -467,10 +569,11 @@ impl Layout {
     }
 }
 
-/// Columns of a row of `n` bytes with `digits`-wide offsets.
-fn row_width(n: usize, digits: usize) -> usize {
-    // offset, 2 spaces, `xx ` per byte, the group spaces, `|`, n chars, `|`.
-    digits + 2 + 3 * n + n.div_ceil(8) + 1 + n + 1
+/// Columns of a row of `n` bytes in groups of `g` with `digits`-wide offsets.
+fn row_width(n: usize, digits: usize, g: usize) -> usize {
+    // offset, 2 spaces, `g` digit pairs and a space per group, the extra space per 8 bytes,
+    // `|`, n chars, `|`.
+    digits + 2 + n / g * (2 * g + 1) + n.div_ceil(8) + 1 + n + 1
 }
 
 fn offset_digits(len: u64) -> usize {
@@ -510,23 +613,21 @@ pub fn row_in(window: &Window, layout: &Layout, offset: u64, len: u64) -> String
     }
     let count = len.min(offset + layout.bytes_per_row as u64) - offset;
     let cells = || (offset..offset + count).map(|o| window.get(o).unwrap_or(Cell::Pending));
-    s.push_str("  ");
+    // Each byte's two digits go at its column (`hex_col`: grouped, a reversed group's last byte
+    // first); everything else is spaces up to the bar.
+    let skip = digits + 2;
+    let mut hex = vec![' '; layout.bar_col() - skip];
     for (i, c) in cells().enumerate() {
-        match c {
-            Cell::Byte(b) => {
-                let _ = write!(s, "{b:02x} ");
-            }
-            Cell::Pending => s.push_str("\u{b7}\u{b7} "),
-            Cell::Unreadable => s.push_str("?? "),
-        }
-        if (i + 1) % 8 == 0 {
-            s.push(' ');
-        }
+        let at = layout.hex_col(i) - skip;
+        let pair = match c {
+            Cell::Byte(b) => [b >> 4, b & 15].map(|d| char::from(DIGITS[d as usize])),
+            Cell::Pending => ['\u{b7}'; 2],
+            Cell::Unreadable => ['?'; 2],
+        };
+        hex[at..at + 2].copy_from_slice(&pair);
     }
-    // The hex part is spaces and 3-byte placeholder dots: pad by columns, not bytes.
-    let cols = s.chars().count();
-    let pad = layout.bar_col().saturating_sub(cols);
-    s.extend(std::iter::repeat_n(' ', pad));
+    s.push_str("  ");
+    s.extend(hex);
     s.push('|');
     s.extend(cells().map(|c| match c {
         Cell::Byte(b) => ascii_char(b),
@@ -537,10 +638,10 @@ pub fn row_in(window: &Window, layout: &Layout, offset: u64, len: u64) -> String
     s
 }
 
-/// Bytes as `column` shows them: what Cmd+C copies.
-pub fn format_bytes(column: Column, bytes: &[u8]) -> String {
+/// Bytes (from file offset `start`) as `column` shows them, the hex column grouped: what Cmd+C copies.
+pub fn format_bytes(column: Column, bytes: &[u8], start: u64, grouping: Grouping) -> String {
     match column {
-        Column::Hex => hex_pairs(bytes),
+        Column::Hex => grouping.format(bytes, start),
         Column::Ascii => ascii_text(bytes),
     }
 }
@@ -548,14 +649,7 @@ pub fn format_bytes(column: Column, bytes: &[u8]) -> String {
 /// The bytes as hex pairs separated by spaces (`7f 45 4c 46`): what Cmd+C copies from the hex
 /// column, and a hex query seeded from a selection.
 pub fn hex_pairs(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 3);
-    for (i, b) in bytes.iter().enumerate() {
-        if i > 0 {
-            s.push(' ');
-        }
-        let _ = write!(s, "{b:02x}");
-    }
-    s
+    Grouping::default().format(bytes, 0)
 }
 
 /// The bytes as the ASCII column shows them (`.` for the rest): what Cmd+C copies from it.
@@ -898,7 +992,7 @@ pub struct HexTab {
 
 impl HexTab {
     pub fn new(path: PathBuf, doc: HexDoc) -> Self {
-        let layout = Layout::fit(row_width(16, 8), 16, doc.len() as u64);
+        let layout = Layout::fit(row_width(16, 8, 1), 16, doc.len() as u64);
         static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -981,9 +1075,9 @@ impl HexTab {
     /// Fits the tab to the area drawn (`max`: the `hex_bytes_per_line` setting): a new layout
     /// snaps the top down to its row's start, so the top row's first byte stays in view, and
     /// reveals the cursor; the top is clamped to the rows; a pending `reveal` is done.
-    pub fn fit(&mut self, width: usize, height: usize, max: usize) {
+    pub fn fit(&mut self, width: usize, height: usize, max: usize, grouping: Grouping) {
         self.height = height.max(1);
-        let layout = Layout::fit(width, max, self.len() as u64);
+        let layout = Layout::fit_grouped(width, max, self.len() as u64, grouping);
         if layout != self.layout {
             self.layout = layout;
             self.top -= self.top % layout.bytes_per_row();
@@ -1094,7 +1188,13 @@ impl HexTab {
     /// `None`; the app does that).
     pub fn copy_text(&self) -> Option<String> {
         let bytes = self.doc.resident_bytes()?;
-        Some(format_bytes(self.column, &bytes[self.copy_range()?]))
+        let range = self.copy_range()?;
+        Some(format_bytes(
+            self.column,
+            &bytes[range.clone()],
+            range.start as u64,
+            self.layout.grouping(),
+        ))
     }
 
     /// The byte (and column) at screen row `row` (from the first drawn) and column `col` (from
@@ -1110,7 +1210,11 @@ impl HexTab {
         let l = &self.layout;
         let hit = l.hit(col).or_else(|| {
             near.then(|| Hit {
-                index: if col < l.hex_col(0) { 0 } else { l.bytes_per_row() - 1 },
+                index: if col < l.offset_digits + 2 {
+                    0
+                } else {
+                    l.bytes_per_row() - 1
+                },
                 column: self.column,
             })
         })?;
@@ -1312,7 +1416,7 @@ mod tests {
                 assert!(n.is_power_of_two() && n <= max);
                 assert!(n == 1 || l.width() <= width, "{width} {max}");
                 if n < max {
-                    assert!(row_width(n * 2, 8) > width, "{width} {max}: {n} isn't the largest");
+                    assert!(row_width(n * 2, 8, 1) > width, "{width} {max}: {n} isn't the largest");
                 }
             }
         }
@@ -1386,6 +1490,64 @@ mod tests {
         assert_eq!(l.row_offset(17, 263), 263, "the end row");
         assert_eq!(l.row_of(255), 15);
         assert_eq!(l.row_of(256), 16);
+    }
+
+    #[test]
+    fn grouped_rows_and_columns() {
+        let doc = HexDoc::new((1..=20u8).collect::<Vec<_>>());
+        let le = Layout::fit_grouped(200, 16, 20, Grouping::new(4, ByteOrder::Little));
+        let be = Layout::fit_grouped(200, 16, 20, Grouping::new(4, ByteOrder::Big));
+        assert_eq!(
+            row(&doc, &le, 0),
+            "00000000  04030201 08070605  0c0b0a09 100f0e0d  |................|"
+        );
+        assert_eq!(
+            row(&doc, &be, 0),
+            "00000000  01020304 05060708  090a0b0c 0d0e0f10  |................|"
+        );
+        // A short last row: a partial group is right-aligned when reversed; the bar stays put.
+        let doc = HexDoc::new((1..=19u8).collect::<Vec<_>>());
+        let le = Layout::fit_grouped(200, 16, 19, Grouping::new(4, ByteOrder::Little));
+        let be = Layout::fit_grouped(200, 16, 19, Grouping::new(4, ByteOrder::Big));
+        let (r_le, r_be) = (row(&doc, &le, 16), row(&doc, &be, 16));
+        assert!(r_le.starts_with("00000010    131211 "), "{r_le}");
+        assert!(r_be.starts_with("00000010  111213 "), "{r_be}");
+        assert_eq!(r_le.chars().position(|c| c == '|'), Some(le.bar_col()));
+        assert_eq!(r_be.chars().position(|c| c == '|'), Some(le.bar_col()));
+        for g in [1, 2, 4, 8] {
+            for order in [ByteOrder::Little, ByteOrder::Big] {
+                let l = Layout::fit_grouped(300, 32, 40, Grouping::new(g, order));
+                let n = l.bytes_per_row();
+                assert!(n >= g && n.is_multiple_of(g));
+                assert_eq!(l.width(), l.ascii_col(n) + 1);
+                let mut cols = std::collections::HashSet::new();
+                for i in 0..n {
+                    for d in 0..2 {
+                        assert!(cols.insert(l.hex_col(i) + d), "{g} {i}");
+                        assert_eq!(l.hit(l.hex_col(i) + d).map(|h| h.index), Some(i), "{g} {order:?} {i}");
+                    }
+                    assert_eq!(l.hit(l.ascii_col(i)).map(|h| h.index), Some(i));
+                }
+                assert!(l.hex_col(n - 1) + 2 <= l.bar_col());
+                let doc = HexDoc::new(vec![0xab; 40]);
+                assert_eq!(row(&doc, &l, 0).chars().position(|c| c == '|'), Some(l.bar_col()));
+            }
+        }
+        let l = Layout::fit_grouped(10, 64, 20, Grouping::new(8, ByteOrder::Big));
+        assert_eq!(l.bytes_per_row(), 8, "never below the group");
+        assert_eq!(Grouping::next_size(8), 1);
+        assert_eq!(Grouping::next_size(2), 4);
+    }
+
+    #[test]
+    fn grouped_copy() {
+        let b: Vec<u8> = (1..=10).collect();
+        let g4 = Grouping::new(4, ByteOrder::Little);
+        assert_eq!(g4.format(&b[..8], 0), "04030201 08070605");
+        assert_eq!(Grouping::new(4, ByteOrder::Big).format(&b[..8], 0), "01020304 05060708");
+        // Unaligned: file groups, partial ones print what is selected.
+        assert_eq!(g4.format(&b[1..7], 1), "040302 070605");
+        assert_eq!(Grouping::default().format(&b[..3], 0), hex_pairs(&b[..3]));
     }
 
     #[test]
@@ -1475,7 +1637,7 @@ mod tests {
             PathBuf::from("/bin.dat"),
             HexDoc::new((0..len).map(|i| i as u8).collect::<Vec<_>>()),
         );
-        t.fit(78, 4, 32);
+        t.fit(78, 4, 32, Grouping::default());
         t
     }
 
@@ -1506,7 +1668,7 @@ mod tests {
         t.motion(Motion::LineEnd, false);
         assert_eq!(t.cursor, 99, "never past the last byte");
         // Its reveal scrolls the last byte's row in, and the end row below it: rows 4..8.
-        t.fit(78, 4, 32);
+        t.fit(78, 4, 32, Grouping::default());
         assert_eq!(t.top_row(), 4);
         t.motion(Motion::PageUp, false);
         assert_eq!((t.cursor, t.top_row()), (99 - 3 * 16, 1));
@@ -1544,24 +1706,24 @@ mod tests {
         t.move_to(200, false);
         t.reveal = false;
         // 32 per row: the top snaps down to 160 (row 5), the cursor's row 6 is shown.
-        t.fit(144, 4, 32);
+        t.fit(144, 4, 32, Grouping::default());
         assert_eq!((t.layout.bytes_per_row(), t.top), (32, 160));
         // 8 per row: row 20 at the top (byte 160); the cursor's byte 200 is row 25, revealed.
-        t.fit(60, 4, 32);
+        t.fit(60, 4, 32, Grouping::default());
         assert_eq!(t.layout.bytes_per_row(), 8);
         assert_eq!(t.top_row(), 22);
         assert!((t.top..t.top + 4 * 8).contains(&200));
         // The wheel doesn't follow the cursor; clamped to the last full page.
         t.scroll_by(1000);
         assert_eq!(t.top_row(), t.rows() - 4);
-        t.fit(60, 4, 32);
+        t.fit(60, 4, 32, Grouping::default());
         assert_eq!(t.top_row(), t.rows() - 4, "no reveal without a move");
     }
 
     #[test]
     fn clicks_map_to_bytes() {
         let mut t = tab(40);
-        t.fit(78, 2, 32);
+        t.fit(78, 2, 32, Grouping::default());
         t.set_top(1);
         let l = t.layout;
         assert_eq!(t.offset_at(0, l.hex_col(3), false), Some((19, Column::Hex)));
@@ -1587,6 +1749,41 @@ mod tests {
             Some((31, Column::Hex)),
             "a drag: the row's end"
         );
+    }
+
+    #[test]
+    fn grouped_clicks_and_drags_map_to_bytes() {
+        for g in [2, 4, 8] {
+            let mut t = tab(40);
+            t.fit(200, 2, 16, Grouping::new(g, ByteOrder::Little));
+            t.set_top(1);
+            let l = t.layout;
+            // Row 1 holds bytes 16..32; the short last row is row 2 (32..40).
+            for (row, count) in [(0usize, 16usize), (1, 8)] {
+                for i in 0..count {
+                    let want = (t.top_row() + row) * 16 + i;
+                    for d in 0..2 {
+                        assert_eq!(
+                            t.offset_at(row, l.hex_col(i) + d, false),
+                            Some((want, Column::Hex)),
+                            "g{g} {i}"
+                        );
+                    }
+                }
+            }
+            let start = l.offset_digits() + 2;
+            // A drag in the gap before the bytes, or inside the first group: the row's start
+            // (a click inside the group is its own byte).
+            assert_eq!(t.offset_at(0, start - 1, true), Some((16, Column::Hex)), "g{g}");
+            assert_eq!(t.offset_at(0, 2, true), Some((16, Column::Hex)), "g{g}");
+            assert_eq!(t.offset_at(0, l.hex_col(0), true), Some((16, Column::Hex)), "g{g}");
+            assert_eq!(
+                t.offset_at(0, l.hex_col(g - 1), true),
+                Some((16 + g - 1, Column::Hex)),
+                "g{g}"
+            );
+            assert_eq!(t.offset_at(0, 300, true), Some((31, Column::Hex)), "g{g}");
+        }
     }
 
     // --- Search, against a naive reference ---
@@ -1804,7 +2001,7 @@ mod tests {
         std::fs::write(&path, &data).unwrap();
         let doc = read(&path).unwrap().unwrap();
         assert!(doc.resident_bytes().is_none());
-        let layout = Layout::fit(row_width(16, 8), 16, doc.len() as u64);
+        let layout = Layout::fit(row_width(16, 8, 1), 16, doc.len() as u64);
         let at = PAGE;
         let pending = row(&doc, &layout, at);
         assert!(
@@ -1900,14 +2097,14 @@ mod tests {
     #[test]
     fn set_doc_clamps_the_cursor_selection_and_top() {
         let mut tab = HexTab::new("a.bin".into(), HexDoc::new(vec![0u8; 1000]));
-        tab.fit(row_width(16, 8), 10, 16);
+        tab.fit(row_width(16, 8, 1), 10, 16, Grouping::default());
         tab.anchor = Some(900);
         tab.move_to(990, true);
-        tab.fit(row_width(16, 8), 10, 16);
+        tab.fit(row_width(16, 8, 1), 10, 16, Grouping::default());
         assert!(tab.top > 0);
         tab.set_doc(HexDoc::new(vec![1u8; 400]));
         assert_eq!((tab.cursor, tab.anchor), (399, Some(399)));
-        tab.fit(row_width(16, 8), 10, 16);
+        tab.fit(row_width(16, 8, 1), 10, 16, Grouping::default());
         assert_eq!(tab.top_row(), tab.rows() - 10, "the last page");
         assert!(tab.top_row() <= tab.layout.row_of(tab.cursor as u64));
         tab.deleted = true;

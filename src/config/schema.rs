@@ -191,6 +191,15 @@ const SETTINGS_KEYS: &[KeySchema] = &[
         "A hex tab's widest row: a power of two from 1 to 64",
     ),
     key(
+        "hex_group_bytes",
+        ValueKind::Int {
+            min: 1,
+            max: 8,
+            pow2: true,
+        },
+        "The hex column's starting byte grouping: 1, 2, 4 or 8",
+    ),
+    key(
         "hex_byte_order",
         ValueKind::Enum(BYTE_ORDERS),
         "The hex data inspector's starting byte order",
@@ -593,7 +602,7 @@ mod tests {
     fn sample(kind: ValueKind) -> String {
         match kind {
             ValueKind::Bool => "true".into(),
-            ValueKind::Int { .. } => "16".into(),
+            ValueKind::Int { max, .. } => max.min(16).to_string(),
             ValueKind::Str => "\"x\"".into(),
             ValueKind::Enum(o) => format!("\"{}\"", o[0]),
             ValueKind::IntList => "[80]".into(),

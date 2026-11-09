@@ -37,6 +37,8 @@ pub struct Overlay<'a> {
     pub find: Option<&'a hex::Query>,
     /// The data inspector, when shown: the byte order it reads in.
     pub inspector: Option<ByteOrder>,
+    /// How the hex column groups its bytes.
+    pub grouping: hex::Grouping,
 }
 
 /// The inspector's width beside the rows (its separator column included).
@@ -56,10 +58,11 @@ enum Placement {
 }
 
 /// Splits `area` into the byte rows' rect and the inspector's.
-fn split(area: Rect, len: usize, max: usize) -> (Rect, Option<(Rect, Placement)>) {
+fn split(area: Rect, len: usize, max: usize, grouping: hex::Grouping) -> (Rect, Option<(Rect, Placement)>) {
     let want = max.clamp(1, 8);
     if area.width > PANEL_WIDTH
-        && hex::Layout::fit((area.width - PANEL_WIDTH) as usize, want, len as u64).bytes_per_row() >= want
+        && hex::Layout::fit_grouped((area.width - PANEL_WIDTH) as usize, want, len as u64, grouping).bytes_per_row()
+            >= want
     {
         let rows = Rect {
             width: area.width - PANEL_WIDTH,
@@ -156,10 +159,10 @@ pub fn render(
 ) -> (Rect, Option<HexHit>) {
     let focused = overlay.focused;
     let (area, panel) = match overlay.inspector {
-        Some(_) => split(full, tab.len(), max),
+        Some(_) => split(full, tab.len(), max, overlay.grouping),
         None => (full, None),
     };
-    tab.fit(area.width as usize, area.height as usize, max);
+    tab.fit(area.width as usize, area.height as usize, max, overlay.grouping);
     let base = theme.get("editor");
     let offset_style = base.patch(theme.get("hexEditor.offset"));
     let border = base.patch(theme.get("hexEditor.border"));
@@ -246,7 +249,8 @@ pub fn render(
             ];
             for (has, style) in layers {
                 if has(at) {
-                    let end = if i + 1 < count && has(at + 1) {
+                    // (A reversed group's cells run right to left: no gap to bridge.)
+                    let end = if i + 1 < count && has(at + 1) && !layout.grouping().reversed() {
                         layout.hex_col(i + 1)
                     } else {
                         hex_cells.end

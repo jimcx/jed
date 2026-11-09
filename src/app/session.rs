@@ -119,6 +119,7 @@ impl App {
         self.environment = environment;
         self.hex_inspector = hex_state.inspector;
         self.hex_byte_order = hex_state.byte_order;
+        self.hex_group = hex_state.group.filter(|n| matches!(n, 1 | 2 | 4 | 8));
         let ids: Vec<_> = groups.iter().map(|g| g.id).collect();
         if let Err(e) = group::check_restore(&tree, &ids, active_group) {
             tracing::warn!("session not restored: {e}");
@@ -480,6 +481,7 @@ impl App {
             hex: crate::session::HexState {
                 inspector: self.hex_inspector,
                 byte_order: self.hex_byte_order,
+                group: self.hex_group,
             },
         }
     }

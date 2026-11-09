@@ -728,3 +728,307 @@ mod inspector {
         }
     }
 }
+
+/// Byte grouping (hex_more-d): "Hex: Cycle Byte Grouping" and the `hex_group_bytes` setting group
+/// the hex column (`xxd -g`), reversed per group in little-endian; rows stay aligned, clicks hit
+/// bytes inside a group, Cmd+C copies the groups as shown, the grouping is kept in the session.
+mod hex_more_d {
+    use super::*;
+    use crate::command::Command;
+    use crate::hex::{ByteOrder, HexDoc};
+    use crate::hex_tests::{bg, byte_bgs, hex_app};
+    use crossterm::event::{MouseButton, MouseEventKind};
+
+    async fn grp_app(len: u8) -> (tempfile::TempDir, App) {
+        let (dir, root, mut app) = hex_app().await;
+        app.open_initial_hex(root.join("x.bin"), HexDoc::new((1..=len).collect::<Vec<_>>()));
+        (dir, app)
+    }
+
+    fn first_row(app: &mut App) -> String {
+        let term = crate::hex_tests::draw(app, 100, 12);
+        rows(app, &term).remove(0)
+    }
+
+    fn click(app: &mut App, x: u16, y: u16) {
+        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_d_cycling_regroups_the_rows_in_both_byte_orders() {
+        let (_d, mut app) = grp_app(20).await;
+        assert!(first_row(&mut app).starts_with("00000000  01 02 03 04 05 06 07 08  09"));
+        app.test_execute(Command::HexCycleGrouping);
+        assert!(first_row(&mut app).starts_with("00000000  0201 0403 0605 0807  0a09"));
+        app.test_execute(Command::HexCycleGrouping);
+        assert!(first_row(&mut app).starts_with("00000000  04030201 08070605  0c0b0a09"));
+        app.test_execute(Command::HexToggleByteOrder);
+        assert_eq!(app.hex_order(), ByteOrder::Big);
+        assert!(first_row(&mut app).starts_with("00000000  01020304 05060708  090a0b0c"));
+        app.test_execute(Command::HexCycleGrouping);
+        assert!(first_row(&mut app).starts_with("00000000  0102030405060708  090a0b0c0d0e0f10"));
+        app.test_execute(Command::HexCycleGrouping);
+        assert!(first_row(&mut app).starts_with("00000000  01 02 03 04"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_d_a_click_on_the_02_digits_puts_the_cursor_on_offset_1() {
+        let (_d, mut app) = grp_app(20).await;
+        app.hex_group = Some(4);
+        let row = first_row(&mut app);
+        assert!(row.contains("04030201"));
+        let rect = rows_rect(&app);
+        // "04030201": the 02 is the third pair.
+        let col = row.find("04030201").unwrap() + 4;
+        for dx in [0, 1] {
+            click(&mut app, rect.x + 11, rect.y + 1);
+            click(&mut app, rect.x + (col + dx) as u16, rect.y);
+            assert_eq!(hex(&app).cursor, 1, "digit {dx}");
+        }
+        app.test_execute(Command::HexToggleByteOrder);
+        let row = first_row(&mut app);
+        let col = row.find("01020304").unwrap() + 4;
+        click(&mut app, rect.x + col as u16, rect.y);
+        assert_eq!(hex(&app).cursor, 2, "big-endian: the third pair is offset 2");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_d_rows_stay_aligned_with_a_short_last_row() {
+        let (_d, mut app) = grp_app(37).await;
+        for g in [2, 4, 8, 1] {
+            app.hex_group = Some(g);
+            for order in [ByteOrder::Little, ByteOrder::Big] {
+                app.hex_byte_order = Some(order);
+                let term = crate::hex_tests::draw(&mut app, 100, 12);
+                let rs = rows(&app, &term);
+                let bars: Vec<_> = rs.iter().filter(|r| r.contains('|')).map(|r| r.find('|')).collect();
+                assert!(bars.len() >= 3, "{rs:?}");
+                assert!(bars.windows(2).all(|w| w[0] == w[1]), "{g} {order:?}: {rs:?}");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_d_a_selection_inside_a_reversed_group_paints_exactly_its_bytes() {
+        let (_d, mut app) = grp_app(20).await;
+        app.hex_group = Some(4);
+        crate::hex_tests::draw(&mut app, 100, 12);
+        {
+            let h = app.group_mut().active_hex_mut().unwrap();
+            h.anchor = Some(1);
+            h.cursor = 2;
+        }
+        let term = crate::hex_tests::draw(&mut app, 100, 12);
+        let sel = bg(&app, "editor.selection");
+        let painted: Vec<_> = (0..5).map(|i| byte_bgs(&app, &term, i).0 == sel).collect();
+        assert_eq!(painted, [false, true, true, false, false]);
+        // Only the two bytes' four digits are lit in the hex part.
+        let rect = rows_rect(&app);
+        let buf = term.backend().buffer();
+        let l = hex(&app).layout;
+        let lit = (0..l.bar_col())
+            .filter(|c| buf[(rect.x + *c as u16, rect.y)].bg == sel)
+            .count();
+        assert_eq!(lit, 4);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_d_narrow_windows_and_inspector_keep_whole_groups() {
+        let (_d, mut app) = grp_app(40).await;
+        app.hex_group = Some(8);
+        // 80 columns: 16 bytes in groups of 8 fit.
+        let term = crate::hex_tests::draw(&mut app, 80, 12);
+        let first = rows(&app, &term)[0].clone();
+        assert!(
+            first.starts_with("00000000  0807060504030201  100f0e0d0c0b0a09"),
+            "{first:?}"
+        );
+        // Too narrow even for one group: the row is cut, nothing panics.
+        for w in [40u16, 30, 20, 12] {
+            let term = crate::hex_tests::draw(&mut app, w, 12);
+            let rect = rows_rect(&app);
+            if rect.x + rect.width <= w {
+                for r in rows(&app, &term) {
+                    assert!(r.chars().count() <= w as usize, "{r:?}");
+                }
+            }
+        }
+        click(&mut app, 3, 1);
+    }
+
+    /// Both digits' backgrounds of byte `at` of the first row, as drawn.
+    fn digit_bgs(app: &App, term: &Terminal<TestBackend>, at: usize) -> [ratatui::style::Color; 2] {
+        let rect = rows_rect(app);
+        let c = hex(app).layout.hex_col(at);
+        let buf = term.backend().buffer();
+        [0, 1].map(|d| buf[(rect.x + (c + d) as u16, rect.y)].bg)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_d_find_matches_paint_inside_reversed_groups_across_a_boundary() {
+        let (_d, root, mut app) = hex_app().await;
+        // Two "cde" matches, each starting two bytes before a group (of 4) boundary.
+        app.open_initial_hex(root.join("x.bin"), HexDoc::new(b"xxcdexxxxxcdexxxxxxx".to_vec()));
+        app.hex_group = Some(4);
+        crate::hex_tests::draw(&mut app, 100, 12);
+        crate::hex_tests::find(&mut app, "cde");
+        assert_eq!(hex(&app).selection(), Some(2..5));
+        let term = crate::hex_tests::draw(&mut app, 100, 12);
+        assert_eq!(hex(&app).layout.bytes_per_row(), 16);
+        let current = bg(&app, "editor.findMatch");
+        let other = bg(&app, "editor.findMatchHighlight");
+        // The selected match: bytes 2, 3 (4 has the cursor), digits and ASCII.
+        for at in [2, 3] {
+            assert_eq!(digit_bgs(&app, &term, at), [current; 2], "byte {at}");
+            assert_eq!(byte_bgs(&app, &term, at).1, current, "byte {at}");
+        }
+        // The other match, 10..13: the end of one group and the start of the next.
+        for at in [10, 11, 12] {
+            assert_eq!(digit_bgs(&app, &term, at), [other; 2], "byte {at}");
+            assert_eq!(byte_bgs(&app, &term, at).1, other, "byte {at}");
+        }
+        for at in [0, 1, 5, 6, 8, 9, 13, 14] {
+            let [a, b] = digit_bgs(&app, &term, at);
+            let asc = byte_bgs(&app, &term, at).1;
+            assert!(![a, b, asc].iter().any(|c| *c == current || *c == other), "byte {at}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_d_selection_across_a_group_boundary_paints_its_digits_and_the_gap_between() {
+        let (_d, mut app) = grp_app(20).await;
+        app.hex_group = Some(4);
+        crate::hex_tests::draw(&mut app, 100, 12);
+        let sel = bg(&app, "editor.selection");
+        // The space after group 0 (its 8 digits start at `offset_digits + 2`).
+        let gap_painted = |app: &App, term: &Terminal<TestBackend>| {
+            let rect = rows_rect(app);
+            let col = hex(app).layout.offset_digits() + 2 + 8;
+            term.backend().buffer()[(rect.x + col as u16, rect.y)].bg == sel
+        };
+        // Little-endian groups run right to left: no gap is bridged. Big-endian: only a gap with
+        // both neighbours (bytes 3 and 4) selected.
+        for (order, anchor, cursor, gap) in [
+            (ByteOrder::Little, 2, 5, false),
+            (ByteOrder::Little, 0, 8, false),
+            (ByteOrder::Little, 0, 3, false),
+            (ByteOrder::Big, 2, 5, true),
+            (ByteOrder::Big, 0, 8, true),
+            (ByteOrder::Big, 0, 3, false),
+            (ByteOrder::Big, 4, 8, false),
+        ] {
+            app.hex_byte_order = Some(order);
+            {
+                let h = app.group_mut().active_hex_mut().unwrap();
+                h.anchor = Some(anchor);
+                h.cursor = cursor;
+            }
+            let term = crate::hex_tests::draw(&mut app, 100, 12);
+            let want = hex(&app).selection().unwrap();
+            for at in 0..12 {
+                let d = digit_bgs(&app, &term, at);
+                assert_eq!(
+                    d == [sel; 2],
+                    want.contains(&at),
+                    "{order:?} {anchor}..{cursor} byte {at}"
+                );
+                assert!(
+                    d == [sel; 2] || d.iter().all(|c| *c != sel),
+                    "{order:?} {anchor}..{cursor} byte {at}"
+                );
+            }
+            assert_eq!(
+                gap_painted(&app, &term),
+                gap,
+                "{order:?} {anchor}..{cursor}: gap after group 0"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_d_a_paged_doc_copies_grouped_hex_and_unchanged_ascii() {
+        let (_d, _root, mut app) = big_app(20 << 20, &[(1, b"COPYME!")], false).await;
+        app.hex_group = Some(4);
+        quick_open(&mut app, "big.bin").await;
+        assert!(hex(&app).doc.resident_bytes().is_none(), "paged");
+        draw(&mut app);
+        // Bytes 1..=6 ("COPYME"): file-aligned groups of 4, the partial ones as selected.
+        app.press(KeyCode::Right, M::NONE);
+        for _ in 0..5 {
+            app.press(KeyCode::Right, M::SHIFT);
+        }
+        app.press(KeyCode::Char('c'), cmd());
+        let le = wait_copied(&mut app, "").await;
+        assert_eq!(le, "504f43 454d59", "little-endian: each group reversed");
+        app.test_execute(Command::HexToggleByteOrder);
+        draw(&mut app);
+        app.press(KeyCode::Char('c'), cmd());
+        let be = wait_copied(&mut app, &le).await;
+        assert_eq!(be, "434f50 594d45");
+        // The ASCII column's copy is the text, whatever the grouping.
+        app.press(KeyCode::Tab, M::NONE);
+        draw(&mut app);
+        app.press(KeyCode::Char('c'), cmd());
+        assert_eq!(wait_copied(&mut app, &be).await, "COPYME");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_d_copy_follows_the_grouping_as_shown() {
+        let (_d, mut app) = grp_app(20).await;
+        app.hex_group = Some(4);
+        crate::hex_tests::draw(&mut app, 100, 12);
+        {
+            let h = app.group_mut().active_hex_mut().unwrap();
+            h.anchor = Some(1);
+            h.cursor = 6;
+        }
+        app.press(KeyCode::Char('c'), cmd());
+        assert_eq!(app.clipboard.read().unwrap(), "040302 070605");
+        app.test_execute(Command::HexToggleByteOrder);
+        crate::hex_tests::draw(&mut app, 100, 12);
+        app.press(KeyCode::Char('c'), cmd());
+        assert_eq!(app.clipboard.read().unwrap(), "020304 050607");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_d_the_setting_starts_the_grouping_and_a_chosen_one_wins() {
+        let (_d, mut app) = grp_app(20).await;
+        app.settings.hex_group_bytes = 2;
+        assert!(first_row(&mut app).starts_with("00000000  0201 0403"));
+        app.test_execute(Command::HexCycleGrouping);
+        assert!(
+            first_row(&mut app).starts_with("00000000  04030201"),
+            "cycles from the setting's"
+        );
+        assert_eq!(
+            crate::config::settings::parse("[settings]\nhex_group_bytes = 3\n")
+                .errors
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_d_the_grouping_survives_quit_and_reopen() {
+        let (_d, root, state) = dirs();
+        fs::write(root.join("a.bin"), [0u8, 1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        let mut app = state_app(&root, &state).await;
+        quick_open(&mut app, "a.bin").await;
+        app.test_execute(Command::HexCycleGrouping);
+        app.test_execute(Command::HexCycleGrouping);
+        quit(app).await;
+        let mut app = state_app(&root, &state).await;
+        assert!(app.settle(|a| a.active_hex().is_some()).await, "restored");
+        assert_eq!(app.hex_group, Some(4));
+        let none: crate::session::HexState = serde_json::from_str(r#"{"inspector":false}"#).unwrap();
+        assert_eq!(none.group, None);
+    }
+
+    #[test]
+    fn hex_more_d_the_command_is_named() {
+        assert_eq!(Command::HexCycleGrouping.name(), "hex.cycleGrouping");
+        assert_eq!(Command::from_name("hex.cycleGrouping"), Some(Command::HexCycleGrouping));
+        assert_eq!(Command::HexCycleGrouping.title(), "Hex: Cycle Byte Grouping");
+    }
+}
