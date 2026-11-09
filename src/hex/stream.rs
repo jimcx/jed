@@ -8,9 +8,6 @@
 //! a newer query or keystroke bumps the shared generation and the old job ends with
 //! `StreamError::Cancelled` instead of a wrong answer. A failed read is `StreamError::Io`.
 
-// Unused until the hex tab streams its finds (hex_more-b).
-#![allow(dead_code)]
-
 use std::io;
 use std::ops::Range;
 use std::sync::Arc;
@@ -30,6 +27,7 @@ pub struct Cancel {
 
 impl Cancel {
     /// Never cancelled.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn never() -> Self {
         Self { current: None }
     }

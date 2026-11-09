@@ -4,8 +4,10 @@
 //! ASCII (its hex digits and its `.`) in `hexEditor.nonPrintable`; the selection as
 //! `editor.selection` in both columns (the gap between two selected bytes' hex too); the cursor's
 //! byte as the terminal cursor in its column (in the focused group) and `editor.cursor.secondary`
-//! in the other (in both when unfocused). Rows wider than the area are cut. Find's matches (the
-//! widget's query, `hex::find_in` over the visible bytes only) in both columns, under the
+//! in the other (in both when unfocused). Rows wider than the area are cut. A byte whose page
+//! isn't loaded yet (a paged file: `HexDoc::window` queues the read) is `··` / `·` in
+//! `hexEditor.pending`, one that can't be read `??` / `?`. Find's matches (the
+//! widget's query, `hex::find_in` over the visible bytes that are loaded) in both columns, under the
 //! selection as `editor.findMatchHighlight`, the selected one over it as `editor.findMatch`, as
 //! the editor layers them; a match over a row break shows on both rows.
 
@@ -40,20 +42,21 @@ pub fn render(f: &mut Frame, area: Rect, tab: &mut HexTab, theme: &Theme, max: u
     let other = theme.get("editor.cursor.secondary");
     let find_highlight = theme.get("editor.findMatchHighlight");
     let find_match = theme.get("editor.findMatch");
+    let pending = theme.get("hexEditor.pending");
     let out = f.buffer_mut();
     out.set_style(area, base);
 
     let layout = tab.layout;
     let n = layout.bytes_per_row();
     let len = tab.len();
-    let bytes = tab.doc.bytes();
     let selected = tab.selection().unwrap_or(0..0);
-    let found = Found::new(
-        bytes,
-        overlay.find,
-        tab.top..(tab.top + area.height as usize * n).min(len),
-        &selected,
-    );
+    let visible = tab.top..(tab.top + area.height as usize * n).min(len);
+    // A match may start up to its length - 1 bytes above the rows and end as far below.
+    let reach = overlay.find.map_or(0, |q| q.len().saturating_sub(1));
+    let window = tab
+        .doc
+        .window(visible.start.saturating_sub(reach) as u64..(visible.end + reach) as u64);
+    let found = Found::new(&window, overlay.find, visible, &selected);
     let mut cursor_cell = None;
     let paint = |out: &mut Cells, y: u16, cols: Range<usize>, style: Style| {
         let end = cols.end.min(area.width as usize);
@@ -73,7 +76,7 @@ pub fn render(f: &mut Frame, area: Rect, tab: &mut HexTab, theme: &Theme, max: u
         out.set_stringn(
             area.x,
             y,
-            hex::row(&tab.doc, &layout, start as u64),
+            hex::row_in(&window, &layout, start as u64, len as u64),
             area.width as usize,
             base,
         );
@@ -90,9 +93,16 @@ pub fn render(f: &mut Frame, area: Rect, tab: &mut HexTab, theme: &Theme, max: u
             let at = start + i;
             let hex_cells = layout.hex_col(i)..layout.hex_col(i) + 2;
             let ascii_cell = layout.ascii_col(i)..layout.ascii_col(i) + 1;
-            if !hex::is_printable(bytes[at]) {
-                paint(out, y, hex_cells.clone(), dim);
-                paint(out, y, ascii_cell.clone(), dim);
+            match window.get(at as u64) {
+                Some(hex::Cell::Byte(b)) if hex::is_printable(b) => {}
+                Some(hex::Cell::Byte(_)) => {
+                    paint(out, y, hex_cells.clone(), dim);
+                    paint(out, y, ascii_cell.clone(), dim);
+                }
+                _ => {
+                    paint(out, y, hex_cells.clone(), pending);
+                    paint(out, y, ascii_cell.clone(), pending);
+                }
             }
             // Find matches, the selection, the selected match: each run of bytes painted through
             // the gaps between their hex cells, so a run is one block.
@@ -142,16 +152,37 @@ struct Found {
 }
 
 impl Found {
-    /// Searches only `visible` (± the query's length − 1, `hex::find_in`); matches have one
+    /// Searches only `visible` (± the query's length − 1, `hex::find_in`, in each run of loaded
+    /// bytes of `window`: a match touching a page that isn't loaded yet isn't one); matches have one
     /// length, so the cover counts come from a difference array in O(bytes + matches).
-    fn new(bytes: &[u8], query: Option<&hex::Query>, visible: Range<usize>, selected: &Range<usize>) -> Self {
+    fn new(window: &hex::Window, query: Option<&hex::Query>, visible: Range<usize>, selected: &Range<usize>) -> Self {
         let mut found = Found {
             cover: Vec::new(),
             current: 0..0,
             visible: visible.clone(),
         };
         let Some(q) = query else { return found };
-        let matches = hex::find_in(bytes, q, visible.clone());
+        let mut matches = Vec::new();
+        let mut cells = window.cells.iter().enumerate().peekable();
+        while let Some((i, c)) = cells.next() {
+            if !matches!(c, hex::Cell::Byte(_)) {
+                continue;
+            }
+            let mut run: Vec<u8> = vec![];
+            let base = window.start as usize + i;
+            let mut next = Some((i, c));
+            while let Some((_, hex::Cell::Byte(b))) = next {
+                run.push(*b);
+                next = cells.next_if(|(_, c)| matches!(c, hex::Cell::Byte(_)));
+            }
+            let lo = visible.start.saturating_sub(base).min(run.len());
+            let hi = visible.end.saturating_sub(base).min(run.len());
+            matches.extend(
+                hex::find_in(&run, q, lo..hi)
+                    .into_iter()
+                    .map(|m| m.start + base..m.end + base),
+            );
+        }
         if matches.is_empty() {
             return found;
         }
@@ -178,5 +209,38 @@ impl Found {
 
     fn covers(&self, at: usize) -> bool {
         at >= self.visible.start && self.cover.get(at - self.visible.start).is_some_and(|&c| c > 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hex::{Mode, PAGE, Query, RESIDENT_MAX, read_pages};
+
+    #[test]
+    fn a_match_over_a_loaded_and_a_pending_page_is_highlighted_once_both_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.bin");
+        let mut data = vec![0u8; RESIDENT_MAX as usize + 1000];
+        let at = PAGE as usize - 3;
+        data[at..at + 6].copy_from_slice(b"NEEDLE");
+        std::fs::write(&path, &data).unwrap();
+        let doc = hex::read(&path).unwrap().unwrap();
+        assert!(doc.resident_bytes().is_none());
+        let q = Query::parse("NEEDLE", Mode::Ascii, true).unwrap();
+        let range = PAGE as usize - 16..PAGE as usize + 16;
+        let found = |doc: &hex::HexDoc| {
+            let w = doc.window(range.start as u64..range.end as u64);
+            Found::new(&w, Some(&q), range.clone(), &(0..0))
+        };
+        let covered = |f: &Found| range.clone().filter(|&i| f.covers(i)).count();
+        assert_eq!(covered(&found(&doc)), 0, "both pending");
+        // Only the page before the boundary: the match touches a pending page, so it isn't drawn.
+        assert!(doc.finish_reads(doc.version(), read_pages(doc.source(), [0])));
+        assert_eq!(covered(&found(&doc)), 0, "one of two pages");
+        assert!(doc.finish_reads(doc.version(), read_pages(doc.source(), [1])));
+        let f = found(&doc);
+        assert_eq!(covered(&f), 6);
+        assert!(f.covers(at) && f.covers(at + 5) && !f.covers(at + 6));
     }
 }

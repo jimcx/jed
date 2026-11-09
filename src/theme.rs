@@ -242,6 +242,7 @@ impl Theme {
             ("hexEditor.offset", Style::new().fg(c(0x858585))),
             ("hexEditor.nonPrintable", Style::new().fg(c(0x8C8C8C))),
             ("hexEditor.border", Style::new().fg(c(0x5A5A5A))),
+            ("hexEditor.pending", Style::new().fg(c(0x6A6A6A))),
             ("editorRuler.foreground", Style::new().fg(c(0x5A5A5A))),
             ("gutter.active", Style::new().fg(c(0xC6C6C6))),
             // Quick diff's gutter markers (Dark+'s `editorGutter.*Background`; a bar or a line in

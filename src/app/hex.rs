@@ -25,44 +25,29 @@ use crate::view::View;
 const WHEEL_ROWS: isize = 3;
 
 /// Reads `path` for a tab: a text file as a buffer, a binary one (or any file, `raw`: Reopen as
-/// Hex) as its bytes for a hex tab; one over `HEX_MAX_BYTES` is an error.
+/// Hex) as its bytes for a hex tab (a big one is opened, not read: its pages load as they are
+/// drawn).
 /// Blocking: call from spawn_blocking.
 pub(super) fn load(path: &Path, raw: bool, indentation: Indentation) -> Result<Loaded, LoadError> {
-    let too_big = |e: String| LoadError::Io(std::io::Error::other(e));
     if !raw {
-        // A binary file too big for a hex tab is refused before it's read whole.
-        if let Ok(meta) = std::fs::metadata(path)
-            && let Err(e) = hex::check_size(meta.len())
-            && sniff_binary(path).map_err(LoadError::Io)?
-        {
-            return Err(too_big(e));
+        // A big binary file is sniffed first, so it is never read whole.
+        if hex::is_big_binary(path).map_err(LoadError::Io)? {
+            return open_hex(path);
         }
         return match Buffer::open_with(path, indentation) {
             Ok(buffer) => Ok(Loaded::Text(Box::new(buffer))),
-            Err(LoadError::Binary(bytes)) => binary(bytes),
+            Err(LoadError::Binary(bytes)) => Ok(Loaded::Binary(HexDoc::new(bytes))),
             Err(e) => Err(e),
         };
     }
+    open_hex(path)
+}
+
+fn open_hex(path: &Path) -> Result<Loaded, LoadError> {
     match hex::read(path).map_err(LoadError::Io)? {
         Some(doc) => Ok(Loaded::Binary(doc)),
         None => Err(LoadError::Io(std::io::ErrorKind::NotFound.into())),
     }
-}
-
-/// Whether the file's start looks binary (`file::looks_binary`), reading only that much.
-fn sniff_binary(path: &Path) -> std::io::Result<bool> {
-    use std::io::Read;
-    let mut start = Vec::new();
-    std::fs::File::open(path)?
-        .take(file::BINARY_SNIFF_LEN as u64)
-        .read_to_end(&mut start)?;
-    Ok(file::looks_binary(&start))
-}
-
-/// A binary file's bytes as a hex tab's doc (the stamp hashed here, off the UI thread).
-fn binary(bytes: Vec<u8>) -> Result<Loaded, LoadError> {
-    hex::check_size(bytes.len() as u64).map_err(|e| LoadError::Io(std::io::Error::other(e)))?;
-    Ok(Loaded::Binary(HexDoc::new(bytes)))
 }
 
 /// Results of hex and Markdown tab background work (`AppEvent::View`).
@@ -74,6 +59,24 @@ pub(super) enum ViewEvent {
         generation: u64,
         count: hex::Count,
     },
+    /// Pages of a paged hex doc read off the UI thread (`App::sync_hex_pages`), for the doc's
+    /// `version` (`HexTab::id` finds the doc); ones for another version, or a tab that is gone,
+    /// are dropped.
+    HexPages {
+        id: u64,
+        version: hex::Version,
+        pages: Vec<(u64, std::io::Result<std::sync::Arc<[u8]>>)>,
+    },
+    /// Find's next / previous match on a paged hex doc, for one search generation
+    /// (`find::HexFind::begin_step`); `None`: no match (or the read failed). An older
+    /// generation's is dropped.
+    HexFound {
+        tab: u64,
+        generation: u64,
+        range: Option<std::ops::Range<u64>>,
+    },
+    /// A paged hex selection read for Cmd+C: its text, or why it couldn't be read.
+    HexCopied { text: std::io::Result<String> },
     /// A big document's Markdown render (`MarkdownTab::id`, the generation asked for, the width
     /// and source revision it is for); an older generation's is dropped.
     MarkdownRendered {
@@ -90,6 +93,19 @@ impl App {
     pub(super) fn handle_view_event(&mut self, ev: ViewEvent) {
         match ev {
             ViewEvent::HexCount { tab, generation, count } => self.hex_counted(tab, generation, count),
+            ViewEvent::HexPages { id, version, pages } => self.hex_pages_read(id, version, pages),
+            ViewEvent::HexFound { tab, generation, range } => self.hex_found(tab, generation, range),
+            ViewEvent::HexCopied { text } => {
+                match text {
+                    Ok(text) => self.clipboard.write(Copied {
+                        text,
+                        whole_line: false,
+                        pieces: Vec::new(),
+                    }),
+                    Err(e) => self.notify(Level::Warning, format!("Can't copy the selection: {e}")),
+                }
+                self.needs_redraw = true;
+            }
             ViewEvent::MarkdownRendered {
                 tab,
                 generation,
@@ -260,7 +276,9 @@ impl App {
     pub(super) fn reopen_as_text(&mut self) {
         let Some(h) = self.active_hex() else { return };
         let path = h.path.clone();
-        if file::looks_binary(h.doc.bytes()) {
+        // A paged doc is judged by its first page when that is loaded; else the open below sniffs it.
+        let start = h.doc.loaded_bytes(0..(h.len().min(file::BINARY_SNIFF_LEN) as u64));
+        if start.is_some_and(|b| file::looks_binary(&b)) {
             let text = format!("{} is a binary file: it opens as hex only", h.name());
             return self.notify(Level::Info, text);
         }
@@ -316,8 +334,9 @@ impl App {
         true
     }
 
-    /// Cmd+C on a hex tab: the selection (else the cursor's byte) as its column shows it. False
-    /// when the active tab isn't a hex view.
+    /// Cmd+C on a hex tab: the selection (else the cursor's byte) as its column shows it. A
+    /// paged doc's bytes are read off the UI thread (`ViewEvent::HexCopied`), up to
+    /// `HEX_COPY_MAX`; a bigger selection is a message. False when the active tab isn't a hex view.
     pub(super) fn hex_copy(&mut self) -> bool {
         let Some(h) = self.active_hex() else { return false };
         if let Some(text) = h.copy_text() {
@@ -326,8 +345,81 @@ impl App {
                 whole_line: false,
                 pieces: Vec::new(),
             });
+            return true;
         }
+        let Some(range) = h.copy_range() else { return true };
+        let size = range.len() as u64;
+        if size > hex::HEX_COPY_MAX {
+            let text = format!(
+                "Selection too big to copy ({} MB, at most {} MB)",
+                size >> 20,
+                hex::HEX_COPY_MAX >> 20
+            );
+            self.notify(Level::Warning, text);
+            return true;
+        }
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return true;
+        };
+        let (source, column) = (h.doc.source().clone(), h.column);
+        let tx = self.tx.clone();
+        rt.spawn_blocking(move || {
+            let mut bytes = vec![0u8; size as usize];
+            let text = source
+                .read_exact_at(range.start as u64, &mut bytes)
+                .map(|()| hex::format_bytes(column, &bytes));
+            let _ = tx.send(AppEvent::View(ViewEvent::HexCopied { text }));
+        });
         true
+    }
+
+    /// Starts the reads the last frames asked for (`HexDoc::window`): each paged doc's missing
+    /// pages in jobs of a few, the visible ones first (`spawn_blocking`) →
+    /// `ViewEvent::HexPages` → `hex_pages_read`. Called after every frame.
+    pub(super) fn sync_hex_pages(&mut self) {
+        let mut jobs = Vec::new();
+        for h in self.groups.hex_tabs() {
+            if h.doc.resident_bytes().is_some() {
+                continue;
+            }
+            for pages in h.doc.plan_reads() {
+                jobs.push((h.id, h.doc.clone(), pages));
+            }
+        }
+        if jobs.is_empty() {
+            return;
+        }
+        // Outside a runtime (unit tests that don't settle) the pages stay placeholders.
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        for (id, doc, pages) in jobs {
+            let tx = self.tx.clone();
+            rt.spawn_blocking(move || {
+                let version = doc.version();
+                let pages = hex::read_pages(doc.source(), pages);
+                let _ = tx.send(AppEvent::View(ViewEvent::HexPages { id, version, pages }));
+            });
+        }
+    }
+
+    /// Pages arrived: cached when the tab's doc is still the version they were read for, else
+    /// dropped.
+    fn hex_pages_read(
+        &mut self,
+        id: u64,
+        version: hex::Version,
+        pages: Vec<(u64, std::io::Result<std::sync::Arc<[u8]>>)>,
+    ) {
+        let Some(doc) = self.groups.hex_tabs().find(|h| h.id == id).map(|h| h.doc.clone()) else {
+            tracing::debug!(id, "pages for a closed hex tab dropped");
+            return;
+        };
+        if doc.finish_reads(version, pages) {
+            self.needs_redraw = true;
+        } else {
+            tracing::debug!(id, "pages of an older version dropped");
+        }
     }
 
     /// Go to Offset (Ctrl+G's input on a hex tab): hex (`0x1f0`, `1f0h`) or decimal, past the

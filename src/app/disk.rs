@@ -4,9 +4,10 @@
 //! change at once as an undoable edit (cursors and scroll kept); a dirty one gets the banner
 //! (reload / keep mine); a missing file marks the buffer deleted. One check per buffer at a
 //! time, none while it's being saved: a request then waits for the running one or the save.
-//! Hex tabs are checked by path the same way (`hex::check` against their bytes' stamp): changed
-//! bytes go to every hex tab of the file at once (`HexTab::set_doc`), a missing file marks them
-//! deleted, a file grown past `HEX_MAX_BYTES` keeps the old bytes with a message.
+//! Hex tabs are checked by path the same way (`hex::check` against their doc's `Version`: a paged
+//! file's metadata, nothing read): a changed file is opened again (a new doc, so a new page
+//! cache) for every hex tab of it at once (`HexTab::set_doc`), a missing file marks them deleted,
+//! an unchanged one lets the pages that failed to read be tried again.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -104,17 +105,18 @@ impl App {
     /// Reads a hex tab's file off the UI thread (`hex::check`, against the tabs' bytes) →
     /// `AppEvent::Disk(DiskEvent::Hex)` → `hex_checked`. Waits for a check of it already running.
     pub(super) fn check_hex(&mut self, path: PathBuf) {
-        let mut stamps = self.groups.hex_tabs().filter(|h| h.path == path).map(|h| h.doc.stamp());
-        let Some(first) = stamps.next() else { return };
+        let mut docs = self.groups.hex_tabs().filter(|h| h.path == path).map(|h| &h.doc);
+        let Some(first) = docs.next() else { return };
+        let probe = first.source().clone();
         // Tabs read at different times: any bytes are news to one of them.
-        let known = stamps.all(|s| s == first).then_some(first);
+        let known = docs.all(|d| d.version() == probe.version()).then(|| probe.version());
         if !self.disk.hex_running.insert(path.clone()) {
             self.disk.hex_again.insert(path);
             return;
         }
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
-            let result = hex::check(&path, known);
+            let result = hex::check(&path, &probe, known);
             let _ = tx.send(AppEvent::Disk(DiskEvent::Hex { path, result }));
         });
     }
@@ -123,7 +125,6 @@ impl App {
         self.disk.hex_running.remove(&path);
         self.disk.checked += 1;
         let gone = self.groups.hex_tabs().any(|h| h.path == path && !h.deleted);
-        let mut message = None;
         {
             let tabs = self.groups.hex_tabs_mut().filter(|h| h.path == path);
             match result {
@@ -134,11 +135,17 @@ impl App {
                     }
                     tabs.for_each(|h| h.deleted = true);
                 }
-                Ok(hex::OnDisk::Unchanged) => tabs.for_each(|h| h.deleted = false),
+                Ok(hex::OnDisk::Unchanged) => {
+                    // Pages that failed to read are tried again.
+                    for h in tabs {
+                        h.deleted = false;
+                        h.doc.retry_failed();
+                    }
+                }
                 Ok(hex::OnDisk::Changed(doc)) => {
                     tracing::info!(path = %path.display(), len = doc.len(), "reloaded from disk (hex)");
                     for h in tabs {
-                        if h.doc.stamp() == doc.stamp() {
+                        if h.doc.version() == doc.version() {
                             h.deleted = false;
                         } else {
                             h.set_doc(doc.clone());
@@ -146,16 +153,7 @@ impl App {
                     }
                     self.disk.reloads += 1;
                 }
-                Ok(hex::OnDisk::TooBig(why)) => {
-                    for h in tabs {
-                        h.deleted = false;
-                        message = Some(format!("{} changed on disk and is {why}: not reloaded", h.name()));
-                    }
-                }
             }
-        }
-        if let Some(text) = message {
-            self.notify(Level::Warning, text);
         }
         self.needs_redraw = true;
         if self.disk.hex_again.remove(&path) {

@@ -15,9 +15,6 @@
 //! missed same-length same-mtime rewrite is a stale page until the file is next touched. A page
 //! read for one version is never shown for another: `PageCache::set_version` drops them all.
 
-// Unused until the hex tab pages its file (hex_more-b).
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
@@ -258,6 +255,7 @@ impl PageCache {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn version(&self) -> Version {
         self.version
     }
@@ -267,20 +265,24 @@ impl PageCache {
         self.bytes
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn len(&self) -> usize {
         self.pages.len()
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.pages.is_empty()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn clear(&mut self) {
         self.pages.clear();
         self.bytes = 0;
     }
 
     /// Switches to `version`, dropping every page when it differs.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn set_version(&mut self, version: Version) {
         if version != self.version {
             self.clear();

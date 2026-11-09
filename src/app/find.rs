@@ -69,6 +69,7 @@ impl App {
 
     pub(super) fn close_find(&mut self) {
         self.find.visible = false;
+        self.find.hex.cancel();
         if self.ui.focus == Focus::Find {
             self.ui.focus = Focus::Editor;
         }
@@ -158,6 +159,10 @@ impl App {
     /// Keeps the widget's matches current for the active tab (one `find_all` per change of
     /// buffer, text, query or options). Runs after every event; closes the widget without a tab.
     pub(super) fn refresh_find(&mut self) {
+        // A hex search runs only while the widget is shown over a hex tab.
+        if !self.find.visible || self.active_hex().is_none() {
+            self.find.hex.cancel();
+        }
         if !self.find.visible {
             return;
         }
@@ -390,7 +395,8 @@ impl App {
     }
 }
 
-/// Most bytes a selection seeds the hex find query with (a bigger one leaves the query as is).
+/// Most bytes a selection seeds the hex find query with (a bigger one leaves the query as is; so
+/// does one whose bytes aren't loaded).
 const HEX_SEED_MAX: usize = 256;
 
 impl App {
@@ -401,10 +407,10 @@ impl App {
         let mode = mode(self.find_options.hex);
         let seed = self.active_hex().and_then(|h| {
             let range = h.selection().filter(|r| r.len() <= HEX_SEED_MAX)?;
-            let bytes = &h.doc.bytes()[range];
+            let bytes = h.doc.loaded_bytes(range.start as u64..range.end as u64)?;
             match mode {
-                Mode::Hex => Some(hex::hex_pairs(bytes)),
-                Mode::Ascii => hex::printable_text(bytes),
+                Mode::Hex => Some(hex::hex_pairs(&bytes)),
+                Mode::Ascii => hex::printable_text(&bytes),
             }
         });
         let f = &mut self.find;
@@ -420,7 +426,8 @@ impl App {
 
     /// Keeps the hex search current for the active hex tab: the query read again when it, the
     /// options or the tab changed, and then its count started off the UI thread (a whole-file
-    /// scan, `hex::count` up to `HEX_MAX_COUNT`) → `AppEvent::View(ViewEvent::HexCount)` → `hex_counted`.
+    /// scan: `hex::count` up to `HEX_MAX_COUNT` over a resident doc, `stream_count` over a paged
+    /// one, which a newer query cancels) → `AppEvent::View(ViewEvent::HexCount)` → `hex_counted`.
     fn refresh_hex_find(&mut self) {
         // No replace input on a hex tab.
         self.find.field = Field::Find;
@@ -431,7 +438,7 @@ impl App {
         let Some(job) = self
             .find
             .hex
-            .refresh(tab, doc.bytes(), &self.find.query.text, self.find_options)
+            .refresh(tab, doc.version(), &self.find.query.text, self.find_options)
         else {
             return;
         };
@@ -442,7 +449,26 @@ impl App {
         let tx = self.tx.clone();
         rt.spawn_blocking(move || {
             let t = std::time::Instant::now();
-            let count = hex::count(doc.bytes(), &job.query, hex::HEX_MAX_COUNT);
+            let count = match doc.resident_bytes() {
+                Some(bytes) => hex::count(bytes, &job.query, hex::HEX_MAX_COUNT),
+                None => match hex::stream_count(
+                    doc.source(),
+                    &job.query,
+                    hex::HEX_MAX_COUNT,
+                    hex::STREAM_CHUNK,
+                    &job.cancel,
+                ) {
+                    Ok(count) => count,
+                    Err(hex::StreamError::Cancelled) => {
+                        tracing::debug!(generation = job.generation, "hex count cancelled");
+                        return;
+                    }
+                    Err(hex::StreamError::Io(e)) => {
+                        tracing::warn!("hex count failed: {e}");
+                        return;
+                    }
+                },
+            };
             tracing::debug!(
                 found = count.found(),
                 capped = count.capped,
@@ -465,22 +491,75 @@ impl App {
     }
 
     /// Selects the hex query's next match starting at or after `from` (`forward`), else the
-    /// previous one starting before it; both wrap. Searches straight from there (memmem: it
-    /// stops at the first match).
+    /// previous one starting before it; both wrap. A resident doc is searched here (memmem: it
+    /// stops at the first match); a paged one off the UI thread (`stream_next` / `stream_prev`,
+    /// one search at a time) → `ViewEvent::HexFound` → `hex_found`, which moves the cursor.
     fn hex_find_from(&mut self, from: usize, forward: bool) {
-        let Some(q) = self.find.hex.query() else { return };
+        let Some(q) = self.find.hex.query().cloned() else {
+            return;
+        };
         let Some(h) = self.groups.active_group_mut().active_hex_mut() else {
             return;
         };
-        let bytes = h.doc.bytes();
-        let found = if forward {
-            hex::find_next(bytes, q, from)
-        } else {
-            hex::find_prev(bytes, q, from)
-        };
-        if let Some(m) = found {
-            h.select(m);
+        if let Some(bytes) = h.doc.resident_bytes() {
+            let found = if forward {
+                hex::find_next(bytes, &q, from)
+            } else {
+                hex::find_prev(bytes, &q, from)
+            };
+            if let Some(m) = found {
+                h.select(m);
+            }
+            return;
         }
+        let (tab, source) = (h.id, h.doc.source().clone());
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let (cancel, generation) = self.find.hex.begin_step();
+        let tx = self.tx.clone();
+        rt.spawn_blocking(move || {
+            let t = std::time::Instant::now();
+            let from = from as u64;
+            let found = if forward {
+                hex::stream_next(&source, &q, from, hex::STREAM_CHUNK, &cancel)
+            } else {
+                hex::stream_prev(&source, &q, from, hex::STREAM_CHUNK, &cancel)
+            };
+            let range = match found {
+                Ok(range) => range,
+                Err(hex::StreamError::Cancelled) => return,
+                Err(hex::StreamError::Io(e)) => {
+                    tracing::warn!("hex search failed: {e}");
+                    None
+                }
+            };
+            tracing::debug!(
+                elapsed_us = t.elapsed().as_micros() as u64,
+                found = range.is_some(),
+                "hex step"
+            );
+            let _ = tx.send(AppEvent::View(super::hex::ViewEvent::HexFound {
+                tab,
+                generation,
+                range,
+            }));
+        });
+    }
+
+    /// A paged search's result arrived: the match selected when it is the current search's and
+    /// its tab is still the active one, else dropped.
+    pub(super) fn hex_found(&mut self, tab: u64, generation: u64, range: Option<std::ops::Range<u64>>) {
+        if !self.find.hex.step_done(generation) {
+            tracing::debug!(tab, generation, "stale hex search dropped");
+            return;
+        }
+        if let Some(r) = range
+            && let Some(h) = self.groups.active_group_mut().active_hex_mut().filter(|h| h.id == tab)
+        {
+            h.select(r.start as usize..r.end as usize);
+        }
+        self.needs_redraw = true;
     }
 
     /// "Find: Toggle Hex" (Cmd+Alt+X / Alt+X, or a click on `0x`): on a hex tab, the byte search

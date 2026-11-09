@@ -62,6 +62,8 @@ mod group;
 mod grouped;
 mod hex;
 #[cfg(test)]
+mod hex_more_tests;
+#[cfg(test)]
 mod hex_tests;
 mod history;
 #[cfg(test)]
@@ -508,6 +510,17 @@ fn main() -> ExitCode {
     let identity = terminal::Identity::new(&workspace.root, single_file, &paths::home())
         .with_title(workspace.window_title().as_deref());
     let initial = match file {
+        // A big binary file opens as a paged hex tab: it is never read whole into a buffer.
+        Some((path, _)) if hex::is_big_binary(&path).unwrap_or(false) => match hex::read(&path) {
+            Ok(Some(doc)) => {
+                initial_hex = Some((path, doc));
+                None
+            }
+            Ok(None) | Err(_) => {
+                eprintln!("jed: {}: can't open the file", path.display());
+                return ExitCode::FAILURE;
+            }
+        },
         Some((path, goto)) => match Buffer::open_with(&path, workspace.settings().indentation()) {
             Ok(buffer) => Some(app::InitialFile { buffer, goto }),
             // Single file mode: a new file, created on save.
@@ -518,10 +531,6 @@ fn main() -> ExitCode {
                 })
             }
             Err(buffer::file::LoadError::Binary(bytes)) => {
-                if let Err(e) = hex::check_size(bytes.len() as u64) {
-                    eprintln!("jed: {}: {e}", path.display());
-                    return ExitCode::FAILURE;
-                }
                 initial_hex = Some((path, hex::HexDoc::new(bytes)));
                 None
             }

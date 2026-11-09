@@ -733,7 +733,11 @@ mod tests {
         assert_eq!(r.session.groups[0].tabs, [hex("a.bin", 2), hex("t.txt", 1)]);
         assert_eq!(r.session.groups[0].active, 1, "still the text file's tab");
         assert_eq!(r.session.groups[1].tabs.len(), 1);
-        let docs: Vec<_> = r.hex.iter().map(|(p, d)| (p.clone(), d.bytes().to_vec())).collect();
+        let docs: Vec<_> = r
+            .hex
+            .iter()
+            .map(|(p, d)| (p.clone(), d.resident_bytes().unwrap().to_vec()))
+            .collect();
         assert_eq!(
             docs,
             [

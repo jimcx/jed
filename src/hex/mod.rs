@@ -1,8 +1,10 @@
 //! The hex view's model (PLAN.md "Binary files (hex view)"): a file's bytes as `hexdump -C` prints
-//! them, and byte search. No UI and no app state: the hex tab (`Tab::Hex`, hex-b) holds a
-//! `HexDoc`, fits a `Layout` to its width and formats only the visible rows with `row`; find on a
-//! hex tab (hex-c) builds a `Query` and calls `find_next` / `find_prev` / `find_in` on the UI
-//! thread (each bounded by the distance to a match or the window) and `count` off it.
+//! them, and byte search. No UI and no app state: the hex tab (`Tab::Hex`) holds a `HexDoc` (a
+//! byte `Source`, resident or paged, and its page cache), fits a `Layout` to its width and
+//! formats only the visible rows with `row` / `row_in` (a byte whose page isn't loaded yet is a
+//! placeholder); find on a hex tab builds a `Query` and calls `find_next` / `find_prev` / `find_in`
+//! on the UI thread for a resident doc, `stream_next` / `stream_prev` / `stream_count` off it for a
+//! paged one, and `count` off it.
 //!
 //! Rows: offset `Layout::offset_digits` wide, two spaces, each byte as `xx ` with one extra space
 //! after every 8th (and after the last when a row has fewer than 8), then `|`, the bytes as ASCII
@@ -10,155 +12,327 @@
 //! only the end offset (the file's size); an empty file has no rows, as hexdump prints nothing.
 //! No `*` squeezing (hexdump `-v`), so row `i` starts at byte `i * bytes_per_row`. One deviation:
 //! every row's offset is as wide as the file's size needs (hexdump widens each offset on its own
-//! past 8 digits), so the columns stay put; it only shows for files of 4 GiB and more, which jed
-//! doesn't open (`HEX_MAX_BYTES`).
+//! past 8 digits), so the columns stay put; it only shows for files of 4 GiB and more.
 //!
 //! Matches are byte ranges `start..start + query.len()` and may overlap (`aa` is found 3 times in
 //! `aaaa`): that makes the matches in a window independent of where the window starts, so a frame
 //! can search only its visible bytes and agree with `count` over the whole file.
 //!
-//! `page` (a file's bytes resident or paged, and the page cache) and `stream` (`find_next` and friends over
-//! a paged file) are the model for files too big to hold; the tab doesn't use them yet.
+//! `page` (a file's bytes resident or paged, and the page cache) and `stream` (`find_next` and
+//! friends over a paged file) are the model for files too big to hold: a frame asks the doc for
+//! its visible bytes (`HexDoc::window`), which queues the pages it lacks; the app reads them off
+//! the UI thread (`plan_reads`, `finish_reads`).
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::fmt::{self, Write as _};
 use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use memchr::memmem;
 
-use crate::buffer::file::{self, Stamp};
 use crate::command::Motion;
 
 mod page;
 mod stream;
 
-#[allow(unused_imports)]
 pub use page::*;
-#[allow(unused_imports)]
 pub use stream::*;
 
-// Byte offsets are `u64` (files of any size) while `HexTab`'s cursor and scroll stay `usize`
-// until the tab is paged: on a 64-bit target the casts between them are lossless.
+// Byte offsets are `u64` (files of any size) while `HexTab`'s cursor and scroll stay `usize`:
+// on a 64-bit target the casts between them are lossless.
 const _: () = assert!(usize::BITS == 64);
 
-/// Files bigger than this aren't opened in a hex tab (paged reads are a TODO).
-pub const HEX_MAX_BYTES: usize = 256 << 20;
 /// `count` stops here: the find widget then says "100000+".
 pub const HEX_MAX_COUNT: usize = 100_000;
 /// The largest `hex_bytes_per_line` (the setting is a power of two from 1 to this).
 pub const MAX_BYTES_PER_ROW: usize = 64;
+/// Cmd+C copies at most this many bytes of a selection (the clipboard text is three times it).
+pub const HEX_COPY_MAX: u64 = 16 << 20;
+/// Pages one background read job takes.
+const JOB_PAGES: usize = 4;
 
-/// Whether a file of `len` bytes opens in a hex tab; else why not (the message's end).
-pub fn check_size(len: u64) -> Result<(), String> {
-    if len > HEX_MAX_BYTES as u64 {
-        Err(format!(
-            "too big for the hex view ({} MB, at most {} MB)",
-            len >> 20,
-            HEX_MAX_BYTES >> 20
-        ))
-    } else {
-        Ok(())
-    }
-}
-
-/// A file's bytes as read, shared (cloning is an `Arc` clone: a tab and its splits share one),
-/// and the `Stamp` they were read with, for the changed-on-disk check.
+/// A file's bytes (`Source`) and the pages read of it so far, shared (cloning is an `Arc` clone:
+/// a tab and its splits share one cache and one set of reads in flight).
 #[derive(Debug, Clone)]
 pub struct HexDoc {
-    bytes: Arc<[u8]>,
-    stamp: Stamp,
+    source: Source,
+    pages: Arc<Mutex<Pages>>,
+}
+
+/// What a doc's frames and page reads share (the UI thread's: never held across a read).
+#[derive(Debug)]
+struct Pages {
+    cache: PageCache,
+    /// Pages being read by a job.
+    inflight: HashSet<u64>,
+    /// Pages that failed to read (the file shrank under us): drawn unreadable, tried again after
+    /// the next disk check (`retry_failed`).
+    failed: HashSet<u64>,
+    /// Pages the frames drawn since the last `plan_reads` need, and ones near them.
+    visible: Vec<u64>,
+    prefetch: Vec<u64>,
+}
+
+/// How one byte of a `Window` shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cell {
+    Byte(u8),
+    /// Its page is being read.
+    Pending,
+    /// Its page can't be read.
+    Unreadable,
+}
+
+/// A run of bytes as a frame draws them: loaded ones as they are, the rest as placeholders.
+#[derive(Debug, Clone)]
+pub struct Window {
+    pub start: u64,
+    pub cells: Vec<Cell>,
+}
+
+impl Window {
+    pub fn get(&self, offset: u64) -> Option<Cell> {
+        let i = usize::try_from(offset.checked_sub(self.start)?).ok()?;
+        self.cells.get(i).copied()
+    }
 }
 
 impl HexDoc {
-    /// Hashes the bytes for the stamp: blocking for a big file (call from `spawn_blocking`, or
-    /// use `with_stamp` with the one the load computed).
+    /// A resident doc over `bytes`: hashes them for the version, blocking for a big one (call
+    /// from `spawn_blocking`).
     pub fn new(bytes: impl Into<Arc<[u8]>>) -> Self {
-        let bytes = bytes.into();
-        let stamp = Stamp::of(&bytes);
-        Self { bytes, stamp }
+        Self::from_source(Source::resident(bytes))
     }
 
-    pub fn with_stamp(bytes: impl Into<Arc<[u8]>>, stamp: Stamp) -> Self {
+    pub fn from_source(source: Source) -> Self {
+        let cache = PageCache::new(source.version());
         Self {
-            bytes: bytes.into(),
-            stamp,
+            source,
+            pages: Arc::new(Mutex::new(Pages {
+                cache,
+                inflight: HashSet::new(),
+                failed: HashSet::new(),
+                visible: Vec::new(),
+                prefetch: Vec::new(),
+            })),
         }
     }
 
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+    fn pages(&self) -> MutexGuard<'_, Pages> {
+        self.pages.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub fn source(&self) -> &Source {
+        &self.source
+    }
+
+    /// What the bytes were read from (a disk check compares it, find's cache key holds it).
+    pub fn version(&self) -> Version {
+        self.source.version()
     }
 
     pub fn len(&self) -> usize {
-        self.bytes.len()
+        self.source.len() as usize
     }
 
     pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
+        self.source.is_empty()
     }
 
-    pub fn stamp(&self) -> Stamp {
-        self.stamp
+    /// The whole file, for a resident doc (it is searched and copied on the UI thread).
+    pub fn resident_bytes(&self) -> Option<&[u8]> {
+        self.source.resident_bytes()
+    }
+
+    /// The whole file (empty for a paged doc), for tests.
+    #[cfg(test)]
+    pub fn bytes(&self) -> &[u8] {
+        self.resident_bytes().unwrap_or(&[])
+    }
+
+    /// Bytes the page cache holds now (a resident doc has none).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn cached_bytes(&self) -> usize {
+        self.pages().cache.bytes()
+    }
+
+    /// `range` (clipped to the file) as a frame draws it. A paged doc's missing pages are
+    /// placeholders and are queued for `plan_reads` (the visible ones, and the pages up to one
+    /// range's length either side); never reads the file.
+    pub fn window(&self, range: Range<u64>) -> Window {
+        let len = self.source.len();
+        let end = range.end.min(len);
+        let start = range.start.min(end);
+        if let Some(bytes) = self.resident_bytes() {
+            return Window {
+                start,
+                cells: bytes[start as usize..end as usize]
+                    .iter()
+                    .map(|&b| Cell::Byte(b))
+                    .collect(),
+            };
+        }
+        let n = end - start;
+        let mut buf = vec![0u8; n as usize];
+        let version = self.version();
+        let mut pages = self.pages();
+        let missing = pages.cache.copy_range(version, start, &mut buf);
+        let mut cells: Vec<Cell> = buf.into_iter().map(Cell::Byte).collect();
+        for &page in &missing {
+            let bytes = page_bytes(page, len);
+            let cell = if pages.failed.contains(&page) {
+                Cell::Unreadable
+            } else {
+                pages.visible.push(page);
+                Cell::Pending
+            };
+            let lo = (bytes.start.max(start) - start) as usize;
+            let hi = (bytes.end.min(end) - start) as usize;
+            cells[lo..hi].fill(cell);
+        }
+        for page in pages_for(start.saturating_sub(n)..end.saturating_add(n).min(len)) {
+            if !pages.cache.contains(version, page) && !pages.failed.contains(&page) && !missing.contains(&page) {
+                pages.prefetch.push(page);
+            }
+        }
+        Window { start, cells }
+    }
+
+    /// The byte at `offset` when it is loaded.
+    pub fn byte(&self, offset: u64) -> Option<u8> {
+        if let Some(bytes) = self.resident_bytes() {
+            return bytes.get(offset as usize).copied();
+        }
+        self.pages().cache.byte(self.version(), offset)
+    }
+
+    /// `range`'s bytes when every one is loaded (nothing is read or queued).
+    pub fn loaded_bytes(&self, range: Range<u64>) -> Option<Vec<u8>> {
+        if let Some(bytes) = self.resident_bytes() {
+            return bytes.get(range.start as usize..range.end as usize).map(<[u8]>::to_vec);
+        }
+        let mut out = vec![0u8; (range.end - range.start) as usize];
+        let missing = self.pages().cache.copy_range(self.version(), range.start, &mut out);
+        missing.is_empty().then_some(out)
+    }
+
+    /// The reads to start for the pages frames asked for since the last call: jobs of a few
+    /// pages, the visible ones first, none for pages loaded, failed or already being read.
+    pub fn plan_reads(&self) -> Vec<Vec<u64>> {
+        let mut pages = self.pages();
+        let version = self.version();
+        let mut want = std::mem::take(&mut pages.visible);
+        want.extend(std::mem::take(&mut pages.prefetch));
+        let mut seen = HashSet::new();
+        want.retain(|&p| {
+            seen.insert(p)
+                && !pages.inflight.contains(&p)
+                && !pages.failed.contains(&p)
+                && !pages.cache.contains(version, p)
+        });
+        pages.inflight.extend(want.iter().copied());
+        want.chunks(JOB_PAGES).map(<[u64]>::to_vec).collect()
+    }
+
+    /// A job's pages arrived: loaded ones cached, failed ones remembered as unreadable. Dropped
+    /// (false) when they were read for another version.
+    pub fn finish_reads(&self, version: Version, read: Vec<(u64, io::Result<Arc<[u8]>>)>) -> bool {
+        if version != self.version() {
+            return false;
+        }
+        let mut pages = self.pages();
+        for (page, result) in read {
+            pages.inflight.remove(&page);
+            match result {
+                Ok(bytes) => pages.cache.insert(version, page, bytes),
+                Err(e) => {
+                    tracing::warn!(page, "can't read a page of the file: {e}");
+                    pages.failed.insert(page);
+                }
+            }
+        }
+        true
+    }
+
+    /// Pages that failed are tried again (after a disk check found the file as it was).
+    pub fn retry_failed(&self) -> bool {
+        let mut pages = self.pages();
+        let any = !pages.failed.is_empty();
+        pages.failed.clear();
+        any
     }
 }
 
-/// Reads `path`'s bytes for a hex tab, whatever they are: `Ok(None)` when it's missing, an
-/// error when it's over `HEX_MAX_BYTES` (checked before reading it).
+/// The file's size as the status bar shows it: `N bytes` below 1 MiB, else binary units with one
+/// decimal and the exact count (`1.2 GB (1288490188 bytes)`).
+pub fn size_text(len: u64) -> String {
+    if len < 1 << 20 {
+        return format!("{len} bytes");
+    }
+    let mut v = len as f64 / (1u64 << 20) as f64;
+    let mut unit = "MB";
+    for next in ["GB", "TB"] {
+        if v >= 1024.0 {
+            v /= 1024.0;
+            unit = next;
+        }
+    }
+    format!("{v:.1} {unit} ({len} bytes)")
+}
+
+/// Opens `path`'s bytes for a hex tab, whatever they are (resident up to `RESIDENT_MAX`, else
+/// paged: nothing read): `Ok(None)` when it's missing.
 /// Blocking: call from spawn_blocking.
 pub fn read(path: &Path) -> io::Result<Option<HexDoc>> {
-    match std::fs::metadata(path) {
-        Ok(meta) => check_size(meta.len()).map_err(io::Error::other)?,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e),
-    }
-    let Some(bytes) = file::read(path)? else {
-        return Ok(None);
-    };
-    // Grown between the size check and the read.
-    check_size(bytes.len() as u64).map_err(io::Error::other)?;
-    Ok(Some(HexDoc::new(bytes)))
+    Ok(open(path)?.map(HexDoc::from_source))
 }
 
-/// What a hex tab's file holds now, against the `Stamp` its bytes were read with (`check`).
+/// Whether `path` is too big to read whole (over `RESIDENT_MAX`) and looks binary
+/// (`file::looks_binary`, reading only its start): it then opens in a hex tab paged, never read
+/// into a text buffer first. False for a missing file.
+/// Blocking: call from spawn_blocking.
+pub fn is_big_binary(path: &Path) -> io::Result<bool> {
+    use std::io::Read;
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.len() > RESIDENT_MAX => {}
+        _ => return Ok(false),
+    }
+    let mut start = Vec::new();
+    std::fs::File::open(path)?
+        .take(crate::buffer::file::BINARY_SNIFF_LEN as u64)
+        .read_to_end(&mut start)?;
+    Ok(crate::buffer::file::looks_binary(&start))
+}
+
+/// What a hex tab's file holds now, against the `Version` its bytes were read with (`check`).
 #[derive(Debug)]
 pub enum OnDisk {
     /// No file there (deleted, or renamed away).
     Missing,
     /// The bytes the tab shows.
     Unchanged,
-    /// Other bytes, read.
+    /// Other bytes, opened (a new doc: its own empty cache).
     Changed(HexDoc),
-    /// Other bytes, now over `HEX_MAX_BYTES`: not read (why, as `check_size` says it).
-    TooBig(String),
 }
 
-/// Reads `path` and compares it with `known` (its hex tabs' `HexDoc::stamp`; `None`: they
-/// differ, so any bytes are `Changed`), for the changed-on-disk check; a file grown over
-/// `HEX_MAX_BYTES` isn't read.
+/// Compares `path` with `known` (its hex tabs' `HexDoc::version`; `None`: they differ, so any
+/// bytes are `Changed`), for the changed-on-disk check: `probe` (a tab's source) takes the file's
+/// version the way the tabs' did (metadata for a paged file, a hash for a resident one), and a
+/// changed file is opened again (a paged one isn't read).
 /// Blocking: call from spawn_blocking.
-pub fn check(path: &Path, known: Option<Stamp>) -> io::Result<OnDisk> {
-    match std::fs::metadata(path) {
-        Ok(meta) => {
-            if let Err(e) = check_size(meta.len()) {
-                return Ok(OnDisk::TooBig(e));
-            }
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(OnDisk::Missing),
-        Err(e) => return Err(e),
-    }
-    let Some(bytes) = file::read(path)? else {
+pub fn check(path: &Path, probe: &Source, known: Option<Version>) -> io::Result<OnDisk> {
+    let Some(now) = probe.current_version(path)? else {
         return Ok(OnDisk::Missing);
     };
-    let stamp = Stamp::of(&bytes);
-    Ok(if Some(stamp) == known {
-        OnDisk::Unchanged
-    } else if let Err(e) = check_size(bytes.len() as u64) {
-        OnDisk::TooBig(e)
-    } else {
-        OnDisk::Changed(HexDoc::with_stamp(bytes, stamp))
+    if Some(now) == known {
+        return Ok(OnDisk::Unchanged);
+    }
+    Ok(match open(path)? {
+        Some(source) => OnDisk::Changed(HexDoc::from_source(source)),
+        None => OnDisk::Missing,
     })
 }
 
@@ -316,9 +490,15 @@ pub fn is_printable(b: u8) -> bool {
 }
 
 /// The row starting at `offset` (a multiple of `bytes_per_row`, or `doc.len()` for the end row)
-/// exactly as `hexdump -C -v` prints it, without the newline.
+/// exactly as `hexdump -C -v` prints it, without the newline (a byte not loaded yet as `··`).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn row(doc: &HexDoc, layout: &Layout, offset: u64) -> String {
-    let len = doc.len() as u64;
+    let window = doc.window(offset..offset + layout.bytes_per_row as u64);
+    row_in(&window, layout, offset, doc.len() as u64)
+}
+
+/// `row` for a file of `len` bytes, its bytes taken from `window` (which must cover the row).
+pub fn row_in(window: &Window, layout: &Layout, offset: u64, len: u64) -> String {
     debug_assert!(offset == len || (offset < len && offset.is_multiple_of(layout.bytes_per_row as u64)));
     let digits = layout.offset_digits;
     let mut s = String::with_capacity(layout.width());
@@ -326,21 +506,41 @@ pub fn row(doc: &HexDoc, layout: &Layout, offset: u64) -> String {
     if offset >= len {
         return s;
     }
-    let bytes = &doc.bytes()[offset as usize..len.min(offset + layout.bytes_per_row as u64) as usize];
+    let count = len.min(offset + layout.bytes_per_row as u64) - offset;
+    let cells = || (offset..offset + count).map(|o| window.get(o).unwrap_or(Cell::Pending));
     s.push_str("  ");
-    for (i, b) in bytes.iter().enumerate() {
-        let _ = write!(s, "{b:02x} ");
+    for (i, c) in cells().enumerate() {
+        match c {
+            Cell::Byte(b) => {
+                let _ = write!(s, "{b:02x} ");
+            }
+            Cell::Pending => s.push_str("\u{b7}\u{b7} "),
+            Cell::Unreadable => s.push_str("?? "),
+        }
         if (i + 1) % 8 == 0 {
             s.push(' ');
         }
     }
-    // All ASCII, so bytes are columns.
-    let pad = layout.bar_col().saturating_sub(s.len());
+    // The hex part is spaces and 3-byte placeholder dots: pad by columns, not bytes.
+    let cols = s.chars().count();
+    let pad = layout.bar_col().saturating_sub(cols);
     s.extend(std::iter::repeat_n(' ', pad));
     s.push('|');
-    s.extend(bytes.iter().map(|&b| ascii_char(b)));
+    s.extend(cells().map(|c| match c {
+        Cell::Byte(b) => ascii_char(b),
+        Cell::Pending => '\u{b7}',
+        Cell::Unreadable => '?',
+    }));
     s.push('|');
     s
+}
+
+/// Bytes as `column` shows them: what Cmd+C copies.
+pub fn format_bytes(column: Column, bytes: &[u8]) -> String {
+    match column {
+        Column::Hex => hex_pairs(bytes),
+        Column::Ascii => ascii_text(bytes),
+    }
 }
 
 /// The bytes as hex pairs separated by spaces (`7f 45 4c 46`): what Cmd+C copies from the hex
@@ -878,17 +1078,17 @@ impl HexTab {
         Some(a.min(self.cursor)..a.max(self.cursor) + 1)
     }
 
-    /// What Cmd+C copies: the selection, else the cursor's byte, as the cursor's column shows
-    /// them (hex pairs, or the ASCII text with `.`s); `None` in an empty file.
+    /// What Cmd+C copies: the selection, else the cursor's byte (`None` in an empty file).
+    pub fn copy_range(&self) -> Option<Range<usize>> {
+        self.selection()
+            .or((self.len() > 0).then(|| self.cursor..self.cursor + 1))
+    }
+
+    /// What Cmd+C copies, for a resident doc (a paged one's bytes are read off the UI thread:
+    /// `None`; the app does that).
     pub fn copy_text(&self) -> Option<String> {
-        let range = self
-            .selection()
-            .or((self.len() > 0).then(|| self.cursor..self.cursor + 1))?;
-        let bytes = &self.doc.bytes()[range];
-        Some(match self.column {
-            Column::Hex => hex_pairs(bytes),
-            Column::Ascii => ascii_text(bytes),
-        })
+        let bytes = self.doc.resident_bytes()?;
+        Some(format_bytes(self.column, &bytes[self.copy_range()?]))
     }
 
     /// The byte (and column) at screen row `row` (from the first drawn) and column `col` (from
@@ -1257,9 +1457,9 @@ mod tests {
         let doc = HexDoc::new(b"abc".to_vec());
         let copy = doc.clone();
         assert!(std::ptr::eq(doc.bytes(), copy.bytes()));
-        assert_eq!(doc.stamp(), Stamp::of(b"abc"));
+        assert_eq!(doc.version(), copy.version());
         assert_eq!((doc.len(), doc.is_empty()), (3, false));
-        assert!(HexDoc::with_stamp(Vec::new(), Stamp::of(b"")).is_empty());
+        assert!(HexDoc::new(Vec::new()).is_empty());
     }
 
     // --- The tab ---
@@ -1522,32 +1722,173 @@ mod tests {
     }
 
     #[test]
-    fn check_compares_the_stamp_and_reads_changes() {
+    fn check_compares_the_version_and_opens_changes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.bin");
-        let known = Some(Stamp::of(b"\0ab"));
-        assert!(matches!(check(&path, known).unwrap(), OnDisk::Missing));
+        let probe = Source::resident(b"\0ab".to_vec());
+        let known = Some(probe.version());
+        assert!(matches!(check(&path, &probe, known).unwrap(), OnDisk::Missing));
         assert!(read(&path).unwrap().is_none());
         std::fs::write(&path, b"\0ab").unwrap();
-        assert!(matches!(check(&path, known).unwrap(), OnDisk::Unchanged));
-        assert_eq!(Some(read(&path).unwrap().unwrap().stamp()), known);
-        assert!(matches!(check(&path, None).unwrap(), OnDisk::Changed(_)));
+        assert!(matches!(check(&path, &probe, known).unwrap(), OnDisk::Unchanged));
+        assert_eq!(Some(read(&path).unwrap().unwrap().version()), known);
+        assert!(matches!(check(&path, &probe, None).unwrap(), OnDisk::Changed(_)));
         std::fs::write(&path, b"\0abc").unwrap();
-        match check(&path, known).unwrap() {
-            OnDisk::Changed(doc) => {
-                assert_eq!(doc.bytes(), b"\0abc");
-                assert_eq!(doc.stamp(), Stamp::of(b"\0abc"));
-            }
+        match check(&path, &probe, known).unwrap() {
+            OnDisk::Changed(doc) => assert_eq!(doc.bytes(), b"\0abc"),
             other => panic!("{other:?}"),
         }
-        // Grown past the limit: not read (a sparse file, so nothing is written).
+        // Grown past the resident limit (a sparse file, so nothing is written): opened paged,
+        // not read.
         let f = std::fs::File::options().write(true).open(&path).unwrap();
-        f.set_len(HEX_MAX_BYTES as u64 + 1).unwrap();
-        match check(&path, known).unwrap() {
-            OnDisk::TooBig(why) => assert!(why.contains("too big"), "{why}"),
+        f.set_len(RESIDENT_MAX + 1).unwrap();
+        match check(&path, &probe, known).unwrap() {
+            OnDisk::Changed(doc) => assert!(doc.resident_bytes().is_none() && doc.len() as u64 == RESIDENT_MAX + 1),
             other => panic!("{other:?}"),
         }
-        assert!(read(&path).is_err());
+        let paged = read(&path).unwrap().unwrap();
+        assert!(matches!(
+            check(&path, paged.source(), Some(paged.version())).unwrap(),
+            OnDisk::Unchanged
+        ));
+    }
+
+    #[test]
+    fn is_big_binary_needs_both_size_and_binary_content() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let mk = |name: &str, len: u64, head: &[u8]| {
+            let p = dir.path().join(name);
+            let mut f = std::fs::File::create(&p).unwrap();
+            f.write_all(head).unwrap();
+            f.set_len(len).unwrap();
+            p
+        };
+        // Sparse zero tails: a "big text file" is spaces, so it is built from real text bytes.
+        let text = dir.path().join("big.txt");
+        std::fs::write(&text, vec![b'a'; RESIDENT_MAX as usize + 1]).unwrap();
+        assert!(!is_big_binary(&text).unwrap(), "big text stays text");
+        assert!(is_big_binary(&mk("big.bin", RESIDENT_MAX + 1, b"\0\x01\x02")).unwrap());
+        assert!(
+            !is_big_binary(&mk("small.bin", 1000, b"\0\x01\x02")).unwrap(),
+            "small: resident path"
+        );
+        assert!(
+            !is_big_binary(&dir.path().join("none")).unwrap(),
+            "missing: left to the caller"
+        );
+    }
+
+    #[test]
+    fn size_text_units() {
+        assert_eq!(size_text(0), "0 bytes");
+        assert_eq!(size_text((1 << 20) - 1), "1048575 bytes");
+        assert_eq!(size_text(1 << 20), "1.0 MB (1048576 bytes)");
+        assert_eq!(size_text(1_288_490_188), "1.2 GB (1288490188 bytes)");
+        assert_eq!(size_text(6 << 30), "6.0 GB (6442450944 bytes)");
+        assert_eq!(size_text(3 << 40), "3.0 TB (3298534883328 bytes)");
+    }
+
+    #[test]
+    fn window_has_placeholders_until_the_pages_are_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.bin");
+        let mut data = vec![0u8; RESIDENT_MAX as usize + 1000];
+        data[PAGE as usize + 5] = 0x41;
+        std::fs::write(&path, &data).unwrap();
+        let doc = read(&path).unwrap().unwrap();
+        assert!(doc.resident_bytes().is_none());
+        let layout = Layout::fit(row_width(16, 8), 16, doc.len() as u64);
+        let at = PAGE;
+        let pending = row(&doc, &layout, at);
+        assert!(
+            pending.contains("\u{b7}\u{b7} ")
+                && pending.ends_with(
+                    "|\u{b7}\u{b7}\u{b7}\u{b7}\u{b7}\u{b7}\u{b7}\u{b7}\u{b7}\u{b7}\u{b7}\u{b7}\u{b7}\u{b7}\u{b7}\u{b7}|"
+                ),
+            "{pending}"
+        );
+        // The visible page first, then the ones around it, in jobs of a few.
+        let jobs = doc.plan_reads();
+        assert_eq!(jobs[0][0], 1);
+        let all: Vec<u64> = jobs.concat();
+        assert!(all.contains(&0), "the page above is prefetched: {all:?}");
+        assert!(doc.plan_reads().is_empty(), "in flight: not asked for twice");
+        let read = read_pages(doc.source(), all.iter().copied());
+        assert!(doc.finish_reads(doc.version(), read));
+        assert!(row(&doc, &layout, at).contains("00 00"));
+        assert_eq!(doc.byte(PAGE + 5), Some(0x41));
+        assert!(doc.cached_bytes() > 0);
+        assert!(doc.plan_reads().is_empty(), "loaded: nothing to ask for");
+        // Another version's pages are dropped.
+        let other = Version::Meta {
+            len: 1,
+            mtime: 0,
+            mtime_nsec: 0,
+            ino: 0,
+            dev: 0,
+        };
+        assert!(!doc.finish_reads(other, Vec::new()));
+        // A failed page draws unreadable and isn't asked for again until `retry_failed`.
+        let far = doc.len() as u64 - 3;
+        let _ = doc.window(far..far + 3);
+        let jobs = doc.plan_reads();
+        let last = (doc.len() as u64 - 1) / PAGE;
+        assert!(jobs.concat().contains(&last));
+        let err = std::io::Error::other("gone");
+        assert!(doc.finish_reads(doc.version(), vec![(last, Err(err))]));
+        assert!(matches!(doc.window(far..far + 3).cells[0], Cell::Unreadable));
+        assert!(doc.plan_reads().iter().all(|j| !j.contains(&last)));
+        assert!(doc.retry_failed());
+        let _ = doc.window(far..far + 3);
+        assert!(doc.plan_reads().concat().contains(&last));
+    }
+
+    #[test]
+    fn reads_are_neither_stuck_nor_repeated_every_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.bin");
+        std::fs::write(&path, vec![7u8; RESIDENT_MAX as usize + 1000]).unwrap();
+        let doc = read(&path).unwrap().unwrap();
+        let wanted = |doc: &HexDoc| -> Vec<u64> { doc.plan_reads().concat() };
+        // Many frames over the same rows: the pages are asked for once, not once per frame.
+        let _ = doc.window(0..256);
+        assert!(wanted(&doc).contains(&0));
+        for _ in 0..5 {
+            let _ = doc.window(0..256);
+            assert!(wanted(&doc).is_empty(), "in flight");
+        }
+        // A failed read frees its in-flight slot and is not asked for every frame either.
+        let err = std::io::Error::other("gone");
+        assert!(doc.finish_reads(doc.version(), vec![(0, Err(err))]));
+        for _ in 0..5 {
+            let _ = doc.window(0..256);
+            assert!(!wanted(&doc).contains(&0), "failed: waits for a disk check");
+        }
+        // A disk check that finds the file as it was retries it, once.
+        assert!(doc.retry_failed());
+        let _ = doc.window(0..256);
+        assert_eq!(wanted(&doc), vec![0], "the failed page again, nothing else");
+        let _ = doc.window(0..256);
+        assert!(wanted(&doc).is_empty());
+        // A changed version is a new doc with its own state: its pages are asked for afresh, and
+        // the old doc's reads (still in flight) are dropped when they arrive.
+        let newer = read(&path).unwrap().unwrap();
+        let _ = newer.window(0..256);
+        assert!(
+            wanted(&newer).contains(&0),
+            "not blocked by the old doc's reads in flight"
+        );
+        let other = Version::Meta {
+            len: 1,
+            mtime: 0,
+            mtime_nsec: 0,
+            ino: 0,
+            dev: 0,
+        };
+        let stale = read_pages(doc.source(), [0]);
+        assert!(!doc.finish_reads(other, stale), "a read for another version is dropped");
+        assert_eq!(doc.cached_bytes(), 0);
     }
 
     #[test]

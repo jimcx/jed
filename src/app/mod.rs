@@ -743,6 +743,7 @@ impl App {
         self.sync_blame();
         self.sync_diffs();
         self.sync_markdown();
+        self.sync_hex_pages();
         self.sync_commit_tabs();
         self.sync_git_history();
         self.sync_branch_history();
@@ -796,6 +797,7 @@ impl App {
             terminal.draw(|f| ui::render(f, self))?;
             // The frame fitted the previews and scrolled the sources.
             self.sync_markdown();
+            self.sync_hex_pages();
         }
         Ok(())
     }
@@ -817,6 +819,7 @@ impl App {
             self.sync_blame();
             self.sync_diffs();
             self.sync_markdown();
+            self.sync_hex_pages();
             self.sync_commit_tabs();
             self.sync_git_history();
             self.sync_branch_history();
@@ -1998,6 +2001,12 @@ impl App {
         self.handle_app_event(AppEvent::View(hex::ViewEvent::HexCount { tab, generation, count }));
     }
 
+    /// Takes in a paged hex search's result as if it had come through the channel
+    /// (`AppEvent::View(ViewEvent::HexFound)`): for tests of stale results.
+    pub fn test_hex_found(&mut self, tab: u64, generation: u64, range: Option<std::ops::Range<u64>>) {
+        self.handle_app_event(AppEvent::View(hex::ViewEvent::HexFound { tab, generation, range }));
+    }
+
     /// Takes in a Markdown render as if it had come through the channel
     /// (`AppEvent::View(ViewEvent::MarkdownRendered)`): for tests of stale results.
     pub fn test_markdown_rendered(&mut self, tab: u64, generation: u64, width: usize, revision: u64, text: &str) {
@@ -2025,6 +2034,7 @@ impl App {
         self.sync_blame();
         self.sync_diffs();
         self.sync_markdown();
+        self.sync_hex_pages();
         self.sync_commit_tabs();
         self.sync_git_history();
         self.sync_branch_history();
@@ -2073,6 +2083,7 @@ impl App {
             self.sync_blame();
             self.sync_diffs();
             self.sync_markdown();
+            self.sync_hex_pages();
             self.sync_commit_tabs();
             self.sync_git_history();
             self.sync_branch_history();

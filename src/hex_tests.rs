@@ -5,7 +5,7 @@
 //! and drags in either column, the wheel and the scroll bar, Ctrl+G as Go to Offset, the status
 //! bar, Cmd+C as hex pairs or ASCII, every command leaving the bytes alone (typing and paste
 //! too), splits sharing the bytes, one tab per path, Reopen as Hex / Text, the `(deleted)` mark
-//! and files too big for the view; the explorer opening it, its rename followed, the tab moved to
+//! and big files (opened paged); the explorer opening it, its rename followed, the tab moved to
 //! another group, closed and quit without a prompt; an empty file and rows narrowed to 1 byte
 //! and cut. Find on a hex tab (hex-c): ASCII and hex queries finding the same match, the `0x`
 //! toggle (Alt+X / Cmd+Alt+X, or a click) converting the query both ways, case, the errors of
@@ -14,7 +14,7 @@
 //! counts dropped, seeding from a selection, no replace / select all / Cmd+D / whole word /
 //! regex there, and the text tab's widget as it was. Disk changes, sessions and navigation
 //! (hex-d): the file rewritten re-read into every hex tab of it (cursor and top clamped, find's
-//! count again), deleted and back, grown past `HEX_MAX_BYTES`; a hex tab kept by the session
+//! count again), deleted and back, grown past `RESIDENT_MAX` (reloaded paged); a hex tab kept by the session
 //! (a missing file dropped, a file now text still hex, the command line's file merged); back /
 //! forward to a hex tab, shown or reopened. `hex_done_when` walks the milestone's "Done when" in
 //! order on one app.
@@ -35,7 +35,7 @@ use crate::milestone10_tests::dirs;
 use crate::workspace::Workspace;
 use crate::workspace::trust::TrustStore;
 
-fn cmd() -> M {
+pub(crate) fn cmd() -> M {
     if cfg!(target_os = "macos") {
         M::SUPER
     } else {
@@ -44,7 +44,7 @@ fn cmd() -> M {
 }
 
 /// `\x7fELF` and a NUL early (binary), then every byte value three times, then some text.
-fn data() -> Vec<u8> {
+pub(crate) fn data() -> Vec<u8> {
     let mut b = b"\x7fELF\x02\x01\x01\x00".to_vec();
     for _ in 0..3 {
         b.extend(0..=255u8);
@@ -84,7 +84,7 @@ async fn hex_app_inner(watch: bool) -> (tempfile::TempDir, PathBuf, App) {
 }
 
 /// Quick open (Cmd+P): types `name`, Enter, waits for its tab (hex or text).
-async fn quick_open(app: &mut App, name: &str) {
+pub(crate) async fn quick_open(app: &mut App, name: &str) {
     app.press(KeyCode::Char('p'), cmd());
     app.type_text(name);
     let found = app
@@ -109,37 +109,37 @@ async fn open_bin(app: &mut App) {
     assert!(app.active_hex().is_some(), "a binary file opens as hex");
 }
 
-fn draw(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
+pub(crate) fn draw(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
     let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
     term.draw(|f| crate::ui::render(f, app)).unwrap();
     term
 }
 
 /// The active group's hex rows' rect, as drawn last.
-fn rows_rect(app: &App) -> Rect {
+pub(crate) fn rows_rect(app: &App) -> Rect {
     app.hits.group(app.groups.active).unwrap().text
 }
 
-fn line(term: &Terminal<TestBackend>, x: u16, y: u16, width: u16) -> String {
+pub(crate) fn line(term: &Terminal<TestBackend>, x: u16, y: u16, width: u16) -> String {
     let buf = term.backend().buffer();
     let s: String = (x..x + width).map(|x| buf[(x, y)].symbol()).collect();
     s.trim_end().to_string()
 }
 
 /// Each drawn row of the active hex tab's rect.
-fn drawn_rows(term: &Terminal<TestBackend>, rect: Rect) -> Vec<String> {
+pub(crate) fn drawn_rows(term: &Terminal<TestBackend>, rect: Rect) -> Vec<String> {
     (0..rect.height)
         .map(|i| line(term, rect.x, rect.y + i, rect.width))
         .filter(|l| !l.is_empty())
         .collect()
 }
 
-fn status_bar(term: &Terminal<TestBackend>) -> String {
+pub(crate) fn status_bar(term: &Terminal<TestBackend>) -> String {
     let area = term.backend().buffer().area;
     line(term, 0, area.height - 1, area.width)
 }
 
-fn hex(app: &App) -> &HexTab {
+pub(crate) fn hex(app: &App) -> &HexTab {
     app.active_hex().expect("a hex tab")
 }
 
@@ -648,9 +648,9 @@ async fn hex_tab_title_deleted_mark_and_files_too_big() {
     assert!(line(&term, 3, 0, 97).contains("bin.dat (deleted)"));
     assert!(status_bar(&term).contains("bin.dat [deleted]"));
 
-    // Over `HEX_MAX_BYTES` (a sparse file: only its start is read): a message, no tab.
+    // Over `RESIDENT_MAX` (a sparse file: only its start is sniffed): opens as a paged hex tab.
     let big = fs::File::create(root.join("big.bin")).unwrap();
-    big.set_len(hex::HEX_MAX_BYTES as u64 + 1).unwrap();
+    big.set_len(hex::RESIDENT_MAX + 1).unwrap();
     drop(big);
     app.press(KeyCode::Char('p'), cmd());
     app.type_text("big.bin");
@@ -663,13 +663,14 @@ async fn hex_tab_title_deleted_mark_and_files_too_big() {
     );
     app.press(KeyCode::Enter, M::NONE);
     assert!(
-        app.settle(|a| a
-            .message
-            .as_ref()
-            .is_some_and(|m| m.text.contains("too big for the hex view")))
+        app.settle(|a| a.active_hex().is_some_and(|h| h.path.ends_with("big.bin")))
             .await
     );
-    assert_eq!(app.group().tabs.len(), 1);
+    assert!(
+        app.active_hex().unwrap().doc.resident_bytes().is_none(),
+        "paged: not read whole"
+    );
+    assert_eq!(app.group().tabs.len(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -867,7 +868,7 @@ async fn hex_empty_file_and_narrow_rows() {
 // Find on a hex tab (hex-c).
 
 /// The find widget's toggle keys: Cmd+Alt on macOS, Alt elsewhere.
-fn toggle() -> M {
+pub(crate) fn toggle() -> M {
     if cfg!(target_os = "macos") {
         M::SUPER | M::ALT
     } else {
@@ -912,7 +913,7 @@ async fn find_app(bytes: &[u8]) -> (tempfile::TempDir, App) {
 }
 
 /// Cmd+F, then `query` typed over the seeded one.
-fn find(app: &mut App, query: &str) {
+pub(crate) fn find(app: &mut App, query: &str) {
     app.press(KeyCode::Char('f'), cmd());
     assert_eq!(app.ui.focus, Focus::Find);
     app.press(KeyCode::Backspace, M::NONE);
@@ -920,12 +921,12 @@ fn find(app: &mut App, query: &str) {
 }
 
 /// Waits for the current query's count.
-async fn settle_count(app: &mut App) {
+pub(crate) async fn settle_count(app: &mut App) {
     assert!(app.settle(|a| a.find.hex.count().is_some()).await, "the count arrives");
 }
 
 /// The find widget's rows as drawn.
-fn widget_rows(app: &App, term: &Terminal<TestBackend>) -> Vec<String> {
+pub(crate) fn widget_rows(app: &App, term: &Terminal<TestBackend>) -> Vec<String> {
     let hit = app.hits.find.expect("the find widget is drawn");
     (0..hit.area.height)
         .map(|i| {
@@ -1568,7 +1569,7 @@ async fn as_hex(app: &mut App, name: &str, bytes: &[u8]) {
 
 /// An app on `root` with sessions in `state` (as `main`'s), the side bar hidden, the session's
 /// restore waited for.
-async fn state_app(root: &Path, state: &Path) -> App {
+pub(crate) async fn state_app(root: &Path, state: &Path) -> App {
     state_app_inner(root, state, false).await
 }
 
@@ -1596,13 +1597,13 @@ async fn state_app_inner(root: &Path, state: &Path, watch: bool) -> App {
 }
 
 /// Quits as `run` does: the command, then `shutdown` (which writes the session).
-async fn quit(mut app: App) {
+pub(crate) async fn quit(mut app: App) {
     app.test_execute(Command::Quit);
     assert!(app.quitting());
     app.shutdown().await;
 }
 
-fn go_to_offset(app: &mut App, offset: &str) {
+pub(crate) fn go_to_offset(app: &mut App, offset: &str) {
     app.press(KeyCode::Char('g'), M::CONTROL);
     app.type_text(offset);
     app.press(KeyCode::Enter, M::NONE);
@@ -1802,23 +1803,18 @@ async fn hex_disk_changes_reach_every_tab_of_the_file() {
     assert!(app.settle(|a| hex(a).doc.bytes() == b"plain text\n").await);
     assert!(app.buffers.find_path(&path).is_none(), "no text buffer");
 
-    // Grown past `HEX_MAX_BYTES` (sparse: never read): a message, the bytes kept.
+    // Grown past `RESIDENT_MAX` (sparse: never read): reloaded as a paged doc.
     let f = fs::File::options().write(true).open(&path).unwrap();
-    f.set_len(hex::HEX_MAX_BYTES as u64 + 1).unwrap();
+    f.set_len(hex::RESIDENT_MAX + 1).unwrap();
     drop(f);
-    let said = app
+    let reloaded = app
         .settle(|a| {
-            a.message
-                .as_ref()
-                .is_some_and(|m| m.text.contains("too big for the hex view") && m.text.contains("not reloaded"))
+            tabs_of(a, &path)
+                .iter()
+                .all(|h| h.doc.resident_bytes().is_none() && h.len() as u64 == hex::RESIDENT_MAX + 1 && !h.deleted)
         })
         .await;
-    assert!(said, "{:?}", app.message.as_ref().map(|m| &m.text));
-    assert!(
-        tabs_of(&app, &path)
-            .iter()
-            .all(|h| h.doc.bytes() == b"plain text\n" && !h.deleted)
-    );
+    assert!(reloaded);
 }
 
 #[tokio::test(flavor = "multi_thread")]

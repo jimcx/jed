@@ -5,10 +5,15 @@
 //!
 //! On a hex tab the same inputs search bytes instead (`HexFind`): the query read as a
 //! `hex::Query` (ASCII text or hex pairs, by `Options::hex`), and the whole file's count, which
-//! the app computes off the UI thread per query generation. Highlights and next / previous search
-//! from the bytes directly (`hex::find_in`, `find_next`), so nothing else is cached.
+//! the app computes off the UI thread per query generation (cancelled when a newer query comes: a
+//! `hex::Cancel` on `count_gen`). Highlights search the visible bytes (`hex::find_in`); next /
+//! previous search from the bytes directly (`find_next`) for a resident doc, off the UI thread for
+//! a paged one (`begin_step`: one search at a time, a newer one or a new query cancels it), so
+//! nothing else is cached.
 
 use std::ops::Range;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ropey::Rope;
 
@@ -49,13 +54,22 @@ pub struct HexFind {
     generation: u64,
     /// `None` while the count runs ("…").
     count: Option<hex::Count>,
+    /// The generation a running count must still be (`refresh` stores each new one): a count job
+    /// ends when it differs.
+    count_gen: Arc<AtomicU64>,
+    /// As `count_gen` for next / previous on a paged doc: bumped by `begin_step` and `refresh`.
+    step_gen: Arc<AtomicU64>,
+    step: u64,
+    /// A paged next / previous is running ("…").
+    stepping: bool,
 }
 
-/// What a `HexFind` was computed for: the tab, its bytes (a re-read is new bytes), the query.
+/// What a `HexFind` was computed for: the tab, its bytes' version (a re-read is new bytes), the
+/// query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HexKey {
     tab: u64,
-    bytes: (usize, usize),
+    version: hex::Version,
     text: String,
     mode: Mode,
     case_sensitive: bool,
@@ -66,16 +80,18 @@ struct HexKey {
 pub struct CountJob {
     pub generation: u64,
     pub query: hex::Query,
+    /// Ends the count when a newer query comes.
+    pub cancel: hex::Cancel,
 }
 
 impl HexFind {
-    /// Reads `text` again when the tab (`tab`, `bytes`), the text or the options changed since
-    /// last time: a new generation, its count unknown. Returns the count to start, if the new
-    /// query is valid and not empty.
-    pub fn refresh(&mut self, tab: u64, bytes: &[u8], text: &str, options: Options) -> Option<CountJob> {
+    /// Reads `text` again when the tab (`tab`, its bytes' `version`), the text or the options
+    /// changed since last time: a new generation, its count unknown, the old count and any running
+    /// search cancelled. Returns the count to start, if the new query is valid and not empty.
+    pub fn refresh(&mut self, tab: u64, version: hex::Version, text: &str, options: Options) -> Option<CountJob> {
         let key = HexKey {
             tab,
-            bytes: (bytes.as_ptr() as usize, bytes.len()),
+            version,
             text: text.to_string(),
             mode: if options.hex { Mode::Hex } else { Mode::Ascii },
             case_sensitive: options.case_sensitive,
@@ -85,12 +101,17 @@ impl HexFind {
         }
         let query = hex::Query::parse(&key.text, key.mode, key.case_sensitive);
         self.generation += 1;
+        self.count_gen.store(self.generation, Ordering::Relaxed);
+        self.step += 1;
+        self.step_gen.store(self.step, Ordering::Relaxed);
+        self.stepping = false;
         self.count = None;
         self.key = Some(key);
         let job = match &query {
             Ok(q) if !q.is_empty() => Some(CountJob {
                 generation: self.generation,
                 query: q.clone(),
+                cancel: hex::Cancel::new(self.count_gen.clone(), self.generation),
             }),
             _ => None,
         };
@@ -98,10 +119,45 @@ impl HexFind {
         job
     }
 
+    /// Forgets the query and ends any running count or search (the widget closed, a tab that
+    /// isn't a hex view active, the app quitting): a scan over a huge file would otherwise run on
+    /// for nothing, and the runtime's drop waits for it. Cheap when nothing is set.
+    pub fn cancel(&mut self) {
+        if self.key.is_none() && !self.stepping {
+            return;
+        }
+        self.generation += 1;
+        self.count_gen.store(self.generation, Ordering::Relaxed);
+        self.step += 1;
+        self.step_gen.store(self.step, Ordering::Relaxed);
+        self.stepping = false;
+        self.count = None;
+        self.key = None;
+        self.query = None;
+    }
+
     /// The current query's generation (what its count must carry).
     #[cfg(test)]
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Starts a paged next / previous search: cancels the one running, returns what to give the
+    /// job (its `Cancel` and the generation its result carries).
+    pub fn begin_step(&mut self) -> (hex::Cancel, u64) {
+        self.step += 1;
+        self.step_gen.store(self.step, Ordering::Relaxed);
+        self.stepping = true;
+        (hex::Cancel::new(self.step_gen.clone(), self.step), self.step)
+    }
+
+    /// A paged search's result arrived: true when it is the current search's (else dropped).
+    pub fn step_done(&mut self, generation: u64) -> bool {
+        if generation != self.step {
+            return false;
+        }
+        self.stepping = false;
+        true
     }
 
     /// The tab the state is for.
@@ -140,7 +196,7 @@ impl HexFind {
         let Some(q) = self.query() else {
             return String::new();
         };
-        let Some(c) = &self.count else {
+        let Some(c) = self.count.as_ref().filter(|_| !self.stepping) else {
             return "…".into();
         };
         let total = if c.capped {
@@ -338,12 +394,13 @@ mod tests {
     #[test]
     fn hex_find_reads_counts_and_drops_stale_counts() {
         let bytes = b"\x00ELF elf";
+        let version = hex::Version::Hash(crate::buffer::file::Stamp::of(bytes));
         let mut h = HexFind::default();
         let mut opts = Options::default();
-        let job = h.refresh(7, bytes, "elf", opts).expect("a count to start");
+        let job = h.refresh(7, version, "elf", opts).expect("a count to start");
         assert_eq!(job.query.len(), 3);
         assert_eq!(h.count_label(Some(1..4)), "…");
-        assert!(h.refresh(7, bytes, "elf", opts).is_none(), "unchanged: no new count");
+        assert!(h.refresh(7, version, "elf", opts).is_none(), "unchanged: no new count");
         let count = hex::count(bytes, &job.query, hex::HEX_MAX_COUNT);
         assert!(!h.counted(8, job.generation, count.clone()), "another tab");
         assert!(!h.counted(7, job.generation - 1, count.clone()), "an older query");
@@ -353,16 +410,61 @@ mod tests {
         assert_eq!(h.count_label(None), "? of 2");
 
         opts.hex = true;
-        assert!(h.refresh(7, bytes, "4", opts).is_none(), "invalid: nothing to count");
+        assert!(h.refresh(7, version, "4", opts).is_none(), "invalid: nothing to count");
         assert_eq!(h.error(), Some(&HexError::Odd));
         assert_eq!(h.count_label(None), "");
-        let job = h.refresh(7, bytes, "aa", opts).unwrap();
+        let job = h.refresh(7, version, "aa", opts).unwrap();
         assert!(h.counted(7, job.generation, hex::count(bytes, &job.query, 10)));
         assert_eq!(h.count_label(None), "No results");
-        let job = h.refresh(7, b"aaaa", "61", opts).unwrap();
+        let job = h
+            .refresh(
+                7,
+                hex::Version::Hash(crate::buffer::file::Stamp::of(b"aaaa")),
+                "61",
+                opts,
+            )
+            .unwrap();
         assert!(h.counted(7, job.generation, hex::count(b"aaaa", &job.query, 2)));
         assert_eq!(h.count_label(Some(1..2)), "2 of 2+");
         assert_eq!(h.count_label(Some(3..4)), "? of 2+", "past the cap");
+    }
+
+    #[test]
+    fn hex_find_cancel_ends_the_count_and_search_and_forgets_the_query() {
+        let v = hex::Version::Hash(crate::buffer::file::Stamp::of(b"abc"));
+        let mut h = HexFind::default();
+        let opts = Options::default();
+        let job = h.refresh(7, v, "ab", opts).unwrap();
+        let (step, _) = h.begin_step();
+        assert!(!job.cancel.is_cancelled() && !step.is_cancelled());
+        h.cancel();
+        assert!(job.cancel.is_cancelled() && step.is_cancelled());
+        assert!(h.query().is_none());
+        assert!(
+            !h.counted(7, job.generation, hex::count(b"ab", &job.query, 10)),
+            "result dropped"
+        );
+        assert!(h.refresh(7, v, "ab", opts).is_some(), "the same query is a new job");
+    }
+
+    #[test]
+    fn hex_find_cancels_the_older_count_and_search() {
+        let v = hex::Version::Hash(crate::buffer::file::Stamp::of(b"abc"));
+        let mut h = HexFind::default();
+        let opts = Options::default();
+        let first = h.refresh(1, v, "a", opts).unwrap();
+        assert!(!first.cancel.is_cancelled());
+        let (step, gen1) = h.begin_step();
+        assert_eq!(h.count_label(None), "…");
+        let (step2, gen2) = h.begin_step();
+        assert!(
+            step.is_cancelled() && !step2.is_cancelled(),
+            "a newer search cancels the older"
+        );
+        assert!(!h.step_done(gen1) && h.step_done(gen2));
+        let second = h.refresh(1, v, "ab", opts).unwrap();
+        assert!(first.cancel.is_cancelled() && !second.cancel.is_cancelled());
+        assert!(step2.is_cancelled(), "a new query cancels the search");
     }
 
     #[test]

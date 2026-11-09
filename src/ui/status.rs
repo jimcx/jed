@@ -298,7 +298,7 @@ fn environment_label(app: &App) -> Option<String> {
 /// value (none in an empty file), the selection's length, the file's size.
 fn hex_status(h: &crate::hex::HexTab) -> Vec<String> {
     let mut parts = Vec::new();
-    if let Some(&b) = h.doc.bytes().get(h.cursor) {
+    if let Some(b) = h.doc.byte(h.cursor as u64) {
         let c = h.cursor;
         parts.push(format!("Offset 0x{c:x} ({c})"));
         parts.push(format!("0x{b:02x} {b}"));
@@ -307,6 +307,6 @@ fn hex_status(h: &crate::hex::HexTab) -> Vec<String> {
         let n = sel.len();
         parts.push(format!("{n} byte{} selected", if n == 1 { "" } else { "s" }));
     }
-    parts.push(format!("{} bytes", h.len()));
+    parts.push(crate::hex::size_text(h.len() as u64));
     parts
 }

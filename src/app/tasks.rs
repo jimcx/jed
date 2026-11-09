@@ -380,6 +380,8 @@ impl App {
     /// tasks and shells killed, all bounded (`lsp::SHUTDOWN_TIMEOUT`, `tasks::SHUTDOWN_TIMEOUT`),
     /// and the session written (`save_session`), all at once.
     pub async fn shutdown(&mut self) {
+        // A hex count over a huge file would hold up the runtime's drop.
+        self.find.hex.cancel();
         self.ipc_shutdown();
         let session = self.save_session();
         let session = async {
