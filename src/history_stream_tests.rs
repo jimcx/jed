@@ -244,26 +244,67 @@ async fn history_stream_scrolling_continues_the_same_walk() {
 
 /// Switching the active file mid-walk cancels the job: it exits without another chunk. Back on
 /// the file a new walk starts.
+// FLAKE: 2026-11-09, hung for over 60 s in a full `scripts/check` run under load (passes alone in
+// 0.5 s). Likely an assertion failed while the probe was held: the held `spawn_blocking` job then
+// never wakes, so the runtime's shutdown waits on it and the failure shows as a hang. `Release`
+// lets the panic surface; the messages dump the state. Seen again the same day: "at first chunk
+// sent: walks 1 sent 0 exited 0, commits 1": the job's `send` (app/git_history.rs) puts the chunk
+// on the channel before `probe.sent.fetch_add`, so the app can show it before the counter moves
+// (a race in the test hook; bumping `sent` before the send would close it).
 #[tokio::test(flavor = "multi_thread")]
 async fn history_stream_switching_files_cancels_the_walk() {
+    /// FLAKE debugging: releases the probe when the test unwinds, so a failure isn't a hang.
+    struct Release<F: FnMut()>(F);
+    impl<F: FnMut()> Drop for Release<F> {
+        fn drop(&mut self) {
+            (self.0)();
+        }
+    }
+    let state_of = |a: &App, step: &str| {
+        let p = &a.stream_probe;
+        format!(
+            "FLAKE history_stream_switching_files_cancels_the_walk at {step}: walks {} sent {} exited {}, \
+             path {:?}, commits {}, stream {}, loading {}",
+            p.walks.load(Ordering::SeqCst),
+            p.sent.load(Ordering::SeqCst),
+            p.exited.load(Ordering::SeqCst),
+            a.git_history.path,
+            a.git_history.commits.len(),
+            a.git_history.stream.is_some(),
+            a.git_history.loading,
+        )
+    };
     let (d, root, state) = big_repo();
     let outside = d.path().join("outside.txt");
     std::fs::write(&outside, "x\n").unwrap();
     let mut app = open_file_app(&root, &state, "target.txt");
     let probe = app.stream_probe.clone();
+    let held = probe.clone();
+    let _release = Release(move || held.hold(false));
     probe.hold(true);
-    assert!(app.settle(|a| a.git_history.commits.len() == 1).await);
-    assert_eq!(probe.sent.load(Ordering::SeqCst), 1);
+    let ok = app.settle(|a| a.git_history.commits.len() == 1).await;
+    assert!(ok, "{}", state_of(&app, "first chunk"));
+    assert_eq!(
+        probe.sent.load(Ordering::SeqCst),
+        1,
+        "{}",
+        state_of(&app, "first chunk sent")
+    );
 
     // A file outside the repository: no new job, the held one is cancelled.
     app.test_open(Buffer::open(&outside).unwrap());
+    let ok = app
+        .settle(|a| a.git_history.path.as_deref() == Some(outside.as_path()))
+        .await;
+    assert!(ok, "{}", state_of(&app, "outside file"));
     assert!(
-        app.settle(|a| a.git_history.path.as_deref() == Some(outside.as_path()))
-            .await
+        app.git_history.commits.is_empty() && app.git_history.stream.is_none(),
+        "{}",
+        state_of(&app, "outside file cleared")
     );
-    assert!(app.git_history.commits.is_empty() && app.git_history.stream.is_none());
     probe.hold(false);
-    assert!(app.settle(|a| a.stream_probe.exited.load(Ordering::SeqCst) == 1).await);
+    let ok = app.settle(|a| a.stream_probe.exited.load(Ordering::SeqCst) == 1).await;
+    assert!(ok, "{}", state_of(&app, "held job exits"));
     assert_eq!(
         probe.sent.load(Ordering::SeqCst),
         1,

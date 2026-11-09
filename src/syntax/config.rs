@@ -375,7 +375,9 @@ impl Language {
             Language::PlainText => &PLAIN_TEXT,
             Language::C | Language::Cpp | Language::ObjC | Language::ObjCpp => &C_LIKE,
             Language::Swift => &SWIFT,
-            Language::JavaScript | Language::JavaScriptReact => &JAVASCRIPT,
+            Language::JavaScript | Language::JavaScriptReact | Language::TypeScript | Language::TypeScriptReact => {
+                &JAVASCRIPT
+            }
             Language::Python => &PYTHON,
             Language::Rust => &RUST,
             Language::Markdown => &MARKDOWN,
@@ -472,7 +474,7 @@ mod tests {
         assert_eq!(swift.brackets, Cpp.config().brackets);
         assert!(swift.tree_tokens);
         // JavaScript: `'` and backtick not in strings or comments, `"` not in strings.
-        for l in [JavaScript, JavaScriptReact] {
+        for l in [JavaScript, JavaScriptReact, TypeScript, TypeScriptReact] {
             assert_eq!(comment(l), Some("//"));
             let c = l.config();
             let p = |open: char| c.pairs.iter().find(|p| p.open == open).copied().unwrap();

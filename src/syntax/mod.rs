@@ -207,7 +207,10 @@ impl Syntax {
         }
         let mut node = tree.root_node().descendant_for_byte_range(pos.0 - 1, pos.0);
         while let Some(n) = node {
-            match self.language.scope_of(n.kind()) {
+            // TypeScript's keyword token `string` (`${string}` in a template literal type) is not a
+            // string literal.
+            let keyword = !n.is_named() && n.kind() == "string";
+            match self.language.scope_of(n.kind()).filter(|_| !keyword) {
                 Some(scope) => return Some(scope),
                 None => node = n.parent(),
             }

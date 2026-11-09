@@ -565,6 +565,18 @@ fn scopes_in_every_language() {
         ),
         (JavaScript, "let s = `a ${`b|${c|}`} d|`;\n", &[String, Code, String]),
         (
+            TypeScript,
+            "let s = `a|${b|}c|`; // d|\nlet r = /x|y/g; type T = `p|${string|}q|`; type A = `x|${B|}y|`;\n",
+            &[
+                String, Code, String, Comment, String, String, Code, String, String, Code, String,
+            ],
+        ),
+        (
+            TypeScriptReact,
+            "let e = <a b=\"c|\">{d|}</a>; // e|\n",
+            &[String, Code, Comment],
+        ),
+        (
             JavaScriptReact,
             "let e = <a b=\"c|\">{d|}</a>; // e|\n",
             &[String, Code, Comment],

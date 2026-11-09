@@ -25,6 +25,10 @@ pub enum Language {
     JavaScript,
     /// JavaScript JSX (`.jsx`): tree-sitter-javascript, which parses JSX.
     JavaScriptReact,
+    /// TypeScript (`.ts`, `.mts`, `.cts`, `.d.ts`): tree-sitter-typescript.
+    TypeScript,
+    /// TypeScript JSX (`.tsx`): tree-sitter-typescript's TSX grammar.
+    TypeScriptReact,
     Python,
     Rust,
     Markdown,
@@ -52,7 +56,7 @@ pub enum Language {
 
 impl Language {
     /// The languages compiled in (plugins are in the registry: `all()`).
-    pub const BUILT_IN: [Language; 23] = [
+    pub const BUILT_IN: [Language; 25] = [
         Language::PlainText,
         Language::C,
         Language::Cpp,
@@ -61,6 +65,8 @@ impl Language {
         Language::Swift,
         Language::JavaScript,
         Language::JavaScriptReact,
+        Language::TypeScript,
+        Language::TypeScriptReact,
         Language::Python,
         Language::Rust,
         Language::Markdown,
@@ -107,6 +113,8 @@ impl Language {
             Language::Swift => "swift",
             Language::JavaScript => "javascript",
             Language::JavaScriptReact => "javascriptreact",
+            Language::TypeScript => "typescript",
+            Language::TypeScriptReact => "typescriptreact",
             Language::Python => "python",
             Language::Rust => "rust",
             Language::Markdown => "markdown",
@@ -137,6 +145,8 @@ impl Language {
             Language::Swift => "Swift",
             Language::JavaScript => "JavaScript",
             Language::JavaScriptReact => "JavaScript JSX",
+            Language::TypeScript => "TypeScript",
+            Language::TypeScriptReact => "TypeScript JSX",
             Language::Python => "Python",
             Language::Rust => "Rust",
             Language::Markdown => "Markdown",
@@ -173,6 +183,8 @@ impl Language {
             Language::ObjC | Language::ObjCpp => tree_sitter_objc::LANGUAGE.into(),
             Language::Swift => tree_sitter_swift::LANGUAGE.into(),
             Language::JavaScript | Language::JavaScriptReact => tree_sitter_javascript::LANGUAGE.into(),
+            Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            Language::TypeScriptReact => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Language::Python => tree_sitter_python::LANGUAGE.into(),
             Language::Rust => tree_sitter_rust::LANGUAGE.into(),
             // The block grammar only: inline text (emphasis, links, code spans) is one leaf.
@@ -204,6 +216,9 @@ impl Language {
         const OBJC: &str = include_str!("queries/objc.scm");
         const SWIFT: &str = include_str!("queries/swift.scm");
         const JAVASCRIPT: &str = include_str!("queries/javascript.scm");
+        const JAVASCRIPT_ONLY: &str = include_str!("queries/javascript-only.scm");
+        const JSX: &str = include_str!("queries/jsx.scm");
+        const TYPESCRIPT: &str = include_str!("queries/typescript.scm");
         const PYTHON: &str = include_str!("queries/python.scm");
         const RUST_FIRST: &str = "(identifier) @variable\n";
         const RUST: &str = include_str!("queries/rust.scm");
@@ -231,11 +246,27 @@ impl Language {
                 OBJC,
             ],
             Language::Swift => &[tree_sitter_swift::HIGHLIGHTS_QUERY, SWIFT],
-            Language::JavaScript => &[tree_sitter_javascript::HIGHLIGHT_QUERY, JAVASCRIPT],
+            Language::JavaScript => &[tree_sitter_javascript::HIGHLIGHT_QUERY, JAVASCRIPT, JAVASCRIPT_ONLY],
             Language::JavaScriptReact => &[
                 tree_sitter_javascript::HIGHLIGHT_QUERY,
                 tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
                 JAVASCRIPT,
+                JAVASCRIPT_ONLY,
+                JSX,
+            ],
+            Language::TypeScript => &[
+                tree_sitter_javascript::HIGHLIGHT_QUERY,
+                tree_sitter_typescript::HIGHLIGHTS_QUERY,
+                JAVASCRIPT,
+                TYPESCRIPT,
+            ],
+            Language::TypeScriptReact => &[
+                tree_sitter_javascript::HIGHLIGHT_QUERY,
+                tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
+                tree_sitter_typescript::HIGHLIGHTS_QUERY,
+                JAVASCRIPT,
+                TYPESCRIPT,
+                JSX,
             ],
             Language::Python => &[tree_sitter_python::HIGHLIGHTS_QUERY, PYTHON],
             Language::Rust => &[RUST_FIRST, tree_sitter_rust::HIGHLIGHTS_QUERY, RUST],
@@ -429,6 +460,8 @@ fn built_in_extension(path: &Path, lower: &str) -> Option<Language> {
         "swift" => Swift,
         "js" | "mjs" | "cjs" | "es6" => JavaScript,
         "jsx" => JavaScriptReact,
+        "ts" | "mts" | "cts" => TypeScript,
+        "tsx" => TypeScriptReact,
         "py" | "pyi" | "pyw" | "ipy" | "gyp" | "gypi" | "scons" => Python,
         "rs" => Rust,
         "md" | "mkd" | "mdwn" | "mdown" | "markdown" | "markdn" | "mdtxt" | "mdtext" | "workbook" => Markdown,
@@ -720,6 +753,38 @@ mod tests {
             detect(Path::new("/ws/x.page"), Path::new("/ws"), "", &a),
             Language::JavaScriptReact
         );
+    }
+
+    #[test]
+    fn typescript_detection() {
+        for ext in ["ts", "mts", "cts", "TS", "Mts"] {
+            assert_eq!(detect_plain(&format!("/ws/a.{ext}"), ""), Language::TypeScript, "{ext}");
+        }
+        for name in ["a.d.ts", "A.D.TS", "a.d.mts", "a.d.cts"] {
+            assert_eq!(detect_plain(&format!("/ws/{name}"), ""), Language::TypeScript, "{name}");
+        }
+        assert_eq!(detect_plain("/ws/a.tsx", ""), Language::TypeScriptReact);
+        assert_eq!(detect_plain("/ws/A.TSX", ""), Language::TypeScriptReact);
+        assert_ne!(detect_plain("/ws/a.tsx", ""), Language::TypeScript);
+        assert_ne!(detect_plain("/ws/a.ts", ""), Language::JavaScript);
+        // Source maps, manifests and tsconfig stay JSON / JSONC.
+        for name in ["a.d.ts.map", "a.ts.map", "a.js.map", "package.json"] {
+            assert_eq!(detect_plain(&format!("/ws/{name}"), ""), Language::Json, "{name}");
+        }
+        assert_eq!(detect_plain("/ws/tsconfig.json", ""), Language::Jsonc);
+        assert_eq!(Language::TypeScript.id(), "typescript");
+        assert_eq!(Language::TypeScriptReact.id(), "typescriptreact");
+        assert_eq!(Language::TypeScript.name(), "TypeScript");
+        assert_eq!(Language::TypeScriptReact.name(), "TypeScript JSX");
+        let map = BTreeMap::from([
+            ("*.page".to_string(), "typescriptreact".to_string()),
+            ("*.rc".to_string(), "typescript".to_string()),
+        ]);
+        let (a, errors) = Associations::new(&map);
+        assert!(errors.is_empty(), "{errors:?}");
+        let d = |p: &str| detect(Path::new(p), Path::new("/ws"), "", &a);
+        assert_eq!(d("/ws/x.page"), Language::TypeScriptReact);
+        assert_eq!(d("/ws/x.rc"), Language::TypeScript);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! End-to-end tests for the TypeScript and JavaScript task (`typescript`). typescript-a: `.js` /
 //! `.jsx` files get their language (and status-bar name), Cmd+/ comments with `//`, backtick
 //! closes and is typed over, a quote closes inside a template string's `${…}` but not in its
-//! text, and the files open coloured.
+//! text, and the files open coloured. typescript-b: the same for `.ts`, `.d.ts` and `.tsx`.
 
 use crossterm::event::{KeyCode as K, KeyModifiers as M};
 
@@ -105,5 +105,54 @@ async fn typescript_quote_closes_in_template_substitution_not_in_text() {
     app.press(K::Down, M::NONE);
     quote_at(&mut app, 4).await;
     assert_eq!(text(&app).lines().nth(1), Some("let d = `p -\" q`;"));
+    app.shutdown_servers().await;
+}
+
+/// typescript-b: `.ts`, `.d.ts` and `.tsx` get their language and name, Cmd+/ comments with `//`,
+/// backtick closes, `<` closes in neither, and each opens parsed.
+#[tokio::test(flavor = "multi_thread")]
+async fn typescript_ts_and_tsx_files_open_by_the_javascript_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = project(
+        dir.path(),
+        &[
+            ("a.ts", "interface I {\n}\nlet s = \n"),
+            ("b.d.ts", "declare const x: number;\n"),
+            ("c.tsx", "const C = (p: Props) => <a b=\"c\">{p.x}</a>;\n"),
+        ],
+    );
+    let fake = FakeLauncher::new(FakeOptions {
+        utf8: true,
+        ..Default::default()
+    });
+    let mut app = open_app(&root, fake.clone());
+    open(&mut app, &root.join("a.ts"));
+    let lang = app.active_buffer().unwrap().syntax.language();
+    assert_eq!((lang, lang.name()), (Language::TypeScript, "TypeScript"));
+    assert!(app.settle(parsed).await);
+    app.press(K::End, M::NONE);
+    app.press(K::Enter, M::NONE);
+    app.type_text("a: T");
+    assert_eq!(text(&app), "interface I {\n    a: T\n}\nlet s = \n");
+    app.press(K::Down, M::NONE);
+    app.press(K::Down, M::NONE);
+    app.press(K::End, M::NONE);
+    app.type_text("`a");
+    assert_eq!(text(&app), "interface I {\n    a: T\n}\nlet s = `a`\n");
+    app.press(K::Char('/'), crate::milestone9_tests::cmd());
+    assert_eq!(text(&app), "interface I {\n    a: T\n}\n// let s = `a`\n");
+
+    open(&mut app, &root.join("b.d.ts"));
+    let lang = app.active_buffer().unwrap().syntax.language();
+    assert_eq!((lang, lang.name()), (Language::TypeScript, "TypeScript"));
+    assert!(app.settle(parsed).await);
+
+    open(&mut app, &root.join("c.tsx"));
+    let lang = app.active_buffer().unwrap().syntax.language();
+    assert_eq!((lang, lang.name()), (Language::TypeScriptReact, "TypeScript JSX"));
+    assert!(app.settle(parsed).await);
+    app.press(K::End, M::NONE);
+    app.type_text("<");
+    assert_eq!(text(&app), "const C = (p: Props) => <a b=\"c\">{p.x}</a>;<\n");
     app.shutdown_servers().await;
 }

@@ -1642,6 +1642,63 @@ index 1..2 100644
     }
 
     #[test]
+    fn typescript_spans() {
+        let text = "interface I<T> extends B { readonly a?: string; m(x: T): void }\nlet v: Array<number> = [];\nenum E { A = 1 }\n@Component({}) class C { constructor(private p: number) {} }\nconst o = x as unknown satisfies Y;\ntype U = `a${string}` | null;\nnamespace N { declare const z: I<T>; }\nclass K extends B { m() { super.m(); return this.n; } }\n";
+        assert_has(
+            Language::TypeScript,
+            text,
+            &[
+                ("interface", "keyword"),
+                ("I", "type"),
+                ("T", "type"),
+                ("extends", "keyword"),
+                ("readonly", "keyword"),
+                ("string", "type.builtin"),
+                ("x", "variable.parameter"),
+                ("void", "type.builtin"),
+                ("Array", "type"),
+                ("number", "type.builtin"),
+                ("enum", "keyword"),
+                ("E", "type"),
+                ("@Component", "function"),
+                ("private", "keyword"),
+                ("p", "variable.parameter"),
+                ("as", "keyword.control"),
+                ("satisfies", "keyword.control"),
+                ("type", "keyword"),
+                ("U", "type"),
+                ("namespace", "keyword"),
+                ("N", "type"),
+                ("declare", "keyword"),
+                ("super", "variable.builtin"),
+                ("this", "variable.builtin"),
+            ],
+        );
+    }
+
+    #[test]
+    fn tsx_spans() {
+        let text = "const C = (p: Props) => <div id=\"a\">{p.x}</div>;\nconst D = () => <Box<string> v={1} />;\n";
+        assert_has(
+            Language::TypeScriptReact,
+            text,
+            &[
+                ("C", "type"), // an upper-case identifier, as in the crate's query
+                ("p", "variable.parameter"),
+                ("Props", "type"),
+                ("=>", "operator"),
+                ("<", "punctuation.tag"),
+                ("div", "tag"),
+                ("id", "tag.attribute"),
+                ("\"a\"", "string"),
+                ("Box", "type"),
+                ("string", "type.builtin"),
+                ("v", "tag.attribute"),
+            ],
+        );
+    }
+
+    #[test]
     fn cpp_spans() {
         let text = "namespace ns {\nclass A : public B {\n  int f(const T& v) { return this ? 1 : nullptr; }\n};\n}\nauto s = R\"(raw)\"; // c\n";
         assert_has(
