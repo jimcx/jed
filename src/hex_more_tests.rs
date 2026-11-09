@@ -9,6 +9,11 @@
 //! the session; a 5 GiB sparse file (offsets of 9 digits, a marker past 4 GiB found by Go to
 //! Offset and by find next / previous across the 4 GiB boundary, its count cancelled by a new
 //! query). Files are sparse (`set_len`), so they cost no disk.
+//!
+//! hex_more-f: `mod done_when` runs the task's whole "Done when" in order on one app (a 6 GiB
+//! sparse file, then small ones for the inspector, grouping, Follow Pointer and Copy As, then quit
+//! and reopen); `milestone_hex_more_budget_6gib` times each step's key handling plus one draw
+//! (release: under `SLOW_FRAME`, 16 ms).
 
 use std::fs;
 use std::os::unix::fs::FileExt;
@@ -402,7 +407,7 @@ mod inspector {
         (dir, app)
     }
 
-    fn hit(app: &App) -> crate::layout::HexHit {
+    pub(super) fn hit(app: &App) -> crate::layout::HexHit {
         app.hits
             .group(app.groups.active)
             .unwrap()
@@ -412,7 +417,7 @@ mod inspector {
     }
 
     /// The panel's rows as drawn, whitespace collapsed: `u16 513`, `i32 int 67305985`.
-    fn panel(app: &App, term: &Terminal<TestBackend>) -> Vec<String> {
+    pub(super) fn panel(app: &App, term: &Terminal<TestBackend>) -> Vec<String> {
         hit(app)
             .rows
             .iter()
@@ -428,7 +433,7 @@ mod inspector {
     }
 
     /// The value shown for `label` (`u16`, `i32 int`).
-    fn shown(app: &App, term: &Terminal<TestBackend>, label: &str) -> String {
+    pub(super) fn shown(app: &App, term: &Terminal<TestBackend>, label: &str) -> String {
         let prefix = format!("{label} ");
         panel(app, term)
             .into_iter()
@@ -436,11 +441,11 @@ mod inspector {
             .unwrap_or_else(|| panic!("no row {label}"))
     }
 
-    fn wide(app: &mut App) -> Terminal<TestBackend> {
+    pub(super) fn wide(app: &mut App) -> Terminal<TestBackend> {
         crate::hex_tests::draw(app, 120, 30)
     }
 
-    fn click(app: &mut App, x: u16, y: u16) {
+    pub(super) fn click(app: &mut App, x: u16, y: u16) {
         app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
         app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
     }
@@ -735,11 +740,11 @@ mod inspector {
 /// the hex column (`xxd -g`), reversed per group in little-endian; rows stay aligned, clicks hit
 /// bytes inside a group, Cmd+C copies the groups as shown, the grouping is kept in the session.
 mod hex_more_d {
+    use super::inspector::click;
     use super::*;
     use crate::command::Command;
     use crate::hex::{ByteOrder, HexDoc};
     use crate::hex_tests::{bg, byte_bgs, hex_app};
-    use crossterm::event::{MouseButton, MouseEventKind};
 
     async fn grp_app(len: u8) -> (tempfile::TempDir, App) {
         let (dir, root, mut app) = hex_app().await;
@@ -747,14 +752,9 @@ mod hex_more_d {
         (dir, app)
     }
 
-    fn first_row(app: &mut App) -> String {
+    pub(super) fn first_row(app: &mut App) -> String {
         let term = crate::hex_tests::draw(app, 100, 12);
         rows(app, &term).remove(0)
-    }
-
-    fn click(app: &mut App, x: u16, y: u16) {
-        app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
-        app.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1058,7 +1058,7 @@ mod follow_copy {
         v
     }
 
-    fn said(app: &App) -> String {
+    pub(super) fn said(app: &App) -> String {
         app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
     }
 
@@ -1166,7 +1166,7 @@ mod follow_copy {
         assert_eq!(cursor(&app), 0x10);
     }
 
-    fn copy_as(app: &mut App, filter: &str) {
+    pub(super) fn copy_as(app: &mut App, filter: &str) {
         app.test_execute(Command::HexCopyAs);
         assert!(app.palette.is_some());
         app.type_text(filter);
@@ -1342,5 +1342,348 @@ mod follow_copy {
         assert_eq!(Command::HexCopyAs.name(), "hex.copyAs");
         assert_eq!(Command::from_name("hex.copyAs"), Some(Command::HexCopyAs));
         assert_eq!(Command::HexCopyAs.title(), "Hex: Copy As…");
+    }
+}
+
+mod done_when {
+    use std::time::{Duration, Instant};
+
+    use super::follow_copy::{copy_as, said};
+    use super::hex_more_d::first_row;
+    use super::inspector::{click, hit, shown, wide};
+    use super::*;
+    use crate::command::Command;
+    use crate::hex_tests::draw as draw_at;
+
+    const GIB: u64 = 1 << 30;
+    /// 6 GiB in release; a debug build scans too slowly for that, so it is 4 GiB and a bit (it
+    /// still crosses 4 GiB, and the searches start next to the boundary, not at 0).
+    const LEN: u64 = if cfg!(debug_assertions) {
+        4 * GIB + 0x1000
+    } else {
+        6 * GIB
+    };
+    /// The markers: the last one before 4 GiB, the first one past it, and one at the end.
+    const BELOW: u64 = 4 * GIB - 0x80;
+    const ABOVE: u64 = 4 * GIB + 0x20;
+    const LAST: u64 = LEN - 8;
+    const MARKS: [(u64, &[u8]); 4] = [(0x10, b"MARK0"), (BELOW, b"MARK3"), (ABOVE, b"MARK4"), (LAST, b"MARKE")];
+    /// Where the searches start: 0x200 before 4 GiB (a Go to Offset argument).
+    const START: u64 = 4 * GIB - 0x200;
+
+    fn offset_arg(at: u64) -> String {
+        format!("{at:#x}")
+    }
+
+    /// The cache's own byte count (not the process's memory) stays under its cap.
+    fn cache_ok(app: &App) {
+        assert!(hex(app).doc.cached_bytes() <= hex::CACHE_MAX);
+    }
+
+    fn selected(want: u64) -> impl Fn(&App) -> bool {
+        move |a| hex(a).selection().is_some_and(|s| s.start as u64 == want)
+    }
+
+    /// The offsets of the rows drawn (9 hex digits each).
+    fn offsets(rows: &[String]) -> Vec<u64> {
+        rows.iter().map(|r| u64::from_str_radix(&r[..9], 16).unwrap()).collect()
+    }
+
+    fn write_small(root: &Path) {
+        let file = |name: &str, first: &[u8], len: usize| {
+            let mut v = vec![0u8; len];
+            v[..first.len()].copy_from_slice(first);
+            fs::write(root.join(name), v).unwrap();
+        };
+        file("s1.bin", &[1, 2, 3, 4, 5, 6, 7, 8], 0x20);
+        file("s2.bin", &[0, 0, 0x80, 0x3f, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f], 0x20);
+        file("s3.bin", &[0x7f, 0x45, 0x4c, 0x46], 0x20);
+        file("s4.bin", &[0x10, 0, 0, 0], 0x20);
+        file("s5.bin", &[0xff; 4], 0x20);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hex_more_done_when() {
+        let (_d, root, mut app) = big_app(LEN, &MARKS, true).await;
+        let state = root.parent().unwrap().join("state");
+        app.state_dir = Some(state.clone());
+        write_small(&root);
+
+        // 6 GiB opens at once as a paged tab with 9-digit offsets; nothing is read yet.
+        quick_open(&mut app, "big.bin").await;
+        assert_eq!((hex(&app).len() as u64, hex(&app).doc.cached_bytes()), (LEN, 0));
+        let term = draw(&mut app);
+        assert!(rows(&app, &term)[0].starts_with("000000000  \u{b7}\u{b7} "));
+
+        // The markers show at their offsets; Cmd+Down / Cmd+Up and paging, the cache under its cap.
+        let term = draw_loaded(&mut app).await;
+        assert!(
+            rows(&app, &term)
+                .iter()
+                .any(|r| r.starts_with("000000010  4d 41 52 4b 30"))
+        );
+        app.press_file_end();
+        assert_eq!(hex(&app).cursor as u64, LEN - 1);
+        let term = draw(&mut app);
+        assert!(
+            rows(&app, &term).iter().any(|r| r.contains('\u{b7}')),
+            "placeholders, no wait"
+        );
+        let term = draw_loaded(&mut app).await;
+        assert!(
+            rows(&app, &term)
+                .iter()
+                .any(|r| r.starts_with(&format!("{:09x}  ", LAST & !0xf)) && r.contains("4d 41 52 4b 45"))
+        );
+        cache_ok(&app);
+        app.press_file_start();
+        assert_eq!(hex(&app).cursor, 0);
+        draw_loaded(&mut app).await;
+        for _ in 0..4 {
+            let before = hex(&app).cursor;
+            app.press(KeyCode::PageDown, M::NONE);
+            assert!(hex(&app).cursor > before);
+            draw_loaded(&mut app).await;
+            cache_ok(&app);
+        }
+        for _ in 0..4 {
+            app.press(KeyCode::PageUp, M::NONE);
+            draw_loaded(&mut app).await;
+            cache_ok(&app);
+        }
+
+        // Ctrl+G to a marker past 4 GiB lands on it.
+        go_to_offset(&mut app, &offset_arg(ABOVE));
+        assert_eq!(hex(&app).cursor as u64, ABOVE);
+        let term = draw_loaded(&mut app).await;
+        assert!(
+            rows(&app, &term)
+                .iter()
+                .any(|r| r.starts_with(&format!("{ABOVE:09x}  4d 41 52 4b 34")))
+        );
+        go_to_offset(&mut app, &offset_arg(START));
+
+        // Cmd+F: the key returns at once with the cursor unmoved ("..." and no match yet); next
+        // and previous cross the 4 GiB boundary (a whole-file count is running meanwhile).
+        find(&mut app, "MARK");
+        assert_eq!(hex(&app).cursor as u64, START);
+        assert!(hex(&app).selection().is_none());
+        assert_eq!(app.find.hex.count_label(None), "\u{2026}");
+        assert!(app.settle(selected(BELOW)).await);
+        app.press(KeyCode::Enter, M::NONE);
+        assert_eq!(
+            hex(&app).selection().map(|s| s.start as u64),
+            Some(BELOW),
+            "waits for the search"
+        );
+        assert!(app.settle(selected(ABOVE)).await, "next crosses 4 GiB");
+        app.press(KeyCode::Enter, M::NONE);
+        assert!(app.settle(selected(LAST)).await);
+        app.press(KeyCode::Enter, M::SHIFT);
+        assert!(app.settle(selected(ABOVE)).await);
+        app.press(KeyCode::Enter, M::SHIFT);
+        assert!(app.settle(selected(BELOW)).await, "previous crosses 4 GiB");
+        cache_ok(&app);
+
+        // A new query cancels the old count (which may still be reading); the new one arrives.
+        let old = app.find.hex.generation();
+        app.type_text("E");
+        assert!(app.find.hex.generation() > old);
+        assert!(app.find.hex.count().is_none());
+        let tab = hex(&app).id;
+        app.test_hex_count(
+            tab,
+            old,
+            hex::Count {
+                starts: vec![0],
+                capped: false,
+            },
+        );
+        assert!(app.find.hex.count().is_none(), "the old count is dropped");
+        // A debug build scans 6 GiB too slowly for settle (30 s); release does.
+        if !cfg!(debug_assertions) {
+            settle_count(&mut app).await;
+            assert_eq!(app.find.hex.count().unwrap().found(), 1);
+            assert!(app.settle(selected(LAST)).await);
+        }
+        // Closing the widget leaves no scan running.
+        app.press(KeyCode::Esc, M::NONE);
+        assert!(app.find.hex.query().is_none());
+
+        // Copying a selection over the cap gives the message; so does Copy As.
+        app.press(KeyCode::Char('a'), cmd());
+        app.message = None;
+        app.press(KeyCode::Char('c'), cmd());
+        assert!(said(&app).starts_with("Selection too big to copy"), "{}", said(&app));
+        app.message = None;
+        copy_as(&mut app, "Base64");
+        assert!(said(&app).starts_with("Selection too big to copy"), "{}", said(&app));
+
+        // Truncated on disk while open (to 4 GiB and a bit): the cursor clamps, no stale bytes.
+        app.press_file_end();
+        draw_loaded(&mut app).await;
+        let cut = 4 * GIB + 0x100;
+        let f = fs::File::options().write(true).open(root.join("big.bin")).unwrap();
+        f.set_len(cut).unwrap();
+        drop(f);
+        assert!(app.settle(|a| hex(a).len() as u64 == cut).await);
+        assert_eq!(hex(&app).cursor as u64, cut - 1);
+        let term = draw(&mut app);
+        let shown_rows = rows(&app, &term);
+        assert!(offsets(&shown_rows).iter().all(|&o| o <= cut), "{shown_rows:?}");
+        let term = draw_loaded(&mut app).await;
+        let shown_rows = rows(&app, &term);
+        assert!(offsets(&shown_rows).iter().all(|&o| o <= cut));
+        assert!(!shown_rows.iter().any(|r| r.contains("MARKE")));
+        cache_ok(&app);
+
+        // A small file behaves as before: resident, and the inspector's values.
+        app.hex_inspector = true;
+        quick_open(&mut app, "s1.bin").await;
+        assert!(hex(&app).doc.resident_bytes().is_some());
+        let term = wide(&mut app);
+        assert_eq!(shown(&app, &term, "u16"), "513");
+        assert_eq!(shown(&app, &term, "u32"), "67305985");
+        assert_eq!(shown(&app, &term, "u64"), "578437695752307201");
+        app.test_execute(Command::HexToggleByteOrder);
+        let term = wide(&mut app);
+        assert_eq!(shown(&app, &term, "u16"), "258");
+        assert_eq!(shown(&app, &term, "u32"), "16909060");
+        assert_eq!(shown(&app, &term, "u64"), "72623859790382856");
+        app.test_execute(Command::HexToggleByteOrder);
+        // A 4-byte selection lights the i32 / u32 rows (the inspector module checks the outline).
+        for _ in 0..3 {
+            app.press(KeyCode::Right, M::SHIFT);
+        }
+        let term = wide(&mut app);
+        assert_eq!(hex(&app).selection(), Some(0..4));
+        let active = crate::hex_tests::bg(&app, "hexEditor.inspector.active");
+        let lit = hit(&app)
+            .rows
+            .iter()
+            .filter(|(r, _)| term.backend().buffer()[(r.x, r.y)].bg == active)
+            .map(|&(_, k)| k)
+            .collect::<Vec<_>>();
+        assert_eq!(lit, [hex::RowKind::I32, hex::RowKind::U32, hex::RowKind::F32]);
+        // Three bytes before the end: the wide rows are blank.
+        go_to_offset(&mut app, "0x1d");
+        let term = wide(&mut app);
+        for label in ["i32 int", "u32", "i64 long", "u64", "f32 float", "f64 double"] {
+            assert_eq!(shown(&app, &term, label), "\u{2014}", "{label}");
+        }
+        // Grouping 4: `04030201` little-endian, `01020304` big; a click on the 02 digits is offset 1.
+        app.press_file_start();
+        app.hex_group = Some(4);
+        assert!(first_row(&mut app).contains("04030201"));
+        let col = first_row(&mut app).find("04030201").unwrap() + 4;
+        let rect = rows_rect(&app);
+        click(&mut app, rect.x + 11, rect.y + 1);
+        click(&mut app, rect.x + col as u16, rect.y);
+        assert_eq!(hex(&app).cursor, 1);
+        app.test_execute(Command::HexToggleByteOrder);
+        assert!(first_row(&mut app).contains("01020304"));
+        app.test_execute(Command::HexToggleByteOrder);
+        let want_order = app.hex_order();
+
+        // f32 / f64.
+        quick_open(&mut app, "s2.bin").await;
+        let term = wide(&mut app);
+        assert_eq!(shown(&app, &term, "f32 float"), "1");
+        go_to_offset(&mut app, "4");
+        let term = wide(&mut app);
+        assert_eq!(shown(&app, &term, "f64 double"), "1");
+
+        // Copy As on `7f 45 4c 46`.
+        quick_open(&mut app, "s3.bin").await;
+        app.groups.active_group_mut().active_hex_mut().unwrap().select(0..4);
+        for (filter, want) in [
+            ("without", "7f454c46"),
+            ("C array", "{ 0x7f, 0x45, 0x4c, 0x46 }"),
+            ("Rust", "[0x7f, 0x45, 0x4c, 0x46]"),
+            ("Python", "b'\\x7fELF'"),
+            ("Base64", "f0VMRg=="),
+        ] {
+            copy_as(&mut app, filter);
+            assert_eq!(app.clipboard.read().unwrap(), want, "{filter}");
+        }
+
+        // Follow Pointer, back / forward; and past the end.
+        quick_open(&mut app, "s4.bin").await;
+        draw_at(&mut app, 120, 30);
+        app.test_execute(Command::HexFollowPointer);
+        assert_eq!(hex(&app).cursor, 0x10);
+        draw_at(&mut app, 120, 30);
+        app.test_execute(Command::NavBack);
+        assert_eq!(hex(&app).cursor, 0);
+        app.test_execute(Command::NavForward);
+        assert_eq!(hex(&app).cursor, 0x10);
+        quick_open(&mut app, "s5.bin").await;
+        app.test_execute(Command::HexFollowPointer);
+        assert_eq!(hex(&app).cursor, 0);
+        assert!(said(&app).contains("past the end"), "{}", said(&app));
+
+        // The toggle, byte order and grouping survive quit and reopen.
+        app.hex_inspector = false;
+        app.test_execute(Command::HexToggleByteOrder);
+        let order = app.hex_order();
+        assert_ne!(order, want_order);
+        quit(app).await;
+        let mut app = state_app(&root, &state).await;
+        assert!(app.settle(|a| a.active_hex().is_some()).await, "restored");
+        assert!(!app.hex_inspector);
+        assert_eq!(app.hex_order(), order);
+        assert_eq!(app.hex_group, Some(4));
+    }
+
+    /// Key handling plus one draw, timed.
+    fn timed(app: &mut App, label: &str, f: impl FnOnce(&mut App)) -> Duration {
+        let t = Instant::now();
+        f(app);
+        draw(app);
+        let d = t.elapsed();
+        println!("hex_more budget: {label}: {d:?}");
+        d
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn milestone_hex_more_budget_6gib() {
+        let (_d, _root, mut app) = big_app(LEN, &MARKS, false).await;
+        // The first draw warms the renderer's buffers; the budget is for steady state.
+        draw(&mut app);
+        let mut worst = Duration::ZERO;
+        let mut note = |d: Duration| worst = worst.max(d);
+        app.press(KeyCode::Char('p'), cmd());
+        app.type_text("big.bin");
+        let listed = |a: &App| {
+            a.palette
+                .as_ref()
+                .is_some_and(|p| p.rows.first().is_some_and(|r| r.label == "big.bin"))
+        };
+        assert!(app.settle(listed).await);
+        note(timed(&mut app, "open", |a| a.press(KeyCode::Enter, M::NONE)));
+        assert!(app.settle(|a| a.active_hex().is_some()).await);
+        draw_loaded(&mut app).await;
+        note(timed(&mut app, "Cmd+Down", |a| a.press_file_end()));
+        draw_loaded(&mut app).await;
+        note(timed(&mut app, "PageUp", |a| a.press(KeyCode::PageUp, M::NONE)));
+        draw_loaded(&mut app).await;
+        note(timed(&mut app, "Cmd+Up", |a| a.press_file_start()));
+        draw_loaded(&mut app).await;
+        note(timed(&mut app, "Ctrl+G past 4 GiB", |a| {
+            go_to_offset(a, &offset_arg(ABOVE))
+        }));
+        draw_loaded(&mut app).await;
+        go_to_offset(&mut app, &offset_arg(START));
+        note(timed(&mut app, "Cmd+F MARK", |a| find(a, "MARK")));
+        assert!(app.settle(selected(BELOW)).await);
+        note(timed(&mut app, "next", |a| a.press(KeyCode::Enter, M::NONE)));
+        assert!(app.settle(selected(ABOVE)).await);
+        note(timed(&mut app, "previous", |a| a.press(KeyCode::Enter, M::SHIFT)));
+        assert!(app.settle(selected(BELOW)).await);
+        note(timed(&mut app, "new query", |a| a.type_text("E")));
+        app.press(KeyCode::Esc, M::NONE);
+        println!("hex_more budget: worst {worst:?}");
+        let limit = if cfg!(debug_assertions) { 500 } else { 16 };
+        assert!(worst < Duration::from_millis(limit), "{worst:?} (limit {limit} ms)");
     }
 }
