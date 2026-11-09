@@ -26,12 +26,18 @@ impl App {
         let Some((run, area)) = self.terminal_run(hit) else {
             return false;
         };
-        let word = {
+        let (url, word) = {
             let screen = run.screen();
             let s = screen.screen();
             let (row, col) = super::mouse::screen_cell(s, area, m.column, m.row);
-            select::path_text(s, (row, col))
+            let url = select::wrapped_line(s, (row, col))
+                .and_then(|(line, at)| crate::url::url_at(&line, at).map(str::to_string));
+            (url, select::path_text(s, (row, col)))
         };
+        if let Some(url) = url {
+            self.open_url(url);
+            return true;
+        }
         let Some(word) = word else { return false };
         let Some((path, pos)) = crate::paths::terminal_link(&word) else {
             return false;
@@ -64,6 +70,20 @@ impl App {
             }));
         });
         true
+    }
+
+    /// Opens a Cmd/Ctrl+clicked web link in the system's browser, off the UI thread; a failure
+    /// comes back as `TerminalEvent::UrlFailed`.
+    pub(super) fn open_url(&mut self, url: String) {
+        tracing::info!(target: "jed::app", %url, "opening link");
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = crate::url::open(&url) {
+                let _ = tx.send(AppEvent::Terminal(super::shell::TerminalEvent::UrlFailed(format!(
+                    "Couldn't open {url}: {e}"
+                ))));
+            }
+        });
     }
 
     /// A clicked link resolved: open the file, or offer `query` in quick open.

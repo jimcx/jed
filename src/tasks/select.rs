@@ -259,6 +259,38 @@ pub fn path_text(screen: &Screen, at: (u16, u16)) -> Option<String> {
     Some(screen.contents_between(at.0, start, at.0, end))
 }
 
+/// The text of the line viewport cell `(row, col)` is on, joined across the rows it soft-wraps
+/// onto (within the viewport), and the byte offset of that cell in it: what a Cmd/Ctrl+click
+/// searches for a URL. Blank cells read as spaces; `None` off the screen.
+pub fn wrapped_line(screen: &Screen, (row, col): (u16, u16)) -> Option<(String, usize)> {
+    let (rows, cols) = size(screen);
+    if row >= rows || col >= cols {
+        return None;
+    }
+    let mut first = row;
+    while first > 0 && screen.row_wrapped(first - 1) {
+        first -= 1;
+    }
+    let mut last = row;
+    while last + 1 < rows && screen.row_wrapped(last) {
+        last += 1;
+    }
+    let (mut text, mut at) = (String::new(), 0);
+    for r in first..=last {
+        for c in 0..cols {
+            if (r, c) == (row, col) {
+                at = text.len();
+            }
+            match screen.cell(r, c) {
+                Some(cell) if cell.is_wide_continuation() => {}
+                Some(cell) if cell.has_contents() => text.push_str(cell.contents()),
+                _ => text.push(' '),
+            }
+        }
+    }
+    Some((text, at))
+}
+
 /// The first row to draw of a `screen` shown in `height` rows: 0 when it fits, else as low as
 /// keeps its last non-blank row and the cursor in view.
 pub fn top_row(screen: &Screen, height: u16) -> u16 {
@@ -451,6 +483,20 @@ mod tests {
         assert_eq!(s.contents_between(0, 0, 0, 4), "ab.c");
         assert_eq!(path_run(s, (0, 1)), Some(((-2, 0), (-2, 4))));
         assert_eq!(cell_at(0, 0, s.scrollback()), (-2, 0), "the same space as `cell_at`");
+    }
+
+    #[test]
+    fn wrapped_line_joins_soft_wrapped_rows() {
+        let p = screen(6, 5, b"ab\r\nhttps://x.io\r\nz");
+        let s = p.screen();
+        // Rows 1-3 ("https", "://x.", "io") are one soft-wrapped line; row 4 starts a new one.
+        let line = "https://x.io   ".to_string();
+        assert_eq!(wrapped_line(s, (2, 1)), Some((line.clone(), 6)));
+        assert_eq!(wrapped_line(s, (1, 0)), Some((line.clone(), 0)));
+        assert_eq!(wrapped_line(s, (3, 1)), Some((line, 11)));
+        assert_eq!(wrapped_line(s, (0, 1)), Some(("ab   ".to_string(), 1)));
+        assert_eq!(wrapped_line(s, (4, 0)).unwrap().0, "z    ");
+        assert_eq!(wrapped_line(s, (9, 0)), None);
     }
 
     #[test]

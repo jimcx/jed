@@ -995,8 +995,17 @@ impl App {
             Selections::single(Selection::new(start, end))
         };
         // Cmd+Click (Ctrl+Click on Linux; mouse reports carry Ctrl, rarely Cmd): go to definition.
+        // On a web link it opens that instead (VS Code).
         let go = m.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER);
         if go && !shift && count == 1 {
+            let line = pos::line_of(rope, at);
+            let start = pos::line_start(rope, line);
+            let text = rope.slice(start.0..pos::line_end(rope, line).0).to_string();
+            if let Some(url) = crate::url::url_at(&text, at.0 - start.0) {
+                let url = url.to_string();
+                self.open_url(url);
+                return;
+            }
             self.go_to_definition();
             return;
         }

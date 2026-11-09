@@ -46,6 +46,8 @@ pub(super) enum TerminalEvent {
         /// The editor group the clicked shell is in.
         from: Option<crate::layout::GroupId>,
     },
+    /// Opening a Cmd/Ctrl+clicked web link (terminal or editor) failed: the message to show.
+    UrlFailed(String),
     /// A task run started, has new output (throttled) or ended (`app/tasks.rs`).
     Task(Event),
     /// A shell tab's run started, has new output (throttled) or ended.
@@ -67,6 +69,7 @@ impl App {
                 query,
                 from,
             } => self.terminal_link_resolved(found, goto, query, from),
+            TerminalEvent::UrlFailed(msg) => self.notify(Level::Warning, msg),
             TerminalEvent::Task(ev) => self.task_event(ev),
             TerminalEvent::Shell(ev) => self.shell_event(ev),
             TerminalEvent::IntegrationWritten(result) => self.shell_integration_written(result),

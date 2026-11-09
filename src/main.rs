@@ -191,6 +191,7 @@ mod typescript_tests;
 mod ui;
 #[cfg(test)]
 mod untitled_tests;
+mod url;
 mod view;
 mod watcher;
 mod workspace;

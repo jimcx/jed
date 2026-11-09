@@ -1,6 +1,7 @@
 //! Cmd/Ctrl+click on a `path[:line[:col]]` in a shell tab's output (`app/term_link.rs`): a path
 //! that names one file opens it in the editor area at the line; anything else goes into quick
-//! open's input; a plain click and a word that is no path do nothing.
+//! open's input; a plain click and a word that is no path do nothing. An `http(s)://` URL
+//! (even one soft-wrapped over rows) opens in the browser instead, from a shell or an editor.
 
 use crossterm::event::KeyModifiers;
 use crossterm::event::{MouseButton, MouseEventKind};
@@ -151,5 +152,53 @@ async fn term_link_from_the_terminal_area_goes_to_the_group_showing_the_file() {
         app.terminals.active_group().active,
         0,
         "the terminal area's tabs are untouched"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_link_opens_a_url_in_the_browser() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    let url = "https://term-link-url.example.com/a/b.html?q=1&r=two#top";
+    let at = show(&mut app, &format!("see {url}."), "b.html").await;
+    link_click(&mut app, at);
+    assert!(app.settle(|_| crate::url::opened(url)).await);
+    assert!(app.palette.is_none() && app.active_buffer().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_link_opens_a_url_wrapped_over_rows() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    let url = format!("https://term-link-wrapped.example.com/{}/tail-end", "x".repeat(120));
+    app.tasks.shell = "/bin/sh".into();
+    app.new_shell_in_editor();
+    drop(draw(&mut app, 100, 30));
+    let run = &app.group().active_shell().unwrap().run;
+    assert!(run.write(format!("printf '%s\\n' '{url}'\n").as_bytes()));
+    assert!(
+        app.settle(|a| screen_text(a).contains("tail-end")).await,
+        "{}",
+        screen_text(&app)
+    );
+    let term = draw(&mut app, 100, 30);
+    let (x, y) = crate::milestone9_tests::find_cells(&term, "tail-end").unwrap();
+    link_click(&mut app, (x + 2, y));
+    assert!(app.settle(|_| crate::url::opened(&url)).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn term_link_cmd_click_on_a_url_in_the_editor_opens_it() {
+    let (_d, root, state) = dirs();
+    std::fs::write(root.join("notes.md"), "docs: <https://editor-url.example.com/guide>\n").unwrap();
+    let mut app = shell_app(&root, &state);
+    app.test_open_file(root.join("notes.md"));
+    assert!(app.settle(|a| a.active_buffer().is_some()).await);
+    let term = draw(&mut app, 100, 30);
+    let (x, y) = crate::milestone9_tests::find_cells(&term, "guide").unwrap();
+    link_click(&mut app, (x, y));
+    assert!(
+        app.settle(|_| crate::url::opened("https://editor-url.example.com/guide"))
+            .await
     );
 }
