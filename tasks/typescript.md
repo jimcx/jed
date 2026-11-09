@@ -2,7 +2,7 @@
 id: typescript
 name: TypeScript and JavaScript
 summary: JavaScript, JSX, TypeScript and TSX files get syntax colours, comment / pair / indent behaviour and a language server (`typescript-language-server`)
-status: open
+status: in-progress
 priority: 0
 dependencies: []
 ---
@@ -19,6 +19,8 @@ See [Syntax highlighting](../PLAN.md#syntax-highlighting), [LSP](../PLAN.md#lsp)
   - Needs: `syntax::Language` and its queries, `lsp::config` `Builtins`, the real-server test helpers (`REAL_SERVERS`, `children_named`), generic `$/progress` handling
   - Done when: `.js`, `.jsx`, `.ts` and `.tsx` files open coloured with the right status-bar name, comment toggling and auto-closed pairs; with `typescript-language-server` installed a project's TS / JS files show diagnostics, hover, go to definition across files, completion, rename and format; the tests above pass
   - Subtasks (one agent and one commit each):
-    - typescript-a: JavaScript and JSX: `Language::JavaScript` / `JavaScriptReact`, detection (extensions, shebangs, the `.js.map` interplay), the grammar crate, `queries/javascript.scm`, `scope_of` kinds, `LanguageConfig`; unit tests; docs (`src/syntax/CLAUDE.md`'s language lists)
+    - ✅ typescript-a: JavaScript and JSX: `Language::JavaScript` / `JavaScriptReact`, detection (extensions, shebangs, the `.js.map` interplay), the grammar crate, `queries/javascript.scm`, `scope_of` kinds, `LanguageConfig`; unit tests; docs (`src/syntax/CLAUDE.md`'s language lists)
+      - Built: both on `tree-sitter-javascript` 0.25.0 (MIT, 2.8 MB `parser.c`); JSX adds the crate's `JSX_HIGHLIGHT_QUERY` before `queries/javascript.scm`, which keeps to nodes TypeScript shares (control keywords / `await` / `of` / `from` / `as`, parameters, class names as types, decorators as functions, shebang, JSX components / attributes / tag punctuation, regex delimiters) so typescript-b can layer `typescript.scm` on it. `JAVASCRIPT` config (`C_LIKE` with `'` and backtick not in strings / comments, `"` not in strings, backtick surround, no `<` pair) serves both. `scope_of`: `template_substitution` is code, `regex` / `regex_pattern` / `regex_flags` strings. `.d.ts.map` stays JSON through the existing `.ts.map` suffix. Tests: `javascript_detection`, `javascript_spans`, `jsx_spans`, `scopes_in_every_language`, `src/typescript_tests.rs` (`typescript_*`).
+      - Deferred: `$` as a word char (no per-language word pattern: `pos::is_word_char` is global); `/** */` auto-closing (pairs are single chars); JSX text has no span test (plain).
     - typescript-b: TypeScript and TSX: `Language::TypeScript` / `TypeScriptReact`, detection (`.d.ts`, `.mts` / `.cts`), the grammar crate, `queries/typescript.scm` layered on JavaScript's, `scope_of` kinds, `LanguageConfig`; unit tests; docs
     - typescript-c: the server: the `typescript-language-server` built-in for all four languages (root lookup, workspace `node_modules` preference, `tsserver.path`, format options), progress, the fake-server tests, the real-server tests (skipped without the binary), `docs/typescript-language-server.md`; hand checks (a TS project and a lone `.js` file; rename, format, quick fixes); marks the task done

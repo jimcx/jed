@@ -21,6 +21,10 @@ pub enum Language {
     ObjCpp,
     /// Swift (`.swift`): tree-sitter-swift.
     Swift,
+    /// JavaScript (`.js`, `.mjs`, `.cjs`, `.es6`): tree-sitter-javascript.
+    JavaScript,
+    /// JavaScript JSX (`.jsx`): tree-sitter-javascript, which parses JSX.
+    JavaScriptReact,
     Python,
     Rust,
     Markdown,
@@ -48,13 +52,15 @@ pub enum Language {
 
 impl Language {
     /// The languages compiled in (plugins are in the registry: `all()`).
-    pub const BUILT_IN: [Language; 21] = [
+    pub const BUILT_IN: [Language; 23] = [
         Language::PlainText,
         Language::C,
         Language::Cpp,
         Language::ObjC,
         Language::ObjCpp,
         Language::Swift,
+        Language::JavaScript,
+        Language::JavaScriptReact,
         Language::Python,
         Language::Rust,
         Language::Markdown,
@@ -99,6 +105,8 @@ impl Language {
             Language::ObjC => "objective-c",
             Language::ObjCpp => "objective-cpp",
             Language::Swift => "swift",
+            Language::JavaScript => "javascript",
+            Language::JavaScriptReact => "javascriptreact",
             Language::Python => "python",
             Language::Rust => "rust",
             Language::Markdown => "markdown",
@@ -127,6 +135,8 @@ impl Language {
             Language::ObjC => "Objective-C",
             Language::ObjCpp => "Objective-C++",
             Language::Swift => "Swift",
+            Language::JavaScript => "JavaScript",
+            Language::JavaScriptReact => "JavaScript JSX",
             Language::Python => "Python",
             Language::Rust => "Rust",
             Language::Markdown => "Markdown",
@@ -162,6 +172,7 @@ impl Language {
             Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
             Language::ObjC | Language::ObjCpp => tree_sitter_objc::LANGUAGE.into(),
             Language::Swift => tree_sitter_swift::LANGUAGE.into(),
+            Language::JavaScript | Language::JavaScriptReact => tree_sitter_javascript::LANGUAGE.into(),
             Language::Python => tree_sitter_python::LANGUAGE.into(),
             Language::Rust => tree_sitter_rust::LANGUAGE.into(),
             // The block grammar only: inline text (emphasis, links, code spans) is one leaf.
@@ -192,6 +203,7 @@ impl Language {
         const CPP: &str = include_str!("queries/cpp.scm");
         const OBJC: &str = include_str!("queries/objc.scm");
         const SWIFT: &str = include_str!("queries/swift.scm");
+        const JAVASCRIPT: &str = include_str!("queries/javascript.scm");
         const PYTHON: &str = include_str!("queries/python.scm");
         const RUST_FIRST: &str = "(identifier) @variable\n";
         const RUST: &str = include_str!("queries/rust.scm");
@@ -219,6 +231,12 @@ impl Language {
                 OBJC,
             ],
             Language::Swift => &[tree_sitter_swift::HIGHLIGHTS_QUERY, SWIFT],
+            Language::JavaScript => &[tree_sitter_javascript::HIGHLIGHT_QUERY, JAVASCRIPT],
+            Language::JavaScriptReact => &[
+                tree_sitter_javascript::HIGHLIGHT_QUERY,
+                tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
+                JAVASCRIPT,
+            ],
             Language::Python => &[tree_sitter_python::HIGHLIGHTS_QUERY, PYTHON],
             Language::Rust => &[RUST_FIRST, tree_sitter_rust::HIGHLIGHTS_QUERY, RUST],
             Language::Markdown => &[tree_sitter_md::HIGHLIGHT_QUERY_BLOCK, MARKDOWN],
@@ -409,6 +427,8 @@ fn built_in_extension(path: &Path, lower: &str) -> Option<Language> {
         "m" => ObjC,
         "mm" => ObjCpp,
         "swift" => Swift,
+        "js" | "mjs" | "cjs" | "es6" => JavaScript,
+        "jsx" => JavaScriptReact,
         "py" | "pyi" | "pyw" | "ipy" | "gyp" | "gypi" | "scons" => Python,
         "rs" => Rust,
         "md" | "mkd" | "mdwn" | "mdown" | "markdown" | "markdn" | "mdtxt" | "mdtext" | "workbook" => Markdown,
@@ -457,6 +477,8 @@ fn by_shebang(first_line: &str) -> Option<Language> {
         Some(Language::Python)
     } else if is("swift") {
         Some(Language::Swift)
+    } else if is("node") || is("deno") || is("bun") {
+        Some(Language::JavaScript)
     } else if SHELLS.iter().any(|s| is(s)) {
         Some(Language::ShellScript)
     } else if is("make") || is("gmake") {
@@ -657,7 +679,7 @@ mod tests {
         for line in [
             "#!/usr/bin/pythonista",
             "#!/usr/bin/shellcheck",
-            "#!/usr/bin/env node",
+            "#!/usr/bin/env nodemon",
             "# python",
             "",
         ] {
@@ -665,6 +687,39 @@ mod tests {
         }
         // The extension wins over the shebang.
         assert_eq!(detect_plain("/ws/tool.c", "#!/usr/bin/python"), Language::C);
+    }
+
+    #[test]
+    fn javascript_detection() {
+        for ext in ["js", "mjs", "cjs", "es6", "JS", "Mjs"] {
+            assert_eq!(detect_plain(&format!("/ws/a.{ext}"), ""), Language::JavaScript, "{ext}");
+        }
+        assert_eq!(detect_plain("/ws/a.jsx", ""), Language::JavaScriptReact);
+        assert_eq!(detect_plain("/ws/A.JSX", ""), Language::JavaScriptReact);
+        for line in [
+            "#!/usr/bin/env node",
+            "#!/usr/bin/node",
+            "#!/usr/bin/env -S deno run",
+            "#!/usr/bin/env bun",
+        ] {
+            assert_eq!(detect_plain("/ws/tool", line), Language::JavaScript, "{line}");
+        }
+        // Source maps and package manifests are JSON.
+        for name in ["a.js.map", "a.d.ts.map", "a.ts.map", "package.json", "a.json"] {
+            assert_eq!(detect_plain(&format!("/ws/{name}"), ""), Language::Json, "{name}");
+        }
+        assert_eq!(Language::JavaScript.id(), "javascript");
+        assert_eq!(Language::JavaScriptReact.id(), "javascriptreact");
+        assert_eq!(Language::JavaScript.name(), "JavaScript");
+        assert_eq!(Language::JavaScriptReact.name(), "JavaScript JSX");
+        // A `.workspace` association works as for any language.
+        let map = BTreeMap::from([("*.page".to_string(), "javascriptreact".to_string())]);
+        let (a, errors) = Associations::new(&map);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            detect(Path::new("/ws/x.page"), Path::new("/ws"), "", &a),
+            Language::JavaScriptReact
+        );
     }
 
     #[test]

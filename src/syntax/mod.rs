@@ -460,6 +460,7 @@ pub fn scope_of(kind: &str) -> Option<Scope> {
     match kind {
         "interpolation"
         | "interpolated_expression"
+        | "template_substitution" // JavaScript's `${…}` inside a template string.
         | "raw_str_interpolation"
         | "key_path_string_expression" // Swift's `#keyPath(A.b)`: code, not a string.
         // Swift's `\(` opener is a leaf of the string, not of its `interpolated_expression`:
@@ -472,6 +473,9 @@ pub fn scope_of(kind: &str) -> Option<Scope> {
             return Some(Scope::Code);
         }
         "char_literal"
+        | "regex" // JavaScript's `/…/g`: a string for `notIn`, as VS Code's tokens do.
+        | "regex_pattern"
+        | "regex_flags"
         | "system_lib_string"
         | "double_quote_scalar"
         | "single_quote_scalar"

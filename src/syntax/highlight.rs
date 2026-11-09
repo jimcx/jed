@@ -1582,6 +1582,66 @@ index 1..2 100644
     }
 
     #[test]
+    fn javascript_spans() {
+        let text = "#!/usr/bin/env node\nimport { a } from 'm';\nasync function f(x, y = 1) {\n  for (const k of xs) await g(this.n);\n  return `a ${x} b`.match(/ab+/g) ?? true;\n}\nconst h = (p) => p;\nclass K extends B { m() { super.m(); } }\n@dec class D {}\n// c\n/** doc */\n";
+        assert_has(
+            Language::JavaScript,
+            text,
+            &[
+                ("#!/usr/bin/env node", "comment"),
+                ("import", "keyword.control"),
+                ("from", "keyword.control"),
+                ("'m'", "string"),
+                ("async", "keyword"),
+                ("function", "keyword"),
+                ("f", "function"),
+                ("x", "variable.parameter"),
+                ("for", "keyword.control"),
+                ("const", "keyword"),
+                ("of", "keyword.control"),
+                ("await", "keyword.control"),
+                ("this", "variable.builtin"),
+                ("return", "keyword.control"),
+                ("`a ", "string"),
+                ("${", "punctuation.special"),
+                (" b`", "string"),
+                ("/ab+/g", "string"),
+                ("true", "constant.builtin"),
+                ("h", "function"),
+                ("p", "variable.parameter"),
+                ("=>", "operator"),
+                ("class", "keyword"),
+                ("K", "type"),
+                ("super", "variable.builtin"),
+                ("@dec", "function"),
+                ("// c", "comment"),
+                ("/** doc */", "comment"),
+            ],
+        );
+    }
+
+    #[test]
+    fn jsx_spans() {
+        let text = "const e = <Box id=\"x\" onClick={go}>hi {name}</Box>;\nconst d = <div/>;\n";
+        assert_has(
+            Language::JavaScriptReact,
+            text,
+            &[
+                ("<", "punctuation.tag"),
+                ("Box", "type"),
+                ("id", "tag.attribute"),
+                ("\"x\"", "string"),
+                ("onClick", "tag.attribute"),
+                ("go", "variable"),
+                (">", "punctuation.tag"),
+                ("name", "variable"),
+                ("Box", "type"),
+                ("div", "tag"),
+            ],
+        );
+    }
+
+    #[test]
     fn cpp_spans() {
         let text = "namespace ns {\nclass A : public B {\n  int f(const T& v) { return this ? 1 : nullptr; }\n};\n}\nauto s = R\"(raw)\"; // c\n";
         assert_has(

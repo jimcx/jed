@@ -186,6 +186,8 @@ mod todo_tests;
 #[cfg(test)]
 mod tools_tests;
 mod tools_view;
+#[cfg(test)]
+mod typescript_tests;
 mod ui;
 #[cfg(test)]
 mod untitled_tests;

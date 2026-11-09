@@ -558,6 +558,17 @@ fn scopes_in_every_language() {
             &[String, Code, String, String, Comment, Code, Code, Code],
         ),
         (Python, "f'a{b|}c|'  # d|\n", &[Code, String, Comment]),
+        (
+            JavaScript,
+            "let s = `a|${b|}c|`; // d|\nlet r = /x|y/g; /* e| */ 'f|'\n",
+            &[String, Code, String, Comment, String, Comment, String],
+        ),
+        (JavaScript, "let s = `a ${`b|${c|}`} d|`;\n", &[String, Code, String]),
+        (
+            JavaScriptReact,
+            "let e = <a b=\"c|\">{d|}</a>; // e|\n",
+            &[String, Code, Comment],
+        ),
     ];
     for &(language, marked, want) in cases {
         let text = marked.replace('|', "");

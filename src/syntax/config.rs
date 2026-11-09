@@ -125,6 +125,30 @@ static SWIFT: LanguageConfig = LanguageConfig {
     ..C_LIKE
 };
 
+/// VS Code's `javascript` / `javascriptreact` configuration: `//`, brackets, `'` and `` ` `` not
+/// in strings or comments, `"` not in strings (JSX has no `<` pair either). Its `/**` pair
+/// is left out (single chars only).
+static JAVASCRIPT: LanguageConfig = LanguageConfig {
+    pairs: &[
+        BRACKETS[0],
+        BRACKETS[1],
+        BRACKETS[2],
+        pair('\'', '\'', true, true),
+        pair('"', '"', true, false),
+        pair('`', '`', true, true),
+    ],
+    surround: &[
+        ('{', '}'),
+        ('[', ']'),
+        ('(', ')'),
+        ('"', '"'),
+        ('\'', '\''),
+        ('`', '`'),
+        ('<', '>'),
+    ],
+    ..C_LIKE
+};
+
 /// VS Code's `python` configuration: `'` not in strings or comments, `"` and `` ` `` not in
 /// strings, the default `autoCloseBefore`, and the `r` / `u` / `f` / `b` string prefixes.
 static PYTHON: LanguageConfig = LanguageConfig {
@@ -351,6 +375,7 @@ impl Language {
             Language::PlainText => &PLAIN_TEXT,
             Language::C | Language::Cpp | Language::ObjC | Language::ObjCpp => &C_LIKE,
             Language::Swift => &SWIFT,
+            Language::JavaScript | Language::JavaScriptReact => &JAVASCRIPT,
             Language::Python => &PYTHON,
             Language::Rust => &RUST,
             Language::Markdown => &MARKDOWN,
@@ -446,6 +471,19 @@ mod tests {
         assert!(!swift.pairs.iter().any(|p| p.open == '\''));
         assert_eq!(swift.brackets, Cpp.config().brackets);
         assert!(swift.tree_tokens);
+        // JavaScript: `'` and backtick not in strings or comments, `"` not in strings.
+        for l in [JavaScript, JavaScriptReact] {
+            assert_eq!(comment(l), Some("//"));
+            let c = l.config();
+            let p = |open: char| c.pairs.iter().find(|p| p.open == open).copied().unwrap();
+            for open in ['\'', '`'] {
+                assert!(p(open).not_in_string && p(open).not_in_comment, "{open}");
+            }
+            assert!(p('"').not_in_string && !p('"').not_in_comment);
+            assert!(!c.pairs.iter().any(|p| p.open == '<'), "no `<` pair");
+            assert_eq!(c.brackets, Cpp.config().brackets);
+            assert!(c.tree_tokens);
+        }
         assert_eq!(comment(Jsonc), Some("//"));
         for l in [
             Python,
