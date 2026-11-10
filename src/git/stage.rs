@@ -11,6 +11,7 @@
 //! as stored (no clean filters such as `core.autocrlf`).
 
 use std::fmt;
+use std::ops::Range;
 use std::path::Path;
 
 use git2::{IndexEntry, IndexTime, Oid, Repository};
@@ -279,7 +280,6 @@ pub fn revert_hunk(repo: &Repo, path: &Path, shown: &FileDiff, k: usize) -> Resu
 /// ([`diff::apply_lines`]), checked and written as [`stage_hunk`] (`Stale`, `Conflicted`,
 /// `Binary`; a file gone from disk whose whole deletion is picked leaves the index). Returns how
 /// many changed lines were staged; 0 (nothing picked) writes nothing.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn stage_lines(repo: &Repo, path: &Path, shown: &FileDiff, pick: &diff::Pick) -> Result<usize, Error> {
     let r = repo.open()?;
     let mut index = r.index()?;
@@ -308,7 +308,6 @@ pub fn stage_lines(repo: &Repo, path: &Path, shown: &FileDiff, pick: &diff::Pick
 /// Blocking: unstages the changed lines `pick` takes from `shown` (a `Staged` [`file_diff`] with
 /// context 0), as [`stage_lines`] ([`diff::revert_lines`] on the index text). A file not in HEAD
 /// whose result is empty leaves the index (untracked again). Returns how many lines.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn unstage_lines(repo: &Repo, path: &Path, shown: &FileDiff, pick: &diff::Pick) -> Result<usize, Error> {
     let r = repo.open()?;
     let mut index = r.index()?;
@@ -490,6 +489,63 @@ pub fn unstage_line(repo: &Repo, path: &Path, worktree: &[u8], line: usize) -> R
         match unstage_hunk(repo, path, &shown, k) {
             Err(Error::Stale) if !stale => stale = true,
             r => return r.map(|()| Some(shown.diff.hunks[k].clone())),
+        }
+    }
+}
+
+/// Blocking: stages the changed lines of the file on disk that lie in `ranges` (line ranges of
+/// the disk text, any order): a fresh index → disk diff with context 0, the pick of
+/// [`diff::Pick::from_new_lines`] ([`stage_lines`]), the diff taken again (once) if the file or
+/// index moved on in between. Returns how many changed lines were staged (0: none in the ranges).
+pub fn stage_ranges(repo: &Repo, path: &Path, ranges: &[Range<usize>]) -> Result<usize, Error> {
+    let mut stale = false;
+    loop {
+        let shown = file_diff(repo, path, Side::Unstaged, 0)?;
+        if shown.diff.binary {
+            return Err(Error::Binary);
+        }
+        let pick = diff::Pick::from_new_lines(&shown.diff.hunks, ranges.iter().cloned());
+        match stage_lines(repo, path, &shown, &pick) {
+            Err(Error::Stale) if !stale => stale = true,
+            r => return r,
+        }
+    }
+}
+
+/// Blocking: unstages the staged changed lines that lie in `ranges` (line ranges of `worktree`,
+/// the buffer's text, any order): they go to the index text's lines through the index →
+/// `worktree` diff ([`diff::old_lines`], so no save is needed), and a fresh HEAD → index diff
+/// gives the pick ([`unstage_lines`]; a hunk whose lines are touched, a pure deletion by a
+/// range's edge included, loses its removed lines too). Taken again (once) if the index moved on
+/// in between. Returns how many changed lines were unstaged (0: none staged in the ranges).
+pub fn unstage_ranges(repo: &Repo, path: &Path, worktree: &[u8], ranges: &[Range<usize>]) -> Result<usize, Error> {
+    let mut stale = false;
+    loop {
+        let index = index_text(repo, path)?.map(|t| t.bytes).unwrap_or_default();
+        let unstaged = diff::diff(&index, worktree, 0)?;
+        let mapped: Vec<Range<usize>> = ranges
+            .iter()
+            .map(|r| {
+                let first = diff::old_lines(&unstaged.hunks, r.start).start;
+                let last = diff::old_lines(&unstaged.hunks, r.end.max(r.start + 1) - 1).end;
+                first..last.max(first)
+            })
+            .collect();
+        let shown = file_diff(repo, path, Side::Staged, 0)?;
+        if shown.diff.binary {
+            return Err(Error::Binary);
+        }
+        // Points (a range of lines the index has none of) still touch a deletion beside them.
+        let old = shown
+            .diff
+            .hunks
+            .iter()
+            .filter(|h| mapped.iter().any(|r| diff::touches(&h.new, r)))
+            .map(|h| h.old.clone());
+        let pick = diff::Pick::new(old, mapped.iter().cloned());
+        match unstage_lines(repo, path, &shown, &pick) {
+            Err(Error::Stale) if !stale => stale = true,
+            r => return r,
         }
     }
 }
@@ -1337,6 +1393,42 @@ mod tests {
             "1\n3\nTHREE\n4\n5\n6\nsix\n"
         );
         assert_eq!(index_state(&root), index_state(&other));
+    }
+
+    #[test]
+    fn stage_and_unstage_ranges_of_lines() {
+        let (_d, root) = picked_repo();
+        let repo = r(&root);
+        let f = Path::new("f.txt");
+        // `TWO` (its hunk's old lines `2 3` go with it) and the deletion of `5` at line 4's edge.
+        assert_eq!(stage_ranges(&repo, f, &[4..5, 1..2]).unwrap(), 4);
+        assert_eq!(git(&root, &["show", ":f.txt"]), "1\nTWO\n4\n6\n");
+        assert_eq!(stage_ranges(&repo, f, &[0..1]).unwrap(), 0, "nothing changed there");
+        // Back: `TWO` of the buffer (the work tree here) unstages its hunk; the deletion stays.
+        assert_eq!(unstage_ranges(&repo, f, NEW.as_bytes(), &[1..2]).unwrap(), 3);
+        assert_eq!(git(&root, &["show", ":f.txt"]), "1\n2\n3\n4\n6\n");
+        assert_eq!(unstage_ranges(&repo, f, NEW.as_bytes(), &[5..6]).unwrap(), 0);
+        assert_eq!(std::fs::read_to_string(root.join("f.txt")).unwrap(), NEW);
+    }
+
+    #[test]
+    fn unstage_ranges_map_buffer_lines_through_the_index() {
+        // Index has two added lines on top of HEAD; the buffer adds one more above them, so its
+        // lines are shifted by one against the index's.
+        let (_d, root) = repo(&[("f.txt", b"a\nb\n")]);
+        std::fs::write(root.join("f.txt"), "a\nX\nY\nb\n").unwrap();
+        git(&root, &["add", "f.txt"]);
+        let repo = r(&root);
+        let f = Path::new("f.txt");
+        let buffer = b"top\na\nX\nY\nb\n";
+        assert_eq!(
+            unstage_ranges(&repo, f, buffer, &[0..1]).unwrap(),
+            0,
+            "`top` isn't staged"
+        );
+        // Buffer line 2 is `X`: the added hunk `X Y` goes whole (`Y` isn't picked: it stays).
+        assert_eq!(unstage_ranges(&repo, f, buffer, &[2..3]).unwrap(), 1);
+        assert_eq!(git(&root, &["show", ":f.txt"]), "a\nY\nb\n");
     }
 
     #[test]

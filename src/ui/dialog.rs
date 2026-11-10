@@ -77,8 +77,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) -> Option<R
             lines.push(Line::raw(""));
             lines.push(buttons(&[("T", "rust"), ("R", "estricted mode")]));
         }
-        Prompt::SaveBeforeStage { buffer, file, .. } => {
-            let what = if *file { "it" } else { "the change" };
+        Prompt::SaveBeforeStage { buffer, what, .. } => {
+            let what = match what {
+                crate::app::What::File => "it",
+                crate::app::What::Line => "the change",
+                crate::app::What::Ranges => "the selected lines",
+            };
             lines.push(Line::raw(format!(" Save {} before staging {what}?", name_of(*buffer))));
             lines.push(Line::raw(" Changes are staged from the file on disk."));
             lines.push(Line::raw(""));

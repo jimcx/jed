@@ -87,6 +87,9 @@ impl Mode {
                     // Git.
                     | Command::StageHunk
                     | Command::UnstageHunk
+                    | Command::StageSelectedRanges
+                    | Command::UnstageSelectedRanges
+                    | Command::RevertSelectedRanges
                     | Command::StageFile
                     | Command::UnstageFile
                     | Command::StageAll

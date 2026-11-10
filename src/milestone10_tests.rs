@@ -1504,7 +1504,13 @@ async fn milestone_10_stage_from_the_diff_view_like_add_p() {
     assert!(diff_tab(&app).pair == Pair::UNSTAGED);
     run_command(&mut app, "Git: Stage File");
     assert!(
-        matches!(app.prompt, Some(crate::app::Prompt::SaveBeforeStage { file: true, .. })),
+        matches!(
+            app.prompt,
+            Some(crate::app::Prompt::SaveBeforeStage {
+                what: crate::app::What::File,
+                ..
+            })
+        ),
         "{:?}",
         app.message.as_ref().map(|m| &m.text)
     );
@@ -2487,7 +2493,13 @@ async fn milestone_10_source_control_saves_dirty_files_before_staging() {
     let a = file(Section::Changes, "a.txt");
     let b = scm_button(&mut app, &a);
     click(&mut app, b);
-    assert!(matches!(app.prompt, Some(Prompt::SaveBeforeStage { file: true, .. })));
+    assert!(matches!(
+        app.prompt,
+        Some(Prompt::SaveBeforeStage {
+            what: crate::app::What::File,
+            ..
+        })
+    ));
     app.press(KeyCode::Esc, M::NONE);
     assert!(app.prompt.is_none() && app.active_buffer().unwrap().is_dirty());
     assert!(!git(&root, &["diff", "--cached", "--name-only"]).contains("a.txt"));

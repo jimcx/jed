@@ -16,10 +16,77 @@ use super::{App, AppEvent, Level, Prompt};
 use crate::buffer::BufferId;
 use crate::buffer::change::{Assoc, ChangeSet};
 use crate::buffer::pos::{self, ByteIdx};
-use crate::git::{Hunk, Repo, stage};
+use crate::git::{Change, Hunk, Repo, diff, stage};
 use crate::layout::{GroupId, Hit};
 use crate::quick_diff::{self, Computed, Job, Mark, Want};
 use crate::selection::{Selection, Selections};
+
+/// "1 changed line" / "3 changed lines".
+fn changed_lines(n: usize) -> String {
+    format!("{n} changed line{}", if n == 1 { "" } else { "s" })
+}
+
+/// The lines selections cover, as sorted, merged line ranges: an empty selection is its line, a
+/// selection ending at column 0 doesn't take that line. `ranges` are in order (`Selections`);
+/// the rope is walked with a `LineWalker`, not looked up per selection.
+fn line_ranges(rope: &ropey::Rope, ranges: &[(ByteIdx, ByteIdx)]) -> Vec<Range<usize>> {
+    let mut walker = pos::LineWalker::new(rope);
+    let mut out: Vec<Range<usize>> = Vec::new();
+    for &(from, to) in ranges {
+        let first = walker.line_at(from).index;
+        let end = if to > from {
+            let last = walker.line_at(to);
+            if last.start() == to { last.index } else { last.index + 1 }
+        } else {
+            first + 1
+        };
+        match out.last_mut() {
+            Some(prev) if first <= prev.end => prev.end = prev.end.max(end),
+            _ => out.push(first..end),
+        }
+    }
+    out
+}
+
+/// Blocking: the edits of `rope` (the buffer's text, `bom`: it has a BOM) that put the index's
+/// lines back for the changed lines in `lines` (a line range per selection): the index -> buffer
+/// diff, [`diff::Pick::from_new_lines`], [`diff::revert_line_edits`]. A refusal is the reason.
+fn plan_revert(
+    repo: &Repo,
+    path: &std::path::Path,
+    rope: &ropey::Rope,
+    bom: bool,
+    lines: &[Range<usize>],
+) -> Result<RevertPlan, String> {
+    let Some(index) = stage::index_text(repo, path).map_err(|e| e.to_string())? else {
+        return Err("it isn't in the index".into());
+    };
+    let link = std::fs::symlink_metadata(repo.workdir.join(path)).is_ok_and(|m| m.file_type().is_symlink());
+    if index.mode == 0o120000 || link {
+        return Err("it is a symbolic link".into());
+    }
+    let text = crate::buffer::file::encode(rope, bom);
+    let found = diff::diff(&index.bytes, &text, 0).map_err(|e| e.to_string())?;
+    if found.binary {
+        return Err("it is binary".into());
+    }
+    let pick = diff::Pick::from_new_lines(&found.hunks, lines.iter().cloned());
+    let shift = if bom { 3 } else { 0 };
+    let mut edits = Vec::new();
+    for (range, mut with) in diff::revert_line_edits(&index.bytes, &text, &found.hunks, &pick) {
+        // The buffer keeps its own BOM: the index's isn't text.
+        if range.start == 0 && with.starts_with(b"\xEF\xBB\xBF") {
+            with.drain(..3);
+        }
+        let with = String::from_utf8(with).map_err(|_| "the index's text isn't UTF-8".to_string())?;
+        let (start, end) = (range.start.saturating_sub(shift), range.end.saturating_sub(shift));
+        edits.push((ByteIdx(start), ByteIdx(end), with));
+    }
+    Ok(RevertPlan {
+        edits,
+        lines: pick.count(&found.hunks),
+    })
+}
 
 /// The app's side of quick diff.
 #[derive(Default)]
@@ -29,6 +96,9 @@ pub struct QuickDiffState {
     /// A stage waiting for the buffer's save in flight to end, and the start of its line,
     /// followed through edits made meanwhile (`follow`): the line it stages is that one's.
     after_save: Option<(StageAt, ByteIdx)>,
+    /// The selections a `What::Ranges` stage works on (start, end), in order, followed through
+    /// edits while it waits (`follow`); taken when it runs.
+    ranges: Vec<(ByteIdx, ByteIdx)>,
     /// The peek (a click on a gutter marker), while open.
     pub peek: Option<Peek>,
     /// Stage / unstage tasks running (tests wait for them).
@@ -54,18 +124,32 @@ impl QuickDiffState {
         {
             for set in changes {
                 *start = set.map(*start, Assoc::After);
+                let map = set.mapper();
+                for (from, to) in &mut self.ranges {
+                    (*from, *to) = (map.map(*from, Assoc::After), map.map(*to, Assoc::Before));
+                }
             }
         }
     }
 }
 
-/// Which change to stage: the one the gutter shows on `line` (0-based) of `buffer`, or with
-/// `file` the whole file (`git.stageFile`).
+/// What a stage works on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum What {
+    /// The change the gutter shows on `StageAt::line`.
+    Line,
+    /// The whole file (`git.stageFile`).
+    File,
+    /// The changed lines in the selections (`QuickDiffState::ranges`; `git.stageSelectedRanges`).
+    Ranges,
+}
+
+/// Which change to stage: `what` of `buffer`, for `Line` the change on `line` (0-based).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StageAt {
     pub buffer: BufferId,
     pub line: usize,
-    pub file: bool,
+    pub what: What,
 }
 
 /// The peek: one change's removed lines and a Stage button, below the change in `group`.
@@ -80,6 +164,13 @@ pub struct Peek {
     pub mark: Mark,
 }
 
+/// What a revert of selected lines found, off-thread: the edits of the buffer's text (byte
+/// ranges, its BOM not counted) and how many changed lines they take back.
+pub(super) struct RevertPlan {
+    edits: Vec<(ByteIdx, ByteIdx, String)>,
+    lines: usize,
+}
+
 /// Results of gutter background work (`AppEvent::Gutter`).
 pub(super) enum GutterEvent {
     /// A buffer's gutter markers were computed.
@@ -88,6 +179,18 @@ pub(super) enum GutterEvent {
     Blame {
         buffer: BufferId,
         computed: crate::blame::Computed,
+    },
+    /// Selected lines were staged or unstaged: how many changed lines.
+    StagedLines {
+        at: StageAt,
+        unstage: bool,
+        result: Result<usize, String>,
+    },
+    /// Selected lines' revert was worked out against the buffer text as of `revision`.
+    Reverted {
+        buffer: BufferId,
+        revision: u64,
+        result: Result<RevertPlan, String>,
     },
     /// A change was staged or unstaged (or wasn't).
     Staged {
@@ -103,6 +206,12 @@ impl App {
             GutterEvent::Markers { buffer, computed } => self.quick_diff_done(buffer, computed),
             GutterEvent::Blame { buffer, computed } => self.blame_done(buffer, computed),
             GutterEvent::Staged { at, unstage, result } => self.staged(at, unstage, result),
+            GutterEvent::StagedLines { at, unstage, result } => self.staged_lines(at, unstage, result),
+            GutterEvent::Reverted {
+                buffer,
+                revision,
+                result,
+            } => self.reverted(buffer, revision, result),
         }
     }
 }
@@ -221,7 +330,7 @@ impl App {
             self.stage_at(StageAt {
                 buffer,
                 line,
-                file: false,
+                what: What::Line,
             });
         }
     }
@@ -249,12 +358,12 @@ impl App {
         };
         let Some(buf) = self.buffers.get(at.buffer) else { return };
         let dirty = buf.is_dirty();
-        if dirty && !at.file && buf.quick_diff.at_line(&buf.rope, at.line).is_none() {
+        if dirty && at.what == What::Line && buf.quick_diff.at_line(&buf.rope, at.line).is_none() {
             self.notify(Level::Info, format!("No change to stage at line {}", at.line + 1));
             return;
         }
         if buf.save_in_flight() {
-            let start = pos::line_start(&buf.rope, at.line.min(pos::line_count(&buf.rope) - 1));
+            let start = self.resume_point(at);
             self.quick_diff.after_save = Some((at, start));
             self.notify(Level::Info, "Waiting for the save to finish…".into());
             return;
@@ -264,26 +373,43 @@ impl App {
             self.prompt = Some(Prompt::SaveBeforeStage {
                 buffer: at.buffer,
                 line: at.line,
-                file: at.file,
+                what: at.what,
             });
             return;
         }
-        if at.file {
-            self.spawn_stage(at, false, move || stage::stage_file(&repo, &path).map(|()| None));
-        } else {
-            self.spawn_stage(at, false, move || stage::stage_line(&repo, &path, at.line));
+        match at.what {
+            What::File => self.spawn_stage(at, false, move || stage::stage_file(&repo, &path).map(|()| None)),
+            What::Line => self.spawn_stage(at, false, move || stage::stage_line(&repo, &path, at.line)),
+            What::Ranges => {
+                // The buffer is the file now: its lines are the disk's.
+                let (rope, ranges) = (buf.rope.clone(), std::mem::take(&mut self.quick_diff.ranges));
+                self.spawn_stage_lines(at, false, move || {
+                    stage::stage_ranges(&repo, &path, &line_ranges(&rope, &ranges))
+                });
+            }
+        }
+    }
+
+    /// Where a stage waiting for a save is kept: the start of its line, or of its first selection.
+    fn resume_point(&self, at: StageAt) -> ByteIdx {
+        let Some(buf) = self.buffers.get(at.buffer) else {
+            return ByteIdx(0);
+        };
+        match (at.what, self.quick_diff.ranges.first()) {
+            (What::Ranges, Some(&(from, _))) => from,
+            _ => pos::line_start(&buf.rope, at.line.min(pos::line_count(&buf.rope) - 1)),
         }
     }
 
     /// The save prompt's Save: saves, then stages once the save is done.
     pub(super) fn save_then_stage(&mut self, at: StageAt) {
-        let Some(buf) = self.buffers.get(at.buffer) else { return };
-        let start = pos::line_start(&buf.rope, at.line.min(pos::line_count(&buf.rope) - 1));
+        let start = self.resume_point(at);
         self.quick_diff.after_save = Some((at, start));
         self.save(at.buffer);
         if !self.buffers.get(at.buffer).is_some_and(|b| b.save_in_flight()) {
             // Refused (read-only): said so.
             self.quick_diff.after_save = None;
+            self.quick_diff.ranges.clear();
         }
     }
 
@@ -300,6 +426,7 @@ impl App {
         if saved {
             self.stage_at(StageAt { line, ..at });
         } else {
+            self.quick_diff.ranges.clear();
             tracing::info!(line = at.line, "not staging: the save didn't happen");
         }
     }
@@ -315,7 +442,7 @@ impl App {
         let at = StageAt {
             buffer,
             line,
-            file: false,
+            what: What::Line,
         };
         self.spawn_stage(at, true, move || {
             let text = crate::buffer::file::encode(&rope, bom);
@@ -344,7 +471,7 @@ impl App {
         let line = at.line + 1;
         let name = self.buffers.get(at.buffer).map(|b| b.name()).unwrap_or_default();
         let (level, text) = match (result, unstage) {
-            (Ok(_), false) if at.file => (Level::Info, format!("Staged {name}")),
+            (Ok(_), false) if at.what == What::File => (Level::Info, format!("Staged {name}")),
             (Ok(Some(_)), false) => (Level::Info, format!("Staged the change at line {line}")),
             (Ok(Some(_)), true) => (Level::Info, format!("Unstaged the change at line {line}")),
             (Ok(None), false) => (Level::Info, format!("No change to stage at line {line}")),
@@ -353,10 +480,162 @@ impl App {
             (Err(e), true) => (Level::Error, format!("Unstaging failed: {e}")),
         };
         self.notify(level, text);
-        if let Some(buf) = self.buffers.get_mut(at.buffer) {
+        self.staged_refresh(at.buffer);
+    }
+
+    /// The index changed: the buffer's markers and the git status are read again.
+    fn staged_refresh(&mut self, buffer: BufferId) {
+        if let Some(buf) = self.buffers.get_mut(buffer) {
             buf.quick_diff.index_changed();
         }
         self.refresh_git(None);
+    }
+
+    fn spawn_stage_lines(
+        &mut self,
+        at: StageAt,
+        unstage: bool,
+        work: impl FnOnce() -> Result<usize, stage::Error> + Send + 'static,
+    ) {
+        self.close_peek();
+        self.quick_diff.staging += 1;
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = work().map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::Gutter(GutterEvent::StagedLines { at, unstage, result }));
+        });
+    }
+
+    /// `AppEvent::Gutter(GutterEvent::StagedLines)`: says how many lines; markers and status are read again.
+    fn staged_lines(&mut self, at: StageAt, unstage: bool, result: Result<usize, String>) {
+        self.quick_diff.staging -= 1;
+        let (level, text) = match (result, unstage) {
+            (Ok(0), _) => (Level::Info, "No changes in the selection".to_string()),
+            (Ok(n), false) => (Level::Info, format!("Staged {}", changed_lines(n))),
+            (Ok(n), true) => (Level::Info, format!("Unstaged {}", changed_lines(n))),
+            (Err(e), false) => (Level::Error, format!("Staging failed: {e}")),
+            (Err(e), true) => (Level::Error, format!("Unstaging failed: {e}")),
+        };
+        self.notify(level, text);
+        self.staged_refresh(at.buffer);
+    }
+
+    /// The active text tab's buffer and its selections' (start, end) in order; a message when
+    /// the active tab isn't a text editor.
+    fn selected_ranges(&mut self) -> Option<(BufferId, Vec<(ByteIdx, ByteIdx)>)> {
+        let found = self.group().active_tab().and_then(|t| {
+            let ranges = t.view.selections.iter().map(|s| (s.start(), s.end())).collect();
+            self.buffers.get(t.buffer).map(|_| (t.buffer, ranges))
+        });
+        if found.is_none() {
+            self.notify(Level::Info, "Select lines in a text tab".into());
+        }
+        found
+    }
+
+    /// `git.stageSelectedRanges` / `git.unstageSelectedRanges`: just the changed lines the
+    /// active text tab's selections touch. Staging goes through `stage_at` (a dirty buffer saved
+    /// first, a save in flight waited for); unstaging maps the buffer's lines to the index's
+    /// through the buffer's text.
+    pub(super) fn stage_selected(&mut self, unstage: bool) {
+        let Some((buffer, ranges)) = self.selected_ranges() else {
+            return;
+        };
+        self.quick_diff.ranges = ranges;
+        let at = StageAt {
+            buffer,
+            line: 0,
+            what: What::Ranges,
+        };
+        if !unstage {
+            return self.stage_at(at);
+        }
+        let Some((repo, path)) = self.git_path(buffer) else {
+            return self.quick_diff.ranges.clear();
+        };
+        let Some(buf) = self.buffers.get(buffer) else { return };
+        let (rope, bom) = (buf.rope.clone(), buf.bom);
+        let ranges = std::mem::take(&mut self.quick_diff.ranges);
+        self.spawn_stage_lines(at, true, move || {
+            let text = crate::buffer::file::encode(&rope, bom);
+            stage::unstage_ranges(&repo, &path, &text, &line_ranges(&rope, &ranges))
+        });
+    }
+
+    /// `git.revertSelectedRanges`: the changed lines the selections touch go back to the index's
+    /// lines in the buffer (one undo step, unsaved). The diff against the index is worked out
+    /// off-thread on the buffer's text as it is now; `reverted` applies it if the buffer still
+    /// is that text.
+    pub(super) fn revert_selected(&mut self) {
+        let Some((buffer, ranges)) = self.selected_ranges() else {
+            return;
+        };
+        let Some(buf) = self.buffers.get(buffer) else { return };
+        if let Some(reason) = &buf.read_only {
+            let text = format!("Read-only: {reason}");
+            return self.notify(Level::Error, text);
+        }
+        let Some((repo, path)) = self.git_path(buffer) else {
+            return;
+        };
+        self.ensure_status_loaded();
+        let buf = self.buffers.get(buffer).expect("checked above");
+        let name = buf.name();
+        let entry = self.git.status.as_ref().and_then(|s| s.entry(&path));
+        let why = match entry {
+            Some(e) if e.unstaged == Some(Change::Untracked) => Some("it isn't in the index"),
+            Some(e) if e.unstaged == Some(Change::Conflicted) || e.staged == Some(Change::Conflicted) => {
+                Some("it has merge conflicts")
+            }
+            _ => None,
+        };
+        if let Some(why) = why {
+            return self.notify(Level::Info, format!("Can't revert lines in {name}: {why}"));
+        }
+        let (rope, bom, revision) = (buf.rope.clone(), buf.bom, buf.revision());
+        self.quick_diff.staging += 1;
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = plan_revert(&repo, &path, &rope, bom, &line_ranges(&rope, &ranges))
+                .map_err(|why| format!("Can't revert lines in {name}: {why}"));
+            let _ = tx.send(AppEvent::Gutter(GutterEvent::Reverted {
+                buffer,
+                revision,
+                result,
+            }));
+        });
+    }
+
+    /// `AppEvent::Gutter(GutterEvent::Reverted)`: the plan's edits go into the buffer as one
+    /// undo step, unless it changed meanwhile.
+    fn reverted(&mut self, buffer: BufferId, revision: u64, result: Result<RevertPlan, String>) {
+        self.quick_diff.staging -= 1;
+        let Some(buf) = self.buffers.get(buffer) else { return };
+        let plan = match result {
+            Ok(plan) => plan,
+            Err(e) => return self.notify(Level::Error, e),
+        };
+        if plan.edits.is_empty() {
+            return self.notify(Level::Info, "No changes in the selection".into());
+        }
+        let name = buf.name();
+        if buf.revision() != revision {
+            let text = format!("Can't revert lines in {name}: the file changed, try again");
+            return self.notify(Level::Error, text);
+        }
+        if let Some(reason) = &buf.read_only {
+            return self.notify(Level::Error, format!("Read-only: {reason}"));
+        }
+        let mut changes = ChangeSet::with_capacity(plan.edits.len(), plan.edits.iter().map(|e| e.2.len()).sum());
+        for (start, end, text) in &plan.edits {
+            changes.push(*start, *end, text);
+        }
+        self.apply_changes(buffer, changes);
+        self.follow_edits();
+        self.notify(
+            Level::Info,
+            format!("Reverted {} (not saved)", changed_lines(plan.lines)),
+        );
     }
 
     /// Opens the peek for the change drawn on `line` in `group` (closes it when it's already
@@ -403,7 +682,7 @@ impl App {
             self.stage_at(StageAt {
                 buffer: p.buffer,
                 line: p.lines.start,
-                file: false,
+                what: What::Line,
             });
         }
     }
@@ -486,5 +765,58 @@ impl App {
             return own;
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::single_range_in_vec_init)]
+    use super::*;
+
+    fn lines_of(text: &str, spans: &[(usize, usize)]) -> Vec<Range<usize>> {
+        line_ranges(
+            &ropey::Rope::from_str(text),
+            &spans.iter().map(|&(a, b)| (ByteIdx(a), ByteIdx(b))).collect::<Vec<_>>(),
+        )
+    }
+
+    #[test]
+    fn selections_become_merged_line_ranges() {
+        let text = "aa\nbb\ncc\ndd\n";
+        // A cursor is its line; a selection ending at column 0 doesn't take that line.
+        assert_eq!(lines_of(text, &[(1, 1)]), [0..1]);
+        assert_eq!(lines_of(text, &[(1, 3)]), [0..1]);
+        assert_eq!(lines_of(text, &[(1, 4)]), [0..2]);
+        assert_eq!(lines_of(text, &[(0, 6)]), [0..2]);
+        // Touching or overlapping ranges merge; others stay apart.
+        assert_eq!(lines_of(text, &[(0, 2), (3, 4), (9, 10)]), [0..2, 3..4]);
+        // To the end of the text: the empty line after the last break isn't taken.
+        assert_eq!(lines_of(text, &[(9, 12)]), [3..4]);
+        assert_eq!(lines_of(text, &[(9, 9)]), [3..4]);
+        assert_eq!(lines_of("x", &[(0, 1)]), [0..1]);
+    }
+
+    #[test]
+    fn pending_ranges_follow_edits_of_their_buffer_only() {
+        let mut q = QuickDiffState::default();
+        let at = StageAt {
+            buffer: 1,
+            line: 0,
+            what: What::Ranges,
+        };
+        q.after_save = Some((at, ByteIdx(10)));
+        q.ranges = vec![(ByteIdx(10), ByteIdx(20))];
+        // Two characters typed before the selection, then three inside it.
+        let mut a = ChangeSet::with_capacity(1, 2);
+        a.push(ByteIdx(0), ByteIdx(0), "xx");
+        let mut b = ChangeSet::with_capacity(1, 3);
+        b.push(ByteIdx(15), ByteIdx(15), "yyy");
+        q.follow(1, &[Arc::new(a), Arc::new(b)]);
+        assert_eq!(q.ranges, [(ByteIdx(12), ByteIdx(25))]);
+        assert_eq!(q.after_save.map(|(_, s)| s), Some(ByteIdx(12)));
+        let mut c = ChangeSet::with_capacity(1, 2);
+        c.push(ByteIdx(0), ByteIdx(0), "zz");
+        q.follow(2, &[Arc::new(c)]);
+        assert_eq!(q.ranges, [(ByteIdx(12), ByteIdx(25))]);
     }
 }

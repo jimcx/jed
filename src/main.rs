@@ -167,6 +167,8 @@ mod spell_dict;
 mod spell_scope;
 mod spell_state;
 mod spellcheck;
+#[cfg(test)]
+mod stage_selected_lines_tests;
 mod suggestion;
 mod syntax;
 #[cfg(test)]

@@ -33,8 +33,7 @@ pub enum Prompt {
     SaveBeforeStage {
         buffer: BufferId,
         line: usize,
-        /// The whole file (`git.stageFile`), not the change at `line`.
-        file: bool,
+        what: super::quick_diff::What,
     },
     /// Stage All (the Source Control view) with dirty buffers among the files: save them first.
     SaveBeforeStageAll {
@@ -193,13 +192,13 @@ impl App {
                 }
                 _ => self.prompt = Some(Prompt::Trust { commands }),
             },
-            Prompt::SaveBeforeStage { buffer, line, file } => match ch {
+            Prompt::SaveBeforeStage { buffer, line, what } => match ch {
                 _ if enter || ch == Some('s') => {
                     self.close_prompt();
-                    self.save_then_stage(super::quick_diff::StageAt { buffer, line, file });
+                    self.save_then_stage(super::quick_diff::StageAt { buffer, line, what });
                 }
                 _ if esc || ch == Some('c') => self.close_prompt(),
-                _ => self.prompt = Some(Prompt::SaveBeforeStage { buffer, line, file }),
+                _ => self.prompt = Some(Prompt::SaveBeforeStage { buffer, line, what }),
             },
             Prompt::SaveBeforeStageAll { buffers } => match ch {
                 _ if enter || ch == Some('s') => {

@@ -14,7 +14,7 @@ use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use super::files::Goto;
 use super::mouse::{Drag, wheel_columns};
-use super::quick_diff::StageAt;
+use super::quick_diff::{StageAt, What};
 use super::{App, AppEvent, Focus, Level, Prompt};
 use crate::buffer::BufferId;
 use crate::buffer::change::ChangeSet;
@@ -637,7 +637,7 @@ impl App {
             self.stage_at(StageAt {
                 buffer,
                 line,
-                file: false,
+                what: What::Line,
             });
             return;
         }
@@ -842,7 +842,7 @@ impl App {
             self.stage_at(StageAt {
                 buffer,
                 line: 0,
-                file: true,
+                what: What::File,
             });
         } else if unstage {
             let done = format!("Unstaged {name}");

@@ -227,6 +227,14 @@ pub enum Command {
     /// In an unstaged diff view (Index ↔ Working Tree): the change at the cursor back to the
     /// index's text in the working tree (the open buffer, one undo step, or the file on disk).
     RevertHunk,
+    /// `git.stageSelectedRanges` (unbound): stages just the changed lines the selections touch
+    /// (a text tab; saved first, as `StageHunk`).
+    StageSelectedRanges,
+    /// `git.unstageSelectedRanges`: takes back just those changed lines from the index.
+    UnstageSelectedRanges,
+    /// `git.revertSelectedRanges`: puts the index's lines back for those changes in the buffer
+    /// (one undo step, unsaved).
+    RevertSelectedRanges,
     /// Alt+F5 / Shift+Alt+F5 (F7 / Shift+F7 in a diff tab): the cursor to the next / previous
     /// change in the gutter, or in the diff view.
     NextChange,
@@ -1223,6 +1231,9 @@ impl Command {
             Command::StageHunk,
             Command::UnstageHunk,
             Command::RevertHunk,
+            Command::StageSelectedRanges,
+            Command::UnstageSelectedRanges,
+            Command::RevertSelectedRanges,
             Command::NextChange,
             Command::PreviousChange,
             Command::CompareWithSaved,
@@ -1581,6 +1592,9 @@ impl Command {
             Command::StageHunk => "git.stageHunk".into(),
             Command::UnstageHunk => "git.unstageHunk".into(),
             Command::RevertHunk => "git.revertHunk".into(),
+            Command::StageSelectedRanges => "git.stageSelectedRanges".into(),
+            Command::UnstageSelectedRanges => "git.unstageSelectedRanges".into(),
+            Command::RevertSelectedRanges => "git.revertSelectedRanges".into(),
             Command::NextChange => "editor.nextChange".into(),
             Command::CompareWithSaved => "file.compareWithSaved".into(),
             Command::CompareActiveFileWith => "file.compareActiveFileWith".into(),
@@ -2032,6 +2046,9 @@ impl Command {
             Command::StageHunk => "Git: Stage Change at Cursor",
             Command::UnstageHunk => "Git: Unstage Change at Cursor",
             Command::RevertHunk => "Git: Revert Change at Cursor",
+            Command::StageSelectedRanges => "Git: Stage Selected Ranges",
+            Command::UnstageSelectedRanges => "Git: Unstage Selected Ranges",
+            Command::RevertSelectedRanges => "Git: Revert Selected Ranges",
             Command::NextChange => "Go to Next Change",
             Command::CompareWithSaved => "File: Compare with Disk",
             Command::CompareActiveFileWith => "File: Compare Active File With…",
@@ -2335,6 +2352,9 @@ mod tests {
             Command::StageHunk => 65,
             Command::UnstageHunk => 66,
             Command::RevertHunk => 85,
+            Command::StageSelectedRanges => 178,
+            Command::UnstageSelectedRanges => 179,
+            Command::RevertSelectedRanges => 180,
             Command::NextChange => 67,
             Command::PreviousChange => 68,
             Command::CompareWithSaved => 69,
@@ -2433,7 +2453,7 @@ mod tests {
             Command::Spell(_) => 149,
         }
     }
-    const VARIANTS: u8 = 155;
+    const VARIANTS: u8 = 181;
 
     #[test]
     fn all_lists_every_variant() {

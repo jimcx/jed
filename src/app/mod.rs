@@ -43,6 +43,7 @@ mod palette;
 mod problems;
 mod prompt;
 mod quick_diff;
+pub use quick_diff::What;
 mod recent;
 mod rename;
 mod reopen;
@@ -1468,6 +1469,9 @@ impl App {
             Command::StageHunk => self.stage_command(false),
             Command::UnstageHunk => self.stage_command(true),
             Command::RevertHunk => self.diff_revert(None),
+            Command::StageSelectedRanges => self.stage_selected(false),
+            Command::UnstageSelectedRanges => self.stage_selected(true),
+            Command::RevertSelectedRanges => self.revert_selected(),
             Command::NextChange | Command::PreviousChange if self.diff_command(cmd) => {}
             Command::NextChange => self.go_to_change(true),
             Command::PreviousChange => self.go_to_change(false),
