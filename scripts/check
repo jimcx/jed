@@ -7,6 +7,14 @@
 # failure. Extra args go to `cargo test` (e.g. `scripts/check test milestone_9`).
 # Tests run under scripts/timeout (900 s, $CHECK_TIMEOUT to change it).
 # Exits non-zero when a check fails.
+#
+# Background runs: `scripts/check --bg [args...]` starts the same run detached
+# (output in target/check.log, pid in target/check.pid) and returns at once;
+# `scripts/check wait [seconds]` blocks until it ends (default 540 s, under an
+# agent's 10-minute tool limit), prints its output and exits with its status, or
+# exits 125 saying "still running" so you call it again. Never wait with
+# `pgrep -f scripts/check`: -f matches the waiting shell's own command line,
+# so such a loop finds itself and never ends.
 
 dir=$(cd "$(dirname "$0")" && pwd)
 cd "$dir/.." || exit 1
@@ -26,6 +34,45 @@ unset JED_IPC
 # No shared CARGO_TARGET_DIR: each checkout/worktree keeps its own `target/`, so
 # two tasks building at once can't clobber each other's binaries. Export
 # CARGO_TARGET_DIR yourself to point the (non-concurrent) budget runs elsewhere.
+# Background run bookkeeping (per checkout, like target/ itself).
+state=target/check
+bg_running() { [ -f "$state.pid" ] && kill -0 "$(cat "$state.pid")" 2>/dev/null; }
+
+case "$1" in
+    --bg)
+        shift
+        if bg_running; then
+            echo "check: already running in the background (pid $(cat "$state.pid")); use scripts/check wait"
+            exit 1
+        fi
+        mkdir -p target
+        rm -f "$state.status"
+        # The status file is written last, so it existing means the run is over.
+        nohup sh -c 'st=$1; shift; "$0" "$@" >"$st.log" 2>&1; echo $? >"$st.status"' "$dir/check" "$state" "$@" \
+            </dev/null >/dev/null 2>&1 &
+        echo $! >"$state.pid"
+        echo "check: started in the background (pid $!); scripts/check wait for the result"
+        exit 0
+        ;;
+    wait)
+        limit=${2:-540}
+        [ -f "$state.pid" ] || { echo "check: no background run (start one with scripts/check --bg)"; exit 1; }
+        waited=0
+        while [ ! -f "$state.status" ] && bg_running && [ "$waited" -lt "$limit" ]; do
+            sleep 2
+            waited=$((waited + 2))
+        done
+        if [ ! -f "$state.status" ]; then
+            if bg_running; then echo "check: still running after ${limit}s; run scripts/check wait again"; exit 125; fi
+            cat "$state.log" 2>/dev/null
+            echo "check: the background run died without a result"
+            exit 1
+        fi
+        cat "$state.log"
+        exit "$(cat "$state.status")"
+        ;;
+esac
+
 out=$(mktemp)
 trap 'rm -f "$out"' EXIT
 
