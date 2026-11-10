@@ -12016,7 +12016,7 @@ mod title_bar {
         );
         let term = draw(&mut app);
         let top = row(&term, 0);
-        assert!(top.starts_with(" j\u{1d49}\u{1d48} "), "{top:?}");
+        assert!(top.starts_with(" J\u{1d49}\u{1d48} "), "{top:?}");
         // The row is cut to fit 80 columns (a long macOS temp path loses its tail), so check the text itself.
         assert!(
             app.identity
@@ -12061,7 +12061,7 @@ mod title_bar {
             "[window]\ntitle = \"api\"\ntitle_bar = true\n[[window.buttons]]\ncommand = \"view.toggleSidebar\"\nlabel = \"E\"\n",
         );
         let term = draw(&mut app);
-        assert!(row(&term, 0).starts_with(" j\u{1d49}\u{1d48} api"));
+        assert!(row(&term, 0).starts_with(" J\u{1d49}\u{1d48} api"));
         let before = app.ui.side_visible;
         let (rect, i) = app.hits.title_buttons[0];
         assert_eq!(i, 0);
