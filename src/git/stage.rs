@@ -4,7 +4,9 @@
 //!
 //! A hunk is staged by writing a new index blob: the index text with that hunk of the
 //! index → disk diff applied (unstaging: the index text with that hunk of the HEAD → index
-//! diff reverted), keeping the entry's mode. With [`GIT_CONTEXT`](super::diff::GIT_CONTEXT)
+//! diff reverted), keeping the entry's mode. Staging, unstaging or reverting picked *lines*
+//! ([`stage_lines`], [`unstage_lines`], [`revert_lines`]; a [`Pick`](super::diff::Pick) over
+//! context-0 hunks) does the same with only those changed lines of each hunk. With [`GIT_CONTEXT`](super::diff::GIT_CONTEXT)
 //! hunks that is what `git add -p` / `git reset -p` write for the same hunk. Texts are compared
 //! as stored (no clean filters such as `core.autocrlf`).
 
@@ -272,6 +274,104 @@ pub fn revert_hunk(repo: &Repo, path: &Path, shown: &FileDiff, k: usize) -> Resu
     Ok(shown.new.clone())
 }
 
+/// Blocking: stages the changed lines `pick` takes from `shown` (an `Unstaged` [`file_diff`]
+/// with context 0): the index text with each hunk reduced to the picked lines
+/// ([`diff::apply_lines`]), checked and written as [`stage_hunk`] (`Stale`, `Conflicted`,
+/// `Binary`; a file gone from disk whose whole deletion is picked leaves the index). Returns how
+/// many changed lines were staged; 0 (nothing picked) writes nothing.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn stage_lines(repo: &Repo, path: &Path, shown: &FileDiff, pick: &diff::Pick) -> Result<usize, Error> {
+    let r = repo.open()?;
+    let mut index = r.index()?;
+    if conflicted(&index, path) {
+        return Err(Error::Conflicted);
+    }
+    let entry = in_index(&r, path)?;
+    let disk = disk_text(repo, path)?;
+    check_texts(shown, &entry, &disk)?;
+    let n = pick.count(&shown.diff.hunks);
+    if n == 0 {
+        return Ok(0);
+    }
+    let text = diff::apply_lines(&shown.old, &shown.new, &shown.diff.hunks, pick);
+    if disk.is_none() && text.is_empty() {
+        index.remove_path(path)?;
+    } else {
+        let mode = entry.or(disk).map_or(0o100644, |t| t.mode);
+        index.add_frombuffer(&new_entry(path, mode), &text)?;
+    }
+    index.write()?;
+    tracing::info!(path = %path.display(), lines = n, "staged lines");
+    Ok(n)
+}
+
+/// Blocking: unstages the changed lines `pick` takes from `shown` (a `Staged` [`file_diff`] with
+/// context 0), as [`stage_lines`] ([`diff::revert_lines`] on the index text). A file not in HEAD
+/// whose result is empty leaves the index (untracked again). Returns how many lines.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn unstage_lines(repo: &Repo, path: &Path, shown: &FileDiff, pick: &diff::Pick) -> Result<usize, Error> {
+    let r = repo.open()?;
+    let mut index = r.index()?;
+    if conflicted(&index, path) {
+        return Err(Error::Conflicted);
+    }
+    let head = in_head(&r, path)?;
+    let entry = in_index(&r, path)?;
+    check_texts(shown, &head, &entry)?;
+    let n = pick.count(&shown.diff.hunks);
+    if n == 0 {
+        return Ok(0);
+    }
+    let text = diff::revert_lines(&shown.old, &shown.new, &shown.diff.hunks, pick);
+    if head.is_none() && text.is_empty() {
+        index.remove_path(path)?;
+    } else {
+        let mode = entry.or(head).map_or(0o100644, |t| t.mode);
+        index.add_frombuffer(&new_entry(path, mode), &text)?;
+    }
+    index.write()?;
+    tracing::info!(path = %path.display(), lines = n, "unstaged lines");
+    Ok(n)
+}
+
+/// Blocking: reverts the changed lines `pick` takes from `shown` (an `Unstaged` [`file_diff`]
+/// with context 0) in the working tree, as [`revert_hunk`] does a hunk ([`diff::revert_lines`]):
+/// the index's lines come back, the rest of the file stays; permissions kept, a deleted file back
+/// with the index entry's executable bit; `Stale`, `Conflicted`, `Binary`, `Untracked` and
+/// `Symlink` refused. The index isn't touched. Returns the file's bytes before, or `None` when
+/// nothing was picked (nothing written).
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn revert_lines(repo: &Repo, path: &Path, shown: &FileDiff, pick: &diff::Pick) -> Result<Option<Vec<u8>>, Error> {
+    let r = repo.open()?;
+    let index = r.index()?;
+    if conflicted(&index, path) {
+        return Err(Error::Conflicted);
+    }
+    let entry = in_index(&r, path)?;
+    let Some(mode) = entry.as_ref().map(|e| e.mode) else {
+        return Err(Error::Untracked);
+    };
+    let disk = disk_text(repo, path)?;
+    if mode == SYMLINK || disk.as_ref().is_some_and(|t| t.mode == SYMLINK) {
+        return Err(Error::Symlink);
+    }
+    check_texts(shown, &entry, &disk)?;
+    let n = pick.count(&shown.diff.hunks);
+    if n == 0 {
+        return Ok(None);
+    }
+    let text = diff::revert_lines(&shown.old, &shown.new, &shown.diff.hunks, pick);
+    let full = repo.workdir.join(path);
+    crate::buffer::file::atomic_write(&full, &text)?;
+    #[cfg(unix)]
+    if disk.is_none() && mode == 0o100755 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&full, std::fs::Permissions::from_mode(0o755))?;
+    }
+    tracing::info!(path = %path.display(), lines = n, "reverted lines");
+    Ok(Some(shown.new.clone()))
+}
+
 /// Blocking: the file in the working tree gets the index's text back (`git checkout -- path`),
 /// bytes as stored, its permissions kept; a file deleted from the work tree comes back with the
 /// index entry's mode. The index isn't touched. Returns the file's bytes before (`None`: it was
@@ -396,13 +496,20 @@ pub fn unstage_line(repo: &Repo, path: &Path, worktree: &[u8], line: usize) -> R
 
 /// `shown`'s hunk `k`, if `old` and `new` are still its texts.
 fn check<'a>(shown: &'a FileDiff, k: usize, old: &Option<Text>, new: &Option<Text>) -> Result<&'a Hunk, Error> {
+    check_texts(shown, old, new)?;
+    shown.diff.hunks.get(k).ok_or(Error::Stale)
+}
+
+/// `Ok` if `old` and `new` are still `shown`'s texts (and it isn't binary), else `Binary` / `Stale`.
+fn check_texts(shown: &FileDiff, old: &Option<Text>, new: &Option<Text>) -> Result<(), Error> {
     if shown.diff.binary {
         return Err(Error::Binary);
     }
     let same = |t: &Option<Text>, bytes: &[u8]| t.as_ref().map_or(&[][..], |t| &t.bytes) == bytes;
-    match shown.diff.hunks.get(k) {
-        Some(h) if same(old, &shown.old) && same(new, &shown.new) => Ok(h),
-        _ => Err(Error::Stale),
+    if same(old, &shown.old) && same(new, &shown.new) {
+        Ok(())
+    } else {
+        Err(Error::Stale)
     }
 }
 
@@ -463,6 +570,7 @@ fn new_entry(path: &Path, mode: u32) -> IndexEntry {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::single_range_in_vec_init)]
     use std::path::PathBuf;
 
     use super::super::diff::GIT_CONTEXT;
@@ -1138,5 +1246,293 @@ mod tests {
         let res = discard_file(&repo, Path::new("new.txt"));
         assert!(matches!(res, Err(Error::Untracked)), "{res:?}");
         assert_eq!(std::fs::read_to_string(root.join("new.txt")).unwrap(), "x\n");
+    }
+
+    // Picked lines. The file: HEAD `1..6`; the work tree turns `2 3` into `TWO THREE`, drops `5`
+    // and adds `six`: three context-0 hunks (old/new lines 0-based: 1..3/1..3, 4..5/4..4, 6..6/5..6).
+    const OLD: &str = "1\n2\n3\n4\n5\n6\n";
+    const NEW: &str = "1\nTWO\nTHREE\n4\n6\nsix\n";
+
+    /// The pick used throughout: old `3`, new `TWO`, and the whole deletion of `5`.
+    fn the_pick() -> diff::Pick {
+        diff::Pick::new([2..3, 4..5], [1..2])
+    }
+
+    fn picked_repo() -> (tempfile::TempDir, PathBuf) {
+        let (d, root) = repo(&[("f.txt", OLD.as_bytes())]);
+        std::fs::write(root.join("f.txt"), NEW).unwrap();
+        (d, root)
+    }
+
+    fn zero_diff(repo: &Repo, side: Side) -> FileDiff {
+        let d = file_diff(repo, Path::new("f.txt"), side, 0).unwrap();
+        assert_eq!(d.diff.hunks.len(), 3, "{:?}", d.diff.hunks);
+        d
+    }
+
+    /// `git apply` of a hand-written zero-context `patch` in `dir` (`--cached` or on the work tree).
+    fn apply_patch(dir: &Path, cached: bool, patch: &str) {
+        let full = format!("--- a/f.txt\n+++ b/f.txt\n{patch}");
+        let mut args = vec!["apply", "--unidiff-zero"];
+        if cached {
+            args.push("--cached");
+        }
+        git_with_input(dir, &args, Some(&full));
+    }
+
+    /// What `git add -p`'s edit makes of the three hunks for `the_pick`, on the index text `OLD`.
+    const STAGE_PATCH: &str = "@@ -2,2 +2,2 @@\n 2\n-3\n+TWO\n@@ -5,1 +4,0 @@\n-5\n";
+    /// The same picked changes undone, on `NEW`: `TWO` back to `3` (`THREE` stays), `5` back.
+    const UNDO_PATCH: &str = "@@ -2,2 +2,2 @@\n-TWO\n+3\n THREE\n@@ -4,0 +5,1 @@\n+5\n";
+
+    #[test]
+    fn stage_lines_like_a_hand_edited_patch() {
+        let (_d, root) = picked_repo();
+        let other = copy(&root);
+        let repo = r(&root);
+        let shown = zero_diff(&repo, Side::Unstaged);
+        assert_eq!(stage_lines(&repo, Path::new("f.txt"), &shown, &the_pick()).unwrap(), 3);
+        apply_patch(&other, true, STAGE_PATCH);
+        assert_eq!(index_state(&root), index_state(&other));
+        assert_eq!(
+            git(&root, &["show", ":f.txt"]),
+            "1\n2\nTWO\n4\n6\n",
+            "THREE and six stay unstaged"
+        );
+        assert_eq!(std::fs::read_to_string(root.join("f.txt")).unwrap(), NEW);
+        assert_eq!(git(&root, &["status", "--porcelain"]), "MM f.txt\n");
+    }
+
+    #[test]
+    fn unstage_lines_like_a_hand_edited_patch() {
+        let (_d, root) = picked_repo();
+        git(&root, &["add", "f.txt"]);
+        let other = copy(&root);
+        let repo = r(&root);
+        let shown = zero_diff(&repo, Side::Staged);
+        assert_eq!(
+            unstage_lines(&repo, Path::new("f.txt"), &shown, &the_pick()).unwrap(),
+            3
+        );
+        apply_patch(&other, true, UNDO_PATCH);
+        assert_eq!(index_state(&root), index_state(&other));
+        assert_eq!(git(&root, &["show", ":f.txt"]), "1\n3\nTHREE\n4\n5\n6\nsix\n");
+    }
+
+    #[test]
+    fn revert_lines_like_a_hand_edited_patch() {
+        let (_d, root) = picked_repo();
+        let other = copy(&root);
+        let repo = r(&root);
+        let shown = zero_diff(&repo, Side::Unstaged);
+        let before = revert_lines(&repo, Path::new("f.txt"), &shown, &the_pick()).unwrap();
+        assert_eq!(before.as_deref(), Some(NEW.as_bytes()));
+        apply_patch(&other, false, UNDO_PATCH);
+        assert_eq!(
+            std::fs::read(root.join("f.txt")).unwrap(),
+            std::fs::read(other.join("f.txt")).unwrap()
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("f.txt")).unwrap(),
+            "1\n3\nTHREE\n4\n5\n6\nsix\n"
+        );
+        assert_eq!(index_state(&root), index_state(&other));
+    }
+
+    #[test]
+    fn picking_nothing_writes_nothing() {
+        let (_d, root) = picked_repo();
+        let before = index_state(&root);
+        let repo = r(&root);
+        let shown = zero_diff(&repo, Side::Unstaged);
+        let none = diff::Pick::default();
+        // A pick of lines outside every hunk counts for nothing either.
+        let outside = diff::Pick::new([0..1], [0..1]);
+        for p in [&none, &outside] {
+            assert_eq!(stage_lines(&repo, Path::new("f.txt"), &shown, p).unwrap(), 0);
+            assert_eq!(revert_lines(&repo, Path::new("f.txt"), &shown, p).unwrap(), None);
+        }
+        assert_eq!(index_state(&root), before);
+        assert_eq!(std::fs::read_to_string(root.join("f.txt")).unwrap(), NEW);
+    }
+
+    #[test]
+    fn lines_of_a_stale_diff_are_refused() {
+        let (_d, root) = picked_repo();
+        let repo = r(&root);
+        let shown = zero_diff(&repo, Side::Unstaged);
+        std::fs::write(root.join("f.txt"), format!("{NEW}more\n")).unwrap();
+        let res = stage_lines(&repo, Path::new("f.txt"), &shown, &the_pick());
+        assert!(matches!(res, Err(Error::Stale)), "{res:?}");
+        assert_eq!(git(&root, &["status", "--porcelain"]), " M f.txt\n", "index untouched");
+        let res = revert_lines(&repo, Path::new("f.txt"), &shown, &the_pick());
+        assert!(matches!(res, Err(Error::Stale)), "{res:?}");
+        assert_eq!(
+            std::fs::read_to_string(root.join("f.txt")).unwrap(),
+            format!("{NEW}more\n")
+        );
+        std::fs::write(root.join("f.txt"), NEW).unwrap();
+        let staged_shown = {
+            git(&root, &["add", "f.txt"]);
+            zero_diff(&repo, Side::Staged)
+        };
+        git(&root, &["reset", "-q"]);
+        let res = unstage_lines(&repo, Path::new("f.txt"), &staged_shown, &the_pick());
+        assert!(matches!(res, Err(Error::Stale)), "{res:?}");
+        assert_eq!(std::fs::read_to_string(root.join("f.txt")).unwrap(), NEW);
+        assert_eq!(git(&root, &["status", "--porcelain"]), " M f.txt\n");
+    }
+
+    #[test]
+    fn lines_of_binary_untracked_and_conflicted_files_are_refused() {
+        let (_d, root) = repo(&[("bin", b"a\0b\n"), ("f", b"base\n")]);
+        std::fs::write(root.join("bin"), b"a\0c\n").unwrap();
+        std::fs::write(root.join("new.txt"), "x\n").unwrap();
+        let repo = r(&root);
+        let all = diff::Pick::new([0..9], [0..9]);
+        let d = file_diff(&repo, Path::new("bin"), Side::Unstaged, 0).unwrap();
+        assert!(matches!(
+            stage_lines(&repo, Path::new("bin"), &d, &all),
+            Err(Error::Binary)
+        ));
+        assert!(matches!(
+            revert_lines(&repo, Path::new("bin"), &d, &all),
+            Err(Error::Binary)
+        ));
+        let d = file_diff(&repo, Path::new("new.txt"), Side::Unstaged, 0).unwrap();
+        assert!(matches!(
+            revert_lines(&repo, Path::new("new.txt"), &d, &all),
+            Err(Error::Untracked)
+        ));
+        let blob = |text: &str| git_with_input(&root, &["hash-object", "-w", "--stdin"], Some(text));
+        let (base, ours, theirs) = (blob("base\n"), blob("ours\n"), blob("theirs\n"));
+        git(&root, &["rm", "-q", "--cached", "f"]);
+        let info = format!(
+            "100644 {} 1\tf\n100644 {} 2\tf\n100644 {} 3\tf\n",
+            base.trim(),
+            ours.trim(),
+            theirs.trim()
+        );
+        git_with_input(&root, &["update-index", "--index-info"], Some(&info));
+        std::fs::write(root.join("f"), "resolved\n").unwrap();
+        let d = FileDiff::default();
+        for res in [
+            stage_lines(&repo, Path::new("f"), &d, &all).map(|_| ()),
+            unstage_lines(&repo, Path::new("f"), &d, &all).map(|_| ()),
+            revert_lines(&repo, Path::new("f"), &d, &all).map(|_| ()),
+        ] {
+            assert!(matches!(res, Err(Error::Conflicted)), "{res:?}");
+        }
+    }
+
+    #[test]
+    fn staging_a_whole_deletion_of_a_gone_file_leaves_the_index() {
+        let (_d, root) = repo(&[("f.txt", b"a\nb\n"), ("g", b"g\n")]);
+        std::fs::remove_file(root.join("f.txt")).unwrap();
+        let repo = r(&root);
+        let shown = file_diff(&repo, Path::new("f.txt"), Side::Unstaged, 0).unwrap();
+        // Part of the deletion first: the index keeps the rest.
+        assert_eq!(
+            stage_lines(&repo, Path::new("f.txt"), &shown, &diff::Pick::new([0..1], [])).unwrap(),
+            1
+        );
+        assert_eq!(git(&root, &["show", ":f.txt"]), "b\n");
+        let shown = file_diff(&repo, Path::new("f.txt"), Side::Unstaged, 0).unwrap();
+        assert_eq!(
+            stage_lines(&repo, Path::new("f.txt"), &shown, &diff::Pick::new([0..1], [])).unwrap(),
+            1
+        );
+        assert_eq!(git(&root, &["ls-files"]), "g\n");
+        assert_eq!(git(&root, &["status", "--porcelain"]), "D  f.txt\n");
+    }
+
+    #[test]
+    fn unstaging_a_whole_addition_makes_the_file_untracked() {
+        let (_d, root) = repo(&[("g", b"g\n")]);
+        std::fs::write(root.join("f.txt"), "a\nb\n").unwrap();
+        git(&root, &["add", "f.txt"]);
+        let repo = r(&root);
+        let shown = file_diff(&repo, Path::new("f.txt"), Side::Staged, 0).unwrap();
+        let first = diff::Pick::new([], [0..1]);
+        assert_eq!(unstage_lines(&repo, Path::new("f.txt"), &shown, &first).unwrap(), 1);
+        assert_eq!(git(&root, &["show", ":f.txt"]), "b\n");
+        let shown = file_diff(&repo, Path::new("f.txt"), Side::Staged, 0).unwrap();
+        assert_eq!(unstage_lines(&repo, Path::new("f.txt"), &shown, &first).unwrap(), 1);
+        assert_eq!(git(&root, &["ls-files"]), "g\n");
+        assert_eq!(git(&root, &["status", "--porcelain"]), "?? f.txt\n");
+    }
+
+    /// The terminator rule against git: a last line without a newline that a picked line follows
+    /// gets one, a picked last line keeps having none (hand-written patches with `\ No newline`).
+    #[test]
+    fn lines_at_a_missing_final_newline_like_git_apply() {
+        let marker = "\\ No newline at end of file\n";
+        let cases = [
+            // Only the added `B`: `b` stays, now with a newline in front of `B`.
+            (
+                diff::Pick::new([], [1..2]),
+                format!("@@ -2 +2,2 @@\n-b\n{marker}+b\n+B\n{marker}"),
+            ),
+            // Only the removal of `b`.
+            (diff::Pick::new([1..2], []), format!("@@ -2 +1,0 @@\n-b\n{marker}")),
+            // Both: `B` replaces `b`, unterminated.
+            (
+                diff::Pick::new([1..2], [1..2]),
+                format!("@@ -2 +2 @@\n-b\n{marker}+B\n{marker}"),
+            ),
+        ];
+        for (pick, patch) in cases {
+            let (_d, root) = repo(&[("f.txt", b"a\nb")]);
+            std::fs::write(root.join("f.txt"), "a\nB").unwrap();
+            let other = copy(&root);
+            let repo = r(&root);
+            let shown = file_diff(&repo, Path::new("f.txt"), Side::Unstaged, 0).unwrap();
+            let n = stage_lines(&repo, Path::new("f.txt"), &shown, &pick).unwrap();
+            assert_eq!(n, pick.count(&shown.diff.hunks));
+            apply_patch(&other, true, &patch);
+            assert_eq!(index_state(&root), index_state(&other), "{pick:?}");
+        }
+    }
+
+    /// A symbolic link isn't reverted by line, and nothing is written through it.
+    #[cfg(unix)]
+    #[test]
+    fn revert_lines_refuses_a_symlink() {
+        let (_d, root) = repo(&[("target.txt", b"t\n")]);
+        std::os::unix::fs::symlink("target.txt", root.join("link")).unwrap();
+        commit_all(&root, "link");
+        std::fs::remove_file(root.join("link")).unwrap();
+        std::os::unix::fs::symlink("elsewhere.txt", root.join("link")).unwrap();
+        let repo = r(&root);
+        let d = file_diff(&repo, Path::new("link"), Side::Unstaged, 0).unwrap();
+        let res = revert_lines(&repo, Path::new("link"), &d, &diff::Pick::new([0..1], [0..1]));
+        assert!(matches!(res, Err(Error::Symlink)), "{res:?}");
+        assert_eq!(
+            std::fs::read_link(root.join("link")).unwrap(),
+            Path::new("elsewhere.txt")
+        );
+        assert_eq!(std::fs::read_to_string(root.join("target.txt")).unwrap(), "t\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lines_keep_modes() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_d, root) = repo(&[("run.sh", b"a\nb\n")]);
+        std::fs::set_permissions(root.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        commit_all(&root, "exec");
+        std::fs::write(root.join("run.sh"), "A\nB\n").unwrap();
+        let repo = r(&root);
+        let shown = file_diff(&repo, Path::new("run.sh"), Side::Unstaged, 0).unwrap();
+        let first = diff::Pick::new([0..1], [0..1]);
+        stage_lines(&repo, Path::new("run.sh"), &shown, &first).unwrap();
+        assert_eq!(git(&root, &["ls-files", "-s"]).split(' ').next(), Some("100755"));
+        // Reverting from a deleted file brings the mode back.
+        std::fs::remove_file(root.join("run.sh")).unwrap();
+        let shown = file_diff(&repo, Path::new("run.sh"), Side::Unstaged, 0).unwrap();
+        revert_lines(&repo, Path::new("run.sh"), &shown, &diff::Pick::new([0..2], [])).unwrap();
+        let mode = std::fs::metadata(root.join("run.sh")).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+        assert_eq!(std::fs::read_to_string(root.join("run.sh")).unwrap(), "b\nA\n");
     }
 }

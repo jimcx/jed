@@ -1,6 +1,10 @@
 //! Hunks between two texts: the one diff engine for the gutter, staging and the diff view
 //! (`git2::Patch::from_buffers`, with git's defaults: Myers, the indent heuristic, no
 //! inter-hunk merging beyond what the context does).
+//!
+//! Besides whole hunks ([`apply`], [`revert`]) a [`Pick`] of lines takes only some of a
+//! (context 0) hunk's changed lines ([`apply_lines`], [`revert_lines`]): what `git add -p`'s
+//! `e`dit makes of the hunk.
 
 use std::ops::Range;
 
@@ -171,8 +175,157 @@ fn splice(base: &[u8], at: &Range<usize>, other: &[u8], from: &Range<usize>) -> 
     out
 }
 
+/// Lines picked from a (context 0) diff: `old` are lines of the old text (removed lines to
+/// take), `new` lines of the new text (added lines to take). Sorted, merged, no empty ranges.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct Pick {
+    old: Vec<Range<usize>>,
+    new: Vec<Range<usize>>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl Pick {
+    /// A pick of old lines and new lines, in any order, overlapping or not.
+    pub fn new(old: impl IntoIterator<Item = Range<usize>>, new: impl IntoIterator<Item = Range<usize>>) -> Pick {
+        Pick {
+            old: normalize(old),
+            new: normalize(new),
+        }
+    }
+
+    /// The pick of a text tab's selections: the new lines `ranges` (each a line range; need not be
+    /// sorted), plus the removed lines of every hunk that touches one of them ([`touches`]: a
+    /// pure deletion at a range's boundary counts).
+    pub fn from_new_lines(hunks: &[Hunk], ranges: impl IntoIterator<Item = Range<usize>>) -> Pick {
+        let new = normalize(ranges);
+        let mut old = Vec::new();
+        for h in hunks {
+            // From the first range ending at or after the hunk's start, while ranges start in reach.
+            let first = new.partition_point(|r| r.end < h.new.start);
+            if new[first..]
+                .iter()
+                .take_while(|r| r.start <= h.new.end)
+                .any(|r| touches(&h.new, r))
+            {
+                old.push(h.old.clone());
+            }
+        }
+        Pick::new(old, new)
+    }
+
+    pub fn has_old(&self, line: usize) -> bool {
+        contains(&self.old, line)
+    }
+
+    pub fn has_new(&self, line: usize) -> bool {
+        contains(&self.new, line)
+    }
+
+    /// How many changed lines of `hunks` (removed and added) the pick takes.
+    pub fn count(&self, hunks: &[Hunk]) -> usize {
+        let n = |ranges: &[Range<usize>], of: &Range<usize>| -> usize {
+            let first = ranges.partition_point(|r| r.end <= of.start);
+            ranges[first..]
+                .iter()
+                .take_while(|r| r.start < of.end)
+                .map(|r| r.end.min(of.end) - r.start.max(of.start))
+                .sum()
+        };
+        hunks.iter().map(|h| n(&self.old, &h.old) + n(&self.new, &h.new)).sum()
+    }
+
+    /// The changed lines of `hunks` this pick leaves out.
+    pub fn complement(&self, hunks: &[Hunk]) -> Pick {
+        Pick::new(
+            hunks
+                .iter()
+                .flat_map(|h| h.old.clone())
+                .filter(|&l| !self.has_old(l))
+                .map(|l| l..l + 1),
+            hunks
+                .iter()
+                .flat_map(|h| h.new.clone())
+                .filter(|&l| !self.has_new(l))
+                .map(|l| l..l + 1),
+        )
+    }
+}
+
+fn normalize(ranges: impl IntoIterator<Item = Range<usize>>) -> Vec<Range<usize>> {
+    let mut v: Vec<Range<usize>> = ranges.into_iter().filter(|r| !r.is_empty()).collect();
+    v.sort_by_key(|r| r.start);
+    let mut out: Vec<Range<usize>> = Vec::with_capacity(v.len());
+    for r in v {
+        match out.last_mut() {
+            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+            _ => out.push(r),
+        }
+    }
+    out
+}
+
+fn contains(ranges: &[Range<usize>], line: usize) -> bool {
+    let i = ranges.partition_point(|r| r.end <= line);
+    ranges.get(i).is_some_and(|r| r.start <= line)
+}
+
+/// `old` with the changes `pick` takes from the `old` → `new` diff (`hunks`, context 0) applied
+/// and the rest of each hunk left as it was: per hunk its old lines that aren't picked, then its
+/// new lines that are (staging lines: `old` = the index text, `new` = the file on disk). Bytes
+/// are kept exactly; a line without a terminator that something follows gets a `\n`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn apply_lines(old: &[u8], new: &[u8], hunks: &[Hunk], pick: &Pick) -> Vec<u8> {
+    splice_picked(old, new, hunks, pick, false)
+}
+
+/// `new` with the changes `pick` takes undone, the rest left: per hunk its old lines that are
+/// picked, then its new lines that aren't (unstaging or reverting lines: `old` = HEAD's / the
+/// index's text, `new` = the index's / the file's).
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn revert_lines(old: &[u8], new: &[u8], hunks: &[Hunk], pick: &Pick) -> Vec<u8> {
+    splice_picked(old, new, hunks, pick, true)
+}
+
+/// One pass over `hunks`, copying the base text (`old`; `new` when `reverse`) between them. In
+/// each hunk, old lines then new lines: apply keeps the unpicked old lines and the picked new
+/// ones, reverse the picked old lines and the unpicked new ones.
+fn splice_picked(old: &[u8], new: &[u8], hunks: &[Hunk], pick: &Pick, reverse: bool) -> Vec<u8> {
+    let (old_l, new_l) = (lines(old), lines(new));
+    let base = if reverse { &new_l } else { &old_l };
+    let mut out = Vec::with_capacity(old.len().max(new.len()));
+    let mut push = |l: &[u8]| {
+        if out.last().is_some_and(|&b| b != b'\n') {
+            out.push(b'\n');
+        }
+        out.extend_from_slice(l);
+    };
+    let mut at = 0;
+    for h in hunks {
+        let end = if reverse { h.new.end } else { h.old.end };
+        let start = if reverse { h.new.start } else { h.old.start };
+        base[at.min(base.len())..start.min(base.len())]
+            .iter()
+            .for_each(|l| push(l));
+        at = end;
+        for i in h.old.clone().filter(|&i| i < old_l.len()) {
+            if pick.has_old(i) == reverse {
+                push(old_l[i]);
+            }
+        }
+        for i in h.new.clone().filter(|&i| i < new_l.len()) {
+            if pick.has_new(i) != reverse {
+                push(new_l[i]);
+            }
+        }
+    }
+    base[at.min(base.len())..].iter().for_each(|l| push(l));
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::single_range_in_vec_init)]
     use super::*;
 
     fn h(old: Range<usize>, new: Range<usize>) -> Hunk {
@@ -385,5 +538,179 @@ mod tests {
         let d = diff(b"a\0b", b"a\0c", 3).unwrap();
         assert!(d.binary);
         assert!(d.hunks.is_empty());
+    }
+
+    fn hunks_of(old: &[u8], new: &[u8]) -> Vec<Hunk> {
+        diff(old, new, 0).unwrap().hunks
+    }
+
+    fn pick(old: &[Range<usize>], new: &[Range<usize>]) -> Pick {
+        Pick::new(old.to_vec(), new.to_vec())
+    }
+
+    fn both(old: &[u8], new: &[u8], p: &Pick) -> (Vec<u8>, Vec<u8>) {
+        let hunks = hunks_of(old, new);
+        (apply_lines(old, new, &hunks, p), revert_lines(old, new, &hunks, p))
+    }
+
+    #[test]
+    fn pick_normalises_and_looks_up() {
+        let p = Pick::new([5..7, 1..3, 3..4, 2..2, 9..9], [0..1]);
+        assert_eq!(p.old, vec![1..4, 5..7]);
+        assert!(p.has_old(1) && p.has_old(3) && !p.has_old(4) && p.has_old(6) && !p.has_old(7) && !p.has_old(0));
+        assert!(p.has_new(0) && !p.has_new(1));
+        let hunks = [h(1..3, 1..2), h(5..5, 4..6)];
+        assert_eq!(p.count(&hunks), 2, "old 1..3 in the first hunk; new 0..1 misses both");
+        let q = Pick::new([1..2], [5..6]);
+        assert_eq!(q.count(&hunks), 2);
+        assert_eq!(q.complement(&hunks), Pick::new([2..3], [1..2, 4..5]));
+    }
+
+    #[test]
+    fn pick_from_new_lines_takes_touched_hunks_old_lines() {
+        // Modified at 1, a pure deletion before new line 3, an addition at 6..8.
+        let hunks = [h(1..2, 1..2), h(3..5, 3..3), h(8..8, 6..8)];
+        let p = Pick::from_new_lines(&hunks, [6..7, 1..2]);
+        assert_eq!(p, Pick::new([1..2, 8..8], [1..2, 6..7]));
+        // The deletion is touched from either side, not from further away.
+        assert_eq!(Pick::from_new_lines(&hunks, [2..3]).old, vec![3..5]);
+        assert_eq!(Pick::from_new_lines(&hunks, [3..4]).old, vec![3..5]);
+        assert!(Pick::from_new_lines(&hunks, [4..5]).old.is_empty());
+        assert!(Pick::from_new_lines(&hunks, [0..1]).old.is_empty());
+        assert!(Pick::from_new_lines(&hunks, []).old.is_empty());
+    }
+
+    #[test]
+    fn lines_of_a_modified_hunk() {
+        let (old, new) = (b"x\na\nb\ny\n", b"x\nA\nB\ny\n");
+        // `-a -b +A +B` picking old b and new A: `a A` (b gone, a kept, A added, B left out).
+        let p = pick(&[2..3], &[1..2]);
+        let (staged, reverted) = both(old, new, &p);
+        assert_eq!(staged, b"x\na\nA\ny\n");
+        // Reverting: b back, A away, B stays.
+        assert_eq!(reverted, b"x\nb\nB\ny\n");
+    }
+
+    #[test]
+    fn lines_of_pure_additions_and_deletions() {
+        let (old, new) = (b"a\nd\n", b"a\nb\nc\nd\n");
+        let p = pick(&[], &[2..3]);
+        assert_eq!(both(old, new, &p), (b"a\nc\nd\n".to_vec(), b"a\nb\nd\n".to_vec()));
+        let (old, new) = (b"a\nb\nc\nd\n", b"a\nd\n");
+        let p = pick(&[1..2], &[]);
+        assert_eq!(both(old, new, &p), (b"a\nc\nd\n".to_vec(), b"a\nb\nd\n".to_vec()));
+    }
+
+    #[test]
+    fn lines_across_hunks_nothing_and_everything() {
+        let old = b"1\n2\n3\n4\n5\n6\n";
+        let new = b"1\nTWO\n3\n4\n6\nsix\n";
+        let hunks = hunks_of(old, new);
+        assert_eq!(hunks.len(), 3, "{hunks:?}");
+        assert_eq!(both(old, new, &Pick::default()), (old.to_vec(), new.to_vec()));
+        let all = Pick::new([0..6], [0..6]);
+        assert_eq!(both(old, new, &all), (new.to_vec(), old.to_vec()));
+        assert_eq!(all.count(&hunks), 4);
+        // Only the second hunk's removal of 5 (not the added `six`).
+        let p = pick(&[4..5], &[]);
+        assert_eq!(both(old, new, &p).0, b"1\n2\n3\n4\n6\n".to_vec());
+        // The first hunk whole, the second untouched.
+        let p = pick(&[1..2], &[1..2]);
+        assert_eq!(both(old, new, &p).0, b"1\nTWO\n3\n4\n5\n6\n".to_vec());
+    }
+
+    #[test]
+    fn lines_keep_crlf_and_a_missing_final_newline() {
+        let (old, new) = (b"a\r\nb\r\nc\r\n", b"a\r\nB\r\nC\r\n");
+        let p = pick(&[2..3], &[1..2]);
+        assert_eq!(both(old, new, &p).0, b"a\r\nb\r\nB\r\n".to_vec());
+        // `c` without a newline becomes `c\n` plus a line: an unpicked old `c` gets its newline
+        // when something follows it.
+        let (old, new) = (b"a\nc", b"a\nc\nd");
+        let hunks = hunks_of(old, new);
+        assert_eq!(hunks, vec![h(1..2, 1..3)]);
+        assert_eq!(apply_lines(old, new, &hunks, &pick(&[], &[2..3])), b"a\nc\nd");
+        assert_eq!(apply_lines(old, new, &hunks, &pick(&[], &[1..2])), b"a\nc\nc\n");
+        assert_eq!(apply_lines(old, new, &hunks, &pick(&[1..2], &[1..2])), b"a\nc\n");
+        assert_eq!(apply_lines(old, new, &hunks, &pick(&[1..2], &[2..3])), b"a\nd");
+        assert_eq!(revert_lines(old, new, &hunks, &pick(&[1..2], &[2..3])), b"a\nc\nc\n");
+        // Dropping the final newline: the picked new last line has none.
+        let (old, new) = (b"a\nb\n", b"a\nb");
+        let hunks = hunks_of(old, new);
+        assert_eq!(apply_lines(old, new, &hunks, &pick(&[1..2], &[1..2])), b"a\nb");
+        assert_eq!(apply_lines(old, new, &hunks, &pick(&[], &[1..2])), b"a\nb\nb");
+    }
+
+    /// Random pairs of texts (a few repeated lines, last line maybe unterminated, CRLF maybe) and
+    /// random picks: the result matches a slower reference (hunks applied last to first on a
+    /// list of lines), and a pick's revert is its complement's apply.
+    #[test]
+    fn lines_agree_with_a_slow_reference() {
+        const LINES: &[&str] = &["a\n", "b\n", "\n", "x\r\n", "c"];
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut rand = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let text = |rand: &mut dyn FnMut(usize) -> usize| -> Vec<u8> {
+            let n = rand(9);
+            let mut out = Vec::new();
+            for i in 0..n {
+                let l = LINES[rand(LINES.len())];
+                out.extend_from_slice(l.as_bytes());
+                if !l.ends_with('\n') && i + 1 < n {
+                    out.push(b'\n');
+                }
+            }
+            out
+        };
+        let join = |parts: Vec<&[u8]>| -> Vec<u8> {
+            let mut out: Vec<u8> = Vec::new();
+            for l in parts {
+                if out.last().is_some_and(|&b| b != b'\n') {
+                    out.push(b'\n');
+                }
+                out.extend_from_slice(l);
+            }
+            out
+        };
+        for _ in 0..200 {
+            let (old, new) = (text(&mut rand), text(&mut rand));
+            let hunks = hunks_of(&old, &new);
+            let (ol, nl) = (lines(&old), lines(&new));
+            let p = Pick::new(
+                (0..ol.len())
+                    .filter(|_| rand(2) == 0)
+                    .map(|i| i..i + 1)
+                    .collect::<Vec<_>>(),
+                (0..nl.len())
+                    .filter(|_| rand(2) == 0)
+                    .map(|i| i..i + 1)
+                    .collect::<Vec<_>>(),
+            );
+            let mut staged = ol.clone();
+            let mut reverted = nl.clone();
+            for hk in hunks.iter().rev() {
+                let mut keep: Vec<&[u8]> = hk.old.clone().filter(|&i| !p.has_old(i)).map(|i| ol[i]).collect();
+                keep.extend(hk.new.clone().filter(|&i| p.has_new(i)).map(|i| nl[i]));
+                staged.splice(hk.old.clone(), keep);
+                let mut back: Vec<&[u8]> = hk.old.clone().filter(|&i| p.has_old(i)).map(|i| ol[i]).collect();
+                back.extend(hk.new.clone().filter(|&i| !p.has_new(i)).map(|i| nl[i]));
+                reverted.splice(hk.new.clone(), back);
+            }
+            let ctx = format!(
+                "{:?} -> {:?}, {p:?}",
+                String::from_utf8_lossy(&old),
+                String::from_utf8_lossy(&new)
+            );
+            let (got, back) = both(&old, &new, &p);
+            assert_eq!(got, join(staged), "{ctx}");
+            assert_eq!(back, join(reverted), "{ctx}");
+            let rest = p.complement(&hunks);
+            assert_eq!(back, apply_lines(&old, &new, &hunks, &rest), "{ctx}");
+            assert_eq!(got, revert_lines(&old, &new, &hunks, &rest), "{ctx}");
+        }
     }
 }
