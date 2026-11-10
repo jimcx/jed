@@ -1012,8 +1012,11 @@ mod tests {
         commit_all(&root, "exec");
         std::fs::write(root.join("run.sh"), text.replace("line 1\n", "one\n")).unwrap();
         same_as_checkout_p(&root, "run.sh", 0, "y\n");
-        let mode = std::fs::metadata(root.join("run.sh")).unwrap().permissions().mode();
-        assert_eq!(mode & 0o111, 0o111);
+        // Our revert (in the copy `same_as_checkout_p` made) keeps the permissions exactly; git
+        // writes a new file with `0o777 & !umask`, so only its owner bit is umask-independent.
+        let mode = |root: &Path| std::fs::metadata(root.join("run.sh")).unwrap().permissions().mode();
+        assert_eq!(mode(&root.with_file_name("b")) & 0o777, 0o755);
+        assert_eq!(mode(&root) & 0o100, 0o100);
     }
 
     #[test]
