@@ -5,7 +5,18 @@
 //! lines back (through the buffer's text, no save); "Git: Revert Selected Ranges" puts the
 //! index's lines back in the buffer as one undo step, left unsaved, refused when read-only, when
 //! the buffer changed while the diff was worked out, and for an untracked file; lines nothing
-//! changed in are "No changes in the selection" and write nothing.
+//! changed in are "No changes in the selection" and write nothing. Subtask c is the same for a
+//! diff tab's row selection (`diff_tab_*`).
+//!
+//! Subtask d is the task's "Done when", as `stage_selected_lines_done_when_*` scenarios: a text
+//! tab with a dirty buffer, part of a mixed hunk plus another hunk staged (index equal to
+//! `git apply --cached` of the hand-edited patch), a subset unstaged (`apply --cached -R`) and
+//! reverted in one undo step (`..._text_tab_stage_unstage_revert`); the diff tab's three, split
+//! with a left-side selection and inline with real keys, and a revert of a file not open equal
+//! to `git apply -R` (`..._diff_tab_both_layouts_and_a_file_not_open`); a conflicted file
+//! refused with nothing changed (`..._a_conflicted_file_is_refused`); the gutter, Source Control
+//! and an open diff tab refreshing (`..._gutter_status_and_open_diff_refresh`); 10,000 cursors
+//! staging 20,000 lines in debug mode (`..._ten_thousand_cursors`).
 
 use std::fs;
 use std::path::Path;
@@ -677,4 +688,247 @@ async fn stage_selected_lines_diff_tab_cancelled_save_stages_nothing() {
     assert!(app.settle(|a| a.quick_diff.staging == 0).await);
     assert_eq!(git(&root, &["diff", "--cached"]), "");
     assert!(app.buffers.iter().next().unwrap().1.is_dirty());
+}
+
+// Subtask d: the done-when, as scenarios against `git apply` of hand-edited patches.
+
+use crate::git::test_repo::git_with_input;
+
+/// A copy of the repository next to it (the index and work tree as they are now).
+fn copy_repo(root: &Path, name: &str) -> std::path::PathBuf {
+    let to = root.with_file_name(name);
+    assert!(
+        std::process::Command::new("cp")
+            .arg("-a")
+            .arg(root)
+            .arg(&to)
+            .status()
+            .unwrap()
+            .success()
+    );
+    to
+}
+
+/// `git apply --unidiff-zero [--cached] [-R]` of `hunks` (zero-context, for `f.txt`) in `dir`.
+fn hand_apply(dir: &Path, cached: bool, reverse: bool, hunks: &str) {
+    let mut args = vec!["apply", "--unidiff-zero"];
+    args.extend(cached.then_some("--cached"));
+    args.extend(reverse.then_some("-R"));
+    git_with_input(dir, &args, Some(&format!("--- a/f.txt\n+++ b/f.txt\n{hunks}")));
+}
+
+/// `TWO`'s hunk with its old lines, and the deletion of `line 10`: what picking `TWO` and the
+/// deletion's neighbour stages, as `git add -p`'s edit would leave the index.
+const STAGE_TWO_AND_DELETION: &str = "@@ -3,2 +3,1 @@\n-line 2\n-line 3\n+TWO\n@@ -11,1 +9,0 @@\n-line 10\n";
+/// The whole first hunk.
+const TWO_AND_THREE: &str = "@@ -3,2 +3,2 @@\n-line 2\n-line 3\n+TWO\n+THREE\n";
+/// Just the first of those.
+const TWO_HUNK: &str = "@@ -3,2 +3,1 @@\n-line 2\n-line 3\n+TWO\n";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_done_when_text_tab_stage_unstage_revert() {
+    let (_d, root, mut app) = setup().await;
+    // A dirty buffer: line 18 edited, outside every pick.
+    select_lines(&mut app, 18, 18);
+    app.press(KeyCode::Left, M::NONE);
+    app.type_text("x");
+    assert!(settle_markers(&mut app).await);
+    let work = changed().replace("line 18\n", "xline 18\n");
+    assert_eq!(buffer_text(&app), work);
+
+    // Stage: part of the mixed hunk (`TWO`) and another hunk (the deletion), saved first.
+    let by_hand = copy_repo(&root, "by_hand");
+    hand_apply(&by_hand, true, false, STAGE_TWO_AND_DELETION);
+    select_each(&mut app, &[(2, 2), (9, 9)]);
+    run_command(&mut app, "Git: Stage Selected Ranges");
+    assert!(matches!(
+        app.prompt,
+        Some(Prompt::SaveBeforeStage { what: What::Ranges, .. })
+    ));
+    app.press(KeyCode::Char('s'), M::NONE);
+    settle_done(&mut app, "Staged 4 changed lines").await;
+    assert_eq!(index_text(&root), git(&by_hand, &["show", ":f.txt"]));
+    assert_eq!(git(&root, &["ls-files", "-s"]), git(&by_hand, &["ls-files", "-s"]));
+    assert_eq!(fs::read_to_string(root.join("f.txt")).unwrap(), work, "saved first");
+    assert!(!app.active_buffer().unwrap().is_dirty());
+    // The hunks nothing was picked in are untouched: `THREE`, the addition and line 18 remain.
+    let unstaged = git(&root, &["diff", "--no-color", "-U0"]);
+    for line in ["+THREE", "+added", "+xline 18"] {
+        assert!(unstaged.contains(line), "{unstaged}");
+    }
+    assert!(settle_markers(&mut app).await);
+
+    // Unstage a subset: `TWO`'s hunk goes back, the deletion stays staged.
+    let by_hand = copy_repo(&root, "by_hand_2");
+    hand_apply(&by_hand, true, true, TWO_HUNK);
+    select_each(&mut app, &[(2, 2)]);
+    app.test_execute(Command::UnstageSelectedRanges);
+    settle_done(&mut app, "Unstaged 3 changed lines").await;
+    assert_eq!(index_text(&root), git(&by_hand, &["show", ":f.txt"]));
+    assert_eq!(index_text(&root), numbered(20).replace("line 10\n", ""));
+    assert!(settle_markers(&mut app).await);
+
+    // Revert `TWO` (and its hunk's old lines): the buffer, one undo step, disk untouched.
+    let before = buffer_text(&app);
+    select_each(&mut app, &[(2, 2)]);
+    app.test_execute(Command::RevertSelectedRanges);
+    settle_done(&mut app, "Reverted 3 changed lines (not saved)").await;
+    assert_eq!(buffer_text(&app), before.replace("TWO\n", "line 2\nline 3\n"));
+    assert_eq!(fs::read_to_string(root.join("f.txt")).unwrap(), work);
+    app.test_execute(Command::Undo);
+    assert_eq!(buffer_text(&app), before, "one undo step");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_done_when_diff_tab_both_layouts_and_a_file_not_open() {
+    // Stage from the left side of a split diff: its rows 2 and 3 each bring their right line.
+    let (_d, root, mut app) = diff_setup(false, Pair::UNSTAGED, false).await;
+    let by_hand = copy_repo(&root, "by_hand");
+    hand_apply(&by_hand, true, false, TWO_AND_THREE);
+    pick_rows(&mut app, false, 2, 3, false);
+    app.test_execute(Command::StageSelectedRanges);
+    settle_diff_done(&mut app, "Staged 4 changed lines").await;
+    assert_eq!(index_text(&root), git(&by_hand, &["show", ":f.txt"]));
+    assert_eq!(
+        index_text(&root),
+        numbered(20).replace("line 2\nline 3\n", "TWO\nTHREE\n")
+    );
+
+    // Revert a file that isn't open, from the right side of a split diff: disk rewritten like
+    // `git apply -R` of the patch, the index alone.
+    let (_d, root, mut app) = diff_setup(false, Pair::UNSTAGED, false).await;
+    let by_hand = copy_repo(&root, "by_hand");
+    hand_apply(&by_hand, false, true, "@@ -3,1 +3,1 @@\n-line 2\n+TWO\n");
+    let index = index_text(&root);
+    pick_rows(&mut app, true, 2, 2, false);
+    app.test_execute(Command::RevertSelectedRanges);
+    settle_diff_done(&mut app, "Reverted 2 changed lines in f.txt").await;
+    assert_eq!(
+        fs::read(root.join("f.txt")).unwrap(),
+        fs::read(by_hand.join("f.txt")).unwrap()
+    );
+    assert_eq!(index_text(&root), index);
+
+    // Unstage from a staged diff, inline, with real keys: the caret starts on the left side, and
+    // two Shift+Downs go from `line 2` over `line 3` to the next left line (`line 10`, column 0),
+    // so the first hunk's rows (the added ones between) are covered, the deletion's not.
+    let (_d, root, mut app) = diff_setup(false, Pair::STAGED, true).await;
+    let by_hand = copy_repo(&root, "by_hand");
+    hand_apply(&by_hand, true, true, TWO_AND_THREE);
+    app.group_mut().active_diff_mut().unwrap().set_layout(true);
+    app.press(KeyCode::Down, M::SHIFT);
+    app.press(KeyCode::Down, M::SHIFT);
+    app.test_execute(Command::UnstageSelectedRanges);
+    settle_diff_done(&mut app, "Unstaged 4 changed lines").await;
+    assert_eq!(index_text(&root), git(&by_hand, &["show", ":f.txt"]));
+    assert_eq!(index_text(&root), changed().replace("TWO\nTHREE\n", "line 2\nline 3\n"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_done_when_a_conflicted_file_is_refused() {
+    let (_d, root, state) = dirs();
+    repo_with(&root, &[("f.txt", "a\nb\nc\n")], &[]);
+    // Stages 1 / 2 / 3 in the index and markers in the work tree.
+    let blob = |text: &str| {
+        fs::write(root.join("blob"), text).unwrap();
+        git(&root, &["hash-object", "-w", "blob"]).trim().to_string()
+    };
+    let (base, ours, theirs) = (blob("a\nb\nc\n"), blob("a\nB\nc\n"), blob("a\nX\nc\n"));
+    fs::remove_file(root.join("blob")).unwrap();
+    let info = format!("100644 {base} 1\tf.txt\n100644 {ours} 2\tf.txt\n100644 {theirs} 3\tf.txt\n");
+    git(&root, &["rm", "--cached", "-q", "f.txt"]);
+    git_with_input(&root, &["update-index", "--index-info"], Some(&info));
+    fs::write(
+        root.join("f.txt"),
+        "a\n<<<<<<< ours\nB\n=======\nX\n>>>>>>> theirs\nc\n",
+    )
+    .unwrap();
+    let mut app = open_file_app(&root, &state, "f.txt");
+    assert!(settle_markers(&mut app).await);
+    let index = git(&root, &["ls-files", "-s"]);
+    let disk = fs::read_to_string(root.join("f.txt")).unwrap();
+    for cmd in [
+        Command::StageSelectedRanges,
+        Command::UnstageSelectedRanges,
+        Command::RevertSelectedRanges,
+    ] {
+        select_each(&mut app, &[(0, 6)]);
+        app.test_execute(cmd);
+        assert!(app.settle(|a| a.quick_diff.staging == 0).await);
+        let m = message(&app);
+        assert!(m.contains("conflict"), "{cmd:?}: {m}");
+        assert_eq!(git(&root, &["ls-files", "-s"]), index);
+        assert_eq!(fs::read_to_string(root.join("f.txt")).unwrap(), disk);
+        assert_eq!(buffer_text(&app), disk);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_done_when_ten_thousand_cursors() {
+    // 20,000 lines, every other one changed: 10,000 hunks, a cursor on each.
+    let old: String = (0..20_000).map(|i| format!("line {i}\n")).collect();
+    let new: String = (0..20_000)
+        .map(|i| {
+            if i % 2 == 0 {
+                format!("new {i}\n")
+            } else {
+                format!("line {i}\n")
+            }
+        })
+        .collect();
+    let (_d, root, state) = dirs();
+    repo_with(&root, &[("f.txt", &old)], &[("f.txt", &new)]);
+    let mut app = open_file_app(&root, &state, "f.txt");
+    app.settings.word_based_suggestions = false;
+    assert!(settle_markers(&mut app).await);
+    let spans: Vec<(usize, usize)> = (0..10_000).map(|k| (2 * k, 2 * k)).collect();
+    select_each(&mut app, &spans);
+    let t = std::time::Instant::now();
+    app.test_execute(Command::StageSelectedRanges);
+    settle_done(&mut app, "Staged 20000 changed lines").await;
+    let took = t.elapsed();
+    assert!(took.as_secs() < 30, "10k cursors took {took:?}");
+    assert_eq!(index_text(&root), new);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_done_when_gutter_status_and_open_diff_refresh() {
+    let (_d, root, mut app) = setup().await;
+    assert!(
+        app.active_buffer()
+            .unwrap()
+            .quick_diff
+            .marks()
+            .iter()
+            .all(|m| !m.staged)
+    );
+    app.open_diff(root.join("f.txt"), Pair::STAGED);
+    assert!(crate::milestone10_tests::settle_diffs(&mut app).await);
+    app.test_execute(Command::PrevTab);
+    select_each(&mut app, &[(2, 2)]);
+    app.test_execute(Command::StageSelectedRanges);
+    settle_done(&mut app, "Staged 3 changed lines").await;
+    // Source Control: the file is now both staged and unstaged.
+    assert!(
+        app.settle(|a| !a.git.running()
+            && a.git
+                .status
+                .as_ref()
+                .and_then(|s| s.entry(Path::new("f.txt")))
+                .is_some_and(|e| e.staged.is_some() && e.unstaged.is_some()))
+            .await
+    );
+    // The gutter: the staged change is marked staged, the rest still unstaged.
+    assert!(
+        app.settle(|a| {
+            let marks = a.active_buffer().unwrap().quick_diff.marks();
+            marks.iter().any(|m| m.staged) && marks.iter().any(|m| !m.staged)
+        })
+        .await
+    );
+    // The open staged diff tab reads the index again and now has the staged hunk.
+    app.test_execute(Command::NextTab);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    let d = app.group_mut().active_diff_mut().unwrap();
+    assert_eq!(d.side_text(true, 2), "TWO");
 }
