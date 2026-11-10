@@ -81,7 +81,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, prompt: &Prompt) -> Option<R
             let what = match what {
                 crate::app::What::File => "it",
                 crate::app::What::Line => "the change",
-                crate::app::What::Ranges => "the selected lines",
+                crate::app::What::Ranges | crate::app::What::Diff => "the selected lines",
             };
             lines.push(Line::raw(format!(" Save {} before staging {what}?", name_of(*buffer))));
             lines.push(Line::raw(" Changes are staged from the file on disk."));

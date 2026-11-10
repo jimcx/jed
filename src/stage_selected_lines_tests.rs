@@ -381,3 +381,300 @@ async fn stage_selected_lines_revert_on_a_crlf_file() {
     app.test_execute(Command::Undo);
     assert_eq!(buffer_text(&app), new);
 }
+
+// Subtask c: the same three commands on a diff tab's row selection.
+
+use crate::diff_caret::Caret;
+use crate::diff_view::Pair;
+
+/// A repository with `f.txt` changed as `changed()` (`staged`: and added to the index) and
+/// `g.txt`; the app on `f.txt` (`open`) or `g.txt` (so `f.txt` isn't open), with `f.txt`'s diff
+/// for `pair` open and loaded.
+async fn diff_setup(open: bool, pair: Pair, staged: bool) -> (tempfile::TempDir, std::path::PathBuf, App) {
+    let (d, root, state) = dirs();
+    repo_with(
+        &root,
+        &[("f.txt", &numbered(20)), ("g.txt", "g\n")],
+        &[("f.txt", &changed())],
+    );
+    if staged {
+        git(&root, &["add", "f.txt"]);
+    }
+    let mut app = open_file_app(&root, &state, if open { "f.txt" } else { "g.txt" });
+    app.settings.word_based_suggestions = false;
+    assert!(settle_markers(&mut app).await);
+    app.open_diff(root.join("f.txt"), pair);
+    assert!(crate::milestone10_tests::settle_diffs(&mut app).await);
+    (d, root, app)
+}
+
+/// Selects lines `first..=last` of one side of the active diff tab, in the layout asked for.
+fn pick_rows(app: &mut App, right: bool, first: usize, last: usize, inline: bool) {
+    let d = app.group_mut().active_diff_mut().unwrap();
+    d.set_layout(inline);
+    let len = d.side_text(right, last).len();
+    d.caret = Caret {
+        right,
+        anchor: (first, 0),
+        head: (last, len),
+        col: None,
+    };
+    d.cursor = d.aligned().row_of(right, last);
+}
+
+async fn settle_diff_done(app: &mut App, what: &str) {
+    assert!(
+        app.settle(|a| a.diffs.staging == 0
+            && a.quick_diff.staging == 0
+            && a.file_history.running() == 0
+            && a.message.as_ref().is_some_and(|m| m.text.contains(what)))
+            .await,
+        "no `{what}`: {:?}",
+        app.message.as_ref().map(|m| &m.text)
+    );
+}
+
+fn message(app: &App) -> String {
+    app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_diff_tab_stages_part_of_a_hunk_split() {
+    // A file not open, then an open one: `TWO`'s row (its removed line too), not `THREE`'s.
+    for open in [false, true] {
+        let (_d, root, mut app) = diff_setup(open, Pair::UNSTAGED, false).await;
+        pick_rows(&mut app, true, 2, 2, false);
+        app.test_execute(Command::StageSelectedRanges);
+        settle_diff_done(&mut app, "Staged 2 changed lines").await;
+        assert_eq!(
+            index_text(&root),
+            numbered(20).replace("line 2\nline 3\n", "line 3\nTWO\n"), // the unpicked removed line stays (git add -p edit)
+            "open {open}"
+        );
+        assert_eq!(fs::read_to_string(root.join("f.txt")).unwrap(), changed());
+        // The diff tab reads the index again: that hunk is down to `THREE`.
+        assert!(app.settle(|a| a.diffs_settled() && !a.git.running()).await);
+        let unstaged = git(&root, &["diff", "--no-color", "-U0"]);
+        assert!(unstaged.contains("+THREE") && !unstaged.contains("+TWO"), "{unstaged}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_diff_tab_inline_left_side_takes_only_removed_lines() {
+    let (_d, root, mut app) = diff_setup(false, Pair::UNSTAGED, false).await;
+    // The removed lines `line 2` and `line 3` on the left side; the added ones aren't covered.
+    pick_rows(&mut app, false, 2, 3, true);
+    app.test_execute(Command::StageSelectedRanges);
+    settle_diff_done(&mut app, "Staged 2 changed lines").await;
+    assert_eq!(index_text(&root), numbered(20).replace("line 2\nline 3\n", ""));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_diff_tab_selection_with_real_keys() {
+    let (_d, root, mut app) = diff_setup(false, Pair::UNSTAGED, false).await;
+    // The cursor starts on the first change (TWO's row); two Shift+Downs end at column 0 of the
+    // third row, which isn't covered: TWO's and THREE's rows.
+    app.group_mut().active_diff_mut().unwrap().set_layout(false);
+    app.press(KeyCode::Down, M::SHIFT);
+    app.press(KeyCode::Down, M::SHIFT);
+    app.test_execute(Command::StageSelectedRanges);
+    settle_diff_done(&mut app, "Staged 4 changed lines").await;
+    assert_eq!(
+        index_text(&root),
+        numbered(20).replace("line 2\nline 3\n", "TWO\nTHREE\n")
+    );
+    // The other hunks are untouched.
+    assert!(git(&root, &["diff", "--no-color", "-U0"]).contains("+added"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_diff_tab_unstages_a_subset() {
+    let (_d, root, mut app) = diff_setup(false, Pair::STAGED, true).await;
+    assert_eq!(index_text(&root), changed());
+    // The added line (a right-only row) goes back out of the index.
+    pick_rows(&mut app, true, 15, 15, false);
+    app.test_execute(Command::UnstageSelectedRanges);
+    settle_diff_done(&mut app, "Unstaged 1 changed line").await;
+    assert_eq!(index_text(&root), changed().replace("added\n", ""));
+    assert_eq!(fs::read_to_string(root.join("f.txt")).unwrap(), changed());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_diff_tab_reverts_an_open_file_in_one_undo_step() {
+    let (_d, root, mut app) = diff_setup(true, Pair::UNSTAGED, false).await;
+    pick_rows(&mut app, true, 2, 2, false);
+    app.test_execute(Command::RevertSelectedRanges);
+    assert_eq!(message(&app), "Reverted 2 changed lines in f.txt (not saved)");
+    // The file's tab (not the diff) holds the edit.
+    let buf = app.buffers.iter().next().unwrap().1;
+    assert_eq!(buf.rope.to_string(), changed().replace("TWO\n", "line 2\n"));
+    assert!(buf.is_dirty());
+    assert_eq!(
+        fs::read_to_string(root.join("f.txt")).unwrap(),
+        changed(),
+        "disk untouched"
+    );
+    app.test_execute(Command::PrevTab);
+    app.test_execute(Command::Undo);
+    assert_eq!(buffer_text(&app), changed(), "one undo step");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_diff_tab_reverts_a_file_that_is_not_open_and_records_history() {
+    let (_d, root, mut app) = diff_setup(false, Pair::UNSTAGED, false).await;
+    let index_before = index_text(&root);
+    pick_rows(&mut app, true, 2, 2, false);
+    app.test_execute(Command::RevertSelectedRanges);
+    settle_diff_done(&mut app, "Reverted 2 changed lines in f.txt").await;
+    assert_eq!(
+        fs::read_to_string(root.join("f.txt")).unwrap(),
+        changed().replace("TWO\n", "line 2\n")
+    );
+    assert_eq!(index_text(&root), index_before);
+    let entries = crate::history::entries(&root, Path::new("f.txt")).unwrap();
+    assert_eq!(entries.len(), 1);
+    let kept = crate::history::read(&root, Path::new("f.txt"), &entries[0].id).unwrap();
+    assert_eq!(String::from_utf8(kept).unwrap(), changed());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_diff_tab_asks_to_save_a_dirty_buffer_first() {
+    let (_d, root, mut app) = diff_setup(true, Pair::UNSTAGED, false).await;
+    // Edit line 5 in the file's tab: the diff tab compares the buffer's text.
+    app.test_execute(Command::PrevTab);
+    select_lines(&mut app, 5, 5);
+    app.press(KeyCode::Left, M::NONE);
+    app.type_text("x");
+    app.test_execute(Command::NextTab);
+    assert!(
+        app.settle(|a| a.diffs_settled() && a.group().active_diff().unwrap().hunks().len() == 4)
+            .await
+    );
+    pick_rows(&mut app, true, 5, 5, false);
+    app.test_execute(Command::StageSelectedRanges);
+    assert!(matches!(
+        app.prompt,
+        Some(Prompt::SaveBeforeStage { what: What::Diff, .. })
+    ));
+    assert_eq!(git(&root, &["diff", "--cached"]), "");
+    app.press(KeyCode::Char('s'), M::NONE);
+    settle_diff_done(&mut app, "Staged 2 changed lines").await;
+    assert_eq!(index_text(&root), numbered(20).replace("line 5\n", "xline 5\n"));
+    assert!(!app.buffers.iter().next().unwrap().1.is_dirty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_diff_tab_refusals_change_nothing() {
+    let (_d, root, mut app) = diff_setup(false, Pair::UNSTAGED, false).await;
+    pick_rows(&mut app, true, 2, 2, false);
+    app.test_execute(Command::UnstageSelectedRanges);
+    assert_eq!(message(&app), "These changes aren't staged");
+    // Rows with no change: nothing picked.
+    pick_rows(&mut app, true, 5, 6, false);
+    for cmd in [Command::StageSelectedRanges, Command::RevertSelectedRanges] {
+        app.test_execute(cmd);
+        assert_eq!(message(&app), "No changes in the selection");
+    }
+    assert_eq!(index_text(&root), numbered(20));
+    assert_eq!(fs::read_to_string(root.join("f.txt")).unwrap(), changed());
+
+    // A staged diff: staging again and reverting are refused.
+    let (_d, root, mut app) = diff_setup(false, Pair::STAGED, true).await;
+    pick_rows(&mut app, true, 2, 2, false);
+    app.test_execute(Command::StageSelectedRanges);
+    assert_eq!(message(&app), "These changes are already staged");
+    app.test_execute(Command::RevertSelectedRanges);
+    assert!(message(&app).starts_with("Only working tree changes can be reverted"));
+    assert_eq!(index_text(&root), changed());
+    assert_eq!(app.diffs.staging + app.quick_diff.staging, 0);
+
+    // Not git's: the saved-file comparison of an open file.
+    let (_d, root, state) = dirs();
+    repo_with(&root, &[("f.txt", &numbered(20))], &[("f.txt", &changed())]);
+    let mut app = open_file_app(&root, &state, "f.txt");
+    app.open_diff(root.join("f.txt"), Pair::SAVED);
+    assert!(crate::milestone10_tests::settle_diffs(&mut app).await);
+    pick_rows(&mut app, true, 2, 2, false);
+    app.test_execute(Command::StageSelectedRanges);
+    assert_eq!(message(&app), "This diff isn't git's: nothing to stage");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_diff_tab_inline_selection_with_real_keys() {
+    let (_d, root, mut app) = diff_setup(false, Pair::UNSTAGED, false).await;
+    // Inline, the first change's rows are the removed `line 2` / `line 3`, then `TWO` / `THREE`:
+    // one Shift+Down ends at column 0 of the second row, so only `line 2` is picked.
+    app.group_mut().active_diff_mut().unwrap().set_layout(true);
+    app.press(KeyCode::Down, M::SHIFT);
+    app.test_execute(Command::StageSelectedRanges);
+    settle_diff_done(&mut app, "Staged 1 changed line").await;
+    assert_eq!(index_text(&root), numbered(20).replace("line 2\n", ""));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_diff_tab_revert_of_a_read_only_buffer_changes_nothing() {
+    let (_d, _root, mut app) = diff_setup(true, Pair::UNSTAGED, false).await;
+    app.buffers.iter_mut().next().unwrap().1.read_only = Some("test".into());
+    pick_rows(&mut app, true, 2, 2, false);
+    app.test_execute(Command::RevertSelectedRanges);
+    assert!(message(&app).starts_with("Read-only"), "{}", message(&app));
+    assert_eq!(app.buffers.iter().next().unwrap().1.rope.to_string(), changed());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_diff_tab_refuses_when_the_file_changed_on_disk() {
+    // The diff is shown, then the file (not open) changes underneath: nothing is written.
+    for cmd in [Command::StageSelectedRanges, Command::RevertSelectedRanges] {
+        let (_d, root, mut app) = diff_setup(false, Pair::UNSTAGED, false).await;
+        let other = changed().replace("line 7\n", "seven\n");
+        fs::write(root.join("f.txt"), &other).unwrap();
+        pick_rows(&mut app, true, 2, 2, false);
+        app.test_execute(cmd);
+        settle_diff_done(&mut app, "the file changed").await;
+        assert_eq!(index_text(&root), numbered(20), "{cmd:?}");
+        assert_eq!(fs::read_to_string(root.join("f.txt")).unwrap(), other, "{cmd:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_diff_tab_revert_refuses_a_buffer_edited_since_the_diff() {
+    let (_d, _root, mut app) = diff_setup(true, Pair::UNSTAGED, false).await;
+    // Edit the file's tab and come straight back, before the diff reads the buffer again.
+    app.test_execute(Command::PrevTab);
+    app.press_file_start();
+    app.type_text("x");
+    app.test_execute(Command::NextTab);
+    assert!(app.group().active_diff().is_some());
+    pick_rows(&mut app, true, 2, 2, false);
+    app.test_execute(Command::RevertSelectedRanges);
+    assert_eq!(
+        message(&app),
+        "Can't revert the change in f.txt: the file changed, try again"
+    );
+    assert_eq!(
+        app.buffers.iter().next().unwrap().1.rope.to_string(),
+        format!("x{}", changed())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stage_selected_lines_diff_tab_cancelled_save_stages_nothing() {
+    let (_d, root, mut app) = diff_setup(true, Pair::UNSTAGED, false).await;
+    app.test_execute(Command::PrevTab);
+    select_lines(&mut app, 5, 5);
+    app.press(KeyCode::Left, M::NONE);
+    app.type_text("x");
+    app.test_execute(Command::NextTab);
+    assert!(
+        app.settle(|a| a.diffs_settled() && a.group().active_diff().unwrap().hunks().len() == 4)
+            .await
+    );
+    pick_rows(&mut app, true, 5, 5, false);
+    app.test_execute(Command::StageSelectedRanges);
+    assert!(app.prompt.is_some());
+    app.press(KeyCode::Esc, M::NONE);
+    assert!(app.prompt.is_none());
+    assert!(app.settle(|a| a.quick_diff.staging == 0).await);
+    assert_eq!(git(&root, &["diff", "--cached"]), "");
+    assert!(app.buffers.iter().next().unwrap().1.is_dirty());
+}

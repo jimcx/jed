@@ -22,7 +22,7 @@ use crate::quick_diff::{self, Computed, Job, Mark, Want};
 use crate::selection::{Selection, Selections};
 
 /// "1 changed line" / "3 changed lines".
-fn changed_lines(n: usize) -> String {
+pub(super) fn changed_lines(n: usize) -> String {
     format!("{n} changed line{}", if n == 1 { "" } else { "s" })
 }
 
@@ -71,9 +71,25 @@ fn plan_revert(
         return Err("it is binary".into());
     }
     let pick = diff::Pick::from_new_lines(&found.hunks, lines.iter().cloned());
+    Ok(RevertPlan {
+        edits: revert_edits(&index.bytes, &text, &found.hunks, &pick, bom)?,
+        lines: pick.count(&found.hunks),
+    })
+}
+
+/// The edits of a buffer's text that take back the lines `pick` takes (`old`: the index's text,
+/// `new`: the buffer's encoded text, `bom`: the buffer has a BOM): [`diff::revert_line_edits`]
+/// in the buffer's byte positions (its BOM not counted).
+pub(super) fn revert_edits(
+    old: &[u8],
+    new: &[u8],
+    hunks: &[Hunk],
+    pick: &diff::Pick,
+    bom: bool,
+) -> Result<Vec<(ByteIdx, ByteIdx, String)>, String> {
     let shift = if bom { 3 } else { 0 };
     let mut edits = Vec::new();
-    for (range, mut with) in diff::revert_line_edits(&index.bytes, &text, &found.hunks, &pick) {
+    for (range, mut with) in diff::revert_line_edits(old, new, hunks, pick) {
         // The buffer keeps its own BOM: the index's isn't text.
         if range.start == 0 && with.starts_with(b"\xEF\xBB\xBF") {
             with.drain(..3);
@@ -82,10 +98,7 @@ fn plan_revert(
         let (start, end) = (range.start.saturating_sub(shift), range.end.saturating_sub(shift));
         edits.push((ByteIdx(start), ByteIdx(end), with));
     }
-    Ok(RevertPlan {
-        edits,
-        lines: pick.count(&found.hunks),
-    })
+    Ok(edits)
 }
 
 /// The app's side of quick diff.
@@ -99,6 +112,8 @@ pub struct QuickDiffState {
     /// The selections a `What::Ranges` stage works on (start, end), in order, followed through
     /// edits while it waits (`follow`); taken when it runs.
     ranges: Vec<(ByteIdx, ByteIdx)>,
+    /// The diff a `What::Diff` stage works on and the lines picked in it; taken when it runs.
+    pub(super) diff_pick: Option<(Arc<crate::diff_view::Doc>, diff::Pick)>,
     /// The peek (a click on a gutter marker), while open.
     pub peek: Option<Peek>,
     /// Stage / unstage tasks running (tests wait for them).
@@ -142,6 +157,8 @@ pub enum What {
     File,
     /// The changed lines in the selections (`QuickDiffState::ranges`; `git.stageSelectedRanges`).
     Ranges,
+    /// The lines picked in an unstaged diff tab's selection (`QuickDiffState::diff_pick`).
+    Diff,
 }
 
 /// Which change to stage: `what` of `buffer`, for `Line` the change on `line` (0-based).
@@ -380,6 +397,13 @@ impl App {
         match at.what {
             What::File => self.spawn_stage(at, false, move || stage::stage_file(&repo, &path).map(|()| None)),
             What::Line => self.spawn_stage(at, false, move || stage::stage_line(&repo, &path, at.line)),
+            What::Diff => {
+                // Exactly the diff shown: the disk is checked against it (`Stale`).
+                let Some((doc, pick)) = self.quick_diff.diff_pick.take() else {
+                    return;
+                };
+                self.spawn_stage_lines(at, false, move || stage::stage_lines(&repo, &path, &doc.shown, &pick));
+            }
             What::Ranges => {
                 // The buffer is the file now: its lines are the disk's.
                 let (rope, ranges) = (buf.rope.clone(), std::mem::take(&mut self.quick_diff.ranges));
@@ -410,6 +434,7 @@ impl App {
             // Refused (read-only): said so.
             self.quick_diff.after_save = None;
             self.quick_diff.ranges.clear();
+            self.quick_diff.diff_pick = None;
         }
     }
 
@@ -427,6 +452,7 @@ impl App {
             self.stage_at(StageAt { line, ..at });
         } else {
             self.quick_diff.ranges.clear();
+            self.quick_diff.diff_pick = None;
             tracing::info!(line = at.line, "not staging: the save didn't happen");
         }
     }

@@ -339,7 +339,6 @@ pub fn unstage_lines(repo: &Repo, path: &Path, shown: &FileDiff, pick: &diff::Pi
 /// with the index entry's executable bit; `Stale`, `Conflicted`, `Binary`, `Untracked` and
 /// `Symlink` refused. The index isn't touched. Returns the file's bytes before, or `None` when
 /// nothing was picked (nothing written).
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn revert_lines(repo: &Repo, path: &Path, shown: &FileDiff, pick: &diff::Pick) -> Result<Option<Vec<u8>>, Error> {
     let r = repo.open()?;
     let index = r.index()?;

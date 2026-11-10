@@ -1469,6 +1469,11 @@ impl App {
             Command::StageHunk => self.stage_command(false),
             Command::UnstageHunk => self.stage_command(true),
             Command::RevertHunk => self.diff_revert(None),
+            Command::StageSelectedRanges | Command::UnstageSelectedRanges | Command::RevertSelectedRanges
+                if self.group().active_diff().is_some() =>
+            {
+                self.diff_selected(cmd)
+            }
             Command::StageSelectedRanges => self.stage_selected(false),
             Command::UnstageSelectedRanges => self.stage_selected(true),
             Command::RevertSelectedRanges => self.revert_selected(),

@@ -8,6 +8,7 @@
 //! change of an unstaged view edits the open buffer (one undo step), else the file on disk.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -734,6 +735,136 @@ impl App {
             }
             let message = match result {
                 Ok(_) => Ok(done),
+                Err(stage::Error::Stale) => Err(refused(&name, "the file changed, try again")),
+                Err(e) => Err(refused(&name, &e.to_string())),
+            };
+            let _ = tx.send(AppEvent::Diff(DiffEvent::Staged(message)));
+        });
+    }
+
+    /// `git.stageSelectedRanges` / `git.unstageSelectedRanges` / `git.revertSelectedRanges` on a
+    /// diff tab: just the lines of the rows its selection covers (`DiffTab::selected_pick`; no
+    /// selection: the caret's row), as `diff_stage` / `diff_revert` do a hunk, with the same
+    /// refusals. Staging an open file goes through the gutter's flow (a dirty buffer saved first,
+    /// a save in flight waited for); everything else works on the diff as shown (`Stale` refuses
+    /// when the repository or the file moved on).
+    pub(super) fn diff_selected(&mut self, cmd: Command) {
+        let Some(d) = self.group().active_diff() else { return };
+        let (path, pair, pick) = (d.path.clone(), d.pair, d.selected_pick());
+        let Some(doc) = d.doc.clone() else { return };
+        if cmd == Command::RevertSelectedRanges {
+            if pair != Pair::UNSTAGED {
+                let text = "Only working tree changes can be reverted (Index ↔ Working Tree)";
+                return self.notify(Level::Info, text.into());
+            }
+        } else {
+            let unstage = cmd == Command::UnstageSelectedRanges;
+            match (pair.staging(), unstage) {
+                (Some(Side::Unstaged), false) | (Some(Side::Staged), true) => {}
+                (Some(Side::Unstaged), true) => return self.notify(Level::Info, "These changes aren't staged".into()),
+                (Some(Side::Staged), false) => {
+                    return self.notify(Level::Info, "These changes are already staged".into());
+                }
+                (None, _) => return self.notify(Level::Info, "This diff isn't git's: nothing to stage".into()),
+            }
+        }
+        let lines = pick.count(&doc.shown.diff.hunks);
+        if lines == 0 {
+            return self.notify(Level::Info, "No changes in the selection".into());
+        }
+        let Some((repo, rel)) = self.repo_path(&path) else {
+            return;
+        };
+        let changed = super::quick_diff::changed_lines(lines);
+        match cmd {
+            Command::StageSelectedRanges => {
+                if let Some(buffer) = self.buffer_of(&path) {
+                    self.quick_diff.diff_pick = Some((doc, pick));
+                    self.stage_at(StageAt {
+                        buffer,
+                        line: 0,
+                        what: What::Diff,
+                    });
+                    return;
+                }
+                self.spawn_diff_stage(format!("Staged {changed}"), "Staging failed", move || {
+                    stage::stage_lines(&repo, &rel, &doc.shown, &pick).map(|_| ())
+                });
+            }
+            Command::UnstageSelectedRanges => {
+                self.spawn_diff_stage(format!("Unstaged {changed}"), "Unstaging failed", move || {
+                    stage::unstage_lines(&repo, &rel, &doc.shown, &pick).map(|_| ())
+                });
+            }
+            _ => self.diff_revert_lines(path, repo, rel, doc, pick, changed),
+        }
+    }
+
+    /// `diff_selected`'s revert (the pair and the pick are checked): as `diff_revert`, the picked
+    /// lines instead of a hunk.
+    fn diff_revert_lines(
+        &mut self,
+        path: PathBuf,
+        repo: Repo,
+        rel: PathBuf,
+        doc: Arc<Doc>,
+        pick: diff::Pick,
+        changed: String,
+    ) {
+        self.ensure_status_loaded();
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let refuse = |why: &str| refused(&name, why);
+        let entry = self.git.status.as_ref().and_then(|s| s.entry(&rel));
+        if entry.is_some_and(|e| e.unstaged == Some(Change::Untracked)) {
+            return self.notify(Level::Info, refuse("it isn't in the index"));
+        }
+        if entry.is_some_and(|e| e.unstaged == Some(Change::Conflicted) || e.staged == Some(Change::Conflicted)) {
+            return self.notify(Level::Info, refuse("it has merge conflicts"));
+        }
+        if let Some(buffer) = self.buffer_of(&path) {
+            let buf = self.buffers.get(buffer).expect("an open buffer");
+            if let Some(reason) = &buf.read_only {
+                let text = format!("Read-only: {reason}");
+                return self.notify(Level::Error, text);
+            }
+            if crate::buffer::file::encode(&buf.rope, buf.bom) != doc.shown.new {
+                return self.notify(Level::Error, refuse("the file changed, try again"));
+            }
+            let shown = &doc.shown;
+            let edits = match super::quick_diff::revert_edits(&shown.old, &shown.new, &shown.diff.hunks, &pick, buf.bom)
+            {
+                Ok(edits) => edits,
+                Err(why) => return self.notify(Level::Error, refuse(&why)),
+            };
+            let mut changes = ChangeSet::with_capacity(edits.len(), edits.iter().map(|e| e.2.len()).sum());
+            for (start, end, text) in &edits {
+                changes.push(*start, *end, text);
+            }
+            self.apply_changes(buffer, changes);
+            self.follow_edits();
+            self.notify(Level::Info, format!("Reverted {changed} in {name} (not saved)"));
+            return;
+        }
+        // Not open: the file on disk, exactly the diff shown.
+        let history = self.history_job(&path);
+        if history.is_some() {
+            self.history_started();
+        }
+        self.diffs.staging += 1;
+        let tx = self.tx.clone();
+        let done = format!("Reverted {changed} in {name}");
+        tokio::task::spawn_blocking(move || {
+            let result = stage::revert_lines(&repo, &rel, &doc.shown, &pick);
+            if let Some(job) = history {
+                let recorded = match &result {
+                    Ok(Some(before)) => job.record(before),
+                    _ => Ok(()),
+                };
+                super::history::send_done(&tx, recorded);
+            }
+            let message = match result {
+                Ok(Some(_)) => Ok(done),
+                Ok(None) => Ok("No changes in the selection".to_string()),
                 Err(stage::Error::Stale) => Err(refused(&name, "the file changed, try again")),
                 Err(e) => Err(refused(&name, &e.to_string())),
             };

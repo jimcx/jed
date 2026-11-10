@@ -83,6 +83,34 @@ fn drawn(row: &Row) -> (bool, usize) {
 }
 
 impl DiffTab {
+    /// The lines the selection's rows show, for staging / unstaging / reverting just them
+    /// (task stage_selected_lines): the rows from the anchor's to the head's (no selection: the
+    /// caret's row; a selection ending at the start of a later line leaves that line's row out),
+    /// each contributing its left line (old) and its right line (new), in either layout and from
+    /// either side.
+    pub fn selected_pick(&self) -> crate::git::diff::Pick {
+        let aligned = self.aligned();
+        let (lo, hi) = self.caret.ordered();
+        let (first, last) = if self.caret.is_empty() {
+            (self.cursor, self.cursor)
+        } else {
+            let first = aligned.row_of(self.caret.right, lo.0);
+            let mut last = aligned.row_of(self.caret.right, hi.0);
+            if hi.1 == 0 && hi.0 > lo.0 && last > first {
+                last -= 1;
+            }
+            (first, last)
+        };
+        let rows = aligned
+            .rows
+            .get(first..=last.min(aligned.rows.len().saturating_sub(1)))
+            .unwrap_or(&[]);
+        crate::git::diff::Pick::new(
+            rows.iter().filter_map(|r| r.left).map(|l| l..l + 1),
+            rows.iter().filter_map(|r| r.right).map(|l| l..l + 1),
+        )
+    }
+
     /// The text of line `line` of a side.
     pub(crate) fn side_text(&self, right: bool, line: usize) -> &str {
         match &self.doc {
@@ -445,6 +473,75 @@ mod tests {
         let mut d = DiffTab::new(1, "f.txt".into(), Pair::UNSTAGED);
         d.doc = Some(Arc::new(Doc::new(old.into(), new.into()).unwrap()));
         d
+    }
+
+    /// (old, new) lines of the pick, probed over `0..n`.
+    fn picked(d: &DiffTab, n: usize) -> (Vec<usize>, Vec<usize>) {
+        let p = d.selected_pick();
+        (
+            (0..n).filter(|&l| p.has_old(l)).collect(),
+            (0..n).filter(|&l| p.has_new(l)).collect(),
+        )
+    }
+
+    #[test]
+    fn selected_pick_takes_the_rows_of_the_selection() {
+        // old: a b c d e   new: a B c D e   (b -> B, d -> D)
+        for inline in [false, true] {
+            let mut d = tab("a\nb\nc\nd\ne\n", "a\nB\nc\nD\ne\n");
+            d.set_layout(inline);
+            // Right side, line 1 to line 2 (c): side by side b / B and c; inline the removed
+            // b row comes before B, so it isn't covered.
+            d.caret = Caret {
+                right: true,
+                anchor: (1, 0),
+                head: (2, 1),
+                col: None,
+            };
+            let old = if inline { vec![2] } else { vec![1, 2] };
+            assert_eq!(picked(&d, 5), (old, vec![1, 2]), "inline {inline}");
+            // Ending at column 0 of line 2 leaves c out.
+            d.caret.head = (2, 0);
+            let old = if inline { vec![] } else { vec![1] };
+            assert_eq!(picked(&d, 5), (old, vec![1]), "col 0, inline {inline}");
+            // Backwards on the left side, from d to b: inline stops at d's removed row.
+            d.caret = Caret {
+                right: false,
+                anchor: (3, 1),
+                head: (1, 0),
+                col: None,
+            };
+            let new = if inline { vec![1, 2] } else { vec![1, 2, 3] };
+            assert_eq!(picked(&d, 5), (vec![1, 2, 3], new), "left, inline {inline}");
+        }
+    }
+
+    #[test]
+    fn selected_pick_of_an_empty_caret_is_its_row() {
+        let mut d = tab("a\nb\nc\n", "a\nc\nd\n");
+        d.set_layout(true);
+        let removed = d
+            .rows()
+            .iter()
+            .position(|r| r.left == Some(1) && r.right.is_none())
+            .unwrap();
+        d.cursor = removed;
+        d.caret = Caret {
+            right: false,
+            anchor: (1, 0),
+            head: (1, 0),
+            col: None,
+        };
+        assert_eq!(picked(&d, 4), (vec![1], vec![]));
+        d.set_layout(false);
+        d.cursor = d.rows().iter().position(|r| r.right == Some(2)).unwrap();
+        d.caret = Caret {
+            right: true,
+            anchor: (2, 0),
+            head: (2, 0),
+            col: None,
+        };
+        assert_eq!(picked(&d, 4), (vec![], vec![2]));
     }
 
     #[test]
