@@ -154,6 +154,9 @@ impl App {
             #[cfg(test)]
             probe.walks.fetch_add(1, Ordering::SeqCst);
             let send = |result: Result<log::Chunk, String>| {
+                // Counted before the send, so a test never sees the chunk before the count.
+                #[cfg(test)]
+                probe.sent.fetch_add(1, Ordering::SeqCst);
                 let sent = tx
                     .send(AppEvent::Git(GitEvent::HistoryChunk {
                         list: list.clone(),
@@ -162,10 +165,7 @@ impl App {
                     }))
                     .is_ok();
                 #[cfg(test)]
-                {
-                    probe.sent.fetch_add(1, Ordering::SeqCst);
-                    probe.wait_if_held();
-                }
+                probe.wait_if_held();
                 sent
             };
             match log::Walker::new(&repo, rel.as_deref()) {

@@ -247,10 +247,10 @@ async fn history_stream_scrolling_continues_the_same_walk() {
 // FLAKE: 2026-11-09, hung for over 60 s in a full `scripts/check` run under load (passes alone in
 // 0.5 s). Likely an assertion failed while the probe was held: the held `spawn_blocking` job then
 // never wakes, so the runtime's shutdown waits on it and the failure shows as a hang. `Release`
-// lets the panic surface; the messages dump the state. Seen again the same day: "at first chunk
-// sent: walks 1 sent 0 exited 0, commits 1": the job's `send` (app/git_history.rs) puts the chunk
-// on the channel before `probe.sent.fetch_add`, so the app can show it before the counter moves
-// (a race in the test hook; bumping `sent` before the send would close it).
+// lets the panic surface; the messages dump the state. Seen again the same day and in CI on
+// 2026-11-11: "at first chunk sent: walks 1 sent 0 exited 0, commits 1": the job's `send`
+// (app/git_history.rs) put the chunk on the channel before bumping `probe.sent`, so the app could
+// show it before the counter moved. Fixed: `sent` is now bumped before the send.
 #[tokio::test(flavor = "multi_thread")]
 async fn history_stream_switching_files_cancels_the_walk() {
     /// FLAKE debugging: releases the probe when the test unwinds, so a failure isn't a hang.
