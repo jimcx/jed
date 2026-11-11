@@ -211,6 +211,21 @@ pub fn tools() -> Vec<Value> {
             &["path", "line"],
         ),
         tool(
+            "get_document_symbols",
+            "Ask jed's language server for a file's symbols as a tree {name, kind, detail, line, end_line, children} (1-based lines; up to 500 symbols, parents before children; `truncated` says when cut), without moving the user's cursor. A file not open is loaded in the background (`opened: true`).",
+            json!({"path": {"type": "string", "description": "file path"}}),
+            &["path"],
+        ),
+        tool(
+            "find_workspace_symbols",
+            "Ask jed's language servers for symbols across the workspace whose name matches `query`: {name, kind, container, path, line, col}. A server must be running (open a file of the language first).",
+            json!({
+                "query": {"type": "string", "description": "name (or part of it) to look for"},
+                "max": {"type": "integer", "description": "at most this many (default 50, up to 200)"},
+            }),
+            &["query"],
+        ),
+        tool(
             "get_environment",
             "jed's version, workspace, git branch and dirty count, open files, language servers, task templates and shells.",
             json!({}),
@@ -380,6 +395,13 @@ pub(crate) fn tool_query(name: &str, args: &Value, cwd: &Path) -> Option<Result<
             }
             "find_references" => lsp_place(args, LspAsk::References, &absolute)?,
             "get_hover" => lsp_place(args, LspAsk::Hover, &absolute)?,
+            "get_document_symbols" => Query::Symbols {
+                path: absolute(arg_str(args, "path")?.ok_or("`path` is required")?),
+            },
+            "find_workspace_symbols" => Query::WorkspaceSymbols {
+                query: arg_str(args, "query")?.ok_or("`query` is required")?.to_string(),
+                max: arg_u64(args, "max")?.map(|n| (n as usize).clamp(1, 200)),
+            },
             "get_environment" => Query::Environment,
             "list_terminals" => Query::Terminals,
             "get_recent_commands" => Query::Commands {
@@ -799,6 +821,27 @@ pub(crate) mod tests {
         assert!(q("get_hover", json!({"path": "a"})).unwrap_err().contains("line"));
         assert!(q("get_hover", json!({"path": "a", "line": 0})).is_err());
         assert!(q("find_definition", json!({"path": "a", "line": 1, "kind": "x"})).is_err());
+        assert_eq!(
+            q("get_document_symbols", json!({"path": "a.rs"})),
+            Ok(Query::Symbols {
+                path: PathBuf::from("/work/a.rs")
+            })
+        );
+        assert_eq!(
+            q("find_workspace_symbols", json!({"query": "Shape", "max": 1000})),
+            Ok(Query::WorkspaceSymbols {
+                query: "Shape".into(),
+                max: Some(200)
+            })
+        );
+        assert_eq!(
+            q("find_workspace_symbols", json!({"query": "x", "max": 0})),
+            Ok(Query::WorkspaceSymbols {
+                query: "x".into(),
+                max: Some(1)
+            })
+        );
+        assert!(q("find_workspace_symbols", json!({})).is_err());
     }
 
     #[test]
@@ -834,6 +877,8 @@ pub(crate) mod tests {
                 "find_definition",
                 "find_references",
                 "get_hover",
+                "get_document_symbols",
+                "find_workspace_symbols",
                 "get_environment",
                 "list_terminals",
                 "get_recent_commands",

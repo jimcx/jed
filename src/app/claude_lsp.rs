@@ -30,6 +30,7 @@ use crate::buffer::file::LoadError;
 use crate::buffer::pos::{self, ByteIdx, DisplayCol, LspPos};
 use crate::ipc::{LspAsk, Query, Reply, Responder};
 use crate::locations::{self, Location};
+use crate::symbols::{self, Symbol};
 
 /// How long a query waits for its server.
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -40,6 +41,10 @@ const MAX_LOCATIONS: usize = 200;
 /// A location's line text, and the hover's text, in bytes.
 const MAX_TEXT: usize = 200;
 const MAX_HOVER: usize = 4096;
+/// Symbols of a file in one answer (`get_document_symbols`), counting children.
+const MAX_SYMBOLS: usize = 500;
+/// Workspace symbols when the query names no `max`.
+const DEFAULT_WORKSPACE_SYMBOLS: usize = 50;
 
 /// What `App::claude_lsp` keeps.
 pub(super) struct State {
@@ -85,6 +90,7 @@ impl State {
                 revision: 0,
                 at: ByteIdx(0),
                 include_declaration: true,
+                query: None,
                 dirty: false,
                 place: Value::Null,
                 deadline: at,
@@ -114,6 +120,8 @@ struct Waiting {
     revision: u64,
     at: ByteIdx,
     include_declaration: bool,
+    /// `WorkspaceSymbols`: what to look for and how many to answer with at most.
+    query: Option<(String, usize)>,
     /// Reported in the answer: the buffer had unsaved changes (its lines, not the file's).
     dirty: bool,
     /// The place asked about (`{line, col}`, 1-based).
@@ -137,6 +145,7 @@ struct Ask {
     symbol: Option<String>,
     col: Option<usize>,
     include_declaration: bool,
+    query: Option<(String, usize)>,
     deadline: Instant,
 }
 
@@ -179,6 +188,18 @@ fn supports_references(caps: &ServerCapabilities) -> bool {
         .is_some_and(|d| !matches!(d, OneOf::Left(false)))
 }
 
+fn supports_document_symbols(caps: &ServerCapabilities) -> bool {
+    caps.document_symbol_provider
+        .as_ref()
+        .is_some_and(|d| !matches!(d, OneOf::Left(false)))
+}
+
+fn supports_workspace_symbols(caps: &ServerCapabilities) -> bool {
+    caps.workspace_symbol_provider
+        .as_ref()
+        .is_some_and(|d| !matches!(d, OneOf::Left(false)))
+}
+
 fn supports_hover(caps: &ServerCapabilities) -> bool {
     caps.hover_provider
         .as_ref()
@@ -193,6 +214,8 @@ fn method(ask: LspAsk) -> (&'static str, fn(&ServerCapabilities) -> bool) {
         LspAsk::Declaration => ("textDocument/declaration", supports_declaration),
         LspAsk::References => ("textDocument/references", supports_references),
         LspAsk::Hover => ("textDocument/hover", supports_hover),
+        LspAsk::DocumentSymbols => ("textDocument/documentSymbol", supports_document_symbols),
+        LspAsk::WorkspaceSymbols => ("workspace/symbol", supports_workspace_symbols),
     }
 }
 
@@ -262,32 +285,46 @@ impl App {
     /// A `Query::Lsp`: resolves the place and asks the file's server; `responder` is answered
     /// when it is time, here for an error.
     pub(super) fn claude_lsp_ask(&mut self, query: &Query, responder: Responder) {
-        let Query::Lsp {
-            ask,
-            path,
-            line,
-            symbol,
-            col,
-            include_declaration,
-        } = query
-        else {
-            return responder.answer(Reply::error("not a language server query"));
+        let (ask, path, line, symbol, col, include_declaration, query) = match query {
+            Query::Lsp {
+                ask: LspAsk::DocumentSymbols | LspAsk::WorkspaceSymbols,
+                ..
+            } => return responder.answer(Reply::error("not a place query")),
+            Query::Lsp {
+                ask,
+                path,
+                line,
+                symbol,
+                col,
+                include_declaration,
+            } => (*ask, path, *line, symbol.clone(), *col, *include_declaration, None),
+            Query::Symbols { path } => (LspAsk::DocumentSymbols, path, 1, None, None, true, None),
+            Query::WorkspaceSymbols { query, max } => {
+                let max = max.unwrap_or(DEFAULT_WORKSPACE_SYMBOLS);
+                let q = Some((query.clone(), max));
+                (LspAsk::WorkspaceSymbols, &PathBuf::new(), 1, None, None, true, q)
+            }
+            _ => return responder.answer(Reply::error("not a language server query")),
         };
         if !self.lsp.started() {
             return responder.answer(Reply::error("language servers are off"));
         }
         let ask = Ask {
             responder,
-            ask: *ask,
+            ask,
             path: path.clone(),
-            line: *line,
-            symbol: symbol.clone(),
-            col: *col,
-            include_declaration: *include_declaration,
+            line,
+            symbol,
+            col,
+            include_declaration,
+            query,
             deadline: Instant::now() + self.claude_lsp.timeout,
         };
         self.claude_lsp.next += 1;
         let n = self.claude_lsp.next;
+        if ask.ask == LspAsk::WorkspaceSymbols {
+            return self.claude_lsp_workspace(n, ask);
+        }
         if let Some(id) = self.buffers.find_path(path) {
             return self.claude_lsp_begin(n, ask, id, false);
         }
@@ -305,6 +342,103 @@ impl App {
         self.claude_lsp.loading.insert(n, ask);
     }
 
+    /// A `WorkspaceSymbols` query: no file, so no loading; waits like the others. Its anchor
+    /// buffer (the active one, else any) only gives the request a place in `requests`.
+    fn claude_lsp_workspace(&mut self, n: u64, ask: Ask) {
+        let anchor = self
+            .group()
+            .active_tab()
+            .map(|t| t.buffer)
+            .or_else(|| self.buffers.iter().next().map(|(id, _)| id));
+        let Some(buffer) = anchor else {
+            return ask.responder.answer(Reply::error(
+                "no language server is running: open a file of the language so its server starts",
+            ));
+        };
+        let waiting = Waiting {
+            responder: ask.responder,
+            ask: ask.ask,
+            buffer,
+            revision: 0,
+            at: ByteIdx(0),
+            include_declaration: true,
+            query: ask.query,
+            dirty: false,
+            place: Value::Null,
+            deadline: ask.deadline,
+            retry_at: None,
+            parked: None,
+            opened: false,
+        };
+        self.claude_lsp.waiting.insert(n, waiting);
+        if let Err(e) = self.claude_lsp_send(n) {
+            self.claude_lsp_finish(n, Reply::error(e));
+        }
+    }
+
+    /// Sends waiting `WorkspaceSymbols` query `n` to the first running server that has the
+    /// feature (the active file's server first). `Ok` with `parked` set while one may still
+    /// start; `Err` for a cause that won't pass.
+    fn claude_lsp_send_workspace(&mut self, n: u64) -> Result<(), String> {
+        let Some(w) = self.claude_lsp.waiting.get(&n) else {
+            return Ok(());
+        };
+        let (buffer, query) = (w.buffer, w.query.as_ref().map_or_else(String::new, |q| q.0.clone()));
+        let preferred = self.lsp.server_of(buffer).map(|(id, ..)| id);
+        let running = |s: &&crate::lsp::Server| match &s.state {
+            crate::lsp::State::Running { capabilities, .. } => supports_workspace_symbols(capabilities),
+            _ => false,
+        };
+        let servers = self.lsp.servers();
+        let chosen = servers
+            .iter()
+            .filter(running)
+            .find(|s| Some(s.id) == preferred)
+            .or_else(|| servers.iter().find(running));
+        let target = chosen.and_then(|s| match &s.state {
+            crate::lsp::State::Running { encoding, .. } => Some((s.id, *encoding)),
+            _ => None,
+        });
+        if let Some((id, encoding)) = target {
+            let group = self.groups.active;
+            let request = Request::Claude { ask: n };
+            let params = json!({"query": query});
+            let at = (group, buffer, ByteIdx(0));
+            if self.send_server_request(id, encoding, at, "workspace/symbol", params, request) {
+                if let Some(w) = self.claude_lsp.waiting.get_mut(&n) {
+                    w.parked = None;
+                }
+                return Ok(());
+            }
+        }
+        let servers = self.lsp.servers();
+        let starting = servers
+            .iter()
+            .find(|s| matches!(s.state, crate::lsp::State::Starting))
+            .map(|s| s.config.name.clone());
+        let any_running = servers
+            .iter()
+            .find(|s| matches!(s.state, crate::lsp::State::Running { .. }))
+            .map(|s| s.config.name.clone());
+        let why = match (starting, any_running) {
+            (Some(name), _) => format!("the {name} language server is still starting"),
+            (None, Some(name)) => {
+                return Err(format!("the {name} language server does not support workspace/symbol"));
+            }
+            (None, None) if self.servers_dirty => "the language server has not started yet".to_string(),
+            (None, None) if servers.is_empty() => {
+                return Err(
+                    "no language server is running: open a file of the language so its server starts".to_string(),
+                );
+            }
+            (None, None) => return Err("no language server is running (see the Tools view)".to_string()),
+        };
+        if let Some(w) = self.claude_lsp.waiting.get_mut(&n) {
+            w.parked = Some(why);
+        }
+        Ok(())
+    }
+
     /// The file is open as `id`: resolves the place and asks.
     fn claude_lsp_begin(&mut self, n: u64, ask: Ask, id: crate::buffer::BufferId, opened: bool) {
         let Some(buf) = self.buffers.get(id) else {
@@ -313,7 +447,10 @@ impl App {
                 .answer(Reply::error(format!("{} is not open in jed", ask.path.display())));
         };
         let tab_width = self.settings.for_buffer(buf).tab_width;
+        // A file's symbols are about no place.
+        let whole = ask.ask == LspAsk::DocumentSymbols;
         let at = match resolve(buf, tab_width, ask.line - 1, ask.symbol.as_deref(), ask.col) {
+            _ if whole => ByteIdx(0),
             Ok(at) => at,
             Err(e) => return ask.responder.answer(Reply::error(e)),
         };
@@ -324,8 +461,9 @@ impl App {
             revision: buf.revision(),
             at,
             include_declaration: ask.include_declaration,
+            query: None,
             dirty: buf.is_dirty(),
-            place: self.claude_place(buf, at),
+            place: if whole { Value::Null } else { self.claude_place(buf, at) },
             deadline: ask.deadline,
             retry_at: None,
             parked: None,
@@ -415,7 +553,16 @@ impl App {
             _ => Value::Null,
         };
         let group = self.groups.active;
-        if self.send_request_with(group, buffer, at, method, supported, Request::Claude { ask: n }, extra) {
+        if ask == LspAsk::WorkspaceSymbols {
+            return self.claude_lsp_send_workspace(n);
+        }
+        let request = Request::Claude { ask: n };
+        let sent = if ask == LspAsk::DocumentSymbols {
+            self.send_doc_request((group, buffer, at), method, supported, request, Value::Null)
+        } else {
+            self.send_request_with(group, buffer, at, method, supported, request, extra)
+        };
+        if sent {
             if let Some(w) = self.claude_lsp.waiting.get_mut(&n) {
                 w.parked = None;
             }
@@ -474,7 +621,8 @@ impl App {
         let mut done: Vec<(u64, Option<&'static str>)> = Vec::new();
         let mut parked: Vec<u64> = Vec::new();
         for (&n, w) in &self.claude_lsp.waiting {
-            let current = self.buffers.get(w.buffer).is_some_and(|b| b.revision() == w.revision);
+            let current = w.ask == LspAsk::WorkspaceSymbols
+                || self.buffers.get(w.buffer).is_some_and(|b| b.revision() == w.revision);
             let in_flight = self.requests.values().any(|p| p.request == Request::Claude { ask: n });
             if w.responder.is_closed() {
                 done.push((n, None));
@@ -586,7 +734,8 @@ impl App {
         let Some(w) = self.claude_lsp.waiting.get_mut(&n) else {
             return;
         };
-        if self.buffers.get(p.buffer).is_none_or(|b| b.revision() != w.revision) {
+        let workspace = w.ask == LspAsk::WorkspaceSymbols;
+        if !workspace && self.buffers.get(p.buffer).is_none_or(|b| b.revision() != w.revision) {
             return self.claude_lsp_finish(n, Reply::error("the file changed while asking: ask again"));
         }
         let value = match result {
@@ -601,20 +750,31 @@ impl App {
             }
         };
         let (ask, place, dirty, opened) = (w.ask, w.place.clone(), w.dirty, w.opened);
-        let Some(buf) = self.buffers.get(p.buffer) else {
-            return;
-        };
+        let max = self.claude_lsp.waiting[&n].query.as_ref().map_or(0, |q| q.1);
         let mut unread = Vec::new();
-        let mut data = match ask {
-            LspAsk::Hover => self.claude_hover(buf, &value, p.encoding),
-            _ => {
-                let (data, rest) = self.claude_locations(&value, p.encoding, ask == LspAsk::References);
-                unread = rest;
-                data
+        let mut data = if ask == LspAsk::WorkspaceSymbols {
+            // About no file: the anchor buffer may be gone.
+            self.claude_workspace_symbols(&value, p.encoding, max)
+        } else {
+            let Some(buf) = self.buffers.get(p.buffer) else {
+                return;
+            };
+            match ask {
+                LspAsk::Hover => self.claude_hover(buf, &value, p.encoding),
+                LspAsk::DocumentSymbols => claude_symbols(&buf.rope, &value, p.encoding),
+                _ => {
+                    let (data, rest) = self.claude_locations(&value, p.encoding, ask == LspAsk::References);
+                    unread = rest;
+                    data
+                }
             }
         };
-        data["at"] = place;
-        data["dirty"] = json!(dirty);
+        if !place.is_null() {
+            data["at"] = place;
+        }
+        if !workspace {
+            data["dirty"] = json!(dirty);
+        }
         if opened {
             data["opened"] = json!(true);
         }
@@ -737,6 +897,35 @@ impl App {
         )
     }
 
+    /// A `workspace/symbol` answer: `{name, kind, container, path, line, col}` (1-based; open
+    /// files' columns are display columns, others' the server's own numbers), at most `max`.
+    fn claude_workspace_symbols(&self, value: &Value, encoding: pos::PosEncoding, max: usize) -> Value {
+        let found = symbols::workspace(value);
+        let count = found.len();
+        let list: Vec<Value> = found
+            .iter()
+            .take(max)
+            .map(|s| {
+                let start = s.start.unwrap_or_default();
+                let loc = Location {
+                    path: s.path.clone(),
+                    start,
+                    end: start,
+                };
+                let (place, _) = self.claude_location(&loc, encoding);
+                json!({
+                    "name": s.name,
+                    "kind": symbols::kind_name(s.kind),
+                    "container": s.container,
+                    "path": place["path"],
+                    "line": place["line"],
+                    "col": place["col"],
+                })
+            })
+            .collect();
+        json!({"symbols": list, "count": count, "truncated": count > max})
+    }
+
     /// The location as an answer says it, and whether its file is open (else `text` is null and
     /// the numbers are the server's, until the file is read).
     fn claude_location(&self, loc: &Location, encoding: pos::PosEncoding) -> (Value, bool) {
@@ -764,6 +953,41 @@ impl App {
         v["text"] = json!(line_clip(&buf.rope, loc.start.line as usize));
         (v, true)
     }
+}
+
+/// A `documentSymbol` answer as a tree of `{name, kind, detail, line, end_line, children}`
+/// (1-based lines), at most `MAX_SYMBOLS` of them, parents before children.
+fn claude_symbols(rope: &Rope, value: &Value, encoding: pos::PosEncoding) -> Value {
+    fn one(rope: &Rope, s: &Symbol, encoding: pos::PosEncoding, left: &mut usize) -> Value {
+        *left -= 1;
+        let line = |p: LspPos| pos::line_of(rope, pos::from_lsp_pos(rope, p, encoding)) + 1;
+        let mut children = Vec::new();
+        for c in &s.children {
+            if *left == 0 {
+                break;
+            }
+            children.push(one(rope, c, encoding, left));
+        }
+        json!({
+            "name": s.name,
+            "kind": symbols::kind_name(s.kind),
+            "detail": s.detail,
+            "line": line(s.selection.0),
+            "end_line": line(s.range.1),
+            "children": children,
+        })
+    }
+    let tree = symbols::document(value);
+    let count: usize = tree.iter().map(Symbol::count).sum();
+    let mut left = MAX_SYMBOLS;
+    let mut list = Vec::new();
+    for s in &tree {
+        if left == 0 {
+            break;
+        }
+        list.push(one(rope, s, encoding, &mut left));
+    }
+    json!({"symbols": list, "count": count, "truncated": count > MAX_SYMBOLS})
 }
 
 /// `{line, col, end_line, end_col}` (1-based, display columns) of a range in `rope`.
@@ -1444,5 +1668,338 @@ mod tests {
         let r = reply(&mut app, &ans).await;
         assert!(r.error.unwrap().contains("stopped"));
         assert!(app.claude_lsp.waiting.is_empty());
+    }
+
+    fn rng(a: u32, b: u32, c: u32, d: u32) -> Value {
+        json!({"start": {"line": a, "character": b}, "end": {"line": c, "character": d}})
+    }
+
+    fn symbols_of(path: &Path) -> Query {
+        Query::Symbols {
+            path: path.to_path_buf(),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn document_symbols_answer_the_tree_for_both_server_shapes() {
+        let (_d, mut app, fake, root) = project().await;
+        let a = root.join("a.cpp");
+        put_cursor(&mut app, 3);
+        let before = user_state(&app);
+        // `DocumentSymbol[]`: children kept.
+        fake.respond(
+            "textDocument/documentSymbol",
+            json!([
+                {"name": "Shape", "kind": 23, "detail": "struct", "range": rng(0, 0, 1, 10), "selectionRange": rng(0, 4, 0, 7),
+                 "children": [{"name": "foo", "kind": 6, "range": rng(1, 0, 1, 10), "selectionRange": rng(1, 4, 1, 8)}]},
+                {"name": "main", "kind": 12, "range": rng(1, 0, 1, 40)}
+            ]),
+        );
+        let ans = ask(&mut app, symbols_of(&a));
+        let r = reply(&mut app, &ans).await;
+        let d = data(&r);
+        assert_eq!(
+            d["symbols"],
+            json!([
+                {"name": "Shape", "kind": "struct", "detail": "struct", "line": 1, "end_line": 2, "children": [
+                    {"name": "foo", "kind": "method", "detail": null, "line": 2, "end_line": 2, "children": []}]},
+                {"name": "main", "kind": "function", "detail": null, "line": 2, "end_line": 2, "children": []}
+            ])
+        );
+        assert_eq!(d["count"], 3);
+        assert_eq!(d["truncated"], false);
+        assert_eq!(d["dirty"], false);
+        assert!(d.get("at").is_none() && d.get("opened").is_none());
+        let sent = &fake.requests("textDocument/documentSymbol")[0];
+        assert!(sent.get("position").is_none(), "{sent}");
+        // Flat `SymbolInformation[]`, nested by `containerName`.
+        let loc = |a, b, c, d| json!({"uri": crate::lsp::uri::from_path(&root.join("a.cpp")).as_str(), "range": rng(a, b, c, d)});
+        fake.respond(
+            "textDocument/documentSymbol",
+            json!([
+                {"name": "Shape", "kind": 23, "location": loc(0, 0, 1, 10)},
+                {"name": "foo", "kind": 6, "containerName": "Shape", "location": loc(1, 0, 1, 10)},
+                {"name": "main", "kind": 12, "location": loc(1, 12, 1, 40)}
+            ]),
+        );
+        let ans = ask(&mut app, symbols_of(&a));
+        let r = reply(&mut app, &ans).await;
+        let d = data(&r);
+        assert_eq!(d["symbols"][0]["name"], "Shape");
+        assert_eq!(d["symbols"][0]["children"][0]["name"], "foo");
+        assert_eq!(d["symbols"][1]["name"], "main");
+        assert_eq!(d["symbols"].as_array().unwrap().len(), 2);
+        assert_eq!(d["count"], 3);
+        assert_eq!(user_state(&app), before);
+        assert!(app.message.is_none(), "nothing is notified");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn document_symbols_of_a_file_that_isnt_open_and_a_dirty_one() {
+        let (_d, mut app, fake, root) = project().await;
+        let b = root.join("b.cpp");
+        fake.respond(
+            "textDocument/documentSymbol",
+            json!([{"name": "bar", "kind": 13, "range": rng(0, 0, 0, 8), "selectionRange": rng(0, 4, 0, 7)}]),
+        );
+        let tabs = app.group().tabs.len();
+        let ans = ask(&mut app, symbols_of(&b));
+        let r = reply(&mut app, &ans).await;
+        let d = data(&r);
+        assert_eq!(d["opened"], true);
+        assert_eq!(d["symbols"][0]["name"], "bar");
+        assert_eq!(d["symbols"][0]["kind"], "variable");
+        assert_eq!(app.group().tabs.len(), tabs + 1);
+        // Unsaved changes are reported.
+        app.type_text("x");
+        let ans = ask(&mut app, symbols_of(&root.join("a.cpp")));
+        let r = reply(&mut app, &ans).await;
+        assert_eq!(data(&r)["dirty"], true);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn document_symbols_are_capped_and_an_edit_asks_again() {
+        let (_d, mut app, fake, root) = project().await;
+        let a = root.join("a.cpp");
+        let many: Vec<Value> = (0..520)
+            .map(|i| json!({"name": format!("s{i}"), "kind": 12, "range": rng(0, 0, 0, 1)}))
+            .collect();
+        fake.respond("textDocument/documentSymbol", json!(many));
+        let ans = ask(&mut app, symbols_of(&a));
+        let r = reply(&mut app, &ans).await;
+        let d = data(&r);
+        assert_eq!(d["symbols"].as_array().unwrap().len(), 500);
+        assert_eq!(d["symbols"][0]["name"], "s0");
+        assert_eq!(d["count"], 520);
+        assert_eq!(d["truncated"], true);
+        // An edit while asking.
+        fake.respond("textDocument/documentSymbol", json!([]));
+        fake.hold("textDocument/documentSymbol", true);
+        let ans = ask(&mut app, symbols_of(&a));
+        assert!(
+            app.settle(|_| fake.requests("textDocument/documentSymbol").len() == 2)
+                .await
+        );
+        app.type_text("x");
+        let r = reply(&mut app, &ans).await;
+        assert!(r.error.unwrap().contains("ask again"));
+        assert!(none_left(&app));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn workspace_symbols_find_a_struct_in_another_file_and_max_caps() {
+        let (_d, mut app, fake, root) = project().await;
+        let b = root.join("b.cpp");
+        let uri = crate::lsp::uri::from_path(&b);
+        let item = |name: &str, line: u32| json!({"name": name, "kind": 23, "containerName": "geom", "location": {"uri": uri.as_str(), "range": rng(line, 4, line, 9)}});
+        fake.respond(
+            "workspace/symbol",
+            json!([item("Shape", 0), item("ShapeB", 3), item("ShapeC", 5)]),
+        );
+        put_cursor(&mut app, 3);
+        let before = user_state(&app);
+        let ans = ask(
+            &mut app,
+            Query::WorkspaceSymbols {
+                query: "Shape".into(),
+                max: Some(2),
+            },
+        );
+        let r = reply(&mut app, &ans).await;
+        let d = data(&r);
+        assert_eq!(
+            d["symbols"],
+            json!([
+                {"name": "Shape", "kind": "struct", "container": "geom", "path": "b.cpp", "line": 1, "col": 5},
+                {"name": "ShapeB", "kind": "struct", "container": "geom", "path": "b.cpp", "line": 4, "col": 5}
+            ])
+        );
+        assert_eq!(d["count"], 3);
+        assert_eq!(d["truncated"], true);
+        assert!(d.get("dirty").is_none());
+        assert_eq!(fake.requests("workspace/symbol")[0]["query"], "Shape");
+        // The default is 50 and nothing is truncated below it.
+        let ans = ask(
+            &mut app,
+            Query::WorkspaceSymbols {
+                query: "Shape".into(),
+                max: None,
+            },
+        );
+        let r = reply(&mut app, &ans).await;
+        assert_eq!(data(&r)["symbols"].as_array().unwrap().len(), 3);
+        assert_eq!(data(&r)["truncated"], false);
+        assert_eq!(user_state(&app), before);
+        assert!(none_left(&app));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn workspace_symbols_survive_an_edit_and_time_out() {
+        let (_d, mut app, fake, _root) = project().await;
+        fake.respond("workspace/symbol", json!([]));
+        fake.hold("workspace/symbol", true);
+        let ans = ask(
+            &mut app,
+            Query::WorkspaceSymbols {
+                query: "x".into(),
+                max: None,
+            },
+        );
+        assert!(app.settle(|_| fake.requests("workspace/symbol").len() == 1).await);
+        app.type_text("x");
+        rest(&mut app).await;
+        assert!(ans.get().is_none(), "an edit does not stale a workspace query");
+        app.claude_lsp.timeout = Duration::from_millis(100);
+        app.claude_lsp
+            .waiting
+            .values_mut()
+            .for_each(|w| w.deadline = Instant::now());
+        let r = reply(&mut app, &ans).await;
+        assert!(r.error.unwrap().contains("timed out"));
+        assert!(none_left(&app));
+        assert!(
+            app.settle(|_| !fake.cancelled().is_empty()).await,
+            "the server is told to stop"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn workspace_symbols_cancel_when_the_client_hangs_up_and_uri_only_places_answer() {
+        let (_d, mut app, fake, root) = project().await;
+        let uri = crate::lsp::uri::from_path(&root.join("b.cpp"));
+        fake.respond(
+            "workspace/symbol",
+            json!([{"name": "Shape", "kind": 23, "location": {"uri": uri.as_str()}}]),
+        );
+        let q = || Query::WorkspaceSymbols {
+            query: "S".into(),
+            max: None,
+        };
+        let ans = ask(&mut app, q());
+        let d = data(&reply(&mut app, &ans).await).clone();
+        assert_eq!(d["symbols"][0]["path"], "b.cpp");
+        assert_eq!(d["symbols"][0]["container"], Value::Null);
+        // The client hangs up while the server holds the answer.
+        fake.hold("workspace/symbol", true);
+        let (responder, rx) = Responder::pair();
+        app.ipc_request(IpcRequest::query(q(), None), responder);
+        assert!(app.settle(|_| fake.requests("workspace/symbol").len() == 2).await);
+        drop(rx);
+        app.pump();
+        assert!(app.settle(|_| !fake.cancelled().is_empty()).await);
+        assert!(none_left(&app));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn workspace_symbols_answer_after_an_edit_and_after_their_anchor_file_closed() {
+        let (_d, mut app, fake, root) = project().await;
+        let uri = crate::lsp::uri::from_path(&root.join("b.cpp"));
+        fake.respond(
+            "workspace/symbol",
+            json!([{"name": "Shape", "kind": 23, "location": {"uri": uri.as_str(), "range": rng(0, 4, 0, 9)}}]),
+        );
+        let q = || Query::WorkspaceSymbols {
+            query: "S".into(),
+            max: None,
+        };
+        // An edit while the server holds the answer: still answered.
+        fake.hold("workspace/symbol", true);
+        let ans = ask(&mut app, q());
+        assert!(app.settle(|_| fake.requests("workspace/symbol").len() == 1).await);
+        app.type_text("x");
+        flush(&app);
+        let r = reply(&mut app, &ans).await;
+        assert_eq!(data(&r)["symbols"][0]["name"], "Shape");
+        // The file the request hangs off is closed while it is held: still answered.
+        let (_d, mut app, fake, root) = project().await;
+        let uri = crate::lsp::uri::from_path(&root.join("b.cpp"));
+        fake.respond(
+            "workspace/symbol",
+            json!([{"name": "Shape", "kind": 23, "location": {"uri": uri.as_str(), "range": rng(0, 4, 0, 9)}}]),
+        );
+        fake.hold("workspace/symbol", true);
+        let ans = ask(&mut app, q());
+        assert!(app.settle(|_| fake.requests("workspace/symbol").len() == 1).await);
+        let group = app.groups.active;
+        let before = app.buffers.iter().count();
+        app.close_tab(group, 0);
+        assert!(app.buffers.iter().count() < before, "the buffer is gone");
+        flush(&app);
+        let r = reply(&mut app, &ans).await;
+        assert_eq!(data(&r)["symbols"][0]["name"], "Shape");
+        assert!(none_left(&app));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn symbols_are_not_places_and_a_capped_tree_stays_whole() {
+        let (_d, mut app, fake, root) = project().await;
+        let a = root.join("a.cpp");
+        // The internal asks can't be sent as place queries.
+        for ask_kind in [LspAsk::DocumentSymbols, LspAsk::WorkspaceSymbols] {
+            let ans = ask(&mut app, query(ask_kind, &a, 1, None, None));
+            assert!(reply(&mut app, &ans).await.error.is_some());
+        }
+        assert!(none_left(&app));
+        assert!(fake.requests("textDocument/documentSymbol").is_empty());
+        // 3 parents with 200 children each: the cap cuts inside the third, not through a node.
+        let parent = |i: usize| {
+            let kids: Vec<Value> = (0..200)
+                .map(|k| json!({"name": format!("k{i}_{k}"), "kind": 6, "range": rng(0, 0, 0, 1)}))
+                .collect();
+            json!({"name": format!("p{i}"), "kind": 5, "range": rng(0, 0, 0, 1), "children": kids})
+        };
+        fake.respond("textDocument/documentSymbol", json!([parent(0), parent(1), parent(2)]));
+        let ans = ask(&mut app, symbols_of(&a));
+        let d = data(&reply(&mut app, &ans).await).clone();
+        let top = d["symbols"].as_array().unwrap();
+        let shown: usize = top.iter().map(|p| 1 + p["children"].as_array().unwrap().len()).sum();
+        assert_eq!(d["count"], 603);
+        assert_eq!(d["truncated"], true);
+        assert_eq!(shown, 500, "the cap counts parents and children");
+        assert_eq!(top.len(), 3);
+        assert_eq!(top[0]["children"].as_array().unwrap().len(), 200);
+        assert_eq!(top[2]["children"].as_array().unwrap().len(), 97);
+        assert_eq!(top[2]["children"][96]["name"], "k2_96");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn symbols_name_a_missing_capability_and_no_server() {
+        let (_d, mut app, _fake, root) = project_with(crate::lsp::fake::FakeOptions {
+            no_symbols: true,
+            ..Default::default()
+        })
+        .await;
+        let ans = ask(&mut app, symbols_of(&root.join("a.cpp")));
+        let e = reply(&mut app, &ans).await.error.unwrap();
+        assert!(
+            e.contains("clangd") && e.contains("does not support textDocument/documentSymbol"),
+            "{e}"
+        );
+        let ans = ask(
+            &mut app,
+            Query::WorkspaceSymbols {
+                query: "x".into(),
+                max: None,
+            },
+        );
+        let e = reply(&mut app, &ans).await.error.unwrap();
+        assert!(
+            e.contains("clangd") && e.contains("does not support workspace/symbol"),
+            "{e}"
+        );
+        // Nothing open: no server runs.
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::milestone9_tests::project(dir.path(), &[("a.cpp", A)]);
+        let fake = FakeLauncher::new(Default::default());
+        let mut app = crate::milestone9_tests::open_app(&root, fake);
+        let ans = ask(
+            &mut app,
+            Query::WorkspaceSymbols {
+                query: "x".into(),
+                max: None,
+            },
+        );
+        let e = reply(&mut app, &ans).await.error.unwrap();
+        assert!(e.contains("no language server is running"), "{e}");
     }
 }

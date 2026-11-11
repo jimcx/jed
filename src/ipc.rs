@@ -105,6 +105,10 @@ pub enum LspAsk {
     Declaration,
     References,
     Hover,
+    /// Not a place: `Query::Symbols` (the file's `textDocument/documentSymbol`).
+    DocumentSymbols,
+    /// Not a file: `Query::WorkspaceSymbols` (`workspace/symbol`).
+    WorkspaceSymbols,
 }
 
 /// What a client can ask jed. Terminals and commands are named by their numbers
@@ -155,6 +159,15 @@ pub enum Query {
         /// References only: include the declaration itself.
         #[serde(default = "default_true")]
         include_declaration: bool,
+    },
+    /// The symbols of `path` (a file's `documentSymbol` tree), answered later like `Lsp`.
+    Symbols { path: PathBuf },
+    /// Symbols across the workspace named like `query` (`workspace/symbol`, at most `max`,
+    /// default 50), answered later like `Lsp`.
+    WorkspaceSymbols {
+        query: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max: Option<usize>,
     },
     /// The loaded code review: the merge request, files, pending drafts (no forge call).
     Review,

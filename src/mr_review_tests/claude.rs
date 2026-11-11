@@ -353,6 +353,8 @@ async fn claude_ide_no_query_or_tool_writes_to_the_forge() {
             Query::Context
             | Query::Editors
             | Query::Lsp { .. }
+            | Query::Symbols { .. }
+            | Query::WorkspaceSymbols { .. }
             | Query::Diagnostics { .. }
             | Query::Terminals
             | Query::Commands { .. }

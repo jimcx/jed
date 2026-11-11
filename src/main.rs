@@ -170,6 +170,7 @@ mod spellcheck;
 #[cfg(test)]
 mod stage_selected_lines_tests;
 mod suggestion;
+mod symbols;
 mod syntax;
 #[cfg(test)]
 mod syntax_plugins_tests;

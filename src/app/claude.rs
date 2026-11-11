@@ -106,7 +106,9 @@ impl App {
             Query::ReviewRefresh | Query::ReviewReply { .. } | Query::ReviewApply { .. } => {
                 Reply::error("a review action, not a read")
             }
-            Query::Lsp { .. } => Reply::error("not a read from loaded state"),
+            Query::Lsp { .. } | Query::Symbols { .. } | Query::WorkspaceSymbols { .. } => {
+                Reply::error("not a read from loaded state")
+            }
             Query::Editors => Reply::data(self.claude_editors()),
             Query::Diagnostics { path } => self.claude_diagnostics(path.as_deref()),
             Query::Terminals => Reply::data(self.claude_terminals(caller)),

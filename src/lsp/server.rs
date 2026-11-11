@@ -13,13 +13,14 @@ use lsp_types::{
     ClientCapabilities, ClientInfo, CodeActionCapabilityResolveSupport, CodeActionClientCapabilities,
     CodeActionKindLiteralSupport, CodeActionLiteralSupport, CompletionClientCapabilities, CompletionItemCapability,
     CompletionItemCapabilityResolveSupport, CompletionListCapability, DiagnosticClientCapabilities,
-    DiagnosticWorkspaceClientCapabilities, DocumentFormattingClientCapabilities, DynamicRegistrationClientCapabilities,
-    GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, InitializeParams, MarkupKind,
-    PositionEncodingKind, PrepareSupportDefaultBehavior, PublishDiagnosticsClientCapabilities,
-    ReferenceClientCapabilities, RenameClientCapabilities, SemanticTokenModifier, SemanticTokenType,
-    SemanticTokensClientCapabilities, SemanticTokensClientCapabilitiesRequests, SemanticTokensFullOptions,
-    SemanticTokensWorkspaceClientCapabilities, ServerCapabilities, TextDocumentClientCapabilities, TokenFormat,
-    WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceEditClientCapabilities, WorkspaceFolder,
+    DiagnosticWorkspaceClientCapabilities, DocumentFormattingClientCapabilities, DocumentSymbolClientCapabilities,
+    DynamicRegistrationClientCapabilities, GeneralClientCapabilities, GotoCapability, HoverClientCapabilities,
+    InitializeParams, MarkupKind, PositionEncodingKind, PrepareSupportDefaultBehavior,
+    PublishDiagnosticsClientCapabilities, ReferenceClientCapabilities, RenameClientCapabilities, SemanticTokenModifier,
+    SemanticTokenType, SemanticTokensClientCapabilities, SemanticTokensClientCapabilitiesRequests,
+    SemanticTokensFullOptions, SemanticTokensWorkspaceClientCapabilities, ServerCapabilities,
+    TextDocumentClientCapabilities, TokenFormat, WindowClientCapabilities, WorkspaceClientCapabilities,
+    WorkspaceEditClientCapabilities, WorkspaceFolder, WorkspaceSymbolClientCapabilities,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -748,7 +749,8 @@ impl Conn {
 /// for, so jed can map them through the edits made since) and pulled ones
 /// (`textDocument.diagnostic`, `workspace.diagnostic.refreshSupport`), hover (markdown first),
 /// go to definition (`LocationLink`s welcome), completion, references, rename (with
-/// `prepareRename` and versioned `WorkspaceEdit`s), code actions and `workspace/applyEdit`.
+/// `prepareRename` and versioned `WorkspaceEdit`s), code actions, `workspace/applyEdit`, and
+/// `documentSymbol` (hierarchical) and `workspace/symbol`.
 fn client_capabilities() -> ClientCapabilities {
     ClientCapabilities {
         general: Some(GeneralClientCapabilities {
@@ -766,6 +768,10 @@ fn client_capabilities() -> ClientCapabilities {
             diagnostic: Some(DiagnosticClientCapabilities {
                 dynamic_registration: None,
                 related_document_support: Some(true),
+            }),
+            document_symbol: Some(DocumentSymbolClientCapabilities {
+                hierarchical_document_symbol_support: Some(true),
+                ..Default::default()
             }),
             hover: Some(HoverClientCapabilities {
                 dynamic_registration: None,
@@ -865,6 +871,7 @@ fn client_capabilities() -> ClientCapabilities {
         // refuses.
         workspace: Some(WorkspaceClientCapabilities {
             apply_edit: Some(true),
+            symbol: Some(WorkspaceSymbolClientCapabilities::default()),
             execute_command: Some(DynamicRegistrationClientCapabilities::default()),
             // `workspace/diagnostic/refresh`: every open document is pulled again.
             diagnostic: Some(DiagnosticWorkspaceClientCapabilities {
@@ -1027,5 +1034,10 @@ mod tests {
                 .contains(&json!("constructorOrDestructor"))
         );
         assert_eq!(v["workspace"]["semanticTokens"]["refreshSupport"], json!(true));
+        assert_eq!(
+            v["textDocument"]["documentSymbol"]["hierarchicalDocumentSymbolSupport"],
+            json!(true)
+        );
+        assert!(v["workspace"]["symbol"].is_object());
     }
 }

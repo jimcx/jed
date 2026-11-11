@@ -26,7 +26,8 @@
 //! `test/flush` (out of order, as `test/later`). A `$/cancelRequest` for a held request answers
 //! it at once with RequestCancelled (-32800), as servers do. `fail(method, code, message)` makes
 //! it answer every `method` request with that error instead (e.g. ContentModified, -32801). It
-//! advertises `hoverProvider` (unless `FakeOptions::no_hover`), `definitionProvider`, `completionProvider` (trigger characters `.` and `>`, resolve),
+//! advertises `documentSymbolProvider` and `workspaceSymbolProvider` (unless `FakeOptions::no_symbols`; answers
+//! are scripted with `respond`), `hoverProvider` (unless `FakeOptions::no_hover`), `definitionProvider`, `completionProvider` (trigger characters `.` and `>`, resolve),
 //! `referencesProvider`, `renameProvider` (with `prepareProvider` unless
 //! `FakeOptions::no_prepare_rename`) and `documentFormattingProvider` (unless
 //! `FakeOptions::no_formatting`) and `codeActionProvider` (with `resolveProvider`, unless
@@ -77,6 +78,8 @@ pub struct FakeOptions {
     pub no_formatting: bool,
     /// Don't advertise `hoverProvider`.
     pub no_hover: bool,
+    /// Don't advertise `documentSymbolProvider` / `workspaceSymbolProvider`.
+    pub no_symbols: bool,
     /// Don't advertise `codeActionProvider`.
     pub no_code_actions: bool,
     /// What `Launcher::locate` answers (the `xcrun --find` fallback for `sourcekit-lsp`).
@@ -343,6 +346,8 @@ async fn serve(
                         let mut caps = json!({
                             "textDocumentSync": options.sync.clone().unwrap_or(json!(2)),
                             "hoverProvider": !options.no_hover,
+                            "documentSymbolProvider": !options.no_symbols,
+                            "workspaceSymbolProvider": !options.no_symbols,
                             "definitionProvider": true,
                             "typeDefinitionProvider": true,
                             "implementationProvider": true,
