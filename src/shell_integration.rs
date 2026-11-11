@@ -187,6 +187,37 @@ pub fn init_for(home: &Path, config_home: &Path, state_dir: &Path, shell_base: &
     })
 }
 
+/// How a shell's integration stands on disk (`status`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    /// The init file has no line sourcing the snippet (or nothing was ever written).
+    NotInstalled,
+    /// The line is there but the snippet file differs from the one jed embeds (or is missing).
+    Stale,
+    UpToDate,
+}
+
+/// Whether `shell_base`'s integration is installed and current; `None` for a shell without a
+/// snippet. `NotInstalled` when no line of the init file is exactly (trimmed) the `source` line
+/// `init_for` would append, so a hand-added variant reads `NotInstalled`; then `Stale` when the
+/// snippet file's text isn't the embedded one (a missing file too: installing writes it).
+///
+/// Blocking: call from `spawn_blocking`.
+pub fn status(home: &Path, config_home: &Path, state_dir: &Path, shell_base: &str) -> Option<Status> {
+    let init = init_for(home, config_home, state_dir, shell_base)?;
+    let sourced = fs::read_to_string(&init.init)
+        .map(|text| text.lines().any(|l| l.trim() == init.source))
+        .unwrap_or(false);
+    if !sourced {
+        return Some(Status::NotInstalled);
+    }
+    let embedded = SNIPPETS.iter().find(|s| s.shell == shell_base)?.text;
+    match fs::read_to_string(&init.snippet) {
+        Ok(text) if text == embedded => Some(Status::UpToDate),
+        _ => Some(Status::Stale),
+    }
+}
+
 /// `'path'`: single-quoted, a quote in the path as `'\''`, which POSIX shells and fish read alike.
 fn quote(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
@@ -371,5 +402,35 @@ mod tests {
         fs::write(&init, "").unwrap();
         append_line(&init, "source x").unwrap();
         assert_eq!(fs::read_to_string(&init).unwrap(), "source x\n");
+    }
+
+    /// Each `Status`, the fish init path, a missing state dir, a near-miss source line and `sh`.
+    #[test]
+    fn status_reads_the_init_file_and_the_snippet() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, cfg, state) = (dir.path().join("h"), dir.path().join("c"), dir.path().join("s"));
+        let st = |shell: &str| status(&home, &cfg, &state, shell);
+        assert_eq!(st("sh"), None);
+        // Nothing written: no state dir, no init file.
+        assert_eq!(st("zsh"), Some(Status::NotInstalled));
+        write_snippets(&state).unwrap();
+        assert_eq!(st("zsh"), Some(Status::NotInstalled));
+        let zsh = init_for(&home, &cfg, &state, "zsh").unwrap();
+        // A source line of another path is a near-miss.
+        append_line(&zsh.init, "source '/elsewhere/shell-integration.zsh'").unwrap();
+        assert_eq!(st("zsh"), Some(Status::NotInstalled));
+        append_line(&zsh.init, &format!("  {}  ", zsh.source)).unwrap();
+        assert_eq!(st("zsh"), Some(Status::UpToDate));
+        fs::write(&zsh.snippet, "old").unwrap();
+        assert_eq!(st("zsh"), Some(Status::Stale));
+        fs::remove_file(&zsh.snippet).unwrap();
+        assert_eq!(st("zsh"), Some(Status::Stale));
+        // fish reads `config_home/fish/config.fish`.
+        let fish = init_for(&home, &cfg, &state, "fish").unwrap();
+        assert!(fish.init.starts_with(&cfg));
+        write_snippets(&state).unwrap();
+        append_line(&fish.init, &fish.source).unwrap();
+        assert_eq!(st("fish"), Some(Status::UpToDate));
+        assert_eq!(st("bash"), Some(Status::NotInstalled));
     }
 }

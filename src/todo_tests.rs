@@ -14033,3 +14033,104 @@ mod word_completion {
         assert_eq!(labels(app), ["beta_new", "beta_late"]);
     }
 }
+
+/// shell_integration_check, done when: the first shell tab warns once that the integration isn't
+/// installed or is out of date (and points at the wizard), and warns nothing when it's current or
+/// the shell has no snippet.
+mod shell_integration_check {
+    use crate::app::App;
+    use crate::app::Level;
+    use crate::command::Command;
+    use crate::shell_integration::{self as si, Status};
+    use crate::shell_tests::{dirs, shell_app, shell_script};
+
+    /// An app whose shell is a script named `name` (so `shell::base` reads it), with state dir and
+    /// home dirs under the tempdir; returns the home dir and state dir too.
+    fn env(name: &str) -> (tempfile::TempDir, App, std::path::PathBuf, std::path::PathBuf) {
+        let (dir, root, state) = dirs();
+        let home = root.parent().unwrap().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let mut app = shell_app(&root, &state);
+        app.tasks.shell = shell_script(&root, name, "echo READY; exec /bin/sh");
+        app.state_dir = Some(state.clone());
+        app.shell_home = (home.clone(), home.join(".config"));
+        (dir, app, home, state)
+    }
+
+    fn warning(app: &App) -> Option<String> {
+        app.message
+            .as_ref()
+            .filter(|m| m.level == Level::Warning)
+            .map(|m| m.text.clone())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn never_installed_warns_once() {
+        let (_dir, mut app, _home, _state) = env("zsh");
+        app.test_execute(Command::NewShell);
+        assert!(app.settle(|a| a.shell_integration_seen.is_some()).await);
+        let text = warning(&app).expect("a warning");
+        assert!(text.contains("zsh isn't installed"), "{text}");
+        assert!(text.contains("Terminal: Install Shell Integration"), "{text}");
+        app.message = None;
+        app.shell_integration_seen = None;
+        app.new_shell_in_editor();
+        // The second shell printing is a real effect after its open: a second check (a file read
+        // spawned by the open) would have reported by then.
+        assert!(
+            app.settle(|a| a.group().active_shell().is_some_and(|t| t
+                .run
+                .screen()
+                .screen()
+                .contents()
+                .contains("READY")))
+                .await
+        );
+        assert!(app.message.is_none(), "second tab warned again");
+        assert_eq!(app.shell_integration_seen, None, "second tab checked again");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stale_snippet_warns_out_of_date() {
+        let (_dir, mut app, home, state) = env("zsh");
+        let init = si::init_for(&home, &home.join(".config"), &state, "zsh").unwrap();
+        si::write_snippets(&state).unwrap();
+        si::append_line(&init.init, &init.source).unwrap();
+        std::fs::write(&init.snippet, "# old\n").unwrap();
+        app.test_execute(Command::NewShell);
+        assert!(app.settle(|a| a.shell_integration_seen.is_some()).await);
+        assert_eq!(app.shell_integration_seen, Some(Some(Status::Stale)));
+        assert!(warning(&app).unwrap().contains("zsh is out of date"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn up_to_date_warns_nothing() {
+        let (_dir, mut app, home, state) = env("zsh");
+        let init = si::init_for(&home, &home.join(".config"), &state, "zsh").unwrap();
+        si::write_snippets(&state).unwrap();
+        si::append_line(&init.init, &init.source).unwrap();
+        app.test_execute(Command::NewShell);
+        assert!(app.settle(|a| a.shell_integration_seen.is_some()).await);
+        assert_eq!(app.shell_integration_seen, Some(Some(Status::UpToDate)));
+        assert!(warning(&app).is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_source_line_warns_not_installed() {
+        let (_dir, mut app, _home, state) = env("zsh");
+        si::write_snippets(&state).unwrap();
+        app.test_execute(Command::NewShell);
+        assert!(app.settle(|a| a.shell_integration_seen.is_some()).await);
+        assert_eq!(app.shell_integration_seen, Some(Some(Status::NotInstalled)));
+        assert!(warning(&app).unwrap().contains("isn't installed"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn shell_without_a_snippet_warns_nothing() {
+        let (_dir, mut app, _home, _state) = env("sh");
+        app.test_execute(Command::NewShell);
+        assert!(app.settle(|a| a.shell_integration_seen.is_some()).await);
+        assert_eq!(app.shell_integration_seen, Some(None));
+        assert!(warning(&app).is_none());
+    }
+}

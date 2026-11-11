@@ -1,8 +1,8 @@
 ---
 id: shell_integration_check
 name: Warn when the shell integration is missing or stale
-summary: when a shell tab opens, warn the user if their shell's integration isn't installed or is an older version than the one jed embeds, pointing at the wizard that fixes it.
-status: open
+summary: the first shell tab of a run checks its shell's integration off-thread and warns once when it isn't installed or is out of date, pointing at "Terminal: Install Shell Integration"
+status: done
 priority: 0
 dependencies: []
 ---
@@ -15,3 +15,9 @@ dependencies: []
   - The wizard already rewrites the snippets and appends the line, so the warning only needs to point at it; no new command or binding
   - Needs: `shell_integration` (`SNIPPETS`, `init_for`, `snippet_path`), the shell tab path (`app/shell.rs::new_shell`), `AppEvent` / `notify`
   - Done when: opening a shell tab with the integration never installed warns "not installed" once (a second tab doesn't repeat it); a stale snippet on disk warns "out of date"; the current snippet plus its `source` line in the init file warns nothing; `sh` (no snippet) warns nothing; and the `status` unit tests and the end-to-end tests (stale snippet on disk, missing source line, up-to-date) pass
+
+✅ Done.
+- Built: `shell_integration::{Status, status}` (blocking; the source line must match exactly, trimmed, so a hand-added variant reads `NotInstalled`); `open_shell` ends with `check_shell_integration`, once per run (`App::shell_integration_checked`, set when the check starts; skipped without a `state_dir`), reporting `TerminalEvent::IntegrationStatus` (not a new `AppEvent` variant, following `IntegrationWritten` / `IntegrationInstalled`) to `shell_integration_status`, which stores `shell_integration_seen` and warns for `NotInstalled` / `Stale`.
+- Also: `App::shell_home` (home, config home; from `paths` in `App::new`) replaces the wizard's direct `paths::home()` / `paths::config_home()`, so tests point both at temp dirs.
+- Deferred: no test for a shell queued behind the starting IPC socket (it goes through `open_shell` too); the second-tab test assumes the check's file read finishes before the second shell prints its first line.
+- Still to check by hand: open jed with no `source` line for the zsh snippet in `~/.zshrc` and see the warning once (a second shell tab doesn't repeat it); run the wizard, open a new jed, see nothing; edit the snippet file in the state dir, open a new jed, see "out of date".

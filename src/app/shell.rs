@@ -56,6 +56,11 @@ pub(super) enum TerminalEvent {
     IntegrationWritten(Result<(), String>),
     /// The shell integration's source line was appended to a shell's init file.
     IntegrationInstalled(Result<PathBuf, String>),
+    /// The first shell tab's integration check finished (`shell_integration::status`).
+    IntegrationStatus {
+        shell: String,
+        status: Option<shell_integration::Status>,
+    },
     /// A focus or launch of another jed ended (`app/recent.rs`).
     TermCtl(Box<super::recent::TermDone>),
 }
@@ -74,6 +79,7 @@ impl App {
             TerminalEvent::Shell(ev) => self.shell_event(ev),
             TerminalEvent::IntegrationWritten(result) => self.shell_integration_written(result),
             TerminalEvent::IntegrationInstalled(result) => self.shell_integration_installed(result),
+            TerminalEvent::IntegrationStatus { shell, status } => self.shell_integration_status(shell, status),
             TerminalEvent::TermCtl(done) => self.termctl_done(*done),
         }
     }
@@ -172,6 +178,46 @@ impl App {
             self.ui.focus = focus;
         }
         self.needs_redraw = true;
+        self.check_shell_integration();
+    }
+
+    /// On the run's first shell tab: reads the integration's state off-thread (`status`), once; the
+    /// result comes back as `TerminalEvent::IntegrationStatus`. Not without a state dir.
+    fn check_shell_integration(&mut self) {
+        if self.shell_integration_checked {
+            return;
+        }
+        let Some(state) = self.state_dir.clone() else {
+            return;
+        };
+        self.shell_integration_checked = true;
+        let base = shell::base(&self.tasks.shell);
+        let (home, config_home) = self.shell_home.clone();
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let status = shell_integration::status(&home, &config_home, &state, &base);
+            let _ = tx.send(AppEvent::Terminal(TerminalEvent::IntegrationStatus {
+                shell: base,
+                status,
+            }));
+        });
+    }
+
+    /// `TerminalEvent::IntegrationStatus`: a warning pointing at the wizard unless it's current.
+    pub(super) fn shell_integration_status(&mut self, shell: String, status: Option<shell_integration::Status>) {
+        self.shell_integration_seen = Some(status);
+        let what = match status {
+            Some(shell_integration::Status::NotInstalled) => "isn't installed",
+            Some(shell_integration::Status::Stale) => "is out of date",
+            Some(shell_integration::Status::UpToDate) | None => {
+                tracing::debug!(%shell, ?status, "shell integration checked");
+                return;
+            }
+        };
+        self.notify(
+            Level::Warning,
+            format!("Shell integration for {shell} {what}: run 'Terminal: Install Shell Integration' to fix it"),
+        );
     }
 
     /// Opens a shell queued behind the socket (`ipc_started`).
@@ -339,7 +385,8 @@ impl App {
             return;
         };
         let base = shell::base(&self.tasks.shell);
-        let Some(init) = shell_integration::init_for(&paths::home(), &paths::config_home(), &state, &base) else {
+        let (home, config_home) = self.shell_home.clone();
+        let Some(init) = shell_integration::init_for(&home, &config_home, &state, &base) else {
             self.notify(
                 Level::Warning,
                 format!("No shell integration for '{base}': zsh, bash and fish have one"),

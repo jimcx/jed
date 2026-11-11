@@ -321,6 +321,13 @@ pub struct App {
     /// Where the session file goes (`paths::state_dir()`); `None` turns sessions off (tests,
     /// unless set before `test_start`).
     pub state_dir: Option<PathBuf>,
+    /// The home and config home the shell integration's init files are under (`paths::home()`,
+    /// `paths::config_home()`); tests point it at a temp dir.
+    pub shell_home: (PathBuf, PathBuf),
+    /// The first shell tab started the integration check (`app/shell.rs`), once per run.
+    pub shell_integration_checked: bool,
+    /// The check's result once it arrived (`Some(None)`: a shell without a snippet).
+    pub shell_integration_seen: Option<Option<crate::shell_integration::Status>>,
     /// Where the bundled dictionary and the notices are written out (`paths::data_dir()`,
     /// `assets::sync`, with the dictionary's first load); `None` in tests.
     pub data_dir: Option<PathBuf>,
@@ -591,6 +598,9 @@ impl App {
             state_dir: Some(crate::paths::state_dir()),
             #[cfg(test)]
             state_dir: None,
+            shell_home: (crate::paths::home(), crate::paths::config_home()),
+            shell_integration_checked: false,
+            shell_integration_seen: None,
             data_dir: (!cfg!(test)).then(crate::paths::data_dir),
             ipc_dir: (!cfg!(test)).then(crate::ipc::default_socket_dir),
             ipc: Default::default(),
