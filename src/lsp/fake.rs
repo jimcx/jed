@@ -196,6 +196,11 @@ impl FakeLauncher {
         self.shared.lock().unwrap().failures.insert(method.into(), error);
     }
 
+    /// Stops failing `method` (a `fail`).
+    pub fn unfail(&self, method: &str) {
+        self.shared.lock().unwrap().failures.remove(method);
+    }
+
     /// Holds (`true`) the scripted answers to `method` until a `test/flush`, or stops holding.
     pub fn hold(&self, method: &str, on: bool) {
         let mut shared = self.shared.lock().unwrap();
@@ -336,6 +341,9 @@ async fn serve(
                             "textDocumentSync": options.sync.clone().unwrap_or(json!(2)),
                             "hoverProvider": !options.no_hover,
                             "definitionProvider": true,
+                            "typeDefinitionProvider": true,
+                            "implementationProvider": true,
+                            "declarationProvider": true,
                             "completionProvider": {
                                 "triggerCharacters": [".", ">"],
                                 "resolveProvider": true,

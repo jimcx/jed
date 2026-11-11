@@ -87,8 +87,24 @@ impl Request {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn is_empty_path(p: &Path) -> bool {
     p.as_os_str().is_empty()
+}
+
+/// What a language server is asked for Claude (`Query::Lsp`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LspAsk {
+    Definition,
+    TypeDefinition,
+    Implementation,
+    Declaration,
+    References,
+    Hover,
 }
 
 /// What a client can ask jed. Terminals and commands are named by their numbers
@@ -125,6 +141,21 @@ pub enum Query {
     Screen { terminal: u64 },
     /// Version, workspace, git, open files, servers, tasks, shells.
     Environment,
+    /// A language server's answer about a place in `path` (`line` 1-based; `symbol` the name on
+    /// that line, else `col`, a 1-based display column, else the line's first non-blank). Answered
+    /// later, when the server has (`app/claude_lsp.rs`).
+    Lsp {
+        ask: LspAsk,
+        path: PathBuf,
+        line: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        symbol: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        col: Option<usize>,
+        /// References only: include the declaration itself.
+        #[serde(default = "default_true")]
+        include_declaration: bool,
+    },
     /// The loaded code review: the merge request, files, pending drafts (no forge call).
     Review,
     /// The review's threads (`path`: one file's; unresolved ones unless `resolved`).
@@ -294,6 +325,13 @@ pub fn remove_socket(path: &Path) {
 pub struct Responder(oneshot::Sender<Reply>);
 
 impl Responder {
+    /// A responder and the receiver of its answer, for tests driving `App::ipc_request`.
+    #[cfg(test)]
+    pub fn pair() -> (Responder, oneshot::Receiver<Reply>) {
+        let (tx, rx) = oneshot::channel();
+        (Responder(tx), rx)
+    }
+
     pub fn answer(self, reply: Reply) {
         let _ = self.0.send(reply);
     }

@@ -76,6 +76,10 @@ pub(super) enum Request {
         version: i32,
         trigger: super::diagnostics_pull::Trigger,
     },
+    /// A query for Claude (`app/claude_lsp.rs`): `ask` numbers the waiting `Responder`. Never
+    /// cancelled by the cursor, a tab switch or a newer request (several run at once); an edit,
+    /// the deadline or the connection closing cancels it, and each of those answers the responder.
+    Claude { ask: u64 },
 }
 
 impl Request {
@@ -84,6 +88,7 @@ impl Request {
             (Request::CodeActions { purpose: a, .. }, Request::CodeActions { purpose: b, .. }) => a == b,
             (Request::SemanticTokens { buffer: a, .. }, Request::SemanticTokens { buffer: b, .. }) => a == b,
             (Request::Diagnostics { buffer: a, .. }, Request::Diagnostics { buffer: b, .. }) => a == b,
+            (Request::Claude { ask: a }, Request::Claude { ask: b }) => a == b,
             _ => std::mem::discriminant(self) == std::mem::discriminant(other),
         }
     }
@@ -120,6 +125,7 @@ impl App {
         }
         self.lsp.sync_documents(&mut self.buffers);
         self.drop_cleared_diagnostics();
+        self.claude_lsp_check();
         // Each turn: a document just opened (or a server just running) is due at once.
         self.check_semantic();
         self.check_pull();
@@ -197,6 +203,7 @@ impl App {
             }
         }
         self.drop_cleared_diagnostics();
+        self.claude_lsp_check();
     }
 
     /// Drops the marks of servers whose diagnostics the manager dropped (stopped, failed,
@@ -342,6 +349,7 @@ impl App {
 
     /// After an input event: cancels the requests whose place moved on.
     pub(super) fn check_requests(&mut self) {
+        self.claude_lsp_check();
         let stale: Vec<(ServerId, i64)> = self
             .requests
             .iter()
@@ -375,6 +383,8 @@ impl App {
                 ..
             } => return self.buffers.get(p.buffer).is_some_and(|b| b.revision() == *revision),
             Request::ExecuteCommand { .. } => return true,
+            // Its own checks (`claude_lsp_check`): they answer the responder.
+            Request::Claude { .. } => return true,
             Request::SemanticTokens { buffer, .. } | Request::Diagnostics { buffer, .. } => {
                 return self.buffers.get(*buffer).is_some();
             }
@@ -401,6 +411,9 @@ impl App {
 
     /// An answer to a pending request: dropped when stale or an error, else handed to its kind.
     fn answer(&mut self, p: Pending, result: Result<Value, RpcError>) {
+        if let Request::Claude { ask } = p.request {
+            return self.claude_lsp_response(p, ask, result);
+        }
         if !self.request_current(&p) {
             tracing::debug!(request = ?p.request, "stale answer dropped");
             return;
@@ -466,6 +479,7 @@ impl App {
                     }
                     Request::SemanticTokens { buffer, .. } => self.semantic_failed(*buffer),
                     Request::Diagnostics { .. } => tracing::debug!("pull diagnostics failed"),
+                    Request::Claude { .. } => {}
                     _ => {}
                 }
                 return;
@@ -490,6 +504,7 @@ impl App {
             Request::ExecuteCommand { .. } => {}
             Request::SemanticTokens { version, .. } => self.semantic_answer(&p, version, &value),
             Request::Diagnostics { version, trigger, .. } => self.pull_answer(&p, version, trigger, value),
+            Request::Claude { .. } => {}
         }
     }
 

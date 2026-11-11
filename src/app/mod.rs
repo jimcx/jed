@@ -6,6 +6,7 @@ mod branch_history;
 mod cheatsheet;
 mod claude;
 mod claude_log;
+mod claude_lsp;
 mod claude_review;
 mod code_action;
 mod commit_tabs;
@@ -160,6 +161,8 @@ enum Timer {
     Files,
     /// A visible Code Review panel is due to look again (`review::POLL`).
     Review,
+    /// A Claude language server query's deadline or retry (`claude_lsp`).
+    ClaudeLsp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -468,6 +471,9 @@ pub struct App {
     suggest: Option<review_suggest::Staged>,
     /// A `review_apply_suggestion` tool call waiting for its answer (`claude_review`).
     claude_apply: Option<claude_review::Apply>,
+    /// `find_definition` / `find_references` / `get_hover` calls waiting for a language server
+    /// (`claude_lsp`).
+    claude_lsp: claude_lsp::State,
     /// The Explorer view's "Git History" section: the active file's commits and the section's
     /// state (`app/git_history.rs`).
     pub git_history: crate::git_history::GitHistory,
@@ -672,6 +678,7 @@ impl App {
             composer: None,
             suggest: None,
             claude_apply: None,
+            claude_lsp: Default::default(),
             git_history: Default::default(),
             branch_history: {
                 let mut h = crate::git_history::GitHistory::default();
@@ -911,6 +918,7 @@ impl App {
             (self.log_tabs.deadline(), Timer::Logs),
             (self.files_poll, Timer::Files),
             (self.review_deadline(), Timer::Review),
+            (self.claude_lsp.deadline(), Timer::ClaudeLsp),
         ]
         .into_iter()
         .filter_map(|(at, timer)| Some((tokio::time::Instant::from_std(at?), timer)))
@@ -947,6 +955,7 @@ impl App {
             Timer::Logs => self.logs_tick(),
             Timer::Files => self.files_matched(),
             Timer::Review => self.review_refresh(),
+            Timer::ClaudeLsp => self.claude_lsp_tick(Instant::now()),
         }
     }
 
@@ -2017,6 +2026,7 @@ impl App {
                     } => "hover fixes",
                     lsp::Request::ResolveAction => "resolve action",
                     lsp::Request::ExecuteCommand { .. } => "execute command",
+                    lsp::Request::Claude { .. } => "claude query",
                 };
                 (kind, p.at.0)
             })

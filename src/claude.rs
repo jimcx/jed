@@ -16,7 +16,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::ipc::client::Connection;
-use crate::ipc::{self, LogLine, Query, Request};
+use crate::ipc::{self, LogLine, LspAsk, Query, Request};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookKind {
@@ -176,6 +176,41 @@ pub fn tools() -> Vec<Value> {
             &[],
         ),
         tool(
+            "find_definition",
+            "Ask jed's language server where a symbol is defined, without moving the user's cursor. Name the place by `line` and `symbol` (the name on that line). Returns locations {path, line, col, end_line, end_col, text}; `dirty: true` when the buffer has unsaved changes (the lines are the buffer's). The file must be open in jed.",
+            json!({
+                "path": {"type": "string", "description": "file path"},
+                "line": {"type": "integer", "description": "1-based line"},
+                "symbol": {"type": "string", "description": "the name on that line (first whole-word match); better than col"},
+                "col": {"type": "integer", "description": "1-based column (as get_active_editor reports): picks the match at or after it when the name is there twice"},
+                "kind": {"type": "string", "enum": ["definition", "type", "implementation", "declaration"], "description": "default definition"},
+            }),
+            &["path", "line"],
+        ),
+        tool(
+            "find_references",
+            "Ask jed's language server for the references to a symbol (up to 200, sorted by path then line), without moving the user's cursor. Place named as in find_definition.",
+            json!({
+                "path": {"type": "string", "description": "file path"},
+                "line": {"type": "integer", "description": "1-based line"},
+                "symbol": {"type": "string", "description": "the name on that line (first whole-word match); better than col"},
+                "col": {"type": "integer", "description": "1-based column (as get_active_editor reports): picks the match at or after it when the name is there twice"},
+                "include_declaration": {"type": "boolean", "description": "default true"},
+            }),
+            &["path", "line"],
+        ),
+        tool(
+            "get_hover",
+            "Ask jed's language server for the hover text (type, docs; markdown as sent, capped at 4 KB) and the range it covers, without showing a popup. Place named as in find_definition.",
+            json!({
+                "path": {"type": "string", "description": "file path"},
+                "line": {"type": "integer", "description": "1-based line"},
+                "symbol": {"type": "string", "description": "the name on that line (first whole-word match); better than col"},
+                "col": {"type": "integer", "description": "1-based column (as get_active_editor reports): picks the match at or after it when the name is there twice"},
+            }),
+            &["path", "line"],
+        ),
+        tool(
             "get_environment",
             "jed's version, workspace, git branch and dirty count, open files, language servers, task templates and shells.",
             json!({}),
@@ -296,6 +331,25 @@ fn arg_str<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, String> {
     }
 }
 
+/// The `Query::Lsp` a place-naming tool call asks (`path`, `line`, `symbol`, `col`).
+fn lsp_place(args: &Value, ask: LspAsk, absolute: &dyn Fn(&str) -> PathBuf) -> Result<Query, String> {
+    let line = need_u64(args, "line")?;
+    if line == 0 {
+        return Err("`line` is 1-based".into());
+    }
+    if arg_u64(args, "col")? == Some(0) {
+        return Err("`col` is 1-based".into());
+    }
+    Ok(Query::Lsp {
+        ask,
+        path: absolute(arg_str(args, "path")?.ok_or("`path` is required")?),
+        line: line as usize,
+        symbol: arg_str(args, "symbol")?.filter(|s| !s.is_empty()).map(String::from),
+        col: arg_u64(args, "col")?.map(|n| n as usize),
+        include_declaration: arg_bool(args, "include_declaration")?.unwrap_or(true),
+    })
+}
+
 /// The query a tool call asks: `None` for an unknown tool, `Err` for bad arguments. Relative
 /// paths are made absolute against `cwd`.
 pub(crate) fn tool_query(name: &str, args: &Value, cwd: &Path) -> Option<Result<Query, String>> {
@@ -310,6 +364,22 @@ pub(crate) fn tool_query(name: &str, args: &Value, cwd: &Path) -> Option<Result<
             "get_diagnostics" => Query::Diagnostics {
                 path: arg_str(args, "path")?.map(absolute),
             },
+            "find_definition" => {
+                let ask = match arg_str(args, "kind")?.unwrap_or("definition") {
+                    "definition" => LspAsk::Definition,
+                    "type" => LspAsk::TypeDefinition,
+                    "implementation" => LspAsk::Implementation,
+                    "declaration" => LspAsk::Declaration,
+                    other => {
+                        return Err(format!(
+                            "`kind` must be definition, type, implementation or declaration, not {other}"
+                        ));
+                    }
+                };
+                lsp_place(args, ask, &absolute)?
+            }
+            "find_references" => lsp_place(args, LspAsk::References, &absolute)?,
+            "get_hover" => lsp_place(args, LspAsk::Hover, &absolute)?,
             "get_environment" => Query::Environment,
             "list_terminals" => Query::Terminals,
             "get_recent_commands" => Query::Commands {
@@ -692,6 +762,46 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn lsp_tools_map_to_queries() {
+        let q = |name: &str, args: Value| tool_query(name, &args, Path::new("/work")).unwrap();
+        assert_eq!(
+            q(
+                "find_definition",
+                json!({"path": "a.rs", "line": 3, "symbol": "foo", "kind": "type"})
+            ),
+            Ok(Query::Lsp {
+                ask: LspAsk::TypeDefinition,
+                path: PathBuf::from("/work/a.rs"),
+                line: 3,
+                symbol: Some("foo".into()),
+                col: None,
+                include_declaration: true,
+            })
+        );
+        assert_eq!(
+            q(
+                "find_references",
+                json!({"path": "/x/a.rs", "line": 1, "col": 4, "include_declaration": false})
+            ),
+            Ok(Query::Lsp {
+                ask: LspAsk::References,
+                path: PathBuf::from("/x/a.rs"),
+                line: 1,
+                symbol: None,
+                col: Some(4),
+                include_declaration: false,
+            })
+        );
+        assert!(matches!(
+            q("get_hover", json!({"path": "a", "line": 2})),
+            Ok(Query::Lsp { ask: LspAsk::Hover, .. })
+        ));
+        assert!(q("get_hover", json!({"path": "a"})).unwrap_err().contains("line"));
+        assert!(q("get_hover", json!({"path": "a", "line": 0})).is_err());
+        assert!(q("find_definition", json!({"path": "a", "line": 1, "kind": "x"})).is_err());
+    }
+
+    #[test]
     fn handshake_list_and_notifications() {
         let mut jed = Fake::default();
         let out = run_mcp(
@@ -721,6 +831,9 @@ pub(crate) mod tests {
                 "get_active_editor",
                 "get_open_editors",
                 "get_diagnostics",
+                "find_definition",
+                "find_references",
+                "get_hover",
                 "get_environment",
                 "list_terminals",
                 "get_recent_commands",

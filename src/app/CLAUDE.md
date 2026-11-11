@@ -56,6 +56,7 @@ One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in ful
 - `term_search.rs` — the search bar over a shell or task tab (`app.term_search`, `tasks::search`): `Command::TermSearch` (Cmd+F, Ctrl+Shift+F on Linux; `Context::TermSearch` while open: Enter / Shift+Enter / F3 step with wrapping, Alt+C case, Esc closes, other keys edit the query and never reach the program, `field_focused` includes it); every edit / step searches the whole scrollback (`find_all`) and `reveal`s the match (centred when off screen); count and current match are as of the last search
 - `session.rs` — sessions (`app.session`): restore at start, `save_session` on quit
 - `backup.rs` — crash backups (`app.backups`): `sync_backups`, `backup_tick`, the offer and restores, `update_crash_snapshot`
+- `claude_lsp.rs` — Claude's language server queries (`find_definition` / `find_references` / `get_hover`): `Query::Lsp` resolved to a place, `Request::Claude`, the waiting responders, timeout and retry
 - `claude_log.rs` — the MCP log (`Tool::Claude`): `→` / `←` / lifecycle lines from `jed claude mcp` log requests, the Tools row's sessions (`app.ipc.sessions`)
 - `tools.rs` — tool logs and log tabs (`app.logs`, `app.log_tabs`), the Tools view, trace / restart commands
 - `recent.rs` — recent workspaces (`app.recent`): record at start, Ctrl+R's picker

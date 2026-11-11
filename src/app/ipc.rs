@@ -116,6 +116,7 @@ impl App {
                 Query::ReviewRefresh | Query::ReviewReply { .. } | Query::ReviewApply { .. } => {
                     return self.claude_review_act(query, responder);
                 }
+                Query::Lsp { .. } => return self.claude_lsp_ask(query, responder),
                 query => self.claude_answer(query, request.terminal),
             };
             responder.answer(reply);

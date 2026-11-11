@@ -2,7 +2,7 @@
 id: claude_lsp
 name: Language server queries for Claude
 summary: "MCP tools that ask jed's running language servers on Claude's behalf: definition, references, hover, a file's symbols and workspace symbols, answered without moving the user's cursor or opening a popup"
-status: open
+status: in-progress
 priority: 0
 dependencies: []
 ---
@@ -44,7 +44,9 @@ See [Claude Code integration](claude_ide.md) and [LSP](../PLAN.md#lsp). jed's se
     - with real rust-analyzer on a small cargo project (skipped with a note when absent): definition of a function called from another file, its references, and a workspace symbol
     - the "claude (mcp)" log shows each call and its answer's size
   - Subtasks (one agent and one commit each):
-    - claude_lsp-a: the plumbing and three tools on open files: `Query::Lsp`, `app/claude_lsp.rs` (resolving `line` / `symbol` / `col`, the waiting responders), `Request::Claude` with its own cancel rules, the timeout and the retry, `find_definition` / `find_references` / `get_hover` in `claude.rs`, locations with line text from open buffers; unit tests against the fake server
+    - ✅ claude_lsp-a: the plumbing and three tools on open files: `Query::Lsp`, `app/claude_lsp.rs` (resolving `line` / `symbol` / `col`, the waiting responders), `Request::Claude` with its own cancel rules, the timeout and the retry, `find_definition` / `find_references` / `get_hover` in `claude.rs`, locations with line text from open buffers; unit tests against the fake server
+      - Done: `app/claude_lsp.rs` (`claude_lsp_ask` resolves the place and sends, `claude_lsp_response`, `claude_lsp_check` for edits / stopped servers / closed clients, `claude_lsp_tick` for the timeout and the retry on one `Timer::ClaudeLsp`; `State::timeout` / `retry` shortened in tests); `Request::Claude { ask }` in `app/lsp.rs` (`request_current` always true, staleness handled by `claude_lsp_check`); `ipc::LspAsk`, `Query::Lsp`, test-only `Responder::pair()`; the fake advertises type definition / implementation / declaration and gains `unfail(method)`
+      - For b: a file not open is the error "<path> is not open in jed: open it first"; locations in files not open get `text: null`; no server / not running / no capability are one generic error naming the method; every answer carries `at` and `dirty`
     - claude_lsp-b: files that aren't open: the background tab load before asking, line text for locations in files that aren't open (off-thread), `server_busy`, the no-server / not-running / no-capability errors
     - claude_lsp-c: symbols: `symbols.rs` (both `documentSymbol` shapes, `workspace/symbol`), `Query::Symbols` / `Query::WorkspaceSymbols`, the two tools, the fake server's scripted answers
     - claude_lsp-d: the done-when tests (`src/claude_lsp_tests.rs`, the real rust-analyzer case), `docs/claude.md`, the module map and the conventions line on `Request::Claude`, the hook line, gaps and hand checks with real `claude` ("where is this used?" answered by `find_references`, not grep); marks the task ✅
