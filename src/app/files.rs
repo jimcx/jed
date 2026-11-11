@@ -188,6 +188,10 @@ impl App {
 
     pub(super) fn opened(&mut self, path: PathBuf, result: Result<Loaded, LoadError>) {
         let opened_path = path.clone();
+        if self.claude_lsp_load_result(&path, &result) {
+            self.opening.remove(&path);
+            return self.claude_lsp_check();
+        }
         if self.nav_opened(&path, &result) || self.reopen_opened(&path, &result) {
             return;
         }
@@ -278,6 +282,7 @@ impl App {
         self.diff_edit_opened(&opened_path);
         self.suggestion_opened(&opened_path);
         self.ipc_sweep();
+        self.claude_lsp_check();
     }
 
     /// Records a successfully opened file in the MRU, workspace-relative when inside the root.

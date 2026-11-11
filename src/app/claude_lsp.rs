@@ -12,17 +12,21 @@
 //! (`State::deadline`, `Timer::ClaudeLsp`).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use lsp_types::{DeclarationCapability, HoverProviderCapability, ImplementationProviderCapability, OneOf};
 use lsp_types::{ServerCapabilities, TypeDefinitionProviderCapability};
+use ropey::Rope;
 use serde_json::{Value, json};
 
-use super::App;
 use super::claude::clip_head;
+use super::files::{Loaded, OpenRequest};
+use super::ipc::IpcEvent;
 use super::lsp::{Pending, Request};
+use super::{App, AppEvent};
 use crate::buffer::Buffer;
+use crate::buffer::file::LoadError;
 use crate::buffer::pos::{self, ByteIdx, DisplayCol, LspPos};
 use crate::ipc::{LspAsk, Query, Reply, Responder};
 use crate::locations::{self, Location};
@@ -41,6 +45,12 @@ const MAX_HOVER: usize = 4096;
 pub(super) struct State {
     next: u64,
     waiting: HashMap<u64, Waiting>,
+    /// Queries about a file that isn't open: its background tab is loading.
+    loading: HashMap<u64, Ask>,
+    /// Why a file Claude asked about could not be loaded (`claude_lsp_load_result`).
+    failed: HashMap<PathBuf, String>,
+    /// Answers waiting for the lines of files that aren't open (read off-thread).
+    reading: HashMap<u64, Reading>,
     /// How long a query waits (tests shorten it).
     pub timeout: Duration,
     /// Before an asked-again request is sent (tests shorten it).
@@ -52,6 +62,9 @@ impl Default for State {
         State {
             next: 0,
             waiting: HashMap::new(),
+            loading: HashMap::new(),
+            failed: HashMap::new(),
+            reading: HashMap::new(),
             timeout: TIMEOUT,
             retry: RETRY,
         }
@@ -76,16 +89,19 @@ impl State {
                 place: Value::Null,
                 deadline: at,
                 retry_at: None,
+                parked: None,
+                opened: false,
             },
         );
     }
 
     /// The earliest deadline or retry among the waiting queries.
     pub(super) fn deadline(&self) -> Option<Instant> {
-        self.waiting
+        let waiting = self
+            .waiting
             .values()
-            .map(|w| w.retry_at.map_or(w.deadline, |r| r.min(w.deadline)))
-            .min()
+            .map(|w| w.retry_at.map_or(w.deadline, |r| r.min(w.deadline)));
+        waiting.chain(self.loading.values().map(|a| a.deadline)).min()
     }
 }
 
@@ -105,6 +121,32 @@ struct Waiting {
     deadline: Instant,
     /// `Some`: no request is in flight, it is sent again then.
     retry_at: Option<Instant>,
+    /// `Some(why)`: no request is in flight because the server isn't ready (starting, or it
+    /// hasn't the document yet); sent at the next check. The timeout names it.
+    parked: Option<String>,
+    /// The file was loaded for this query: the answer says `opened: true`.
+    opened: bool,
+}
+
+/// A query as it came, before its place is resolved.
+struct Ask {
+    responder: Responder,
+    ask: LspAsk,
+    path: PathBuf,
+    line: usize,
+    symbol: Option<String>,
+    col: Option<usize>,
+    include_declaration: bool,
+    deadline: Instant,
+}
+
+/// An answer waiting for the text of files that aren't open.
+struct Reading {
+    responder: Responder,
+    data: Value,
+    /// `data["locations"][index]` is `location`, its range and `text` still to fill.
+    unread: Vec<(usize, Location)>,
+    encoding: pos::PosEncoding,
 }
 
 fn supports_definition(caps: &ServerCapabilities) -> bool {
@@ -231,38 +273,132 @@ impl App {
         else {
             return responder.answer(Reply::error("not a language server query"));
         };
-        let Some(id) = self.buffers.find_path(path) else {
-            return responder.answer(Reply::error(format!(
-                "{} is not open in jed: open it first (open_file)",
-                path.display()
-            )));
-        };
-        let Some(buf) = self.buffers.get(id) else {
-            return responder.answer(Reply::error(format!("{} is not open in jed", path.display())));
-        };
-        let tab_width = self.settings.for_buffer(buf).tab_width;
-        let at = match resolve(buf, tab_width, line - 1, symbol.as_deref(), *col) {
-            Ok(at) => at,
-            Err(e) => return responder.answer(Reply::error(e)),
-        };
-        let now = Instant::now();
-        let waiting = Waiting {
+        if !self.lsp.started() {
+            return responder.answer(Reply::error("language servers are off"));
+        }
+        let ask = Ask {
             responder,
             ask: *ask,
-            buffer: id,
-            revision: buf.revision(),
-            at,
+            path: path.clone(),
+            line: *line,
+            symbol: symbol.clone(),
+            col: *col,
             include_declaration: *include_declaration,
-            dirty: buf.is_dirty(),
-            place: self.claude_place(buf, at),
-            deadline: now + self.claude_lsp.timeout,
-            retry_at: None,
+            deadline: Instant::now() + self.claude_lsp.timeout,
         };
         self.claude_lsp.next += 1;
         let n = self.claude_lsp.next;
+        if let Some(id) = self.buffers.find_path(path) {
+            return self.claude_lsp_begin(n, ask, id, false);
+        }
+        // Not open: loaded as a background tab (the server needs the document), asked once it is.
+        if !self.opening.contains_key(path) {
+            self.start_open(
+                path.clone(),
+                OpenRequest {
+                    background: true,
+                    ..Default::default()
+                },
+            );
+        }
+        self.claude_lsp.failed.remove(path);
+        self.claude_lsp.loading.insert(n, ask);
+    }
+
+    /// The file is open as `id`: resolves the place and asks.
+    fn claude_lsp_begin(&mut self, n: u64, ask: Ask, id: crate::buffer::BufferId, opened: bool) {
+        let Some(buf) = self.buffers.get(id) else {
+            return ask
+                .responder
+                .answer(Reply::error(format!("{} is not open in jed", ask.path.display())));
+        };
+        let tab_width = self.settings.for_buffer(buf).tab_width;
+        let at = match resolve(buf, tab_width, ask.line - 1, ask.symbol.as_deref(), ask.col) {
+            Ok(at) => at,
+            Err(e) => return ask.responder.answer(Reply::error(e)),
+        };
+        let waiting = Waiting {
+            responder: ask.responder,
+            ask: ask.ask,
+            buffer: id,
+            revision: buf.revision(),
+            at,
+            include_declaration: ask.include_declaration,
+            dirty: buf.is_dirty(),
+            place: self.claude_place(buf, at),
+            deadline: ask.deadline,
+            retry_at: None,
+            parked: None,
+            opened,
+        };
         self.claude_lsp.waiting.insert(n, waiting);
         if let Err(e) = self.claude_lsp_send(n) {
             self.claude_lsp_finish(n, Reply::error(e));
+        }
+    }
+
+    /// Why no request could be sent for `buffer`: `Ok(why)` while the server isn't ready (wait),
+    /// `Err` for a cause that won't pass.
+    fn claude_lsp_why(
+        &self,
+        buffer: crate::buffer::BufferId,
+        method: &str,
+        supported: fn(&ServerCapabilities) -> bool,
+    ) -> Result<String, String> {
+        let Some(buf) = self.buffers.get(buffer) else {
+            return Err("the file was closed".to_string());
+        };
+        let language = buf.syntax.language();
+        let name = language.name();
+        let covering: Vec<&crate::lsp::Server> = self
+            .lsp
+            .servers()
+            .iter()
+            .filter(|s| s.languages.contains(&language))
+            .collect();
+        if covering.is_empty() {
+            return match crate::lsp::config::resolve(language, &self.workspace.config, self.trust, &self.lsp.builtins) {
+                _ if self.servers_dirty => Ok("the language server has not started yet".to_string()),
+                crate::lsp::config::Resolved::AwaitingTrust => Err(format!(
+                    "the workspace is not trusted yet, so its {name} language server is not running (answer the trust prompt in jed)"
+                )),
+                crate::lsp::config::Resolved::None => Err(format!("no language server for {name}")),
+                crate::lsp::config::Resolved::Server(c) => Err(format!(
+                    "the {} language server for {name} has exited (see the Tools view)",
+                    c.name
+                )),
+            };
+        }
+        let state = |s: &crate::lsp::Server| match s.state {
+            crate::lsp::State::Starting => "starting",
+            crate::lsp::State::Running { .. } => "running",
+            crate::lsp::State::Failed => "failed",
+        };
+        if let Some(s) = covering.iter().find(|s| matches!(s.state, crate::lsp::State::Starting)) {
+            return Ok(format!("the {} language server is still starting", s.config.name));
+        }
+        if !covering
+            .iter()
+            .any(|s| matches!(s.state, crate::lsp::State::Running { .. }))
+        {
+            let s = covering[0];
+            return Err(format!(
+                "the {} language server is not running ({}; see the Tools view)",
+                s.config.name,
+                state(s)
+            ));
+        }
+        match self.lsp.server_of(buffer) {
+            Some((id, _, caps)) if !supported(caps) => {
+                let server = self
+                    .lsp
+                    .servers()
+                    .iter()
+                    .find(|s| s.id == id)
+                    .map_or("the", |s| &s.config.name);
+                Err(format!("the {server} language server does not support {method}"))
+            }
+            _ => Ok("the language server has not opened the file yet".to_string()),
         }
     }
 
@@ -280,13 +416,40 @@ impl App {
         };
         let group = self.groups.active;
         if self.send_request_with(group, buffer, at, method, supported, Request::Claude { ask: n }, extra) {
+            if let Some(w) = self.claude_lsp.waiting.get_mut(&n) {
+                w.parked = None;
+            }
             return Ok(());
         }
-        Err(if !self.lsp.started() {
-            "language servers are off".to_string()
-        } else {
-            format!("no running language server with this file open supports {method} (see the Tools view)")
-        })
+        if !self.lsp.started() {
+            return Err("language servers are off".to_string());
+        }
+        let why = self.claude_lsp_why(buffer, method, supported)?;
+        if let Some(w) = self.claude_lsp.waiting.get_mut(&n) {
+            w.parked = Some(why);
+        }
+        Ok(())
+    }
+
+    /// A file's load finished (`App::opened`): remembers why one Claude waits for failed.
+    /// `true`: the file is missing and only Claude's background load wants it, so no tab is
+    /// made of the empty new file (`opened` drops the result).
+    pub(super) fn claude_lsp_load_result(&mut self, path: &Path, result: &Result<Loaded, LoadError>) -> bool {
+        if !self.claude_lsp.loading.values().any(|a| a.path == path) {
+            return false;
+        }
+        let why = match result {
+            Err(e) => e.to_string(),
+            Ok(Loaded::Binary(_)) => "binary file".to_string(),
+            Ok(Loaded::Text(b)) if b.disk().is_none() => "no such file".to_string(),
+            Ok(Loaded::Text(_)) => return false,
+        };
+        self.claude_lsp.failed.insert(path.to_path_buf(), why);
+        matches!(result, Ok(Loaded::Text(_)))
+            && self
+                .opening
+                .get(path)
+                .is_some_and(|r| r.background && r.edits.is_empty() && r.restore.is_none() && r.backup.is_none())
     }
 
     /// Answers waiting query `n` and forgets it.
@@ -304,10 +467,12 @@ impl App {
     /// After an input event or server event: answers the queries whose buffer changed or went
     /// away, whose server stopped (its request is gone) or whose client hung up.
     pub(super) fn claude_lsp_check(&mut self) {
+        self.claude_lsp_check_loading();
         if self.claude_lsp.waiting.is_empty() {
             return;
         }
         let mut done: Vec<(u64, Option<&'static str>)> = Vec::new();
+        let mut parked: Vec<u64> = Vec::new();
         for (&n, w) in &self.claude_lsp.waiting {
             let current = self.buffers.get(w.buffer).is_some_and(|b| b.revision() == w.revision);
             let in_flight = self.requests.values().any(|p| p.request == Request::Claude { ask: n });
@@ -315,6 +480,8 @@ impl App {
                 done.push((n, None));
             } else if !current {
                 done.push((n, Some("the file changed while asking: ask again")));
+            } else if w.parked.is_some() {
+                parked.push(n);
             } else if w.retry_at.is_none() && !in_flight {
                 done.push((n, Some("the language server stopped before answering")));
             }
@@ -329,10 +496,63 @@ impl App {
                 }
             }
         }
+        // The server may be ready now.
+        for n in parked {
+            if let Err(e) = self.claude_lsp_send(n) {
+                self.claude_lsp_finish(n, Reply::error(e));
+            }
+        }
+    }
+
+    /// Queries waiting for a file's background tab: asked once it is open; answered when the
+    /// load failed or the client hung up.
+    fn claude_lsp_check_loading(&mut self) {
+        if self.claude_lsp.loading.is_empty() {
+            return;
+        }
+        let ns: Vec<u64> = self.claude_lsp.loading.keys().copied().collect();
+        for n in ns {
+            let a = &self.claude_lsp.loading[&n];
+            if a.responder.is_closed() {
+                self.claude_lsp.loading.remove(&n);
+            } else if let Some(id) = self.buffers.find_path(&a.path) {
+                if let Some(a) = self.claude_lsp.loading.remove(&n) {
+                    self.claude_lsp_begin(n, a, id, true);
+                }
+            } else if !self.opening.contains_key(&a.path)
+                && let Some(a) = self.claude_lsp.loading.remove(&n)
+            {
+                let why = self.claude_lsp.failed.get(&a.path).cloned();
+                let why = why.unwrap_or_else(|| "it could not be loaded".to_string());
+                a.responder.answer(Reply::error(format!(
+                    "{} is not a text file jed can open: {why}",
+                    a.path.display()
+                )));
+            }
+        }
+        if self.claude_lsp.loading.is_empty() {
+            self.claude_lsp.failed.clear();
+        }
     }
 
     /// The timer: queries past their deadline are cancelled and answered, retries sent.
     pub(super) fn claude_lsp_tick(&mut self, now: Instant) {
+        let late: Vec<u64> = self
+            .claude_lsp
+            .loading
+            .iter()
+            .filter(|(_, a)| now >= a.deadline)
+            .map(|(n, _)| *n)
+            .collect();
+        for n in late {
+            if let Some(a) = self.claude_lsp.loading.remove(&n) {
+                let after = duration_text(self.claude_lsp.timeout);
+                a.responder.answer(Reply::error(format!(
+                    "{} did not load in {after}: timed out",
+                    a.path.display()
+                )));
+            }
+        }
         let due: Vec<u64> = self
             .claude_lsp
             .waiting
@@ -347,9 +567,13 @@ impl App {
             if now >= w.deadline {
                 self.claude_lsp_cancel(n);
                 let after = duration_text(self.claude_lsp.timeout);
+                let why = match &self.claude_lsp.waiting[&n].parked {
+                    Some(why) => format!(" ({why})"),
+                    None => String::new(),
+                };
                 self.claude_lsp_finish(
                     n,
-                    Reply::error(format!("the language server did not answer in {after}: timed out")),
+                    Reply::error(format!("the language server did not answer in {after}: timed out{why}")),
                 );
             } else if let Err(e) = self.claude_lsp_send(n) {
                 self.claude_lsp_finish(n, Reply::error(e));
@@ -376,27 +600,87 @@ impl App {
                 return self.claude_lsp_finish(n, Reply::error(format!("the language server failed: {}", e.message)));
             }
         };
-        let (ask, place, dirty) = (w.ask, w.place.clone(), w.dirty);
+        let (ask, place, dirty, opened) = (w.ask, w.place.clone(), w.dirty, w.opened);
         let Some(buf) = self.buffers.get(p.buffer) else {
             return;
         };
+        let mut unread = Vec::new();
         let mut data = match ask {
             LspAsk::Hover => self.claude_hover(buf, &value, p.encoding),
-            _ => self.claude_locations(&value, p.encoding, ask == LspAsk::References),
+            _ => {
+                let (data, rest) = self.claude_locations(&value, p.encoding, ask == LspAsk::References);
+                unread = rest;
+                data
+            }
         };
         data["at"] = place;
         data["dirty"] = json!(dirty);
-        self.claude_lsp_finish(n, Reply::data(data));
+        if opened {
+            data["opened"] = json!(true);
+        }
+        let busy = self
+            .lsp
+            .servers()
+            .iter()
+            .find(|s| s.id == p.server)
+            .and_then(|s| s.progress.latest().map(|w| w.label()));
+        if let Some(label) = busy {
+            data["server_busy"] = json!(label);
+        }
+        let Some(w) = self.claude_lsp.waiting.remove(&n) else {
+            return;
+        };
+        if unread.is_empty() || tokio::runtime::Handle::try_current().is_err() {
+            return w.responder.answer(Reply::data(data));
+        }
+        // Lines of files that aren't open: read off the UI thread, answered when it reports.
+        let mut paths: Vec<PathBuf> = unread.iter().map(|(_, l)| l.path.clone()).collect();
+        paths.sort();
+        paths.dedup();
+        self.claude_lsp.reading.insert(
+            n,
+            Reading {
+                responder: w.responder,
+                data,
+                unread,
+                encoding: p.encoding,
+            },
+        );
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let files = paths
+                .into_iter()
+                .filter_map(|path| {
+                    let bytes = std::fs::read(&path).ok()?;
+                    Some((path, Rope::from_str(&String::from_utf8_lossy(&bytes))))
+                })
+                .collect();
+            let _ = tx.send(AppEvent::Ipc(IpcEvent::ClaudeLspRead { n, files }));
+        });
     }
 
-    /// `{path, line, col, end_line, end_col, text}` of a range in `buf`.
-    fn claude_range_in(&self, buf: &Buffer, start: LspPos, end: LspPos, encoding: pos::PosEncoding) -> Value {
-        let (a, b) = (
-            pos::from_lsp_pos(&buf.rope, start, encoding),
-            pos::from_lsp_pos(&buf.rope, end, encoding),
-        );
-        let (from, to) = (self.claude_place(buf, a), self.claude_place(buf, b));
-        json!({"line": from["line"], "col": from["col"], "end_line": to["line"], "end_col": to["col"]})
+    /// The files read for answer `n`: fills in the lines and ranges of its locations (a file
+    /// that couldn't be read keeps `text: null` and the server's own numbers) and answers.
+    pub(super) fn claude_lsp_read(&mut self, n: u64, files: Vec<(PathBuf, Rope)>) {
+        let Some(mut r) = self.claude_lsp.reading.remove(&n) else {
+            return;
+        };
+        let tab_width = self.settings.tab_width;
+        for (i, loc) in &r.unread {
+            let Some((_, rope)) = files.iter().find(|(p, _)| *p == loc.path) else {
+                continue;
+            };
+            let slot = &mut r.data["locations"][*i];
+            for (k, v) in claude_range(rope, tab_width, loc.start, loc.end, r.encoding)
+                .as_object()
+                .into_iter()
+                .flatten()
+            {
+                slot[k] = v.clone();
+            }
+            slot["text"] = json!(line_clip(rope, loc.start.line as usize));
+        }
+        r.responder.answer(Reply::data(r.data));
     }
 
     fn claude_hover(&self, buf: &Buffer, value: &Value, encoding: pos::PosEncoding) -> Value {
@@ -415,28 +699,47 @@ impl App {
         if let Some(range) = value.get("range")
             && let (Some(s), Some(e)) = (range.get("start").and_then(pos), range.get("end").and_then(pos))
         {
-            v["range"] = self.claude_range_in(buf, s, e.max(s), encoding);
+            let tab_width = self.settings.for_buffer(buf).tab_width;
+            v["range"] = claude_range(&buf.rope, tab_width, s, e.max(s), encoding);
         }
         v
     }
 
     /// The locations of a definition / references answer: at most `MAX_LOCATIONS`, references
-    /// sorted by path then line. Lines of files that aren't open have no `text` yet.
-    fn claude_locations(&self, value: &Value, encoding: pos::PosEncoding, sort: bool) -> Value {
+    /// sorted by path then line; and those in files that aren't open, whose `text` is still null.
+    fn claude_locations(
+        &self,
+        value: &Value,
+        encoding: pos::PosEncoding,
+        sort: bool,
+    ) -> (Value, Vec<(usize, Location)>) {
         let mut found = locations::parse(value);
         if sort {
             found.sort_by(|a, b| (&a.path, a.start).cmp(&(&b.path, b.start)));
         }
         let count = found.len();
+        let mut unread = Vec::new();
         let list: Vec<Value> = found
             .iter()
             .take(MAX_LOCATIONS)
-            .map(|l| self.claude_location(l, encoding))
+            .enumerate()
+            .map(|(i, l)| {
+                let (v, open) = self.claude_location(l, encoding);
+                if !open {
+                    unread.push((i, l.clone()));
+                }
+                v
+            })
             .collect();
-        json!({"locations": list, "count": count, "truncated": count > MAX_LOCATIONS})
+        (
+            json!({"locations": list, "count": count, "truncated": count > MAX_LOCATIONS}),
+            unread,
+        )
     }
 
-    fn claude_location(&self, loc: &Location, encoding: pos::PosEncoding) -> Value {
+    /// The location as an answer says it, and whether its file is open (else `text` is null and
+    /// the numbers are the server's, until the file is read).
+    fn claude_location(&self, loc: &Location, encoding: pos::PosEncoding) -> (Value, bool) {
         let path: PathBuf = loc
             .path
             .strip_prefix(&self.workspace.root)
@@ -445,7 +748,7 @@ impl App {
         let path = path.display().to_string();
         let open = self.buffers.find_path(&loc.path).and_then(|id| self.buffers.get(id));
         let Some(buf) = open else {
-            return json!({
+            let v = json!({
                 "path": path,
                 "line": loc.start.line + 1,
                 "col": loc.start.character + 1,
@@ -453,14 +756,30 @@ impl App {
                 "end_col": loc.end.character + 1,
                 "text": null,
             });
+            return (v, false);
         };
-        let mut v = self.claude_range_in(buf, loc.start, loc.end, encoding);
-        let line = (loc.start.line as usize).min(pos::line_count(&buf.rope).saturating_sub(1));
-        let text = pos::line_text(&buf.rope, line);
+        let tab_width = self.settings.for_buffer(buf).tab_width;
+        let mut v = claude_range(&buf.rope, tab_width, loc.start, loc.end, encoding);
         v["path"] = json!(path);
-        v["text"] = json!(clip_head(&text, MAX_TEXT).0);
-        v
+        v["text"] = json!(line_clip(&buf.rope, loc.start.line as usize));
+        (v, true)
     }
+}
+
+/// `{line, col, end_line, end_col}` (1-based, display columns) of a range in `rope`.
+fn claude_range(rope: &Rope, tab_width: usize, start: LspPos, end: LspPos, encoding: pos::PosEncoding) -> Value {
+    let place = |p: LspPos| {
+        let at = pos::from_lsp_pos(rope, p, encoding);
+        (pos::line_of(rope, at) + 1, pos::display_col(rope, at, tab_width).0 + 1)
+    };
+    let ((line, col), (end_line, end_col)) = (place(start), place(end));
+    json!({"line": line, "col": col, "end_line": end_line, "end_col": end_col})
+}
+
+/// Line `line` (0-based, the last one if past the end) of `rope`, clipped to `MAX_TEXT` bytes.
+fn line_clip(rope: &Rope, line: usize) -> String {
+    let line = line.min(pos::line_count(rope).saturating_sub(1));
+    clip_head(&pos::line_text(rope, line), MAX_TEXT).0.to_string()
 }
 
 /// A hover's `contents` as sent: a string, a `MarkupContent` / `MarkedString`, or an array of them.
@@ -676,10 +995,11 @@ mod tests {
         assert_eq!(d["truncated"], false);
         assert_eq!(d["locations"][1]["text"], "int main() {\treturn foo() + foo(); }");
         assert_eq!(
-            d["locations"][2]["text"],
-            Value::Null,
-            "a file that isn't open: no text yet"
+            d["locations"][2]["text"], "int bar;",
+            "a file that isn't open: its line read off-thread"
         );
+        assert_eq!(d["locations"][2]["col"], 5);
+        assert!(app.buffers.find_path(&b).is_none(), "asking doesn't open the file");
         let sent = &fake.requests("textDocument/references")[0];
         assert_eq!(sent["context"], json!({"includeDeclaration": false}));
     }
@@ -807,9 +1127,243 @@ mod tests {
         app.pump();
         assert!(app.settle(|_| !fake.cancelled().is_empty()).await);
         assert!(app.claude_lsp.waiting.is_empty());
-        // A file that isn't open (the next subtask loads it).
-        let ans = ask(&mut app, query(LspAsk::Hover, &root.join("b.cpp"), 1, None, None));
-        assert!(reply(&mut app, &ans).await.error.unwrap().contains("not open"));
+    }
+
+    /// An app on `a.cpp`, a server advertising what `options` say.
+    async fn project_with(
+        options: crate::lsp::fake::FakeOptions,
+    ) -> (tempfile::TempDir, App, Arc<FakeLauncher>, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::milestone9_tests::project(
+            dir.path(),
+            &[("a.cpp", A), ("b.cpp", "int bar;\n"), ("n.txt", "plain\n")],
+        );
+        std::fs::write(root.join("bin.cpp"), [0u8, 1, 2, 0, 255]).unwrap();
+        let fake = FakeLauncher::new(options);
+        let mut app = crate::milestone9_tests::open_app(&root, fake.clone());
+        crate::milestone9_tests::open_synced(&mut app, &fake, &root.join("a.cpp")).await;
+        (dir, app, fake, root)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_file_that_isnt_open_loads_as_a_background_tab() {
+        let (_d, mut app, fake, root) = project().await;
+        let (a, b) = (root.join("a.cpp"), root.join("b.cpp"));
+        fake.respond("textDocument/definition", json!([location(&a, 0, 4, 7)]));
+        put_cursor(&mut app, 3);
+        let before = user_state(&app);
+        let tabs = app.group().tabs.len();
+        let ans = ask(&mut app, query(LspAsk::Definition, &b, 1, Some("bar"), None));
+        let r = reply(&mut app, &ans).await;
+        let d = data(&r);
+        assert_eq!(d["opened"], true);
+        assert_eq!(d["at"], json!({"line": 1, "col": 5}));
+        assert_eq!(d["locations"][0]["path"], "a.cpp");
+        assert_eq!(app.group().tabs.len(), tabs + 1, "a background tab");
+        assert!(app.buffers.find_path(&b).is_some());
+        assert_eq!(
+            user_state(&app),
+            before,
+            "the user's tab, cursor and history are as they were"
+        );
+        assert!(app.message.is_none(), "nothing is notified");
+        let sent = &fake.requests("textDocument/definition")[0];
+        assert!(
+            sent["textDocument"]["uri"].as_str().unwrap().ends_with("/b.cpp"),
+            "{sent}"
+        );
+        // Asked again, it is open already: no `opened`.
+        let ans = ask(&mut app, query(LspAsk::Definition, &b, 1, Some("bar"), None));
+        let r = reply(&mut app, &ans).await;
+        assert!(data(&r).get("opened").is_none());
+        assert_eq!(app.group().tabs.len(), tabs + 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_server_not_started_yet_is_waited_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::milestone9_tests::project(dir.path(), &[("b.cpp", "int bar;\n")]);
+        let fake = FakeLauncher::new(Default::default());
+        let mut app = crate::milestone9_tests::open_app(&root, fake.clone());
+        assert!(fake.launches().is_empty(), "no file open: no server");
+        let b = root.join("b.cpp");
+        fake.respond("textDocument/hover", json!(null));
+        let ans = ask(&mut app, query(LspAsk::Hover, &b, 1, Some("bar"), None));
+        let r = reply(&mut app, &ans).await;
+        assert_eq!(data(&r)["opened"], true);
+        assert_eq!(fake.launches(), ["clangd"]);
+        assert!(none_left(&app));
+        app.shutdown_servers().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_file_jed_cant_load_as_text_is_an_error() {
+        let (_d, mut app, fake, root) = project_with(Default::default()).await;
+        let ans = ask(&mut app, query(LspAsk::Hover, &root.join("missing.cpp"), 1, None, None));
+        let e = reply(&mut app, &ans).await.error.unwrap();
+        assert!(
+            e.contains("missing.cpp") && e.contains("not a text file jed can open"),
+            "{e}"
+        );
+        assert!(
+            app.buffers.find_path(&root.join("missing.cpp")).is_none(),
+            "no empty new-file tab"
+        );
+        let ans = ask(&mut app, query(LspAsk::Hover, &root.join("bin.cpp"), 1, None, None));
+        let e = reply(&mut app, &ans).await.error.unwrap();
+        assert!(e.contains("binary file"), "{e}");
+        assert!(none_left(&app));
+        assert!(app.claude_lsp.loading.is_empty());
+        // Internal on purpose: a stale cause has no other effect (the next ask for the path
+        // clears it), so a leak is only visible here.
+        assert!(app.claude_lsp.failed.is_empty(), "no failure causes are kept");
+        assert!(fake.requests("textDocument/hover").is_empty());
+        // The hex tab of a binary file isn't opened either.
+        assert!(app.group().find_hex(&root.join("bin.cpp")).is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_server_for_the_language_and_a_missing_capability_name_the_cause() {
+        let (_d, mut app, _fake, root) = project_with(crate::lsp::fake::FakeOptions {
+            no_hover: true,
+            ..Default::default()
+        })
+        .await;
+        let ans = ask(
+            &mut app,
+            query(LspAsk::Hover, &root.join("a.cpp"), 1, Some("foo"), None),
+        );
+        let e = reply(&mut app, &ans).await.error.unwrap();
+        assert!(
+            e.contains("clangd") && e.contains("does not support textDocument/hover"),
+            "{e}"
+        );
+        let ans = ask(&mut app, query(LspAsk::Hover, &root.join("n.txt"), 1, None, None));
+        let e = reply(&mut app, &ans).await.error.unwrap();
+        assert!(e.contains("no language server for Plain Text"), "{e}");
+        assert!(none_left(&app));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_crashed_server_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::milestone9_tests::project(dir.path(), &[("a.cpp", A)]);
+        let fake = FakeLauncher::new(crate::lsp::fake::FakeOptions {
+            crash_after_init: true,
+            ..Default::default()
+        });
+        let mut app = crate::milestone9_tests::open_app(&root, fake.clone());
+        open(&mut app, &root.join("a.cpp"));
+        assert!(app.settle(|a| a.message.is_some()).await, "the crash is reported");
+        let ans = ask(
+            &mut app,
+            query(LspAsk::Hover, &root.join("a.cpp"), 1, Some("foo"), None),
+        );
+        let e = reply(&mut app, &ans).await.error.unwrap();
+        assert!(
+            e.contains("clangd") && e.contains("failed") && e.contains("Tools view"),
+            "{e}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_server_that_never_starts_times_out_naming_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::milestone9_tests::project(dir.path(), &[("a.cpp", A)]);
+        let fake = FakeLauncher::new(crate::lsp::fake::FakeOptions {
+            hold_init: true,
+            ..Default::default()
+        });
+        let mut app = crate::milestone9_tests::open_app(&root, fake.clone());
+        let a = root.join("a.cpp");
+        open(&mut app, &a);
+        assert!(app.settle(|_| !fake.launches().is_empty()).await, "the server launched");
+        app.claude_lsp.timeout = Duration::from_millis(300);
+        let ans = ask(&mut app, query(LspAsk::Hover, &a, 1, Some("foo"), None));
+        let e = reply(&mut app, &ans).await.error.unwrap();
+        assert!(e.contains("timed out"), "{e}");
+        assert!(e.contains("still starting"), "names the parked reason: {e}");
+        assert!(none_left(&app));
+        assert!(fake.requests("textDocument/hover").is_empty());
+        app.shutdown_servers().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_user_open_of_the_file_claude_waits_for_wins() {
+        let (_d, mut app, fake, root) = project().await;
+        let b = root.join("b.cpp");
+        fake.respond("textDocument/hover", json!(null));
+        let ans = ask(&mut app, query(LspAsk::Hover, &b, 1, Some("bar"), None));
+        // The user opens the same file before the load reports: theirs, not a background tab.
+        app.open_file(b.clone(), true, None);
+        let r = reply(&mut app, &ans).await;
+        assert_eq!(data(&r)["opened"], true);
+        let tab = app.group().active_tab().unwrap();
+        assert_eq!(app.buffers.find_path(&b), Some(tab.buffer), "the user's open is shown");
+        assert!(app.claude_lsp.loading.is_empty() && app.claude_lsp.failed.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_user_open_of_a_missing_file_claude_asked_about_makes_its_new_file_tab() {
+        let (_d, mut app, _fake, root) = project().await;
+        let m = root.join("missing.cpp");
+        let ans = ask(&mut app, query(LspAsk::Hover, &m, 1, None, None));
+        app.open_file(m.clone(), true, None);
+        reply(&mut app, &ans).await;
+        assert!(
+            app.settle(|a| a.buffers.find_path(&m).is_some()).await,
+            "the user's new-file tab"
+        );
+        let tab = app.group().active_tab().unwrap();
+        assert_eq!(app.buffers.find_path(&m), Some(tab.buffer), "shown to the user");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_user_opening_a_missing_file_still_makes_a_new_file_tab() {
+        let (_d, mut app, _fake, root) = project().await;
+        let m = root.join("missing.cpp");
+        app.open_file(m.clone(), true, None);
+        assert!(app.settle(|a| a.buffers.find_path(&m).is_some()).await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_busy_server_is_named_in_the_answer() {
+        let (_d, mut app, fake, root) = project().await;
+        let a = root.join("a.cpp");
+        fake.respond("textDocument/hover", json!(null));
+        let ans = ask(&mut app, query(LspAsk::Hover, &a, 1, Some("foo"), None));
+        assert!(data(&reply(&mut app, &ans).await).get("server_busy").is_none());
+        let server = app.lsp.server_for(Language::Cpp).unwrap();
+        server.notify(
+            "test/progress",
+            json!({"token": "t", "value": {"kind": "begin", "title": "Indexing", "percentage": 40}}),
+        );
+        assert!(
+            app.settle(|a| a.lsp.server_for(Language::Cpp).unwrap().progress.latest().is_some())
+                .await
+        );
+        let ans = ask(&mut app, query(LspAsk::Hover, &a, 1, Some("foo"), None));
+        let r = reply(&mut app, &ans).await;
+        let busy = data(&r)["server_busy"].as_str().unwrap();
+        assert!(busy.contains("Indexing"), "{busy}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_location_in_a_file_that_cant_be_read_has_no_text() {
+        let (_d, mut app, fake, root) = project().await;
+        let a = root.join("a.cpp");
+        let gone = root.join("gone.cpp");
+        fake.respond(
+            "textDocument/definition",
+            json!([location(&gone, 2, 1, 4), location(&a, 0, 4, 7)]),
+        );
+        let ans = ask(&mut app, query(LspAsk::Definition, &a, 2, Some("foo"), None));
+        let r = reply(&mut app, &ans).await;
+        let d = data(&r);
+        assert_eq!(d["locations"][0]["text"], Value::Null);
+        assert_eq!(d["locations"][0]["line"], 3, "the server's numbers stay");
+        assert_eq!(d["locations"][1]["text"], "int foo() { return 1; }");
+        assert_eq!(d["count"], 2);
     }
 
     #[tokio::test(flavor = "multi_thread")]

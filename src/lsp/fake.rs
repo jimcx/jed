@@ -67,6 +67,8 @@ pub struct FakeOptions {
     pub ignore_shutdown: bool,
     /// Answer `initialize` with an error.
     pub init_error: bool,
+    /// Never answer `initialize`: the server stays `Starting`.
+    pub hold_init: bool,
     /// The `textDocumentSync` capability to advertise (default `2`: incremental).
     pub sync: Option<Value>,
     /// Advertise `renameProvider: true` (no `prepareRename`) instead of `{ prepareProvider: true }`.
@@ -314,6 +316,7 @@ async fn serve(
             }
             match Message::from_value(value).unwrap() {
                 Message::Request { id, method, params } => match method.as_str() {
+                    "initialize" if options.hold_init => {}
                     "initialize" if options.init_error => out.push(Message::Response {
                         id,
                         result: Err(RpcError {

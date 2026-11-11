@@ -40,6 +40,12 @@ pub(super) enum IpcEvent {
     Request(Request, Responder),
     /// The task socket is listening, or why not.
     Started(Result<Server, String>),
+    /// Files read off-thread for the lines of a language server answer of Claude's
+    /// (`claude_lsp_read`).
+    ClaudeLspRead {
+        n: u64,
+        files: Vec<(std::path::PathBuf, ropey::Rope)>,
+    },
 }
 
 impl App {
@@ -47,6 +53,7 @@ impl App {
         match ev {
             IpcEvent::Request(request, responder) => self.ipc_request(request, responder),
             IpcEvent::Started(result) => self.ipc_started(result),
+            IpcEvent::ClaudeLspRead { n, files } => self.claude_lsp_read(n, files),
         }
     }
 }
