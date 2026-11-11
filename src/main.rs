@@ -12,6 +12,8 @@ mod claude;
 #[cfg(test)]
 mod claude_ide_tests;
 #[cfg(test)]
+mod claude_lsp_tests;
+#[cfg(test)]
 mod clear_scrollback_tests;
 mod clipboard;
 mod code_action;

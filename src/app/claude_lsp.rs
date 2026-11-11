@@ -282,6 +282,13 @@ fn resolve(
 }
 
 impl App {
+    /// Shortens the deadline and the retry wait of Claude's queries (tests; the unit tests reach the fields).
+    #[cfg(test)]
+    pub(crate) fn test_claude_lsp_times(&mut self, timeout: Option<Duration>, retry: Option<Duration>) {
+        self.claude_lsp.timeout = timeout.unwrap_or(TIMEOUT);
+        self.claude_lsp.retry = retry.unwrap_or(RETRY);
+    }
+
     /// A `Query::Lsp`: resolves the place and asks the file's server; `responder` is answered
     /// when it is time, here for an error.
     pub(super) fn claude_lsp_ask(&mut self, query: &Query, responder: Responder) {

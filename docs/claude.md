@@ -62,12 +62,30 @@ and not fed back to it):
 | `get_recent_commands` | a shell's last commands with exit codes |
 | `get_command_output` | the output of one command |
 | `get_terminal_screen` | what a shell shows now (a TUI, a half-typed prompt) |
+| `find_definition` | where a symbol is defined (`kind`: definition, type, implementation or declaration), from the language server |
+| `find_references` | the references to a symbol (up to 200, sorted by path then line) |
+| `get_hover` | the server's hover text (markdown, capped at 4 KB) and its range |
+| `get_document_symbols` | a file's symbols as a tree: name, kind, detail, line range, children |
+| `find_workspace_symbols` | symbols by name across the workspace (`max`, default 50, up to 200) |
 | `open_file` | opens a file at a line in jed |
 | `get_review` | the merge request, its files and your pending drafts |
 | `get_review_threads` | the threads, their live lines, comments and suggestions |
 | `review_refresh` | reloads the merge request |
 | `review_apply_suggestion` | applies a suggestion and saves the file |
 | `review_draft_reply` | adds a reply as a draft, optionally marking the thread to resolve |
+
+The language server tools ask the servers jed already runs, so they know what the editor knows (and need the
+server for that language to be running). Name a place with `path`, a 1-based `line` and the `symbol` on it
+(the first whole-word match; `col` picks a later one; with neither, the line's first non-blank): Claude never
+counts columns, and a `symbol` that isn't on the line is an error quoting the line as jed has it. Answers carry
+locations as `{path, line, col, end_line, end_col, text}` (path relative to the workspace, at most 200, with
+`count` and `truncated`). `dirty: true` says the file has unsaved changes and the server answered for them. A
+file that isn't open is loaded as a background tab (`opened: true`). `server_busy` names the work a server is
+still reporting (indexing: the answer may be incomplete). A request waits up to 10 s (then `$/cancelRequest` and a
+timeout error), is asked again after a routine `ContentModified`, and answers "the file changed while asking:
+ask again" if the file is edited meanwhile. Nothing the user sees changes: no cursor move, scroll, popup,
+Locations list, back / forward entry or notice. Each call and the size of its answer are in the "claude (mcp)"
+log.
 
 Outside jed (`JED_IPC` unset or the socket gone) the hooks print nothing and the tools answer "not inside a
 jed terminal".

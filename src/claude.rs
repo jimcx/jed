@@ -621,7 +621,9 @@ fn session_start(jed: &mut dyn Jed) -> Result<String, String> {
         "The jed MCP tools show the editor's state (active file, selection, diagnostics, open tabs) and the \
          other terminals' commands and output, and open files in the editor. The review tools (get_review, \
          get_review_threads, review_apply_suggestion, review_draft_reply) deal with a merge request's feedback: fix the code \
-         yourself; replies are only drafts the user submits in jed.\n",
+         yourself; replies are only drafts the user submits in jed. The language server tools (find_definition, \
+         find_references, get_hover, get_document_symbols, find_workspace_symbols) ask jed's running servers: \
+         prefer them to grep for where a symbol is defined or used.\n",
     );
     Ok(out)
 }
@@ -1110,6 +1112,8 @@ pub(crate) mod tests {
             "dev (1 variable",
             "terminal 2",
             "MCP tools",
+            "find_definition",
+            "prefer them to grep",
         ] {
             assert!(text.contains(want), "{want} in {text}");
         }
