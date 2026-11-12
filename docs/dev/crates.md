@@ -13,6 +13,11 @@ default member, so plain `cargo build --release` builds `target/release/jed`); t
 
 `jterm` depends on `jtui`; neither depends on jed or jmux.
 
+`jtui` so far: `paths` (per-app XDG dirs, `~` display, `file:line:col`), `url`, `socket` (socket dir
+for a pid), `clipboard` (arboard / OSC 52 / in-process `memory()`, `base64`), `terminal` (host terminal
+setup, `Identity`, `CursorShape`). jed passes `crate::APP` where a name is needed.
+Anything jed's tests rely on is compiled unconditionally in a crate: `cfg(test)` doesn't cross crates.
+
 ## Rules
 
 - **Shared code names no application:** directory names, env variable names and window titles are

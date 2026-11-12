@@ -3,3 +3,13 @@ name = "jtui"
 version = "0.1.0"
 edition.workspace = true
 publish = false
+
+[dependencies]
+arboard = { workspace = true }
+crossterm = { workspace = true }
+libc = { workspace = true }
+ratatui = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

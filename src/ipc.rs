@@ -16,9 +16,7 @@
 //! The socket is `<socket_dir>/<pid>.sock` in a `0700` directory ([`prepare_dir`]); [`Server`]
 //! removes it on drop and [`remove_socket`] does the same from the panic hook.
 
-use std::ffi::OsStr;
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -274,64 +272,12 @@ pub fn decode<T: for<'de> Deserialize<'de>>(line: &str) -> Result<T, String> {
     serde_json::from_str(line.trim()).map_err(|e| e.to_string())
 }
 
-/// The socket directory from the environment's values: `$XDG_RUNTIME_DIR/jed` (absolute only),
-/// else `$TMPDIR/jed-<uid>`, else `/tmp/jed-<uid>`.
-pub fn socket_dir(xdg_runtime_dir: Option<&OsStr>, tmpdir: Option<&OsStr>, uid: u32) -> PathBuf {
-    let absolute = |v: Option<&OsStr>| {
-        v.filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-    };
-    if let Some(xdg) = absolute(xdg_runtime_dir) {
-        return xdg.join("jed");
-    }
-    let base = absolute(tmpdir).unwrap_or_else(|| PathBuf::from("/tmp"));
-    base.join(format!("jed-{uid}"))
-}
-
-/// [`socket_dir`] for this process's environment and user.
+/// [`jtui::socket::default_socket_dir`] for jed.
 pub fn default_socket_dir() -> PathBuf {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    let uid = unsafe { libc::getuid() };
-    socket_dir(
-        std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
-        std::env::var_os("TMPDIR").as_deref(),
-        uid,
-    )
+    jtui::socket::default_socket_dir(crate::APP)
 }
 
-/// The socket for process `pid` in `dir`.
-pub fn socket_path(dir: &Path, pid: u32) -> PathBuf {
-    dir.join(format!("{pid}.sock"))
-}
-
-/// Create `dir` with mode `0700`, or check an existing one is ours and closed to others.
-///
-/// Blocking: call from spawn_blocking
-pub fn prepare_dir(dir: &Path) -> io::Result<()> {
-    match std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir) {
-        Ok(()) => {}
-        Err(e) => return Err(e),
-    }
-    let meta = std::fs::symlink_metadata(dir)?;
-    // SAFETY: getuid has no preconditions and cannot fail.
-    let uid = unsafe { libc::getuid() };
-    if !meta.is_dir() {
-        return Err(io::Error::other(format!("{} is not a directory", dir.display())));
-    }
-    if meta.uid() != uid {
-        return Err(io::Error::other(format!("{} is owned by another user", dir.display())));
-    }
-    if meta.mode() & 0o077 != 0 {
-        return Err(io::Error::other(format!("{} is accessible by others", dir.display())));
-    }
-    Ok(())
-}
-
-/// Delete the socket file; never panics, ignores errors (also for the panic hook).
-pub fn remove_socket(path: &Path) {
-    let _ = std::fs::remove_file(path);
-}
+pub use jtui::socket::{prepare_dir, remove_socket, socket_path};
 
 /// Answers one request: send a [`Reply`], or drop it to close the connection unanswered.
 #[derive(Debug)]
@@ -552,7 +498,6 @@ pub mod client {
 mod tests {
     use super::client::{Outcome, open};
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -628,41 +573,6 @@ mod tests {
         // Decodes, but asks for nothing: the server refuses it.
         assert!(!decode::<Request>("{\"wait\":true}").unwrap().is_valid());
         assert!(decode::<Request>("").is_err());
-    }
-
-    #[test]
-    fn socket_dir_choices() {
-        let s = |v: &'static str| Some(OsStr::new(v));
-        assert_eq!(
-            socket_dir(s("/run/user/1"), s("/t"), 5),
-            PathBuf::from("/run/user/1/jed")
-        );
-        assert_eq!(socket_dir(s("rel"), s("/var/t"), 5), PathBuf::from("/var/t/jed-5"));
-        assert_eq!(socket_dir(s(""), s("/var/t"), 5), PathBuf::from("/var/t/jed-5"));
-        assert_eq!(socket_dir(None, None, 5), PathBuf::from("/tmp/jed-5"));
-        assert_eq!(socket_dir(None, s("rel"), 5), PathBuf::from("/tmp/jed-5"));
-        assert_eq!(socket_path(Path::new("/d"), 42), PathBuf::from("/d/42.sock"));
-    }
-
-    #[test]
-    fn prepare_dir_creates_private_and_refuses_open() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("a").join("jed");
-        prepare_dir(&dir).unwrap();
-        assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
-        prepare_dir(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(prepare_dir(&dir).is_err());
-        let file = tmp.path().join("file");
-        std::fs::write(&file, "").unwrap();
-        assert!(prepare_dir(&file).is_err());
-        // A symlink to a private directory of ours is still refused (someone could repoint it).
-        let private = tmp.path().join("private");
-        prepare_dir(&private).unwrap();
-        let link = tmp.path().join("link");
-        std::os::unix::fs::symlink(&private, &link).unwrap();
-        let err = prepare_dir(&link).unwrap_err();
-        assert!(err.to_string().contains("not a directory"), "{err}");
     }
 
     type Seen = Arc<Mutex<Vec<Request>>>;

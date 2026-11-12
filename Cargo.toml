@@ -16,6 +16,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.3"
 tracing = "0.1.44"
+arboard = { version = "3.7.0", default-features = false }
+libc = "0.2.191"
+tempfile = "3.27.0"
 
 [package]
 name = "jed"
@@ -26,7 +29,7 @@ edition.workspace = true
 jtui = { path = "crates/jtui" }
 jterm = { path = "crates/jterm" }
 anyhow = "1.0.104"
-arboard = { version = "3.7.0", default-features = false }
+arboard = { workspace = true }
 crossterm = { workspace = true }
 futures-util = "0.3.34"
 git2 = { version = "0.21", default-features = false }
@@ -34,7 +37,7 @@ globset = "0.4.21"
 grep-matcher = "0.1.9"
 grep-searcher = "0.1.17"
 ignore = "0.4.34"
-libc = "0.2.191"
+libc = { workspace = true }
 lsp-types = "0.97.0"
 memchr = "2.8.3"
 notify = "9.0.0-rc.7"
@@ -86,7 +89,7 @@ ureq = { version = "3.5.1", default-features = false, features = ["rustls", "pla
 zstd = "0.14.3"
 
 [dev-dependencies]
-tempfile = "3.27.0"
+tempfile = { workspace = true }
 
 # [profile.*] and [patch.crates-io] live here only; they cover every workspace member.
 [profile.release]

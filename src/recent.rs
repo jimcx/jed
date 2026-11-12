@@ -210,17 +210,7 @@ pub fn shell_quote(s: &str) -> Cow<'_, str> {
     }
 }
 
-/// `path` with `home` shown as `~` (`~` itself, `~/rest`); other paths as they are.
-pub fn display(path: &Path, home: &Path) -> String {
-    if home.as_os_str().is_empty() || home == Path::new("/") {
-        return path.display().to_string();
-    }
-    match path.strip_prefix(home) {
-        Ok(rest) if rest.as_os_str().is_empty() => "~".into(),
-        Ok(rest) => format!("~/{}", rest.display()),
-        Err(_) => path.display().to_string(),
-    }
-}
+pub use jtui::paths::display;
 
 /// The folder's own name (the whole path for `/`).
 pub fn folder_name(path: &Path) -> String {

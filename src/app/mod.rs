@@ -532,7 +532,8 @@ impl App {
     #[cfg(test)]
     pub(crate) fn start_identity(workspace: &Workspace, mode: Mode, initial: Option<&InitialFile>) -> Identity {
         let single = initial.filter(|_| mode.is_single()).map(|f| f.buffer.path.as_path());
-        Identity::new(&workspace.root, single, &crate::paths::home()).with_title(workspace.window_title().as_deref())
+        Identity::new(crate::APP, &workspace.root, single, &crate::paths::home())
+            .with_title(workspace.window_title().as_deref())
     }
 
     /// Must not start background work: it may run before the runtime is entered. `start` does that.
@@ -555,7 +556,7 @@ impl App {
             editor_hint: None,
             trust: trust_store.evaluate(&root, &workspace.config),
             trust_store,
-            cursor_shape: crate::terminal::CursorShape::of(&settings),
+            cursor_shape: crate::terminal::cursor_shape(&settings),
             identity,
             title_dirty: false,
             settings,
@@ -1053,7 +1054,7 @@ impl App {
 
     /// Sends the settings' cursor shape (DECSCUSR) to `out` when it isn't the one sent last.
     pub fn sync_cursor_shape(&mut self, out: &mut impl std::io::Write) -> std::io::Result<()> {
-        let shape = crate::terminal::CursorShape::of(&self.settings);
+        let shape = crate::terminal::cursor_shape(&self.settings);
         if shape != self.cursor_shape {
             crate::terminal::set_cursor_shape(out, shape)?;
             self.cursor_shape = shape;

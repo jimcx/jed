@@ -1253,6 +1253,14 @@ dependencies = [
 [[package]]
 name = "jtui"
 version = "0.1.0"
+dependencies = [
+ "arboard",
+ "crossterm",
+ "libc",
+ "ratatui",
+ "tempfile",
+ "tracing",
+]
 
 [[package]]
 name = "kasuari"

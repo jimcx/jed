@@ -1,3 +1,6 @@
+/// The application's name, passed to `jtui` for the directory, socket and window names it derives.
+pub const APP: &str = "jed";
+
 mod app;
 #[cfg(test)]
 mod apple_langs_tests;
@@ -513,7 +516,7 @@ fn main() -> ExitCode {
         .as_ref()
         .filter(|_| mode.is_single())
         .map(|(path, _)| path.as_path());
-    let identity = terminal::Identity::new(&workspace.root, single_file, &paths::home())
+    let identity = terminal::Identity::new(APP, &workspace.root, single_file, &paths::home())
         .with_title(workspace.window_title().as_deref());
     let initial = match file {
         // A big binary file opens as a paged hex tab: it is never read whole into a buffer.
@@ -562,7 +565,7 @@ fn main() -> ExitCode {
     panic::install();
     let kitty = terminal::kitty_supported();
     tracing::info!(kitty, "keyboard protocol");
-    let cursor = terminal::CursorShape::of(&workspace.settings());
+    let cursor = terminal::cursor_shape(&workspace.settings());
     let result = terminal::enter(kitty, cursor, &identity)
         .map_err(anyhow::Error::from)
         .and_then(|mut term| {
