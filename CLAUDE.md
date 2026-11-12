@@ -10,6 +10,7 @@ Work is a task, built via `/task <name>`: one commit, or one per subtask (`tools
 - [docs/dev/modules.md](docs/dev/modules.md) — every `jed/src/` module (one line each, then in full) and the data flow step by step.
 - [docs/dev/conventions.md](docs/dev/conventions.md) — rules per area: tabs, keymaps, settings, language server requests, edits from background results, scroll bars, adding a command end to end, and each feature's conventions.
 - [docs/dev/testing.md](docs/dev/testing.md) — running the checks, driving the app headlessly, test helpers per feature.
+- [docs/dev/review.md](docs/dev/review.md) — the review criteria and finding dispositions that `/task`'s validator, `/task-review` and the review bot all apply (the bot's policy for this repo: `.jim-bots.toml`).
 - [docs/dev/crates.md](docs/dev/crates.md) — the workspace: what goes in jed, jmux, `jtui`, `jterm`; re-exports; where their tests live.
 - [docs/dev/app.md](docs/dev/app.md), [ui.md](docs/dev/ui.md), [buffer.md](docs/dev/buffer.md), [lsp.md](docs/dev/lsp.md), [syntax.md](docs/dev/syntax.md) — those `jed/src/` directories in full. Each directory's nested `CLAUDE.md` (and `docs/terminals/CLAUDE.md`) is the short form: its files and the rules to know before editing.
 

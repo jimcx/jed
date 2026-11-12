@@ -1,20 +1,28 @@
 #!/bin/sh
 # Hand a finished task branch to review: push it to `origin` (Gitea) and open a
-# merge request (pull request) against main. Nothing is merged here; the user
-# merges in Gitea. Prints the MR's URL.
+# merge request (pull request) against main. Nothing is merged here: the review
+# and merge bots, or the user, take it from there. Prints the MR's URL.
 #
 # Needs GITEA_TOKEN (a Gitea access token with repository write access) in the
 # environment, or a configured `tea` CLI (used instead when it is installed).
 # Run from the branch's own worktree (it must be checked out and clean).
 #
-# Usage: scripts/mr <branch> [title]
+# Usage: scripts/mr [-e <evidence file>] <branch> [title]
 #   title defaults to the branch's only commit subject, or the branch name when
 #   there are several; the body lists the branch's commits (subject + body).
+#   -e appends the file under an "## Evidence" heading (docs/dev/review.md:
+#   who built it, mutation results, deviations, flaky tests, hand checks), for
+#   the reviewer to check against. A missing or empty file is skipped.
 set -e
 
+evidence=
+if [ "$1" = "-e" ]; then
+    evidence=$2
+    shift 2
+fi
 branch=$1
 title=$2
-[ -n "$branch" ] || { echo "usage: scripts/mr <branch> [title]" >&2; exit 2; }
+[ -n "$branch" ] || { echo "usage: scripts/mr [-e <evidence file>] <branch> [title]" >&2; exit 2; }
 [ -z "$(git status --porcelain)" ] || { echo "scripts/mr: working tree not clean" >&2; exit 1; }
 
 range="main..$branch"
@@ -27,6 +35,9 @@ if [ -z "$title" ]; then
     fi
 fi
 body=$(git log --reverse --format='### %s%n%n%b' "$range")
+if [ -n "$evidence" ] && [ -s "$evidence" ]; then
+    body=$(printf '%s\n\n## Evidence\n\n%s' "$body" "$(cat "$evidence")")
+fi
 
 git push --force-with-lease -u origin "$branch"
 

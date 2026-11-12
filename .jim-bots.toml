@@ -1,0 +1,28 @@
+# How the review bot treats this repository's merge requests. Read from `main` (never from the branch under
+# review), over the bot's own defaults. The criteria themselves are in docs/dev/review.md.
+
+[review]
+criteria_file = "docs/dev/review.md"
+
+# Dispositions the bot fixes itself before it approves: blocking findings (up to its fix-round limit) and `fix`
+# findings (one cleanup round per merge request). `followup` findings and hand checks are filed in an issue.
+fix = ["blocking", "fix"]
+followups = "issue"
+followup_label = "bot:followup"
+
+# A change touching one of these is reviewed and fixed as usual, then waits for a human to approve instead of
+# merging on its own: forge tokens and requests (a leak is hard for a test to rule out), and the process itself.
+hold_paths = [
+    "jed/src/forge/config.rs",
+    "jed/src/forge/http.rs",
+    "docs/dev/review.md",
+    ".jim-bots.toml",
+    ".claude/commands/*",
+    "scripts/check",
+    "scripts/mr",
+]
+
+notes = """
+Run checks with scripts/check (see CLAUDE.md), never plain cargo test: `scripts/check test <filter>` runs one test.
+Read CLAUDE.md's Invariants before judging correctness.
+"""
