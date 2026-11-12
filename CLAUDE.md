@@ -12,6 +12,7 @@ Milestones 1–13 are done and keep their numbers. Everything after them is a ta
 - [docs/dev/modules.md](docs/dev/modules.md) — the module map (every `src/` module, one line each, then in full) and the data flow step by step. Read the entries for what you touch.
 - [docs/dev/conventions.md](docs/dev/conventions.md) — rules for one area: tabs, keymaps, settings, language server requests, edits from background results, scroll bars, adding a command end to end, and each feature's conventions (files changed on disk, log tabs, file history, sessions, crash backups, back / forward, recent workspaces, tool logs).
 - [docs/dev/testing.md](docs/dev/testing.md) — driving the app headlessly, and test helpers per feature.
+- [docs/dev/crates.md](docs/dev/crates.md) — the workspace: `crates/jtui`, `crates/jterm` (shared with jmux), what goes where, re-exports, where their tests live.
 - [docs/dev/app.md](docs/dev/app.md) / [docs/dev/ui.md](docs/dev/ui.md) — every `src/app/` submodule and `src/ui/` widget in full.
 - The nested `CLAUDE.md` files in `src/app`, `src/buffer`, `src/lsp`, `src/syntax`, `src/ui`, `docs/terminals`.
 
@@ -21,9 +22,9 @@ Milestones 1–13 are done and keep their numbers. Everything after them is a ta
 on PATH, so prefix every command with `export PATH="$HOME/.rustup/toolchains/1.99-aarch64-apple-darwin/bin:$PATH"`.
 
 ```sh
-cargo fmt --check                            # rustfmt.toml: max_width = 120
-cargo clippy --all-targets -- -D warnings
-cargo test                                   # ~2300 tests, ~11 s (dependencies build at opt-level 2: Cargo.toml)
+cargo fmt --all --check                      # rustfmt.toml: max_width = 120
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace                       # ~2300 tests, ~11 s (dependencies build at opt-level 2: Cargo.toml)
 cargo test --release milestone -- --nocapture --test-threads=1   # M1 and M6 (1 MB Cmd+Shift+L + typing; line/cursor commands at 61k selections; find + replace all) budgets: release only (M6 has coarse debug bounds); serial, since parallel tests nearly double the timings on a slow machine
 cargo test --release search -- --nocapture      # so are the 1 MB find-all and 10 MB workspace-search budgets
 ```

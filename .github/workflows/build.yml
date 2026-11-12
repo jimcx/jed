@@ -38,16 +38,16 @@ jobs:
         if: ${{ !env.GITEA_ACTIONS }}
 
       - name: Format
-        run: cargo fmt --check
+        run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Build
         run: cargo build --release
 
       - name: Test
-        run: scripts/timeout 900 cargo test
+        run: scripts/timeout 900 cargo test --workspace
 
       - name: Package
         shell: bash
