@@ -84,8 +84,6 @@ pub struct Chunk {
 /// opens the repository and [`Self::step`] reads objects, so call both from `spawn_blocking`.
 pub struct Walker {
     repo: Repository,
-    /// `None`: every commit is shown and every parent walked (`git log`).
-    path: Option<PathBuf>,
     /// git's `revs->commits`: by date, newest first; an item added later goes after the items of
     /// its date, so a parent is never taken before its child at equal dates.
     heap: BinaryHeap<(i64, Reverse<u64>, Oid)>,
@@ -93,7 +91,10 @@ pub struct Walker {
     seq: u64,
     /// Each parsed commit's path entry, so a parent shared by several children reads its tree
     /// once.
-    entries: RefCell<HashMap<Oid, Option<(i32, Oid)>>>,
+    #[allow(clippy::type_complexity)]
+    entries: RefCell<HashMap<(Oid, PathBuf), Option<(i32, Oid)>>>,
+    /// The path each queued commit is followed under (a rename changes it for the parents).
+    paths: HashMap<Oid, PathBuf>,
     slice: Duration,
     visited: u64,
 }
@@ -113,16 +114,19 @@ impl Walker {
         };
         let mut walker = Walker {
             repo: r,
-            path: path.map(Path::to_path_buf),
             heap: BinaryHeap::new(),
             queued: HashSet::new(),
             seq: 0,
             entries: RefCell::default(),
+            paths: HashMap::new(),
             slice: SLICE,
             visited: 0,
         };
         if let Some((tip, time)) = tip {
             walker.queue(tip, time);
+            if let Some(path) = path {
+                walker.paths.insert(tip, path.to_path_buf());
+            }
         }
         Ok(walker)
     }
@@ -149,12 +153,16 @@ impl Walker {
         let mut found = Vec::new();
         while let Some((_, _, id)) = self.heap.pop() {
             self.visited += 1;
-            let (walk, shown) = {
+            let (walk, shown, next) = {
                 let commit = self.repo.find_commit(id)?;
-                let (walk, show) = self.simplify(&commit)?;
-                (walk, if show { Some(describe(&commit)?) } else { None })
+                let path = self.paths.get(&id).cloned();
+                let (walk, show, next) = self.simplify(&commit, path.as_deref())?;
+                (walk, if show { Some(describe(&commit)?) } else { None }, next)
             };
             for (parent, time) in walk {
+                if let Some(next) = &next {
+                    self.paths.entry(parent).or_insert_with(|| next.clone());
+                }
                 self.queue(parent, time);
             }
             if let Some(shown) = shown {
@@ -181,22 +189,29 @@ impl Walker {
         }
     }
 
-    /// Whether git shows this commit, and the parents (with their commit times) the walk goes on
-    /// through.
-    fn simplify(&self, commit: &git2::Commit) -> Result<(Vec<(Oid, i64)>, bool), git2::Error> {
-        if self.path.is_none() {
-            return Ok((commit.parents().map(|p| (p.id(), p.time().seconds())).collect(), true));
-        }
+    /// Whether git shows this commit, the parents (with their commit times) the walk goes on
+    /// through, and the path they are followed under (`--follow`: the old name when this commit
+    /// renamed the file in).
+    #[allow(clippy::type_complexity)]
+    fn simplify(
+        &self,
+        commit: &git2::Commit,
+        path: Option<&Path>,
+    ) -> Result<(Vec<(Oid, i64)>, bool, Option<PathBuf>), git2::Error> {
+        let Some(path) = path else {
+            let parents = commit.parents().map(|p| (p.id(), p.time().seconds())).collect();
+            return Ok((parents, true, None));
+        };
         if commit.parent_count() == 0 {
             let tree = commit.tree()?;
-            return Ok((Vec::new(), self.entry_of(&tree)?.is_some()));
+            return Ok((Vec::new(), self.entry_of(&tree, path)?.is_some(), None));
         }
-        let own = self.entry(commit)?;
+        let own = self.entry(commit, path)?;
         let mut treesame = None;
         let mut parents = Vec::with_capacity(commit.parent_count());
         for parent in commit.parents() {
             let id = (parent.id(), parent.time().seconds());
-            if treesame.is_none() && self.entry(&parent)? == own {
+            if treesame.is_none() && self.entry(&parent, path)? == own {
                 treesame = Some(id);
             }
             parents.push(id);
@@ -204,27 +219,56 @@ impl Walker {
         match treesame {
             // TREESAME to a parent: hidden, and the walk follows that parent alone (git drops
             // the parents on either side of it too).
-            Some(parent) => Ok((vec![parent], false)),
+            Some(parent) => Ok((vec![parent], false, Some(path.to_path_buf()))),
             // TREESAME to none: shown, every parent walked.
-            None => Ok((parents, true)),
+            None => {
+                let renamed = self.renamed_from(commit, path, own)?;
+                Ok((parents, true, Some(renamed.unwrap_or_else(|| path.to_path_buf()))))
+            }
         }
+    }
+
+    /// The path `commit` renamed to `path` from, when the first parent lacks `path` and
+    /// has a file that is its rename source (`git log --follow`).
+    fn renamed_from(
+        &self,
+        commit: &git2::Commit,
+        path: &Path,
+        own: Option<(i32, Oid)>,
+    ) -> Result<Option<PathBuf>, git2::Error> {
+        if own.is_none() {
+            return Ok(None);
+        }
+        let parent = commit.parent(0)?;
+        if self.entry(&parent, path)?.is_some() {
+            return Ok(None);
+        }
+        let mut diff = self
+            .repo
+            .diff_tree_to_tree(Some(&parent.tree()?), Some(&commit.tree()?), None)?;
+        diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+        for delta in diff.deltas() {
+            if delta.status() == git2::Delta::Renamed && delta.new_file().path() == Some(path) {
+                return Ok(delta.old_file().path().map(Path::to_path_buf));
+            }
+        }
+        Ok(None)
     }
 
     /// The path's entry in `commit`, from the cache or its tree (the commit is already parsed, so
     /// no second lookup).
-    fn entry(&self, commit: &git2::Commit) -> Result<Option<(i32, Oid)>, git2::Error> {
-        let id = commit.id();
+    fn entry(&self, commit: &git2::Commit, path: &Path) -> Result<Option<(i32, Oid)>, git2::Error> {
+        let id = (commit.id(), path.to_path_buf());
         if let Some(entry) = self.entries.borrow().get(&id) {
             return Ok(*entry);
         }
-        let entry = self.entry_of(&commit.tree()?)?;
+        let entry = self.entry_of(&commit.tree()?, path)?;
         self.entries.borrow_mut().insert(id, entry);
         Ok(entry)
     }
 
     /// The path's tree entry as (mode, blob id); `None` when the tree doesn't have it.
-    fn entry_of(&self, tree: &Tree) -> Result<Option<(i32, Oid)>, git2::Error> {
-        let Some(path) = &self.path else { return Ok(None) };
+    fn entry_of(&self, tree: &Tree, path: &Path) -> Result<Option<(i32, Oid)>, git2::Error> {
         match tree.get_path(path) {
             Ok(entry) => Ok(Some((entry.filemode(), entry.id()))),
             Err(_) => Ok(None),
@@ -677,9 +721,9 @@ mod tests {
         assert_eq!(shown[0], git(&root, &["rev-parse", "HEAD"]).trim());
     }
 
-    /// No `--follow`: a renamed path's history starts at the rename.
+    /// `--follow`: a renamed path's history continues under the old name.
     #[test]
-    fn a_renamed_path_does_not_follow_the_rename() {
+    fn a_renamed_path_follows_the_rename() {
         let (_d, root) = tmp();
         write(&root, "a.txt", "a\n");
         commit_at(&root, "2026-01-01T00:00:00+0000", "root");
@@ -687,8 +731,7 @@ mod tests {
         commit_at(&root, "2026-01-02T00:00:00+0000", "renames a");
         let repo = Repo::discover(&root).unwrap();
         let shown = pages(&repo, "b.txt", PAGE);
-        assert_eq!(shown, cli(&root, "b.txt"));
-        assert_eq!(shown.len(), 1, "only the rename, not the root");
+        assert_eq!(shown.len(), 2, "the rename and the root");
         assert_eq!(pages(&repo, "a.txt", PAGE), cli(&root, "a.txt"));
     }
 
