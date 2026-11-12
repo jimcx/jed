@@ -11,10 +11,12 @@ pub enum CharClass {
 }
 
 /// Word characters for word movement, double-click and whole-word search: alphanumeric or `_`.
+#[inline]
 pub fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+#[inline]
 pub fn class_of(g: &str) -> CharClass {
     let c = g.chars().next().unwrap_or(' ');
     if c.is_whitespace() {

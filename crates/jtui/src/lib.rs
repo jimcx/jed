@@ -13,9 +13,10 @@
 //!   (junction glyphs where lines meet)
 //! - `theme`: `Theme` (key -> `Style`, 256-colour fallback, terminal cell mapping) and `widget_entries`,
 //!   the keys the shared widgets read
+//! - `keymap`: `KeyCombo`, `Platform`, and `Keymap<Ctx, Cmd>` with the user keybindings file reader,
+//!   generic over the app's `KeyContext` / `KeyCommand` types
 //!
-//! Still to move in: `Keymap` machinery, and a ratatui backend that draws into a byte
-//! stream.
+//! Still to come: a ratatui backend that draws into a byte stream.
 //!
 //! Shared code names no application: directory names, env variable names and window titles are
 //! passed in. See docs/dev/crates.md.
@@ -24,6 +25,7 @@ pub mod borders;
 pub mod clipboard;
 pub mod context_menu;
 pub mod field;
+pub mod keymap;
 pub mod paths;
 pub mod scrollbar;
 pub mod scrollbar_draw;

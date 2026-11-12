@@ -2,12 +2,15 @@
 //! A binding applies in one context (editor, explorer, palette, find, replace, search,
 //! searchResults, problems, locations, suggest, codeActions, contextMenu, diff, scm, gitHistory, task) or everywhere.
 //! The defaults are VS Code's; `keybindings.toml` replaces bindings command by command.
+//! `KeyCombo`, `Platform` and the generic `Keymap` live in `jtui::keymap`; this file holds jed's
+//! contexts, defaults and file template, and a `Keymap` over them.
 
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use serde::Deserialize;
+
+pub use jtui::keymap::{KeyCombo, NAMED_KEYS, Platform, Source};
+use jtui::keymap::{KeyCommand, KeyContext};
 
 use crate::command::{
     CodeActionCommand as Ca, ColumnMotion, Command, CommitCommand as Cc, ContextMenuCommand as Cm,
@@ -19,166 +22,7 @@ use crate::command::{
 
 pub const FILE_NAME: &str = "keybindings.toml";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyCombo {
-    pub code: KeyCode,
-    pub mods: KeyModifiers,
-}
-
-/// Modifiers in display and config order.
-const MODIFIERS: [(KeyModifiers, &str, &str); 4] = [
-    (KeyModifiers::SUPER, "cmd", "Cmd"),
-    (KeyModifiers::CONTROL, "ctrl", "Ctrl"),
-    (KeyModifiers::ALT, "alt", "Alt"),
-    (KeyModifiers::SHIFT, "shift", "Shift"),
-];
-
-/// Named keys: config spelling, display label.
-pub(crate) const NAMED_KEYS: [(KeyCode, &str, &str); 15] = [
-    (KeyCode::Left, "left", "Left"),
-    (KeyCode::Right, "right", "Right"),
-    (KeyCode::Up, "up", "Up"),
-    (KeyCode::Down, "down", "Down"),
-    (KeyCode::Home, "home", "Home"),
-    (KeyCode::End, "end", "End"),
-    (KeyCode::PageUp, "pageup", "PageUp"),
-    (KeyCode::PageDown, "pagedown", "PageDown"),
-    (KeyCode::Backspace, "backspace", "Backspace"),
-    (KeyCode::Delete, "delete", "Delete"),
-    (KeyCode::Insert, "insert", "Insert"),
-    (KeyCode::Enter, "enter", "Enter"),
-    (KeyCode::Tab, "tab", "Tab"),
-    (KeyCode::Esc, "esc", "Esc"),
-    (KeyCode::Char(' '), "space", "Space"),
-];
-
-/// Shift+1 … Shift+0 on a US keyboard.
-const SHIFTED_DIGITS: &str = "!@#$%^&*()";
-
-impl KeyCombo {
-    /// Uppercase letters become lowercase + Shift, so `Cmd+Shift+Z` matches however the terminal reports it.
-    /// With Cmd, Ctrl or Alt held, a shifted digit (US layout: `!` … `)`) becomes the digit + Shift,
-    /// since kitty-protocol terminals report Cmd+Shift+1 as Cmd+`!`; likewise `_` becomes `-` + Shift
-    /// and `<` / `>` become `,` / `.` + Shift.
-    pub fn from_event(ev: &KeyEvent) -> Self {
-        let mut mods =
-            ev.modifiers & (KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
-        let chord = mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
-        let code = match ev.code {
-            // Ctrl+Space as a legacy terminal may report it (NUL, read as Ctrl+@ or Ctrl+Shift+2).
-            KeyCode::Char('@') if mods - KeyModifiers::SHIFT == KeyModifiers::CONTROL => {
-                mods = KeyModifiers::CONTROL;
-                KeyCode::Char(' ')
-            }
-            KeyCode::Char(c) if c.is_uppercase() => {
-                mods |= KeyModifiers::SHIFT;
-                KeyCode::Char(c.to_lowercase().next().unwrap_or(c))
-            }
-            KeyCode::Char(c) if chord && SHIFTED_DIGITS.contains(c) => {
-                mods |= KeyModifiers::SHIFT;
-                let i = SHIFTED_DIGITS.chars().position(|d| d == c).unwrap_or(0);
-                KeyCode::Char(char::from(b'0' + ((i + 1) % 10) as u8))
-            }
-            // Shift+- as a kitty-protocol terminal with alternate keys reports it (Go Forward).
-            KeyCode::Char('_') if chord => {
-                mods |= KeyModifiers::SHIFT;
-                KeyCode::Char('-')
-            }
-            // Shift+, / Shift+. as alternate keys report them (Focus Previous / Next Editor Group).
-            KeyCode::Char('<') if chord => {
-                mods |= KeyModifiers::SHIFT;
-                KeyCode::Char(',')
-            }
-            KeyCode::Char('>') if chord => {
-                mods |= KeyModifiers::SHIFT;
-                KeyCode::Char('.')
-            }
-            KeyCode::BackTab => {
-                mods |= KeyModifiers::SHIFT;
-                KeyCode::Tab
-            }
-            c => c,
-        };
-        Self { code, mods }
-    }
-
-    /// Config spelling, e.g. `cmd+shift+p`, `ctrl+alt+backslash`, `f2`: modifiers in the order
-    /// cmd, ctrl, alt, shift (`super`, `control`, `option` also accepted); lowercase key names.
-    pub fn parse(spec: &str) -> Result<Self, String> {
-        let lower = spec.trim().to_lowercase();
-        let mut parts: Vec<&str> = lower.split('+').map(str::trim).collect();
-        let key = parts.pop().filter(|k| !k.is_empty()).ok_or("no key")?;
-        let mut mods = KeyModifiers::NONE;
-        for m in parts {
-            mods |= match m {
-                "cmd" | "super" | "command" => KeyModifiers::SUPER,
-                "ctrl" | "control" => KeyModifiers::CONTROL,
-                "alt" | "option" | "opt" => KeyModifiers::ALT,
-                "shift" => KeyModifiers::SHIFT,
-                _ => return Err(format!("unknown modifier \"{m}\"")),
-            };
-        }
-        let code = match key {
-            "backslash" => KeyCode::Char('\\'),
-            "plus" => KeyCode::Char('+'),
-            "escape" => KeyCode::Esc,
-            "return" => KeyCode::Enter,
-            k => match NAMED_KEYS.iter().find(|(_, name, _)| *name == k) {
-                Some((code, ..)) => *code,
-                None => match (
-                    k.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()),
-                    k.chars().count(),
-                ) {
-                    (Some(n), _) if (1..=24).contains(&n) => KeyCode::F(n),
-                    (_, 1) => KeyCode::Char(k.chars().next().unwrap_or(' ')),
-                    _ => return Err(format!("unknown key \"{k}\"")),
-                },
-            },
-        };
-        // As a key event would arrive: `ctrl+!` is `ctrl+shift+1`, or it could never match.
-        Ok(Self::from_event(&KeyEvent::new(code, mods)))
-    }
-
-    /// The config spelling `parse` reads (also the spelling in docs/terminals/README.md).
-    pub fn spec(&self) -> String {
-        self.join("+", |(_, spec, _)| spec, |code| key_name(code, false))
-    }
-
-    /// For people, e.g. `Cmd+Shift+P`.
-    pub fn label(&self) -> String {
-        self.join("+", |(_, _, label)| label, |code| key_name(code, true))
-    }
-
-    fn join(
-        &self,
-        sep: &str,
-        modifier: impl Fn(&(KeyModifiers, &'static str, &'static str)) -> &'static str,
-        key: impl Fn(KeyCode) -> String,
-    ) -> String {
-        let mut parts: Vec<String> = MODIFIERS
-            .iter()
-            .filter(|(m, ..)| self.mods.contains(*m))
-            .map(|m| modifier(m).to_string())
-            .collect();
-        parts.push(key(self.code));
-        parts.join(sep)
-    }
-}
-
-fn key_name(code: KeyCode, label: bool) -> String {
-    if let Some((_, spec, l)) = NAMED_KEYS.iter().find(|(c, ..)| *c == code) {
-        return if label { l } else { spec }.to_string();
-    }
-    match code {
-        KeyCode::Char('\\') if !label => "backslash".into(),
-        KeyCode::Char('+') if !label => "plus".into(),
-        KeyCode::Char(c) if label => c.to_uppercase().collect(),
-        KeyCode::Char(c) => c.to_string(),
-        KeyCode::F(n) if label => format!("F{n}"),
-        KeyCode::F(n) => format!("f{n}"),
-        other => format!("{other:?}").to_lowercase(),
-    }
-}
+pub type Binding = jtui::keymap::Binding<Context, Command>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Context {
@@ -343,69 +187,40 @@ fn is_shell_key(combo: &KeyCombo) -> bool {
     matches!(combo.code, KeyCode::Char(c) if c.is_ascii_lowercase() && c != 'q') && combo.mods == KeyModifiers::CONTROL
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Platform {
-    MacOs,
-    Linux,
-}
-
-impl Platform {
-    pub fn current() -> Self {
-        if cfg!(target_os = "macos") {
-            Platform::MacOs
-        } else {
-            Platform::Linux
-        }
+impl KeyContext for Context {
+    fn parent(self) -> Option<Self> {
+        Context::parent(self)
+    }
+    fn parse(name: &str) -> Option<Self> {
+        Context::parse(name)
+    }
+    fn names() -> Vec<&'static str> {
+        Self::ALL.iter().map(|(_, n)| *n).collect()
+    }
+    fn passes_through(self, combo: &KeyCombo) -> bool {
+        self == Context::Shell && is_shell_key(combo)
     }
 }
 
-/// Where a binding came from: the built-in defaults or `keybindings.toml`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Source {
-    Default,
-    User,
+impl KeyCommand for Command {
+    fn from_name(name: &str) -> Option<Self> {
+        Command::from_name(name)
+    }
+    fn name(&self) -> String {
+        Command::name(self)
+    }
+    fn title(&self) -> String {
+        Command::title(self)
+    }
 }
 
-/// One key combo bound to a command, in a context (`None` = everywhere), and where it came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Binding {
-    pub combo: KeyCombo,
-    pub context: Option<Context>,
-    pub command: Command,
-    pub source: Source,
-}
-
-pub struct Keymap {
-    /// `None` context = everywhere; each binding's command and where it came from.
-    bindings: HashMap<(KeyCombo, Option<Context>), (Command, Source)>,
-    /// The binding the palette shows for each command (its context too): the first one that
-    /// still applies.
-    shown: HashMap<Command, (KeyCombo, Option<Context>)>,
-}
-
-/// `keybindings.toml`: a list of `[[binding]]` tables.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct UserFile {
-    #[serde(default)]
-    binding: Vec<UserBinding>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct UserBinding {
-    key: String,
-    command: String,
-    #[serde(default)]
-    context: Option<String>,
-}
+/// jed's keymap: `jtui`'s generic one over `Context` and `Command`, with the defaults supplied per platform.
+pub struct Keymap(jtui::keymap::Keymap<Context, Command>);
 
 impl Keymap {
     /// Every binding: combo, context (`None` = everywhere), command and where it came from.
     pub fn bindings_with_source(&self) -> impl Iterator<Item = (KeyCombo, Option<Context>, Command, Source)> + '_ {
-        self.bindings
-            .iter()
-            .map(|((combo, ctx), (command, source))| (*combo, *ctx, *command, *source))
+        self.0.bindings_with_source()
     }
 
     /// Every binding: combo, context (`None` = everywhere) and command.
@@ -418,151 +233,47 @@ impl Keymap {
     /// A binding for the current context wins over its parent's (replace → find), which wins
     /// over a global one.
     pub fn lookup(&self, ev: &KeyEvent, context: Context) -> Option<Command> {
-        let combo = KeyCombo::from_event(ev);
-        let mut ctx = Some(context);
-        while let Some(c) = ctx {
-            if let Some(cmd) = self.bindings.get(&(combo, Some(c))) {
-                return Some(cmd.0);
-            }
-            ctx = c.parent();
-        }
-        if context == Context::Shell && is_shell_key(&combo) {
-            return None;
-        }
-        self.bindings.get(&(combo, None)).map(|(cmd, _)| *cmd)
+        self.0.lookup(ev, context)
     }
 
     /// The key shown next to a command in the palette.
     pub fn binding_for(&self, cmd: Command) -> Option<KeyCombo> {
-        self.shown.get(&cmd).map(|(combo, _)| *combo)
+        self.0.binding_for(cmd)
     }
 
-    /// The commands bound in `context` itself (not its parents or globally), each with its
-    /// palette key when that's one of them, else its first by label; sorted by command title.
+    /// The commands bound in `context` itself (not its parents or globally), sorted by command title.
     pub fn context_bindings(&self, context: Context) -> Vec<(KeyCombo, Command)> {
-        let mut by_cmd: HashMap<Command, KeyCombo> = HashMap::new();
-        for ((combo, ctx), (cmd, _)) in &self.bindings {
-            if *ctx != Some(context) {
-                continue;
-            }
-            let shown = self.binding_for(*cmd) == Some(*combo);
-            by_cmd
-                .entry(*cmd)
-                .and_modify(|c| {
-                    if shown || (self.binding_for(*cmd) != Some(*c) && combo.label() < c.label()) {
-                        *c = *combo;
-                    }
-                })
-                .or_insert(*combo);
-        }
-        let mut rows: Vec<(KeyCombo, Command)> = by_cmd.into_iter().map(|(cmd, combo)| (combo, cmd)).collect();
-        rows.sort_by_cached_key(|(combo, cmd)| (cmd.title(), combo.label()));
-        rows
-    }
-
-    /// Later bindings win on the same key and context.
-    fn from_list(list: Vec<Binding>) -> Self {
-        let mut bindings = HashMap::new();
-        for b in &list {
-            bindings.insert((b.combo, b.context), (b.command, b.source));
-        }
-        let mut shown = HashMap::new();
-        for b in &list {
-            if bindings.get(&(b.combo, b.context)).map(|(command, _)| *command) == Some(b.command) {
-                shown.entry(b.command).or_insert((b.combo, b.context));
-            }
-        }
-        Self { bindings, shown }
+        self.0.context_bindings(context)
     }
 
     pub fn default_for(platform: Platform) -> Self {
-        Self::from_list(defaults(platform))
+        Self(jtui::keymap::Keymap::from_list(defaults(platform)))
     }
 
     /// The defaults, with each command named in `user` bound only to the user's keys.
-    /// A user key also takes over whatever the default had on it, in that context.
+    #[cfg(test)]
     pub fn with_user(platform: Platform, user: &[Binding]) -> Self {
-        let rebound: HashSet<Command> = user.iter().map(|b| b.command).collect();
-        let mut list: Vec<Binding> = defaults(platform)
-            .into_iter()
-            .filter(|b| !rebound.contains(&b.command))
-            .collect();
-        list.extend_from_slice(user);
-        Self::from_list(list)
+        Self(jtui::keymap::Keymap::with_user(defaults(platform), user))
     }
 
     /// Blocking. The keymap for `platform` with the user's `keybindings.toml` (if any) on top,
     /// plus one message per problem. Bad entries are skipped; an unreadable file gives the defaults.
     pub fn load(path: &Path, platform: Platform) -> (Self, Vec<String>) {
-        match std::fs::read_to_string(path) {
-            Ok(text) => Self::from_text(platform, &text).unwrap_or_else(|e| (Self::default_for(platform), vec![e])),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Self::default_for(platform), Vec::new()),
-            Err(e) => (Self::default_for(platform), vec![format!("{FILE_NAME}: {e}")]),
-        }
+        let (km, errors) = jtui::keymap::Keymap::load(path, FILE_NAME, defaults(platform));
+        (Self(km), errors)
     }
 
-    /// Blocking, for a live reload. Like `load`, but a file that can't be read or parsed at all is
-    /// an `Err`, so the caller keeps the last good keymap (as a `.workspace` reload does); problems
-    /// in single bindings still apply the rest, reported.
+    /// Blocking, for a live reload. A file that can't be read or parsed at all is an `Err`, so the
+    /// caller keeps the last good keymap.
     pub fn reload(path: &Path, platform: Platform) -> Result<(Self, Vec<String>), String> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => Self::from_text(platform, &text),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((Self::default_for(platform), Vec::new())),
-            Err(e) => Err(format!("{FILE_NAME}: {e}")),
-        }
-    }
-
-    /// The keymap `text` builds on `platform`'s defaults, or its syntax error.
-    fn from_text(platform: Platform, text: &str) -> Result<(Self, Vec<String>), String> {
-        let (user, errors) = user_bindings(user_file(text)?);
-        for b in &user {
-            tracing::info!(key = %b.combo.spec(), command = %b.command.name(), context = ?b.context, "user keybinding");
-        }
-        Ok((Self::with_user(platform, &user), errors))
+        jtui::keymap::Keymap::reload(path, FILE_NAME, defaults(platform)).map(|(km, errors)| (Self(km), errors))
     }
 }
 
 /// The bindings in a `keybindings.toml`, and a message for each one that couldn't be used.
 #[cfg(test)]
 fn parse_user(text: &str) -> (Vec<Binding>, Vec<String>) {
-    match user_file(text) {
-        Ok(file) => user_bindings(file),
-        Err(e) => (Vec::new(), vec![e]),
-    }
-}
-
-/// `keybindings.toml`'s TOML, or the message for a syntax error (the whole file is then unusable).
-fn user_file(text: &str) -> Result<UserFile, String> {
-    toml::from_str(text).map_err(|e| format!("{FILE_NAME}: {}", e.message()))
-}
-
-fn user_bindings(file: UserFile) -> (Vec<Binding>, Vec<String>) {
-    let mut out = Vec::new();
-    let mut errors = Vec::new();
-    for b in file.binding {
-        let combo = KeyCombo::parse(&b.key).map_err(|e| format!("key \"{}\": {e}", b.key));
-        let command = Command::from_name(&b.command).ok_or_else(|| format!("unknown command \"{}\"", b.command));
-        let context = match b.context.as_deref() {
-            None => Ok(None),
-            Some(name) => Context::parse(name).map(Some).ok_or_else(|| {
-                let names: Vec<&str> = Context::ALL.iter().map(|(_, n)| *n).collect();
-                format!("unknown context \"{name}\" (one of {})", names.join(", "))
-            }),
-        };
-        match (combo, command, context) {
-            (Ok(combo), Ok(command), Ok(context)) => out.push(Binding {
-                combo,
-                context,
-                command,
-                source: Source::User,
-            }),
-            (combo, command, context) => {
-                let e = [combo.err(), command.err(), context.err()].into_iter().flatten();
-                errors.extend(e.map(|e| format!("{FILE_NAME}: {e}")));
-            }
-        }
-    }
-    (out, errors)
+    jtui::keymap::parse_user(FILE_NAME, text)
 }
 
 /// What the Keyboard Shortcuts view writes when there's no `keybindings.toml` yet: a comment

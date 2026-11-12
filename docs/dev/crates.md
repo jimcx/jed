@@ -13,11 +13,21 @@ default member, so plain `cargo build --release` builds `target/release/jed`); t
 
 `jterm` depends on `jtui`; neither depends on jed or jmux.
 
-`jtui` so far: `paths` (per-app XDG dirs, `~` display, `file:line:col`), `url`, `socket` (socket dir
+`jtui` holds: `paths` (per-app XDG dirs, `~` display, `file:line:col`), `url`, `socket` (socket dir
 for a pid), `clipboard` (arboard / OSC 52 / in-process `memory()`, `base64`), `terminal` (host terminal
 setup, `Identity`, `CursorShape`), `scrollbar` (model) and `scrollbar_draw` (bars and marks, colours via the
 `style::Styles` trait: `Theme` implements it), `field` (`TextField`) with `text` (its `&str` grapheme and word
-steps), `context_menu` (generic over the command type; jed aliases it to `Command`), `split` (the split tree, `Divider`, `SplitDir`, `DropSide`, `MIN_GROUP_*`; serde form is the session file's), `borders` (junction glyphs, colours via `Styles`), `theme` (`Theme::new(entries, truecolor)`: `get` / `find` / `dim` / `ansi` / `terminal_cell`, `rgb`, `squiggle`, 256-colour fallback; `widget_entries`: the one list of the keys the shared widgets read, which an app's theme starts from; jed's `Theme` wraps it and adds the editor / syntax entries). jed passes `crate::APP` where a name is needed.
+steps), `context_menu` (generic over the command type; jed aliases it to `Command`), `split` (the split tree,
+`Divider`, `SplitDir`, `DropSide`, `MIN_GROUP_*`; serde form is the session file's), `borders` (junction glyphs,
+colours via `Styles`), `theme` (`Theme::new(entries, truecolor)`: `get` / `find` / `dim` / `ansi` /
+`terminal_cell`, `rgb`, `squiggle`, 256-colour fallback; `widget_entries`: the keys the shared widgets read,
+which an app's theme starts from; jed's `Theme` wraps it and adds the editor / syntax entries), `keymap`
+(`KeyCombo`, `Platform`, `Source`, `Binding<Ctx, Cmd>`, `Keymap<Ctx, Cmd>` and the keybindings file reader,
+generic over the app's `KeyContext` / `KeyCommand` types; defaults and the file name are passed in).
+jed passes `crate::APP` where a name is needed. Still to come: a ratatui backend that draws into a byte stream.
+Stayed in jed (tied to its tab kinds or tool logs): `logging.rs`, `palette.rs`, `group.rs`, `ui/tabs.rs`,
+`HitMap` and the hit structs, `session.rs`; also jed's `Context`, `defaults`, command names and keybindings
+file template.
 Anything jed's tests rely on is compiled unconditionally in a crate: `cfg(test)` doesn't cross crates.
 
 ## Rules

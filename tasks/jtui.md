@@ -1,8 +1,8 @@
 ---
 id: jtui
 name: "jtui: shared TUI building blocks"
-summary: jed's application-neutral TUI pieces (host terminal setup, clipboard, dirs, split tree, borders, scroll bar, text field, context menu, theme and keymap machinery) move to `crates/jtui`, jed re-exporting them
-status: in-progress
+summary: jed's application-neutral TUI pieces (host terminal setup, clipboard, dirs and sockets, split tree, borders, scroll bars, text field, context menu, theme and keymap machinery) live in `crates/jtui`, jed re-exporting them
+status: done
 priority: 0
 dependencies: [crates_workspace]
 ---
@@ -31,4 +31,13 @@ See [Shared crates and jmux](../PLAN.md#shared-crates-and-jmux), [jmux's plan](.
       - `Divider.terminal` stays (jed sets it after `layout` for the terminal area's tree); its doc is generic. jmux may want it gone or renamed when it has trees of its own
     - ✅ jtui-d: `Theme` machinery and the shared widgets' key list; jed's `Theme::dark_plus` builds on it
       - Done: `jtui::theme::Theme::new(entries, truecolor)` (later entries win) with `get` / `find` / `dim` / `ansi` / `terminal_cell` / `truecolor`, the 256-colour fallback and `terminal_has_truecolor`; `jtui::theme::widget_entries(truecolor)` is the one list of the shared widgets' keys (scroll bar, borders, tab bar, `dialog.input`, menu, terminal). jed's `Theme` wraps it (`Deref`) with `token_styles`, `markdown_style`, `status_bar_auto`; `dark_plus` = `widget_entries` + jed's `own_entries` (a test forbids repeats). Dark+ colours checked identical before / after
-    - jtui-e: `KeyCombo`, `Platform` and the generic `Keymap<Ctx, Cmd>`; if making `Keymap` generic needs changes outside `config/keymap.rs`, `keys.rs` and their direct users, move only `KeyCombo` / `Platform` and the file reader and record the rest as deferred. Also the done-when checks, `docs/dev/modules.md` / `crates.md` entries for everything moved, and marks the task ✅
+    - ✅ jtui-e: `KeyCombo`, `Platform` and the generic `Keymap<Ctx, Cmd>`; if making `Keymap` generic needs changes outside `config/keymap.rs`, `keys.rs` and their direct users, move only `KeyCombo` / `Platform` and the file reader and record the rest as deferred. Also the done-when checks, `docs/dev/modules.md` / `crates.md` entries for everything moved, and marks the task ✅
+      - Done: `jtui::keymap`: `KeyCombo`, `NAMED_KEYS`, `Platform`, `Source`, the traits `KeyContext` (`parent`, `parse`, `names`, `passes_through`) and `KeyCommand` (`from_name`, `name`, `title`), `Binding<Ctx, Cmd>`, `Keymap<Ctx, Cmd>` (defaults passed as data, the file name as an argument) and the `keybindings.toml` reader. jed's `config::keymap::Keymap` is a newtype with the old API; `Context`, `defaults`, the template / stub fns and their tests stay
+
+✅ Done:
+  - `crates/jtui` holds `paths`, `url`, `socket`, `clipboard`, `terminal`, `scrollbar`, `scrollbar_draw`, `style` (`Styles`), `text`, `field`, `context_menu`, `split`, `borders`, `theme`, `keymap`; `docs/dev/crates.md` lists them and what stayed in jed. jed's modules re-export, so jed's call sites are unchanged except: `terminal::cursor_shape(&settings)` (was `CursorShape::of`), `Identity::new(APP, …)`, `field::from_command` (was `FieldCommand::from_command`)
+  - The app's name comes from `crate::APP` (`"jed"`, `main.rs`). Shared drawing takes `&impl jtui::style::Styles`; shared widget colours come from `jtui::theme::widget_entries`
+  - Also: `cfg(test)` doesn't cross crates, so test hooks stay jed-side (`url::OPENED`, `scrollbar::lit`) or are always compiled (`Clipboard::memory`). `arboard`, `libc`, `tempfile`, `serde_json`, `toml` joined `[workspace.dependencies]`. The `user keybinding` log line's target is now `jtui::keymap`. New tests pin the split tree's session JSON and run every app-name path with a non-jed name
+  - Checked: `cargo test -p jtui` alone (87 tests), `cargo tree -p jtui` has no jed / jterm, the `"jed"` / `JED_` grep only hits `#[cfg(test)]` mods; release `milestone` and `search` budgets against `b214755` within noise (three slower readings re-run 3× each in one session: the baseline varies as much)
+  - Deferred: as listed above (`logging.rs`, `palette.rs`, `group.rs`, `ui/tabs.rs`, `HitMap`, `session.rs`); `Divider.terminal` is still a jed-shaped field in `jtui::split`; `ui/context_menu.rs` (the menu's drawing) stays in jed
+  - Still to check by hand: run jed once — window title and kitty user vars (`jed`, `jed_workspace`), OSC 52 copy over SSH, the session restoring its splits, a user `keybindings.toml` binding
