@@ -92,8 +92,8 @@ impl Identity {
     }
 
     /// OSC 2: the window's title, control characters dropped; not wrapped (tmux takes titles
-    /// itself). `start` sends it after pushing the title stack; a `.workspace` reload only
-    /// re-sends it (`App::sync_window_title`).
+    /// itself). `start` sends it after pushing the title stack; to rename the window later the app
+    /// re-sends only this.
     pub fn title_sequence(&self) -> String {
         let title: String = self.title_text().chars().filter(|c| !c.is_control()).collect();
         format!("\x1b]2;{title}\x1b\\")
@@ -245,8 +245,8 @@ pub fn kitty_supported() -> bool {
     crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false)
 }
 
-/// Raw mode, then `start`'s sequences on stdout. `cursor`: the settings' shape (`App::run`
-/// sends it again when a `.workspace` reload changes it).
+/// Raw mode, then `start`'s sequences on stdout. `cursor`: the app's shape (it sends
+/// [`set_cursor_shape`] again when that changes).
 pub fn enter(kitty: bool, cursor: CursorShape, identity: &Identity) -> io::Result<Term> {
     enable_raw_mode()?;
     ACTIVE.store(true, Ordering::SeqCst);

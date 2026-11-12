@@ -710,6 +710,12 @@ fn to_ansi256(r: u8, g: u8, b: u8) -> u8 {
     }
 }
 
+impl jtui::style::Styles for Theme {
+    fn get(&self, key: &str) -> Style {
+        Theme::get(self, key)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

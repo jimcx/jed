@@ -1260,6 +1260,8 @@ dependencies = [
  "ratatui",
  "tempfile",
  "tracing",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]

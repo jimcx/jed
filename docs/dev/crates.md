@@ -15,7 +15,9 @@ default member, so plain `cargo build --release` builds `target/release/jed`); t
 
 `jtui` so far: `paths` (per-app XDG dirs, `~` display, `file:line:col`), `url`, `socket` (socket dir
 for a pid), `clipboard` (arboard / OSC 52 / in-process `memory()`, `base64`), `terminal` (host terminal
-setup, `Identity`, `CursorShape`). jed passes `crate::APP` where a name is needed.
+setup, `Identity`, `CursorShape`), `scrollbar` (model) and `scrollbar_draw` (bars and marks, colours via the
+`style::Styles` trait: `Theme` implements it), `field` (`TextField`) with `text` (its `&str` grapheme and word
+steps), `context_menu` (generic over the command type; jed aliases it to `Command`). jed passes `crate::APP` where a name is needed.
 Anything jed's tests rely on is compiled unconditionally in a crate: `cfg(test)` doesn't cross crates.
 
 ## Rules

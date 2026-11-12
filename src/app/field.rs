@@ -7,11 +7,11 @@ use super::{App, Focus};
 use crate::clipboard::Copied;
 use crate::command::Command;
 use crate::config::keymap::Context;
-use crate::field::{FieldCommand, Outcome, TextField};
+use crate::field::{Outcome, TextField};
 
 /// Whether `cmd` means something in a text field: a `FieldCommand`, or copy / cut / paste.
 pub(super) fn has_field_meaning(cmd: Command) -> bool {
-    matches!(cmd, Command::Copy | Command::Cut | Command::Paste) || FieldCommand::from_command(cmd).is_some()
+    matches!(cmd, Command::Copy | Command::Cut | Command::Paste) || crate::field::from_command(cmd).is_some()
 }
 
 impl App {
@@ -28,7 +28,7 @@ impl App {
     /// bound to it when that has a field meaning (`handle_event` leaves those to the field, so
     /// a global `keybindings.toml` binding of an editor command applies here too), else the
     /// key's editor-context command. A command with a field meaning runs on `field` (moves,
-    /// deletes, select all — `FieldCommand::from_command` — and copy / cut / paste through
+    /// deletes, select all — `field::from_command` — and copy / cut / paste through
     /// `app.clipboard`); others do nothing. So Home / End, Shift+arrows, word moves and rebinds
     /// work as in the editor, with no field keys of their own. `own` is the field's context
     /// (`None` for a prompt's field).
@@ -65,7 +65,7 @@ impl App {
                 }
                 None => Outcome::Ignored,
             },
-            _ => FieldCommand::from_command(cmd).map_or(Outcome::Ignored, |c| field.run(c)),
+            _ => crate::field::from_command(cmd).map_or(Outcome::Ignored, |c| field.run(c)),
         }
     }
 }

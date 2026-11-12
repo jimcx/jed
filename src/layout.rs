@@ -760,13 +760,7 @@ pub struct KeysHit {
     pub scrollbar: Option<ScrollBarHit>,
 }
 
-/// A scroll bar as drawn: its track (one column, or one row for `ScrollTarget::Columns`) and the thumb on it (`None`: nothing to
-/// scroll), in cells from the track's start.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ScrollBarHit {
-    pub track: Rect,
-    pub thumb: Option<crate::scrollbar::Thumb>,
-}
+pub use jtui::scrollbar_draw::ScrollBarHit;
 
 /// A diff tab: the rows' rect (below its header), each change's Stage / Unstage button (with
 /// the change's hunk index) and the header's Open File button.
