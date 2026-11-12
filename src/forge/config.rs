@@ -436,7 +436,16 @@ mod tests {
     fn forges_user_doc_explains_configuration() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/forges.md");
         let doc = std::fs::read_to_string(&path).expect("docs/forges.md is missing");
-        for needle in ["forges.toml", "[[forge]]", "host", "kind", "api_url", "token_env", "token", "mcp_read_only"] {
+        for needle in [
+            "forges.toml",
+            "[[forge]]",
+            "host",
+            "kind",
+            "api_url",
+            "token_env",
+            "token",
+            "mcp_read_only",
+        ] {
             assert!(doc.contains(needle), "docs/forges.md doesn't mention {needle}");
         }
     }
