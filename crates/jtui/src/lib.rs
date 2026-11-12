@@ -11,8 +11,10 @@
 //! - `context_menu`: the menu model, generic over the command type
 //! - `split`: the split tree (`SplitTree`, `Divider`, `SplitDir`, `DropSide`); `borders`: the border layer
 //!   (junction glyphs where lines meet)
+//! - `theme`: `Theme` (key -> `Style`, 256-colour fallback, terminal cell mapping) and `widget_entries`,
+//!   the keys the shared widgets read
 //!
-//! Still to move in: `Theme` and `Keymap` machinery, and a ratatui backend that draws into a byte
+//! Still to move in: `Keymap` machinery, and a ratatui backend that draws into a byte
 //! stream.
 //!
 //! Shared code names no application: directory names, env variable names and window titles are
@@ -30,4 +32,5 @@ pub mod split;
 pub mod style;
 pub mod terminal;
 pub mod text;
+pub mod theme;
 pub mod url;

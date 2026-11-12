@@ -17,7 +17,7 @@ default member, so plain `cargo build --release` builds `target/release/jed`); t
 for a pid), `clipboard` (arboard / OSC 52 / in-process `memory()`, `base64`), `terminal` (host terminal
 setup, `Identity`, `CursorShape`), `scrollbar` (model) and `scrollbar_draw` (bars and marks, colours via the
 `style::Styles` trait: `Theme` implements it), `field` (`TextField`) with `text` (its `&str` grapheme and word
-steps), `context_menu` (generic over the command type; jed aliases it to `Command`), `split` (the split tree, `Divider`, `SplitDir`, `DropSide`, `MIN_GROUP_*`; serde form is the session file's), `borders` (junction glyphs, colours via `Styles`). jed passes `crate::APP` where a name is needed.
+steps), `context_menu` (generic over the command type; jed aliases it to `Command`), `split` (the split tree, `Divider`, `SplitDir`, `DropSide`, `MIN_GROUP_*`; serde form is the session file's), `borders` (junction glyphs, colours via `Styles`), `theme` (`Theme::new(entries, truecolor)`: `get` / `find` / `dim` / `ansi` / `terminal_cell`, `rgb`, `squiggle`, 256-colour fallback; `widget_entries`: the one list of the keys the shared widgets read, which an app's theme starts from; jed's `Theme` wraps it and adds the editor / syntax entries). jed passes `crate::APP` where a name is needed.
 Anything jed's tests rely on is compiled unconditionally in a crate: `cfg(test)` doesn't cross crates.
 
 ## Rules
