@@ -2,7 +2,7 @@
 //! (`app.tasks`, a `tasks::Tasks`) shown one per bottom-panel tab (`PanelTab::Task`, drawn by
 //! `ui::task`): kill, close, scroll, and the keys / pastes the focused tab sends to its task.
 
-use crossterm::event::{KeyEvent, MouseEvent};
+use crossterm::event::{KeyEvent, KeyModifiers, MouseEvent};
 
 use super::{App, Focus, Level};
 use crate::clipboard::Copied;
@@ -342,7 +342,7 @@ impl App {
         self.notify(level, note);
     }
 
-    /// Cmd+C (Linux: Ctrl+C or Ctrl+Shift+C) on a terminal: copies the mouse selection of the active one — a shell tab with the
+    /// Cmd+C (Linux: Ctrl+Shift+C) on a terminal: copies the mouse selection of the active one — a shell tab with the
     /// editor's keys, else the shown task — and returns true. False when there is no selection,
     /// so copy elsewhere (and a terminal with nothing selected) is unaffected.
     pub(super) fn terminal_copy(&mut self) -> bool {
@@ -358,10 +358,13 @@ impl App {
     }
 
     /// Whether `key` is the editor's Cmd+C over the focused terminal with a mouse selection, so
-    /// it copies instead of going to the program (where Ctrl+C is SIGINT). Without a selection
-    /// the key stays the program's. It follows the editor's copy binding, so a rebind works.
+    /// it copies instead of going to the program. Without a selection the key stays the
+    /// program's. It follows the editor's copy binding, so a rebind works, except to a key with
+    /// Ctrl alone: those are always the program's, so Linux's Ctrl+C is SIGINT even with a
+    /// selection (Linux copies with Ctrl+Shift+C, bound in the shell and task contexts).
     pub(super) fn terminal_copy_key(&self, key: &KeyEvent) -> bool {
         matches!(self.context(), Context::Shell | Context::Task)
+            && key.modifiers != KeyModifiers::CONTROL
             && self.keymap.lookup(key, Context::Editor) == Some(Command::Copy)
             && self.active_terminal().is_some_and(|run| run.selection().is_some())
     }

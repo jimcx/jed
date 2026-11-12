@@ -38,7 +38,7 @@ map --when-focus-on var:jed ctrl+shift+page_up
 map --when-focus-on var:jed ctrl+shift+page_down
 ```
 
-`ctrl+shift+c` is released because jed holds the mouse: a drag or double-click in a jed terminal is jed's selection, not kitty's, so kitty's copy would copy nothing and leave the clipboard as it was. jed copies it with `ctrl+shift+c` (or `ctrl+c` while something is selected). Don't add `ctrl+shift+v`: kitty's paste is how text gets into jed (bracketed paste). Shift+drag still makes a kitty selection.
+`ctrl+shift+c` is released because jed holds the mouse: a drag or double-click in a jed terminal is jed's selection, not kitty's, so kitty's copy would copy nothing and leave the clipboard as it was. jed copies it with `ctrl+shift+c`; `ctrl+c` is always the program's (SIGINT). Don't add `ctrl+shift+v`: kitty's paste is how text gets into jed (bracketed paste). Shift+drag still makes a kitty selection.
 
 ## TODO
 

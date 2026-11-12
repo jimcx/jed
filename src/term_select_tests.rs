@@ -1,6 +1,6 @@
 //! Mouse selection in a terminal (`term_select`): over a shell and a task tab whose program
-//! hasn't asked for the mouse, a left drag highlights the cells it covers and Cmd/Ctrl+C (and
-//! Linux's Ctrl+Shift+C) copies exactly that text (trailing spaces trimmed, soft-wrapped rows joined), also when the view is
+//! hasn't asked for the mouse, a left drag highlights the cells it covers and Cmd+C (Linux:
+//! Ctrl+Shift+C; its Ctrl+C stays the program's SIGINT) copies exactly that text (trailing spaces trimmed, soft-wrapped rows joined), also when the view is
 //! scrolled back (`term_select_scrollback`: the selection moves with its text through any scroll
 //! and copies in full, in view or not); a click clears it; new output keeps it on its text
 //! (`term_select_keep_*`: scrolled up with it, clamped / dropped at the scrollback cap, cleared
@@ -23,22 +23,18 @@ use crate::layout;
 use crate::shell_tests::{COUNT_TO_200, dirs, draw, screen_text, scrollback, shell_app};
 use crate::tasks::RunId;
 
-/// The platform's Cmd (Super on macOS, Ctrl on Linux): Cmd+C / Ctrl+C copies.
+/// The modifiers of this platform's terminal copy key with `c`: Cmd+C on macOS, Ctrl+Shift+C on
+/// Linux (where Ctrl+C is the program's SIGINT).
 fn cmd() -> KeyModifiers {
     if cfg!(target_os = "macos") {
         KeyModifiers::SUPER
     } else {
-        KeyModifiers::CONTROL
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT
     }
 }
 
-/// Cmd+C with nothing selected leaves the clipboard alone. Skipped on Linux: Cmd+C is Ctrl+C
-/// there, which the shell gets as SIGINT (its `^C` and new prompt scroll the output by a line at a
-/// random moment).
+/// The copy key with nothing selected leaves the clipboard alone.
 fn assert_copy_without_selection_keeps_clipboard(app: &mut App) {
-    if cmd() == KeyModifiers::CONTROL {
-        return;
-    }
     app.clipboard.write(Copied {
         text: "keep".into(),
         whole_line: false,
@@ -153,9 +149,21 @@ async fn term_select_shell_drag_highlights_and_copy() {
     );
     drop(term);
 
-    // Cmd/Ctrl+C copies exactly the covered text: trailing spaces trimmed per line.
+    // The copy key copies exactly the covered text: trailing spaces trimmed per line.
     app.press(KeyCode::Char('c'), cmd());
     assert_eq!(app.clipboard.read().unwrap(), "alpha\nbeta");
+
+    // Linux's Ctrl+C (its editor copy) stays the shell's SIGINT with a selection too: nothing
+    // copied, and the shell gets the interrupt (the line discipline echoes `^C`).
+    app.keymap = Keymap::default_for(Platform::Linux);
+    keep_clipboard(&mut app);
+    app.press(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert_eq!(app.clipboard.read().unwrap(), "keep", "Ctrl+C doesn't copy a terminal");
+    assert!(
+        app.settle(|a| screen_text(a).contains("^C")).await,
+        "the shell got Ctrl+C:\n{}",
+        screen_text(&app)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -732,7 +740,7 @@ async fn term_select_copy_elsewhere_is_unaffected_by_a_lingering_selection() {
         &state,
         Some("[tasks.select]\ncommand = '''printf 'alpha   \\nbeta\\n'; sleep 60'''\n"),
     );
-    // An editor with its own text, so Cmd/Ctrl+C there must not copy the task's selection.
+    // An editor with its own text, so its copy must not copy the task's selection.
     app.test_open(crate::buffer::Buffer::new_file(&root.join("a.txt")));
     app.type_text("hello");
     drop(draw(&mut app, 100, 30));
@@ -758,7 +766,13 @@ async fn term_select_copy_elsewhere_is_unaffected_by_a_lingering_selection() {
     // Back in the editor, its own copy wins: the task's selection must not hijack it.
     app.ui.focus = Focus::Editor;
     app.test_execute(Command::SelectAll);
-    app.press(KeyCode::Char('c'), cmd());
+    // The editor's copy: Cmd+C, Ctrl+C on Linux.
+    let editor_copy = if cfg!(target_os = "macos") {
+        KeyModifiers::SUPER
+    } else {
+        KeyModifiers::CONTROL
+    };
+    app.press(KeyCode::Char('c'), editor_copy);
     assert_eq!(
         app.clipboard.read().unwrap(),
         "hello",
@@ -767,10 +781,9 @@ async fn term_select_copy_elsewhere_is_unaffected_by_a_lingering_selection() {
 }
 
 /// Each platform's keys that copy a terminal's mouse selection (with that platform's keymap).
-fn copy_keys() -> [(Platform, KeyModifiers); 3] {
+fn copy_keys() -> [(Platform, KeyModifiers); 2] {
     [
         (Platform::MacOs, KeyModifiers::SUPER),
-        (Platform::Linux, KeyModifiers::CONTROL),
         (Platform::Linux, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
     ]
 }
@@ -814,8 +827,8 @@ fn double_click_checks(app: &mut App, area: Rect, row: u16, selection: impl Fn(&
     }
     assert_ne!(bg(&term, at(13).0, at(13).1), selected, "nor the blank");
     drop(term);
-    // Every platform's copy keys copy it, whichever this host is: Cmd+C on macOS, Ctrl+C and
-    // Ctrl+Shift+C (the terminal emulator's copy key, VS Code's terminal copy) on Linux.
+    // Every platform's copy key copies it, whichever this host is: Cmd+C on macOS, Ctrl+Shift+C
+    // (the terminal emulator's copy key, VS Code's terminal copy) on Linux.
     for (platform, mods) in copy_keys() {
         app.keymap = Keymap::default_for(platform);
         keep_clipboard(app);
@@ -837,11 +850,7 @@ fn double_click_checks(app: &mut App, area: Rect, row: u16, selection: impl Fn(&
     double_click(app, x, y);
     assert_eq!(selection(app), None, "a blank selects nothing");
     // With nothing selected the copy keys copy nothing (nor the editor's text behind a task).
-    // Not Linux's Ctrl+C: that one goes to the program as SIGINT.
     for (platform, mods) in copy_keys() {
-        if mods == KeyModifiers::CONTROL {
-            continue;
-        }
         app.keymap = Keymap::default_for(platform);
         keep_clipboard(app);
         app.press(KeyCode::Char('c'), mods);

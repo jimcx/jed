@@ -1206,8 +1206,8 @@ impl App {
                 {
                     self.execute(cmd);
                 } else if self.terminal_copy_key(&key) {
-                    // Cmd/Ctrl+C over a terminal with a mouse selection: it copies. With none the
-                    // key falls through to the program, where Ctrl+C is SIGINT.
+                    // macOS's Cmd+C over a terminal with a mouse selection: it copies. With none the
+                    // key falls through to the program. Linux's Ctrl+C is always the program's.
                     self.execute(Command::Copy);
                 } else if self.palette.is_some() {
                     self.palette_key(key);
