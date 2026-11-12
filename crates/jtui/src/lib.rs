@@ -9,13 +9,16 @@
 //!   trait the drawing reads colours through
 //! - `field`: `TextField`; `text`: its grapheme and word steps on a `&str`
 //! - `context_menu`: the menu model, generic over the command type
+//! - `split`: the split tree (`SplitTree`, `Divider`, `SplitDir`, `DropSide`); `borders`: the border layer
+//!   (junction glyphs where lines meet)
 //!
-//! Still to move in: the split tree and dividers, border junctions, `Theme` and `Keymap` machinery, and a ratatui backend that draws into a byte
+//! Still to move in: `Theme` and `Keymap` machinery, and a ratatui backend that draws into a byte
 //! stream.
 //!
 //! Shared code names no application: directory names, env variable names and window titles are
 //! passed in. See docs/dev/crates.md.
 
+pub mod borders;
 pub mod clipboard;
 pub mod context_menu;
 pub mod field;
@@ -23,6 +26,7 @@ pub mod paths;
 pub mod scrollbar;
 pub mod scrollbar_draw;
 pub mod socket;
+pub mod split;
 pub mod style;
 pub mod terminal;
 pub mod text;

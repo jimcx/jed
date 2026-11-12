@@ -1258,6 +1258,8 @@ dependencies = [
  "crossterm",
  "libc",
  "ratatui",
+ "serde",
+ "serde_json",
  "tempfile",
  "tracing",
  "unicode-segmentation",
