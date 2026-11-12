@@ -620,6 +620,13 @@ Review a Gitea, GitHub or GitLab merge request (MR) on its checked-out branch (t
 - `theme` — maps highlight names and UI elements to colours; built-in dark theme only for now
 - Every user action is a named `Command`, so keybindings and the palette go through the same path
 
+### Shared crates and jmux
+- The repository is a cargo workspace: jed at the root, `crates/jtui` (TUI building blocks), `crates/jterm` (the terminal engine) and `jmux/` (a tmux-like multiplexer built from them; its design is in [jmux/PLAN.md](jmux/PLAN.md))
+- A module that moves to a crate leaves a re-export behind, so jed's paths (`crate::tasks::run`, `crate::scrollbar`, …) stay
+- Shared code names no application: directory names, env variable names and window titles are passed in
+- Not shared: `App`, the event loop, `HitMap`, tabs and groups, the palette, sessions, settings contents, default keys
+- Built by the `crates_workspace`, `jtui`, `jterm` and `jmux_*` tasks, in that order
+
 ### Text positions
 - One set of position types, used by every module — no raw `usize` offsets across module boundaries
 - Newtypes so mixing units is a compile error:
@@ -693,11 +700,18 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 <!-- tasks:index:start -->
 - **Block comment and bracket jumps** (`block_comment_bracket`): toggle block comments per selection, and go to / select a bracket — [tasks/block_comment_bracket.md](tasks/block_comment_bracket.md)
 - **Bug reporter** (`bug_report`): write a self-contained bug report with app state — [tasks/bug_report.md](tasks/bug_report.md)
+- **Cargo workspace for shared crates** (`crates_workspace`): the repository becomes a cargo workspace (jed at the root, empty `crates/jtui` and `crates/jterm`) with the checks, CI and docs covering every member — [tasks/crates_workspace.md](tasks/crates_workspace.md)
 - **Change End of Line Sequence** (`change_eol`): change a buffer's line endings to LF or CRLF — [tasks/change_eol.md](tasks/change_eol.md)
 - **Close tabs and go to the Nth tab** (`close_tabs_nth`): close all / others / saved tabs, and go to the Nth tab in a group — [tasks/close_tabs_nth.md](tasks/close_tabs_nth.md)
 - **Expand / shrink selection** (`expand_shrink_selection`): grow / shrink each selection to enclosing syntax nodes — [tasks/expand_shrink_selection.md](tasks/expand_shrink_selection.md)
 - **Feature-based end-to-end test files** (`feature_test_files`): reorganize milestone test files into per-feature files — [tasks/feature_test_files.md](tasks/feature_test_files.md)
 - **Fresh diagnostics for Claude** (`claude_diagnostics`): `get_diagnostics` says whether the servers have caught up with each file, can wait until they have and can cover a file that isn't open; a PostToolUse hook tells Claude the new errors in a file it just edited — [tasks/claude_diagnostics.md](tasks/claude_diagnostics.md)
+- **jmux: commands side bar** (`jmux_commands`): a side bar listing the session's running and finished commands; picking one focuses its terminal and scrolls to where it ran — [tasks/jmux_commands.md](tasks/jmux_commands.md)
+- **jmux: sessions, server and client** (`jmux_server`): a `jmux` binary with named sessions — a detached server per session owning one full-screen shell, a thin client that attaches, detaches and re-attaches — [tasks/jmux_server.md](tasks/jmux_server.md)
+- **jmux: settings, keybindings, docs and release** (`jmux_config`): `settings.toml` and `keybindings.toml` for jmux, the status bar's session info, user docs, and `jmux` in the release pipeline — [tasks/jmux_config.md](tasks/jmux_config.md)
+- **jmux: tabs, splits and terminal features** (`jmux_layout`): many terminals per session in jed's layout — tab bars, split groups, dividers, tab drag and drop — with selection, copy / paste, scrollback, search and links in each — [tasks/jmux_layout.md](tasks/jmux_layout.md)
+- **jterm: shared terminal engine** (`jterm`): jed's terminal (PTY run, vt100 screen and compressed scrollback, command records, selection, search, key and mouse encoding, shell tab model, shell integration, screen drawing) moves to `crates/jterm`, jed re-exporting it — [tasks/jterm.md](tasks/jterm.md)
+- **jtui: shared TUI building blocks** (`jtui`): jed's application-neutral TUI pieces (host terminal setup, clipboard, dirs, split tree, borders, scroll bar, text field, context menu, theme and keymap machinery) move to `crates/jtui`, jed re-exporting them — [tasks/jtui.md](tasks/jtui.md)
 - **Keyboard resize of splits** (`keyboard_resize_splits`): resize the active group's split by keyboard — [tasks/keyboard_resize_splits.md](tasks/keyboard_resize_splits.md)
 - **Language features** (`lang`): go to symbol, signature help and breadcrumbs / sticky scroll — [tasks/lang.md](tasks/lang.md)
 - **Language server setup docs** (`language_server_docs`): docs for installing and configuring language servers — [tasks/language_server_docs.md](tasks/language_server_docs.md)

@@ -1,0 +1,24 @@
+---
+id: jmux_server
+name: "jmux: sessions, server and client"
+summary: a `jmux` binary with named sessions — a detached server per session owning one full-screen shell, a thin client that attaches, detaches and re-attaches
+status: open
+priority: 0
+dependencies: [jterm]
+---
+
+See [jmux's plan](../jmux/PLAN.md): [Architecture](../jmux/PLAN.md#architecture), [Sessions](../jmux/PLAN.md#sessions), [Tests](../jmux/PLAN.md#tests).
+
+  - Needs: `jtui` (host terminal setup, socket dirs, theme, keymap), `jterm` (`Run`, `ShellTab`, drawing); jed's `ipc.rs` and `app/mod.rs` event loop as the models to copy from
+  - A new workspace member `jmux/` (binary `jmux`), in the checks and CI as the crates are
+  - A stream backend in `jtui`: a ratatui `Backend` that writes crossterm's commands into a byte buffer and takes its size from the caller instead of the tty; the server draws through it
+  - The protocol, socket naming, stale-socket handling, attach / detach / take-over and session end as the plan's Architecture section says
+  - Starting a server: `jmux new` re-executes itself as `jmux server --session <name>` detached (new session id, stdio closed, cwd kept for the first shell) and waits for the socket before attaching; the server forks nothing before its runtime starts except this
+  - The server `App` in this task: one shell filling the screen above a one-line status bar (session name); keys and paste go to the shell, the detach key detaches; the client's size is the shell's size
+  - The client restores the terminal on every exit path (detach, session end, server death, a panic, SIGHUP / SIGTERM) and prints one line saying why it left
+  - Logging: `tracing` to `<state dir>/jmux/logs`, one file per server; nothing printed while the UI is up
+  - Done when: `jmux new -s work` shows a shell; detaching returns to the outer shell with `[detached from work]`; `jmux ls` lists `work`; `jmux attach -t work` shows the same screen, scrollback included, at the new window size; a second attach takes the session over and the first client says so; `exit` in the shell ends the session, removes the socket and the client says `[session work ended]`; `kill -9` of the server makes the client restore the terminal and say the server went away; `jmux` inside a jmux shell is refused
+  - Subtasks (one agent and one commit each):
+    - jmux_server-a: the crate, the stream backend in `jtui`, the protocol module (frames, messages, encode / decode with tests) and the session directory (names, socket paths, listing, stale sockets)
+    - jmux_server-b: the server — detached start, the listener, the `App` with one `ShellTab`, drawing to the attached client, input and resize from it, the session ending when the shell exits
+    - jmux_server-c: the client and CLI — `new`, `attach`, `ls`, `kill-session`, `rename-session`, bare `jmux`; raw mode and restore; detach, take-over and server-death handling; the done-when tests (`jmux/src/jmux_server_tests.rs`), hand checks and marks the task ✅
