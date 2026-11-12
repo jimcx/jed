@@ -533,6 +533,27 @@ mod tests {
         assert_eq!(pages(&repo, "old.txt", PAGE).len(), 1, "only the root");
     }
 
+    /// The history follows a file through a rename (like `git log --follow`).
+    #[test]
+    fn history_follows_a_rename() {
+        let (_d, root) = tmp();
+        write(&root, "old.txt", "one\ntwo\nthree\nfour\n");
+        commit_at(&root, "2026-01-01T00:00:00+0000", "root");
+        write(&root, "old.txt", "one\ntwo\nthree\nfour\nfive\n");
+        commit_at(&root, "2026-01-02T00:00:00+0000", "edit");
+        git(&root, &["mv", "old.txt", "new.txt"]);
+        commit_at(&root, "2026-01-03T00:00:00+0000", "rename");
+        write(&root, "new.txt", "one\ntwo\nthree\nfour\nfive\nsix\n");
+        commit_at(&root, "2026-01-04T00:00:00+0000", "edit again");
+        let repo = Repo::discover(&root).unwrap();
+        let follow: Vec<String> = git(&root, &["log", "--follow", "--format=%H", "--", "new.txt"])
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(follow.len(), 4);
+        assert_eq!(pages(&repo, "new.txt", PAGE), follow, "history of the renamed file");
+    }
+
     /// A mode-only change is not TREESAME (git compares the entry's mode as well as its blob).
     #[test]
     fn a_mode_only_change_is_shown() {
