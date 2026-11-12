@@ -37,5 +37,8 @@ the whole file is ignored while it holds a token and group or others can read it
 ## Troubleshooting
 
 - The file is ignored (with an error shown) if group or others can write to it.
-- An unknown key, or a wrong type, is reported as an error for that entry.
+- A syntax error, an unknown key or a wrong type (except for `mcp_read_only`) is reported as an error and the whole
+  file is ignored: no host is configured.
+- An invalid `host`, `kind`, `api_url` or `token_env` value, or a mistyped `mcp_read_only`, skips just that entry.
+- While the file has any error, Claude's review tools are read-only on all hosts.
 - Redirects are not followed and only HTTPS is used unless `api_url` says `http://`.
