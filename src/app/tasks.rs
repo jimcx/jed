@@ -342,7 +342,7 @@ impl App {
         self.notify(level, note);
     }
 
-    /// Cmd+C on a terminal: copies the mouse selection of the active one — a shell tab with the
+    /// Cmd+C (Linux: Ctrl+C or Ctrl+Shift+C) on a terminal: copies the mouse selection of the active one — a shell tab with the
     /// editor's keys, else the shown task — and returns true. False when there is no selection,
     /// so copy elsewhere (and a terminal with nothing selected) is unaffected.
     pub(super) fn terminal_copy(&mut self) -> bool {

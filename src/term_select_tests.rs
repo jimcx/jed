@@ -1,6 +1,6 @@
 //! Mouse selection in a terminal (`term_select`): over a shell and a task tab whose program
-//! hasn't asked for the mouse, a left drag highlights the cells it covers and Cmd/Ctrl+C copies
-//! exactly that text (trailing spaces trimmed, soft-wrapped rows joined), also when the view is
+//! hasn't asked for the mouse, a left drag highlights the cells it covers and Cmd/Ctrl+C (and
+//! Linux's Ctrl+Shift+C) copies exactly that text (trailing spaces trimmed, soft-wrapped rows joined), also when the view is
 //! scrolled back (`term_select_scrollback`: the selection moves with its text through any scroll
 //! and copies in full, in view or not); a click clears it; new output keeps it on its text
 //! (`term_select_keep_*`: scrolled up with it, clamped / dropped at the scrollback cap, cleared
@@ -18,6 +18,7 @@ use vt100::MouseProtocolMode;
 use crate::app::{App, Focus};
 use crate::clipboard::Copied;
 use crate::command::Command;
+use crate::config::keymap::{Keymap, Platform};
 use crate::layout;
 use crate::shell_tests::{COUNT_TO_200, dirs, draw, screen_text, scrollback, shell_app};
 use crate::tasks::RunId;
@@ -765,6 +766,24 @@ async fn term_select_copy_elsewhere_is_unaffected_by_a_lingering_selection() {
     );
 }
 
+/// Each platform's keys that copy a terminal's mouse selection (with that platform's keymap).
+fn copy_keys() -> [(Platform, KeyModifiers); 3] {
+    [
+        (Platform::MacOs, KeyModifiers::SUPER),
+        (Platform::Linux, KeyModifiers::CONTROL),
+        (Platform::Linux, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+    ]
+}
+
+/// Puts "keep" on the clipboard, to see whether a copy replaced it.
+fn keep_clipboard(app: &mut App) {
+    app.clipboard.write(Copied {
+        text: "keep".into(),
+        whole_line: false,
+        pieces: Vec::new(),
+    });
+}
+
 /// Double-clicks `(x, y)` (two quick clicks on one cell).
 fn double_click(app: &mut App, x: u16, y: u16) {
     click(app, x, y);
@@ -795,8 +814,19 @@ fn double_click_checks(app: &mut App, area: Rect, row: u16, selection: impl Fn(&
     }
     assert_ne!(bg(&term, at(13).0, at(13).1), selected, "nor the blank");
     drop(term);
-    app.press(KeyCode::Char('c'), cmd());
-    assert_eq!(app.clipboard.read().unwrap(), "~/src/jed-0.1");
+    // Every platform's copy keys copy it, whichever this host is: Cmd+C on macOS, Ctrl+C and
+    // Ctrl+Shift+C (the terminal emulator's copy key, VS Code's terminal copy) on Linux.
+    for (platform, mods) in copy_keys() {
+        app.keymap = Keymap::default_for(platform);
+        keep_clipboard(app);
+        app.press(KeyCode::Char('c'), mods);
+        assert_eq!(
+            app.clipboard.read().unwrap(),
+            "~/src/jed-0.1",
+            "{platform:?} {mods:?} copies"
+        );
+    }
+    app.keymap = Keymap::default_for(Platform::current());
 
     // A third click on the cell is a plain click: it clears.
     click(app, x, y);
@@ -806,6 +836,22 @@ fn double_click_checks(app: &mut App, area: Rect, row: u16, selection: impl Fn(&
     let (x, y) = at(13);
     double_click(app, x, y);
     assert_eq!(selection(app), None, "a blank selects nothing");
+    // With nothing selected the copy keys copy nothing (nor the editor's text behind a task).
+    // Not Linux's Ctrl+C: that one goes to the program as SIGINT.
+    for (platform, mods) in copy_keys() {
+        if mods == KeyModifiers::CONTROL {
+            continue;
+        }
+        app.keymap = Keymap::default_for(platform);
+        keep_clipboard(app);
+        app.press(KeyCode::Char('c'), mods);
+        assert_eq!(
+            app.clipboard.read().unwrap(),
+            "keep",
+            "{platform:?} {mods:?}: nothing to copy"
+        );
+    }
+    app.keymap = Keymap::default_for(Platform::current());
 
     // A single click on a path character clears the double-click's selection.
     let (x, y) = at(5);

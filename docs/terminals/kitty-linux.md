@@ -11,6 +11,7 @@ Config: `~/.config/kitty/kitty.conf`. Kitty keyboard protocol: always available,
 ```conf
 # --- jed (Linux): release kitty's ctrl+shift defaults while jed has focus ---
 map --when-focus-on var:jed ctrl+shift+1
+map --when-focus-on var:jed ctrl+shift+c
 map --when-focus-on var:jed ctrl+shift+comma
 map --when-focus-on var:jed ctrl+shift+minus
 map --when-focus-on var:jed ctrl+shift+period
@@ -37,7 +38,7 @@ map --when-focus-on var:jed ctrl+shift+page_up
 map --when-focus-on var:jed ctrl+shift+page_down
 ```
 
-Don't add `ctrl+shift+v` / `ctrl+shift+c` unless you want them gone: kitty's paste is how text gets into jed (bracketed paste), and jed copies with `ctrl+c`.
+`ctrl+shift+c` is released because jed holds the mouse: a drag or double-click in a jed terminal is jed's selection, not kitty's, so kitty's copy would copy nothing and leave the clipboard as it was. jed copies it with `ctrl+shift+c` (or `ctrl+c` while something is selected). Don't add `ctrl+shift+v`: kitty's paste is how text gets into jed (bracketed paste). Shift+drag still makes a kitty selection.
 
 ## TODO
 

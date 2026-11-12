@@ -1195,14 +1195,20 @@ fn defaults(platform: Platform) -> Vec<Binding> {
         if mac { cmd } else { ctrl | shift },
         Command::TermSearch(Ts::Open),
     );
+    // VS Code's terminal copy on Linux (`copySelection`): Ctrl+Shift+C copies the mouse
+    // selection, as the terminal emulator's own copy would if jed didn't hold the mouse. Ctrl+C
+    // with a selection copies too (`terminal_copy_key`); without one it stays SIGINT.
+    let term_copy = (!mac).then_some((KeyCode::Char('c'), ctrl | shift, Command::Copy));
     let task = {
         let mut t = task.to_vec();
         t.push(term_find);
+        t.extend(term_copy);
         t
     };
     let shell = {
         let mut t = shell.to_vec();
         t.push(term_find);
+        t.extend(term_copy);
         t
     };
     let term_search = [

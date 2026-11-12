@@ -1620,6 +1620,11 @@ impl App {
         if !cut && self.terminal_copy() {
             return;
         }
+        // Over a terminal with nothing selected (Ctrl+Shift+C on Linux), copy nothing rather
+        // than the editor's selection behind a focused task.
+        if matches!(self.context(), Context::Shell | Context::Task) {
+            return;
+        }
         if cut && !self.active_writable() {
             return;
         }
