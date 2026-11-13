@@ -74,6 +74,7 @@ fn config(dir: &Path) -> Config {
         socket: session::socket_path(dir, "work"),
         program: "/bin/sh".into(),
         cwd: std::env::temp_dir(),
+        open_url: |_| Ok(()),
     }
 }
 

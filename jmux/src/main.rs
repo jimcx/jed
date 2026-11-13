@@ -66,6 +66,7 @@ fn run_server(args: ServerArgs) -> i32 {
         socket: PathBuf::new(),
         program,
         cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+        open_url: jtui::url::open,
     };
     let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(rt) => rt,

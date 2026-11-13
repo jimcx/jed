@@ -9,7 +9,7 @@
 
 use vt100::Screen;
 
-use crate::run::RunId;
+use crate::run::{Run, RunId};
 use crate::select::{self, Cell};
 use jtui::field::TextField;
 
@@ -164,6 +164,46 @@ pub fn find_visible(screen: &Screen, query: &str, case: bool) -> Vec<Match> {
     out
 }
 
+/// Every match of `query` in `run`'s scrollback and screen (takes its screen lock: a pass over
+/// the kept rows).
+pub fn find_in(run: &Run, query: &str, case: bool) -> Vec<Match> {
+    let mut parser = run.screen();
+    find_all(parser.screen_mut(), query, case)
+}
+
+/// Scrolls `run`'s view so `m` is on screen, centred when it wasn't.
+pub fn reveal(run: &Run, m: Match) {
+    let mut parser = run.screen();
+    let screen = parser.screen_mut();
+    let (rows, _) = select::size(screen);
+    let back = screen.scrollback();
+    let row = select::viewport_row(m.line, back);
+    if !(0..rows as isize).contains(&row) {
+        let target = (rows as isize / 2 - m.line).max(0) as usize;
+        screen.set_scrollback(target);
+    }
+}
+
+/// The index of the match to stand on after a step from `current`, wrapping: the first after it
+/// going `forward`, else the last before it; `None` without matches.
+pub fn step_pick(matches: &[Match], current: Option<Match>, forward: bool) -> Option<usize> {
+    if matches.is_empty() {
+        return None;
+    }
+    let last = matches.len() - 1;
+    Some(match (current, forward) {
+        (None, true) => 0,
+        (None, false) => last,
+        (Some(c), true) => matches.iter().position(|m| m.cell() > c.cell()).unwrap_or(0),
+        (Some(c), false) => matches.iter().rposition(|m| m.cell() < c.cell()).unwrap_or(last),
+    })
+}
+
+/// Which match a changed query stands on: the newest, where people look first.
+pub fn newest(matches: &[Match]) -> Option<usize> {
+    matches.len().checked_sub(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +230,17 @@ mod tests {
         assert!(all.windows(2).all(|w| w[0] < w[1]));
         assert_eq!(all[0], m(-(screen.scrollback_len() as isize), 7, 10));
         assert_eq!(&all[8..], &[m(2, 0, 3), m(2, 4, 7)]);
+    }
+
+    #[test]
+    fn stepping_wraps_both_ways() {
+        let all = [m(0, 0, 1), m(1, 0, 1), m(2, 0, 1)];
+        assert_eq!(step_pick(&all, Some(all[2]), true), Some(0));
+        assert_eq!(step_pick(&all, Some(all[0]), false), Some(2));
+        assert_eq!(step_pick(&all, Some(all[0]), true), Some(1));
+        assert_eq!(step_pick(&all, None, false), Some(2));
+        assert_eq!(step_pick(&[], None, true), None);
+        assert_eq!(newest(&all), Some(2));
     }
 
     #[test]

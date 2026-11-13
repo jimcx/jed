@@ -4,8 +4,9 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use jtui::keymap::{Binding, KeyCombo, Keymap, Platform, Source};
 
-use crate::command::{Command, Context};
+use crate::command::{Command, Context, SearchCommand as Sc};
 use crate::group::Side;
+use jtui::field::{FieldCommand as Fc, FieldMotion as Fm};
 
 pub type JmuxKeymap = Keymap<Context, Command>;
 
@@ -57,6 +58,12 @@ pub fn defaults(platform: Platform) -> Vec<Binding<Context, Command>> {
         } else {
             term(KeyCode::Char('c'), ctrl | shift, Command::Copy)
         },
+        // Jed's terminal find: Cmd+F on macOS, Ctrl+Shift+F elsewhere (Ctrl+F is the shell's).
+        term(
+            KeyCode::Char('f'),
+            if mac { KeyModifiers::SUPER } else { ctrl | shift },
+            Command::Search(Sc::Open),
+        ),
         (KeyCode::Char('d'), ctrl | shift, Command::Detach, None),
     ];
     let side = if mac { KeyModifiers::SUPER | alt } else { alt | shift };
@@ -74,6 +81,52 @@ pub fn defaults(platform: Platform) -> Vec<Binding<Context, Command>> {
     let go = if mac { ctrl } else { alt };
     for n in 1..=9u8 {
         list.push(term(KeyCode::Char(char::from(b'0' + n)), go, Command::GoToTab(n)));
+    }
+    // The search bar: Enter / F3 step (Shift back), Alt+C (Cmd+Alt+C) toggles case, Esc closes, and
+    // the query field's editing keys (the editor's, on one line).
+    let find = |code, mods, command| (code, mods, command, Some(Context::Search));
+    let (word, line) = if mac { (alt, KeyModifiers::SUPER) } else { (ctrl, ctrl) };
+    let field = |motion, select| Command::Field(Fc::Move { motion, select });
+    list.extend([
+        find(KeyCode::Enter, none, Command::Search(Sc::Next)),
+        find(KeyCode::Enter, shift, Command::Search(Sc::Previous)),
+        find(KeyCode::F(3), none, Command::Search(Sc::Next)),
+        find(KeyCode::F(3), shift, Command::Search(Sc::Previous)),
+        find(
+            KeyCode::Char('c'),
+            if mac { KeyModifiers::SUPER | alt } else { alt },
+            Command::Search(Sc::ToggleCase),
+        ),
+        find(KeyCode::Esc, none, Command::Search(Sc::Close)),
+        find(KeyCode::Left, none, field(Fm::Left, false)),
+        find(KeyCode::Left, shift, field(Fm::Left, true)),
+        find(KeyCode::Right, none, field(Fm::Right, false)),
+        find(KeyCode::Right, shift, field(Fm::Right, true)),
+        find(KeyCode::Left, word, field(Fm::WordLeft, false)),
+        find(KeyCode::Left, word | shift, field(Fm::WordLeft, true)),
+        find(KeyCode::Right, word, field(Fm::WordRight, false)),
+        find(KeyCode::Right, word | shift, field(Fm::WordRight, true)),
+        find(KeyCode::Home, none, field(Fm::Start, false)),
+        find(KeyCode::Home, shift, field(Fm::Start, true)),
+        find(KeyCode::End, none, field(Fm::End, false)),
+        find(KeyCode::End, shift, field(Fm::End, true)),
+        find(KeyCode::Backspace, none, Command::Field(Fc::DeleteLeft)),
+        find(KeyCode::Backspace, shift, Command::Field(Fc::DeleteLeft)),
+        find(KeyCode::Delete, none, Command::Field(Fc::DeleteRight)),
+        find(KeyCode::Backspace, word, Command::Field(Fc::DeleteWordLeft)),
+        find(KeyCode::Delete, word, Command::Field(Fc::DeleteWordRight)),
+        find(
+            KeyCode::Char('a'),
+            if mac { KeyModifiers::SUPER } else { ctrl },
+            Command::Field(Fc::SelectAll),
+        ),
+    ]);
+    if mac {
+        list.push(find(KeyCode::Backspace, line, Command::Field(Fc::DeleteToStart)));
+        list.push(find(KeyCode::Left, line, field(Fm::Start, false)));
+        list.push(find(KeyCode::Right, line, field(Fm::End, false)));
+    } else {
+        list.push(find(KeyCode::Char('u'), ctrl, Command::Field(Fc::DeleteToStart)));
     }
     let confirm = |code, command| (code, none, command, Some(Context::Confirm));
     list.extend([
@@ -209,6 +262,38 @@ mod tests {
         let mac = Keymap::from_list(defaults(Platform::MacOs));
         assert_eq!(look(&mac, KeyCode::Char('c'), KeyModifiers::SUPER), Some(Command::Copy));
         assert_eq!(look(&mac, KeyCode::Char('c'), ctrl | shift), None);
+    }
+
+    #[test]
+    fn find_keys_open_the_bar_and_edit_its_query() {
+        let ev = |code, mods| KeyEvent::new(code, mods);
+        let (ctrl, shift) = (KeyModifiers::CONTROL, KeyModifiers::SHIFT);
+        let lin = Keymap::from_list(defaults(Platform::Linux));
+        let look = |m: &JmuxKeymap, c, code, mods| m.lookup(&ev(code, mods), c);
+        let open = Some(Command::Search(Sc::Open));
+        assert_eq!(look(&lin, Context::Terminal, KeyCode::Char('F'), ctrl | shift), open);
+        assert_eq!(look(&lin, Context::Search, KeyCode::Char('F'), ctrl | shift), open);
+        // Plain Ctrl+F stays the shell's.
+        assert_eq!(look(&lin, Context::Terminal, KeyCode::Char('f'), ctrl), None);
+        assert_eq!(
+            look(&lin, Context::Search, KeyCode::Enter, shift),
+            Some(Command::Search(Sc::Previous))
+        );
+        assert_eq!(
+            look(&lin, Context::Search, KeyCode::Esc, KeyModifiers::NONE),
+            Some(Command::Search(Sc::Close))
+        );
+        assert_eq!(
+            look(&lin, Context::Search, KeyCode::Backspace, ctrl),
+            Some(Command::Field(Fc::DeleteWordLeft))
+        );
+        // The terminal's bindings are not the bar's: Esc, Enter and the scrollback keys differ.
+        assert_eq!(look(&lin, Context::Terminal, KeyCode::Enter, KeyModifiers::NONE), None);
+        let mac = Keymap::from_list(defaults(Platform::MacOs));
+        assert_eq!(
+            look(&mac, Context::Terminal, KeyCode::Char('f'), KeyModifiers::SUPER),
+            open
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@
 id: jmux_layout
 name: "jmux: tabs, splits and terminal features"
 summary: many terminals per session in jed's layout — tab bars, split groups, dividers, tab drag and drop — with selection, copy / paste, scrollback, search and links in each
-status: in-progress
+status: done
 priority: 0
 dependencies: [jmux_server]
 ---
@@ -42,4 +42,13 @@ See [jmux's plan](../jmux/PLAN.md): [Layout](../jmux/PLAN.md#layout), [Terminals
       - Moved out of jed: `screen_cell` / `shift_drag_cell` / `round_run_drag` → `jterm::select`, `ClickTracker` → `jtui::clicks`; new `jtui::clipboard::osc52_sequence`
       - Pitfall: don't hold `run.screen()` across `run.scroll(…)` (it deadlocks)
       - Deferred: `Clear` (Cmd+K); drag auto-scroll at the edges (jed has none); OSC 52's tmux wrap reads the server's `TMUX`
-    - jmux_layout-e: search and links in a terminal; the done-when tests (`jmux/src/jmux_layout_tests.rs`), hand checks and marks the task ✅
+    - ✅ jmux_layout-e: search and links in a terminal; the done-when tests (`jmux/src/jmux_layout_tests.rs`), hand checks and marks the task ✅
+  - ✅ Done. What it changed (for later work):
+    - jmux's server `App` holds `Groups` (a `jtui::split::SplitTree` of groups of `ShellTab`s: `group.rs`), a `HitMap` written by `ui::render` (`hit.rs`), `Command` / `Context::{Terminal, Confirm, Search}` (`command.rs`) and per-platform defaults (`keymap.rs`); `App.drag` is `Divider` / `Tab` / `Terminal` / `ScrollBar`, owns the mouse until release and is cleared when a client attaches
+    - Escape output for the client (OSC 22 pointer, OSC 52 copy) is appended to the next frame (`App.out`), dropped while no client is attached
+    - Search: `jmux/src/app/search.rs` (`Context::Search`, parent `Terminal`, so the layout keys work while the bar is open and no key reaches the shell); Ctrl+Shift+F (Cmd+F), Enter / F3 step, Alt+C case, Esc closes. Links: Ctrl / Cmd+click on a URL opens it through `Config::open_url` (`jtui::url::open`; tests pass a recorder)
+    - Shared code moved out of jed: `jtui::split::{snap_side, gap_at}`, `jtui::clicks::ClickTracker`, `jtui::clipboard::osc52_sequence`, `jterm::select::{screen_cell, shift_drag_cell, round_run_drag}`, `jterm::search::{find_in, reveal, step_pick, newest}`; jed calls them, behaviour unchanged
+    - Tests: `jmux/src/jmux_layout_tests.rs` (`jmux_layout_{a..e}_*`; its `//!` doc maps each done-when clause to its test)
+    - Also: `FLAKE` debugging on `jmux_server_replaces_a_stale_socket_but_not_a_live_one` and `milestone_9_rename_across_files` (each failed once, unrelated)
+    - Deferred: file-path links (jmux has no editor); a status message when opening a link fails; move-tab keys; `Clear` (Cmd+K); Esc cancelling a tab drag; "N terminals" in the status bar; OSC 22 / OSC 52 tmux passthrough reads the server's `TMUX`, not the client's
+    - Still to check by hand (a real attached jmux): Ctrl+` opens a second tab, Ctrl+PageDown / PageUp and Alt+1 / 2 cycle; Ctrl+\ splits right with two prompts, the divider drags with a resize pointer, Alt+Shift+arrows and a click move focus; a tab drags along its bar, to the other group's bar and onto a group's edge (marker and shade colours); drag-select then Ctrl+Shift+C pastes elsewhere through OSC 52; a paste types into the prompt; wheel, scroll bar and Shift+PageUp scroll back; `seq 1 200; echo MARK; seq 1 200; echo MARK` then Ctrl+Shift+F `mark` reads "2 of 2", steps with Enter / Shift+Enter, Esc gives keys back; Ctrl+click on `https://example.com/x` opens the browser, a wrapped URL opens whole; vim gets keys, arrows and the mouse, Shift+drag still selects; the pointer resets after detach; Ctrl+Shift+D then `jmux attach` brings back the same tabs, splits and ratios

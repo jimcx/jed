@@ -21,7 +21,7 @@ pub enum Outcome {
 }
 
 /// Where a field move goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FieldMotion {
     Left,
     Right,
@@ -32,7 +32,7 @@ pub enum FieldMotion {
 }
 
 /// What a field does (an editor command's meaning on one line: the app's command mapping).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FieldCommand {
     Move { motion: FieldMotion, select: bool },
     DeleteLeft,

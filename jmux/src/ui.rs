@@ -68,7 +68,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
             // The run follows the area every frame (a no-op while the size is the same); hidden
             // tabs keep their last size.
             shell.run.resize(text.height, text.width);
-            jterm::draw::render_shell(f, text, shell, &app.theme, focused && app.confirm.is_none(), None);
+            let search = app.search.as_ref().filter(|s| s.run == shell.run.id);
+            jterm::draw::render_shell(f, text, shell, &app.theme, focused && app.confirm.is_none(), search);
             if let Some(track) = track {
                 let base = app.theme.get("editor").patch(app.theme.get("terminal.background"));
                 let look = if scrolling == Some(id) {

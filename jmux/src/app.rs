@@ -38,6 +38,7 @@ use crate::keymap::{self, JmuxKeymap};
 use crate::protocol::{ByeReason, ClientMsg, PROTOCOL_VERSION, ServerMsg};
 use crate::tab_drag::TabDrag;
 use crate::{theme, ui};
+use jterm::search::TermSearch;
 
 /// Messages a connection may have queued for its writer. A client that falls this far behind is
 /// dropped (its terminal can catch up on the next attach) rather than letting memory grow.
@@ -73,6 +74,9 @@ pub struct Config {
     pub program: PathBuf,
     /// Its working directory.
     pub cwd: PathBuf,
+    /// Opens a clicked URL (blocking: it runs in `spawn_blocking`); `jtui::url::open`, a recorder
+    /// in the tests.
+    pub open_url: fn(&str) -> Result<(), String>,
 }
 
 /// What the event loop hears about.
@@ -109,6 +113,8 @@ struct Conn {
     hello: bool,
 }
 
+mod search;
+
 pub struct App {
     pub name: String,
     config: Config,
@@ -125,6 +131,8 @@ pub struct App {
     pointer: Pointer,
     /// Counts clicks in a terminal (a double click selects a word, a triple one the line).
     clicks: ClickTracker,
+    /// The search bar, over one run (shown while that tab is active).
+    pub search: Option<TermSearch>,
     /// Escape output for the client (OSC 52 from a copy), sent with the next frame.
     out: Vec<u8>,
     /// The dividers' lines (`ui::render`).
@@ -200,6 +208,7 @@ impl App {
             mouse_at: None,
             pointer: Pointer::Default,
             clicks: ClickTracker::default(),
+            search: None,
             out: Vec::new(),
             borders: Borders::default(),
             next_run: 1,
@@ -341,6 +350,8 @@ impl App {
             Command::PageDown => self.scroll_active(Scroll::Page(1)),
             Command::ScrollTop => self.scroll_active(Scroll::Edge(true)),
             Command::ScrollBottom => self.scroll_active(Scroll::Edge(false)),
+            Command::Search(c) => self.search_command(c),
+            Command::Field(c) => self.search_edit(c),
             Command::Detach => self.detach(),
             Command::ConfirmYes => {
                 if let Some(confirm) = self.confirm.take()
@@ -393,6 +404,9 @@ impl App {
         };
         if self.confirm.as_ref().is_some_and(|c| c.run == tab.run.id) {
             self.confirm = None;
+        }
+        if self.search.as_ref().is_some_and(|s| s.run == tab.run.id) {
+            self.search = None;
         }
         let failed = match tab.run.status() {
             Status::Failed(e) => Some(e),
@@ -623,6 +637,7 @@ impl App {
     fn input(&mut self, input: Input) {
         match input {
             Input::Key(key) => self.key(key),
+            Input::Paste(text) if self.confirm.is_none() && self.search_active() => self.search_paste(&text),
             Input::Paste(text) => {
                 if let Some(shell) = self.groups.active_group().active_tab() {
                     let bracketed = shell.run.screen().screen().bracketed_paste();
@@ -643,17 +658,25 @@ impl App {
         }
         let context = if self.confirm.is_some() {
             Context::Confirm
+        } else if self.search_active() {
+            Context::Search
         } else {
             Context::Terminal
         };
         if let Some(command) = self.keymap.lookup(&key, context) {
             // A held key repeats nothing but the tab cycling.
-            if key.kind == KeyEventKind::Press || matches!(command, Command::NextTab | Command::PrevTab) {
+            let repeats = matches!(command, Command::NextTab | Command::PrevTab | Command::Field(_));
+            if key.kind == KeyEventKind::Press || repeats {
                 self.execute(command);
             }
             return;
         }
         if context == Context::Confirm {
+            return;
+        }
+        if context == Context::Search {
+            self.search_type(key);
+            self.needs_redraw = true;
             return;
         }
         if let Some(shell) = self.groups.active_group().active_tab() {
@@ -756,7 +779,10 @@ impl App {
                 if matches!(m.kind, MouseEventKind::Down(_)) {
                     self.groups.active = group;
                 }
-                self.terminal_mouse(group, m);
+                let text = self.hit.group(group).map(|g| g.text);
+                if !text.is_some_and(|text| self.link_click(group, text, m)) {
+                    self.terminal_mouse(group, m);
+                }
             }
             Some(Hit::ScrollBar { group }) => match m.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
@@ -1097,6 +1123,7 @@ mod tests {
             socket: PathBuf::new(),
             program: "/bin/sh".into(),
             cwd: PathBuf::from("/"),
+            open_url: |_| Ok(()),
         };
         let mut app = App::new(config, events);
         let rx = connect(&mut app, 1, cap);
@@ -1213,6 +1240,7 @@ mod tests {
             socket: PathBuf::new(),
             program: "/bin/sh".into(),
             cwd: PathBuf::from("/"),
+            open_url: |_| Ok(()),
         };
         let mut app = App::new(config, events);
         // A writer that does nothing until the gate opens, then reports what it was given.

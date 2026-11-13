@@ -2,6 +2,7 @@
 //! `App::execute` runs them. `Command` stays `Copy + Hash` (a keymap key).
 
 use crossterm::event::{KeyCode, KeyModifiers};
+use jtui::field::{FieldCommand, FieldMotion};
 use jtui::keymap::{KeyCombo, KeyCommand, KeyContext};
 
 use crate::group::Side;
@@ -13,27 +14,98 @@ pub enum Context {
     Terminal,
     /// The "close a running terminal?" question: unbound keys are swallowed.
     Confirm,
+    /// The search bar over a terminal (its parent is `Terminal`): typing edits the query, no key reaches the shell.
+    Search,
 }
 
 impl KeyContext for Context {
+    /// The search bar falls back to the terminal's keys (new tab, split, scrollback, ...): only the
+    /// keys no binding takes are the bar's, so none reaches the shell.
     fn parent(self) -> Option<Self> {
-        None
+        (self == Context::Search).then_some(Context::Terminal)
     }
     fn parse(name: &str) -> Option<Self> {
         match name {
             "terminal" => Some(Context::Terminal),
             "confirm" => Some(Context::Confirm),
+            "search" => Some(Context::Search),
             _ => None,
         }
     }
     fn names() -> Vec<&'static str> {
-        vec!["terminal", "confirm"]
+        vec!["terminal", "confirm", "search"]
     }
     /// Plain Ctrl+letter always reaches the shell (history search, delete word, ...).
     fn passes_through(self, combo: &KeyCombo) -> bool {
         self == Context::Terminal
             && matches!(combo.code, KeyCode::Char(c) if c.is_ascii_lowercase())
             && combo.mods == KeyModifiers::CONTROL
+    }
+}
+
+/// What the search bar does (`Open` is bound in the terminal context, the rest while it is open).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SearchCommand {
+    Open,
+    Next,
+    Previous,
+    ToggleCase,
+    Close,
+}
+
+impl SearchCommand {
+    pub const ALL: [SearchCommand; 5] = [
+        SearchCommand::Open,
+        SearchCommand::Next,
+        SearchCommand::Previous,
+        SearchCommand::ToggleCase,
+        SearchCommand::Close,
+    ];
+}
+
+/// Every edit of the query field the keymap can bind (the search bar's own editing keys).
+fn field_commands() -> Vec<FieldCommand> {
+    let mut all = Vec::new();
+    for motion in [
+        FieldMotion::Left,
+        FieldMotion::Right,
+        FieldMotion::WordLeft,
+        FieldMotion::WordRight,
+        FieldMotion::Start,
+        FieldMotion::End,
+    ] {
+        all.push(FieldCommand::Move { motion, select: false });
+        all.push(FieldCommand::Move { motion, select: true });
+    }
+    all.extend([
+        FieldCommand::DeleteLeft,
+        FieldCommand::DeleteRight,
+        FieldCommand::DeleteWordLeft,
+        FieldCommand::DeleteWordRight,
+        FieldCommand::DeleteToStart,
+        FieldCommand::SelectAll,
+    ]);
+    all
+}
+
+fn field_name(c: FieldCommand) -> String {
+    let word = |m| match m {
+        FieldMotion::Left => "left",
+        FieldMotion::Right => "right",
+        FieldMotion::WordLeft => "wordLeft",
+        FieldMotion::WordRight => "wordRight",
+        FieldMotion::Start => "start",
+        FieldMotion::End => "end",
+    };
+    match c {
+        FieldCommand::Move { motion, select: false } => format!("search.field.{}", word(motion)),
+        FieldCommand::Move { motion, select: true } => format!("search.field.select.{}", word(motion)),
+        FieldCommand::DeleteLeft => "search.field.deleteLeft".into(),
+        FieldCommand::DeleteRight => "search.field.deleteRight".into(),
+        FieldCommand::DeleteWordLeft => "search.field.deleteWordLeft".into(),
+        FieldCommand::DeleteWordRight => "search.field.deleteWordRight".into(),
+        FieldCommand::DeleteToStart => "search.field.deleteToStart".into(),
+        FieldCommand::SelectAll => "search.field.selectAll".into(),
     }
 }
 
@@ -66,6 +138,10 @@ pub enum Command {
     PageDown,
     ScrollTop,
     ScrollBottom,
+    /// The search bar over the active terminal (`Open` shows it, the rest act while it is open).
+    Search(SearchCommand),
+    /// An edit of the search bar's query.
+    Field(FieldCommand),
     Detach,
     ConfirmYes,
     ConfirmNo,
@@ -98,6 +174,8 @@ impl Command {
             Command::ConfirmYes,
             Command::ConfirmNo,
         ];
+        all.extend(SearchCommand::ALL.map(Command::Search));
+        all.extend(field_commands().into_iter().map(Command::Field));
         all.extend((1..=9).map(Command::GoToTab));
         all.extend((1..=8).map(Command::FocusGroup));
         all
@@ -131,6 +209,14 @@ impl KeyCommand for Command {
             Command::PageDown => "terminal.scrollPageDown".into(),
             Command::ScrollTop => "terminal.scrollToTop".into(),
             Command::ScrollBottom => "terminal.scrollToBottom".into(),
+            Command::Search(c) => match c {
+                SearchCommand::Open => "terminal.find".into(),
+                SearchCommand::Next => "search.next".into(),
+                SearchCommand::Previous => "search.previous".into(),
+                SearchCommand::ToggleCase => "search.toggleCase".into(),
+                SearchCommand::Close => "search.close".into(),
+            },
+            Command::Field(c) => field_name(*c),
             Command::Detach => "session.detach".into(),
             Command::ConfirmYes => "confirm.yes".into(),
             Command::ConfirmNo => "confirm.no".into(),
@@ -159,6 +245,15 @@ impl KeyCommand for Command {
             Command::PageDown => "Scroll Page Down".into(),
             Command::ScrollTop => "Scroll to Top".into(),
             Command::ScrollBottom => "Scroll to Bottom".into(),
+            Command::Search(c) => match c {
+                SearchCommand::Open => "Find in Terminal",
+                SearchCommand::Next => "Find Next",
+                SearchCommand::Previous => "Find Previous",
+                SearchCommand::ToggleCase => "Toggle Find Case Sensitivity",
+                SearchCommand::Close => "Close Find",
+            }
+            .into(),
+            Command::Field(c) => format!("Find Field: {}", field_name(*c).trim_start_matches("search.field.")),
             Command::Detach => "Detach".into(),
             Command::ConfirmYes => "Confirm".into(),
             Command::ConfirmNo => "Cancel".into(),
@@ -188,6 +283,7 @@ mod tests {
         assert_eq!(Context::parse("terminal"), Some(Context::Terminal));
         assert_eq!(Context::parse("confirm"), Some(Context::Confirm));
         assert_eq!(Context::parse("x"), None);
-        assert_eq!(Context::names().len(), 2);
+        assert_eq!(Context::parse("search"), Some(Context::Search));
+        assert_eq!(Context::names().len(), 3);
     }
 }

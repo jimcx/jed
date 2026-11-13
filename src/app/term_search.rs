@@ -10,7 +10,6 @@
 use super::{App, Level};
 use crate::command::TermSearchCommand as Ts;
 use crate::field::Outcome;
-use crate::tasks::Run;
 use crate::tasks::search::{self, Match, TermSearch};
 use crossterm::event::KeyEvent;
 
@@ -78,26 +77,14 @@ impl App {
         self.term_research();
     }
 
-    /// The query or case changed: the newest match becomes current (the end of the output is
-    /// where people look first).
+    /// The query or case changed: the newest match becomes current.
     fn term_research(&mut self) {
-        self.term_search_apply(|matches, _| matches.len().checked_sub(1));
+        self.term_search_apply(|matches, _| search::newest(matches));
     }
 
     /// Next (`forward`) or previous match from the current one, wrapping.
     fn term_search_step(&mut self, forward: bool) {
-        self.term_search_apply(|matches, current| {
-            if matches.is_empty() {
-                return None;
-            }
-            let last = matches.len() - 1;
-            Some(match (current, forward) {
-                (None, true) => 0,
-                (None, false) => last,
-                (Some(c), true) => matches.iter().position(|m| m.cell() > c.cell()).unwrap_or(0),
-                (Some(c), false) => matches.iter().rposition(|m| m.cell() < c.cell()).unwrap_or(last),
-            })
-        });
+        self.term_search_apply(|matches, current| search::step_pick(matches, current, forward));
     }
 
     /// Searches again and lets `pick` choose the current match among them; scrolls to it.
@@ -106,32 +93,14 @@ impl App {
             return;
         };
         if let Some(run) = self.active_terminal().filter(|r| r.id == s.run) {
-            let matches = find_in(run, &s.field.text, s.case);
+            let matches = search::find_in(run, &s.field.text, s.case);
             s.index = pick(&matches, s.current);
             s.current = s.index.map(|i| matches[i]);
             s.count = matches.len();
             if let Some(m) = s.current {
-                reveal(run, m);
+                search::reveal(run, m);
             }
         }
         self.term_search = Some(s);
-    }
-}
-
-fn find_in(run: &Run, query: &str, case: bool) -> Vec<Match> {
-    let mut parser = run.screen();
-    search::find_all(parser.screen_mut(), query, case)
-}
-
-/// Scrolls `run`'s view so `m` is on screen, centred when it wasn't.
-fn reveal(run: &Run, m: Match) {
-    let mut parser = run.screen();
-    let screen = parser.screen_mut();
-    let (rows, _) = crate::tasks::select::size(screen);
-    let back = screen.scrollback();
-    let row = crate::tasks::select::viewport_row(m.line, back);
-    if !(0..rows as isize).contains(&row) {
-        let target = (rows as isize / 2 - m.line).max(0) as usize;
-        screen.set_scrollback(target);
     }
 }

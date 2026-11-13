@@ -18,6 +18,31 @@
 //! word and the row; a paste types into the shell, bracketed when it asked; a program with mouse
 //! reporting gets the events but Shift keeps them for the selection; the wheel, Shift+PageUp and the
 //! scroll bar (click and drag) scroll the scrollback and a typed key returns to the live screen.
+//!
+//! jmux_layout-e (`jmux_layout_e_*`): the search bar finds, counts ("2 of 3") and steps with wrap,
+//! scrolls the view to a match in the scrollback and draws the matches in the theme's find colours;
+//! the program gets no keys while the bar is open and Esc gives them back; the bar goes with its
+//! tab. A Ctrl / Cmd + click on a URL (also one wrapped over two rows) opens exactly it through the
+//! recording opener, a plain click does not. A full-screen program (a stand-in, and a real `vi`
+//! when installed) gets its keys and mouse.
+//!
+//! The whole task's "done when", clause by clause, and the test that covers each:
+//! - a new terminal is a second tab and the keys cycle: `jmux_layout_a_new_terminal_is_a_second_tab_and_the_keys_cycle`;
+//! - split right gives two live shells side by side: `jmux_layout_b_split_right_gives_two_live_shells_side_by_side`;
+//! - the divider drags: `jmux_layout_b_the_divider_drags_and_the_shells_follow`; focus moves with the keys
+//!   and a click: `jmux_layout_b_split_down_stacks_and_focus_follows_the_keys_and_clicks`;
+//! - a tab drags along its bar (`jmux_layout_c_a_tab_drags_along_its_bar_and_keeps_its_shell`), to the other
+//!   group (`jmux_layout_c_a_tab_moves_to_the_other_groups_bar_and_an_emptied_group_goes`) and onto a
+//!   group's edge to split it (`jmux_layout_c_a_drop_on_an_edge_splits_the_group_and_the_centre_joins_it`);
+//! - dragging selects and copy sends OSC 52: `jmux_layout_d_dragging_selects_and_copy_sends_osc_52`; paste
+//!   types it: `jmux_layout_d_a_paste_types_into_the_shell_bracketed_when_it_asked`; the wheel and the scroll
+//!   bar scroll: `jmux_layout_d_the_wheel_and_the_scrollback_keys_scroll_and_a_typed_key_returns_to_the_live_screen`,
+//!   `jmux_layout_d_the_scroll_bar_is_drawn_and_a_click_or_drag_on_it_scrolls`;
+//! - search finds and steps: `jmux_layout_e_search_finds_counts_and_steps_with_wrap_and_scrolls_to_the_match`;
+//!   a Ctrl+click on a URL opens it: `jmux_layout_e_a_ctrl_click_on_a_url_opens_exactly_it_and_a_plain_click_does_not`;
+//! - a full-screen program gets its keys and mouse: `jmux_layout_e_a_full_screen_program_gets_its_keys_and_mouse`;
+//! - detach and attach bring back the layout: `jmux_layout_b_a_new_terminal_opens_in_the_focused_group_and_reattach_keeps_the_split`,
+//!   `jmux_layout_a_a_reattach_shows_the_same_tabs`.
 
 use std::num::NonZeroU16;
 use std::path::PathBuf;
@@ -65,6 +90,7 @@ impl Harness {
             socket: PathBuf::new(),
             program: "/bin/sh".into(),
             cwd: std::env::temp_dir(),
+            open_url: record_url,
         };
         let mut app = App::new(config, tx);
         app.start();
@@ -1638,4 +1664,303 @@ async fn jmux_layout_d_a_copy_while_no_client_is_attached_is_not_sent_to_the_nex
     h.attach(2);
     h.frame().await;
     assert!(!String::from_utf8_lossy(&h.raw).contains("]52;"), "no stale OSC 52");
+}
+
+// ---- jmux_layout-e: search and links in a terminal, and the whole done-when ----
+
+/// URLs the test opener was asked to open (a recorder: no test launches a browser). Tests use URLs
+/// of their own, so parallel tests do not see each other's.
+static OPENED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn record_url(url: &str) -> Result<(), String> {
+    OPENED.lock().unwrap().push(url.to_string());
+    Ok(())
+}
+
+fn opened(url: &str) -> usize {
+    OPENED.lock().unwrap().iter().filter(|u| *u == url).count()
+}
+
+/// Three lines holding "MARK" (the first two scroll off a 12-row screen), none of them in the
+/// command's own text.
+const MARKS: &str =
+    "printf 'MAR%s one\\n' K; seq 1 30; printf 'MAR%s two\\n' K; seq 31 40; printf 'MAR%s three\\n' K\n";
+
+impl Harness {
+    fn search_label(&self) -> String {
+        self.app.search.as_ref().map(|s| s.label()).unwrap_or_default()
+    }
+
+    /// The background colour of the cell, as the theme names it.
+    fn bg_is(&self, row: u16, col: u16, key: &str) -> bool {
+        let want = self.app.theme.get(key).bg;
+        let got = self.screen.screen().cell(row, col).map(|c| c.bgcolor());
+        match (want, got) {
+            (Some(ratatui::style::Color::Rgb(r, g, b)), Some(vt100::Color::Rgb(r2, g2, b2))) => {
+                (r, g, b) == (r2, g2, b2)
+            }
+            _ => false,
+        }
+    }
+
+    async fn search_open(&mut self) {
+        self.command(Command::Search(crate::command::SearchCommand::Open));
+        self.settle("the search bar", |h| h.app.search.is_some() && !h.app.needs_redraw)
+            .await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_e_search_finds_counts_and_steps_with_wrap_and_scrolls_to_the_match() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    h.type_text(MARKS);
+    h.settle_text("MARK three").await;
+    assert!(
+        h.scrollback() == 0 && !h.text().contains("MARK one"),
+        "the first mark has scrolled off"
+    );
+    h.search_open().await;
+    h.type_text("mark");
+    h.settle("three matches, the newest current", |h| h.search_label() == "3 of 3")
+        .await;
+    h.settle_text("3 of 3").await;
+    assert!(h.row(1).contains("mark"), "the query is in the bar: {:?}", h.row(1));
+    // Forward from the last wraps to the first, which is in the scrollback: the view goes there.
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    h.settle("the first match", |h| {
+        h.search_label() == "1 of 3" && h.text().contains("MARK one")
+    })
+    .await;
+    assert!(h.scrollback() > 0);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    h.settle("the second match", |h| {
+        h.search_label() == "2 of 3" && h.text().contains("MARK two")
+    })
+    .await;
+    h.key(KeyCode::F(3), KeyModifiers::SHIFT);
+    h.settle("back to the first", |h| h.search_label() == "1 of 3").await;
+    h.key(KeyCode::Enter, KeyModifiers::SHIFT);
+    h.settle("back wraps to the last", |h| {
+        h.search_label() == "3 of 3" && h.text().contains("MARK three")
+    })
+    .await;
+    h.settle_text("3 of 3").await;
+    // Case sensitivity: "mark" no longer matches "MARK".
+    h.key(KeyCode::Char('c'), KeyModifiers::ALT);
+    h.settle("no results", |h| h.search_label() == "No results").await;
+    h.settle_text("No results").await;
+    // Stepping with no matches stays put, and does not panic.
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    h.key(KeyCode::Enter, KeyModifiers::SHIFT);
+    h.type_text("x");
+    h.settle("still no results", |h| {
+        h.app.search.as_ref().is_some_and(|s| s.field.text == "markx")
+    })
+    .await;
+    assert_eq!(h.search_label(), "No results");
+    assert!(h.app.search.as_ref().unwrap().current.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_e_the_current_match_and_the_others_are_drawn_in_the_find_colours() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    h.type_text("printf 'MAR%s MAR%s\\n' K K\n");
+    h.settle("the output", |h| h.text().lines().any(|l| l.starts_with("MARK MARK")))
+        .await;
+    h.search_open().await;
+    h.type_text("MARK");
+    h.settle("two matches", |h| h.search_label() == "2 of 2").await;
+    h.frame().await;
+    h.settle("the highlights drawn", |h| {
+        let row = (0..h.rows).find(|r| h.row(*r).starts_with("MARK MARK"));
+        row.is_some_and(|r| h.bg_is(r, 5, "editor.findMatch") && h.bg_is(r, 0, "editor.findMatchHighlight"))
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_e_the_program_gets_no_keys_while_the_bar_is_open_and_esc_gives_them_back() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    h.search_open().await;
+    h.type_text("qzx");
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    h.key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    h.settle("the query", |h| {
+        h.app.search.as_ref().is_some_and(|s| s.field.text == "qzx")
+    })
+    .await;
+    h.frame().await;
+    // The shell saw none of it: its own screen has no "qzx".
+    let shell_text = h
+        .app
+        .groups
+        .active_group()
+        .active_tab()
+        .unwrap()
+        .run
+        .screen()
+        .screen()
+        .contents();
+    assert!(!shell_text.contains("qzx"), "{shell_text}");
+    // An edit key and a paste go to the query too.
+    h.key(KeyCode::Backspace, KeyModifiers::NONE);
+    h.input(Input::Paste("ab\ncd".into()));
+    h.settle("the edited query", |h| {
+        h.app.search.as_ref().is_some_and(|s| s.field.text == "qzabcd")
+    })
+    .await;
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    h.settle("the bar closed", |h| h.app.search.is_none()).await;
+    h.type_text("echo BACK_$((20+2))\n");
+    h.settle_text("BACK_22").await;
+    assert!(!h.text().contains("qzx"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_e_the_bar_belongs_to_its_tab_and_goes_with_it() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    h.search_open().await;
+    h.type_text("zzz");
+    h.command(Command::NewTerminal);
+    h.settle("the second tab", |h| h.tab_count() == 2 && h.active() == 1)
+        .await;
+    // The bar is over the first tab: the second one's keys are its shell's.
+    h.type_text("echo TWO_$((1+1))\n");
+    h.settle_text("TWO_2").await;
+    assert!(
+        h.app.search.as_ref().is_some_and(|s| s.field.text == "zzz"),
+        "the query is kept"
+    );
+    h.command(Command::PrevTab);
+    h.settle("the bar again", |h| h.active() == 0 && h.text().contains("zzz"))
+        .await;
+    // Closing the tab drops the bar.
+    h.command(Command::CloseTerminal);
+    h.settle("one tab", |h| h.tab_count() == 1).await;
+    assert!(h.app.search.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_e_a_ctrl_click_on_a_url_opens_exactly_it_and_a_plain_click_does_not() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    h.type_text("printf 'see https:/%s now\\n' /example.com/e-single\n");
+    h.settle("the output", |h| {
+        h.text().lines().any(|l| l.starts_with("see https://example.com"))
+    })
+    .await;
+    h.frame().await;
+    let row = (0..h.rows).find(|r| h.row(*r).starts_with("see https://")).unwrap();
+    let col = h.row(row).find("example").unwrap() as u16;
+    let url = "https://example.com/e-single";
+    h.click_at(col, row);
+    h.click_at(col, row);
+    h.app.drag = None;
+    h.mouse_with(MouseEventKind::Down(MouseButton::Left), 1, row, KeyModifiers::CONTROL);
+    assert!(h.app.drag.is_some(), "a Ctrl+click off a link is a normal press");
+    h.mouse_with(MouseEventKind::Up(MouseButton::Left), 1, row, KeyModifiers::CONTROL);
+    h.mouse_with(MouseEventKind::Down(MouseButton::Left), col, row, KeyModifiers::CONTROL);
+    h.mouse_with(MouseEventKind::Up(MouseButton::Left), col, row, KeyModifiers::CONTROL);
+    h.settle("the link opened", |_| opened(url) >= 1).await;
+    assert_eq!(
+        opened(url),
+        1,
+        "plain clicks and a Ctrl+click beside the link open nothing"
+    );
+    // Cmd (Super) is the other modifier, and the press selected nothing.
+    h.mouse_with(MouseEventKind::Down(MouseButton::Left), col, row, KeyModifiers::SUPER);
+    h.settle("opened again", |_| opened(url) >= 2).await;
+    assert_eq!(h.selected_text(), None);
+    assert!(h.app.drag.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_e_a_url_wrapped_over_two_rows_opens_whole() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    let tail = "a".repeat(80);
+    h.type_text(&format!("printf 'https:/%s\\n' /example.com/{tail}\n"));
+    h.settle("the output", |h| {
+        h.text().lines().any(|l| l.starts_with("https://example.com"))
+    })
+    .await;
+    h.frame().await;
+    let row = (0..h.rows).find(|r| h.row(*r).starts_with("https://")).unwrap();
+    let url = format!("https://example.com/{tail}");
+    assert!(!h.row(row).contains(&tail), "it wraps");
+    // On the second row.
+    h.mouse_with(
+        MouseEventKind::Down(MouseButton::Left),
+        3,
+        row + 1,
+        KeyModifiers::CONTROL,
+    );
+    h.settle("the whole URL opened", |_| opened(&url) == 1).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_e_a_full_screen_program_gets_its_keys_and_mouse() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    // The alternate screen, application cursor keys and SGR mouse reporting, then raw input read
+    // back as hex: Up, then a press at column 3, row 3 (1-based).
+    h.type_text(
+        "printf '\\033[?1049h\\033[?1h\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=12 2>/dev/null | od -An -tx1\n",
+    );
+    h.settle("the program's modes", |h| {
+        h.app.groups.active_group().active_tab().is_some_and(|t| {
+            let r = t.run.screen();
+            let s = r.screen();
+            s.alternate_screen() && s.application_cursor() && s.mouse_protocol_mode() != vt100::MouseProtocolMode::None
+        })
+    })
+    .await;
+    h.frame().await;
+    h.key(KeyCode::Up, KeyModifiers::NONE);
+    // Terminal text starts below the tab bar: screen row 3 is the shell's row 2.
+    h.mouse(MouseEventKind::Down(MouseButton::Left), 2, 3);
+    h.settle_text("1b 4f 41 1b 5b 3c 30 3b 33 3b 33 4d").await;
+    assert_eq!(h.selected_text(), None, "the press was the program's, not a selection");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_e_a_real_vi_gets_its_keys() {
+    let Some(vi) = ["/usr/bin/vi", "/bin/vi"]
+        .into_iter()
+        .find(|p| std::path::Path::new(p).exists())
+    else {
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("jmux-vi-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("note.txt");
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    h.type_text(&format!("{vi} {}\n", file.display()));
+    h.settle("vi on the alternate screen", |h| {
+        h.app
+            .groups
+            .active_group()
+            .active_tab()
+            .is_some_and(|t| t.run.screen().screen().alternate_screen())
+    })
+    .await;
+    h.frame().await;
+    h.type_text("iFROM_VI");
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    h.type_text(":wq\n");
+    h.settle("vi to exit", |h| {
+        h.app
+            .groups
+            .active_group()
+            .active_tab()
+            .is_some_and(|t| !t.run.screen().screen().alternate_screen())
+    })
+    .await;
+    assert!(std::fs::read_to_string(&file).unwrap().contains("FROM_VI"));
+    let _ = std::fs::remove_dir_all(&dir);
 }
