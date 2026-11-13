@@ -53,7 +53,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
     let find = &app.find;
     let hex = app.active_hex();
     let sel = app.group().active_tab().map(|t| *t.view.selections.primary());
-    if (hex.is_none() && sel.is_none()) || !find.visible || area.width < 24 || area.height < 3 {
+    let diff = app.group().active_diff().is_some();
+    if (hex.is_none() && sel.is_none() && !diff) || !find.visible || area.width < 24 || area.height < 3 {
         return None;
     }
     let theme = &app.theme;
@@ -66,7 +67,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
         None => find.error().map(|e| e.to_string()),
     };
     // A hex tab has no replace.
-    let replace_visible = find.replace_visible && hex.is_none();
+    let replace_visible = find.replace_visible && hex.is_none() && !diff;
 
     let rows = 1 + u16::from(replace_visible) + u16::from(error.is_some());
     let width = area.width.min(MAX_WIDTH);

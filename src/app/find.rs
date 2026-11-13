@@ -29,6 +29,9 @@ impl App {
         if self.active_hex().is_some() {
             return self.open_hex_find();
         }
+        if self.group().active_diff().is_some() {
+            return self.open_diff_find();
+        }
         let regex = self.find_options.regex;
         let Some((buf, view)) = self.active_mut() else {
             return;
@@ -77,7 +80,7 @@ impl App {
 
     pub(super) fn find_command(&mut self, cmd: F) {
         // Bytes have no replace and no select all (and Tab has no replace input to go to).
-        if self.active_hex().is_some()
+        if (self.active_hex().is_some() || self.group().active_diff().is_some())
             && matches!(
                 cmd,
                 F::SelectAllMatches | F::ReplaceOne | F::ReplaceAll | F::SwitchField
@@ -150,6 +153,9 @@ impl App {
             let from = h.selection().map_or(h.cursor, |s| s.start);
             return self.hex_find_from(from, true);
         }
+        if self.group().active_diff().is_some() {
+            return self.diff_find(true, true);
+        }
         if let Some(view) = self.group().active_tab().map(|t| &t.view) {
             let from = view.selections.primary().start();
             self.find_from(from);
@@ -168,6 +174,12 @@ impl App {
         }
         if self.active_hex().is_some() {
             return self.refresh_hex_find();
+        }
+        // A diff tab is searched row by row on each step: nothing to cache.
+        if self.group().active_diff().is_some() {
+            self.find.replace_visible = false;
+            self.find.field = Field::Find;
+            return;
         }
         let Some(tab) = self.groups.active_group().active_tab() else {
             self.close_find();
@@ -211,6 +223,9 @@ impl App {
                 (true, None) => self.hex_find_from(h.cursor, true),
                 (false, s) => self.hex_find_from(s.map_or(h.cursor, |s| s.start), false),
             };
+        }
+        if self.group().active_diff().is_some() {
+            return self.diff_find(forward, false);
         }
         let Some((find, buf, view)) = self.find_target() else {
             return;
@@ -400,6 +415,61 @@ impl App {
 const HEX_SEED_MAX: usize = 256;
 
 impl App {
+    /// Cmd+F on a diff tab: the widget, focused, its query selected (no replace: the rows are
+    /// read-only here), the search going on from the cursor's row.
+    fn open_diff_find(&mut self) {
+        let f = &mut self.find;
+        f.visible = true;
+        f.replace_visible = false;
+        f.query.select_all();
+        f.field = Field::Find;
+        self.ui.focus = Focus::Find;
+        self.diff_find(true, true);
+    }
+
+    /// Moves the diff tab's cursor to the next (`forward`) or previous row with a match of the
+    /// query, wrapping; `inclusive` lets the current row count (incremental search).
+    fn diff_find(&mut self, forward: bool, inclusive: bool) {
+        let Ok(matcher) = crate::search::Matcher::new(&self.find.query.text, self.find_options) else {
+            return;
+        };
+        let Some(d) = self.groups.active_group_mut().active_diff_mut() else {
+            return;
+        };
+        let Some(doc) = d.doc.clone() else { return };
+        let aligned = doc.aligned(d.inline);
+        let n = aligned.rows.len();
+        if n == 0 || self.find.query.text.is_empty() {
+            return;
+        }
+        let hit = |i: usize| {
+            let row = &aligned.rows[i];
+            [(row.right, &doc.right), (row.left, &doc.left)]
+                .into_iter()
+                .filter_map(|(l, lines)| l.map(|l| lines.line(l)))
+                .any(|text| {
+                    matcher
+                        .find_next(&ropey::Rope::from_str(text), ByteIdx(0), false)
+                        .is_some()
+                })
+        };
+        let start = d.cursor.min(n - 1);
+        let steps = if inclusive { 0..n } else { 1..n + 1 };
+        let found = steps
+            .map(|k| {
+                if forward {
+                    (start + k) % n
+                } else {
+                    (start + n - k % n) % n
+                }
+            })
+            .find(|&i| hit(i));
+        if let Some(i) = found {
+            d.cursor = i;
+            d.reveal = true;
+        }
+    }
+
     /// Cmd+F (or Cmd+Alt+F: no replace here) on a hex tab: the widget, focused, its query seeded
     /// from the selected bytes in the current mode — hex pairs, or the text when every byte is
     /// printable — else the last query stays; selected, so typing replaces it.
