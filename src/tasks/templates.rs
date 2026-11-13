@@ -231,8 +231,7 @@ pub fn substitute(text: &str, vars: &Environment) -> Result<String, String> {
     Ok(out)
 }
 
-/// What every run gets unless its template sets them: tools see a colour terminal.
-pub const DEFAULT_ENV: [(&str, &str); 2] = [("TERM", "xterm-256color"), ("COLORTERM", "truecolor")];
+pub use jterm::spec::DEFAULT_ENV;
 
 impl Template {
     /// The command through `shell -c` (so templates can use pipes, `&&`, globs), the cwd resolved

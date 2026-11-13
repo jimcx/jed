@@ -373,6 +373,7 @@ mod tests {
             20,
             Arc::new(|_| {}),
             0,
+            crate::tasks::START_OPTIONS,
             1,
         );
         let deadline = std::time::Instant::now() + Duration::from_secs(5);

@@ -5,6 +5,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// What every run gets unless its template sets them: tools see a colour terminal.
+pub const DEFAULT_ENV: [(&str, &str); 2] = [("TERM", "xterm-256color"), ("COLORTERM", "truecolor")];
+
 /// A template made ready to run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spec {
