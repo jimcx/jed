@@ -110,8 +110,9 @@ impl Harness {
             cols,
         };
         h.attach(1);
-        // Typing before the shell's first prompt races the prompt against the command's echo.
-        h.settle("the shell's first prompt", |h| h.row(1).starts_with("$ "))
+        // Typing before the shell's first prompt races the prompt against the command's echo. The
+        // prompt is `$ ` (dash) or `sh-5.3$ ` (bash as sh).
+        h.settle("the shell's first prompt", |h| h.row(1).trim_end().ends_with('$'))
             .await;
         h
     }
@@ -1359,7 +1360,8 @@ impl Harness {
     /// output) or a number below `below`.
     fn at_oldest(&self, below: u32) -> bool {
         let row = self.row(1);
-        row.starts_with("$ seq 1 200")
+        row.split_once("$ ")
+            .is_some_and(|(_, line)| line.starts_with("seq 1 200"))
             || row
                 .split_whitespace()
                 .next()
@@ -1428,7 +1430,10 @@ async fn jmux_layout_d_a_click_selects_nothing_and_double_and_triple_clicks_take
 async fn jmux_layout_d_a_paste_types_into_the_shell_bracketed_when_it_asked() {
     let mut h = Harness::new(12, 60).await;
     h.settle_text("sh ○").await;
-    h.input(Input::Paste("echo PASTED_$((6+1))\n".into()));
+    // bash's readline (bash as sh) turns bracketed paste on at its prompt, where a pasted newline
+    // doesn't run the line: Enter does, in either shell.
+    h.input(Input::Paste("echo PASTED_$((6+1))".into()));
+    h.type_text("\r");
     h.settle_text("PASTED_7").await;
     // `cat -v` shows the bracket markers a program that asked for them receives.
     h.type_text("printf '\\033[?2004h'; cat -v\n");
