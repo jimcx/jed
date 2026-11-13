@@ -26,6 +26,17 @@ pub fn dark_plus(truecolor: bool) -> Theme {
         ("statusBar.prompt", fg_bg(0x000000, 0xD7BA7D)),
         // A one-line message (the shell integration is missing) in place of the title.
         ("statusBar.notice", fg_bg(0xFFFFFF, 0x6C4A00)),
+        // The commands side bar (jed's side bar keys): its fill, dim text, the selected row, and
+        // the glyphs of running / succeeded / failed commands.
+        ("sideBar", fg_bg(0xCCCCCC, 0x252526)),
+        ("sideBar.dim", Style::new().fg(c(0x858585))),
+        ("list.active", fg_bg(0xFFFFFF, 0x04395E)),
+        ("list.inactive", Style::new().bg(c(0x37373D))),
+        ("commands.running", Style::new().fg(c(0x3794FF))),
+        ("commands.ok", Style::new().fg(c(0x0DBC79))),
+        ("commands.failed", Style::new().fg(c(0xF48771))),
+        // A closed terminal's rows.
+        ("commands.closed", Style::new().fg(c(0x5A5A5A))),
     ];
     Theme::new(widget_entries(truecolor).into_iter().chain(own), truecolor)
 }
@@ -44,6 +55,15 @@ mod tests {
                 "statusBar.prompt",
                 "statusBar.notice",
                 "terminal.dropBackground",
+                "sideBar",
+                "sideBar.dim",
+                "sideBar.border",
+                "list.active",
+                "list.inactive",
+                "commands.running",
+                "commands.ok",
+                "commands.failed",
+                "commands.closed",
             ]) {
                 assert!(theme.find(key).is_some(), "missing {key}");
             }

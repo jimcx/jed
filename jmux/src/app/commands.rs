@@ -84,12 +84,15 @@ impl App {
         match event {
             IntegrationEvent::Checked { shell, status } => {
                 tracing::debug!(%shell, ?status, "shell integration checked");
+                self.integration_missing = status == Some(jterm::shell_integration::Status::NotInstalled);
+                self.needs_redraw = true;
                 if let Some(text) = integration::notice(&shell, status) {
                     self.notice = Some(text);
                     self.needs_redraw = true;
                 }
             }
             IntegrationEvent::Installed(result) => {
+                self.integration_missing &= result.is_err();
                 self.notice = Some(match result {
                     Ok(done) => done.message(self.config.dirs.as_ref().map_or(std::path::Path::new(""), |d| &d.home)),
                     Err(e) => format!("Can't install the shell integration: {e}"),

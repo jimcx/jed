@@ -14,10 +14,12 @@ mod logging;
 mod protocol;
 mod server;
 mod session;
+mod side;
 mod tab_drag;
 mod tabbar;
 mod theme;
 mod ui;
+mod ui_side;
 
 #[cfg(test)]
 mod jmux_commands_tests;

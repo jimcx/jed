@@ -35,8 +35,27 @@ pub struct GroupHit {
     pub arrows: Option<TabArrows>,
 }
 
+/// The side bar as drawn.
+#[derive(Debug, Clone, Default)]
+pub struct SideHit {
+    /// The whole bar (its border column is `border`).
+    pub area: Rect,
+    /// The column of the line between the bar and the groups, which a drag moves.
+    pub border: Rect,
+    pub filter: Rect,
+    /// The filter's sideways scroll as drawn (to map a click to a character).
+    pub filter_scroll: usize,
+    /// The rows' area: row `i` of it is the visible row `first + i`.
+    pub list: Rect,
+    pub first: usize,
+    /// How many rows are drawn.
+    pub shown: usize,
+    pub scroll: ScrollBarHit,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct HitMap {
+    pub side: Option<SideHit>,
     pub groups: Vec<GroupHit>,
     /// The dividers between groups, as `Groups::layout` gave them.
     pub dividers: Vec<Divider>,
@@ -70,6 +89,14 @@ pub enum Hit {
     },
     /// A divider: an index into `HitMap::dividers`.
     Divider(usize),
+    /// The side bar's border line.
+    SideBorder,
+    SideFilter,
+    /// A drawn row: the index among the visible rows.
+    SideRow(usize),
+    SideScrollBar,
+    /// The rest of the bar.
+    Side,
 }
 
 fn contains(r: Rect, x: u16, y: u16) -> bool {
@@ -78,6 +105,28 @@ fn contains(r: Rect, x: u16, y: u16) -> bool {
 
 impl HitMap {
     pub fn at(&self, x: u16, y: u16) -> Option<Hit> {
+        if let Some(s) = &self.side {
+            if contains(s.border, x, y) {
+                return Some(Hit::SideBorder);
+            }
+            if contains(s.filter, x, y) {
+                return Some(Hit::SideFilter);
+            }
+            if contains(s.scroll.track, x, y) {
+                return Some(Hit::SideScrollBar);
+            }
+            if contains(s.list, x, y) {
+                let i = usize::from(y - s.list.y);
+                return Some(if i < s.shown {
+                    Hit::SideRow(s.first + i)
+                } else {
+                    Hit::Side
+                });
+            }
+            if contains(s.area, x, y) {
+                return Some(Hit::Side);
+            }
+        }
         if let Some(i) = self.dividers.iter().position(|d| contains(d.rect, x, y)) {
             return Some(Hit::Divider(i));
         }
@@ -147,6 +196,7 @@ mod tests {
                 arrows: Some(TabArrows { back: 0, forward: 29 }),
             }],
             dividers: Vec::new(),
+            side: None,
         };
         assert_eq!(map.at(3, 0), Some(Hit::Tab { group: 7, index: 0 }));
         assert_eq!(map.at(15, 0), Some(Hit::Close { group: 7, index: 1 }));
@@ -185,10 +235,42 @@ mod tests {
                 ..GroupHit::default()
             })
             .collect();
-        let map = HitMap { groups, dividers };
+        let map = HitMap {
+            groups,
+            dividers,
+            side: None,
+        };
         assert_eq!(map.at(d.x, 0), Some(Hit::Divider(0)));
         assert_eq!(map.at(d.x, 3), Some(Hit::Divider(0)));
         assert_eq!(map.at(d.x - 1, 3), Some(Hit::Terminal { group: 1 }));
         assert_eq!(map.at(d.x + 1, 3), Some(Hit::Terminal { group: 2 }));
+    }
+
+    #[test]
+    fn the_side_bar_resolves_its_parts_before_the_groups() {
+        let map = HitMap {
+            side: Some(SideHit {
+                area: Rect::new(0, 0, 10, 8),
+                border: Rect::new(10, 0, 1, 8),
+                filter: Rect::new(1, 0, 8, 1),
+                filter_scroll: 0,
+                list: Rect::new(0, 1, 9, 7),
+                first: 4,
+                shown: 2,
+                scroll: ScrollBarHit {
+                    track: Rect::new(9, 1, 1, 7),
+                    thumb: None,
+                },
+            }),
+            ..HitMap::default()
+        };
+        assert_eq!(map.at(10, 3), Some(Hit::SideBorder));
+        assert_eq!(map.at(3, 0), Some(Hit::SideFilter));
+        assert_eq!(map.at(3, 1), Some(Hit::SideRow(4)));
+        assert_eq!(map.at(3, 2), Some(Hit::SideRow(5)));
+        assert_eq!(map.at(3, 3), Some(Hit::Side));
+        assert_eq!(map.at(9, 3), Some(Hit::SideScrollBar));
+        assert_eq!(map.at(0, 0), Some(Hit::Side));
+        assert_eq!(map.at(11, 3), None);
     }
 }

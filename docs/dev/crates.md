@@ -99,7 +99,20 @@ directory, tests pass a temp dir) and the server:
   drops it. Links: a Ctrl / Cmd + left press on a URL (`select::wrapped_line` + `jtui::url::url_at`, before the mouse reporting and
   selection) calls `Config::open_url` (`jtui::url::open`) in `spawn_blocking`, a failure logged; the tests pass a recorder, so none
   launches a browser. File paths are not links (no editor).
-  Commands (`history`, `integration`, `app/commands.rs`; the side bar that shows them is `jmux_commands-b`): `App.history` is a
+  Side bar (`side`, `ui_side`, `app/side.rs`): `App.side: SideBar` (`visible`, `width` asked for, `focused`, the filter `TextField`,
+  `view_rows`) is server state, so detach / attach keep it. `ui::body(rows, cols, &side)` is the groups' area right of the bar and its
+  1-column border (`term_size` and `cells` use it too, so new shells start at the right size); `side::clamp_width` keeps `MIN_WIDTH` 12
+  and leaves the groups 20 columns. `ui_side::render` draws the filter box, the rows (glyph, command, title, duration (+ age from 44
+  columns), closed rows `commands.closed`), the scroll bar and the empty text (`side::empty_text`: how to install the integration while
+  `App.integration_missing`), and writes `HitMap::side` (`Hit::SideBorder` / `SideFilter` / `SideRow(i)` / `SideScrollBar` / `Side`).
+  Keys: Ctrl+Shift+B toggles (Cmd+B), Ctrl+Shift+E focuses (Cmd+Shift+E); `Context::Side` (parent `Terminal`, so the terminal keys
+  still work and take the keys back) has Up / Down / PageUp / PageDown / Home / End, Enter (`SideCommand::Open`), Esc (back), and the
+  field keys (`Command::Field` goes to the filter while the bar is focused); other keys are typed into the filter, never a shell. Mouse:
+  a row click selects and opens, the wheel and scroll bar scroll, the border drags (`Drag::SideBorder`, col-resize pointer), a press
+  elsewhere takes the keys back. Opening a row (`open_row`): a closed terminal's row does nothing; else the tab is focused and
+  `Run::scroll_to_command(id)` puts the command's first row at the top, or a notice says the scrollback lost it. `AppEvent::Tick` (a
+  1 s tokio interval started by `App::start`) sets `needs_redraw` only while the bar shows and there are rows.
+  Commands (`history`, `integration`, `app/commands.rs`): `App.history` is a
   `History` (model, no drawing): one list of every terminal's `CommandRecord`s, running first then finished newest first, capped at
   `Config::command_history` (`COMMAND_HISTORY` 500; the oldest finished rows go, a running one never), rows keyed `(RunId, record id)`,
   filter (substring, case-insensitive), selection kept by identity, scroll; `Row::glyph` / `duration_text` / `age_text` are pure

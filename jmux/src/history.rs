@@ -11,9 +11,6 @@
 //! index of the first visible row among [`History::visible`]. Row text (glyph, duration, age) is
 //! pure functions of the record and the current time.
 
-// The side bar (jmux_commands-b) is the reader of most of this API.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -195,10 +192,6 @@ impl History {
 
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
-    }
-
-    pub fn filter(&self) -> &str {
-        &self.filter
     }
 
     /// Sets the filter; the selection stays on its row when that still shows, else moves to the first.

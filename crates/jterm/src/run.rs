@@ -359,6 +359,29 @@ fn file_url_path(url: &[u8]) -> Option<PathBuf> {
     (!path.as_os_str().as_encoded_bytes().contains(&0)).then_some(path)
 }
 
+/// [`Run::scroll_to_command`] on a parser.
+fn scroll_to_start(parser: &mut vt100::Parser<TitleCallback>, id: u64) -> bool {
+    let Some(start) = parser
+        .callbacks()
+        .commands()
+        .iter()
+        .find(|c| c.id == id)
+        .map(|c| c.start_row)
+    else {
+        return false;
+    };
+    let screen = parser.screen_mut();
+    let oldest = screen.scrolled_lines().saturating_sub(screen.scrollback_len() as u64);
+    if start < oldest {
+        return false;
+    }
+    let top = (start - oldest) as usize;
+    screen.set_scrollback(usize::MAX);
+    let max = screen.scrollback();
+    screen.set_scrollback(max.saturating_sub(top));
+    true
+}
+
 /// [`Run::command_output`] on a parser.
 fn command_text(parser: &mut vt100::Parser<TitleCallback>, id: u64, max_lines: usize) -> Option<CommandOutput> {
     let rec = parser.callbacks().commands().iter().find(|c| c.id == id)?.clone();
@@ -594,6 +617,13 @@ impl Run {
     /// returns what's on screen so far (up to the cursor).
     pub fn command_output(&self, id: u64, max_lines: usize) -> Option<CommandOutput> {
         command_text(&mut self.screen(), id, max_lines)
+    }
+
+    /// Scrolls the view so command `id`'s first row is at the top (or as near as the live screen
+    /// allows). False, the view untouched, when the command is gone from the ring or its first
+    /// row has left the scrollback.
+    pub fn scroll_to_command(&self, id: u64) -> bool {
+        scroll_to_start(&mut self.screen(), id)
     }
 
     /// Resizes the screen and the PTY (the process gets SIGWINCH). Zero is taken as one. A size
@@ -1382,6 +1412,67 @@ mod tests {
         assert_eq!(cmds.front().unwrap().id, 6);
         assert_eq!(cmds.back().unwrap().id, RING as u64 + 5);
         assert!(cmds.back().unwrap().started_at <= std::time::SystemTime::now());
+    }
+
+    /// A command's first row goes to the top of the view while the scrollback holds it.
+    #[test]
+    fn scroll_to_command_puts_its_first_row_at_the_top() {
+        let sink: Sink = Arc::new(|_| {});
+        let mut parser = vt100::Parser::new_with_callbacks(
+            nonzero(5),
+            nonzero(20),
+            12,
+            TitleCallback::new(RunId(7), sink, "t".into(), 50),
+        );
+        parser.process(b"$ one\r\n\x1b]133;B\x07");
+        for n in 1..=6 {
+            parser.process(format!("a{n}\r\n").as_bytes());
+        }
+        parser.process(b"\x1b]133;D;0\x07$ two\r\n\x1b]133;B\x07");
+        for n in 1..=3 {
+            parser.process(format!("b{n}\r\n").as_bytes());
+        }
+        parser.process(b"\x1b]133;D;0\x07$ ");
+        assert!(scroll_to_start(&mut parser, 1));
+        let first = parser.screen().rows(0, 20).next().unwrap();
+        assert!(first.starts_with("a1"), "{first:?}");
+        assert!(!scroll_to_start(&mut parser, 99));
+        // Push the first command out of the 12-line scrollback.
+        for n in 1..=30 {
+            parser.process(format!("n{n}\r\n").as_bytes());
+        }
+        assert!(!scroll_to_start(&mut parser, 1));
+    }
+
+    /// The boundary: while the command's first row is the oldest the scrollback holds it is found
+    /// and shown at the top; one more line of output drops it and the jump says so.
+    #[test]
+    fn scroll_to_command_at_the_scrollback_boundary() {
+        let sink: Sink = Arc::new(|_| {});
+        let mut parser = vt100::Parser::new_with_callbacks(
+            nonzero(5),
+            nonzero(20),
+            12,
+            TitleCallback::new(RunId(7), sink, "t".into(), 50),
+        );
+        parser.process(b"$ one\r\n\x1b]133;B\x07a1\r\n");
+        let mut last_found = None;
+        for n in 1..=40 {
+            parser.screen_mut().set_scrollback(0);
+            if !scroll_to_start(&mut parser, 1) {
+                // The first row to miss: the one before it was the oldest line, at the top.
+                assert!(last_found.is_some(), "found at least once");
+                assert_eq!(last_found.as_deref().map(|r: &str| r.starts_with("a1")), Some(true));
+                let start = parser.callbacks().commands()[0].start_row;
+                let screen = parser.screen();
+                assert_eq!(screen.scrolled_lines() - screen.scrollback_len() as u64, start + 1);
+                return;
+            }
+            last_found = parser.screen().rows(0, 20).next();
+            parser.screen_mut().set_scrollback(0);
+            parser.process(format!("x{n}\r\n").as_bytes());
+        }
+        panic!("the command never left the scrollback");
     }
 
     /// Output is read back by absolute row, across the scrollback; rows scrolled off are

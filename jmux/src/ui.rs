@@ -1,27 +1,38 @@
-//! Drawing the server's `App` into a frame: each group's tab bar and terminal, the dividers between
-//! groups, above a one-line status
+//! Drawing the server's `App` into a frame: the commands side bar (`ui_side`) when it shows, each
+//! group's tab bar and terminal, the dividers between groups, above a one-line status
 //! bar (or the close question). Writes the `HitMap`.
 
 use jtui::borders::Segment;
 use jtui::scrollbar::Scrollable;
 use jtui::scrollbar_draw::{self, Look, ScrollBarHit};
+use jtui::split::SplitDir;
 use jtui::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::app::{App, Drag};
 use crate::hit::{GroupHit, HitMap};
+use crate::side::SideBar;
 use crate::tab_drag::{self, TabDrop};
 use crate::tabbar;
+use crate::ui_side;
 
 /// Rows the status bar takes.
 pub const STATUS_ROWS: u16 = 1;
 /// Rows a group's tab bar takes.
 pub const TAB_ROWS: u16 = 1;
 
-/// The area of the groups in a `rows` × `cols` screen: all but the status bar.
-pub fn body(rows: u16, cols: u16) -> Rect {
-    Rect::new(0, 0, cols, rows.saturating_sub(STATUS_ROWS))
+/// The area of the groups in a `rows` × `cols` screen: all but the status bar and the side bar
+/// (with its border column) when it shows.
+pub fn body(rows: u16, cols: u16, side: &SideBar) -> Rect {
+    let taken = side.reserved(cols).min(cols);
+    Rect::new(taken, 0, cols - taken, rows.saturating_sub(STATUS_ROWS))
+}
+
+/// The side bar's area (without its border column), none while it is hidden.
+pub fn side_area(rows: u16, cols: u16, side: &SideBar) -> Option<Rect> {
+    side.visible
+        .then(|| Rect::new(0, 0, side.width_in(cols), rows.saturating_sub(STATUS_ROWS)))
 }
 
 /// A group's terminal: its area below the tab bar.
@@ -40,7 +51,7 @@ pub fn shell_area(term: Rect) -> (Rect, Option<Rect>) {
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
-    let (cells, dividers) = app.groups.layout(body(area.height, area.width));
+    let (cells, dividers) = app.groups.layout(body(area.height, area.width, &app.side));
     let mut hit = HitMap::default();
     let target = match &app.drag {
         Some(Drag::Tab(t)) => t.target,
@@ -69,7 +80,14 @@ pub fn render(f: &mut Frame, app: &mut App) {
             // tabs keep their last size.
             shell.run.resize(text.height, text.width);
             let search = app.search.as_ref().filter(|s| s.run == shell.run.id);
-            jterm::draw::render_shell(f, text, shell, &app.theme, focused && app.confirm.is_none(), search);
+            jterm::draw::render_shell(
+                f,
+                text,
+                shell,
+                &app.theme,
+                focused && app.confirm.is_none() && !app.side.focused,
+                search,
+            );
             if let Some(track) = track {
                 let base = app.theme.get("editor").patch(app.theme.get("terminal.background"));
                 let look = if scrolling == Some(id) {
@@ -98,11 +116,16 @@ pub fn render(f: &mut Frame, app: &mut App) {
             arrows,
         });
     }
-    // The dividers' lines, joined where they cross.
-    let segments = dividers
+    // The dividers' lines, joined where they cross, and the side bar's border.
+    let mut segments: Vec<Segment> = dividers
         .iter()
         .map(|d| Segment::new(d.rect, d.dir, None, "editorGroup.border"))
         .collect();
+    if let Some(side) = side_area(area.height, area.width, &app.side) {
+        let edge = Rect::new(side.x + side.width, side.y, 1, side.height);
+        segments.push(Segment::new(edge, SplitDir::Right, Some("sideBar"), "sideBar.border"));
+        hit.side = Some(ui_side::render(f, app, side, edge));
+    }
     app.borders.apply(f, segments, &app.theme);
     hit.dividers = dividers;
     app.hit = hit;

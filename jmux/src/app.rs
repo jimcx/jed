@@ -31,12 +31,13 @@ use tokio::sync::mpsc::{Sender, UnboundedSender};
 use tokio::task::JoinHandle;
 use vt100::MouseProtocolMode;
 
-use crate::command::{Command, Context};
+use crate::command::{Command, Context, SideCommand};
 use crate::group::Groups;
 use crate::history::History;
 use crate::hit::{Hit, HitMap};
 use crate::keymap::{self, JmuxKeymap};
 use crate::protocol::{ByeReason, ClientMsg, PROTOCOL_VERSION, ServerMsg};
+use crate::side::SideBar;
 use crate::tab_drag::TabDrag;
 use crate::{integration, theme, ui};
 use jterm::search::TermSearch;
@@ -106,6 +107,8 @@ pub enum AppEvent {
     Run(Event),
     /// A blocking shell-integration job finished (`integration_event`).
     Integration(IntegrationEvent),
+    /// Once a second (`App::start`'s timer): the side bar's durations and ages move on.
+    Tick,
 }
 
 /// What the off-thread integration jobs report.
@@ -136,6 +139,7 @@ struct Conn {
 
 mod commands;
 mod search;
+mod side;
 
 pub struct App {
     pub name: String,
@@ -152,6 +156,10 @@ pub struct App {
     pub history: History,
     /// The first shell's integration check has been started.
     integration_checked: bool,
+    /// The check found the first shell's integration not installed (the side bar's empty text says so).
+    pub integration_missing: bool,
+    /// The commands side bar.
+    pub side: SideBar,
     /// The divider or tab being dragged: it owns the mouse until the release.
     pub(crate) drag: Option<Drag>,
     /// Where the pointer last was, and the shape the client was last told to show.
@@ -200,6 +208,12 @@ pub enum Drag {
         group: GroupId,
         grab: u16,
     },
+    /// The side bar's border, moving its width.
+    SideBorder,
+    /// The side bar's scroll bar thumb, held by its half cell `grab`.
+    SideScroll {
+        grab: u16,
+    },
 }
 
 impl App {
@@ -235,6 +249,8 @@ impl App {
             confirm: None,
             notice: None,
             integration_checked: false,
+            integration_missing: false,
+            side: SideBar::new(),
             drag: None,
             mouse_at: None,
             pointer: Pointer::Default,
@@ -266,11 +282,24 @@ impl App {
     /// Needs a tokio runtime.
     pub fn start(&mut self) {
         self.new_terminal(self.groups.active);
+        // The side bar's durations and ages: a frame a second while it shows (`tick`), not per frame.
+        let events = self.events.clone();
+        tokio::spawn(async move {
+            let mut timer = tokio::time::interval(std::time::Duration::from_secs(1));
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            timer.tick().await;
+            loop {
+                timer.tick().await;
+                if events.send(AppEvent::Tick).is_err() {
+                    break;
+                }
+            }
+        });
         tracing::info!(session = %self.name, program = %self.config.program.display(), "session started");
     }
 
     /// The key that runs `command`, as a label (`Ctrl+Shift+D`).
-    fn key_label(&self, command: Command) -> String {
+    pub(crate) fn key_label(&self, command: Command) -> String {
         self.keymap.binding_for(command).map_or_else(String::new, |c| c.label())
     }
 
@@ -286,11 +315,9 @@ impl App {
         } else {
             INITIAL_SIZE
         };
-        let (cells, _) = self.groups.layout(ui::body(rows, cols));
-        let area = cells
-            .iter()
-            .find(|(id, _)| *id == group)
-            .map_or(ui::body(rows, cols), |c| c.1);
+        let body = ui::body(rows, cols, &self.side);
+        let (cells, _) = self.groups.layout(body);
+        let area = cells.iter().find(|(id, _)| *id == group).map_or(body, |c| c.1);
         let (text, _) = ui::shell_area(ui::term_area(area));
         (text.height, text.width)
     }
@@ -341,7 +368,7 @@ impl App {
         } else {
             INITIAL_SIZE
         };
-        self.groups.layout(ui::body(rows, cols)).0
+        self.groups.layout(ui::body(rows, cols, &self.side)).0
     }
 
     /// Runs a command. Commands never look at keys.
@@ -383,6 +410,8 @@ impl App {
             Command::ScrollTop => self.scroll_active(Scroll::Edge(true)),
             Command::ScrollBottom => self.scroll_active(Scroll::Edge(false)),
             Command::Search(c) => self.search_command(c),
+            Command::Side(c) => self.side_command(c),
+            Command::Field(c) if self.side.focused => self.side_edit(c),
             Command::Field(c) => self.search_edit(c),
             Command::Detach => self.detach(),
             Command::ConfirmYes => {
@@ -485,6 +514,7 @@ impl App {
             }
             AppEvent::Run(ev) => self.run_event(ev),
             AppEvent::Integration(ev) => self.integration_event(ev),
+            AppEvent::Tick => self.tick(),
         }
     }
 
@@ -674,6 +704,10 @@ impl App {
     fn input(&mut self, input: Input) {
         match input {
             Input::Key(key) => self.key(key),
+            Input::Paste(text) if self.confirm.is_none() && self.side.focused => {
+                self.side_paste(&text);
+                self.needs_redraw = true;
+            }
             Input::Paste(text) if self.confirm.is_none() && self.search_active() => self.search_paste(&text),
             Input::Paste(text) => {
                 if let Some(shell) = self.groups.active_group().active_tab() {
@@ -698,6 +732,8 @@ impl App {
         }
         let context = if self.confirm.is_some() {
             Context::Confirm
+        } else if self.side.focused {
+            Context::Side
         } else if self.search_active() {
             Context::Search
         } else {
@@ -705,13 +741,33 @@ impl App {
         };
         if let Some(command) = self.keymap.lookup(&key, context) {
             // A held key repeats nothing but the tab cycling.
-            let repeats = matches!(command, Command::NextTab | Command::PrevTab | Command::Field(_));
+            let repeats = matches!(
+                command,
+                Command::NextTab
+                    | Command::PrevTab
+                    | Command::Field(_)
+                    | Command::Side(SideCommand::Up | SideCommand::Down | SideCommand::PageUp | SideCommand::PageDown)
+            );
             if key.kind == KeyEventKind::Press || repeats {
+                // A terminal command (new tab, split, scrolling, ...) takes the keys back from the bar.
+                if context == Context::Side
+                    && !matches!(
+                        command,
+                        Command::Side(_) | Command::Field(_) | Command::Detach | Command::InstallShellIntegration
+                    )
+                {
+                    self.side.focused = false;
+                }
                 self.execute(command);
             }
             return;
         }
         if context == Context::Confirm {
+            return;
+        }
+        if context == Context::Side {
+            self.side_type(key);
+            self.needs_redraw = true;
             return;
         }
         if context == Context::Search {
@@ -761,6 +817,12 @@ impl App {
                 }
                 (Drag::ScrollBar { .. }, MouseEventKind::Up(_)) => self.drag = None,
                 (Drag::Divider(_), MouseEventKind::Up(_)) => self.drag = None,
+                (Drag::SideBorder, MouseEventKind::Drag(MouseButton::Left)) => self.side_resize(m.column),
+                (Drag::SideScroll { grab }, MouseEventKind::Drag(MouseButton::Left)) => {
+                    let grab = *grab;
+                    self.side_scroll_drag(m.row, grab);
+                }
+                (Drag::SideBorder | Drag::SideScroll { .. }, MouseEventKind::Up(_)) => self.drag = None,
                 (Drag::Tab(_), MouseEventKind::Up(_)) => self.finish_tab_drag(m.column, m.row),
                 _ => {}
             }
@@ -768,7 +830,23 @@ impl App {
             return;
         }
         let down = |button| m.kind == MouseEventKind::Down(button);
-        match self.hit.at(m.column, m.row) {
+        let at = self.hit.at(m.column, m.row);
+        if let Some(hit) = at
+            && matches!(
+                hit,
+                Hit::SideBorder | Hit::SideFilter | Hit::SideRow(_) | Hit::SideScrollBar | Hit::Side
+            )
+        {
+            if self.side_mouse(hit, m) {
+                self.needs_redraw = true;
+            }
+            return;
+        }
+        // A press anywhere else takes the keys back from the bar.
+        if matches!(m.kind, MouseEventKind::Down(_)) && self.side.focused {
+            self.side.focused = false;
+        }
+        match at {
             Some(Hit::Tab { group, index }) if down(MouseButton::Left) => {
                 self.groups.active = group;
                 if let Some(g) = self.groups.get_mut(group) {
@@ -833,7 +911,7 @@ impl App {
                 MouseEventKind::Down(_) => self.groups.active = group,
                 _ => return,
             },
-            None => return,
+            _ => return,
         }
         self.needs_redraw = true;
     }
@@ -1046,7 +1124,8 @@ impl App {
         };
         match &self.drag {
             Some(Drag::Divider(d)) => return resize(d),
-            Some(Drag::Tab(_) | Drag::ScrollBar { .. }) => return Pointer::Default,
+            Some(Drag::SideBorder) => return Pointer::ColResize,
+            Some(Drag::Tab(_) | Drag::ScrollBar { .. } | Drag::SideScroll { .. }) => return Pointer::Default,
             // Held for the whole selection, as jed holds the I-beam during a text drag.
             Some(Drag::Terminal { .. }) => return Pointer::Text,
             None => {}
@@ -1056,6 +1135,7 @@ impl App {
         };
         match self.hit.at(x, y) {
             Some(Hit::Divider(i)) => self.hit.dividers.get(i).map_or(Pointer::Default, resize),
+            Some(Hit::SideBorder) => Pointer::ColResize,
             Some(Hit::Terminal { group }) => {
                 let reporting = self
                     .groups

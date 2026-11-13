@@ -16,24 +16,27 @@ pub enum Context {
     Confirm,
     /// The search bar over a terminal (its parent is `Terminal`): typing edits the query, no key reaches the shell.
     Search,
+    /// The commands side bar: the list's keys, typing edits the filter, no key reaches a shell.
+    Side,
 }
 
 impl KeyContext for Context {
-    /// The search bar falls back to the terminal's keys (new tab, split, scrollback, ...): only the
-    /// keys no binding takes are the bar's, so none reaches the shell.
+    /// The search bar and the side bar fall back to the terminal's keys (new tab, split,
+    /// scrollback, ...): only the keys no binding takes are theirs, so none reaches the shell.
     fn parent(self) -> Option<Self> {
-        (self == Context::Search).then_some(Context::Terminal)
+        matches!(self, Context::Search | Context::Side).then_some(Context::Terminal)
     }
     fn parse(name: &str) -> Option<Self> {
         match name {
             "terminal" => Some(Context::Terminal),
             "confirm" => Some(Context::Confirm),
             "search" => Some(Context::Search),
+            "side" => Some(Context::Side),
             _ => None,
         }
     }
     fn names() -> Vec<&'static str> {
-        vec!["terminal", "confirm", "search"]
+        vec!["terminal", "confirm", "search", "side"]
     }
     /// Plain Ctrl+letter always reaches the shell (history search, delete word, ...).
     fn passes_through(self, combo: &KeyCombo) -> bool {
@@ -61,6 +64,71 @@ impl SearchCommand {
         SearchCommand::ToggleCase,
         SearchCommand::Close,
     ];
+}
+
+/// What the commands side bar does (`Toggle` and `Focus` are bound in the terminal context, the rest
+/// while the bar has the keys).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SideCommand {
+    /// Shows or hides the bar.
+    Toggle,
+    /// Shows the bar and gives it the keys.
+    Focus,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    First,
+    Last,
+    /// Jumps to the selected command's terminal and output.
+    Open,
+    /// Gives the keys back to the terminal.
+    Back,
+}
+
+impl SideCommand {
+    pub const ALL: [SideCommand; 10] = [
+        SideCommand::Toggle,
+        SideCommand::Focus,
+        SideCommand::Up,
+        SideCommand::Down,
+        SideCommand::PageUp,
+        SideCommand::PageDown,
+        SideCommand::First,
+        SideCommand::Last,
+        SideCommand::Open,
+        SideCommand::Back,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            SideCommand::Toggle => "sideBar.toggle",
+            SideCommand::Focus => "sideBar.focus",
+            SideCommand::Up => "sideBar.up",
+            SideCommand::Down => "sideBar.down",
+            SideCommand::PageUp => "sideBar.pageUp",
+            SideCommand::PageDown => "sideBar.pageDown",
+            SideCommand::First => "sideBar.first",
+            SideCommand::Last => "sideBar.last",
+            SideCommand::Open => "sideBar.open",
+            SideCommand::Back => "sideBar.back",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            SideCommand::Toggle => "Toggle Commands Side Bar",
+            SideCommand::Focus => "Focus Commands Side Bar",
+            SideCommand::Up => "Commands: Previous",
+            SideCommand::Down => "Commands: Next",
+            SideCommand::PageUp => "Commands: Page Up",
+            SideCommand::PageDown => "Commands: Page Down",
+            SideCommand::First => "Commands: First",
+            SideCommand::Last => "Commands: Last",
+            SideCommand::Open => "Commands: Go to Command",
+            SideCommand::Back => "Commands: Back to Terminal",
+        }
+    }
 }
 
 /// Every edit of the query field the keymap can bind (the search bar's own editing keys).
@@ -140,7 +208,9 @@ pub enum Command {
     ScrollBottom,
     /// The search bar over the active terminal (`Open` shows it, the rest act while it is open).
     Search(SearchCommand),
-    /// An edit of the search bar's query.
+    /// The commands side bar.
+    Side(SideCommand),
+    /// An edit of the search bar's query (or of the side bar's filter while it has the keys).
     Field(FieldCommand),
     Detach,
     ConfirmYes,
@@ -178,6 +248,7 @@ impl Command {
             Command::InstallShellIntegration,
         ];
         all.extend(SearchCommand::ALL.map(Command::Search));
+        all.extend(SideCommand::ALL.map(Command::Side));
         all.extend(field_commands().into_iter().map(Command::Field));
         all.extend((1..=9).map(Command::GoToTab));
         all.extend((1..=8).map(Command::FocusGroup));
@@ -219,6 +290,7 @@ impl KeyCommand for Command {
                 SearchCommand::ToggleCase => "search.toggleCase".into(),
                 SearchCommand::Close => "search.close".into(),
             },
+            Command::Side(c) => c.name().into(),
             Command::Field(c) => field_name(*c),
             Command::Detach => "session.detach".into(),
             Command::ConfirmYes => "confirm.yes".into(),
@@ -257,6 +329,7 @@ impl KeyCommand for Command {
                 SearchCommand::Close => "Close Find",
             }
             .into(),
+            Command::Side(c) => c.title().into(),
             Command::Field(c) => format!("Find Field: {}", field_name(*c).trim_start_matches("search.field.")),
             Command::Detach => "Detach".into(),
             Command::ConfirmYes => "Confirm".into(),
@@ -289,6 +362,7 @@ mod tests {
         assert_eq!(Context::parse("confirm"), Some(Context::Confirm));
         assert_eq!(Context::parse("x"), None);
         assert_eq!(Context::parse("search"), Some(Context::Search));
-        assert_eq!(Context::names().len(), 3);
+        assert_eq!(Context::parse("side"), Some(Context::Side));
+        assert_eq!(Context::names().len(), 4);
     }
 }

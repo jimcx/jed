@@ -4,7 +4,7 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use jtui::keymap::{Binding, KeyCombo, Keymap, Platform, Source};
 
-use crate::command::{Command, Context, SearchCommand as Sc};
+use crate::command::{Command, Context, SearchCommand as Sc, SideCommand as Sd};
 use crate::group::Side;
 use jtui::field::{FieldCommand as Fc, FieldMotion as Fm};
 
@@ -128,6 +128,54 @@ pub fn defaults(platform: Platform) -> Vec<Binding<Context, Command>> {
         list.push(find(KeyCode::Right, line, field(Fm::End, false)));
     } else {
         list.push(find(KeyCode::Char('u'), ctrl, Command::Field(Fc::DeleteToStart)));
+    }
+    // The commands side bar (VS Code's side bar toggle, Cmd+B; Ctrl+B is the shell's): Ctrl+Shift+B
+    // shows / hides it, Ctrl+Shift+E (the explorer's key in VS Code) gives it the keys. Both work
+    // while it has them. Its list keys are plain, and the filter box takes the field keys above
+    // (Home / End move the list instead).
+    let toggle = if mac {
+        (KeyCode::Char('b'), KeyModifiers::SUPER)
+    } else {
+        (KeyCode::Char('b'), ctrl | shift)
+    };
+    let focus = if mac {
+        (KeyCode::Char('e'), KeyModifiers::SUPER | shift)
+    } else {
+        (KeyCode::Char('e'), ctrl | shift)
+    };
+    list.push(term(toggle.0, toggle.1, Command::Side(Sd::Toggle)));
+    list.push(term(focus.0, focus.1, Command::Side(Sd::Focus)));
+    let side = |code, mods, command| (code, mods, command, Some(Context::Side));
+    list.extend([
+        side(KeyCode::Up, none, Command::Side(Sd::Up)),
+        side(KeyCode::Down, none, Command::Side(Sd::Down)),
+        side(KeyCode::PageUp, none, Command::Side(Sd::PageUp)),
+        side(KeyCode::PageDown, none, Command::Side(Sd::PageDown)),
+        side(KeyCode::Home, none, Command::Side(Sd::First)),
+        side(KeyCode::End, none, Command::Side(Sd::Last)),
+        side(KeyCode::Enter, none, Command::Side(Sd::Open)),
+        side(KeyCode::Esc, none, Command::Side(Sd::Back)),
+        side(KeyCode::Left, none, field(Fm::Left, false)),
+        side(KeyCode::Left, shift, field(Fm::Left, true)),
+        side(KeyCode::Right, none, field(Fm::Right, false)),
+        side(KeyCode::Right, shift, field(Fm::Right, true)),
+        side(KeyCode::Left, word, field(Fm::WordLeft, false)),
+        side(KeyCode::Right, word, field(Fm::WordRight, false)),
+        side(KeyCode::Backspace, none, Command::Field(Fc::DeleteLeft)),
+        side(KeyCode::Backspace, shift, Command::Field(Fc::DeleteLeft)),
+        side(KeyCode::Delete, none, Command::Field(Fc::DeleteRight)),
+        side(KeyCode::Backspace, word, Command::Field(Fc::DeleteWordLeft)),
+        side(KeyCode::Delete, word, Command::Field(Fc::DeleteWordRight)),
+        side(
+            KeyCode::Char('a'),
+            if mac { KeyModifiers::SUPER } else { ctrl },
+            Command::Field(Fc::SelectAll),
+        ),
+    ]);
+    if mac {
+        list.push(side(KeyCode::Backspace, line, Command::Field(Fc::DeleteToStart)));
+    } else {
+        list.push(side(KeyCode::Char('u'), ctrl, Command::Field(Fc::DeleteToStart)));
     }
     let confirm = |code, command| (code, none, command, Some(Context::Confirm));
     list.extend([
@@ -294,6 +342,45 @@ mod tests {
         assert_eq!(
             look(&mac, Context::Terminal, KeyCode::Char('f'), KeyModifiers::SUPER),
             open
+        );
+    }
+
+    #[test]
+    fn side_bar_keys_resolve_in_their_contexts() {
+        use crate::command::SideCommand as Sd;
+        let ev = |code, mods| KeyEvent::new(code, mods);
+        let (ctrl, shift, none) = (KeyModifiers::CONTROL, KeyModifiers::SHIFT, KeyModifiers::NONE);
+        let lin = Keymap::from_list(defaults(Platform::Linux));
+        let look = |m: &JmuxKeymap, c, code, mods| m.lookup(&ev(code, mods), c);
+        assert_eq!(
+            look(&lin, Context::Terminal, KeyCode::Char('B'), ctrl | shift),
+            Some(Command::Side(Sd::Toggle))
+        );
+        assert_eq!(
+            look(&lin, Context::Side, KeyCode::Char('E'), ctrl | shift),
+            Some(Command::Side(Sd::Focus))
+        );
+        assert_eq!(look(&lin, Context::Terminal, KeyCode::Down, none), None);
+        assert_eq!(
+            look(&lin, Context::Side, KeyCode::Down, none),
+            Some(Command::Side(Sd::Down))
+        );
+        assert_eq!(
+            look(&lin, Context::Side, KeyCode::Enter, none),
+            Some(Command::Side(Sd::Open))
+        );
+        assert_eq!(
+            look(&lin, Context::Side, KeyCode::Esc, none),
+            Some(Command::Side(Sd::Back))
+        );
+        assert_eq!(
+            look(&lin, Context::Side, KeyCode::Home, none),
+            Some(Command::Side(Sd::First))
+        );
+        let mac = Keymap::from_list(defaults(Platform::MacOs));
+        assert_eq!(
+            look(&mac, Context::Terminal, KeyCode::Char('b'), KeyModifiers::SUPER),
+            Some(Command::Side(Sd::Toggle))
         );
     }
 
