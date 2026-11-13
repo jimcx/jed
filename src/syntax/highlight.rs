@@ -1724,6 +1724,18 @@ index 1..2 100644
         );
     }
 
+    /// `operator` is a control keyword (like `return`) in every overload form.
+    #[test]
+    fn cpp_operator_keyword() {
+        let text = "struct A {\n  A operator+(const A& o) const;\n  bool operator==(const A& o) const;\n  A& operator[](int i);\n  A& operator()(int i);\n  operator bool() const;\n  void* operator new(unsigned long n);\n};\n";
+        let spans = all(Language::Cpp, text);
+        let ops: Vec<_> = spans.iter().filter(|(s, _)| s == "operator").collect();
+        assert_eq!(ops.len(), 6, "{spans:?}");
+        for (s, k) in ops {
+            assert_eq!(*k, "keyword.control", "{s:?}: {spans:?}");
+        }
+    }
+
     #[test]
     fn python_spans() {
         let text = "import os\nclass K:\n    def f(self, x=1):\n        # c\n        return \"s\\t\" + str(x) if x else None\n";
