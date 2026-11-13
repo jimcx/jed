@@ -50,9 +50,26 @@ Modules: `spec` (`Spec`, `DEFAULT_ENV`, and the `StartGate` test latch), `run`, 
 `APP = "jmux"` (`main.rs`) is what it passes to jtui. Modules so far: `protocol` (`ClientMsg` / `ServerMsg` / `ByeReason`;
 a frame is a u32 big-endian length of the rest, a kind byte (0 JSON, 1 raw `Output`), the payload; `encode_*`, the
 incremental `FrameReader`, async `read_msg` / `write_all_msg` and blocking `read_msg_blocking`; crossterm's `Event`
-travels through its `serde` feature, which jmux enables) and `session` (names `[A-Za-z0-9_.-]{1,64}`, `<dir>/<name>.sock`,
+travels through its `serde` feature, which jmux enables), `session` (names `[A-Za-z0-9_.-]{1,64}`, `<dir>/<name>.sock`,
 `list` / `remove_stale` / `next_free_name` / `most_recent`, blocking: they connect to the sockets; every function takes the
-directory, tests pass a temp dir).
+directory, tests pass a temp dir) and the server:
+
+- `server`: `spawn_server(exe, socket_dir, name)` (blocking; what `jmux new` will call) re-executes the binary as the hidden
+  `jmux server --session <name> --socket-dir <dir>` (`setsid`, stdio null, cwd kept) and polls until the socket accepts;
+  `run(socket_dir, Config)` is that process: bind (a live socket is `AddrInUse`, a stale file replaced; a guard removes the
+  socket on every exit), then one loop over an unbounded `AppEvent` channel (drain the burst, redraw once). Each connection is
+  a reader task (`AppEvent::Client` / `Closed`) and a writer task fed by a channel, so the app never waits on a client; the
+  session end drops the queues and awaits the writers (2 s) so `Bye` is delivered.
+- `app`: `App` (shape of jed's: owns everything, `handle(AppEvent)`, `needs_redraw`, `redraw(&mut Terminal<StreamBackend>)`).
+  One `ShellTab` (`$SHELL`, `JMUX` / `JMUX_TERMINAL` set, started in `start` at 24x80 and resized by the first `Hello`).
+  One attached client: a `Hello` replaces it (the old one gets `Bye TakenOver`), sets the stream backend's size, clears and
+  redraws in full; `Detach` / the connection closing leave the server running and drawing nothing. Ctrl+Shift+D detaches;
+  other keys / paste / mouse go to the shell; the shell ending ends the session (`Bye SessionEnded`, the process exits).
+- `ui` (`render(f, &mut App)`: shell above a one-row status bar, session name / title / detach hint), `theme` (the only file
+  with colours: `jterm::draw::KEYS` + `statusBar*` over `widget_entries`), `logging` (`<state dir>/jmux/logs/<name>-<pid>.log`,
+  `JMUX_LOG`, panics logged).
+- Tests: `jmux/src/jmux_server_tests.rs` runs a real server (own thread and runtime, `/bin/sh`) in a temp dir (a subfolder:
+  `prepare_dir` insists on `0700`) and drives it with a client over the socket that feeds `Output` into a `vt100::Parser`.
 
 ## Rules
 

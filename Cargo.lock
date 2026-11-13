@@ -1181,12 +1181,17 @@ name = "jmux"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "jterm",
  "jtui",
  "libc",
+ "ratatui",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "vt100",
 ]
 
 [[package]]
