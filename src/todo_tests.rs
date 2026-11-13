@@ -14141,7 +14141,7 @@ mod find_in_diff_view {
 
     use crate::app::{App, InitialFile};
     use crate::buffer::Buffer;
-    use crate::command::Command;
+    use crate::command::{Command, FindCommand};
     use crate::diff_view::Pair;
     use crate::git::test_repo::{commit_all, init};
     use crate::workspace::trust::TrustStore;
@@ -14178,5 +14178,78 @@ mod find_in_diff_view {
         assert!(app.active_buffer().is_none(), "expected a diff tab to be active");
         app.test_execute(Command::OpenFind);
         assert!(app.find.visible, "Find did not open on the diff tab");
+    }
+
+    /// Steps the diff cursor through matches: incremental search as the query is typed, Enter /
+    /// Shift+Enter with wrapping both ways, a match only on the deleted (left) side, no match
+    /// leaving the cursor, and replace / select-all doing nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn find_on_a_diff_tab_steps_the_cursor_row_by_row() {
+        use crossterm::event::{KeyCode as K, KeyModifiers as M};
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let (root, state) = (base.join("proj"), base.join("state"));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        init(&root);
+        fs::write(
+            root.join("f.txt"),
+            "alpha\nbeta x\ngamma\ndelta x\nepsilon\ngone x\nzeta\n",
+        )
+        .unwrap();
+        commit_all(&root, "one");
+        fs::write(root.join("f.txt"), "alpha\nbeta x\ngamma\ndelta x\nepsilon\nzeta\n").unwrap();
+        let initial = InitialFile {
+            buffer: Buffer::open(&root.join("f.txt")).unwrap(),
+            goto: None,
+        };
+        let mut app = App::new(
+            Workspace::load(root.clone()),
+            TrustStore::load(state.join("trust.toml")),
+            Some(initial),
+            true,
+        );
+        app.test_start();
+        assert!(
+            app.settle(|a| !a.git.running() && a.git.status.as_ref().is_some_and(|s| !s.entries.is_empty()))
+                .await
+        );
+        app.open_diff(root.join("f.txt"), Pair::UNSTAGED);
+        assert!(app.settle(|a| a.diffs_settled() && a.git.status.is_some()).await);
+        let cursor = |a: &App| a.groups.active_group().active_diff().unwrap().cursor;
+        assert_eq!(cursor(&app), 5, "the diff opens on its first change, the deleted row");
+
+        app.test_execute(Command::OpenFind);
+        assert_eq!(cursor(&app), 5, "an empty query moves nothing");
+        app.type_text("x");
+        assert_eq!(
+            cursor(&app),
+            5,
+            "incremental search keeps a matching row (left side only)"
+        );
+        app.press(K::Enter, M::NONE);
+        assert_eq!(cursor(&app), 1, "next wraps to the first match");
+        app.press(K::Enter, M::NONE);
+        assert_eq!(cursor(&app), 3);
+        app.press(K::Enter, M::NONE);
+        assert_eq!(cursor(&app), 5, "the match only on the deleted side counts");
+        app.press(K::Enter, M::SHIFT);
+        assert_eq!(cursor(&app), 3);
+        app.press(K::Enter, M::SHIFT);
+        assert_eq!(cursor(&app), 1);
+        app.press(K::Enter, M::SHIFT);
+        assert_eq!(cursor(&app), 5, "previous wraps to the last match");
+        app.press(K::Enter, M::SHIFT);
+        assert_eq!(cursor(&app), 3);
+
+        app.test_execute(Command::Find(FindCommand::ReplaceOne));
+        app.test_execute(Command::Find(FindCommand::SelectAllMatches));
+        assert_eq!(cursor(&app), 3);
+        assert!(!app.find.replace_visible);
+
+        app.type_text("qqq");
+        assert_eq!(cursor(&app), 3, "a query without a match leaves the cursor in place");
+        app.press(K::Enter, M::NONE);
+        assert_eq!(cursor(&app), 3);
     }
 }
