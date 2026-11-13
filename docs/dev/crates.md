@@ -61,10 +61,16 @@ directory, tests pass a temp dir) and the server:
   a reader task (`AppEvent::Client` / `Closed`) and a writer task fed by a channel, so the app never waits on a client; the
   session end drops the queues and awaits the writers (2 s) so `Bye` is delivered.
 - `app`: `App` (shape of jed's: owns everything, `handle(AppEvent)`, `needs_redraw`, `redraw(&mut Terminal<StreamBackend>)`).
-  One `ShellTab` (`$SHELL`, `JMUX` / `JMUX_TERMINAL` set, started in `start` at 24x80 and resized by the first `Hello`).
+  `groups: Groups` of `ShellTab`s (`$SHELL`, `JMUX` / `JMUX_TERMINAL` set; the first started in `start` at 24x80, every shell
+  resized to its group's area each frame, a hidden tab keeps its last size); `execute(Command)` runs new / close / next /
+  previous / Nth tab (new = after the active tab, numbered per program `sh (2)`; a tab with a running command, `!idle`
+  from the shell integration, asks first: `confirm`, drawn over the status bar, y / Enter close, n / Esc cancel, other
+  keys and the mouse swallowed). A shell that exits closes its tab; the last tab closing ends the session.
   One attached client: a `Hello` replaces it (the old one gets `Bye TakenOver`), sets the stream backend's size, clears and
-  redraws in full; `Detach` / the connection closing leave the server running and drawing nothing. Ctrl+Shift+D detaches;
-  other keys / paste / mouse go to the shell; the shell ending ends the session (`Bye SessionEnded`, the process exits).
+  redraws in full; `Detach` / the connection closing leave the server running and drawing nothing. `key` looks the key up in `keymap`
+  (`Context::Terminal` / `Confirm`), unbound keys go to the active shell, as do paste and mouse (`HitMap`: tab bar clicks
+  pick / close (x or middle click) / scroll, terminal events keep their offset below the bar); `Bye SessionEnded` and the
+  process exits with the last tab.
   `Query` / `Kill` / `Rename { name }` as a connection's first message never attach: answered (`Info` / `Done` / `Error`)
   and closed. `Kill` ends the session; `Rename` moves the socket file (the guard follows; running shells keep the old
   `$JMUX`).
@@ -74,13 +80,21 @@ directory, tests pass a temp dir) and the server:
   restores first, SIGHUP / SIGTERM, `terminal::restore()` on every outcome, then the line.
 - `cli`: `parse` -> `Cmd`; blocking functions of a socket dir (`ls`, `find`, `start`, `kill`, `rename`, `request`) and
   `nested(jmux_env)` (the `$JMUX` refusal); `main::run_cli(cmd, dir, jmux_env)` ties them to `client::run_attached`.
-- `ui` (`render(f, &mut App)`: shell above a one-row status bar, session name / title / detach hint), `theme` (the only file
+- `command` (`Command`, `Context`; `KeyCommand` names like `terminal.new`; plain Ctrl+letter passes through to the shell),
+  `keymap` (`defaults(Platform)` as data: Ctrl+` / Ctrl+Shift+T new, Ctrl+Shift+W close, Ctrl+PageDown / PageUp, Alt+1..9,
+  Ctrl+Shift+D detach; the file loading is `jmux_config`), `group` (`Group` = tabs + active + bar scroll; `Groups` over
+  `jtui::split::SplitTree`, one group so far, an emptied group leaves the tree), `hit` (`HitMap` / `Hit`, written by
+  `ui::render`), `tabbar` (` title × ` tabs, state glyph colours, `‹ ›` overflow arrows),
+  `ui` (`render(f, &mut App)`: each group's tab bar and terminal above a one-row status bar: session name / title / detach
+  hint from the keymap), `theme` (the only file
   with colours: `jterm::draw::KEYS` + `statusBar*` over `widget_entries`), `logging` (`<state dir>/jmux/logs/<name>-<pid>.log`,
   `JMUX_LOG`, panics logged).
 - Tests: `jmux/src/jmux_server_tests.rs` runs a real server (own thread and runtime, `/bin/sh`) in a temp dir (a subfolder:
   `prepare_dir` insists on `0700`) and drives it with a client over the socket that feeds `Output` into a `vt100::Parser`, or
   with `client::attach` (`Attached`: events in a channel, output into a parser). `jmux/tests/cli.rs` runs the binary
   (`CARGO_BIN_EXE_jmux`, env via `Command::env`): `kill -9` of the server, `ls`, kill / rename, the `$JMUX` refusal.
+  `jmux/src/jmux_layout_tests.rs` drives an `App` in-process (`Harness`: `settle` runs the event loop's steps until a
+  condition, keys via `command(Command)` from the keymap, a `vt100` screen fed by the connection's `Output`) with real shells.
 
 ## Rules
 

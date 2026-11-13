@@ -1320,6 +1320,9 @@ mod tests {
         assert!(none_left(&app));
     }
 
+    // FLAKE: 2026-11-14, answered `the language server failed: fake doesn't know textDocument/definition`
+    // instead of the retried definition (once in three full runs). Suspect: the 50 ms retry fires between
+    // `unfail` and `respond`, when the fake has neither a failure nor an answer for the method.
     #[tokio::test(flavor = "multi_thread")]
     async fn content_modified_is_asked_again() {
         let (_d, mut app, fake, root) = project().await;
@@ -1333,8 +1336,20 @@ mod tests {
         );
         assert!(ans.get().is_none(), "not answered with the routine error");
         fake.unfail("textDocument/definition");
+        let unfailed_at = std::time::Instant::now();
         fake.respond("textDocument/definition", json!([location(&a, 0, 4, 7)]));
+        let responding_after = unfailed_at.elapsed();
         let r = reply(&mut app, &ans).await;
+        if r.error.is_some() {
+            let sent = fake.requests("textDocument/definition");
+            eprintln!(
+                "FLAKE content_modified_is_asked_again: error {:?}; definition requests sent {}: {sent:?}; \
+                 respond() registered {responding_after:?} after unfail(); retry {:?}",
+                r.error,
+                sent.len(),
+                app.claude_lsp.retry
+            );
+        }
         assert_eq!(data(&r)["count"], 1);
         assert_eq!(fake.requests("textDocument/definition").len(), 2);
     }

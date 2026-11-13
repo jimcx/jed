@@ -1,15 +1,23 @@
 //! jmux: a terminal multiplexer with detachable sessions (design in `jmux/PLAN.md`).
 
 mod app;
+
 mod cli;
 mod client;
+mod command;
+mod group;
+mod hit;
+mod keymap;
 mod logging;
 mod protocol;
 mod server;
 mod session;
+mod tabbar;
 mod theme;
 mod ui;
 
+#[cfg(test)]
+mod jmux_layout_tests;
 #[cfg(test)]
 mod jmux_server_tests;
 

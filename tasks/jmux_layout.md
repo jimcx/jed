@@ -2,7 +2,7 @@
 id: jmux_layout
 name: "jmux: tabs, splits and terminal features"
 summary: many terminals per session in jed's layout — tab bars, split groups, dividers, tab drag and drop — with selection, copy / paste, scrollback, search and links in each
-status: open
+status: in-progress
 priority: 0
 dependencies: [jmux_server]
 ---
@@ -17,7 +17,12 @@ See [jmux's plan](../jmux/PLAN.md): [Layout](../jmux/PLAN.md#layout), [Terminals
   - If writing jmux's tab bar or groups turns out to copy more than ~300 lines of jed's unchanged, stop and report: that is the sign to make `Group<T>` generic in `jtui` instead (deferred from the `jtui` task)
   - Done when: a new terminal is a second tab and the keys cycle between them; split right gives two live shells side by side, the divider drags and focus moves with the keys and a click; a tab drags along its bar, to the other group, and onto a group's edge to split it; dragging in a terminal selects, copy puts it on the clipboard through OSC 52 and paste types it; the wheel and the scroll bar scroll the scrollback; search finds and steps through matches; a Ctrl+click on a URL opens it; a full-screen program (vim) gets its keys and mouse; detach and attach bring back the same layout
   - Subtasks (one agent and one commit each):
-    - jmux_layout-a: groups and the tab bar — the model, `Command` / `Context` / default keys, new / close / next / previous / Nth tab, titles, the close confirm
+    - ✅ jmux_layout-a: groups and the tab bar — the model, `Command` / `Context` / default keys, new / close / next / previous / Nth tab, titles, the close confirm
+      - `jmux/src/group.rs`: `Group` (tabs of `ShellTab`, `open` / `close` / `cycle` / `go_to` / `scroll_tabs`) and `Groups` on `jtui::split::SplitTree` (one group so far; `fresh_id` ready for splits; an emptied group leaves the tree unless last)
+      - `command.rs` (`Command`, `Context::{Terminal, Confirm}`), `keymap.rs` (`defaults(Platform)`: new Ctrl+` / Ctrl+Shift+T, close Ctrl+Shift+W (Cmd+W), next / previous Ctrl+PageDown / PageUp, tab N Alt+1..9 (Ctrl+1..9 on macOS), detach Ctrl+Shift+D; plain Ctrl+letter passes through in `Terminal`), `hit.rs` (`HitMap`, written by `ui::render`), `tabbar.rs`
+      - `app.rs`: `execute`, `new_terminal` (RunIds never reused), `request_close` (confirm over the status bar while a command runs; keys swallowed), `close_tab`; a shell exiting closes its tab, the last one ends the session; terminal mouse offset by the tab bar row
+      - Copy budget: ~80–100 lines from jed's tab bar, so no generic `Group<T>` in jtui
+      - Tests: `jmux/src/jmux_layout_tests.rs` (`Harness`, `jmux_layout_a_*`); the status bar doesn't show "N terminals" yet
     - jmux_layout-b: splits — split right / down, focus by key and click, divider drag, borders, per-group sizes, empty groups removed
     - jmux_layout-c: tab drag and drop — reorder, move between groups, drop on an edge to split, the drop zone shaded
     - jmux_layout-d: inside a terminal — mouse reporting passthrough, selection and copy, paste, scrollback keys / wheel / scroll bar, search, links; the done-when tests (`jmux/src/jmux_layout_tests.rs`), hand checks and marks the task ✅

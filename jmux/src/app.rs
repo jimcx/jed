@@ -11,10 +11,11 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crossterm::event::{Event as Input, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
+use crossterm::event::{Event as Input, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 use jterm::run::{EnvNames, Event, RunId, SCROLLBACK, Sink, StartOptions, Status};
 use jterm::shell::{self, ShellTab};
 use jterm::{keys, mouse};
+use jtui::split::GroupId;
 use jtui::stream_backend::StreamBackend;
 use jtui::theme::Theme;
 use ratatui::Terminal;
@@ -23,11 +24,12 @@ use tokio::sync::mpsc::{Sender, UnboundedSender};
 use tokio::task::JoinHandle;
 use vt100::MouseProtocolMode;
 
+use crate::command::{Command, Context};
+use crate::group::Groups;
+use crate::hit::{Hit, HitMap};
+use crate::keymap::{self, JmuxKeymap};
 use crate::protocol::{ByeReason, ClientMsg, PROTOCOL_VERSION, ServerMsg};
 use crate::{theme, ui};
-
-/// Shown at the right of the status bar.
-pub const DETACH_HINT: &str = "Ctrl+Shift+D detach";
 
 /// Messages a connection may have queued for its writer. A client that falls this far behind is
 /// dropped (its terminal can catch up on the next attach) rather than letting memory grow.
@@ -76,6 +78,14 @@ pub enum AppEvent {
     Run(Event),
 }
 
+/// The open question "close this terminal? a command is running".
+pub struct Confirm {
+    /// The tab's run (the tab may move or go before the answer).
+    pub run: RunId,
+    /// What runs: the tab's title without its state glyph.
+    pub name: String,
+}
+
 struct Conn {
     tx: Sender<ServerMsg>,
     writer: JoinHandle<()>,
@@ -87,7 +97,13 @@ pub struct App {
     pub name: String,
     config: Config,
     events: UnboundedSender<AppEvent>,
-    pub shell: Option<ShellTab>,
+    pub groups: Groups,
+    pub keymap: JmuxKeymap,
+    /// What the last frame drew where (`ui::render`), for the mouse.
+    pub hit: HitMap,
+    pub confirm: Option<Confirm>,
+    /// The id of the next run (they stay unique for the session: `$JMUX_TERMINAL`).
+    next_run: u64,
     pub theme: Theme,
     conns: HashMap<u64, Conn>,
     /// Writers of connections told `Bye`: `shutdown` waits for them so the message is delivered.
@@ -110,7 +126,11 @@ impl App {
             name: config.name.clone(),
             config,
             events,
-            shell: None,
+            groups: Groups::new(),
+            keymap: keymap::keymap(),
+            hit: HitMap::default(),
+            confirm: None,
+            next_run: 1,
             theme: theme::dark_plus(true),
             conns: HashMap::new(),
             closing: Vec::new(),
@@ -130,9 +150,42 @@ impl App {
         &self.config.socket
     }
 
-    /// Starts the shell at 24×80 (no client has said its size yet); an attach resizes it. Needs a
-    /// tokio runtime.
+    /// Starts the first shell at 24×80 (no client has said its size yet); an attach resizes it.
+    /// Needs a tokio runtime.
     pub fn start(&mut self) {
+        self.new_terminal();
+        tracing::info!(session = %self.name, program = %self.config.program.display(), "session started");
+    }
+
+    /// The key that runs `command`, as a label (`Ctrl+Shift+D`).
+    fn key_label(&self, command: Command) -> String {
+        self.keymap.binding_for(command).map_or_else(String::new, |c| c.label())
+    }
+
+    /// Shown at the right of the status bar.
+    pub fn detach_hint(&self) -> String {
+        format!("{} detach", self.key_label(Command::Detach))
+    }
+
+    /// The size a new shell in `group` starts at (the next frame resizes it to its area).
+    fn term_size(&self, group: GroupId) -> (u16, u16) {
+        let (rows, cols) = if self.attached.is_some() {
+            self.size
+        } else {
+            INITIAL_SIZE
+        };
+        let (cells, _) = self.groups.layout(ui::body(rows, cols));
+        let area = cells
+            .iter()
+            .find(|(id, _)| *id == group)
+            .map_or(ui::body(rows, cols), |c| c.1);
+        let term = ui::term_area(area);
+        (term.height, term.width)
+    }
+
+    /// Opens a shell tab after the active one in the active group and makes it the active tab:
+    /// the `number`th of its program, the lowest not taken (`zsh`, `zsh (2)`).
+    fn new_terminal(&mut self) {
         let sink: Sink = {
             let events = self.events.clone();
             Arc::new(move |ev| {
@@ -144,22 +197,86 @@ impl App {
             &self.config.cwd,
             Some((ENV.ipc, &self.config.socket)),
         );
-        let (rows, cols) = INITIAL_SIZE;
+        let base = shell::base(&self.config.program);
+        let number = (1..)
+            .find(|n| !self.groups.tabs().any(|t| t.base == base && t.number == *n))
+            .unwrap_or(1);
+        let id = RunId(self.next_run);
+        self.next_run += 1;
+        let (rows, cols) = self.term_size(self.groups.active);
         let options = StartOptions {
             env: ENV,
             command_ring: 500,
         };
-        self.shell = Some(ShellTab::new(
-            RunId(1),
-            spec,
-            rows - ui::STATUS_ROWS,
-            cols,
-            sink,
-            SCROLLBACK,
-            options,
-            1,
-        ));
-        tracing::info!(session = %self.name, program = %self.config.program.display(), "session started");
+        let tab = ShellTab::new(id, spec, rows, cols, sink, SCROLLBACK, options, number);
+        self.groups.active_group_mut().open(tab);
+        self.needs_redraw = true;
+    }
+
+    /// Runs a command. Commands never look at keys.
+    pub fn execute(&mut self, command: Command) {
+        match command {
+            Command::NewTerminal => self.new_terminal(),
+            Command::CloseTerminal => {
+                let group = self.groups.active;
+                let index = self.groups.active_group().active;
+                self.request_close(group, index);
+            }
+            Command::NextTab => self.groups.active_group_mut().cycle(1),
+            Command::PrevTab => self.groups.active_group_mut().cycle(-1),
+            Command::GoToTab(n) => self.groups.active_group_mut().go_to(usize::from(n)),
+            Command::Detach => self.detach(),
+            Command::ConfirmYes => {
+                if let Some(confirm) = self.confirm.take()
+                    && let Some((group, index)) = self.groups.find(confirm.run)
+                {
+                    self.close_tab(group, index);
+                }
+            }
+            Command::ConfirmNo => self.confirm = None,
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Closes a tab, asking first while a command runs in it (known from the shell integration).
+    fn request_close(&mut self, group: GroupId, index: usize) {
+        let Some(tab) = self.groups.get(group).and_then(|g| g.tabs.get(index)) else {
+            return;
+        };
+        if !tab.idle && tab.run.status().is_running() {
+            let name = tab.title.trim_end_matches(['●', '○', ' ']).to_string();
+            self.confirm = Some(Confirm { run: tab.run.id, name });
+            self.needs_redraw = true;
+        } else {
+            self.close_tab(group, index);
+        }
+    }
+
+    /// Drops the tab (which hangs its shell up); the last one closing ends the session.
+    fn close_tab(&mut self, group: GroupId, index: usize) {
+        let Some(tab) = self.groups.close_tab(group, index) else {
+            return;
+        };
+        if self.confirm.as_ref().is_some_and(|c| c.run == tab.run.id) {
+            self.confirm = None;
+        }
+        let failed = match tab.run.status() {
+            Status::Failed(e) => Some(e),
+            _ => None,
+        };
+        self.needs_redraw = true;
+        if self.groups.tab_count() == 0 {
+            let reason = match failed {
+                Some(e) => {
+                    tracing::error!(error = %e, "the shell failed to start");
+                    ByeReason::ServerError(e)
+                }
+                None => ByeReason::SessionEnded,
+            };
+            self.end_session(reason);
+        } else if let Some(e) = failed {
+            tracing::error!(error = %e, "a shell failed to start");
+        }
     }
 
     pub fn handle(&mut self, event: AppEvent) {
@@ -206,7 +323,7 @@ impl App {
                 ClientMsg::Kill => {
                     tracing::info!(conn, "session killed");
                     self.answer(conn, ServerMsg::Done);
-                    self.end_session();
+                    self.end_session(ByeReason::SessionEnded);
                 }
                 ClientMsg::Rename { name } => {
                     let reply = match self.rename(&name) {
@@ -274,12 +391,13 @@ impl App {
 
     fn info(&self) -> ServerMsg {
         let running = self
-            .shell
-            .as_ref()
-            .is_some_and(|s| !s.idle && s.run.status().is_running());
+            .groups
+            .tabs()
+            .filter(|s| !s.idle && s.run.status().is_running())
+            .count();
         ServerMsg::Info {
-            terminals: u32::from(self.shell.is_some()),
-            running: u32::from(running),
+            terminals: self.groups.tab_count() as u32,
+            running: running as u32,
             created: self.created,
             attached: self.attached.is_some(),
         }
@@ -369,7 +487,7 @@ impl App {
         match input {
             Input::Key(key) => self.key(key),
             Input::Paste(text) => {
-                if let Some(shell) = &self.shell {
+                if let Some(shell) = self.groups.active_group().active_tab() {
                     let bracketed = shell.run.screen().screen().bracketed_paste();
                     if shell.run.write(&keys::paste(&text, bracketed)) {
                         shell.run.scroll_to(false);
@@ -386,13 +504,22 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
-        if is_detach(&key) {
-            if key.kind == KeyEventKind::Press {
-                self.detach();
+        let context = if self.confirm.is_some() {
+            Context::Confirm
+        } else {
+            Context::Terminal
+        };
+        if let Some(command) = self.keymap.lookup(&key, context) {
+            // A held key repeats nothing but the tab cycling.
+            if key.kind == KeyEventKind::Press || matches!(command, Command::NextTab | Command::PrevTab) {
+                self.execute(command);
             }
             return;
         }
-        if let Some(shell) = &self.shell {
+        if context == Context::Confirm {
+            return;
+        }
+        if let Some(shell) = self.groups.active_group().active_tab() {
             let application_cursor = shell.run.screen().screen().application_cursor();
             if let Some(bytes) = keys::encode(&key, application_cursor)
                 && shell.run.write(&bytes)
@@ -403,16 +530,72 @@ impl App {
         }
     }
 
-    /// A pointer event over the shell: reported to a program that asked for the mouse, else the
-    /// wheel scrolls the scrollback.
+    /// A pointer event: on a tab bar it picks, closes or scrolls tabs; over a terminal it focuses
+    /// the group and goes to its shell. Nothing happens while the close question is open.
     fn mouse(&mut self, m: MouseEvent) {
-        let Some(shell) = &self.shell else {
-            return;
-        };
-        let area = ui::shell_area(self.size.0, self.size.1);
-        if m.row >= area.height || m.column >= area.width || !shell.run.status().is_running() {
+        if self.confirm.is_some() {
             return;
         }
+        let down = |button| m.kind == MouseEventKind::Down(button);
+        match self.hit.at(m.column, m.row) {
+            Some(Hit::Tab { group, index }) if down(MouseButton::Left) => {
+                self.groups.active = group;
+                if let Some(g) = self.groups.get_mut(group) {
+                    g.active = index;
+                }
+            }
+            Some(Hit::Tab { group, index } | Hit::Close { group, index }) if down(MouseButton::Middle) => {
+                self.request_close(group, index)
+            }
+            Some(Hit::Close { group, index }) if down(MouseButton::Left) => self.request_close(group, index),
+            Some(Hit::Arrow { group, forward }) if down(MouseButton::Left) => {
+                if let Some(g) = self.groups.get_mut(group) {
+                    g.scroll_tabs(if forward { 1 } else { -1 });
+                }
+            }
+            Some(Hit::Tab { group, .. } | Hit::Close { group, .. } | Hit::Arrow { group, .. } | Hit::Bar { group }) => {
+                // The wheel over a bar scrolls its tabs; a click elsewhere on it focuses the group.
+                match m.kind {
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollLeft => {
+                        if let Some(g) = self.groups.get_mut(group) {
+                            g.scroll_tabs(-1);
+                        }
+                    }
+                    MouseEventKind::ScrollDown | MouseEventKind::ScrollRight => {
+                        if let Some(g) = self.groups.get_mut(group) {
+                            g.scroll_tabs(1);
+                        }
+                    }
+                    MouseEventKind::Down(_) => self.groups.active = group,
+                    _ => return,
+                }
+            }
+            Some(Hit::Terminal { group }) => {
+                if matches!(m.kind, MouseEventKind::Down(_)) {
+                    self.groups.active = group;
+                }
+                self.terminal_mouse(group, m);
+            }
+            None => return,
+        }
+        self.needs_redraw = true;
+    }
+
+    /// A pointer event over `group`'s terminal: reported to a program that asked for the mouse,
+    /// else the wheel scrolls the scrollback.
+    fn terminal_mouse(&mut self, group: GroupId, mut m: MouseEvent) {
+        let Some(term) = self.hit.group(group).map(|g| g.term) else {
+            return;
+        };
+        let Some(shell) = self.groups.get(group).and_then(|g| g.active_tab()) else {
+            return;
+        };
+        if !shell.run.status().is_running() {
+            return;
+        }
+        // Positions are relative to the terminal's own corner.
+        m.row -= term.y;
+        m.column -= term.x;
         let bytes = {
             let screen = shell.run.screen();
             let s = screen.screen();
@@ -444,27 +627,27 @@ impl App {
     fn run_event(&mut self, ev: Event) {
         match ev {
             Event::Output(_) | Event::Started(_) => self.needs_redraw = true,
-            Event::Foreground { name, idle, error, .. } => {
-                if let Some(shell) = &mut self.shell {
+            Event::Foreground { id, name, idle, error } => {
+                if let Some((group, index)) = self.groups.find(id)
+                    && let Some(shell) = self.groups.get_mut(group).and_then(|g| g.tabs.get_mut(index))
+                {
                     shell.title = shell::title(&shell.base, shell.number, Some((&name, idle)));
                     shell.idle = idle;
                     shell.error = error;
                     self.needs_redraw = true;
                 }
             }
-            Event::Ended(_) => self.end_session(),
+            // The shell exited (or never started): its tab goes, with no question.
+            Event::Ended(id) => {
+                if let Some((group, index)) = self.groups.find(id) {
+                    self.close_tab(group, index);
+                }
+            }
         }
     }
 
-    /// The shell ended (the last terminal closed): the client is told and the server quits.
-    fn end_session(&mut self) {
-        let reason = match self.shell.as_ref().map(|s| s.run.status()) {
-            Some(Status::Failed(e)) => {
-                tracing::error!(error = %e, "the shell failed to start");
-                ByeReason::ServerError(e)
-            }
-            _ => ByeReason::SessionEnded,
-        };
+    /// The last terminal closed (or the session was killed): the client is told and the server quits.
+    fn end_session(&mut self, reason: ByeReason) {
         tracing::info!(session = %self.name, ?reason, "session ended");
         if let Some(conn) = self.attached.take() {
             self.bye(conn, reason);
@@ -498,20 +681,18 @@ impl App {
     /// Hangs up: the shell is killed and the connections' queues close. Returns the writer tasks
     /// to wait for, so queued messages (`Bye`) reach their clients.
     pub fn shutdown(&mut self) -> Vec<JoinHandle<()>> {
-        self.shell = None;
+        self.groups = Groups::new();
+        self.confirm = None;
         let mut writers = std::mem::take(&mut self.closing);
         writers.extend(self.conns.drain().map(|(_, c)| c.writer));
         writers
     }
 }
 
-/// Ctrl+Shift+D, as a terminal reports it with or without the kitty keyboard protocol's case.
-fn is_detach(key: &KeyEvent) -> bool {
-    matches!(key.code, KeyCode::Char('d' | 'D')) && key.modifiers.contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
-}
-
 #[cfg(test)]
 mod tests {
+    use crossterm::event::{KeyCode, KeyModifiers};
+
     use super::*;
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
@@ -688,15 +869,5 @@ mod tests {
                 reason: ByeReason::Detached
             })
         ));
-    }
-
-    #[test]
-    fn detach_key_is_ctrl_shift_d_only() {
-        let cs = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
-        assert!(is_detach(&key(KeyCode::Char('d'), cs)));
-        assert!(is_detach(&key(KeyCode::Char('D'), cs)));
-        assert!(!is_detach(&key(KeyCode::Char('d'), KeyModifiers::CONTROL)));
-        assert!(!is_detach(&key(KeyCode::Char('d'), KeyModifiers::SHIFT)));
-        assert!(!is_detach(&key(KeyCode::Char('x'), cs)));
     }
 }

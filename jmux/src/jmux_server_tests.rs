@@ -264,7 +264,8 @@ async fn jmux_server_follows_the_clients_size() {
     })
     .await;
     c.type_text("stty size\r").await;
-    c.wait_text("29 90").await;
+    // The group's tab bar takes a row above the shell, the status bar one below.
+    c.wait_text("28 90").await;
     c.end(&mut server).await;
 }
 
