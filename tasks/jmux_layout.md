@@ -35,4 +35,11 @@ See [jmux's plan](../jmux/PLAN.md): [Layout](../jmux/PLAN.md#layout), [Terminals
       - jed's pure helpers `snap_side` / `gap_at` moved to `jtui::split` (`gap_at` takes `(index, x0, x1)` items); ~140 lines copied into jmux, so still no generic `Group<T>`
       - Drawing: the drop marker (`tab.dropMarker`) and the shade (`terminal.dropBackground`, new jmux theme key)
       - Deferred: no move-tab keys yet (left / right, to the next group); Esc doesn't cancel a drag (it goes to the shell)
-    - jmux_layout-d: inside a terminal — mouse reporting passthrough, selection and copy, paste, scrollback keys / wheel / scroll bar, search, links; the done-when tests (`jmux/src/jmux_layout_tests.rs`), hand checks and marks the task ✅
+    - ✅ jmux_layout-d: inside a terminal — mouse reporting passthrough, selection and copy (OSC 52 to the client), paste, scrollback keys / wheel / scroll bar
+      - `app.rs`: `terminal_mouse` (a program reporting the mouse gets it unless Shift is held or the view is scrolled back), `select_press` / `select_drag` / `select_release` (`Drag::Terminal`; double click = jed's path run, triple click = the row, new; Shift+click extends), `scrollbar_click` / `scrollbar_drag` (`Drag::ScrollBar`), `scroll_active`; `App.out` holds escape output (OSC 52) appended to the next frame, dropped while no client is attached
+      - Commands `Copy` (Ctrl+Shift+C, Cmd+C), `ScrollUp` / `ScrollDown` / `PageUp` / `PageDown` / `ScrollTop` / `ScrollBottom` (jed's shell keys); paste is the client terminal's bracketed paste (no key)
+      - A scroll bar column at each terminal's right edge (`ui::shell_area`, `GroupHit::{text, scroll}`, `Hit::ScrollBar`); shells are sized to the text area, one column narrower
+      - Moved out of jed: `screen_cell` / `shift_drag_cell` / `round_run_drag` → `jterm::select`, `ClickTracker` → `jtui::clicks`; new `jtui::clipboard::osc52_sequence`
+      - Pitfall: don't hold `run.screen()` across `run.scroll(…)` (it deadlocks)
+      - Deferred: `Clear` (Cmd+K); drag auto-scroll at the edges (jed has none); OSC 52's tmux wrap reads the server's `TMUX`
+    - jmux_layout-e: search and links in a terminal; the done-when tests (`jmux/src/jmux_layout_tests.rs`), hand checks and marks the task ✅

@@ -11,8 +11,13 @@
 //!
 //! jmux_layout-c (`jmux_layout_c_*`): a tab drags along its bar, to another group's bar (an
 //! emptied group goes), onto a group's edge to split it or its centre to join it; no target moves
-//! nothing; the marker and shade are drawn; a detach clears the drag. The terminal features follow
-//! in jmux_layout-d.
+//! nothing; the marker and shade are drawn; a detach clears the drag.
+//!
+//! jmux_layout-d (`jmux_layout_d_*`): dragging in a terminal selects (drawn in the theme's
+//! selection colour) and Copy sends the text as OSC 52; double and triple clicks select a path-like
+//! word and the row; a paste types into the shell, bracketed when it asked; a program with mouse
+//! reporting gets the events but Shift keeps them for the selection; the wheel, Shift+PageUp and the
+//! scroll bar (click and drag) scroll the scrollback and a typed key returns to the live screen.
 
 use std::num::NonZeroU16;
 use std::path::PathBuf;
@@ -211,7 +216,7 @@ impl Harness {
 
     /// Whether every group's active shell is the size of its terminal area.
     fn shells_fit(&self) -> bool {
-        let fit = |g: &crate::hit::GroupHit| self.shell_size(g.id) == (g.term.height, g.term.width);
+        let fit = |g: &crate::hit::GroupHit| self.shell_size(g.id) == (g.text.height, g.text.width);
         self.app.hit.groups.iter().all(fit)
     }
 
@@ -303,7 +308,7 @@ async fn jmux_layout_a_every_shell_is_sized_to_its_groups_area_and_hidden_tabs_k
         let (r, c) = g.tabs[i].run.screen().screen().size();
         (r.get(), c.get())
     };
-    assert_eq!(size(&h, 1), (10, 60));
+    assert_eq!(size(&h, 1), (10, 59));
     // The client resizes while the second tab shows: the first, hidden, keeps its last size.
     h.rows = 15;
     h.cols = 70;
@@ -313,10 +318,10 @@ async fn jmux_layout_a_every_shell_is_sized_to_its_groups_area_and_hidden_tabs_k
         msg: ClientMsg::Resize { rows: 15, cols: 70 },
     });
     h.terminal = Terminal::new(StreamBackend::new(70, 15)).unwrap();
-    h.settle("the active shell to follow", |h| size(h, 1) == (13, 70)).await;
-    assert_eq!(size(&h, 0), (10, 60), "a hidden tab keeps its last size");
+    h.settle("the active shell to follow", |h| size(h, 1) == (13, 69)).await;
+    assert_eq!(size(&h, 0), (10, 59), "a hidden tab keeps its last size");
     h.command(Command::PrevTab);
-    h.settle("the shown shell to follow", |h| size(h, 0) == (13, 70)).await;
+    h.settle("the shown shell to follow", |h| size(h, 0) == (13, 69)).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -707,8 +712,8 @@ async fn jmux_layout_b_split_right_gives_two_live_shells_side_by_side() {
     };
     assert!(col_of(&h, "LEFT_3") < usize::from(left.term.width));
     assert!(col_of(&h, "RIGHT_2") >= usize::from(right.term.x));
-    assert_eq!(h.shell_size(left.id), (left.term.height, left.term.width));
-    assert_eq!(h.shell_size(right.id), (right.term.height, right.term.width));
+    assert_eq!(h.shell_size(left.id), (left.text.height, left.text.width));
+    assert_eq!(h.shell_size(right.id), (right.text.height, right.text.width));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -748,6 +753,7 @@ async fn jmux_layout_b_split_down_stacks_and_focus_follows_the_keys_and_clicks()
     // A click on a group's terminal or its bar focuses it.
     let t = rect(&h, a);
     h.click(MouseButton::Left, t.x + 2, t.y + 2);
+    h.mouse(MouseEventKind::Up(MouseButton::Left), t.x + 2, t.y + 2);
     assert_eq!(h.app.groups.active, a);
     let bar = h.app.hit.group(c).unwrap().bar;
     h.click(MouseButton::Left, bar.x + bar.width - 1, bar.y);
@@ -770,8 +776,8 @@ async fn jmux_layout_b_the_divider_drags_and_the_shells_follow() {
     })
     .await;
     assert_eq!(h.app.hit.group(left_id).unwrap().term.width, wide_before + 12);
-    assert_eq!(h.shell_size(left_id).1, wide_before + 12);
-    assert_eq!(h.shell_size(right_id).1, h.app.hit.group(right_id).unwrap().term.width);
+    assert_eq!(h.shell_size(left_id).1, wide_before + 11);
+    assert_eq!(h.shell_size(right_id).1, h.app.hit.group(right_id).unwrap().text.width);
     // Released: more motion moves nothing.
     h.mouse(MouseEventKind::Drag(MouseButton::Left), 5, 4);
     h.settle("a frame", |h| !h.app.needs_redraw).await;
@@ -840,7 +846,7 @@ async fn jmux_layout_b_a_shell_exiting_removes_its_group_and_the_other_fills_the
     assert_eq!(h.app.groups.active, left, "focus moves to the neighbour");
     assert_eq!(h.app.hit.groups[0].term.width, 61);
     assert!(h.app.hit.dividers.is_empty());
-    assert_eq!(h.shell_size(left).1, 61);
+    assert_eq!(h.shell_size(left).1, 60);
     assert!(h.bye.is_none(), "the session goes on");
     h.type_text("echo STILL_$((5+5))\n");
     h.settle_text("STILL_10").await;
@@ -1247,4 +1253,389 @@ async fn jmux_layout_c_a_group_too_narrow_to_split_takes_an_edge_drop_as_the_cen
     assert!(h.app.groups.get(order[0]).is_none(), "the emptied group left");
     assert_eq!(h.app.groups.get(order[1]).unwrap().tabs.len(), 2, "joined, not split");
     assert_eq!(h.app.groups.order().len(), 2);
+}
+
+// ---- jmux_layout-d: inside a terminal ----
+
+fn b64(text: &str) -> String {
+    jtui::clipboard::base64(text.as_bytes())
+}
+
+impl Harness {
+    /// The first screen row containing `needle`.
+    fn row_of(&self, needle: &str) -> u16 {
+        (0..self.rows)
+            .find(|r| self.row(*r).contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} not on screen:\n{}", self.text()))
+    }
+
+    fn release(&mut self, x: u16, y: u16) {
+        self.mouse(MouseEventKind::Up(MouseButton::Left), x, y);
+    }
+
+    /// A press and release (one click) at `x`, `y`.
+    fn click_at(&mut self, x: u16, y: u16) {
+        self.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+        self.release(x, y);
+    }
+
+    fn mouse_with(&mut self, kind: MouseEventKind, x: u16, y: u16, modifiers: KeyModifiers) {
+        self.input(Input::Mouse(MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers,
+        }));
+    }
+
+    /// Whether the client was sent an OSC 52 copy of exactly `text`.
+    fn copied(&self, text: &str) -> bool {
+        let want = format!("]52;c;{}\x07", b64(text));
+        String::from_utf8_lossy(&self.raw).contains(&want)
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        self.app
+            .groups
+            .active_group()
+            .active_tab()
+            .unwrap()
+            .run
+            .copy_selection()
+    }
+
+    fn scrollback(&self) -> usize {
+        self.app
+            .groups
+            .active_group()
+            .active_tab()
+            .unwrap()
+            .run
+            .scrollbar_extent()
+            .0
+    }
+
+    /// The number the first row of the shell shows (after `seq`).
+    fn top_number(&self) -> u32 {
+        let row = self.row(1);
+        row.split_whitespace()
+            .next()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no number on the shell's first row: {row:?}"))
+    }
+
+    /// Whether the shell's first row is the command line that printed the numbers (the oldest
+    /// output) or a number below `below`.
+    fn at_oldest(&self, below: u32) -> bool {
+        let row = self.row(1);
+        row.starts_with("seq 1 200")
+            || row
+                .split_whitespace()
+                .next()
+                .and_then(|n| n.parse::<u32>().ok())
+                .is_some_and(|n| n < below)
+    }
+
+    /// Prints 1..=200 and waits for the end of it.
+    async fn seq_200(&mut self) {
+        self.type_text("seq 1 200\n");
+        self.settle("the end of seq", |h| (0..h.rows).any(|r| h.row(r).trim() == "200"))
+            .await;
+        self.frame().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_d_dragging_selects_and_copy_sends_osc_52() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    h.type_text("printf 'ONE_%s\\n' TWO\n");
+    h.settle("the output", |h| h.text().contains("ONE_TWO")).await;
+    h.frame().await;
+    let row = h.row_of("ONE_TWO");
+    // Nothing selected: Copy sends nothing.
+    h.command(Command::Copy);
+    h.frame().await;
+    assert!(!String::from_utf8_lossy(&h.raw).contains("]52;"));
+    // Press on the O, drag past the last O of TWO (the head cell is excluded: 7 columns).
+    h.mouse(MouseEventKind::Down(MouseButton::Left), 0, row);
+    h.mouse(MouseEventKind::Drag(MouseButton::Left), 7, row);
+    h.frame().await;
+    assert_eq!(h.pointer_shapes().last().map(String::as_str), Some("text"));
+    let selection_bg = vt100::Color::Rgb(0x26, 0x4F, 0x78);
+    assert_eq!(h.bg_at(3, row), selection_bg, "the dragged cells are drawn selected");
+    assert_ne!(h.bg_at(9, row), selection_bg, "the cells past it are not");
+    h.release(7, row);
+    assert_eq!(h.selected_text().as_deref(), Some("ONE_TWO"));
+    h.command(Command::Copy);
+    h.settle("the copy to reach the client", |h| h.copied("ONE_TWO")).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_d_a_click_selects_nothing_and_double_and_triple_clicks_take_a_word_and_the_row() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    h.type_text("printf 'see %s done\\n' /usr/lib/x_y\n");
+    h.settle("the output", |h| h.text().lines().any(|l| l.starts_with("see /usr")))
+        .await;
+    h.frame().await;
+    let row = (0..h.rows).find(|r| h.row(*r).starts_with("see /usr")).unwrap();
+    h.click_at(1, row);
+    assert_eq!(h.selected_text(), None, "a click selects no cell");
+    // Double click inside the path: the path-like run.
+    h.click_at(8, row);
+    h.click_at(8, row);
+    assert_eq!(h.selected_text().as_deref(), Some("/usr/lib/x_y"));
+    h.command(Command::Copy);
+    h.settle("the copy", |h| h.copied("/usr/lib/x_y")).await;
+    // A third click in quick succession: the whole row.
+    h.click_at(8, row);
+    assert_eq!(h.selected_text().as_deref(), Some("see /usr/lib/x_y done"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_d_a_paste_types_into_the_shell_bracketed_when_it_asked() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    h.input(Input::Paste("echo PASTED_$((6+1))\n".into()));
+    h.settle_text("PASTED_7").await;
+    // `cat -v` shows the bracket markers a program that asked for them receives.
+    h.type_text("printf '\\033[?2004h'; cat -v\n");
+    h.settle("bracketed paste on", |h| {
+        h.app
+            .groups
+            .active_group()
+            .active_tab()
+            .unwrap()
+            .run
+            .screen()
+            .screen()
+            .bracketed_paste()
+    })
+    .await;
+    h.input(Input::Paste("hello\n".into()));
+    h.settle_text("^[[200~hello").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_d_a_program_with_mouse_reporting_gets_the_mouse_and_shift_selects_instead() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    h.type_text(
+        "printf 'ABC_%s\\n' DEF; printf '\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=8 2>/dev/null | od -An -tx1\n",
+    );
+    h.settle("mouse reporting on", |h| {
+        h.app
+            .groups
+            .active_group()
+            .active_tab()
+            .is_some_and(|t| t.run.screen().screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None)
+    })
+    .await;
+    h.settle("the output", |h| h.text().lines().any(|l| l.starts_with("ABC_DEF")))
+        .await;
+    h.frame().await;
+    let row = h.row_of("ABC_DEF");
+    // A drag is the program's: reported, nothing selected.
+    h.mouse(MouseEventKind::Down(MouseButton::Left), 0, row);
+    h.mouse(MouseEventKind::Drag(MouseButton::Left), 5, row);
+    h.release(5, row);
+    h.settle_text("1b 5b 3c 30 3b 31 3b").await;
+    assert_eq!(h.selected_text(), None);
+    assert!(h.app.drag.is_none());
+    // Shift keeps the mouse for jmux's selection.
+    let shift = KeyModifiers::SHIFT;
+    h.mouse_with(MouseEventKind::Down(MouseButton::Left), 0, row, shift);
+    h.mouse_with(MouseEventKind::Drag(MouseButton::Left), 7, row, shift);
+    h.mouse_with(MouseEventKind::Up(MouseButton::Left), 7, row, shift);
+    assert_eq!(h.selected_text().as_deref(), Some("ABC_DEF"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_d_the_wheel_and_the_scrollback_keys_scroll_and_a_typed_key_returns_to_the_live_screen() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    h.seq_200().await;
+    let live = h.top_number();
+    assert_eq!(h.scrollback(), 0);
+    h.mouse(MouseEventKind::ScrollUp, 5, 5);
+    h.frame().await;
+    assert_eq!(h.top_number(), live - 3, "the wheel is three lines");
+    h.mouse(MouseEventKind::ScrollDown, 5, 5);
+    h.frame().await;
+    assert_eq!(h.top_number(), live);
+    // A page is the screen's rows less one (10 rows).
+    h.key(KeyCode::PageUp, KeyModifiers::SHIFT);
+    h.frame().await;
+    assert_eq!(h.top_number(), live - 9);
+    h.key(KeyCode::Up, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    h.frame().await;
+    assert_eq!(h.top_number(), live - 10);
+    h.key(KeyCode::Down, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    h.key(KeyCode::PageDown, KeyModifiers::SHIFT);
+    h.frame().await;
+    assert_eq!(h.top_number(), live);
+    h.key(KeyCode::Home, KeyModifiers::CONTROL);
+    h.frame().await;
+    assert!(h.at_oldest(2), "the oldest output: {:?}", h.row(1));
+    h.key(KeyCode::End, KeyModifiers::CONTROL);
+    h.frame().await;
+    assert_eq!(h.top_number(), live);
+    // A key typed while scrolled back goes to the shell and the view returns to the live screen.
+    h.mouse(MouseEventKind::ScrollUp, 5, 5);
+    assert!(h.scrollback() > 0);
+    h.key(KeyCode::Char('x'), KeyModifiers::NONE);
+    assert_eq!(h.scrollback(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_d_the_scroll_bar_is_drawn_and_a_click_or_drag_on_it_scrolls() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    // Nothing to scroll yet: no thumb. The shell leaves the bar's column alone.
+    let g = h.app.hit.groups[0].clone();
+    assert_eq!((g.text.width, g.scroll.track.x, g.scroll.track.width), (59, 59, 1));
+    assert_eq!(g.scroll.track.height, g.text.height);
+    assert!(g.scroll.thumb.is_none());
+    // The shell itself is sized to the text area, one column narrower than the terminal area.
+    let size = h
+        .app
+        .groups
+        .active_group()
+        .active_tab()
+        .unwrap()
+        .run
+        .screen()
+        .screen()
+        .size();
+    assert_eq!((size.0.get(), size.1.get()), (g.text.height, 59));
+    h.seq_200().await;
+    let live = h.top_number();
+    let g = h.app.hit.groups[0].clone();
+    let thumb = g.scroll.thumb.expect("a thumb once there is scrollback");
+    assert_eq!(
+        thumb.start + thumb.len,
+        g.scroll.track.height,
+        "at the bottom while live"
+    );
+    let slider = vt100::Color::Rgb(0x42, 0x42, 0x42);
+    let (x, top) = (g.scroll.track.x, g.scroll.track.y);
+    let bottom = top + g.scroll.track.height - 1;
+    // The thumb's end is a half block in the slider colour (or a full cell of it).
+    let cell = h.screen.screen().cell(bottom, x).unwrap();
+    assert!(cell.fgcolor() == slider || cell.bgcolor() == slider, "{cell:?}");
+    // A click above the thumb jumps there: the top of the scrollback.
+    h.click_at(x, top);
+    h.frame().await;
+    assert!(h.at_oldest(live / 2), "scrolled far back: {:?}", h.row(1));
+    assert!(h.app.drag.is_none(), "released");
+    // Grab the thumb (now at the top) and drag it down, past the track's end (the drag owns the
+    // mouse wherever the pointer goes).
+    h.mouse(MouseEventKind::Down(MouseButton::Left), x, top);
+    h.mouse(MouseEventKind::Drag(MouseButton::Left), x, bottom + 1);
+    h.release(x, bottom + 1);
+    h.frame().await;
+    assert_eq!(h.scrollback(), 0, "dragged back to the live screen");
+    assert_eq!(h.top_number(), live);
+    h.type_text("printf '%059d\\n' 0\n");
+    h.settle("a full-width line", |h| h.text().contains(&"0".repeat(59)))
+        .await;
+    h.frame().await;
+    let full = h.row_of(&"0".repeat(59));
+    assert_ne!(
+        h.screen
+            .screen()
+            .cell(full, 59)
+            .map(|c| c.contents().to_string())
+            .as_deref(),
+        Some("0"),
+        "the bar's column holds no shell text"
+    );
+    // The wheel over the bar scrolls too.
+    h.mouse(MouseEventKind::ScrollUp, x, top + 3);
+    assert_eq!(h.scrollback(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_d_a_new_client_starts_with_no_drag_and_the_selection_stays() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    h.type_text("printf 'KEEP_%s\\n' ME\n");
+    h.settle("the output", |h| h.text().contains("KEEP_ME")).await;
+    h.frame().await;
+    let row = h.row_of("KEEP_ME");
+    h.mouse(MouseEventKind::Down(MouseButton::Left), 0, row);
+    h.mouse(MouseEventKind::Drag(MouseButton::Left), 7, row);
+    assert!(h.app.drag.is_some());
+    h.attach(2);
+    assert!(h.app.drag.is_none(), "a new client starts with no drag");
+    assert_eq!(h.selected_text().as_deref(), Some("KEEP_ME"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_d_the_wheel_goes_to_a_reporting_program_and_shift_scrolls_instead() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    h.seq_200().await;
+    h.type_text("printf '\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=6 2>/dev/null | od -An -tx1\n");
+    h.settle("mouse reporting on", |h| {
+        h.app
+            .groups
+            .active_group()
+            .active_tab()
+            .is_some_and(|t| t.run.screen().screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None)
+    })
+    .await;
+    h.frame().await;
+    h.mouse(MouseEventKind::ScrollUp, 5, 5);
+    // The program got the wheel report (button 64), and the scrollback did not move.
+    h.settle_text("1b 5b 3c 36 34 3b").await;
+    assert_eq!(h.scrollback(), 0, "the wheel was the program's, not the scrollback's");
+    h.mouse_with(MouseEventKind::ScrollUp, 5, 5, KeyModifiers::SHIFT);
+    assert_eq!(h.scrollback(), 3, "Shift keeps the wheel for the scrollback");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_d_shift_click_extends_the_selection() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    h.type_text("printf 'ALPHA %s\\n' BETA\n");
+    h.settle("the output", |h| h.text().lines().any(|l| l.starts_with("ALPHA BETA")))
+        .await;
+    h.frame().await;
+    let row = (0..h.rows).find(|r| h.row(*r).starts_with("ALPHA BETA")).unwrap();
+    h.mouse(MouseEventKind::Down(MouseButton::Left), 0, row);
+    h.mouse(MouseEventKind::Drag(MouseButton::Left), 5, row);
+    h.release(5, row);
+    assert_eq!(h.selected_text().as_deref(), Some("ALPHA"));
+    h.mouse_with(MouseEventKind::Down(MouseButton::Left), 10, row, KeyModifiers::SHIFT);
+    h.mouse_with(MouseEventKind::Up(MouseButton::Left), 10, row, KeyModifiers::SHIFT);
+    assert_eq!(
+        h.selected_text().as_deref(),
+        Some("ALPHA BETA"),
+        "extended from the anchor"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_d_a_copy_while_no_client_is_attached_is_not_sent_to_the_next_one() {
+    let mut h = Harness::new(12, 60).await;
+    h.settle_text("sh ○").await;
+    h.type_text("printf 'STALE_%s\\n' COPY\n");
+    h.settle("the output", |h| h.text().contains("STALE_COPY")).await;
+    h.frame().await;
+    let row = h.row_of("STALE_COPY");
+    h.mouse(MouseEventKind::Down(MouseButton::Left), 0, row);
+    h.mouse(MouseEventKind::Drag(MouseButton::Left), 10, row);
+    h.release(10, row);
+    assert_eq!(h.selected_text().as_deref(), Some("STALE_COPY"));
+    // The client goes away, then a copy runs and a frame is due with nobody attached.
+    let conn = h.conn;
+    h.app.handle(AppEvent::Closed { conn });
+    h.app.execute(Command::Copy);
+    h.app.redraw(&mut h.terminal).unwrap();
+    // A new client gets a fresh screen without the old copy.
+    h.attach(2);
+    h.frame().await;
+    assert!(!String::from_utf8_lossy(&h.raw).contains("]52;"), "no stale OSC 52");
 }

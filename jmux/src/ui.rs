@@ -3,6 +3,8 @@
 //! bar (or the close question). Writes the `HitMap`.
 
 use jtui::borders::Segment;
+use jtui::scrollbar::Scrollable;
+use jtui::scrollbar_draw::{self, Look, ScrollBarHit};
 use jtui::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -28,12 +30,24 @@ pub fn term_area(group: Rect) -> Rect {
     Rect::new(group.x, group.y + bar, group.width, group.height - bar)
 }
 
+/// A group's terminal split into the shell's cells and the one-column track of its scroll bar
+/// (none when the area is narrower than two columns, as jed's `take_column`).
+pub fn shell_area(term: Rect) -> (Rect, Option<Rect>) {
+    let mut text = term;
+    let track = scrollbar_draw::take_column(&mut text);
+    (text, track)
+}
+
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let (cells, dividers) = app.groups.layout(body(area.height, area.width));
     let mut hit = HitMap::default();
     let target = match &app.drag {
         Some(Drag::Tab(t)) => t.target,
+        _ => None,
+    };
+    let scrolling = match &app.drag {
+        Some(Drag::ScrollBar { group, .. }) => Some(*group),
         _ => None,
     };
     for (id, rect) in cells {
@@ -48,11 +62,23 @@ pub fn render(f: &mut Frame, app: &mut App) {
             _ => None,
         };
         let (tabs, arrows) = tabbar::render(f, bar, group, &app.theme, focused, drop);
+        let (text, track) = shell_area(term);
+        let mut scroll = ScrollBarHit::default();
         if let Some(shell) = group.active_tab() {
             // The run follows the area every frame (a no-op while the size is the same); hidden
             // tabs keep their last size.
-            shell.run.resize(term.height, term.width);
-            jterm::draw::render_shell(f, term, shell, &app.theme, focused && app.confirm.is_none(), None);
+            shell.run.resize(text.height, text.width);
+            jterm::draw::render_shell(f, text, shell, &app.theme, focused && app.confirm.is_none(), None);
+            if let Some(track) = track {
+                let base = app.theme.get("editor").patch(app.theme.get("terminal.background"));
+                let look = if scrolling == Some(id) {
+                    Look::Active
+                } else {
+                    Look::Normal
+                };
+                let bar = shell.run.scrollable().scroll();
+                scroll = scrollbar_draw::render(f.buffer_mut(), track, bar, look, base, &app.theme);
+            }
         }
         if let Some(TabDrop::Terminal { group, side }) = target
             && group == id
@@ -65,6 +91,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
             id,
             bar,
             term,
+            text,
+            scroll,
             tabs,
             arrows,
         });

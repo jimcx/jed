@@ -10,12 +10,16 @@ use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
-use crossterm::event::{Event as Input, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{Event as Input, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use jterm::run::{EnvNames, Event, RunId, SCROLLBACK, Sink, StartOptions, Status};
 use jterm::shell::{self, ShellTab};
-use jterm::{keys, mouse};
+use jterm::{keys, mouse, select};
 use jtui::borders::Borders;
+use jtui::clicks::ClickTracker;
+use jtui::clipboard::osc52_sequence;
+use jtui::scrollbar::Scrollable;
 use jtui::split::{Divider, GroupId, SplitDir};
 use jtui::stream_backend::StreamBackend;
 use jtui::terminal::{Pointer, set_pointer};
@@ -44,6 +48,14 @@ const INITIAL_SIZE: (u16, u16) = (24, 80);
 
 /// Rows a mouse wheel notch scrolls the scrollback by.
 const WHEEL_LINES: isize = 3;
+
+/// A step through a shell's scrollback.
+enum Scroll {
+    Lines(isize),
+    Page(isize),
+    /// The oldest output (true) or the live screen.
+    Edge(bool),
+}
 
 /// The variables a shell gets: the socket path and its terminal's id (jterm sets the second).
 const ENV: EnvNames = EnvNames {
@@ -111,6 +123,10 @@ pub struct App {
     /// Where the pointer last was, and the shape the client was last told to show.
     mouse_at: Option<(u16, u16)>,
     pointer: Pointer,
+    /// Counts clicks in a terminal (a double click selects a word, a triple one the line).
+    clicks: ClickTracker,
+    /// Escape output for the client (OSC 52 from a copy), sent with the next frame.
+    out: Vec<u8>,
     /// The dividers' lines (`ui::render`).
     pub borders: Borders,
     /// The id of the next run (they stay unique for the session: `$JMUX_TERMINAL`).
@@ -135,6 +151,19 @@ pub struct App {
 pub enum Drag {
     Divider(Divider),
     Tab(TabDrag),
+    /// Selecting text in a terminal; `anchor` is the pressed range (a word or line for a double /
+    /// triple click), `text` the shell's cells on screen.
+    Terminal {
+        run: RunId,
+        anchor: (select::Cell, select::Cell),
+        word: bool,
+        text: Rect,
+    },
+    /// A scroll bar's thumb, held by its half cell `grab`.
+    ScrollBar {
+        group: GroupId,
+        grab: u16,
+    },
 }
 
 impl App {
@@ -170,6 +199,8 @@ impl App {
             drag: None,
             mouse_at: None,
             pointer: Pointer::Default,
+            clicks: ClickTracker::default(),
+            out: Vec::new(),
             borders: Borders::default(),
             next_run: 1,
             theme: theme::dark_plus(true),
@@ -220,8 +251,8 @@ impl App {
             .iter()
             .find(|(id, _)| *id == group)
             .map_or(ui::body(rows, cols), |c| c.1);
-        let term = ui::term_area(area);
-        (term.height, term.width)
+        let (text, _) = ui::shell_area(ui::term_area(area));
+        (text.height, text.width)
     }
 
     /// Opens a shell tab after the active one in `group` and makes it the active tab: the `number`th
@@ -293,6 +324,23 @@ impl App {
             Command::NextTab => self.groups.active_group_mut().cycle(1),
             Command::PrevTab => self.groups.active_group_mut().cycle(-1),
             Command::GoToTab(n) => self.groups.active_group_mut().go_to(usize::from(n)),
+            Command::Copy => {
+                if let Some(text) = self
+                    .groups
+                    .active_group()
+                    .active_tab()
+                    .and_then(|s| s.run.copy_selection())
+                    && !text.is_empty()
+                {
+                    self.out.extend_from_slice(osc52_sequence(&text).as_bytes());
+                }
+            }
+            Command::ScrollUp => self.scroll_active(Scroll::Lines(-1)),
+            Command::ScrollDown => self.scroll_active(Scroll::Lines(1)),
+            Command::PageUp => self.scroll_active(Scroll::Page(-1)),
+            Command::PageDown => self.scroll_active(Scroll::Page(1)),
+            Command::ScrollTop => self.scroll_active(Scroll::Edge(true)),
+            Command::ScrollBottom => self.scroll_active(Scroll::Edge(false)),
             Command::Detach => self.detach(),
             Command::ConfirmYes => {
                 if let Some(confirm) = self.confirm.take()
@@ -304,6 +352,24 @@ impl App {
             Command::ConfirmNo => self.confirm = None,
         }
         self.needs_redraw = true;
+    }
+
+    /// Scrolls the active shell's scrollback.
+    fn scroll_active(&mut self, by: Scroll) {
+        let Some(shell) = self.groups.active_group().active_tab() else {
+            return;
+        };
+        let run = &shell.run;
+        match by {
+            Scroll::Lines(n) => run.scroll(n),
+            // A page is the screen's rows less one.
+            Scroll::Page(n) => {
+                // The rows first: the screen's lock is not held across the scroll, which takes it.
+                let rows = run.screen().screen().size().0.get() as isize;
+                run.scroll(n * (rows - 1).max(1));
+            }
+            Scroll::Edge(top) => run.scroll_to(top),
+        }
     }
 
     /// Closes a tab, asking first while a command runs in it (known from the shell integration).
@@ -624,6 +690,13 @@ impl App {
                     self.groups.set_ratio(&d, ratio);
                 }
                 (Drag::Tab(_), MouseEventKind::Drag(MouseButton::Left)) => self.tab_drag_to(m.column, m.row),
+                (Drag::Terminal { .. }, MouseEventKind::Drag(MouseButton::Left)) => self.select_drag(m),
+                (Drag::Terminal { .. }, MouseEventKind::Up(_)) => self.select_release(),
+                (Drag::ScrollBar { group, grab }, MouseEventKind::Drag(MouseButton::Left)) => {
+                    let (group, grab) = (*group, *grab);
+                    self.scrollbar_drag(group, m.row, grab);
+                }
+                (Drag::ScrollBar { .. }, MouseEventKind::Up(_)) => self.drag = None,
                 (Drag::Divider(_), MouseEventKind::Up(_)) => self.drag = None,
                 (Drag::Tab(_), MouseEventKind::Up(_)) => self.finish_tab_drag(m.column, m.row),
                 _ => {}
@@ -685,15 +758,25 @@ impl App {
                 }
                 self.terminal_mouse(group, m);
             }
+            Some(Hit::ScrollBar { group }) => match m.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.groups.active = group;
+                    self.scrollbar_click(group, m.row);
+                }
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => self.wheel(group, m.kind),
+                MouseEventKind::Down(_) => self.groups.active = group,
+                _ => return,
+            },
             None => return,
         }
         self.needs_redraw = true;
     }
 
-    /// A pointer event over `group`'s terminal: reported to a program that asked for the mouse,
-    /// else the wheel scrolls the scrollback.
+    /// A pointer event over `group`'s terminal: reported to a program that asked for the mouse
+    /// (Shift keeps it for jmux's own selection), else it selects and the wheel scrolls the
+    /// scrollback. A program's events are not reported while the view is scrolled back.
     fn terminal_mouse(&mut self, group: GroupId, mut m: MouseEvent) {
-        let Some(term) = self.hit.group(group).map(|g| g.term) else {
+        let Some(text) = self.hit.group(group).map(|g| g.text) else {
             return;
         };
         let Some(shell) = self.groups.get(group).and_then(|g| g.active_tab()) else {
@@ -702,35 +785,190 @@ impl App {
         if !shell.run.status().is_running() {
             return;
         }
-        // Positions are relative to the terminal's own corner.
-        m.row -= term.y;
-        m.column -= term.x;
-        let bytes = {
+        let shift = m.modifiers.contains(KeyModifiers::SHIFT);
+        let reported = {
             let screen = shell.run.screen();
             let s = screen.screen();
-            if s.mouse_protocol_mode() == MouseProtocolMode::None {
-                None
-            } else if s.scrollback() != 0 {
-                return;
-            } else {
-                Some(mouse::encode(&m, s.mouse_protocol_mode(), s.mouse_protocol_encoding()))
-            }
+            let mode = s.mouse_protocol_mode();
+            (mode != MouseProtocolMode::None && s.scrollback() == 0 && !shift).then(|| {
+                // Positions are relative to the shell's own corner.
+                m.row -= text.y;
+                m.column -= text.x;
+                mouse::encode(&m, mode, s.mouse_protocol_encoding())
+            })
         };
-        match bytes {
+        match reported {
             Some(Some(bytes)) => {
                 let motion = matches!(m.kind, MouseEventKind::Drag(_) | MouseEventKind::Moved);
                 shell.run.write_mouse(bytes, motion);
             }
             Some(None) => {}
-            None => {
-                match m.kind {
-                    MouseEventKind::ScrollUp => shell.run.scroll(-WHEEL_LINES),
-                    MouseEventKind::ScrollDown => shell.run.scroll(WHEEL_LINES),
-                    _ => return,
+            None => match m.kind {
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => self.wheel(group, m.kind),
+                MouseEventKind::Down(MouseButton::Left) => self.select_press(group, text, m),
+                _ => {}
+            },
+        }
+    }
+
+    /// The wheel over `group`'s terminal: three lines of scrollback.
+    fn wheel(&mut self, group: GroupId, kind: MouseEventKind) {
+        let Some(shell) = self.groups.get(group).and_then(|g| g.active_tab()) else {
+            return;
+        };
+        shell.run.scroll(if kind == MouseEventKind::ScrollUp {
+            -WHEEL_LINES
+        } else {
+            WHEEL_LINES
+        });
+    }
+
+    /// A left press in a terminal's text (its program has no mouse reporting, or Shift is held):
+    /// an empty selection at the cell (a double click: the path-like run under it, a triple
+    /// click: the row; Shift on a single click extends the selection) and a drag that owns the
+    /// mouse until the release.
+    fn select_press(&mut self, group: GroupId, text: Rect, m: MouseEvent) {
+        let count = self.clicks.click(Instant::now(), m.column, m.row);
+        let Some(run) = self.groups.get(group).and_then(|g| g.active_tab()).map(|s| &s.run) else {
+            return;
+        };
+        let (anchor, word) = {
+            let screen = run.screen();
+            let s = screen.screen();
+            let (row, col) = select::screen_cell(s, text, m.column, m.row);
+            let cell = select::cell_at(row, col, s.scrollback());
+            let seed = match count {
+                2 => select::path_run(s, (row, col)),
+                3 => {
+                    let line = row as isize - s.scrollback() as isize;
+                    Some(((line, 0), (line, select::size(s).1)))
                 }
-                self.needs_redraw = true;
+                _ => None,
+            };
+            let extend = m.modifiers.contains(KeyModifiers::SHIFT) && count == 1;
+            let (anchor, head) = match run.selection() {
+                Some(old) if extend => ((old.anchor, old.anchor), cell),
+                _ => {
+                    let (a, h) = seed.unwrap_or((cell, cell));
+                    ((a, h), h)
+                }
+            };
+            // Set while the screen is held, so no output lands between the cell and the drag.
+            run.set_dragging(true);
+            run.set_selection(select::Selection { anchor: anchor.0, head });
+            (anchor, count == 2 && seed.is_some())
+        };
+        self.drag = Some(Drag::Terminal {
+            run: run.id,
+            anchor,
+            word,
+            text,
+        });
+    }
+
+    /// The pointer moved with the selection drag held: the head follows it (the cell clamps into
+    /// the text, also with the pointer outside), by words after a double click.
+    fn select_drag(&mut self, m: MouseEvent) {
+        let Some(Drag::Terminal {
+            run,
+            anchor,
+            word,
+            text,
+        }) = self.drag.clone()
+        else {
+            return;
+        };
+        let Some(run) = self.run_by_id(run) else {
+            return;
+        };
+        // The screen is held from taking the lines output scrolled to setting the selection, so
+        // no chunk's shift of the anchor is lost in between.
+        let screen = run.screen();
+        // Dropped meanwhile (a resize, output that changed its text): the anchor is stale, so
+        // the drag ends instead of rebuilding a selection from it.
+        if run.selection().is_none() {
+            drop(screen);
+            run.set_dragging(false);
+            self.drag = None;
+            return;
+        }
+        // Output scrolled meanwhile: the anchor followed its text, so must our copy.
+        let moved = run.take_drag_lines() as isize;
+        let anchor = (
+            select::shift_drag_cell(anchor.0, moved),
+            select::shift_drag_cell(anchor.1, moved),
+        );
+        let s = screen.screen();
+        let (row, col) = select::screen_cell(s, text, m.column, m.row);
+        let head = select::cell_at(row, col, s.scrollback());
+        let (start, head) = if word {
+            select::round_run_drag(anchor, head, select::path_run(s, (row, col)))
+        } else {
+            (anchor.0, head)
+        };
+        run.set_selection(select::Selection { anchor: start, head });
+        drop(screen);
+        if moved != 0
+            && let Some(Drag::Terminal { anchor: stored, .. }) = &mut self.drag
+        {
+            *stored = anchor;
+        }
+    }
+
+    /// The button went up: a press without a drag selected no cell, so nothing stays to copy.
+    fn select_release(&mut self) {
+        if let Some(Drag::Terminal { run, .. }) = self.drag.take()
+            && let Some(run) = self.run_by_id(run)
+        {
+            run.set_dragging(false);
+            if run.selection().is_some_and(|s| s.anchor == s.head) {
+                run.clear_selection();
             }
         }
+    }
+
+    fn run_by_id(&self, id: RunId) -> Option<&jterm::run::Run> {
+        self.groups.tabs().find(|t| t.run.id == id).map(|t| &t.run)
+    }
+
+    /// A left press on `group`'s scroll bar: on the thumb it is grabbed where it was pressed, off
+    /// it the thumb jumps there (centred on the pointer) and is grabbed. The thumb moves in half
+    /// cells.
+    fn scrollbar_click(&mut self, group: GroupId, y: u16) {
+        let Some(hit) = self.hit.group(group).map(|g| g.scroll) else {
+            return;
+        };
+        let Some(thumb) = hit.thumb else {
+            return;
+        };
+        let Some(run) = self.groups.get(group).and_then(|g| g.active_tab()).map(|s| &s.run) else {
+            return;
+        };
+        let scroll = run.scrollable().scroll();
+        let cell = y.saturating_sub(hit.track.y);
+        let (pos, len) = (cell * 2, hit.track.height * 2);
+        let grab = if thumb.contains(cell) {
+            pos.saturating_sub(scroll.thumb(len).map_or(0, |t| t.start))
+        } else {
+            let grab = scroll.thumb(len).map_or(0, |t| t.len / 2);
+            run.set_scrollback_from_top(scroll.top_at(len, i32::from(pos) - i32::from(grab)));
+            grab
+        };
+        self.drag = Some(Drag::ScrollBar { group, grab });
+    }
+
+    /// The pointer at row `y` with the thumb held by `grab`.
+    fn scrollbar_drag(&mut self, group: GroupId, y: u16, grab: u16) {
+        let Some(hit) = self.hit.group(group).map(|g| g.scroll) else {
+            return;
+        };
+        let Some(run) = self.groups.get(group).and_then(|g| g.active_tab()).map(|s| &s.run) else {
+            return;
+        };
+        let scroll = run.scrollable().scroll();
+        let len = hit.track.height * 2;
+        let start = 2 * (i32::from(y) - i32::from(hit.track.y)) - i32::from(grab);
+        run.set_scrollback_from_top(scroll.top_at(len, start));
     }
 
     /// The pointer's shape: a resize arrow over a divider (and while dragging one), the I-beam over
@@ -742,7 +980,9 @@ impl App {
         };
         match &self.drag {
             Some(Drag::Divider(d)) => return resize(d),
-            Some(Drag::Tab(_)) => return Pointer::Default,
+            Some(Drag::Tab(_) | Drag::ScrollBar { .. }) => return Pointer::Default,
+            // Held for the whole selection, as jed holds the I-beam during a text drag.
+            Some(Drag::Terminal { .. }) => return Pointer::Text,
             None => {}
         }
         let Some((x, y)) = self.mouse_at else {
@@ -798,6 +1038,7 @@ impl App {
     pub fn redraw(&mut self, terminal: &mut Terminal<StreamBackend>) -> io::Result<()> {
         self.needs_redraw = false;
         let Some(conn) = self.attached else {
+            self.out.clear();
             return Ok(());
         };
         if self.resync {
@@ -812,6 +1053,8 @@ impl App {
         }
         terminal.draw(|f| ui::render(f, self))?;
         let mut bytes = terminal.backend_mut().take_output();
+        // After the frame: a copy's OSC 52.
+        bytes.append(&mut self.out);
         // The client's pointer follows what the last frame drew.
         let pointer = self.desired_pointer();
         if pointer != self.pointer {

@@ -2,6 +2,7 @@
 //! - `paths`: per-user directories (named by the app), `~` display, `file:line:col` positions
 //! - `url`: web links in text, opening one in the browser
 //! - `socket`: where a process's unix socket lives, and creating its private directory
+//! - `clicks`: the single / double / triple click counter
 //! - `clipboard`: the system clipboard (arboard / OSC 52) and base64
 //! - `terminal`: host terminal setup (raw mode, kitty keyboard, pointer and cursor shapes, window
 //!   title and user vars)
@@ -23,6 +24,7 @@
 //! passed in. See docs/dev/crates.md.
 
 pub mod borders;
+pub mod clicks;
 pub mod clipboard;
 pub mod context_menu;
 pub mod field;

@@ -105,10 +105,16 @@ impl Clipboard {
     }
 }
 
+/// The OSC 52 sequence that sets a terminal's clipboard to `text`, wrapped for tmux as `osc52`
+/// does. For a process that sends it on as bytes (jmux's server) rather than to its own stdout.
+pub fn osc52_sequence(text: &str) -> String {
+    crate::terminal::passthrough(&format!("\x1b]52;c;{}\x07", base64(text.as_bytes())))
+}
+
 /// Sets the terminal's clipboard. Wrapped for tmux so it reaches the outer terminal
 /// (needs `set -g allow-passthrough on`, or tmux's own `set-clipboard on` handles the plain form).
 fn osc52(text: &str) {
-    let seq = crate::terminal::passthrough(&format!("\x1b]52;c;{}\x07", base64(text.as_bytes())));
+    let seq = osc52_sequence(text);
     let mut out = std::io::stdout();
     if let Err(e) = out.write_all(seq.as_bytes()).and_then(|()| out.flush()) {
         tracing::warn!("OSC 52 write failed: {e}");
@@ -138,6 +144,14 @@ pub fn base64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn osc52_sequence_sets_the_clipboard_to_the_base64_of_the_text() {
+        let seq = osc52_sequence("foo");
+        // Wrapped for tmux (its escapes doubled) when the process runs in it.
+        assert!(seq.contains("]52;c;Zm9v\x07"), "{seq:?}");
+        assert!(seq.starts_with("\x1b"));
+    }
 
     #[test]
     fn base64_matches_rfc_4648_vectors() {

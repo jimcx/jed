@@ -1,5 +1,6 @@
 //! What the last frame drew where, for the mouse: written by `ui::render`, read by `App::mouse`.
 
+use jtui::scrollbar_draw::ScrollBarHit;
 use jtui::split::{Divider, GroupId};
 use ratatui::layout::Rect;
 
@@ -24,7 +25,12 @@ pub struct TabArrows {
 pub struct GroupHit {
     pub id: GroupId,
     pub bar: Rect,
+    /// Everything below the bar: the shell's `text` and the scroll bar's column.
     pub term: Rect,
+    /// Where the shell's cells are (`term` less the scroll bar's column).
+    pub text: Rect,
+    /// The scroll bar: its track (empty when the area is too narrow) and thumb.
+    pub scroll: ScrollBarHit,
     pub tabs: Vec<TabHit>,
     pub arrows: Option<TabArrows>,
 }
@@ -58,6 +64,10 @@ pub enum Hit {
     Terminal {
         group: GroupId,
     },
+    /// A terminal's scroll bar column.
+    ScrollBar {
+        group: GroupId,
+    },
     /// A divider: an index into `HitMap::dividers`.
     Divider(usize),
 }
@@ -73,6 +83,9 @@ impl HitMap {
         }
         for g in &self.groups {
             let group = g.id;
+            if contains(g.scroll.track, x, y) {
+                return Some(Hit::ScrollBar { group });
+            }
             if contains(g.term, x, y) {
                 return Some(Hit::Terminal { group });
             }
@@ -112,6 +125,11 @@ mod tests {
                 id: 7,
                 bar: Rect::new(0, 0, 30, 1),
                 term: Rect::new(0, 1, 30, 5),
+                text: Rect::new(0, 1, 29, 5),
+                scroll: ScrollBarHit {
+                    track: Rect::new(29, 1, 1, 5),
+                    thumb: None,
+                },
                 tabs: vec![
                     TabHit {
                         index: 0,
@@ -148,6 +166,7 @@ mod tests {
         );
         assert_eq!(map.at(20, 0), Some(Hit::Bar { group: 7 }));
         assert_eq!(map.at(4, 3), Some(Hit::Terminal { group: 7 }));
+        assert_eq!(map.at(29, 3), Some(Hit::ScrollBar { group: 7 }));
         assert_eq!(map.at(4, 6), None);
     }
 

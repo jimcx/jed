@@ -44,6 +44,19 @@ pub fn defaults(platform: Platform) -> Vec<Binding<Context, Command>> {
         term(KeyCode::Char('\\'), cmd | alt, Command::SplitDown),
         term(KeyCode::Char(','), ctrl | shift, Command::FocusPreviousGroup),
         term(KeyCode::Char('.'), ctrl | shift, Command::FocusNextGroup),
+        // Jed's terminal scrollback keys. Copy is VS Code's Linux key (plain Ctrl+C stays SIGINT);
+        // on macOS the outer terminal's own Cmd+C copies, and one that sends it on gets this.
+        term(KeyCode::PageUp, shift, Command::PageUp),
+        term(KeyCode::PageDown, shift, Command::PageDown),
+        term(KeyCode::Up, ctrl | shift, Command::ScrollUp),
+        term(KeyCode::Down, ctrl | shift, Command::ScrollDown),
+        term(KeyCode::Home, ctrl, Command::ScrollTop),
+        term(KeyCode::End, ctrl, Command::ScrollBottom),
+        if mac {
+            term(KeyCode::Char('c'), KeyModifiers::SUPER, Command::Copy)
+        } else {
+            term(KeyCode::Char('c'), ctrl | shift, Command::Copy)
+        },
         (KeyCode::Char('d'), ctrl | shift, Command::Detach, None),
     ];
     let side = if mac { KeyModifiers::SUPER | alt } else { alt | shift };
@@ -176,6 +189,26 @@ mod tests {
             look(&mac, KeyCode::Down, sup | alt),
             Some(Command::FocusSide(Side::Down))
         );
+    }
+
+    #[test]
+    fn scrollback_and_copy_keys_follow_jeds_terminal_keys() {
+        let ev = |code, mods| KeyEvent::new(code, mods);
+        let (ctrl, shift) = (KeyModifiers::CONTROL, KeyModifiers::SHIFT);
+        let lin = Keymap::from_list(defaults(Platform::Linux));
+        let look = |m: &JmuxKeymap, code, mods| m.lookup(&ev(code, mods), Context::Terminal);
+        assert_eq!(look(&lin, KeyCode::PageUp, shift), Some(Command::PageUp));
+        assert_eq!(look(&lin, KeyCode::PageDown, shift), Some(Command::PageDown));
+        assert_eq!(look(&lin, KeyCode::Up, ctrl | shift), Some(Command::ScrollUp));
+        assert_eq!(look(&lin, KeyCode::Down, ctrl | shift), Some(Command::ScrollDown));
+        assert_eq!(look(&lin, KeyCode::Home, ctrl), Some(Command::ScrollTop));
+        assert_eq!(look(&lin, KeyCode::End, ctrl), Some(Command::ScrollBottom));
+        assert_eq!(look(&lin, KeyCode::Char('C'), ctrl | shift), Some(Command::Copy));
+        // Plain Ctrl+C stays the program's (SIGINT), selection or not.
+        assert_eq!(look(&lin, KeyCode::Char('c'), ctrl), None);
+        let mac = Keymap::from_list(defaults(Platform::MacOs));
+        assert_eq!(look(&mac, KeyCode::Char('c'), KeyModifiers::SUPER), Some(Command::Copy));
+        assert_eq!(look(&mac, KeyCode::Char('c'), ctrl | shift), None);
     }
 
     #[test]

@@ -1,11 +1,13 @@
 //! Mouse: clicks, double/triple clicks, drags, wheel.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 use ropey::Rope;
 use vt100::MouseProtocolMode;
+
+pub use jtui::clicks::ClickTracker;
 
 use super::tab_drag::TabDrag;
 use super::{App, Focus};
@@ -25,7 +27,6 @@ use crate::tasks::{Run, RunId, mouse, select};
 use crate::terminal::Pointer;
 use crate::view::View;
 
-const MULTI_CLICK: Duration = Duration::from_millis(500);
 pub(super) const WHEEL_LINES: isize = 3;
 /// Columns text and diff views scroll sideways per wheel step (and a diff's Left / Right).
 pub(super) const SIDE_STEP: isize = 4;
@@ -43,20 +44,6 @@ pub(super) fn wheel_columns(m: &MouseEvent) -> Option<isize> {
     }
 }
 
-/// The screen cell `(row, col)` the pointer at `(x, y)` is over in `area`, in the visible-viewport
-/// cells `vt100::Screen::cell` uses: the pointer clamped into `area`, shifted by the row a taller
-/// screen is drawn from (`select::top_row`), then clamped into the screen.
-pub(super) fn screen_cell(screen: &vt100::Screen, area: Rect, x: u16, y: u16) -> (u16, u16) {
-    let top = select::top_row(screen, area.height);
-    let (rows, cols) = select::size(screen);
-    let col = x.saturating_sub(area.x).min(area.width.saturating_sub(1));
-    let row = y.saturating_sub(area.y).min(area.height.saturating_sub(1));
-    (
-        row.saturating_add(top).min(rows.saturating_sub(1)),
-        col.min(cols.saturating_sub(1)),
-    )
-}
-
 /// The (anchor, head) of a word-wise drag in an editor: the anchor word `anchor` stays selected
 /// and the far end is the end (forwards) or start (backwards) of the word under `at`.
 fn round_word_drag(rope: &Rope, anchor: (ByteIdx, ByteIdx), at: ByteIdx) -> (ByteIdx, ByteIdx) {
@@ -64,28 +51,6 @@ fn round_word_drag(rope: &Rope, anchor: (ByteIdx, ByteIdx), at: ByteIdx) -> (Byt
         (anchor.1, pos::word_range(rope, at).0)
     } else if at >= anchor.1 {
         (anchor.0, pos::word_range(rope, at).1.max(anchor.1))
-    } else {
-        anchor
-    }
-}
-
-/// `cell` `lines` lines up (the anchor following its text as output scrolls; copy clamps).
-fn shift_drag_cell((line, col): select::Cell, lines: isize) -> select::Cell {
-    (line.saturating_sub(lines), col)
-}
-
-/// The (anchor, head) of a word-wise drag in a terminal: the anchor run stays selected and the
-/// far end is the end (forwards) or start (backwards) of the run under the pointer (`under`),
-/// or the pointer's cell when it is not on a path run.
-fn round_run_drag(
-    anchor: (select::Cell, select::Cell),
-    head: select::Cell,
-    under: Option<(select::Cell, select::Cell)>,
-) -> (select::Cell, select::Cell) {
-    if head < anchor.0 {
-        (anchor.1, under.map_or(head, |r| r.0.min(head)))
-    } else if head >= anchor.1 {
-        (anchor.0, under.map_or(head, |r| r.1.max(head)))
     } else {
         anchor
     }
@@ -153,24 +118,6 @@ pub enum FieldTarget {
     Find(Field),
     Search(Input),
     Palette,
-}
-
-/// Counts clicks on the same cell in quick succession (1, 2, 3).
-#[derive(Default)]
-pub struct ClickTracker {
-    last: Option<(Instant, u16, u16)>,
-    count: u8,
-}
-
-impl ClickTracker {
-    pub fn click(&mut self, now: Instant, x: u16, y: u16) -> u8 {
-        self.count = match self.last {
-            Some((t, lx, ly)) if lx == x && ly == y && now.duration_since(t) < MULTI_CLICK => self.count % 3 + 1,
-            _ => 1,
-        };
-        self.last = Some((now, x, y));
-        self.count
-    }
 }
 
 /// The height of a bottom area whose top border is dragged to `row`, above `bottom`.
@@ -372,7 +319,7 @@ impl App {
                 if s.mouse_protocol_mode() != MouseProtocolMode::None {
                     return false;
                 }
-                let (row, col) = screen_cell(s, area, m.column, m.row);
+                let (row, col) = select::screen_cell(s, area, m.column, m.row);
                 let cell = select::cell_at(row, col, s.scrollback());
                 // A double-click selects the path-like run under the pointer (none on a
                 // non-path cell: the empty selection a click makes).
@@ -431,13 +378,16 @@ impl App {
             }
             // Output scrolled meanwhile: the anchor followed its text, so must our copy.
             let moved = run.take_drag_lines() as isize;
-            let anchor = (shift_drag_cell(anchor.0, moved), shift_drag_cell(anchor.1, moved));
+            let anchor = (
+                select::shift_drag_cell(anchor.0, moved),
+                select::shift_drag_cell(anchor.1, moved),
+            );
             let s = screen.screen();
-            let (row, col) = screen_cell(s, area, m.column, m.row);
+            let (row, col) = select::screen_cell(s, area, m.column, m.row);
             let head = select::cell_at(row, col, s.scrollback());
             let word_run = if word { select::path_run(s, (row, col)) } else { None };
             let (start, head) = if word {
-                round_run_drag(anchor, head, word_run)
+                select::round_run_drag(anchor, head, word_run)
             } else {
                 (anchor.0, head)
             };
@@ -1220,18 +1170,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn click_counting() {
-        let mut c = ClickTracker::default();
-        let t = Instant::now();
-        assert_eq!(c.click(t, 1, 1), 1);
-        assert_eq!(c.click(t + Duration::from_millis(100), 1, 1), 2);
-        assert_eq!(c.click(t + Duration::from_millis(200), 1, 1), 3);
-        assert_eq!(c.click(t + Duration::from_millis(300), 1, 1), 1, "wraps after triple");
-        assert_eq!(c.click(t + Duration::from_millis(350), 2, 1), 1, "different cell");
-        assert_eq!(c.click(t + Duration::from_secs(2), 2, 1), 1, "too slow");
-    }
-
-    #[test]
     fn alt_click_removal_keeps_primary_and_newest_on_their_selections() {
         let heads = |v: &View| v.selections.iter().map(|s| s.head.0).collect::<Vec<_>>();
         let mut v = View::new();
@@ -1337,26 +1275,5 @@ mod tests {
         assert_eq!(round_word_drag(&rope, anchor, b(4)), anchor, "the anchor word's start");
         assert_eq!(round_word_drag(&rope, anchor, b(3)), (b(7), b(3)), "the space before");
         assert_eq!(round_word_drag(&rope, anchor, b(8)), (b(4), b(11)), "a word's start");
-    }
-
-    #[test]
-    fn run_drag_rounds_to_the_run_under_the_pointer() {
-        let anchor = ((1, 4), (1, 10));
-        assert_eq!(
-            round_run_drag(anchor, (1, 13), Some(((1, 12), (1, 20)))),
-            ((1, 4), (1, 20))
-        );
-        assert_eq!(
-            round_run_drag(anchor, (1, 1), Some(((1, 0), (1, 3)))),
-            ((1, 10), (1, 0))
-        );
-        assert_eq!(round_run_drag(anchor, (1, 15), None), ((1, 4), (1, 15)));
-        assert_eq!(round_run_drag(anchor, (1, 2), None), ((1, 10), (1, 2)));
-        assert_eq!(
-            round_run_drag(anchor, (0, 30), Some(((0, 25), (0, 40)))),
-            ((1, 10), (0, 25)),
-            "a run on an earlier row"
-        );
-        assert_eq!(round_run_drag(anchor, (1, 6), None), anchor);
     }
 }

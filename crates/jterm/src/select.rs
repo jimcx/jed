@@ -17,6 +17,7 @@
 //! Only a program that hasn't asked for the mouse gets a selection (`tasks::mouse` keeps every
 //! event when it has), which the mouse wiring decides.
 
+use ratatui::layout::Rect;
 use vt100::Screen;
 
 /// `screen`'s `(rows, cols)` as plain numbers (`vt100` 0.18 returns `NonZeroU16`s).
@@ -307,6 +308,38 @@ pub fn top_row(screen: &Screen, height: u16) -> u16 {
         .unwrap_or(0)
         .max(screen.cursor_position().0);
     (last + 1).saturating_sub(height).min(rows - height)
+}
+
+/// The screen cell `(row, col)` the pointer at `(x, y)` is over in `area`, in the visible-viewport
+/// cells `vt100::Screen::cell` uses: the pointer clamped into `area`, shifted by the row a taller
+/// screen is drawn from (`top_row`), then clamped into the screen.
+pub fn screen_cell(screen: &vt100::Screen, area: Rect, x: u16, y: u16) -> (u16, u16) {
+    let top = top_row(screen, area.height);
+    let (rows, cols) = size(screen);
+    let col = x.saturating_sub(area.x).min(area.width.saturating_sub(1));
+    let row = y.saturating_sub(area.y).min(area.height.saturating_sub(1));
+    (
+        row.saturating_add(top).min(rows.saturating_sub(1)),
+        col.min(cols.saturating_sub(1)),
+    )
+}
+
+/// `cell` `lines` lines up (the anchor following its text as output scrolls; copy clamps).
+pub fn shift_drag_cell((line, col): Cell, lines: isize) -> Cell {
+    (line.saturating_sub(lines), col)
+}
+
+/// The (anchor, head) of a word-wise drag in a terminal: the anchor run stays selected and the
+/// far end is the end (forwards) or start (backwards) of the run under the pointer (`under`),
+/// or the pointer's cell when it is not on a path run.
+pub fn round_run_drag(anchor: (Cell, Cell), head: Cell, under: Option<(Cell, Cell)>) -> (Cell, Cell) {
+    if head < anchor.0 {
+        (anchor.1, under.map_or(head, |r| r.0.min(head)))
+    } else if head >= anchor.1 {
+        (anchor.0, under.map_or(head, |r| r.1.max(head)))
+    } else {
+        anchor
+    }
 }
 
 #[cfg(test)]
@@ -667,5 +700,26 @@ mod tests {
         assert_eq!(top_row(p.screen(), 2), 1);
         p.process(b"\r\n\r\n\r\n\r\nseven\r\n");
         assert_eq!(top_row(p.screen(), 4), 4, "the cursor below the last line");
+    }
+
+    #[test]
+    fn run_drag_rounds_to_the_run_under_the_pointer() {
+        let anchor = ((1, 4), (1, 10));
+        assert_eq!(
+            round_run_drag(anchor, (1, 13), Some(((1, 12), (1, 20)))),
+            ((1, 4), (1, 20))
+        );
+        assert_eq!(
+            round_run_drag(anchor, (1, 1), Some(((1, 0), (1, 3)))),
+            ((1, 10), (1, 0))
+        );
+        assert_eq!(round_run_drag(anchor, (1, 15), None), ((1, 4), (1, 15)));
+        assert_eq!(round_run_drag(anchor, (1, 2), None), ((1, 10), (1, 2)));
+        assert_eq!(
+            round_run_drag(anchor, (0, 30), Some(((0, 25), (0, 40)))),
+            ((1, 10), (0, 25)),
+            "a run on an earlier row"
+        );
+        assert_eq!(round_run_drag(anchor, (1, 6), None), anchor);
     }
 }

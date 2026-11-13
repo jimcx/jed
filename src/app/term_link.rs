@@ -29,7 +29,7 @@ impl App {
         let (url, word) = {
             let screen = run.screen();
             let s = screen.screen();
-            let (row, col) = super::mouse::screen_cell(s, area, m.column, m.row);
+            let (row, col) = crate::tasks::select::screen_cell(s, area, m.column, m.row);
             let url = select::wrapped_line(s, (row, col))
                 .and_then(|(line, at)| crate::url::url_at(&line, at).map(str::to_string));
             (url, select::path_text(s, (row, col)))
