@@ -5,7 +5,7 @@
 
 use jterm::run::RunId;
 use jterm::shell::ShellTab;
-use jtui::split::{Divider, GroupId, SplitDir, SplitTree};
+use jtui::split::{Divider, DropSide, GroupId, SplitDir, SplitTree};
 use ratatui::layout::Rect;
 
 /// Tabs side by side in one bar, one of them active.
@@ -46,6 +46,19 @@ impl Group {
 
     pub fn position(&self, run: RunId) -> Option<usize> {
         self.tabs.iter().position(|t| t.run.id == run)
+    }
+
+    /// Moves the tab at `from` to `to`, its index afterwards; it becomes active. False when either
+    /// index is out of range or it wouldn't move.
+    pub fn move_tab(&mut self, from: usize, to: usize) -> bool {
+        let len = self.tabs.len();
+        if from >= len || to >= len || from == to {
+            return false;
+        }
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.active = to;
+        true
     }
 
     /// The next (`delta` 1) or previous tab, wrapping.
@@ -146,6 +159,64 @@ impl Groups {
         self.groups.push((new, Group::default()));
         self.active = new;
         new
+    }
+
+    /// Moves the tab at `index` of group `from` into group `to`, at a gap among its tabs or (`None`)
+    /// right of its active tab. The tab (and its running shell) moves as it is, becomes `to`'s
+    /// active tab and `to` the active group; a `from` left empty leaves the tree. False and
+    /// nothing changes for the same group, an unknown group or a bad `index`.
+    pub fn move_between(&mut self, from: GroupId, index: usize, to: GroupId, at: Option<usize>) -> bool {
+        if from == to || self.get(to).is_none() || self.get(from).is_none_or(|g| index >= g.tabs.len()) {
+            return false;
+        }
+        let Some(tab) = self.close_tab(from, index) else {
+            return false;
+        };
+        let target = self.get_mut(to).expect("checked above");
+        let at = at.map_or(if target.tabs.is_empty() { 0 } else { target.active + 1 }, |a| {
+            a.min(target.tabs.len())
+        });
+        target.tabs.insert(at, tab);
+        target.active = at;
+        self.active = to;
+        true
+    }
+
+    /// Splits `target` on `side` into a new empty group and moves the tab at `index` of `from`
+    /// into it, which gets the focus. A left or upper side puts the new group first. If nothing
+    /// can move the tree is left as it was. Returns the new group's id.
+    pub fn move_to_split(&mut self, from: GroupId, index: usize, target: GroupId, side: DropSide) -> Option<GroupId> {
+        if self.get(from).is_none_or(|g| index >= g.tabs.len()) {
+            return None;
+        }
+        let new = self.split_empty_of(target, side)?;
+        if self.move_between(from, index, new, None) {
+            Some(new)
+        } else {
+            self.tree.remove(new);
+            self.groups.retain(|(id, _)| *id != new);
+            self.active = target;
+            None
+        }
+    }
+
+    /// Splits `target` into a new empty group on `side`, which becomes active: a left or upper
+    /// side puts the new group first in the tree. `None` (nothing changes) if `target` isn't in it.
+    pub fn split_empty_of(&mut self, target: GroupId, side: DropSide) -> Option<GroupId> {
+        let (dir, new_first) = match side {
+            DropSide::Left => (SplitDir::Right, true),
+            DropSide::Right => (SplitDir::Right, false),
+            DropSide::Up => (SplitDir::Down, true),
+            DropSide::Down => (SplitDir::Down, false),
+        };
+        let new = self.fresh_id();
+        if !self.tree.split_with(target, dir, new, new_first) {
+            self.next -= 1;
+            return None;
+        }
+        self.groups.push((new, Group::default()));
+        self.active = new;
+        Some(new)
     }
 
     fn fresh_id(&mut self) -> GroupId {
@@ -328,6 +399,87 @@ mod tests {
         gs.close_tab(second, 0);
         assert_eq!((gs.active, gs.order()), (1, vec![1]));
         assert_eq!(gs.layout(Rect::new(0, 0, 41, 10)).0[0].1.width, 41);
+    }
+
+    #[tokio::test]
+    async fn move_tab_reorders_activates_and_ignores_bad_or_no_moves() {
+        let mut g = Group::default();
+        for i in 1..=4 {
+            g.open(tab(i));
+        }
+        assert!(g.move_tab(0, 2));
+        assert_eq!((ids(&g), g.active), (vec![2, 3, 1, 4], 2));
+        assert!(g.move_tab(3, 0));
+        assert_eq!((ids(&g), g.active), (vec![4, 2, 3, 1], 0));
+        assert!(!g.move_tab(1, 1), "same place");
+        assert!(!g.move_tab(1, 4), "past the end");
+        assert!(!g.move_tab(4, 0), "no such tab");
+        assert_eq!((ids(&g), g.active), (vec![4, 2, 3, 1], 0));
+    }
+
+    #[tokio::test]
+    async fn move_between_keeps_the_tab_and_removes_an_emptied_group() {
+        let mut gs = Groups::new();
+        for i in 1..=2 {
+            gs.get_mut(1).unwrap().open(tab(i));
+        }
+        let b = gs.split(SplitDir::Right);
+        for i in 3..=4 {
+            gs.get_mut(b).unwrap().open(tab(i));
+        }
+        assert!(!gs.move_between(1, 0, 1, Some(0)), "same group");
+        assert!(!gs.move_between(1, 5, b, None), "no such tab");
+        assert!(!gs.move_between(1, 0, 99, None), "no such group");
+        assert_eq!(gs.tab_count(), 4);
+        // At a gap: the tab is inserted there and active, its group focused.
+        gs.active = 1;
+        assert!(gs.move_between(1, 0, b, Some(1)));
+        assert_eq!(
+            (ids(gs.get(1).unwrap()), ids(gs.get(b).unwrap())),
+            (vec![2], vec![3, 1, 4])
+        );
+        assert_eq!((gs.get(b).unwrap().active, gs.active), (1, b));
+        // Without a gap: right of the target's active tab.
+        gs.get_mut(b).unwrap().active = 0;
+        gs.active = 1;
+        assert!(gs.move_between(1, 0, b, None));
+        assert_eq!(ids(gs.get(b).unwrap()), [3, 2, 1, 4]);
+        assert_eq!((gs.get(b).unwrap().active, gs.active), (1, b));
+        assert!(gs.get(1).is_none(), "the emptied group left the tree");
+        assert_eq!(gs.order(), vec![b]);
+        // A gap past the end clamps to the end.
+        let c = gs.split(SplitDir::Down);
+        gs.get_mut(c).unwrap().open(tab(5));
+        assert!(gs.move_between(c, 0, b, Some(99)));
+        assert_eq!(ids(gs.get(b).unwrap()), [3, 2, 1, 4, 5]);
+    }
+
+    #[tokio::test]
+    async fn move_to_split_puts_the_new_group_on_the_side_and_gives_it_the_tab() {
+        for (side, new_first) in [
+            (DropSide::Left, true),
+            (DropSide::Right, false),
+            (DropSide::Up, true),
+            (DropSide::Down, false),
+        ] {
+            let mut gs = Groups::new();
+            gs.get_mut(1).unwrap().open(tab(1));
+            gs.get_mut(1).unwrap().open(tab(2));
+            let new = gs.move_to_split(1, 0, 1, side).expect("splits");
+            let order = gs.order();
+            assert_eq!(order, if new_first { vec![new, 1] } else { vec![1, new] }, "{side:?}");
+            assert_eq!((ids(gs.get(new).unwrap()), ids(gs.get(1).unwrap())), (vec![1], vec![2]));
+            assert_eq!(gs.active, new);
+        }
+        // A bad tab or target leaves the tree alone.
+        let mut gs = Groups::new();
+        gs.get_mut(1).unwrap().open(tab(1));
+        assert!(gs.move_to_split(1, 3, 1, DropSide::Right).is_none());
+        assert!(gs.move_to_split(1, 0, 99, DropSide::Right).is_none());
+        assert_eq!((gs.order(), ids(gs.get(1).unwrap())), (vec![1], vec![1]));
+        // A lone tab onto its own edge: the original empties and goes.
+        let new = gs.move_to_split(1, 0, 1, DropSide::Right).unwrap();
+        assert_eq!((gs.order(), ids(gs.get(new).unwrap())), (vec![new], vec![1]));
     }
 
     #[tokio::test]

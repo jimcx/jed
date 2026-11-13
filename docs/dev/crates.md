@@ -6,7 +6,7 @@ default member, so plain `cargo build --release` builds `target/release/jed`); t
 
 | Crate | Path | Holds |
 | --- | --- | --- |
-| `jtui` | `crates/jtui` | TUI building blocks: host terminal setup, clipboard, per-user dirs and sockets, split tree, border junctions, scroll bars, `TextField`, context menu, `Theme` / `Keymap` machinery, a byte-stream ratatui backend |
+| `jtui` | `crates/jtui` | TUI building blocks: host terminal setup, clipboard, per-user dirs and sockets, split tree, border junctions, scroll bars, tab-drop helpers (`split::gap_at` / `snap_side`), `TextField`, context menu, `Theme` / `Keymap` machinery, a byte-stream ratatui backend |
 | `jterm` | `crates/jterm` | The terminal engine: PTY run, `vt100` screen and scrollback, command records, selection, search, key / mouse encoding, shell tab model, shell integration snippets, drawing a screen |
 | `jed` | `.` | The editor |
 | `jmux` | `jmux` | The multiplexer (binary `jmux`): `protocol` (frames and messages), `session` (socket directory); server and client follow |
@@ -75,7 +75,12 @@ directory, tests pass a temp dir) and the server:
   (checked first) starts a drag (`App.drag`) that owns the mouse until release and calls `Groups::set_ratio`. The pointer
   shape is the server's call: `desired_pointer` (resize arrows over / while dragging a divider, I-beam over a terminal
   unless its program has mouse reporting on) is appended to the frame as OSC 22 in `redraw` when it changed (reset on an
-  attach); the client's `restore_terminal` puts it back.
+  attach); the client's `restore_terminal` puts it back. Tab drag (`tab_drag`, jed's `drag_tabs` rules without a terminal
+  strip or `can_dock`): a press on a tab activates it and starts `Drag::Tab` (identified by its `RunId`; owns the mouse like
+  a divider drag, cleared on attach); the target is a gap in a bar (`jtui::split::gap_at`, marker `tab.dropMarker`) or a
+  terminal (`snap_side`: an edge band splits, the centre joins right of the active tab; `terminal.dropBackground` shades
+  `shade_rect`); the release calls `Group::move_tab` / `Groups::move_between` / `move_to_split` (the shells keep running,
+  an emptied group leaves the tree). No keys for it yet.
   `Query` / `Kill` / `Rename { name }` as a connection's first message never attach: answered (`Info` / `Done` / `Error`)
   and closed. `Kill` ends the session; `Rename` moves the socket file (the guard follows; running shells keep the old
   `$JMUX`).
@@ -90,7 +95,7 @@ directory, tests pass a temp dir) and the server:
   Ctrl+Shift+D detach; jed's `cmd` is Ctrl / Cmd: `cmd+\` split right, `cmd+alt+\` down, `cmd+1..8` group N,
   Ctrl+Shift+, / . previous / next group, Alt+Shift+arrows (Cmd+Alt on macOS) focus by side; the file loading is `jmux_config`), `group` (`Group` = tabs + active + bar scroll; `Groups` over
   `jtui::split::SplitTree`, an emptied group leaves the tree), `hit` (`HitMap` with the dividers / `Hit`, written by
-  `ui::render`), `tabbar` (` title × ` tabs, state glyph colours, `‹ ›` overflow arrows),
+  `ui::render`), `tab_drag`, `tabbar` (` title × ` tabs, state glyph colours, `‹ ›` overflow arrows),
   `ui` (`render(f, &mut App)`: each group's tab bar and terminal, the dividers (`jtui::borders`), above a one-row status bar: session name / title / detach
   hint from the keymap), `theme` (the only file
   with colours: `jterm::draw::KEYS` + `statusBar*` over `widget_entries`), `logging` (`<state dir>/jmux/logs/<name>-<pid>.log`,

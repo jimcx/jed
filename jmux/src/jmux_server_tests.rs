@@ -393,9 +393,23 @@ async fn jmux_server_puts_the_cursor_where_the_shells_is() {
     server.join().unwrap();
 }
 
+/// What the stale-socket test prints at each step (shown only when it fails), so a failure says
+/// which step it died in and what the socket looked like.
+fn flake_step(t0: Instant, step: &str, socket: &Path) {
+    eprintln!(
+        "FLAKE jmux_server_replaces_a_stale_socket_but_not_a_live_one: step `{step}` at {:?}, socket exists {}, is a socket file {}",
+        t0.elapsed(),
+        socket.exists(),
+        std::fs::metadata(socket).is_ok_and(|m| std::os::unix::fs::FileTypeExt::is_socket(&m.file_type())),
+    );
+}
+
+// FLAKE: 2026-11-14, failed once with bad frame: Io(ConnectionReset) at line 141 (`Client::next`)
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_server_replaces_a_stale_socket_but_not_a_live_one() {
+    let t0 = Instant::now();
     let mut server = TestServer::start();
+    flake_step(t0, "server started", &server.socket);
     // A second server for the same name finds the live socket and refuses.
     let second = spawn_thread(server.dir.clone());
     let deadline = Instant::now() + WAIT;
@@ -412,16 +426,22 @@ async fn jmux_server_replaces_a_stale_socket_but_not_a_live_one() {
         server.socket.exists(),
         "the refused server must not remove the live socket"
     );
+    flake_step(t0, "second server refused; attaching to the first", &server.socket);
     let c = Client::attach(&server.socket, 20, 60).await;
+    flake_step(t0, "attached to the first; ending it", &server.socket);
     c.end(&mut server).await;
+    flake_step(t0, "first server ended", &server.socket);
 
     // A leftover file nobody listens on is replaced.
     drop(std::os::unix::net::UnixListener::bind(&server.socket).unwrap());
     assert!(server.socket.exists());
     server.thread = Some(spawn_thread(server.dir.clone()));
     server::wait_for_socket(&server.socket, WAIT, || true).unwrap();
+    flake_step(t0, "replacement server's socket is up; attaching", &server.socket);
     let c = Client::attach(&server.socket, 20, 60).await;
+    flake_step(t0, "attached to the replacement; ending it", &server.socket);
     c.end(&mut server).await;
+    flake_step(t0, "done", &server.socket);
 }
 
 // ---- jmux_server-c: the client and the CLI ----

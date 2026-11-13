@@ -4459,6 +4459,22 @@ async fn milestone_9_rename_across_files() {
     // The explorer's F2 is still the file rename.
     app.press(K::Char('e'), cmd() | M::SHIFT);
     app.press(K::F(2), M::NONE);
+    // FLAKE: 2026-11-14, failed once (1 of 3 full runs) here: no inline rename after the explorer's
+    // F2. Suspect: the explorer's selected row isn't a.cpp yet (None, or the root) because the
+    // reveal waits on a directory listing loaded off the UI thread.
+    if !(app.prompt.is_none() && app.inline_rename.is_some()) {
+        eprintln!(
+            "FLAKE milestone_9_rename_across_files: prompt {}, inline_rename {}, focus {:?}, explorer selected \
+             {:?} (root {:?}, root loaded {}), rows {}",
+            app.prompt.is_some(),
+            app.inline_rename.is_some(),
+            app.ui.focus,
+            app.explorer.selected,
+            app.workspace.root,
+            app.explorer.is_loaded(&app.workspace.root),
+            app.explorer.rows().len(),
+        );
+    }
     assert!(app.prompt.is_none() && app.inline_rename.is_some());
     app.press(K::Esc, M::NONE);
     app.press(K::Char('1'), cmd());

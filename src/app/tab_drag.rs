@@ -10,7 +10,8 @@ use ratatui::layout::{Position, Rect};
 use super::mouse::Drag;
 use super::{App, Focus};
 use crate::group::{Tab, TabIdentity, is_terminal_group};
-use crate::layout::{DropSide, GroupId, MIN_GROUP_HEIGHT, MIN_GROUP_WIDTH, TabHit};
+use crate::layout::{DropSide, GroupId};
+use jtui::split::{gap_at, snap_side};
 
 /// An in-flight tab drag: the tab's group and index where it started, and where it would land
 /// (`None` while the pointer is not over a target).
@@ -45,39 +46,6 @@ pub enum TabDrop {
     TerminalStrip,
 }
 
-/// The gap in `tabs` at `x`: the tabs whose midpoint is left of the pointer. The index is in
-/// the group's own terms, so a scrolled bar's first drawn tab (`tabs[0].index`) is counted from.
-fn gap_at(tabs: &[TabHit], x: u16) -> usize {
-    let first = tabs.first().map_or(0, |t| t.index);
-    first + tabs.iter().filter(|t| t.x0 + (t.x1 - t.x0) / 2 < x).count()
-}
-
-/// Which edge of `rect` the point (`x`, `y`) is near enough to snap to, or `None` for its
-/// centre (or outside it). Each edge's band is a quarter of that dimension, and the nearest
-/// edge within its band wins (ties in the order Left, Right, Up, Down). An edge whose dimension
-/// can't hold a split of two minimum groups is no edge at all.
-fn snap_side(rect: Rect, x: u16, y: u16) -> Option<DropSide> {
-    if !rect.contains(Position { x, y }) {
-        return None;
-    }
-    let horizontal = rect.width > 2 * MIN_GROUP_WIDTH;
-    let vertical = rect.height > 2 * MIN_GROUP_HEIGHT;
-    let (band_w, band_h) = (rect.width / 4, rect.height / 4);
-    let (right, bottom) = (rect.x + rect.width - 1, rect.y + rect.height - 1);
-    // In tie order; `min` keeps the first of equal distances.
-    let candidates = [
-        (DropSide::Left, x - rect.x, horizontal, band_w),
-        (DropSide::Right, right - x, horizontal, band_w),
-        (DropSide::Up, y - rect.y, vertical, band_h),
-        (DropSide::Down, bottom - y, vertical, band_h),
-    ];
-    candidates
-        .into_iter()
-        .filter(|&(_, distance, fits, band)| fits && distance <= band)
-        .min_by_key(|&(_, distance, ..)| distance)
-        .map(|(side, ..)| side)
-}
-
 /// Whether a tab dragged out of group `from` (`shell`: it is a terminal) may land in group `to`.
 /// Only terminals dock in the terminal area, from the area or an editor group; a terminal may
 /// drop on any editor group.
@@ -101,7 +69,7 @@ impl App {
         if let Some(group) = dockable.clone().find(|g| g.tab_bar.contains(Position { x, y })) {
             return Some(TabDrop::TabBar {
                 group: group.id,
-                index: gap_at(&group.tabs, x),
+                index: gap_at(group.tabs.iter().map(|t| (t.index, t.x0, t.x1)), x),
             });
         }
         let group = dockable.find(|g| g.editor.contains(Position { x, y }))?;
@@ -281,129 +249,13 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{can_dock, gap_at, snap_side};
+    use super::can_dock;
     use crate::group::TERMINAL_GROUP_BASE as T;
-    use crate::layout::{DropSide, TabHit};
-    use ratatui::layout::Rect;
-
-    fn tab(index: usize, x0: u16, x1: u16) -> TabHit {
-        TabHit {
-            index,
-            x0,
-            x1,
-            close_x: x0,
-        }
-    }
-
     #[test]
     fn only_shells_dock_in_the_area() {
         assert!(can_dock(T, T + 1, true) && can_dock(0, 1, false));
         assert!(can_dock(T, 0, true), "a terminal drops on an editor group");
         assert!(can_dock(0, T, true), "a shell from an editor group docks in the area");
         assert!(!can_dock(0, T, false), "no other tab docks in the area");
-    }
-
-    #[test]
-    fn the_gap_is_the_tabs_whose_midpoint_is_left_of_the_pointer() {
-        let tabs = [tab(0, 0, 10), tab(1, 10, 20), tab(2, 20, 30)];
-        assert_eq!(gap_at(&tabs, 0), 0);
-        assert_eq!(gap_at(&tabs, 4), 0, "left of the first midpoint");
-        assert_eq!(gap_at(&tabs, 5), 0, "on the midpoint is not past it");
-        assert_eq!(gap_at(&tabs, 6), 1);
-        assert_eq!(gap_at(&tabs, 15), 1);
-        assert_eq!(gap_at(&tabs, 16), 2);
-        assert_eq!(gap_at(&tabs, 25), 2);
-        assert_eq!(gap_at(&tabs, 26), 3, "past the last midpoint: the end");
-        assert_eq!(gap_at(&tabs, 60), 3, "past the bar is still the end");
-    }
-
-    #[test]
-    fn a_scrolled_bar_counts_from_its_first_drawn_tab() {
-        let tabs = [tab(4, 0, 10), tab(5, 10, 20)];
-        assert_eq!(gap_at(&tabs, 0), 4);
-        assert_eq!(gap_at(&tabs, 6), 5);
-        assert_eq!(gap_at(&tabs, 26), 6);
-        assert_eq!(gap_at(&[], 8), 0, "an empty bar: the only gap");
-    }
-
-    /// A 40×20 editor: each band is the nearer quarter (10 columns, 5 rows).
-    #[test]
-    fn the_nearer_quarter_is_a_side_and_the_middle_is_the_centre() {
-        let r = Rect::new(0, 0, 40, 20);
-        assert_eq!(snap_side(r, 0, 10), Some(DropSide::Left));
-        assert_eq!(snap_side(r, 10, 10), Some(DropSide::Left), "exactly a quarter in");
-        assert_eq!(snap_side(r, 11, 10), None, "past the band: the centre");
-        assert_eq!(snap_side(r, 29, 10), Some(DropSide::Right));
-        assert_eq!(snap_side(r, 39, 10), Some(DropSide::Right), "the last column");
-        assert_eq!(snap_side(r, 28, 10), None);
-        assert_eq!(snap_side(r, 20, 0), Some(DropSide::Up));
-        assert_eq!(snap_side(r, 20, 5), Some(DropSide::Up), "exactly a quarter down");
-        assert_eq!(snap_side(r, 20, 6), None);
-        assert_eq!(snap_side(r, 20, 14), Some(DropSide::Down));
-        assert_eq!(snap_side(r, 20, 19), Some(DropSide::Down), "the last row");
-        assert_eq!(snap_side(r, 20, 13), None);
-        assert_eq!(snap_side(r, 20, 10), None, "the centre");
-        assert_eq!(snap_side(r, 40, 10), None, "outside");
-        assert_eq!(snap_side(r, 20, 20), None);
-    }
-
-    #[test]
-    fn the_nearest_edge_wins_with_left_right_up_down_ties() {
-        let r = Rect::new(0, 0, 40, 20);
-        assert_eq!(snap_side(r, 2, 2), Some(DropSide::Left), "left and up tie: left first");
-        assert_eq!(
-            snap_side(r, 37, 2),
-            Some(DropSide::Right),
-            "right and up tie: right first"
-        );
-        assert_eq!(
-            snap_side(r, 2, 17),
-            Some(DropSide::Left),
-            "left and down tie: left first"
-        );
-        assert_eq!(
-            snap_side(r, 37, 17),
-            Some(DropSide::Right),
-            "right and down tie: right first"
-        );
-        assert_eq!(snap_side(r, 20, 2), Some(DropSide::Up), "the top half");
-        assert_eq!(
-            snap_side(r, 5, 4),
-            Some(DropSide::Up),
-            "the nearer edge wins, not the first"
-        );
-        assert_eq!(snap_side(r, 4, 5), Some(DropSide::Left));
-    }
-
-    #[test]
-    fn snap_side_works_on_a_rect_away_from_the_origin() {
-        let r = Rect::new(40, 7, 40, 20);
-        assert_eq!(snap_side(r, 40, 17), Some(DropSide::Left));
-        assert_eq!(snap_side(r, 50, 17), Some(DropSide::Left), "exactly a quarter in");
-        assert_eq!(snap_side(r, 51, 17), None);
-        assert_eq!(snap_side(r, 79, 17), Some(DropSide::Right), "the last column");
-        assert_eq!(snap_side(r, 60, 7), Some(DropSide::Up));
-        assert_eq!(snap_side(r, 60, 26), Some(DropSide::Down), "the last row");
-        assert_eq!(snap_side(r, 39, 17), None, "outside on the left");
-        assert_eq!(snap_side(r, 80, 17), None, "outside on the right");
-        assert_eq!(snap_side(r, 60, 6), None, "outside above");
-        assert_eq!(snap_side(r, 60, 27), None, "outside below");
-    }
-
-    #[test]
-    fn an_edge_that_cannot_hold_a_split_is_no_edge() {
-        // 25 is the narrowest width that can hold two minimum groups (12 + a divider + 12).
-        let narrow = Rect::new(0, 0, 24, 20);
-        assert_eq!(snap_side(narrow, 0, 10), None, "too narrow to split sideways");
-        let just = Rect::new(0, 0, 25, 20);
-        assert_eq!(snap_side(just, 0, 10), Some(DropSide::Left), "25 fits a split");
-        assert_eq!(snap_side(just, 24, 10), Some(DropSide::Right));
-
-        // 9 is the shortest height that can hold two minimum groups (4 + a divider + 4).
-        let short = Rect::new(0, 0, 40, 8);
-        assert_eq!(snap_side(short, 20, 0), None, "too short to split lengthways");
-        let just = Rect::new(0, 0, 40, 9);
-        assert_eq!(snap_side(just, 20, 0), Some(DropSide::Up), "9 fits a split");
-        assert_eq!(snap_side(just, 20, 8), Some(DropSide::Down));
     }
 }

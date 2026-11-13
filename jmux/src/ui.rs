@@ -7,8 +7,9 @@ use jtui::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
-use crate::app::App;
+use crate::app::{App, Drag};
 use crate::hit::{GroupHit, HitMap};
+use crate::tab_drag::{self, TabDrop};
 use crate::tabbar;
 
 /// Rows the status bar takes.
@@ -31,6 +32,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let (cells, dividers) = app.groups.layout(body(area.height, area.width));
     let mut hit = HitMap::default();
+    let target = match &app.drag {
+        Some(Drag::Tab(t)) => t.target,
+        _ => None,
+    };
     for (id, rect) in cells {
         let term = term_area(rect);
         let bar = Rect::new(rect.x, rect.y, rect.width, rect.height - term.height);
@@ -38,12 +43,23 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let Some(group) = app.groups.get_mut(id) else {
             continue;
         };
-        let (tabs, arrows) = tabbar::render(f, bar, group, &app.theme, focused);
+        let drop = match target {
+            Some(TabDrop::TabBar { group, index }) if group == id => Some(index),
+            _ => None,
+        };
+        let (tabs, arrows) = tabbar::render(f, bar, group, &app.theme, focused, drop);
         if let Some(shell) = group.active_tab() {
             // The run follows the area every frame (a no-op while the size is the same); hidden
             // tabs keep their last size.
             shell.run.resize(term.height, term.width);
             jterm::draw::render_shell(f, term, shell, &app.theme, focused && app.confirm.is_none(), None);
+        }
+        if let Some(TabDrop::Terminal { group, side }) = target
+            && group == id
+        {
+            // The zone a drop would take, over what the shell drew.
+            let zone = tab_drag::shade_rect(term, side).intersection(f.area());
+            f.buffer_mut().set_style(zone, app.theme.get("terminal.dropBackground"));
         }
         hit.groups.push(GroupHit {
             id,

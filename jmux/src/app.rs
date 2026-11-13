@@ -32,6 +32,7 @@ use crate::group::Groups;
 use crate::hit::{Hit, HitMap};
 use crate::keymap::{self, JmuxKeymap};
 use crate::protocol::{ByeReason, ClientMsg, PROTOCOL_VERSION, ServerMsg};
+use crate::tab_drag::TabDrag;
 use crate::{theme, ui};
 
 /// Messages a connection may have queued for its writer. A client that falls this far behind is
@@ -105,8 +106,8 @@ pub struct App {
     /// What the last frame drew where (`ui::render`), for the mouse.
     pub hit: HitMap,
     pub confirm: Option<Confirm>,
-    /// The divider being dragged.
-    drag: Option<Divider>,
+    /// The divider or tab being dragged: it owns the mouse until the release.
+    pub(crate) drag: Option<Drag>,
     /// Where the pointer last was, and the shape the client was last told to show.
     mouse_at: Option<(u16, u16)>,
     pointer: Pointer,
@@ -129,7 +130,33 @@ pub struct App {
     pub should_quit: bool,
 }
 
+/// What a held mouse button is dragging.
+#[derive(Debug, Clone)]
+pub enum Drag {
+    Divider(Divider),
+    Tab(TabDrag),
+}
+
 impl App {
+    /// The tab drag in flight, if that is what is being dragged.
+    pub(crate) fn tab_drag_mut(&mut self) -> Option<&mut TabDrag> {
+        match &mut self.drag {
+            Some(Drag::Tab(t)) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Ends the drag if it is a tab's, handing it over.
+    pub(crate) fn take_tab_drag(&mut self) -> Option<TabDrag> {
+        match self.drag.take() {
+            Some(Drag::Tab(t)) => Some(t),
+            other => {
+                self.drag = other;
+                None
+            }
+        }
+    }
+
     /// Spawns nothing (`start` does).
     pub fn new(config: Config, events: UnboundedSender<AppEvent>) -> App {
         App {
@@ -589,14 +616,16 @@ impl App {
         if self.confirm.is_some() {
             return;
         }
-        if let Some(d) = &self.drag {
-            match m.kind {
-                MouseEventKind::Drag(MouseButton::Left) => {
+        if let Some(drag) = &self.drag {
+            match (drag, m.kind) {
+                (Drag::Divider(d), MouseEventKind::Drag(MouseButton::Left)) => {
                     let ratio = d.ratio_at(m.column, m.row);
                     let d = d.clone();
                     self.groups.set_ratio(&d, ratio);
                 }
-                MouseEventKind::Up(_) => self.drag = None,
+                (Drag::Tab(_), MouseEventKind::Drag(MouseButton::Left)) => self.tab_drag_to(m.column, m.row),
+                (Drag::Divider(_), MouseEventKind::Up(_)) => self.drag = None,
+                (Drag::Tab(_), MouseEventKind::Up(_)) => self.finish_tab_drag(m.column, m.row),
                 _ => {}
             }
             self.needs_redraw = true;
@@ -608,6 +637,15 @@ impl App {
                 self.groups.active = group;
                 if let Some(g) = self.groups.get_mut(group) {
                     g.active = index;
+                    // A drag that never leaves the tab is just a click.
+                    self.drag = g.tabs.get(index).map(|t| {
+                        Drag::Tab(TabDrag {
+                            from: group,
+                            index,
+                            run: t.run.id,
+                            target: None,
+                        })
+                    });
                 }
             }
             Some(Hit::Tab { group, index } | Hit::Close { group, index }) if down(MouseButton::Middle) => {
@@ -638,7 +676,7 @@ impl App {
             }
             Some(Hit::Divider(i)) => {
                 if down(MouseButton::Left) {
-                    self.drag = self.hit.dividers.get(i).cloned();
+                    self.drag = self.hit.dividers.get(i).cloned().map(Drag::Divider);
                 }
             }
             Some(Hit::Terminal { group }) => {
@@ -702,8 +740,10 @@ impl App {
             SplitDir::Right => Pointer::ColResize,
             SplitDir::Down => Pointer::RowResize,
         };
-        if let Some(d) = &self.drag {
-            return resize(d);
+        match &self.drag {
+            Some(Drag::Divider(d)) => return resize(d),
+            Some(Drag::Tab(_)) => return Pointer::Default,
+            None => {}
         }
         let Some((x, y)) = self.mouse_at else {
             return Pointer::Default;

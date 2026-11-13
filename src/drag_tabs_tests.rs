@@ -21,9 +21,10 @@ use crate::buffer::Buffer;
 use crate::buffer::file::Stamp;
 use crate::command::Command;
 use crate::group::Tab;
-use crate::layout::{DropSide, GroupId, MIN_GROUP_HEIGHT, MIN_GROUP_WIDTH, TabHit};
+use crate::layout::{DropSide, GroupId, TabHit};
 use crate::workspace::trust::TrustStore;
 use crate::workspace::{self, Workspace};
+use jtui::split::{MIN_GROUP_HEIGHT, MIN_GROUP_WIDTH};
 
 /// A workspace with `names` (40 numbered lines each), the first open, the others opened after
 /// it in the same group (the last active).

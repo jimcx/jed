@@ -29,5 +29,10 @@ See [jmux's plan](../jmux/PLAN.md): [Layout](../jmux/PLAN.md#layout), [Terminals
       - `Hit::Divider(i)` (checked before the groups) and `HitMap.dividers`; `App.drag` holds a divider drag until release and owns the mouse meanwhile; a client attaching clears the drag and the pointer position; dividers drawn with `jtui::borders` (`editorGroup.border`)
       - Pointer: the server appends OSC 22 to a frame only when the shape changes (resize arrows over or while dragging a divider, the I-beam over terminal text unless its program reports the mouse); the client resets it on every exit and in the panic hook
       - Deferred: the OSC 22 passthrough wrap reads `TMUX` from the server's environment, not the client's; "N terminals" in the status bar
-    - jmux_layout-c: tab drag and drop — reorder, move between groups, drop on an edge to split, the drop zone shaded
+    - ✅ jmux_layout-c: tab drag and drop — reorder, move between groups, drop on an edge to split, the drop zone shaded
+      - `jmux/src/tab_drag.rs`: `TabDrag` (the tab known by its `RunId`: a release after it closed or moved moves nothing), `TabDrop::{TabBar, Terminal { side }}`, `App::tab_drop_at` / `tab_drag_to` / `finish_tab_drag`, `shade_rect`; `Drag::Tab` owns the mouse until release like the divider drag and is cleared on attach
+      - `group.rs`: `Group::move_tab`, `Groups::move_between` (an emptied source group leaves the tree), `split_empty_of`, `move_to_split`
+      - jed's pure helpers `snap_side` / `gap_at` moved to `jtui::split` (`gap_at` takes `(index, x0, x1)` items); ~140 lines copied into jmux, so still no generic `Group<T>`
+      - Drawing: the drop marker (`tab.dropMarker`) and the shade (`terminal.dropBackground`, new jmux theme key)
+      - Deferred: no move-tab keys yet (left / right, to the next group); Esc doesn't cancel a drag (it goes to the shell)
     - jmux_layout-d: inside a terminal — mouse reporting passthrough, selection and copy, paste, scrollback keys / wheel / scroll bar, search, links; the done-when tests (`jmux/src/jmux_layout_tests.rs`), hand checks and marks the task ✅

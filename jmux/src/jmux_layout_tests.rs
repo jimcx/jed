@@ -7,8 +7,12 @@
 //! jmux_layout-b (`jmux_layout_b_*`): split right gives two live shells side by side, each sized
 //! to its half; the divider drags through the `HitMap` and the shells follow; focus moves with
 //! keys and clicks; the pointer shape (OSC 22) follows the divider and the terminal text; a shell
-//! exiting removes its group; a re-attach keeps the split. Tab drag and the terminal features
-//! follow in jmux_layout-c and -d.
+//! exiting removes its group; a re-attach keeps the split.
+//!
+//! jmux_layout-c (`jmux_layout_c_*`): a tab drags along its bar, to another group's bar (an
+//! emptied group goes), onto a group's edge to split it or its centre to join it; no target moves
+//! nothing; the marker and shade are drawn; a detach clears the drag. The terminal features follow
+//! in jmux_layout-d.
 
 use std::num::NonZeroU16;
 use std::path::PathBuf;
@@ -402,6 +406,8 @@ async fn jmux_layout_a_clicks_on_the_bar_pick_close_and_middle_click_closes() {
     // A click on the first tab's title picks it.
     h.click(MouseButton::Left, tabs[0].x0 + 1, 0);
     assert_eq!(h.active(), 0);
+    // The release ends the tab drag the press started.
+    h.mouse(MouseEventKind::Up(MouseButton::Left), tabs[0].x0 + 1, 0);
     // The × of the second closes it (the shell is idle: no question).
     h.click(MouseButton::Left, tabs[1].close_x, 0);
     assert_eq!(h.titles(), ["sh ○", "sh (3) ○"]);
@@ -921,4 +927,324 @@ async fn jmux_layout_b_a_drag_does_not_outlive_its_client_and_hidden_tabs_keep_t
         "{:?}",
         h.pointer_shapes()
     );
+}
+
+// jmux_layout-c: tab drag and drop. Each shell prints its own `TAG10<n>`, so a screen says which
+// shell it is.
+
+/// `n` tabs in one group, shell `i` having printed `TAG10<i>`.
+async fn tagged_tabs(rows: u16, cols: u16, n: usize) -> Harness {
+    let mut h = Harness::new(rows, cols).await;
+    h.settle_text("sh ○").await;
+    for i in 0..n {
+        if i > 0 {
+            h.command(Command::NewTerminal);
+            h.settle("a new tab", |h| h.tab_count() == i + 1 && h.shells_fit())
+                .await;
+        }
+        h.type_text(&format!("echo TAG$((100+{i}))\n"));
+        h.settle_text(&format!("TAG10{i}")).await;
+    }
+    h
+}
+
+/// Which shells `group` holds, in tab order, by the tag each printed.
+fn tags(h: &Harness, group: u64) -> Vec<usize> {
+    let g = h.app.groups.get(group).unwrap();
+    g.tabs
+        .iter()
+        .map(|t| {
+            let text = t.run.screen().screen().contents();
+            (0..9)
+                .find(|i| text.contains(&format!("TAG10{i}")))
+                .expect("a tagged shell")
+        })
+        .collect()
+}
+
+impl Harness {
+    async fn frame(&mut self) {
+        self.settle("a frame", |h| !h.app.needs_redraw).await;
+    }
+
+    /// The cell inside tab `index` of `group`'s bar (left of its close button).
+    fn tab_cell(&self, group: u64, index: usize) -> (u16, u16) {
+        let g = self.app.hit.group(group).unwrap();
+        let t = g.tabs.iter().find(|t| t.index == index).unwrap();
+        (t.x0 + 1, g.bar.y)
+    }
+
+    /// Presses at `from`, moves to `to` (a frame drawn there) and releases.
+    async fn drag(&mut self, from: (u16, u16), to: (u16, u16)) {
+        self.press_and_move(from, to).await;
+        self.mouse(MouseEventKind::Up(MouseButton::Left), to.0, to.1);
+        self.frame().await;
+    }
+
+    async fn press_and_move(&mut self, from: (u16, u16), to: (u16, u16)) {
+        self.mouse(MouseEventKind::Down(MouseButton::Left), from.0, from.1);
+        self.mouse(MouseEventKind::Drag(MouseButton::Left), to.0, to.1);
+        self.frame().await;
+    }
+
+    fn bg_at(&self, x: u16, y: u16) -> vt100::Color {
+        self.screen.screen().cell(y, x).unwrap().bgcolor()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_c_a_tab_drags_along_its_bar_and_keeps_its_shell() {
+    let mut h = tagged_tabs(12, 61, 3).await;
+    let g = h.app.groups.active;
+    assert_eq!(tags(&h, g), [0, 1, 2]);
+    let bar = h.app.hit.group(g).unwrap().bar;
+    // First tab to past the last one.
+    let from = h.tab_cell(g, 0);
+    h.drag(from, (bar.x + bar.width - 1, bar.y)).await;
+    assert_eq!(tags(&h, g), [1, 2, 0]);
+    assert_eq!(h.app.groups.get(g).unwrap().active, 2, "the dragged tab is active");
+    h.settle_text("TAG100").await;
+    // Last back to the start.
+    let from = h.tab_cell(g, 2);
+    h.drag(from, (bar.x, bar.y)).await;
+    assert_eq!(tags(&h, g), [0, 1, 2]);
+    // Dropped beside itself: the order stays, and it is still just a click on it.
+    let from = h.tab_cell(g, 1);
+    h.drag(from, from).await;
+    assert_eq!((tags(&h, g), h.active()), (vec![0, 1, 2], 1));
+    // Where it ends up, a keystroke still reaches the same live shell.
+    h.type_text("echo AFTER$((1+1))\n");
+    h.settle_text("AFTER2").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_c_a_tab_moves_to_the_other_groups_bar_and_an_emptied_group_goes() {
+    let mut h = split_right(12, 61).await;
+    let (left, right) = (h.app.hit.groups[0].id, h.app.hit.groups[1].id);
+    // Tag the right shell, then give the left group a second tab.
+    h.type_text("echo TAG$((100+1))\n");
+    h.settle_text("TAG101").await;
+    h.command(Command::FocusSide(Side::Left));
+    h.type_text("echo TAG$((100+0))\n");
+    h.settle_text("TAG100").await;
+    h.command(Command::NewTerminal);
+    h.settle("two tabs on the left", |h| {
+        h.app.groups.get(left).unwrap().tabs.len() == 2 && h.shells_fit()
+    })
+    .await;
+    h.type_text("echo TAG$((100+2))\n");
+    h.settle_text("TAG102").await;
+    assert_eq!((tags(&h, left), tags(&h, right)), (vec![0, 2], vec![1]));
+
+    // Left tab 0 onto the right bar's far end.
+    let rbar = h.app.hit.group(right).unwrap().bar;
+    let from = h.tab_cell(left, 0);
+    h.drag(from, (rbar.x + rbar.width - 1, rbar.y)).await;
+    assert_eq!((tags(&h, left), tags(&h, right)), (vec![2], vec![1, 0]));
+    assert_eq!(
+        (h.app.groups.active, h.app.groups.get(right).unwrap().active),
+        (right, 1)
+    );
+    h.settle("the shells sized to their groups", |h| h.shells_fit()).await;
+
+    // The left group's only tab to the start of the right bar: the left group is gone, the other
+    // fills the screen.
+    let from = h.tab_cell(left, 0);
+    h.drag(from, (rbar.x, rbar.y)).await;
+    assert!(h.app.groups.get(left).is_none());
+    assert_eq!(tags(&h, right), [2, 1, 0]);
+    h.settle("the lone group to fill the width", |h| {
+        h.app.hit.groups.len() == 1 && h.app.hit.groups[0].term.width == 61 && h.shells_fit()
+    })
+    .await;
+    assert!(h.app.hit.dividers.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_c_a_drop_on_an_edge_splits_the_group_and_the_centre_joins_it() {
+    let mut h = tagged_tabs(14, 61, 2).await;
+    let g = h.app.groups.active;
+    let term = h.app.hit.group(g).unwrap().term;
+    let from = h.tab_cell(g, 0);
+    // The right edge: a new group to the right takes shell 0.
+    h.drag(from, (term.x + term.width - 1, term.y + term.height / 2)).await;
+    h.settle("two groups, each shell sized", |h| {
+        h.app.hit.groups.len() == 2 && h.shells_fit()
+    })
+    .await;
+    let order = h.app.groups.order();
+    assert_eq!(order.len(), 2);
+    assert_eq!((tags(&h, order[0]), tags(&h, order[1])), (vec![1], vec![0]));
+    assert_eq!(h.app.groups.active, order[1], "the new group has the focus");
+    let (l, r) = (h.app.hit.groups[0].term, h.app.hit.groups[1].term);
+    assert_eq!(l.width + r.width + 1, 61, "halves");
+    assert!(r.width >= 28 && l.width >= 28);
+    h.settle_text("TAG100").await;
+
+    // The new group's only tab dropped on the other's top edge: it moves there as a split above
+    // and the emptied group leaves, so there are two groups stacked.
+    let tab = h.tab_cell(order[1], 0);
+    let other = h.app.hit.group(order[0]).unwrap().term;
+    h.drag(tab, (other.x + other.width / 2, other.y)).await;
+    h.settle("two stacked groups", |h| {
+        let g = &h.app.hit.groups;
+        g.len() == 2 && g[0].term.y < g[1].term.y && g[0].term.x == g[1].term.x && h.shells_fit()
+    })
+    .await;
+    let order = h.app.groups.order();
+    assert_eq!((tags(&h, order[0]), tags(&h, order[1])), (vec![0], vec![1]));
+
+    // The centre of the other group: joins it, right of its active tab.
+    let tab = h.tab_cell(order[0], 0);
+    let centre = h.app.hit.group(order[1]).unwrap().term;
+    h.drag(tab, (centre.x + centre.width / 2, centre.y + centre.height / 2))
+        .await;
+    assert_eq!(h.app.groups.order(), vec![order[1]]);
+    assert_eq!(tags(&h, order[1]), [1, 0]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_c_a_drop_on_its_own_centre_or_outside_any_target_moves_nothing() {
+    let mut h = tagged_tabs(14, 61, 2).await;
+    let g = h.app.groups.active;
+    let term = h.app.hit.group(g).unwrap().term;
+    let from = h.tab_cell(g, 0);
+    h.drag(from, (term.x + term.width / 2, term.y + term.height / 2)).await;
+    assert_eq!((tags(&h, g), h.app.hit.groups.len()), (vec![0, 1], 1), "own centre");
+    // The status bar is no target.
+    let from = h.tab_cell(g, 0);
+    h.drag(from, (5, 13)).await;
+    assert_eq!((tags(&h, g), h.app.hit.groups.len()), (vec![0, 1], 1), "outside");
+    // Nor is a divider's cell.
+    h.command(Command::SplitRight);
+    h.settle("two groups", |h| {
+        h.app.hit.groups.len() == 2 && h.tab_count() == 3 && h.shells_fit()
+    })
+    .await;
+    let d = h.app.hit.dividers[0].rect;
+    let from = h.tab_cell(g, 0);
+    h.drag(from, (d.x, 6)).await;
+    assert_eq!(tags(&h, g).len(), 2);
+    assert_eq!(h.app.hit.groups.len(), 2);
+    assert!(h.app.drag.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_c_the_marker_and_the_shade_are_drawn_while_dragging() {
+    let mut h = tagged_tabs(14, 61, 3).await;
+    let g = h.app.groups.active;
+    let (bar, term) = {
+        let hit = h.app.hit.group(g).unwrap();
+        (hit.bar, hit.term)
+    };
+    let before = h.bg_at(term.x + term.width - 2, term.y + 5);
+    // Over the bar, at the gap before tab 1: one cell marked.
+    let from = h.tab_cell(g, 0);
+    let gap_x = h.app.hit.group(g).unwrap().tabs[1].x0;
+    h.press_and_move(from, (gap_x + 1, bar.y)).await;
+    assert_ne!(h.bg_at(gap_x, bar.y), h.bg_at(gap_x + 1, bar.y), "the marker cell");
+    let marker = h.bg_at(gap_x, bar.y);
+    assert_ne!(h.bg_at(gap_x - 1, bar.y), marker, "one cell wide");
+    // Over the terminal's right edge: the right half is shaded, the left is not.
+    h.mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        term.x + term.width - 1,
+        term.y + 5,
+    );
+    h.frame().await;
+    let shade = h.bg_at(term.x + term.width - 2, term.y + 5);
+    assert_ne!(shade, before);
+    assert_eq!(h.bg_at(term.x + term.width - 1, term.y + term.height - 1), shade);
+    assert_eq!(h.bg_at(term.x + term.width / 2, term.y), shade, "from the middle");
+    assert_ne!(h.bg_at(term.x + term.width / 2 - 1, term.y), shade, "not the left half");
+    assert_ne!(h.bg_at(gap_x, bar.y), marker, "the marker moved away");
+    // The centre shades all of it.
+    h.mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        term.x + term.width / 2,
+        term.y + 5,
+    );
+    h.frame().await;
+    assert_eq!(h.bg_at(term.x, term.y), shade);
+    // Released outside: nothing stays drawn shaded.
+    h.mouse(MouseEventKind::Up(MouseButton::Left), 3, 13);
+    h.frame().await;
+    assert_ne!(h.bg_at(term.x, term.y), shade);
+    assert_eq!(tags(&h, g), [0, 1, 2]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_c_a_detach_mid_drag_clears_it_and_a_reattach_shows_the_moved_layout() {
+    let mut h = tagged_tabs(14, 61, 2).await;
+    let g = h.app.groups.active;
+    let term = h.app.hit.group(g).unwrap().term;
+    let from = h.tab_cell(g, 0);
+    let edge = (term.x + term.width - 1, term.y + 5);
+    h.press_and_move(from, edge).await;
+    assert!(h.app.drag.is_some());
+    h.attach(2);
+    assert!(h.app.drag.is_none(), "the drag belonged to the old client");
+    h.mouse(MouseEventKind::Up(MouseButton::Left), edge.0, edge.1);
+    h.frame().await;
+    assert_eq!((h.app.hit.groups.len(), tags(&h, g)), (1, vec![0, 1]));
+    // A finished drag's layout comes back on the next attach.
+    let from = h.tab_cell(g, 0);
+    h.drag(from, edge).await;
+    h.settle("two groups", |h| h.app.hit.groups.len() == 2 && h.shells_fit())
+        .await;
+    let before: Vec<_> = h.app.hit.groups.iter().map(|g| (g.id, g.term)).collect();
+    h.attach(3);
+    h.settle("the same two groups", |h| {
+        h.app.hit.groups.iter().map(|g| (g.id, g.term)).collect::<Vec<_>>() == before && h.shells_fit()
+    })
+    .await;
+    let order = h.app.groups.order();
+    assert_eq!((tags(&h, order[0]), tags(&h, order[1])), (vec![1], vec![0]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_c_a_tab_closed_mid_drag_is_not_replaced_by_the_one_that_took_its_index() {
+    let mut h = tagged_tabs(14, 61, 3).await;
+    let g = h.app.groups.active;
+    let term = h.app.hit.group(g).unwrap().term;
+    let edge = (term.x + term.width - 1, term.y + 5);
+    // Pick up tab 0 (it is the active one), then it goes away while the pointer is over the edge.
+    let from = h.tab_cell(g, 0);
+    h.press_and_move(from, edge).await;
+    h.command(Command::CloseTerminal);
+    h.settle("tab 0 closed", |h| h.tab_count() == 2).await;
+    assert_eq!(tags(&h, g), [1, 2]);
+    h.mouse(MouseEventKind::Up(MouseButton::Left), edge.0, edge.1);
+    h.frame().await;
+    assert_eq!((h.app.hit.groups.len(), tags(&h, g)), (1, vec![1, 2]), "nothing moved");
+    assert!(h.app.drag.is_none());
+    // The dragged tab's group losing it by other means moves nothing either.
+    let from = h.tab_cell(g, 0);
+    h.press_and_move(from, edge).await;
+    h.app.groups.close_tab(g, 0);
+    h.mouse(MouseEventKind::Up(MouseButton::Left), edge.0, edge.1);
+    h.frame().await;
+    assert_eq!((h.app.hit.groups.len(), tags(&h, g)), (1, vec![2]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_c_a_group_too_narrow_to_split_takes_an_edge_drop_as_the_centre() {
+    // Three groups across 61 columns: the middle one is about 15 wide, under two minimum groups.
+    let mut h = Harness::new(12, 61).await;
+    h.settle_text("sh ○").await;
+    for _ in 0..2 {
+        h.command(Command::SplitRight);
+        let n = h.app.hit.groups.len() + 1;
+        h.settle("another group", |h| h.app.hit.groups.len() == n && h.shells_fit())
+            .await;
+    }
+    let order = h.app.groups.order();
+    let narrow = h.app.hit.group(order[1]).unwrap().term;
+    assert!(narrow.width <= 2 * jtui::split::MIN_GROUP_WIDTH, "{narrow:?}");
+    let from = h.tab_cell(order[0], 0);
+    // The narrow group's left edge cell: a centre drop would join it, a split would add a group.
+    h.drag(from, (narrow.x, narrow.y + 3)).await;
+    assert!(h.app.groups.get(order[0]).is_none(), "the emptied group left");
+    assert_eq!(h.app.groups.get(order[1]).unwrap().tabs.len(), 2, "joined, not split");
+    assert_eq!(h.app.groups.order().len(), 2);
 }

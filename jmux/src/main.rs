@@ -12,6 +12,7 @@ mod logging;
 mod protocol;
 mod server;
 mod session;
+mod tab_drag;
 mod tabbar;
 mod theme;
 mod ui;

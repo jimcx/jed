@@ -20,6 +20,8 @@ pub fn dark_plus(truecolor: bool) -> Theme {
         ("find.option.active", fg_bg(0xFFFFFF, 0x1F6FB0)),
         ("statusBar", fg_bg(0xFFFFFF, 0x007ACC)),
         ("statusBar.detail", fg_bg(0xE0E0E0, 0x007ACC)),
+        // The zone a dragged tab would take (as jed's `editor.dropBackground`).
+        ("terminal.dropBackground", fg_bg(0xFFFFFF, 0x0A4A7A)),
         // The close question that replaces the status bar.
         ("statusBar.prompt", fg_bg(0x000000, 0xD7BA7D)),
     ];
@@ -34,10 +36,12 @@ mod tests {
     fn defines_every_key_the_terminal_drawing_reads() {
         for truecolor in [true, false] {
             let theme = dark_plus(truecolor);
-            for key in jterm::draw::KEYS
-                .iter()
-                .chain(&["statusBar", "statusBar.detail", "statusBar.prompt"])
-            {
+            for key in jterm::draw::KEYS.iter().chain(&[
+                "statusBar",
+                "statusBar.detail",
+                "statusBar.prompt",
+                "terminal.dropBackground",
+            ]) {
                 assert!(theme.find(key).is_some(), "missing {key}");
             }
         }

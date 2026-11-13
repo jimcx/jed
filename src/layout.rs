@@ -14,7 +14,7 @@ pub const MIN_TERMINAL_HEIGHT: u16 = 4;
 /// Room always left above the bottom panel for the editor (a tab bar and a few lines).
 pub const MIN_EDITOR_HEIGHT: u16 = 5;
 
-pub use jtui::split::{Divider, DropSide, GroupId, MIN_GROUP_HEIGHT, MIN_GROUP_WIDTH, SplitDir, SplitTree};
+pub use jtui::split::{Divider, DropSide, GroupId, SplitDir, SplitTree};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -17,13 +17,15 @@ fn width(title: &str) -> u16 {
     title.width() as u16 + 4
 }
 
-/// Draws the bar into `area` (one row); returns where its tabs and arrows landed.
+/// Draws the bar into `area` (one row); returns where its tabs and arrows landed. `drop` is the
+/// gap a dragged tab would land in, marked with one cell.
 pub fn render(
     f: &mut Frame,
     area: Rect,
     group: &mut Group,
     theme: &Theme,
     focused: bool,
+    drop: Option<usize>,
 ) -> (Vec<TabHit>, Option<TabArrows>) {
     // A group squeezed out of a tiny window can lie outside the frame.
     let area = area.intersection(f.area());
@@ -119,6 +121,19 @@ pub fn render(
             close_x,
         });
         x += w;
+    }
+    if let Some(index) = drop {
+        // The gap before tab `index`, or after the last tab drawn; on a scrolled bar a gap can
+        // name a tab that isn't drawn, which is the one just after the last drawn.
+        let gap_x = match hits.iter().find(|t| t.index == index).map(|t| t.x0) {
+            Some(x) => x,
+            None => match hits.last() {
+                Some(t) if index > t.index => t.x1,
+                _ => left,
+            },
+        };
+        let gap_x = gap_x.clamp(left, right.saturating_sub(1));
+        out.set_style(Rect::new(gap_x, area.y, 1, 1), theme.get("tab.dropMarker"));
     }
     (hits, arrows)
 }
