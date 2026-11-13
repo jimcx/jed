@@ -231,6 +231,21 @@ impl TitleCallback {
         }
     }
 
+    /// The snippets name a command by its first word, which for `sudo dnf update` is `sudo`: a
+    /// title that is the running command line's first word becomes [`program_of`] that line
+    /// (`dnf`). A program's own title, or one with no command line (an old snippet), is kept.
+    fn unwrapped(&self, title: String) -> String {
+        let line = self
+            .commands
+            .back()
+            .filter(|c| self.running && c.finished.is_none())
+            .and_then(|c| c.command.as_deref());
+        match line.and_then(|l| Some((l.split_whitespace().next()?, program_of(l)?))) {
+            Some((first, program)) if first == title => sanitized(program).unwrap_or(title),
+            _ => title,
+        }
+    }
+
     /// Reports the current state through the sink.
     fn report(&self) {
         (self.sink)(Event::Foreground {
@@ -245,7 +260,7 @@ impl TitleCallback {
 impl vt100::Callbacks for TitleCallback {
     /// OSC 0 and 2: the window title (a program's own, while it runs).
     fn set_window_title(&mut self, _screen: &mut vt100::Screen, title: &[u8]) {
-        self.title = sanitized(&String::from_utf8_lossy(title));
+        self.title = sanitized(&String::from_utf8_lossy(title)).map(|t| self.unwrapped(t));
         self.report();
     }
 
@@ -294,6 +309,86 @@ impl vt100::Callbacks for TitleCallback {
             _ => {}
         }
     }
+}
+
+/// Commands that run the command after them, which a tab title sees through: each one's name,
+/// its short options that take a value (`-u root`, `-uroot`) and its long ones (`--user root`;
+/// `--user=root` needs no entry). sudo's `-h` is left out: alone it is `--help`.
+const WRAPPERS: &[(&str, &str, &[&str])] = &[
+    (
+        "sudo",
+        "CDgpRrTtUu",
+        &[
+            "chdir",
+            "chroot",
+            "close-from",
+            "command-timeout",
+            "group",
+            "host",
+            "other-user",
+            "prompt",
+            "role",
+            "type",
+            "user",
+        ],
+    ),
+    ("doas", "Cu", &[]),
+    ("env", "CSu", &["chdir", "split-string", "unset"]),
+    ("nice", "n", &["adjustment"]),
+    ("ionice", "cn", &["class", "classdata"]),
+    ("nohup", "", &[]),
+    ("time", "fo", &["format", "output"]),
+    ("exec", "a", &[]),
+    ("command", "", &[]),
+    ("builtin", "", &[]),
+];
+
+/// The program a command line runs, past `NAME=value` assignments and [`WRAPPERS`] with their
+/// options: `dnf` for `sudo -u root dnf update`, `make` for `FOO=1 nice -n 5 make`. A wrapper
+/// with no command after it (`sudo -i`) is itself; `None` for a line of no words. The line is
+/// split on whitespace only (no quoting): it names a tab, nothing runs it.
+pub(crate) fn program_of(line: &str) -> Option<&str> {
+    let mut words = line.split_whitespace().peekable();
+    let mut wrapper = None;
+    while let Some(word) = words.next() {
+        if is_assignment(word) {
+            continue;
+        }
+        if matches!(word, "|" | "||" | "&&" | ";" | "&") {
+            break;
+        }
+        let Some(&(_, short, long)) = WRAPPERS.iter().find(|(name, ..)| *name == word) else {
+            return Some(word);
+        };
+        wrapper = Some(word);
+        while let Some(option) = words.next_if(|w| w.len() > 1 && w.starts_with('-')) {
+            if option == "--" {
+                break;
+            }
+            let takes_value = match option.strip_prefix("--") {
+                Some(name) => long.contains(&name),
+                // The first value-taking letter ends the cluster: its value is the rest, else
+                // the next word.
+                None => option[1..]
+                    .char_indices()
+                    .find(|&(_, c)| short.contains(c))
+                    .is_some_and(|(i, c)| i + c.len_utf8() == option.len() - 1),
+            };
+            if takes_value {
+                words.next();
+            }
+        }
+    }
+    wrapper
+}
+
+/// A shell assignment before a command: `NAME=value`, `NAME` a letter or `_` then letters,
+/// digits and `_`.
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
 }
 
 /// The cursor's row counted from the first row the terminal ever had.
@@ -1340,6 +1435,64 @@ mod tests {
         assert_eq!(last(&events), at("evil", false, false));
         parser.process(b"\x1b]2;\x01\x07");
         assert_eq!(last(&events), at("zsh", false, false));
+    }
+
+    /// A command line's program, past assignments and wrappers with their options.
+    #[test]
+    fn program_of_sees_through_wrappers() {
+        let cases = [
+            ("make", Some("make")),
+            ("sudo dnf update", Some("dnf")),
+            ("sudo -u root dnf update", Some("dnf")),
+            ("sudo -uroot dnf", Some("dnf")),
+            ("sudo -Eu root dnf", Some("dnf")),
+            ("sudo --user root dnf", Some("dnf")),
+            ("sudo --user=root -E dnf", Some("dnf")),
+            ("sudo -- dnf", Some("dnf")),
+            ("sudo FOO=1 dnf", Some("dnf")),
+            ("FOO=1 BAR_2=x make -j8", Some("make")),
+            ("sudo nice -n 5 make", Some("make")),
+            ("nice -5 make", Some("make")),
+            ("env -i -u HOME PATH=/bin ls", Some("ls")),
+            ("time sudo -v", Some("sudo")),
+            ("sudo -i", Some("sudo")),
+            ("sudo | cat", Some("sudo")),
+            ("  ", None),
+            ("", None),
+            ("x=1", None),
+            ("=x make", Some("=x")),
+            ("1x=y", Some("1x=y")),
+            ("-", Some("-")),
+        ];
+        for (line, want) in cases {
+            assert_eq!(program_of(line), want, "{line:?}");
+        }
+    }
+
+    /// The snippet's first-word title for a wrapped command (`sudo`) is the program it runs, from
+    /// the `633;E` command line; a program's own title and a line-less command keep theirs.
+    #[test]
+    fn a_wrapped_commands_title_is_its_program() {
+        let (mut parser, events) = title_parser("zsh");
+        let last = |events: &Arc<Mutex<Vec<Event>>>| match lock(events).last().cloned().unwrap() {
+            Event::Foreground { name, idle, .. } => (name, idle),
+            ev => panic!("{ev:?}"),
+        };
+        parser.process(b"\x1b]133;B\x07\x1b]633;E;sudo -u root dnf update\x07\x1b]0;sudo\x07");
+        assert_eq!(last(&events), ("dnf".into(), false));
+        parser.process(b"\x1b]2;dnf progress\x07");
+        assert_eq!(last(&events), ("dnf progress".into(), false), "the program's own title");
+        parser.process(b"\x1b]133;D;0\x07");
+        assert_eq!(last(&events), ("zsh".into(), true));
+
+        // An old snippet: no `633;E`, so nothing to see through.
+        parser.process(b"\x1b]133;B\x07\x1b]0;sudo\x07");
+        assert_eq!(last(&events), ("sudo".into(), false));
+        parser.process(b"\x1b]133;D;0\x07");
+
+        // `sudo -i` runs a shell: the wrapper's own name.
+        parser.process(b"\x1b]133;B\x07\x1b]633;E;sudo -i\x07\x1b]0;sudo\x07");
+        assert_eq!(last(&events), ("sudo".into(), false));
     }
 
     /// FinalTerm's other semantic-prompt markers — `133;A` (a prompt starts) and `133;C` (a

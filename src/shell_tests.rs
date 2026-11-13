@@ -241,6 +241,25 @@ async fn shell_title_follows_the_shells_osc_codes() {
     );
 }
 
+/// A wrapped command's tab is named after the program it runs: `sudo dnf update` (the snippet's
+/// first-word title `sudo`, its `633;E` command line) titles the tab `dnf ●`.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_title_sees_through_sudo() {
+    let (_d, root, state) = dirs();
+    let mut app = shell_app(&root, &state);
+    app.tasks.shell = "/bin/sh".into();
+    app.new_shell_in_editor();
+    let title = |a: &App| a.group().active_shell().map(|s| s.title.clone()).unwrap_or_default();
+    let run = &app.group().active_shell().unwrap().run;
+    run.write(b"printf '\\033]133;B\\007\\033]633;E;sudo dnf update\\007\\033]0;sudo\\007'\n");
+    assert!(
+        app.settle(|a| title(a) == "dnf ●").await,
+        "the program sudo runs: {:?}; screen:\n{}",
+        title(&app),
+        shell_text(&app)
+    );
+}
+
 /// Without the integration's OSC codes nothing renames the tab: a shell's title stays its base
 /// name even while a command runs (`sleep` no longer reaches the title — the `/proc` foreground
 /// poller it used to come from is gone).
