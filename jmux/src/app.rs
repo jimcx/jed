@@ -15,10 +15,13 @@ use crossterm::event::{Event as Input, KeyEvent, KeyEventKind, MouseButton, Mous
 use jterm::run::{EnvNames, Event, RunId, SCROLLBACK, Sink, StartOptions, Status};
 use jterm::shell::{self, ShellTab};
 use jterm::{keys, mouse};
-use jtui::split::GroupId;
+use jtui::borders::Borders;
+use jtui::split::{Divider, GroupId, SplitDir};
 use jtui::stream_backend::StreamBackend;
+use jtui::terminal::{Pointer, set_pointer};
 use jtui::theme::Theme;
 use ratatui::Terminal;
+use ratatui::layout::Rect;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{Sender, UnboundedSender};
 use tokio::task::JoinHandle;
@@ -102,6 +105,13 @@ pub struct App {
     /// What the last frame drew where (`ui::render`), for the mouse.
     pub hit: HitMap,
     pub confirm: Option<Confirm>,
+    /// The divider being dragged.
+    drag: Option<Divider>,
+    /// Where the pointer last was, and the shape the client was last told to show.
+    mouse_at: Option<(u16, u16)>,
+    pointer: Pointer,
+    /// The dividers' lines (`ui::render`).
+    pub borders: Borders,
     /// The id of the next run (they stay unique for the session: `$JMUX_TERMINAL`).
     next_run: u64,
     pub theme: Theme,
@@ -130,6 +140,10 @@ impl App {
             keymap: keymap::keymap(),
             hit: HitMap::default(),
             confirm: None,
+            drag: None,
+            mouse_at: None,
+            pointer: Pointer::Default,
+            borders: Borders::default(),
             next_run: 1,
             theme: theme::dark_plus(true),
             conns: HashMap::new(),
@@ -153,7 +167,7 @@ impl App {
     /// Starts the first shell at 24×80 (no client has said its size yet); an attach resizes it.
     /// Needs a tokio runtime.
     pub fn start(&mut self) {
-        self.new_terminal();
+        self.new_terminal(self.groups.active);
         tracing::info!(session = %self.name, program = %self.config.program.display(), "session started");
     }
 
@@ -183,9 +197,9 @@ impl App {
         (term.height, term.width)
     }
 
-    /// Opens a shell tab after the active one in the active group and makes it the active tab:
-    /// the `number`th of its program, the lowest not taken (`zsh`, `zsh (2)`).
-    fn new_terminal(&mut self) {
+    /// Opens a shell tab after the active one in `group` and makes it the active tab: the `number`th
+    /// of its program, the lowest not taken (`zsh`, `zsh (2)`).
+    fn new_terminal(&mut self, group: GroupId) {
         let sink: Sink = {
             let events = self.events.clone();
             Arc::new(move |ev| {
@@ -203,20 +217,47 @@ impl App {
             .unwrap_or(1);
         let id = RunId(self.next_run);
         self.next_run += 1;
-        let (rows, cols) = self.term_size(self.groups.active);
+        let (rows, cols) = self.term_size(group);
         let options = StartOptions {
             env: ENV,
             command_ring: 500,
         };
         let tab = ShellTab::new(id, spec, rows, cols, sink, SCROLLBACK, options, number);
-        self.groups.active_group_mut().open(tab);
+        if let Some(g) = self.groups.get_mut(group) {
+            g.open(tab);
+        }
         self.needs_redraw = true;
+    }
+
+    /// Splits the active group in `dir`; the new group holds one new shell and has the focus.
+    fn split(&mut self, dir: SplitDir) {
+        let group = self.groups.split(dir);
+        self.new_terminal(group);
+    }
+
+    /// The last layout's group areas, for the directional focus.
+    fn cells(&self) -> Vec<(GroupId, Rect)> {
+        let (rows, cols) = if self.attached.is_some() {
+            self.size
+        } else {
+            INITIAL_SIZE
+        };
+        self.groups.layout(ui::body(rows, cols)).0
     }
 
     /// Runs a command. Commands never look at keys.
     pub fn execute(&mut self, command: Command) {
         match command {
-            Command::NewTerminal => self.new_terminal(),
+            Command::NewTerminal => self.new_terminal(self.groups.active),
+            Command::SplitRight => self.split(SplitDir::Right),
+            Command::SplitDown => self.split(SplitDir::Down),
+            Command::FocusSide(side) => {
+                let cells = self.cells();
+                self.groups.focus_side(&cells, side);
+            }
+            Command::FocusNextGroup => self.groups.focus_step(1),
+            Command::FocusPreviousGroup => self.groups.focus_step(-1),
+            Command::FocusGroup(n) => self.groups.focus_nth(usize::from(n)),
             Command::CloseTerminal => {
                 let group = self.groups.active;
                 let index = self.groups.active_group().active;
@@ -384,6 +425,9 @@ impl App {
         }
         crate::session::touch(&self.config.socket);
         self.attached = Some(conn);
+        // A drag or pointer position belongs to the client that had them.
+        self.drag = None;
+        self.mouse_at = None;
         self.size = (rows.max(1), cols.max(1));
         self.resync = true;
         self.needs_redraw = true;
@@ -533,7 +577,29 @@ impl App {
     /// A pointer event: on a tab bar it picks, closes or scrolls tabs; over a terminal it focuses
     /// the group and goes to its shell. Nothing happens while the close question is open.
     fn mouse(&mut self, m: MouseEvent) {
+        self.mouse_at = Some((m.column, m.row));
+        self.pointer_event(m);
+        if self.desired_pointer() != self.pointer {
+            self.needs_redraw = true;
+        }
+    }
+
+    /// A divider drag takes every event until the button is released.
+    fn pointer_event(&mut self, m: MouseEvent) {
         if self.confirm.is_some() {
+            return;
+        }
+        if let Some(d) = &self.drag {
+            match m.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    let ratio = d.ratio_at(m.column, m.row);
+                    let d = d.clone();
+                    self.groups.set_ratio(&d, ratio);
+                }
+                MouseEventKind::Up(_) => self.drag = None,
+                _ => {}
+            }
+            self.needs_redraw = true;
             return;
         }
         let down = |button| m.kind == MouseEventKind::Down(button);
@@ -568,6 +634,11 @@ impl App {
                     }
                     MouseEventKind::Down(_) => self.groups.active = group,
                     _ => return,
+                }
+            }
+            Some(Hit::Divider(i)) => {
+                if down(MouseButton::Left) {
+                    self.drag = self.hit.dividers.get(i).cloned();
                 }
             }
             Some(Hit::Terminal { group }) => {
@@ -624,6 +695,33 @@ impl App {
         }
     }
 
+    /// The pointer's shape: a resize arrow over a divider (and while dragging one), the I-beam over
+    /// a terminal unless its program takes the mouse itself, else the default.
+    fn desired_pointer(&self) -> Pointer {
+        let resize = |d: &Divider| match d.dir {
+            SplitDir::Right => Pointer::ColResize,
+            SplitDir::Down => Pointer::RowResize,
+        };
+        if let Some(d) = &self.drag {
+            return resize(d);
+        }
+        let Some((x, y)) = self.mouse_at else {
+            return Pointer::Default;
+        };
+        match self.hit.at(x, y) {
+            Some(Hit::Divider(i)) => self.hit.dividers.get(i).map_or(Pointer::Default, resize),
+            Some(Hit::Terminal { group }) => {
+                let reporting = self
+                    .groups
+                    .get(group)
+                    .and_then(|g| g.active_tab())
+                    .is_some_and(|s| s.run.screen().screen().mouse_protocol_mode() != MouseProtocolMode::None);
+                if reporting { Pointer::Default } else { Pointer::Text }
+            }
+            _ => Pointer::Default,
+        }
+    }
+
     fn run_event(&mut self, ev: Event) {
         match ev {
             Event::Output(_) | Event::Started(_) => self.needs_redraw = true,
@@ -664,6 +762,8 @@ impl App {
         };
         if self.resync {
             self.resync = false;
+            // A new client starts with the default pointer.
+            self.pointer = Pointer::Default;
             let (rows, cols) = self.size;
             let backend = terminal.backend_mut();
             backend.take_output();
@@ -671,7 +771,13 @@ impl App {
             terminal.clear()?;
         }
         terminal.draw(|f| ui::render(f, self))?;
-        let bytes = terminal.backend_mut().take_output();
+        let mut bytes = terminal.backend_mut().take_output();
+        // The client's pointer follows what the last frame drew.
+        let pointer = self.desired_pointer();
+        if pointer != self.pointer {
+            self.pointer = pointer;
+            let _ = set_pointer(&mut bytes, pointer);
+        }
         if !bytes.is_empty() {
             self.send(conn, ServerMsg::Output(bytes));
         }

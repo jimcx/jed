@@ -23,6 +23,11 @@ See [jmux's plan](../jmux/PLAN.md): [Layout](../jmux/PLAN.md#layout), [Terminals
       - `app.rs`: `execute`, `new_terminal` (RunIds never reused), `request_close` (confirm over the status bar while a command runs; keys swallowed), `close_tab`; a shell exiting closes its tab, the last one ends the session; terminal mouse offset by the tab bar row
       - Copy budget: ~80–100 lines from jed's tab bar, so no generic `Group<T>` in jtui
       - Tests: `jmux/src/jmux_layout_tests.rs` (`Harness`, `jmux_layout_a_*`); the status bar doesn't show "N terminals" yet
-    - jmux_layout-b: splits — split right / down, focus by key and click, divider drag, borders, per-group sizes, empty groups removed
+    - ✅ jmux_layout-b: splits — split right / down, focus by key and click, divider drag, borders, per-group sizes, empty groups removed
+      - `group.rs`: `Groups::split` (a new group beside the active one, focused; the caller opens its shell), `focus_step` (tree order, wraps), `focus_nth`, `focus_side` (`neighbour`: the adjacent group on that side overlapping the active one's span most), `set_ratio`
+      - Commands / keys: split right Ctrl+\ (Cmd+\), split down Ctrl+Alt+\ (Cmd+Alt+\), focus group N Ctrl+1..8 (Cmd+1..8), previous / next group Ctrl+Shift+, / ., focus by side Alt+Shift+arrows (Cmd+Alt+arrows); `App::new_terminal(group)` is shared by new and split
+      - `Hit::Divider(i)` (checked before the groups) and `HitMap.dividers`; `App.drag` holds a divider drag until release and owns the mouse meanwhile; a client attaching clears the drag and the pointer position; dividers drawn with `jtui::borders` (`editorGroup.border`)
+      - Pointer: the server appends OSC 22 to a frame only when the shape changes (resize arrows over or while dragging a divider, the I-beam over terminal text unless its program reports the mouse); the client resets it on every exit and in the panic hook
+      - Deferred: the OSC 22 passthrough wrap reads `TMUX` from the server's environment, not the client's; "N terminals" in the status bar
     - jmux_layout-c: tab drag and drop — reorder, move between groups, drop on an edge to split, the drop zone shaded
     - jmux_layout-d: inside a terminal — mouse reporting passthrough, selection and copy, paste, scrollback keys / wheel / scroll bar, search, links; the done-when tests (`jmux/src/jmux_layout_tests.rs`), hand checks and marks the task ✅

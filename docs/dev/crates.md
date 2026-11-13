@@ -70,7 +70,12 @@ directory, tests pass a temp dir) and the server:
   redraws in full; `Detach` / the connection closing leave the server running and drawing nothing. `key` looks the key up in `keymap`
   (`Context::Terminal` / `Confirm`), unbound keys go to the active shell, as do paste and mouse (`HitMap`: tab bar clicks
   pick / close (x or middle click) / scroll, terminal events keep their offset below the bar); `Bye SessionEnded` and the
-  process exits with the last tab.
+  process exits with the last tab. Splits: `SplitRight` / `SplitDown` put a new group (one new shell, focused) beside the
+  active one; `FocusSide` (`group::neighbour`, over the layout's rects), next / previous / Nth group; `Hit::Divider(i)`
+  (checked first) starts a drag (`App.drag`) that owns the mouse until release and calls `Groups::set_ratio`. The pointer
+  shape is the server's call: `desired_pointer` (resize arrows over / while dragging a divider, I-beam over a terminal
+  unless its program has mouse reporting on) is appended to the frame as OSC 22 in `redraw` when it changed (reset on an
+  attach); the client's `restore_terminal` puts it back.
   `Query` / `Kill` / `Rename { name }` as a connection's first message never attach: answered (`Info` / `Done` / `Error`)
   and closed. `Kill` ends the session; `Rename` moves the socket file (the guard follows; running shells keep the old
   `$JMUX`).
@@ -82,10 +87,11 @@ directory, tests pass a temp dir) and the server:
   `nested(jmux_env)` (the `$JMUX` refusal); `main::run_cli(cmd, dir, jmux_env)` ties them to `client::run_attached`.
 - `command` (`Command`, `Context`; `KeyCommand` names like `terminal.new`; plain Ctrl+letter passes through to the shell),
   `keymap` (`defaults(Platform)` as data: Ctrl+` / Ctrl+Shift+T new, Ctrl+Shift+W close, Ctrl+PageDown / PageUp, Alt+1..9,
-  Ctrl+Shift+D detach; the file loading is `jmux_config`), `group` (`Group` = tabs + active + bar scroll; `Groups` over
-  `jtui::split::SplitTree`, one group so far, an emptied group leaves the tree), `hit` (`HitMap` / `Hit`, written by
+  Ctrl+Shift+D detach; jed's `cmd` is Ctrl / Cmd: `cmd+\` split right, `cmd+alt+\` down, `cmd+1..8` group N,
+  Ctrl+Shift+, / . previous / next group, Alt+Shift+arrows (Cmd+Alt on macOS) focus by side; the file loading is `jmux_config`), `group` (`Group` = tabs + active + bar scroll; `Groups` over
+  `jtui::split::SplitTree`, an emptied group leaves the tree), `hit` (`HitMap` with the dividers / `Hit`, written by
   `ui::render`), `tabbar` (` title × ` tabs, state glyph colours, `‹ ›` overflow arrows),
-  `ui` (`render(f, &mut App)`: each group's tab bar and terminal above a one-row status bar: session name / title / detach
+  `ui` (`render(f, &mut App)`: each group's tab bar and terminal, the dividers (`jtui::borders`), above a one-row status bar: session name / title / detach
   hint from the keymap), `theme` (the only file
   with colours: `jterm::draw::KEYS` + `statusBar*` over `widget_entries`), `logging` (`<state dir>/jmux/logs/<name>-<pid>.log`,
   `JMUX_LOG`, panics logged).

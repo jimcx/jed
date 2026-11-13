@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crossterm::event::{Event, EventStream};
 use futures_util::{Stream, StreamExt};
-use jtui::terminal::{self, CursorShape, CursorStyle, Identity};
+use jtui::terminal::{self, CursorShape, CursorStyle, Identity, Pointer};
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixStream;
 
@@ -182,7 +182,7 @@ pub fn run_attached(socket: &Path, name: &str) -> i32 {
             }
         };
         let result = attach(stream, &info, EventStream::new(), &mut io::stdout(), hangup_signal()).await;
-        finish(result, name, terminal::restore, &mut io::stdout(), &mut io::stderr())
+        finish(result, name, restore_terminal, &mut io::stdout(), &mut io::stderr())
     });
     // The event stream's reader thread must not hold the exit.
     runtime.shutdown_background();
@@ -211,11 +211,18 @@ fn finish(
     }
 }
 
+/// Puts the terminal back, the mouse pointer too: the server sets its shape (it decides what is
+/// under the pointer), so this client resets it whether or not one was set.
+fn restore_terminal() {
+    let _ = terminal::set_pointer(&mut io::stdout(), Pointer::Default);
+    terminal::restore();
+}
+
 /// A panic puts the terminal back first, so its message is readable.
 fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        terminal::restore();
+        restore_terminal();
         previous(info);
     }));
 }

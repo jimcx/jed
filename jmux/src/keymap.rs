@@ -5,6 +5,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use jtui::keymap::{Binding, KeyCombo, Keymap, Platform, Source};
 
 use crate::command::{Command, Context};
+use crate::group::Side;
 
 pub type JmuxKeymap = Keymap<Context, Command>;
 
@@ -20,6 +21,8 @@ pub fn defaults(platform: Platform) -> Vec<Binding<Context, Command>> {
         KeyModifiers::NONE,
     );
     let mac = platform == Platform::MacOs;
+    // Cmd on macOS, Ctrl elsewhere (jed's `cmd`).
+    let cmd = if mac { KeyModifiers::SUPER } else { ctrl };
     let term = |code, mods, command| (code, mods, command, Some(Context::Terminal));
     let mut list = vec![
         term(KeyCode::Char('`'), ctrl, Command::NewTerminal),
@@ -35,8 +38,26 @@ pub fn defaults(platform: Platform) -> Vec<Binding<Context, Command>> {
         },
         term(KeyCode::PageDown, ctrl, Command::NextTab),
         term(KeyCode::PageUp, ctrl, Command::PrevTab),
+        // Jed's split and group keys. Ctrl+Shift+, / . (terminals report `<` / `>`, normalised by
+        // `KeyCombo::from_event`) step through the groups.
+        term(KeyCode::Char('\\'), cmd, Command::SplitRight),
+        term(KeyCode::Char('\\'), cmd | alt, Command::SplitDown),
+        term(KeyCode::Char(','), ctrl | shift, Command::FocusPreviousGroup),
+        term(KeyCode::Char('.'), ctrl | shift, Command::FocusNextGroup),
         (KeyCode::Char('d'), ctrl | shift, Command::Detach, None),
     ];
+    let side = if mac { KeyModifiers::SUPER | alt } else { alt | shift };
+    for (code, s) in [
+        (KeyCode::Left, Side::Left),
+        (KeyCode::Right, Side::Right),
+        (KeyCode::Up, Side::Up),
+        (KeyCode::Down, Side::Down),
+    ] {
+        list.push(term(code, side, Command::FocusSide(s)));
+    }
+    for n in 1..=8u8 {
+        list.push(term(KeyCode::Char(char::from(b'0' + n)), cmd, Command::FocusGroup(n)));
+    }
     let go = if mac { ctrl } else { alt };
     for n in 1..=9u8 {
         list.push(term(KeyCode::Char(char::from(b'0' + n)), go, Command::GoToTab(n)));
@@ -117,6 +138,43 @@ mod tests {
         assert_eq!(
             map.lookup(&ev(KeyCode::Char('D'), cs), Context::Confirm),
             Some(Command::Detach)
+        );
+    }
+
+    #[test]
+    fn split_and_group_keys_resolve_per_platform() {
+        let ev = |code, mods| KeyEvent::new(code, mods);
+        let (ctrl, shift, alt) = (KeyModifiers::CONTROL, KeyModifiers::SHIFT, KeyModifiers::ALT);
+        let lin = Keymap::from_list(defaults(Platform::Linux));
+        let look = |m: &JmuxKeymap, code, mods| m.lookup(&ev(code, mods), Context::Terminal);
+        assert_eq!(look(&lin, KeyCode::Char('\\'), ctrl), Some(Command::SplitRight));
+        assert_eq!(look(&lin, KeyCode::Char('\\'), ctrl | alt), Some(Command::SplitDown));
+        assert_eq!(
+            look(&lin, KeyCode::Char('.'), ctrl | shift),
+            Some(Command::FocusNextGroup)
+        );
+        assert_eq!(
+            look(&lin, KeyCode::Char('>'), ctrl | shift),
+            Some(Command::FocusNextGroup)
+        );
+        assert_eq!(
+            look(&lin, KeyCode::Char('<'), ctrl | shift),
+            Some(Command::FocusPreviousGroup)
+        );
+        assert_eq!(look(&lin, KeyCode::Char('2'), ctrl), Some(Command::FocusGroup(2)));
+        assert_eq!(look(&lin, KeyCode::Char('2'), alt), Some(Command::GoToTab(2)));
+        assert_eq!(
+            look(&lin, KeyCode::Left, alt | shift),
+            Some(Command::FocusSide(Side::Left))
+        );
+        let mac = Keymap::from_list(defaults(Platform::MacOs));
+        let (sup, ctl) = (KeyModifiers::SUPER, KeyModifiers::CONTROL);
+        assert_eq!(look(&mac, KeyCode::Char('\\'), sup), Some(Command::SplitRight));
+        assert_eq!(look(&mac, KeyCode::Char('2'), sup), Some(Command::FocusGroup(2)));
+        assert_eq!(look(&mac, KeyCode::Char('2'), ctl), Some(Command::GoToTab(2)));
+        assert_eq!(
+            look(&mac, KeyCode::Down, sup | alt),
+            Some(Command::FocusSide(Side::Down))
         );
     }
 

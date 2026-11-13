@@ -4,6 +4,8 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use jtui::keymap::{KeyCombo, KeyCommand, KeyContext};
 
+use crate::group::Side;
+
 /// Which part has the key focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Context {
@@ -45,6 +47,16 @@ pub enum Command {
     PrevTab,
     /// The Nth tab of the active group, 1 to 9.
     GoToTab(u8),
+    /// Splits the active group side by side (a new terminal in the new group, which takes focus).
+    SplitRight,
+    /// Splits the active group one above the other.
+    SplitDown,
+    /// The group nearest the active one on that side.
+    FocusSide(Side),
+    FocusNextGroup,
+    FocusPreviousGroup,
+    /// The Nth group in tree order, 1 to 8.
+    FocusGroup(u8),
     Detach,
     ConfirmYes,
     ConfirmNo,
@@ -58,11 +70,20 @@ impl Command {
             Command::CloseTerminal,
             Command::NextTab,
             Command::PrevTab,
+            Command::SplitRight,
+            Command::SplitDown,
+            Command::FocusNextGroup,
+            Command::FocusPreviousGroup,
+            Command::FocusSide(Side::Left),
+            Command::FocusSide(Side::Right),
+            Command::FocusSide(Side::Up),
+            Command::FocusSide(Side::Down),
             Command::Detach,
             Command::ConfirmYes,
             Command::ConfirmNo,
         ];
         all.extend((1..=9).map(Command::GoToTab));
+        all.extend((1..=8).map(Command::FocusGroup));
         all
     }
 }
@@ -78,6 +99,15 @@ impl KeyCommand for Command {
             Command::NextTab => "terminal.nextTab".into(),
             Command::PrevTab => "terminal.previousTab".into(),
             Command::GoToTab(n) => format!("terminal.goToTab{n}"),
+            Command::SplitRight => "terminal.splitRight".into(),
+            Command::SplitDown => "terminal.splitDown".into(),
+            Command::FocusSide(Side::Left) => "terminal.focusLeftGroup".into(),
+            Command::FocusSide(Side::Right) => "terminal.focusRightGroup".into(),
+            Command::FocusSide(Side::Up) => "terminal.focusAboveGroup".into(),
+            Command::FocusSide(Side::Down) => "terminal.focusBelowGroup".into(),
+            Command::FocusNextGroup => "terminal.focusNextGroup".into(),
+            Command::FocusPreviousGroup => "terminal.focusPreviousGroup".into(),
+            Command::FocusGroup(n) => format!("terminal.focusGroup{n}"),
             Command::Detach => "session.detach".into(),
             Command::ConfirmYes => "confirm.yes".into(),
             Command::ConfirmNo => "confirm.no".into(),
@@ -90,6 +120,15 @@ impl KeyCommand for Command {
             Command::NextTab => "Next Tab".into(),
             Command::PrevTab => "Previous Tab".into(),
             Command::GoToTab(n) => format!("Go to Tab {n}"),
+            Command::SplitRight => "Split Terminal Right".into(),
+            Command::SplitDown => "Split Terminal Down".into(),
+            Command::FocusSide(Side::Left) => "Focus Group Left".into(),
+            Command::FocusSide(Side::Right) => "Focus Group Right".into(),
+            Command::FocusSide(Side::Up) => "Focus Group Above".into(),
+            Command::FocusSide(Side::Down) => "Focus Group Below".into(),
+            Command::FocusNextGroup => "Focus Next Group".into(),
+            Command::FocusPreviousGroup => "Focus Previous Group".into(),
+            Command::FocusGroup(n) => format!("Focus Group {n}"),
             Command::Detach => "Detach".into(),
             Command::ConfirmYes => "Confirm".into(),
             Command::ConfirmNo => "Cancel".into(),

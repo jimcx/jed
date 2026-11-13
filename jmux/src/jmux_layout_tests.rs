@@ -2,8 +2,13 @@
 //! with real `/bin/sh` shells: a new terminal is a second tab and the keys cycle between them
 //! (the first part of the task's "done when"), titles and numbering, the close confirm, a shell
 //! that exits closing its tab, the last tab ending the session, clicks on the bar, mouse positions
-//! offset by the bar, and a re-attach showing the same tabs. Splits, tab drag and the terminal
-//! features follow in jmux_layout-b to -d.
+//! offset by the bar, and a re-attach showing the same tabs.
+//!
+//! jmux_layout-b (`jmux_layout_b_*`): split right gives two live shells side by side, each sized
+//! to its half; the divider drags through the `HitMap` and the shells follow; focus moves with
+//! keys and clicks; the pointer shape (OSC 22) follows the divider and the terminal text; a shell
+//! exiting removes its group; a re-attach keeps the split. Tab drag and the terminal features
+//! follow in jmux_layout-c and -d.
 
 use std::num::NonZeroU16;
 use std::path::PathBuf;
@@ -16,6 +21,7 @@ use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
 
 use crate::app::{App, AppEvent, Config};
 use crate::command::Command;
+use crate::group::Side;
 use crate::protocol::{ByeReason, ClientMsg, PROTOCOL_VERSION, ServerMsg};
 
 /// The longest any wait lasts.
@@ -30,6 +36,8 @@ struct Harness {
     terminal: Terminal<StreamBackend>,
     screen: vt100::Parser,
     bye: Option<ByeReason>,
+    /// Everything the client was sent, for the escape sequences the screen does not keep.
+    raw: Vec<u8>,
     conn: u64,
     rows: u16,
     cols: u16,
@@ -59,6 +67,7 @@ impl Harness {
             terminal: Terminal::new(StreamBackend::new(cols, rows)).unwrap(),
             screen: screen(rows, cols),
             bye: None,
+            raw: Vec::new(),
             conn: 1,
             rows,
             cols,
@@ -83,6 +92,7 @@ impl Harness {
         self.app.handle(AppEvent::Client { conn, msg });
         self.screen = screen(self.rows, self.cols);
         self.terminal = Terminal::new(StreamBackend::new(self.cols, self.rows)).unwrap();
+        self.raw.clear();
         self.conn = conn;
     }
 
@@ -137,7 +147,10 @@ impl Harness {
         }
         while let Ok(msg) = self.conn_rx.try_recv() {
             match msg {
-                ServerMsg::Output(bytes) => self.screen.process(&bytes),
+                ServerMsg::Output(bytes) => {
+                    self.screen.process(&bytes);
+                    self.raw.extend_from_slice(&bytes);
+                }
                 ServerMsg::Bye { reason } => self.bye = Some(reason),
                 _ => {}
             }
@@ -174,6 +187,28 @@ impl Harness {
             .rows(0, self.cols)
             .nth(usize::from(row))
             .unwrap_or_default()
+    }
+
+    /// The pointer shapes (OSC 22 names) sent so far, in order.
+    fn pointer_shapes(&self) -> Vec<String> {
+        let raw = String::from_utf8_lossy(&self.raw);
+        raw.split("\x1b]22;")
+            .skip(1)
+            .filter_map(|p| p.split("\x1b\\").next().map(str::to_string))
+            .collect()
+    }
+
+    /// The size (rows, columns) of the active shell of `group`.
+    fn shell_size(&self, group: u64) -> (u16, u16) {
+        let tab = self.app.groups.get(group).unwrap().active_tab().unwrap();
+        let (rows, cols) = tab.run.screen().screen().size();
+        (rows.get(), cols.get())
+    }
+
+    /// Whether every group's active shell is the size of its terminal area.
+    fn shells_fit(&self) -> bool {
+        let fit = |g: &crate::hit::GroupHit| self.shell_size(g.id) == (g.term.height, g.term.width);
+        self.app.hit.groups.iter().all(fit)
     }
 
     fn titles(&self) -> Vec<String> {
@@ -626,4 +661,264 @@ async fn jmux_layout_a_keys_typed_during_the_confirm_never_reach_the_shell() {
     h.type_text("echo END_$((2+3))\n");
     h.settle_text("END_5").await;
     assert!(!h.text().contains("LEAKED"), "{}", h.text());
+}
+
+/// A split session: the first group on the left, the new one on the right (focused).
+async fn split_right(rows: u16, cols: u16) -> Harness {
+    let mut h = Harness::new(rows, cols).await;
+    h.settle_text("sh ○").await;
+    h.command(Command::SplitRight);
+    h.settle("two groups with a shell each", |h| {
+        h.app.hit.groups.len() == 2 && h.tab_count() == 2 && h.shells_fit()
+    })
+    .await;
+    h
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_b_split_right_gives_two_live_shells_side_by_side() {
+    let mut h = split_right(12, 61).await;
+    let (left, right) = (h.app.hit.groups[0].clone(), h.app.hit.groups[1].clone());
+    assert_eq!(h.app.groups.active, right.id, "the new group has the focus");
+    assert!(left.term.x + left.term.width < right.term.x, "a divider between them");
+    assert_eq!(left.term.width + right.term.width + 1, 61);
+    assert_eq!(h.app.hit.dividers.len(), 1);
+    // The divider's line is drawn between the two terminals.
+    let line = h.app.hit.dividers[0].rect;
+    let drawn = h.row(line.y + 3).chars().nth(usize::from(line.x));
+    assert_eq!(drawn, Some('│'), "{}", h.row(line.y + 3));
+
+    h.type_text("echo RIGHT_$((1+1))\n");
+    h.settle_text("RIGHT_2").await;
+    h.command(Command::FocusSide(Side::Left));
+    assert_eq!(h.app.groups.active, left.id);
+    h.type_text("echo LEFT_$((1+2))\n");
+    h.settle_text("LEFT_3").await;
+    // Side by side: each output is on its own half of the screen.
+    let col_of = |h: &Harness, needle: &str| {
+        let line = (0..h.rows).map(|r| h.row(r)).find(|l| l.contains(needle)).unwrap();
+        line.split(needle).next().unwrap().chars().count()
+    };
+    assert!(col_of(&h, "LEFT_3") < usize::from(left.term.width));
+    assert!(col_of(&h, "RIGHT_2") >= usize::from(right.term.x));
+    assert_eq!(h.shell_size(left.id), (left.term.height, left.term.width));
+    assert_eq!(h.shell_size(right.id), (right.term.height, right.term.width));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_b_split_down_stacks_and_focus_follows_the_keys_and_clicks() {
+    let mut h = split_right(20, 61).await;
+    let (a, b) = (h.app.hit.groups[0].id, h.app.hit.groups[1].id);
+    h.command(Command::SplitDown);
+    h.settle("three groups", |h| {
+        h.app.hit.groups.len() == 3 && h.tab_count() == 3 && h.shells_fit()
+    })
+    .await;
+    let c = h.app.groups.active;
+    assert!(![a, b].contains(&c));
+    let rect = |h: &Harness, id| h.app.hit.group(id).unwrap().term;
+    assert!(
+        rect(&h, c).y > rect(&h, b).y && rect(&h, c).x == rect(&h, b).x,
+        "c is below b"
+    );
+    h.command(Command::FocusSide(Side::Up));
+    assert_eq!(h.app.groups.active, b);
+    h.command(Command::FocusSide(Side::Up));
+    assert_eq!(h.app.groups.active, b, "nothing above: stays");
+    h.command(Command::FocusSide(Side::Left));
+    assert_eq!(h.app.groups.active, a);
+    h.command(Command::FocusSide(Side::Right));
+    assert_eq!(h.app.groups.active, b);
+    h.command(Command::FocusNextGroup);
+    assert_eq!(h.app.groups.active, c);
+    h.command(Command::FocusNextGroup);
+    assert_eq!(h.app.groups.active, a, "wraps");
+    h.command(Command::FocusPreviousGroup);
+    assert_eq!(h.app.groups.active, c);
+    h.command(Command::FocusGroup(2));
+    assert_eq!(h.app.groups.active, b);
+    h.command(Command::FocusGroup(7));
+    assert_eq!(h.app.groups.active, b);
+    // A click on a group's terminal or its bar focuses it.
+    let t = rect(&h, a);
+    h.click(MouseButton::Left, t.x + 2, t.y + 2);
+    assert_eq!(h.app.groups.active, a);
+    let bar = h.app.hit.group(c).unwrap().bar;
+    h.click(MouseButton::Left, bar.x + bar.width - 1, bar.y);
+    assert_eq!(h.app.groups.active, c);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_b_the_divider_drags_and_the_shells_follow() {
+    let mut h = split_right(12, 61).await;
+    let before = h.app.hit.dividers[0].rect;
+    let (left_id, right_id) = (h.app.hit.groups[0].id, h.app.hit.groups[1].id);
+    let wide_before = h.app.hit.group(left_id).unwrap().term.width;
+    h.mouse(MouseEventKind::Down(MouseButton::Left), before.x, before.y + 4);
+    h.mouse(MouseEventKind::Drag(MouseButton::Left), before.x + 10, before.y + 4);
+    // Wherever the pointer goes during the drag, the divider is what moves.
+    h.mouse(MouseEventKind::Drag(MouseButton::Left), before.x + 12, before.y + 9);
+    h.mouse(MouseEventKind::Up(MouseButton::Left), before.x + 12, before.y + 9);
+    h.settle("the divider to move and the shells to follow", |h| {
+        h.app.hit.dividers[0].rect.x == before.x + 12 && h.shells_fit()
+    })
+    .await;
+    assert_eq!(h.app.hit.group(left_id).unwrap().term.width, wide_before + 12);
+    assert_eq!(h.shell_size(left_id).1, wide_before + 12);
+    assert_eq!(h.shell_size(right_id).1, h.app.hit.group(right_id).unwrap().term.width);
+    // Released: more motion moves nothing.
+    h.mouse(MouseEventKind::Drag(MouseButton::Left), 5, 4);
+    h.settle("a frame", |h| !h.app.needs_redraw).await;
+    assert_eq!(h.app.hit.dividers[0].rect.x, before.x + 12);
+    // The terminals still work after the resize.
+    h.type_text("echo RESIZED_$((4+4))\n");
+    h.settle_text("RESIZED_8").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_b_the_pointer_follows_the_divider_and_the_terminal_text() {
+    let mut h = split_right(12, 61).await;
+    let d = h.app.hit.dividers[0].rect;
+    let term = h.app.hit.groups[0].term;
+    let bar = h.app.hit.groups[0].bar;
+    h.mouse(MouseEventKind::Moved, term.x + 2, term.y + 2);
+    h.settle("the text pointer", |h| h.pointer_shapes() == ["text"]).await;
+    h.mouse(MouseEventKind::Moved, d.x, d.y + 3);
+    h.settle("the resize pointer", |h| h.pointer_shapes() == ["text", "ew-resize"])
+        .await;
+    // Held through a drag, wherever it goes.
+    h.mouse(MouseEventKind::Down(MouseButton::Left), d.x, d.y + 3);
+    h.mouse(MouseEventKind::Drag(MouseButton::Left), d.x + 5, d.y + 3);
+    h.mouse(MouseEventKind::Drag(MouseButton::Left), d.x + 5, bar.y);
+    h.settle("a frame", |h| !h.app.needs_redraw).await;
+    assert_eq!(h.pointer_shapes(), ["text", "ew-resize"], "no change while dragging");
+    h.mouse(MouseEventKind::Up(MouseButton::Left), 1, bar.y);
+    h.settle("the default pointer over the bar", |h| {
+        h.pointer_shapes().last().is_some_and(|s| s == "default")
+    })
+    .await;
+    // A program that takes the mouse itself keeps the default shape over its text.
+    h.type_text("printf '\\033[?1000h'\n");
+    h.settle("mouse reporting on", |h| {
+        let tab = h.app.groups.active_group().active_tab().unwrap();
+        tab.run.screen().screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None
+    })
+    .await;
+    let right = h.app.hit.groups[1].term;
+    let before = h.pointer_shapes().len();
+    h.mouse(MouseEventKind::Moved, right.x + 2, right.y + 2);
+    h.settle("a frame", |h| !h.app.needs_redraw).await;
+    assert_eq!(h.pointer_shapes().len(), before, "the default stays");
+    // A new client starts from the default; the old pointer position means nothing to it, so it
+    // is told a shape only once its own pointer moves.
+    h.attach(2);
+    h.settle("the new client's frame", |h| h.text().contains("sh")).await;
+    assert!(h.pointer_shapes().is_empty(), "{:?}", h.pointer_shapes());
+    let left = h.app.hit.groups[0].term;
+    h.mouse(MouseEventKind::Moved, left.x + 2, left.y + 2);
+    h.settle("the text pointer for the new client", |h| {
+        h.pointer_shapes() == ["text"]
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_b_a_shell_exiting_removes_its_group_and_the_other_fills_the_width() {
+    let mut h = split_right(12, 61).await;
+    let left = h.app.hit.groups[0].id;
+    h.type_text("exit\n");
+    h.settle("the right group to go", |h| {
+        h.app.hit.groups.len() == 1 && h.shells_fit()
+    })
+    .await;
+    assert_eq!(h.app.groups.active, left, "focus moves to the neighbour");
+    assert_eq!(h.app.hit.groups[0].term.width, 61);
+    assert!(h.app.hit.dividers.is_empty());
+    assert_eq!(h.shell_size(left).1, 61);
+    assert!(h.bye.is_none(), "the session goes on");
+    h.type_text("echo STILL_$((5+5))\n");
+    h.settle_text("STILL_10").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_b_closing_a_groups_last_tab_removes_it_and_the_last_group_ends_the_session() {
+    let mut h = split_right(12, 61).await;
+    h.command(Command::CloseTerminal);
+    h.settle("one group", |h| h.app.hit.groups.len() == 1).await;
+    assert_eq!(h.app.groups.order().len(), 1);
+    h.command(Command::CloseTerminal);
+    h.settle("the session to end", |h| h.bye.is_some()).await;
+    assert_eq!(h.bye, Some(ByeReason::SessionEnded));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_b_a_new_terminal_opens_in_the_focused_group_and_reattach_keeps_the_split() {
+    let mut h = split_right(12, 61).await;
+    let x = h.app.hit.dividers[0].rect.x;
+    h.mouse(MouseEventKind::Down(MouseButton::Left), x, 5);
+    h.mouse(MouseEventKind::Drag(MouseButton::Left), 20, 5);
+    h.mouse(MouseEventKind::Up(MouseButton::Left), 20, 5);
+    h.settle("the divider at 20", |h| {
+        h.app.hit.dividers[0].rect.x == 20 && h.shells_fit()
+    })
+    .await;
+    let (left, right) = (h.app.hit.groups[0].id, h.app.hit.groups[1].id);
+    h.type_text("echo KEPT_$((6+1))\n");
+    h.settle_text("KEPT_7").await;
+    h.command(Command::FocusSide(Side::Left));
+    h.command(Command::NewTerminal);
+    h.settle("a tab in the left group", |h| {
+        h.app.groups.get(left).unwrap().tabs.len() == 2
+    })
+    .await;
+    assert_eq!(h.app.groups.get(right).unwrap().tabs.len(), 1);
+
+    h.command(Command::Detach);
+    h.settle("the detach", |h| h.bye == Some(ByeReason::Detached)).await;
+    h.attach(2);
+    h.settle("the same split again", |h| {
+        h.app.hit.dividers.len() == 1 && h.app.hit.dividers[0].rect.x == 20 && h.text().contains("KEPT_7")
+    })
+    .await;
+    assert_eq!(h.app.groups.get(left).unwrap().tabs.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_layout_b_a_drag_does_not_outlive_its_client_and_hidden_tabs_keep_their_size() {
+    let mut h = split_right(12, 61).await;
+    let left = h.app.hit.groups[0].id;
+    // A second tab in the left group; it is hidden once the first is picked again.
+    h.command(Command::FocusSide(Side::Left));
+    h.command(Command::NewTerminal);
+    h.settle("two tabs on the left", |h| {
+        h.app.groups.get(left).unwrap().tabs.len() == 2 && h.shells_fit()
+    })
+    .await;
+    let size_of = |h: &Harness, i: usize| {
+        let tab = &h.app.groups.get(left).unwrap().tabs[i];
+        let (r, c) = tab.run.screen().screen().size();
+        (r.get(), c.get())
+    };
+    let hidden_before = size_of(&h, 0);
+    let d = h.app.hit.dividers[0].rect;
+    h.mouse(MouseEventKind::Down(MouseButton::Left), d.x, 5);
+    h.mouse(MouseEventKind::Drag(MouseButton::Left), d.x + 8, 5);
+    h.settle("the left group wider", |h| {
+        h.app.hit.dividers[0].rect.x == d.x + 8 && h.shells_fit()
+    })
+    .await;
+    assert_eq!(size_of(&h, 0), hidden_before, "the hidden tab keeps its last size");
+    assert_ne!(size_of(&h, 1).1, hidden_before.1);
+    // The client goes away mid-drag; the next one's motion must not move the divider.
+    h.attach(2);
+    h.settle("the new client's frame", |h| h.app.hit.dividers.len() == 1)
+        .await;
+    h.mouse(MouseEventKind::Drag(MouseButton::Left), 40, 5);
+    h.settle("a frame", |h| !h.app.needs_redraw).await;
+    assert_eq!(h.app.hit.dividers[0].rect.x, d.x + 8);
+    assert!(
+        h.pointer_shapes().iter().all(|s| s != "ew-resize"),
+        "{:?}",
+        h.pointer_shapes()
+    );
 }

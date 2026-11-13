@@ -1,11 +1,11 @@
 //! Groups of shell tabs in a split tree. A `Group` is a tab bar's worth of shells; `Groups` lays
-//! them out with `jtui::split::SplitTree` (one group until splits arrive) and knows which one has
+//! them out with `jtui::split::SplitTree` and knows which one has
 //! the focus. Closing a tab drops its `ShellTab`, which hangs the shell up; a group left without
 //! tabs leaves the tree, and the last tab closing leaves the session without any.
 
 use jterm::run::RunId;
 use jterm::shell::ShellTab;
-use jtui::split::{Divider, GroupId, SplitTree};
+use jtui::split::{Divider, GroupId, SplitDir, SplitTree};
 use ratatui::layout::Rect;
 
 /// Tabs side by side in one bar, one of them active.
@@ -138,12 +138,88 @@ impl Groups {
         Some(tab)
     }
 
-    /// The next free group id (for splits, `jmux_layout-b`).
-    #[allow(dead_code)]
-    pub fn fresh_id(&mut self) -> GroupId {
+    /// Splits the active group in `dir`: a new empty group beside it takes the focus (the caller
+    /// opens its shell). Returns its id.
+    pub fn split(&mut self, dir: SplitDir) -> GroupId {
+        let new = self.fresh_id();
+        self.tree.split(self.active, dir, new);
+        self.groups.push((new, Group::default()));
+        self.active = new;
+        new
+    }
+
+    fn fresh_id(&mut self) -> GroupId {
         self.next += 1;
         self.next - 1
     }
+
+    /// Moves the divider `divider` (from `layout`) to `ratio`.
+    pub fn set_ratio(&mut self, divider: &Divider, ratio: f32) {
+        self.tree.set_ratio(divider, ratio);
+    }
+
+    /// The groups in tree order.
+    pub fn order(&self) -> Vec<GroupId> {
+        self.tree.groups()
+    }
+
+    /// Focuses the group `step` places on in tree order (wrapping).
+    pub fn focus_step(&mut self, step: isize) {
+        let order = self.order();
+        if let Some(at) = order.iter().position(|g| *g == self.active) {
+            let n = order.len() as isize;
+            self.active = order[(at as isize + step).rem_euclid(n) as usize];
+        }
+    }
+
+    /// Focuses the `n`th group (1-based, tree order); none there does nothing.
+    pub fn focus_nth(&mut self, n: usize) {
+        if let Some(g) = n.checked_sub(1).and_then(|i| self.order().get(i).copied()) {
+            self.active = g;
+        }
+    }
+
+    /// Focuses the group nearest the active one in `side`, given the last layout.
+    pub fn focus_side(&mut self, cells: &[(GroupId, Rect)], side: Side) {
+        if let Some(g) = neighbour(cells, self.active, side) {
+            self.active = g;
+        }
+    }
+}
+
+/// A direction on the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Side {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// The group beside `from` on `side`: the nearest one past its edge whose span overlaps `from`'s
+/// most.
+pub fn neighbour(cells: &[(GroupId, Rect)], from: GroupId, side: Side) -> Option<GroupId> {
+    let (_, r) = cells.iter().find(|(g, _)| *g == from)?;
+    let overlap = |a0: u16, a1: u16, b0: u16, b1: u16| a1.min(b1).saturating_sub(a0.max(b0));
+    let (rr, rb) = (r.x + r.width, r.y + r.height);
+    cells
+        .iter()
+        .filter(|(g, _)| *g != from)
+        .filter_map(|(g, c)| {
+            let (cr, cb) = (c.x + c.width, c.y + c.height);
+            let rows = overlap(r.y, rb, c.y, cb);
+            let cols = overlap(r.x, rr, c.x, cr);
+            let (gap, span) = match side {
+                Side::Left if cr <= r.x => (r.x - cr, rows),
+                Side::Right if c.x >= rr => (c.x - rr, rows),
+                Side::Up if cb <= r.y => (r.y - cb, cols),
+                Side::Down if c.y >= rb => (c.y - rb, cols),
+                _ => return None,
+            };
+            (span > 0).then_some((*g, span, gap))
+        })
+        .min_by_key(|(_, span, gap)| (*gap, std::cmp::Reverse(*span)))
+        .map(|(g, ..)| g)
 }
 
 #[cfg(test)]
@@ -229,14 +305,68 @@ mod tests {
         assert_eq!(gs.layout(Rect::new(0, 0, 40, 10)).0.len(), 1);
         // With a second group, emptying it removes it and moves the focus.
         let mut gs = Groups::new();
-        let second = gs.fresh_id();
-        assert!(gs.tree.split(1, jtui::split::SplitDir::Right, second));
-        gs.groups.push((second, Group::default()));
+        let second = gs.split(SplitDir::Right);
         gs.get_mut(1).unwrap().open(tab(1));
         gs.get_mut(second).unwrap().open(tab(2));
         gs.active = second;
         gs.close_tab(second, 0);
         assert_eq!((gs.active, gs.layout(Rect::new(0, 0, 40, 10)).0.len()), (1, 1));
         assert!(gs.get(second).is_none());
+    }
+
+    #[tokio::test]
+    async fn split_adds_a_focused_group_beside_the_active_one() {
+        let mut gs = Groups::new();
+        gs.active_group_mut().open(tab(1));
+        let second = gs.split(SplitDir::Right);
+        assert_eq!((gs.active, gs.order()), (second, vec![1, second]));
+        gs.active_group_mut().open(tab(2));
+        let (cells, dividers) = gs.layout(Rect::new(0, 0, 41, 10));
+        assert_eq!((cells.len(), dividers.len()), (2, 1));
+        assert!(cells[0].1.x < cells[1].1.x);
+        // Closing the new group's only tab removes it and focus returns to the first.
+        gs.close_tab(second, 0);
+        assert_eq!((gs.active, gs.order()), (1, vec![1]));
+        assert_eq!(gs.layout(Rect::new(0, 0, 41, 10)).0[0].1.width, 41);
+    }
+
+    #[tokio::test]
+    async fn focus_steps_wrap_and_nth_ignores_a_missing_group() {
+        let mut gs = Groups::new();
+        let b = gs.split(SplitDir::Right);
+        let c = gs.split(SplitDir::Down);
+        assert_eq!(gs.order(), vec![1, b, c]);
+        gs.focus_step(1);
+        assert_eq!(gs.active, 1);
+        gs.focus_step(-1);
+        assert_eq!(gs.active, c);
+        gs.focus_nth(2);
+        assert_eq!(gs.active, b);
+        gs.focus_nth(9);
+        gs.focus_nth(0);
+        assert_eq!(gs.active, b);
+    }
+
+    #[test]
+    fn neighbours_on_a_two_by_two_layout() {
+        let r = |x, y| Rect::new(x, y, 10, 5);
+        // 1 2
+        // 3 4, with a wide group 5 under them.
+        let cells = [
+            (1, r(0, 0)),
+            (2, r(11, 0)),
+            (3, r(0, 6)),
+            (4, r(11, 6)),
+            (5, Rect::new(0, 12, 21, 5)),
+        ];
+        assert_eq!(neighbour(&cells, 1, Side::Right), Some(2));
+        assert_eq!(neighbour(&cells, 1, Side::Down), Some(3));
+        assert_eq!(neighbour(&cells, 4, Side::Left), Some(3));
+        assert_eq!(neighbour(&cells, 4, Side::Up), Some(2));
+        assert_eq!(neighbour(&cells, 3, Side::Down), Some(5));
+        assert_eq!(neighbour(&cells, 1, Side::Left), None);
+        assert_eq!(neighbour(&cells, 1, Side::Up), None);
+        assert_eq!(neighbour(&cells, 5, Side::Up), Some(3));
+        assert_eq!(neighbour(&cells, 9, Side::Up), None);
     }
 }

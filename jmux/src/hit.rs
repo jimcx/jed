@@ -1,6 +1,6 @@
 //! What the last frame drew where, for the mouse: written by `ui::render`, read by `App::mouse`.
 
-use jtui::split::GroupId;
+use jtui::split::{Divider, GroupId};
 use ratatui::layout::Rect;
 
 /// A tab's x range in its bar and the x of its `×`.
@@ -32,6 +32,8 @@ pub struct GroupHit {
 #[derive(Debug, Clone, Default)]
 pub struct HitMap {
     pub groups: Vec<GroupHit>,
+    /// The dividers between groups, as `Groups::layout` gave them.
+    pub dividers: Vec<Divider>,
 }
 
 /// What a screen cell is part of.
@@ -56,6 +58,8 @@ pub enum Hit {
     Terminal {
         group: GroupId,
     },
+    /// A divider: an index into `HitMap::dividers`.
+    Divider(usize),
 }
 
 fn contains(r: Rect, x: u16, y: u16) -> bool {
@@ -64,6 +68,9 @@ fn contains(r: Rect, x: u16, y: u16) -> bool {
 
 impl HitMap {
     pub fn at(&self, x: u16, y: u16) -> Option<Hit> {
+        if let Some(i) = self.dividers.iter().position(|d| contains(d.rect, x, y)) {
+            return Some(Hit::Divider(i));
+        }
         for g in &self.groups {
             let group = g.id;
             if contains(g.term, x, y) {
@@ -121,6 +128,7 @@ mod tests {
                 ],
                 arrows: Some(TabArrows { back: 0, forward: 29 }),
             }],
+            dividers: Vec::new(),
         };
         assert_eq!(map.at(3, 0), Some(Hit::Tab { group: 7, index: 0 }));
         assert_eq!(map.at(15, 0), Some(Hit::Close { group: 7, index: 1 }));
@@ -141,5 +149,27 @@ mod tests {
         assert_eq!(map.at(20, 0), Some(Hit::Bar { group: 7 }));
         assert_eq!(map.at(4, 3), Some(Hit::Terminal { group: 7 }));
         assert_eq!(map.at(4, 6), None);
+    }
+
+    #[test]
+    fn a_divider_wins_over_the_groups_beside_it() {
+        let mut tree = jtui::split::SplitTree::new(1);
+        tree.split(1, jtui::split::SplitDir::Right, 2);
+        let (cells, dividers) = tree.layout(Rect::new(0, 0, 21, 6));
+        let d = dividers[0].rect;
+        let groups = cells
+            .iter()
+            .map(|(id, r)| GroupHit {
+                id: *id,
+                bar: Rect { height: 1, ..*r },
+                term: Rect::new(r.x, r.y + 1, r.width, r.height - 1),
+                ..GroupHit::default()
+            })
+            .collect();
+        let map = HitMap { groups, dividers };
+        assert_eq!(map.at(d.x, 0), Some(Hit::Divider(0)));
+        assert_eq!(map.at(d.x, 3), Some(Hit::Divider(0)));
+        assert_eq!(map.at(d.x - 1, 3), Some(Hit::Terminal { group: 1 }));
+        assert_eq!(map.at(d.x + 1, 3), Some(Hit::Terminal { group: 2 }));
     }
 }

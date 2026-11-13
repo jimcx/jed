@@ -1,6 +1,8 @@
-//! Drawing the server's `App` into a frame: each group's tab bar and terminal, above a one-line
-//! status bar (or the close question). Writes the `HitMap`.
+//! Drawing the server's `App` into a frame: each group's tab bar and terminal, the dividers between
+//! groups, above a one-line status
+//! bar (or the close question). Writes the `HitMap`.
 
+use jtui::borders::Segment;
 use jtui::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -27,7 +29,7 @@ pub fn term_area(group: Rect) -> Rect {
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let area = f.area();
-    let (cells, _dividers) = app.groups.layout(body(area.height, area.width));
+    let (cells, dividers) = app.groups.layout(body(area.height, area.width));
     let mut hit = HitMap::default();
     for (id, rect) in cells {
         let term = term_area(rect);
@@ -51,6 +53,13 @@ pub fn render(f: &mut Frame, app: &mut App) {
             arrows,
         });
     }
+    // The dividers' lines, joined where they cross.
+    let segments = dividers
+        .iter()
+        .map(|d| Segment::new(d.rect, d.dir, None, "editorGroup.border"))
+        .collect();
+    app.borders.apply(f, segments, &app.theme);
+    hit.dividers = dividers;
     app.hit = hit;
     if area.height > 0 {
         let bar = Rect::new(0, area.height - STATUS_ROWS, area.width, STATUS_ROWS);
