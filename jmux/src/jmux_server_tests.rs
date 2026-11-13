@@ -845,6 +845,17 @@ fn jmux_exe() -> PathBuf {
     path
 }
 
+/// A script in `dir` that runs the jmux binary with `SHELL=/bin/sh`, so servers started through
+/// `cli::start` don't run the developer's own shell (zsh's first-run menu would swallow input).
+fn sh_pinned_exe(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("jmux-sh");
+    let body = format!("#!/bin/sh\nSHELL=/bin/sh exec '{}' \"$@\"\n", jmux_exe().display());
+    std::fs::write(&script, body).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
 /// Kills a server started through `cli::start` when dropped, also on a panic: `Kill`, then SIGKILL
 /// of the pid the socket's peer credentials name.
 struct StartedServer {
@@ -907,7 +918,8 @@ async fn jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_liv
     // A leftover socket nobody listens on.
     drop(std::os::unix::net::UnixListener::bind(session::socket_path(&dir, "work")).unwrap());
 
-    let (d, c, exe) = (dir.clone(), cwd.clone(), jmux_exe());
+    let sh_exe = sh_pinned_exe(tmp.path());
+    let (d, c, exe) = (dir.clone(), cwd.clone(), sh_exe.clone());
     let started = tokio::task::spawn_blocking(move || crate::cli::start(&exe, &d, Some("work"), Some(&c)))
         .await
         .unwrap();
@@ -920,13 +932,13 @@ async fn jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_liv
     c.wait_rows("the shell's directory", |r| r.iter().any(|l| l.trim() == want))
         .await;
     // The same name again is refused and leaves the live session alone.
-    let (d, exe) = (dir.clone(), jmux_exe());
+    let (d, exe) = (dir.clone(), sh_exe.clone());
     let again = tokio::task::spawn_blocking(move || crate::cli::start(&exe, &d, Some("work"), None))
         .await
         .unwrap();
     assert_eq!(again.unwrap_err(), "jmux: session work already exists");
     // An unnamed start takes the next free number.
-    let (d, exe) = (dir.clone(), jmux_exe());
+    let (d, exe) = (dir.clone(), sh_exe.clone());
     let numbered = tokio::task::spawn_blocking(move || crate::cli::start(&exe, &d, None, None))
         .await
         .unwrap();
