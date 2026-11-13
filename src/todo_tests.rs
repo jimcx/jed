@@ -14134,3 +14134,49 @@ mod shell_integration_check {
         assert!(warning(&app).is_none());
     }
 }
+
+mod find_in_diff_view {
+    //! Issue 37: Find (Cmd+F / palette "Find") does nothing on a diff tab.
+    use std::fs;
+
+    use crate::app::{App, InitialFile};
+    use crate::buffer::Buffer;
+    use crate::command::Command;
+    use crate::diff_view::Pair;
+    use crate::git::test_repo::{commit_all, init};
+    use crate::workspace::trust::TrustStore;
+    use crate::workspace::{self, Workspace};
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_find_on_a_diff_tab_shows_the_find_widget() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = workspace::normalize(dir.path());
+        let (root, state) = (base.join("proj"), base.join("state"));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        init(&root);
+        fs::write(root.join("f.txt"), "one\ntwo\n").unwrap();
+        commit_all(&root, "one");
+        fs::write(root.join("f.txt"), "one\ntwo changed\n").unwrap();
+        let initial = InitialFile {
+            buffer: Buffer::open(&root.join("f.txt")).unwrap(),
+            goto: None,
+        };
+        let mut app = App::new(
+            Workspace::load(root.clone()),
+            TrustStore::load(state.join("trust.toml")),
+            Some(initial),
+            true,
+        );
+        app.test_start();
+        assert!(
+            app.settle(|a| !a.git.running() && a.git.status.as_ref().is_some_and(|s| !s.entries.is_empty()))
+                .await
+        );
+        app.open_diff(root.join("f.txt"), Pair::UNSTAGED);
+        assert!(app.settle(|a| a.diffs_settled() && a.git.status.is_some()).await);
+        assert!(app.active_buffer().is_none(), "expected a diff tab to be active");
+        app.test_execute(Command::OpenFind);
+        assert!(app.find.visible, "Find did not open on the diff tab");
+    }
+}
