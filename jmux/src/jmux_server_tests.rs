@@ -4,6 +4,12 @@
 //! shown above the status bar, keys and paste reaching it, resize, take-over keeping the screen,
 //! detach keeping the server, the session ending with the shell (socket removed), a version
 //! mismatch, stale and live sockets. Every wait is a deadline loop; nothing sleeps for a fixed time.
+//!
+//! jmux_server-c (client and CLI, the rest of "done when"): `client::attach` driven with a channel of
+//! terminal events and a `vt100` screen as its output against the same real server: a shell shown,
+//! detach and its line, `ls`, re-attach at another size with scrollback, take-over, `exit` ending the
+//! session, a vanishing server, `$JMUX` refusing `new` / `attach`, `kill-session`, `rename-session`.
+//! (`kill -9` of a real server is in `tests/cli.rs`.)
 
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
@@ -13,6 +19,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use tokio::net::UnixStream;
 
 use crate::app::Config;
+use crate::client::{self, Outcome};
 use crate::protocol::{ByeReason, ClientMsg, PROTOCOL_VERSION, ServerMsg, read_msg, write_all_msg};
 use crate::{server, session};
 
@@ -414,4 +421,563 @@ async fn jmux_server_replaces_a_stale_socket_but_not_a_live_one() {
     server::wait_for_socket(&server.socket, WAIT, || true).unwrap();
     let c = Client::attach(&server.socket, 20, 60).await;
     c.end(&mut server).await;
+}
+
+// ---- jmux_server-c: the client and the CLI ----
+
+use std::io::Write;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
+
+use crossterm::event::{MouseEvent, MouseEventKind};
+use tokio::sync::{mpsc, oneshot};
+
+/// The terminal's events as a stream (what `EventStream` is in the real client).
+struct Events(mpsc::UnboundedReceiver<std::io::Result<Event>>);
+
+impl futures_util::Stream for Events {
+    type Item = std::io::Result<Event>;
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.0.poll_recv(cx)
+    }
+}
+
+/// The client's "terminal": what it writes goes through a `vt100` parser.
+#[derive(Clone)]
+struct Screen(Arc<Mutex<vt100::Parser>>);
+
+impl Write for Screen {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().process(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A running `client::attach` with the test holding its terminal's ends.
+struct Attached {
+    events: mpsc::UnboundedSender<std::io::Result<Event>>,
+    screen: Screen,
+    hangup: Option<oneshot::Sender<()>>,
+    task: tokio::task::JoinHandle<Outcome>,
+}
+
+impl Attached {
+    async fn start(socket: &Path, rows: u16, cols: u16) -> Attached {
+        let stream = UnixStream::connect(socket).await.unwrap();
+        let (events, rx) = mpsc::unbounded_channel();
+        let (hangup, hangup_rx) = oneshot::channel::<()>();
+        let screen = Screen(Arc::new(Mutex::new(parser(rows, cols))));
+        let mut out = screen.clone();
+        let terminal = client::Terminal {
+            rows,
+            cols,
+            truecolor: true,
+            term: "xterm-256color".into(),
+        };
+        let task = tokio::spawn(async move {
+            let signal = async move {
+                if hangup_rx.await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            };
+            client::attach(stream, &terminal, Events(rx), &mut out, signal)
+                .await
+                .unwrap()
+        });
+        Attached {
+            events,
+            screen,
+            hangup: Some(hangup),
+            task,
+        }
+    }
+
+    fn send(&self, event: Event) {
+        self.events.send(Ok(event)).unwrap();
+    }
+
+    fn key(&self, code: KeyCode, modifiers: KeyModifiers) {
+        self.send(Event::Key(KeyEvent::new(code, modifiers)));
+    }
+
+    fn type_text(&self, text: &str) {
+        for ch in text.chars() {
+            let code = if ch == '\r' { KeyCode::Enter } else { KeyCode::Char(ch) };
+            self.key(code, KeyModifiers::NONE);
+        }
+    }
+
+    fn rows(&self) -> Vec<String> {
+        let p = self.screen.0.lock().unwrap();
+        let cols = p.screen().size().1.get();
+        p.screen().rows(0, cols).collect()
+    }
+
+    fn text(&self) -> String {
+        self.screen.0.lock().unwrap().screen().contents()
+    }
+
+    async fn wait_rows(&self, what: &str, done: impl Fn(&[String]) -> bool) {
+        let deadline = Instant::now() + WAIT;
+        while !done(&self.rows()) {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}:\n{}",
+                self.text()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    async fn wait_text(&self, needle: &str) {
+        self.wait_rows(&format!("{needle:?}"), |rows| rows.iter().any(|r| r.contains(needle)))
+            .await;
+    }
+
+    /// The client's return value (it must come within `WAIT`).
+    async fn outcome(self) -> Outcome {
+        tokio::time::timeout(WAIT, self.task)
+            .await
+            .expect("the client did not return")
+            .unwrap()
+    }
+}
+
+fn detach_key() -> Event {
+    Event::Key(KeyEvent::new(
+        KeyCode::Char('D'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_server_new_shows_a_shell_with_the_session_in_the_status_bar() {
+    let mut server = TestServer::start();
+    let c = Attached::start(&server.socket, 20, 60).await;
+    c.wait_rows("the status bar", |r| r.last().is_some_and(|l| l.contains(" work")))
+        .await;
+    c.type_text("echo hi-$((1+2))\r");
+    c.wait_text("hi-3").await;
+    c.type_text("exit\r");
+    assert_eq!(c.outcome().await, Outcome::Bye(ByeReason::SessionEnded));
+    server.join().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_server_the_detach_key_returns_with_the_detached_line_and_ls_lists_the_session() {
+    let mut server = TestServer::start();
+    let c = Attached::start(&server.socket, 20, 60).await;
+    c.wait_text("detach").await;
+    // While attached, `ls` says so.
+    let dir = server.dir.clone();
+    let lines = tokio::task::spawn_blocking(move || crate::cli::ls(&dir)).await.unwrap();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("work: 1 terminal, "), "{lines:?}");
+    assert!(lines[0].ends_with(", attached"), "{lines:?}");
+    c.send(detach_key());
+    let outcome = c.outcome().await;
+    assert_eq!(outcome, Outcome::Bye(ByeReason::Detached));
+    assert_eq!(outcome.message("work"), "[detached from work]");
+    assert_eq!(outcome.exit_code(), 0);
+    // The server keeps running, listed as not attached.
+    let dir = server.dir.clone();
+    let lines = tokio::task::spawn_blocking(move || crate::cli::ls(&dir)).await.unwrap();
+    assert!(
+        lines[0].starts_with("work: ") && lines[0].ends_with(", detached"),
+        "{lines:?}"
+    );
+    let c = Attached::start(&server.socket, 20, 60).await;
+    c.type_text("exit\r");
+    assert_eq!(c.outcome().await, Outcome::Bye(ByeReason::SessionEnded));
+    server.join().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_server_attach_shows_the_same_screen_and_scrollback_at_the_new_size() {
+    let mut server = TestServer::start();
+    let c = Attached::start(&server.socket, 20, 60).await;
+    c.wait_text("detach").await;
+    c.type_text("seq 1 100\r");
+    c.wait_rows("the end of the output", |r| r.iter().any(|l| l.trim() == "100"))
+        .await;
+    c.send(detach_key());
+    assert_eq!(c.outcome().await, Outcome::Bye(ByeReason::Detached));
+
+    let c = Attached::start(&server.socket, 12, 40).await;
+    c.wait_rows("the old screen at 12 rows", |r| {
+        r.len() == 12 && r.iter().any(|l| l.trim() == "100") && r[11].contains(" work")
+    })
+    .await;
+    // Scrollback: the wheel scrolls back to the first lines of the output.
+    for _ in 0..50 {
+        c.send(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+    c.wait_rows("an early line in the scrollback", |r| r.iter().any(|l| l.trim() == "3"))
+        .await;
+    c.type_text("exit\r");
+    assert_eq!(c.outcome().await, Outcome::Bye(ByeReason::SessionEnded));
+    server.join().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_server_a_second_attach_takes_over_and_the_first_client_says_so() {
+    let mut server = TestServer::start();
+    let first = Attached::start(&server.socket, 20, 60).await;
+    first.wait_text("detach").await;
+    first.type_text("echo mine\r");
+    first
+        .wait_rows("the echo", |r| r.iter().any(|l| l.trim() == "mine"))
+        .await;
+    let second = Attached::start(&server.socket, 20, 60).await;
+    let outcome = first.outcome().await;
+    assert_eq!(outcome, Outcome::Bye(ByeReason::TakenOver));
+    assert_eq!(outcome.message("work"), "[work taken over by another client]");
+    second
+        .wait_rows("the same screen", |r| r.iter().any(|l| l.trim() == "mine"))
+        .await;
+    second.type_text("exit\r");
+    assert_eq!(second.outcome().await, Outcome::Bye(ByeReason::SessionEnded));
+    server.join().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_server_exit_ends_the_session_removes_the_socket_and_says_so() {
+    let mut server = TestServer::start();
+    let c = Attached::start(&server.socket, 20, 60).await;
+    c.wait_text("detach").await;
+    c.type_text("exit\r");
+    let outcome = c.outcome().await;
+    assert_eq!(outcome.message("work"), "[session work ended]");
+    assert_eq!(outcome.exit_code(), 0);
+    server.join().unwrap();
+    assert!(!server.socket.exists(), "the socket outlived the session");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_server_a_vanishing_server_is_reported_as_gone() {
+    // A stand-in server that accepts, reads the hello and drops the connection (as `kill -9` of
+    // the real one does; that is in tests/cli.rs).
+    let tmp = tempfile::tempdir().unwrap();
+    let socket = tmp.path().join("gone.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let fake = tokio::spawn(async move {
+        let (mut s, _) = listener.accept().await.unwrap();
+        let _ = read_msg::<ClientMsg, _>(&mut s).await;
+        write_all_msg(&mut s, &ServerMsg::Output(b"hello".to_vec()))
+            .await
+            .unwrap();
+    });
+    let c = Attached::start(&socket, 5, 20).await;
+    let outcome = c.outcome().await;
+    fake.await.unwrap();
+    assert_eq!(outcome, Outcome::ServerGone);
+    assert_eq!(outcome.message("work"), "[server of work went away]");
+    assert_eq!(outcome.exit_code(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_server_a_hangup_or_a_closed_terminal_detaches() {
+    let mut server = TestServer::start();
+    let mut c = Attached::start(&server.socket, 20, 60).await;
+    c.wait_text("detach").await;
+    c.hangup.take().unwrap().send(()).unwrap();
+    assert_eq!(c.outcome().await, Outcome::Hangup);
+    // The input ending (the terminal closing) is the same, and the session survives both.
+    let c = Attached::start(&server.socket, 20, 60).await;
+    c.wait_text("detach").await;
+    let Attached { events, task, .. } = c;
+    drop(events);
+    assert_eq!(
+        tokio::time::timeout(WAIT, task).await.unwrap().unwrap(),
+        Outcome::Hangup
+    );
+    let c = Attached::start(&server.socket, 20, 60).await;
+    c.type_text("exit\r");
+    assert_eq!(c.outcome().await, Outcome::Bye(ByeReason::SessionEnded));
+    server.join().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_server_resize_events_reach_the_server() {
+    let mut server = TestServer::start();
+    let c = Attached::start(&server.socket, 20, 60).await;
+    c.wait_text("detach").await;
+    // The client's own terminal here is a fixed 20x60 parser: a 10 row screen's status bar is on row 9.
+    c.send(Event::Resize(60, 10));
+    c.wait_rows("the status bar on row 9", |r| {
+        r.get(9).is_some_and(|l| l.contains(" work"))
+    })
+    .await;
+    c.type_text("exit\r");
+    assert_eq!(c.outcome().await, Outcome::Bye(ByeReason::SessionEnded));
+    server.join().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_server_jmux_inside_a_jmux_shell_is_refused() {
+    let mut server = TestServer::start();
+    let inside = server.socket.to_string_lossy().into_owned();
+    let dir = server.dir.clone();
+    let codes = tokio::task::spawn_blocking(move || {
+        use crate::cli::Cmd;
+        let new = Cmd::New {
+            name: Some("nested".into()),
+            dir: None,
+        };
+        let new = crate::run_cli(new, &dir, Some(&inside), true);
+        let attach = crate::run_cli(Cmd::Attach { target: None }, &dir, Some(&inside), true);
+        let bare = crate::run_cli(Cmd::Default, &dir, Some(&inside), true);
+        (new, attach, bare, session::list(&dir).len())
+    })
+    .await
+    .unwrap();
+    assert_eq!(codes, (1, 1, 1, 1), "refused without starting or attaching to anything");
+    use crate::cli::Cmd;
+    let want = "jmux: already inside session work (unset JMUX to nest anyway)";
+    let env = Some(server.socket.to_str().unwrap());
+    for cmd in [
+        Cmd::New { name: None, dir: None },
+        Cmd::Attach { target: None },
+        Cmd::Default,
+    ] {
+        assert_eq!(crate::refusal(&cmd, env, true).as_deref(), Some(want), "{cmd:?}");
+    }
+    for cmd in [Cmd::Ls, Cmd::Kill { target: "x".into() }, Cmd::Help] {
+        assert_eq!(crate::refusal(&cmd, env, true), None, "{cmd:?}");
+    }
+    assert_eq!(crate::refusal(&Cmd::Default, None, true), None);
+    // No terminal: refused with its own message, after the nesting one.
+    for cmd in [
+        Cmd::New { name: None, dir: None },
+        Cmd::Attach { target: None },
+        Cmd::Default,
+    ] {
+        assert_eq!(
+            crate::refusal(&cmd, None, false).as_deref(),
+            Some("jmux: not a terminal")
+        );
+        assert_eq!(crate::refusal(&cmd, env, false).as_deref(), Some(want));
+    }
+    assert_eq!(crate::refusal(&Cmd::Ls, None, false), None);
+    let refusal = crate::cli::nested(Some(&server.socket.to_string_lossy())).unwrap();
+    assert!(refusal.contains("already inside session work"), "{refusal}");
+    let c = Attached::start(&server.socket, 10, 40).await;
+    c.type_text("exit\r");
+    assert_eq!(c.outcome().await, Outcome::Bye(ByeReason::SessionEnded));
+    server.join().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_server_kill_session_ends_the_session_and_tells_the_client() {
+    let mut server = TestServer::start();
+    let c = Attached::start(&server.socket, 20, 60).await;
+    c.wait_text("detach").await;
+    let dir = server.dir.clone();
+    let line = tokio::task::spawn_blocking(move || crate::cli::kill(&dir, "work"))
+        .await
+        .unwrap();
+    assert_eq!(line.unwrap(), "[session work killed]");
+    assert_eq!(c.outcome().await, Outcome::Bye(ByeReason::SessionEnded));
+    server.join().unwrap();
+    assert!(!server.socket.exists());
+    let dir = server.dir.clone();
+    let err = tokio::task::spawn_blocking(move || crate::cli::kill(&dir, "work"))
+        .await
+        .unwrap();
+    assert_eq!(err.unwrap_err(), "jmux: no session work");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_server_rename_session_moves_the_socket_and_refuses_a_taken_name() {
+    let mut server = TestServer::start();
+    let c = Attached::start(&server.socket, 20, 60).await;
+    c.wait_text("detach").await;
+    let dir = server.dir.clone();
+    let other = std::os::unix::net::UnixListener::bind(session::socket_path(&dir, "other")).unwrap();
+    let d = dir.clone();
+    let results = tokio::task::spawn_blocking(move || {
+        (
+            crate::cli::rename(&d, Some("work"), "other", None),
+            crate::cli::rename(&d, Some("work"), "a/b", None),
+            crate::cli::rename(&d, None, "play", Some("/x/work.sock")),
+        )
+    })
+    .await
+    .unwrap();
+    assert_eq!(results.0.unwrap_err(), "jmux: session other already exists");
+    assert!(results.1.unwrap_err().contains("invalid session name"));
+    assert_eq!(results.2.unwrap(), "[session work renamed to play]");
+    drop(other);
+    assert!(!server.socket.exists());
+    assert!(session::socket_path(&dir, "play").exists());
+    c.wait_rows("the new name in the status bar", |r| {
+        r.last().is_some_and(|l| l.contains(" play"))
+    })
+    .await;
+    // The renamed session is still the same one, and killing it by its new name works.
+    let d = dir.clone();
+    let line = tokio::task::spawn_blocking(move || crate::cli::kill(&d, "play"))
+        .await
+        .unwrap();
+    assert!(line.is_ok(), "{line:?}");
+    assert_eq!(c.outcome().await, Outcome::Bye(ByeReason::SessionEnded));
+    server.join().unwrap();
+    assert!(
+        !session::socket_path(&dir, "play").exists(),
+        "the guard removes the renamed socket"
+    );
+}
+
+/// The `jmux` binary next to the test binary (cargo builds it for `tests/cli.rs`).
+fn jmux_exe() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let path = exe.parent().unwrap().parent().unwrap().join("jmux");
+    assert!(path.exists(), "{} is not built", path.display());
+    path
+}
+
+/// Kills a server started through `cli::start` when dropped, also on a panic: `Kill`, then SIGKILL
+/// of the pid the socket's peer credentials name.
+struct StartedServer {
+    socket: PathBuf,
+    pid: Option<i32>,
+}
+
+impl StartedServer {
+    fn new(socket: &Path) -> StartedServer {
+        use std::os::fd::AsRawFd;
+        let pid = std::os::unix::net::UnixStream::connect(socket).ok().and_then(|s| {
+            let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+            let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+            // SAFETY: getsockopt with a ucred buffer of the stated length.
+            let rc = unsafe {
+                libc::getsockopt(
+                    s.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_PEERCRED,
+                    (&raw mut cred).cast(),
+                    &mut len,
+                )
+            };
+            (rc == 0).then_some(cred.pid)
+        });
+        StartedServer {
+            socket: socket.to_path_buf(),
+            pid,
+        }
+    }
+}
+
+impl Drop for StartedServer {
+    fn drop(&mut self) {
+        let asked = crate::cli::request(&self.socket, &ClientMsg::Kill);
+        if asked.is_err() && !self.socket.exists() {
+            return; // already ended by the test
+        }
+        if let Some(pid) = self.pid {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            // SAFETY: signal 0 probes the pid; SIGKILL goes to the server this guard started.
+            while unsafe { libc::kill(pid, 0) } == 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if unsafe { libc::kill(pid, 0) } == 0 {
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_live_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("run");
+    let cwd = tmp.path().join("project-dir");
+    std::fs::create_dir(&cwd).unwrap();
+    let cwd = cwd.canonicalize().unwrap();
+    jtui::socket::prepare_dir(&dir).unwrap();
+    // A leftover socket nobody listens on.
+    drop(std::os::unix::net::UnixListener::bind(session::socket_path(&dir, "work")).unwrap());
+
+    let (d, c, exe) = (dir.clone(), cwd.clone(), jmux_exe());
+    let started = tokio::task::spawn_blocking(move || crate::cli::start(&exe, &d, Some("work"), Some(&c)))
+        .await
+        .unwrap();
+    let (name, socket) = started.unwrap();
+    let _work = StartedServer::new(&socket);
+    assert_eq!(name, "work");
+    let c = Attached::start(&socket, 20, 80).await;
+    c.type_text("pwd\r");
+    let want = cwd.display().to_string();
+    c.wait_rows("the shell's directory", |r| r.iter().any(|l| l.trim() == want))
+        .await;
+    // The same name again is refused and leaves the live session alone.
+    let (d, exe) = (dir.clone(), jmux_exe());
+    let again = tokio::task::spawn_blocking(move || crate::cli::start(&exe, &d, Some("work"), None))
+        .await
+        .unwrap();
+    assert_eq!(again.unwrap_err(), "jmux: session work already exists");
+    // An unnamed start takes the next free number.
+    let (d, exe) = (dir.clone(), jmux_exe());
+    let numbered = tokio::task::spawn_blocking(move || crate::cli::start(&exe, &d, None, None))
+        .await
+        .unwrap();
+    let (second, second_socket) = numbered.unwrap();
+    let _second = StartedServer::new(&second_socket);
+    assert_ne!(second, "work");
+    // `ls` lists both, one line each; the attached one says so.
+    let d = dir.clone();
+    let lines = tokio::task::spawn_blocking(move || crate::cli::ls(&d)).await.unwrap();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("work: ") && l.ends_with(", attached"))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with(&format!("{second}: ")) && l.ends_with(", detached"))
+    );
+    // Kill the detached one: no client is involved, its socket goes.
+    let (d, s2) = (dir.clone(), second.clone());
+    let killed = tokio::task::spawn_blocking(move || crate::cli::kill(&d, &s2))
+        .await
+        .unwrap();
+    assert_eq!(killed.unwrap(), format!("[session {second} killed]"));
+    let deadline = Instant::now() + WAIT;
+    while session::socket_path(&dir, &second).exists() {
+        assert!(Instant::now() < deadline, "the killed session's socket stayed");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // The attached client was not taken over by the queries and the kill above.
+    c.type_text("exit\r");
+    assert_eq!(c.outcome().await, Outcome::Bye(ByeReason::SessionEnded));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_server_ls_removes_stale_sockets_and_attach_ignores_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("run");
+    jtui::socket::prepare_dir(&dir).unwrap();
+    let stale = || drop(std::os::unix::net::UnixListener::bind(session::socket_path(&dir, "dead")).unwrap());
+    stale();
+    let d = dir.clone();
+    let found = tokio::task::spawn_blocking(move || crate::cli::find(&d, Some("dead")))
+        .await
+        .unwrap();
+    assert_eq!(found.unwrap_err(), "jmux: no session dead");
+    stale();
+    let d = dir.clone();
+    let lines = tokio::task::spawn_blocking(move || crate::cli::ls(&d)).await.unwrap();
+    assert_eq!(lines, vec!["no sessions".to_string()]);
+    assert!(!session::socket_path(&dir, "dead").exists());
 }

@@ -42,6 +42,16 @@ pub enum ClientMsg {
         cols: u16,
     },
     Detach,
+    /// Management requests, accepted as a connection's first message instead of `Hello` (they
+    /// never attach or take over): the server answers and closes the connection.
+    /// `jmux ls`: answered with [`ServerMsg::Info`].
+    Query,
+    /// `jmux kill-session`: the session ends; answered with [`ServerMsg::Done`].
+    Kill,
+    /// `jmux rename-session`: answered with [`ServerMsg::Done`] or [`ServerMsg::Error`].
+    Rename {
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -53,6 +63,21 @@ pub enum ServerMsg {
     Output(Vec<u8>),
     Bye {
         reason: ByeReason,
+    },
+    /// The answer to [`ClientMsg::Query`].
+    Info {
+        terminals: u32,
+        /// Terminals running a command (not idle at their prompt).
+        running: u32,
+        /// Unix seconds the session started.
+        created: u64,
+        attached: bool,
+    },
+    /// The request (kill, rename) succeeded.
+    Done,
+    /// The request failed; the text is for the user.
+    Error {
+        message: String,
     },
 }
 
@@ -172,6 +197,7 @@ pub fn encode_client(msg: &ClientMsg) -> Vec<u8> {
     encode(msg)
 }
 
+#[cfg(test)]
 pub fn encode_server(msg: &ServerMsg) -> Vec<u8> {
     encode(msg)
 }
@@ -323,6 +349,9 @@ mod tests {
             },
             ClientMsg::Resize { rows: 50, cols: 200 },
             ClientMsg::Detach,
+            ClientMsg::Query,
+            ClientMsg::Kill,
+            ClientMsg::Rename { name: "new".into() },
         ];
         v.extend(events().into_iter().map(ClientMsg::Input));
         v
@@ -347,6 +376,16 @@ mod tests {
             },
             ServerMsg::Bye {
                 reason: ByeReason::ServerError("boom".into()),
+            },
+            ServerMsg::Info {
+                terminals: 1,
+                running: 0,
+                created: 1_700_000_000,
+                attached: true,
+            },
+            ServerMsg::Done,
+            ServerMsg::Error {
+                message: "taken".into(),
             },
         ]
     }

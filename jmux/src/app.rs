@@ -97,6 +97,8 @@ pub struct App {
     size: (u16, u16),
     /// The next draw starts from a cleared screen at `size` (an attach or a resize).
     resync: bool,
+    /// Unix seconds this session started (`jmux ls`).
+    created: u64,
     pub needs_redraw: bool,
     pub should_quit: bool,
 }
@@ -115,9 +117,17 @@ impl App {
             attached: None,
             size: INITIAL_SIZE,
             resync: false,
+            created: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
             needs_redraw: false,
             should_quit: false,
         }
+    }
+
+    /// The session's socket file (it changes with `rename-session`).
+    pub fn socket(&self) -> &std::path::Path {
+        &self.config.socket
     }
 
     /// Starts the shell at 24×80 (no client has said its size yet); an attach resizes it. Needs a
@@ -189,6 +199,22 @@ impl App {
                     truecolor,
                     term,
                 } => self.hello(conn, version, rows, cols, truecolor, &term),
+                ClientMsg::Query => {
+                    let info = self.info();
+                    self.answer(conn, info);
+                }
+                ClientMsg::Kill => {
+                    tracing::info!(conn, "session killed");
+                    self.answer(conn, ServerMsg::Done);
+                    self.end_session();
+                }
+                ClientMsg::Rename { name } => {
+                    let reply = match self.rename(&name) {
+                        Ok(()) => ServerMsg::Done,
+                        Err(message) => ServerMsg::Error { message },
+                    };
+                    self.answer(conn, reply);
+                }
                 other => {
                     tracing::warn!(conn, ?other, "first message was not Hello");
                     self.conns.remove(&conn);
@@ -200,7 +226,9 @@ impl App {
             return;
         }
         match msg {
-            ClientMsg::Hello { .. } => tracing::warn!(conn, "second Hello ignored"),
+            ClientMsg::Hello { .. } | ClientMsg::Query | ClientMsg::Kill | ClientMsg::Rename { .. } => {
+                tracing::warn!(conn, "unexpected message from an attached client ignored")
+            }
             ClientMsg::Input(input) => self.input(input),
             ClientMsg::Resize { rows, cols } => self.resize(rows, cols),
             ClientMsg::Detach => self.detach(),
@@ -241,6 +269,56 @@ impl App {
         self.size = (rows.max(1), cols.max(1));
         self.resync = true;
         self.needs_redraw = true;
+    }
+
+    fn info(&self) -> ServerMsg {
+        let running = self
+            .shell
+            .as_ref()
+            .is_some_and(|s| !s.idle && s.run.status().is_running());
+        ServerMsg::Info {
+            terminals: u32::from(self.shell.is_some()),
+            running: u32::from(running),
+            created: self.created,
+            attached: self.attached.is_some(),
+        }
+    }
+
+    /// Sends a management request's answer and forgets the connection (its writer ends after the
+    /// answer).
+    fn answer(&mut self, conn: u64, msg: ServerMsg) {
+        self.send(conn, msg);
+        if let Some(c) = self.conns.remove(&conn) {
+            self.closing.retain(|w| !w.is_finished());
+            self.closing.push(c.writer);
+        }
+    }
+
+    /// Renames the session: its socket file moves in the same directory (running shells keep the
+    /// old path in `$JMUX`). An error text when the name is invalid or another live session has it.
+    fn rename(&mut self, name: &str) -> Result<(), String> {
+        if !crate::session::valid_name(name) {
+            return Err(format!("invalid session name {name}"));
+        }
+        if name == self.name {
+            return Ok(());
+        }
+        let dir = self
+            .config
+            .socket
+            .parent()
+            .ok_or("the session has no socket directory")?;
+        let new = crate::session::socket_path(dir, name);
+        if std::os::unix::net::UnixStream::connect(&new).is_ok() {
+            return Err(format!("session {name} already exists"));
+        }
+        std::fs::rename(&self.config.socket, &new).map_err(|e| format!("cannot rename: {e}"))?;
+        tracing::info!(from = %self.name, to = name, "session renamed");
+        self.config.socket = new;
+        self.name = name.to_string();
+        self.config.name = self.name.clone();
+        self.needs_redraw = true;
+        Ok(())
     }
 
     /// Tells `conn` why, then forgets it (its writer ends after sending the message).

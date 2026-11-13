@@ -11,12 +11,13 @@ path = "src/main.rs"
 [dependencies]
 jtui = { path = "../crates/jtui" }
 jterm = { path = "../crates/jterm" }
-crossterm = { workspace = true, features = ["serde"] }
+crossterm = { workspace = true, features = ["serde", "event-stream"] }
 libc = { workspace = true }
 ratatui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["signal"] }
+futures-util = "0.3.34"
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 vt100 = { workspace = true }

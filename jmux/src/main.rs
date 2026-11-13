@@ -1,16 +1,12 @@
 //! jmux: a terminal multiplexer with detachable sessions (design in `jmux/PLAN.md`).
 
-// Parts of these are for the client and CLI (jmux_server-c): `FrameReader`, `read_msg_blocking`,
-// `session::list` & co., `server::spawn_server`.
-#[allow(dead_code)]
-mod protocol;
-#[allow(dead_code)]
-mod session;
-
 mod app;
+mod cli;
+mod client;
 mod logging;
-#[allow(dead_code)]
+mod protocol;
 mod server;
+mod session;
 mod theme;
 mod ui;
 
@@ -81,9 +77,77 @@ fn run_server(args: ServerArgs) -> i32 {
     }
 }
 
+/// Why `cmd` must not run inside a jmux terminal (`$JMUX` set): starting or attaching nests.
+/// Without a terminal (`tty` false) they are refused too, before anything is started.
+/// `ls`, `kill-session` and `rename-session` work inside and without.
+fn refusal(cmd: &cli::Cmd, jmux_env: Option<&str>, tty: bool) -> Option<String> {
+    use cli::Cmd;
+    match cmd {
+        Cmd::New { .. } | Cmd::Attach { .. } | Cmd::Default => {
+            cli::nested(jmux_env).or_else(|| (!tty).then(|| "jmux: not a terminal".to_string()))
+        }
+        _ => None,
+    }
+}
+
+/// Runs a parsed command and returns the exit code. `jmux_env` is `$JMUX`.
+fn run_cli(cmd: cli::Cmd, dir: &std::path::Path, jmux_env: Option<&str>, tty: bool) -> i32 {
+    use cli::Cmd;
+    let refuse = |why: String| {
+        eprintln!("{why}");
+        1
+    };
+    let attach = |(name, socket): (String, PathBuf)| client::run_attached(&socket, &name);
+    if let Some(why) = refusal(&cmd, jmux_env, tty) {
+        return refuse(why);
+    }
+    match cmd {
+        Cmd::Help => {
+            println!("{}", cli::USAGE);
+            0
+        }
+        Cmd::Ls => {
+            for line in cli::ls(dir) {
+                println!("{line}");
+            }
+            0
+        }
+        Cmd::Kill { target } => match cli::kill(dir, &target) {
+            Ok(line) => {
+                println!("{line}");
+                0
+            }
+            Err(e) => refuse(e),
+        },
+        Cmd::Rename { target, new } => match cli::rename(dir, target.as_deref(), &new, jmux_env) {
+            Ok(line) => {
+                println!("{line}");
+                0
+            }
+            Err(e) => refuse(e),
+        },
+        Cmd::Attach { target } => match cli::find(dir, target.as_deref()) {
+            Ok(found) => attach(found),
+            Err(e) => refuse(e),
+        },
+        Cmd::New { name, dir: cwd } => {
+            let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("jmux"));
+            match cli::start(&exe, dir, name.as_deref(), cwd.as_deref()) {
+                Ok(started) => attach(started),
+                Err(e) => refuse(e),
+            }
+        }
+        Cmd::Default => match cli::find(dir, None) {
+            Ok(found) => attach(found),
+            Err(_) => run_cli(Cmd::New { name: None, dir: None }, dir, jmux_env, tty),
+        },
+    }
+}
+
 fn main() {
-    let mut args = std::env::args().skip(1);
-    if args.next().as_deref() == Some("server") {
+    let mut args = std::env::args().skip(1).peekable();
+    if args.peek().map(String::as_str) == Some("server") {
+        args.next();
         match parse_server_args(args) {
             Ok(args) => std::process::exit(run_server(args)),
             Err(e) => {
@@ -92,8 +156,19 @@ fn main() {
             }
         }
     }
-    eprintln!("jmux: not yet implemented");
-    std::process::exit(2);
+    match cli::parse(args) {
+        Ok(cmd) => {
+            let dir = jtui::socket::default_socket_dir(APP);
+            let jmux_env = std::env::var("JMUX").ok();
+            use std::io::IsTerminal;
+            let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+            std::process::exit(run_cli(cmd, &dir, jmux_env.as_deref(), tty));
+        }
+        Err(e) => {
+            eprintln!("jmux: {e}\n{}", cli::USAGE);
+            std::process::exit(2);
+        }
+    }
 }
 
 #[cfg(test)]

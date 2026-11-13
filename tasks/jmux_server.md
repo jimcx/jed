@@ -1,8 +1,8 @@
 ---
 id: jmux_server
 name: "jmux: sessions, server and client"
-summary: a `jmux` binary with named sessions — a detached server per session owning one full-screen shell, a thin client that attaches, detaches and re-attaches
-status: in-progress
+summary: a `jmux` binary with named sessions — a detached server per session owning one full-screen shell, a thin client that attaches, detaches and re-attaches; `new`, `attach`, `ls`, `kill-session`, `rename-session`
+status: done
 priority: 0
 dependencies: [jterm]
 ---
@@ -29,4 +29,12 @@ See [jmux's plan](../jmux/PLAN.md): [Architecture](../jmux/PLAN.md#architecture)
       - `app.rs`: one shell (24×80 until the first `Hello`), one attached client; a new `Hello` sends the old one `Bye TakenOver`; Ctrl+Shift+D / `Detach` / the client closing detach; per-connection output queue bounded (`OUT_QUEUE` 256: a client that stops reading is dropped); the shell ending sends `Bye SessionEnded` and `shutdown` awaits the writers
       - `ui.rs` / `theme.rs` / `logging.rs` (`<state dir>/jmux/logs/<name>-<pid>.log`, `JMUX_LOG`); `main.rs` parses only `server`; other subcommands still say "not yet implemented"
       - No `Kill` message or terminal count yet (c adds what `kill-session` / `ls` need); no SIGTERM handling in the server (a killed server leaves a stale socket, which `remove_stale` / `bind` handle)
-    - jmux_server-c: the client and CLI — `new`, `attach`, `ls`, `kill-session`, `rename-session`, bare `jmux`; raw mode and restore; detach, take-over and server-death handling; the done-when tests (`jmux/src/jmux_server_tests.rs`), hand checks and marks the task ✅
+    - ✅ jmux_server-c: the client and CLI — `new`, `attach`, `ls`, `kill-session`, `rename-session`, bare `jmux`; raw mode and restore; detach, take-over and server-death handling; the done-when tests (`jmux/src/jmux_server_tests.rs`), hand checks and marks the task ✅
+  - ✅ Done. What it changed (for later work):
+    - `jmux/src/client.rs`: `attach(stream, …) -> Outcome` (`Bye(reason)` / `ServerGone` / `Hangup`) is the testable core; `run_attached` does raw mode (kitty when supported), the panic hook, SIGHUP / SIGTERM, and `finish` restores the terminal before printing the one line (`[server of work went away]` for a dead server)
+    - `jmux/src/cli.rs` + `main.rs`: `parse` → `Cmd`, blocking helpers (`ls`, `find`, `start`, `kill`, `rename`), `run_cli(cmd, dir, jmux_env, tty)`; `refusal` refuses `new` / `attach` / bare `jmux` inside a session (`$JMUX`) and without a terminal, before anything starts; `ls` / `kill-session` / `rename-session` work inside one
+    - Protocol: `Query` → `Info { terminals, running, created, attached }`, `Kill` → `Done`, `Rename { name }` → `Done` / `Error`, accepted only as a connection's first message (they never attach); `spawn_server` takes the first shell's `cwd`
+    - Tests: in-process server + `client::attach` in `jmux_server_tests.rs` (real shells; `StartedServer` kills servers a failing test started); the real binary in `jmux/tests/cli.rs` (`kill -9`, nesting, no tty, kill / rename)
+    - Also: a client that stops reading is dropped (bounded queue); `rename-session` leaves running shells' `$JMUX` at the old path
+    - Deferred: the server handles no SIGTERM (a killed server leaves a stale socket, which `ls` / `new` remove); one terminal per session until jmux_layout
+    - Still to check by hand: `jmux new -s work` shows a shell with the status bar; Ctrl+Shift+D prints `[detached from work]` with the terminal restored (cursor, mouse, no raw mode); `jmux ls`; `jmux attach -t work` in a window of another size shows the same screen and the wheel scrolls back; a second terminal attaching makes the first print `[work taken over by another client]`; `exit` prints `[session work ended]`; `kill -9` of the server prints `[server of work went away]` with the terminal restored; `jmux` inside a jmux shell is refused; closing the window while attached leaves the session detached in `jmux ls`; `jmux new -s x -c /tmp` starts in `/tmp`

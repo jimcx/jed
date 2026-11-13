@@ -43,13 +43,16 @@ pub fn server_args(name: &str, socket_dir: &Path) -> Vec<OsString> {
 }
 
 /// Starts the server of session `name` as a detached process of `exe` (new session id, stdio
-/// closed, the current directory kept for the first shell) and returns once its socket accepts
+/// closed, in `cwd` or else the current directory, which is the first shell's) and returns once its socket accepts
 /// connections. An error if the process exits first or the socket doesn't appear in
 /// [`START_TIMEOUT`]. Forks nothing else: the server's runtime starts in the new process.
 ///
 /// Blocking: call from spawn_blocking
-pub fn spawn_server(exe: &Path, socket_dir: &Path, name: &str) -> io::Result<()> {
+pub fn spawn_server(exe: &Path, socket_dir: &Path, name: &str, cwd: Option<&Path>) -> io::Result<()> {
     let mut command = Command::new(exe);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
     command
         .args(server_args(name, socket_dir))
         .stdin(Stdio::null())
@@ -116,7 +119,7 @@ fn bind(dir: &Path, name: &str) -> io::Result<(UnixListener, SocketGuard)> {
 
 /// Runs the session until its shell ends. Needs a tokio runtime.
 pub async fn run(socket_dir: &Path, mut config: Config) -> io::Result<()> {
-    let (listener, _guard) = bind(socket_dir, &config.name)?;
+    let (listener, mut guard) = bind(socket_dir, &config.name)?;
     config.socket = session::socket_path(socket_dir, &config.name);
     let (events, mut rx) = mpsc::unbounded_channel();
     let accept = tokio::spawn(accept_loop(listener, events.clone()));
@@ -140,6 +143,10 @@ pub async fn run(socket_dir: &Path, mut config: Config) -> io::Result<()> {
         while let Ok(event) = rx.try_recv() {
             app.handle(event);
         }
+        // A rename moved the socket file: the guard removes the new one.
+        if app.socket() != guard.0 {
+            guard.0 = app.socket().to_path_buf();
+        }
         if app.should_quit {
             break Ok(());
         }
@@ -156,7 +163,7 @@ pub async fn run(socket_dir: &Path, mut config: Config) -> io::Result<()> {
         }
     })
     .await;
-    drop(_guard);
+    drop(guard);
     result
 }
 
