@@ -99,6 +99,17 @@ directory, tests pass a temp dir) and the server:
   drops it. Links: a Ctrl / Cmd + left press on a URL (`select::wrapped_line` + `jtui::url::url_at`, before the mouse reporting and
   selection) calls `Config::open_url` (`jtui::url::open`) in `spawn_blocking`, a failure logged; the tests pass a recorder, so none
   launches a browser. File paths are not links (no editor).
+  Commands (`history`, `integration`, `app/commands.rs`; the side bar that shows them is `jmux_commands-b`): `App.history` is a
+  `History` (model, no drawing): one list of every terminal's `CommandRecord`s, running first then finished newest first, capped at
+  `Config::command_history` (`COMMAND_HISTORY` 500; the oldest finished rows go, a running one never), rows keyed `(RunId, record id)`,
+  filter (substring, case-insensitive), selection kept by identity, scroll; `Row::glyph` / `duration_text` / `age_text` are pure
+  fns of the record and `now`. `run_event` feeds it from `Run::commands()` on `Foreground` and `Ended`; `close_tab` calls `close` (rows
+  stay, `closed`, a running one ends with no exit: glyph `·`). `integration` is `jterm::shell_integration` with jmux's `NAMES`
+  (`JMUX` guard) and `Dirs { home, config_home, state }` (`Config::dirs`, `None` in tests that need no check; tests pass temp dirs,
+  never the real ones): `check`, `notice`, `install` (blocking). The first shell started runs `check` in `spawn_blocking` and a
+  missing / stale integration sets `App.notice` (drawn over the status bar's title, `statusBar.notice`, cleared by the next key);
+  `Command::InstallShellIntegration` (Ctrl+Shift+I) and `jmux install-shell-integration` (`cli::install_shell_integration`, `$SHELL`)
+  run `install` (no confirmation: the command is the ask). Results come back as `AppEvent::Integration`.
   `Query` / `Kill` / `Rename { name }` as a connection's first message never attach: answered (`Info` / `Done` / `Error`)
   and closed. `Kill` ends the session; `Rename` moves the socket file (the guard follows; running shells keep the old
   `$JMUX`).

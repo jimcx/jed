@@ -24,6 +24,8 @@ pub fn dark_plus(truecolor: bool) -> Theme {
         ("terminal.dropBackground", fg_bg(0xFFFFFF, 0x0A4A7A)),
         // The close question that replaces the status bar.
         ("statusBar.prompt", fg_bg(0x000000, 0xD7BA7D)),
+        // A one-line message (the shell integration is missing) in place of the title.
+        ("statusBar.notice", fg_bg(0xFFFFFF, 0x6C4A00)),
     ];
     Theme::new(widget_entries(truecolor).into_iter().chain(own), truecolor)
 }
@@ -40,6 +42,7 @@ mod tests {
                 "statusBar",
                 "statusBar.detail",
                 "statusBar.prompt",
+                "statusBar.notice",
                 "terminal.dropBackground",
             ]) {
                 assert!(theme.find(key).is_some(), "missing {key}");

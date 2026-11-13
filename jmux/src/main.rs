@@ -6,7 +6,9 @@ mod cli;
 mod client;
 mod command;
 mod group;
+mod history;
 mod hit;
+mod integration;
 mod keymap;
 mod logging;
 mod protocol;
@@ -17,6 +19,8 @@ mod tabbar;
 mod theme;
 mod ui;
 
+#[cfg(test)]
+mod jmux_commands_tests;
 #[cfg(test)]
 mod jmux_layout_tests;
 #[cfg(test)]
@@ -67,6 +71,8 @@ fn run_server(args: ServerArgs) -> i32 {
         program,
         cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
         open_url: jtui::url::open,
+        dirs: Some(integration::Dirs::real()),
+        command_history: app::COMMAND_HISTORY,
     };
     let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(rt) => rt,
@@ -115,6 +121,16 @@ fn run_cli(cmd: cli::Cmd, dir: &std::path::Path, jmux_env: Option<&str>, tty: bo
         Cmd::Help => {
             println!("{}", cli::USAGE);
             0
+        }
+        Cmd::InstallShellIntegration => {
+            let shell = std::env::var("SHELL").ok();
+            match cli::install_shell_integration(&integration::Dirs::real(), shell.as_deref()) {
+                Ok(line) => {
+                    println!("{line}");
+                    0
+                }
+                Err(e) => refuse(e),
+            }
         }
         Cmd::Ls => {
             for line in cli::ls(dir) {

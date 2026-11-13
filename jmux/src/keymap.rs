@@ -12,7 +12,7 @@ pub type JmuxKeymap = Keymap<Context, Command>;
 
 /// The default bindings. Jed's terminal keys: Ctrl+` and Ctrl+Shift+T open a terminal, Ctrl+Shift+W
 /// closes it (plain Ctrl+W is the shell's; Cmd+W on macOS), Ctrl+PageDown / PageUp cycle, Alt+1..9
-/// go to a tab (Ctrl+1..9 on macOS). Detach, Ctrl+Shift+D, works everywhere. The first binding of
+/// go to a tab (Ctrl+1..9 on macOS). Detach, Ctrl+Shift+D, works everywhere; Ctrl+Shift+I installs the shell integration. The first binding of
 /// a command is the one shown.
 pub fn defaults(platform: Platform) -> Vec<Binding<Context, Command>> {
     let (ctrl, shift, alt, none) = (
@@ -65,6 +65,7 @@ pub fn defaults(platform: Platform) -> Vec<Binding<Context, Command>> {
             Command::Search(Sc::Open),
         ),
         (KeyCode::Char('d'), ctrl | shift, Command::Detach, None),
+        (KeyCode::Char('i'), ctrl | shift, Command::InstallShellIntegration, None),
     ];
     let side = if mac { KeyModifiers::SUPER | alt } else { alt | shift };
     for (code, s) in [

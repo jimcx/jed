@@ -33,11 +33,12 @@ use vt100::MouseProtocolMode;
 
 use crate::command::{Command, Context};
 use crate::group::Groups;
+use crate::history::History;
 use crate::hit::{Hit, HitMap};
 use crate::keymap::{self, JmuxKeymap};
 use crate::protocol::{ByeReason, ClientMsg, PROTOCOL_VERSION, ServerMsg};
 use crate::tab_drag::TabDrag;
-use crate::{theme, ui};
+use crate::{integration, theme, ui};
 use jterm::search::TermSearch;
 
 /// Messages a connection may have queued for its writer. A client that falls this far behind is
@@ -77,7 +78,14 @@ pub struct Config {
     /// Opens a clicked URL (blocking: it runs in `spawn_blocking`); `jtui::url::open`, a recorder
     /// in the tests.
     pub open_url: fn(&str) -> Result<(), String>,
+    /// Where the shell integration lives (`None`: no check, no install).
+    pub dirs: Option<integration::Dirs>,
+    /// The most commands the history keeps (`command_history`).
+    pub command_history: usize,
 }
+
+/// The default `command_history` (settings files come later).
+pub const COMMAND_HISTORY: usize = 500;
 
 /// What the event loop hears about.
 pub enum AppEvent {
@@ -96,6 +104,19 @@ pub enum AppEvent {
         conn: u64,
     },
     Run(Event),
+    /// A blocking shell-integration job finished (`integration_event`).
+    Integration(IntegrationEvent),
+}
+
+/// What the off-thread integration jobs report.
+pub enum IntegrationEvent {
+    /// The first shell's check: its base name and the state on disk.
+    Checked {
+        shell: String,
+        status: Option<jterm::shell_integration::Status>,
+    },
+    /// An install finished.
+    Installed(Result<integration::Installed, String>),
 }
 
 /// The open question "close this terminal? a command is running".
@@ -113,6 +134,7 @@ struct Conn {
     hello: bool,
 }
 
+mod commands;
 mod search;
 
 pub struct App {
@@ -124,6 +146,12 @@ pub struct App {
     /// What the last frame drew where (`ui::render`), for the mouse.
     pub hit: HitMap,
     pub confirm: Option<Confirm>,
+    /// A one-line message in place of the status bar's title, until the next key.
+    pub notice: Option<String>,
+    /// The commands of every terminal, running and finished (`history`).
+    pub history: History,
+    /// The first shell's integration check has been started.
+    integration_checked: bool,
     /// The divider or tab being dragged: it owns the mouse until the release.
     pub(crate) drag: Option<Drag>,
     /// Where the pointer last was, and the shape the client was last told to show.
@@ -198,12 +226,15 @@ impl App {
     pub fn new(config: Config, events: UnboundedSender<AppEvent>) -> App {
         App {
             name: config.name.clone(),
+            history: History::new(config.command_history),
             config,
             events,
             groups: Groups::new(),
             keymap: keymap::keymap(),
             hit: HitMap::default(),
             confirm: None,
+            notice: None,
+            integration_checked: false,
             drag: None,
             mouse_at: None,
             pointer: Pointer::Default,
@@ -293,6 +324,7 @@ impl App {
         if let Some(g) = self.groups.get_mut(group) {
             g.open(tab);
         }
+        self.check_integration();
         self.needs_redraw = true;
     }
 
@@ -361,6 +393,7 @@ impl App {
                 }
             }
             Command::ConfirmNo => self.confirm = None,
+            Command::InstallShellIntegration => self.install_integration(),
         }
         self.needs_redraw = true;
     }
@@ -412,6 +445,9 @@ impl App {
             Status::Failed(e) => Some(e),
             _ => None,
         };
+        // A finish the shell reported since the last `Foreground` event isn't lost.
+        self.feed_history_from(&tab);
+        self.history.close(tab.run.id, Instant::now());
         self.needs_redraw = true;
         if self.groups.tab_count() == 0 {
             let reason = match failed {
@@ -448,6 +484,7 @@ impl App {
                 }
             }
             AppEvent::Run(ev) => self.run_event(ev),
+            AppEvent::Integration(ev) => self.integration_event(ev),
         }
     }
 
@@ -655,6 +692,9 @@ impl App {
     fn key(&mut self, key: KeyEvent) {
         if key.kind == KeyEventKind::Release {
             return;
+        }
+        if self.notice.take().is_some() {
+            self.needs_redraw = true;
         }
         let context = if self.confirm.is_some() {
             Context::Confirm
@@ -1040,9 +1080,12 @@ impl App {
                     shell.error = error;
                     self.needs_redraw = true;
                 }
+                self.feed_history(id);
             }
             // The shell exited (or never started): its tab goes, with no question.
             Event::Ended(id) => {
+                // A last finish may not have sent a `Foreground`.
+                self.feed_history(id);
                 if let Some((group, index)) = self.groups.find(id) {
                     self.close_tab(group, index);
                 }
@@ -1124,6 +1167,8 @@ mod tests {
             program: "/bin/sh".into(),
             cwd: PathBuf::from("/"),
             open_url: |_| Ok(()),
+            dirs: None,
+            command_history: COMMAND_HISTORY,
         };
         let mut app = App::new(config, events);
         let rx = connect(&mut app, 1, cap);
@@ -1241,6 +1286,8 @@ mod tests {
             program: "/bin/sh".into(),
             cwd: PathBuf::from("/"),
             open_url: |_| Ok(()),
+            dirs: None,
+            command_history: COMMAND_HISTORY,
         };
         let mut app = App::new(config, events);
         // A writer that does nothing until the gate opens, then reports what it was given.

@@ -75,6 +75,8 @@ fn config(dir: &Path) -> Config {
         program: "/bin/sh".into(),
         cwd: std::env::temp_dir(),
         open_url: |_| Ok(()),
+        dirs: None,
+        command_history: crate::app::COMMAND_HISTORY,
     }
 }
 
@@ -929,6 +931,8 @@ impl Drop for StartedServer {
     }
 }
 
+// FLAKE: 2026-11-14, timed out waiting for the shell's directory; the typed pwd landed in the sh prompt under load
+// FLAKE: 2026-11-14, timed out waiting for the shell's directory; the typed pwd landed in the sh prompt under load
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_live_name() {
     let tmp = tempfile::tempdir().unwrap();
@@ -951,8 +955,19 @@ async fn jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_liv
     let c = Attached::start(&socket, 20, 80).await;
     c.type_text("pwd\r");
     let want = cwd.display().to_string();
-    c.wait_rows("the shell's directory", |r| r.iter().any(|l| l.trim() == want))
-        .await;
+    let (begun, deadline) = (Instant::now(), Instant::now() + WAIT);
+    while !c.rows().iter().any(|l| l.trim() == want) {
+        if Instant::now() >= deadline {
+            eprintln!(
+                "FLAKE jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_live_name: \
+                 no row equal to {want:?} after {:?}; screen:\n{}",
+                begun.elapsed(),
+                c.text()
+            );
+            panic!("timed out waiting for the shell's directory:\n{}", c.text());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     // The same name again is refused and leaves the live session alone.
     let (d, exe) = (dir.clone(), sh_exe.clone());
     let again = tokio::task::spawn_blocking(move || crate::cli::start(&exe, &d, Some("work"), None))
@@ -997,8 +1012,12 @@ async fn jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_liv
     assert_eq!(c.outcome().await, Outcome::Bye(ByeReason::SessionEnded));
 }
 
+// FLAKE: 2026-11-14, `ls` listed `dead: Connection reset by peer (os error 104)` instead of removing the
+// socket (seen once in a full run); suspected cause: the closed listener's socket answers with ECONNRESET,
+// which `remove_stale` doesn't count as stale
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_server_ls_removes_stale_sockets_and_attach_ignores_them() {
+    let began = Instant::now();
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("run");
     jtui::socket::prepare_dir(&dir).unwrap();
@@ -1012,6 +1031,17 @@ async fn jmux_server_ls_removes_stale_sockets_and_attach_ignores_them() {
     stale();
     let d = dir.clone();
     let lines = tokio::task::spawn_blocking(move || crate::cli::ls(&d)).await.unwrap();
+    if lines != ["no sessions".to_string()] {
+        let path = session::socket_path(&dir, "dead");
+        eprintln!(
+            "FLAKE jmux_server_ls_removes_stale_sockets_and_attach_ignores_them: ls gave {lines:?}; socket {path:?} \
+             exists {}, connect now {:?}; the listener was dropped (closed, never killed) right before the second `ls`, \
+             about {:?} after the test began",
+            path.exists(),
+            std::os::unix::net::UnixStream::connect(&path).map(|_| ()),
+            began.elapsed()
+        );
+    }
     assert_eq!(lines, vec!["no sessions".to_string()]);
     assert!(!session::socket_path(&dir, "dead").exists());
 }

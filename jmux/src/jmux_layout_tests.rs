@@ -91,6 +91,8 @@ impl Harness {
             program: "/bin/sh".into(),
             cwd: std::env::temp_dir(),
             open_url: record_url,
+            dirs: None,
+            command_history: crate::app::COMMAND_HISTORY,
         };
         let mut app = App::new(config, tx);
         app.start();

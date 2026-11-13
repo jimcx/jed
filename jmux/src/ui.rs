@@ -114,6 +114,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
             f.buffer_mut().set_style(bar, style);
             f.buffer_mut()
                 .set_stringn(bar.x, bar.y, &text, bar.width as usize, style);
+        } else if let Some(notice) = &app.notice {
+            let style = app.theme.get("statusBar.notice");
+            f.buffer_mut().set_style(bar, style);
+            f.buffer_mut()
+                .set_stringn(bar.x, bar.y, format!(" {notice}"), bar.width as usize, style);
         } else {
             let title = app.groups.active_group().active_tab().map_or("", |s| s.title.as_str());
             status_bar(f, bar, &app.name, title, &app.detach_hint(), &app.theme);

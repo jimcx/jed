@@ -145,6 +145,8 @@ pub enum Command {
     Detach,
     ConfirmYes,
     ConfirmNo,
+    /// Writes the shell integration's snippets and adds the line sourcing one to the shell's init file.
+    InstallShellIntegration,
 }
 
 impl Command {
@@ -173,6 +175,7 @@ impl Command {
             Command::Detach,
             Command::ConfirmYes,
             Command::ConfirmNo,
+            Command::InstallShellIntegration,
         ];
         all.extend(SearchCommand::ALL.map(Command::Search));
         all.extend(field_commands().into_iter().map(Command::Field));
@@ -220,6 +223,7 @@ impl KeyCommand for Command {
             Command::Detach => "session.detach".into(),
             Command::ConfirmYes => "confirm.yes".into(),
             Command::ConfirmNo => "confirm.no".into(),
+            Command::InstallShellIntegration => "session.installShellIntegration".into(),
         }
     }
     fn title(&self) -> String {
@@ -257,6 +261,7 @@ impl KeyCommand for Command {
             Command::Detach => "Detach".into(),
             Command::ConfirmYes => "Confirm".into(),
             Command::ConfirmNo => "Cancel".into(),
+            Command::InstallShellIntegration => "Install Shell Integration".into(),
         }
     }
 }

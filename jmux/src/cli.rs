@@ -17,6 +17,7 @@ pub const USAGE: &str = "usage: jmux [command]
   ls                            list the sessions
   kill-session -t name          end a session
   rename-session [-t name] new  rename a session (this one inside jmux)
+  install-shell-integration     add jmux's shell integration (command history) to your shell's init file
 
 Detach with Ctrl+Shift+D. Attaching takes the session over from another client.";
 
@@ -31,6 +32,7 @@ pub enum Cmd {
     Ls,
     Kill { target: String },
     Rename { target: Option<String>, new: String },
+    InstallShellIntegration,
     Help,
 }
 
@@ -46,7 +48,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cmd, String> {
     let allowed: &[&str] = match cmd.as_str() {
         "new" => &["-s", "-c"],
         "attach" | "kill-session" | "rename-session" => &["-t"],
-        "ls" => &[],
+        "ls" | "install-shell-integration" => &[],
         "-h" | "--help" | "help" => return Ok(Cmd::Help),
         other => return Err(format!("unknown command {other}")),
     };
@@ -71,6 +73,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cmd, String> {
         },
         "attach" => Cmd::Attach { target: flag("-t") },
         "ls" => Cmd::Ls,
+        "install-shell-integration" => Cmd::InstallShellIntegration,
         "kill-session" => Cmd::Kill {
             target: flag("-t").ok_or("kill-session needs -t <name>")?,
         },
@@ -93,6 +96,16 @@ pub fn current_session(jmux_env: Option<&str>) -> Option<String> {
 /// The refusal for starting or attaching inside a jmux terminal.
 pub fn nested(jmux_env: Option<&str>) -> Option<String> {
     current_session(jmux_env).map(|s| format!("jmux: already inside session {s} (unset JMUX to nest anyway)"))
+}
+
+/// `jmux install-shell-integration`: installs for the shell `$SHELL` names (`shell`, else `sh`)
+/// and returns the line to print.
+///
+/// Blocking: reads and writes files.
+pub fn install_shell_integration(dirs: &crate::integration::Dirs, shell: Option<&str>) -> Result<String, String> {
+    let program = shell.filter(|s| !s.is_empty()).unwrap_or("/bin/sh");
+    let base = jterm::shell::base(Path::new(program));
+    crate::integration::install(dirs, &base).map(|done| done.message(&dirs.home))
 }
 
 /// Sends one management request to the server on `socket` and returns its answer.
@@ -290,6 +303,30 @@ mod tests {
         assert!(p(&["kill-session"]).is_err());
         assert!(p(&["rename-session"]).is_err());
         assert!(p(&["rename-session", "a", "b"]).is_err());
+    }
+
+    #[test]
+    fn install_shell_integration_parses_and_takes_no_arguments() {
+        assert_eq!(
+            parse(["install-shell-integration".to_string()]),
+            Ok(Cmd::InstallShellIntegration)
+        );
+        assert!(parse(["install-shell-integration".to_string(), "-t".into(), "x".into()]).is_err());
+    }
+
+    #[test]
+    fn install_shell_integration_uses_the_given_dirs_and_shell() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = crate::integration::Dirs {
+            home: tmp.path().join("home"),
+            config_home: tmp.path().join("home/.config"),
+            state: tmp.path().join("state"),
+        };
+        let line = install_shell_integration(&dirs, Some("/usr/bin/zsh")).unwrap();
+        assert!(line.starts_with("Added to ~/.zshrc"), "{line}");
+        assert!(tmp.path().join("home/.zshrc").exists() && tmp.path().join("state/shell-integration.zsh").exists());
+        let e = install_shell_integration(&dirs, None).unwrap_err();
+        assert!(e.contains("'sh'"), "{e}");
     }
 
     #[test]
