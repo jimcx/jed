@@ -2,7 +2,7 @@
 id: jterm
 name: "jterm: shared terminal engine"
 summary: jed's terminal (PTY run, vt100 screen and compressed scrollback, command records, selection, search, key and mouse encoding, shell tab model, shell integration, screen drawing) moves to `crates/jterm`, jed re-exporting it
-status: open
+status: in-progress
 priority: 0
 dependencies: [jtui]
 ---
@@ -17,6 +17,8 @@ See [Shared crates and jmux](../PLAN.md#shared-crates-and-jmux), [jmux's plan](.
   - Two additions jmux needs, with jed's values unchanged: the command ring's size is a `Run::start` argument (jed passes `COMMAND_RING` 50), and a `CommandRecord` also carries its wall-clock start time
   - Done when: `cargo test -p jterm` passes alone, real-shell tests included; `grep -rn 'JED_\|"jed"' crates/jterm/src` finds nothing outside tests; jed's `scripts/check` passes with no end-to-end test changed; the release `milestone` budget run is within noise of before; by hand, a jed shell tab still shows titles, the command list over the Claude integration (`get_recent_commands`), selection, search and the scroll bar
   - Subtasks (one agent and one commit each):
-    - jterm-a: the engine — `run`, `select`, `keys`, `mouse` and `Spec`, with `EnvNames` and the ring-size argument and wall-clock time; jed's `tasks/mod.rs` re-exports
+    - ✅ jterm-a: the engine — `run`, `select`, `keys`, `mouse` and `Spec`, with `EnvNames` and the ring-size argument and wall-clock time; jed's `tasks/mod.rs` re-exports
+      - Done: `jterm::{run, select, keys, mouse, spec}`; jed's `tasks/{run,select,keys,mouse}.rs` are `pub use jterm::<m>::*` stubs, `templates.rs` re-exports `Spec`. `Run::start(…, options: StartOptions { env: EnvNames { ipc, terminal }, command_ring })`; jed's `tasks::START_OPTIONS` (`JED_IPC` / `JED_TERMINAL`, `COMMAND_RING` 50, pinned by `start_options_are_jeds_values`) is passed by `Tasks::run` and `shell.rs`. `CommandRecord::started_at: SystemTime`
+      - Test hooks jed uses are always compiled, `#[doc(hidden)]`: `Spec::start_gate` / `StartGate`, `run::NO_SPAWN`, `Run::test_hold_state` / `test_screen_free`, `select::test_parser` (jterm-b/c: same for anything jed's tests reach). Real-shell `Run` tests live in `crates/jterm/src/run/real_tests.rs` (local `group_alive`); `Tasks`-level ones stay in jed. Log target is now `jterm::run`. `portable-pty` is a workspace dependency, jterm's only
     - jterm-b: `search` (over `jtui`'s `TextField`), the shell tab model (`ShellTab`, `title`, `base`, `spec`, the glyphs) and `shell_integration` with its names passed in
     - jterm-c: drawing — the screen, cursor, selection and search-match drawing from `ui/task.rs` into `jterm::draw` over `jtui::Theme`; jed's `ui/task.rs` keeps the task tab's frame and calls it. Also the done-when checks, the docs entries, and marks the task ✅

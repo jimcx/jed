@@ -6,3 +6,12 @@ publish = false
 
 [dependencies]
 jtui = { path = "../jtui" }
+crossterm = { workspace = true }
+libc = { workspace = true }
+portable-pty = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+vt100 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

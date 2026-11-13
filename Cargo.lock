@@ -1129,7 +1129,6 @@ dependencies = [
  "memchr",
  "notify",
  "nucleo",
- "portable-pty",
  "pulldown-cmark",
  "ratatui",
  "regex",
@@ -1247,7 +1246,14 @@ dependencies = [
 name = "jterm"
 version = "0.1.0"
 dependencies = [
+ "crossterm",
  "jtui",
+ "libc",
+ "portable-pty",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "vt100",
 ]
 
 [[package]]

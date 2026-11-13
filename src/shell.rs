@@ -46,7 +46,7 @@ impl ShellTab {
         number: usize,
     ) -> ShellTab {
         let base = spec.name.clone();
-        let run = Run::start(id, spec, rows, cols, sink, scrollback);
+        let run = Run::start(id, spec, rows, cols, sink, scrollback, crate::tasks::START_OPTIONS);
         ShellTab {
             run,
             title: title(&base, number, None),
@@ -102,7 +102,6 @@ pub fn spec(program: &Path, root: &Path, ipc: Option<&Path>) -> Spec {
         argv: vec![program.as_os_str().to_os_string()],
         cwd: root.to_path_buf(),
         env,
-        #[cfg(test)]
         start_gate: None,
     }
 }

@@ -29,12 +29,11 @@
 //! and skipped, the others kept.
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+
+pub use jterm::spec::Spec;
 #[cfg(test)]
-use std::sync::{Arc, Mutex};
-#[cfg(test)]
-use std::time::Duration;
+pub use jterm::spec::StartGate;
 
 pub use crate::workspace::config::{Environment, Task};
 
@@ -232,72 +231,6 @@ pub fn substitute(text: &str, vars: &Environment) -> Result<String, String> {
     Ok(out)
 }
 
-/// A template made ready to run.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Spec {
-    pub name: String,
-    /// The template's command line, with its `{{NAME}}`s filled in.
-    pub command: String,
-    /// `[shell, "-c", command]`.
-    pub argv: Vec<OsString>,
-    pub cwd: PathBuf,
-    /// Set on top of jed's own environment, in order (the template's last, so it wins).
-    pub env: Vec<(String, String)>,
-    /// Test-only: when set, the off-thread spawn blocks on it, keeping the run `Starting` so a
-    /// test can quit while the shell is still starting (rather than racing the spawn).
-    #[cfg(test)]
-    pub start_gate: Option<StartGate>,
-}
-
-/// A test-only latch the spawn waits on (keeping a run `Starting`) until the test drops the
-/// matching [`StartGateHandle`]. `Clone`/`Debug`/`PartialEq` so `Spec` keeps its derives.
-#[cfg(test)]
-#[derive(Clone, Debug)]
-pub struct StartGate {
-    released: Arc<Mutex<bool>>,
-}
-
-/// The test's end of a [`StartGate`]: dropping it releases the waiting spawn.
-#[cfg(test)]
-pub struct StartGateHandle {
-    released: Arc<Mutex<bool>>,
-}
-
-#[cfg(test)]
-impl StartGate {
-    /// The gate (to put on a `Spec`), and the handle a test drops to release the spawn.
-    pub fn new() -> (StartGate, StartGateHandle) {
-        let released = Arc::new(Mutex::new(false));
-        (
-            StartGate {
-                released: released.clone(),
-            },
-            StartGateHandle { released },
-        )
-    }
-
-    /// Blocks (on the spawn's thread) until the test drops the handle.
-    pub(crate) fn wait(&self) {
-        while !*self.released.lock().unwrap() {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    }
-}
-
-#[cfg(test)]
-impl PartialEq for StartGate {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-
-#[cfg(test)]
-impl Drop for StartGateHandle {
-    fn drop(&mut self) {
-        *self.released.lock().unwrap() = true;
-    }
-}
-
 /// What every run gets unless its template sets them: tools see a colour terminal.
 pub const DEFAULT_ENV: [(&str, &str); 2] = [("TERM", "xterm-256color"), ("COLORTERM", "truecolor")];
 
@@ -323,7 +256,6 @@ impl Template {
             command,
             cwd: resolve_cwd(root, cwd.as_deref()),
             env,
-            #[cfg(test)]
             start_gate: None,
         })
     }
@@ -350,6 +282,7 @@ pub fn default_shell() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
 
     fn task(command: &str) -> Task {
         Task {
