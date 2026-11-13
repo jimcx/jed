@@ -108,6 +108,9 @@ impl Harness {
             cols,
         };
         h.attach(1);
+        // Typing before the shell's first prompt races the prompt against the command's echo.
+        h.settle("the shell's first prompt", |h| h.row(1).starts_with("$ "))
+            .await;
         h
     }
 
@@ -1354,7 +1357,7 @@ impl Harness {
     /// output) or a number below `below`.
     fn at_oldest(&self, below: u32) -> bool {
         let row = self.row(1);
-        row.starts_with("seq 1 200")
+        row.starts_with("$ seq 1 200")
             || row
                 .split_whitespace()
                 .next()
