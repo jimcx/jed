@@ -7,6 +7,7 @@
   "co_return"
   "co_yield"
   "co_await"
+  "operator"
 ] @keyword.control
 
 (auto) @type.builtin
