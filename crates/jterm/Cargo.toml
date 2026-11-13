@@ -9,8 +9,10 @@ jtui = { path = "../jtui" }
 crossterm = { workspace = true }
 libc = { workspace = true }
 portable-pty = { workspace = true }
+ratatui = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+unicode-width = { workspace = true }
 vt100 = { workspace = true }
 
 [dev-dependencies]

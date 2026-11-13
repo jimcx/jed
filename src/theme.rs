@@ -658,4 +658,13 @@ mod tests {
             assert!(seen.insert(*k), "{k} is listed twice");
         }
     }
+
+    /// Dark+ defines every key `jterm::draw` reads (a missing one logs `missing theme key`).
+    #[test]
+    fn dark_plus_defines_the_terminal_drawing_keys() {
+        let theme = Theme::dark_plus(true);
+        for key in jterm::draw::KEYS {
+            assert!(theme.find(key).is_some(), "{key} is missing");
+        }
+    }
 }

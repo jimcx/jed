@@ -1250,9 +1250,11 @@ dependencies = [
  "jtui",
  "libc",
  "portable-pty",
+ "ratatui",
  "tempfile",
  "tokio",
  "tracing",
+ "unicode-width",
  "vt100",
 ]
 

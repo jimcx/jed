@@ -1,8 +1,8 @@
 ---
 id: jterm
 name: "jterm: shared terminal engine"
-summary: jed's terminal (PTY run, vt100 screen and compressed scrollback, command records, selection, search, key and mouse encoding, shell tab model, shell integration, screen drawing) moves to `crates/jterm`, jed re-exporting it
-status: in-progress
+summary: jed's terminal engine lives in `crates/jterm` (PTY run, vt100 screen and compressed scrollback, command records, selection, search, key and mouse encoding, shell tab model, shell integration, screen drawing), jed re-exporting it; app names, the IPC env variables and the command ring size are passed in
+status: done
 priority: 0
 dependencies: [jtui]
 ---
@@ -23,4 +23,12 @@ See [Shared crates and jmux](../PLAN.md#shared-crates-and-jmux), [jmux's plan](.
     - ✅ jterm-b: `search` (over `jtui`'s `TextField`), the shell tab model (`ShellTab`, `title`, `base`, `spec`, the glyphs) and `shell_integration` with its names passed in
       - Done: `jterm::{search, shell, shell_integration}`; `DEFAULT_ENV` is `jterm::spec`'s. `ShellTab::new(…, options: StartOptions, number)`; jterm's `shell::spec(program, root, ipc: Option<(&str, &Path)>)`, jed's `shell::spec` keeps its signature (passes `JED_IPC`)
       - Snippets are templates (`@@APP@@` / `@@GUARD@@` / `@@PREFIX@@`) filled from `shell_integration::Names { app, guard, prefix }`; `snippets(&Names)`, `status(names, …)`, `write_snippets(names, …)`. jed's `shell_integration::NAMES` (`jed`, `JED_IPC`, `_jed`) and wrappers keep the old signatures; `src/testdata/shell-integration.{zsh,bash,fish}` hold the pre-move text and `jeds_snippets_are_byte_identical_to_the_fixtures` compares. jterm's `another_apps_names_work_in_a_real_bash` runs the snippet under other names (zsh / fish not covered there)
-    - jterm-c: drawing — the screen, cursor, selection and search-match drawing from `ui/task.rs` into `jterm::draw` over `jtui::Theme`; jed's `ui/task.rs` keeps the task tab's frame and calls it. Also the done-when checks, the docs entries, and marks the task ✅
+    - ✅ jterm-c: drawing — the screen, cursor, selection and search-match drawing from `ui/task.rs` into `jterm::draw` over `jtui::Theme`; jed's `ui/task.rs` keeps the task tab's frame and calls it. Also the done-when checks, the docs entries, and marks the task ✅
+      - Done: `jterm::draw` (`draw_cells`, `cursor_in`, `draw_screen`, `draw_search`, `render_shell`) over `&jtui::theme::Theme`; `jterm::draw::KEYS` lists the theme keys it reads beyond `terminal.*` (jed's `dark_plus_defines_the_terminal_drawing_keys` checks them). `draw_field` / `DrawnField` moved to `jtui::field_draw` (`ui/find.rs` re-exports). `ui::task` keeps `render` (info line, scroll bar, PTY resize)
+
+✅ Done:
+  - `crates/jterm` holds `run`, `select`, `keys`, `mouse`, `spec`, `search`, `shell`, `shell_integration` and `draw`, depending only on `jtui`; jed's old modules re-export them (`tasks::{run, select, keys, mouse, search}`, `shell`, `shell_integration`), with jed-side wrappers where a name is needed: `tasks::START_OPTIONS` (`JED_IPC` / `JED_TERMINAL`, ring 50), `shell::spec`, `shell_integration::NAMES` + `write_snippets` / `status`. `docs/dev/crates.md` describes it
+  - Also: test hooks jed's tests use are always compiled and `#[doc(hidden)]` (`StartGate`, `NO_SPAWN`, the lock-order hooks, `test_parser`); log targets are now `jterm::run` etc.; `portable-pty` is jterm's alone (workspace dependency); `src/testdata/shell-integration.*` pin the snippets' bytes; new jterm tests cover other apps' names (env, snippets in a real bash), ring size, `started_at`, selection / search / cursor drawing
+  - Checked: `cargo test -p jterm` alone (82 tests, real shells), `cargo tree -p jterm` has no jed, the `JED_` / `"jed"` / `_jed` grep hits only a `#[cfg(test)]` mod, `git diff 295bfd0 -- 'src/*_tests.rs'` empty; release `milestone` budgets against `295bfd0` within noise (geometric mean of ratios 1.00; two baseline runs differ as much)
+  - Deferred: the snippets' real-shell test under other names covers bash only (zsh / fish by jed's own tests with jed's names); `ShellTab::new` has 8 arguments (`allow(too_many_arguments)`)
+  - Still to check by hand: a jed shell tab's titles and state glyph, `get_recent_commands` over the Claude integration, mouse selection and copy, Cmd+F search in a terminal, the terminal scroll bar; "Terminal: Install Shell Integration" reports Up to date for an existing install

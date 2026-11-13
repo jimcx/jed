@@ -77,7 +77,7 @@ impl TextField {
     }
 
     /// The byte offset at screen column `col` of the field's text, drawn scrolled sideways by
-    /// `scroll` columns (`ui::find::draw_field`'s layout): the offset of the grapheme there, its
+    /// `scroll` columns (`field_draw::draw_field`'s layout): the offset of the grapheme there, its
     /// start when the column falls inside a wide one, the text's end past it. `col` is relative
     /// to the input's left edge and may go past either end (a drag there scrolls the field): a
     /// negative `col` maps left of the first drawn column, a large one past the text's end.

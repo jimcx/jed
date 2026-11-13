@@ -7,7 +7,7 @@
 //!   title and user vars)
 //! - `scrollbar`: the scroll bar model; `scrollbar_draw`: drawing bars and marks; `style`: the `Styles`
 //!   trait the drawing reads colours through
-//! - `field`: `TextField`; `text`: its grapheme and word steps on a `&str`
+//! - `field`: `TextField`; `field_draw`: drawing one; `text`: its grapheme and word steps on a `&str`
 //! - `context_menu`: the menu model, generic over the command type
 //! - `split`: the split tree (`SplitTree`, `Divider`, `SplitDir`, `DropSide`); `borders`: the border layer
 //!   (junction glyphs where lines meet)
@@ -25,6 +25,7 @@ pub mod borders;
 pub mod clipboard;
 pub mod context_menu;
 pub mod field;
+pub mod field_draw;
 pub mod keymap;
 pub mod paths;
 pub mod scrollbar;
