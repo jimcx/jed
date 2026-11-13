@@ -16,7 +16,8 @@
 //! - `keymap`: `KeyCombo`, `Platform`, and `Keymap<Ctx, Cmd>` with the user keybindings file reader,
 //!   generic over the app's `KeyContext` / `KeyCommand` types
 //!
-//! Still to come: a ratatui backend that draws into a byte stream.
+//! - `stream_backend`: `StreamBackend`, a ratatui `Backend` writing into a byte buffer, sized by the caller
+//!   (a server drawing for a remote client)
 //!
 //! Shared code names no application: directory names, env variable names and window titles are
 //! passed in. See docs/dev/crates.md.
@@ -32,6 +33,7 @@ pub mod scrollbar;
 pub mod scrollbar_draw;
 pub mod socket;
 pub mod split;
+pub mod stream_backend;
 pub mod style;
 pub mod terminal;
 pub mod text;

@@ -2,7 +2,7 @@
 id: jmux_server
 name: "jmux: sessions, server and client"
 summary: a `jmux` binary with named sessions — a detached server per session owning one full-screen shell, a thin client that attaches, detaches and re-attaches
-status: open
+status: in-progress
 priority: 0
 dependencies: [jterm]
 ---
@@ -19,6 +19,10 @@ See [jmux's plan](../jmux/PLAN.md): [Architecture](../jmux/PLAN.md#architecture)
   - Logging: `tracing` to `<state dir>/jmux/logs`, one file per server; nothing printed while the UI is up
   - Done when: `jmux new -s work` shows a shell; detaching returns to the outer shell with `[detached from work]`; `jmux ls` lists `work`; `jmux attach -t work` shows the same screen, scrollback included, at the new window size; a second attach takes the session over and the first client says so; `exit` in the shell ends the session, removes the socket and the client says `[session work ended]`; `kill -9` of the server makes the client restore the terminal and say the server went away; `jmux` inside a jmux shell is refused
   - Subtasks (one agent and one commit each):
-    - jmux_server-a: the crate, the stream backend in `jtui`, the protocol module (frames, messages, encode / decode with tests) and the session directory (names, socket paths, listing, stale sockets)
+    - ✅ jmux_server-a: the crate, the stream backend in `jtui`, the protocol module (frames, messages, encode / decode with tests) and the session directory (names, socket paths, listing, stale sockets)
+      - `jtui::stream_backend::StreamBackend::new(cols, rows)`: `set_size`, `take_output` (drains the bytes), never reads the tty
+      - `jmux/src/protocol.rs`: u32 BE length, kind byte (0 JSON, 1 raw output), max 16 MiB; `ClientMsg`, `ServerMsg`, `ByeReason` (+ `ServerError`) with `message(session)` for the client's last line; `FrameReader<M>`, async `read_msg` / `write_all_msg`, blocking `read_msg_blocking` (`Ok(None)` only on EOF at a frame boundary); `PROTOCOL_VERSION`
+      - `jmux/src/session.rs`: `valid_name` (≤ 64 bytes), `socket_path`, `list` / `remove_stale` (stale = ECONNREFUSED / NotFound only), `next_free_name`, `most_recent` (newest socket mtime: touch it on attach)
+      - `main.rs` is a stub; `protocol` / `session` carry `#[allow(dead_code)]` until b / c use them
     - jmux_server-b: the server — detached start, the listener, the `App` with one `ShellTab`, drawing to the attached client, input and resize from it, the session ending when the shell exits
     - jmux_server-c: the client and CLI — `new`, `attach`, `ls`, `kill-session`, `rename-session`, bare `jmux`; raw mode and restore; detach, take-over and server-death handling; the done-when tests (`jmux/src/jmux_server_tests.rs`), hand checks and marks the task ✅

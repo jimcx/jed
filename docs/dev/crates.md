@@ -2,14 +2,14 @@
 
 The repository is one cargo workspace (root `Cargo.toml`): jed is the root package (`src/`, the
 default member, so plain `cargo build --release` builds `target/release/jed`); the libraries are
-`crates/*`; `jmux/` (a tmux-like multiplexer, design in `jmux/PLAN.md`) joins as a member in its own task.
+`crates/*`; `jmux/` (a tmux-like multiplexer, design in `jmux/PLAN.md`) is a member too.
 
 | Crate | Path | Holds |
 | --- | --- | --- |
 | `jtui` | `crates/jtui` | TUI building blocks: host terminal setup, clipboard, per-user dirs and sockets, split tree, border junctions, scroll bars, `TextField`, context menu, `Theme` / `Keymap` machinery, a byte-stream ratatui backend |
 | `jterm` | `crates/jterm` | The terminal engine: PTY run, `vt100` screen and scrollback, command records, selection, search, key / mouse encoding, shell tab model, shell integration snippets, drawing a screen |
 | `jed` | `.` | The editor |
-| `jmux` | `jmux` | The multiplexer (later) |
+| `jmux` | `jmux` | The multiplexer (binary `jmux`): `protocol` (frames and messages), `session` (socket directory); server and client follow |
 
 `jterm` depends on `jtui`; neither depends on jed or jmux.
 
@@ -24,7 +24,7 @@ colours via `Styles`), `theme` (`Theme::new(entries, truecolor)`: `get` / `find`
 which an app's theme starts from; jed's `Theme` wraps it and adds the editor / syntax entries), `keymap`
 (`KeyCombo`, `Platform`, `Source`, `Binding<Ctx, Cmd>`, `Keymap<Ctx, Cmd>` and the keybindings file reader,
 generic over the app's `KeyContext` / `KeyCommand` types; defaults and the file name are passed in).
-jed passes `crate::APP` where a name is needed. Still to come: a ratatui backend that draws into a byte stream.
+`stream_backend` (`StreamBackend::new(cols, rows)`: a ratatui `Backend` over `CrosstermBackend<Vec<u8>>` whose `size()` / `window_size()` come from `set_size`, never the tty, `get_cursor_position` the last one set; `take_output()` drains the bytes a server sends to its client). jed passes `crate::APP` where a name is needed.
 Stayed in jed (tied to its tab kinds or tool logs): `logging.rs`, `palette.rs`, `group.rs`, `ui/tabs.rs`,
 `HitMap` and the hit structs, `session.rs`; also jed's `Context`, `defaults`, command names and keybindings
 file template.
@@ -44,6 +44,15 @@ Modules: `spec` (`Spec`, `DEFAULT_ENV`, and the `StartGate` test latch), `run`, 
 `search` (`Match { line, start, end }` in `select::Cell` space; `find_all(&mut Screen, query, case)`, windowed like `select::copy_text` with the view restored; `find_visible` for the rows shown, per frame; `TermSearch`, the bar's state over a `jtui::field::TextField`, with `label()`; literal, per screen row, case-insensitive unless asked). `shell` (`ShellTab { run, title, base, number, idle, error }`, `ShellTab::new(id, spec, rows, cols, sink, scrollback, StartOptions, number)` starts the run; `title(base, number, state)`: `zsh ○` at the prompt, `make ●` while `make` runs, `zsh (2) ○` for the next shell, glyphs `IDLE_GLYPH` / `RUNNING_GLYPH`; `base(program)`; `spec(program, root, ipc: Option<(var name, socket)>)`: argv is the program alone, no `-c` / `--norc`, so the user's init runs, cwd = root, `DEFAULT_ENV` plus the IPC variable). `shell_integration` (opt-in zsh / bash / fish snippets, templates rendered by `snippets(&Names { app, guard, prefix })` from `@@APP@@` / `@@GUARD@@` / `@@PREFIX@@`, which never occur in shell syntax and are asserted gone; jed's `NAMES`: `jed`, `JED_IPC`, `_jed`, pinned by `src/testdata/shell-integration.*`. Each opens with a guard on the IPC variable, so sourcing it elsewhere does nothing; preexec sends `133;B`, `633;E;<escaped command line>` then `OSC 0 <first word>`, precmd `133;D;<exit code>` then OSC 7 `file://host/<cwd>`; `133;A` leads the whole prompt: zsh's precmd prepends it to `PS1` once, bash's `<prefix>_mark` (appended to `PROMPT_COMMAND`, after any user hook that rebuilds `PS1`) likewise inside `\[ \]`, fish wraps `fish_prompt`; bash's `<prefix>_precmd` is prepended to the user's `PROMPT_COMMAND` (string or array) and returns the real `$?`; the DEBUG trap skips both and each `;` / newline piece of `PROMPT_COMMAND`; the snippet FILE is written once, so users re-run the install command to refresh it. Blocking `write_snippets(names, state_dir)`; `init_for(home, config_home, state_dir, shell_base)` → `Init { snippet, init, source }` (`~/.zshrc`, `~/.bashrc`, `<config_home>/fish/config.fish`; `None` for `sh`, …), `source` single-quoted; blocking `append_line(init, line)` (creates the file and folder, one `O_APPEND` write, a newline first when the file has text and doesn't end in one); blocking `status(names, home, config_home, state_dir, shell_base)` reads the init file (a line exactly the `source` line) and the snippet file: `NotInstalled` / `Stale` / `UpToDate`, `None` for `sh`).
 
 `draw` (`draw_cells(buf, area, screen, top)`, `cursor_in`, `draw_screen(f, area, run, &jtui::Theme, focused, search) -> scrollback` (cells, every one through `Theme::terminal_cell`, the selection in `editor.selection`'s background, the search's matches and bar, the cursor), `draw_search`, `render_shell(f, area, &ShellTab, theme, focused, search)`; reads the run's status before its screen: the spawn holds the state lock while it takes the screen's. `draw::KEYS` lists the theme keys it reads besides `terminal.*`: an app's theme must define them, jed's `theme.rs` test checks Dark+ does). The app draws its own frame (jed's `ui::task::render`: info line, scroll bar) around it.
+
+## jmux
+
+`APP = "jmux"` (`main.rs`) is what it passes to jtui. Modules so far: `protocol` (`ClientMsg` / `ServerMsg` / `ByeReason`;
+a frame is a u32 big-endian length of the rest, a kind byte (0 JSON, 1 raw `Output`), the payload; `encode_*`, the
+incremental `FrameReader`, async `read_msg` / `write_all_msg` and blocking `read_msg_blocking`; crossterm's `Event`
+travels through its `serde` feature, which jmux enables) and `session` (names `[A-Za-z0-9_.-]{1,64}`, `<dir>/<name>.sock`,
+`list` / `remove_stale` / `next_free_name` / `most_recent`, blocking: they connect to the sockets; every function takes the
+directory, tests pass a temp dir).
 
 ## Rules
 
