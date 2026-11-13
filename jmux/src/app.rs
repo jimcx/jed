@@ -265,6 +265,7 @@ impl App {
         if truecolor != self.theme.truecolor() {
             self.theme = theme::dark_plus(truecolor);
         }
+        crate::session::touch(&self.config.socket);
         self.attached = Some(conn);
         self.size = (rows.max(1), cols.max(1));
         self.resync = true;

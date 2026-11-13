@@ -102,6 +102,18 @@ pub fn next_free_name(dir: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// Sets the socket's modification time to now (a client attached), so [`most_recent`] finds the
+/// session used last. A failure is only logged: the session still works.
+pub fn touch(path: &Path) {
+    let Some(c) = path.to_str().and_then(|p| std::ffi::CString::new(p).ok()) else {
+        return;
+    };
+    // SAFETY: c is a valid NUL-terminated path; null times mean "now".
+    if unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), std::ptr::null(), 0) } != 0 {
+        tracing::debug!(path = %path.display(), "cannot touch socket");
+    }
+}
+
 /// The live session touched last (bare `jmux` attaches to it).
 ///
 /// Blocking: call from spawn_blocking
@@ -202,6 +214,29 @@ mod tests {
         set("new", 2000);
         set("dead", 3000);
         assert_eq!(most_recent(d.path()).unwrap().name, "new");
+    }
+
+    #[test]
+    fn touch_makes_a_session_the_most_recent() {
+        let d = tempfile::tempdir().unwrap();
+        let _a = bind(d.path(), "a");
+        let _b = bind(d.path(), "b");
+        for (name, secs) in [("a", 1000), ("b", 2000)] {
+            let c = std::ffi::CString::new(socket_path(d.path(), name).to_str().unwrap()).unwrap();
+            let t = libc::timespec {
+                tv_sec: secs,
+                tv_nsec: 0,
+            };
+            let times = [t, t];
+            // SAFETY: c is a valid NUL-terminated path and times has two entries.
+            assert_eq!(
+                unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), times.as_ptr(), 0) },
+                0
+            );
+        }
+        assert_eq!(most_recent(d.path()).unwrap().name, "b");
+        touch(&socket_path(d.path(), "a"));
+        assert_eq!(most_recent(d.path()).unwrap().name, "a");
     }
 
     #[test]
