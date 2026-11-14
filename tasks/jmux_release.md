@@ -1,0 +1,21 @@
+---
+id: jmux_release
+name: jmux in CI, releases and the install script
+summary: "CI builds, tests and packages `jmux` beside `jed` in one cargo build that shares their dependencies; a `v<N>` release publishes both; `scripts/install` installs both"
+status: open
+priority: 0
+dependencies: [jmux_config]
+---
+
+jmux is a workspace member (`jmux/`), and CI already lints and tests it (`cargo clippy --workspace`, `cargo test --workspace`), but `Cargo.toml`'s `default-members = ["."]` means the release build (`cargo build --release`), the package step, the `release` job and `scripts/install` only ever produce `jed`. This task ships `jmux` beside it without compiling the shared dependencies twice.
+
+  - Parked until `jmux_config` lands (it was in progress elsewhere when this was planned): first check what `jmux_config-c` did to the pipeline and `scripts/install`, and keep only what is still missing here
+  - Needs: `.github/workflows/build.yml` (the `build` matrix and `release` job, from `ci`), `scripts/install`, the root `Cargo.toml` (`[workspace.dependencies]`, `[profile.release]`), `jmux/Cargo.toml`, `tasks/update.md` (its asset names)
+  - **One build for both binaries.** Cargo unifies features only across the packages selected in one invocation (resolver 3). jmux turns on features jed doesn't (`crossterm/serde`, `tokio/signal`), so `cargo build --release -p jed` followed by `-p jmux` builds `crossterm`, `tokio` and everything above them (`ratatui`, `jtui`, `jterm`, `vt100`, …) a second time. Build both with one `cargo build --release -p jed -p jmux` everywhere: CI's Build step and `scripts/install`. Don't change `default-members` (a second binary there makes a bare `cargo run` ambiguous and widens a bare `cargo test`)
+  - **Shared versions in one place.** `futures-util` and `tracing-subscriber` are declared in both `Cargo.toml` and `jmux/Cargo.toml` with copied versions and features: move them to `[workspace.dependencies]` (`tracing-subscriber` keeps `env-filter`) and use `{ workspace = true }` in both, so the two can't drift into two copies. Check the other jmux / jed / `crates/*` dependencies for the same (anything declared twice by version), and that `cargo tree --workspace -e normal -d` lists no new duplicate
+  - **CI** (`build.yml`, `build` job): Build step → `cargo build --release -p jed -p jmux`; Package strips both and writes two tarballs, `jed-<os>-<arch>.tar.gz` (name unchanged: `update` picks its asset by it) and `jmux-<os>-<arch>.tar.gz`, each holding its one binary; the uploaded artifact is renamed to one name per platform (e.g. `dist-<os>-<arch>`) holding both. The `release` job's `dist/*` already takes every tarball; check that `merge-multiple` still gives four files. The Gitea runner path (no rust-cache, no upload) keeps working. The Swatinem cache needs no change (one cache per job covers the shared `target/`)
+  - **`scripts/install`**: one `cargo build --release -p jed -p jmux`, strip and `install -m 755` both into the destination, print each installed path; `$1` / `$PREFIX_BIN` keep their meaning; `--only jed|jmux` builds and installs just one (then `-p` only that package). Still POSIX `sh`, `set -eu`
+  - **Docs**: the root `README.md` build lines name both binaries and `scripts/install`; `tasks/ci.md`'s entry is history and stays; `tasks/update.md` notes that a release now carries `jmux-*` tarballs too and that the asset choice must match the `jed-` prefix
+  - Deferred: a `jmux --version` (jed's comes from `build.rs`'s `JED_VERSION`); `jmux` self-update (with `update`); Homebrew / distro packages
+  - Done when: a push runs green on Linux and macOS and its artifacts hold `jed-…` and `jmux-…` tarballs for each platform, each binary stripped and running (`jmux --help` exits 0); in the Build step's log no dependency is compiled twice (each crate's `Compiling` line appears once); locally, `scripts/install "$tmp"` puts both binaries in `$tmp`, a second run right after is all `Fresh` (`cargo build --release -p jed -p jmux -v`), and `--only jmux` installs only `jmux`; `scripts/check` passes
+  - Hand checks: after the next `/release`, the GitHub release lists four tarballs, and `jed` / `jmux` from them run on Linux and macOS
