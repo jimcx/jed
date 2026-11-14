@@ -936,7 +936,7 @@ impl Drop for StartedServer {
 }
 
 // FLAKE: 2026-11-14, timed out waiting for the shell's directory; the typed pwd landed in the sh prompt under load
-// FLAKE: 2026-11-14, timed out waiting for the shell's directory; the typed pwd landed in the sh prompt under load
+// FLAKE: 2026-11-14, failed once under a parallel release build (which step is unknown)
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_live_name() {
     let tmp = tempfile::tempdir().unwrap();
@@ -953,7 +953,10 @@ async fn jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_liv
     let started = tokio::task::spawn_blocking(move || crate::cli::start(&exe, &d, Some("work"), Some(&c)))
         .await
         .unwrap();
-    let (name, socket) = started.unwrap();
+    let (name, socket) = started.unwrap_or_else(|e| {
+        eprintln!("FLAKE jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_live_name: first start failed: {e:?}; socket exists {}", session::socket_path(&dir, "work").exists());
+        panic!("first start failed: {e:?}")
+    });
     let _work = StartedServer::new(&socket);
     assert_eq!(name, "work");
     let c = Attached::start(&socket, 20, 80).await;
@@ -977,43 +980,76 @@ async fn jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_liv
     let again = tokio::task::spawn_blocking(move || crate::cli::start(&exe, &d, Some("work"), None))
         .await
         .unwrap();
+    if again.as_ref().err().map(String::as_str) != Some("jmux: session work already exists") {
+        eprintln!(
+            "FLAKE jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_live_name: second start of `work` gave {again:?}, wanted the refusal"
+        );
+    }
     assert_eq!(again.unwrap_err(), "jmux: session work already exists");
     // An unnamed start takes the next free number.
     let (d, exe) = (dir.clone(), sh_exe.clone());
     let numbered = tokio::task::spawn_blocking(move || crate::cli::start(&exe, &d, None, None))
         .await
         .unwrap();
-    let (second, second_socket) = numbered.unwrap();
+    let (second, second_socket) = numbered.unwrap_or_else(|e| {
+        eprintln!("FLAKE jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_live_name: unnamed start failed: {e:?}");
+        panic!("unnamed start failed: {e:?}")
+    });
     let _second = StartedServer::new(&second_socket);
     assert_ne!(second, "work");
     // `ls` lists both, one line each; the attached one says so.
     let d = dir.clone();
     let lines = tokio::task::spawn_blocking(move || crate::cli::ls(&d)).await.unwrap();
-    assert_eq!(lines.len(), 2, "{lines:?}");
+    let dump = format!(
+        "ls gave {lines:?}; second {second:?}; sockets {:?}",
+        std::fs::read_dir(&dir).map(|r| r.flatten().map(|e| e.file_name()).collect::<Vec<_>>())
+    );
+    if lines.len() != 2 {
+        eprintln!("FLAKE jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_live_name: {dump}");
+    }
+    assert_eq!(lines.len(), 2, "{dump}");
     assert!(
         lines
             .iter()
-            .any(|l| l.starts_with("work: ") && l.ends_with(", attached"))
+            .any(|l| l.starts_with("work: ") && l.ends_with(", attached")),
+        "{dump}"
     );
     assert!(
         lines
             .iter()
-            .any(|l| l.starts_with(&format!("{second}: ")) && l.ends_with(", detached"))
+            .any(|l| l.starts_with(&format!("{second}: ")) && l.ends_with(", detached")),
+        "{dump}"
     );
     // Kill the detached one: no client is involved, its socket goes.
     let (d, s2) = (dir.clone(), second.clone());
     let killed = tokio::task::spawn_blocking(move || crate::cli::kill(&d, &s2))
         .await
         .unwrap();
+    if killed.as_ref().ok() != Some(&format!("[session {second} killed]")) {
+        eprintln!(
+            "FLAKE jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_live_name: kill of {second} gave {killed:?}"
+        );
+    }
     assert_eq!(killed.unwrap(), format!("[session {second} killed]"));
     let deadline = Instant::now() + WAIT;
     while session::socket_path(&dir, &second).exists() {
-        assert!(Instant::now() < deadline, "the killed session's socket stayed");
+        if Instant::now() >= deadline {
+            eprintln!(
+                "FLAKE jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_live_name: the killed session {second}'s socket stayed after {WAIT:?}"
+            );
+            panic!("the killed session's socket stayed");
+        }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     // The attached client was not taken over by the queries and the kill above.
     c.type_text("exit\r");
-    assert_eq!(c.outcome().await, Outcome::Bye(ByeReason::SessionEnded));
+    let outcome = c.outcome().await;
+    if outcome != Outcome::Bye(ByeReason::SessionEnded) {
+        eprintln!(
+            "FLAKE jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_live_name: attached client ended with {outcome:?}, wanted SessionEnded"
+        );
+    }
+    assert_eq!(outcome, Outcome::Bye(ByeReason::SessionEnded));
 }
 
 // FLAKE: 2026-11-14, `ls` listed `dead: Connection reset by peer (os error 104)` instead of removing the

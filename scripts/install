@@ -1,12 +1,13 @@
 #!/bin/sh
-# Build the release binary and copy it into ~/.local/bin (or $1 / $PREFIX_BIN).
+# Build the release binaries (jed and jmux) and copy them into ~/.local/bin (or $1 / $PREFIX_BIN).
 set -eu
 cd "$(dirname "$0")/.."
 dest="${1:-${PREFIX_BIN:-$HOME/.local/bin}}"
-cargo build --release
+cargo build --release -p jed -p jmux
 mkdir -p "$dest"
 # Cargo's strip = true can fail with only a warning, so make sure (as the release workflow does).
-strip target/release/jed
+strip target/release/jed target/release/jmux
 install -m 755 target/release/jed "$dest/jed"
-echo "installed $dest/jed"
+install -m 755 target/release/jmux "$dest/jmux"
+echo "installed $dest/jed and $dest/jmux"
 case ":$PATH:" in *":$dest:"*) ;; *) echo "note: $dest is not on PATH" ;; esac

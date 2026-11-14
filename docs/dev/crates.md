@@ -47,6 +47,8 @@ Modules: `spec` (`Spec`, `DEFAULT_ENV`, and the `StartGate` test latch), `run`, 
 
 ## jmux
 
+User docs: `jmux/README.md` (install, sessions, keys, settings; keep it in step with `cli.rs`, `keymap.rs`, `settings.rs`). Releases ship `jmux` beside `jed` (`build.yml`, `scripts/install`; `scripts/changelog` groups tasks named `jmux: …`). Its Cmd keys must be rows of `docs/terminals/README.md` (test `jmux_every_cmd_binding_is_in_the_terminal_docs`).
+
 `APP = "jmux"` (`main.rs`) is what it passes to jtui. Modules: `protocol` (`ClientMsg` / `ServerMsg` / `ByeReason`;
 a frame is a u32 big-endian length of the rest, a kind byte (0 JSON, 1 raw `Output`), the payload; `encode_*`, the
 incremental `FrameReader`, async `read_msg` / `write_all_msg` and blocking `read_msg_blocking`; crossterm's `Event`

@@ -440,4 +440,28 @@ mod tests {
         assert!(reload(&path).is_err());
         assert_eq!(load(&path).1.len(), 1);
     }
+
+    /// jmux adds no Cmd key of its own: every one is a row of jed's table in docs/terminals, whose
+    /// snippets release it.
+    #[test]
+    fn jmux_every_cmd_binding_is_in_the_terminal_docs() {
+        let readme = include_str!("../../docs/terminals/README.md");
+        let documented: HashSet<String> = readme
+            .lines()
+            .filter_map(|l| l.strip_prefix("| `"))
+            .filter_map(|l| l.split('`').next())
+            .filter(|k| k.starts_with("cmd+"))
+            .map(str::to_string)
+            .collect();
+        let missing: Vec<String> = defaults(Platform::MacOs)
+            .iter()
+            .filter(|b| b.combo.mods.contains(KeyModifiers::SUPER))
+            .map(|b| b.combo.spec())
+            .filter(|k| !documented.contains(k))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "docs/terminals/README.md lacks jmux's Cmd keys: {missing:?}"
+        );
+    }
 }

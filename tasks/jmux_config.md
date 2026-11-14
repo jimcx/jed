@@ -1,8 +1,8 @@
 ---
 id: jmux_config
 name: "jmux: settings, keybindings, docs and release"
-summary: "`settings.toml` and `keybindings.toml` for jmux, the status bar's session info, user docs, and `jmux` in the release pipeline"
-status: in-progress
+summary: "`settings.toml` and `keybindings.toml` for jmux (Reload Settings re-reads both), the status bar's session, terminal and running counts, `jmux/README.md`, and `jmux` built and published beside `jed`"
+status: done
 priority: 0
 dependencies: [jmux_layout]
 ---
@@ -29,4 +29,10 @@ See [jmux's plan](../jmux/PLAN.md): [Settings, keys and theme](../jmux/PLAN.md#s
       - Reload: one `spawn_blocking` job reads both files; `AppEvent::Settings(Option<Settings>, Option<JmuxKeymap>, Vec<String>)`; an unparsable keybindings file keeps the old keymap, reported
       - Status bar (`ui.rs` `status_bar`): ` work  2 terminals · 1 running  <title> … Ctrl+Shift+D detach` (running only when > 0; narrow: the title gives way first); `App::counts()` shared with `App::info` (`jmux ls`)
       - Tests: `jmux_config_b_*`, `ui::status_bar_tests`, keymap unit tests
-    - jmux_config-c: docs and release; task done — `jmux/README.md`, the root `README.md` line, jmux's Cmd bindings in `docs/terminals/` where they differ from jed's; the pipeline builds, packages and publishes `jmux` beside `jed`; `scripts/changelog` groups jmux's tasks; `/release` notes; remaining done-when gaps and hand checks; mark the task ✅
+    - ✅ jmux_config-c: docs and release; task done — `jmux/README.md`, the root `README.md` line, jmux's Cmd bindings in `docs/terminals/` where they differ from jed's; the pipeline builds, packages and publishes `jmux` beside `jed`; `scripts/changelog` groups jmux's tasks; `/release` notes; remaining done-when gaps and hand checks; mark the task ✅
+      - `jmux/README.md` (install, sessions, keys per platform, `keybindings.toml` and command names, every setting, shell integration, status bar); root README's Features and Documentation map; `docs/terminals/`: every jmux Cmd key is already in jed's table (a paragraph says so), kitty's `map` lines scope to `"var:jed or var:jmux"`, `kitty-linux.md` gains Ctrl+Shift+B / D / R / W; `jmux_every_cmd_binding_is_in_the_terminal_docs` (`jmux/src/keymap.rs`) checks the table
+      - Release: `build.yml` builds `-p jed -p jmux` and packs `jed-<os>-<arch>.tar.gz` and `jmux-<os>-<arch>.tar.gz` (one artifact); `scripts/install` installs both; `scripts/changelog` puts tasks named `jmux: …` under `### jmux` (and the rest under `### jed`) when both kinds are in the range; both `release.md` say the tag ships both
+- ✅ Done. Settings, keybindings and the status bar's counts for jmux; user docs; jmux in the release.
+  - Also: `App::counts()` shared by the status bar and `jmux ls`; `settings::COMMAND_HISTORY` (moved from `app`); `FLAKE` debugging on `jmux_server_new_replaces_a_stale_socket_keeps_the_cwd_and_refuses_a_live_name`
+  - Deferred: `cursor_style` applies from the next attach only (the client reads it); no unbinding a default key without rebinding its command (as jed)
+  - Still to check by hand: `cursor_style = "underline"` then attach; edit `keybindings.toml` live + Ctrl+Shift+R; the status bar's counts and a narrow bar; a real tag's CI run publishes both tarballs; the kitty `"var:jed or var:jmux"` snippets on a current kitty (checked only on 0.47.1's loader) and jmux's keys in each terminal

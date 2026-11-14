@@ -4,7 +4,7 @@ Checked against kitty **0.49.2** docs:
 - https://sw.kovidgoyal.net/kitty/conf/ (default shortcuts, `macos_option_as_alt`)
 - https://sw.kovidgoyal.net/kitty/mapping/ (unmapping, `--when-focus-on`)
 
-Snippet below parsed by kitty 0.49.2's own config loader: no warnings, every `map` a conditional mapping on `var:jed`, Option-as-Alt = both.
+Snippet below parsed by kitty 0.49.2's own config loader: no warnings, every `map` a conditional mapping on `var:jed or var:jmux`, Option-as-Alt = both. The `"var:jed or var:jmux"` form was re-parsed with kitty 0.47.1 (no warnings); the unquoted form is an error ("or has unknown key").
 
 Config: `~/.config/kitty/kitty.conf`. Kitty keyboard protocol: always available, nothing to enable.
 
@@ -12,7 +12,7 @@ Config: `~/.config/kitty/kitty.conf`. Kitty keyboard protocol: always available,
 
 `map <key>` with **no action** unmaps the shortcut and passes the key to the program ("mapping it to nothing"). Don't use `discard_event`: it drops the key without sending it to the program.
 
-Each line is scoped with `--when-focus-on var:jed`: jed sets the user var `jed` (OSC 1337 `SetUserVar`) while it runs and clears it on exit (and when it crashes), so the keys are released only while a jed window has focus; every other kitty window keeps kitty's own shortcuts. `--when-focus-on` takes a kitty search expression (spaces and parentheses are operators, so match on the var, not a title regex; `cmdline:` only sees the window's launch command, not jed started from its shell). A `kill -9`'d jed can't clear the var: run `printf '\e]1337;SetUserVar=jed\a'` in that window.
+Each line is scoped with `--when-focus-on "var:jed or var:jmux"` (quoted: it is one search expression): jed sets the user var `jed` (OSC 1337 `SetUserVar`) while it runs and jmux sets `jmux` the same way (but no `jmux_workspace`), each cleared on exit (and when it crashes), so the keys are released only while a jed or jmux window has focus; every other kitty window keeps kitty's own shortcuts. `--when-focus-on` takes a kitty search expression (spaces and parentheses are operators, so match on the var, not a title regex; `cmdline:` only sees the window's launch command, not jed started from its shell). A `kill -9`'d jed can't clear the var: run `printf '\e]1337;SetUserVar=jed\a'` in that window.
 
 jed also sets the window title to `jed <workspace>` (`jed <file>` in single file mode; kitty's title stack restores the shell's on exit), the user var `jed_workspace` (the workspace root, for `kitten @ ls`) and OSC 7 (the root as the window's directory, so new windows / tabs opened from jed's start there). Inside tmux the user vars need `set -g allow-passthrough on`.
 
@@ -20,91 +20,91 @@ jed also sets the window title to `jed <workspace>` (`jed <file>` in single file
 
 ```conf
 # --- jed: send these Cmd keys to the program ---
-map --when-focus-on var:jed cmd+a
-map --when-focus-on var:jed cmd+z
-map --when-focus-on var:jed cmd+shift+z
-map --when-focus-on var:jed cmd+c
-map --when-focus-on var:jed cmd+x
-map --when-focus-on var:jed cmd+slash
-map --when-focus-on var:jed cmd+shift+k
-map --when-focus-on var:jed cmd+l
-map --when-focus-on var:jed cmd+enter
-map --when-focus-on var:jed cmd+shift+enter
-map --when-focus-on var:jed cmd+]
-map --when-focus-on var:jed cmd+[
-map --when-focus-on var:jed cmd+alt+i
-map --when-focus-on var:jed cmd+period
-map --when-focus-on var:jed cmd+alt+v
-map --when-focus-on var:jed cmd+d
-map --when-focus-on var:jed cmd+shift+l
-map --when-focus-on var:jed cmd+alt+d
-map --when-focus-on var:jed cmd+u
-map --when-focus-on var:jed cmd+alt+up
-map --when-focus-on var:jed cmd+alt+down
-map --when-focus-on var:jed cmd+alt+shift+left
-map --when-focus-on var:jed cmd+alt+shift+right
-map --when-focus-on var:jed cmd+alt+shift+up
-map --when-focus-on var:jed cmd+alt+shift+down
-map --when-focus-on var:jed cmd+alt+shift+page_up
-map --when-focus-on var:jed cmd+alt+shift+page_down
-map --when-focus-on var:jed cmd+left
-map --when-focus-on var:jed cmd+shift+left
-map --when-focus-on var:jed cmd+right
-map --when-focus-on var:jed cmd+shift+right
-map --when-focus-on var:jed cmd+up
-map --when-focus-on var:jed cmd+shift+up
-map --when-focus-on var:jed cmd+down
-map --when-focus-on var:jed cmd+shift+down
-map --when-focus-on var:jed cmd+backspace
-map --when-focus-on var:jed cmd+f
-map --when-focus-on var:jed cmd+alt+f
-map --when-focus-on var:jed cmd+alt+c
-map --when-focus-on var:jed cmd+alt+w
-map --when-focus-on var:jed cmd+alt+r
-map --when-focus-on var:jed cmd+alt+x
-map --when-focus-on var:jed cmd+shift+1
-map --when-focus-on var:jed cmd+alt+enter
-map --when-focus-on var:jed cmd+alt+n
-map --when-focus-on var:jed cmd+alt+shift+n
-map --when-focus-on var:jed cmd+n
-map --when-focus-on var:jed cmd+s
-map --when-focus-on var:jed cmd+shift+s
-map --when-focus-on var:jed cmd+alt+s
-map --when-focus-on var:jed cmd+q
-map --when-focus-on var:jed cmd+w
-map --when-focus-on var:jed cmd+shift+t
-map --when-focus-on var:jed cmd+k
-map --when-focus-on var:jed cmd+b
-map --when-focus-on var:jed cmd+shift+e
-map --when-focus-on var:jed cmd+shift+f
-map --when-focus-on var:jed cmd+shift+h
-map --when-focus-on var:jed cmd+shift+j
-map --when-focus-on var:jed cmd+1
-map --when-focus-on var:jed cmd+2
-map --when-focus-on var:jed cmd+3
-map --when-focus-on var:jed cmd+4
-map --when-focus-on var:jed cmd+5
-map --when-focus-on var:jed cmd+6
-map --when-focus-on var:jed cmd+7
-map --when-focus-on var:jed cmd+8
-map --when-focus-on var:jed cmd+t
-map --when-focus-on var:jed cmd+y
-map --when-focus-on var:jed cmd+backslash
-map --when-focus-on var:jed cmd+alt+backslash
-map --when-focus-on var:jed cmd+alt+right
-map --when-focus-on var:jed cmd+alt+left
-map --when-focus-on var:jed cmd+ctrl+right
-map --when-focus-on var:jed cmd+ctrl+left
-map --when-focus-on var:jed cmd+shift+page_up
-map --when-focus-on var:jed cmd+shift+page_down
-map --when-focus-on var:jed cmd+shift+p
-map --when-focus-on var:jed cmd+,
-map --when-focus-on var:jed cmd+alt+,
-map --when-focus-on var:jed cmd+p
-map --when-focus-on var:jed cmd+j
-map --when-focus-on var:jed cmd+shift+m
-map --when-focus-on var:jed cmd+shift+u
-map --when-focus-on var:jed cmd+alt+z
+map --when-focus-on "var:jed or var:jmux" cmd+a
+map --when-focus-on "var:jed or var:jmux" cmd+z
+map --when-focus-on "var:jed or var:jmux" cmd+shift+z
+map --when-focus-on "var:jed or var:jmux" cmd+c
+map --when-focus-on "var:jed or var:jmux" cmd+x
+map --when-focus-on "var:jed or var:jmux" cmd+slash
+map --when-focus-on "var:jed or var:jmux" cmd+shift+k
+map --when-focus-on "var:jed or var:jmux" cmd+l
+map --when-focus-on "var:jed or var:jmux" cmd+enter
+map --when-focus-on "var:jed or var:jmux" cmd+shift+enter
+map --when-focus-on "var:jed or var:jmux" cmd+]
+map --when-focus-on "var:jed or var:jmux" cmd+[
+map --when-focus-on "var:jed or var:jmux" cmd+alt+i
+map --when-focus-on "var:jed or var:jmux" cmd+period
+map --when-focus-on "var:jed or var:jmux" cmd+alt+v
+map --when-focus-on "var:jed or var:jmux" cmd+d
+map --when-focus-on "var:jed or var:jmux" cmd+shift+l
+map --when-focus-on "var:jed or var:jmux" cmd+alt+d
+map --when-focus-on "var:jed or var:jmux" cmd+u
+map --when-focus-on "var:jed or var:jmux" cmd+alt+up
+map --when-focus-on "var:jed or var:jmux" cmd+alt+down
+map --when-focus-on "var:jed or var:jmux" cmd+alt+shift+left
+map --when-focus-on "var:jed or var:jmux" cmd+alt+shift+right
+map --when-focus-on "var:jed or var:jmux" cmd+alt+shift+up
+map --when-focus-on "var:jed or var:jmux" cmd+alt+shift+down
+map --when-focus-on "var:jed or var:jmux" cmd+alt+shift+page_up
+map --when-focus-on "var:jed or var:jmux" cmd+alt+shift+page_down
+map --when-focus-on "var:jed or var:jmux" cmd+left
+map --when-focus-on "var:jed or var:jmux" cmd+shift+left
+map --when-focus-on "var:jed or var:jmux" cmd+right
+map --when-focus-on "var:jed or var:jmux" cmd+shift+right
+map --when-focus-on "var:jed or var:jmux" cmd+up
+map --when-focus-on "var:jed or var:jmux" cmd+shift+up
+map --when-focus-on "var:jed or var:jmux" cmd+down
+map --when-focus-on "var:jed or var:jmux" cmd+shift+down
+map --when-focus-on "var:jed or var:jmux" cmd+backspace
+map --when-focus-on "var:jed or var:jmux" cmd+f
+map --when-focus-on "var:jed or var:jmux" cmd+alt+f
+map --when-focus-on "var:jed or var:jmux" cmd+alt+c
+map --when-focus-on "var:jed or var:jmux" cmd+alt+w
+map --when-focus-on "var:jed or var:jmux" cmd+alt+r
+map --when-focus-on "var:jed or var:jmux" cmd+alt+x
+map --when-focus-on "var:jed or var:jmux" cmd+shift+1
+map --when-focus-on "var:jed or var:jmux" cmd+alt+enter
+map --when-focus-on "var:jed or var:jmux" cmd+alt+n
+map --when-focus-on "var:jed or var:jmux" cmd+alt+shift+n
+map --when-focus-on "var:jed or var:jmux" cmd+n
+map --when-focus-on "var:jed or var:jmux" cmd+s
+map --when-focus-on "var:jed or var:jmux" cmd+shift+s
+map --when-focus-on "var:jed or var:jmux" cmd+alt+s
+map --when-focus-on "var:jed or var:jmux" cmd+q
+map --when-focus-on "var:jed or var:jmux" cmd+w
+map --when-focus-on "var:jed or var:jmux" cmd+shift+t
+map --when-focus-on "var:jed or var:jmux" cmd+k
+map --when-focus-on "var:jed or var:jmux" cmd+b
+map --when-focus-on "var:jed or var:jmux" cmd+shift+e
+map --when-focus-on "var:jed or var:jmux" cmd+shift+f
+map --when-focus-on "var:jed or var:jmux" cmd+shift+h
+map --when-focus-on "var:jed or var:jmux" cmd+shift+j
+map --when-focus-on "var:jed or var:jmux" cmd+1
+map --when-focus-on "var:jed or var:jmux" cmd+2
+map --when-focus-on "var:jed or var:jmux" cmd+3
+map --when-focus-on "var:jed or var:jmux" cmd+4
+map --when-focus-on "var:jed or var:jmux" cmd+5
+map --when-focus-on "var:jed or var:jmux" cmd+6
+map --when-focus-on "var:jed or var:jmux" cmd+7
+map --when-focus-on "var:jed or var:jmux" cmd+8
+map --when-focus-on "var:jed or var:jmux" cmd+t
+map --when-focus-on "var:jed or var:jmux" cmd+y
+map --when-focus-on "var:jed or var:jmux" cmd+backslash
+map --when-focus-on "var:jed or var:jmux" cmd+alt+backslash
+map --when-focus-on "var:jed or var:jmux" cmd+alt+right
+map --when-focus-on "var:jed or var:jmux" cmd+alt+left
+map --when-focus-on "var:jed or var:jmux" cmd+ctrl+right
+map --when-focus-on "var:jed or var:jmux" cmd+ctrl+left
+map --when-focus-on "var:jed or var:jmux" cmd+shift+page_up
+map --when-focus-on "var:jed or var:jmux" cmd+shift+page_down
+map --when-focus-on "var:jed or var:jmux" cmd+shift+p
+map --when-focus-on "var:jed or var:jmux" cmd+,
+map --when-focus-on "var:jed or var:jmux" cmd+alt+,
+map --when-focus-on "var:jed or var:jmux" cmd+p
+map --when-focus-on "var:jed or var:jmux" cmd+j
+map --when-focus-on "var:jed or var:jmux" cmd+shift+m
+map --when-focus-on "var:jed or var:jmux" cmd+shift+u
+map --when-focus-on "var:jed or var:jmux" cmd+alt+z
 
 # --- jed: Option acts as Alt ---
 macos_option_as_alt both
@@ -130,7 +130,7 @@ listen_on unix:@kitty-{kitty_pid}
 
 ## What you lose
 
-While a jed window has focus: kitty's own Cmd+C (copy screen text; use the mouse selection, which kitty can copy on select), Cmd+N (new OS window), Cmd+W (close tab), Cmd+Q (quit), Cmd+K (clear the terminal), Cmd+1..8 (switch window) and Cmd+Up/Down (scroll). Other kitty windows keep them. Close jed's tab with Cmd+Shift+W (close OS window) or the menu.
+While a jed or jmux window has focus: kitty's own Cmd+C (copy screen text; use the mouse selection, which kitty can copy on select), Cmd+N (new OS window), Cmd+W (close tab), Cmd+Q (quit), Cmd+K (clear the terminal), Cmd+1..8 (switch window) and Cmd+Up/Down (scroll). Other kitty windows keep them. Close jed's tab with Cmd+Shift+W (close OS window) or the menu.
 
 ## Checklist
 

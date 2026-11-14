@@ -37,6 +37,8 @@ fully supported. Not modal, nothing like vim. Written in Rust (ratatui, crosster
   work; files changed on disk reload or warn
 - **Tools view:** every language server and task with its log, like VS Code's Output panel
 - OSC 52 clipboard over SSH
+- **jmux:** a companion terminal multiplexer built from jed's terminal engine (sessions that survive detaching, tabs,
+  splits, scrollback, find, a side bar of your commands); see [jmux/README.md](jmux/README.md)
 
 Platforms: macOS first, Linux too. Windows is not supported.
 
@@ -90,6 +92,7 @@ VS Code's defaults, Cmd on macOS and Ctrl on Linux. The full list is in
 For users:
 
 - [docs/terminals/](docs/terminals/README.md) — terminal setup (start here)
+- [jmux/README.md](jmux/README.md) — jmux: install, sessions, keys, settings, shell integration
 - [docs/tasks.md](docs/tasks.md) — configuring tasks
 - [docs/forges.md](docs/forges.md) — configuring forges for merge-request review
 - [docs/git-editor.md](docs/git-editor.md) — jed as git's `core.editor`

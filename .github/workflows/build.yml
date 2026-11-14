@@ -44,7 +44,7 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Build
-        run: cargo build --release
+        run: cargo build --release -p jed -p jmux
 
       - name: Test
         run: scripts/timeout 900 cargo test --workspace
@@ -53,12 +53,14 @@ jobs:
         shell: bash
         run: |
           os=$([ "$RUNNER_OS" = macOS ] && echo macos || echo linux)
-          pkg="jed-$os-$(uname -m)"
-          echo "PKG=$pkg" >> "$GITHUB_ENV"
+          # One tarball per binary (jed-<os>-<arch>, jmux-<os>-<arch>), both in the one artifact.
+          echo "PKG=jed-$os-$(uname -m)" >> "$GITHUB_ENV"
           # Cargo's strip = true can fail with only a warning (rust-objcopy), so make sure.
-          strip target/release/jed
+          strip target/release/jed target/release/jmux
           mkdir -p dist
-          tar -czf "dist/$pkg.tar.gz" -C target/release jed
+          for bin in jed jmux; do
+            tar -czf "dist/$bin-$os-$(uname -m).tar.gz" -C target/release "$bin"
+          done
 
       - uses: actions/upload-artifact@v4
         if: ${{ !env.GITEA_ACTIONS }}
@@ -67,7 +69,7 @@ jobs:
           path: dist/*.tar.gz
 
   # A version tag (git tag v0.1.0 && git push origin v0.1.0) publishes a release
-  # with both platforms' tarballs, once every build and test has passed. The notes
+  # with both platforms' tarballs (jed and jmux), once every build and test has passed. The notes
   # are a changelog of the commits and tasks completed since the previous
   # release (scripts/changelog, shared with the release command).
   release:

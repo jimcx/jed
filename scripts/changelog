@@ -1,5 +1,5 @@
 #!/bin/sh
-# Print the changelog body for a jed release: the tasks completed since the
+# Print the changelog body for a release (jed and jmux share its tag): the tasks completed since the
 # previous release, then every commit between them. The release command embeds
 # it in the annotated tag message; CI's release job publishes it as the GitHub
 # Release notes.
@@ -35,8 +35,14 @@ else
     features=
 fi
 
+# jmux's tasks are named "jmux: ..."; when both kinds are in the range they get a subheading each.
+jmux=$(printf '%s\n' "$features" | grep '^- \*\*jmux: ' || true)
+jed=$(printf '%s\n' "$features" | grep -v '^- \*\*jmux: ' || true)
+
 echo '## What changed'
-if [ -n "$features" ]; then
+if [ -n "$jmux" ] && [ -n "$jed" ]; then
+    printf '\n### jed\n\n%s\n\n### jmux\n\n%s\n' "$jed" "$jmux"
+elif [ -n "$features" ]; then
     echo
     echo "$features"
 fi
