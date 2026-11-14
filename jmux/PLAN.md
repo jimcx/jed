@@ -101,7 +101,7 @@ One cargo workspace at the repository root; jed stays the root package (`src/`).
 - Keys: Up / Down / PageUp / PageDown / Home / End, Enter, Esc back to the terminal
 
 ### Settings, keys and theme
-- `~/.config/jmux/settings.toml`: `shell`, `scrollback`, `scrollback_compression`, `command_history`, `side_bar_width`, `cursor_style`
+- `~/.config/jmux/settings.toml`: `shell`, `scrollback`, `scrollback_compression`, `command_history`, `side_bar_width`, `cursor_style`, `tabs_at_bottom`
 - `~/.config/jmux/keybindings.toml`, same format as jed's
 - Default keys follow jed's terminal area (new terminal, split, focus group, move tab, scrollback, search, copy / paste) plus detach and "focus side bar"
 - Built-in dark theme, jed's colours for the shared widgets

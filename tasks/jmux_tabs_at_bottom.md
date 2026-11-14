@@ -1,8 +1,8 @@
 ---
 id: jmux_tabs_at_bottom
 name: "jmux: tab bars at the bottom"
-summary: "a `tabs_at_bottom` setting in jmux's `settings.toml` docks each group's tab bar on the group's last row, as jed's does"
-status: open
+summary: "`tabs_at_bottom` in jmux's `settings.toml` docks each group's tab bar on its last row; Reload Settings moves the bars at once"
+status: done
 priority: 0
 dependencies: [jmux_config]
 ---
@@ -18,3 +18,9 @@ See [jmux's plan](../jmux/PLAN.md): [Settings, keys and theme](../jmux/PLAN.md#s
   - Reload Settings applies it at once (the next frame redraws the layout; shells keep their size since the height doesn't change)
   - Docs: the `settings.toml` table in `jmux/README.md`, the settings line in `jmux/PLAN.md`
   - Done when: with the setting on, each group's bar is on its last row and the shell starts on its first; clicking a tab, the bar's scroll arrows and dragging a tab to another bar or a terminal half work at the bottom; toggling it and running Reload Settings moves the bars without restarting the session; a bad value is reported and the default applies. Tests in `jmux/src/jmux_tabs_at_bottom_tests.rs`, named `jmux_tabs_at_bottom_*`
+
+- ✅ Done. `tabs_at_bottom` (bool, default false) in jmux's `settings.toml` puts each group's tab bar on its last row.
+  - Layout comes from one function, `ui::bar_and_term(group, tabs_at_bottom)` (`term_area` delegates to it), used by `ui::render` and `App::term_size`; the terminal's height is the same either way, so a reload moves the bars without resizing shells. Mouse, scroll arrows and tab drag needed no change: they read the `HitMap` rects.
+  - Also: `apply_settings` needed no change (it already stores the new settings and redraws).
+  - Deferred: nothing.
+  - Still to check by hand: `tabs_at_bottom = true` + Ctrl+Shift+R in a real terminal with a split, the scroll bar track beside the shell, and a tab dragged onto a bottom bar.

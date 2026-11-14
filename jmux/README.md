@@ -107,6 +107,7 @@ editing in the search bar and the side bar's filter (`search.field.*`) have name
 | `command_history` | whole number, 0-100000 | 500 | The most commands the side bar keeps |
 | `side_bar_width` | whole number, 1-500 | 32 | The side bar's width in columns |
 | `cursor_style` | `"block"`, `"line"`, `"underline"` | `"block"` | The host terminal's cursor while attached |
+| `tabs_at_bottom` | `true`, `false` | `false` | Each group's tab bar on its last row, the terminal above it (applies at once on Reload Settings) |
 
 A key that is unknown or badly typed is reported as a notice (`settings.toml: line 3: ...`, the first problem and
 how many more) and skipped; the rest applies. A TOML syntax error makes the whole file unusable: one error,

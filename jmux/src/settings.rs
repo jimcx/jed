@@ -27,6 +27,8 @@ pub struct Settings {
     /// The side bar's width in columns.
     pub side_bar_width: u16,
     pub cursor_style: CursorStyle,
+    /// Each group's tab bar on its last row instead of its first.
+    pub tabs_at_bottom: bool,
 }
 
 impl Default for Settings {
@@ -38,6 +40,7 @@ impl Default for Settings {
             command_history: COMMAND_HISTORY,
             side_bar_width: crate::side::DEFAULT_WIDTH,
             cursor_style: CursorStyle::Block,
+            tabs_at_bottom: false,
         }
     }
 }
@@ -111,6 +114,7 @@ fn apply(s: &mut Settings, key: &str, value: &toml::Value) -> Result<(), String>
         }
         "scrollback" => s.scrollback = count(10_000_000)? as usize,
         "scrollback_compression" => s.scrollback_compression = value.as_bool().ok_or_else(|| bad("true or false"))?,
+        "tabs_at_bottom" => s.tabs_at_bottom = value.as_bool().ok_or_else(|| bad("true or false"))?,
         "command_history" => s.command_history = count(100_000)? as usize,
         "side_bar_width" => s.side_bar_width = count(500)?.max(1) as u16,
         "cursor_style" => {
@@ -151,7 +155,7 @@ mod tests {
     fn every_key_is_read() {
         let (s, errors) = parse(
             "shell = \"/bin/zsh\"\nscrollback = 100\nscrollback_compression = true\ncommand_history = 7\n\
-             side_bar_width = 40\ncursor_style = \"underline\"\n",
+             side_bar_width = 40\ncursor_style = \"underline\"\ntabs_at_bottom = true\n",
         );
         assert_eq!(errors, Vec::<String>::new());
         assert_eq!(
@@ -163,6 +167,7 @@ mod tests {
                 command_history: 7,
                 side_bar_width: 40,
                 cursor_style: CursorStyle::Underline,
+                tabs_at_bottom: true,
             }
         );
     }
@@ -170,12 +175,13 @@ mod tests {
     #[test]
     fn a_bad_key_is_reported_with_its_line_and_the_rest_applies() {
         let text = "scrollback = 10\nscrollback_compression = \"yes\"\ncommand_history = -1\nbogus = 1\n\
-                    cursor_style = \"star\"\nshell = \"/bin/dash\"\n";
+                    cursor_style = \"star\"\ntabs_at_bottom = 1\nshell = \"/bin/dash\"\n";
         let (s, errors) = parse(text);
         assert_eq!((s.scrollback, s.shell), (10, Some("/bin/dash".into())));
         assert!(!s.scrollback_compression && s.command_history == 500 && s.cursor_style == CursorStyle::Block);
-        assert_eq!(errors.len(), 4, "{errors:?}");
-        for (error, line) in errors.iter().zip([2, 3, 4, 5]) {
+        assert!(!s.tabs_at_bottom);
+        assert_eq!(errors.len(), 5, "{errors:?}");
+        for (error, line) in errors.iter().zip([2, 3, 4, 5, 6]) {
             assert!(error.starts_with(&format!("settings.toml: line {line}:")), "{errors:?}");
         }
         assert!(errors[2].contains("unknown setting bogus"), "{errors:?}");

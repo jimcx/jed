@@ -30,6 +30,8 @@ mod jmux_config_tests;
 mod jmux_layout_tests;
 #[cfg(test)]
 mod jmux_server_tests;
+#[cfg(test)]
+mod jmux_tabs_at_bottom_tests;
 
 use std::path::PathBuf;
 

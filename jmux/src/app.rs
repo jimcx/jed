@@ -349,7 +349,7 @@ impl App {
         let body = ui::body(rows, cols, &self.side);
         let (cells, _) = self.groups.layout(body);
         let area = cells.iter().find(|(id, _)| *id == group).map_or(body, |c| c.1);
-        let (text, _) = ui::shell_area(ui::term_area(area));
+        let (text, _) = ui::shell_area(ui::term_area(area, self.config.settings.tabs_at_bottom));
         (text.height, text.width)
     }
 

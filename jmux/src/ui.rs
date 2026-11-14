@@ -35,10 +35,27 @@ pub fn side_area(rows: u16, cols: u16, side: &SideBar) -> Option<Rect> {
         .then(|| Rect::new(0, 0, side.width_in(cols), rows.saturating_sub(STATUS_ROWS)))
 }
 
-/// A group's terminal: its area below the tab bar.
-pub fn term_area(group: Rect) -> Rect {
+/// A group's tab bar and terminal: the bar on the group's first row, or its last with
+/// `tabs_at_bottom`; the terminal is the rest. The height is the same either way.
+pub fn bar_and_term(group: Rect, tabs_at_bottom: bool) -> (Rect, Rect) {
     let bar = TAB_ROWS.min(group.height);
-    Rect::new(group.x, group.y + bar, group.width, group.height - bar)
+    let rest = group.height - bar;
+    if tabs_at_bottom {
+        (
+            Rect::new(group.x, group.y + rest, group.width, bar),
+            Rect::new(group.x, group.y, group.width, rest),
+        )
+    } else {
+        (
+            Rect::new(group.x, group.y, group.width, bar),
+            Rect::new(group.x, group.y + bar, group.width, rest),
+        )
+    }
+}
+
+/// A group's terminal: its area beside the tab bar.
+pub fn term_area(group: Rect, tabs_at_bottom: bool) -> Rect {
+    bar_and_term(group, tabs_at_bottom).1
 }
 
 /// A group's terminal split into the shell's cells and the one-column track of its scroll bar
@@ -62,8 +79,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         _ => None,
     };
     for (id, rect) in cells {
-        let term = term_area(rect);
-        let bar = Rect::new(rect.x, rect.y, rect.width, rect.height - term.height);
+        let (bar, term) = bar_and_term(rect, app.config.settings.tabs_at_bottom);
         let focused = id == app.groups.active;
         let Some(group) = app.groups.get_mut(id) else {
             continue;
