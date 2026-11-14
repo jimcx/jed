@@ -76,7 +76,9 @@ fn config(dir: &Path) -> Config {
         cwd: std::env::temp_dir(),
         open_url: |_| Ok(()),
         dirs: None,
-        command_history: crate::app::COMMAND_HISTORY,
+        settings: Default::default(),
+        settings_path: None,
+        settings_errors: Vec::new(),
     }
 }
 

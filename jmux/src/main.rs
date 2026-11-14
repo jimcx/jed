@@ -14,6 +14,7 @@ mod logging;
 mod protocol;
 mod server;
 mod session;
+mod settings;
 mod side;
 mod tab_drag;
 mod tabbar;
@@ -23,6 +24,8 @@ mod ui_side;
 
 #[cfg(test)]
 mod jmux_commands_tests;
+#[cfg(test)]
+mod jmux_config_tests;
 #[cfg(test)]
 mod jmux_layout_tests;
 #[cfg(test)]
@@ -64,6 +67,8 @@ fn run_server(args: ServerArgs) -> i32 {
     let log = logging::log_path(&logging::log_dir(), &args.session, std::process::id());
     let _ = logging::init(&log);
     let socket_dir = args.socket_dir.unwrap_or_else(|| jtui::socket::default_socket_dir(APP));
+    let settings_path = settings::path(&jtui::paths::config_dir(APP));
+    let (settings, settings_errors) = settings::load(&settings_path);
     let program = std::env::var_os("SHELL")
         .filter(|s| !s.is_empty())
         .map_or_else(|| PathBuf::from("/bin/sh"), PathBuf::from);
@@ -74,7 +79,9 @@ fn run_server(args: ServerArgs) -> i32 {
         cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
         open_url: jtui::url::open,
         dirs: Some(integration::Dirs::real()),
-        command_history: app::COMMAND_HISTORY,
+        settings,
+        settings_path: Some(settings_path),
+        settings_errors,
     };
     let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(rt) => rt,

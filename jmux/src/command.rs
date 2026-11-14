@@ -217,6 +217,8 @@ pub enum Command {
     ConfirmNo,
     /// Writes the shell integration's snippets and adds the line sourcing one to the shell's init file.
     InstallShellIntegration,
+    /// Re-reads `settings.toml` (off-thread); it applies to the next terminal.
+    ReloadSettings,
 }
 
 impl Command {
@@ -246,6 +248,7 @@ impl Command {
             Command::ConfirmYes,
             Command::ConfirmNo,
             Command::InstallShellIntegration,
+            Command::ReloadSettings,
         ];
         all.extend(SearchCommand::ALL.map(Command::Search));
         all.extend(SideCommand::ALL.map(Command::Side));
@@ -296,6 +299,7 @@ impl KeyCommand for Command {
             Command::ConfirmYes => "confirm.yes".into(),
             Command::ConfirmNo => "confirm.no".into(),
             Command::InstallShellIntegration => "session.installShellIntegration".into(),
+            Command::ReloadSettings => "session.reloadSettings".into(),
         }
     }
     fn title(&self) -> String {
@@ -335,6 +339,7 @@ impl KeyCommand for Command {
             Command::ConfirmYes => "Confirm".into(),
             Command::ConfirmNo => "Cancel".into(),
             Command::InstallShellIntegration => "Install Shell Integration".into(),
+            Command::ReloadSettings => "Reload Settings".into(),
         }
     }
 }

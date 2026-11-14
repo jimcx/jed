@@ -32,10 +32,11 @@ use jtui::stream_backend::StreamBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
 
-use crate::app::{App, AppEvent, COMMAND_HISTORY, Config};
+use crate::app::{App, AppEvent, Config};
 use crate::command::{Command, SideCommand};
 use crate::integration::Dirs;
 use crate::protocol::{ClientMsg, PROTOCOL_VERSION, ServerMsg};
+use crate::settings::COMMAND_HISTORY;
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -65,7 +66,12 @@ impl Harness {
             cwd: std::env::temp_dir(),
             open_url: |_| Ok(()),
             dirs,
-            command_history,
+            settings: crate::settings::Settings {
+                command_history,
+                ..Default::default()
+            },
+            settings_path: None,
+            settings_errors: Vec::new(),
         };
         let mut app = App::new(config, tx);
         app.start();

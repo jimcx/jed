@@ -142,6 +142,13 @@ directory, tests pass a temp dir) and the server:
   hint from the keymap), `theme` (the only file
   with colours: `jterm::draw::KEYS` + `statusBar*` over `widget_entries`), `logging` (`<state dir>/jmux/logs/<name>-<pid>.log`,
   `JMUX_LOG`, panics logged).
+- `settings`: `settings.toml` (`shell`, `scrollback`, `scrollback_compression`, `command_history`, `side_bar_width`, `cursor_style`);
+  `parse(text) -> (Settings, errors)` is lenient per key (a bad one is `settings.toml: line N: ...` and skipped; a syntax error
+  means defaults). `main::run_server` loads it before the runtime (`Config.settings` / `settings_path` / `settings_errors`, the
+  first notice); `Command::ReloadSettings` (Ctrl+Shift+R) reads it in `spawn_blocking` (`App::reload_settings`, the one job a
+  reload's other files join) and `AppEvent::Settings` applies it (`apply_settings`: the next terminal's shell and scrollback,
+  the history cap, the side bar width; the notice). `App::program()` is `shell` else `$SHELL`. The client reads `cursor_style`
+  at attach only. Tests pass the file's path (`jmux/src/jmux_config_tests.rs`, `jmux_config_a_*`).
 - Tests: `jmux/src/jmux_server_tests.rs` runs a real server (own thread and runtime, `/bin/sh`) in a temp dir (a subfolder:
   `prepare_dir` insists on `0700`) and drives it with a client over the socket that feeds `Output` into a `vt100::Parser`, or
   with `client::attach` (`Attached`: events in a channel, output into a parser). `jmux/tests/cli.rs` runs the binary

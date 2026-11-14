@@ -12,8 +12,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::settings::Settings;
 use crossterm::event::{Event as Input, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use jterm::run::{EnvNames, Event, RunId, SCROLLBACK, Sink, StartOptions, Status};
+use jterm::run::{EnvNames, Event, RunId, Sink, StartOptions, Status};
 use jterm::shell::{self, ShellTab};
 use jterm::{keys, mouse, select};
 use jtui::borders::Borders;
@@ -81,12 +82,22 @@ pub struct Config {
     pub open_url: fn(&str) -> Result<(), String>,
     /// Where the shell integration lives (`None`: no check, no install).
     pub dirs: Option<integration::Dirs>,
-    /// The most commands the history keeps (`command_history`).
-    pub command_history: usize,
+    /// `settings.toml` as the server last read it (`apply_settings` replaces it).
+    pub settings: Settings,
+    /// Where it is read from on `Command::ReloadSettings` (`None`: no reload).
+    pub settings_path: Option<PathBuf>,
+    /// What was wrong in the first read: the first notice.
+    pub settings_errors: Vec<String>,
 }
 
-/// The default `command_history` (settings files come later).
-pub const COMMAND_HISTORY: usize = 500;
+/// The notice for a settings file's problems: the first, and how many more.
+fn settings_notice(errors: &[String]) -> Option<String> {
+    let (first, rest) = errors.split_first()?;
+    Some(match rest.len() {
+        0 => first.clone(),
+        n => format!("{first} (and {n} more)"),
+    })
+}
 
 /// What the event loop hears about.
 pub enum AppEvent {
@@ -107,6 +118,9 @@ pub enum AppEvent {
     Run(Event),
     /// A blocking shell-integration job finished (`integration_event`).
     Integration(IntegrationEvent),
+    /// `Command::ReloadSettings`'s read finished: the settings and what was wrong in the file
+    /// (`apply_settings`).
+    Settings(Settings, Vec<String>),
     /// Once a second (`App::start`'s timer): the side bar's durations and ages move on.
     Tick,
 }
@@ -143,7 +157,7 @@ mod side;
 
 pub struct App {
     pub name: String,
-    config: Config,
+    pub(crate) config: Config,
     events: UnboundedSender<AppEvent>,
     pub groups: Groups,
     pub keymap: JmuxKeymap,
@@ -236,21 +250,33 @@ impl App {
         }
     }
 
+    /// The shell a new terminal runs: the `shell` setting, else the config's (`$SHELL`, `/bin/sh`).
+    pub(crate) fn program(&self) -> PathBuf {
+        self.config
+            .settings
+            .shell
+            .clone()
+            .unwrap_or_else(|| self.config.program.clone())
+    }
+
     /// Spawns nothing (`start` does).
     pub fn new(config: Config, events: UnboundedSender<AppEvent>) -> App {
+        let notice = settings_notice(&config.settings_errors);
+        let mut side = SideBar::new();
+        side.width = config.settings.side_bar_width;
         App {
             name: config.name.clone(),
-            history: History::new(config.command_history),
+            history: History::new(config.settings.command_history),
             config,
             events,
             groups: Groups::new(),
             keymap: keymap::keymap(),
             hit: HitMap::default(),
             confirm: None,
-            notice: None,
+            notice,
             integration_checked: false,
             integration_missing: false,
-            side: SideBar::new(),
+            side,
             drag: None,
             mouse_at: None,
             pointer: Pointer::Default,
@@ -331,12 +357,9 @@ impl App {
                 let _ = events.send(AppEvent::Run(ev));
             })
         };
-        let spec = shell::spec(
-            &self.config.program,
-            &self.config.cwd,
-            Some((ENV.ipc, &self.config.socket)),
-        );
-        let base = shell::base(&self.config.program);
+        let program = self.program();
+        let spec = shell::spec(&program, &self.config.cwd, Some((ENV.ipc, &self.config.socket)));
+        let base = shell::base(&program);
         let number = (1..)
             .find(|n| !self.groups.tabs().any(|t| t.base == base && t.number == *n))
             .unwrap_or(1);
@@ -347,7 +370,16 @@ impl App {
             env: ENV,
             command_ring: 500,
         };
-        let tab = ShellTab::new(id, spec, rows, cols, sink, SCROLLBACK, options, number);
+        let tab = ShellTab::new(
+            id,
+            spec,
+            rows,
+            cols,
+            sink,
+            self.config.settings.scrollback(),
+            options,
+            number,
+        );
         if let Some(g) = self.groups.get_mut(group) {
             g.open(tab);
         }
@@ -423,6 +455,7 @@ impl App {
             }
             Command::ConfirmNo => self.confirm = None,
             Command::InstallShellIntegration => self.install_integration(),
+            Command::ReloadSettings => self.reload_settings(),
         }
         self.needs_redraw = true;
     }
@@ -514,6 +547,7 @@ impl App {
             }
             AppEvent::Run(ev) => self.run_event(ev),
             AppEvent::Integration(ev) => self.integration_event(ev),
+            AppEvent::Settings(settings, errors) => self.apply_settings(settings, errors),
             AppEvent::Tick => self.tick(),
         }
     }
@@ -753,7 +787,11 @@ impl App {
                 if context == Context::Side
                     && !matches!(
                         command,
-                        Command::Side(_) | Command::Field(_) | Command::Detach | Command::InstallShellIntegration
+                        Command::Side(_)
+                            | Command::Field(_)
+                            | Command::Detach
+                            | Command::InstallShellIntegration
+                            | Command::ReloadSettings
                     )
                 {
                     self.side.focused = false;
@@ -1248,7 +1286,9 @@ mod tests {
             cwd: PathBuf::from("/"),
             open_url: |_| Ok(()),
             dirs: None,
-            command_history: COMMAND_HISTORY,
+            settings: Settings::default(),
+            settings_path: None,
+            settings_errors: Vec::new(),
         };
         let mut app = App::new(config, events);
         let rx = connect(&mut app, 1, cap);
@@ -1367,7 +1407,9 @@ mod tests {
             cwd: PathBuf::from("/"),
             open_url: |_| Ok(()),
             dirs: None,
-            command_history: COMMAND_HISTORY,
+            settings: Settings::default(),
+            settings_path: None,
+            settings_errors: Vec::new(),
         };
         let mut app = App::new(config, events);
         // A writer that does nothing until the gate opens, then reports what it was given.

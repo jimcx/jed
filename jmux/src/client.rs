@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crossterm::event::{Event, EventStream};
 use futures_util::{Stream, StreamExt};
-use jtui::terminal::{self, CursorShape, CursorStyle, Identity, Pointer};
+use jtui::terminal::{self, CursorShape, Identity, Pointer};
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixStream;
 
@@ -170,7 +170,9 @@ pub fn run_attached(socket: &Path, name: &str) -> i32 {
             .unwrap_or_default();
         let identity = Identity::new(crate::APP, Path::new(name), None, &home);
         let cursor = CursorShape {
-            style: CursorStyle::Block,
+            style: crate::settings::load(&crate::settings::path(&jtui::paths::config_dir(crate::APP)))
+                .0
+                .cursor_style,
             blinking: true,
         };
         let _term = match terminal::enter(kitty, cursor, &identity) {

@@ -185,6 +185,12 @@ impl History {
         self.clamp();
     }
 
+    /// Changes the cap (`command_history` reloaded); the oldest finished rows go at once.
+    pub fn set_cap(&mut self, cap: usize) {
+        self.cap = cap;
+        self.reorder();
+    }
+
     /// Every row, in list order.
     pub fn rows(&self) -> &[Row] {
         &self.rows
@@ -374,6 +380,19 @@ mod tests {
         let mut small = History::new(1);
         small.update(RunId(1), "sh", vec![rec(b, 1, "x", 0, None), rec(b, 2, "y", 1, None)]);
         assert_eq!(small.rows().len(), 2, "running rows are never dropped");
+    }
+
+    #[test]
+    fn set_cap_drops_the_oldest_finished_rows_at_once() {
+        let b = Instant::now();
+        let mut h = History::new(10);
+        let recs: Vec<_> = (1..=5)
+            .map(|i| rec(b, i, &format!("c{i}"), i, Some((i + 1, 0))))
+            .collect();
+        h.update(RunId(1), "sh", recs);
+        assert_eq!(h.rows().len(), 5);
+        h.set_cap(2);
+        assert_eq!(labels(&h), ["c5", "c4"]);
     }
 
     #[test]

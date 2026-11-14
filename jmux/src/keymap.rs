@@ -66,6 +66,7 @@ pub fn defaults(platform: Platform) -> Vec<Binding<Context, Command>> {
         ),
         (KeyCode::Char('d'), ctrl | shift, Command::Detach, None),
         (KeyCode::Char('i'), ctrl | shift, Command::InstallShellIntegration, None),
+        (KeyCode::Char('r'), ctrl | shift, Command::ReloadSettings, None),
     ];
     let side = if mac { KeyModifiers::SUPER | alt } else { alt | shift };
     for (code, s) in [
