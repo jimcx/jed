@@ -1,13 +1,34 @@
 #!/bin/sh
-# Build the release binaries (jed and jmux) and copy them into ~/.local/bin (or $1 / $PREFIX_BIN).
+# Build the release binaries (jed and jmux, one cargo build) and copy them into ~/.local/bin (or $1 / $PREFIX_BIN).
+# Usage: scripts/install [--only jed|jmux] [dest]
 set -eu
 cd "$(dirname "$0")/.."
-dest="${1:-${PREFIX_BIN:-$HOME/.local/bin}}"
-cargo build --release -p jed -p jmux
+usage() { echo "usage: scripts/install [--only jed|jmux] [dest]" >&2; exit 2; }
+only=""
+dest=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --only) [ $# -ge 2 ] || usage; only="$2"; [ -n "$only" ] || usage; shift 2 ;;
+    --only=*) only="${1#--only=}"; [ -n "$only" ] || usage; shift ;;
+    -*) usage ;;
+    *) [ -z "$dest" ] || usage; dest="$1"; shift ;;
+  esac
+done
+case "$only" in
+  "") bins="jed jmux" ;;
+  jed|jmux) bins="$only" ;;
+  *) usage ;;
+esac
+dest="${dest:-${PREFIX_BIN:-$HOME/.local/bin}}"
+pkgs=""
+for b in $bins; do pkgs="$pkgs -p $b"; done
+# shellcheck disable=SC2086
+cargo build --release $pkgs
 mkdir -p "$dest"
-# Cargo's strip = true can fail with only a warning, so make sure (as the release workflow does).
-strip target/release/jed target/release/jmux
-install -m 755 target/release/jed "$dest/jed"
-install -m 755 target/release/jmux "$dest/jmux"
-echo "installed $dest/jed and $dest/jmux"
+for b in $bins; do
+  # Cargo's strip = true can fail with only a warning, so make sure (as the release workflow does).
+  strip "target/release/$b"
+  install -m 755 "target/release/$b" "$dest/$b"
+  echo "installed $dest/$b"
+done
 case ":$PATH:" in *":$dest:"*) ;; *) echo "note: $dest is not on PATH" ;; esac

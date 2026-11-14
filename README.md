@@ -45,8 +45,9 @@ Platforms: macOS first, Linux too. Windows is not supported.
 ## Building
 
 ```sh
-cargo build --release
+cargo build --release -p jed -p jmux    # target/release/jed and target/release/jmux, one build
 ./target/release/jed [<folder> | <file>[:line[:col]]]
+scripts/install                         # build, strip and copy both into ~/.local/bin (or $1 / $PREFIX_BIN); --only jed|jmux
 ```
 
 The toolchain is pinned in `rust-toolchain.toml`; rustup picks it up.

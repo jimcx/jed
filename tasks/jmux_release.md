@@ -1,8 +1,8 @@
 ---
 id: jmux_release
 name: jmux in CI, releases and the install script
-summary: "CI builds, tests and packages `jmux` beside `jed` in one cargo build that shares their dependencies; a `v<N>` release publishes both; `scripts/install` installs both"
-status: open
+summary: "CI builds `jed` and `jmux` in one cargo build and packages a tarball of each (artifact `dist-<os>-<arch>`); a `v<N>` release publishes both; `scripts/install [--only jed|jmux]` installs both; shared dependency versions live in `[workspace.dependencies]`"
+status: done
 priority: 0
 dependencies: [jmux_config]
 ---
@@ -19,3 +19,11 @@ jmux is a workspace member (`jmux/`), and CI already lints and tests it (`cargo 
   - Deferred: a `jmux --version` (jed's comes from `build.rs`'s `JED_VERSION`); `jmux` self-update (with `update`); Homebrew / distro packages
   - Done when: a push runs green on Linux and macOS and its artifacts hold `jed-…` and `jmux-…` tarballs for each platform, each binary stripped and running (`jmux --help` exits 0); in the Build step's log no dependency is compiled twice (each crate's `Compiling` line appears once); locally, `scripts/install "$tmp"` puts both binaries in `$tmp`, a second run right after is all `Fresh` (`cargo build --release -p jed -p jmux -v`), and `--only jmux` installs only `jmux`; `scripts/check` passes
   - Hand checks: after the next `/release`, the GitHub release lists four tarballs, and `jed` / `jmux` from them run on Linux and macOS
+  - ✅ Done. What it changed: `jmux_config-c` had already moved CI's Build / Package steps and `scripts/install` to one `cargo build --release -p jed -p jmux` with a tarball per binary; this task finished the rest
+    - `futures-util` and `tracing-subscriber` (with `env-filter`) are `[workspace.dependencies]`, `{ workspace = true }` in jed and jmux; `cargo tree --workspace -e normal -d` unchanged (bitflags, hashbrown, syn, thiserror, as before)
+    - CI's per-platform artifact is `dist-<os>-<arch>` (was `jed-<os>-<arch>`), holding both tarballs; the release job's `merge-multiple` gives four distinct files
+    - `scripts/install [--only jed|jmux] [dest]`: `--only` before or after the dest, `-p` only that package; a bad / empty value, unknown option or second dest prints usage and exits 2; one `installed <path>` line per binary
+    - README (root and jmux) build / install lines; `docs/dev/crates.md` says why `default-members` stays `.`; `tasks/update.md` notes the `jed-` asset prefix
+    - Also: the jmux layout harness's `pointer_shapes` undoubles ESCs, since `jtui::terminal` wraps OSC sequences in tmux passthrough when `$TMUX` is set: two `jmux_layout` tests failed whenever `cargo test` ran inside tmux
+    - Verified locally: `scripts/install "$tmp"` installs both, the next `cargo build --release -p jed -p jmux -v` compiles nothing, `jmux --help` exits 0, `--only jmux` installs only jmux
+    - Still to check by hand: a push runs green on Linux and macOS with `dist-linux-*` / `dist-macos-*` artifacts each holding `jed-…` and `jmux-…` tarballs, and the Build log compiles each crate once; after the next `/release`, the GitHub release lists four tarballs that run on both platforms

@@ -53,8 +53,8 @@ jobs:
         shell: bash
         run: |
           os=$([ "$RUNNER_OS" = macOS ] && echo macos || echo linux)
-          # One tarball per binary (jed-<os>-<arch>, jmux-<os>-<arch>), both in the one artifact.
-          echo "PKG=jed-$os-$(uname -m)" >> "$GITHUB_ENV"
+          # One tarball per binary (jed-<os>-<arch>, jmux-<os>-<arch>), both in the one artifact (dist-<os>-<arch>).
+          echo "ARTIFACT=dist-$os-$(uname -m)" >> "$GITHUB_ENV"
           # Cargo's strip = true can fail with only a warning (rust-objcopy), so make sure.
           strip target/release/jed target/release/jmux
           mkdir -p dist
@@ -65,7 +65,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: ${{ !env.GITEA_ACTIONS }}
         with:
-          name: ${{ env.PKG }}
+          name: ${{ env.ARTIFACT }}
           path: dist/*.tar.gz
 
   # A version tag (git tag v0.1.0 && git push origin v0.1.0) publishes a release

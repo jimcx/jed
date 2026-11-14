@@ -8,7 +8,8 @@ handling is jed's (shared through `crates/jterm`), so the keys and the feel matc
 
 ```sh
 scripts/install                  # builds jed and jmux, copies both into ~/.local/bin (or $1 / $PREFIX_BIN)
-cargo build --release -p jmux    # just jmux: target/release/jmux
+scripts/install --only jmux      # just jmux (--only jed: just jed)
+cargo build --release -p jmux    # just jmux, uninstalled: target/release/jmux
 ```
 
 Release tags publish `jmux-<os>-<arch>.tar.gz` beside `jed-<os>-<arch>.tar.gz` (macOS and Linux; one `jmux`

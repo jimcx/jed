@@ -1,7 +1,7 @@
 # Crates
 
 The repository is one cargo workspace (root `Cargo.toml`): jed is the root package (`src/`, the
-default member, so plain `cargo build --release` builds `target/release/jed`); the libraries are
+default member, so plain `cargo build --release` builds only `target/release/jed`; CI and `scripts/install` build `-p jed -p jmux` in one invocation so shared dependencies compile once); the libraries are
 `crates/*`; `jmux/` (a tmux-like multiplexer, design in `jmux/PLAN.md`) is a member too.
 
 | Crate | Path | Holds |
@@ -47,7 +47,7 @@ Modules: `spec` (`Spec`, `DEFAULT_ENV`, and the `StartGate` test latch), `run`, 
 
 ## jmux
 
-User docs: `jmux/README.md` (install, sessions, keys, settings; keep it in step with `cli.rs`, `keymap.rs`, `settings.rs`). Releases ship `jmux` beside `jed` (`build.yml`, `scripts/install`; `scripts/changelog` groups tasks named `jmux: …`). Its Cmd keys must be rows of `docs/terminals/README.md` (test `jmux_every_cmd_binding_is_in_the_terminal_docs`).
+User docs: `jmux/README.md` (install, sessions, keys, settings; keep it in step with `cli.rs`, `keymap.rs`, `settings.rs`). Releases ship `jmux` beside `jed` (`build.yml`: one `dist-<os>-<arch>` artifact with both tarballs; `scripts/install [--only jed|jmux]`; `scripts/changelog` groups tasks named `jmux: …`). Its Cmd keys must be rows of `docs/terminals/README.md` (test `jmux_every_cmd_binding_is_in_the_terminal_docs`).
 
 `APP = "jmux"` (`main.rs`) is what it passes to jtui. Modules: `protocol` (`ClientMsg` / `ServerMsg` / `ByeReason`;
 a frame is a u32 big-endian length of the rest, a kind byte (0 JSON, 1 raw `Output`), the payload; `encode_*`, the

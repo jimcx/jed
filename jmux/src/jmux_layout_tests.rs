@@ -236,7 +236,9 @@ impl Harness {
 
     /// The pointer shapes (OSC 22 names) sent so far, in order.
     fn pointer_shapes(&self) -> Vec<String> {
-        let raw = String::from_utf8_lossy(&self.raw);
+        // Under tmux ($TMUX set) jtui wraps OSC sequences in passthrough with every ESC doubled;
+        // undoubling them leaves the plain sequence either way.
+        let raw = String::from_utf8_lossy(&self.raw).replace("\x1b\x1b", "\x1b");
         raw.split("\x1b]22;")
             .skip(1)
             .filter_map(|p| p.split("\x1b\\").next().map(str::to_string))
