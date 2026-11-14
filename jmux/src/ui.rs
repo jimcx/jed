@@ -144,24 +144,76 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 .set_stringn(bar.x, bar.y, format!(" {notice}"), bar.width as usize, style);
         } else {
             let title = app.groups.active_group().active_tab().map_or("", |s| s.title.as_str());
-            status_bar(f, bar, &app.name, title, &app.detach_hint(), &app.theme);
+            status_bar(f, bar, &app.name, app.counts(), title, &app.detach_hint(), &app.theme);
         }
     }
 }
 
-/// ` <session>  <title>` on the left, the detach hint on the right.
-fn status_bar(f: &mut Frame, bar: Rect, name: &str, title: &str, hint: &str, theme: &Theme) {
+/// ` <session>  3 terminals · 1 running  <title>` on the left, the detach hint on the right. What
+/// doesn't fit goes: the title first, then the counts.
+fn status_bar(f: &mut Frame, bar: Rect, name: &str, counts: (usize, usize), title: &str, hint: &str, theme: &Theme) {
     let (style, detail) = (theme.get("statusBar"), theme.get("statusBar.detail"));
     let buf = f.buffer_mut();
     buf.set_style(bar, style);
     let width = bar.width as usize;
     let hint = format!("{hint} ");
+    let (terminals, running) = counts;
+    let mut summary = format!("{terminals} terminal{}", if terminals == 1 { "" } else { "s" });
+    if running > 0 {
+        summary.push_str(&format!(" · {running} running"));
+    }
     let left = format!(" {name}");
     let (x, _) = buf.set_stringn(bar.x, bar.y, &left, width, style);
     let right_x = bar.x + bar.width.saturating_sub(hint.len() as u16);
     if right_x > x + 2 {
         buf.set_stringn(right_x, bar.y, &hint, width, detail);
         let room = (right_x - x).saturating_sub(3) as usize;
-        buf.set_stringn(x + 2, bar.y, title, room, detail);
+        let (x, _) = buf.set_stringn(x + 2, bar.y, &summary, room, detail);
+        let room = right_x.saturating_sub(x).saturating_sub(3) as usize;
+        if room > 0 && summary.chars().count() <= (right_x - bar.x) as usize {
+            buf.set_stringn(x + 2, bar.y, title, room, detail);
+        }
+    }
+}
+
+#[cfg(test)]
+mod status_bar_tests {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::*;
+
+    fn bar(width: u16, counts: (usize, usize), title: &str) -> String {
+        let theme = crate::theme::dark_plus(true);
+        let mut t = Terminal::new(TestBackend::new(width, 1)).unwrap();
+        t.draw(|f| status_bar(f, f.area(), "work", counts, title, "Ctrl+Shift+D detach", &theme))
+            .unwrap();
+        t.backend().buffer().content().iter().map(|c| c.symbol()).collect()
+    }
+
+    #[test]
+    fn counts_pluralise_and_running_shows_only_when_positive() {
+        let wide = bar(100, (1, 0), "vim");
+        assert!(
+            wide.contains("work") && wide.contains("1 terminal ") && wide.contains("vim"),
+            "{wide}"
+        );
+        assert!(
+            !wide.contains("running") && wide.ends_with("Ctrl+Shift+D detach "),
+            "{wide}"
+        );
+        let wide = bar(100, (3, 2), "");
+        assert!(wide.contains("3 terminals · 2 running"), "{wide}");
+    }
+
+    #[test]
+    fn a_narrow_bar_truncates_the_title_before_the_counts() {
+        let roomy = bar(50, (3, 0), "a-very-long-title-here");
+        assert!(
+            roomy.contains("3 terminals  a-very") && !roomy.contains("title-here"),
+            "{roomy}"
+        );
+        let narrow = bar(45, (3, 0), "a-very-long-title-here");
+        assert!(narrow.contains("3 terminals") && !narrow.contains("a-very"), "{narrow}");
+        assert!(narrow.contains("detach"), "{narrow}");
     }
 }

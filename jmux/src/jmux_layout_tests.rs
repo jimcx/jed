@@ -95,6 +95,8 @@ impl Harness {
             settings: Default::default(),
             settings_path: None,
             settings_errors: Vec::new(),
+            keybindings_path: None,
+            keymap: None,
         };
         let mut app = App::new(config, tx);
         app.start();

@@ -6,6 +6,12 @@
 //! a notice with its line and the rest applies (`..._a_bad_key_...`); "Reload Settings" re-reads the
 //! file, changes the next terminal only and says so in the status bar (`..._reload_...`), reports a
 //! bad key the same way, and without a settings path says there is nothing to reload.
+//!
+//! Covered by `jmux_config_b_*` (`keybindings.toml` and the status bar): a user binding for split
+//! right works and the default key stops (`..._a_user_binding_...`); a bad binding is a notice and
+//! the rest applies; Reload Settings re-reads the file, and a file that does not parse keeps the old
+//! keymap; the bar shows the terminal and running counts and they update, and a rebound detach key
+//! shows.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -17,6 +23,7 @@ use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
 
 use crate::app::{App, AppEvent, Config};
 use crate::command::Command;
+use crate::keymap;
 use crate::protocol::{ClientMsg, PROTOCOL_VERSION, ServerMsg};
 use crate::settings;
 
@@ -25,8 +32,10 @@ const WAIT: Duration = Duration::from_secs(10);
 struct Harness {
     app: App,
     events: UnboundedReceiver<AppEvent>,
-    _conn_rx: Receiver<ServerMsg>,
+    conn_rx: Receiver<ServerMsg>,
     terminal: Terminal<StreamBackend>,
+    /// What the client would show (the frames' bytes).
+    screen: vt100::Parser,
     dir: tempfile::TempDir,
 }
 
@@ -42,10 +51,21 @@ fn script(dir: &Path, name: &str, marker: &str) -> PathBuf {
 impl Harness {
     /// A started session whose settings file holds `text` (read the way `run_server` does).
     async fn new(text: &str) -> Harness {
+        Harness::with_keys(text, None).await
+    }
+
+    /// Like `new`, with a `keybindings.toml` holding `keys` (read the way `run_server` does).
+    async fn with_keys(text: &str, keys: Option<&str>) -> Harness {
         let dir = tempfile::tempdir().unwrap();
+        let keys_path = dir.path().join(keymap::FILE_NAME);
+        if let Some(keys) = keys {
+            std::fs::write(&keys_path, keys).unwrap();
+        }
+        let (keymap, keymap_errors) = keymap::load(&keys_path);
         let path = dir.path().join("settings.toml");
         std::fs::write(&path, text).unwrap();
-        let (settings, settings_errors) = settings::load(&path);
+        let (settings, mut settings_errors) = settings::load(&path);
+        settings_errors.extend(keymap_errors);
         let (tx, events) = tokio::sync::mpsc::unbounded_channel();
         let config = Config {
             name: "work".into(),
@@ -57,6 +77,8 @@ impl Harness {
             settings,
             settings_path: Some(path),
             settings_errors,
+            keybindings_path: Some(keys_path),
+            keymap: Some(keymap),
         };
         let mut app = App::new(config, tx);
         app.start();
@@ -78,8 +100,13 @@ impl Harness {
         Harness {
             app,
             events,
-            _conn_rx: conn_rx,
+            conn_rx,
             terminal: Terminal::new(StreamBackend::new(100, 24)).unwrap(),
+            screen: vt100::Parser::new(
+                std::num::NonZeroU16::new(24).unwrap(),
+                std::num::NonZeroU16::new(100).unwrap(),
+                0,
+            ),
             dir,
         }
     }
@@ -113,6 +140,28 @@ impl Harness {
         if self.app.needs_redraw {
             self.app.redraw(&mut self.terminal).unwrap();
         }
+        while let Ok(msg) = self.conn_rx.try_recv() {
+            if let ServerMsg::Output(bytes) = msg {
+                self.screen.process(&bytes);
+            }
+        }
+    }
+
+    fn keys_file(&self) -> PathBuf {
+        self.dir.path().join(keymap::FILE_NAME)
+    }
+
+    /// The status bar's text.
+    fn bar(&self) -> String {
+        self.screen.screen().rows(0, 100).nth(23).unwrap_or_default()
+    }
+
+    fn press(&mut self, code: crossterm::event::KeyCode, mods: crossterm::event::KeyModifiers) {
+        let key = crossterm::event::KeyEvent::new(code, mods);
+        self.app.handle(AppEvent::Client {
+            conn: 1,
+            msg: ClientMsg::Input(Input::Key(key)),
+        });
     }
 
     async fn settle(&mut self, what: &str, done: impl Fn(&Harness) -> bool) {
@@ -224,6 +273,100 @@ async fn jmux_config_a_reload_reports_a_bad_key_and_applies_the_rest() {
 async fn jmux_config_a_reload_without_a_settings_path_says_so() {
     let mut h = Harness::new("").await;
     h.app.config.settings_path = None;
+    h.app.config.keybindings_path = None;
     h.app.execute(Command::ReloadSettings);
     assert!(h.app.notice.as_deref().unwrap().contains("No settings file"));
+}
+
+const SPLIT_RIGHT_ON_CTRL_ALT_K: &str = "[[binding]]\nkey = \"ctrl+alt+k\"\ncommand = \"terminal.splitRight\"\n";
+
+fn ctrl_alt() -> crossterm::event::KeyModifiers {
+    crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_config_b_a_user_binding_for_split_right_works_and_the_default_key_stops() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let mut h = Harness::with_keys("", Some(SPLIT_RIGHT_ON_CTRL_ALT_K)).await;
+    assert!(h.app.notice.is_none(), "{:?}", h.app.notice);
+    h.settle("the first shell", |h| h.app.groups.tabs().count() == 1).await;
+    assert_eq!(h.app.groups.order().len(), 1);
+    // The default key (Ctrl+\\) no longer splits.
+    h.press(KeyCode::Char('\\'), KeyModifiers::CONTROL);
+    assert_eq!(h.app.groups.order().len(), 1);
+    h.press(KeyCode::Char('k'), ctrl_alt());
+    h.settle("a second group", |h| h.app.groups.order().len() == 2).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_config_b_a_bad_binding_is_reported_and_the_others_apply() {
+    use crossterm::event::KeyCode;
+    let keys = format!("{SPLIT_RIGHT_ON_CTRL_ALT_K}\n[[binding]]\nkey = \"ctrl+alt+j\"\ncommand = \"nope.nothing\"\n");
+    let mut h = Harness::with_keys("", Some(&keys)).await;
+    let notice = h.app.notice.clone().unwrap();
+    assert!(
+        notice.contains("keybindings.toml") && notice.contains("nope.nothing"),
+        "{notice}"
+    );
+    h.press(KeyCode::Char('k'), ctrl_alt());
+    h.settle("a second group", |h| h.app.groups.order().len() == 2).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_config_b_reload_rereads_the_file_and_a_broken_file_keeps_the_old_keymap() {
+    use crossterm::event::KeyCode;
+    let mut h = Harness::new("").await;
+    h.press(KeyCode::Char('k'), ctrl_alt());
+    assert_eq!(h.app.groups.order().len(), 1, "unbound before the reload");
+    std::fs::write(h.keys_file(), SPLIT_RIGHT_ON_CTRL_ALT_K).unwrap();
+    assert_eq!(h.reload().await, "Settings reloaded");
+    h.press(KeyCode::Char('k'), ctrl_alt());
+    h.settle("a second group", |h| h.app.groups.order().len() == 2).await;
+    // A file that does not parse: reported, the keymap from before stays.
+    std::fs::write(h.keys_file(), "[[binding\n").unwrap();
+    let notice = h.reload().await;
+    assert!(notice.contains("keybindings.toml"), "{notice}");
+    h.press(KeyCode::Char('k'), ctrl_alt());
+    h.settle("a third group", |h| h.app.groups.order().len() == 3).await;
+    // One bad binding in a parsable file: reported on a reload too, the good one still applies.
+    let bad = format!("{SPLIT_RIGHT_ON_CTRL_ALT_K}\n[[binding]]\nkey = \"ctrl+alt+j\"\ncommand = \"nope.nothing\"\n");
+    std::fs::write(h.keys_file(), bad).unwrap();
+    let notice = h.reload().await;
+    assert!(notice.contains("nope.nothing"), "{notice}");
+    h.press(KeyCode::Char('k'), ctrl_alt());
+    h.settle("a fourth group", |h| h.app.groups.order().len() == 4).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_config_b_reload_works_with_only_a_keybindings_path() {
+    let mut h = Harness::new("").await;
+    h.app.config.settings_path = None;
+    assert_eq!(h.reload().await, "Settings reloaded");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_config_b_the_status_bar_shows_the_counts_and_they_update() {
+    let mut h = Harness::new("").await;
+    h.settle("1 terminal", |h| {
+        h.bar().contains("work") && h.bar().contains("1 terminal ")
+    })
+    .await;
+    assert!(h.bar().contains("detach"), "{}", h.bar());
+    h.app.execute(Command::NewTerminal);
+    h.settle("2 terminals", |h| h.bar().contains("2 terminals")).await;
+    // A running command (the codes the shell integration prints) shows, then goes.
+    h.type_text("printf '\\033]133;B\\007'; sleep 2; printf '\\033]133;D;0\\007'");
+    h.settle("1 running", |h| h.bar().contains("1 running")).await;
+    h.settle("no longer running", |h| !h.bar().contains("running")).await;
+    assert!(h.bar().contains("2 terminals"), "{}", h.bar());
+    h.app.execute(Command::CloseTerminal);
+    h.settle("1 terminal again", |h| h.bar().contains("1 terminal ")).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jmux_config_b_a_rebound_detach_key_shows_in_the_bar() {
+    let keys = "[[binding]]\nkey = \"ctrl+alt+q\"\ncommand = \"session.detach\"\n";
+    let mut h = Harness::with_keys("", Some(keys)).await;
+    h.settle("the hint", |h| h.bar().contains("detach")).await;
+    assert!(h.bar().contains("Ctrl+Alt+Q detach"), "{}", h.bar());
 }

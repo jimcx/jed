@@ -68,7 +68,6 @@ const ENV: EnvNames = EnvNames {
 };
 
 /// What a server is started with.
-#[derive(Debug, Clone)]
 pub struct Config {
     pub name: String,
     /// The session's socket (the shell's `$JMUX`).
@@ -88,6 +87,11 @@ pub struct Config {
     pub settings_path: Option<PathBuf>,
     /// What was wrong in the first read: the first notice.
     pub settings_errors: Vec<String>,
+    /// `keybindings.toml`, re-read on `Command::ReloadSettings` (`None`: no reload).
+    pub keybindings_path: Option<PathBuf>,
+    /// The keymap the first read built (`None`: the defaults); `App::new` takes it. Its problems are in
+    /// `settings_errors`.
+    pub keymap: Option<JmuxKeymap>,
 }
 
 /// The notice for a settings file's problems: the first, and how many more.
@@ -118,9 +122,9 @@ pub enum AppEvent {
     Run(Event),
     /// A blocking shell-integration job finished (`integration_event`).
     Integration(IntegrationEvent),
-    /// `Command::ReloadSettings`'s read finished: the settings and what was wrong in the file
-    /// (`apply_settings`).
-    Settings(Settings, Vec<String>),
+    /// `Command::ReloadSettings`'s read finished: the new settings and keymap (`None`: no file to
+    /// read, or an unreadable keybindings file: keep the old) and what was wrong (`apply_settings`).
+    Settings(Option<Settings>, Option<JmuxKeymap>, Vec<String>),
     /// Once a second (`App::start`'s timer): the side bar's durations and ages move on.
     Tick,
 }
@@ -260,17 +264,18 @@ impl App {
     }
 
     /// Spawns nothing (`start` does).
-    pub fn new(config: Config, events: UnboundedSender<AppEvent>) -> App {
+    pub fn new(mut config: Config, events: UnboundedSender<AppEvent>) -> App {
         let notice = settings_notice(&config.settings_errors);
         let mut side = SideBar::new();
         side.width = config.settings.side_bar_width;
+        let keymap = config.keymap.take().unwrap_or_else(keymap::keymap);
         App {
             name: config.name.clone(),
             history: History::new(config.settings.command_history),
             config,
             events,
             groups: Groups::new(),
-            keymap: keymap::keymap(),
+            keymap,
             hit: HitMap::default(),
             confirm: None,
             notice,
@@ -547,7 +552,7 @@ impl App {
             }
             AppEvent::Run(ev) => self.run_event(ev),
             AppEvent::Integration(ev) => self.integration_event(ev),
-            AppEvent::Settings(settings, errors) => self.apply_settings(settings, errors),
+            AppEvent::Settings(settings, keymap, errors) => self.apply_settings(settings, keymap, errors),
             AppEvent::Tick => self.tick(),
         }
     }
@@ -641,14 +646,20 @@ impl App {
         self.needs_redraw = true;
     }
 
-    fn info(&self) -> ServerMsg {
+    /// How many terminals there are and how many of them run a command.
+    pub fn counts(&self) -> (usize, usize) {
         let running = self
             .groups
             .tabs()
             .filter(|s| !s.idle && s.run.status().is_running())
             .count();
+        (self.groups.tab_count(), running)
+    }
+
+    fn info(&self) -> ServerMsg {
+        let (terminals, running) = self.counts();
         ServerMsg::Info {
-            terminals: self.groups.tab_count() as u32,
+            terminals: terminals as u32,
             running: running as u32,
             created: self.created,
             attached: self.attached.is_some(),
@@ -1289,6 +1300,8 @@ mod tests {
             settings: Settings::default(),
             settings_path: None,
             settings_errors: Vec::new(),
+            keybindings_path: None,
+            keymap: None,
         };
         let mut app = App::new(config, events);
         let rx = connect(&mut app, 1, cap);
@@ -1410,6 +1423,8 @@ mod tests {
             settings: Settings::default(),
             settings_path: None,
             settings_errors: Vec::new(),
+            keybindings_path: None,
+            keymap: None,
         };
         let mut app = App::new(config, events);
         // A writer that does nothing until the gate opens, then reports what it was given.

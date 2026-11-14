@@ -68,7 +68,10 @@ fn run_server(args: ServerArgs) -> i32 {
     let _ = logging::init(&log);
     let socket_dir = args.socket_dir.unwrap_or_else(|| jtui::socket::default_socket_dir(APP));
     let settings_path = settings::path(&jtui::paths::config_dir(APP));
-    let (settings, settings_errors) = settings::load(&settings_path);
+    let (settings, mut settings_errors) = settings::load(&settings_path);
+    let keybindings_path = jtui::paths::config_dir(APP).join(keymap::FILE_NAME);
+    let (keymap, keymap_errors) = keymap::load(&keybindings_path);
+    settings_errors.extend(keymap_errors);
     let program = std::env::var_os("SHELL")
         .filter(|s| !s.is_empty())
         .map_or_else(|| PathBuf::from("/bin/sh"), PathBuf::from);
@@ -82,6 +85,8 @@ fn run_server(args: ServerArgs) -> i32 {
         settings,
         settings_path: Some(settings_path),
         settings_errors,
+        keybindings_path: Some(keybindings_path),
+        keymap: Some(keymap),
     };
     let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(rt) => rt,

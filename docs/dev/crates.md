@@ -135,7 +135,7 @@ directory, tests pass a temp dir) and the server:
 - `command` (`Command`, `Context`; `KeyCommand` names like `terminal.new`; plain Ctrl+letter passes through to the shell),
   `keymap` (`defaults(Platform)` as data: Ctrl+` / Ctrl+Shift+T new, Ctrl+Shift+W close, Ctrl+PageDown / PageUp, Alt+1..9,
   Ctrl+Shift+D detach; jed's `cmd` is Ctrl / Cmd: `cmd+\` split right, `cmd+alt+\` down, `cmd+1..8` group N,
-  Ctrl+Shift+, / . previous / next group, Alt+Shift+arrows (Cmd+Alt on macOS) focus by side; the file loading is `jmux_config`), `group` (`Group` = tabs + active + bar scroll; `Groups` over
+  Ctrl+Shift+, / . previous / next group, Alt+Shift+arrows (Cmd+Alt on macOS) focus by side; `keymap::load` / `reload` put `keybindings.toml` over them, jed's file format via `Keymap::load`/`reload`), `group` (`Group` = tabs + active + bar scroll; `Groups` over
   `jtui::split::SplitTree`, an emptied group leaves the tree), `hit` (`HitMap` with the dividers / `Hit`, written by
   `ui::render`), `tab_drag`, `tabbar` (` title × ` tabs, state glyph colours, `‹ ›` overflow arrows),
   `ui` (`render(f, &mut App)`: each group's tab bar and terminal, the dividers (`jtui::borders`), above a one-row status bar: session name / title / detach
@@ -149,6 +149,10 @@ directory, tests pass a temp dir) and the server:
   reload's other files join) and `AppEvent::Settings` applies it (`apply_settings`: the next terminal's shell and scrollback,
   the history cap, the side bar width; the notice). `App::program()` is `shell` else `$SHELL`. The client reads `cursor_style`
   at attach only. Tests pass the file's path (`jmux/src/jmux_config_tests.rs`, `jmux_config_a_*`).
+  `keybindings.toml`: `main::run_server` loads it too (`Config.keymap` / `keybindings_path`; its problems join `settings_errors`);
+  the same reload job re-reads it (`Keymap::reload`: an unparsable file is an error and the old keymap stays; `AppEvent::Settings`
+  carries `Option<Settings>`, `Option<JmuxKeymap>`, errors). The status bar (`ui::status_bar`) shows the session, `App::counts()`
+  (terminals, running; also `info`) and the title (dropped first when narrow), and the detach key; tests `jmux_config_b_*`.
 - Tests: `jmux/src/jmux_server_tests.rs` runs a real server (own thread and runtime, `/bin/sh`) in a temp dir (a subfolder:
   `prepare_dir` insists on `0700`) and drives it with a client over the socket that feeds `Output` into a `vt100::Parser`, or
   with `client::attach` (`Attached`: events in a channel, output into a parser). `jmux/tests/cli.rs` runs the binary

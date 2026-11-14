@@ -1,5 +1,5 @@
 //! jmux's default keys, as data (`Keymap::from_list`); commands never look at keys. A user's
-//! keybindings file is a later task (`jmux_config`).
+//! `keybindings.toml` goes over them (`load` at startup, `reload` on Reload Settings; jed's file format).
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use jtui::keymap::{Binding, KeyCombo, Keymap, Platform, Source};
@@ -199,6 +199,21 @@ pub fn keymap() -> JmuxKeymap {
     Keymap::from_list(defaults(Platform::current()))
 }
 
+/// The user's file name, in the config directory.
+pub const FILE_NAME: &str = "keybindings.toml";
+
+/// Blocking: the defaults with the file at `path` over them, and one message per problem (bad
+/// entries are skipped, the rest applies).
+pub fn load(path: &std::path::Path) -> (JmuxKeymap, Vec<String>) {
+    Keymap::load(path, FILE_NAME, defaults(Platform::current()))
+}
+
+/// Blocking: like `load`, but a file that can't be read or parsed at all is an `Err` (the caller
+/// keeps its keymap).
+pub fn reload(path: &std::path::Path) -> Result<(JmuxKeymap, Vec<String>), String> {
+    Keymap::reload(path, FILE_NAME, defaults(Platform::current()))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -394,5 +409,35 @@ mod tests {
             // The confirm's y / n / Enter / Esc are plain keys: a Ctrl chord means nothing there.
             assert_eq!(map.lookup(&ev, Context::Confirm), None, "confirm Ctrl+{c}");
         }
+    }
+
+    fn user(text: &str) -> Result<(JmuxKeymap, Vec<String>), String> {
+        Keymap::from_text(FILE_NAME, defaults(Platform::Linux), text)
+    }
+
+    #[test]
+    fn a_user_binding_replaces_the_commands_defaults_and_bad_ones_are_reported() {
+        let text = "[[binding]]\nkey = \"ctrl+alt+k\"\ncommand = \"terminal.splitRight\"\n\n\
+                    [[binding]]\nkey = \"ctrl+alt+j\"\ncommand = \"noSuchCommand\"\n";
+        let (map, errors) = user(text).unwrap();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("keybindings.toml"), "{errors:?}");
+        let ev = |code, mods| KeyEvent::new(code, mods);
+        let k = ev(KeyCode::Char('k'), KeyModifiers::CONTROL | KeyModifiers::ALT);
+        assert_eq!(map.lookup(&k, Context::Terminal), Some(Command::SplitRight));
+        let old = ev(KeyCode::Char('\\'), KeyModifiers::CONTROL);
+        assert_eq!(map.lookup(&old, Context::Terminal), None);
+    }
+
+    #[test]
+    fn a_missing_file_gives_the_defaults_and_a_broken_one_is_an_error_on_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let (map, errors) = load(&path);
+        assert!(errors.is_empty() && map.binding_for(Command::Detach).is_some());
+        assert!(reload(&path).unwrap().1.is_empty());
+        std::fs::write(&path, "[[binding\n").unwrap();
+        assert!(reload(&path).is_err());
+        assert_eq!(load(&path).1.len(), 1);
     }
 }

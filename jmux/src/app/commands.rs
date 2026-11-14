@@ -84,23 +84,51 @@ impl App {
     /// `Command::ReloadSettings`: reads `settings.toml` off-thread; `apply_settings` gets the result.
     /// Every file a reload re-reads goes through this one job.
     pub(super) fn reload_settings(&mut self) {
-        let Some(path) = self.config.settings_path.clone() else {
+        let (settings_path, keys_path) = (self.config.settings_path.clone(), self.config.keybindings_path.clone());
+        if settings_path.is_none() && keys_path.is_none() {
             self.notice = Some("No settings file to reload".into());
             return;
-        };
+        }
         let events = self.events.clone();
         tokio::task::spawn_blocking(move || {
-            let (settings, errors) = crate::settings::load(&path);
-            let _ = events.send(AppEvent::Settings(settings, errors));
+            let (settings, mut errors) = match settings_path {
+                Some(path) => {
+                    let (settings, errors) = crate::settings::load(&path);
+                    (Some(settings), errors)
+                }
+                None => (None, Vec::new()),
+            };
+            let keymap = keys_path.and_then(|path| match crate::keymap::reload(&path) {
+                Ok((keymap, keys_errors)) => {
+                    errors.extend(keys_errors);
+                    Some(keymap)
+                }
+                // Unreadable or unparsable: the old keymap stays.
+                Err(e) => {
+                    errors.push(e);
+                    None
+                }
+            });
+            let _ = events.send(AppEvent::Settings(settings, keymap, errors));
         });
     }
 
     /// A reload's result: new terminals use it (running ones keep theirs); the notice is the first
     /// problem, else "Settings reloaded".
-    pub(super) fn apply_settings(&mut self, settings: Settings, errors: Vec<String>) {
-        self.history.set_cap(settings.command_history);
-        self.side.width = settings.side_bar_width;
-        self.config.settings = settings;
+    pub(super) fn apply_settings(
+        &mut self,
+        settings: Option<Settings>,
+        keymap: Option<crate::keymap::JmuxKeymap>,
+        errors: Vec<String>,
+    ) {
+        if let Some(settings) = settings {
+            self.history.set_cap(settings.command_history);
+            self.side.width = settings.side_bar_width;
+            self.config.settings = settings;
+        }
+        if let Some(keymap) = keymap {
+            self.keymap = keymap;
+        }
         self.notice = Some(super::settings_notice(&errors).unwrap_or_else(|| "Settings reloaded".into()));
         tracing::info!(errors = errors.len(), "settings reloaded");
         self.needs_redraw = true;
