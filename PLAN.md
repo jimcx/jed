@@ -705,6 +705,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Expand / shrink selection** (`expand_shrink_selection`): grow / shrink each selection to enclosing syntax nodes — [tasks/expand_shrink_selection.md](tasks/expand_shrink_selection.md)
 - **Feature-based end-to-end test files** (`feature_test_files`): reorganize milestone test files into per-feature files — [tasks/feature_test_files.md](tasks/feature_test_files.md)
 - **Fresh diagnostics for Claude** (`claude_diagnostics`): `get_diagnostics` says whether the servers have caught up with each file, can wait until they have and can cover a file that isn't open; a PostToolUse hook tells Claude the new errors in a file it just edited — [tasks/claude_diagnostics.md](tasks/claude_diagnostics.md)
+- **jed in its own directory** (`jed_dir`): move jed's package (`src/`, `build.rs`, `assets/`, `examples/`, `NOTICES.md`, its `[package]`) into `jed/` beside `jmux/`; the root `Cargo.toml` becomes a virtual workspace — [tasks/jed_dir.md](tasks/jed_dir.md)
 - **Keyboard resize of splits** (`keyboard_resize_splits`): resize the active group's split by keyboard — [tasks/keyboard_resize_splits.md](tasks/keyboard_resize_splits.md)
 - **Language features** (`lang`): go to symbol, signature help and breadcrumbs / sticky scroll — [tasks/lang.md](tasks/lang.md)
 - **Language server setup docs** (`language_server_docs`): docs for installing and configuring language servers — [tasks/language_server_docs.md](tasks/language_server_docs.md)
