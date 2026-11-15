@@ -187,12 +187,12 @@ mod files_section {
 }
 
 mod approvals {
-    use crate::forge::{Approval, ApprovalState, latest_approvals};
+    use crate::forge::{Approval, ApprovalState, Verdict, latest_approvals};
     use crate::mr_review_tests::threads::loaded_app_reviews;
     use crate::mr_review_tests::{idle, screen};
 
-    fn v(who: &str, s: Option<ApprovalState>) -> (String, Option<ApprovalState>) {
-        (who.to_string(), s)
+    fn v(who: &str, s: Option<ApprovalState>) -> (String, Verdict) {
+        (who.to_string(), s.map_or(Verdict::Keep, Verdict::Set))
     }
 
     #[test]

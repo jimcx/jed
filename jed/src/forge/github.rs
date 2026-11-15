@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use super::http::{Client, clean_line, clean_text, encode_path, encode_segment};
 use super::{
     Anchor, ApprovalState, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments, MrState,
-    RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, latest_approvals,
+    RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, Verdict, latest_approvals, review_body,
 };
 
 /// Stop a GraphQL connection after this many pages of 100 (a malicious server can't loop us).
@@ -388,7 +388,8 @@ impl Forge for GitHub {
     /// drafts. A thread's comments beyond the first 100 are not read.
     ///
     /// Blocking: call from spawn_blocking.
-    fn comments(&self, repo: &RepoRef, number: u64) -> Result<MrComments> {
+    fn comments(&self, repo: &RepoRef, mr: &MergeRequest) -> Result<MrComments> {
+        let number = mr.number;
         let threads: Vec<GqlThread> = self.nodes(repo, number, "reviewThreads", THREAD_FIELDS)?;
         let reviews: Vec<GqlReview> = self.nodes(repo, number, "reviews", REVIEW_FIELDS)?;
         let issue: Vec<GqlComment> = self.nodes(repo, number, "comments", ISSUE_COMMENT_FIELDS)?;
@@ -407,14 +408,15 @@ impl Forge for GitHub {
             .collect();
         conversation.extend(issue.iter().map(comment));
         conversation.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        // DISMISSED is a state of its own, so a dismissed approval is already ignored.
+        // DISMISSED is a state of its own: it clears its author's verdict.
         let mut verdicts: Vec<&GqlReview> = reviews.iter().collect();
         verdicts.sort_by(|a, b| a.submitted_at.cmp(&b.submitted_at));
         let approvals = latest_approvals(verdicts.into_iter().map(|r| {
             let state = match r.state.as_deref() {
-                Some("APPROVED") => Some(ApprovalState::Approved),
-                Some("CHANGES_REQUESTED") => Some(ApprovalState::ChangesRequested),
-                _ => None,
+                Some("APPROVED") => Verdict::Set(ApprovalState::Approved),
+                Some("CHANGES_REQUESTED") => Verdict::Set(ApprovalState::ChangesRequested),
+                Some("DISMISSED") => Verdict::Clear,
+                _ => Verdict::Keep,
             };
             (ghost(r.author.as_ref().and_then(|a| a.login.as_ref())), state)
         }));
@@ -459,11 +461,7 @@ impl Forge for GitHub {
             })
             .collect();
         // GitHub requires a body for COMMENT and REQUEST_CHANGES; jed has no overall-body input.
-        let overall = match review.event {
-            ReviewEvent::Comment if review.body.trim().is_empty() => "Review comments",
-            ReviewEvent::RequestChanges if review.body.trim().is_empty() => "Changes requested",
-            _ => review.body.as_str(),
-        };
+        let overall = review_body(review.event, &review.body, true);
         let body = json!({
             "commit_id": head_sha,
             "body": overall,
@@ -648,7 +646,9 @@ mod tests {
                 "POST /api/graphql ~reviews(",
                 data(
                     "reviews",
-                    r#"[{"databaseId":9,"body":"overall","state":"COMMENTED","submittedAt":"2026-01-05T00:00:00Z","url":"","author":{"login":"bob"}},
+                    r#"[{"databaseId":7,"body":"","state":"CHANGES_REQUESTED","submittedAt":"2026-01-04T00:00:00Z","url":"","author":{"login":"bob"}},
+                        {"databaseId":8,"body":"","state":"DISMISSED","submittedAt":"2026-01-04T01:00:00Z","url":"","author":{"login":"bob"}},
+                        {"databaseId":9,"body":"overall","state":"COMMENTED","submittedAt":"2026-01-05T00:00:00Z","url":"","author":{"login":"bob"}},
                         {"databaseId":10,"body":"secret","state":"PENDING","submittedAt":null,"url":"","author":{"login":"me"}},
                         {"databaseId":11,"body":"","state":"APPROVED","submittedAt":"2026-01-06T00:00:00Z","url":"","author":{"login":"cy"}}]"#,
                     None,
@@ -663,10 +663,11 @@ mod tests {
                 ),
             ),
         ]);
-        let all = gh.comments(&repo, 7).unwrap();
+        let all = gh.comments(&repo, &crate::forge::test_mr(7)).unwrap();
         assert_eq!(all.threads[0].hunk.as_deref(), Some("@@ -1 +1 @@\n+x"), "cleaned");
         assert_eq!(all.threads[1].hunk, None);
-        // An approval with an empty body is kept; a COMMENTED review adds none.
+        // An approval with an empty body is kept; a COMMENTED review adds none; bob's dismissed change
+        // request leaves nothing.
         assert_eq!(
             all.approvals,
             [crate::forge::Approval {
@@ -747,15 +748,21 @@ mod tests {
             "POST /api/graphql",
             Reply::json(r#"{"errors":[{"message":"Could not resolve to a PullRequest"}]}"#),
         )]);
-        let err = gh.comments(&repo, 7).err().unwrap();
+        let err = gh.comments(&repo, &crate::forge::test_mr(7)).err().unwrap();
         assert!(err.to_string().contains("Could not resolve"), "{err}");
         let (_s, gh, repo) = setup(vec![("POST /api/graphql", Reply::json("not json"))]);
-        assert!(matches!(gh.comments(&repo, 7), Err(ForgeError::Parse(_))));
+        assert!(matches!(
+            gh.comments(&repo, &crate::forge::test_mr(7)),
+            Err(ForgeError::Parse(_))
+        ));
         let (_s, gh, repo) = setup(vec![(
             "POST /api/graphql",
             Reply::json(r#"{"data":{"repository":null}}"#),
         )]);
-        assert!(matches!(gh.comments(&repo, 7), Err(ForgeError::Parse(_))));
+        assert!(matches!(
+            gh.comments(&repo, &crate::forge::test_mr(7)),
+            Err(ForgeError::Parse(_))
+        ));
     }
 
     fn draft(side: Side, start: u32, end: u32, body: &str) -> DraftComment {

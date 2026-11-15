@@ -14,7 +14,7 @@ use serde::Deserialize;
 use super::http::{Client, clean_line, clean_text, encode_path, encode_segment};
 use super::{
     Anchor, ApprovalState, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments, MrState,
-    RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, latest_approvals,
+    RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, Verdict, latest_approvals, review_body,
 };
 
 pub struct Gitea {
@@ -322,7 +322,8 @@ impl Forge for Gitea {
     /// its own drafts.
     ///
     /// Blocking: call from spawn_blocking.
-    fn comments(&self, repo: &RepoRef, number: u64) -> Result<MrComments> {
+    fn comments(&self, repo: &RepoRef, mr: &MergeRequest) -> Result<MrComments> {
+        let number = mr.number;
         let pulls = Self::pulls(repo);
         let reviews: Vec<Review> = self.client.get_all(&format!("{pulls}/{number}/reviews"))?;
         let mut line_comments = Vec::new();
@@ -359,13 +360,16 @@ impl Forge for Gitea {
             )
         }));
         conversation.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        let mut verdicts: Vec<&Review> = reviews.iter().filter(|r| !r.dismissed).collect();
+        // A stale approval (a push came after it) still stands, as Gitea shows it; a dismissed
+        // review clears its author's verdict.
+        let mut verdicts: Vec<&Review> = reviews.iter().collect();
         verdicts.sort_by(|a, b| a.submitted_at.cmp(&b.submitted_at));
         let approvals = latest_approvals(verdicts.into_iter().map(|r| {
             let state = match r.state.as_str() {
-                "APPROVED" => Some(ApprovalState::Approved),
-                "REQUEST_CHANGES" => Some(ApprovalState::ChangesRequested),
-                _ => None,
+                _ if r.dismissed => Verdict::Clear,
+                "APPROVED" => Verdict::Set(ApprovalState::Approved),
+                "REQUEST_CHANGES" => Verdict::Set(ApprovalState::ChangesRequested),
+                _ => Verdict::Keep,
             };
             let author = login(&r.user);
             (author, state)
@@ -410,7 +414,8 @@ impl Forge for Gitea {
             })
             .collect();
         let body = serde_json::json!({
-            "body": review.body,
+            // Gitea refuses a change request without a body (line comments don't count).
+            "body": review_body(review.event, &review.body, review.comments.is_empty()),
             "event": event_name(review.event),
             "commit_id": head_sha,
             "comments": comments,
@@ -696,10 +701,56 @@ mod tests {
             ("/api/v1/repos/o/r/pulls/7/reviews/1/comments", Reply::json(comments)),
             ("/api/v1/repos/o/r/issues/7/comments?page=1&limit=50", Reply::json("[]")),
         ]);
-        let c = gitea.comments(&repo, 7).unwrap();
+        let c = gitea.comments(&repo, &crate::forge::test_mr(7)).unwrap();
         let t = &c.threads[0];
         assert_eq!((t.anchor.start_line, t.anchor.end_line), (3, 5));
         assert_eq!(t.comments[0].body, "multi");
+    }
+
+    #[test]
+    fn a_dismissed_review_clears_the_reviewers_verdict() {
+        let reviews = r#"[
+            {"id":1,"user":{"login":"bob"},"body":"","state":"REQUEST_CHANGES","submitted_at":"2026-01-01T10:00:00Z"},
+            {"id":2,"user":{"login":"bob"},"body":"","state":"APPROVED","dismissed":true,"submitted_at":"2026-01-01T11:00:00Z"},
+            {"id":3,"user":{"login":"sam"},"body":"","state":"APPROVED","stale":true,"submitted_at":"2026-01-01T12:00:00Z"}]"#;
+        let (_s, gitea, repo) = setup(vec![
+            (
+                "/api/v1/repos/o/r/pulls/7/reviews?page=1&limit=50",
+                Reply::json(reviews),
+            ),
+            ("/api/v1/repos/o/r/issues/7/comments?page=1&limit=50", Reply::json("[]")),
+        ]);
+        let a = gitea.comments(&repo, &crate::forge::test_mr(7)).unwrap().approvals;
+        let got: Vec<(&str, ApprovalState)> = a.iter().map(|a| (a.author.as_str(), a.state)).collect();
+        // bob's dismissed approval leaves nothing; sam's stale approval still stands.
+        assert_eq!(got, [("sam", ApprovalState::Approved)]);
+    }
+
+    #[test]
+    fn a_change_request_always_carries_a_body() {
+        let (server, gitea, repo) = setup(vec![("POST /api/v1/repos/o/r/pulls/7/reviews", Reply::json("{}"))]);
+        let empty = DraftReview {
+            event: ReviewEvent::RequestChanges,
+            body: String::new(),
+            comments: Vec::new(),
+        };
+        assert!(gitea.submit_review(&repo, 7, "h", &empty).error.is_none());
+        let sent: serde_json::Value = serde_json::from_str(&server.requests()[0].body).unwrap();
+        assert_eq!(sent["body"], "Changes requested");
+        // A comment review needs a body only when no line comments come with it; approvals never.
+        for (event, expect) in [(ReviewEvent::Comment, "Review comments"), (ReviewEvent::Approve, "")] {
+            let r = DraftReview { event, ..empty.clone() };
+            assert!(gitea.submit_review(&repo, 7, "h", &r).error.is_none());
+            let sent: serde_json::Value = serde_json::from_str(&server.requests().last().unwrap().body).unwrap();
+            assert_eq!(sent["body"], expect, "{event:?}");
+        }
+        let mine = DraftReview {
+            body: "mine".into(),
+            ..empty
+        };
+        gitea.submit_review(&repo, 7, "h", &mine);
+        let sent: serde_json::Value = serde_json::from_str(&server.requests().last().unwrap().body).unwrap();
+        assert_eq!(sent["body"], "mine");
     }
 
     #[test]
@@ -718,7 +769,7 @@ mod tests {
             ),
             ("/api/v1/repos/o/r/issues/7/comments?page=1&limit=50", Reply::json("[]")),
         ]);
-        let a = gitea.comments(&repo, 7).unwrap().approvals;
+        let a = gitea.comments(&repo, &crate::forge::test_mr(7)).unwrap().approvals;
         let got: Vec<(&str, ApprovalState)> = a.iter().map(|a| (a.author.as_str(), a.state)).collect();
         assert_eq!(
             got,
@@ -751,7 +802,7 @@ mod tests {
                 Reply::json(issue),
             ),
         ]);
-        let c = gitea.comments(&repo, 7).unwrap();
+        let c = gitea.comments(&repo, &crate::forge::test_mr(7)).unwrap();
         assert_eq!(c.threads.len(), 2);
         let t = &c.threads[0];
         assert_eq!(t.id, "11");

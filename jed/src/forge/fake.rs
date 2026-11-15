@@ -142,16 +142,22 @@ fn serve(
     let path = target.split('?').next().unwrap_or(&target).to_string();
     // A route may start with a method (`POST /path`); it then matches that method only.
     let (with_target, with_path) = (format!("{method} {target}"), format!("{method} {path}"));
-    // A route may end with ` ~needle` and then matches only a body containing it; routes with the
-    // same key answer in turn (the last one repeats).
+    // A route may end with ` ~needle` and then matches only a body containing it (`a&b`: both; such a route
+    // wins over one without a needle, so it can refuse what the plain one accepts); routes with
+    // the same key answer in turn (the last one repeats).
     let matching = |k: &String| -> Vec<(String, &Reply)> {
         routes
             .iter()
             .filter_map(|(t, r)| {
                 let (key, needle) = t.split_once(" ~").unwrap_or((t, ""));
-                (key == k.as_str() && body.contains(needle)).then(|| (t.clone(), r))
+                (key == k.as_str() && needle.split('&').all(|n| body.contains(n))).then(|| (t.clone(), r))
             })
-            .collect()
+            .collect::<Vec<_>>()
+    };
+    let matching = |k: &String| -> Vec<(String, &Reply)> {
+        let all = matching(k);
+        let specific: Vec<_> = all.iter().filter(|(t, _)| t.contains(" ~")).cloned().collect();
+        if specific.is_empty() { all } else { specific }
     };
     let reply = [&with_target, &with_path, &target, &path]
         .iter()
@@ -184,4 +190,64 @@ fn serve(
     let mut stream = stream;
     stream.write_all(out.as_bytes())?;
     stream.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sends `POST <path>` with `body` and returns the reply's status.
+    fn post(server: &FakeServer, path: &str, body: &str) -> u16 {
+        let mut s = TcpStream::connect(server.addr).unwrap();
+        write!(
+            s,
+            "POST {path} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut s, &mut text).unwrap();
+        text.split_whitespace().nth(1).unwrap().parse().unwrap()
+    }
+
+    #[test]
+    fn a_needle_route_wins_over_a_plain_one_and_ampersand_needs_both() {
+        // Like Gitea: a change request with an empty body is refused, anything else accepted.
+        let server = FakeServer::start(vec![
+            (
+                r#"POST /p ~"body":""&"event":"REQUEST_CHANGES""#.into(),
+                Reply::status(422),
+            ),
+            ("POST /p".into(), Reply::status(200)),
+        ]);
+        assert_eq!(post(&server, "/p", r#"{"body":"","event":"REQUEST_CHANGES"}"#), 422);
+        assert_eq!(post(&server, "/p", r#"{"body":"x","event":"REQUEST_CHANGES"}"#), 200);
+        assert_eq!(post(&server, "/p", r#"{"body":"","event":"APPROVED"}"#), 200);
+        assert_eq!(post(&server, "/p", "{}"), 200);
+    }
+
+    #[test]
+    fn a_needle_route_wins_even_when_listed_after_the_plain_one() {
+        let server = FakeServer::start(vec![
+            ("POST /p".into(), Reply::status(200)),
+            ("POST /p ~refuse".into(), Reply::status(422)),
+        ]);
+        assert_eq!(post(&server, "/p", "refuse me"), 422);
+        assert_eq!(post(&server, "/p", "refuse me"), 422, "and again");
+        assert_eq!(post(&server, "/p", "fine"), 200);
+    }
+
+    #[test]
+    fn a_needle_alone_404s_without_a_match_and_plain_routes_answer_in_turn() {
+        let server = FakeServer::start(vec![
+            ("POST /p ~yes".into(), Reply::status(201)),
+            ("POST /q".into(), Reply::status(200)),
+            ("POST /q".into(), Reply::status(202)),
+        ]);
+        assert_eq!(post(&server, "/p", "yes"), 201);
+        assert_eq!(post(&server, "/p", "no"), 404);
+        assert_eq!(post(&server, "/q", ""), 200);
+        assert_eq!(post(&server, "/q", ""), 202);
+        assert_eq!(post(&server, "/q", ""), 202);
+    }
 }

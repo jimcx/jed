@@ -162,16 +162,45 @@ pub struct Approval {
     pub state: ApprovalState,
 }
 
-/// Folds reviews, oldest first, into each author's latest verdict: `Some` replaces the author's
-/// earlier one, `None` (a comment-only, pending or dismissed review) leaves it alone.
-pub fn latest_approvals(reviews: impl IntoIterator<Item = (String, Option<ApprovalState>)>) -> Vec<Approval> {
+/// What one review does to its author's standing verdict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// An approval or a change request: replaces the author's earlier verdict.
+    Set(ApprovalState),
+    /// A comment-only or pending review: leaves the author's verdict alone.
+    Keep,
+    /// A dismissed review: the author has no standing verdict (an approval dismissed after a
+    /// change request leaves nothing, not the change request).
+    Clear,
+}
+
+/// Folds reviews, oldest first, into each author's latest verdict.
+pub fn latest_approvals(reviews: impl IntoIterator<Item = (String, Verdict)>) -> Vec<Approval> {
     let mut out: Vec<Approval> = Vec::new();
-    for (author, state) in reviews {
-        let Some(state) = state else { continue };
+    for (author, verdict) in reviews {
+        if verdict == Verdict::Keep {
+            continue;
+        }
         out.retain(|a| a.author != author);
-        out.push(Approval { author, state });
+        if let Verdict::Set(state) = verdict {
+            out.push(Approval { author, state });
+        }
     }
     out
+}
+
+/// The overall body to send with a review. jed has no overall-body input, but forges refuse an
+/// empty one for some events: a change request always (Gitea, GitHub), a comment review on GitHub
+/// (`comment_needs_body`; Gitea takes it when line comments come with it).
+pub fn review_body(event: ReviewEvent, body: &str, comment_needs_body: bool) -> &str {
+    if !body.trim().is_empty() {
+        return body;
+    }
+    match event {
+        ReviewEvent::RequestChanges => "Changes requested",
+        ReviewEvent::Comment if comment_needs_body => "Review comments",
+        _ => body,
+    }
 }
 
 /// A suggested replacement (`crate::suggestion::parse`): lines `start_line..=end_line` (1-based,
@@ -268,8 +297,9 @@ pub trait Forge: Send + Sync {
     /// The open merge requests whose head branch is `head_branch`.
     fn find_open(&self, repo: &RepoRef, head_branch: &str) -> Result<Vec<MergeRequest>>;
     fn merge_request(&self, repo: &RepoRef, number: u64) -> Result<MergeRequest>;
-    /// Others' (and the user's own submitted) comments.
-    fn comments(&self, repo: &RepoRef, number: u64) -> Result<MrComments>;
+    /// Others' (and the user's own submitted) comments on `mr` (the lookup's, so a forge needing its
+    /// head or URL doesn't fetch it again).
+    fn comments(&self, repo: &RepoRef, mr: &MergeRequest) -> Result<MrComments>;
     /// The token's user (to tell which comments are the user's own).
     fn current_user(&self) -> Result<String>;
     /// Posts the review: its comments at their anchors (on `head_sha`) and the verdict. The
@@ -312,5 +342,85 @@ pub fn connect(
         Kind::Gitea => Ok(Box::new(gitea::Gitea::new(client))),
         Kind::GitHub => Ok(Box::new(github::GitHub::new(client))),
         Kind::GitLab => Ok(Box::new(gitlab::GitLab::new(client))),
+    }
+}
+
+/// A merge request with only its number set, for adapter tests whose `comments` needs no more.
+#[cfg(test)]
+pub fn test_mr(number: u64) -> MergeRequest {
+    MergeRequest {
+        number,
+        title: String::new(),
+        body: String::new(),
+        state: MrState::Open,
+        draft: false,
+        author: String::new(),
+        url: String::new(),
+        base: BranchRef::default(),
+        head: BranchRef::default(),
+        head_repo: None,
+        merge_base: None,
+    }
+}
+
+#[cfg(test)]
+mod verdict_tests {
+    use super::*;
+
+    fn fold(reviews: &[(&str, Verdict)]) -> Vec<(String, ApprovalState)> {
+        latest_approvals(reviews.iter().map(|(a, v)| (a.to_string(), *v)))
+            .into_iter()
+            .map(|a| (a.author, a.state))
+            .collect()
+    }
+
+    const OK: Verdict = Verdict::Set(ApprovalState::Approved);
+    const NO: Verdict = Verdict::Set(ApprovalState::ChangesRequested);
+
+    #[test]
+    fn verdicts_fold_by_author_in_order() {
+        assert!(
+            fold(&[("a", OK), ("a", Verdict::Clear)]).is_empty(),
+            "dismissed approval"
+        );
+        assert!(
+            fold(&[("a", NO), ("a", Verdict::Clear)]).is_empty(),
+            "dismissed change request"
+        );
+        assert!(
+            fold(&[("a", NO), ("a", OK), ("a", Verdict::Clear)]).is_empty(),
+            "a dismissed approval after a change request leaves nothing, not the change request"
+        );
+        assert_eq!(
+            fold(&[("a", NO), ("a", Verdict::Keep)]),
+            [("a".into(), ApprovalState::ChangesRequested)],
+            "a comment keeps the change request"
+        );
+        assert_eq!(
+            fold(&[("a", OK), ("a", NO)]),
+            [("a".into(), ApprovalState::ChangesRequested)]
+        );
+        assert_eq!(
+            fold(&[("a", Verdict::Clear), ("a", OK)]),
+            [("a".into(), ApprovalState::Approved)],
+            "a review after the dismissal counts"
+        );
+        assert_eq!(
+            fold(&[("a", OK), ("b", NO), ("a", Verdict::Clear)]),
+            [("b".into(), ApprovalState::ChangesRequested)]
+        );
+    }
+
+    #[test]
+    fn a_review_body_is_filled_in_only_where_the_forge_refuses_an_empty_one() {
+        assert_eq!(
+            review_body(ReviewEvent::RequestChanges, "  ", false),
+            "Changes requested"
+        );
+        assert_eq!(review_body(ReviewEvent::RequestChanges, "", true), "Changes requested");
+        assert_eq!(review_body(ReviewEvent::RequestChanges, "mine", true), "mine");
+        assert_eq!(review_body(ReviewEvent::Comment, "", true), "Review comments");
+        assert_eq!(review_body(ReviewEvent::Comment, "", false), "");
+        assert_eq!(review_body(ReviewEvent::Approve, "", true), "");
     }
 }

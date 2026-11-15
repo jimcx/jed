@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use super::http::{Client, clean_line, clean_text, encode_segment};
 use super::{
     Anchor, ApprovalState, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments, MrState,
-    RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, latest_approvals,
+    RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, Verdict, latest_approvals,
 };
 
 pub struct GitLab {
@@ -73,6 +73,14 @@ struct User {
 struct Approvals {
     #[serde(default)]
     approved_by: Vec<ApprovedBy>,
+}
+
+/// One entry of `…/reviewers`: the reviewer and their review state (`unreviewed`, `reviewed`,
+/// `requested_changes`, `approved`).
+#[derive(Deserialize, Default)]
+struct Reviewer {
+    user: Option<User>,
+    state: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -457,8 +465,8 @@ impl Forge for GitLab {
     /// current one, or not on a text line); the rest are conversation, system notes skipped.
     ///
     /// Blocking: call from spawn_blocking.
-    fn comments(&self, repo: &RepoRef, number: u64) -> Result<MrComments> {
-        let current = self.merge_request(repo, number)?;
+    fn comments(&self, repo: &RepoRef, current: &MergeRequest) -> Result<MrComments> {
+        let number = current.number;
         let discussions: Vec<Discussion> = self
             .client
             .get_all(&format!("{}/discussions", Self::mr_path(repo, number)))?;
@@ -496,21 +504,43 @@ impl Forge for GitLab {
                 None => out.conversation.extend(notes.iter().map(make)),
             }
         }
+        out.conversation.sort_by(|a, b| a.created_at.cmp(&b.created_at));
         // A failing approvals request (an edition without approvals answers 404) shows nothing.
+        let mut verdicts: Vec<(String, Verdict)> = Vec::new();
         match self
             .client
             .get_json::<Approvals>(&format!("{}/approvals", Self::mr_path(repo, number)))
         {
-            Ok(a) => {
-                out.approvals = latest_approvals(a.approved_by.iter().filter_map(|b| b.user.as_ref()).map(|u| {
-                    (
-                        clean_line(u.username.as_deref().unwrap_or_default()),
-                        Some(ApprovalState::Approved),
-                    )
-                }))
-            }
+            Ok(a) => verdicts.extend(a.approved_by.iter().filter_map(|b| b.user.as_ref()).map(|u| {
+                (
+                    clean_line(u.username.as_deref().unwrap_or_default()),
+                    Verdict::Set(ApprovalState::Approved),
+                )
+            })),
             Err(e) => tracing::warn!("reading approvals failed: {e}"),
         }
+        // The reviewers' own states carry "requested changes", which approvals don't. Older
+        // GitLab has no such endpoint (404) or state: approvals show alone, the failure logged once.
+        match self
+            .client
+            .get_json::<Vec<Reviewer>>(&format!("{}/reviewers", Self::mr_path(repo, number)))
+        {
+            Ok(rs) => verdicts.extend(rs.iter().filter_map(|r| {
+                let name = clean_line(r.user.as_ref()?.username.as_deref().unwrap_or_default());
+                match r.state.as_deref() {
+                    Some("requested_changes") => Some((name, Verdict::Set(ApprovalState::ChangesRequested))),
+                    Some("approved") => Some((name, Verdict::Set(ApprovalState::Approved))),
+                    _ => None,
+                }
+            })),
+            Err(e) => {
+                static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::warn!("reading reviewers failed (changes requested not shown): {e}");
+                }
+            }
+        }
+        out.approvals = latest_approvals(verdicts);
         Ok(out)
     }
 
@@ -915,7 +945,7 @@ mod tests {
                 Reply::json(&json),
             ),
         ]);
-        let c = gl.comments(&repo, 7).unwrap();
+        let c = gl.comments(&repo, &gl.merge_request(&repo, 7).unwrap()).unwrap();
         assert_eq!(c.threads.len(), 4);
         let t = &c.threads[0];
         assert_eq!(t.id, "7:aa11");
@@ -958,11 +988,17 @@ mod tests {
                     .with_header("X-Next-Page", ""),
             ),
         ]);
-        assert_eq!(gl.comments(&repo, 7).unwrap().conversation.len(), 2);
+        assert_eq!(
+            gl.comments(&repo, &gl.merge_request(&repo, 7).unwrap())
+                .unwrap()
+                .conversation
+                .len(),
+            2
+        );
         assert_eq!(
             server.requests().len(),
-            4,
-            "the MR, two pages, the approvals (a 404 here)"
+            5,
+            "the MR, two pages, the approvals and the reviewers (404s here)"
         );
     }
 
@@ -1141,13 +1177,89 @@ mod tests {
             r
         };
         let (_s, gl, repo) = setup(routes(true).iter().map(|(p, r)| (p.as_str(), r.clone())).collect());
-        let a = gl.comments(&repo, 7).unwrap().approvals;
+        let a = gl
+            .comments(&repo, &gl.merge_request(&repo, 7).unwrap())
+            .unwrap()
+            .approvals;
         let names: Vec<&str> = a.iter().map(|a| a.author.as_str()).collect();
         assert_eq!(names, ["sam", "al[2Jex"]);
         assert!(a.iter().all(|a| a.state == ApprovalState::Approved));
         // No approvals route (404): the comments still load, with none.
         let (_s, gl, repo) = setup(routes(false).iter().map(|(p, r)| (p.as_str(), r.clone())).collect());
-        assert!(gl.comments(&repo, 7).unwrap().approvals.is_empty());
+        assert!(
+            gl.comments(&repo, &gl.merge_request(&repo, 7).unwrap())
+                .unwrap()
+                .approvals
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_conversation_is_sorted_by_time_not_by_page_order() {
+        let note = |id: u64, at: &str| {
+            format!(
+                r#"{{"id":"d{id}","individual_note":true,"notes":[{{"id":{id},"body":"n{id}","author":{{"username":"cy"}},"created_at":"{at}","updated_at":"{at}","system":false}}]}}"#
+            )
+        };
+        let json = format!(
+            "[{},{},{}]",
+            note(1, "2026-01-03T00:00:00Z"),
+            note(2, "2026-01-01T00:00:00Z"),
+            note(3, "2026-01-02T00:00:00Z")
+        );
+        let (_s, gl, repo) = setup(vec![
+            (&route("/merge_requests/7"), Reply::json(MR)),
+            (
+                &route("/merge_requests/7/discussions?per_page=100&page=1"),
+                Reply::json(&json),
+            ),
+        ]);
+        let c = gl.comments(&repo, &gl.merge_request(&repo, 7).unwrap()).unwrap();
+        let bodies: Vec<&str> = c.conversation.iter().map(|c| c.body.as_str()).collect();
+        assert_eq!(bodies, ["n2", "n3", "n1"]);
+    }
+
+    #[test]
+    fn reviewers_who_requested_changes_show_and_a_missing_endpoint_is_harmless() {
+        let approvals = r#"{"approved_by":[{"user":{"username":"sam"}},{"user":{"username":"bob"}}]}"#;
+        let reviewers = r#"[{"user":{"username":"bob"},"state":"requested_changes"},
+            {"user":{"username":"zed"},"state":"requested_changes"},
+            {"user":{"username":"ann"},"state":"unreviewed"},{"user":{"username":"ed"},"state":"reviewed"}]"#;
+        let base = || {
+            vec![
+                (route("/merge_requests/7"), Reply::json(MR)),
+                (
+                    route("/merge_requests/7/discussions?per_page=100&page=1"),
+                    Reply::json("[]"),
+                ),
+                (route("/merge_requests/7/approvals"), Reply::json(approvals)),
+            ]
+        };
+        let mut with = base();
+        with.push((route("/merge_requests/7/reviewers"), Reply::json(reviewers)));
+        let (_s, gl, repo) = setup(with.iter().map(|(p, r)| (p.as_str(), r.clone())).collect());
+        let a = gl
+            .comments(&repo, &gl.merge_request(&repo, 7).unwrap())
+            .unwrap()
+            .approvals;
+        let got: Vec<(&str, ApprovalState)> = a.iter().map(|a| (a.author.as_str(), a.state)).collect();
+        assert_eq!(
+            got,
+            [
+                ("sam", ApprovalState::Approved),
+                ("bob", ApprovalState::ChangesRequested),
+                ("zed", ApprovalState::ChangesRequested)
+            ]
+        );
+        // The endpoint 404s (an older GitLab): approvals alone.
+        let without = base();
+        let (_s, gl, repo) = setup(without.iter().map(|(p, r)| (p.as_str(), r.clone())).collect());
+        let a = gl
+            .comments(&repo, &gl.merge_request(&repo, 7).unwrap())
+            .unwrap()
+            .approvals;
+        assert_eq!(a.len(), 2);
+        assert!(a.iter().all(|a| a.state == ApprovalState::Approved));
     }
 
     #[test]

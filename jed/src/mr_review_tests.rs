@@ -2369,13 +2369,13 @@ mod drafts {
 
 /// mr_review-f2: Submit Review, reply, resolve, edit and delete against the fake forge's canned
 /// POST / PATCH / DELETE replies.
-mod write {
+pub(crate) mod write {
     use super::*;
     use crate::diff_caret::Caret;
     use crossterm::event::{MouseButton, MouseEventKind};
 
     const FILE: &str = "review-drafts.json";
-    const REVIEWS: &str = "/api/v1/repos/alice/project/pulls/7/reviews";
+    pub(crate) const REVIEWS: &str = "/api/v1/repos/alice/project/pulls/7/reviews";
 
     fn lines(app: &mut App, w: u16, h: u16) -> Vec<String> {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -2396,7 +2396,7 @@ mod write {
 
     /// The fake forge: `!7` whose head is `mr_head`, sam's thread (11, line 3) and bob's resolved
     /// one (12, deleted line 2), the token's user `sam`, and `review` as the answer to a submit.
-    fn server(main: &str, head: &str, mr_head: &str, review: Reply) -> FakeServer {
+    pub(crate) fn server(main: &str, head: &str, mr_head: &str, review: Reply) -> FakeServer {
         let pr = pr_json(7, "Add review panel", main).replace(
             r#""ref":"feature","sha":"h0""#,
             &format!(r#""ref":"feature","sha":"{mr_head}""#),
@@ -2422,6 +2422,11 @@ mod write {
                 Reply::json("[]"),
             ),
             ("/api/v1/user".into(), Reply::json(r#"{"login":"sam"}"#)),
+            // Like Gitea: a change request needs a body, and line comments don't count as one.
+            (
+                format!(r#"POST {REVIEWS} ~"body":""&"event":"REQUEST_CHANGES""#),
+                Reply::status(422).with_body(r#"{"message":"review event REQUEST_CHANGES requires a body"}"#),
+            ),
             (format!("POST {REVIEWS}"), review),
             (format!("POST {PULLS}/7/comments/11/replies"), Reply::json("{}")),
             (format!("POST {PULLS}/comments/11/resolve"), Reply::status(204)),
@@ -2438,13 +2443,13 @@ mod write {
     }
 
     /// The repository, its HEAD and main's commit.
-    fn repo(dir: &Path) -> (PathBuf, String, String) {
+    pub(crate) fn repo(dir: &Path) -> (PathBuf, String, String) {
         let (root, main) = make_repo(dir);
         let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
         (root, head, main)
     }
 
-    async fn boot(root: &Path, server: &FakeServer, state: Option<PathBuf>) -> App {
+    pub(crate) async fn boot(root: &Path, server: &FakeServer, state: Option<PathBuf>) -> App {
         let mut app = open_app(root, state, config_for(server), true);
         assert!(app.settle(loaded).await);
         assert!(app.settle(|a| a.git.status.is_some()).await);

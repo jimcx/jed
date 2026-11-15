@@ -33,6 +33,18 @@ pub(crate) fn server(main: &str, head: &str, publish: Reply) -> FakeServer {
 /// [`server`] with the ranged discussion's first note by `author` saying `body` (JSON-escaped);
 /// editing that note answers too.
 pub(crate) fn server_with_note(main: &str, head: &str, publish: Reply, author: &str, body: &str) -> FakeServer {
+    server_with_routes(main, head, publish, author, body, Vec::new())
+}
+
+/// [`server_with_note`] plus more routes (the approvals, the reviewers).
+pub(crate) fn server_with_routes(
+    main: &str,
+    head: &str,
+    publish: Reply,
+    author: &str,
+    body: &str,
+    extra: Vec<(String, Reply)>,
+) -> FakeServer {
     let mr = format!(
         r#"{{"iid":7,"title":"Add review panel","description":"","state":"opened","draft":false,
         "author":{{"username":"ann"}},"web_url":"https://git.example.com/alice/project/-/merge_requests/7",
@@ -55,7 +67,7 @@ pub(crate) fn server_with_note(main: &str, head: &str, publish: Reply, author: &
         "author":{{"username":"ann"}},"created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","system":false}}]}},
         {{"id":"dd44","individual_note":true,"notes":[{{"id":104,"body":"added 1 commit","author":{{"username":"ann"}},"system":true}}]}}]"#
     );
-    FakeServer::start(vec![
+    let mut routes = vec![
         (
             format!("{API}/merge_requests?state=opened&source_branch=feature&per_page=100&page=1"),
             Reply::json(&format!("[{mr}]")),
@@ -83,7 +95,9 @@ pub(crate) fn server_with_note(main: &str, head: &str, publish: Reply, author: &
             format!("PUT {API}/merge_requests/7/discussions/aa11"),
             Reply::json("{}"),
         ),
-    ])
+    ];
+    routes.extend(extra);
+    FakeServer::start(routes)
 }
 
 /// The panel loaded on the standard repository against `server`, `mod.txt`'s diff open.

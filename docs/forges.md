@@ -50,3 +50,11 @@ In jed a plain ` ```suggestion ` fence in a comment replaces the lines the comme
 plain fence as its last line only, so on GitLab jed shows a plain fence in someone else's comment as
 `suggestion:-0+0` and posts yours (new, edited or a reply) as `suggestion:-N+0` over the thread's lines:
 what you see in jed is what GitLab's page offers.
+
+## Approvals and change requests
+
+The panel names who approved and who asked for changes: each reviewer's latest review counts, and a
+dismissed review leaves that reviewer with nothing (not their earlier verdict). A Gitea approval marked
+stale (a push came after it) still shows as approved. GitLab's change requests come from the merge
+request's reviewers (`requested_changes`); an older GitLab without that shows approvals only. Request
+Changes with no comments is sent with the body "Changes requested", which Gitea and GitHub require.
