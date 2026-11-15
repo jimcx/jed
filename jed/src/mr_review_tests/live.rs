@@ -3,8 +3,9 @@
 //! changing those lines outdates a thread; a new draft's lines are counted in the merge request's
 //! head, and lines that exist only locally can't be commented on.
 
-use super::suggest::{boot, message, on_line3, select, text, world};
+use super::suggest::{boot, lines, message, on_line3, select, text, world};
 use super::*;
+use crate::diff_caret::Caret;
 use crate::forge::Side;
 use crate::review_anchor::Placement;
 
@@ -147,4 +148,54 @@ async fn mr_review_a_draft_follows_lines_typed_above_and_new_ones_count_in_the_h
     app.test_execute(Command::ReviewComment);
     assert_eq!(app.test_composer_text(), None);
     assert!(message(&app).contains("changed locally"), "{}", message(&app));
+}
+
+/// The active review diff's floating Comment button, as last drawn.
+fn comment_button(app: &App) -> Option<ratatui::layout::Rect> {
+    app.hits
+        .group(app.groups.active)
+        .unwrap()
+        .diff
+        .as_ref()
+        .unwrap()
+        .comment
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mr_review_the_floating_comment_button_comments_on_the_selected_lines() {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    let dir = tempfile::tempdir().unwrap();
+    let (root, server) = world(dir.path(), false, |_, _| "[]".into());
+    let mut app = boot(&root, &server).await;
+    // No selection: no button.
+    assert_eq!(comment_button(&app), None);
+    // Lines 2-3 selected: the button on line 3's row, at the right end.
+    select(&mut app, true, 1, 2);
+    draw_wide(&mut app, 120);
+    let b = comment_button(&app).expect("the button is drawn");
+    let screen = lines(&mut app, 120, 24);
+    let row = &screen[b.y as usize];
+    assert!(row.contains("m3") && row.contains("+ Comment"), "{row}");
+    // A click opens the box on those lines; while it is open the button is gone.
+    app.mouse(MouseEventKind::Down(MouseButton::Left), b.x + 1, b.y);
+    app.mouse(MouseEventKind::Up(MouseButton::Left), b.x + 1, b.y);
+    assert_eq!(app.test_composer_text(), Some(String::new()));
+    draw_wide(&mut app, 120);
+    assert_eq!(comment_button(&app), None);
+    app.type_text("From the button");
+    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    let rows = app.review.draft_rows();
+    let d = &rows.iter().find(|r| r.draft.body == "From the button").unwrap().draft;
+    assert_eq!((d.start, d.end, d.right), (2, 3, true));
+    // A selection ending at a line's start doesn't take that line.
+    app.group_mut().active_diff_mut().unwrap().caret = Caret {
+        right: true,
+        anchor: (0, 0),
+        head: (2, 0),
+        col: None,
+    };
+    draw_wide(&mut app, 120);
+    let b = comment_button(&app).expect("the button is drawn");
+    let row = lines(&mut app, 120, 24)[b.y as usize].clone();
+    assert!(row.contains("m2 changed"), "{row}");
 }

@@ -7,7 +7,7 @@ use crossterm::event::{MouseButton, MouseEventKind};
 
 const REVIEWS: &str = "/api/v1/repos/alice/project/pulls/7/reviews";
 
-fn lines(app: &mut App, w: u16, h: u16) -> Vec<String> {
+pub(super) fn lines(app: &mut App, w: u16, h: u16) -> Vec<String> {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| crate::ui::render(f, app)).unwrap();
     let buf = term.backend().buffer();

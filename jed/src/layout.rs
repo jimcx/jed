@@ -539,6 +539,8 @@ pub struct DiffHit {
     pub divider: Option<u16>,
     /// A review tab's thread blocks on screen (the part in view), in order.
     pub blocks: Vec<BlockHit>,
+    /// A review tab's floating Comment button on the selection's last line, when drawn.
+    pub comment: Option<Rect>,
 }
 
 /// A thread block's rows in view and its collapse toggle (when its header is in view).

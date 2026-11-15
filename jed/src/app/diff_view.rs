@@ -1069,6 +1069,11 @@ impl App {
                     self.open_diff_source();
                     return true;
                 }
+                if h.comment.is_some_and(|r| r.contains(p)) {
+                    self.focus_group(g);
+                    self.review_comment();
+                    return true;
+                }
                 if h.restore.is_some_and(|r| r.contains(p)) {
                     self.focus_group(g);
                     self.show_file_history(true);

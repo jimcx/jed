@@ -38,6 +38,8 @@ const TO_LEFT: &str = " ← ";
 const OPEN_FILE: &str = " Open File ";
 /// A file-history entry's tab: restores the file to the entry (`fileHistory.restore`).
 const RESTORE: &str = " Restore ";
+/// A review diff's floating button on a selection's last line (`review.comment`).
+const COMMENT: &str = " + Comment ";
 
 /// The colours, looked up once per frame.
 struct Styles {
@@ -252,6 +254,12 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
         .list()
         .iter()
         .any(|t| matches!(t.role, review_blocks::Role::Composer { .. }));
+    // A review diff's selection: its last line (one ending at a line's start doesn't include
+    // it) gets the Comment button, unless a comment box is open.
+    let comment_on = (d.pair.is_review() && !caret.is_empty() && !composing).then(|| {
+        let (lo, hi) = caret.ordered();
+        if hi.0 > lo.0 && hi.1 == 0 { hi.0 - 1 } else { hi.0 }
+    });
     let (mut left_walk, mut right_walk) = (Walk::new(&doc.left), Walk::new(&doc.right));
     // The text's columns (as `draw_inline` / `draw_half` lay them out; side by side the narrower
     // side) and the widest line drawn, for sideways scrolling.
@@ -394,6 +402,24 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
                 }
                 _ => None,
             };
+        }
+        // The Comment button floats over the right end of the caret side's column.
+        if let Some(last) = comment_on
+            && (if caret.right { row.right } else { row.left }) == Some(last)
+        {
+            let w = COMMENT.width() as u16;
+            let (start, end) = if inline {
+                (body.x, body.x + body.width)
+            } else if caret.right {
+                (body.x + half + 1, body.x + body.width)
+            } else {
+                (body.x, body.x + half)
+            };
+            if end - start > w + 12 {
+                let rect = Rect::new(end - w, y, w, 1);
+                out.set_stringn(rect.x, y, COMMENT, w as usize, theme.get("review.composer.button"));
+                hit.comment = Some(rect);
+            }
         }
         // The change's buttons on its first row: Stage / Unstage at the row's right end; Revert
         // (an unstaged view) at the left column's right end, or left of Stage inline.
