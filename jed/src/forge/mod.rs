@@ -289,12 +289,21 @@ impl fmt::Display for ForgeError {
 
 impl std::error::Error for ForgeError {}
 
+/// Whether `mr`'s head branch lives in `repo`: `head_repo` equals `repo.path` (case-insensitively)
+/// or is unknown. The one rule every adapter's `find_open` filters with.
+pub fn in_repo(mr: &MergeRequest, repo: &RepoRef) -> bool {
+    mr.head_repo
+        .as_deref()
+        .is_none_or(|h| h.eq_ignore_ascii_case(&repo.path))
+}
+
 pub type Result<T> = std::result::Result<T, ForgeError>;
 
 /// One forge's merge request API. Every method is `Blocking: call from spawn_blocking`. Writes
 /// (drafts, submit, resolve) are added by the review-writing subtask.
 pub trait Forge: Send + Sync {
-    /// The open merge requests whose head branch is `head_branch`.
+    /// The open merge requests whose head branch is `head_branch` in `repo` itself (a fork's
+    /// merge request from a branch of the same name is not one; see [`in_repo`]).
     fn find_open(&self, repo: &RepoRef, head_branch: &str) -> Result<Vec<MergeRequest>>;
     fn merge_request(&self, repo: &RepoRef, number: u64) -> Result<MergeRequest>;
     /// Others' (and the user's own submitted) comments on `mr` (the lookup's, so a forge needing its
@@ -360,6 +369,32 @@ pub fn test_mr(number: u64) -> MergeRequest {
         head: BranchRef::default(),
         head_repo: None,
         merge_base: None,
+    }
+}
+
+#[cfg(test)]
+mod in_repo_tests {
+    use super::*;
+
+    fn with(head_repo: Option<&str>) -> MergeRequest {
+        MergeRequest {
+            head_repo: head_repo.map(String::from),
+            ..test_mr(1)
+        }
+    }
+
+    #[test]
+    fn matches_the_repository_ignoring_case_and_keeps_unknown() {
+        let repo = RepoRef {
+            host: "h".into(),
+            path: "alice/project".into(),
+        };
+        assert!(in_repo(&with(Some("alice/project")), &repo));
+        assert!(in_repo(&with(Some("Alice/Project")), &repo), "case-insensitive");
+        assert!(in_repo(&with(None), &repo), "unknown is kept");
+        assert!(!in_repo(&with(Some("bob/project")), &repo));
+        assert!(!in_repo(&with(Some("alice/project2")), &repo));
+        assert!(!in_repo(&with(Some("project 9")), &repo));
     }
 }
 

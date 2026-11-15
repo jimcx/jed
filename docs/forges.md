@@ -58,3 +58,9 @@ dismissed review leaves that reviewer with nothing (not their earlier verdict). 
 stale (a push came after it) still shows as approved. GitLab's change requests come from the merge
 request's reviewers (`requested_changes`); an older GitLab without that shows approvals only. Request
 Changes with no comments is sent with the body "Changes requested", which Gitea and GitHub require.
+
+## Forks
+
+The panel shows the merge request whose source branch is the checked-out branch *in the repository
+itself*. A fork's merge request from a branch of the same name (`main`, `patch-1`) is not shown as
+the branch's own.

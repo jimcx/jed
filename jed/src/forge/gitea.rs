@@ -298,7 +298,8 @@ fn threads(mut comments: Vec<ReviewComment>) -> Vec<Thread> {
 }
 
 impl Forge for Gitea {
-    /// Gitea cannot filter by head branch, so this lists the open pull requests and filters.
+    /// Gitea cannot filter by head branch, so this lists the open pull requests and filters by
+    /// branch name and head repository (a fork's pull request is left out).
     ///
     /// Blocking: call from spawn_blocking.
     fn find_open(&self, repo: &RepoRef, head_branch: &str) -> Result<Vec<MergeRequest>> {
@@ -306,7 +307,7 @@ impl Forge for Gitea {
         Ok(pulls
             .into_iter()
             .map(merge_request)
-            .filter(|m| m.head.name == head_branch)
+            .filter(|m| m.head.name == head_branch && super::in_repo(m, repo))
             .collect())
     }
 
@@ -493,7 +494,7 @@ mod tests {
     const PR: &str = r#"{"number":7,"title":"Add \u001b[2Jthing","body":"a\r\nb","state":"open","draft":false,"merged":false,
         "user":{"login":"ann"},"html_url":"https://g/o/r/pulls/7","merge_base":"mb111",
         "base":{"ref":"main","sha":"b0","repo":{"full_name":"o/r"}},
-        "head":{"ref":"feat","sha":"h0","repo":{"full_name":"fork/r"}}}"#;
+        "head":{"ref":"feat","sha":"h0","repo":{"full_name":"O/r"}}}"#;
 
     fn setup(routes: Vec<(&str, Reply)>) -> (FakeServer, Gitea, RepoRef) {
         let server = FakeServer::start(routes.into_iter().map(|(p, r)| (p.to_string(), r)).collect());
@@ -517,6 +518,20 @@ mod tests {
     }
 
     #[test]
+    fn a_fork_request_on_the_same_branch_name_is_left_out() {
+        let fork = PR
+            .replace("\"number\":7", "\"number\":8")
+            .replace("\"full_name\":\"O/r\"}}}", "\"full_name\":\"fork/r\"}}}");
+        assert!(fork.contains("fork/r"));
+        let (_s, gitea, repo) = setup(vec![(
+            "/api/v1/repos/o/r/pulls?state=open&page=1&limit=50",
+            Reply::json(&format!("[{fork},{PR}]")),
+        )]);
+        let found = gitea.find_open(&repo, "feat").unwrap();
+        assert_eq!(found.iter().map(|m| m.number).collect::<Vec<_>>(), [7]);
+    }
+
+    #[test]
     fn finds_open_requests_by_head_branch() {
         let other = PR
             .replace("\"number\":7", "\"number\":8")
@@ -533,7 +548,7 @@ mod tests {
         assert_eq!(m.title, "Add [2Jthing", "control characters are removed");
         assert_eq!(m.body, "a\nb");
         assert_eq!((m.base.name.as_str(), m.head.sha.as_str()), ("main", "h0"));
-        assert_eq!(m.head_repo.as_deref(), Some("fork/r"));
+        assert_eq!(m.head_repo.as_deref(), Some("O/r"));
         assert_eq!(m.merge_base.as_deref(), Some("mb111"));
         assert_eq!(server.requests()[0].header("authorization"), Some("token tok"));
         assert!(gitea.find_open(&repo, "nope").unwrap().is_empty());

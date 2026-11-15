@@ -49,8 +49,14 @@ pub(crate) fn server_with_routes(
         r#"{{"iid":7,"title":"Add review panel","description":"","state":"opened","draft":false,
         "author":{{"username":"ann"}},"web_url":"https://git.example.com/alice/project/-/merge_requests/7",
         "source_branch":"feature","target_branch":"main","sha":"{head}",
+        "source_project_id":3,"target_project_id":3,
         "diff_refs":{{"base_sha":"{main}","start_sha":"{main}","head_sha":"{head}"}}}}"#
     );
+    // A fork's merge request from a branch of the same name, with the higher number: the lookup
+    // must not pick it.
+    let fork = mr
+        .replace("\"iid\":7", "\"iid\":8")
+        .replace("\"source_project_id\":3", "\"source_project_id\":9");
     let old = "d".repeat(40);
     let discussions = format!(
         r#"[{{"id":"aa11","individual_note":false,"notes":[{{"id":101,"body":"{body}",
@@ -70,7 +76,7 @@ pub(crate) fn server_with_routes(
     let mut routes = vec![
         (
             format!("{API}/merge_requests?state=opened&source_branch=feature&per_page=100&page=1"),
-            Reply::json(&format!("[{mr}]")),
+            Reply::json(&format!("[{fork},{mr}]")),
         ),
         (format!("{API}/merge_requests/7"), Reply::json(&mr)),
         (format!("{API}/merge_requests/7/diffs"), Reply::json("[]")),

@@ -8956,6 +8956,8 @@ mod discard_changes {
     // open buffer of a.txt still had the changed text); passed on 3 isolated reruns.
     // FLAKE: 2026-11-03 again (spell_check review follow-up), once in a full run under load
     // ~8, output not captured; passed alone 3 times and in the full runs before and after.
+    // FLAKE: 2026-11-16, failed once in a full run under load (left "a2\n", right "a\n"; seen
+    // during review_forge_fixes-c); the dump below is printed with every assertion.
     // Suspect: `settle_stage` waits for the discard's task and git, not for the open buffer's
     // reload (`discard_done` → `check_disk`, itself off-thread), so the buffer can still hold
     // "a2\n" (see "disk check busy" / "reloads" in the dump; the sibling test

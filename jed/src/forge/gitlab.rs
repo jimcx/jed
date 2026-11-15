@@ -112,6 +112,8 @@ struct Mr {
     target_branch: String,
     sha: Option<String>,
     diff_refs: Option<DiffRefs>,
+    source_project_id: Option<u64>,
+    target_project_id: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -189,7 +191,18 @@ fn ghost(user: Option<&User>) -> String {
         .unwrap_or_else(|| "ghost".into())
 }
 
-fn merge_request(m: Mr) -> MergeRequest {
+/// GitLab names the source project by id only: equal ids mean `repo`'s own project; otherwise
+/// (a fork) the path is not in the answer, so a marker that never equals a repository path stands in.
+fn head_repo(m: &Mr, repo: &RepoRef) -> Option<String> {
+    match (m.source_project_id, m.target_project_id) {
+        (Some(s), Some(t)) if s == t => Some(repo.path.clone()),
+        (Some(s), Some(_)) => Some(format!("project {s}")),
+        _ => None,
+    }
+}
+
+fn merge_request(m: Mr, repo: &RepoRef) -> MergeRequest {
+    let head_repo = head_repo(&m, repo);
     let refs = m.diff_refs.unwrap_or_default();
     let clean = |s: &Option<String>| Some(text(s)).filter(|s| !s.is_empty());
     let head_sha = clean(&m.sha).or_else(|| clean(&refs.head_sha)).unwrap_or_default();
@@ -213,7 +226,7 @@ fn merge_request(m: Mr) -> MergeRequest {
             name: clean_line(&m.source_branch),
             sha: head_sha,
         },
-        head_repo: None,
+        head_repo,
         merge_base: clean(&refs.base_sha),
     }
 }
@@ -451,14 +464,14 @@ impl Forge for GitLab {
         let mrs: Vec<Mr> = self.client.get_all(&url)?;
         Ok(mrs
             .into_iter()
-            .map(merge_request)
-            .filter(|m| m.head.name == head_branch)
+            .map(|m| merge_request(m, repo))
+            .filter(|m| m.head.name == head_branch && super::in_repo(m, repo))
             .collect())
     }
 
     /// Blocking: call from spawn_blocking.
     fn merge_request(&self, repo: &RepoRef, number: u64) -> Result<MergeRequest> {
-        Ok(merge_request(self.client.get_json(&Self::mr_path(repo, number))?))
+        Ok(merge_request(self.client.get_json(&Self::mr_path(repo, number))?, repo))
     }
 
     /// Discussions: positioned ones are threads (outdated when made at another head than the
@@ -858,6 +871,42 @@ mod tests {
         let r = &server.requests()[0];
         assert_eq!(r.header("private-token"), Some("tok"));
         assert_eq!(r.header("authorization"), None);
+    }
+
+    #[test]
+    fn a_fork_request_on_the_same_branch_name_is_left_out() {
+        let with = |n: u32, s: u32| {
+            MR.replace("\"iid\":7", &format!("\"iid\":{n}")).replace(
+                "\"sha\":\"h0\"",
+                &format!("\"source_project_id\":{s},\"target_project_id\":3,\"sha\":\"h0\""),
+            )
+        };
+        let (_s, gl, repo) = setup(vec![(
+            &route("/merge_requests?state=opened&source_branch=feat&per_page=100&page=1"),
+            Reply::json(&format!(
+                "[{},{},{}]",
+                with(8, 9),
+                with(7, 3),
+                MR.replace("\"iid\":7", "\"iid\":6")
+            )),
+        )]);
+        let found = gl.find_open(&repo, "feat").unwrap();
+        // Same project and no ids (unknown) stay; the fork's is out.
+        assert_eq!(found.iter().map(|m| m.number).collect::<Vec<_>>(), [7, 6]);
+        assert_eq!(found[0].head_repo.as_deref(), Some("grp/sub/repo"));
+        assert_eq!(found[1].head_repo, None);
+    }
+
+    #[test]
+    fn a_fork_merge_requests_head_repo_is_a_marker_never_a_path() {
+        let fork = MR.replace(
+            "\"sha\":\"h0\"",
+            "\"source_project_id\":9,\"target_project_id\":3,\"sha\":\"h0\"",
+        );
+        let (_s, gl, repo) = setup(vec![(&route("/merge_requests/7"), Reply::json(&fork))]);
+        let m = gl.merge_request(&repo, 7).unwrap();
+        assert_eq!(m.head_repo.as_deref(), Some("project 9"));
+        assert!(!super::super::in_repo(&m, &repo));
     }
 
     #[test]

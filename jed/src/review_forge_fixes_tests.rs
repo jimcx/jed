@@ -2,7 +2,8 @@
 //! app against the fake GitLab server: a plain ` ```suggestion ` fence in a multi-line GitLab
 //! comment replaces only the comment's last line when applied, `suggestion:-N+M` its range; a
 //! reply or an edit from jed on GitLab is posted with the plain fence spelled out (`-N+0`), so
-//! GitLab's page means what jed's box showed.
+//! GitLab's page means what jed's box showed. Subtask c: the panel picks the same-repository merge
+//! request, not a fork's on the same branch name.
 
 mod gitlab_suggestions {
     use crate::app::App;
@@ -231,5 +232,27 @@ mod verdicts {
             lookups,
             "one MR request per lookup"
         );
+    }
+}
+
+/// Subtask c: GitLab's fake lists a same-project merge request (7) and a fork's (8, higher) on the
+/// branch `feature`; the panel shows 7.
+mod forks {
+    use crate::forge::fake::Reply;
+    use crate::git::test_repo::git;
+    use crate::mr_review_tests::gitlab::boot;
+    use crate::mr_review_tests::gitlab::server;
+    use crate::mr_review_tests::make_repo;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_forge_fixes_c_the_panel_picks_the_same_repository_merge_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main) = make_repo(dir.path());
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let srv = server(&main, &head, Reply::status(204));
+        let app = boot(&root, &srv, None).await;
+        let r = app.review.review().unwrap();
+        assert_eq!(r.mr.number, 7);
+        assert_eq!(r.mr.head_repo.as_deref(), Some("alice/project"));
     }
 }
