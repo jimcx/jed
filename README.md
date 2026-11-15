@@ -69,7 +69,7 @@ uses.
 
 | File | What it holds | Docs |
 |---|---|---|
-| `~/.config/jed/settings.toml` | Editor settings (tab width, whitespace, cursor, …). "Preferences: Open User Settings" creates it with every key at its default | [src/config/settings.rs](src/config/settings.rs) (table at the top) |
+| `~/.config/jed/settings.toml` | Editor settings (tab width, whitespace, cursor, …). "Preferences: Open User Settings" creates it with every key at its default | [jed/src/config/settings.rs](jed/src/config/settings.rs) (table at the top) |
 | `~/.config/jed/keybindings.toml` | Your own key bindings (`[[binding]]` with `key`, `command`, optional `context`); command names are shown in the palette | [PLAN.md — Keybindings](PLAN.md#keybindings-vs-code-defaults) |
 | `~/.config/jed/tasks.toml` | Task templates for every workspace | [docs/tasks.md](docs/tasks.md) |
 | `~/.config/jed/forges.toml` | Merge-request hosts, API URLs and token variables for review | [docs/forges.md](docs/forges.md) |

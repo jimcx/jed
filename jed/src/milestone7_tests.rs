@@ -25,7 +25,7 @@
 //! decides the selection, focus is kept if any request asked); an opened match is centred;
 //! results whose file changed since are clamped; results streaming in don't move the selection.
 //!
-//! Done when (`mod done_when`): a copy of this repo's `src/` and `docs/`, searched through the
+//! Done when (`mod done_when`): a copy of this repo's `jed/src/` and `docs/`, searched through the
 //! Search view in all three modes, gives exactly the hits of an independent reference (what
 //! `rg -F -i`, `rg -F -s` and `rg` report); an unsaved edit shows up in the results and opens
 //! with its text selected; typing never stalls (`view::milestone_7_typing_in_the_query_never_stalls`,
@@ -1255,7 +1255,7 @@ mod done_when {
         assert_eq!(app.search_view.query.text, pattern);
     }
 
-    /// This repo's `src/` and `docs/`, copied so edits made while the test runs can't flake it,
+    /// This repo's `jed/src/` and `docs/`, copied so edits made while the test runs can't flake it,
     /// searched through the Search view in each mode, give exactly the reference's hits.
     #[tokio::test(flavor = "multi_thread")]
     async fn milestone_7_three_modes_agree_with_the_reference() {

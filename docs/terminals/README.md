@@ -20,7 +20,7 @@ Terminal.app doesn't support the kitty keyboard protocol and can't send Cmd keys
 
 ## Cmd bindings jed uses
 
-Every macOS binding with Cmd in jed's default keymap. **Keep this table in sync with `src/config/keymap.rs`**: a unit test (`terminal_docs_list_every_cmd_binding`) fails if a Cmd binding is missing here or listed but no longer bound. When the table changes, update every snippet too.
+Every macOS binding with Cmd in jed's default keymap. **Keep this table in sync with `jed/src/config/keymap.rs`**: a unit test (`terminal_docs_list_every_cmd_binding`) fails if a Cmd binding is missing here or listed but no longer bound. When the table changes, update every snippet too.
 
 Canonical spelling (the test parses the first column): modifiers in the order `cmd`, `ctrl`, `alt`, `shift`; lowercase key names; `backslash` for `\`.
 

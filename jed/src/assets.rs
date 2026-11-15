@@ -1,5 +1,5 @@
-//! What is compiled into the binary, zstd-packed by `build.rs` (`bundle.rs`): the bundled
-//! dictionary (`assets/dictionaries/en_AU/`, with its licence) and `NOTICES.md`. They are
+//! What is compiled into the binary, zstd-packed by `jed/build.rs` (`bundle.rs`): the bundled
+//! dictionary (`jed/assets/dictionaries/en_AU/`, with its licence) and `jed/NOTICES.md`. They are
 //! unpacked on first use ([`dictionary_files`], [`notices`]) and written out to
 //! `<data dir>/` by [`sync`] when the stamp file there doesn't name this build's bundle (so the
 //! licence travels with the dictionary on disk).

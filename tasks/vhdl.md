@@ -18,5 +18,5 @@ See [Syntax highlighting](../PLAN.md#syntax-highlighting), [LSP](../PLAN.md#lsp)
   - Needs: `syntax::Language` and its queries, `lsp::config` `Builtins`, the real-server test helpers (`REAL_SERVERS`, `children_named`)
   - Done when: a `.vhd` file opens coloured with `--` comment toggling and auto-closed `(` / `"`, and with `vhdl_ls` installed shows diagnostics, hover and go to definition across files in a project with a `vhdl_ls.toml`; the tests above pass
   - Subtasks (one agent and one commit each):
-    - vhdl-a: the language: `Language::Vhdl`, detection, the grammar crate, highlight queries (+ `queries/vhdl.scm`), `scope_of` kinds, `LanguageConfig`; unit tests; docs (`src/syntax/CLAUDE.md`'s language lists)
+    - vhdl-a: the language: `Language::Vhdl`, detection, the grammar crate, highlight queries (+ `queries/vhdl.scm`), `scope_of` kinds, `LanguageConfig`; unit tests; docs (`jed/src/syntax/CLAUDE.md`'s language lists)
     - vhdl-b: the server: the `vhdl_ls` built-in, the fake-server test, the real-server test (skipped without the binary), a `vhdl_ls.toml` note in the server docs; hand checks; marks the task ✅

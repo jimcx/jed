@@ -1051,7 +1051,7 @@ async fn syntax_plugins_broken_query_is_reported_in_the_app() {
     assert!(!coloured_lines(&mut app, 1));
 }
 
-/// "Copying `examples/languages/cmake/` in under the id `cmake2` colours a `CMakeLists.txt`
+/// "Copying `jed/examples/languages/cmake/` in under the id `cmake2` colours a `CMakeLists.txt`
 /// exactly as the built-in CMake does." The copy's file claims are dropped (the registry is
 /// process-global, and a plugin claiming `.cmake` would take every other test's files) and the
 /// file is reached through a `.workspace` association. With its claims the template would not

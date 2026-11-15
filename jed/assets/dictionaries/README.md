@@ -1,6 +1,6 @@
 # Bundled dictionaries
 
-Used by `src/spellcheck.rs`; `build.rs` zstd-packs `en_AU/` into the binary (`src/assets.rs`), so a refreshed dictionary needs a rebuild.
+Used by `jed/src/spellcheck.rs`; `jed/build.rs` zstd-packs `en_AU/` into the binary (`jed/src/assets.rs`), so a refreshed dictionary needs a rebuild.
 
 - `en_AU/` — the Australian English Hunspell dictionary (`en_AU.aff`, `en_AU.dic`) with its
   licence file (`README_en_AU.txt`: the SCOWL, Ispell and WordNet notices; the folder's generic
@@ -13,4 +13,4 @@ Used by `src/spellcheck.rs`; `build.rs` zstd-packs `en_AU/` into the binary (`sr
   buffer in that language is checked (`spellcheck::language_terms`; jed's own lists).
 
 Other languages are not bundled: the user fetches them into `<config dir>/dictionaries/<lang>/`
-([docs/spell-check.md](../../docs/spell-check.md)).
+([docs/spell-check.md](../../../docs/spell-check.md)).

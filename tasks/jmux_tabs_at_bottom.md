@@ -7,7 +7,7 @@ priority: 0
 dependencies: [jmux_config]
 ---
 
-See [jmux's plan](../jmux/PLAN.md): [Settings, keys and theme](../jmux/PLAN.md#settings-keys-and-theme). jed's model: `tabs_at_bottom` (`src/config/settings.rs`, `edit::Settings`, the tab bar / editor split in `ui::render`, test `tabs_at_bottom` in `src/todo_tests.rs`).
+See [jmux's plan](../jmux/PLAN.md): [Settings, keys and theme](../jmux/PLAN.md#settings-keys-and-theme). jed's model: `tabs_at_bottom` (`jed/src/config/settings.rs`, `edit::Settings`, the tab bar / editor split in `ui::render`, test `tabs_at_bottom` in `jed/src/todo_tests.rs`).
 
 `tabs_at_bottom = true` in `~/.config/jmux/settings.toml` (bool, default `false`, same key, type and meaning as jed's) puts each group's tab bar on its last row and the terminal (shell and scroll bar track) above it.
 

@@ -1,9 +1,9 @@
 # Dictionaries
 
 The checker uses Hunspell dictionaries (read by the `spellbook` crate). Australian English
-(`en_AU`) is built into jed with its licence (`assets/dictionaries/en_AU/`, zstd-packed into the
-binary by `build.rs`), so it works out of the box. The first load also writes it out, with its
-licence and `NOTICES.md`, to `~/.local/share/jed/` (`$XDG_DATA_HOME/jed`) when `.bundle-stamp` there
+(`en_AU`) is built into jed with its licence (`jed/assets/dictionaries/en_AU/`, zstd-packed into the
+binary by `jed/build.rs`), so it works out of the box. The first load also writes it out, with its
+licence and `jed/NOTICES.md`, to `~/.local/share/jed/` (`$XDG_DATA_HOME/jed`) when `.bundle-stamp` there
 doesn't name this build's bundle (so a new jed version refreshes them; a matching stamp costs one
 small read). To use another language, set `spell_check_language = "de_DE"` (any Hunspell name;
 default `"en_AU"`) and install its files:
@@ -14,7 +14,7 @@ That downloads `de_DE.aff`, `de_DE.dic` and the dictionary's licence/readme file
 LibreOffice `dictionaries` repository into `<config dir>/dictionaries/de_DE/` (the config dir is
 where `settings.toml` lives). Keep the licence files with the dictionary. Run from a jed checkout;
 needs python3 and curl. `scripts/fetch-dictionary --bundled <lang>` refreshes the bundled
-`assets/dictionaries/<lang>/` instead. Changing the setting loads the new dictionary at once; if
+`jed/assets/dictionaries/<lang>/` instead. Changing the setting loads the new dictionary at once; if
 its files are missing jed uses `en_AU` and says so once.
 
 # Your own words

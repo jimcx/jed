@@ -576,7 +576,7 @@ impl Parser<'_> {
     }
 }
 
-/// Test support: a real grammar (the vendored CMake one in `examples/languages/cmake/`) built with
+/// Test support: a real grammar (the vendored CMake one in `jed/examples/languages/cmake/`) built with
 /// the system C compiler into a prebuilt library, once per test process, and plugin directories
 /// made from it.
 #[cfg(test)]

@@ -1,6 +1,6 @@
 # app submodules (detail)
 
-Every `src/app/` submodule in full: its state, functions, events and rules. `src/app/CLAUDE.md` has one line each plus the things to know before editing; read the entries here for the submodules you touch.
+Every `jed/src/app/` submodule in full: its state, functions, events and rules. `jed/src/app/CLAUDE.md` has one line each plus the things to know before editing; read the entries here for the submodules you touch.
 
 `App` (in `mod.rs`) owns all state; submodules are `impl App` blocks split by area, with `pub(super)` methods:
 

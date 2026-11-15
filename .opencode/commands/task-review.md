@@ -21,7 +21,7 @@ This is the review half of `/task` on its own: the criteria of its validator and
 2. Find the task the change builds from the `tasks/` file(s) the diff touches, the commit subjects, or the argument, and read it (`scripts/tasks show <id>`): its text, its "Done when", and for a subtask its line in the subtask list. Don't re-read PLAN.md sections beyond what a finding needs.
 3. `git diff --stat <range>` for the files. Skip generated files and PLAN.md's index.
    - Review the diff, not the code around it: look further only to grep for an existing helper, to see how hot a path is, or to see what a test exercises.
-   - Read narrowly: diff one file or hunk at a time (`git diff <range> -- <file>`, never a whole multi-file diff), ranges of ≤ 150 lines, no `cat` of files over ~300 lines (grep `docs/dev/app.md` / `modules.md` for `src/app/mod.rs` and the like); independent reads and greps in one message.
+   - Read narrowly: diff one file or hunk at a time (`git diff <range> -- <file>`, never a whole multi-file diff), ranges of ≤ 150 lines, no `cat` of files over ~300 lines (grep `docs/dev/app.md` / `modules.md` for `jed/src/app/mod.rs` and the like); independent reads and greps in one message.
 
 ## Review
 
@@ -30,7 +30,7 @@ This is the review half of `/task` on its own: the criteria of its validator and
 ### Validator (/task step 7)
 
 - Are the tests useful, and do they actually test the code? Look for tautologies, assertions that can't fail, checks against test-only hooks instead of real effects, missing negative cases, and flakiness. Random or property-style tests cap their iterations and output sizes.
-- Coverage against every part of the task — for a subtask, its line in the subtask list, and the task's "Done when" on the last subtask. End-to-end tests go through real code paths (`docs/dev/testing.md`) and sit where CLAUDE.md's "Tests" says (`src/todo_tests.rs` for a single task, `src/<id>_tests.rs` for a task with subtasks).
+- Coverage against every part of the task — for a subtask, its line in the subtask list, and the task's "Done when" on the last subtask. End-to-end tests go through real code paths (`docs/dev/testing.md`) and sit where CLAUDE.md's "Tests" says (`jed/src/todo_tests.rs` for a single task, `jed/src/<id>_tests.rs` for a task with subtasks).
 - Real bugs in the changed code.
 
 ### Reviewer (/task step 8)

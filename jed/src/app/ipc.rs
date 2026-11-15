@@ -1,4 +1,4 @@
-//! The socket tasks reach this jed by (`src/ipc.rs`; PLAN.md, Git editor, "From a task
+//! The socket tasks reach this jed by (`jed/src/ipc.rs`; PLAN.md, Git editor, "From a task
 //! terminal"): started from `start`, requests arrive as `AppEvent::Ipc(IpcEvent::Request)`, and a `wait` request is
 //! answered when its file's last tab closes (`ipc_sweep`, called wherever a tab or a load ends).
 

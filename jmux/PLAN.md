@@ -19,7 +19,7 @@ second binary and shares code with jed through two crates. Tasks are in `../task
 - A prefix key; jmux binds keys directly, as jed does
 
 ## Crates
-One cargo workspace at the repository root; jed stays the root package (`src/`).
+One cargo workspace at the repository root; jed is the `jed/` package, the root a virtual workspace.
 
 | Crate | Path | Holds |
 |---|---|---|

@@ -9,7 +9,7 @@ Drawing only — but `render` is not pure: it takes `&mut App` and writes back s
 - Selections: only `selections.overlapping(viewport)` are looked at (there can be 60k); one index walks that sorted slice while bytes are visited in order; a selection over a line break paints one cell past the line end. Secondary cursors follow `cursor_style`: underlined cells (`editor.cursor.secondaryUnderline`) for `line` / `underline`, reversed (`editor.cursor.secondary`) for `block`; the terminal cursor marks the primary, only in the focused group with no prompt or palette open.
 - Styles: start from the widget's base key (`editor`, `sideBar`, `dialog`, `statusBar.<colour>`) and `patch` modifier keys on top (`editor.selection`, `gutter.active`, …). Every key comes from `Theme::dark_plus`; never construct `Color`s here.
 
-One line per widget or editor layer; [docs/dev/ui.md](../../docs/dev/ui.md) has each in full (keys, layout, hits, render-time state) — read the entries for what you touch, and add detail there, not here.
+One line per widget or editor layer; [docs/dev/ui.md](../../../docs/dev/ui.md) has each in full (keys, layout, hits, render-time state) — read the entries for what you touch, and add detail there, not here.
 
 - `activity.rs` — the activity bar's icons (greyed, `activityBar.disabled`, when `Mode::allows_view` says no: single file mode)
 - `tabs.rs` — tab bars: overflow scrolling with `‹` / `›`, revealing the active tab, deleted / diff / shell / dirty titles, a shell title's state glyph in its theme colour (`tab.shellRunning` / `tab.shellIdle`, red `tab.shellError` after a failed command); a dragged tab's drop marker (`tab.dropMarker`); the group's number in the bar's corner with two or more groups (`tab.groupNumber`)

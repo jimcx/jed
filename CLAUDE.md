@@ -9,12 +9,12 @@ guessing: Features (one subsection per area), [Keybindings](PLAN.md#keybindings-
 Milestones 1–13 are done and keep their numbers. Everything after them is a task, built via `/task <name>`: a single task is one commit; a bigger one has a short id and subtasks (`tools-a`, `tools-b`, …), one commit each (a task too big for one commit gets split into subtasks or smaller tasks). Each task and milestone lives in a `tasks/<id>.md` file with a front-matter header (`id`, `name`, `summary`, `status`, `priority`, `dependencies`); PLAN.md's [Tasks](PLAN.md#tasks) list is an index generated from them with `scripts/tasks` (see [tasks/README.md](tasks/README.md)). OpenCode runs the same workflows from `.opencode/commands/` (`task.md`, `task-review.md` — `/task`'s review criteria applied to existing work, without subagents (review-bot reads them too) — and `release.md`; agents and instruction loading in [opencode.jsonc](opencode.jsonc)); keep them in step with `.claude/commands/`. Finished work keeps its file with `status: done`; the full entry (what was built, "Deferred", hand checks, notes for later work) stays there — grep `tasks/` when something refers back to one.
 
 **This file is the summary; details are read on demand**:
-- [docs/dev/modules.md](docs/dev/modules.md) — the module map (every `src/` module, one line each, then in full) and the data flow step by step. Read the entries for what you touch.
+- [docs/dev/modules.md](docs/dev/modules.md) — the module map (every `jed/src/` module, one line each, then in full) and the data flow step by step. Read the entries for what you touch.
 - [docs/dev/conventions.md](docs/dev/conventions.md) — rules for one area: tabs, keymaps, settings, language server requests, edits from background results, scroll bars, adding a command end to end, and each feature's conventions (files changed on disk, log tabs, file history, sessions, crash backups, back / forward, recent workspaces, tool logs).
 - [docs/dev/testing.md](docs/dev/testing.md) — driving the app headlessly, and test helpers per feature.
 - [docs/dev/crates.md](docs/dev/crates.md) — the workspace: `crates/jtui`, `crates/jterm` (shared with jmux), what goes where, re-exports, where their tests live.
-- [docs/dev/app.md](docs/dev/app.md) / [docs/dev/ui.md](docs/dev/ui.md) — every `src/app/` submodule and `src/ui/` widget in full.
-- The nested `CLAUDE.md` files in `src/app`, `src/buffer`, `src/lsp`, `src/syntax`, `src/ui`, `docs/terminals`.
+- [docs/dev/app.md](docs/dev/app.md) / [docs/dev/ui.md](docs/dev/ui.md) — every `jed/src/app/` submodule and `jed/src/ui/` widget in full.
+- The nested `CLAUDE.md` files in `jed/src/{app,buffer,lsp,syntax,ui}`, `docs/terminals`.
 
 ## Toolchain and checks
 
@@ -35,7 +35,7 @@ All three must pass before a commit. Cap test runs with `scripts/timeout 900 car
 
 ## Where things are
 
-`main.rs` parses args and loads config before raw mode; `app/` holds `App` (all state, the event loop, `execute(Command)`); `ui/` draws it (`ui::render(f, &mut App)`, which also writes back render-time state such as view sizes and the mouse `HitMap`). Feature "model" modules in `src/` (`find.rs`, `diff_view.rs`, `scm.rs`, …) hold no app state and draw nothing: `app/<area>.rs` drives them, `ui/<area>.rs` draws them. Positions and the buffer live in `buffer/`, commands in `command.rs`, keys in `config/keymap.rs`, settings in `config/settings.rs` + `edit::Settings`. Find a module in [docs/dev/modules.md](docs/dev/modules.md#module-map-src); the event loop's steps are in [its data flow](docs/dev/modules.md#data-flow).
+jed's source is `jed/src/`: `main.rs` parses args and loads config before raw mode; `app/` holds `App` (all state, the event loop, `execute(Command)`); `ui/` draws it (`ui::render(f, &mut App)`, which also writes back render-time state such as view sizes and the mouse `HitMap`). Feature "model" modules in `jed/src/` (`find.rs`, `diff_view.rs`, `scm.rs`, …) hold no app state and draw nothing: `app/<area>.rs` drives them, `ui/<area>.rs` draws them. Positions and the buffer live in `buffer/`, commands in `command.rs`, keys in `config/keymap.rs`, settings in `config/settings.rs` + `edit::Settings`. Find a module in [docs/dev/modules.md](docs/dev/modules.md#module-map-jedsrc); the event loop's steps are in [its data flow](docs/dev/modules.md#data-flow).
 crossterm is patched via `[patch.crates-io]` with a fork (github.com/jimcx/crossterm, branch `fwdback`, tag `0.29+fwdback`) adding the mouse back / forward buttons; on a crossterm upgrade, rebase `fwdback` and re-apply the patch.
 `vt100` is likewise a fork (github.com/jimcx/vt100-rust, tag `v0.18.1+jed4`: 0.18.1 + prompt marks + `Screen::scrolled_lines` + optional zstd scrollback compression) in `[patch.crates-io]`.
 
@@ -61,7 +61,7 @@ crossterm is patched via `[patch.crates-io]` with a fork (github.com/jimcx/cross
 ## Tests
 
 - Unit tests sit in `#[cfg(test)] mod tests` at the bottom of each module.
-- End-to-end tests: `src/milestone_tests.rs` (M1), `src/milestone2_tests.rs` … `milestone8_tests.rs`, named `milestone_N_*`; a task with subtasks adds `src/<id>_tests.rs` (tests named `<id>_*`, a `#[cfg(test)] mod` line in `main.rs`; a release budget test keeps `milestone` in its name, e.g. `milestone_soft_wrap_budget_*`); single tasks' go in `src/todo_tests.rs`, one `mod` per task. Each file opens with a `//!` doc saying what "done when" it covers.
+- End-to-end tests: `jed/src/milestone_tests.rs` (M1), `milestone2_tests.rs` … `milestone8_tests.rs`, named `milestone_N_*`; a task with subtasks adds `jed/src/<id>_tests.rs` (tests named `<id>_*`, a `#[cfg(test)] mod` line in `jed/src/main.rs`; a release budget test keeps `milestone` in its name, e.g. `milestone_soft_wrap_budget_*`); single tasks' go in `jed/src/todo_tests.rs`, one `mod` per task. Each file opens with a `//!` doc saying what "done when" it covers.
 - They drive the app headlessly through real code paths (`App::new` + `test_start`, `press`, `type_text`, `mouse`, `settle`, `TestBackend` drawing): read [docs/dev/testing.md](docs/dev/testing.md#driving-the-app-headlessly) first, then its section for the feature. Never set `XDG_CONFIG_HOME` (tests run in parallel); `settle` results are always `assert!`ed.
 - **`terminal_docs_list_every_cmd_binding`** (`config/keymap.rs`) fails if the macOS Cmd bindings and the table in `docs/terminals/README.md` differ. Any new/changed/removed Cmd binding means updating that table *and* every terminal snippet (see `docs/terminals/CLAUDE.md`).
 

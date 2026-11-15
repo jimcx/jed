@@ -13,8 +13,8 @@
 //!
 //! **Dictionaries**: Hunspell `.aff` + `.dic` pairs read by the `spellbook` crate (which does the
 //! affix expansion, case rules and suggestions). Australian English (`en_AU`, [`DEFAULT_LANGUAGE`])
-//! is compiled in zstd-packed with its licence (`assets/dictionaries/en_AU/`, fetched by
-//! `scripts/fetch-dictionary`, packed by `build.rs`, see `assets.rs`). The `spell_check_language` setting names another language: its
+//! is compiled in zstd-packed with its licence (`jed/assets/dictionaries/en_AU/`, fetched by
+//! `scripts/fetch-dictionary`, packed by `jed/build.rs`, see `assets.rs`). The `spell_check_language` setting names another language: its
 //! pair is read from `<config dir>/dictionaries/<lang>/<lang>.{aff,dic}` (same script, given that
 //! directory), see [`Dictionary::load`]; one that is missing falls back to `en_AU`
 //! ([`Dictionary::missing_language`] says so, the app tells the user once). Always bundled:

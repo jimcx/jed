@@ -1,8 +1,8 @@
 ---
 id: jed_dir
 name: jed in its own directory
-summary: "move jed's package (`src/`, `build.rs`, `assets/`, `examples/`, `NOTICES.md`, its `[package]`) into `jed/` beside `jmux/`; the root `Cargo.toml` becomes a virtual workspace"
-status: in-progress
+summary: "jed's package (`src/`, `build.rs`, `assets/`, `examples/`, `NOTICES.md`, its `[package]`) lives in `jed/` beside `jmux/`; the root `Cargo.toml` is a virtual workspace (`default-members = [\"jed\"]`)"
+status: done
 priority: 0
 dependencies: []
 ---
@@ -37,4 +37,10 @@ Layout after the move:
     - ✅ jed_dir-a: the move — `git mv` of `src/`, `build.rs`, `assets/`, `examples/`, `NOTICES.md` into `jed/`; `jed/Cargo.toml` split out, the root `Cargo.toml` a virtual workspace (`default-members = ["jed"]`); the `repo_root()` test helper and the include / manifest-dir fixes; `scripts/fetch-dictionary`; checks, scripts, CI and the release budgets pass. Only the docs a broken build or test needs change here
       - Done: 367 pure renames; root `Cargo.toml` workspace-only, `jed/Cargo.toml` holds the package; `jed/src/test_util.rs` `repo_root()` (with a test that it is the workspace root) replaces `CARGO_MANIFEST_DIR` for `.venv`, `rust-toolchain.toml`, `docs/forges.md`, `claude-plugin`, milestone 7's `docs` copy and workspace_search's reference test; keymap's terminals README include gained a `../`; `scripts/fetch-dictionary --bundled` → `jed/assets/dictionaries/`. Scripts, CI and `.workspace` needed nothing. Only `docs/dev/modules.md` / `testing.md` got the helper's lines; stale doc paths (incl. `task.md` in `.claude/commands/` and `.opencode/commands/`) are for jed_dir-b
       - The release budget `milestone_conflict_scan_budget_typing_in_a_1mb_file` fails on this Linux machine (~155µs vs 100µs) identically before the move; not caused by it
-    - jed_dir-b: docs and agent instructions; task done — every jed path in `CLAUDE.md`, `docs/`, the nested `CLAUDE.md` files, `PLAN.md`, `README.md`, `NOTICES.md`, `jmux/` docs, `.claude/commands/` and `.opencode/commands/` (kept in step), source comments and `tasks/*.md` (one reviewed rewrite script, its rule in the commit body); the leftover-path grep; mark the task ✅
+    - ✅ jed_dir-b: docs and agent instructions; task done — every jed path in `CLAUDE.md`, `docs/`, the nested `CLAUDE.md` files, `PLAN.md`, `README.md`, `NOTICES.md`, `jmux/` docs, `.claude/commands/` and `.opencode/commands/` (kept in step), source comments and `tasks/*.md` (one reviewed rewrite script, its rule in the commit body); the leftover-path grep; mark the task ✅
+  - ✅ Done. Body paths above are pre-move on purpose (they describe the move)
+    - Changed for later work: jed's source is `jed/src/` (end-to-end tests `jed/src/<id>_tests.rs`, `jed/src/todo_tests.rs`); tests needing the repository root use `test_util::repo_root()`, `CARGO_MANIFEST_DIR` means `jed/`; the module-map anchor is `docs/dev/modules.md#module-map-jedsrc`
+    - Also: nested `CLAUDE.md` links to `docs/` fixed (`../../../docs/…`); `tasks/*.md` rewritten by a script (a root-relative `src/…`, `assets/…`, `examples/…`, `build.rs`, `NOTICES.md` became `jed/…` when that path, or its directory for globs, exists under `jed/` or names a removed / planned jed file; generic examples and the historical pathspec in `jterm.md` kept)
+    - Deferred: moving jed's design out of `PLAN.md` into a `jed/PLAN.md`
+    - Still to check by hand: the bundled dictionary and "Help: About" notices show in a release build (`scripts/install`); `cargo run` at the root opens jed
+    - The release budget `milestone_conflict_scan_budget_typing_in_a_1mb_file` fails on this Linux machine (~155µs vs 100µs) both before and after the move

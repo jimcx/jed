@@ -30,7 +30,7 @@ fn pack(out: &str, files: Vec<std::path::PathBuf>) {
     std::fs::write(dest, bundle::pack(&entries).unwrap()).unwrap();
 }
 
-/// `assets/dictionaries/en_AU/` and `NOTICES.md`, zstd-packed for `src/assets.rs`.
+/// `jed/assets/dictionaries/en_AU/` and `jed/NOTICES.md`, zstd-packed for `jed/src/assets.rs`.
 fn pack_assets() {
     let dir = Path::new("assets/dictionaries/en_AU");
     println!("cargo:rerun-if-changed={}", dir.display());

@@ -13,7 +13,7 @@ use super::plugin::{self, LIBRARY, MANIFEST, Manifest};
 use super::{Language, Scope};
 use crate::theme::{ANSI_RESET, Theme};
 
-/// The commented template (`examples/languages/cmake/language.toml`): jed's CMake as a plugin.
+/// The commented template (`jed/examples/languages/cmake/language.toml`): jed's CMake as a plugin.
 const TEMPLATE: &str = include_str!("../../examples/languages/cmake/language.toml");
 
 /// Replaces the template's line starting with `prefix`.

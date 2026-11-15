@@ -2,7 +2,7 @@
 
 `App` (in `mod.rs`) owns all state; submodules are `impl App` blocks split by area, with `pub(super)` methods:
 
-One line per submodule; [docs/dev/app.md](../../docs/dev/app.md) has each in full (state, functions, events, rules) — read the entries for what you touch, and add detail there, not here (the root CLAUDE.md's budget applies: a line or two per change).
+One line per submodule; [docs/dev/app.md](../../../docs/dev/app.md) has each in full (state, functions, events, rules) — read the entries for what you touch, and add detail there, not here (the root CLAUDE.md's budget applies: a line or two per change).
 
 - `mod.rs` — the `App` struct, `new` / `start` / `run`, `handle_event`, `execute`, `sync_views`, copy / paste, `handle_app_event`, `render_whitespace()`, and the `#[cfg(test)]` driving helpers (`test_start`, `press`, `type_text`, `mouse`, `settle`, `pump`, `test_execute`, the `test_*_tick`s, …: listed in docs/dev/app.md)
 - `config.rs` — `ConfigEvent` (`AppEvent::Config`: the workspace config / settings / keymap re-reads and the `*Ready` files made for editing them) and `handle_config_event`.

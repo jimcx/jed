@@ -55,7 +55,7 @@ extra-paths = ["scripts", "vendor"]
 
 jed treats `SConstruct`, `SConscript` and their spellings as Python, and opens them in ty as Python even though they have no `.py`. SCons runs these files with its globals (`Environment`, `Import`, `Glob`, `ARGUMENTS`, …) already defined, so ty on its own reports each of them as `Name 'Environment' used when not defined`.
 
-**What jed does by itself:** in a workspace with an `SConstruct` at its root, jed writes a stub of SCons's globals to `~/.local/state/jed/lsp/scons/__builtins__.pyi` (the source is `src/lsp/scons_builtins.pyi`). It adds that folder to ty's `environment.extra-paths` when it starts any server whose command is named `ty`, including a `.venv/bin/ty`. ty treats the names in a `__builtins__.pyi` on its search path as builtins. Nothing is written into the workspace, and `SConstruct` gets completion, hover and go to definition with no false errors.
+**What jed does by itself:** in a workspace with an `SConstruct` at its root, jed writes a stub of SCons's globals to `~/.local/state/jed/lsp/scons/__builtins__.pyi` (the source is `jed/src/lsp/scons_builtins.pyi`). It adds that folder to ty's `environment.extra-paths` when it starts any server whose command is named `ty`, including a `.venv/bin/ty`. ty treats the names in a `__builtins__.pyi` on its search path as builtins. Nothing is written into the workspace, and `SConstruct` gets completion, hover and go to definition with no false errors.
 
 What the stub can't know is what your own build adds. Here is an example project:
 
