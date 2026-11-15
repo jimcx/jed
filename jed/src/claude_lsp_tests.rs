@@ -431,7 +431,7 @@ async fn retry(
 #[tokio::test(flavor = "multi_thread")]
 async fn claude_lsp_real_rust_analyzer_definition_references_and_workspace_symbol() {
     let _one_at_a_time = REAL_SERVERS.lock().await;
-    let toolchain = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("rust-toolchain.toml")).unwrap();
+    let toolchain = std::fs::read_to_string(crate::test_util::repo_root().join("rust-toolchain.toml")).unwrap();
     let probe = tempfile::tempdir().unwrap();
     let runs = std::process::Command::new("rust-analyzer")
         .arg("--version")

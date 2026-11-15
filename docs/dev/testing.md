@@ -6,6 +6,7 @@ How to drive the app in end-to-end tests and inspect each feature, moved out of 
 
 Helpers are `#[cfg(test)] impl App` in `app/mod.rs`.
 
+- Repository files (`.venv`, `docs/`, `rust-toolchain.toml`, `claude-plugin/`) are found with `test_util::repo_root()`, never `CARGO_MANIFEST_DIR` (that is `jed/`).
 - Build: `App::new(Workspace::load(root), TrustStore::load(dir.join("trust.toml")), Some(InitialFile { buffer, goto: None }), true)`, then `app.test_start()` (watcher + first listing). The file watcher is **off by default in tests** (`watch_files: !cfg!(test)`: the macOS FSEvents watcher is pathologically slow — `notify`'s stream rebuild pegs `fseventsd`); a test that changes files on disk (or `.workspace`/settings) and settles on the app seeing it calls `app.enable_file_watching()` before `test_start`. See `open_app` in each milestone file and `milestone_tests::test_app`. With user settings: `Workspace::load(root).with_user_settings(config::settings::load(path).overrides)`, set `app.config_dir`, and `app.report_errors(errors)` as `main` does (`milestone8_tests::user_app`); never set `XDG_CONFIG_HOME` (tests run in parallel).
 - Use `tempfile::tempdir()` and `workspace::normalize(dir.path())` for the root (macOS temp paths are symlinks). Keep the trust store inside the tempdir.
 - `app.test_open(buffer)` opens a second buffer in a new active tab (no file I/O).

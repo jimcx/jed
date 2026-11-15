@@ -548,7 +548,7 @@ async fn milestone_9_real_clangd() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn milestone_9_real_ty() {
-    let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv/bin/ty");
+    let venv = crate::test_util::repo_root().join(".venv/bin/ty");
     let Some(ty) = which("ty").or_else(|| venv.is_file().then_some(venv)) else {
         eprintln!("milestone_9_real_ty: skipped, ty isn't on PATH or in .venv/bin");
         return;
@@ -1555,7 +1555,7 @@ async fn milestone_9_real_clangd_diagnostics() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn milestone_9_real_ty_diagnostics() {
-    let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv/bin/ty");
+    let venv = crate::test_util::repo_root().join(".venv/bin/ty");
     let Some(ty) = which("ty").or_else(|| venv.is_file().then_some(venv)) else {
         eprintln!("milestone_9_real_ty_diagnostics: skipped, ty isn't on PATH or in .venv/bin");
         return;
@@ -3236,7 +3236,7 @@ async fn milestone_9_real_clangd_hover_and_definition() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn milestone_9_real_ty_hover_and_definition() {
-    let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv/bin/ty");
+    let venv = crate::test_util::repo_root().join(".venv/bin/ty");
     let Some(ty) = which("ty").or_else(|| venv.is_file().then_some(venv)) else {
         eprintln!("milestone_9_real_ty_hover_and_definition: skipped, ty isn't on PATH or in .venv/bin");
         return;
@@ -4074,7 +4074,7 @@ async fn milestone_9_real_clangd_completion() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn milestone_9_real_ty_completion() {
-    let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv/bin/ty");
+    let venv = crate::test_util::repo_root().join(".venv/bin/ty");
     let Some(ty) = which("ty").or_else(|| venv.is_file().then_some(venv)) else {
         eprintln!("milestone_9_real_ty_completion: skipped, ty isn't on PATH or in .venv/bin");
         return;
@@ -5029,7 +5029,7 @@ async fn milestone_9_real_clangd_references_and_rename() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn milestone_9_real_ty_references_and_rename() {
-    let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv/bin/ty");
+    let venv = crate::test_util::repo_root().join(".venv/bin/ty");
     let Some(ty) = which("ty").or_else(|| venv.is_file().then_some(venv)) else {
         eprintln!("milestone_9_real_ty_references_and_rename: skipped, ty isn't on PATH or in .venv/bin");
         return;
@@ -5622,7 +5622,7 @@ const SCONS_HELPERS: &str = "def cpp_files(nodes: list) -> list:
 /// on ty's search path). ty has no formatter: format document says so.
 #[tokio::test(flavor = "multi_thread")]
 async fn milestone_9_done_when_scons_project() {
-    let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv/bin/ty");
+    let venv = crate::test_util::repo_root().join(".venv/bin/ty");
     let Some(ty) = which("ty").or_else(|| venv.is_file().then_some(venv)) else {
         eprintln!("milestone_9_done_when_scons_project: skipped, ty isn't on PATH or in .venv/bin");
         return;

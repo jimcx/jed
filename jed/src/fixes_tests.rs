@@ -1356,7 +1356,7 @@ const RA_FIXES_MAIN: &str =
 async fn fixes_done_when_rust_analyzer() {
     let _one_at_a_time = REAL_SERVERS.lock().await;
     let dir = tempfile::tempdir().unwrap();
-    let toolchain = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("rust-toolchain.toml")).unwrap();
+    let toolchain = std::fs::read_to_string(crate::test_util::repo_root().join("rust-toolchain.toml")).unwrap();
     let root = project(
         dir.path(),
         &[
@@ -1679,7 +1679,7 @@ const TY_PY: &str = "import os\nx = undefined_name\ny = 1 +\nz = 2\n";
 /// squiggles and the hover shows none. Skipped with a note without ty.
 #[tokio::test(flavor = "multi_thread")]
 async fn fixes_done_when_ty() {
-    let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv/bin/ty");
+    let venv = crate::test_util::repo_root().join(".venv/bin/ty");
     let Some(ty) = which("ty").or_else(|| venv.is_file().then_some(venv)) else {
         eprintln!("fixes_done_when_ty: skipped, ty isn't on PATH or in .venv/bin");
         return;

@@ -2952,7 +2952,7 @@ mod rust_language_server {
     async fn real_rust_analyzer_on_a_cargo_crate() {
         let _one_at_a_time = REAL_SERVERS.lock().await;
         let dir = tempfile::tempdir().unwrap();
-        let toolchain = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("rust-toolchain.toml")).unwrap();
+        let toolchain = fs::read_to_string(crate::test_util::repo_root().join("rust-toolchain.toml")).unwrap();
         let root = project(
             dir.path(),
             &[
@@ -13288,7 +13288,6 @@ mod selection_highlight {
 /// helper beside a subfolder `SConstruct`.
 mod scons_settings {
     use std::fs;
-    use std::path::Path;
     use std::sync::Arc;
 
     use serde_json::{Value, json};
@@ -13406,7 +13405,7 @@ mod scons_settings {
     /// through `scons_path` (a scratch install). Skipped without ty.
     #[tokio::test(flavor = "multi_thread")]
     async fn real_ty_resolves_scons_in_a_site_scons_helper() {
-        let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv/bin/ty");
+        let venv = crate::test_util::repo_root().join(".venv/bin/ty");
         let Some(ty) = which("ty").or_else(|| venv.is_file().then_some(venv)) else {
             eprintln!("real_ty_resolves_scons_in_a_site_scons_helper: skipped, ty isn't on PATH or in .venv/bin");
             return;

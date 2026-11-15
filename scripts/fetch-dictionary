@@ -3,7 +3,7 @@
 
     scripts/fetch-dictionary de_DE                      # into <config dir>/dictionaries/de_DE/ (loaded at run time)
     scripts/fetch-dictionary de_DE <dir>                # into <dir>/de_DE/
-    scripts/fetch-dictionary --bundled en_AU            # into assets/dictionaries/en_AU/ (what jed compiles in)
+    scripts/fetch-dictionary --bundled en_AU            # into jed/assets/dictionaries/en_AU/ (what jed compiles in)
 
 The config dir is `$XDG_CONFIG_HOME/jed` (default `~/.config/jed`), where `settings.toml` lives.
 
@@ -55,7 +55,7 @@ def main():
     xdg = os.environ.get("XDG_CONFIG_HOME", "")
     config = xdg if os.path.isabs(xdg) else os.path.expanduser("~/.config")
     if bundled:
-        base = os.path.join(root, "assets", "dictionaries")
+        base = os.path.join(root, "jed", "assets", "dictionaries")
     else:
         base = os.path.expanduser(args[1]) if len(args) == 2 else os.path.join(config, "jed", "dictionaries")
     prefix = lang.split("_")[0]

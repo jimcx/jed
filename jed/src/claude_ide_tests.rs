@@ -955,7 +955,7 @@ async fn claude_ide_new_session_runs_claude_in_a_jed_shell() {
 }
 
 fn plugin_file(rel: &str) -> Value {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+    let path = crate::test_util::repo_root().join(rel);
     serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{rel}: {e}")))
         .unwrap_or_else(|e| panic!("{rel}: {e}"))
 }
@@ -1008,7 +1008,7 @@ fn claude_ide_manifests_match_the_cli() {
 #[test]
 fn claude_ide_real_claude_validates_the_plugin() {
     let config = tempfile::tempdir().unwrap();
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = crate::test_util::repo_root();
     for target in ["claude-plugin", "."] {
         let out = match std::process::Command::new("claude")
             .args(["plugin", "validate", target])

@@ -113,6 +113,7 @@ The full per-module reference that the root `CLAUDE.md` summarises in one line e
 - `review_write.rs` — what the Code Review panel sends to the forge (no app state): `Job` (User, Submit, Reply, Resolve, Edit, Delete), `run` (blocking: connect and call the `Forge`), `Done`; `app/review_write.rs` drives it.
 - `suggestion.rs` — review-comment suggestions (no app state): `parse(body, anchor)` into `forge::Suggestion` ranges (GitHub / Gitea fence = the anchored lines, GitLab `suggestion:-N+M`), `fences` (also used to draw them), `template` (Insert Suggestion's text); caps on blocks, lines and spans.
 - `git/range.rs` — the review's local side: `local_info` (branch, its upstream's name, remote and URL), `merge_base` (the forge's, else `merge_base` of HEAD and the base; `RangeError::Missing` when a commit isn't in the clone: "run `git fetch`"), `changes` (the MR's files: merge base to the MR head commit, else local HEAD, as paths; counts and a content hash from the work tree, no untracked files; `show`'s rename detection).
+- `test_util.rs` — `#[cfg(test)]` `repo_root()`: the repository root (parent of jed's `CARGO_MANIFEST_DIR`, `jed/`), for tests reading `.venv`, `docs/`, `rust-toolchain.toml`, `claude-plugin/`; jed's own files stay under `CARGO_MANIFEST_DIR`.
 - `milestone*_tests.rs` — end-to-end tests per milestone (`#[cfg(test)]` modules declared in `main.rs`); `todo_tests.rs` — end-to-end tests for single PLAN.md tasks (no subtasks), one `mod` per item; `syntax_plugins_tests.rs` — syntax plugins (`syntax_plugins_*`)
 
 ## Data flow

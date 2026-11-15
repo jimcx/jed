@@ -1261,9 +1261,8 @@ mod done_when {
     async fn milestone_7_three_modes_agree_with_the_reference() {
         let dir = tempfile::tempdir().unwrap();
         let root = crate::workspace::normalize(dir.path());
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
-        copy_dir(&repo.join("src"), &root.join("src"));
-        copy_dir(&repo.join("docs"), &root.join("docs"));
+        copy_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &root.join("src"));
+        copy_dir(&crate::test_util::repo_root().join("docs"), &root.join("docs"));
         let mut app = test_app(&root, Buffer::open(&root.join("src/main.rs")).unwrap());
         app.test_start();
         app.test_plain_whitespace();

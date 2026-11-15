@@ -1494,7 +1494,7 @@ mod tests {
 
     #[test]
     fn agrees_with_a_reference_on_this_repo() {
-        let root = crate::workspace::normalize(Path::new(env!("CARGO_MANIFEST_DIR")));
+        let root = crate::workspace::normalize(crate::test_util::repo_root());
         let cases = [
             ("fn", PLAIN),
             ("Matcher", opts(false, true)),

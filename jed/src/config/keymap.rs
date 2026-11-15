@@ -2009,7 +2009,7 @@ mod tests {
     /// per-terminal snippets can't silently fall behind the keymap.
     #[test]
     fn terminal_docs_list_every_cmd_binding() {
-        let readme = include_str!("../../docs/terminals/README.md");
+        let readme = include_str!("../../../docs/terminals/README.md");
         let documented: std::collections::BTreeSet<String> = readme
             .lines()
             .filter_map(|l| l.strip_prefix("| `"))

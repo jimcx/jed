@@ -434,7 +434,7 @@ mod tests {
     /// User docs: `docs/forges.md` explains how to configure forges (issue #30).
     #[test]
     fn forges_user_doc_explains_configuration() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/forges.md");
+        let path = crate::test_util::repo_root().join("docs/forges.md");
         let doc = std::fs::read_to_string(&path).expect("docs/forges.md is missing");
         for needle in [
             "forges.toml",

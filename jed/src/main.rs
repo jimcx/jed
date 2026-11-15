@@ -192,6 +192,8 @@ mod term_search_tests;
 mod term_select_tests;
 mod termctl;
 mod terminal;
+#[cfg(test)]
+mod test_util;
 mod theme;
 #[cfg(test)]
 mod todo_tests;
