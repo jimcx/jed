@@ -790,6 +790,7 @@ mod tests {
                 commit: "h0".into(),
             },
             body: body.into(),
+            other: (None, None),
         }
     }
 

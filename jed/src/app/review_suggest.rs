@@ -252,16 +252,27 @@ impl App {
             return self.notify(Level::Info, "Suggestions apply to the new side".into());
         }
         let (tab, first, last) = (c.tab, c.start.max(1) as usize - 1, c.end.max(c.start) as usize);
-        let Some(doc) = self
-            .groups
-            .diff_tabs_mut()
-            .find(|(_, d)| d.id == tab)
-            .and_then(|(_, d)| d.doc.as_ref())
-        else {
+        let Some((_, d)) = self.groups.diff_tabs_mut().find(|(_, d)| d.id == tab) else {
             return;
         };
+        // A thread tab's doc is the thread's snippet, numbered from `base`.
+        let (base, in_thread) = (d.thread.as_ref().map_or(0, |t| t.base), d.thread.is_some());
+        if d.thread.as_ref().is_some_and(|t| !t.has_code) {
+            return self.notify(Level::Info, "This thread's code isn't available".into());
+        }
+        let Some(doc) = d.doc.as_ref() else { return };
+        let (Some(first), Some(last)) = (first.checked_sub(base), last.checked_sub(base)) else {
+            return self.notify(Level::Info, "This thread's code isn't available".into());
+        };
         if last > doc.right.len() {
-            return self.notify(Level::Info, "The diff is updating, try again".into());
+            return self.notify(
+                Level::Info,
+                if in_thread {
+                    "This thread's code isn't available".into()
+                } else {
+                    "The diff is updating, try again".into()
+                },
+            );
         }
         let lines: Vec<String> = (first..last).map(|l| doc.right.line(l).to_string()).collect();
         let (text, caret) = suggestion::template(&lines);

@@ -21,7 +21,7 @@ pub(super) fn message(app: &App) -> String {
 }
 
 /// A fake forge with these comments (a JSON array); the merge request's head is `head`.
-fn server(main: &str, head: &str, comments: &str) -> FakeServer {
+pub(crate) fn server(main: &str, head: &str, comments: &str) -> FakeServer {
     server_with(main, head, comments, Vec::new())
 }
 
@@ -71,7 +71,7 @@ pub(super) fn on_line3(body: &'static str) -> impl Fn(&str, &str) -> String {
     move |head, _| format!("[{}]", threads::rc(11, "bob", body, "mod.txt", 3, head, "+m3", false))
 }
 
-pub(super) async fn boot(root: &Path, server: &FakeServer) -> App {
+pub(crate) async fn boot(root: &Path, server: &FakeServer) -> App {
     let mut app = open_app(root, None, config_for(server), true);
     assert!(app.settle(loaded).await);
     assert!(app.settle(|a| a.git.status.is_some()).await);

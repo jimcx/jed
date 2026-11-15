@@ -218,6 +218,9 @@ pub struct Suggestion {
 pub struct DraftComment {
     pub anchor: Anchor,
     pub body: String,
+    /// The other side's line numbers of the anchor's first and last line, where the line is
+    /// unchanged (GitLab wants both numbers of a context line); `None` for a changed line.
+    pub other: (Option<u32>, Option<u32>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

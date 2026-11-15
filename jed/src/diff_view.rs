@@ -700,6 +700,8 @@ pub struct ThreadTab {
     pub base: usize,
     /// The row of the last anchored line: the thread's block goes under it.
     pub last: usize,
+    /// The tab shows the thread's code (not the placeholder for a thread without any).
+    pub has_code: bool,
 }
 
 /// Blocking: reads both sides of `job` and diffs them.

@@ -9,7 +9,7 @@ use crate::diff_caret::Caret;
 
 const API: &str = "/api/v3/repos/alice/project";
 
-fn config_github(server: &FakeServer) -> ForgeConfig {
+pub(crate) fn config_github(server: &FakeServer) -> ForgeConfig {
     ForgeConfig {
         entries: vec![Entry {
             host: "git.example.com".into(),
@@ -38,7 +38,7 @@ fn graphql(connection: &str, nodes: &str) -> String {
     )
 }
 
-fn server(main: &str, head: &str) -> FakeServer {
+pub(crate) fn server(main: &str, head: &str) -> FakeServer {
     server_with(main, head, true)
 }
 
@@ -106,7 +106,7 @@ fn claude_reply(app: &mut App, thread: &str, body: &str, resolve: bool) {
     assert!(!app.review.draft_rows().is_empty());
 }
 
-async fn boot_github(root: &Path, server: &FakeServer) -> App {
+pub(crate) async fn boot_github(root: &Path, server: &FakeServer) -> App {
     let mut app = open_app(root, None, config_github(server), true);
     assert!(app.settle(loaded).await);
     assert!(app.settle(|a| a.git.status.is_some()).await);

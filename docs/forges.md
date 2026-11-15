@@ -64,3 +64,13 @@ Changes with no comments is sent with the body "Changes requested", which Gitea 
 The panel shows the merge request whose source branch is the checked-out branch *in the repository
 itself*. A fork's merge request from a branch of the same name (`main`, `patch-1`) is not shown as
 the branch's own.
+
+## Comments outside the diff
+
+jed's review diff shows the whole file, so a draft can sit on a line the merge request didn't touch
+(and isn't near a change). GitHub refuses a review comment on a line outside the diff's hunks (their
+three lines of context included), and one refused comment fails the whole review, so jed holds such a
+draft back: PENDING says "held back: not in the merge request's diff", the comment box says so when
+it opens there, and Submit Review posts the others. Gitea and GitLab are not held back (their docs
+don't say they refuse; unverified, see the task's hand checks). A comment on an unchanged line on
+GitLab is sent with both the old and the new line number, as GitLab's API asks.

@@ -372,13 +372,25 @@ fn sha1_hex(data: &[u8]) -> String {
 }
 
 /// One end of a `line_range`; the other file's line number in the `line_code` is 0.
-fn range_point(path: &str, side: Side, line: u32) -> Value {
-    let (kind, old, new) = match side {
-        Side::Left => ("old", line, 0),
-        Side::Right => ("new", 0, line),
+/// An unchanged line has both numbers (`other` is the other side's) and no type: unverified,
+/// GitLab's own diffs give a context line no type.
+fn range_point(path: &str, side: Side, line: u32, other: Option<u32>) -> Value {
+    let (kind, old, new) = match (side, other) {
+        (Side::Left, None) => (Some("old"), line, 0),
+        (Side::Right, None) => (Some("new"), 0, line),
+        (Side::Left, Some(o)) => (None, line, o),
+        (Side::Right, Some(o)) => (None, o, line),
     };
-    let mut v = json!({ "line_code": format!("{}_{old}_{new}", sha1_hex(path.as_bytes())), "type": kind });
-    v[if side == Side::Left { "old_line" } else { "new_line" }] = json!(line);
+    let mut v = json!({ "line_code": format!("{}_{old}_{new}", sha1_hex(path.as_bytes())) });
+    if let Some(kind) = kind {
+        v["type"] = json!(kind);
+    }
+    if old > 0 {
+        v["old_line"] = json!(old);
+    }
+    if new > 0 {
+        v["new_line"] = json!(new);
+    }
     v
 }
 
@@ -393,7 +405,13 @@ fn paths_of<'a>(a: &'a Anchor, renames: &'a [(String, String)]) -> (&'a str, &'a
     }
 }
 
-fn position(a: &Anchor, refs: &DiffRefs, head_sha: &str, renames: &[(String, String)]) -> Value {
+fn position(
+    a: &Anchor,
+    other: (Option<u32>, Option<u32>),
+    refs: &DiffRefs,
+    head_sha: &str,
+    renames: &[(String, String)],
+) -> Value {
     let (old_path, new_path) = paths_of(a, renames);
     let mut p = json!({
         "position_type": "text",
@@ -404,10 +422,13 @@ fn position(a: &Anchor, refs: &DiffRefs, head_sha: &str, renames: &[(String, Str
         "new_path": new_path,
     });
     p[if a.side == Side::Left { "old_line" } else { "new_line" }] = json!(a.end_line);
+    if let Some(o) = other.1 {
+        p[if a.side == Side::Left { "new_line" } else { "old_line" }] = json!(o);
+    }
     if a.start_line < a.end_line {
         p["line_range"] = json!({
-            "start": range_point(new_path, a.side, a.start_line),
-            "end": range_point(new_path, a.side, a.end_line),
+            "start": range_point(new_path, a.side, a.start_line, other.0),
+            "end": range_point(new_path, a.side, a.end_line, other.1),
         });
     }
     p
@@ -620,7 +641,7 @@ impl Forge for GitLab {
         for (i, c) in review.comments.iter().enumerate() {
             let body = json!({
                 "note": gitlab_body(&c.body, &c.anchor),
-                "position": position(&c.anchor, &refs, at, &renames),
+                "position": position(&c.anchor, c.other, &refs, at, &renames),
             });
             match self.client.post(&format!("{mr_path}/draft_notes"), &body.to_string()) {
                 Ok(r) => {
@@ -1067,6 +1088,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_unchanged_line_sends_both_line_numbers() {
+        let refs = DiffRefs::default();
+        let p = position(&anchor(4, 6, Side::Right), (Some(3), Some(5)), &refs, "h", &[]);
+        assert_eq!((p["new_line"].as_u64(), p["old_line"].as_u64()), (Some(6), Some(5)));
+        let (s, e) = (&p["line_range"]["start"], &p["line_range"]["end"]);
+        assert_eq!((s["new_line"].as_u64(), s["old_line"].as_u64()), (Some(4), Some(3)));
+        assert_eq!((e["new_line"].as_u64(), e["old_line"].as_u64()), (Some(6), Some(5)));
+        assert!(s["type"].is_null());
+        // A changed line keeps one number.
+        let p = position(&anchor(4, 4, Side::Right), (None, None), &refs, "h", &[]);
+        assert!(p["old_line"].is_null() && p["new_line"] == 4);
+    }
+
     fn review(event: ReviewEvent, anchors: &[(u32, u32)]) -> DraftReview {
         DraftReview {
             body: String::new(),
@@ -1076,6 +1111,7 @@ mod tests {
                 .map(|&(s, e)| DraftComment {
                     anchor: anchor(s, e, Side::Right),
                     body: format!("c{s}"),
+                    other: (None, None),
                 })
                 .collect(),
         }

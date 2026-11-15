@@ -2480,6 +2480,8 @@ async fn milestone_10_source_control_selection_kept_across_live_updates() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+// FLAKE: 2026-11-16, the Stage All settle for "Staged 3 files" timed out once in a full run under
+// load (passed alone three times); the failing path dumps the message, files and index.
 async fn milestone_10_source_control_saves_dirty_files_before_staging() {
     let (_d, root, state) = dirs();
     scm_repo(&root);
@@ -2542,10 +2544,22 @@ async fn milestone_10_source_control_saves_dirty_files_before_staging() {
     );
     click(&mut app, b);
     app.press(KeyCode::Enter, M::NONE);
-    assert!(
-        app.settle(|a| a.message.as_ref().is_some_and(|m| m.text.contains("Staged 3 files")))
-            .await
-    );
+    let staged = app
+        .settle(|a| a.message.as_ref().is_some_and(|m| m.text.contains("Staged 3 files")))
+        .await;
+    if !staged {
+        eprintln!(
+            "FLAKE milestone_10_source_control_saves_dirty_files_before_staging: message {:?}, prompt {:?}, \
+             c.txt {:?}, e.txt {:?}, cached {:?}, unstaged {:?}",
+            app.message.as_ref().map(|m| &m.text),
+            app.prompt.is_some(),
+            fs::read_to_string(&c).ok(),
+            fs::read_to_string(&e).ok(),
+            git(&root, &["diff", "--cached", "--name-only"]),
+            git(&root, &["diff", "--name-only"]),
+        );
+    }
+    assert!(staged, "FLAKE: no \"Staged 3 files\" message (state above)");
     assert!(settle_stage(&mut app).await);
     assert_eq!(fs::read_to_string(&c).unwrap(), "c3y\n");
     assert_eq!(fs::read_to_string(&e).unwrap(), "ez\n");

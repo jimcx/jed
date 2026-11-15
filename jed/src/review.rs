@@ -22,7 +22,7 @@ use crate::git::Repo;
 use crate::git::range::{self, FileChange, RangeError};
 use crate::logs::ToolLog;
 use crate::review_anchor::{self, Placement};
-use crate::review_drafts::{DraftRow, DraftStore};
+use crate::review_drafts::{self, DraftRow, DraftStore, FileHunks};
 use crate::scrollbar::ListScroll;
 
 /// Reads an environment variable (the tests give their own).
@@ -57,6 +57,11 @@ pub struct Review {
     /// The host's entry in `forges.toml` sets `mcp_read_only`: Claude's tools may not apply
     /// suggestions or draft replies.
     pub mcp_read_only: bool,
+    /// The host's forge (what it accepts differs: GitHub refuses comments outside the diff).
+    pub kind: forge::Kind,
+    /// Each file's hunks from the merge base to the head, by path (a file whose commits or
+    /// blobs weren't readable is missing).
+    pub hunks: Arc<BTreeMap<String, FileHunks>>,
 }
 
 /// A thread and where [`review_anchor`] put it.
@@ -266,6 +271,7 @@ pub fn lookup(req: Request) -> Outcome {
             (Vec::new(), Vec::new(), Vec::new(), Some(e))
         }
     };
+    let hunks = review_drafts::file_hunks(&req.repo, merge_base.as_deref(), &mr.head.sha, &files);
     let viewed = req.viewed_from.as_deref().map(Viewed::load);
     let relation = range::head_relation(&req.repo, &mr.head.sha);
     let mcp_read_only = config.mcp_read_only(&repo_ref.host);
@@ -283,6 +289,8 @@ pub fn lookup(req: Request) -> Outcome {
             comments_error,
             relation,
             mcp_read_only,
+            kind: resolved.kind,
+            hunks: Arc::new(hunks),
         }),
         viewed,
     )
@@ -433,7 +441,8 @@ impl Drafts {
                     .live
                     .get(&d.id)
                     .or_else(|| self.drift.get(&d.id))
-                    .and_then(|h| h.as_deref()),
+                    .and_then(|h| h.as_deref())
+                    .or_else(|| (!d.outside_ok(review.kind, &review.hunks)).then_some(review_drafts::NOT_IN_DIFF)),
                 draft: d,
             })
             .collect();

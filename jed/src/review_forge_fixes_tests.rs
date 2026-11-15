@@ -256,3 +256,194 @@ mod forks {
         assert_eq!(r.mr.head_repo.as_deref(), Some("alice/project"));
     }
 }
+
+/// Subtask d: Insert Suggestion in a thread tab's reply box reads the anchored lines through the
+/// tab's base (and refuses without code); on GitHub a draft on a line outside the diff's hunks is
+/// held back (named in PENDING, the composer says so), the others post; on Gitea it posts.
+mod placement {
+    use crate::app::App;
+    use crate::command::Command;
+    use crate::diff_caret::Caret;
+    use crate::forge::fake::FakeServer;
+    use crate::git::test_repo::git;
+    use crate::mr_review_tests::github::{boot_github, server as github_server};
+    use crate::mr_review_tests::suggest::{boot, server as gitea_server};
+    use crate::mr_review_tests::{draw_wide, make_repo, open_file, threads};
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn screen(app: &mut App) -> String {
+        let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        let buf = term.backend().buffer();
+        (0..40)
+            .map(|y| (0..140).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn select(app: &mut App, line: usize) {
+        app.group_mut().active_diff_mut().unwrap().go_to_side_line(true, line);
+        draw_wide(app, 120);
+        app.group_mut().active_diff_mut().unwrap().caret = Caret {
+            right: true,
+            anchor: (line - 1, 0),
+            head: (line - 1, 1),
+            col: None,
+        };
+    }
+
+    fn message(app: &App) -> String {
+        app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
+    }
+
+    /// A reply box in the thread tab of bob's thread on `renamed.txt` line 7 (`seven`, so the
+    /// snippet starts at line 4: the tab's base is 3).
+    async fn thread_reply(code: bool) -> (App, FakeServer, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main) = make_repo(dir.path());
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        // Without code: the anchor commit is not in the clone and there is no hunk.
+        let commit = if code {
+            head.as_str()
+        } else {
+            "0123456789012345678901234567890123456789"
+        };
+        let comments = format!(
+            "[{}]",
+            threads::rc(31, "bob", "Why", "renamed.txt", 7, commit, "+seven", false)
+        );
+        let server = gitea_server(&main, &head, &comments);
+        let mut app = boot(&root, &server).await;
+        let len = app.review.review().unwrap().conv_len();
+        app.review.view.conv.focused = true;
+        app.review.view.conv.select(len, 0);
+        app.ui.focus = crate::app::Focus::SidePanel;
+        app.test_execute(Command::ReviewOpenThread);
+        assert!(app.settle(|a| a.diffs_settled()).await);
+        assert!(app.group().active_diff().unwrap().thread.is_some());
+        app.review.view.conv.focused = false;
+        app.test_execute(Command::ReviewReply);
+        assert!(app.test_composer_text().is_some(), "{}", message(&app));
+        (app, server, dir)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_forge_fixes_d_a_thread_tabs_reply_box_inserts_the_anchored_lines() {
+        let (mut app, _server, _dir) = thread_reply(true).await;
+        app.test_execute(Command::ReviewInsertSuggestion);
+        assert_eq!(
+            app.test_composer_text().as_deref(),
+            Some("```suggestion\nseven\n```"),
+            "{}",
+            message(&app)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_forge_fixes_d_a_thread_without_code_refuses_to_insert() {
+        let (mut app, _server, _dir) = thread_reply(false).await;
+        app.test_execute(Command::ReviewInsertSuggestion);
+        assert_eq!(app.test_composer_text().as_deref(), Some(""));
+        assert!(message(&app).contains("code isn't available"), "{}", message(&app));
+    }
+
+    fn posted(server: &FakeServer) -> Option<serde_json::Value> {
+        server
+            .requests()
+            .into_iter()
+            .find(|r| r.method == "POST" && r.target.ends_with("/pulls/7/reviews"))
+            .map(|r| serde_json::from_str(&r.body).unwrap())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_forge_fixes_d_github_holds_back_a_draft_outside_the_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main) = make_repo(dir.path());
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let server = github_server(&main, &head);
+        let mut app = boot_github(&root, &server).await;
+        open_file(&mut app, "renamed.txt").await;
+        draw_wide(&mut app, 120);
+        select(&mut app, 1);
+        app.test_execute(Command::ReviewComment);
+        let text = screen(&mut app);
+        assert!(
+            text.contains("not in the merge request's diff"),
+            "the box says so: {text}"
+        );
+        app.type_text("outside");
+        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        select(&mut app, 6);
+        app.test_execute(Command::ReviewComment);
+        let text = screen(&mut app);
+        assert!(!text.contains("not in the merge request's diff"), "{text}");
+        app.type_text("inside");
+        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        let rows = app.review.draft_rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].held, Some("not in the merge request's diff"));
+        assert_eq!(rows[1].held, None);
+        app.test_execute(Command::ReviewSubmitComment);
+        assert!(
+            app.settle(|a| a.review.draft_rows().len() == 1 && !a.review.writing)
+                .await
+        );
+        let v = posted(&server).expect("the review was posted");
+        assert_eq!(v["comments"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            (v["comments"][0]["body"].as_str(), v["comments"][0]["line"].as_u64()),
+            (Some("inside"), Some(6))
+        );
+        let rows = app.review.draft_rows();
+        assert_eq!(rows[0].draft.body, "outside");
+        assert_eq!(rows[0].held, Some("not in the merge request's diff"));
+        let text = screen(&mut app);
+        assert!(text.contains("held back"), "PENDING names it: {text}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_forge_fixes_d_a_drifted_draft_outside_the_diff_names_the_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main) = make_repo(dir.path());
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let server = github_server(&main, &head);
+        let mut app = boot_github(&root, &server).await;
+        open_file(&mut app, "renamed.txt").await;
+        draw_wide(&mut app, 120);
+        select(&mut app, 1);
+        app.test_execute(Command::ReviewComment);
+        app.type_text("outside");
+        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        let rows = app.review.draft_rows();
+        assert_eq!(rows[0].held, Some("not in the merge request's diff"));
+        let id = rows[0].draft.id.clone();
+        app.review.drafts.live.insert(id, Some("line changed".into()));
+        assert_eq!(app.review.draft_rows()[0].held, Some("line changed"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_forge_fixes_d_gitea_posts_a_draft_outside_the_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main) = make_repo(dir.path());
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let server = gitea_server(&main, &head, "[]");
+        let mut app = boot(&root, &server).await;
+        open_file(&mut app, "renamed.txt").await;
+        draw_wide(&mut app, 120);
+        select(&mut app, 1);
+        app.test_execute(Command::ReviewComment);
+        let text = screen(&mut app);
+        assert!(!text.contains("not in the merge request's diff"), "{text}");
+        app.type_text("outside");
+        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        assert_eq!(app.review.draft_rows()[0].held, None);
+        app.test_execute(Command::ReviewSubmitComment);
+        assert!(
+            app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
+                .await
+        );
+        let v = posted(&server).expect("the review was posted");
+        assert_eq!(v["comments"][0]["body"], "outside");
+    }
+}

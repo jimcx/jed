@@ -163,12 +163,13 @@ impl App {
             .partition(|r| r.draft.reply_to.is_some());
         if sent.is_empty() && replies.is_empty() && event == forge::ReviewEvent::Comment {
             let why = if held > 0 {
-                format!("{held} draft(s) are held back: their lines changed")
+                format!("{held} draft(s) are held back (see PENDING)")
             } else {
                 "No drafts to submit".into()
             };
             return self.notify(Level::Info, why);
         }
+        let hunks = review.hunks.clone();
         let job = Job::Submit {
             number: review.mr.number,
             head_sha: review.mr.head.sha.clone(),
@@ -180,6 +181,7 @@ impl App {
                     .map(|r| DraftComment {
                         anchor: r.draft.anchor(),
                         body: r.draft.body.clone(),
+                        other: other_lines(r.draft, &hunks),
                     })
                     .collect(),
             },
@@ -353,6 +355,7 @@ impl App {
             commit: String::new(),
             editing: None,
             kind,
+            outside: false,
         });
     }
 
@@ -446,5 +449,49 @@ impl App {
             ThreadButton::Edit => self.edit_in(thread),
             ThreadButton::Delete => self.delete_in(thread),
         }
+    }
+}
+
+/// The other side's numbers of `d`'s first and last line, where they are unchanged lines.
+fn other_lines(
+    d: &crate::review_drafts::Draft,
+    hunks: &std::collections::BTreeMap<String, crate::review_drafts::FileHunks>,
+) -> (Option<u32>, Option<u32>) {
+    let Some(h) = hunks.get(&d.path) else {
+        return (None, None);
+    };
+    (
+        h.counterpart(d.right, d.start),
+        h.counterpart(d.right, d.end.max(d.start)),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::other_lines;
+    use crate::review_drafts::{Draft, FileHunks};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn a_range_on_unchanged_lines_takes_each_ends_own_counterpart() {
+        let old: String = (1..=12).map(|i| format!("l{i}\n")).collect();
+        let mut new: Vec<String> = (1..=12).map(|i| format!("l{i}\n")).collect();
+        new.splice(0..0, ["x\n".to_string(), "y\n".to_string()]); // new line n is old n-2
+        let new = new.concat();
+        let d = |c| crate::git::diff::diff(old.as_bytes(), new.as_bytes(), c).unwrap().hunks;
+        let mut hunks = BTreeMap::new();
+        hunks.insert(
+            "a.txt".to_string(),
+            FileHunks {
+                context: d(3),
+                changes: d(0),
+            },
+        );
+        let draft = |path: &str, right| Draft::new(path.into(), right, 5, 8, "c".into(), vec![], "b".into());
+        let mut left = draft("a.txt", false);
+        left.right = false;
+        assert_eq!(other_lines(&draft("a.txt", true), &hunks), (Some(3), Some(6)));
+        assert_eq!(other_lines(&left, &hunks), (Some(7), Some(10)));
+        assert_eq!(other_lines(&draft("b.txt", true), &hunks), (None, None));
     }
 }

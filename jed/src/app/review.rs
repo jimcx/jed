@@ -421,6 +421,7 @@ impl App {
                     title: format!("Thread {}:{}", a.path, a.end_line),
                     base,
                     last,
+                    has_code: row.code.is_some(),
                 };
                 let tab = DiffTab::thread(id, workdir.join(&a.path), thread, code);
                 self.group_mut().open_tab(Tab::Diff(Box::new(tab)));

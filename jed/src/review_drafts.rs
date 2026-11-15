@@ -20,8 +20,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::forge::{Anchor, RepoRef, Side};
+use crate::forge::{Anchor, Kind, RepoRef, Side};
 use crate::git::Repo;
+use crate::git::diff::Hunk;
 use crate::git::range::FileChange;
 use crate::logs::ToolLog;
 
@@ -31,6 +32,8 @@ const FILE: &str = "review-drafts.json";
 pub const LINE_CHANGED: &str = "line changed";
 pub const LINES_CHANGED: &str = "lines changed";
 pub const FILE_CHANGED: &str = "file changed";
+/// GitHub refuses a comment on a line outside the merge request's diff hunks.
+pub const NOT_IN_DIFF: &str = "not in the merge request's diff";
 
 /// One comment not posted yet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +160,18 @@ impl Draft {
         } else {
             Some(LINE_CHANGED)
         }
+    }
+
+    /// Whether the forge `kind` takes the draft where it is, given the merge request's hunks:
+    /// false for GitHub when its lines aren't all inside one hunk. A reply, another forge or a
+    /// file with unknown hunks passes.
+    pub fn outside_ok(&self, kind: Kind, hunks: &BTreeMap<String, FileHunks>) -> bool {
+        if kind != Kind::GitHub || self.reply_to.is_some() {
+            return true;
+        }
+        hunks
+            .get(&self.path)
+            .is_none_or(|h| h.in_diff(self.right, self.start, self.end))
     }
 
     /// `drift` against a whole file's bytes (`None`: the file is gone).
@@ -320,9 +335,90 @@ impl DraftStore {
     }
 }
 
+/// A file's hunks from the merge base to the merge request's head: what the forge's diff
+/// contains, per side.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileHunks {
+    /// With GitHub's 3 lines of context: the lines a comment may be on.
+    pub context: Vec<Hunk>,
+    /// Without context: the changed lines.
+    pub changes: Vec<Hunk>,
+}
+
+impl FileHunks {
+    /// Lines `start..=end` (1-based) of the right (or left) side all inside one hunk.
+    pub fn in_diff(&self, right: bool, start: u32, end: u32) -> bool {
+        let (first, last) = (start.max(1) as usize - 1, end.max(start) as usize);
+        self.context.iter().any(|h| {
+            let r = if right { &h.new } else { &h.old };
+            r.start <= first && last <= r.end
+        })
+    }
+
+    /// The other side's number (1-based) of an unchanged `line` of this side; `None` when the
+    /// line is itself changed.
+    pub fn counterpart(&self, right: bool, line: u32) -> Option<u32> {
+        let idx = line.max(1) as usize - 1;
+        let mine = |h: &Hunk| if right { h.new.clone() } else { h.old.clone() };
+        let other = |h: &Hunk| if right { h.old.clone() } else { h.new.clone() };
+        if self.changes.iter().any(|h| mine(h).contains(&idx)) {
+            return None;
+        }
+        let delta: isize = self
+            .changes
+            .iter()
+            .filter(|h| mine(h).end <= idx)
+            .map(|h| other(h).len() as isize - mine(h).len() as isize)
+            .sum();
+        Some((idx as isize + delta + 1) as u32)
+    }
+}
+
+/// The hunks of one file, by its path in the merge request (`None`: a text or commit is
+/// missing, or the file is binary, so nothing is known).
+///
+/// Blocking (git): call from spawn_blocking.
+pub fn file_hunks(
+    repo: &Repo,
+    merge_base: Option<&str>,
+    head_sha: &str,
+    files: &[FileChange],
+) -> BTreeMap<String, FileHunks> {
+    let mut out = BTreeMap::new();
+    let Ok(git) = repo.open() else { return out };
+    let find = |rev: &str| git2::Oid::from_str(rev).ok().and_then(|o| git.find_commit(o).ok());
+    let (Some(base), Some(head)) = (merge_base.and_then(find), find(head_sha)) else {
+        return out;
+    };
+    for f in files {
+        let old = f.old_path.as_deref().unwrap_or(&f.path);
+        let old = crate::review_anchor::blob_at(&git, &base, old).unwrap_or_default();
+        let new = crate::review_anchor::blob_at(&git, &head, &f.path).unwrap_or_default();
+        let (Ok(context), Ok(changes)) = (
+            crate::git::diff::diff(&old, &new, 3),
+            crate::git::diff::diff(&old, &new, 0),
+        ) else {
+            continue;
+        };
+        if context.binary {
+            continue;
+        }
+        out.insert(
+            f.path.clone(),
+            FileHunks {
+                context: context.hunks,
+                changes: changes.hunks,
+            },
+        );
+    }
+    out
+}
+
 /// Blocking (git, files): which of `drafts` are held back now, by id: for a right-side draft,
 /// whether a commit since the draft's changed its lines (its commit's file against HEAD's; local
 /// edits don't hold a draft back), else the file on disk; the merge base's blob for a left-side one.
+/// (A draft outside the diff ([`Draft::outside_ok`]) is judged where the rows are built, so it
+/// holds for live text too.)
 pub fn check(
     repo: &Repo,
     merge_base: Option<&str>,
@@ -533,5 +629,130 @@ mod tests {
         d.right = false;
         assert_eq!(d.anchor().side, Side::Left);
         assert_eq!(d.place(), "a.txt:4");
+    }
+
+    /// Ten lines; line 5 changed, lines 8-9 replaced by three new ones.
+    fn hunks() -> FileHunks {
+        let old: Vec<String> = (1..=10).map(|i| format!("l{i}\n")).collect();
+        let mut new = old.clone();
+        new[4] = "five\n".into();
+        new.splice(7..9, ["a\n".into(), "b\n".into(), "c\n".into()]);
+        let (old, new) = (old.concat(), new.concat());
+        let d = |c| crate::git::diff::diff(old.as_bytes(), new.as_bytes(), c).unwrap().hunks;
+        FileHunks {
+            context: d(3),
+            changes: d(0),
+        }
+    }
+
+    #[test]
+    fn lines_inside_one_context_hunk_are_in_the_diff() {
+        let h = hunks();
+        assert!(h.in_diff(true, 5, 5));
+        assert!(h.in_diff(true, 2, 11));
+        assert!(!h.in_diff(true, 1, 1));
+        assert!(!h.in_diff(true, 1, 5), "a range must sit in one hunk");
+        assert!(!h.in_diff(true, 12, 12));
+    }
+
+    #[test]
+    fn the_diff_has_no_gap_in_a_file_of_few_lines() {
+        let h = FileHunks {
+            context: crate::git::diff::diff(b"a\nb\nc\n", b"a\nB\nc\n", 3).unwrap().hunks,
+            changes: Vec::new(),
+        };
+        assert!(h.in_diff(true, 1, 3) && h.in_diff(false, 1, 3));
+    }
+
+    #[test]
+    fn an_unchanged_line_knows_the_other_sides_number() {
+        let h = hunks();
+        assert_eq!(h.counterpart(true, 2), Some(2));
+        assert_eq!(h.counterpart(true, 5), None, "changed");
+        assert_eq!(h.counterpart(true, 7), Some(7));
+        assert_eq!(h.counterpart(true, 8), None);
+        // Old line 10 follows the replaced 8-9 (three new lines): new line 11.
+        assert_eq!(h.counterpart(false, 10), Some(11));
+        assert_eq!(h.counterpart(true, 11), Some(10));
+        assert_eq!(h.counterpart(false, 9), None);
+    }
+
+    fn file_of(old: &str, new: &str) -> FileHunks {
+        let d = |c| crate::git::diff::diff(old.as_bytes(), new.as_bytes(), c).unwrap().hunks;
+        FileHunks {
+            context: d(3),
+            changes: d(0),
+        }
+    }
+
+    fn lines(n: usize) -> Vec<String> {
+        (1..=n).map(|i| format!("l{i}\n")).collect()
+    }
+
+    #[test]
+    fn the_hunk_edges_keep_the_last_context_line_and_hold_the_next() {
+        let old = lines(30);
+        let mut new = old.clone();
+        new[9] = "ten\n".into(); // line 10: context is lines 7..=13
+        let h = file_of(&old.concat(), &new.concat());
+        assert!(h.in_diff(true, 7, 7), "first context line");
+        assert!(h.in_diff(true, 13, 13), "last context line");
+        assert!(!h.in_diff(true, 6, 6));
+        assert!(!h.in_diff(true, 14, 14));
+        assert!(h.in_diff(true, 7, 13));
+        assert!(!h.in_diff(true, 13, 14), "straddles the end");
+        assert!(!h.in_diff(true, 6, 8), "straddles the start");
+        assert!(h.in_diff(false, 7, 13) && !h.in_diff(false, 14, 14));
+    }
+
+    #[test]
+    fn the_left_side_is_judged_against_the_old_lines() {
+        let old = lines(30);
+        let mut new = old.clone();
+        new.drain(0..5); // old 1-5 deleted
+        let h = file_of(&old.concat(), &new.concat());
+        // Old context 1..=8; the new side has only 3 context lines (1..=3).
+        assert!(h.in_diff(false, 1, 8) && !h.in_diff(false, 9, 9));
+        assert!(h.in_diff(true, 1, 3) && !h.in_diff(true, 4, 4));
+    }
+
+    #[test]
+    fn counterparts_follow_insertions_and_deletions() {
+        let old = lines(12);
+        let mut new = old.clone();
+        new.splice(3..3, ["x\n".to_string(), "y\n".to_string()]); // 2 inserted before old 4
+        new.remove(new.len() - 3); // old 10 deleted
+        let h = file_of(&old.concat(), &new.concat());
+        assert_eq!(h.counterpart(true, 3), Some(3), "before the first hunk");
+        assert_eq!(h.counterpart(true, 4), None, "inserted");
+        assert_eq!(h.counterpart(true, 6), Some(4), "between the hunks");
+        assert_eq!(h.counterpart(false, 4), Some(6));
+        assert_eq!(h.counterpart(false, 10), None, "deleted");
+        assert_eq!(h.counterpart(false, 11), Some(12), "after both hunks");
+        assert_eq!(h.counterpart(true, 12), Some(11));
+        assert_eq!(h.counterpart(true, 10), Some(8));
+    }
+
+    #[test]
+    fn a_reply_is_never_held() {
+        let mut map = BTreeMap::new();
+        map.insert("a.txt".to_string(), hunks());
+        let mut d = draft("a.txt", 1, 1, &["l1"], "x");
+        d.reply_to = Some("t1".into());
+        assert!(d.outside_ok(Kind::GitHub, &map));
+    }
+
+    #[test]
+    fn only_github_holds_a_draft_outside_the_diff() {
+        let mut map = BTreeMap::new();
+        map.insert("a.txt".to_string(), hunks());
+        let outside = draft("a.txt", 1, 1, &["l1"], "x");
+        let inside = draft("a.txt", 5, 5, &["five"], "x");
+        assert!(!outside.outside_ok(Kind::GitHub, &map));
+        assert!(inside.outside_ok(Kind::GitHub, &map));
+        assert!(outside.outside_ok(Kind::Gitea, &map));
+        assert!(outside.outside_ok(Kind::GitLab, &map));
+        // A file without known hunks passes.
+        assert!(draft("b.txt", 1, 1, &["x"], "x").outside_ok(Kind::GitHub, &map));
     }
 }

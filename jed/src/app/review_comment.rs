@@ -48,6 +48,8 @@ pub(super) struct Composer {
     pub editing: Option<String>,
     /// What saving does: a draft (the default), or a reply / an edit posted at once.
     pub kind: ComposerKind,
+    /// GitHub won't take a comment on these lines (outside the diff's hunks): the box says so.
+    pub outside: bool,
 }
 
 /// What a comment box writes.
@@ -133,7 +135,18 @@ impl Composer {
             resolved: false,
             mine: false,
             apply: false,
-            comments: vec![(format!("{verb} on {}", range_label(self.start, self.end)), self.text())],
+            comments: vec![(
+                format!(
+                    "{verb} on {}{}",
+                    range_label(self.start, self.end),
+                    if self.outside {
+                        " (not in the merge request's diff: held back)"
+                    } else {
+                        ""
+                    }
+                ),
+                self.text(),
+            )],
         }
     }
 }
@@ -233,6 +246,7 @@ impl App {
             commit,
             editing: None,
             kind: ComposerKind::Draft,
+            outside: false,
         });
     }
 
@@ -245,7 +259,14 @@ impl App {
         }
     }
 
-    pub(super) fn start_composer(&mut self, c: Composer) {
+    pub(super) fn start_composer(&mut self, mut c: Composer) {
+        c.outside = c.kind == ComposerKind::Draft
+            && self.review.review().is_some_and(|r| {
+                r.kind == crate::forge::Kind::GitHub
+                    && r.hunks
+                        .get(&c.path)
+                        .is_some_and(|h| !h.in_diff(c.right, c.start, c.end))
+            });
         self.composer = Some(c);
         self.ui.focus = Focus::Editor;
         if let Some(d) = self.group_mut().active_diff_mut() {
@@ -317,6 +338,7 @@ impl App {
             commit: draft.commit,
             editing: Some(draft.id),
             kind: ComposerKind::Draft,
+            outside: false,
         });
     }
 

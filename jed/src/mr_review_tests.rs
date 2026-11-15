@@ -11,10 +11,10 @@
 
 mod claude;
 mod done_when;
-mod github;
+pub(crate) mod github;
 pub(crate) mod gitlab;
 mod live;
-mod suggest;
+pub(crate) mod suggest;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -113,7 +113,7 @@ fn one_mr(main: &str) -> FakeServer {
     ])
 }
 
-fn loaded(app: &App) -> bool {
+pub(crate) fn loaded(app: &App) -> bool {
     app.review.review().is_some()
 }
 
@@ -536,7 +536,7 @@ async fn shown(dir: &Path) -> (App, FakeServer, String) {
 }
 
 /// Selects `path` in the panel and opens it with Enter; the diff tab loaded.
-async fn open_file(app: &mut App, path: &str) {
+pub(crate) async fn open_file(app: &mut App, path: &str) {
     let (view, files) = app.review.split();
     view.select_path(files, path);
     app.ui.focus = crate::app::Focus::SidePanel;
@@ -1058,7 +1058,7 @@ pub(crate) mod threads {
     const ISSUES: &str = "/api/v1/repos/alice/project/issues/7/comments?page=1&limit=50";
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn rc(
+    pub(crate) fn rc(
         id: u64,
         user: &str,
         body: &str,
