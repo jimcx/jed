@@ -893,27 +893,52 @@ struct StartedServer {
 
 impl StartedServer {
     fn new(socket: &Path) -> StartedServer {
-        use std::os::fd::AsRawFd;
-        let pid = std::os::unix::net::UnixStream::connect(socket).ok().and_then(|s| {
-            let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
-            let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-            // SAFETY: getsockopt with a ucred buffer of the stated length.
-            let rc = unsafe {
-                libc::getsockopt(
-                    s.as_raw_fd(),
-                    libc::SOL_SOCKET,
-                    libc::SO_PEERCRED,
-                    (&raw mut cred).cast(),
-                    &mut len,
-                )
-            };
-            (rc == 0).then_some(cred.pid)
-        });
+        let pid = std::os::unix::net::UnixStream::connect(socket)
+            .ok()
+            .and_then(|s| peer_pid(&s));
         StartedServer {
             socket: socket.to_path_buf(),
             pid,
         }
     }
+}
+
+/// The pid of the process at the other end of a connected Unix socket.
+#[cfg(target_os = "linux")]
+fn peer_pid(s: &std::os::unix::net::UnixStream) -> Option<i32> {
+    use std::os::fd::AsRawFd;
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: getsockopt with a ucred buffer of the stated length.
+    let rc = unsafe {
+        libc::getsockopt(
+            s.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut cred).cast(),
+            &mut len,
+        )
+    };
+    (rc == 0).then_some(cred.pid)
+}
+
+/// The pid of the process at the other end of a connected Unix socket.
+#[cfg(target_os = "macos")]
+fn peer_pid(s: &std::os::unix::net::UnixStream) -> Option<i32> {
+    use std::os::fd::AsRawFd;
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    // SAFETY: getsockopt with a pid_t buffer of the stated length.
+    let rc = unsafe {
+        libc::getsockopt(
+            s.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&raw mut pid).cast(),
+            &mut len,
+        )
+    };
+    (rc == 0).then_some(pid)
 }
 
 impl Drop for StartedServer {
