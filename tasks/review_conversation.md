@@ -1,0 +1,42 @@
+---
+id: review_conversation
+name: Code review conversation
+summary: read a merge request's description and comments in full in a conversation tab, with times on every comment, write a merge request comment, and give Submit Review an overall body
+status: open
+priority: 0
+dependencies: [mr_review, review_fixes]
+---
+
+The merge request's own conversation is fetched but can't be read: Enter on a CONVERSATIONS row that isn't a line thread shows the comment's first line in the status bar (`app/review.rs` `review_open_conv`), the description (`MergeRequest::body`) is shown nowhere, comment times reach only Claude's tool, and nothing can be written there. Four subtasks in order, one commit each.
+
+  - Needs: the review model (`jed/src/review.rs`: `Review::conversation`, `Conversations`), the panel (`jed/src/app/review.rs`, `jed/src/ui/review.rs`), thread tabs and blocks (`diff_view::ThreadTab` / `Pair::THREAD`, `jed/src/review_blocks.rs`: `ThreadBlock`, `Role`, `wrap`, the button row), the composer (`jed/src/app/review_comment.rs`: `Composer`, `ComposerKind`), writes (`jed/src/review_write.rs` `Job`, `jed/src/app/review_write.rs`), the forge layer (`jed/src/forge/mod.rs` `Forge`, `Comment`, `DraftReview::body`, the three adapters, `fake.rs`), Claude's review tools (`jed/src/app/claude_review.rs`), the Markdown preview (`jed/src/markdown_tab.rs`) only as a possible renderer
+  - Rules for every subtask: tests in `jed/src/review_conversation_tests.rs` (a `//!` doc, a `#[cfg(test)] mod` line in `main.rs`), named `review_conversation_*`; unit tests in the module's `mod tests`; adapters against `forge::fake`. All remote text is already cleaned by the adapters (`http::clean_text`): keep it that way for anything new. Commands are unbound and in the palette and the panel's context menu, per [adding a command](../docs/dev/conventions.md#adding-a-command-end-to-end). Docs kept in step. No real hostnames.
+  - Done when:
+    - Enter or a click on the panel's summary or on a merge request comment's row opens the conversation tab: the description, then every comment and review summary in time order, each in full, the selected one in view
+    - every comment in the conversation tab, in a thread block and in a thread tab shows when it was written (`2h ago`, a date when older), and `edited` when it was changed
+    - "Code Review: Comment on Merge Request" posts a comment on Gitea, GitHub and GitLab, and the user's own merge request comments can be edited and deleted
+    - Submit Review can carry an overall body, which GitHub, Gitea and GitLab receive; without one the forges' required-body fallbacks still apply
+    - Claude's review tool returns the description
+    - `scripts/check` is green
+  - Subtasks (one agent and one commit each):
+    - review_conversation-a: the conversation tab (read-only)
+        - A tab titled `!42 Conversation`, one per merge request, reused. Model it on the thread tab: a read-only diff tab with no code lines whose content is blocks (the description as the first block, headed by the author and the title; then `Review::conversation` in order), or a new `Tab` kind if blocks without code rows fight the diff view — decide after reading `review_blocks.rs` and `ui/diff.rs`, and say why in the report. Comments wrap to the width and scroll; the caret steps block to block; copy works.
+        - Opens from the summary rows' Enter / click (the summary's click switches merge request today when there are several: keep that on the `‹n/of›` mark only), from a merge request comment's CONVERSATIONS row (replacing the status-bar line), and from "Code Review: Open Conversation" (`review.openConversation`).
+        - It follows the review: a lookup's new comments appear (`ReviewState::generation`), another merge request's lookup closes or retitles it.
+        - `claude_review.rs`'s merge request answer gains `body` (clipped as its other bodies are).
+        - Tests: the tab drawn with the description and two comments in full; the row's Enter reveals that comment; a refresh adds a comment; the Claude tool's answer.
+    - review_conversation-b: times on comments
+        - `Comment::created_at` / `updated_at` are the forges' ISO 8601 strings. Add a small parser and `ago(now, then)` (`just now`, `5m ago`, `2h ago`, `3d ago`, then `12 Mar` / `12 Mar 2025`) — check whether `git_history.rs` or blame already has the relative-time text and reuse it. `ThreadBlock::comments` carries the time (and `edited` when `updated_at` is later than `created_at` by more than a few seconds); the header row draws `sam · 2h ago`, as mr_review's mockup has it, truncating the time before the name.
+        - Times are computed at draw from a clock the tests can set; no timer redraws for them (the 60 s poll refreshes them).
+        - Tests: the parser (Z and offset forms, fractional seconds, garbage gives no time), `ago`'s steps, a thread block and the conversation tab drawn with a fixed clock.
+    - review_conversation-c: writing merge request comments
+        - `Forge::comment(repo, number, body) -> Result<()>`: Gitea and GitHub `POST …/issues/{n}/comments`, GitLab `POST …/merge_requests/{iid}/notes` (check each in the docs first). Editing and deleting need the right endpoint per kind of comment: `edit_comment` / `delete_comment` today address review comments (Gitea `issues/comments/{id}`, GitHub `pulls/comments/{id}`, GitLab by its `iid:discussion:note` id, which already covers plain notes); GitHub's plain comments are `issues/comments/{id}`. Review summaries (`review-N` ids) stay read-only.
+        - "Code Review: Comment on Merge Request" (`review.commentOnMergeRequest`) opens the composer at the end of the conversation tab (`ComposerKind::Conversation`), posted at once on Ctrl+Enter like a reply (`Job::Comment`), the box staying open until the forge says yes. Edit and Delete buttons on the user's own comments there (delete confirms, as `Prompt::ConfirmDeleteComment`).
+        - Claude's tools get no way to post one (a note in `claude_review.rs`).
+        - Tests: post, edit and delete against each fake; a refused post keeps the box and its text.
+    - review_conversation-d: Submit Review's overall body
+        - Today `DraftReview::body` is always empty (`app/review_write.rs:175`) and GitHub gets a made-up one. The three Submit Review commands open a one-box prompt in the conversation tab or over the panel: "Review summary (optional)", Ctrl+Enter submits, Esc cancels the submit; an empty body submits as today. Decide between a composer box at the end of the conversation tab (`ComposerKind::Summary(event)`) and a `Prompt::Input` (single line is too small for a summary: prefer the box), and keep "submit with no summary" one keystroke (Ctrl+Enter on the empty box).
+        - The body is saved with the drafts (`review_drafts.rs`, one per merge request) so a failed submit or a restart keeps it, and removed when the forge confirms the review.
+        - Adapters already send `review.body` (Gitea `body`, GitHub `body` with the fallback, GitLab `bulk_publish`'s `note`): test each receives it.
+        - Then run the task's done-when, fill in "What it changed", "Deferred" and "Still to check by hand", and mark the task ✅.
+  - Deferred: full Markdown rendering of comments (headings, lists, links, images); reactions; replying to a merge request comment as a thread (GitLab discussions); mentions' completion.
