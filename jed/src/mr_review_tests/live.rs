@@ -1,7 +1,8 @@
 //! Threads and drafts placed on the live text of a review diff: lines typed above them (unsaved)
 //! move them and their blocks, an edit of their own lines keeps them there, and only a commit
 //! changing those lines outdates a thread; a new draft's lines are counted in the merge request's
-//! head, and lines that exist only locally can't be commented on.
+//! head, and lines that exist only locally can't be commented on. A gutter bar marks the lines
+//! each thread and draft is on.
 
 use super::suggest::{boot, lines, message, on_line3, select, text, world};
 use super::*;
@@ -198,4 +199,50 @@ async fn mr_review_the_floating_comment_button_comments_on_the_selected_lines() 
     let b = comment_button(&app).expect("the button is drawn");
     let row = lines(&mut app, 120, 24)[b.y as usize].clone();
     assert!(row.contains("m2 changed"), "{row}");
+}
+
+/// The review diff's rows drawn 120 wide: each row's text and the colour of its gutter bar
+/// (`None`: no bar).
+fn marked_rows(app: &mut App) -> Vec<(String, Option<ratatui::style::Color>)> {
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 24)).unwrap();
+    term.draw(|f| crate::ui::render(f, app)).unwrap();
+    let buf = term.backend().buffer();
+    (0..24)
+        .map(|y| {
+            let row: String = (0..120).map(|x| buf[(x, y)].symbol().to_string()).collect();
+            let bar = (0..120).find(|&x| buf[(x, y)].symbol() == "▎").map(|x| buf[(x, y)].fg);
+            (row, bar)
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mr_review_gutter_bars_mark_the_lines_of_threads_and_drafts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, server) = world(dir.path(), false, on_line3("Why this"));
+    let mut app = boot(&root, &server).await;
+    let thread = app.theme.get("review.lineMarker").fg;
+    let draft = app.theme.get("review.draft.lineMarker").fg;
+    // The bar of the diff row (right of the side panel) showing `text`.
+    let bar = |rows: &[(String, Option<ratatui::style::Color>)], text: &str| {
+        rows.iter()
+            .find(|(r, _)| r.rsplit('│').next().is_some_and(|code| code.contains(text)))
+            .unwrap_or_else(|| panic!("no row with {text}"))
+            .1
+    };
+    // The thread is on line 3 alone.
+    let rows = marked_rows(&mut app);
+    assert_eq!(bar(&rows, "m3"), thread);
+    assert_eq!(bar(&rows, "m1"), None);
+    assert_eq!(bar(&rows, "m2 changed"), None);
+    // A draft on lines 1-2: both marked in the draft's colour; the thread's line keeps its own.
+    select(&mut app, true, 0, 1);
+    app.test_execute(Command::ReviewComment);
+    app.type_text("Both lines");
+    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    assert!(app.review.draft_rows().iter().any(|r| r.draft.body == "Both lines"));
+    let rows = marked_rows(&mut app);
+    assert_eq!(bar(&rows, "m1"), draft);
+    assert_eq!(bar(&rows, "m2 changed"), draft);
+    assert_eq!(bar(&rows, "m3"), thread);
 }

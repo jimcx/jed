@@ -50,6 +50,8 @@ pub struct ThreadBlock {
     pub right: bool,
     /// The thread's last line (0-based) on that side: the block goes under its row.
     pub line: usize,
+    /// How many lines above `line` it covers too (`line - span ..= line`, marked in the gutter).
+    pub span: usize,
     pub resolved: bool,
     /// The user wrote a comment in the thread (Edit and Delete buttons).
     pub mine: bool,
@@ -718,6 +720,7 @@ mod tests {
             id: id.into(),
             right: true,
             line: 0,
+            span: 0,
             resolved,
             mine: false,
             apply: false,
@@ -902,6 +905,7 @@ mod tests {
             id: "composer".into(),
             right: true,
             line: 2,
+            span: 1,
             resolved: false,
             mine: false,
             apply: false,

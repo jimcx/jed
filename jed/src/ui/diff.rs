@@ -58,6 +58,40 @@ struct Styles {
     tokens: Vec<Style>,
 }
 
+/// The gutter bars of a review diff: each block's lines (`line - span ..= line`) on its side, in
+/// the order they win where they overlap (open threads, the comment box, drafts, resolved
+/// threads). A handful per file, so a row looks through all of them.
+struct LineMarks(Vec<(bool, std::ops::RangeInclusive<usize>, Style)>);
+
+impl LineMarks {
+    fn new(list: &[review_blocks::ThreadBlock], theme: &Theme) -> LineMarks {
+        use review_blocks::Role;
+        let mut marks: Vec<_> = list
+            .iter()
+            .map(|t| {
+                let (rank, key) = match t.role {
+                    Role::Thread if t.resolved => (3, "review.lineMarker.resolved"),
+                    Role::Thread => (0, "review.lineMarker"),
+                    Role::Composer { .. } => (1, "review.composer.lineMarker"),
+                    Role::Draft => (2, "review.draft.lineMarker"),
+                };
+                (rank, (t.right, t.line.saturating_sub(t.span)..=t.line, theme.get(key)))
+            })
+            .collect();
+        marks.sort_by_key(|m| m.0);
+        LineMarks(marks.into_iter().map(|m| m.1).collect())
+    }
+
+    /// The bar's colour beside `line` of a side (`right`: the work tree's), if any.
+    fn at(&self, right: bool, line: Option<usize>) -> Option<Style> {
+        let line = line?;
+        self.0.iter().find(|m| m.0 == right && m.1.contains(&line)).map(|m| m.2)
+    }
+}
+
+/// The gutter bar's glyph, in the column between a line number and the text.
+const LINE_MARK: &str = "▎";
+
 /// One side's syntax colours over the visible rows: its lines are visited in increasing order,
 /// so one index walks its spans (a binary search for the first line only).
 struct Walk<'a> {
@@ -260,6 +294,7 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
         let (lo, hi) = caret.ordered();
         if hi.0 > lo.0 && hi.1 == 0 { hi.0 - 1 } else { hi.0 }
     });
+    let marks = LineMarks::new(d.threads.list(), theme);
     let (mut left_walk, mut right_walk) = (Walk::new(&doc.left), Walk::new(&doc.right));
     // The text's columns (as `draw_inline` / `draw_half` lay them out; side by side the narrower
     // side) and the widest line drawn, for sideways scrolling.
@@ -336,6 +371,7 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
             };
             let (right, l) = (row.kind() != Kind::Removed, line_no(row));
             let sel = caret.on_line(right, l, line.text.len());
+            let mark = marks.at(right, Some(l));
             let (cell, w) = draw_inline(
                 out,
                 body,
@@ -348,6 +384,7 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
                 &st,
                 current,
                 sel,
+                mark,
             );
             at_caret = (right == caret.right).then_some(cell);
             (cell, w, (w, w))
@@ -355,9 +392,11 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
             let left = Rect::new(body.x, y, half, 1);
             let right = Rect::new(body.x + half + 1, y, body.width - half - 1, 1);
             let side = |rect, line, removed: bool, part, sel| {
+                let mark = marks.at(!removed, if removed { row.left } else { row.right });
                 let ctx = Half {
                     rect,
                     sel,
+                    mark,
                     line,
                     digits,
                     left_col: d.left_col,
@@ -577,6 +616,8 @@ struct Half<'a> {
     current: bool,
     /// The selected bytes of the line, and whether its line break is selected.
     sel: Option<(Range<usize>, bool)>,
+    /// A review comment's bar beside the number.
+    mark: Option<Style>,
 }
 
 /// Draws one side of a row (its number, then its text; filler when it has no line). Returns
@@ -605,6 +646,11 @@ fn draw_half(
     let number = if h.current { st.gutter_active } else { st.gutter };
     let number = number.bg(bg.bg.unwrap_or_default());
     out.set_stringn(x, y, format!("{:>w$} ", line + 1, w = h.digits), width as usize, number);
+    if let Some(m) = h.mark
+        && (h.digits as u16) < width
+    {
+        out.set_stringn(x + h.digits as u16, y, LINE_MARK, 1, number.patch(m));
+    }
     let highlight = part.map(|p| (p, if removed { st.removed_text } else { st.inserted_text }));
     let room = width.saturating_sub(text_x - x);
     let w = draw_text(
@@ -636,6 +682,7 @@ fn draw_inline(
     st: &Styles,
     current: bool,
     sel: Option<(Range<usize>, bool)>,
+    mark: Option<Style>,
 ) -> ((u16, u16), usize) {
     let (bg, sign) = match row.kind() {
         Kind::Removed => (st.removed, "-"),
@@ -650,6 +697,12 @@ fn draw_inline(
     let n = |l: Option<usize>| l.map_or(String::new(), |l| (l + 1 + base).to_string());
     let gutter = format!("{:>w$} {:>w$} ", n(row.left), n(row.right), w = digits);
     let (gx, _) = out.set_stringn(body.x, y, &gutter, width, number);
+    // The bar goes in the space after the second number.
+    if let Some(m) = mark
+        && gx > body.x
+    {
+        out.set_stringn(gx - 1, y, LINE_MARK, 1, number.patch(m));
+    }
     let (sx, _) = out.set_stringn(
         gx,
         y,

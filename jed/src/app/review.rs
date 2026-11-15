@@ -476,9 +476,11 @@ impl App {
                         .iter()
                         .filter_map(|t| match (&d.thread, &t.place) {
                             // A thread tab: its one thread, under the code's last anchored line.
-                            (Some(tab), _) => {
-                                (tab.id == t.thread.id).then(|| forge_block(t, user, true, tab.last, false))
-                            }
+                            (Some(tab), _) => (tab.id == t.thread.id).then(|| {
+                                let a = &t.thread.anchor;
+                                let span = a.end_line.saturating_sub(a.start_line) as usize;
+                                forge_block(t, user, true, (tab.last, span), false)
+                            }),
                             (None, Placement::Placed { side, lines })
                                 if workdir.join(&t.thread.anchor.path) == d.path =>
                             {
@@ -489,7 +491,8 @@ impl App {
                                         .iter()
                                         .any(|c| !crate::suggestion::parse(&c.body, &t.thread.anchor).is_empty());
                                 let line = lines.end.saturating_sub(1).max(lines.start);
-                                Some(forge_block(t, user, *side == Side::Right, line, apply))
+                                let span = line - lines.start;
+                                Some(forge_block(t, user, *side == Side::Right, (line, span), apply))
                             }
                             _ => None,
                         })
@@ -837,12 +840,13 @@ impl App {
     }
 }
 
-/// A forge thread's block under `line` of a diff's text (`apply`: it may offer Apply Suggestion).
+/// A forge thread's block under `line` of a diff's text, covering `span` lines above it too
+/// (`apply`: it may offer Apply Suggestion).
 fn forge_block(
     t: &crate::review::ThreadRow,
     user: Option<&str>,
     right: bool,
-    line: usize,
+    (line, span): (usize, usize),
     apply: bool,
 ) -> crate::review_blocks::ThreadBlock {
     crate::review_blocks::ThreadBlock {
@@ -850,6 +854,7 @@ fn forge_block(
         id: t.thread.id.clone(),
         right,
         line,
+        span,
         resolved: t.thread.resolved,
         mine: user.is_some_and(|u| t.thread.comments.iter().any(|c| c.author.eq_ignore_ascii_case(u))),
         apply,
