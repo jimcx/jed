@@ -420,7 +420,7 @@ impl Forge for Gitea {
     }
 
     /// Blocking: call from spawn_blocking.
-    fn reply(&self, repo: &RepoRef, number: u64, thread_id: &str, body: &str) -> Result<()> {
+    fn reply(&self, repo: &RepoRef, number: u64, thread_id: &str, body: &str, _lines: (u32, u32)) -> Result<()> {
         let url = format!(
             "{}/{number}/comments/{}/replies",
             Self::pulls(repo),
@@ -441,7 +441,14 @@ impl Forge for Gitea {
     /// Review comments are issue comments on Gitea.
     ///
     /// Blocking: call from spawn_blocking.
-    fn edit_comment(&self, repo: &RepoRef, comment_id: &str, body: &str, range: Option<(u32, u32)>) -> Result<()> {
+    fn edit_comment(
+        &self,
+        repo: &RepoRef,
+        comment_id: &str,
+        body: &str,
+        range: Option<(u32, u32)>,
+        _lines: (u32, u32),
+    ) -> Result<()> {
         let url = format!("{}/comments/{}", Self::issues(repo), encode_segment(comment_id));
         let body = serde_json::json!({ "body": with_marker(body, range) });
         self.client.patch(&url, &body.to_string()).map(|_| ())
@@ -651,10 +658,10 @@ mod tests {
             ("DELETE /api/v1/repos/o/r/issues/comments/11", Reply::status(204)),
             ("/api/v1/user", Reply::json("{\"login\":\"me\"}")),
         ]);
-        gitea.reply(&repo, 7, "11", "hi").unwrap();
+        gitea.reply(&repo, 7, "11", "hi", (1, 1)).unwrap();
         gitea.set_resolved(&repo, "11", true).unwrap();
         gitea.set_resolved(&repo, "11", false).unwrap();
-        gitea.edit_comment(&repo, "11", "new", Some((2, 4))).unwrap();
+        gitea.edit_comment(&repo, "11", "new", Some((2, 4)), (2, 4)).unwrap();
         gitea.delete_comment(&repo, "11").unwrap();
         assert_eq!(gitea.current_user().unwrap(), "me");
         let reqs = server.requests();
@@ -663,7 +670,18 @@ mod tests {
         assert_eq!(reqs[0].body, "{\"body\":\"hi\"}");
         assert_eq!(reqs[3].body, "{\"body\":\"new\\n\\n<!-- jed:range=2-4 -->\"}");
         assert!(reqs[1].target.ends_with("/resolve") && reqs[2].target.ends_with("/unresolve"));
-        assert!(gitea.reply(&repo, 7, "99", "x").is_err(), "an unknown route is a 404");
+        // A plain suggestion fence on a multi-line thread is posted as written (a plain fence
+        // means the whole range there), and only an edit of the first comment adds the marker.
+        let fence = "```suggestion\nx\n```";
+        gitea.reply(&repo, 7, "11", fence, (2, 4)).unwrap();
+        gitea.edit_comment(&repo, "11", fence, None, (2, 4)).unwrap();
+        let reqs = server.requests();
+        assert_eq!(reqs[reqs.len() - 2].body, r#"{"body":"```suggestion\nx\n```"}"#);
+        assert_eq!(reqs[reqs.len() - 1].body, r#"{"body":"```suggestion\nx\n```"}"#);
+        assert!(
+            gitea.reply(&repo, 7, "99", "x", (1, 1)).is_err(),
+            "an unknown route is a 404"
+        );
     }
 
     #[test]

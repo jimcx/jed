@@ -57,12 +57,16 @@ pub(super) enum ComposerKind {
     /// A reply in the thread `thread_id`.
     Reply {
         thread_id: String,
+        /// The thread's first and last line.
+        lines: (u32, u32),
     },
     /// A new text for the user's comment `comment_id`; `range` is its thread's lines when it is
     /// the thread's first comment (some forges keep the range in the body).
     Edit {
         comment_id: String,
         range: Option<(u32, u32)>,
+        /// The thread's first and last line (every comment in it).
+        lines: (u32, u32),
     },
 }
 

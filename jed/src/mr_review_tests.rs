@@ -12,7 +12,7 @@
 mod claude;
 mod done_when;
 mod github;
-mod gitlab;
+pub(crate) mod gitlab;
 mod live;
 mod suggest;
 
@@ -52,7 +52,7 @@ fn pr_json(number: u64, title: &str, merge_base: &str) -> String {
 /// `<base>/proj`: `main` with `a.txt`, `gone.txt`, `mod.txt`, then `feature` (checked out) renaming
 /// `a.txt`, editing `mod.txt`, adding `new.txt`, deleting `gone.txt`. Returns the repository and
 /// main's commit id.
-fn make_repo(base: &Path) -> (PathBuf, String) {
+pub(crate) fn make_repo(base: &Path) -> (PathBuf, String) {
     // Canonical, so paths built from it match the app's (macOS's temp dir is behind /var → /private/var).
     let root = base.canonicalize().unwrap().join("proj");
     fs::create_dir_all(&root).unwrap();
@@ -548,7 +548,7 @@ fn diff(app: &App) -> &crate::diff_view::DiffTab {
     app.group().active_diff().expect("a diff tab")
 }
 
-fn draw_wide(app: &mut App, width: u16) {
+pub(crate) fn draw_wide(app: &mut App, width: u16) {
     let mut term = Terminal::new(TestBackend::new(width, 24)).unwrap();
     term.draw(|f| crate::ui::render(f, app)).unwrap();
 }

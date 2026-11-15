@@ -30,6 +30,8 @@ pub enum Job {
         number: u64,
         thread_id: String,
         body: String,
+        /// The thread's first and last line.
+        lines: (u32, u32),
     },
     Resolve {
         thread_id: String,
@@ -39,6 +41,8 @@ pub enum Job {
         comment_id: String,
         body: String,
         range: Option<(u32, u32)>,
+        /// The thread's first and last line.
+        lines: (u32, u32),
     },
     Delete {
         comment_id: String,
@@ -53,6 +57,8 @@ pub struct ReplyDraft {
     pub thread_id: String,
     pub body: String,
     pub resolve: bool,
+    /// The thread's first and last line.
+    pub lines: (u32, u32),
 }
 
 impl Job {
@@ -155,7 +161,7 @@ pub fn run(req: Request, job: Job) -> Done {
             // Each reply has its own outcome. One whose thread resolve fails was posted: it is
             // confirmed (a retry would post it twice) and the failure is the submit's `error`.
             for r in replies {
-                match api.reply(repo, *number, &r.thread_id, &r.body) {
+                match api.reply(repo, *number, &r.thread_id, &r.body, r.lines) {
                     Err(e) => {
                         log.error(&format!("reply {}: {e}", r.id));
                         failed.push((r.id.clone(), e.to_string()));
@@ -177,13 +183,15 @@ pub fn run(req: Request, job: Job) -> Done {
             number,
             thread_id,
             body,
-        } => api.reply(repo, *number, thread_id, body),
+            lines,
+        } => api.reply(repo, *number, thread_id, body, *lines),
         Job::Resolve { thread_id, resolved } => api.set_resolved(repo, thread_id, *resolved),
         Job::Edit {
             comment_id,
             body,
             range,
-        } => api.edit_comment(repo, comment_id, body, *range),
+            lines,
+        } => api.edit_comment(repo, comment_id, body, *range, *lines),
         Job::Delete { comment_id } => api.delete_comment(repo, comment_id),
     };
     match result {

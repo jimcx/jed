@@ -8,9 +8,9 @@
 use super::*;
 use crate::diff_caret::Caret;
 
-pub(super) const API: &str = "/api/v4/projects/alice%2Fproject";
+pub(crate) const API: &str = "/api/v4/projects/alice%2Fproject";
 
-pub(super) fn config_gitlab(server: &FakeServer) -> ForgeConfig {
+pub(crate) fn config_gitlab(server: &FakeServer) -> ForgeConfig {
     ForgeConfig {
         entries: vec![Entry {
             host: "git.example.com".into(),
@@ -26,7 +26,13 @@ pub(super) fn config_gitlab(server: &FakeServer) -> ForgeConfig {
 
 /// The merge request `!7` at `head`, a multi-line discussion on `mod.txt` lines 2-3 at `head`, one
 /// made at an old commit, a plain comment and a system note. `publish` answers `bulk_publish`.
-pub(super) fn server(main: &str, head: &str, publish: Reply) -> FakeServer {
+pub(crate) fn server(main: &str, head: &str, publish: Reply) -> FakeServer {
+    server_with_note(main, head, publish, "bob", "Natively ranged remark")
+}
+
+/// [`server`] with the ranged discussion's first note by `author` saying `body` (JSON-escaped);
+/// editing that note answers too.
+pub(crate) fn server_with_note(main: &str, head: &str, publish: Reply, author: &str, body: &str) -> FakeServer {
     let mr = format!(
         r#"{{"iid":7,"title":"Add review panel","description":"","state":"opened","draft":false,
         "author":{{"username":"ann"}},"web_url":"https://git.example.com/alice/project/-/merge_requests/7",
@@ -35,8 +41,8 @@ pub(super) fn server(main: &str, head: &str, publish: Reply) -> FakeServer {
     );
     let old = "d".repeat(40);
     let discussions = format!(
-        r#"[{{"id":"aa11","individual_note":false,"notes":[{{"id":101,"body":"Natively ranged remark",
-        "author":{{"username":"bob"}},"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z",
+        r#"[{{"id":"aa11","individual_note":false,"notes":[{{"id":101,"body":"{body}",
+        "author":{{"username":"{author}"}},"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z",
         "system":false,"resolvable":true,"resolved":false,"position":{{"head_sha":"{head}","base_sha":"{main}",
         "start_sha":"{main}","old_path":"mod.txt","new_path":"mod.txt","position_type":"text","new_line":3,
         "old_line":null,"line_range":{{"start":{{"line_code":"x_0_2","type":"new","old_line":null,"new_line":2}},
@@ -70,6 +76,10 @@ pub(super) fn server(main: &str, head: &str, publish: Reply) -> FakeServer {
             Reply::status(201).with_body("{}"),
         ),
         (
+            format!("PUT {API}/merge_requests/7/discussions/aa11/notes/101"),
+            Reply::json("{}"),
+        ),
+        (
             format!("PUT {API}/merge_requests/7/discussions/aa11"),
             Reply::json("{}"),
         ),
@@ -77,7 +87,7 @@ pub(super) fn server(main: &str, head: &str, publish: Reply) -> FakeServer {
 }
 
 /// The panel loaded on the standard repository against `server`, `mod.txt`'s diff open.
-pub(super) async fn boot(root: &Path, server: &FakeServer, state: Option<PathBuf>) -> App {
+pub(crate) async fn boot(root: &Path, server: &FakeServer, state: Option<PathBuf>) -> App {
     let mut app = open_app(root, state, config_gitlab(server), true);
     assert!(app.settle(loaded).await);
     assert!(app.settle(|a| a.git.status.is_some()).await);
@@ -220,6 +230,28 @@ async fn claude_ide_gitlab_posts_a_reply_draft_and_resolves_at_submit_without_a_
     );
     assert_eq!(sent[0].body, r#"{"body":"Done in abc"}"#);
     assert_eq!(sent[1].body, r#"{"resolved":true}"#);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_forge_fixes_a_gitlab_reply_draft_posted_at_submit_spells_the_plain_fence_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, main) = make_repo(dir.path());
+    let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+    let server = server(&main, &head, Reply::status(204));
+    let mut app = boot(&root, &server, None).await;
+    // The thread aa11 is on lines 2-3: a plain fence means both lines (`-1+0`).
+    claude_reply(&mut app, "7:aa11", "Try\n```suggestion\nX\n```", false);
+    app.test_execute(Command::ReviewSubmitComment);
+    assert!(
+        app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
+            .await
+    );
+    let post = server
+        .requests()
+        .into_iter()
+        .find(|r| r.method == "POST" && r.target.ends_with("/discussions/aa11/notes"))
+        .expect("the reply was posted");
+    assert_eq!(post.body, r#"{"body":"Try\n```suggestion:-1+0\nX\n```"}"#);
 }
 
 #[tokio::test(flavor = "multi_thread")]

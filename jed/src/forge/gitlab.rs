@@ -260,7 +260,10 @@ fn comment(iid: u64, discussion: &str, n: &Note, mr_url: &str) -> Comment {
     Comment {
         id: format!("{iid}:{discussion}:{}", n.id),
         author: ghost(n.author.as_ref()),
-        body: clean_text(n.body.as_deref().unwrap_or_default()),
+        // A plain fence is GitLab's `-0+0`: the comment's last line only. Say so, so that
+        // `suggestion::parse` (which reads a plain fence as the whole anchored range, as the
+        // other forges do and as jed writes it) needs no forge.
+        body: spell_out(&clean_text(n.body.as_deref().unwrap_or_default()), ":-0+0"),
         created_at: text(&n.created_at),
         updated_at: text(&n.updated_at),
         url: if mr_url.is_empty() {
@@ -390,10 +393,18 @@ fn position(a: &Anchor, refs: &DiffRefs, head_sha: &str, renames: &[(String, Str
 }
 
 /// A plain `suggestion` fence in a multi-line comment becomes `suggestion:-N+0`, which is how
-/// GitLab's page knows the block replaces the whole range (jed itself reads both the same).
+/// GitLab's page knows the block replaces the whole range (in jed a plain fence means that).
 fn gitlab_body(body: &str, a: &Anchor) -> String {
-    let span = a.end_line - a.start_line;
+    let span = a.end_line.saturating_sub(a.start_line);
     if span == 0 || span > crate::suggestion::MAX_SPAN {
+        return body.to_string();
+    }
+    spell_out(body, &format!(":-{span}+0"))
+}
+
+/// `body` with `info` (`:-N+M`) added to every plain `suggestion` fence.
+fn spell_out(body: &str, info: &str) -> String {
+    if !body.contains("```") {
         return body.to_string();
     }
     let mut lines: Vec<String> = body.split('\n').map(str::to_string).collect();
@@ -402,10 +413,23 @@ fn gitlab_body(body: &str, a: &Anchor) -> String {
             && let Some(line) = lines.get_mut(f.open)
             && let Some(at) = line.to_ascii_lowercase().find("suggestion")
         {
-            line.insert_str(at + "suggestion".len(), &format!(":-{span}+0"));
+            line.insert_str(at + "suggestion".len(), info);
         }
     }
     lines.join("\n")
+}
+
+/// `gitlab_body` for a thread's lines `(start, end)`: a reply or an edited comment, whose
+/// suggestion GitLab applies relative to the thread's last line.
+fn gitlab_lines(body: &str, (start, end): (u32, u32)) -> String {
+    let anchor = Anchor {
+        path: String::new(),
+        side: Side::Right,
+        start_line: start,
+        end_line: end,
+        commit: String::new(),
+    };
+    gitlab_body(body, &anchor)
 }
 
 impl Forge for GitLab {
@@ -605,13 +629,15 @@ impl Forge for GitLab {
     }
 
     /// Blocking: call from spawn_blocking.
-    fn reply(&self, repo: &RepoRef, _number: u64, thread_id: &str, body: &str) -> Result<()> {
+    fn reply(&self, repo: &RepoRef, _number: u64, thread_id: &str, body: &str, lines: (u32, u32)) -> Result<()> {
         let (iid, disc, _) = split_ids(thread_id)?;
         if disc.is_empty() {
             return Err(ForgeError::Parse("not a GitLab thread id".into()));
         }
         let url = format!("{}/discussions/{disc}/notes", Self::mr_path(repo, iid));
-        self.client.post(&url, &json!({ "body": body }).to_string()).map(|_| ())
+        self.client
+            .post(&url, &json!({ "body": gitlab_lines(body, lines) }).to_string())
+            .map(|_| ())
     }
 
     /// Blocking: call from spawn_blocking.
@@ -626,12 +652,21 @@ impl Forge for GitLab {
             .map(|_| ())
     }
 
-    /// GitLab keeps the range natively, so `range` is not used.
+    /// GitLab keeps the range natively, so `range` is not used; `lines` spells out plain fences.
     ///
     /// Blocking: call from spawn_blocking.
-    fn edit_comment(&self, repo: &RepoRef, comment_id: &str, body: &str, _range: Option<(u32, u32)>) -> Result<()> {
+    fn edit_comment(
+        &self,
+        repo: &RepoRef,
+        comment_id: &str,
+        body: &str,
+        _range: Option<(u32, u32)>,
+        lines: (u32, u32),
+    ) -> Result<()> {
         let url = note_path(repo, comment_id)?;
-        self.client.put(&url, &json!({ "body": body }).to_string()).map(|_| ())
+        self.client
+            .put(&url, &json!({ "body": gitlab_lines(body, lines) }).to_string())
+            .map(|_| ())
     }
 
     /// Blocking: call from spawn_blocking.
@@ -1129,6 +1164,62 @@ mod tests {
     }
 
     #[test]
+    fn a_plain_fence_is_read_as_gitlab_reads_it_and_parses_to_one_line() {
+        let note: Note = serde_json::from_str(
+            r#"{"id":2,"body":"a\n```suggestion\nx\n```\n```suggestion:-2+0\ny\n```\n```rust\nz\n```"}"#,
+        )
+        .unwrap();
+        let c = comment(7, "aa11", &note, "");
+        assert_eq!(
+            c.body,
+            "a\n```suggestion:-0+0\nx\n```\n```suggestion:-2+0\ny\n```\n```rust\nz\n```"
+        );
+        // On lines 5-9: the plain fence (now -0+0) is line 9 only, `-2+0` lines 7-9.
+        let found = crate::suggestion::parse(&c.body, &anchor(5, 9, Side::Right));
+        let spans: Vec<_> = found.iter().map(|s| (s.start_line, s.end_line)).collect();
+        assert_eq!(spans, [(9, 9), (7, 9)]);
+    }
+
+    #[test]
+    fn replies_and_edits_spell_a_plain_fence_out_with_the_threads_lines() {
+        let (server, gl, repo) = setup(vec![
+            (
+                &format!("POST {}", route("/merge_requests/7/discussions/aa11/notes")),
+                Reply::status(201).with_body("{}"),
+            ),
+            (
+                &format!("PUT {}", route("/merge_requests/7/discussions/aa11/notes/2")),
+                Reply::json("{}"),
+            ),
+        ]);
+        let body = "```suggestion\nx\n```";
+        gl.reply(&repo, 7, "7:aa11", body, (5, 8)).unwrap();
+        gl.edit_comment(&repo, "7:aa11:2", body, None, (5, 8)).unwrap();
+        let bodies: Vec<_> = server.requests().iter().map(|r| r.body.clone()).collect();
+        let want = r#"{"body":"```suggestion:-3+0\nx\n```"}"#;
+        assert_eq!(bodies, [want, want]);
+    }
+
+    #[test]
+    fn a_single_line_thread_and_an_explicit_range_are_posted_unchanged() {
+        let (server, gl, repo) = setup(vec![(
+            &format!("POST {}", route("/merge_requests/7/discussions/aa11/notes")),
+            Reply::status(201).with_body("{}"),
+        )]);
+        gl.reply(&repo, 7, "7:aa11", "```suggestion\nx\n```", (5, 5)).unwrap();
+        gl.reply(&repo, 7, "7:aa11", "```suggestion:-1+1\nx\n```", (5, 8))
+            .unwrap();
+        let bodies: Vec<_> = server.requests().iter().map(|r| r.body.clone()).collect();
+        assert_eq!(
+            bodies,
+            [
+                r#"{"body":"```suggestion\nx\n```"}"#,
+                r#"{"body":"```suggestion:-1+1\nx\n```"}"#
+            ]
+        );
+    }
+
+    #[test]
     fn reply_resolve_edit_delete_requests() {
         let (server, gl, repo) = setup(vec![
             (
@@ -1156,11 +1247,11 @@ mod tests {
                 Reply::status(204),
             ),
         ]);
-        gl.reply(&repo, 7, "7:aa11", "thanks").unwrap();
+        gl.reply(&repo, 7, "7:aa11", "thanks", (1, 1)).unwrap();
         gl.set_resolved(&repo, "7:aa11", true).unwrap();
-        gl.edit_comment(&repo, "7:aa11:2", "new", None).unwrap();
+        gl.edit_comment(&repo, "7:aa11:2", "new", None, (1, 1)).unwrap();
         gl.delete_comment(&repo, "7:aa11:2").unwrap();
-        gl.edit_comment(&repo, "7::50", "plain", None).unwrap();
+        gl.edit_comment(&repo, "7::50", "plain", None, (1, 1)).unwrap();
         gl.delete_comment(&repo, "7::50").unwrap();
         let bodies: Vec<_> = server
             .requests()
@@ -1176,10 +1267,10 @@ mod tests {
     fn ids_are_validated_before_they_reach_a_url() {
         let (server, gl, repo) = setup(vec![]);
         for bad in ["7:../x:1", "x:aa:1", "7:aa:1:2", "7:zz:1", "7:aa:q", "7"] {
-            assert!(gl.edit_comment(&repo, bad, "b", None).is_err(), "{bad}");
+            assert!(gl.edit_comment(&repo, bad, "b", None, (1, 1)).is_err(), "{bad}");
         }
         assert!(gl.set_resolved(&repo, "7:a/b", true).is_err());
-        assert!(gl.reply(&repo, 7, "7:", "x").is_err());
+        assert!(gl.reply(&repo, 7, "7:", "x", (1, 1)).is_err());
         assert!(server.requests().is_empty());
     }
 

@@ -275,12 +275,20 @@ pub trait Forge: Send + Sync {
     /// Posts the review: its comments at their anchors (on `head_sha`) and the verdict. The
     /// outcome says which comments the forge took; the others stay drafts.
     fn submit_review(&self, repo: &RepoRef, number: u64, head_sha: &str, review: &DraftReview) -> SubmitOutcome;
-    /// Replies in the thread (`thread_id` is `Thread::id`); posted at once.
-    fn reply(&self, repo: &RepoRef, number: u64, thread_id: &str, body: &str) -> Result<()>;
+    /// Replies in the thread (`thread_id` is `Thread::id`); posted at once. `lines`: the
+    /// thread's first and last line (GitLab spells a plain suggestion fence out with them).
+    fn reply(&self, repo: &RepoRef, number: u64, thread_id: &str, body: &str, lines: (u32, u32)) -> Result<()>;
     fn set_resolved(&self, repo: &RepoRef, thread_id: &str, resolved: bool) -> Result<()>;
     /// `range`: the lines of the thread's first comment, for adapters that keep a multi-line range
-    /// in the body (Gitea).
-    fn edit_comment(&self, repo: &RepoRef, comment_id: &str, body: &str, range: Option<(u32, u32)>) -> Result<()>;
+    /// in the body (Gitea). `lines`: the thread's lines, for every comment in it, as in `reply`.
+    fn edit_comment(
+        &self,
+        repo: &RepoRef,
+        comment_id: &str,
+        body: &str,
+        range: Option<(u32, u32)>,
+        lines: (u32, u32),
+    ) -> Result<()>;
     fn delete_comment(&self, repo: &RepoRef, comment_id: &str) -> Result<()>;
     /// The git blob id of `path` at `commit` on the host; `None` when it has no such file (404).
     /// Places threads anchored on commits the local clone lacks.

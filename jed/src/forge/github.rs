@@ -477,7 +477,7 @@ impl Forge for GitHub {
     /// By thread node id (GraphQL): the REST reply call needs a comment id, which a thread id is not.
     ///
     /// Blocking: call from spawn_blocking.
-    fn reply(&self, _repo: &RepoRef, _number: u64, thread_id: &str, body: &str) -> Result<()> {
+    fn reply(&self, _repo: &RepoRef, _number: u64, thread_id: &str, body: &str, _lines: (u32, u32)) -> Result<()> {
         self.client
             .graphql(REPLY_MUTATION, json!({ "thread": thread_id, "body": body }))
             .map(|_| ())
@@ -511,7 +511,14 @@ impl Forge for GitHub {
     /// GitHub keeps the range natively, so `range` is not used.
     ///
     /// Blocking: call from spawn_blocking.
-    fn edit_comment(&self, repo: &RepoRef, comment_id: &str, body: &str, _range: Option<(u32, u32)>) -> Result<()> {
+    fn edit_comment(
+        &self,
+        repo: &RepoRef,
+        comment_id: &str,
+        body: &str,
+        _range: Option<(u32, u32)>,
+        _lines: (u32, u32),
+    ) -> Result<()> {
         let id = numeric_id(comment_id)?;
         let url = format!("{}/comments/{id}", Self::pulls(repo));
         self.client
@@ -844,10 +851,10 @@ mod tests {
             ("PATCH /api/v3/repos/o/r/pulls/comments/101", Reply::json("{}")),
             ("DELETE /api/v3/repos/o/r/pulls/comments/101", Reply::status(204)),
         ]);
-        gh.reply(&repo, 7, "PRRT_a", "thanks").unwrap();
+        gh.reply(&repo, 7, "PRRT_a", "thanks", (1, 1)).unwrap();
         gh.set_resolved(&repo, "PRRT_a", true).unwrap();
         gh.set_resolved(&repo, "PRRT_a", false).unwrap();
-        gh.edit_comment(&repo, "101", "new", Some((1, 2))).unwrap();
+        gh.edit_comment(&repo, "101", "new", Some((1, 2)), (1, 2)).unwrap();
         gh.delete_comment(&repo, "101").unwrap();
         let seen = server.requests();
         let body = |i: usize| serde_json::from_str::<Value>(&seen[i].body).unwrap();
@@ -859,10 +866,18 @@ mod tests {
         // Ids that are not numbers never reach a URL.
         assert!(matches!(gh.delete_comment(&repo, "../x"), Err(ForgeError::Parse(_))));
         assert!(matches!(
-            gh.edit_comment(&repo, "review-9", "x", None),
+            gh.edit_comment(&repo, "review-9", "x", None, (1, 1)),
             Err(ForgeError::Parse(_))
         ));
         assert_eq!(seen.len(), 5);
+    }
+
+    #[test]
+    fn an_edit_posts_a_plain_suggestion_fence_unchanged_on_a_range() {
+        let (server, gh, repo) = setup(vec![("PATCH /api/v3/repos/o/r/pulls/comments/101", Reply::json("{}"))]);
+        gh.edit_comment(&repo, "101", "```suggestion\nx\n```", Some((2, 4)), (2, 4))
+            .unwrap();
+        assert_eq!(server.requests()[0].body, r#"{"body":"```suggestion\nx\n```"}"#);
     }
 
     #[test]

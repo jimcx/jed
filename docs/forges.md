@@ -42,3 +42,11 @@ the whole file is ignored while it holds a token and group or others can read it
 - An invalid `host`, `kind`, `api_url` or `token_env` value, or a mistyped `mcp_read_only`, skips just that entry.
 - While the file has any error, Claude's review tools are read-only on hosts without a valid entry (including github.com / gitlab.com); configured hosts keep their own `mcp_read_only`.
 - Redirects are not followed and only HTTPS is used unless `api_url` says `http://`.
+
+## Suggestions
+
+In jed a plain ` ```suggestion ` fence in a comment replaces the lines the comment is on, and
+`suggestion:-N+M` the lines from N above to M below its last line (up to 100 each way). GitLab reads a
+plain fence as its last line only, so on GitLab jed shows a plain fence in someone else's comment as
+`suggestion:-0+0` and posts yours (new, edited or a reply) as `suggestion:-N+0` over the thread's lines:
+what you see in jed is what GitLab's page offers.

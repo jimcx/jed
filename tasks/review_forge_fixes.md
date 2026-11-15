@@ -2,7 +2,7 @@
 id: review_forge_fixes
 name: Code review forge fixes
 summary: suggestions read as GitLab reads them, a Request Changes that Gitea accepts, fork merge requests matched the same way on every forge, drafts GitHub would refuse named before the submit, and the adapters' smaller differences
-status: open
+status: in-progress
 priority: 0
 dependencies: [mr_review, review_fixes]
 ---
@@ -20,7 +20,7 @@ Bugs and adapter differences found by reading the forge layer and the review cod
     - a reviewer who asked for changes on GitLab shows in the approval line; a dismissed approval doesn't bring back the same reviewer's older verdict
     - `scripts/check` is green
   - Subtasks (one agent and one commit each):
-    - review_forge_fixes-a: suggestions mean what the forge means
+    - ✅ review_forge_fixes-a: suggestions mean what the forge means. Done: fix on read — `gitlab::comment` spells each plain fence `suggestion:-0+0` (`spell_out`), so `suggestion::parse` stays forge-free; `Forge::reply` and `edit_comment` gained `lines: (u32, u32)` (the thread's span, for every comment; a reply draft's own lines at submit) and GitLab writes a plain fence as `-N+0` through `gitlab_lines`; Gitea's range marker still only on the first comment. GitLab test helpers in `mr_review_tests/gitlab.rs` are `pub(crate)` (`server_with_note`). Docs (docs.gitlab.com suggestions page) confirm `-N+M` is relative to the commented (last) line, 100 above / 100 below; they don't describe a plain fence in a multi-line comment, so its `-0+0` reading and a reply's anchor are still unverified (hand check: a plain fence from GitLab's page on a multi-line comment and on a reply, Apply, see which lines change)
         - Today `suggestion::parse(body, anchor)` reads a plain fence as "replace the anchored lines" for every forge (`jed/src/suggestion.rs:106`). GitLab reads a plain fence as `-0+0`: the comment's last line only. `gitlab::gitlab_body` (`jed/src/forge/gitlab.rs:394`) already rewrites a plain fence to `suggestion:-N+0` at submit for that reason, but only `submit_review` calls it: `edit_comment` and `reply` post the plain fence.
         - First check GitLab's suggestion docs (the `-N+M` syntax, the plain fence's meaning, limits) and record them in mr_review.md's GitLab bullet, which today says "unverified".
         - Fix on read, in the GitLab adapter: normalise each comment body's plain suggestion fences to `suggestion:-0+0` as it is read (`gitlab::comment`), so `parse` needs no forge argument and everything downstream (blocks, Apply, Claude's tool) agrees. Or give `parse` the `forge::Kind`: pick whichever leaves the text the user sees when editing their own comment closest to what GitLab stores, and say which in the report.

@@ -192,6 +192,7 @@ impl App {
                         thread_id: r.draft.reply_to.clone()?,
                         body: r.draft.body.clone(),
                         resolve: r.draft.resolve,
+                        lines: (r.draft.start, r.draft.end),
                     })
                 })
                 .collect(),
@@ -358,6 +359,7 @@ impl App {
     fn reply_to(&mut self, row: ThreadRow) {
         let kind = ComposerKind::Reply {
             thread_id: row.thread.id.clone(),
+            lines: (row.thread.anchor.start_line, row.thread.anchor.end_line),
         };
         self.compose_in(&row, kind, "");
     }
@@ -369,6 +371,7 @@ impl App {
         let kind = ComposerKind::Edit {
             comment_id: c.id.clone(),
             range,
+            lines: (a.start_line, a.end_line),
         };
         self.compose_in(&row, kind, &c.body);
     }
@@ -385,15 +388,21 @@ impl App {
             return self.notify(Level::Error, "The merge request is not loaded".into());
         };
         let job = match &c.kind {
-            ComposerKind::Reply { thread_id } => Job::Reply {
+            ComposerKind::Reply { thread_id, lines } => Job::Reply {
                 number,
                 thread_id: thread_id.clone(),
                 body,
+                lines: *lines,
             },
-            ComposerKind::Edit { comment_id, range } => Job::Edit {
+            ComposerKind::Edit {
+                comment_id,
+                range,
+                lines,
+            } => Job::Edit {
                 comment_id: comment_id.clone(),
                 body,
                 range: *range,
+                lines: *lines,
             },
             ComposerKind::Draft => return,
         };
