@@ -238,7 +238,8 @@ async fn jmux_server_shows_a_shell_above_the_status_bar_and_runs_keys() {
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_server_gives_the_shell_its_environment() {
     let mut server = TestServer::start();
-    let mut c = Client::attach(&server.socket, 20, 80).await;
+    // Wide enough that macOS's long temp path doesn't wrap.
+    let mut c = Client::attach(&server.socket, 20, 200).await;
     c.type_text("echo id=$JMUX_TERMINAL sock=$JMUX\r").await;
     let socket = server.socket.display().to_string();
     c.wait_text(&format!("id=1 sock={socket}")).await;

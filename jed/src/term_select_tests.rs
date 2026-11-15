@@ -154,13 +154,17 @@ async fn term_select_shell_drag_highlights_and_copy() {
     assert_eq!(app.clipboard.read().unwrap(), "alpha\nbeta");
 
     // Linux's Ctrl+C (its editor copy) stays the shell's SIGINT with a selection too: nothing
-    // copied, and the shell gets the interrupt (the line discipline echoes `^C`).
+    // copied, and the shell gets the interrupt: the line discipline echoes `^C`, or (macOS's
+    // /bin/sh is bash, whose readline handles it) the shell draws a fresh prompt.
+    let prompts = |a: &App| screen_text(a).lines().filter(|l| l.trim_end().ends_with('$')).count();
+    let before = prompts(&app);
     app.keymap = Keymap::default_for(Platform::Linux);
     keep_clipboard(&mut app);
     app.press(KeyCode::Char('c'), KeyModifiers::CONTROL);
     assert_eq!(app.clipboard.read().unwrap(), "keep", "Ctrl+C doesn't copy a terminal");
     assert!(
-        app.settle(|a| screen_text(a).contains("^C")).await,
+        app.settle(|a| screen_text(a).contains("^C") || prompts(a) > before)
+            .await,
         "the shell got Ctrl+C:\n{}",
         screen_text(&app)
     );

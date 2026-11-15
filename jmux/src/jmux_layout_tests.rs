@@ -491,7 +491,9 @@ async fn jmux_layout_a_mouse_positions_are_relative_to_the_terminal_below_the_ba
     let mut h = Harness::new(12, 60).await;
     h.settle_text("sh ○").await;
     // A program asks for the mouse, then reads the 8 bytes of one report.
-    h.type_text("printf '\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=8 2>/dev/null | od -An -tx1\n");
+    h.type_text(
+        "printf '\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=8 2>/dev/null | od -An -tx1 | tr -s ' '\n",
+    );
     h.settle("mouse reporting on", |h| {
         h.app
             .groups
@@ -1464,7 +1466,7 @@ async fn jmux_layout_d_a_program_with_mouse_reporting_gets_the_mouse_and_shift_s
     let mut h = Harness::new(12, 60).await;
     h.settle_text("sh ○").await;
     h.type_text(
-        "printf 'ABC_%s\\n' DEF; printf '\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=8 2>/dev/null | od -An -tx1\n",
+        "printf 'ABC_%s\\n' DEF; printf '\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=8 2>/dev/null | od -An -tx1 | tr -s ' '\n",
     );
     h.settle("mouse reporting on", |h| {
         h.app
@@ -1619,7 +1621,9 @@ async fn jmux_layout_d_the_wheel_goes_to_a_reporting_program_and_shift_scrolls_i
     let mut h = Harness::new(12, 60).await;
     h.settle_text("sh ○").await;
     h.seq_200().await;
-    h.type_text("printf '\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=6 2>/dev/null | od -An -tx1\n");
+    h.type_text(
+        "printf '\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=6 2>/dev/null | od -An -tx1 | tr -s ' '\n",
+    );
     h.settle("mouse reporting on", |h| {
         h.app
             .groups
@@ -1925,7 +1929,7 @@ async fn jmux_layout_e_a_full_screen_program_gets_its_keys_and_mouse() {
     // The alternate screen, application cursor keys and SGR mouse reporting, then raw input read
     // back as hex: Up, then a press at column 3, row 3 (1-based).
     h.type_text(
-        "printf '\\033[?1049h\\033[?1h\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=12 2>/dev/null | od -An -tx1\n",
+        "printf '\\033[?1049h\\033[?1h\\033[?1000h\\033[?1006h'; stty raw -echo; dd bs=1 count=12 2>/dev/null | od -An -tx1 | tr -s ' '\n",
     );
     h.settle("the program's modes", |h| {
         h.app.groups.active_group().active_tab().is_some_and(|t| {
