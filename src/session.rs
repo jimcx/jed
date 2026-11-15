@@ -218,7 +218,7 @@ impl TryFrom<Text> for Side {
             Text::Empty => Side::Empty,
             Text::Replaced => return Err(t),
             // Compare Current Conflict: its blocks are the tab's, not the file's.
-            Text::ConflictCurrent | Text::ConflictIncoming => return Err(t),
+            Text::ConflictCurrent | Text::ConflictIncoming | Text::ThreadCode => return Err(t),
             // A compare of two texts: kept by neither the session nor the file.
             Text::CompareLeft | Text::CompareRight => return Err(t),
         })

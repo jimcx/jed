@@ -1087,7 +1087,12 @@ pub(crate) mod threads {
 
     /// `with_comments` with the reviews list (a JSON array) given too.
     pub(super) fn with_reviews(main: &str, comments: &str, reviews: &str) -> FakeServer {
-        FakeServer::start(vec![
+        with_extra(main, comments, reviews, Vec::new())
+    }
+
+    /// `with_reviews` plus more routes (a reply, a resolve, ...).
+    pub(super) fn with_extra(main: &str, comments: &str, reviews: &str, extra: Vec<(String, Reply)>) -> FakeServer {
+        let mut routes = vec![
             (
                 format!("{PULLS}?state=open&page=1&limit=50"),
                 Reply::json(&format!("[{}]", pr_json(7, "Add review panel", main))),
@@ -1102,7 +1107,9 @@ pub(crate) mod threads {
                     "updated_at":"","html_url":"u99"}]"#,
                 ),
             ),
-        ])
+        ];
+        routes.extend(extra);
+        FakeServer::start(routes)
     }
 
     fn standard(head: &str, main: &str) -> String {
@@ -1133,16 +1140,32 @@ pub(crate) mod threads {
         edit: Option<(&str, &str)>,
         reviews: Option<&str>,
     ) -> (App, FakeServer) {
+        loaded_app_with(dir, edit, reviews, None, Vec::new()).await
+    }
+
+    /// `loaded_app_reviews` with `comments` (a JSON array of line comments, `{HEAD}` and `{MAIN}`
+    /// standing for the commits) instead of the standard three, and `extra` routes.
+    pub(crate) async fn loaded_app_with(
+        dir: &Path,
+        edit: Option<(&str, &str)>,
+        reviews: Option<&str>,
+        comments: Option<&str>,
+        extra: Vec<(String, Reply)>,
+    ) -> (App, FakeServer) {
         let (root, main) = make_repo(dir);
         let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
         if let Some((file, text)) = edit {
             fs::write(root.join(file), text).unwrap();
         }
-        let comments = standard(&head, &main);
-        let server = match reviews {
-            Some(r) => with_reviews(&main, &comments, r),
-            None => with_comments(&main, &comments),
+        let comments = match comments {
+            Some(c) => c.replace("{HEAD}", &head).replace("{MAIN}", &main),
+            None => standard(&head, &main),
         };
+        let reviews = reviews.unwrap_or(
+            r#"[{"id":1,"user":{"login":"bob"},"body":"","state":"COMMENT","comments_count":9,
+                    "submitted_at":"2026-01-02T10:00:00Z","html_url":"u"}]"#,
+        );
+        let server = with_extra(&main, &comments, reviews, extra);
         let mut app = open_app(&root, None, config_for(&server), true);
         assert!(app.settle(loaded).await);
         app.test_execute(Command::ShowReview);
@@ -1204,7 +1227,7 @@ pub(crate) mod threads {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn mr_review_a_local_edit_outdates_the_thread_on_that_line() {
+    async fn mr_review_a_local_edit_outdates_the_thread_and_its_row_opens_the_thread_tab() {
         let dir = tempfile::tempdir().unwrap();
         let (mut app, _server) = loaded_app(dir.path(), Some(("mod.txt", "m1\nm2 changed\nm3 edited\n"))).await;
         let p = places(&app);
@@ -1213,7 +1236,7 @@ pub(crate) mod threads {
         assert!(matches!(p[1].1, Placement::Placed { side: Side::Left, .. }));
         let text = screen(&mut app);
         assert!(text.contains("outdated"), "{text}");
-        // Enter opens the file near where the thread was written (line 3).
+        // Enter opens the thread's own tab (not the file's diff).
         let conv = &mut app.review.view.conv;
         conv.focused = true;
         conv.select(4, 2);
@@ -1221,7 +1244,8 @@ pub(crate) mod threads {
         app.press(KeyCode::Enter, KeyModifiers::NONE);
         assert!(app.settle(|a| a.diffs_settled()).await);
         assert!(diff(&app).path.ends_with("mod.txt"));
-        assert_eq!(diff(&app).cursor_line(), 2);
+        assert!(diff(&app).pair.is_thread());
+        assert_eq!(diff(&app).thread.as_ref().unwrap().id, "11");
     }
 
     #[tokio::test(flavor = "multi_thread")]

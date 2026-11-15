@@ -17,6 +17,7 @@ use crate::command::ReviewCommand as C;
 use crate::diff_view::{DiffTab, Pair};
 use crate::forge::Side;
 use crate::git::Head;
+use crate::group::Tab;
 use crate::layout::SidePanel;
 use crate::logs::Tool;
 use crate::review::{Content, Empty, Outcome, Pane, Request};
@@ -337,9 +338,9 @@ impl App {
         }
     }
 
-    /// Opens the selected conversation: a thread's file at its line (the mapped one when placed,
-    /// else the nearest to where it was written; a file the review doesn't list just shows the
-    /// thread in the status bar), a merge request comment shows its text there.
+    /// Opens the selected conversation: a placed thread's file at its line; any other thread (outdated,
+    /// missing, in a file the review doesn't list) in its thread tab; a merge request comment
+    /// shows its text in the status bar.
     pub(super) fn review_open_conv(&mut self) {
         let Some(review) = self.review.review() else { return };
         let Some(i) = self.review.view.conv.selected(review.conv_len()) else {
@@ -356,17 +357,11 @@ impl App {
             Placement::Placed { side, lines } => (*side == Side::Right, lines.start),
             _ => (a.side == Side::Right, a.start_line.saturating_sub(1) as usize),
         };
-        let first = t.thread.comments.first();
-        let text = format!(
-            "{}:{} {}: {}",
-            a.path,
-            a.start_line,
-            first.map_or("", |c| c.author.as_str()),
-            first.and_then(|c| c.body.lines().next()).unwrap_or("")
-        );
         let path = a.path.clone();
-        if !review.files.iter().any(|f| f.path == path) {
-            return self.notify(Level::Info, text);
+        // Only a thread placed in a file the review lists belongs to that file's diff.
+        if !matches!(t.place, Placement::Placed { .. }) || !review.files.iter().any(|f| f.path == path) {
+            let row = t.clone();
+            return self.open_thread_tab(&row);
         }
         self.review_open_file(&path);
         if let Some(workdir) = self.git.status.as_ref().map(|s| s.repo.workdir.clone())
@@ -376,6 +371,59 @@ impl App {
             d.go_to_side_line(right, line);
             self.needs_redraw = true;
         }
+    }
+
+    /// "Code Review: Open Thread": the selected thread's tab, whatever its placement.
+    pub(super) fn review_open_thread(&mut self) {
+        if let Some(row) = self.review_need_target() {
+            self.open_thread_tab(&row);
+        }
+    }
+
+    /// Opens (or shows the active group's) thread tab of `row`: its code, when known, and its
+    /// block; read-only, never the file's own diff.
+    fn open_thread_tab(&mut self, row: &crate::review::ThreadRow) {
+        let Some(workdir) = self.git.status.as_ref().map(|s| s.repo.workdir.clone()) else {
+            return;
+        };
+        let a = &row.thread.anchor;
+        let (base, last, code) = match &row.code {
+            Some(c) => (c.first - 1, c.last, c.text.clone()),
+            None => (
+                a.end_line.saturating_sub(1) as usize,
+                0,
+                "(the code isn't available)\n".to_string(),
+            ),
+        };
+        if let Some((buf, _)) = self.active_mut() {
+            buf.seal_undo();
+        }
+        let existing = self.group().tabs.iter().position(|t| {
+            t.diff()
+                .and_then(|d| d.thread.as_ref())
+                .is_some_and(|t| t.id == row.thread.id)
+        });
+        match existing {
+            Some(i) => self.group_mut().active = i,
+            None => {
+                let id = self.next_diff_id();
+                let thread = crate::diff_view::ThreadTab {
+                    id: row.thread.id.clone(),
+                    title: format!("Thread {}:{}", a.path, a.end_line),
+                    base,
+                    last,
+                };
+                let tab = DiffTab::thread(id, workdir.join(&a.path), thread, code);
+                self.group_mut().open_tab(Tab::Diff(Box::new(tab)));
+            }
+        }
+        if let Some(d) = self.group_mut().active_diff_mut() {
+            d.go_to_side_line(true, last);
+        }
+        self.ui.focus = Focus::Editor;
+        self.needs_redraw = true;
+        self.sync_diffs();
+        self.sync_review_threads();
     }
 
     /// Gives each review diff tab the placed threads of its file (a lookup finished, or the tab
@@ -393,11 +441,9 @@ impl App {
             self.composer = None;
         }
         // Called after every diff event: nothing to build (or clone) while every tab is current.
-        if !self
-            .groups
-            .diff_tabs_mut()
-            .any(|(_, d)| d.pair.is_review() && d.threads.synced != Some((generation, d.doc_key())))
-        {
+        if !self.groups.diff_tabs_mut().any(|(_, d)| {
+            (d.pair.is_review() || d.pair.is_thread()) && d.threads.synced != Some((generation, d.doc_key()))
+        }) {
             return;
         }
         let drafts: &[crate::review_drafts::Draft] = match (&self.review.drafts.store, self.review.drafts_key()) {
@@ -411,7 +457,7 @@ impl App {
         let user = self.review.user.as_deref();
         for (_, d) in self.groups.diff_tabs_mut() {
             let stamp = (generation, d.doc_key());
-            if !d.pair.is_review() || d.threads.synced == Some(stamp) {
+            if !(d.pair.is_review() || d.pair.is_thread()) || d.threads.synced == Some(stamp) {
                 continue;
             }
             d.threads.synced = Some(stamp);
@@ -419,33 +465,24 @@ impl App {
                 .map(|r| {
                     r.threads
                         .iter()
-                        .filter(|t| workdir.join(&t.thread.anchor.path) == d.path)
-                        .filter_map(|t| {
-                            let Placement::Placed { side, lines } = &t.place else {
-                                return None;
-                            };
-                            Some(crate::review_blocks::ThreadBlock {
-                                role: crate::review_blocks::Role::Thread,
-                                id: t.thread.id.clone(),
-                                right: *side == Side::Right,
-                                line: lines.end.saturating_sub(1).max(lines.start),
-                                resolved: t.thread.resolved,
-                                mine: user.is_some_and(|u| {
-                                    t.thread.comments.iter().any(|c| c.author.eq_ignore_ascii_case(u))
-                                }),
-                                apply: *side == Side::Right
+                        .filter_map(|t| match (&d.thread, &t.place) {
+                            // A thread tab: its one thread, under the code's last anchored line.
+                            (Some(tab), _) => {
+                                (tab.id == t.thread.id).then(|| forge_block(t, user, true, tab.last, false))
+                            }
+                            (None, Placement::Placed { side, lines })
+                                if workdir.join(&t.thread.anchor.path) == d.path =>
+                            {
+                                let apply = *side == Side::Right
                                     && !t.thread.resolved
                                     && t.thread
                                         .comments
                                         .iter()
-                                        .any(|c| !crate::suggestion::parse(&c.body, &t.thread.anchor).is_empty()),
-                                comments: t
-                                    .thread
-                                    .comments
-                                    .iter()
-                                    .map(|c| (c.author.clone(), c.body.clone()))
-                                    .collect(),
-                            })
+                                        .any(|c| !crate::suggestion::parse(&c.body, &t.thread.anchor).is_empty());
+                                let line = lines.end.saturating_sub(1).max(lines.start);
+                                Some(forge_block(t, user, *side == Side::Right, line, apply))
+                            }
+                            _ => None,
                         })
                         .collect()
                 })
@@ -456,14 +493,19 @@ impl App {
                 for draft in drafts.iter().filter(|x| workdir.join(&x.path) == d.path) {
                     if draft.reply_to.is_some() {
                         // Under its thread's block, wherever the thread is placed now.
-                        let placed = review.and_then(|r| {
-                            r.threads.iter().find_map(|t| match &t.place {
-                                Placement::Placed { side, lines } if Some(&t.thread.id) == draft.reply_to.as_ref() => {
-                                    Some((*side, lines.end.saturating_sub(1).max(lines.start)))
-                                }
-                                _ => None,
-                            })
-                        });
+                        let placed = match &d.thread {
+                            Some(tab) => (draft.reply_to.as_ref() == Some(&tab.id)).then_some((Side::Right, tab.last)),
+                            None => review.and_then(|r| {
+                                r.threads.iter().find_map(|t| match &t.place {
+                                    Placement::Placed { side, lines }
+                                        if Some(&t.thread.id) == draft.reply_to.as_ref() =>
+                                    {
+                                        Some((*side, lines.end.saturating_sub(1).max(lines.start)))
+                                    }
+                                    _ => None,
+                                })
+                            }),
+                        };
                         if let Some((side, line)) = placed
                             && editing.as_deref() != Some(draft.id.as_str())
                         {
@@ -472,6 +514,9 @@ impl App {
                             b.line = line;
                             blocks.push(b);
                         }
+                        continue;
+                    }
+                    if d.thread.is_some() {
                         continue;
                     }
                     let lines = if draft.right { &doc.right } else { &doc.left };
@@ -487,7 +532,11 @@ impl App {
             if let Some((tab, block)) = &composer
                 && *tab == d.id
             {
-                blocks.push(block.clone());
+                let mut block = block.clone();
+                if let Some(tab) = &d.thread {
+                    (block.right, block.line) = (true, tab.last);
+                }
+                blocks.push(block);
             }
             d.threads.set(blocks);
             self.needs_redraw = true;
@@ -720,5 +769,30 @@ impl App {
             let count = self.review.file_count();
             self.review.view.scroll_by(count, delta);
         }
+    }
+}
+
+/// A forge thread's block under `line` of a diff's text (`apply`: it may offer Apply Suggestion).
+fn forge_block(
+    t: &crate::review::ThreadRow,
+    user: Option<&str>,
+    right: bool,
+    line: usize,
+    apply: bool,
+) -> crate::review_blocks::ThreadBlock {
+    crate::review_blocks::ThreadBlock {
+        role: crate::review_blocks::Role::Thread,
+        id: t.thread.id.clone(),
+        right,
+        line,
+        resolved: t.thread.resolved,
+        mine: user.is_some_and(|u| t.thread.comments.iter().any(|c| c.author.eq_ignore_ascii_case(u))),
+        apply,
+        comments: t
+            .thread
+            .comments
+            .iter()
+            .map(|c| (c.author.clone(), c.body.clone()))
+            .collect(),
     }
 }

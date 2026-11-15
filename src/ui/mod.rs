@@ -229,8 +229,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
         let mut banner = None;
         let file = match group.tabs.get(group.active) {
             Some(Tab::Text(t)) => app.buffers.get(t.buffer),
-            Some(Tab::Diff(d)) => app.buffers.iter().find(|(_, b)| b.path == d.path).map(|(_, b)| b),
-            Some(Tab::Hex(_) | Tab::Markdown(_) | Tab::Shell(_)) | None => None,
+            Some(Tab::Diff(d)) if !d.pair.is_thread() => {
+                app.buffers.iter().find(|(_, b)| b.path == d.path).map(|(_, b)| b)
+            }
+            Some(Tab::Diff(_) | Tab::Hex(_) | Tab::Markdown(_) | Tab::Shell(_)) | None => None,
         };
         if let Some(buf) = file
             && buf.disk_conflict.is_some()

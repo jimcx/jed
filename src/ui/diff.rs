@@ -232,7 +232,8 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
     };
     let block_width = crate::review_blocks::block_width(body.width as usize);
     let mut block_lines: Option<(usize, Vec<BlockLine>)> = None;
-    let digits = doc.left.len().max(doc.right.len()).to_string().len().max(3);
+    let base = d.thread.as_ref().map_or(0, |t| t.base);
+    let digits = (doc.left.len().max(doc.right.len()) + base).to_string().len().max(3);
     let button = match d.pair.staging() {
         Some(Side::Unstaged) => Some(" Stage "),
         Some(Side::Staged) => Some(" Unstage "),
@@ -328,7 +329,17 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
             let (right, l) = (row.kind() != Kind::Removed, line_no(row));
             let sel = caret.on_line(right, l, line.text.len());
             let (cell, w) = draw_inline(
-                out, body, y, row, line, digits, d.left_col, tab_width, &st, current, sel,
+                out,
+                body,
+                y,
+                row,
+                line,
+                (digits, base),
+                d.left_col,
+                tab_width,
+                &st,
+                current,
+                sel,
             );
             at_caret = (right == caret.right).then_some(cell);
             (cell, w, (w, w))
@@ -593,7 +604,7 @@ fn draw_inline(
     y: u16,
     row: &Row,
     line: Line,
-    digits: usize,
+    (digits, base): (usize, usize),
     left_col: usize,
     tab_width: usize,
     st: &Styles,
@@ -610,7 +621,7 @@ fn draw_inline(
     out.set_stringn(body.x, y, " ".repeat(width), width, bg);
     let number = if current { st.gutter_active } else { st.gutter };
     let number = number.bg(bg.bg.unwrap_or_default());
-    let n = |l: Option<usize>| l.map_or(String::new(), |l| (l + 1).to_string());
+    let n = |l: Option<usize>| l.map_or(String::new(), |l| (l + 1 + base).to_string());
     let gutter = format!("{:>w$} {:>w$} ", n(row.left), n(row.right), w = digits);
     let (gx, _) = out.set_stringn(body.x, y, &gutter, width, number);
     let (sx, _) = out.set_stringn(

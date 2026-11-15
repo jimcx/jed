@@ -437,6 +437,8 @@ pub enum Command {
     /// "Code Review: Insert Suggestion" (unbound): while a comment box is open, a suggestion
     /// fence round the diff's lines it is on.
     ReviewInsertSuggestion,
+    /// "Code Review: Open Thread" (unbound): the selected thread's tab (its code and comments), whatever its placement.
+    ReviewOpenThread,
     /// The Code Review panel's list (`Context::Review`).
     Review(ReviewCommand),
     /// "Tools: Toggle Protocol Trace": the selected (or the active file's) language server's
@@ -1332,6 +1334,7 @@ impl Command {
             Command::ReviewDeleteComment,
             Command::ReviewApplySuggestion,
             Command::ReviewInsertSuggestion,
+            Command::ReviewOpenThread,
         ]);
         all.extend(ReviewCommand::ALL.map(Command::Review));
         all
@@ -1748,6 +1751,7 @@ impl Command {
             Command::ReviewDeleteComment => "review.deleteComment".into(),
             Command::ReviewApplySuggestion => "review.applySuggestion".into(),
             Command::ReviewInsertSuggestion => "review.insertSuggestion".into(),
+            Command::ReviewOpenThread => "review.openThread".into(),
             Command::Review(c) => format!(
                 "reviewView.{}",
                 match c {
@@ -2185,6 +2189,7 @@ impl Command {
             Command::ReviewDeleteComment => "Code Review: Delete Comment",
             Command::ReviewApplySuggestion => "Code Review: Apply Suggestion",
             Command::ReviewInsertSuggestion => "Code Review: Insert Suggestion",
+            Command::ReviewOpenThread => "Code Review: Open Thread",
             Command::Review(c) => match c {
                 ReviewCommand::Up => "Code Review: Select Previous File",
                 ReviewCommand::Down => "Code Review: Select Next File",
@@ -2413,6 +2418,7 @@ mod tests {
             Command::ReviewDeleteComment => 168,
             Command::ReviewApplySuggestion => 169,
             Command::ReviewInsertSuggestion => 170,
+            Command::ReviewOpenThread => 181,
             Command::Review(_) => 154,
             Command::ToggleToolTrace => 92,
             Command::RestartServer => 93,

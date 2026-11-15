@@ -73,6 +73,9 @@ fn real_lines(rope: &ropey::Rope) -> usize {
 impl App {
     /// "Code Review: Apply Suggestion".
     pub(super) fn review_apply_suggestion(&mut self) {
+        if self.group().active_diff().is_some_and(|d| d.thread.is_some()) && !self.review.view.conv.focused {
+            return self.notify(Level::Info, "Open the thread's file to apply its suggestion".into());
+        }
         if let Some(row) = self.review_need_target() {
             self.apply_suggestion_of(row);
         }

@@ -72,6 +72,9 @@ pub enum Text {
     ConflictCurrent,
     /// The same conflict's incoming block.
     ConflictIncoming,
+    /// A review thread's code (its thread tab), both sides: the tab's own bytes (the first of
+    /// `conflict`'s two); never in sessions.
+    ThreadCode,
     /// The left / right side of a compare tab (`Compare`): a file or an open buffer, read from
     /// the tab's `compare` sources (`Job::compare`); never in sessions.
     CompareLeft,
@@ -92,6 +95,7 @@ impl Text {
             Text::Replaced => "Replace Preview".into(),
             Text::ConflictCurrent => "Current".into(),
             Text::ConflictIncoming => "Incoming".into(),
+            Text::ThreadCode => "Thread".into(),
             Text::CompareLeft => "Left".into(),
             Text::CompareRight => "Right".into(),
         }
@@ -153,6 +157,18 @@ impl Pair {
             left: Text::ConflictCurrent,
             right: Text::ConflictIncoming,
         }
+    }
+
+    /// A review thread's tab: its code on both sides (so every row is context), read from the
+    /// tab's own bytes; no staging.
+    pub const THREAD: Pair = Pair {
+        left: Text::ThreadCode,
+        right: Text::ThreadCode,
+    };
+
+    /// Whether this is the `THREAD` pair.
+    pub fn is_thread(self) -> bool {
+        self == Pair::THREAD
     }
 
     /// A code review's file: the merge base's text against the work tree's (always inline, see
@@ -666,6 +682,19 @@ pub struct Job {
     pub left_path: Option<PathBuf>,
 }
 
+/// What a thread tab (`Pair::THREAD`) is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadTab {
+    /// The forge's thread id.
+    pub id: String,
+    /// The tab's title (`Thread path:line`).
+    pub title: String,
+    /// The number of the code's first line, minus one (the anchor commit's numbering).
+    pub base: usize,
+    /// The row of the last anchored line: the thread's block goes under it.
+    pub last: usize,
+}
+
 /// Blocking: reads both sides of `job` and diffs them.
 pub fn load(job: Job) -> Result<Doc, String> {
     let left = read(&job, job.pair.left, job.left_path.as_deref()).map_err(|e| e.to_string())?;
@@ -680,6 +709,7 @@ fn read(job: &Job, text: Text, path: Option<&Path>) -> Result<Vec<u8>, stage::Er
     let block = match text {
         Text::ConflictCurrent => Some(job.conflict.as_ref().map(|(current, _)| current.clone())),
         Text::ConflictIncoming => Some(job.conflict.as_ref().map(|(_, incoming)| incoming.clone())),
+        Text::ThreadCode => Some(job.conflict.as_ref().map(|(code, _)| code.clone())),
         _ => None,
     };
     if let Some(block) = block {
@@ -746,7 +776,7 @@ fn read(job: &Job, text: Text, path: Option<&Path>) -> Result<Vec<u8>, stage::Er
         }
         Text::Empty => Some(Vec::new()),
         Text::Replaced => unreachable!("read above"),
-        Text::ConflictCurrent | Text::ConflictIncoming => unreachable!("read above"),
+        Text::ConflictCurrent | Text::ConflictIncoming | Text::ThreadCode => unreachable!("read above"),
         Text::CompareLeft | Text::CompareRight => unreachable!("read above"),
     };
     Ok(bytes.unwrap_or_default())
@@ -804,6 +834,8 @@ pub struct DiffTab {
     pub conflict: Option<(Vec<u8>, Vec<u8>)>,
     /// A review tab's renamed file: where the left side's file was, absolute.
     pub left_path: Option<PathBuf>,
+    /// A thread tab's thread (`Pair::THREAD`; its code is `conflict`'s first block).
+    pub thread: Option<ThreadTab>,
     /// A compare tab's sides (`Pair::COMPARE`).
     pub compare: Option<Compare>,
     /// The caret and selection in one side's text (`diff_caret`); its row is `cursor`.
@@ -861,6 +893,7 @@ impl DiffTab {
             replace: None,
             conflict: None,
             left_path: None,
+            thread: None,
             compare: None,
             caret: Default::default(),
             edited: None,
@@ -925,6 +958,16 @@ impl DiffTab {
         }
     }
 
+    /// A review thread's tab: `code` (lines ending in a line break; may be a note) on both sides,
+    /// `path` the file for the syntax colours.
+    pub fn thread(id: u64, path: PathBuf, thread: ThreadTab, code: String) -> DiffTab {
+        DiffTab {
+            conflict: Some((code.into_bytes(), Vec::new())),
+            thread: Some(thread),
+            ..DiffTab::new(id, path, Pair::THREAD)
+        }
+    }
+
     /// A copy for a split (same diff, same place), with its own `id`.
     pub fn copy(&self, id: u64) -> DiffTab {
         DiffTab {
@@ -951,6 +994,7 @@ impl DiffTab {
             replace: self.replace.clone(),
             conflict: self.conflict.clone(),
             left_path: self.left_path.clone(),
+            thread: self.thread.clone(),
             compare: self.compare.clone(),
             caret: self.caret,
             edited: self.edited,
@@ -973,7 +1017,7 @@ impl DiffTab {
 
     /// A review tab's layout is one column at any width (comments go between the code's rows).
     pub fn forced_inline(&self) -> bool {
-        self.pair.is_review()
+        self.pair.is_review() || self.pair.is_thread()
     }
 
     /// A tab for a code review's file (`Pair::review`); `old` is a renamed file's old path.
@@ -986,6 +1030,9 @@ impl DiffTab {
 
     /// The file's name for the tab bar.
     pub fn title(&self) -> String {
+        if let Some(t) = &self.thread {
+            return t.title.clone();
+        }
         if let Some(c) = &self.compare {
             return format!("{} ↔ {}", c.sides[0].title(), c.sides[1].title());
         }

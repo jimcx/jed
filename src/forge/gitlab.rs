@@ -466,6 +466,7 @@ impl Forge for GitLab {
                         resolved: !resolvable.is_empty() && resolvable.iter().all(|n| n.resolved),
                         outdated,
                         comments: notes.iter().map(make).collect(),
+                        hunk: None,
                     });
                 }
                 None => out.conversation.extend(notes.iter().map(make)),

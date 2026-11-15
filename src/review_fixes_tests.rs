@@ -2,6 +2,9 @@
 //! base's tree against the MR head, else local HEAD), shown as the work tree has them: untracked
 //! files and locally edited files outside the MR are hidden, an MR file edited locally shows with
 //! the edit's counts, and a local HEAD behind the MR still lists the MR's files.
+//!
+//! Subtask d: a thread out of its file's context (outdated, missing) opens in a thread tab, where Reply and
+//! Resolve work (`mod thread_tab`).
 
 use crate::git::Repo;
 use crate::git::range::{FileChange, changes};
@@ -245,6 +248,211 @@ mod approvals {
         assert!(
             !text.contains("approved by") && !text.contains("changes requested"),
             "{text}"
+        );
+    }
+}
+
+/// Subtask d: a thread out of its file's context opens in a thread tab (its code, its comments;
+/// Reply and Resolve work there), reused per thread id.
+mod thread_tab {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use crate::app::App;
+    use crate::command::Command;
+    use crate::forge::fake::Reply;
+    use crate::mr_review_tests::idle;
+    use crate::mr_review_tests::threads::{loaded_app, loaded_app_with};
+
+    const PULLS: &str = "/api/v1/repos/alice/project/pulls";
+    /// mod.txt as the work tree has it after an edit that outdates thread 11 (line 3).
+    const EDITED: (&str, &str) = ("mod.txt", "m1\nm2 changed\nm3 edited\n");
+
+    fn wide(app: &mut App) -> String {
+        let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        let buf = term.backend().buffer();
+        (0..30)
+            .map(|y| (0..120).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Enter on CONVERSATIONS row `i` (by path and line: 0 is thread 13, 1 is 12, 2 is 11).
+    async fn open_row(app: &mut App, i: usize) {
+        let len = app.review.review().unwrap().conv_len();
+        app.review.view.conv.focused = true;
+        app.review.view.conv.select(len, i);
+        app.ui.focus = crate::app::Focus::SidePanel;
+        app.press(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.settle(|a| a.diffs_settled()).await);
+    }
+
+    fn thread_tabs(app: &App) -> Vec<String> {
+        app.group()
+            .tabs
+            .iter()
+            .filter_map(|t| t.diff().and_then(|d| d.thread.as_ref()).map(|t| t.id.clone()))
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_fixes_an_outdated_thread_opens_in_a_thread_tab_with_its_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server) = loaded_app(dir.path(), Some(EDITED)).await;
+        open_row(&mut app, 2).await;
+        assert_eq!(thread_tabs(&app), ["11"]);
+        assert_eq!(app.group().active_diff().unwrap().title(), "Thread mod.txt:3");
+        let text = wide(&mut app);
+        // The code at the anchor commit, then the thread's block.
+        assert!(text.contains("m2 changed"), "{text}");
+        assert!(text.contains("Can this overflow"), "{text}");
+        assert!(text.contains("[Reply] [Resolve]"), "{text}");
+        assert!(!text.contains("Apply"), "{text}");
+        assert!(!text.contains("m3 edited"), "the work tree's text isn't shown: {text}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_fixes_the_thread_tab_is_reused_and_open_thread_works_on_placed_threads() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server) = loaded_app(dir.path(), None).await;
+        // A placed thread's row opens the file's diff...
+        open_row(&mut app, 2).await;
+        assert!(thread_tabs(&app).is_empty());
+        // ...and Open Thread opens its tab, once.
+        app.review.view.conv.focused = true;
+        app.test_execute(Command::ReviewOpenThread);
+        app.test_execute(Command::ReviewOpenThread);
+        assert_eq!(thread_tabs(&app), ["11"]);
+        open_row(&mut app, 0).await;
+        assert_eq!(thread_tabs(&app), ["11", "13"]);
+        open_row(&mut app, 0).await;
+        assert_eq!(thread_tabs(&app), ["11", "13"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_fixes_a_missing_commit_shows_the_hunk_or_the_block_alone() {
+        // Thread 13 has a hunk; the other has none; both anchor a commit the clone doesn't have.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server) = loaded_app(dir.path(), None).await;
+        open_row(&mut app, 0).await;
+        let text = wide(&mut app);
+        assert!(text.contains("Old commit"), "{text}");
+        assert!(text.contains("m1"), "the hunk's line: {text}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let bare = format!(
+            r#"[{{"id":21,"user":{{"login":"cy"}},"body":"No hunk here","path":"mod.txt","position":1,
+            "original_position":1,"commit_id":"{d}","original_commit_id":"{d}","diff_hunk":"","resolver":null}}]"#,
+            d = "d".repeat(40)
+        );
+        let (mut app, _server) = loaded_app_with(dir.path(), None, None, Some(&bare), Vec::new()).await;
+        open_row(&mut app, 0).await;
+        let text = wide(&mut app);
+        assert!(text.contains("No hunk here"), "{text}");
+        assert!(text.contains("the code isn't available"), "{text}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_fixes_edit_and_delete_work_in_the_thread_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let extra = vec![
+            ("/api/v1/user".to_string(), Reply::json(r#"{"login":"sam"}"#)),
+            (
+                "PATCH /api/v1/repos/alice/project/issues/comments/11".to_string(),
+                Reply::json("{}"),
+            ),
+            (
+                "DELETE /api/v1/repos/alice/project/issues/comments/11".to_string(),
+                Reply::status(204),
+            ),
+        ];
+        let (mut app, server) = loaded_app_with(dir.path(), Some(EDITED), None, None, extra).await;
+        open_row(&mut app, 2).await;
+        app.review.view.conv.focused = false;
+        app.test_execute(Command::ReviewEditComment);
+        assert_eq!(
+            app.test_composer_text().as_deref(),
+            Some("Can this overflow on a narrow terminal")
+        );
+        app.type_text("?");
+        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        assert!(
+            app.settle(|a| a.test_composer_text().is_none() && !a.review.writing)
+                .await
+        );
+        let patch = server.requests().into_iter().find(|r| r.method == "PATCH").unwrap();
+        assert_eq!(patch.body, r#"{"body":"Can this overflow on a narrow terminal?"}"#);
+        idle(&mut app).await;
+        app.test_execute(Command::ReviewDeleteComment);
+        assert!(matches!(
+            app.prompt,
+            Some(crate::app::Prompt::ConfirmDeleteComment { .. })
+        ));
+        app.press(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(
+            app.settle(|_| server.requests().iter().any(|r| r.method == "DELETE"))
+                .await
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_fixes_a_thread_tab_never_stands_in_for_the_files_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server) = loaded_app(dir.path(), Some(EDITED)).await;
+        open_row(&mut app, 2).await;
+        let path = app.group().active_diff().unwrap().path.clone();
+        // Thread 12 is placed: its row opens the file's review diff beside the thread tab.
+        open_row(&mut app, 1).await;
+        assert!(app.group().active_diff().unwrap().pair.is_review());
+        let n = app
+            .group()
+            .tabs
+            .iter()
+            .filter(|t| t.diff().is_some_and(|d| d.path == path))
+            .count();
+        assert_eq!(n, 2, "the thread tab and the file's diff");
+        // Another thread of the same file is a tab of its own.
+        open_row(&mut app, 0).await;
+        assert_eq!(thread_tabs(&app), ["11", "13"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_fixes_reply_and_resolve_work_in_the_thread_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let extra = vec![
+            (format!("POST {PULLS}/7/comments/11/replies"), Reply::json("{}")),
+            (format!("POST {PULLS}/comments/11/resolve"), Reply::status(204)),
+        ];
+        let (mut app, server) = loaded_app_with(dir.path(), Some(EDITED), None, None, extra).await;
+        open_row(&mut app, 2).await;
+        // The keys are the editor's now: the tab's own thread is the target.
+        app.review.view.conv.focused = false;
+        app.test_execute(Command::ReviewReply);
+        assert!(app.test_composer_text().is_some());
+        app.type_text("Fixed it");
+        let text = wide(&mut app);
+        assert!(text.contains("Reply (posted at once)"), "{text}");
+        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+        assert!(
+            app.settle(|a| a.test_composer_text().is_none() && !a.review.writing)
+                .await
+        );
+        let reqs = server.requests();
+        let reply = reqs
+            .iter()
+            .find(|r| r.target.ends_with("/comments/11/replies"))
+            .unwrap();
+        assert_eq!(reply.body, r#"{"body":"Fixed it"}"#);
+        idle(&mut app).await;
+        assert_eq!(thread_tabs(&app), ["11"]);
+        app.test_execute(Command::ReviewResolve);
+        assert!(app.settle(|a| !a.review.writing).await);
+        assert!(
+            server
+                .requests()
+                .iter()
+                .any(|r| r.target.ends_with("/comments/11/resolve"))
         );
     }
 }

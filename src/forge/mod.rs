@@ -135,6 +135,8 @@ pub struct Thread {
     /// The anchored code has since changed or gone: `anchor` then refers to `anchor.commit`.
     pub outdated: bool,
     pub comments: Vec<Comment>,
+    /// The forge's diff hunk of the anchored lines (text, `@@` header first), when it sends one.
+    pub hunk: Option<String>,
 }
 
 /// Everyone's comments on a merge request: line threads, and the conversation under the title

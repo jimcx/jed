@@ -132,7 +132,10 @@ impl Tab {
                 fn sources(d: &DiffTab) -> Option<[&crate::diff_view::Source; 2]> {
                     d.compare.as_ref().map(|c| c.sides.each_ref().map(|s| &s.source))
                 }
-                a.path == b.path && a.pair == b.pair && sources(a) == sources(b)
+                fn thread(d: &DiffTab) -> Option<&str> {
+                    d.thread.as_ref().map(|t| t.id.as_str())
+                }
+                a.path == b.path && a.pair == b.pair && sources(a) == sources(b) && thread(a) == thread(b)
             }
             (Tab::Hex(a), Tab::Hex(b)) => a.path == b.path,
             (Tab::Markdown(a), Tab::Markdown(b)) => a.source == b.source,

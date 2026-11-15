@@ -219,7 +219,13 @@ impl App {
             self.notify(Level::Info, "Merge request comments are read-only here".into());
             return None;
         }
-        let d = self.group().active_diff().filter(|d| d.pair.is_review())?;
+        let d = self
+            .group()
+            .active_diff()
+            .filter(|d| d.pair.is_review() || d.pair.is_thread())?;
+        if let Some(tab) = &d.thread {
+            return review.threads.iter().find(|r| r.thread.id == tab.id).cloned();
+        }
         let id = &d.threads.list()[d.thread_at_caret()?].id;
         review.threads.iter().find(|r| &r.thread.id == id).cloned()
     }
@@ -304,9 +310,6 @@ impl App {
         if self.composer.is_some() {
             return self.notify(Level::Info, "Finish the open comment first".into());
         }
-        let Placement::Placed { side, lines } = &row.place else {
-            return self.notify(Level::Info, "This thread is outdated: it can't be answered here".into());
-        };
         if self.review.view.conv.focused {
             self.review_open_conv();
         }
@@ -314,28 +317,35 @@ impl App {
             return;
         };
         let path = row.thread.anchor.path.clone();
-        let Some(d) = self
-            .group()
-            .active_diff()
-            .filter(|d| d.pair.is_review() && d.path == workdir.join(&path))
-        else {
+        let Some(d) = self.group().active_diff().filter(|d| match &d.thread {
+            Some(t) => t.id == row.thread.id,
+            None => d.pair.is_review() && d.path == workdir.join(&path),
+        }) else {
             return self.notify(Level::Info, format!("Open {path}'s review diff first"));
         };
-        let tab = d.id;
+        let (tab, in_tab) = (d.id, d.thread.is_some());
         let mut buf = Buffer::untitled(0);
         let mut view = View::new();
         if !text.is_empty() {
             edit::paste(&mut buf, &mut view, text, false, &[]);
         }
-        let start = lines.start as u32 + 1;
+        // The box sits on the thread's lines: where it is placed, else where it was written.
+        let a = &row.thread.anchor;
+        let (side, start, end) = match &row.place {
+            Placement::Placed { side, lines } if !in_tab => {
+                let start = lines.start as u32 + 1;
+                (*side, start, (lines.end as u32).max(start))
+            }
+            _ => (a.side, a.start_line, a.end_line),
+        };
         self.start_composer(Composer {
             tab,
             buf,
             view,
             path,
-            right: *side == Side::Right,
+            right: side == Side::Right,
             start,
-            end: (lines.end as u32).max(start),
+            end,
             lines: Vec::new(),
             commit: String::new(),
             editing: None,

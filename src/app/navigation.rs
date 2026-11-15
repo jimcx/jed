@@ -186,7 +186,7 @@ impl App {
             let diff = g
                 .tabs
                 .iter()
-                .position(|t| t.diff().is_some_and(|d| d.path == entry.path));
+                .position(|t| t.diff().is_some_and(|d| d.path == entry.path && !d.pair.is_thread()));
             let hex = g.find_hex(&entry.path);
             let preview = g.tabs.iter().position(|t| {
                 t.markdown()

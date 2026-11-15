@@ -64,6 +64,8 @@ pub struct Review {
 pub struct ThreadRow {
     pub thread: Thread,
     pub place: Placement,
+    /// The code it was written on (its tab shows it), when known.
+    pub code: Option<review_anchor::Snippet>,
 }
 
 impl Review {
@@ -215,11 +217,21 @@ pub fn lookup(req: Request) -> Outcome {
     let (threads, conversation, approvals, comments_error) = match api.comments(&repo_ref, number) {
         Ok(c) => {
             let places = review_anchor::place_all(&req.repo, &c.threads, merge_base.as_deref(), &files);
+            let git = req.repo.open().ok();
+            let mut blobs = std::collections::HashMap::new();
+            let codes: Vec<_> = c
+                .threads
+                .iter()
+                .map(|t| {
+                    git.as_ref()
+                        .and_then(|g| review_anchor::snippet(g, t, merge_base.as_deref(), &mut blobs))
+                })
+                .collect();
             let mut rows: Vec<ThreadRow> = c
                 .threads
                 .into_iter()
-                .zip(places)
-                .map(|(thread, place)| ThreadRow { thread, place })
+                .zip(places.into_iter().zip(codes))
+                .map(|(thread, (place, code))| ThreadRow { thread, place, code })
                 .collect();
             rows.sort_by(|a, b| {
                 let (a, b) = (&a.thread.anchor, &b.thread.anchor);

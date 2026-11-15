@@ -86,7 +86,7 @@ const CONNECTION_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!,
     pullRequest(number:$number){FIELD(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{SELECTION}}}}}";
 
 const THREAD_FIELDS: &str = "id isResolved isOutdated path line startLine originalLine originalStartLine diffSide \
-    comments(first:100){nodes{id databaseId body createdAt updatedAt url author{login} commit{oid} originalCommit{oid}}}";
+    comments(first:100){nodes{id databaseId body createdAt updatedAt url author{login} commit{oid} originalCommit{oid} diffHunk}}";
 const REVIEW_FIELDS: &str = "databaseId body state submittedAt url author{login}";
 const ISSUE_COMMENT_FIELDS: &str = "databaseId body createdAt updatedAt url author{login}";
 
@@ -173,6 +173,7 @@ struct GqlComment {
     author: Option<Actor>,
     commit: Option<CommitRef>,
     original_commit: Option<CommitRef>,
+    diff_hunk: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -323,6 +324,10 @@ fn thread(t: GqlThread) -> Thread {
         },
         resolved: t.is_resolved,
         outdated,
+        hunk: first
+            .and_then(|c| c.diff_hunk.as_deref())
+            .filter(|h| !h.is_empty())
+            .map(clean_text),
         comments: comments.into_iter().map(comment).collect(),
     }
 }
@@ -603,7 +608,7 @@ mod tests {
         {"id":"PRRT_a","isResolved":false,"isOutdated":false,"path":"src/a.rs","line":12,"startLine":10,
          "originalLine":12,"originalStartLine":10,"diffSide":"RIGHT","comments":{"nodes":[
            {"id":"PRRC_1","databaseId":101,"body":"range\u001b[2J","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z",
-            "url":"https://g/c/101","author":{"login":"bob"},"commit":{"oid":"h0"},"originalCommit":{"oid":"h0"}},
+            "url":"https://g/c/101","author":{"login":"bob"},"commit":{"oid":"h0"},"originalCommit":{"oid":"h0"},"diffHunk":"@@ -1 +1 @@\n+x\u001b"},
            {"id":"PRRC_2","databaseId":102,"body":"reply","createdAt":"2026-01-02T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z",
             "url":"","author":null,"commit":{"oid":"h0"},"originalCommit":{"oid":"h0"}}]}},
         {"id":"PRRT_b","isResolved":true,"isOutdated":true,"path":"src/b.rs","line":null,"startLine":null,
@@ -635,6 +640,8 @@ mod tests {
             ),
         ]);
         let all = gh.comments(&repo, 7).unwrap();
+        assert_eq!(all.threads[0].hunk.as_deref(), Some("@@ -1 +1 @@\n+x"), "cleaned");
+        assert_eq!(all.threads[1].hunk, None);
         // An approval with an empty body is kept; a COMMENTED review adds none.
         assert_eq!(
             all.approvals,

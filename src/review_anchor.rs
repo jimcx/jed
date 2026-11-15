@@ -146,6 +146,94 @@ fn compare(
     Ok(Compared::new(&anchored, &target))
 }
 
+/// The code a thread was written on, for its tab: the anchored lines with context, in the
+/// anchor commit's numbering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snippet {
+    /// The number (1-based) of the first line.
+    pub first: usize,
+    /// The lines, each ending in a line break.
+    pub text: String,
+    /// The index of the last anchored line in `text`'s lines.
+    pub last: usize,
+}
+
+/// Lines of context before the anchored lines in a [`Snippet`].
+const CONTEXT: usize = 3;
+
+/// Blocking (git): the thread's code. A right-side thread reads the blob at its anchor commit
+/// (when that commit is in the clone); else the forge's diff hunk; a left-side thread whose hunk
+/// is missing reads the merge base's file.
+///
+/// `blobs` caches the reads per (commit, path): a file's threads share them.
+pub fn snippet(
+    git: &Repository,
+    t: &Thread,
+    merge_base: Option<&str>,
+    blobs: &mut std::collections::HashMap<(String, String), Option<Vec<u8>>>,
+) -> Option<Snippet> {
+    let a = &t.anchor;
+    let find = |rev: &str| Oid::from_str(rev).ok().and_then(|o| git.find_commit(o).ok());
+    let rev = match a.side {
+        Side::Right => Some(a.commit.as_str()),
+        Side::Left if t.hunk.is_none() => merge_base,
+        Side::Left => None,
+    };
+    let blob = rev.and_then(|rev| {
+        blobs
+            .entry((rev.to_string(), a.path.clone()))
+            .or_insert_with(|| find(rev).and_then(|c| blob_at(git, &c, &a.path)))
+            .as_deref()
+    });
+    if let Some(blob) = blob {
+        let text = String::from_utf8_lossy(blob);
+        let lines: Vec<&str> = text.lines().collect();
+        let end = (a.end_line as usize).min(lines.len());
+        if end == 0 {
+            return None;
+        }
+        let from = (a.start_line as usize).clamp(1, end).saturating_sub(CONTEXT).max(1);
+        let text: String = lines[from - 1..end].iter().map(|l| format!("{l}\n")).collect();
+        return Some(Snippet {
+            first: from,
+            text,
+            last: end - from,
+        });
+    }
+    hunk_snippet(t.hunk.as_deref()?, a)
+}
+
+/// The anchored side's lines of a diff hunk (`@@ -a,b +c,d @@`, then ` `, `+`, `-` lines), the
+/// last ones: the hunk ends at the commented line.
+fn hunk_snippet(hunk: &str, a: &Anchor) -> Option<Snippet> {
+    let mut lines = hunk.lines();
+    let header = lines.next()?.strip_prefix("@@ ")?;
+    let mut parts = header.split(' ');
+    let (old, new) = (parts.next()?, parts.next()?);
+    let from = match a.side {
+        Side::Left => old.strip_prefix('-')?,
+        Side::Right => new.strip_prefix('+')?,
+    };
+    let mut number: usize = from.split(',').next()?.parse().ok()?;
+    let mut kept: Vec<(usize, &str)> = Vec::new();
+    for l in lines {
+        let (mark, rest) = l.split_at(l.chars().next().map_or(0, char::len_utf8));
+        let on_side = !matches!((mark, a.side), ("+", Side::Left) | ("-", Side::Right) | ("\\", _));
+        if on_side {
+            kept.push((number, rest));
+            number += 1;
+        }
+    }
+    let span = (a.end_line - a.start_line.min(a.end_line)) as usize + 1;
+    let kept = &kept[kept.len().saturating_sub(span + CONTEXT)..];
+    let first = kept.first()?.0;
+    Some(Snippet {
+        first,
+        text: kept.iter().map(|(_, l)| format!("{l}\n")).collect(),
+        last: kept.len() - 1,
+    })
+}
+
 pub(crate) fn blob_at(git: &Repository, commit: &git2::Commit, path: &str) -> Option<Vec<u8>> {
     let entry = commit.tree().ok()?.get_path(std::path::Path::new(path)).ok()?;
     Some(git.find_blob(entry.id()).ok()?.content().to_vec())
@@ -160,6 +248,27 @@ mod tests {
     }
 
     const OLD: &[u8] = b"a\nb\nc\nd\ne\n";
+
+    fn anchor(side: Side, start: u32, end: u32) -> Anchor {
+        Anchor {
+            path: "a.txt".into(),
+            side,
+            start_line: start,
+            end_line: end,
+            commit: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_hunk_gives_the_anchored_sides_last_lines() {
+        let hunk = "@@ -10,4 +20,4 @@\n a\n-b\n+B\n c\n+d\n";
+        let right = hunk_snippet(hunk, &anchor(Side::Right, 23, 23)).unwrap();
+        assert_eq!((right.first, right.text.as_str(), right.last), (20, "a\nB\nc\nd\n", 3));
+        let hunk = "@@ -10,4 +20,4 @@\n a\n-b\n+B\n c\n-d\n";
+        let left = hunk_snippet(hunk, &anchor(Side::Left, 13, 13)).unwrap();
+        assert_eq!((left.first, left.text.as_str(), left.last), (10, "a\nb\nc\nd\n", 3));
+        assert!(hunk_snippet("not a hunk", &anchor(Side::Right, 1, 1)).is_none());
+    }
 
     #[test]
     fn an_unchanged_text_keeps_the_lines() {
@@ -300,6 +409,7 @@ mod tests {
             resolved: false,
             outdated: false,
             comments: Vec::new(),
+            hunk: None,
         };
         let change = |status| FileChange {
             path: "a.txt".into(),
@@ -355,6 +465,7 @@ mod tests {
             resolved: false,
             outdated: false,
             comments: Vec::new(),
+            hunk: None,
         };
         let renamed = FileChange {
             path: "b.txt".into(),

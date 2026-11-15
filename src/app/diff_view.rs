@@ -378,11 +378,11 @@ impl App {
             return;
         };
         // The group's diff tab of the file, if it has one; else the file's changes.
-        let pair = self
-            .group()
-            .tabs
-            .iter()
-            .find_map(|t| t.diff().filter(|d| d.path == path).map(|d| d.pair));
+        let pair = self.group().tabs.iter().find_map(|t| {
+            t.diff()
+                .filter(|d| d.path == path && !d.pair.is_thread())
+                .map(|d| d.pair)
+        });
         match pair {
             Some(pair) => self.open_diff(path.clone(), pair),
             None => self.open_changes(),
@@ -448,6 +448,8 @@ impl App {
             let open = match sides {
                 // A compare's language is its right side's.
                 Some([_, right]) => right.and_then(|id| buffers.get(id).map(|b| (id, b))),
+                // A thread tab's text is its own, whatever the file's buffer holds.
+                None if d.pair.is_thread() => None,
                 None => buffers.iter().find(|(_, b)| b.path == d.path),
             };
             let mut live = [open.map(|(id, b)| (id, b.revision())), None];

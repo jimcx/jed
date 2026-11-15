@@ -283,6 +283,7 @@ fn threads(mut comments: Vec<ReviewComment>) -> Vec<Thread> {
                 resolved: c.resolver.is_some(),
                 outdated,
                 comments: Vec::new(),
+                hunk: (!c.diff_hunk.is_empty()).then(|| clean_text(&c.diff_hunk)),
             });
             out.len() - 1
         });
@@ -728,6 +729,7 @@ mod tests {
             ["why?", "because"]
         );
         assert!(!t.resolved && !t.outdated, "the first comment decides resolved");
+        assert_eq!(t.hunk.as_deref(), Some("@@ -1,2 +1,3 @@\n x\n+y"));
         let o = &c.threads[1];
         assert!(o.outdated);
         assert_eq!(
