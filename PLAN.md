@@ -621,7 +621,7 @@ Review a Gitea, GitHub or GitLab merge request (MR) on its checked-out branch (t
 - Every user action is a named `Command`, so keybindings and the palette go through the same path
 
 ### Shared crates and jmux
-- The repository is a cargo workspace: jed at the root, `crates/jtui` (TUI building blocks), `crates/jterm` (the terminal engine) and `jmux/` (a tmux-like multiplexer built from them; its design is in [jmux/PLAN.md](jmux/PLAN.md))
+- The repository is a cargo workspace: jed in `jed/`, `crates/jtui` (TUI building blocks), `crates/jterm` (the terminal engine) and `jmux/` (a tmux-like multiplexer built from them; its design is in [jmux/PLAN.md](jmux/PLAN.md))
 - A module that moves to a crate leaves a re-export behind, so jed's paths (`crate::tasks::run`, `crate::scrollbar`, …) stay
 - Shared code names no application: directory names, env variable names and window titles are passed in
 - Not shared: `App`, the event loop, `HitMap`, tabs and groups, the palette, sessions, settings contents, default keys
