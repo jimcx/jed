@@ -15,7 +15,7 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::http::{Client, clean_line, clean_text, encode_segment};
+use super::http::{Client, clean_line, clean_text, encode_path, encode_segment};
 use super::{
     Anchor, ApprovalState, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments, MrState,
     RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, latest_approvals,
@@ -484,6 +484,23 @@ impl Forge for GitHub {
     }
 
     /// Blocking: call from spawn_blocking.
+    fn blob_id(&self, repo: &RepoRef, commit: &str, path: &str) -> Result<Option<String>> {
+        #[derive(Deserialize, Default)]
+        struct File {
+            #[serde(default)]
+            sha: String,
+        }
+        let url = format!(
+            "{}/contents/{}?ref={}",
+            Self::repo_path(repo),
+            encode_path(path),
+            encode_segment(commit)
+        );
+        let file: Option<File> = self.client.get_json_opt(&url)?;
+        Ok(file.map(|f| clean_line(&f.sha)).filter(|s| !s.is_empty()))
+    }
+
+    /// Blocking: call from spawn_blocking.
     fn set_resolved(&self, _repo: &RepoRef, thread_id: &str, resolved: bool) -> Result<()> {
         let mutation = if resolved { RESOLVE_MUTATION } else { UNRESOLVE_MUTATION };
         self.client
@@ -852,5 +869,19 @@ mod tests {
     fn current_user_reads_the_login() {
         let (_s, gh, _r) = setup(vec![("/api/v3/user", Reply::json(r#"{"login":"me"}"#))]);
         assert_eq!(gh.current_user().unwrap(), "me");
+    }
+
+    #[test]
+    fn blob_id_reads_the_file_sha_and_maps_404_to_none() {
+        let (server, forge, repo) = setup(vec![(
+            "/api/v3/repos/o/r/contents/src/a%20b.rs?ref=c0ffee",
+            Reply::json(r#"{"name":"a b.rs","sha":"abc123"}"#),
+        )]);
+        assert_eq!(
+            forge.blob_id(&repo, "c0ffee", "src/a b.rs").unwrap().as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(forge.blob_id(&repo, "c0ffee", "src/none.rs").unwrap(), None);
+        assert_eq!(server.requests().len(), 2);
     }
 }

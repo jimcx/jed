@@ -202,6 +202,17 @@ impl Client {
         })
     }
 
+    /// GET and parse the JSON body, `None` for a 404.
+    ///
+    /// Blocking: call from spawn_blocking.
+    pub fn get_json_opt<T: DeserializeOwned>(&self, path: &str) -> Result<Option<T>> {
+        match self.get(path) {
+            Ok(r) => parse_json(&r.body).map(Some),
+            Err(ForgeError::Status { status: 404, .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// GET and parse the JSON body.
     ///
     /// Blocking: call from spawn_blocking.
@@ -372,6 +383,11 @@ pub fn clean_text(s: &str) -> String {
 
 fn is_unsafe(c: char) -> bool {
     c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}')
+}
+
+/// Percent-encodes a file path: each segment encoded, the slashes kept.
+pub fn encode_path(path: &str) -> String {
+    path.split('/').map(encode_segment).collect::<Vec<_>>().join("/")
 }
 
 /// Percent-encodes one URL path segment.

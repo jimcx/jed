@@ -282,6 +282,9 @@ pub trait Forge: Send + Sync {
     /// in the body (Gitea).
     fn edit_comment(&self, repo: &RepoRef, comment_id: &str, body: &str, range: Option<(u32, u32)>) -> Result<()>;
     fn delete_comment(&self, repo: &RepoRef, comment_id: &str) -> Result<()>;
+    /// The git blob id of `path` at `commit` on the host; `None` when it has no such file (404).
+    /// Places threads anchored on commits the local clone lacks.
+    fn blob_id(&self, repo: &RepoRef, commit: &str, path: &str) -> Result<Option<String>>;
 }
 
 /// The `Forge` for a host: looks the host up in `config` (then the detected `github.com` /

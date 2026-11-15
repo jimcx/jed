@@ -638,6 +638,23 @@ impl Forge for GitLab {
     fn delete_comment(&self, repo: &RepoRef, comment_id: &str) -> Result<()> {
         self.client.delete(&note_path(repo, comment_id)?).map(|_| ())
     }
+
+    /// Blocking: call from spawn_blocking.
+    fn blob_id(&self, repo: &RepoRef, commit: &str, path: &str) -> Result<Option<String>> {
+        #[derive(Deserialize, Default)]
+        struct File {
+            #[serde(default)]
+            blob_id: String,
+        }
+        let url = format!(
+            "{}/repository/files/{}?ref={}",
+            Self::project(repo),
+            encode_segment(path),
+            encode_segment(commit)
+        );
+        let file: Option<File> = self.client.get_json_opt(&url)?;
+        Ok(file.map(|f| clean_line(&f.blob_id)).filter(|s| !s.is_empty()))
+    }
 }
 
 #[cfg(test)]
@@ -1181,5 +1198,19 @@ mod tests {
     fn current_user_is_the_username() {
         let (_s, gl, _r) = setup(vec![("/api/v4/user", Reply::json(r#"{"username":"alice","id":1}"#))]);
         assert_eq!(gl.current_user().unwrap(), "alice");
+    }
+
+    #[test]
+    fn blob_id_reads_the_file_sha_and_maps_404_to_none() {
+        let (server, forge, repo) = setup(vec![(
+            "/api/v4/projects/grp%2Fsub%2Frepo/repository/files/src%2Fa%20b.rs?ref=c0ffee",
+            Reply::json(r#"{"name":"a b.rs","blob_id":"abc123"}"#),
+        )]);
+        assert_eq!(
+            forge.blob_id(&repo, "c0ffee", "src/a b.rs").unwrap().as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(forge.blob_id(&repo, "c0ffee", "src/none.rs").unwrap(), None);
+        assert_eq!(server.requests().len(), 2);
     }
 }

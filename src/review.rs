@@ -66,6 +66,9 @@ pub struct ThreadRow {
     pub place: Placement,
     /// The code it was written on (its tab shows it), when known.
     pub code: Option<review_anchor::Snippet>,
+    /// Anchored on a commit newer than the local clone, but the file is the same here: placed
+    /// at its own lines.
+    pub behind: bool,
 }
 
 impl Review {
@@ -138,6 +141,8 @@ pub struct Request {
     /// Read the viewed marks from here (the app has none in memory yet).
     pub viewed_from: Option<PathBuf>,
     pub log: ToolLog,
+    /// The host's blob ids already asked for (shared across lookups).
+    pub blobs: review_anchor::BlobCache,
 }
 
 /// The given `forges.toml`, else the user's file.
@@ -216,7 +221,18 @@ pub fn lookup(req: Request) -> Outcome {
     }
     let (threads, conversation, approvals, comments_error) = match api.comments(&repo_ref, number) {
         Ok(c) => {
-            let places = review_anchor::place_all(&req.repo, &c.threads, merge_base.as_deref(), &files);
+            let mut places = review_anchor::place_all(&req.repo, &c.threads, merge_base.as_deref(), &files);
+            let behind = review_anchor::place_behind(
+                &req.repo,
+                &*api,
+                &repo_ref,
+                &c.threads,
+                &mut places,
+                merge_base.as_deref(),
+                &files,
+                &req.blobs,
+                log,
+            );
             let git = req.repo.open().ok();
             let mut blobs = std::collections::HashMap::new();
             let codes: Vec<_> = c
@@ -230,8 +246,13 @@ pub fn lookup(req: Request) -> Outcome {
             let mut rows: Vec<ThreadRow> = c
                 .threads
                 .into_iter()
-                .zip(places.into_iter().zip(codes))
-                .map(|(thread, (place, code))| ThreadRow { thread, place, code })
+                .zip(places.into_iter().zip(codes).zip(behind))
+                .map(|(thread, ((place, code), behind))| ThreadRow {
+                    thread,
+                    place,
+                    code,
+                    behind,
+                })
                 .collect();
             rows.sort_by(|a, b| {
                 let (a, b) = (&a.thread.anchor, &b.thread.anchor);
@@ -361,6 +382,8 @@ pub struct ReviewState {
     /// `forges.toml` as loaded; `None` makes each lookup read the user's file (tests give one).
     pub config: Option<Arc<ForgeConfig>>,
     pub env: Env,
+    /// The host's blob ids of files at commits (never change, so kept across lookups).
+    pub blobs: review_anchor::BlobCache,
     /// Look up at launch and when HEAD moves (off in tests, which opt in).
     pub auto: bool,
     /// Counts what review diff tabs show besides their text (a lookup's result, a draft or the
@@ -462,6 +485,7 @@ impl Default for ReviewState {
             writing: false,
             fetched_at: None,
             env: Arc::new(|name| std::env::var(name).ok()),
+            blobs: Default::default(),
         }
     }
 }

@@ -1,8 +1,8 @@
 ---
 id: review_fixes
 name: Code review fixes
-summary: the Code Review panel lists only the merge request's files, FILES collapses, an approval line, a thread tab for threads out of their file's context, and threads placed on a branch behind the merge request
-status: in-progress
+summary: the Code Review panel lists only the merge request's files, FILES collapses, shows who approved, opens threads out of their file's context in a thread tab, and places threads on a branch behind the merge request
+status: done
 priority: 0
 dependencies: [mr_review]
 ---
@@ -18,6 +18,9 @@ Fixes to the Code Review panel ([mr_review](mr_review.md)) from using it. Five i
     - an outdated or missing thread opens in a thread tab showing its code (when known) and comments, where Reply, Resolve, Edit and Delete work as in a review diff
     - with local HEAD behind the merge request (the thread's commit not in the clone), a thread on a file whose content at that commit equals the work tree's is placed in the diff
     - `scripts/check` is green
+    - What it changed: FILES shows only the MR's files (untracked and unrelated edits gone) and collapses like a section; an approval line under the summary on all three forges; a thread tab (Reply / Resolve / Edit / Delete) for outdated or missing threads; threads on a commit the clone lacks are placed when the host's blob id of the file equals the local one.
+    - Deferred: files appended to the review (not in the MR) diff against the work tree, not the MR head; a thread tab's snippet isn't refreshed by a later lookup; a divider drag while FILES is collapsed only stores a height; the conversations list has no scroll bar; the 50-request cap has no test.
+    - Still to check by hand: against a real Gitea, GitHub and GitLab: the approval line, a thread tab's reply / resolve, and a branch behind the MR (threads placed, tagged `newer commit`).
   - Subtasks (one agent and one commit each):
     - ✅ review_fixes-a: FILES lists only the merge request's files
         - Today `git::range::changes` (`src/git/range.rs:172`) diffs the merge base's tree against the work tree *with untracked files*, so every untracked or locally edited file shows.
@@ -43,9 +46,10 @@ Fixes to the Code Review panel ([mr_review](mr_review.md)) from using it. Five i
         - Tests: Enter on an outdated row opens the thread tab with the comments drawn; reply from it posts through the fake forge; resolve toggles; the tab is reused; a missing commit with a hunk shows the hunk's lines; with neither, the block alone.
         - Done: `Pair::THREAD` / `DiffTab::thread` / `ThreadTab { id, title, base, last }` (code bytes in `DiffTab::conflict.0`, read only by `diff_view::read`); `Thread::hunk` (Gitea `diff_hunk`, GitHub `diffHunk`; GitLab none); `review_anchor::snippet` (right side: blob at the anchor commit, else the hunk; left: the hunk, else the merge base's file) computed in `lookup` for every thread with blobs cached per (commit, path), stored in `ThreadRow::code` (so Open Thread on a placed thread has its code too); `open_thread_tab`, `forge_block`, `Command::ReviewOpenThread`. A thread tab shares its file's path, so every by-path match skips it (`!pair.is_thread()` in `open_diff_for_file`, navigation, the disk banner, `sync_diffs` never feeds it the file's buffer) and `Tab::same_as` compares thread ids.
         - For subtask e: a thread tab never places threads; e's `behind` threads are `Placed` and so keep opening the file's diff. A thread tab's snippet is built when it opens and not refreshed by a later lookup (deferred); no code and no hunk gives one placeholder line.
-    - review_fixes-e: threads placed when the local branch is behind the merge request
+    - ✅ review_fixes-e: threads placed when the local branch is behind the merge request
         - Today `review_anchor::compare` returns `Placement::Missing` when the anchor commit isn't in the clone (local behind the merge request, not fetched), so those threads never show in the diff.
         - Add `Forge::blob_id(repo, commit, path) -> Result<Option<String>>`: the git blob id of `path` at `commit` (Gitea / GitHub `GET …/contents/{path}?ref={commit}` → `sha`; GitLab `GET /projects/:id/repository/files/{path}?ref={commit}` → `blob_id`; 404 → `None`).
         - In `lookup`, after `place_all`: for each distinct (commit, path, side) whose placement is `Missing`, ask the forge for the blob id (capped: at most 50 requests per lookup, logged when the cap is hit). Right side: compare with the work tree file's blob id (`git2::Oid::hash_object(ObjectType::Blob, bytes)`); left side: with the merge base's (old path for a rename) tree entry id. Equal: the file hasn't changed since, so the thread is `Placed` at its own lines (`start_line - 1 .. end_line`), with a flag in `ThreadRow` (`behind: bool`) so the CONVERSATIONS row tags it `newer commit` (dimmed like outdated, but shown in the diff). Not equal or an error: stays `Missing` (then opens in the thread tab from d).
         - Suggestions on a `behind` thread may apply (the lines are the same); replies work as for any placed thread.
         - Tests: a repo whose MR head commit (served by the fake forge) is absent locally, the file's blob id matching the work tree → placed, drawn in the diff, row tagged; mismatched → missing; the fake forge's request count stays at one per distinct file.
+        - Done: `Forge::blob_id` (404 is `None`, the answer cleaned; `Client::get_json_opt`, `encode_path` for Gitea / GitHub, GitLab encodes the whole path) and `review_anchor::place_behind` (after `place_all`: `Missing` threads only, at most 50 requests per lookup, logged; an error is logged and leaves the thread missing). The local id is the work tree file's `hash_object` (right; a deleted file has none) or the merge base's tree entry (left, old path of a rename); equal makes the thread `Placed` at its own lines with `ThreadRow::behind`, tagged `newer commit` in CONVERSATIONS. Answers (also 404s) are cached across lookups in `ReviewState::blobs` (`BlobCache`, keyed by repository, commit, path; errors not kept), so the 60 s poll costs nothing after the first. Hashing the raw work tree bytes ignores `.gitattributes` filters (autocrlf): such a file stays missing (safe). Suggestions apply on a behind thread (tested): the out-of-date check reads the work tree's file for the commit's text (`review_suggest::read_base(.., behind)`), as the commit isn't in the clone. Not tested: the 50 cap.

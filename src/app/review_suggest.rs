@@ -42,11 +42,16 @@ pub(super) struct Staged {
 }
 
 /// Blocking (git): lines `start..=end` (1-based) of `path` as `commit` has them, `None` when the
-/// commit, the file or the lines aren't there.
-fn read_base(repo: &Repo, commit: &str, path: &str, start: u32, end: u32) -> Option<Vec<String>> {
-    let git = repo.open().ok()?;
-    let commit = git.find_commit(git2::Oid::from_str(commit).ok()?).ok()?;
-    let blob = review_anchor::blob_at(&git, &commit, path)?;
+/// commit, the file or the lines aren't there. A `behind` thread's commit isn't in the clone: the
+/// work tree's file stands in (its blob id is the commit's).
+fn read_base(repo: &Repo, commit: &str, path: &str, start: u32, end: u32, behind: bool) -> Option<Vec<String>> {
+    let blob = if behind {
+        std::fs::read(repo.workdir.join(path)).ok()?
+    } else {
+        let git = repo.open().ok()?;
+        let commit = git.find_commit(git2::Oid::from_str(commit).ok()?).ok()?;
+        review_anchor::blob_at(&git, &commit, path)?
+    };
     let text = String::from_utf8_lossy(&blob);
     let all: Vec<&str> = text.split('\n').collect();
     // A final line break doesn't start another line.
@@ -132,10 +137,10 @@ impl App {
             revision,
             base: None,
         };
-        let (commit, rel) = (a.commit.clone(), a.path.clone());
+        let (commit, rel, behind) = (a.commit.clone(), a.path.clone(), row.behind);
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
-            staged.base = read_base(&repo, &commit, &rel, s.start_line, s.end_line);
+            staged.base = read_base(&repo, &commit, &rel, s.start_line, s.end_line, behind);
             let _ = tx.send(AppEvent::Review(ReviewEvent::Suggestion(staged)));
         });
         true

@@ -22,11 +22,17 @@ fn message(app: &App) -> String {
 
 /// A fake forge with these comments (a JSON array); the merge request's head is `head`.
 fn server(main: &str, head: &str, comments: &str) -> FakeServer {
+    server_with(main, head, comments, Vec::new())
+}
+
+/// [`server`] with more routes.
+fn server_with(main: &str, head: &str, comments: &str, extra: Vec<(String, Reply)>) -> FakeServer {
     let pr = pr_json(7, "Add review panel", main).replace(
         r#""ref":"feature","sha":"h0""#,
         &format!(r#""ref":"feature","sha":"{head}""#),
     );
-    FakeServer::start(vec![
+    let mut routes = extra;
+    routes.extend(vec![
         (
             format!("{PULLS}?state=open&page=1&limit=50"),
             Reply::json(&format!("[{pr}]")),
@@ -43,7 +49,8 @@ fn server(main: &str, head: &str, comments: &str) -> FakeServer {
         ),
         ("/api/v1/user".into(), Reply::json(r#"{"login":"sam"}"#)),
         (format!("POST {REVIEWS}"), Reply::json("{}")),
-    ])
+    ]);
+    FakeServer::start(routes)
 }
 
 /// The repository (mod.txt CRLF when asked: committed so, so the thread places), and the server
@@ -329,4 +336,27 @@ async fn mr_review_done_when_a_suggestion_applies_as_one_undo_step_and_refuses_w
     apply(&mut app).await;
     assert!(message(&app).contains("out of date"), "{}", message(&app));
     assert_eq!(text(&app, &root), "m1\nm2 changed\nm3 fixed\nm4\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_fixes_a_suggestion_on_a_thread_on_a_newer_commit_applies_at_its_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, main) = make_repo(dir.path());
+    let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+    // The anchor commit isn't in the clone; the host's file there is the work tree's.
+    let newer = "d".repeat(40);
+    let sha = git2::Oid::hash_object(git2::ObjectType::Blob, b"m1\nm2 changed\nm3\n")
+        .unwrap()
+        .to_string();
+    let extra = vec![(
+        format!("/api/v1/repos/alice/project/contents/mod.txt?ref={newer}"),
+        Reply::json(&format!(r#"{{"name":"mod.txt","sha":"{sha}"}}"#)),
+    )];
+    let comments = format!("[{}]", threads::rc(11, "bob", ONE, "mod.txt", 3, &newer, "+m3", false));
+    let server = server_with(&main, &head, &comments, extra);
+    let mut app = boot(&root, &server).await;
+    assert!(app.review.review().unwrap().threads.iter().all(|t| t.behind));
+    apply(&mut app).await;
+    let msg = message(&app);
+    assert_eq!(text(&app, &root), "m1\nm2 changed\nm3 fixed\nm4\n", "{msg}");
 }

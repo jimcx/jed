@@ -4,7 +4,7 @@
 //! the edit's counts, and a local HEAD behind the MR still lists the MR's files.
 //!
 //! Subtask d: a thread out of its file's context (outdated, missing) opens in a thread tab, where Reply and
-//! Resolve work (`mod thread_tab`).
+//! Resolve work (`mod thread_tab`). Subtask e: threads on a commit the clone lacks are placed when the file matches (`mod behind`).
 
 use crate::git::Repo;
 use crate::git::range::{FileChange, changes};
@@ -454,5 +454,134 @@ mod thread_tab {
                 .iter()
                 .any(|r| r.target.ends_with("/comments/11/resolve"))
         );
+    }
+}
+
+/// Subtask e: threads on a commit the clone lacks are placed when the host's blob id of the file
+/// there equals the work tree's (`mod behind`).
+mod behind {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use crate::app::App;
+    use crate::forge::fake::Reply;
+    use crate::mr_review_tests::screen;
+    use crate::mr_review_tests::threads::loaded_app_with;
+    use crate::review_anchor::Placement;
+
+    const CONTENTS: &str = "/api/v1/repos/alice/project/contents/mod.txt";
+    /// The work tree's mod.txt.
+    const TEXT: &str = "m1\nm2 changed\nm3\n";
+
+    fn blob(text: &str) -> String {
+        git2::Oid::hash_object(git2::ObjectType::Blob, text.as_bytes())
+            .unwrap()
+            .to_string()
+    }
+
+    fn comments() -> String {
+        let d = "d".repeat(40);
+        let one = |id: u32, line: u32, body: &str| {
+            format!(
+                r#"{{"id":{id},"user":{{"login":"cy"}},"body":"{body}","path":"mod.txt","position":{line},
+                "original_position":{line},"commit_id":"{d}","original_commit_id":"{d}","diff_hunk":"","resolver":null}}"#
+            )
+        };
+        format!("[{},{}]", one(21, 1, "First behind"), one(22, 3, "Second behind"))
+    }
+
+    fn extra(sha: &str) -> Vec<(String, Reply)> {
+        vec![(
+            format!("{CONTENTS}?ref={}", "d".repeat(40)),
+            Reply::json(&format!(r#"{{"name":"mod.txt","sha":"{sha}"}}"#)),
+        )]
+    }
+
+    fn places(app: &App) -> Vec<(String, Placement, bool)> {
+        let r = app.review.review().unwrap();
+        r.threads
+            .iter()
+            .map(|t| (t.thread.id.clone(), t.place.clone(), t.behind))
+            .collect()
+    }
+
+    fn wide(app: &mut App) -> String {
+        let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        let buf = term.backend().buffer();
+        (0..30)
+            .map(|y| (0..120).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Contents requests, and lookups (the panel looks up when it loads and again when shown, and
+    /// each looks up the merge request once): the blob ids are kept, so one request in all.
+    fn contents_requests(server: &crate::forge::fake::FakeServer) -> (usize, usize) {
+        let reqs = server.requests();
+        let n = |p: &str| reqs.iter().filter(|r| r.target.split('?').next() == Some(p)).count();
+        (n(CONTENTS), n("/api/v1/repos/alice/project/pulls/7"))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_fixes_a_thread_on_a_newer_commit_is_placed_when_the_file_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, server) = loaded_app_with(dir.path(), None, None, Some(&comments()), extra(&blob(TEXT))).await;
+        let p = places(&app);
+        assert_eq!(p.len(), 2);
+        assert!(p.iter().all(|(_, _, behind)| *behind), "{p:?}");
+        let right = crate::forge::Side::Right;
+        assert_eq!(
+            p[0].1,
+            Placement::Placed {
+                side: right,
+                lines: 0..1
+            }
+        );
+        assert_eq!(
+            p[1].1,
+            Placement::Placed {
+                side: right,
+                lines: 2..3
+            }
+        );
+        // Two threads, one file and commit: one request.
+        let (asked, lookups) = contents_requests(&server);
+        assert!(lookups >= 2 && asked == 1, "{asked} requests in {lookups} lookups");
+        let text = screen(&mut app);
+        assert!(text.contains("newer commit"), "{text}");
+        assert!(!text.contains("no commit"), "{text}");
+        // Its row opens the file's diff (not a thread tab), which draws the thread.
+        let len = app.review.review().unwrap().conv_len();
+        app.review.view.conv.focused = true;
+        app.review.view.conv.select(len, 0);
+        app.ui.focus = crate::app::Focus::SidePanel;
+        app.press(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.settle(|a| a.diffs_settled()).await);
+        assert!(app.group().active_diff().unwrap().pair.is_review());
+        let text = wide(&mut app);
+        assert!(text.contains("First behind"), "{text}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_fixes_a_thread_on_a_newer_commit_stays_missing_when_the_file_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let extra = extra(&blob("something else\n"));
+        let (app, server) = loaded_app_with(dir.path(), None, None, Some(&comments()), extra).await;
+        for (id, place, behind) in places(&app) {
+            assert_eq!((place, behind), (Placement::Missing, false), "{id}");
+        }
+        let (asked, lookups) = contents_requests(&server);
+        assert!(lookups >= 2 && asked == 1, "{asked} requests in {lookups} lookups");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_fixes_a_thread_on_a_newer_commit_stays_missing_when_the_host_has_no_file() {
+        // No contents route: the fake answers 404.
+        let dir = tempfile::tempdir().unwrap();
+        let (app, server) = loaded_app_with(dir.path(), None, None, Some(&comments()), Vec::new()).await;
+        assert!(places(&app).iter().all(|(_, p, b)| *p == Placement::Missing && !b));
+        // A 404 is an answer too: asked once.
+        assert_eq!(contents_requests(&server).0, 1);
     }
 }

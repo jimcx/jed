@@ -7,18 +7,24 @@
 //! hunk (or lines inserted between the anchored ones, or a vanished file) makes it
 //! [`Placement::Outdated`]; a commit that isn't in the clone makes it [`Placement::Missing`].
 //!
+//! A thread on a commit the clone lacks (the local branch is behind the merge request) is
+//! [`place_behind`]'d by comparing the host's blob id of the file there with the shown one.
+//!
 //! [`place_all`] runs at lookup time (off-thread) and so judges the file on disk, not unsaved
 //! edits; the next refresh sees an edit once it is saved.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::ops::Range;
+use std::sync::{Arc, Mutex};
 
 use git2::{Oid, Repository};
 
-use crate::forge::{Anchor, Side, Thread};
+use crate::forge::{Anchor, Forge, RepoRef, Side, Thread};
 use crate::git::Repo;
 use crate::git::diff::{self, new_lines, touches};
 use crate::git::range::FileChange;
+use crate::logs::ToolLog;
 
 /// Where a thread is on the review diff now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +150,129 @@ fn compare(
         }
     };
     Ok(Compared::new(&anchored, &target))
+}
+
+/// Most forge requests [`place_behind`] makes in one lookup.
+pub const BEHIND_REQUESTS: usize = 50;
+
+/// The host's blob ids already asked for, by (repository, commit, path); `None` is a file the host
+/// doesn't have there. A blob id at a commit never changes, so lookups share it; errors aren't kept.
+pub type BlobCache = Arc<Mutex<HashMap<(RepoRef, String, String), Option<String>>>>;
+
+/// Blocking (git, files, network): places the `Missing` threads whose anchor commit the clone lacks
+/// (the local branch is behind the merge request) when the file hasn't changed since: the host's
+/// blob id of the file at the anchor commit equals the one shown (the work tree's for the right
+/// side, the merge base's for the left). Such a thread becomes `Placed` at its own lines; the
+/// returned flags mark them. One request per distinct (commit, path), at most [`BEHIND_REQUESTS`]
+/// (logged when hit) and answers kept in `cache`; an error leaves the thread missing. Hashing the
+/// work tree's bytes ignores `.gitattributes` filters (autocrlf): a file the host stores differently
+/// just stays missing.
+#[allow(clippy::too_many_arguments)]
+pub fn place_behind(
+    repo: &Repo,
+    api: &dyn Forge,
+    remote: &RepoRef,
+    threads: &[Thread],
+    places: &mut [Placement],
+    merge_base: Option<&str>,
+    files: &[FileChange],
+    cache: &BlobCache,
+    log: &ToolLog,
+) -> Vec<bool> {
+    let mut behind = vec![false; threads.len()];
+    if !places.contains(&Placement::Missing) {
+        return behind;
+    }
+    let Ok(git) = repo.open() else {
+        return behind;
+    };
+    let mut local: HashMap<(&str, Side), Option<String>> = HashMap::new();
+    let mut asked: HashMap<(&str, &str), Option<String>> = HashMap::new();
+    let mut requests = 0;
+    let mut capped = false;
+    for (i, t) in threads.iter().enumerate() {
+        let a = &t.anchor;
+        if places[i] != Placement::Missing || a.commit.is_empty() {
+            continue;
+        }
+        let key = (a.commit.as_str(), a.path.as_str());
+        let theirs = match asked.entry(key) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => {
+                let ckey = (remote.clone(), a.commit.clone(), a.path.clone());
+                let cached = cache.lock().ok().and_then(|c| c.get(&ckey).cloned());
+                match cached {
+                    Some(v) => e.insert(v),
+                    None => {
+                        if requests >= BEHIND_REQUESTS {
+                            capped = true;
+                            continue;
+                        }
+                        requests += 1;
+                        match api.blob_id(remote, &a.commit, &a.path) {
+                            Ok(v) => {
+                                if let Ok(mut c) = cache.lock() {
+                                    c.insert(ckey, v.clone());
+                                }
+                                e.insert(v)
+                            }
+                            Err(err) => {
+                                log.error(&format!("blob of {} at {}: {err}", a.path, a.commit));
+                                e.insert(None)
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        let Some(theirs) = theirs.as_ref() else {
+            continue;
+        };
+        let ours = local
+            .entry((a.path.as_str(), a.side))
+            .or_insert_with(|| local_blob_id(repo, &git, a, merge_base, files));
+        if ours.as_ref() == Some(theirs) {
+            let lines = (a.start_line.max(1) - 1) as usize..a.end_line.max(a.start_line).max(1) as usize;
+            places[i] = Placement::Placed { side: a.side, lines };
+            behind[i] = true;
+        }
+    }
+    if capped {
+        log.info(&format!(
+            "Checked {BEHIND_REQUESTS} files at newer commits; threads on other files stay missing"
+        ));
+    }
+    behind
+}
+
+/// The git blob id of what the thread's file is shown as: the work tree's file (right side) or the
+/// merge base's (left side, at the old path of a rename).
+fn local_blob_id(
+    repo: &Repo,
+    git: &Repository,
+    a: &Anchor,
+    merge_base: Option<&str>,
+    files: &[FileChange],
+) -> Option<String> {
+    match a.side {
+        Side::Right => {
+            if files.iter().any(|f| f.path == a.path && f.status == 'D') {
+                return None;
+            }
+            let bytes = std::fs::read(repo.workdir.join(&a.path)).ok()?;
+            Some(Oid::hash_object(git2::ObjectType::Blob, &bytes).ok()?.to_string())
+        }
+        Side::Left => {
+            let base = git.find_commit(Oid::from_str(merge_base?).ok()?).ok()?;
+            let old = files
+                .iter()
+                .find(|f| f.path == a.path)
+                .and_then(|f| f.old_path.as_deref())
+                .unwrap_or(&a.path);
+            let entry = base.tree().ok()?.get_path(std::path::Path::new(old)).ok()?;
+            Some(entry.id().to_string())
+        }
+    }
 }
 
 /// The code a thread was written on, for its tab: the anchored lines with context, in the

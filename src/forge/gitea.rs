@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use super::http::{Client, clean_line, clean_text, encode_segment};
+use super::http::{Client, clean_line, clean_text, encode_path, encode_segment};
 use super::{
     Anchor, ApprovalState, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments, MrState,
     RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, latest_approvals,
@@ -452,6 +452,23 @@ impl Forge for Gitea {
         let url = format!("{}/comments/{}", Self::issues(repo), encode_segment(comment_id));
         self.client.delete(&url).map(|_| ())
     }
+
+    /// Blocking: call from spawn_blocking.
+    fn blob_id(&self, repo: &RepoRef, commit: &str, path: &str) -> Result<Option<String>> {
+        #[derive(Deserialize, Default)]
+        struct File {
+            #[serde(default)]
+            sha: String,
+        }
+        let url = format!(
+            "{}/contents/{}?ref={}",
+            Self::repo_path(repo),
+            encode_path(path),
+            encode_segment(commit)
+        );
+        let file: Option<File> = self.client.get_json_opt(&url)?;
+        Ok(file.map(|f| clean_line(&f.sha)).filter(|s| !s.is_empty()))
+    }
 }
 
 #[cfg(test)]
@@ -745,5 +762,19 @@ mod tests {
             server.requests().iter().all(|r| !r.target.contains("reviews/2")),
             "pending reviews are skipped"
         );
+    }
+
+    #[test]
+    fn blob_id_reads_the_file_sha_and_maps_404_to_none() {
+        let (server, forge, repo) = setup(vec![(
+            "/api/v1/repos/o/r/contents/src/a%20b.rs?ref=c0ffee",
+            Reply::json(r#"{"name":"a b.rs","sha":"abc123"}"#),
+        )]);
+        assert_eq!(
+            forge.blob_id(&repo, "c0ffee", "src/a b.rs").unwrap().as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(forge.blob_id(&repo, "c0ffee", "src/none.rs").unwrap(), None);
+        assert_eq!(server.requests().len(), 2);
     }
 }

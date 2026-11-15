@@ -329,6 +329,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
                     };
                     let a = &t.thread.anchor;
                     let (tag, faded) = match t.place {
+                        Placement::Placed { .. } if t.behind => ("newer commit", true),
                         Placement::Placed { .. } => ("", false),
                         Placement::Outdated => ("outdated", true),
                         Placement::Missing => ("no commit", true),

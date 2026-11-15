@@ -120,6 +120,7 @@ impl App {
             choose: self.review.choice,
             viewed_from: self.review.viewed.is_none().then(|| self.state_dir.clone()).flatten(),
             log: self.logs.tool(Tool::Review),
+            blobs: self.review.blobs.clone(),
         };
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
