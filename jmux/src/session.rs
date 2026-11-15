@@ -133,6 +133,30 @@ mod tests {
         UnixListener::bind(socket_path(dir, name)).unwrap()
     }
 
+    /// A stale socket file: bound but never listening. (Dropping a `bind` listener races with
+    /// other tests' forks, whose children hold the listening fd until they exec, so the socket
+    /// can still accept and read as live.)
+    fn stale(dir: &Path, name: &str) {
+        let path = socket_path(dir, name);
+        let bytes = path.to_str().unwrap().as_bytes();
+        // SAFETY: plain socket / bind / close on a fresh fd; sun_path is zeroed and the path is
+        // checked to fit with its NUL.
+        unsafe {
+            let fd = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
+            assert!(fd >= 0);
+            let mut addr: libc::sockaddr_un = std::mem::zeroed();
+            addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+            assert!(bytes.len() < addr.sun_path.len());
+            for (d, s) in addr.sun_path.iter_mut().zip(bytes) {
+                *d = *s as libc::c_char;
+            }
+            let len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+            let ok = libc::bind(fd, &addr as *const _ as *const libc::sockaddr, len);
+            libc::close(fd);
+            assert_eq!(ok, 0, "bind {}", path.display());
+        }
+    }
+
     #[test]
     fn names() {
         for ok in ["work", "a.b-c_d", "0", "A9", &"x".repeat(64)] {
@@ -155,7 +179,7 @@ mod tests {
     fn lists_live_and_stale_sorted() {
         let d = tempfile::tempdir().unwrap();
         let _b = bind(d.path(), "b");
-        drop(bind(d.path(), "a"));
+        stale(d.path(), "a");
         let _c = bind(d.path(), "c");
         std::fs::write(d.path().join("notes.txt"), "").unwrap();
         std::fs::write(d.path().join("bad name.sock"), "").unwrap();
@@ -170,7 +194,7 @@ mod tests {
     fn removes_only_stale() {
         let d = tempfile::tempdir().unwrap();
         let _live = bind(d.path(), "live");
-        drop(bind(d.path(), "dead"));
+        stale(d.path(), "dead");
         assert_eq!(remove_stale(d.path()), ["dead"]);
         assert!(!d.path().join("dead.sock").exists());
         assert!(d.path().join("live.sock").exists());
@@ -185,7 +209,7 @@ mod tests {
         let _two = bind(d.path(), "2");
         let _w = bind(d.path(), "work");
         assert_eq!(next_free_name(d.path()), "1");
-        drop(bind(d.path(), "1"));
+        stale(d.path(), "1");
         assert_eq!(next_free_name(d.path()), "1");
     }
 
@@ -195,7 +219,7 @@ mod tests {
         assert!(most_recent(d.path()).is_none());
         let _old = bind(d.path(), "old");
         let _new = bind(d.path(), "new");
-        drop(bind(d.path(), "dead"));
+        stale(d.path(), "dead");
         // A socket cannot be opened to set its time, so set it through the path.
         let set = |name: &str, secs: i64| {
             let c = std::ffi::CString::new(socket_path(d.path(), name).to_str().unwrap()).unwrap();
@@ -242,7 +266,7 @@ mod tests {
     #[test]
     fn next_free_name_ignores_non_numeric_and_stale_and_non_sock_files() {
         let d = tempfile::tempdir().unwrap();
-        drop(bind(d.path(), "0"));
+        stale(d.path(), "0");
         let _one = bind(d.path(), "1");
         std::fs::write(d.path().join("2"), "").unwrap();
         std::fs::write(d.path().join("2.txt"), "").unwrap();
@@ -272,7 +296,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("keep.txt"), "").unwrap();
         std::fs::write(d.path().join(".sock"), "").unwrap();
-        drop(bind(d.path(), "a.b"));
+        stale(d.path(), "a.b");
         assert_eq!(remove_stale(d.path()), ["a.b"]);
         assert!(d.path().join("keep.txt").exists());
         assert!(d.path().join(".sock").exists());
