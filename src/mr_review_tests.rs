@@ -181,6 +181,40 @@ async fn mr_review_finds_the_merge_request_and_lists_its_files() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mr_review_files_hide_untracked_files_and_a_local_head_behind_the_mr_keeps_the_mrs_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, main) = make_repo(dir.path());
+    let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+    fs::write(root.join("scratch.txt"), "s\n").unwrap();
+    let pr = pr_json(7, "Add review panel", &main).replace(r#""sha":"h0""#, &format!(r#""sha":"{head}""#));
+    let server = FakeServer::start(vec![
+        (
+            format!("{PULLS}?state=open&page=1&limit=50"),
+            Reply::json(&format!("[{pr}]")),
+        ),
+        (format!("{PULLS}/7"), Reply::json(&pr)),
+    ]);
+    let mut app = open_app(&root, None, config_for(&server), true);
+    assert!(app.settle(loaded).await);
+    let paths = |app: &App| {
+        let mut v: Vec<String> = app.review.files().iter().map(|f| f.path.clone()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(paths(&app), ["gone.txt", "mod.txt", "new.txt", "renamed.txt"]);
+    app.test_execute(Command::ShowReview);
+    idle(&mut app).await;
+    assert!(!screen(&mut app).contains("scratch.txt"));
+
+    // The branch reset to main (the MR's commit still in the clone): the MR's files still list.
+    git(&root, &["reset", "-q", "--hard", &main]);
+    fs::write(root.join("scratch.txt"), "s\n").unwrap();
+    let mut app = open_app(&root, None, config_for(&server), true);
+    assert!(app.settle(loaded).await);
+    assert_eq!(paths(&app), ["gone.txt", "mod.txt", "new.txt", "renamed.txt"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mr_review_viewed_marks_are_local_and_clear_when_a_file_changes() {
     let dir = tempfile::tempdir().unwrap();
     let (root, main) = make_repo(dir.path());
@@ -2532,8 +2566,10 @@ mod write {
     async fn mr_review_submit_refuses_when_local_head_is_not_the_merge_request_head() {
         let dir = tempfile::tempdir().unwrap();
         let (root, head, main) = repo(dir.path());
-        // The merge request is at main's commit: local is ahead of it.
-        let server = server(&main, &head, &main, Reply::json("{}"));
+        // The merge request is at the commit before local HEAD's: local is ahead of it.
+        std::fs::write(root.join("later.txt"), "l\n").unwrap();
+        crate::git::test_repo::commit_all(&root, "later");
+        let server = server(&main, &head, &head, Reply::json("{}"));
         let mut app = boot(&root, &server, None).await;
         comment(&mut app, 1, 2, "x");
         app.test_execute(Command::ReviewSubmitComment);

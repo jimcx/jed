@@ -201,7 +201,7 @@ pub fn lookup(req: Request) -> Outcome {
         info.remote.as_deref(),
     );
     let (merge_base, files, files_error) = match base {
-        Ok(b) => match range::changes(&req.repo, &b) {
+        Ok(b) => match range::changes(&req.repo, &b, Some(&mr.head.sha)) {
             Ok(files) => (Some(b), files, None),
             Err(e) => (Some(b), Vec::new(), Some(e.to_string())),
         },

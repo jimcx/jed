@@ -5,7 +5,9 @@
 //!
 //! Blocking (`Repo::open` per call): call from `spawn_blocking`.
 
-use git2::{Delta, DiffFindOptions, DiffOptions, ObjectType, Oid, Repository};
+use std::collections::HashSet;
+
+use git2::{Delta, DiffFindOptions, ObjectType, Oid, Repository};
 
 use super::Repo;
 
@@ -167,15 +169,12 @@ pub fn merge_base(
     Ok(r.merge_base(head, base.id())?.to_string())
 }
 
-/// Blocking: the files that differ between the commit `base` and the working tree (the index and
-/// untracked files included), renames detected as in `show`.
-pub fn changes(repo: &Repo, base: &str) -> Result<Vec<FileChange>, RangeError> {
-    let r = repo.open()?;
-    let id = Oid::from_str(base).map_err(|e| RangeError::Git(e.message().into()))?;
-    let tree = r.find_commit(id)?.tree()?;
-    let mut opts = DiffOptions::new();
-    opts.include_untracked(true).recurse_untracked_dirs(true);
-    let mut diff = r.diff_tree_to_workdir_with_index(Some(&tree), Some(&mut opts))?;
+/// `diff` with renames detected, as `FileChange`s for the deltas `keep(path, old_path)` accepts.
+fn collect(
+    r: &Repository,
+    mut diff: git2::Diff,
+    keep: &dyn Fn(&str, Option<&str>) -> bool,
+) -> Result<Vec<FileChange>, RangeError> {
     let mut find = DiffFindOptions::new();
     find.renames(true).rename_threshold(50);
     diff.find_similar(Some(&mut find))?;
@@ -196,6 +195,9 @@ pub fn changes(repo: &Repo, base: &str) -> Result<Vec<FileChange>, RangeError> {
         let old_path = matches!(status, 'R' | 'C')
             .then(|| delta.old_file().path().map(|p| p.to_string_lossy().into_owned()))
             .flatten();
+        if !keep(&path, old_path.as_deref()) {
+            continue;
+        }
         let (additions, deletions) = match git2::Patch::from_diff(&diff, i)? {
             Some(patch) => {
                 let (_, a, d) = patch.line_stats()?;
@@ -204,13 +206,66 @@ pub fn changes(repo: &Repo, base: &str) -> Result<Vec<FileChange>, RangeError> {
             None => (0, 0),
         };
         out.push(FileChange {
-            hash: content_hash(&r, &path, status),
+            hash: content_hash(r, &path, status),
             path,
             old_path,
             status,
             additions,
             deletions,
         });
+    }
+    Ok(out)
+}
+
+/// The paths of `files`, new and old.
+fn paths(files: &[FileChange]) -> HashSet<&str> {
+    files
+        .iter()
+        .flat_map(|f| [Some(f.path.as_str()), f.old_path.as_deref()])
+        .flatten()
+        .collect()
+}
+
+/// Blocking: the merge request's files: those of the diff from the commit `base` to `head` (the
+/// merge request's head commit when it is in the clone, else local HEAD), as they stand in the
+/// working tree (index included, so local edits show with their counts; untracked files never do).
+/// An MR file the work tree has no difference for (local HEAD behind the MR) is listed with the
+/// MR's own change. Renames detected as in `show`; a rename's old path counts too.
+pub fn changes(repo: &Repo, base: &str, head: Option<&str>) -> Result<Vec<FileChange>, RangeError> {
+    let r = repo.open()?;
+    let id = Oid::from_str(base).map_err(|e| RangeError::Git(e.message().into()))?;
+    let tree = r.find_commit(id)?.tree()?;
+    let commit = match head
+        .and_then(|h| Oid::from_str(h).ok())
+        .and_then(|id| r.find_commit(id).ok())
+    {
+        Some(c) => c,
+        None => r.head()?.peel_to_commit()?,
+    };
+    let mr = collect(
+        &r,
+        r.diff_tree_to_tree(Some(&tree), Some(&commit.tree()?), None)?,
+        &|_, _| true,
+    )?;
+    let wanted = paths(&mr);
+    let work = r.diff_tree_to_workdir_with_index(Some(&tree), None)?;
+    let mut out = collect(&r, work, &|p, o| {
+        wanted.contains(p) || o.is_some_and(|o| wanted.contains(o))
+    })?;
+    let shown: HashSet<String> = paths(&out).into_iter().map(String::from).collect();
+    let head_tree = commit.tree()?;
+    for mut f in mr {
+        if shown.contains(&f.path) || f.old_path.as_ref().is_some_and(|o| shown.contains(o)) {
+            continue;
+        }
+        // Not in the work tree: the viewed mark follows the MR's own blob.
+        if f.status != 'D' {
+            f.hash = head_tree
+                .get_path(std::path::Path::new(&f.path))
+                .map(|e| e.id().to_string())
+                .unwrap_or_default();
+        }
+        out.push(f);
     }
     Ok(out)
 }
@@ -252,7 +307,7 @@ mod tests {
         let base = git(p, &["rev-parse", "main"]).trim().to_string();
         let found = merge_base(&r, None, &base, "main", None).unwrap();
         assert_eq!(found, base);
-        let files = changes(&r, &found).unwrap();
+        let files = changes(&r, &found, None).unwrap();
         let by = |n: &str| files.iter().find(|f| f.path == n).unwrap();
         assert_eq!(by("b.txt").status, 'R');
         assert_eq!(by("b.txt").old_path.as_deref(), Some("a.txt"));

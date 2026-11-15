@@ -147,6 +147,8 @@ mod review_anchor;
 mod review_blocks;
 mod review_drafts;
 #[cfg(test)]
+mod review_fixes_tests;
+#[cfg(test)]
 mod review_followups_tests;
 mod review_write;
 mod scm;
