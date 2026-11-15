@@ -16,7 +16,7 @@ fn lines(app: &mut App, w: u16, h: u16) -> Vec<String> {
         .collect()
 }
 
-fn message(app: &App) -> String {
+pub(super) fn message(app: &App) -> String {
     app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
 }
 
@@ -55,7 +55,7 @@ fn server_with(main: &str, head: &str, comments: &str, extra: Vec<(String, Reply
 
 /// The repository (mod.txt CRLF when asked: committed so, so the thread places), and the server
 /// with `comments(head, main)`.
-fn world(dir: &Path, crlf: bool, comments: impl Fn(&str, &str) -> String) -> (PathBuf, FakeServer) {
+pub(super) fn world(dir: &Path, crlf: bool, comments: impl Fn(&str, &str) -> String) -> (PathBuf, FakeServer) {
     let (root, main) = make_repo(dir);
     if crlf {
         fs::write(root.join("mod.txt"), "m1\r\nm2 changed\r\nm3\r\n").unwrap();
@@ -67,11 +67,11 @@ fn world(dir: &Path, crlf: bool, comments: impl Fn(&str, &str) -> String) -> (Pa
 }
 
 /// bob's thread on `mod.txt` line 3 (`m3`) with `body` (JSON-escaped).
-fn on_line3(body: &'static str) -> impl Fn(&str, &str) -> String {
+pub(super) fn on_line3(body: &'static str) -> impl Fn(&str, &str) -> String {
     move |head, _| format!("[{}]", threads::rc(11, "bob", body, "mod.txt", 3, head, "+m3", false))
 }
 
-async fn boot(root: &Path, server: &FakeServer) -> App {
+pub(super) async fn boot(root: &Path, server: &FakeServer) -> App {
     let mut app = open_app(root, None, config_for(server), true);
     assert!(app.settle(loaded).await);
     assert!(app.settle(|a| a.git.status.is_some()).await);
@@ -84,7 +84,7 @@ async fn boot(root: &Path, server: &FakeServer) -> App {
     app
 }
 
-fn select(app: &mut App, right: bool, first: usize, last: usize) {
+pub(super) fn select(app: &mut App, right: bool, first: usize, last: usize) {
     app.group_mut().active_diff_mut().unwrap().go_to_side_line(right, last);
     draw_wide(app, 120);
     app.group_mut().active_diff_mut().unwrap().caret = Caret {
@@ -95,7 +95,7 @@ fn select(app: &mut App, right: bool, first: usize, last: usize) {
     };
 }
 
-fn text(app: &App, root: &Path) -> String {
+pub(super) fn text(app: &App, root: &Path) -> String {
     let id = app.buffers.find_path(&root.join("mod.txt")).expect("mod.txt is open");
     app.buffers.get(id).unwrap().rope.to_string()
 }

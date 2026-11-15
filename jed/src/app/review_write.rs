@@ -113,6 +113,7 @@ impl App {
         for id in &posted {
             self.review.drafts.drift.remove(id);
             self.review.drafts.live.remove(id);
+            self.review.drafts.at.remove(id);
         }
         self.review.drafts.errors = failed.iter().cloned().collect();
         if !posted.is_empty() {
@@ -346,6 +347,7 @@ impl App {
             right: side == Side::Right,
             start,
             end,
+            row: (end.max(start) - 1) as usize,
             lines: Vec::new(),
             commit: String::new(),
             editing: None,

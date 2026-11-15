@@ -9,9 +9,11 @@
 //!
 //! Saving makes a [`Draft`] in the store, written to the state directory on every change
 //! (off-thread, `DraftStore::save`). A draft whose lines no longer read as they did is held back:
-//! not drawn in the diff, named in PENDING, and not for Submit Review (later) to post. The drafts
-//! are read once (`load_drafts`) and judged against the files on disk after each lookup
-//! (`check_drafts`); an open tab judges its file's drafts on its live text.
+//! not drawn in the diff, named in PENDING, and not for Submit Review (later) to post. A draft's
+//! lines are counted in its commit (the merge request's head), so local edits only move it: the
+//! drafts are read once (`load_drafts`) and judged after each lookup (`check_drafts`: a commit
+//! since changing their lines), and an open tab draws them where its live text has them
+//! (`Doc::live`, `drafts.at`).
 
 use super::{App, AppEvent, Focus, Level, review::ReviewEvent};
 use crate::buffer::Buffer;
@@ -34,9 +36,11 @@ pub(super) struct Composer {
     /// The file, relative to the work tree.
     pub path: String,
     pub right: bool,
-    /// The lines, 1-based inclusive.
+    /// The lines, 1-based inclusive: a draft's in its commit's numbering (what is posted).
     pub start: u32,
     pub end: u32,
+    /// The line (0-based) of the text shown the box goes under: `end`'s, moved by local edits.
+    pub row: usize,
     /// Their text now.
     pub lines: Vec<String>,
     pub commit: String,
@@ -117,7 +121,7 @@ impl Composer {
             },
             id: "composer".into(),
             right: self.right,
-            line: (self.end.max(self.start) - 1) as usize,
+            line: self.row,
             resolved: false,
             mine: false,
             apply: false,
@@ -196,7 +200,18 @@ impl App {
         };
         let path = path.to_string_lossy().replace('\\', "/");
         let lines = (lo.0..=last).map(|l| side.line(l).to_string()).collect();
-        let (tab, start, end) = (d.id, lo.0 as u32 + 1, last as u32 + 1);
+        let (tab, mut start, mut end) = (d.id, lo.0 as u32 + 1, last as u32 + 1);
+        // The right side is the text now: count the lines in the merge request's head, which a
+        // local edit of them leaves no place in. (A head the clone lacks: the lines as shown.)
+        if right && doc.live.has(&commit) {
+            let Some(lines) = doc.live.anchored_lines(&commit, lo.0..last + 1) else {
+                return self.notify(
+                    Level::Info,
+                    "These lines are changed locally: comment on lines the merge request has".into(),
+                );
+            };
+            (start, end) = (lines.start as u32 + 1, lines.end as u32);
+        }
         self.start_composer(Composer {
             tab,
             buf: Buffer::untitled(0),
@@ -205,11 +220,21 @@ impl App {
             right,
             start,
             end,
+            row: last,
             lines,
             commit,
             editing: None,
             kind: ComposerKind::Draft,
         });
+    }
+
+    /// A draft's first line (0-based) in the text its review diff shows: moved by local edits
+    /// above it when an open tab placed it (`drafts.at`), else its own.
+    pub(super) fn draft_first_line(&self, d: &Draft) -> usize {
+        match self.review.drafts.at.get(&d.id) {
+            Some(&at) if d.right => at,
+            _ => d.start.saturating_sub(1) as usize,
+        }
     }
 
     pub(super) fn start_composer(&mut self, c: Composer) {
@@ -236,10 +261,9 @@ impl App {
         rows.iter()
             .map(|r| r.draft)
             .find(|x| {
-                x.right == d.caret.right
-                    && workdir.join(&x.path) == d.path
-                    && (x.start as usize) <= hi.0 + 1
-                    && lo.0 < x.end.max(x.start) as usize
+                let first = self.draft_first_line(x);
+                let last = first + (x.end.max(x.start) - x.start) as usize;
+                x.right == d.caret.right && workdir.join(&x.path) == d.path && first <= hi.0 && lo.0 <= last
             })
             .cloned()
     }
@@ -271,6 +295,7 @@ impl App {
         let mut view = View::new();
         edit::paste(&mut buf, &mut view, &draft.body, false, &[]);
         self.review.view.pending.focused = false;
+        let row = self.draft_first_line(&draft) + (draft.end.max(draft.start) - draft.start) as usize;
         self.start_composer(Composer {
             tab,
             buf,
@@ -279,6 +304,7 @@ impl App {
             right: draft.right,
             start: draft.start,
             end: draft.end,
+            row,
             lines: draft.lines,
             commit: draft.commit,
             editing: Some(draft.id),
@@ -297,6 +323,7 @@ impl App {
         }
         self.review.drafts.drift.remove(&draft.id);
         self.review.drafts.live.remove(&draft.id);
+        self.review.drafts.at.remove(&draft.id);
         self.save_drafts();
         let len = self.review.draft_rows().len();
         let p = &mut self.review.view.pending;
@@ -516,6 +543,7 @@ impl App {
         self.review.drafts.drift = held.into_iter().collect();
         // The open tabs say it again from their live text (`sync_review_threads`).
         self.review.drafts.live.clear();
+        self.review.drafts.at.clear();
         self.needs_redraw = true;
     }
 
@@ -573,7 +601,7 @@ impl App {
     /// Opens the selected draft's file at its first line.
     pub(super) fn review_open_draft(&mut self) {
         let Some(draft) = self.target_draft() else { return };
-        let (path, right, line) = (draft.path.clone(), draft.right, draft.start.saturating_sub(1) as usize);
+        let (path, right, line) = (draft.path.clone(), draft.right, self.draft_first_line(&draft));
         let in_review = self
             .review
             .review()

@@ -483,6 +483,14 @@ impl App {
                 continue;
             }
             let generation = d.begin_sides(live);
+            // A review diff re-places its file's threads and drafts on the text it shows.
+            let anchors = match (d.pair.is_review(), &repo) {
+                (true, Some(repo)) => repo
+                    .relative(&d.path)
+                    .map(|rel| self.review.anchor_commits(&rel.to_string_lossy().replace('\\', "/")))
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            };
             let job = Job {
                 repo: repo.clone(),
                 root: self.workspace.root.clone(),
@@ -499,6 +507,7 @@ impl App {
                 replace: d.replace.clone(),
                 conflict: d.conflict.clone(),
                 left_path: d.left_path.clone(),
+                anchors,
             };
             jobs.push((d.id, generation, job));
         }
@@ -516,8 +525,12 @@ impl App {
 
     /// `AppEvent::Diff(DiffEvent::Loaded)`: the tab's new diff (dropped when it closed or a newer load runs).
     pub(super) fn diff_loaded(&mut self, id: u64, generation: u64, result: Result<Doc, String>) {
-        if let Some((_, d)) = self.groups.diff_tabs_mut().find(|(_, d)| d.id == id) {
-            d.finish(generation, result);
+        let review = match self.groups.diff_tabs_mut().find(|(_, d)| d.id == id) {
+            Some((_, d)) => d.finish(generation, result) && d.pair.is_review(),
+            None => false,
+        };
+        if review {
+            self.review_live_places();
         }
     }
 

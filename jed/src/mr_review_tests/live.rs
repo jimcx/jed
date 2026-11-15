@@ -1,0 +1,150 @@
+//! Threads and drafts placed on the live text of a review diff: lines typed above them (unsaved)
+//! move them and their blocks, an edit of their own lines keeps them there, and only a commit
+//! changing those lines outdates a thread; a new draft's lines are counted in the merge request's
+//! head, and lines that exist only locally can't be commented on.
+
+use super::suggest::{boot, message, on_line3, select, text, world};
+use super::*;
+use crate::forge::Side;
+use crate::review_anchor::Placement;
+
+/// The one thread's placement.
+fn place(app: &App) -> Placement {
+    app.review.review().unwrap().threads[0].place.clone()
+}
+
+/// The lines (0-based) the review diff tab's blocks follow, by role.
+fn block_lines(app: &App) -> Vec<(crate::review_blocks::Role, usize)> {
+    let tab = app
+        .group()
+        .tabs
+        .iter()
+        .find_map(|t| t.diff().filter(|d| d.pair.is_review()));
+    tab.unwrap().threads.list().iter().map(|b| (b.role, b.line)).collect()
+}
+
+/// `mod.txt`'s text tab opened and active (the review diff is tab 0), its cursor at the start.
+async fn open_text(app: &mut App, root: &Path) {
+    app.test_open_file(root.join("mod.txt"));
+    assert!(
+        app.settle(|a| a.buffers.find_path(&root.join("mod.txt")).is_some())
+            .await
+    );
+}
+
+/// Types `n` new lines at the start of the file (its text tab active, cursor at the start).
+async fn lines_above(app: &mut App, n: usize) {
+    for i in 0..n {
+        app.type_text(&format!("top {i}"));
+        app.press(KeyCode::Enter, KeyModifiers::NONE);
+    }
+    assert!(app.settle(|a| a.diffs_settled()).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mr_review_lines_typed_above_a_thread_move_it_and_its_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, server) = world(dir.path(), false, on_line3("Why this"));
+    let mut app = boot(&root, &server).await;
+    assert_eq!(
+        place(&app),
+        Placement::Placed {
+            side: Side::Right,
+            lines: 2..3
+        }
+    );
+    open_text(&mut app, &root).await;
+    lines_above(&mut app, 2).await;
+    // Unsaved: the file on disk is as it was.
+    assert_eq!(
+        fs::read_to_string(root.join("mod.txt")).unwrap(),
+        "m1\nm2 changed\nm3\n"
+    );
+    assert_eq!(
+        place(&app),
+        Placement::Placed {
+            side: Side::Right,
+            lines: 4..5
+        }
+    );
+    app.test_activate_tab(0);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    assert_eq!(block_lines(&app), [(crate::review_blocks::Role::Thread, 4)]);
+    // Removed again: back at its line.
+    let id = app.buffers.find_path(&root.join("mod.txt")).unwrap();
+    while app.buffers.get_mut(id).unwrap().undo().is_some() {}
+    assert_eq!(text(&app, &root), "m1\nm2 changed\nm3\n");
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    assert!(
+        app.settle(|a| place(a)
+            == Placement::Placed {
+                side: Side::Right,
+                lines: 2..3
+            })
+        .await
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mr_review_an_edit_of_a_threads_line_keeps_it_there_and_a_commit_outdates_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, server) = world(dir.path(), false, on_line3("Why this"));
+    let mut app = boot(&root, &server).await;
+    open_text(&mut app, &root).await;
+    app.press(KeyCode::Down, KeyModifiers::NONE);
+    app.press(KeyCode::Down, KeyModifiers::NONE);
+    app.press(KeyCode::End, KeyModifiers::NONE);
+    app.type_text(" edited");
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    app.type_text("m4");
+    assert_eq!(text(&app, &root), "m1\nm2 changed\nm3 edited\nm4\n");
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    // Edited locally: still on its line, as long.
+    assert_eq!(
+        place(&app),
+        Placement::Placed {
+            side: Side::Right,
+            lines: 2..3
+        }
+    );
+    // Committed, the merge request's code changed under it: outdated.
+    app.test_execute(Command::Save);
+    assert!(app.settle(|a| !a.buffers.iter().any(|(_, b)| b.is_dirty())).await);
+    commit_all(&root, "edit");
+    app.test_refresh_git();
+    assert!(app.settle(|a| place(a) == Placement::Outdated).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mr_review_a_draft_follows_lines_typed_above_and_new_ones_count_in_the_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let (root, server) = world(dir.path(), false, |_, _| "[]".into());
+    let mut app = boot(&root, &server).await;
+    // A draft on lines 2-3 ("m2 changed", "m3").
+    select(&mut app, true, 1, 2);
+    app.test_execute(Command::ReviewComment);
+    app.type_text("Check this");
+    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    assert_eq!(app.test_composer_text(), None);
+    open_text(&mut app, &root).await;
+    lines_above(&mut app, 1).await;
+    app.test_activate_tab(0);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    let rows = app.review.draft_rows();
+    assert_eq!((rows[0].draft.start, rows[0].draft.end, rows[0].held), (2, 3, None));
+    assert_eq!(block_lines(&app), [(crate::review_blocks::Role::Draft, 3)]);
+    // A new one on "m3" (line 4 shown) counts it as the head's line 3.
+    select(&mut app, true, 3, 3);
+    app.test_execute(Command::ReviewComment);
+    app.type_text("And this");
+    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    assert_eq!(app.test_composer_text(), None);
+    let rows = app.review.draft_rows();
+    let new = rows.iter().find(|r| r.draft.body == "And this").unwrap();
+    assert_eq!((new.draft.start, new.draft.end, new.held), (3, 3, None));
+    // The typed line isn't in the merge request.
+    select(&mut app, true, 0, 0);
+    app.test_execute(Command::ReviewComment);
+    assert_eq!(app.test_composer_text(), None);
+    assert!(message(&app).contains("changed locally"), "{}", message(&app));
+}

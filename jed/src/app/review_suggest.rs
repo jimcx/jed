@@ -6,7 +6,8 @@
 //! suggestion's lines is read off-thread (`Staged`, `ReviewEvent::Suggestion`). When it arrives the
 //! file's buffer (opened in the background if it isn't) must still read the same at those lines,
 //! else nothing happens and "Suggestion is out of date" is said; this also refuses a second,
-//! overlapping suggestion and one the buffer's edits (or the placement's file on disk) moved. The
+//! overlapping suggestion and one whose lines the buffer's edits changed (edits above the thread
+//! move the placement with them: it follows the review diff's live text). The
 //! buffer's revision is checked again at that moment. A good apply is one `EditKind::Other` step
 //! through `edit::paste` on a scratch view; nothing is committed, saved or resolved.
 //!

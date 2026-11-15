@@ -139,13 +139,12 @@ impl Draft {
         tags
     }
 
-    /// Why the draft can't be placed where it was written, given the lines `line` (0-based, on
-    /// the draft's side) reads now; `None`: unchanged.
-    pub fn drift<'a>(&self, line: impl Fn(usize) -> Option<&'a str>) -> Option<&'static str> {
+    /// Why the draft is held back when its lines, found from `first` (0-based: where local edits
+    /// above moved them), no longer read as they did; `None` when they do (a reply draft never is).
+    pub fn drift_from<'a>(&self, first: usize, line: impl Fn(usize) -> Option<&'a str>) -> Option<&'static str> {
         if self.reply_to.is_some() {
             return None;
         }
-        let first = (self.start.max(1) - 1) as usize;
         let same = self
             .lines
             .iter()
@@ -168,7 +167,25 @@ impl Draft {
         let Some(text) = text else { return Some(FILE_CHANGED) };
         let text = String::from_utf8_lossy(text);
         let lines: Vec<&str> = text.lines().collect();
-        self.drift(|i| lines.get(i).copied())
+        self.drift_from((self.start.max(1) - 1) as usize, |i| lines.get(i).copied())
+    }
+
+    /// Why the draft is held back when its lines were changed in place (`LINE(S)_CHANGED`).
+    pub fn changed(&self) -> &'static str {
+        if self.lines.len() > 1 {
+            LINES_CHANGED
+        } else {
+            LINE_CHANGED
+        }
+    }
+
+    /// Where the draft's lines are in the text a review diff shows (0-based): `Some(None)` when a
+    /// commit since changed them, `None` when its commit wasn't compared there.
+    pub fn place_in(&self, live: &crate::review_anchor::Live) -> Option<Option<std::ops::Range<usize>>> {
+        match live.place(&self.commit, self.start, self.end)? {
+            crate::review_anchor::Placement::Placed { lines, .. } => Some(Some(lines)),
+            _ => Some(None),
+        }
     }
 }
 
@@ -303,8 +320,9 @@ impl DraftStore {
     }
 }
 
-/// Blocking (git, files): which of `drafts` are held back now, by id: the file on disk for a
-/// right-side draft, the merge base's blob for a left-side one.
+/// Blocking (git, files): which of `drafts` are held back now, by id: for a right-side draft,
+/// whether a commit since the draft's changed its lines (its commit's file against HEAD's; local
+/// edits don't hold a draft back), else the file on disk; the merge base's blob for a left-side one.
 pub fn check(
     repo: &Repo,
     merge_base: Option<&str>,
@@ -328,7 +346,25 @@ pub fn check(
                     crate::review_anchor::blob_at(git, &commit, old)
                 })
             };
-            (d.id.clone(), d.drift_in(text.as_deref()).map(String::from))
+            // The draft's commit against HEAD: only a commit changing its lines holds it back.
+            let compared = (d.right && d.reply_to.is_none())
+                .then(|| {
+                    let git = git.as_ref()?;
+                    let commit = git.find_commit(git2::Oid::from_str(&d.commit).ok()?).ok()?;
+                    let anchored = crate::review_anchor::blob_at(git, &commit, &d.path)?;
+                    let head = crate::review_anchor::head_blob(git, &d.path);
+                    Some(head.and_then(|head| crate::review_anchor::Compared::new(&anchored, &head)))
+                })
+                .flatten();
+            let held = match compared {
+                Some(Some(c)) => match c.place(Side::Right, d.start, d.end) {
+                    crate::review_anchor::Placement::Placed { .. } => None,
+                    _ => Some(d.changed()),
+                },
+                Some(None) => Some(FILE_CHANGED),
+                None => d.drift_in(text.as_deref()),
+            };
+            (d.id.clone(), held.map(String::from))
         })
         .collect()
 }
@@ -399,7 +435,7 @@ mod tests {
         let mut r = Draft::reply("p.rs".into(), true, (3, 3), "t1".into(), "ok".into(), true);
         r.by_claude = true;
         assert_eq!(r.drift_in(None), None);
-        assert_eq!(r.drift(|_| None), None);
+        assert_eq!(r.drift_from(0, |_| None), None);
         let mut store = store;
         assert!(!store.set_reply("k", r.clone()));
         r.body = "again".into();

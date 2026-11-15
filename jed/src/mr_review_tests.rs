@@ -13,6 +13,7 @@ mod claude;
 mod done_when;
 mod github;
 mod gitlab;
+mod live;
 mod suggest;
 
 use std::fs;

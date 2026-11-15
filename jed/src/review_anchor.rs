@@ -12,8 +12,12 @@
 //! A thread on a commit the clone lacks (the local branch is behind the merge request) is
 //! [`place_behind`]'d by comparing the host's blob id of the file there with the shown one.
 //!
-//! [`place_all`] runs at lookup time (off-thread) and so judges the file on disk, not unsaved
-//! edits; the next refresh sees an edit once it is saved.
+//! [`place_all`] runs at lookup time (off-thread) and so judges the file on disk. A review diff
+//! tab's load places the file's right-side threads and drafts on the text it shows, unsaved edits
+//! too, in two steps ([`compare_live`], [`Live::place`]): the anchor commit's file against HEAD's,
+//! as above (only a commit outdates a thread, as the forge sees it), then HEAD's against the live
+//! text, leniently ([`Compared::follow`]): lines added or removed above a thread shift it, and a
+//! thread whose own lines are edited stays on them.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -42,24 +46,55 @@ pub enum Placement {
 
 /// An anchored text diffed against the text it is shown on: what every thread on the same
 /// commit, file and side shares.
-struct Compared {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Compared {
     /// Lines of the anchored text.
     lines: usize,
+    /// Lines of the target.
+    target: usize,
     diff: diff::Diff,
 }
 
 impl Compared {
     /// `None` when the texts can't be compared (binary, a diff error): the threads there are outdated.
-    fn new(anchored: &[u8], target: &[u8]) -> Option<Compared> {
+    pub fn new(anchored: &[u8], target: &[u8]) -> Option<Compared> {
         let diff = diff::diff(anchored, target, 0).ok().filter(|d| !d.binary)?;
         Some(Compared {
             lines: diff::lines(anchored).len(),
+            target: diff::lines(target).len(),
             diff,
         })
     }
 
+    /// The reverse of `place`: where the target's 0-based lines `range` are in the anchored
+    /// text; `None` when they were changed (or lines inserted between them) or aren't there.
+    pub fn anchored_lines(&self, range: Range<usize>) -> Option<Range<usize>> {
+        if range.is_empty() || range.end > self.target {
+            return None;
+        }
+        let hunks = &self.diff.hunks;
+        if hunks.iter().any(|h| {
+            touches(&h.new, &range) && !(h.new.is_empty() && (h.new.start == range.start || h.new.start == range.end))
+        }) {
+            return None;
+        }
+        let from = diff::old_lines(hunks, range.start).start;
+        let to = diff::old_lines(hunks, range.end - 1).start + 1;
+        Some(from..to)
+    }
+
+    /// Where the anchored text's 0-based lines `range` went in the target, changed or not: as
+    /// many lines (at least one, inside the target) from where its first line went (shifted by
+    /// the hunks above; a changed first line: its hunk's first line).
+    pub fn follow(&self, range: Range<usize>) -> Range<usize> {
+        let start = new_lines(&self.diff.hunks, range.start)
+            .start
+            .min(self.target.saturating_sub(1));
+        start..(start + range.len().max(1)).min(self.target.max(start + 1))
+    }
+
     /// Where lines `start..=end` (1-based) of the anchored text are in the target.
-    fn place(&self, side: Side, start: u32, end: u32) -> Placement {
+    pub fn place(&self, side: Side, start: u32, end: u32) -> Placement {
         let first = (start.max(1) - 1) as usize;
         let last = (end.max(start).max(1)) as usize;
         let range = first..last;
@@ -162,6 +197,74 @@ fn compare(
         }
     };
     Ok(Compared::new(&anchored, &target))
+}
+
+/// A review diff's file compared for placing on its live text (`Doc::live`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Live {
+    /// HEAD's file against the live text; `None`: HEAD hasn't the file, or it is binary.
+    pub head: Option<Compared>,
+    /// Each anchor commit's file against HEAD's; a commit the clone doesn't have is left out (its
+    /// threads keep the lookup's placement), `None` a file the commit doesn't have or a binary one.
+    pub anchored: Vec<(String, Option<Compared>)>,
+}
+
+impl Live {
+    /// Whether `commit` was compared (its threads and drafts can be placed here).
+    pub fn has(&self, commit: &str) -> bool {
+        self.anchored.iter().any(|(c, _)| c == commit)
+    }
+
+    /// Where lines `start..=end` (1-based) of `commit`'s file are in the live text: `None` when the
+    /// commit wasn't compared; outdated when HEAD changed them.
+    pub fn place(&self, commit: &str, start: u32, end: u32) -> Option<Placement> {
+        let (_, compared) = self.anchored.iter().find(|(c, _)| c == commit)?;
+        let (Some(c), Some(head)) = (compared, &self.head) else {
+            return Some(Placement::Outdated);
+        };
+        Some(match c.place(Side::Right, start, end) {
+            Placement::Placed { side, lines } => Placement::Placed {
+                side,
+                lines: head.follow(lines),
+            },
+            other => other,
+        })
+    }
+
+    /// The reverse, strictly: where the live text's 0-based lines `range` are in `commit`'s file;
+    /// `None` when they were edited (locally or since the commit) or the commit wasn't compared.
+    pub fn anchored_lines(&self, commit: &str, range: Range<usize>) -> Option<Range<usize>> {
+        let (_, Some(c)) = self.anchored.iter().find(|(c, _)| c == commit)? else {
+            return None;
+        };
+        c.anchored_lines(self.head.as_ref()?.anchored_lines(range)?)
+    }
+}
+
+/// Blocking (git, the diffs): `live` (a review diff's right side, the file's text now) against
+/// HEAD's file `rel`, and that against the file at each of `commits`.
+pub fn compare_live(repo: &Repo, rel: &str, commits: &[String], live: &[u8]) -> Live {
+    let Ok(git) = repo.open() else { return Live::default() };
+    let head_text = head_blob(&git, rel);
+    let anchored = commits
+        .iter()
+        .filter_map(|c| {
+            let commit = git.find_commit(Oid::from_str(c).ok()?).ok()?;
+            let compared = blob_at(&git, &commit, rel)
+                .zip(head_text.as_deref())
+                .and_then(|(anchored, head)| Compared::new(&anchored, head));
+            Some((c.clone(), compared))
+        })
+        .collect();
+    Live {
+        head: head_text.and_then(|h| Compared::new(&h, live)),
+        anchored,
+    }
+}
+
+/// The file at `path` in HEAD's tree.
+pub(crate) fn head_blob(git: &Repository, path: &str) -> Option<Vec<u8>> {
+    blob_at(git, &git.head().ok()?.peel_to_commit().ok()?, path)
 }
 
 /// Most forge requests [`place_behind`] makes in one lookup.
@@ -682,5 +785,40 @@ mod tests {
             place_all(&repo, &[thread(Side::Left)], Some(&base), &[plain])[0],
             Placement::Outdated
         );
+    }
+
+    #[test]
+    fn live_text_shifts_threads_keeps_edited_ones_and_only_commits_outdate() {
+        use crate::git::test_repo::{commit_all, git, init};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init(root);
+        std::fs::write(root.join("a.txt"), "a\nb\nc\n").unwrap();
+        commit_all(root, "base");
+        let first = git(root, &["rev-parse", "HEAD"]).trim().to_string();
+        let repo = Repo::discover(root).unwrap();
+        let commits = [first.clone(), "d".repeat(40)];
+        let live = |text: &str| compare_live(&repo, "a.txt", &commits, text.as_bytes());
+        let placed = |lines| Some(placed(Side::Right, lines));
+        // A commit the clone lacks isn't compared.
+        assert!(!live("a\nb\nc\n").has(&commits[1]));
+        assert_eq!(live("a\nb\nc\n").place(&commits[1], 3, 3), None);
+        // Lines above move it; the reverse finds the commit's lines; added lines have none.
+        let above = live("x\ny\na\nb\nc\n");
+        assert_eq!(above.place(&first, 2, 3), placed(3..5));
+        assert_eq!(above.anchored_lines(&first, 3..5), Some(1..3));
+        assert_eq!(above.anchored_lines(&first, 0..1), None);
+        // Its own line edited (and a line added after it): still there, as long.
+        let edited = live("a\nb\nC\nD\n");
+        assert_eq!(edited.place(&first, 3, 3), placed(2..3));
+        assert_eq!(edited.anchored_lines(&first, 2..3), None);
+        // A line deleted above, and the thread's own line gone at the end: kept inside the text.
+        assert_eq!(live("b\nc\n").place(&first, 3, 3), placed(1..2));
+        assert_eq!(live("a\nb\n").place(&first, 3, 3), placed(1..2));
+        // A commit changing the line outdates it, whatever the live text.
+        std::fs::write(root.join("a.txt"), "a\nb\nc2\n").unwrap();
+        commit_all(root, "change");
+        assert_eq!(live("a\nb\nc2\n").place(&first, 3, 3), Some(Placement::Outdated));
+        assert_eq!(live("a\nb\nc2\n").place(&first, 1, 1), placed(0..1));
     }
 }

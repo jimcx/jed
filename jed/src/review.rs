@@ -459,6 +459,9 @@ pub struct Drafts {
     pub drift: HashMap<String, Option<String>>,
     /// The same as the open review diff tabs see their file's text now (it wins over `drift`).
     pub live: HashMap<String, Option<String>>,
+    /// Where a draft's first line is (0-based) in the text an open review diff tab shows: its
+    /// lines shifted by local edits above them (`sync_review_threads`).
+    pub at: HashMap<String, usize>,
     /// Why the forge refused a draft at the last submit, by id (until the next submit).
     pub errors: HashMap<String, String>,
 }
@@ -516,6 +519,33 @@ impl ReviewState {
             out.push((Pane::Pending, section(&self.view.pending)));
         }
         out
+    }
+
+    /// The commits the right-side threads and drafts of `path` (relative to the work tree) are
+    /// numbered in, and the merge request's head (where a new draft's lines are counted), each
+    /// once: a review diff of the file compares its live text with the file at each.
+    pub fn anchor_commits(&self, path: &str) -> Vec<String> {
+        let Some(review) = self.review() else { return Vec::new() };
+        let threads = review
+            .threads
+            .iter()
+            .map(|t| &t.thread.anchor)
+            .filter(|a| a.side == forge::Side::Right && a.path == path)
+            .map(|a| &a.commit);
+        let drafts = self
+            .drafts
+            .rows(review)
+            .into_iter()
+            .map(|r| r.draft)
+            .filter(|d| d.right && d.reply_to.is_none() && d.path == path)
+            .map(|d| &d.commit);
+        let mut commits: Vec<String> = Vec::new();
+        for c in std::iter::once(&review.mr.head.sha).chain(threads).chain(drafts) {
+            if !c.is_empty() && !commits.contains(c) {
+                commits.push(c.clone());
+            }
+        }
+        commits
     }
 
     pub fn review(&self) -> Option<&Review> {

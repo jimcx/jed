@@ -178,6 +178,14 @@ impl App {
         }
         let (view, files) = self.review.split();
         view.settle(files);
+        // The lookup placed the threads on the files on disk: the open review diffs place them on
+        // the text they show again now, and load again for the commits of new threads.
+        self.review_live_places();
+        for (_, d) in self.groups.diff_tabs_mut() {
+            if d.pair.is_review() {
+                d.mark_stale();
+            }
+        }
         self.check_drafts();
         self.review_fetch_user();
         if std::mem::take(&mut self.review.queued) {
@@ -521,12 +529,25 @@ impl App {
                         continue;
                     }
                     let lines = if draft.right { &doc.right } else { &doc.left };
-                    let held = draft
-                        .drift(|i| (i < lines.len()).then(|| lines.line(i)))
-                        .map(String::from);
-                    live.push((draft.id.clone(), held.clone()));
+                    // A right-side draft's lines are counted in its commit: where they are in the
+                    // text shown (moved by local edits; a commit changing them holds it back).
+                    let placed = if draft.right { draft.place_in(&doc.live) } else { None };
+                    let (first, held) = match placed {
+                        Some(Some(at)) => (Some(at.start), None),
+                        Some(None) => (None, Some(draft.changed())),
+                        None => {
+                            let first = (draft.start.max(1) - 1) as usize;
+                            let held = draft.drift_from(first, |i| (i < lines.len()).then(|| lines.line(i)));
+                            (Some(first), held)
+                        }
+                    };
+                    live.push((draft.id.clone(), held.map(String::from), first));
                     if held.is_none() && editing.as_deref() != Some(draft.id.as_str()) {
-                        blocks.push(super::review_comment::draft_block(draft));
+                        let mut b = super::review_comment::draft_block(draft);
+                        if let Some(first) = first {
+                            b.line = first + (draft.end.max(draft.start) - draft.start) as usize;
+                        }
+                        blocks.push(b);
                     }
                 }
             }
@@ -542,7 +563,50 @@ impl App {
             d.threads.set(blocks);
             self.needs_redraw = true;
         }
-        self.review.drafts.live.extend(live);
+        for (id, held, first) in live {
+            self.review.drafts.live.insert(id.clone(), held);
+            match first {
+                Some(at) => self.review.drafts.at.insert(id, at),
+                None => self.review.drafts.at.remove(&id),
+            };
+        }
+    }
+
+    /// Places the right-side threads of each open review diff's file on the text it shows (its
+    /// last load's `Doc::live`): lines added or removed above a thread move it, a thread whose
+    /// lines were edited stays on them, and only a commit changing them outdates it. A thread on a
+    /// commit the tab didn't compare (one the clone lacks) keeps the lookup's place. The tabs lay
+    /// their blocks out again when a place changed.
+    pub(super) fn review_live_places(&mut self) {
+        let Some(workdir) = self.git.status.as_ref().map(|s| s.repo.workdir.clone()) else {
+            return;
+        };
+        let Content::Loaded(review) = &mut self.review.content else {
+            return;
+        };
+        let mut changed = false;
+        for (_, d) in self.groups.diff_tabs_mut() {
+            let Some(doc) = d.doc.as_ref().filter(|_| d.pair.is_review()) else {
+                continue;
+            };
+            for t in &mut review.threads {
+                let a = &t.thread.anchor;
+                if a.side != Side::Right || workdir.join(&a.path) != d.path {
+                    continue;
+                }
+                let Some(place) = doc.live.place(&a.commit, a.start_line, a.end_line) else {
+                    continue;
+                };
+                if t.place != place {
+                    t.place = place;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.review.generation += 1;
+            self.needs_redraw = true;
+        }
     }
 
     /// Next / Previous Thread: the caret to the next / previous thread's line in the active

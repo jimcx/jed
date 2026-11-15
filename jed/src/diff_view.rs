@@ -568,6 +568,10 @@ pub struct Doc {
     /// The texts as compared (BOM included), for staging a hunk exactly as shown
     /// (`stage::stage_hunk` / `unstage_hunk` refuse when the repository moved on).
     pub shown: FileDiff,
+    /// A review diff's right side compared with HEAD's file, and that with the file at each of
+    /// `Job::anchors` (the commits its threads and drafts are numbered in): where they are in the
+    /// text shown.
+    pub live: crate::review_anchor::Live,
 }
 
 impl Doc {
@@ -591,6 +595,7 @@ impl Doc {
             inline,
             binary: d.binary,
             shown: FileDiff { old, new, diff: d },
+            live: Default::default(),
         })
     }
 
@@ -680,6 +685,8 @@ pub struct Job {
     pub conflict: Option<(Vec<u8>, Vec<u8>)>,
     /// Where the left side's file is when it isn't `path` (a review's renamed file), absolute.
     pub left_path: Option<PathBuf>,
+    /// A review diff's anchor commits, compared with its right side (`Doc::live`).
+    pub anchors: Vec<String>,
 }
 
 /// What a thread tab (`Pair::THREAD`) is about.
@@ -700,6 +707,13 @@ pub fn load(job: Job) -> Result<Doc, String> {
     let left = read(&job, job.pair.left, job.left_path.as_deref()).map_err(|e| e.to_string())?;
     let right = read(&job, job.pair.right, None).map_err(|e| e.to_string())?;
     let mut doc = Doc::new(left, right)?;
+    if !job.anchors.is_empty()
+        && let Some(repo) = &job.repo
+        && let Some(rel) = repo.relative(&job.path)
+    {
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        doc.live = crate::review_anchor::compare_live(repo, &rel, &job.anchors, &doc.shown.new);
+    }
     doc.highlight(job.language, job.syntax_max_bytes);
     Ok(doc)
 }
@@ -1711,6 +1725,7 @@ mod tests {
             replace: None,
             conflict: None,
             left_path: None,
+            anchors: Vec::new(),
             compare: None,
         };
         let doc = load(job(Some("new\n"))).unwrap();
@@ -1766,6 +1781,7 @@ mod tests {
             replace,
             conflict: None,
             left_path: None,
+            anchors: Vec::new(),
             compare: None,
         };
         let lines = |l: &Lines| (0..l.len()).map(|i| l.line(i).to_string()).collect::<Vec<_>>();
@@ -1805,6 +1821,7 @@ mod tests {
             replace: None,
             conflict,
             left_path: None,
+            anchors: Vec::new(),
             compare: None,
         };
         let doc = load(job(Some((b"ours\n".to_vec(), b"theirs\n".to_vec())))).unwrap();
@@ -1885,6 +1902,7 @@ mod tests {
             replace: None,
             conflict: None,
             left_path: None,
+            anchors: Vec::new(),
             compare: None,
         };
         let pair = Pair::commit(id(&second), Some(id(&first)));
