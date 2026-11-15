@@ -1,7 +1,8 @@
 #!/bin/sh
 # Wait for the "Build" GitHub Actions workflow run on a commit to finish, then
 # exit 0 when it passed and non-zero when it failed, was cancelled, or no run
-# appeared. Polls the public GitHub API (unauthenticated; set GITHUB_TOKEN or
+# appeared. Polls the public GitHub API (unauthenticated, once a minute and
+# waiting out a rate limit; set GITHUB_TOKEN or
 # GH_TOKEN to raise the rate limit) and needs curl and jq on PATH. The release
 # command runs it after pushing main, so a release is only tagged once its
 # tests pass.
@@ -35,31 +36,53 @@ url="https://api.github.com/repos/$repo/actions/workflows/build.yml/runs?branch=
 
 fetch() {
     if [ -n "$auth" ]; then
-        curl -sS -H "$auth" "$url"
+        curl -sS -H "$auth" "$1"
     else
-        curl -sS "$url"
+        curl -sS "$1"
     fi
 }
 
-attempt=0
+# Unauthenticated, the API allows 60 requests an hour: poll once a minute.
+if [ -n "$auth" ]; then interval=30; else interval=60; fi
+deadline=$(($(date +%s) + 30 * 60))
 while :; do
-    attempt=$((attempt + 1))
-    json=$(fetch)
-    status=$(printf '%s' "$json" | jq -r '.workflow_runs[0].status // "none"')
-    conclusion=$(printf '%s' "$json" | jq -r '.workflow_runs[0].conclusion // "none"')
+    json=$(fetch "$url") || json=
+    # An error (rate limit, bad repo, network) has no workflow_runs: say so instead of
+    # reading it as "no run yet", and after a rate limit wait for its reset.
+    if ! printf '%s' "$json" | jq -e '.workflow_runs' >/dev/null 2>&1; then
+        message=$(printf '%s' "$json" | jq -r '.message // empty' 2>/dev/null || true)
+        echo "wait-ci: GitHub API error: ${message:-no response}" >&2
+        case $message in
+        *"rate limit"*)
+            reset=$(fetch https://api.github.com/rate_limit | jq -r '.resources.core.reset // empty' 2>/dev/null || true)
+            now=$(date +%s)
+            if [ -n "$reset" ] && [ "$reset" -gt "$now" ]; then
+                echo "wait-ci: rate limited until $(date -r "$reset" 2>/dev/null || date -d "@$reset"); set GITHUB_TOKEN to avoid this" >&2
+                deadline=$((deadline + reset - now + 5))
+                sleep $((reset - now + 5))
+                continue
+            fi
+            ;;
+        esac
+        status=error
+        conclusion=none
+    else
+        status=$(printf '%s' "$json" | jq -r '.workflow_runs[0].status // "none"')
+        conclusion=$(printf '%s' "$json" | jq -r '.workflow_runs[0].conclusion // "none"')
+    fi
     if [ "$status" = "completed" ]; then
         break
     fi
-    if [ "$attempt" -ge 60 ]; then
+    if [ "$(date +%s)" -ge "$deadline" ]; then
         echo "wait-ci: no completed Build run for $sha after 30 minutes" >&2
         exit 1
     fi
     if [ "$status" = "none" ]; then
         echo "wait-ci: no Build run for $sha yet..."
-    else
+    elif [ "$status" != error ]; then
         echo "wait-ci: Build run for $sha is $status..."
     fi
-    sleep 30
+    sleep "$interval"
 done
 
 echo "wait-ci: Build run for $sha finished: $conclusion"
