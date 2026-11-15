@@ -702,6 +702,7 @@ A task that adds a Cmd binding also updates `docs/terminals/` (the `terminal_doc
 - **Bug reporter** (`bug_report`): write a self-contained bug report with app state — [tasks/bug_report.md](tasks/bug_report.md)
 - **Change End of Line Sequence** (`change_eol`): change a buffer's line endings to LF or CRLF — [tasks/change_eol.md](tasks/change_eol.md)
 - **Close tabs and go to the Nth tab** (`close_tabs_nth`): close all / others / saved tabs, and go to the Nth tab in a group — [tasks/close_tabs_nth.md](tasks/close_tabs_nth.md)
+- **Code review fixes** (`review_fixes`): the Code Review panel lists only the merge request's files, FILES collapses, an approval line, a thread tab for threads out of their file's context, and threads placed on a branch behind the merge request — [tasks/review_fixes.md](tasks/review_fixes.md)
 - **Expand / shrink selection** (`expand_shrink_selection`): grow / shrink each selection to enclosing syntax nodes — [tasks/expand_shrink_selection.md](tasks/expand_shrink_selection.md)
 - **Feature-based end-to-end test files** (`feature_test_files`): reorganize milestone test files into per-feature files — [tasks/feature_test_files.md](tasks/feature_test_files.md)
 - **Fresh diagnostics for Claude** (`claude_diagnostics`): `get_diagnostics` says whether the servers have caught up with each file, can wait until they have and can cover a file that isn't open; a PostToolUse hook tells Claude the new errors in a file it just edited — [tasks/claude_diagnostics.md](tasks/claude_diagnostics.md)

@@ -1,0 +1,46 @@
+---
+id: review_fixes
+name: Code review fixes
+summary: the Code Review panel lists only the merge request's files, FILES collapses, an approval line, a thread tab for threads out of their file's context, and threads placed on a branch behind the merge request
+status: in-progress
+priority: 0
+dependencies: [mr_review]
+---
+
+Fixes to the Code Review panel ([mr_review](mr_review.md)) from using it. Five independent subtasks in the order below, one commit each.
+
+  - Needs: the review model (`src/review.rs`: `lookup`, `Review`, `ReviewState`, `ReviewView`, `Conversations`, `Pane`), the panel (`src/ui/review.rs`, `src/app/review.rs`), `git::range::changes`, `review_anchor::place_all`, the forge layer (`src/forge/mod.rs` `Forge` trait, `gitea.rs`, `github.rs`, `gitlab.rs`, `fake.rs`), thread blocks (`src/review_blocks.rs`, `app/review_write.rs`, `app/review_comment.rs`), diff tabs (`diff_view::Pair` / `Text`; Compare Current Conflict's `Pair::conflict()` keeps its bytes on the tab: the model for a tab with its own texts)
+  - Rules for every subtask: tests in `src/review_fixes_tests.rs` (a `//!` doc, a `#[cfg(test)] mod` line in `main.rs`), named `review_fixes_*`; unit tests in the module's `mod tests`. Forge adapters are tested against `forge::fake`. Docs kept in step (`docs/dev/modules.md`, `docs/dev/app.md`, `docs/dev/ui.md`, the nested CLAUDE.md line). No real hostnames.
+  - Done when:
+    - an untracked file, or a tracked file the merge request doesn't change, never shows under FILES; a file the merge request changes still shows with the work tree's text
+    - FILES collapses and expands from its header (click, Enter / Space on it, and a command), its space going to the sections below, and the state survives a refresh
+    - a merge request approved with no comment shows the approval under the summary (who approved; changes requested shown too) on Gitea, GitHub and GitLab
+    - an outdated or missing thread opens in a thread tab showing its code (when known) and comments, where Reply, Resolve, Edit and Delete work as in a review diff
+    - with local HEAD behind the merge request (the thread's commit not in the clone), a thread on a file whose content at that commit equals the work tree's is placed in the diff
+    - `scripts/check` is green
+  - Subtasks (one agent and one commit each):
+    - review_fixes-a: FILES lists only the merge request's files
+        - Today `git::range::changes` (`src/git/range.rs:172`) diffs the merge base's tree against the work tree *with untracked files*, so every untracked or locally edited file shows.
+        - The review's paths are the merge request's diff: the merge base's tree against the merge request's head commit (`mr.head.sha`) when that commit is in the clone, else against local `HEAD`'s tree (the branch, committed). Rename detection as today; a rename's old path counts too.
+        - `changes` keeps diffing against the work tree (so local edits to a review file still show, with their counts) but drops untracked files and keeps only deltas whose path or old path is a review path. A review file deleted locally still shows (as `D`).
+        - Tests: untracked file hidden; a tracked file edited locally but not in the MR hidden; an MR file edited locally shown with the edit's counts; local HEAD behind the MR (head commit in the clone, not checked out) lists the MR's files.
+    - review_fixes-b: FILES collapses like a proper section
+        - Today `▾ FILES` is a fixed label (`src/ui/review.rs:143`). Make it a collapsing header like CONVERSATIONS: `▸` / `▾`, a click on it toggles, Enter / Space with the header selected (or a `review.toggleFiles` command, "Code Review: Toggle Files", in the palette) toggles. Collapsed, FILES is its header row only and `side_sections::split` gives the rest to CONVERSATIONS / PENDING (expanded sections fill the space; read `side_sections.rs` for how a collapsed section is treated).
+        - The collapse state lives in `ReviewView` (not reset by a lookup). Keyboard navigation (Up / Down) skips the hidden rows; focusing FILES while collapsed lands on the header.
+        - Tests: header click toggles and the file rows vanish / return in a `TestBackend` draw; CONVERSATIONS gets the space; the state survives `review_refresh`; the command toggles.
+    - review_fixes-c: an approval line under the summary
+        - Add `approvals: Vec<Approval>` to `MrComments` (`src/forge/mod.rs`): `Approval { author, state: ApprovalState::{Approved, ChangesRequested} }`, the latest review state per author (a later Comment-only review doesn't clear an approval; a later approval clears changes requested; dismissed reviews dropped). Gitea: `GET /repos/{o}/{r}/pulls/{n}/reviews` (`state` `APPROVED` / `REQUEST_CHANGES`, `dismissed`), probably already read for the review summaries in `comments`; GitHub: `GET /repos/{o}/{r}/pulls/{n}/reviews`; GitLab: `GET /projects/:id/merge_requests/:iid/approvals` (`approved_by[].user.username`; GitLab has no "changes requested" here). Clean names with `http::clean_line`.
+        - Carry it into `Review` (`approvals`), and draw one line after the counts line (`src/ui/review.rs`, before the head banner): `✓ approved by sam, alex` in a new `review.approved` theme key, `✗ changes requested by bob` in `review.changesRequested` (both when both; truncated to the width). Nothing when there are none.
+        - Tests: each adapter's parse against `forge::fake` (an approval with an empty body is kept; a dismissed one dropped; latest state per author); the panel line drawn.
+    - review_fixes-d: a thread tab for threads out of their file's context
+        - Today an outdated or missing thread (or one on a file FILES doesn't list) only shows its first line in the status bar, and Reply / Edit refuse ("This thread is outdated: it can't be answered here", `app/review_write.rs:308`).
+        - A thread tab: opening such a CONVERSATIONS row (Enter / click), or "Code Review: Open Thread" on any thread row, opens a diff tab of the thread alone, reused per thread id, titled `Thread path:line`. Model it on Compare Current Conflict: a new `Pair::thread()` (`Text::ThreadCode` both sides, or left `Empty`) whose bytes live on the tab, read-only, never staged. Its text is the anchored lines with up to 3 lines of context from the blob at the thread's anchor commit (`review_anchor::blob_at`) when the commit is in the clone, else the forge's diff hunk if the thread carries one (add `Thread::hunk: Option<String>`, filled by Gitea's `diff_hunk` and GitHub's `diffHunk`; GitLab none), else no code lines (the block alone). Line numbers are the anchor commit's.
+        - The thread's block (`Role::Thread`, with its replies' drafts) sits after the anchored lines; the composer opens under it; Reply, Resolve, Edit, Delete and the PENDING draft replies work there as in a review diff (`compose_in`, `review_target`, `sync_review_threads` learn the thread tab: matched by thread id, not by path and placement). Apply Suggestion stays off in a thread tab.
+        - Placed threads keep opening their file's review diff; "Open Thread" opens the tab for them too.
+        - Tests: Enter on an outdated row opens the thread tab with the comments drawn; reply from it posts through the fake forge; resolve toggles; the tab is reused; a missing commit with a hunk shows the hunk's lines; with neither, the block alone.
+    - review_fixes-e: threads placed when the local branch is behind the merge request
+        - Today `review_anchor::compare` returns `Placement::Missing` when the anchor commit isn't in the clone (local behind the merge request, not fetched), so those threads never show in the diff.
+        - Add `Forge::blob_id(repo, commit, path) -> Result<Option<String>>`: the git blob id of `path` at `commit` (Gitea / GitHub `GET …/contents/{path}?ref={commit}` → `sha`; GitLab `GET /projects/:id/repository/files/{path}?ref={commit}` → `blob_id`; 404 → `None`).
+        - In `lookup`, after `place_all`: for each distinct (commit, path, side) whose placement is `Missing`, ask the forge for the blob id (capped: at most 50 requests per lookup, logged when the cap is hit). Right side: compare with the work tree file's blob id (`git2::Oid::hash_object(ObjectType::Blob, bytes)`); left side: with the merge base's (old path for a rename) tree entry id. Equal: the file hasn't changed since, so the thread is `Placed` at its own lines (`start_line - 1 .. end_line`), with a flag in `ThreadRow` (`behind: bool`) so the CONVERSATIONS row tags it `newer commit` (dimmed like outdated, but shown in the diff). Not equal or an error: stays `Missing` (then opens in the thread tab from d).
+        - Suggestions on a `behind` thread may apply (the lines are the same); replies work as for any placed thread.
+        - Tests: a repo whose MR head commit (served by the fake forge) is absent locally, the file's blob id matching the work tree → placed, drawn in the diff, row tagged; mismatched → missing; the fake forge's request count stays at one per distinct file.
