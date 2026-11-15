@@ -106,6 +106,21 @@ fn exit(run: &Run) -> Exit {
     }
 }
 
+/// Whether process `pid` is alive. A zombie isn't: a child killed by the hang-up stays one until
+/// its parent reaps it, which a shell in a loop may not do before `KILL_GRACE` (seen on macOS).
+fn process_alive(pid: i32) -> bool {
+    // SAFETY: signal 0 only checks for existence.
+    if unsafe { libc::kill(pid, 0) } != 0 {
+        return false;
+    }
+    let out = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    let stat = String::from_utf8_lossy(&out.stdout);
+    !stat.trim().is_empty() && !stat.trim_start().starts_with('Z')
+}
+
 /// Whether any live process is in group `pgid`. Zombies don't count: where nothing reaps orphans
 /// (a container whose pid 1 is not an init) a killed process stays a zombie, which `kill(-pgid, 0)`
 /// still sees.
@@ -584,8 +599,9 @@ async fn closing_or_dropping_a_run_kills_it() {
     wait_until("b gone", || !group_alive(pb)).await;
 }
 
-// FLAKE: 2026-11-01, failed in full runs under load (load avg ~15-20), passes alone: the
-// elapsed-time assertion (child gone within KILL_GRACE) is the suspect.
+// Was flaky (2026-11-01 under load; 2026-11-15 on macOS CI: "hup" shown, child gone after 1.15 s):
+// `kill(child, 0)` also sees the hung-up child as a zombie its looping shell hadn't reaped, so
+// "gone" now means "not alive or a zombie".
 #[tokio::test(flavor = "multi_thread")]
 async fn kill_hangs_up_the_whole_group() {
     let (mut t, _) = tasks();
@@ -606,8 +622,7 @@ async fn kill_hangs_up_the_whole_group() {
         .unwrap();
     let at = Instant::now();
     run.kill();
-    // SAFETY: signal 0 only checks for existence (the reaped child is gone or a zombie of init).
-    wait_until("child gone", || unsafe { libc::kill(child, 0) } != 0).await;
+    wait_until("child gone", || !process_alive(child)).await;
     let elapsed = at.elapsed();
     if elapsed >= super::KILL_GRACE {
         eprintln!(

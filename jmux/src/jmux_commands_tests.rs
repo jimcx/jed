@@ -219,6 +219,20 @@ impl Harness {
         ));
     }
 
+    /// Waits for the active terminal's shell to print its first prompt, so a line typed next is
+    /// echoed after it (typed earlier, the tty echoes it first and the command's output then
+    /// starts on the prompt's line).
+    async fn prompted(&mut self) {
+        self.settle("the shell's prompt", |h| {
+            h.app
+                .groups
+                .active_group()
+                .active_tab()
+                .is_some_and(|t| t.run.screen().screen().contents().contains('$'))
+        })
+        .await;
+    }
+
     fn status_row(&self) -> String {
         self.screen.screen().rows(0, 100).last().unwrap_or_default()
     }
@@ -484,11 +498,13 @@ async fn jmux_commands_b_clicking_an_old_row_in_the_other_group_focuses_it_and_s
     let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
     h.show_side().await;
     let first = h.app.groups.active;
+    h.prompted().await;
     h.fake_out("old", 60);
     finished(&mut h, 1).await;
     h.app.execute(Command::SplitRight);
     let second = h.app.groups.active;
     assert_ne!(first, second);
+    h.prompted().await;
     h.fake("other", 0, 0);
     finished(&mut h, 2).await;
     h.settle("both rows drawn", |h| h.side_has("old") && h.side_has("other"))
