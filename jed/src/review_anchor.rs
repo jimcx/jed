@@ -1,8 +1,10 @@
 //! Where a review thread sits now: the text it was written against (the blob of its anchor commit)
 //! diffed against the text it is shown on, with its lines mapped through the hunks.
 //!
-//! A thread on the right side is compared with the work tree's file, one on the left (a deleted
-//! line) with the merge base's, the left side of the review diff. When every anchored line is
+//! A thread on the right side (its anchor commit's file) is compared with the work tree's file, one
+//! on the left (a deleted line) with the merge base's, the left side of the review diff. Forges give
+//! a left thread its head commit too, but its line numbers count the base's lines: that text is read
+//! from the merge base of the anchor commit and the review's merge base. When every anchored line is
 //! unchanged the thread is [`Placement::Placed`] at the mapped lines; a line inside a changed
 //! hunk (or lines inserted between the anchored ones, or a vanished file) makes it
 //! [`Placement::Outdated`]; a commit that isn't in the clone makes it [`Placement::Missing`].
@@ -118,16 +120,16 @@ fn compare(
     let Some(commit) = Oid::from_str(&a.commit).ok().and_then(|o| git.find_commit(o).ok()) else {
         return Err(Placement::Missing);
     };
-    let Some(anchored) = blob_at(git, &commit, &a.path) else {
-        return Err(Placement::Outdated);
-    };
-    let target = match a.side {
+    let (anchored, target) = match a.side {
         Side::Right => {
+            let Some(anchored) = blob_at(git, &commit, &a.path) else {
+                return Err(Placement::Outdated);
+            };
             if files.iter().any(|f| f.path == a.path && f.status == 'D') {
                 return Err(Placement::Outdated);
             }
             match std::fs::read(repo.workdir.join(&a.path)) {
-                Ok(t) => t,
+                Ok(t) => (anchored, t),
                 Err(_) => return Err(Placement::Outdated),
             }
         }
@@ -143,9 +145,19 @@ fn compare(
                 .find(|f| f.path == a.path)
                 .and_then(|f| f.old_path.as_deref())
                 .unwrap_or(&a.path);
-            match blob_at(git, &base, old) {
-                Some(t) => t,
-                None => return Err(Placement::Outdated),
+            // A left line number counts lines of the base the thread was written against, not of
+            // its (head) commit: the merge base of that commit with today's base (the base itself
+            // while the target branch hasn't moved).
+            let Some(then) = git
+                .merge_base(commit.id(), base.id())
+                .ok()
+                .and_then(|o| git.find_commit(o).ok())
+            else {
+                return Err(Placement::Outdated);
+            };
+            match (blob_at(git, &then, old), blob_at(git, &base, old)) {
+                (Some(anchored), Some(target)) => (anchored, target),
+                _ => return Err(Placement::Outdated),
             }
         }
     };
@@ -567,6 +579,51 @@ mod tests {
         assert_eq!(p[2], placed(Side::Left, 1..2));
         // No merge base known: the left side cannot be judged.
         assert_eq!(place_all(&repo, &threads, None, &[change('D')])[2], Placement::Missing);
+    }
+
+    #[test]
+    fn a_left_thread_counts_the_base_lines_not_its_head_commits() {
+        // A forge anchors a comment on a deleted line to the head commit, but numbers the line in
+        // the base: lines added above it on the branch must not shift it.
+        use crate::git::test_repo::{commit_all, git, init};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init(root);
+        std::fs::write(root.join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+        commit_all(root, "base");
+        let base = git(root, &["rev-parse", "HEAD"]).trim().to_string();
+        std::fs::write(root.join("a.txt"), "new1\nnew2\none\ntwo\nfour\n").unwrap();
+        commit_all(root, "add two lines, delete three");
+        let head = git(root, &["rev-parse", "HEAD"]).trim().to_string();
+        let repo = Repo::discover(root).unwrap();
+        let thread = Thread {
+            id: "1".into(),
+            anchor: Anchor {
+                path: "a.txt".into(),
+                side: Side::Left,
+                start_line: 3,
+                end_line: 3,
+                commit: head,
+            },
+            resolved: false,
+            outdated: false,
+            comments: Vec::new(),
+            hunk: None,
+        };
+        let change = FileChange {
+            path: "a.txt".into(),
+            old_path: None,
+            status: 'M',
+            additions: 2,
+            deletions: 1,
+            hash: String::new(),
+        };
+        let p = place_all(&repo, &[thread], Some(&base), &[change]);
+        assert_eq!(
+            p[0],
+            placed(Side::Left, 2..3),
+            "base line 3 (\"three\"), not shifted by the added lines"
+        );
     }
 
     #[test]
