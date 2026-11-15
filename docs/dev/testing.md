@@ -2,6 +2,25 @@
 
 How to drive the app in end-to-end tests and inspect each feature, moved out of the root `CLAUDE.md` (which keeps the test file layout). Read the general harness first, then the ones for the area you test; add new helpers here, not to the root file.
 
+## Running the checks
+
+`rust-toolchain.toml` pins 1.99. On Linux plain `cargo` works (the rustup proxy is on PATH); on macOS cargo isn't
+on PATH, so prefix every command with `export PATH="$HOME/.rustup/toolchains/1.99-aarch64-apple-darwin/bin:$PATH"`.
+
+```sh
+cargo fmt --all --check                      # rustfmt.toml: max_width = 120
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace                       # ~3300 tests across jed, jmux and the crates (dependencies build at opt-level 2: Cargo.toml)
+cargo test --release milestone -- --nocapture --test-threads=1   # M1 and M6 (1 MB Cmd+Shift+L + typing; line/cursor commands at 61k selections; find + replace all) budgets: release only (M6 has coarse debug bounds); serial, since parallel tests nearly double the timings on a slow machine
+cargo test --release search -- --nocapture      # so are the 1 MB find-all and 10 MB workspace-search budgets
+```
+
+**Agents run them through `scripts/check`** (sets the macOS PATH itself; prints only fmt's diff, clippy's warnings, failing tests and the result lines; tests under `scripts/timeout 900`): `scripts/check` runs all three, `scripts/check test <filter>` one test or module (`scripts/check fmt` / `clippy` alone). Don't run plain `cargo test` into an agent's context: thousands of lines of build and progress output. For a failure's full output, re-run just that test. The release budget runs above are the exception (their `--nocapture` timings are the point); pipe them through `tail -40`. `scripts/check` uses cargo's default per-checkout `target/` (no shared `CARGO_TARGET_DIR`), so two tasks building at once can't clobber each other's binaries; export `CARGO_TARGET_DIR` yourself if you want the direct `cargo` budget runs to share a dir. To run checks in the background, use `scripts/check --bg [args]` then `scripts/check wait` (blocks up to 540 s, exits 125 if still running: call it again); never poll with `pgrep -f scripts/check`, which matches the polling shell's own command line and never ends.
+
+All three must pass before a commit. Cap test runs with `scripts/timeout 900 cargo test …` (macOS has no `timeout`; this kills the whole process group, so cargo's test binary can't outlive it).
+
+The release budget runs are jed's (the workspace's default member); they are the exception to "not plain cargo" (their `--nocapture` timings are the point): pipe them through `tail -40`.
+
 ## Driving the app headlessly
 
 Helpers are `#[cfg(test)] impl App` in `app/mod.rs`.

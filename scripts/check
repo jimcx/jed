@@ -4,7 +4,7 @@
 # isn't filled with build noise: fmt's diff, clippy's warnings, and for tests
 # the failures and the "test result" lines (progress dots and passing tests
 # dropped). With no first argument it runs all three, stopping at the first
-# failure. Everything covers the whole workspace (jed and crates/*). Extra args go to `cargo test --workspace` (e.g. `scripts/check test milestone_9`).
+# failure. Everything covers the whole workspace (jed, jmux and crates/*). Extra args go to `cargo test --workspace` (e.g. `scripts/check test milestone_9`).
 # Tests run under scripts/timeout (900 s, $CHECK_TIMEOUT to change it).
 # Exits non-zero when a check fails.
 #
