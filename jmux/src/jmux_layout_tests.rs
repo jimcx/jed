@@ -1767,7 +1767,7 @@ async fn jmux_layout_e_search_finds_counts_and_steps_with_wrap_and_scrolls_to_th
     .await;
     h.settle_text("3 of 3").await;
     // Case sensitivity: "mark" no longer matches "MARK".
-    h.key(KeyCode::Char('c'), KeyModifiers::ALT);
+    h.command(Command::Search(crate::command::SearchCommand::ToggleCase));
     h.settle("no results", |h| h.search_label() == "No results").await;
     h.settle_text("No results").await;
     // Stepping with no matches stays put, and does not panic.

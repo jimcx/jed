@@ -161,6 +161,12 @@ impl Harness {
             .collect()
     }
 
+    /// The key bound to `command` on this platform, pressed.
+    fn command(&mut self, command: Command) {
+        let combo = self.app.keymap.binding_for(command).expect("a default key");
+        self.key_with(combo.code, combo.mods);
+    }
+
     fn key_with(&mut self, code: KeyCode, mods: KeyModifiers) {
         let msg = ClientMsg::Input(Input::Key(KeyEvent::new(code, mods)));
         self.app.handle(AppEvent::Client { conn: 1, msg });
@@ -639,9 +645,9 @@ async fn jmux_commands_b_keys_move_the_selection_open_a_row_and_hand_the_keys_ba
     finished(&mut h, 1).await;
     h.fake_out("second", 3);
     finished(&mut h, 2).await;
-    let (cs, none) = (KeyModifiers::CONTROL | KeyModifiers::SHIFT, KeyModifiers::NONE);
-    // Ctrl+Shift+E shows the bar and gives it the keys; Ctrl+Shift+B hides it.
-    h.key_with(KeyCode::Char('E'), cs);
+    let none = KeyModifiers::NONE;
+    // Ctrl+Shift+E (Cmd+Shift+E) shows the bar and gives it the keys; Ctrl+Shift+B (Cmd+B) hides it.
+    h.command(Command::Side(SideCommand::Focus));
     assert!(h.app.side.visible && h.app.side.focused);
     h.key_with(KeyCode::Down, none);
     assert_eq!(h.app.history.selected().unwrap().label(), "second");
@@ -665,11 +671,11 @@ async fn jmux_commands_b_keys_move_the_selection_open_a_row_and_hand_the_keys_ba
     assert!(!h.app.side.focused);
     assert_eq!(h.app.notice, None);
     // Esc gives the keys back without opening anything.
-    h.key_with(KeyCode::Char('E'), cs);
+    h.command(Command::Side(SideCommand::Focus));
     assert!(h.app.side.focused);
     h.key_with(KeyCode::Esc, none);
     assert!(!h.app.side.focused && h.app.side.visible);
-    h.key_with(KeyCode::Char('B'), cs);
+    h.command(Command::Side(SideCommand::Toggle));
     assert!(!h.app.side.visible);
     // Plain Ctrl+B stays the shell's.
     h.key_with(KeyCode::Char('b'), KeyModifiers::CONTROL);
