@@ -182,3 +182,69 @@ mod files_section {
         assert!(hit.conv_list.height > 0);
     }
 }
+
+mod approvals {
+    use crate::forge::{Approval, ApprovalState, latest_approvals};
+    use crate::mr_review_tests::threads::loaded_app_reviews;
+    use crate::mr_review_tests::{idle, screen};
+
+    fn v(who: &str, s: Option<ApprovalState>) -> (String, Option<ApprovalState>) {
+        (who.to_string(), s)
+    }
+
+    #[test]
+    fn review_fixes_latest_verdict_per_author_wins() {
+        use ApprovalState::*;
+        let got = latest_approvals([
+            v("sam", Some(Approved)),
+            v("bob", Some(ChangesRequested)),
+            v("sam", None),
+            v("bob", Some(Approved)),
+            v("sam", Some(ChangesRequested)),
+            v("ann", None),
+        ]);
+        let want = [("bob", Approved), ("sam", ChangesRequested)]
+            .map(|(n, s)| Approval {
+                author: n.into(),
+                state: s,
+            })
+            .to_vec();
+        assert_eq!(got, want);
+    }
+
+    /// An approval with an empty body is no conversation entry, but the panel names the approver.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_fixes_the_summary_shows_who_approved_and_who_asked_for_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let reviews = r#"[
+            {"id":1,"user":{"login":"bob"},"body":"","state":"COMMENT","comments_count":9,"submitted_at":"2026-01-02T10:00:00Z","html_url":"u"},
+            {"id":2,"user":{"login":"sam"},"body":"","state":"APPROVED","submitted_at":"2026-01-02T11:00:00Z","html_url":"u"},
+            {"id":3,"user":{"login":"alex"},"body":"","state":"REQUEST_CHANGES","submitted_at":"2026-01-02T12:00:00Z","html_url":"u"},
+            {"id":4,"user":{"login":"alex"},"body":"","state":"APPROVED","submitted_at":"2026-01-02T13:00:00Z","html_url":"u"},
+            {"id":5,"user":{"login":"zed"},"body":"","state":"REQUEST_CHANGES","submitted_at":"2026-01-02T14:00:00Z","html_url":"u"}]"#;
+        let (mut app, _server) = loaded_app_reviews(dir.path(), None, Some(reviews)).await;
+        idle(&mut app).await;
+        let r = app.review.review().unwrap();
+        assert_eq!(
+            r.conversation.len(),
+            1,
+            "the empty-bodied reviews add no conversation entries"
+        );
+        let text = screen(&mut app);
+        assert!(text.contains("✓ approved by sam, alex"), "{text}");
+        assert!(text.contains("✗ changes requested by zed"), "{text}");
+        assert!(!text.contains("by bob"), "{text}");
+    }
+
+    /// Reviews without any verdict draw no approval lines.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_fixes_no_verdicts_no_approval_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server) = loaded_app_reviews(dir.path(), None, None).await;
+        let text = screen(&mut app);
+        assert!(
+            !text.contains("approved by") && !text.contains("changes requested"),
+            "{text}"
+        );
+    }
+}

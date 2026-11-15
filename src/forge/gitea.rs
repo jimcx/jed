@@ -13,8 +13,8 @@ use serde::Deserialize;
 
 use super::http::{Client, clean_line, clean_text, encode_segment};
 use super::{
-    Anchor, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments, MrState, RepoRef, Result,
-    ReviewEvent, Side, SubmitOutcome, Thread,
+    Anchor, ApprovalState, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments, MrState,
+    RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, latest_approvals,
 };
 
 pub struct Gitea {
@@ -93,6 +93,8 @@ struct Review {
     body: String,
     #[serde(default)]
     state: String,
+    #[serde(default)]
+    dismissed: bool,
     #[serde(default)]
     comments_count: u32,
     #[serde(default)]
@@ -356,9 +358,21 @@ impl Forge for Gitea {
             )
         }));
         conversation.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        let mut verdicts: Vec<&Review> = reviews.iter().filter(|r| !r.dismissed).collect();
+        verdicts.sort_by(|a, b| a.submitted_at.cmp(&b.submitted_at));
+        let approvals = latest_approvals(verdicts.into_iter().map(|r| {
+            let state = match r.state.as_str() {
+                "APPROVED" => Some(ApprovalState::Approved),
+                "REQUEST_CHANGES" => Some(ApprovalState::ChangesRequested),
+                _ => None,
+            };
+            let author = login(&r.user);
+            (author, state)
+        }));
         Ok(MrComments {
             threads: threads(line_comments),
             conversation,
+            approvals,
         })
     }
 
@@ -650,6 +664,34 @@ mod tests {
         let t = &c.threads[0];
         assert_eq!((t.anchor.start_line, t.anchor.end_line), (3, 5));
         assert_eq!(t.comments[0].body, "multi");
+    }
+
+    #[test]
+    fn approvals_keep_the_latest_state_per_author() {
+        let reviews = r#"[
+            {"id":1,"user":{"login":"sam"},"body":"","state":"APPROVED","submitted_at":"2026-01-01T10:00:00Z"},
+            {"id":2,"user":{"login":"bob"},"body":"","state":"REQUEST_CHANGES","submitted_at":"2026-01-01T11:00:00Z"},
+            {"id":3,"user":{"login":"sam"},"body":"nit","state":"COMMENT","submitted_at":"2026-01-01T12:00:00Z"},
+            {"id":4,"user":{"login":"alex"},"body":"","state":"APPROVED","dismissed":true,"submitted_at":"2026-01-01T13:00:00Z"},
+            {"id":5,"user":{"login":"bob"},"body":"","state":"APPROVED","submitted_at":"2026-01-01T14:00:00Z"},
+            {"id":6,"user":{"login":"zed"},"body":"","state":"REQUEST_CHANGES","submitted_at":"2026-01-01T15:00:00Z"}]"#;
+        let (_s, gitea, repo) = setup(vec![
+            (
+                "/api/v1/repos/o/r/pulls/7/reviews?page=1&limit=50",
+                Reply::json(reviews),
+            ),
+            ("/api/v1/repos/o/r/issues/7/comments?page=1&limit=50", Reply::json("[]")),
+        ]);
+        let a = gitea.comments(&repo, 7).unwrap().approvals;
+        let got: Vec<(&str, ApprovalState)> = a.iter().map(|a| (a.author.as_str(), a.state)).collect();
+        assert_eq!(
+            got,
+            [
+                ("sam", ApprovalState::Approved),
+                ("bob", ApprovalState::Approved),
+                ("zed", ApprovalState::ChangesRequested)
+            ]
+        );
     }
 
     #[test]

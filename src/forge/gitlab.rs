@@ -20,8 +20,8 @@ use serde_json::{Value, json};
 
 use super::http::{Client, clean_line, clean_text, encode_segment};
 use super::{
-    Anchor, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments, MrState, RepoRef, Result,
-    ReviewEvent, Side, SubmitOutcome, Thread,
+    Anchor, ApprovalState, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments, MrState,
+    RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, latest_approvals,
 };
 
 pub struct GitLab {
@@ -67,6 +67,17 @@ impl GitLab {
 #[derive(Deserialize, Default)]
 struct User {
     username: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct Approvals {
+    #[serde(default)]
+    approved_by: Vec<ApprovedBy>,
+}
+
+#[derive(Deserialize, Default)]
+struct ApprovedBy {
+    user: Option<User>,
 }
 
 #[derive(Deserialize, Default)]
@@ -459,6 +470,21 @@ impl Forge for GitLab {
                 }
                 None => out.conversation.extend(notes.iter().map(make)),
             }
+        }
+        // A failing approvals request (an edition without approvals answers 404) shows nothing.
+        match self
+            .client
+            .get_json::<Approvals>(&format!("{}/approvals", Self::mr_path(repo, number)))
+        {
+            Ok(a) => {
+                out.approvals = latest_approvals(a.approved_by.iter().filter_map(|b| b.user.as_ref()).map(|u| {
+                    (
+                        clean_line(u.username.as_deref().unwrap_or_default()),
+                        Some(ApprovalState::Approved),
+                    )
+                }))
+            }
+            Err(e) => tracing::warn!("reading approvals failed: {e}"),
         }
         Ok(out)
     }
@@ -880,7 +906,11 @@ mod tests {
             ),
         ]);
         assert_eq!(gl.comments(&repo, 7).unwrap().conversation.len(), 2);
-        assert_eq!(server.requests().len(), 3);
+        assert_eq!(
+            server.requests().len(),
+            4,
+            "the MR, two pages, the approvals (a 404 here)"
+        );
     }
 
     #[test]
@@ -1038,6 +1068,33 @@ mod tests {
         let out = gl.submit_review(&repo, 7, "old", &review(ReviewEvent::Comment, &[(4, 4)]));
         assert!(out.posted.is_empty() && out.error.as_deref().is_some_and(|e| e.contains("new commits")));
         assert_eq!(server.requests().len(), 1);
+    }
+
+    #[test]
+    fn approvals_come_from_the_approvals_endpoint_and_may_fail() {
+        let approvals =
+            r#"{"approved_by":[{"user":{"username":"sam"}},{"user":{"username":"al\u001b[2Jex"}},{"user":null}]}"#;
+        let routes = |with: bool| {
+            let mut r = vec![
+                (route("/merge_requests/7"), Reply::json(MR)),
+                (
+                    route("/merge_requests/7/discussions?per_page=100&page=1"),
+                    Reply::json("[]"),
+                ),
+            ];
+            if with {
+                r.push((route("/merge_requests/7/approvals"), Reply::json(approvals)));
+            }
+            r
+        };
+        let (_s, gl, repo) = setup(routes(true).iter().map(|(p, r)| (p.as_str(), r.clone())).collect());
+        let a = gl.comments(&repo, 7).unwrap().approvals;
+        let names: Vec<&str> = a.iter().map(|a| a.author.as_str()).collect();
+        assert_eq!(names, ["sam", "al[2Jex"]);
+        assert!(a.iter().all(|a| a.state == ApprovalState::Approved));
+        // No approvals route (404): the comments still load, with none.
+        let (_s, gl, repo) = setup(routes(false).iter().map(|(p, r)| (p.as_str(), r.clone())).collect());
+        assert!(gl.comments(&repo, 7).unwrap().approvals.is_empty());
     }
 
     #[test]

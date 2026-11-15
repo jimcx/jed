@@ -143,6 +143,33 @@ pub struct Thread {
 pub struct MrComments {
     pub threads: Vec<Thread>,
     pub conversation: Vec<Comment>,
+    /// The latest approval or change request per reviewer (empty on a forge that has none).
+    pub approvals: Vec<Approval>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApprovalState {
+    Approved,
+    ChangesRequested,
+}
+
+/// A reviewer's standing verdict on a merge request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Approval {
+    pub author: String,
+    pub state: ApprovalState,
+}
+
+/// Folds reviews, oldest first, into each author's latest verdict: `Some` replaces the author's
+/// earlier one, `None` (a comment-only, pending or dismissed review) leaves it alone.
+pub fn latest_approvals(reviews: impl IntoIterator<Item = (String, Option<ApprovalState>)>) -> Vec<Approval> {
+    let mut out: Vec<Approval> = Vec::new();
+    for (author, state) in reviews {
+        let Some(state) = state else { continue };
+        out.retain(|a| a.author != author);
+        out.push(Approval { author, state });
+    }
+    out
 }
 
 /// A suggested replacement (`crate::suggestion::parse`): lines `start_line..=end_line` (1-based,

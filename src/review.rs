@@ -48,6 +48,8 @@ pub struct Review {
     pub threads: Vec<ThreadRow>,
     /// The merge request's own conversation (plain comments, review summaries), read-only.
     pub conversation: Vec<Comment>,
+    /// Who approved or asked for changes (the latest verdict per reviewer).
+    pub approvals: Vec<forge::Approval>,
     /// Why the comments couldn't be read (the rest of the review is still shown).
     pub comments_error: Option<String>,
     /// How local HEAD related to the merge request's head when this was looked up.
@@ -210,7 +212,7 @@ pub fn lookup(req: Request) -> Outcome {
     if let Some(e) = &files_error {
         log.error(e);
     }
-    let (threads, conversation, comments_error) = match api.comments(&repo_ref, number) {
+    let (threads, conversation, approvals, comments_error) = match api.comments(&repo_ref, number) {
         Ok(c) => {
             let places = review_anchor::place_all(&req.repo, &c.threads, merge_base.as_deref(), &files);
             let mut rows: Vec<ThreadRow> = c
@@ -223,12 +225,12 @@ pub fn lookup(req: Request) -> Outcome {
                 let (a, b) = (&a.thread.anchor, &b.thread.anchor);
                 (&a.path, a.start_line).cmp(&(&b.path, b.start_line))
             });
-            (rows, c.conversation, None)
+            (rows, c.conversation, c.approvals, None)
         }
         Err(e) => {
             let e = format!("comments: {e}");
             log.error(&e);
-            (Vec::new(), Vec::new(), Some(e))
+            (Vec::new(), Vec::new(), Vec::new(), Some(e))
         }
     };
     let viewed = req.viewed_from.as_deref().map(Viewed::load);
@@ -244,6 +246,7 @@ pub fn lookup(req: Request) -> Outcome {
             files_error,
             threads,
             conversation,
+            approvals,
             comments_error,
             relation,
             mcp_read_only,

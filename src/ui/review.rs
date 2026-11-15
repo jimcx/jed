@@ -15,7 +15,7 @@ use unicode_width::UnicodeWidthStr;
 use super::scrollbar;
 use crate::app::{App, Focus};
 use crate::command::Command;
-use crate::forge::MrState;
+use crate::forge::{ApprovalState, MrState};
 use crate::layout::{ReviewHit, ScrollBarHit, ScrollTarget, SidePanel};
 use crate::review::{Content, Pane};
 use crate::review_anchor::Placement;
@@ -105,6 +105,27 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
     }
     counts.push_str(&format!(" · {mr_state}"));
     text(out, &mut y, end, &truncate(&counts, width - 2), dim);
+    for (state, mark, what, key) in [
+        (ApprovalState::Approved, '✓', "approved", "review.approved"),
+        (
+            ApprovalState::ChangesRequested,
+            '✗',
+            "changes requested",
+            "review.changesRequested",
+        ),
+    ] {
+        let names: Vec<&str> = review
+            .approvals
+            .iter()
+            .filter(|a| a.state == state)
+            .map(|a| a.author.as_str())
+            .collect();
+        if !names.is_empty() {
+            let line = format!("{mark} {what} by {}", names.join(", "));
+            let style = base.patch(theme.get(key));
+            text(out, &mut y, end, &truncate(&line, width - 2), style);
+        }
+    }
     // Submit Review needs local HEAD to be the merge request's head.
     if let Some(banner) = review.head_banner(app.git.status.as_ref().and_then(|s| s.head_id.as_deref())) {
         text(out, &mut y, end, banner, error);

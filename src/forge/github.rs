@@ -17,8 +17,8 @@ use serde_json::{Value, json};
 
 use super::http::{Client, clean_line, clean_text, encode_segment};
 use super::{
-    Anchor, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments, MrState, RepoRef, Result,
-    ReviewEvent, Side, SubmitOutcome, Thread,
+    Anchor, ApprovalState, BranchRef, Comment, DraftReview, Forge, ForgeError, MergeRequest, MrComments, MrState,
+    RepoRef, Result, ReviewEvent, Side, SubmitOutcome, Thread, latest_approvals,
 };
 
 /// Stop a GraphQL connection after this many pages of 100 (a malicious server can't loop us).
@@ -402,9 +402,21 @@ impl Forge for GitHub {
             .collect();
         conversation.extend(issue.iter().map(comment));
         conversation.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        // DISMISSED is a state of its own, so a dismissed approval is already ignored.
+        let mut verdicts: Vec<&GqlReview> = reviews.iter().collect();
+        verdicts.sort_by(|a, b| a.submitted_at.cmp(&b.submitted_at));
+        let approvals = latest_approvals(verdicts.into_iter().map(|r| {
+            let state = match r.state.as_deref() {
+                Some("APPROVED") => Some(ApprovalState::Approved),
+                Some("CHANGES_REQUESTED") => Some(ApprovalState::ChangesRequested),
+                _ => None,
+            };
+            (ghost(r.author.as_ref().and_then(|a| a.login.as_ref())), state)
+        }));
         Ok(MrComments {
             threads: threads.into_iter().map(thread).collect(),
             conversation,
+            approvals,
         })
     }
 
@@ -623,6 +635,14 @@ mod tests {
             ),
         ]);
         let all = gh.comments(&repo, 7).unwrap();
+        // An approval with an empty body is kept; a COMMENTED review adds none.
+        assert_eq!(
+            all.approvals,
+            [crate::forge::Approval {
+                author: "cy".into(),
+                state: ApprovalState::Approved
+            }]
+        );
         assert_eq!(all.threads.len(), 2);
         let t = &all.threads[0];
         assert_eq!(t.id, "PRRT_a");

@@ -1077,19 +1077,23 @@ pub(crate) mod threads {
 
     /// A fake forge whose review has these line comments (a JSON array) and one plain comment.
     pub(super) fn with_comments(main: &str, comments: &str) -> FakeServer {
+        with_reviews(
+            main,
+            comments,
+            r#"[{"id":1,"user":{"login":"bob"},"body":"","state":"COMMENT","comments_count":9,
+                    "submitted_at":"2026-01-02T10:00:00Z","html_url":"u"}]"#,
+        )
+    }
+
+    /// `with_comments` with the reviews list (a JSON array) given too.
+    pub(super) fn with_reviews(main: &str, comments: &str, reviews: &str) -> FakeServer {
         FakeServer::start(vec![
             (
                 format!("{PULLS}?state=open&page=1&limit=50"),
                 Reply::json(&format!("[{}]", pr_json(7, "Add review panel", main))),
             ),
             (format!("{PULLS}/7"), Reply::json(&pr_json(7, "Add review panel", main))),
-            (
-                format!("{PULLS}/7/reviews?page=1&limit=50"),
-                Reply::json(
-                    r#"[{"id":1,"user":{"login":"bob"},"body":"","state":"COMMENT","comments_count":9,
-                    "submitted_at":"2026-01-02T10:00:00Z","html_url":"u"}]"#,
-                ),
-            ),
+            (format!("{PULLS}/7/reviews?page=1&limit=50"), Reply::json(reviews)),
             (format!("{PULLS}/7/reviews/1/comments"), Reply::json(comments)),
             (
                 ISSUES.to_string(),
@@ -1120,12 +1124,25 @@ pub(crate) mod threads {
     }
 
     pub(crate) async fn loaded_app(dir: &Path, edit: Option<(&str, &str)>) -> (App, FakeServer) {
+        loaded_app_reviews(dir, edit, None).await
+    }
+
+    /// `loaded_app` with the fake forge's reviews list replaced (a JSON array).
+    pub(crate) async fn loaded_app_reviews(
+        dir: &Path,
+        edit: Option<(&str, &str)>,
+        reviews: Option<&str>,
+    ) -> (App, FakeServer) {
         let (root, main) = make_repo(dir);
         let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
         if let Some((file, text)) = edit {
             fs::write(root.join(file), text).unwrap();
         }
-        let server = with_comments(&main, &standard(&head, &main));
+        let comments = standard(&head, &main);
+        let server = match reviews {
+            Some(r) => with_reviews(&main, &comments, r),
+            None => with_comments(&main, &comments),
+        };
         let mut app = open_app(&root, None, config_for(&server), true);
         assert!(app.settle(loaded).await);
         app.test_execute(Command::ShowReview);

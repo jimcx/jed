@@ -297,6 +297,8 @@ fn own_entries(truecolor: bool) -> Vec<(&'static str, Style)> {
         ("review.unresolved", Style::new().fg(c(0xE2C08D))),
         ("review.resolved", Style::new().fg(c(0x89D185))),
         ("review.error", Style::new().fg(c(0xF14C4C))),
+        ("review.approved", Style::new().fg(c(0x89D185))),
+        ("review.changesRequested", Style::new().fg(c(0xE2C08D))),
         // Thread blocks in a review diff: the frame, the header row, a resolved thread's header
         // and the comment text.
         ("review.thread.border", fg_bg(0x6A9FB5, 0x1E2A33)),
