@@ -124,7 +124,7 @@ fn lookups(server: &FakeServer) -> usize {
         .count()
 }
 
-fn screen(app: &mut App) -> String {
+pub(crate) fn screen(app: &mut App) -> String {
     let mut term = Terminal::new(TestBackend::new(70, 24)).unwrap();
     term.draw(|f| crate::ui::render(f, app)).unwrap();
     let buf = term.backend().buffer();
@@ -134,7 +134,7 @@ fn screen(app: &mut App) -> String {
         .join("\n")
 }
 
-async fn idle(app: &mut App) {
+pub(crate) async fn idle(app: &mut App) {
     assert!(app.settle(|a| !a.review.loading).await);
 }
 
@@ -1048,7 +1048,7 @@ mod lsp {
 /// mr_review-e1: threads loaded with the lookup, placed against the live text, the unresolved
 /// count and the CONVERSATIONS section (a divider that drags, a collapsing header, Enter / a
 /// click opening the file at the thread's line).
-mod threads {
+pub(crate) mod threads {
     use super::*;
     use crate::forge::Side;
     use crate::review_anchor::Placement;
@@ -1119,7 +1119,7 @@ mod threads {
         )
     }
 
-    async fn loaded_app(dir: &Path, edit: Option<(&str, &str)>) -> (App, FakeServer) {
+    pub(crate) async fn loaded_app(dir: &Path, edit: Option<(&str, &str)>) -> (App, FakeServer) {
         let (root, main) = make_repo(dir);
         let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
         if let Some((file, text)) = edit {

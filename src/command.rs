@@ -424,6 +424,8 @@ pub enum Command {
     ReviewReply,
     /// "Code Review: Resolve / Unresolve Thread" (unbound): toggles the same thread.
     ReviewResolve,
+    /// Collapses or expands the Code Review panel's FILES section.
+    ReviewToggleFiles,
     /// "Code Review: Edit Comment" (unbound): your last comment in that thread, in the box.
     ReviewEditComment,
     /// "Code Review: Delete Comment" (unbound): your last comment in that thread.
@@ -1325,6 +1327,7 @@ impl Command {
             Command::ReviewSubmitRequestChanges,
             Command::ReviewReply,
             Command::ReviewResolve,
+            Command::ReviewToggleFiles,
             Command::ReviewEditComment,
             Command::ReviewDeleteComment,
             Command::ReviewApplySuggestion,
@@ -1740,6 +1743,7 @@ impl Command {
             Command::ReviewSubmitRequestChanges => "review.submitRequestChanges".into(),
             Command::ReviewReply => "review.reply".into(),
             Command::ReviewResolve => "review.resolve".into(),
+            Command::ReviewToggleFiles => "review.toggleFiles".into(),
             Command::ReviewEditComment => "review.editComment".into(),
             Command::ReviewDeleteComment => "review.deleteComment".into(),
             Command::ReviewApplySuggestion => "review.applySuggestion".into(),
@@ -2176,6 +2180,7 @@ impl Command {
             Command::ReviewSubmitRequestChanges => "Code Review: Submit Review (Request Changes)",
             Command::ReviewReply => "Code Review: Reply",
             Command::ReviewResolve => "Code Review: Resolve / Unresolve Thread",
+            Command::ReviewToggleFiles => "Code Review: Toggle Files",
             Command::ReviewEditComment => "Code Review: Edit Comment",
             Command::ReviewDeleteComment => "Code Review: Delete Comment",
             Command::ReviewApplySuggestion => "Code Review: Apply Suggestion",
@@ -2403,6 +2408,7 @@ mod tests {
             Command::ReviewSubmitRequestChanges => 164,
             Command::ReviewReply => 165,
             Command::ReviewResolve => 166,
+            Command::ReviewToggleFiles => 171,
             Command::ReviewEditComment => 167,
             Command::ReviewDeleteComment => 168,
             Command::ReviewApplySuggestion => 169,

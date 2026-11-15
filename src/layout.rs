@@ -380,6 +380,8 @@ pub struct ReviewHit {
     pub body: Rect,
     /// Each shown section's divider row (a drag resizes it), top to bottom.
     pub dividers: Vec<(Rect, crate::review::Pane)>,
+    /// The FILES header (a click collapses it).
+    pub files_header: Rect,
     /// The CONVERSATIONS section's header (a click collapses it).
     pub conv_header: Rect,
     /// Its rows, two lines each from `conv_list.y`, the first being list row `conv_top`.

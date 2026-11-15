@@ -21,7 +21,7 @@ use crate::layout::SidePanel;
 use crate::logs::Tool;
 use crate::review::{Content, Empty, Outcome, Pane, Request};
 use crate::review_anchor::Placement;
-use crate::side_sections::{dragged_height, split};
+use crate::side_sections::{dragged_height, split, split_collapsed};
 
 /// Results of the panel's background work.
 pub(super) enum ReviewEvent {
@@ -242,6 +242,9 @@ impl App {
         let page = self.review.view.height.max(1) as isize;
         let pending = self.review.draft_rows().len();
         let (view, files) = self.review.split();
+        if view.files_collapsed || view.files_header {
+            return self.review_files_header_command(cmd, len, pending);
+        }
         // Down from the last file enters the conversations, else the pending drafts.
         let last = view.selected_row(files).is_some_and(|i| i + 1 == files.len());
         let enter = !view.conv.collapsed && len > 0 && last;
@@ -255,6 +258,7 @@ impl App {
                 view.pending.select(pending, 0);
             }
             C::Delete => {}
+            C::Up if view.selected_row(files).is_none_or(|i| i == 0) => view.files_header = true,
             C::Up => view.move_selection(files, -1),
             C::Down => view.move_selection(files, 1),
             C::PageUp => view.move_selection(files, -page),
@@ -269,6 +273,39 @@ impl App {
                 }
             }
         }
+    }
+
+    /// The keys while the FILES header has the selection (always while FILES is collapsed): Enter
+    /// and Space toggle it, Down leaves for the first file (collapsed: the next section).
+    fn review_files_header_command(&mut self, cmd: C, len: usize, pending: usize) {
+        let view = &mut self.review.view;
+        match cmd {
+            C::Open | C::ToggleViewed => self.review_toggle_files(),
+            C::Down if view.files_collapsed && len > 0 && !view.conv.collapsed => {
+                view.conv.focused = true;
+                view.conv.select(len, 0);
+            }
+            C::Down if view.files_collapsed && pending > 0 => {
+                view.pending.focused = true;
+                view.pending.select(pending, 0);
+            }
+            C::Down if !view.files_collapsed => {
+                view.files_header = false;
+                let (view, files) = self.review.split();
+                view.select(files, 0);
+            }
+            C::FocusEditor if !self.group().tabs.is_empty() => self.ui.focus = Focus::Editor,
+            _ => {}
+        }
+    }
+
+    /// Collapses or expands FILES; its header has the selection (and the keys) afterwards.
+    pub(super) fn review_toggle_files(&mut self) {
+        let view = &mut self.review.view;
+        view.files_collapsed = !view.files_collapsed;
+        view.files_header = true;
+        view.conv.focused = false;
+        view.pending.focused = false;
     }
 
     /// The keys while the CONVERSATIONS list has them (`len` rows).
@@ -517,7 +554,10 @@ impl App {
             self.drag = Some(super::mouse::Drag::ReviewDivider(*pane));
         } else if let Some((_, command)) = hit.pending_buttons.iter().find(|b| b.0.contains(at)) {
             self.execute(*command);
+        } else if hit.files_header.contains(at) {
+            self.review_toggle_files();
         } else if hit.conv_header.contains(at) {
+            self.review.view.files_header = false;
             let conv = &mut self.review.view.conv;
             conv.focused = true;
             conv.collapsed = !conv.collapsed;
@@ -543,6 +583,7 @@ impl App {
                 self.review_open_draft();
             }
         } else {
+            self.review.view.files_header = false;
             self.review_click_row((m.column, m.row));
         }
     }
@@ -640,7 +681,12 @@ impl App {
         let Some(i) = sections.iter().position(|s| s.0 == pane) else {
             return;
         };
-        let (_, heights) = split(body.height, &sections.iter().map(|s| s.1).collect::<Vec<_>>());
+        let wishes = sections.iter().map(|s| s.1).collect::<Vec<_>>();
+        let (_, heights) = if self.review.view.files_collapsed {
+            split_collapsed(body.height, &wishes)
+        } else {
+            split(body.height, &wishes)
+        };
         let below: u16 = heights[i + 1..].iter().sum();
         let want = (body.y + body.height).saturating_sub(below).saturating_sub(row);
         let height = dragged_height(body.height, &heights, i, want);

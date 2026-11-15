@@ -56,6 +56,7 @@ impl Mode {
                     | Command::ReviewSubmitRequestChanges
                     | Command::ReviewReply
                     | Command::ReviewResolve
+                    | Command::ReviewToggleFiles
                     | Command::ReviewEditComment
                     | Command::ReviewDeleteComment
                     | Command::ReviewApplySuggestion

@@ -1583,6 +1583,7 @@ impl App {
             Command::ReviewSubmitRequestChanges => self.review_submit(crate::forge::ReviewEvent::RequestChanges),
             Command::ReviewReply => self.review_reply(),
             Command::ReviewResolve => self.review_resolve(),
+            Command::ReviewToggleFiles => self.review_toggle_files(),
             Command::ReviewEditComment => self.review_edit_comment(),
             Command::ReviewDeleteComment => self.review_delete_comment(),
             Command::ReviewApplySuggestion => self.review_apply_suggestion(),

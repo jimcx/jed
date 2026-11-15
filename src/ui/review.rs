@@ -19,7 +19,7 @@ use crate::forge::MrState;
 use crate::layout::{ReviewHit, ScrollBarHit, ScrollTarget, SidePanel};
 use crate::review::{Content, Pane};
 use crate::review_anchor::Placement;
-use crate::side_sections::split;
+use crate::side_sections::{split, split_collapsed};
 
 /// Draws the panel in `area` (the side panel below its title, without its border), the file
 /// list's scroll bar in its last column. Sets the list's height and keeps its selection on its file.
@@ -129,7 +129,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
     let Content::Loaded(review) = &state.content else {
         unreachable!()
     };
-    let (files_h, heights) = split(region.height, &sections.iter().map(|s| s.1).collect::<Vec<_>>());
+    let wishes = sections.iter().map(|s| s.1).collect::<Vec<_>>();
+    let files_collapsed = state.view.files_collapsed;
+    let (files_h, heights) = if files_collapsed {
+        split_collapsed(region.height, &wishes)
+    } else {
+        split(region.height, &wishes)
+    };
     let height_of = |pane: Pane| {
         sections
             .iter()
@@ -140,13 +146,23 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
     let conv_h = height_of(Pane::Conversations);
     let pending_h = height_of(Pane::Pending);
     let files_end = y + files_h;
-    out.set_stringn(area.x, y, " ▾ FILES", width, header);
+    hit.files_header = Rect { y, height: 1, ..area };
+    let header_selected =
+        (files_collapsed || state.view.files_header) && !state.view.conv.focused && !state.view.pending.focused;
+    let files_label = format!(" {} FILES", if files_collapsed { '▸' } else { '▾' });
+    let files_head = if header_selected {
+        base.patch(selected_style)
+    } else {
+        header
+    };
+    out.set_style(hit.files_header, files_head);
+    out.set_stringn(area.x, y, &files_label, width, files_head);
     y += 1;
     if let Some(e) = &review.files_error {
         text(out, &mut y, files_end, e, error);
     }
     let mut bar = None;
-    if y < files_end {
+    if y < files_end && !files_collapsed {
         let mut list = Rect {
             y,
             height: files_end - y,
@@ -165,7 +181,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
             scrollbar::render(out, track, scroll, look, base, theme)
         });
         hit.list = list;
-        let files_style = if state.view.conv.focused {
+        let files_style = if state.view.conv.focused || state.view.files_header {
             inactive
         } else {
             selected_style

@@ -560,6 +560,10 @@ pub struct ReviewView {
     pub conv: Conversations,
     /// The PENDING section: likewise (its rows are one line tall).
     pub pending: Conversations,
+    /// FILES is collapsed to its header row (kept across lookups).
+    pub files_collapsed: bool,
+    /// The FILES header has the selection (always while collapsed): Enter / Space toggle it.
+    pub files_header: bool,
     selected: Option<(String, usize)>,
     /// Rows drawn in the last frame (0 until the first draw).
     pub height: usize,

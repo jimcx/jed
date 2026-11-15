@@ -55,6 +55,18 @@ pub fn split(body: u16, sections: &[Section]) -> (u16, Vec<u16>) {
     (body - avail, heights)
 }
 
+/// [`split`] for a collapsed tree (the first region: just its header row): the rows it frees go to
+/// the last expanded shown section, so expanded sections fill the space. With none shown the tree
+/// is one row, the rest blank.
+pub fn split_collapsed(body: u16, sections: &[Section]) -> (u16, Vec<u16>) {
+    let (rest, mut heights) = split(body, sections);
+    let free = rest.saturating_sub(1);
+    if let Some(i) = sections.iter().zip(&heights).rposition(|(s, h)| *h > 0 && !s.collapsed) {
+        heights[i] += free;
+    }
+    (1, heights)
+}
+
 /// The height a divider drag stores for section `i`: `want` rows, clamped so the tree and the
 /// other shown sections (at `heights`, from [`split`]) keep their rows — those above can shrink
 /// to their minimum, those below keep what they have. Unchanged (`want`) when `i` is hidden.
@@ -112,6 +124,18 @@ mod tests {
         assert_eq!(split(6, &[open(6), open(10)]), (3, vec![0, 3]));
         assert_eq!(split(7, &[open(6), open(10)]), (3, vec![2, 2]));
         assert_eq!(split(4, &[open(6), open(10)]), (4, vec![0, 0]));
+    }
+
+    #[test]
+    fn a_collapsed_tree_gives_its_rows_to_the_last_open_section() {
+        assert_eq!(split_collapsed(30, &[open(6), open(10)]), (1, vec![6, 23]));
+        assert_eq!(split_collapsed(30, &[open(6), shut(10)]), (1, vec![27, 2]));
+        assert_eq!(
+            split_collapsed(30, &[shut(6)]),
+            (1, vec![2]),
+            "nothing open: blank rows"
+        );
+        assert_eq!(split_collapsed(30, &[]), (1, vec![]));
     }
 
     #[test]

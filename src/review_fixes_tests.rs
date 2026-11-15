@@ -88,3 +88,97 @@ fn review_fixes_an_appended_file_hashes_the_mrs_blob_not_the_work_tree() {
     let blob = git(dir.path(), &["rev-parse", &format!("{head}:mr.txt")]);
     assert_eq!(mr.hash, blob.trim());
 }
+
+/// Subtask b: FILES is a collapsing section like CONVERSATIONS.
+mod files_section {
+    use crate::command::{Command, ReviewCommand as C};
+    use crate::mr_review_tests::threads::loaded_app;
+    use crate::mr_review_tests::{idle, screen};
+    use crossterm::event::{MouseButton, MouseEventKind};
+
+    fn click_files_header(app: &mut crate::app::App) {
+        let h = app.hits.review.clone().unwrap().files_header;
+        assert_eq!(h.height, 1);
+        app.mouse(MouseEventKind::Down(MouseButton::Left), h.x + 4, h.y);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_fixes_files_header_click_collapses_and_conversations_gets_the_space() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server) = loaded_app(dir.path(), None).await;
+        let text = screen(&mut app);
+        assert!(text.contains("▾ FILES"), "{text}");
+        let rows_before = app.hits.review.clone().unwrap().conv_list.height;
+        assert!(!app.hits.review.clone().unwrap().rows.is_empty());
+
+        click_files_header(&mut app);
+        let text = screen(&mut app);
+        assert!(app.review.view.files_collapsed);
+        assert!(text.contains("▸ FILES"), "{text}");
+        let hit = app.hits.review.clone().unwrap();
+        assert!(hit.rows.is_empty(), "file rows are gone");
+        assert!(hit.conv_list.height > rows_before, "CONVERSATIONS fills the space");
+        assert_eq!(hit.conv_header.y, hit.files_header.y + 2, "divider, then the header");
+
+        // A lookup does not reset it.
+        app.test_execute(Command::ReviewRefresh);
+        idle(&mut app).await;
+        screen(&mut app);
+        assert!(app.review.view.files_collapsed);
+
+        click_files_header(&mut app);
+        let text = screen(&mut app);
+        assert!(!app.review.view.files_collapsed);
+        assert!(text.contains("▾ FILES"), "{text}");
+        assert!(!app.hits.review.clone().unwrap().rows.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_fixes_the_command_and_keys_toggle_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server) = loaded_app(dir.path(), None).await;
+        app.test_execute(Command::ReviewToggleFiles);
+        assert!(app.review.view.files_collapsed && app.review.view.files_header);
+        // Collapsed: Down skips the hidden rows into CONVERSATIONS; Up comes back to the header.
+        app.test_execute(Command::Review(C::Down));
+        assert!(app.review.view.conv.focused);
+        app.test_execute(Command::Review(C::Up));
+        assert!(!app.review.view.conv.focused && app.review.view.files_collapsed);
+        // Enter on the header expands, Space collapses again.
+        app.test_execute(Command::Review(C::Open));
+        assert!(!app.review.view.files_collapsed);
+        app.test_execute(Command::Review(C::ToggleViewed));
+        assert!(app.review.view.files_collapsed);
+        app.test_execute(Command::Review(C::Open));
+        // Expanded with the header selected: Down goes to the first file.
+        app.test_execute(Command::Review(C::Down));
+        assert!(!app.review.view.files_header);
+        // Up from the first file selects the header again.
+        app.test_execute(Command::Review(C::Up));
+        assert!(app.review.view.files_header);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_fixes_the_divider_drags_while_files_is_collapsed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server) = loaded_app(dir.path(), None).await;
+        app.test_execute(Command::ReviewToggleFiles);
+        screen(&mut app);
+        let divider = app.hits.review.clone().unwrap().dividers[0].0;
+        let height = app.hits.review.clone().unwrap().conv_list.height;
+        // The section fills the panel (it took FILES' rows), so a drag can't move its divider; the
+        // stored height is what it has once FILES expands again.
+        app.mouse(MouseEventKind::Down(MouseButton::Left), divider.x + 5, divider.y);
+        app.mouse(MouseEventKind::Drag(MouseButton::Left), divider.x + 5, divider.y + 2);
+        app.mouse(MouseEventKind::Up(MouseButton::Left), divider.x + 5, divider.y + 2);
+        screen(&mut app);
+        let hit = app.hits.review.clone().unwrap();
+        assert_eq!(hit.dividers[0].0.y, divider.y, "the section keeps filling the panel");
+        assert_eq!(hit.conv_list.height, height);
+        app.test_execute(Command::ReviewToggleFiles);
+        screen(&mut app);
+        let hit = app.hits.review.clone().unwrap();
+        assert!(hit.conv_list.height < height, "expanded, it has only its stored height");
+        assert!(hit.conv_list.height > 0);
+    }
+}
