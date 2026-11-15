@@ -39,11 +39,21 @@ fn graphql(connection: &str, nodes: &str) -> String {
 }
 
 pub(crate) fn server(main: &str, head: &str) -> FakeServer {
-    server_with(main, head, true)
+    server_with(main, head, true, false)
+}
+
+/// As `server`, but the thread says it has more than the 100 comments it returned.
+pub(crate) fn server_with_long_thread(main: &str, head: &str) -> FakeServer {
+    server_with(main, head, true, true)
 }
 
 /// `replies`: the fake takes a reply and a resolve mutation (else both are 404s).
-fn server_with(main: &str, head: &str, replies: bool) -> FakeServer {
+fn server_with(main: &str, head: &str, replies: bool, long: bool) -> FakeServer {
+    let page = if long {
+        r#""pageInfo":{"hasNextPage":true},"#
+    } else {
+        ""
+    };
     let pr = format!(
         r#"{{"number":7,"title":"Add review panel","body":null,"state":"open","draft":false,
         "user":{{"login":"ann"}},"html_url":"https://git.example.com/alice/project/pull/7",
@@ -52,7 +62,7 @@ fn server_with(main: &str, head: &str, replies: bool) -> FakeServer {
     );
     let thread = format!(
         r#"[{{"id":"PRRT_1","isResolved":false,"isOutdated":false,"path":"mod.txt","line":3,"startLine":2,
-        "originalLine":3,"originalStartLine":2,"diffSide":"RIGHT","comments":{{"nodes":[
+        "originalLine":3,"originalStartLine":2,"diffSide":"RIGHT","comments":{{{page}"nodes":[
         {{"id":"PRRC_1","databaseId":501,"body":"Natively ranged remark","createdAt":"2026-01-01T00:00:00Z",
         "updatedAt":"2026-01-01T00:00:00Z","url":"","author":{{"login":"bob"}},
         "commit":{{"oid":"{head}"}},"originalCommit":{{"oid":"{head}"}}}}]}}}}]"#
@@ -149,7 +159,7 @@ async fn claude_ide_github_keeps_a_reply_draft_whose_post_failed() {
     let dir = tempfile::tempdir().unwrap();
     let (root, main) = make_repo(dir.path());
     let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
-    let server = server_with(&main, &head, false);
+    let server = server_with(&main, &head, false, false);
     let mut app = boot_github(&root, &server).await;
     claude_reply(&mut app, "PRRT_1", "Will fail", true);
     app.test_execute(Command::ReviewSubmitComment);

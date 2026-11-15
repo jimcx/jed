@@ -1801,6 +1801,12 @@ impl App {
         self.review_deadline()
     }
 
+    /// Waits for the event loop's next timer (up to 5 s) and says whether it is the review poll.
+    pub async fn test_next_timer_is_review(&self) -> bool {
+        let timer = tokio::time::timeout(std::time::Duration::from_secs(5), self.next_timer()).await;
+        matches!(timer, Ok(Timer::Review))
+    }
+
     pub fn test_start(&mut self) {
         self.start();
         // Production defers the full status walk until it's wanted; tests want it eagerly so

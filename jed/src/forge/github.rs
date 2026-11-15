@@ -51,7 +51,7 @@ impl GitHub {
         number: u64,
         field: &str,
         selection: &str,
-    ) -> Result<Vec<T>> {
+    ) -> Result<(Vec<T>, bool)> {
         let (owner, name) = repo
             .path
             .split_once('/')
@@ -59,7 +59,8 @@ impl GitHub {
         let query = CONNECTION_QUERY.replace("FIELD", field).replace("SELECTION", selection);
         let mut all = Vec::new();
         let mut after = Value::Null;
-        for _ in 0..MAX_GRAPHQL_PAGES {
+        let mut cut = false;
+        for n in 0..MAX_GRAPHQL_PAGES {
             let mut data = self.client.graphql(
                 &query,
                 json!({ "owner": owner, "name": name, "number": number, "after": after }),
@@ -74,19 +75,22 @@ impl GitHub {
             let page = conn.get("pageInfo");
             let more = page.and_then(|p| p.get("hasNextPage")).and_then(Value::as_bool) == Some(true);
             match page.and_then(|p| p.get("endCursor")).and_then(Value::as_str) {
-                Some(cursor) if more => after = json!(cursor),
+                Some(cursor) if more => {
+                    after = json!(cursor);
+                    cut = n + 1 == MAX_GRAPHQL_PAGES;
+                }
                 _ => break,
             }
         }
-        Ok(all)
+        Ok((all, cut))
     }
 }
 
 const CONNECTION_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){\
     pullRequest(number:$number){FIELD(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{SELECTION}}}}}";
 
-const THREAD_FIELDS: &str = "id isResolved isOutdated path line startLine originalLine originalStartLine diffSide \
-    comments(first:100){nodes{id databaseId body createdAt updatedAt url author{login} commit{oid} originalCommit{oid} diffHunk}}";
+const THREAD_FIELDS: &str = "id isResolved isOutdated path line startLine originalLine originalStartLine diffSide startDiffSide \
+    comments(first:100){pageInfo{hasNextPage} nodes{id databaseId body createdAt updatedAt url author{login} commit{oid} originalCommit{oid} diffHunk}}";
 const REVIEW_FIELDS: &str = "databaseId body state submittedAt url author{login}";
 const ISSUE_COMMENT_FIELDS: &str = "databaseId body createdAt updatedAt url author{login}";
 
@@ -156,9 +160,19 @@ struct CommitRef {
 }
 
 #[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct Nodes<T> {
     #[serde(default = "Vec::new")]
     nodes: Vec<Option<T>>,
+    #[serde(default)]
+    page_info: PageInfo,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PageInfo {
+    #[serde(default)]
+    has_next_page: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -190,6 +204,7 @@ struct GqlThread {
     original_line: Option<u32>,
     original_start_line: Option<u32>,
     diff_side: Option<String>,
+    start_diff_side: Option<String>,
     #[serde(default)]
     comments: Nodes<GqlComment>,
 }
@@ -307,7 +322,15 @@ fn thread(t: GqlThread) -> Thread {
     // No usable line at all (a file-level comment): never guess a line, leave it to CONVERSATIONS.
     let outdated = t.is_outdated || end.is_none();
     let end = end.unwrap_or(1).max(1);
-    let start = start.unwrap_or(end).clamp(1, end);
+    let mut start = start.unwrap_or(end).clamp(1, end);
+    // A range whose ends are on different sides has no single span of lines to show or fence:
+    // it is anchored on its end line (on `diffSide`) only.
+    if t.start_diff_side
+        .as_deref()
+        .is_some_and(|s| Some(s) != t.diff_side.as_deref())
+    {
+        start = end;
+    }
     Thread {
         id: clean_line(&t.id),
         anchor: Anchor {
@@ -386,14 +409,33 @@ impl Forge for GitHub {
 
     /// Review threads (GraphQL, with resolved and outdated state), submitted reviews' summaries
     /// and the plain comments under the title. Pending reviews are skipped: jed keeps its own
-    /// drafts. A thread's comments beyond the first 100 are not read.
+    /// drafts. A thread's comments beyond the first 100 are not read (paging them would take a
+    /// `node(id:)` query per thread), and neither is anything past [`MAX_GRAPHQL_PAGES`] pages of a
+    /// connection: both come back in `MrComments::notes` for the lookup to log.
     ///
     /// Blocking: call from spawn_blocking.
     fn comments(&self, repo: &RepoRef, mr: &MergeRequest) -> Result<MrComments> {
         let number = mr.number;
-        let threads: Vec<GqlThread> = self.nodes(repo, number, "reviewThreads", THREAD_FIELDS)?;
-        let reviews: Vec<GqlReview> = self.nodes(repo, number, "reviews", REVIEW_FIELDS)?;
-        let issue: Vec<GqlComment> = self.nodes(repo, number, "comments", ISSUE_COMMENT_FIELDS)?;
+        let (threads, threads_cut): (Vec<GqlThread>, bool) =
+            self.nodes(repo, number, "reviewThreads", THREAD_FIELDS)?;
+        let (reviews, reviews_cut): (Vec<GqlReview>, bool) = self.nodes(repo, number, "reviews", REVIEW_FIELDS)?;
+        let (issue, issue_cut): (Vec<GqlComment>, bool) = self.nodes(repo, number, "comments", ISSUE_COMMENT_FIELDS)?;
+        let mut notes = Vec::new();
+        for (what, cut) in [
+            ("review threads", threads_cut),
+            ("reviews", reviews_cut),
+            ("comments", issue_cut),
+        ] {
+            if cut {
+                notes.push(format!("{what} past the first {MAX_GRAPHQL_PAGES} pages are not shown"));
+            }
+        }
+        let long = threads.iter().filter(|t| t.comments.page_info.has_next_page).count();
+        if long > 0 {
+            notes.push(format!(
+                "{long} thread(s) have more than 100 comments; only the first 100 are shown"
+            ));
+        }
         let mut conversation: Vec<Comment> = reviews
             .iter()
             .filter(|r| r.state.as_deref() != Some("PENDING"))
@@ -425,6 +467,7 @@ impl Forge for GitHub {
             threads: threads.into_iter().map(thread).collect(),
             conversation,
             approvals,
+            notes,
         })
     }
 
@@ -731,6 +774,16 @@ mod tests {
         let forged = parse(r#"{"id":"T","path":"a.rs","line":3,"startLine":99,"diffSide":"RIGHT"}"#);
         assert!(!forged.outdated);
         assert_eq!((forged.anchor.start_line, forged.anchor.end_line), (3, 3));
+        // A range from the old side to the new one is anchored on its end line.
+        let mixed =
+            parse(r#"{"id":"T","path":"a.rs","line":12,"startLine":10,"diffSide":"RIGHT","startDiffSide":"LEFT"}"#);
+        assert_eq!(
+            (mixed.anchor.start_line, mixed.anchor.end_line, mixed.anchor.side),
+            (12, 12, Side::Right)
+        );
+        let same =
+            parse(r#"{"id":"T","path":"a.rs","line":12,"startLine":10,"diffSide":"RIGHT","startDiffSide":"RIGHT"}"#);
+        assert_eq!((same.anchor.start_line, same.anchor.end_line), (10, 12));
         let zero = parse(r#"{"id":"T","path":"a.rs","line":0,"startLine":0}"#);
         assert_eq!((zero.anchor.start_line, zero.anchor.end_line), (1, 1));
         let huge = serde_json::from_str::<GqlThread>(r#"{"id":"T","line":99999999999}"#);
@@ -746,15 +799,71 @@ mod tests {
             ),
             ("POST /api/graphql ~reviewThreads", data("reviewThreads", "[]", None)),
         ]);
-        let _: Vec<GqlThread> = gh.nodes(&repo, 7, "reviewThreads", THREAD_FIELDS).unwrap();
+        let _: (Vec<GqlThread>, bool) = gh.nodes(&repo, 7, "reviewThreads", THREAD_FIELDS).unwrap();
         let sent = server.requests();
         assert_eq!(sent.len(), 2);
         assert!(sent[0].body.contains("\"after\":null") && sent[1].body.contains("\"after\":\"C1\""));
         // A server that never stops saying there is more is cut off.
         let (server, gh, repo) = setup(vec![("POST /api/graphql", data("reviewThreads", "[]", Some("C")))]);
-        let got: Vec<GqlThread> = gh.nodes(&repo, 7, "reviewThreads", THREAD_FIELDS).unwrap();
-        assert!(got.is_empty());
+        let (got, cut): (Vec<GqlThread>, bool) = gh.nodes(&repo, 7, "reviewThreads", THREAD_FIELDS).unwrap();
+        assert!(got.is_empty() && cut, "reported as cut");
         assert_eq!(server.requests().len(), MAX_GRAPHQL_PAGES);
+    }
+
+    #[test]
+    fn the_page_cap_is_only_reported_when_more_pages_remain() {
+        // MAX_GRAPHQL_PAGES pages, the last one saying there is nothing more: not cut.
+        let pages = (0..MAX_GRAPHQL_PAGES)
+            .map(|i| {
+                let next = (i + 1 < MAX_GRAPHQL_PAGES).then(|| format!("C{i}"));
+                (
+                    format!(
+                        "POST /api/graphql ~\"after\":{}",
+                        if i == 0 {
+                            "null".into()
+                        } else {
+                            format!("\"C{}\"", i - 1)
+                        }
+                    ),
+                    data("reviewThreads", "[]", next.as_deref()),
+                )
+            })
+            .collect::<Vec<_>>();
+        let (server, gh, repo) = setup(pages.iter().map(|(p, r)| (p.as_str(), r.clone())).collect());
+        let (_, cut): (Vec<GqlThread>, bool) = gh.nodes(&repo, 7, "reviewThreads", THREAD_FIELDS).unwrap();
+        assert_eq!(server.requests().len(), MAX_GRAPHQL_PAGES);
+        assert!(!cut, "the last page was the end");
+    }
+
+    #[test]
+    fn a_short_thread_and_no_cut_make_no_notes() {
+        let short = r#"[{"id":"T","path":"a.rs","line":3,"diffSide":"RIGHT","comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}]"#;
+        let (_s, gh, repo) = setup(vec![
+            ("POST /api/graphql ~reviewThreads(", data("reviewThreads", short, None)),
+            ("POST /api/graphql ~reviews(", data("reviews", "[]", None)),
+            (
+                "POST /api/graphql ~comments(first:100,after",
+                data("comments", "[]", None),
+            ),
+        ]);
+        let all = gh.comments(&repo, &crate::forge::test_mr(7)).unwrap();
+        assert!(all.notes.is_empty(), "{:?}", all.notes);
+    }
+
+    #[test]
+    fn a_long_thread_comes_back_as_a_note() {
+        let long = r#"[{"id":"T","path":"a.rs","line":3,"diffSide":"RIGHT","comments":{"pageInfo":{"hasNextPage":true},"nodes":[]}}]"#;
+        let (_s, gh, repo) = setup(vec![
+            ("POST /api/graphql ~reviewThreads(", data("reviewThreads", long, None)),
+            ("POST /api/graphql ~reviews(", data("reviews", "[]", None)),
+            (
+                "POST /api/graphql ~comments(first:100,after",
+                data("comments", "[]", None),
+            ),
+        ]);
+        let all = gh.comments(&repo, &crate::forge::test_mr(7)).unwrap();
+        assert_eq!(all.notes.len(), 1, "{:?}", all.notes);
+        assert!(all.notes[0].contains("1 thread"));
     }
 
     #[test]

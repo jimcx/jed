@@ -4,7 +4,7 @@
 //! ```toml
 //! [[forge]]
 //! host = "git.example.com"
-//! kind = "gitea"                       # gitea | github | gitlab
+//! kind = "gitea"                       # gitea | forgejo | github | gitlab
 //! api_url = "https://git.example.com/api/v1"   # optional; http:// only if written out here
 //! token_env = "GITEA_TOKEN"            # optional; default GITEA_TOKEN / GITHUB_TOKEN / GITLAB_TOKEN
 //! token = "…"                          # optional; used instead of the environment variable
@@ -172,8 +172,8 @@ fn entry(e: RawEntry) -> Result<Entry, String> {
     if host.is_empty() || host.contains(['/', '@', ' ']) {
         return Err(format!("`host` must be a bare host name, got `{}`", e.host));
     }
-    let kind =
-        Kind::from_name(&e.kind).ok_or_else(|| format!("unknown `kind` `{}` (gitea, github or gitlab)", e.kind))?;
+    let kind = Kind::from_name(&e.kind)
+        .ok_or_else(|| format!("unknown `kind` `{}` (gitea, forgejo, github or gitlab)", e.kind))?;
     let api_url = match e.api_url {
         None => None,
         Some(u) => {
@@ -301,6 +301,15 @@ mod tests {
             (l.api_url.as_str(), l.token_env.as_str()),
             ("https://gl.corp/api/v4", "CORP_TOKEN")
         );
+    }
+
+    #[test]
+    fn forgejo_is_accepted_as_a_kind_and_unknown_kinds_name_it() {
+        let c = parse("[[forge]]\nhost = \"fj.example.com\"\nkind = \"forgejo\"\n");
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert_eq!(c.resolve("fj.example.com").unwrap().kind, Kind::Gitea);
+        let bad = parse("[[forge]]\nhost = \"x.example.com\"\nkind = \"svn\"\n");
+        assert!(bad.errors.iter().any(|e| e.contains("forgejo")), "{:?}", bad.errors);
     }
 
     #[test]

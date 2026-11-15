@@ -9,7 +9,7 @@
 //!
 //! Saving makes a [`Draft`] in the store, written to the state directory on every change
 //! (off-thread, `DraftStore::save`). A draft whose lines no longer read as they did is held back:
-//! not drawn in the diff, named in PENDING, and not for Submit Review (later) to post. A draft's
+//! not drawn in the diff, named in PENDING, and not for Submit Review to post. A draft's
 //! lines are counted in its commit (the merge request's head), so local edits only move it: the
 //! drafts are read once (`load_drafts`) and judged after each lookup (`check_drafts`: a commit
 //! since changing their lines), and an open tab draws them where its live text has them

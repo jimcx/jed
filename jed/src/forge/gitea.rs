@@ -379,6 +379,7 @@ impl Forge for Gitea {
             threads: threads(line_comments),
             conversation,
             approvals,
+            notes: Vec::new(),
         })
     }
 

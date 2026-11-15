@@ -242,18 +242,37 @@ fn row(label: &str, glyph: char, title: &str, closed: bool) -> (String, char, St
     (label.into(), glyph, title.into(), closed)
 }
 
+// FLAKE: 2026-11-16, failed once in a full `scripts/check` run under heavy load (overlapping
+// runs; which step is unknown); the FLAKE lines below name the step and the rows seen.
 #[tokio::test(flavor = "multi_thread")]
 async fn jmux_commands_a_a_command_is_a_running_row_then_finished_with_its_exit_code() {
     let mut h = Harness::new("/bin/sh", None, COMMAND_HISTORY).await;
+    let flake = |step: &str, h: &Harness| {
+        eprintln!(
+            "FLAKE jmux_commands_a_a_command_is_a_running_row_then_finished_with_its_exit_code: before `{step}`, rows {:?}",
+            h.rows()
+        )
+    };
     h.fake("slow", 2, 0);
+    flake("a running row", &h);
     h.settle("a running row", |h| h.rows() == [row("slow", '●', "sh", false)])
         .await;
+    flake("it finished", &h);
     h.settle("it finished", |h| h.rows() == [row("slow", '✓', "sh", false)])
         .await;
     let r = &h.app.history.rows()[0];
-    assert!(r.duration_text(Instant::now()).ends_with('s'));
-    assert!(r.record.finished.unwrap() - r.record.started >= Duration::from_secs(2));
+    let took = r.record.finished.map(|f| f - r.record.started);
+    assert!(
+        r.duration_text(Instant::now()).ends_with('s'),
+        "FLAKE: duration text {:?}",
+        r.duration_text(Instant::now())
+    );
+    assert!(
+        took.is_some_and(|t| t >= Duration::from_secs(2)),
+        "FLAKE: took {took:?}"
+    );
     h.fake("bad", 0, 1);
+    flake("a failed row", &h);
     h.settle("a failed row", |h| {
         h.rows() == [row("bad", '✗', "sh", false), row("slow", '✓', "sh", false)]
     })

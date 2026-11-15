@@ -226,6 +226,9 @@ pub fn lookup(req: Request) -> Outcome {
     }
     let (threads, conversation, approvals, comments_error) = match api.comments(&repo_ref, &mr) {
         Ok(c) => {
+            for note in &c.notes {
+                log.info(note);
+            }
             let mut places = review_anchor::place_all(&req.repo, &c.threads, merge_base.as_deref(), &files);
             let behind = review_anchor::place_behind(
                 &req.repo,

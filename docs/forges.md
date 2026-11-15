@@ -1,17 +1,17 @@
 # Configuring forges
 
-jed's merge-request review talks to a forge (Gitea, GitHub or GitLab). Hosts are configured in
+jed's merge-request review talks to a forge (Gitea or Forgejo, GitHub or GitLab). Hosts are configured in
 `~/.config/jed/forges.toml`. This file is the only place a host, API URL or token variable can
 come from: `.workspace`, the settings and repositories can't set them, so a repository can't
 point your token at a server it picks.
 
-`github.com` and `gitlab.com` need no entry; just provide a token (`GITHUB_TOKEN` / `GITLAB_TOKEN`).
+`github.com` and `gitlab.com` need no entry; just provide a token (`GITHUB_TOKEN` / `GITLAB_TOKEN`). A token is required for every host, public repositories too: without one the panel says "No token" and asks the server nothing.
 Any other host (a self-hosted Gitea, GitLab, …) needs one `[[forge]]` entry:
 
 ```toml
 [[forge]]
 host = "git.example.com"
-kind = "gitea"                               # gitea | github | gitlab
+kind = "gitea"                               # gitea | forgejo | github | gitlab
 api_url = "https://git.example.com/api/v1"   # optional
 token_env = "GITEA_TOKEN"                    # optional
 token = "…"                                  # optional
@@ -21,7 +21,7 @@ mcp_read_only = true                         # optional
 | Key             | Required | Meaning |
 |-----------------|----------|---------|
 | `host`          | yes      | The host name of the remote (with the port for an `http(s)://` remote). |
-| `kind`          | yes      | `gitea`, `github` or `gitlab`. |
+| `kind`          | yes      | `gitea`, `forgejo` (read as Gitea), `github` or `gitlab`. |
 | `api_url`       | no       | API root. Defaults to the host's standard one over HTTPS. `http://` is used only if you write it out here. |
 | `token_env`     | no       | Environment variable holding the token. Default `GITEA_TOKEN`, `GITHUB_TOKEN` or `GITLAB_TOKEN` by `kind`. |
 | `token`         | no       | The token itself, used instead of the environment variable. |
@@ -74,3 +74,9 @@ draft back: PENDING says "held back: not in the merge request's diff", the comme
 it opens there, and Submit Review posts the others. Gitea and GitLab are not held back (their docs
 don't say they refuse; unverified, see the task's hand checks). A comment on an unchanged line on
 GitLab is sent with both the old and the new line number, as GitLab's API asks.
+
+## Limits
+
+GitHub's lists are read 100 at a time, up to 100 pages each; a thread's comments past the first 100
+are not read. Either cut-off is said once per lookup in the Review tool log. A multi-line thread
+whose first and last line are on different sides of the diff is anchored on its last line only.

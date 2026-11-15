@@ -299,7 +299,7 @@ mod placement {
 
     /// A reply box in the thread tab of bob's thread on `renamed.txt` line 7 (`seven`, so the
     /// snippet starts at line 4: the tab's base is 3).
-    async fn thread_reply(code: bool) -> (App, FakeServer, tempfile::TempDir) {
+    pub(super) async fn thread_reply(code: bool) -> (App, FakeServer, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let (root, main) = make_repo(dir.path());
         let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
@@ -445,5 +445,108 @@ mod placement {
         );
         let v = posted(&server).expect("the review was posted");
         assert_eq!(v["comments"][0]["body"], "outside");
+    }
+}
+
+/// Subtask e: the 60 s refresh also runs while a review diff or thread tab is active; GitHub's
+/// cut-off thread comments are said in the Review tool log; a tokenless lookup stops before any
+/// request (`mr_review_tests` covers the empty state).
+mod small_differences {
+    use crate::app::App;
+    use crate::git::test_repo::git;
+    use crate::logs::Tool;
+    use crate::mr_review_tests::github::{boot_github, server_with_long_thread};
+    use crate::mr_review_tests::{make_repo, open_file};
+    use std::time::Instant;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_forge_fixes_e_a_review_tab_keeps_the_refresh_going_with_the_panel_hidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main) = make_repo(dir.path());
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let server = server_with_long_thread(&main, &head);
+        let mut app: App = boot_github(&root, &server).await;
+        open_file(&mut app, "mod.txt").await;
+        assert!(app.group().active_diff().unwrap().pair.is_review());
+        app.ui.side_panel = crate::layout::SidePanel::Explorer;
+        app.review.next_poll = Some(Instant::now());
+        assert!(app.test_review_deadline().is_some(), "a review tab is active");
+        // Another tab in the only group: no poll with the panel hidden.
+        app.test_execute(crate::command::Command::NewUntitledFile);
+        assert!(app.group().active_diff().is_none());
+        assert_eq!(app.test_review_deadline(), None, "no review tab, no panel: no poll");
+        app.test_execute(crate::command::Command::PrevTab);
+        assert!(app.test_review_deadline().is_some());
+        assert!(app.test_next_timer_is_review().await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_forge_fixes_e_only_a_review_diff_or_the_panel_counts_for_the_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main) = make_repo(dir.path());
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let server = server_with_long_thread(&main, &head);
+        let mut app: App = boot_github(&root, &server).await;
+        app.ui.side_panel = crate::layout::SidePanel::Explorer;
+        app.review.next_poll = Some(Instant::now());
+        // A plain (non-review) diff tab is not a reason to poll.
+        app.open_diff(root.join("mod.txt"), crate::diff_view::Pair::COMPARE);
+        assert!(!app.group().active_diff().unwrap().pair.is_review());
+        assert_eq!(app.test_review_deadline(), None);
+        // The panel on screen is.
+        app.ui.side_panel = crate::layout::SidePanel::Review;
+        app.ui.side_visible = true;
+        assert!(app.test_review_deadline().is_some());
+        app.ui.side_visible = false;
+        assert_eq!(app.test_review_deadline(), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_forge_fixes_e_a_thread_tab_keeps_the_refresh_going_with_the_panel_hidden() {
+        let (mut app, _server, _dir) = super::placement::thread_reply(true).await;
+        let d = app.group().active_diff().unwrap();
+        assert!(
+            d.thread.is_some() && !d.pair.is_review(),
+            "a thread tab, not a review diff"
+        );
+        app.ui.side_panel = crate::layout::SidePanel::Explorer;
+        app.review.next_poll = Some(Instant::now());
+        assert!(app.test_review_deadline().is_some(), "a thread tab is active");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_forge_fixes_e_a_review_tab_in_another_group_keeps_the_refresh_going() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main) = make_repo(dir.path());
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let server = server_with_long_thread(&main, &head);
+        let mut app: App = boot_github(&root, &server).await;
+        app.test_execute(crate::command::Command::SplitRight);
+        open_file(&mut app, "mod.txt").await;
+        app.ui.side_panel = crate::layout::SidePanel::Explorer;
+        app.review.next_poll = Some(Instant::now());
+        // The review tab is in one group; focus the one without it.
+        if app.group().active_diff().is_some() {
+            app.test_execute(crate::command::Command::FocusPreviousGroup);
+        }
+        assert!(
+            app.group().active_diff().is_none(),
+            "the focused group has no review tab"
+        );
+        assert!(
+            app.test_review_deadline().is_some(),
+            "the other group shows a review tab"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_forge_fixes_e_github_says_in_the_tool_log_that_a_thread_was_cut() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main) = make_repo(dir.path());
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let server = server_with_long_thread(&main, &head);
+        let app = boot_github(&root, &server).await;
+        let log = app.logs.texts(&Tool::Review);
+        assert!(log.iter().any(|l| l.contains("more than 100 comments")), "{log:?}");
     }
 }

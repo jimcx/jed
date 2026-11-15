@@ -57,7 +57,9 @@ pub struct Response {
 
 impl Client {
     /// `lookup` reads an environment variable (injected so tests need not touch the process
-    /// environment). A missing token is allowed (a public repository may answer without one).
+    /// environment). The client itself allows no token
+    /// (requests go out anonymously); `review::lookup` requires one before any request, since
+    /// writes need it.
     ///
     /// Blocking: builds the TLS configuration (loads the platform's certificates); call from
     /// spawn_blocking.

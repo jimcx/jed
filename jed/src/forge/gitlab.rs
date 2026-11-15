@@ -591,8 +591,8 @@ impl Forge for GitLab {
     /// Each comment is a draft note (so one bad line fails alone), then the drafts are published
     /// together (a failed publish deletes them again, so a retry doesn't double them), then
     /// Approve posts `approve` at the reviewed commit. A merge request that has moved on since
-    /// `head_sha` refuses the whole submit. Drafts the user has made on GitLab's own page are
-    /// published too: they are the user's pending review.
+    /// `head_sha` refuses the whole submit, and so do draft notes already pending on GitLab's own
+    /// page (publishing would post them with ours).
     ///
     /// Blocking: call from spawn_blocking.
     fn submit_review(&self, repo: &RepoRef, number: u64, head_sha: &str, review: &DraftReview) -> SubmitOutcome {

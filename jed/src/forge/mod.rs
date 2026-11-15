@@ -147,6 +147,9 @@ pub struct MrComments {
     pub conversation: Vec<Comment>,
     /// The latest approval or change request per reviewer (empty on a forge that has none).
     pub approvals: Vec<Approval>,
+    /// What the adapter left out (a connection cut at its page cap, a long thread): the lookup logs
+    /// each once, since adapters hold no tool log.
+    pub notes: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -302,8 +305,8 @@ pub fn in_repo(mr: &MergeRequest, repo: &RepoRef) -> bool {
 
 pub type Result<T> = std::result::Result<T, ForgeError>;
 
-/// One forge's merge request API. Every method is `Blocking: call from spawn_blocking`. Writes
-/// (drafts, submit, resolve) are added by the review-writing subtask.
+/// One forge's merge request API. Every method is `Blocking: call from spawn_blocking`. Its
+/// writes (submit, reply, resolve, edit, delete) go through the same client and token.
 pub trait Forge: Send + Sync {
     /// The open merge requests whose head branch is `head_branch` in `repo` itself (a fork's
     /// merge request from a branch of the same name is not one; see [`in_repo`]).

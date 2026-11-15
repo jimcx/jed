@@ -4,7 +4,7 @@
 //! A lookup (`review::lookup`) runs in `spawn_blocking` and comes back as
 //! `AppEvent::Review(ReviewEvent::Looked)`. It starts at launch and whenever HEAD moves
 //! (`review_head_check`, from the git status handlers), when the panel is shown, on "Code Review:
-//! Refresh" and every `review.interval` (60 s) while the panel is on screen (`review_deadline`).
+//! Refresh" and every `review.interval` (60 s) while the panel is on screen or a review diff / thread tab is active (`review_deadline`).
 //! One runs at a time; a request meanwhile is queued. A failed lookup keeps the last result on
 //! screen under its error; the viewed marks are written off-thread when they change.
 
@@ -38,9 +38,15 @@ pub(super) enum ReviewEvent {
 }
 
 impl App {
-    /// The panel is on screen.
+    /// The panel is on screen, or a review diff or thread tab is the active tab of any group.
     fn review_visible(&self) -> bool {
-        self.ui.side_visible && self.ui.side_panel == SidePanel::Review
+        (self.ui.side_visible && self.ui.side_panel == SidePanel::Review)
+            || self.groups.ids().into_iter().any(|g| {
+                self.groups
+                    .get(g)
+                    .and_then(|g| g.active_diff())
+                    .is_some_and(|d| d.pair.is_review() || d.thread.is_some())
+            })
     }
 
     /// When the visible panel looks again (`None` while hidden or looking).
