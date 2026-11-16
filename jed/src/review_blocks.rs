@@ -61,6 +61,31 @@ pub struct ThreadBlock {
     pub apply: bool,
     /// `(author, body)` of each comment, in order.
     pub comments: Vec<(String, String)>,
+    /// When each comment was written (`times[i]` for `comments[i]`); empty or shorter for
+    /// blocks without times (drafts, the comment box), whose comments then show none.
+    pub times: Vec<Option<Stamp>>,
+}
+
+/// When a comment was written and whether it changed since.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamp {
+    /// Seconds since the Unix epoch.
+    pub at: i64,
+    pub edited: bool,
+}
+
+/// An update this many seconds after the creation or later counts as an edit (forges touch
+/// `updated_at` right after creating a comment).
+pub const EDITED_AFTER: i64 = 5;
+
+impl Stamp {
+    /// The stamp of a forge comment; `None` when its `created_at` doesn't parse.
+    pub fn of(c: &crate::forge::Comment) -> Option<Stamp> {
+        use crate::forge::time::parse_iso;
+        let at = parse_iso(&c.created_at)?;
+        let edited = parse_iso(&c.updated_at).is_some_and(|u| u - at > EDITED_AFTER);
+        Some(Stamp { at, edited })
+    }
 }
 
 /// A button on a forge thread's last row.
@@ -458,8 +483,35 @@ fn body_rows(body: &str, width: usize) -> Vec<(bool, String)> {
     out
 }
 
-/// A thread's lines at `width`.
-pub fn lines(t: &ThreadBlock, collapsed: bool, width: usize) -> Vec<BlockLine> {
+/// A header row: `┌ sam · 2h ago · edited` filled with `─` to the right, the time (as of `now`,
+/// epoch seconds) cut before the name when the row is narrow: `edited` goes first, then the time.
+fn header_row(
+    corner: &str,
+    who: &str,
+    done: &str,
+    stamp: Option<Stamp>,
+    now: i64,
+    right: &str,
+    width: usize,
+) -> String {
+    let left = format!("{corner} {who}{done}");
+    let room = width.saturating_sub(right.width() + left.width() + 1);
+    let mut tail = String::new();
+    if let Some(s) = stamp {
+        let when = crate::forge::time::ago(now, s.at);
+        let full = format!(" · {when} · edited");
+        let short = format!(" · {when}");
+        if s.edited && full.width() <= room {
+            tail = full;
+        } else if short.width() <= room {
+            tail = short;
+        }
+    }
+    rule(&format!("{left}{tail}"), right, width)
+}
+
+/// A thread's lines at `width`, its times as of `now` (epoch seconds).
+pub fn lines(t: &ThreadBlock, collapsed: bool, width: usize, now: i64) -> Vec<BlockLine> {
     if let Role::Composer { .. } = t.role {
         return composer_lines(t, width);
     }
@@ -467,6 +519,7 @@ pub fn lines(t: &ThreadBlock, collapsed: bool, width: usize) -> Vec<BlockLine> {
     let first = t.comments.first();
     let author = first.map_or("", |c| c.0.as_str());
     let done = if t.resolved { " ✓" } else { "" };
+    let stamp = |i: usize| t.times.get(i).copied().flatten();
     let mut out = Vec::new();
     let mut extra = String::new();
     let head = if collapsed {
@@ -475,11 +528,16 @@ pub fn lines(t: &ThreadBlock, collapsed: bool, width: usize) -> Vec<BlockLine> {
         extra = if more > 0 { format!(" (+{more})") } else { String::new() };
         format!("┌ {author}{done}: {body}")
     } else {
-        format!("┌ {author}{done}")
+        String::new()
     };
+    let right = format!("{extra} {mark} ");
     out.push(BlockLine {
         kind: Kind::Header,
-        text: rule(&head, &format!("{extra} {mark} "), width),
+        text: if collapsed {
+            rule(&head, &right, width)
+        } else {
+            header_row("┌", author, done, stamp(0), now, &right, width)
+        },
     });
     if collapsed {
         return out;
@@ -488,7 +546,7 @@ pub fn lines(t: &ThreadBlock, collapsed: bool, width: usize) -> Vec<BlockLine> {
         if i > 0 {
             out.push(BlockLine {
                 kind: Kind::Reply,
-                text: rule(&format!("├ {who}"), "", width),
+                text: header_row("├", who, "", stamp(i), now, "", width),
             });
         }
         for (code, l) in body_rows(body, width.saturating_sub(2)) {
@@ -726,6 +784,7 @@ mod tests {
             resolved,
             mine: false,
             apply: false,
+            times: Vec::new(),
             comments: vec![("sam".into(), body.into())],
         }
     }
@@ -829,7 +888,7 @@ mod tests {
         let mut t = thread("1", false, "This can underflow when the pane is narrow.");
         t.comments.push(("bob".into(), "agreed".into()));
         for width in [12, 20, 40] {
-            let ls = lines(&t, false, width);
+            let ls = lines(&t, false, width, 0);
             assert_eq!(ls.len(), height(&t, false, width));
             for l in &ls {
                 assert!(l.text.width() <= width, "{l:?}");
@@ -838,7 +897,7 @@ mod tests {
             assert_eq!(ls.last().unwrap().kind, Kind::Footer);
             assert!(ls[0].text.ends_with(" ▾ "));
         }
-        let c = lines(&t, true, 30);
+        let c = lines(&t, true, 30, 0);
         assert_eq!(c.len(), 1);
         assert!(c[0].text.ends_with(" ▸ "));
         assert!(c[0].text.contains("(+1)"));
@@ -850,7 +909,7 @@ mod tests {
         let mut t = thread("1", false, "Try\n```suggestion\nlet very_long_name = 1;\n\n```\nok");
         t.apply = true;
         for width in [12, 30] {
-            let ls = lines(&t, false, width);
+            let ls = lines(&t, false, width, 0);
             assert_eq!(ls.len(), height(&t, false, width));
             let code: Vec<_> = ls.iter().filter(|l| l.kind == Kind::Code).collect();
             assert_eq!(code.len(), 2, "{ls:?}");
@@ -911,9 +970,10 @@ mod tests {
             resolved: false,
             mine: false,
             apply: false,
+            times: Vec::new(),
             comments: vec![("Comment on lines 3–4".into(), "one\ntwo".into())],
         };
-        let ls = lines(&t, false, 40);
+        let ls = lines(&t, false, 40, 0);
         let kinds: Vec<_> = ls.iter().map(|l| l.kind).collect();
         assert_eq!(
             kinds,
@@ -930,5 +990,72 @@ mod tests {
         ts.set(vec![t]);
         ts.toggle(0);
         assert!(!ts.is_collapsed(0));
+    }
+
+    #[test]
+    fn headers_show_the_time_and_edited() {
+        let now = 1_000_000;
+        let mut t = thread("1", false, "text");
+        t.comments.push(("bob".into(), "agreed".into()));
+        t.times = vec![
+            Some(Stamp {
+                at: now - 2 * 3600,
+                edited: false,
+            }),
+            Some(Stamp {
+                at: now - 90,
+                edited: true,
+            }),
+        ];
+        let ls = lines(&t, false, 40, now);
+        assert!(ls[0].text.starts_with("┌ sam · 2h ago ─"), "{:?}", ls[0].text);
+        let reply = ls.iter().find(|l| l.kind == Kind::Reply).unwrap();
+        assert!(reply.text.starts_with("├ bob · 1m ago · edited ─"), "{:?}", reply.text);
+        // The row stays one row of the width; collapsed, no time.
+        assert!(ls.iter().all(|l| l.text.width() <= 40));
+        assert!(!lines(&t, true, 40, now)[0].text.contains("ago"));
+        // No time: as before.
+        t.times.clear();
+        assert!(lines(&t, false, 40, now)[0].text.starts_with("┌ sam ─"));
+    }
+
+    #[test]
+    fn a_narrow_header_cuts_the_time_before_the_name() {
+        let now = 1_000_000;
+        let mut t = thread("1", false, "text");
+        t.times = vec![Some(Stamp {
+            at: now - 7200,
+            edited: true,
+        })];
+        // Right part ` ▾ ` takes 3 columns; `┌ sam` 5, and the fill needs one more.
+        let head = |w| lines(&t, false, w, now)[0].text.clone();
+        assert!(head(40).starts_with("┌ sam · 2h ago · edited"));
+        assert!(head(24).starts_with("┌ sam · 2h ago ─"), "{}", head(24));
+        assert!(!head(24).contains("edited"));
+        assert!(head(10).starts_with("┌ sam ─"), "{}", head(10));
+        assert!(!head(10).contains("ago"));
+        assert!(head(6).starts_with("┌ "), "{}", head(6)); // the name is cut as before
+    }
+
+    #[test]
+    fn a_stamp_is_edited_only_well_after_the_creation() {
+        let c = |created: &str, updated: &str| crate::forge::Comment {
+            id: String::new(),
+            author: "a".into(),
+            body: String::new(),
+            created_at: created.into(),
+            updated_at: updated.into(),
+            url: String::new(),
+        };
+        let at = crate::forge::time::parse_iso("2026-03-12T10:20:30Z").unwrap();
+        let s = Stamp::of(&c("2026-03-12T10:20:30Z", "2026-03-12T10:20:33Z")).unwrap();
+        assert_eq!(s, Stamp { at, edited: false });
+        assert!(
+            Stamp::of(&c("2026-03-12T10:20:30Z", "2026-03-12T10:20:36Z"))
+                .unwrap()
+                .edited
+        );
+        assert!(!Stamp::of(&c("2026-03-12T10:20:30Z", "")).unwrap().edited);
+        assert_eq!(Stamp::of(&c("", "2026-03-12T10:20:36Z")), None);
     }
 }

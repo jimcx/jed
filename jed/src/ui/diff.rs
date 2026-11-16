@@ -136,6 +136,7 @@ struct Line<'a> {
 /// Draws the diff tab in `area`; `focused` puts the terminal cursor on the current row, `find`
 /// (the find widget's query, while it is open over the tab) highlights its matches. Writes back
 /// the layout and the rows that fit; returns the rows' rect and the buttons for the mouse.
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     f: &mut Frame,
     area: Rect,
@@ -144,6 +145,7 @@ pub fn render(
     tab_width: usize,
     focused: bool,
     find: Option<&Matcher>,
+    now: i64,
 ) -> DiffHit {
     let st = Styles {
         base: theme.get("editor"),
@@ -339,7 +341,8 @@ pub fn render(
                 let lines = match &mut block_lines {
                     Some((b, lines)) if *b == bi => lines,
                     slot => {
-                        let fresh = review_blocks::lines(&d.threads.list()[t], d.threads.is_collapsed(t), block_width);
+                        let fresh =
+                            review_blocks::lines(&d.threads.list()[t], d.threads.is_collapsed(t), block_width, now);
                         &mut slot.insert((bi, fresh)).1
                     }
                 };

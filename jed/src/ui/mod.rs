@@ -326,6 +326,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 app.settings.tab_width,
                 focused,
                 find,
+                app.review.clock.unwrap_or_else(crate::forge::time::now),
             ));
             // As drawn: `diff::render` sets `text_width` and measures the rows it drew.
             hscroll = Some((d.scroll_width, d.text_width, d.left_col, None));

@@ -20,6 +20,7 @@ pub mod gitea;
 pub mod github;
 pub mod gitlab;
 pub mod http;
+pub mod time;
 pub mod url;
 
 #[cfg(test)]

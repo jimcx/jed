@@ -1654,6 +1654,7 @@ pub(crate) mod threads {
             &thread,
             false,
             crate::review_blocks::block_width(diff_hit(&app).rows.width as usize),
+            0,
         );
         assert_eq!(lines.len(), tall_h);
         let mut last_top = 0;

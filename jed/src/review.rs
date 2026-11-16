@@ -408,6 +408,9 @@ pub struct ReviewState {
     pub writing: bool,
     /// When the loaded review was looked up.
     pub fetched_at: Option<std::time::SystemTime>,
+    /// The time comments' ages are counted from, in epoch seconds (tests set it; `None`: the
+    /// system clock, read at each draw).
+    pub clock: Option<i64>,
 }
 
 impl Review {
@@ -499,6 +502,7 @@ impl Default for ReviewState {
             user_loading: false,
             writing: false,
             fetched_at: None,
+            clock: None,
             env: Arc::new(|name| std::env::var(name).ok()),
             blobs: Default::default(),
         }

@@ -934,16 +934,20 @@ fn conversation_blocks(r: &crate::review::Review) -> Vec<crate::review_blocks::T
         "description".to_string(),
         format!("{} · {}", r.mr.author, r.mr.title),
         text(&r.mr.body, "(no description)"),
+        None,
     )];
-    items.extend(
-        r.conversation
-            .iter()
-            .map(|c| (c.id.clone(), c.author.clone(), text(&c.body, "(no text)"))),
-    );
+    items.extend(r.conversation.iter().map(|c| {
+        (
+            c.id.clone(),
+            c.author.clone(),
+            text(&c.body, "(no text)"),
+            crate::review_blocks::Stamp::of(c),
+        )
+    }));
     items
         .into_iter()
         .enumerate()
-        .map(|(i, (id, head, body))| crate::review_blocks::ThreadBlock {
+        .map(|(i, (id, head, body, stamp))| crate::review_blocks::ThreadBlock {
             role: crate::review_blocks::Role::Comment,
             id,
             right: true,
@@ -953,6 +957,7 @@ fn conversation_blocks(r: &crate::review::Review) -> Vec<crate::review_blocks::T
             mine: false,
             apply: false,
             comments: vec![(head, body)],
+            times: vec![stamp],
         })
         .collect()
 }
@@ -979,5 +984,6 @@ fn forge_block(
             .iter()
             .map(|c| (c.author.clone(), c.body.clone()))
             .collect(),
+        times: t.thread.comments.iter().map(crate::review_blocks::Stamp::of).collect(),
     }
 }

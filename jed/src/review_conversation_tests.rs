@@ -251,3 +251,106 @@ async fn review_conversation_stepping_down_brings_the_whole_block_into_view() {
         app.press(KeyCode::Down, KeyModifiers::NONE);
     }
 }
+
+// review_conversation-b: times on comments, drawn with a fixed clock (`app.review.clock`).
+
+/// 2026-03-12T10:20:30Z, the clock of these tests.
+const NOW: i64 = 1_773_310_830;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_conversation_thread_blocks_show_when_each_comment_was_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _server) = loaded_app(dir.path(), None).await;
+    crate::mr_review_tests::open_file(&mut app, "mod.txt").await;
+    app.review.clock = Some(NOW);
+    {
+        let r = review(&mut app);
+        let sam = r.threads.iter_mut().find(|t| t.thread.id == "11").unwrap();
+        sam.thread.comments[0].created_at = "2026-03-12T08:20:30Z".into();
+        sam.thread.comments[0].updated_at = "2026-03-12T08:25:30.500Z".into();
+        let mut reply = comment("500", "dee", "A reply");
+        reply.created_at = "2026-03-12T10:15:00+00:00".into();
+        sam.thread.comments.push(reply);
+        // Unparseable: no time, as before.
+        let bob = r.threads.iter_mut().find(|t| t.thread.id == "12").unwrap();
+        bob.thread.comments[0].created_at = "soon".into();
+    }
+    changed(&mut app);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    let l = draw(&mut app, 120, 30);
+    let row = |what: &str| {
+        l.iter()
+            .find(|r| r.contains(what))
+            .unwrap_or_else(|| panic!("{what} in {l:#?}"))
+    };
+    assert!(row("┌ sam").contains("┌ sam · 2h ago · edited ─"), "{l:#?}");
+    assert!(row("├ dee").contains("├ dee · 5m ago ─"), "{l:#?}");
+    assert!(
+        !row("┌ bob").contains("ago") && !row("┌ bob").contains("soon"),
+        "{l:#?}"
+    );
+    // Later: the same comment, a day and a bit on, then (weeks on) a date; no redraw timer.
+    app.review.clock = Some(NOW + 26 * 3600);
+    let l = draw(&mut app, 120, 30);
+    assert!(l.iter().any(|r| r.contains("┌ sam · 1d ago · edited")), "{l:#?}");
+    app.review.clock = Some(NOW + 40 * 86_400);
+    let l = draw(&mut app, 120, 30);
+    assert!(l.iter().any(|r| r.contains("┌ sam · 12 Mar · edited")), "{l:#?}");
+    // A narrow tab cuts `edited` first, then the time, never the name.
+    let l = draw(&mut app, 50, 30);
+    assert!(l.iter().any(|r| r.contains("┌ sam") && !r.contains("edited")), "{l:#?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_conversation_the_tab_shows_each_comments_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _server) = loaded_app(dir.path(), None).await;
+    app.review.clock = Some(NOW);
+    let mut fresh = comment("101", "bob", "Fresh");
+    fresh.created_at = "2026-03-12T10:20:00Z".into();
+    let mut old = comment("102", "cy", "Ancient");
+    old.created_at = "2025-12-31T23:00:00Z".into();
+    old.updated_at = "2026-01-02T00:00:00Z".into();
+    let mut garbage = comment("103", "dee", "Timeless");
+    garbage.created_at = String::new();
+    review(&mut app).conversation = vec![fresh, old, garbage];
+    changed(&mut app);
+    open(&mut app).await;
+    let l = draw(&mut app, 100, 40);
+    let row = |what: &str| {
+        l.iter()
+            .find(|r| r.contains(what))
+            .unwrap_or_else(|| panic!("{what} in {l:#?}"))
+    };
+    // The description has no time of its own.
+    assert!(!row("ann · Add review panel").contains("ago"), "{l:#?}");
+    assert!(row("┌ bob").contains("┌ bob · just now ─"), "{l:#?}");
+    assert!(row("┌ cy").contains("┌ cy · 31 Dec 2025 · edited ─"), "{l:#?}");
+    assert!(!row("┌ dee").contains("·"), "{l:#?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_conversation_a_thread_tab_shows_the_time_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, _server) = loaded_app(dir.path(), None).await;
+    app.review.clock = Some(NOW);
+    {
+        let r = review(&mut app);
+        let sam = r.threads.iter_mut().find(|t| t.thread.id == "11").unwrap();
+        sam.thread.comments[0].created_at = "2026-03-12T07:20:30Z".into();
+        sam.thread.comments[0].updated_at = "2026-03-12T07:40:00Z".into();
+    }
+    changed(&mut app);
+    // Row 2 is thread 11; Open Thread opens its tab.
+    let len = app.review.review().unwrap().conv_len();
+    app.review.view.conv.focused = true;
+    app.review.view.conv.select(len, 2);
+    app.test_execute(Command::ReviewOpenThread);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    assert!(app.group().active_diff().is_some_and(|d| d.thread.is_some()));
+    let l = draw(&mut app, 120, 30);
+    assert!(l.iter().any(|r| r.contains("┌ sam · 3h ago · edited ─")), "{l:#?}");
+    app.review.clock = Some(NOW + 2 * 86_400);
+    let l = draw(&mut app, 120, 30);
+    assert!(l.iter().any(|r| r.contains("┌ sam · 2d ago · edited")), "{l:#?}");
+}
