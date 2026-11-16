@@ -739,6 +739,25 @@ impl Forge for GitLab {
     }
 
     /// Blocking: call from spawn_blocking.
+    fn comment(&self, repo: &RepoRef, number: u64, body: &str) -> Result<()> {
+        let url = format!("{}/notes", Self::mr_path(repo, number));
+        self.client.post(&url, &json!({ "body": body }).to_string()).map(|_| ())
+    }
+
+    /// The body goes as written: no suggestion fence to spell out (that is for a line's thread).
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn edit_conversation_comment(&self, repo: &RepoRef, comment_id: &str, body: &str) -> Result<()> {
+        let url = note_path(repo, comment_id)?;
+        self.client.put(&url, &json!({ "body": body }).to_string()).map(|_| ())
+    }
+
+    /// Blocking: call from spawn_blocking.
+    fn delete_conversation_comment(&self, repo: &RepoRef, comment_id: &str) -> Result<()> {
+        self.delete_comment(repo, comment_id)
+    }
+
+    /// Blocking: call from spawn_blocking.
     fn blob_id(&self, repo: &RepoRef, commit: &str, path: &str) -> Result<Option<String>> {
         #[derive(Deserialize, Default)]
         struct File {
@@ -770,6 +789,32 @@ mod tests {
         "diff_refs":{"base_sha":"mb1","start_sha":"t0","head_sha":"h0"}}"#;
     const P: &str = "/api/v4/projects/grp%2Fsub%2Frepo";
     const NO_DRAFTS: &str = "/merge_requests/7/draft_notes?per_page=100&page=1";
+
+    #[test]
+    fn conversation_notes_are_posted_edited_and_deleted_without_fence_changes() {
+        let (server, gl, repo) = setup(vec![
+            (
+                &format!("POST {}", route("/merge_requests/7/notes")),
+                Reply::status(201).with_body("{}"),
+            ),
+            (
+                &format!("PUT {}", route("/merge_requests/7/notes/50")),
+                Reply::json("{}"),
+            ),
+            (
+                &format!("DELETE {}", route("/merge_requests/7/notes/50")),
+                Reply::status(204),
+            ),
+        ]);
+        gl.comment(&repo, 7, "hello").unwrap();
+        gl.edit_conversation_comment(&repo, "7::50", "```suggestion\nx\n```")
+            .unwrap();
+        gl.delete_conversation_comment(&repo, "7::50").unwrap();
+        let reqs = server.requests();
+        assert_eq!(reqs[0].body, r#"{"body":"hello"}"#);
+        assert_eq!(reqs[1].body, r#"{"body":"```suggestion\nx\n```"}"#);
+        assert_eq!(reqs[2].method, "DELETE");
+    }
 
     fn setup(routes: Vec<(&str, Reply)>) -> (FakeServer, GitLab, RepoRef) {
         let server = FakeServer::start(routes.into_iter().map(|(p, r)| (p.to_string(), r)).collect());

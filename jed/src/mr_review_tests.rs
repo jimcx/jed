@@ -2218,7 +2218,10 @@ mod drafts {
         lines(&mut app, 120, 30);
         let hit = app.hits.review.clone().unwrap();
         app.mouse(right, hit.conv_list.x + 4, hit.conv_list.y);
-        assert_eq!(super::menu_labels(&app), ["Open Conversation: on"]);
+        assert_eq!(
+            super::menu_labels(&app),
+            ["Open Conversation: on", "Comment on Merge Request: on"]
+        );
         assert!(app.review.view.conv.focused);
     }
 

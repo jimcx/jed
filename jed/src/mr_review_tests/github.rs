@@ -49,6 +49,17 @@ pub(crate) fn server_with_long_thread(main: &str, head: &str) -> FakeServer {
 
 /// `replies`: the fake takes a reply and a resolve mutation (else both are 404s).
 fn server_with(main: &str, head: &str, replies: bool, long: bool) -> FakeServer {
+    server_plus(main, head, replies, long, Vec::new())
+}
+
+/// As `server_with`, with `extra` routes too.
+pub(crate) fn server_plus(
+    main: &str,
+    head: &str,
+    replies: bool,
+    long: bool,
+    extra: Vec<(String, Reply)>,
+) -> FakeServer {
     let page = if long {
         r#""pageInfo":{"hasNextPage":true},"#
     } else {
@@ -104,6 +115,7 @@ fn server_with(main: &str, head: &str, replies: bool, long: bool) -> FakeServer 
         ),
         (format!("POST {API}/pulls/7/reviews"), Reply::json("{}")),
     ]);
+    routes.extend(extra);
     FakeServer::start(routes)
 }
 

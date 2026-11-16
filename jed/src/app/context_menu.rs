@@ -85,7 +85,10 @@ fn review_items(spot: ReviewSpot) -> Vec<MenuItem> {
     match spot {
         ReviewSpot::File => vec![MenuItem::new("Toggle Viewed", Command::Review(R::ToggleViewed))],
         ReviewSpot::Thread { own, suggestion } => thread(true, own, suggestion),
-        ReviewSpot::Comment => vec![MenuItem::new("Open Conversation", Command::ReviewOpenConversation)],
+        ReviewSpot::Comment => vec![
+            MenuItem::new("Open Conversation", Command::ReviewOpenConversation),
+            MenuItem::new("Comment on Merge Request", Command::ReviewCommentOnMergeRequest),
+        ],
         ReviewSpot::Draft => vec![
             MenuItem::new("Go to Draft", Command::Review(R::Open)),
             MenuItem::Separator,
@@ -98,6 +101,7 @@ fn review_items(spot: ReviewSpot) -> Vec<MenuItem> {
                 MenuItem::new("Refresh", Command::ReviewRefresh),
                 MenuItem::new("Switch Merge Request", Command::ReviewSwitch),
                 MenuItem::new("Open Conversation", Command::ReviewOpenConversation),
+                MenuItem::new("Comment on Merge Request", Command::ReviewCommentOnMergeRequest),
                 MenuItem::Separator,
             ];
             items.extend(submit());

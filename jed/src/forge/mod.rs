@@ -336,6 +336,12 @@ pub trait Forge: Send + Sync {
         lines: (u32, u32),
     ) -> Result<()>;
     fn delete_comment(&self, repo: &RepoRef, comment_id: &str) -> Result<()>;
+    /// A plain comment on the merge request's conversation (not on a line); posted at once.
+    fn comment(&self, repo: &RepoRef, number: u64, body: &str) -> Result<()>;
+    /// Edits a comment of the conversation (`MrComments::conversation`): the endpoint of a plain
+    /// comment, which GitHub keeps apart from review comments (the ids look alike).
+    fn edit_conversation_comment(&self, repo: &RepoRef, comment_id: &str, body: &str) -> Result<()>;
+    fn delete_conversation_comment(&self, repo: &RepoRef, comment_id: &str) -> Result<()>;
     /// The git blob id of `path` at `commit` on the host; `None` when it has no such file (404).
     /// Places threads anchored on commits the local clone lacks.
     fn blob_id(&self, repo: &RepoRef, commit: &str, path: &str) -> Result<Option<String>>;

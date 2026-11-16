@@ -70,6 +70,19 @@ pub(super) enum ComposerKind {
         /// The thread's first and last line (every comment in it).
         lines: (u32, u32),
     },
+    /// A new plain comment at the end of the merge request's conversation tab (posted at once).
+    Conversation,
+    /// A new text for the user's conversation comment `comment_id`.
+    EditConversation {
+        comment_id: String,
+    },
+}
+
+impl ComposerKind {
+    /// The box lives at the end of the conversation tab (not under a line of a diff).
+    pub(super) fn in_conversation(&self) -> bool {
+        matches!(self, ComposerKind::Conversation | ComposerKind::EditConversation { .. })
+    }
 }
 
 /// `line 4` / `lines 4–6`.
@@ -123,6 +136,8 @@ impl Composer {
         let verb = match (&self.kind, self.editing.is_some()) {
             (ComposerKind::Reply { .. }, _) => "Reply (posted at once)",
             (ComposerKind::Edit { .. }, _) => "Edit your comment (saved at once)",
+            (ComposerKind::Conversation, _) => "Comment on the merge request (posted at once)",
+            (ComposerKind::EditConversation { .. }, _) => "Edit your comment (saved at once)",
             (_, true) => "Edit comment",
             _ => "Comment",
         };
@@ -140,8 +155,12 @@ impl Composer {
             times: Vec::new(),
             comments: vec![(
                 format!(
-                    "{verb} on {}{}",
-                    range_label(self.start, self.end),
+                    "{verb}{}{}",
+                    if self.kind.in_conversation() {
+                        String::new()
+                    } else {
+                        format!(" on {}", range_label(self.start, self.end))
+                    },
                     if self.outside {
                         " (not in the merge request's diff: held back)"
                     } else {

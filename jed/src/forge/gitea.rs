@@ -468,6 +468,26 @@ impl Forge for Gitea {
     }
 
     /// Blocking: call from spawn_blocking.
+    fn comment(&self, repo: &RepoRef, number: u64, body: &str) -> Result<()> {
+        let url = format!("{}/{number}/comments", Self::issues(repo));
+        self.client
+            .post(&url, &serde_json::json!({ "body": body }).to_string())
+            .map(|_| ())
+    }
+
+    /// Plain comments are issue comments too: the review comments' calls, without a range marker.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn edit_conversation_comment(&self, repo: &RepoRef, comment_id: &str, body: &str) -> Result<()> {
+        self.edit_comment(repo, comment_id, body, None, (0, 0))
+    }
+
+    /// Blocking: call from spawn_blocking.
+    fn delete_conversation_comment(&self, repo: &RepoRef, comment_id: &str) -> Result<()> {
+        self.delete_comment(repo, comment_id)
+    }
+
+    /// Blocking: call from spawn_blocking.
     fn blob_id(&self, repo: &RepoRef, commit: &str, path: &str) -> Result<Option<String>> {
         #[derive(Deserialize, Default)]
         struct File {
@@ -496,6 +516,22 @@ mod tests {
         "user":{"login":"ann"},"html_url":"https://g/o/r/pulls/7","merge_base":"mb111",
         "base":{"ref":"main","sha":"b0","repo":{"full_name":"o/r"}},
         "head":{"ref":"feat","sha":"h0","repo":{"full_name":"O/r"}}}"#;
+
+    #[test]
+    fn conversation_comments_are_posted_edited_and_deleted_as_issue_comments() {
+        let (server, gitea, repo) = setup(vec![
+            ("POST /api/v1/repos/o/r/issues/7/comments", Reply::json("{}")),
+            ("PATCH /api/v1/repos/o/r/issues/comments/40", Reply::json("{}")),
+            ("DELETE /api/v1/repos/o/r/issues/comments/40", Reply::status(204)),
+        ]);
+        gitea.comment(&repo, 7, "hello").unwrap();
+        gitea.edit_conversation_comment(&repo, "40", "new").unwrap();
+        gitea.delete_conversation_comment(&repo, "40").unwrap();
+        let reqs = server.requests();
+        assert_eq!(reqs[0].body, r#"{"body":"hello"}"#);
+        assert_eq!(reqs[1].body, r#"{"body":"new"}"#);
+        assert_eq!(reqs[2].method, "DELETE");
+    }
 
     fn setup(routes: Vec<(&str, Reply)>) -> (FakeServer, Gitea, RepoRef) {
         let server = FakeServer::start(routes.into_iter().map(|(p, r)| (p.to_string(), r)).collect());

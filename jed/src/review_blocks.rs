@@ -18,9 +18,9 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::diff_view::Aligned;
 
 /// Rows under a block's comments for buttons: a composer's Comment / Cancel, a forge thread's
-/// Reply / Resolve / [Apply Suggestion] / Edit / Delete.
+/// Reply / Resolve / [Apply Suggestion] / Edit / Delete; a conversation comment of the user's: Edit / Delete.
 fn button_rows(t: &ThreadBlock) -> usize {
-    usize::from(matches!(t.role, Role::Composer { .. } | Role::Thread))
+    usize::from(matches!(t.role, Role::Composer { .. } | Role::Thread) || t.role == Role::Comment && t.mine)
 }
 
 /// Columns the blocks are indented by (under the line numbers) and kept free on the right.
@@ -33,7 +33,7 @@ const MARGIN: usize = 1;
 pub enum Role {
     #[default]
     Thread,
-    /// A merge request comment in the conversation tab (no buttons).
+    /// A merge request comment in the conversation tab (Edit / Delete when it is the user's own).
     Comment,
     Draft,
     /// `caret`: the byte of the text the caret is at.
@@ -100,13 +100,14 @@ pub enum ThreadButton {
 
 /// A thread's buttons and their columns from the block's left edge (`│ [Reply] [Resolve]`).
 pub fn thread_buttons(t: &ThreadBlock) -> Vec<(std::ops::Range<usize>, ThreadButton, &'static str)> {
-    let mut list = vec![
-        (ThreadButton::Reply, "[Reply]"),
-        (
+    let mut list = Vec::new();
+    if t.role != Role::Comment {
+        list.push((ThreadButton::Reply, "[Reply]"));
+        list.push((
             ThreadButton::Resolve,
             if t.resolved { "[Unresolve]" } else { "[Resolve]" },
-        ),
-    ];
+        ));
+    }
     if t.apply {
         list.push((ThreadButton::Apply, "[Apply Suggestion]"));
     }
@@ -558,7 +559,7 @@ pub fn lines(t: &ThreadBlock, collapsed: bool, width: usize, now: i64) -> Vec<Bl
     }
     out.extend((0..button_rows(t)).map(|_| BlockLine {
         kind: Kind::Buttons,
-        text: if t.role == Role::Thread {
+        text: if matches!(t.role, Role::Thread | Role::Comment) {
             let labels: Vec<&str> = thread_buttons(t).iter().map(|b| b.2).collect();
             cut(&format!("│ {}", labels.join(" ")), width)
         } else {

@@ -85,7 +85,10 @@ impl App {
             }
             Done::Wrote(job) => {
                 self.review.writing = false;
-                if matches!(job, Job::Reply { .. } | Job::Edit { .. }) {
+                if matches!(
+                    job,
+                    Job::Reply { .. } | Job::Edit { .. } | Job::Comment { .. } | Job::EditConversation { .. }
+                ) {
                     self.composer = None;
                     self.review_blocks_changed();
                 }
@@ -298,13 +301,85 @@ impl App {
             self.prompt = Some(Prompt::ConfirmDeleteComment {
                 comment_id: c.id,
                 place: format!("{}:{}", a.path, a.end_line),
+                conversation: false,
             });
         }
     }
 
     /// The user confirmed the delete prompt.
-    pub(super) fn review_delete_confirmed(&mut self, comment_id: String) {
-        self.review_write(Job::Delete { comment_id });
+    pub(super) fn review_delete_confirmed(&mut self, comment_id: String, conversation: bool) {
+        self.review_write(if conversation {
+            Job::DeleteConversation { comment_id }
+        } else {
+            Job::Delete { comment_id }
+        });
+    }
+
+    /// "Code Review: Comment on Merge Request": the conversation tab with an empty box at its end.
+    pub(super) fn review_comment_on_mr(&mut self) {
+        self.conversation_compose(ComposerKind::Conversation, "");
+    }
+
+    /// Opens the conversation tab (if need be) with a box at its end for `kind`, holding `text`:
+    /// where the conversation's writes (a new comment, an edit; later the review's summary) go.
+    fn conversation_compose(&mut self, kind: ComposerKind, text: &str) {
+        if self.composer.is_some() {
+            return self.notify(Level::Info, "Finish the open comment first".into());
+        }
+        let last = self.review.review().map(|r| r.conversation.len() + 1);
+        self.review_open_conversation(None);
+        let Some(last) = last else { return };
+        let Some(tab) = self.group().active_diff().filter(|d| d.conv.is_some()).map(|d| d.id) else {
+            return;
+        };
+        let mut buf = Buffer::untitled(0);
+        let mut view = View::new();
+        if !text.is_empty() {
+            edit::paste(&mut buf, &mut view, text, false, &[]);
+        }
+        self.start_composer(Composer {
+            tab,
+            buf,
+            view,
+            path: String::new(),
+            right: true,
+            start: 0,
+            end: 0,
+            row: last,
+            lines: Vec::new(),
+            commit: String::new(),
+            editing: None,
+            kind,
+            outside: false,
+        });
+    }
+
+    /// A click on an Edit / Delete button of the conversation comment `id`.
+    fn conversation_button(&mut self, id: &str, button: ThreadButton) {
+        let user = self.review.user.clone().unwrap_or_default();
+        let Some(c) = self
+            .review
+            .review()
+            .and_then(|r| r.conversation.iter().find(|c| c.id == id))
+            .filter(|c| c.author.eq_ignore_ascii_case(&user))
+            .cloned()
+        else {
+            return self.notify(Level::Info, "Only your own comments can be changed".into());
+        };
+        match button {
+            ThreadButton::Edit => {
+                let kind = ComposerKind::EditConversation { comment_id: c.id };
+                self.conversation_compose(kind, &c.body);
+            }
+            ThreadButton::Delete => {
+                self.prompt = Some(Prompt::ConfirmDeleteComment {
+                    comment_id: c.id,
+                    place: "the merge request".into(),
+                    conversation: true,
+                });
+            }
+            _ => {}
+        }
     }
 
     /// Opens a comment box under the thread in the active review diff (opening the thread's
@@ -407,6 +482,11 @@ impl App {
                 range: *range,
                 lines: *lines,
             },
+            ComposerKind::Conversation => Job::Comment { number, body },
+            ComposerKind::EditConversation { comment_id } => Job::EditConversation {
+                comment_id: comment_id.clone(),
+                body,
+            },
             ComposerKind::Draft => return,
         };
         self.review_write(job);
@@ -431,6 +511,11 @@ impl App {
         else {
             return;
         };
+        if t.role == review_blocks::Role::Comment {
+            let id = t.id.clone();
+            self.focus_group(g);
+            return self.conversation_button(&id, button);
+        }
         let Some(thread) = self
             .review
             .review()

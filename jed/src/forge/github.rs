@@ -526,6 +526,30 @@ impl Forge for GitHub {
     }
 
     /// Blocking: call from spawn_blocking.
+    fn comment(&self, repo: &RepoRef, number: u64, body: &str) -> Result<()> {
+        let url = format!("{}/issues/{number}/comments", Self::repo_path(repo));
+        self.client.post(&url, &json!({ "body": body }).to_string()).map(|_| ())
+    }
+
+    /// Plain comments live under `issues/comments`, review comments under `pulls/comments`.
+    ///
+    /// Blocking: call from spawn_blocking.
+    fn edit_conversation_comment(&self, repo: &RepoRef, comment_id: &str, body: &str) -> Result<()> {
+        let id = numeric_id(comment_id)?;
+        let url = format!("{}/issues/comments/{id}", Self::repo_path(repo));
+        self.client
+            .patch(&url, &json!({ "body": body }).to_string())
+            .map(|_| ())
+    }
+
+    /// Blocking: call from spawn_blocking.
+    fn delete_conversation_comment(&self, repo: &RepoRef, comment_id: &str) -> Result<()> {
+        let id = numeric_id(comment_id)?;
+        let url = format!("{}/issues/comments/{id}", Self::repo_path(repo));
+        self.client.delete(&url).map(|_| ())
+    }
+
+    /// Blocking: call from spawn_blocking.
     fn blob_id(&self, repo: &RepoRef, commit: &str, path: &str) -> Result<Option<String>> {
         #[derive(Deserialize, Default)]
         struct File {
@@ -589,6 +613,30 @@ mod tests {
         "user":{"login":"ann"},"html_url":"https://g/o/r/pull/7",
         "base":{"ref":"main","sha":"b0","repo":{"full_name":"o/r"}},
         "head":{"ref":"feat","sha":"h0","repo":{"full_name":"O/r"}}}"#;
+
+    #[test]
+    fn conversation_comments_use_the_issue_endpoints() {
+        let (server, gh, repo) = setup(vec![
+            ("POST /api/v3/repos/o/r/issues/7/comments", Reply::json("{}")),
+            ("PATCH /api/v3/repos/o/r/issues/comments/20", Reply::json("{}")),
+            ("DELETE /api/v3/repos/o/r/issues/comments/20", Reply::status(204)),
+        ]);
+        gh.comment(&repo, 7, "hello").unwrap();
+        gh.edit_conversation_comment(&repo, "20", "new").unwrap();
+        gh.delete_conversation_comment(&repo, "20").unwrap();
+        let seen = server.requests();
+        assert_eq!(seen[0].body, r#"{"body":"hello"}"#);
+        assert_eq!(seen[1].body, r#"{"body":"new"}"#);
+        assert_eq!(seen[2].method, "DELETE");
+        assert!(matches!(
+            gh.edit_conversation_comment(&repo, "review-9", "x"),
+            Err(ForgeError::Parse(_))
+        ));
+        assert!(matches!(
+            gh.delete_conversation_comment(&repo, "../x"),
+            Err(ForgeError::Parse(_))
+        ));
+    }
 
     fn setup(routes: Vec<(&str, Reply)>) -> (FakeServer, GitHub, RepoRef) {
         let server = FakeServer::start(routes.into_iter().map(|(p, r)| (p.to_string(), r)).collect());

@@ -47,6 +47,19 @@ pub enum Job {
     Delete {
         comment_id: String,
     },
+    /// A plain comment on the conversation.
+    Comment {
+        number: u64,
+        body: String,
+    },
+    /// Edit / delete of a conversation comment (GitHub's endpoint differs from a review comment's).
+    EditConversation {
+        comment_id: String,
+        body: String,
+    },
+    DeleteConversation {
+        comment_id: String,
+    },
 }
 
 /// A reply draft as Submit Review posts it.
@@ -71,7 +84,9 @@ impl Job {
             Job::Resolve { resolved: true, .. } => "Thread resolved",
             Job::Resolve { .. } => "Thread reopened",
             Job::Edit { .. } => "Comment edited",
-            Job::Delete { .. } => "Comment deleted",
+            Job::Delete { .. } | Job::DeleteConversation { .. } => "Comment deleted",
+            Job::Comment { .. } => "Comment posted",
+            Job::EditConversation { .. } => "Comment edited",
         }
     }
 
@@ -82,7 +97,9 @@ impl Job {
             Job::Reply { .. } => "replying",
             Job::Resolve { .. } => "resolving",
             Job::Edit { .. } => "editing the comment",
-            Job::Delete { .. } => "deleting the comment",
+            Job::Delete { .. } | Job::DeleteConversation { .. } => "deleting the comment",
+            Job::Comment { .. } => "commenting",
+            Job::EditConversation { .. } => "editing the comment",
         }
     }
 }
@@ -193,6 +210,9 @@ pub fn run(req: Request, job: Job) -> Done {
             lines,
         } => api.edit_comment(repo, comment_id, body, *range, *lines),
         Job::Delete { comment_id } => api.delete_comment(repo, comment_id),
+        Job::Comment { number, body } => api.comment(repo, *number, body),
+        Job::EditConversation { comment_id, body } => api.edit_conversation_comment(repo, comment_id, body),
+        Job::DeleteConversation { comment_id } => api.delete_conversation_comment(repo, comment_id),
     };
     match result {
         Ok(()) => {

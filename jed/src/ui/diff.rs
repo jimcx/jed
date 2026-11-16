@@ -640,7 +640,7 @@ fn draw_block_line(
                     let w = cols.len().min(room.saturating_sub(cols.start));
                     out.set_style(Rect::new(x + cols.start as u16, y, w as u16, 1), style);
                 }
-            } else if line.kind == BlockKind::Buttons && block.role == Role::Thread {
+            } else if line.kind == BlockKind::Buttons && matches!(block.role, Role::Thread | Role::Comment) {
                 let style = theme.get("review.thread.button");
                 for (cols, _, _) in review_blocks::thread_buttons(block) {
                     let w = cols.len().min(room.saturating_sub(cols.start));

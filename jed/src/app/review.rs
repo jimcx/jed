@@ -534,8 +534,16 @@ impl App {
             if d.conv.is_some() {
                 // The merge request's conversation: one block under each of the tab's rows.
                 if let Some(r) = review {
-                    let blocks = conversation_blocks(r);
-                    d.set_conversation(format!("!{} Conversation", r.mr.number), r.mr.number, blocks.len());
+                    let mut blocks = conversation_blocks(r, user);
+                    // The box (a new comment, an edit) is one more row, at the end.
+                    let boxed = composer.as_ref().filter(|(tab, _)| *tab == d.id);
+                    let rows = blocks.len() + usize::from(boxed.is_some());
+                    if let Some((_, b)) = boxed {
+                        let mut b = b.clone();
+                        (b.right, b.line) = (true, blocks.len());
+                        blocks.push(b);
+                    }
+                    d.set_conversation(format!("!{} Conversation", r.mr.number), r.mr.number, rows);
                     d.threads.set(blocks);
                     self.needs_redraw = true;
                 }
@@ -922,7 +930,7 @@ impl App {
 /// (`apply`: it may offer Apply Suggestion).
 /// The blocks of a merge request's conversation tab: the description (headed by its author and the
 /// title), then each comment and review summary, block `i` under row `i`.
-fn conversation_blocks(r: &crate::review::Review) -> Vec<crate::review_blocks::ThreadBlock> {
+fn conversation_blocks(r: &crate::review::Review, user: Option<&str>) -> Vec<crate::review_blocks::ThreadBlock> {
     let text = |body: &str, empty: &str| {
         if body.trim().is_empty() {
             empty.to_string()
@@ -949,12 +957,19 @@ fn conversation_blocks(r: &crate::review::Review) -> Vec<crate::review_blocks::T
         .enumerate()
         .map(|(i, (id, head, body, stamp))| crate::review_blocks::ThreadBlock {
             role: crate::review_blocks::Role::Comment,
+            // Edit / delete: the user's own comments; a review summary (`review-N`) and the
+            // description are not comments the forge lets us change.
+            mine: !id.starts_with("review-")
+                && user.is_some_and(|u| {
+                    r.conversation
+                        .iter()
+                        .any(|c| c.id == id && c.author.eq_ignore_ascii_case(u))
+                }),
             id,
             right: true,
             line: i,
             span: 0,
             resolved: false,
-            mine: false,
             apply: false,
             comments: vec![(head, body)],
             times: vec![stamp],

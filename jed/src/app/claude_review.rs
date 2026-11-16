@@ -14,6 +14,9 @@
 //!   `App::claude_apply` and every outcome of that path answers it (`suggest_notify` for a
 //!   refusal, `suggest_applied` + `claude_apply_saved` for the success, once the save finished).
 //! - reply: a reply draft (`Draft::reply`, one per thread), saved like any draft, never posted.
+//!
+//! No tool posts, edits or deletes a merge request comment (Comment on Merge Request is the
+//! user's command): Claude only drafts replies, which the user submits.
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};

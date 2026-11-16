@@ -354,3 +354,221 @@ async fn review_conversation_a_thread_tab_shows_the_time_too() {
     let l = draw(&mut app, 120, 30);
     assert!(l.iter().any(|r| r.contains("┌ sam · 2d ago · edited")), "{l:#?}");
 }
+
+// ---- review_conversation-c: writing merge request comments (Gitea end to end; the other
+// forges' endpoints are the adapters' unit tests) ----
+
+const ISSUES_POST: &str = "POST /api/v1/repos/alice/project/issues/7/comments";
+
+fn sam_comment(app: &mut App) {
+    app.review.user = Some("sam".into());
+    review(app).conversation.push(comment("300", "sam", "my words"));
+    changed(app);
+}
+
+fn sent(server: &crate::forge::fake::FakeServer, method: &str) -> Vec<crate::forge::fake::Request> {
+    server.requests().into_iter().filter(|r| r.method == method).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_conversation_comment_on_merge_request_posts_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let extra = vec![(ISSUES_POST.to_string(), crate::forge::fake::Reply::json("{}"))];
+    let (mut app, server) = crate::mr_review_tests::threads::loaded_app_with(dir.path(), None, None, None, extra).await;
+    app.test_execute(Command::ReviewCommentOnMergeRequest);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    assert_eq!(app.test_composer_text().as_deref(), Some(""));
+    assert_eq!(tabs(&app), 1);
+    let l = draw(&mut app, 100, 30).join("\n");
+    assert!(l.contains("Comment on the merge request (posted at once)"), "{l}");
+    // The box is after the description and ann's comment.
+    assert!(l.find("looking").unwrap() < l.find("posted at once").unwrap(), "{l}");
+    app.type_text("Looks good to me");
+    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    assert!(app.settle(|a| a.test_composer_text().is_none()).await);
+    let posts = sent(&server, "POST");
+    let post = posts
+        .iter()
+        .find(|r| r.target.ends_with("issues/7/comments"))
+        .expect("a post");
+    assert_eq!(post.body, r#"{"body":"Looks good to me"}"#);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_conversation_a_refused_post_keeps_the_box_and_its_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let extra = vec![(
+        ISSUES_POST.to_string(),
+        crate::forge::fake::Reply::status(500).with_body("{}"),
+    )];
+    let (mut app, server) = crate::mr_review_tests::threads::loaded_app_with(dir.path(), None, None, None, extra).await;
+    app.test_execute(Command::ReviewCommentOnMergeRequest);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    app.type_text("keep me");
+    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    assert!(
+        app.settle(|a| !a.review.writing && !sent(&server, "POST").is_empty())
+            .await
+    );
+    assert_eq!(app.test_composer_text().as_deref(), Some("keep me"));
+    assert!(app.review.error.is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_conversation_own_comments_have_edit_and_delete_buttons() {
+    let dir = tempfile::tempdir().unwrap();
+    let extra = vec![
+        (
+            "PATCH /api/v1/repos/alice/project/issues/comments/300".to_string(),
+            crate::forge::fake::Reply::json("{}"),
+        ),
+        (
+            "DELETE /api/v1/repos/alice/project/issues/comments/300".to_string(),
+            crate::forge::fake::Reply::status(204),
+        ),
+    ];
+    let (mut app, server) = crate::mr_review_tests::threads::loaded_app_with(dir.path(), None, None, None, extra).await;
+    sam_comment(&mut app);
+    // A review summary of the user's is read-only, and so are others' comments.
+    review(&mut app)
+        .conversation
+        .push(comment("review-5", "sam", "summary"));
+    changed(&mut app);
+    open(&mut app).await;
+    let rows = draw(&mut app, 100, 40);
+    assert_eq!(rows.iter().filter(|r| r.contains("[Edit]")).count(), 1, "{rows:#?}");
+    let at = |rows: &[String], label: &str| {
+        rows.iter()
+            .enumerate()
+            .find_map(|(y, r)| r.find(label).map(|b| (r[..b].chars().count() as u16, y as u16)))
+            .unwrap()
+    };
+    // Edit: the box holds the comment's text; the forge gets the new one.
+    let (x, y) = at(&rows, "[Edit]");
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x + 2, y);
+    assert_eq!(app.test_composer_text().as_deref(), Some("my words"));
+    app.type_text(" and more");
+    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    assert!(app.settle(|a| a.test_composer_text().is_none()).await);
+    assert_eq!(sent(&server, "PATCH")[0].body, r#"{"body":"my words and more"}"#);
+    // Delete confirms first.
+    let rows = draw(&mut app, 100, 40);
+    let (x, y) = at(&rows, "[Delete]");
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x + 2, y);
+    assert!(matches!(
+        app.prompt,
+        Some(crate::app::Prompt::ConfirmDeleteComment { conversation: true, .. })
+    ));
+    assert!(sent(&server, "DELETE").is_empty());
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.settle(|_a| !sent(&server, "DELETE").is_empty()).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_conversation_the_box_is_guarded_kept_over_a_refresh_and_cancelled_by_esc() {
+    let dir = tempfile::tempdir().unwrap();
+    let extra = vec![(ISSUES_POST.to_string(), crate::forge::fake::Reply::json("{}"))];
+    let (mut app, server) = crate::mr_review_tests::threads::loaded_app_with(dir.path(), None, None, None, extra).await;
+    app.test_execute(Command::ReviewCommentOnMergeRequest);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    // An empty box posts nothing.
+    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    assert!(sent(&server, "POST").is_empty());
+    assert_eq!(app.test_composer_text().as_deref(), Some(""));
+    app.type_text("draft words");
+    // A second command while the box is open keeps the text (no new box).
+    app.test_execute(Command::ReviewCommentOnMergeRequest);
+    assert_eq!(app.test_composer_text().as_deref(), Some("draft words"));
+    // A refresh that adds a comment re-syncs the blocks: the box stays, still last.
+    review(&mut app)
+        .conversation
+        .push(comment("301", "bob", "late arrival"));
+    changed(&mut app);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    let l = draw(&mut app, 100, 40).join("\n");
+    assert_eq!(app.test_composer_text().as_deref(), Some("draft words"));
+    assert!(l.contains("late arrival") && l.contains("draft words"), "{l}");
+    assert!(l.find("late arrival").unwrap() < l.find("draft words").unwrap(), "{l}");
+    // Esc cancels without posting.
+    app.press(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.test_composer_text().is_none());
+    assert!(sent(&server, "POST").is_empty());
+    let l = draw(&mut app, 100, 40).join("\n");
+    assert!(!l.contains("posted at once"), "{l}");
+}
+
+fn click_label(app: &mut App, label: &str) {
+    let rows = draw(app, 100, 40);
+    let (y, b) = rows
+        .iter()
+        .enumerate()
+        .find_map(|(y, r)| r.find(label).map(|b| (y as u16, b)))
+        .unwrap();
+    let x = rows[y as usize][..b].chars().count() as u16 + 2;
+    app.mouse(MouseEventKind::Down(MouseButton::Left), x, y);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_conversation_a_refused_edit_keeps_the_box() {
+    let dir = tempfile::tempdir().unwrap();
+    let extra = vec![(
+        "PATCH /api/v1/repos/alice/project/issues/comments/300".to_string(),
+        crate::forge::fake::Reply::status(500).with_body("{}"),
+    )];
+    let (mut app, server) = crate::mr_review_tests::threads::loaded_app_with(dir.path(), None, None, None, extra).await;
+    sam_comment(&mut app);
+    open(&mut app).await;
+    click_label(&mut app, "[Edit]");
+    app.type_text("!");
+    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    assert!(
+        app.settle(|a| !a.review.writing && !sent(&server, "PATCH").is_empty())
+            .await
+    );
+    assert_eq!(app.test_composer_text().as_deref(), Some("my words!"));
+    assert!(app.review.error.is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_conversation_github_edit_and_delete_go_to_the_issue_comment_endpoints() {
+    use crate::forge::fake::Reply;
+    use crate::mr_review_tests::github::{boot_github, server_plus};
+    let dir = tempfile::tempdir().unwrap();
+    let (root, main) = crate::mr_review_tests::make_repo(dir.path());
+    let head = crate::git::test_repo::git(&root, &["rev-parse", "HEAD"])
+        .trim()
+        .to_string();
+    let api = "/api/v3/repos/alice/project";
+    let extra = vec![
+        (format!("POST {api}/issues/7/comments"), Reply::json("{}")),
+        (format!("PATCH {api}/issues/comments/300"), Reply::json("{}")),
+        (format!("DELETE {api}/issues/comments/300"), Reply::status(204)),
+    ];
+    let server = server_plus(&main, &head, true, false, extra);
+    let mut app = boot_github(&root, &server).await;
+    app.test_execute(Command::ReviewCommentOnMergeRequest);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    app.type_text("hi there");
+    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    assert!(app.settle(|a| a.test_composer_text().is_none()).await);
+    let post = sent(&server, "POST")
+        .into_iter()
+        .find(|r| r.target.ends_with("/issues/7/comments"))
+        .expect("a post");
+    assert_eq!(post.body, r#"{"body":"hi there"}"#);
+    app.review.user = Some("sam".into());
+    review(&mut app).conversation.push(comment("300", "sam", "my words"));
+    changed(&mut app);
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    click_label(&mut app, "[Edit]");
+    app.type_text("!");
+    app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    assert!(app.settle(|a| a.test_composer_text().is_none()).await);
+    let patch = &sent(&server, "PATCH")[0];
+    assert!(patch.target.ends_with("/issues/comments/300"), "{}", patch.target);
+    assert_eq!(patch.body, r#"{"body":"my words!"}"#);
+    click_label(&mut app, "[Delete]");
+    app.press(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.settle(|_a| !sent(&server, "DELETE").is_empty()).await);
+    assert!(sent(&server, "DELETE")[0].target.ends_with("/issues/comments/300"));
+}
