@@ -452,12 +452,17 @@ impl App {
         send_key(&shell.run, key);
     }
 
-    /// A paste while a shell tab has the keys: into the shell (bracketed when it asked).
+    /// A paste while a shell tab has the keys: into the shell (bracketed when it asked); files
+    /// dropped in as bare paths shell-quoted first (`shell::dropped_paths`).
     pub(super) fn shell_paste(&mut self, text: &str) {
         let Some(shell) = self.focused_shell() else {
             return;
         };
-        send_paste(&shell.run, text);
+        // Files dropped in from a terminal that pastes them as bare paths (kitty): quoted.
+        match shell::dropped_paths(text, |p| p.exists()) {
+            Some(quoted) => send_paste(&shell.run, &quoted),
+            None => send_paste(&shell.run, text),
+        }
     }
 
     /// `AppEvent::Terminal(TerminalEvent::Shell)`: output and starts only need a redraw (`handle_app_event` asks for one);
