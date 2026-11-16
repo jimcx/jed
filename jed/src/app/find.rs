@@ -175,10 +175,14 @@ impl App {
         if self.active_hex().is_some() {
             return self.refresh_hex_find();
         }
-        // A diff tab is searched row by row on each step: nothing to cache.
-        if self.group().active_diff().is_some() {
+        // A diff tab: both sides' lines, cached per doc (no replace: the rows are read-only here).
+        if let Some(d) = self.groups.active_group().active_diff() {
             self.find.replace_visible = false;
             self.find.field = Field::Find;
+            if let Some(doc) = &d.doc {
+                let f = &mut self.find;
+                f.diff.refresh(d.id, d.doc_key(), doc, &f.query.text, self.find_options);
+            }
             return;
         }
         let Some(tab) = self.groups.active_group().active_tab() else {
@@ -427,46 +431,52 @@ impl App {
         self.diff_find(true, true);
     }
 
-    /// Moves the diff tab's cursor to the next (`forward`) or previous row with a match of the
-    /// query, wrapping; `inclusive` lets the current row count (incremental search).
+    /// Selects the diff tab's next (`forward`) or previous match of the query after (before) the
+    /// caret's selection, in row order (a row's left side first), wrapping; `inclusive` lets a
+    /// match at the selection's start count (incremental search).
     fn diff_find(&mut self, forward: bool, inclusive: bool) {
-        let Ok(matcher) = crate::search::Matcher::new(&self.find.query.text, self.find_options) else {
-            return;
-        };
+        self.refresh_find();
+        let find = &self.find.diff;
         let Some(d) = self.groups.active_group_mut().active_diff_mut() else {
             return;
         };
         let Some(doc) = d.doc.clone() else { return };
-        let aligned = doc.aligned(d.inline);
-        let n = aligned.rows.len();
-        if n == 0 || self.find.query.text.is_empty() {
+        if !find.is_current(d.id, d.doc_key()) {
             return;
         }
-        let hit = |i: usize| {
-            let row = &aligned.rows[i];
-            [(row.right, &doc.right), (row.left, &doc.left)]
+        d.sync_caret();
+        let inline = d.inline;
+        let cursor = d.cursor;
+        let here = (d.caret.right, d.caret.ordered().0.1);
+        let after = |m: &crate::find::DiffMatch| {
+            let k = (m.right, m.range.start);
+            if inclusive { k >= here } else { k > here }
+        };
+        let in_row = find.row_matches(&doc, inline, cursor);
+        let found = if forward {
+            in_row.into_iter().find(after).or_else(|| {
+                let row = find.row_after(inline, Some(cursor)).or(find.row_after(inline, None))?;
+                find.row_matches(&doc, inline, row).into_iter().next()
+            })
+        } else {
+            in_row
                 .into_iter()
-                .filter_map(|(l, lines)| l.map(|l| lines.line(l)))
-                .any(|text| {
-                    matcher
-                        .find_next(&ropey::Rope::from_str(text), ByteIdx(0), false)
-                        .is_some()
+                .rev()
+                .find(|m| (m.right, m.range.start) < here)
+                .or_else(|| {
+                    let row = find
+                        .row_before(inline, Some(cursor))
+                        .or(find.row_before(inline, None))?;
+                    find.row_matches(&doc, inline, row).into_iter().last()
                 })
         };
-        let start = d.cursor.min(n - 1);
-        let steps = if inclusive { 0..n } else { 1..n + 1 };
-        let found = steps
-            .map(|k| {
-                if forward {
-                    (start + k) % n
-                } else {
-                    (start + n - k % n) % n
-                }
-            })
-            .find(|&i| hit(i));
-        if let Some(i) = found {
-            d.cursor = i;
-            d.reveal = true;
+        if let Some(m) = found {
+            d.place_caret(crate::diff_caret::Caret {
+                right: m.right,
+                anchor: (m.line, m.range.start),
+                head: (m.line, m.range.end),
+                col: None,
+            });
         }
     }
 

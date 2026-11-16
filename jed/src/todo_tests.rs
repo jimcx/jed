@@ -14183,7 +14183,8 @@ mod find_in_diff_view {
 
     /// Steps the diff cursor through matches: incremental search as the query is typed, Enter /
     /// Shift+Enter with wrapping both ways, a match only on the deleted (left) side, no match
-    /// leaving the cursor, and replace / select-all doing nothing.
+    /// leaving the cursor, and replace / select-all doing nothing. Drawn, the matches are
+    /// highlighted and the widget shows the count.
     #[tokio::test(flavor = "multi_thread")]
     async fn find_on_a_diff_tab_steps_the_cursor_row_by_row() {
         use crossterm::event::{KeyCode as K, KeyModifiers as M};
@@ -14242,6 +14243,32 @@ mod find_in_diff_view {
         assert_eq!(cursor(&app), 5, "previous wraps to the last match");
         app.press(K::Enter, M::SHIFT);
         assert_eq!(cursor(&app), 3);
+
+        // Drawn: the count, the selected match (row 3's `x`) and the others highlighted.
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let cells = term.backend().buffer().clone();
+        let row_text = |y: u16| (0..100).map(|x| cells[(x, y)].symbol().to_string()).collect::<String>();
+        assert!((0..20).any(|y| row_text(y).contains("2 of 3")), "the count shows");
+        let bgs_of = |needle: &str| {
+            let mut out = Vec::new();
+            for y in 0..20 {
+                let text = row_text(y);
+                for (i, _) in text.match_indices(needle) {
+                    let x = text[..i].chars().count() as u16 + needle.chars().count() as u16 - 1;
+                    out.push(cells[(x, y)].bg);
+                }
+            }
+            out
+        };
+        let current = app.theme.get("editor.findMatch").bg.unwrap();
+        let other = app.theme.get("editor.findMatchHighlight").bg.unwrap();
+        assert!(bgs_of("delta x").contains(&current), "the selected match");
+        assert!(
+            bgs_of("beta x").iter().all(|&b| b == other),
+            "other matches, both sides"
+        );
+        assert!(bgs_of("gone x").iter().all(|&b| b == other));
 
         app.test_execute(Command::Find(FindCommand::ReplaceOne));
         app.test_execute(Command::Find(FindCommand::SelectAllMatches));

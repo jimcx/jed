@@ -314,6 +314,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
             && app.cheat_sheet.is_none()
             && app.keys.is_none();
         if let Some(d) = group.active_diff_mut() {
+            // The find widget's matches, over the active group's diff (the one it searched).
+            let find = (is_active && !terminal && app.find.visible && app.find.diff.is_current(d.id, d.doc_key()))
+                .then(|| app.find.diff.matcher())
+                .flatten();
             diff_hit = Some(diff::render(
                 f,
                 editor_area,
@@ -321,6 +325,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 &app.theme,
                 app.settings.tab_width,
                 focused,
+                find,
             ));
             // As drawn: `diff::render` sets `text_width` and measures the rows it drew.
             hscroll = Some((d.scroll_width, d.text_width, d.left_col, None));

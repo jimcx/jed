@@ -50,7 +50,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
     let find = &app.find;
     let hex = app.active_hex();
     let sel = app.group().active_tab().map(|t| *t.view.selections.primary());
-    let diff = app.group().active_diff().is_some();
+    let diff_tab = app.group().active_diff();
+    let diff = diff_tab.is_some();
     if (hex.is_none() && sel.is_none() && !diff) || !find.visible || area.width < 24 || area.height < 3 {
         return None;
     }
@@ -61,6 +62,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
     let selected = input.patch(theme.get("editor.selection"));
     let error = match hex {
         Some(_) => find.hex.error().map(|e| e.to_string()),
+        None if diff => find.diff.error().map(|e| e.to_string()),
         None => find.error().map(|e| e.to_string()),
     };
     // A hex tab has no replace.
@@ -116,6 +118,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
     }
     let count = match (hex, sel) {
         (Some(h), _) => find.hex.count_label(h.selection()),
+        (None, _) if let Some(d) = diff_tab => diff_count(find, d),
         (None, Some(sel)) => find.count_label((sel.start(), sel.end())),
         (None, None) => String::new(),
     };
@@ -156,3 +159,17 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) -> Option<FindHit> {
 }
 
 pub(super) use jtui::field_draw::draw_field;
+
+/// A diff tab's "3 of 41": the caret's selection on its line, as a match would be.
+fn diff_count(find: &crate::find::FindWidget, d: &crate::diff_view::DiffTab) -> String {
+    let Some(doc) = d.doc.as_ref().filter(|_| find.diff.is_current(d.id, d.doc_key())) else {
+        return String::new();
+    };
+    let (lo, hi) = d.caret.ordered();
+    let selected = crate::find::DiffMatch {
+        right: d.caret.right,
+        line: lo.0,
+        range: lo.1..if hi.0 == lo.0 { hi.1 } else { usize::MAX },
+    };
+    find.diff.count_label(doc, d.inline, d.cursor, &selected)
+}

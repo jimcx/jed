@@ -26,6 +26,7 @@ use crate::diff_view::{self, DiffTab, Kind, Lines, Row};
 use crate::git::stage::Side;
 use crate::layout::{BlockHit, DiffHit};
 use crate::review_blocks::{self, BlockLine, Kind as BlockKind, Spot};
+use crate::search::Matcher;
 use crate::syntax::Span;
 use crate::theme::Theme;
 
@@ -54,6 +55,9 @@ struct Styles {
     inserted_text: Style,
     fill: Style,
     control: Style,
+    /// Find matches (the find widget open over the tab): the selected one, the others.
+    find_match: Style,
+    find_highlight: Style,
     /// Per `syntax::KEYS` index: the token's foreground (and modifiers), never a background.
     tokens: Vec<Style>,
 }
@@ -129,9 +133,18 @@ struct Line<'a> {
     spans: &'a [Span],
 }
 
-/// Draws the diff tab in `area`; `focused` puts the terminal cursor on the current row. Writes
-/// back the layout and the rows that fit; returns the rows' rect and the buttons for the mouse.
-pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_width: usize, focused: bool) -> DiffHit {
+/// Draws the diff tab in `area`; `focused` puts the terminal cursor on the current row, `find`
+/// (the find widget's query, while it is open over the tab) highlights its matches. Writes back
+/// the layout and the rows that fit; returns the rows' rect and the buttons for the mouse.
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    d: &mut DiffTab,
+    theme: &Theme,
+    tab_width: usize,
+    focused: bool,
+    find: Option<&Matcher>,
+) -> DiffHit {
     let st = Styles {
         base: theme.get("editor"),
         current: theme.get("editor").patch(theme.get("editor.lineHighlight")),
@@ -145,6 +158,8 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
         inserted_text: theme.get("diffEditor.insertedTextBackground"),
         fill: theme.get("editor").patch(theme.get("diffEditor.diagonalFill")),
         control: theme.get("editor.whitespace.control"),
+        find_match: theme.get("editor.findMatch"),
+        find_highlight: theme.get("editor.findMatchHighlight"),
         selection: theme.get("editor.selection"),
         tokens: crate::syntax::KEYS
             .iter()
@@ -372,6 +387,7 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
             let (right, l) = (row.kind() != Kind::Removed, line_no(row));
             let sel = caret.on_line(right, l, line.text.len());
             let mark = marks.at(right, Some(l));
+            let found = finds(find, &caret, right, l, line.text);
             let (cell, w) = draw_inline(
                 out,
                 body,
@@ -385,15 +401,17 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
                 current,
                 sel,
                 mark,
+                &found,
             );
             at_caret = (right == caret.right).then_some(cell);
             (cell, w, (w, w))
         } else {
             let left = Rect::new(body.x, y, half, 1);
             let right = Rect::new(body.x + half + 1, y, body.width - half - 1, 1);
-            let side = |rect, line, removed: bool, part, sel| {
+            let side = |rect, line, removed: bool, part, sel, found| {
                 let mark = marks.at(!removed, if removed { row.left } else { row.right });
                 let ctx = Half {
+                    finds: found,
                     rect,
                     sel,
                     mark,
@@ -411,14 +429,27 @@ pub fn render(f: &mut Frame, area: Rect, d: &mut DiffTab, theme: &Theme, tab_wid
                 let lines = if right { &doc.right } else { &doc.left };
                 l.and_then(|l| caret.on_line(right, l, lines.line(l).len()))
             };
+            let found = |right: bool, line: &Option<(usize, Line)>| {
+                line.as_ref()
+                    .map_or_else(Vec::new, |(l, text)| finds(find, &caret, right, *l, text.text))
+            };
+            let (left_found, right_found) = (found(false, &left_line), found(true, &right_line));
             let (l, lr, lp) = side(
                 left,
                 left_line,
                 true,
                 parts.as_ref().map(|p| p.0.clone()),
                 on(false, row.left),
+                left_found,
             );
-            let (r, rr, rp) = side(right, right_line, false, parts.map(|p| p.1), on(true, row.right));
+            let (r, rr, rp) = side(
+                right,
+                right_line,
+                false,
+                parts.map(|p| p.1),
+                on(true, row.right),
+                right_found,
+            );
             let at_left = draw_half(out, &l, row, lr, lp, &st);
             let at_right = draw_half(out, &r, row, rr, rp, &st);
             // The cell at `body.x + half` is the centre line (a border: `borders` draws it).
@@ -618,6 +649,8 @@ struct Half<'a> {
     sel: Option<(Range<usize>, bool)>,
     /// A review comment's bar beside the number.
     mark: Option<Style>,
+    /// The find matches in the line (`true`: the selected one).
+    finds: Vec<(Range<usize>, bool)>,
 }
 
 /// Draws one side of a row (its number, then its text; filler when it has no line). Returns
@@ -662,6 +695,7 @@ fn draw_half(
         bg,
         highlight,
         h.sel.clone(),
+        &h.finds,
         st,
     );
     ((text_x, y), w)
@@ -683,6 +717,7 @@ fn draw_inline(
     current: bool,
     sel: Option<(Range<usize>, bool)>,
     mark: Option<Style>,
+    found: &[(Range<usize>, bool)],
 ) -> ((u16, u16), usize) {
     let (bg, sign) = match row.kind() {
         Kind::Removed => (st.removed, "-"),
@@ -711,14 +746,15 @@ fn draw_inline(
         bg,
     );
     let room = body.width.saturating_sub(sx - body.x);
-    let w = draw_text(out, (sx, y, room), &line, left_col, tab_width, bg, None, sel, st);
+    let w = draw_text(out, (sx, y, room), &line, left_col, tab_width, bg, None, sel, found, st);
     ((sx, y), w)
 }
 
 /// A line's text from display column `left_col`, `width` cells at most, through
 /// `pos::display_grapheme` (tabs, control characters) as the editor draws it: the token colours
-/// of its spans over `style`, then `highlight`'s background over a byte range. Returns the line's
-/// whole width (the part past the edge only measured).
+/// of its spans over `style`, then `highlight`'s background over a byte range, the find matches
+/// (`found`, in order), the selection, and the selected match over that. Returns the line's whole
+/// width (the part past the edge only measured).
 #[allow(clippy::too_many_arguments)]
 fn draw_text(
     out: &mut Cells,
@@ -729,11 +765,13 @@ fn draw_text(
     style: Style,
     highlight: Option<(Range<usize>, Style)>,
     sel: Option<(Range<usize>, bool)>,
+    found: &[(Range<usize>, bool)],
     st: &Styles,
 ) -> usize {
     let width = width as usize;
     let mut col = 0usize;
     let mut k = 0;
+    let mut fi = 0;
     for (off, g) in line.text.grapheme_indices(true) {
         let (shown, w) = pos::display_grapheme(g, DisplayCol(col), tab_width);
         if col < left_col {
@@ -761,10 +799,20 @@ fn draw_text(
         if g.starts_with(|c: char| c.is_control()) && g != "\t" {
             s = s.patch(st.control);
         }
+        while fi < found.len() && found[fi].0.end <= off {
+            fi += 1;
+        }
+        let in_match = found.get(fi).filter(|(r, _)| r.contains(&off));
+        if let Some((_, false)) = in_match {
+            s = s.patch(st.find_highlight);
+        }
         if let Some((range, _)) = &sel
             && range.contains(&off)
         {
             s = s.patch(st.selection);
+        }
+        if let Some((_, true)) = in_match {
+            s = s.patch(st.find_match);
         }
         out.set_stringn(x + (col - left_col) as u16, y, &shown, w, s);
         col += w;
@@ -785,4 +833,24 @@ fn line_no(row: &Row) -> usize {
         Kind::Removed => row.left.unwrap_or_default(),
         _ => row.right.unwrap_or_default(),
     }
+}
+
+/// The find matches in line `line` of a side (`right`), its text `text`: each marked selected
+/// when it is exactly the caret's selection. None without a query.
+fn finds(
+    find: Option<&Matcher>,
+    caret: &crate::diff_caret::Caret,
+    right: bool,
+    line: usize,
+    text: &str,
+) -> Vec<(Range<usize>, bool)> {
+    let Some(m) = find else { return Vec::new() };
+    let (lo, hi) = caret.ordered();
+    let selected = (caret.right == right && lo.0 == line && hi.0 == line).then_some(lo.1..hi.1);
+    let mut out = Vec::new();
+    m.each_in_line(text.as_bytes(), |s, e| {
+        out.push((s..e, selected == Some(s..e)));
+        true
+    });
+    out
 }

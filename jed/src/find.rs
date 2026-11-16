@@ -10,6 +10,9 @@
 //! previous search from the bytes directly (`find_next`) for a resident doc, off the UI thread for
 //! a paged one (`begin_step`: one search at a time, a newer one or a new query cancels it), so
 //! nothing else is cached.
+//!
+//! On a diff tab (`DiffFind`) both sides' lines are searched, line by line, into how many matches
+//! lie before each row of either layout: the count, and the next / previous row with a match.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -43,6 +46,8 @@ pub struct FindWidget {
     cache: Option<Cache>,
     /// The byte search's state while the active tab is a hex view.
     pub hex: HexFind,
+    /// The matches while the active tab is a diff view.
+    pub diff: DiffFind,
 }
 
 /// Find on a hex tab: the query as read last and the whole file's count for it.
@@ -211,6 +216,200 @@ impl HexFind {
             _ => format!("? of {total}"),
         }
     }
+}
+
+/// Find on a diff tab: per layout (side by side, inline), how many matches lie before each row,
+/// cached per (tab, loaded doc, query, options). A row's matches are those of the lines it draws
+/// (`row_lines`: an unchanged row's once), so the count is of what is on screen. A row's own matches are searched again when needed (`row_matches`).
+#[derive(Debug, Default)]
+pub struct DiffFind {
+    cache: Option<DiffCache>,
+}
+
+#[derive(Debug)]
+struct DiffCache {
+    key: DiffKey,
+    found: Result<DiffFound, SearchError>,
+}
+
+/// What a `DiffFind` was computed for: the tab, its doc (`DiffTab::doc_key`), the query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiffKey {
+    tab: u64,
+    doc: (usize, u64),
+    query: String,
+    options: Options,
+}
+
+#[derive(Debug)]
+struct DiffFound {
+    matcher: Matcher,
+    /// Per layout (`[side by side, inline]`): the matches in the rows before each row, and the
+    /// total last (one more entry than rows).
+    before: [Vec<usize>; 2],
+}
+
+/// A match in a diff tab: the side (`right`: the new text), the line in that side, its bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffMatch {
+    pub right: bool,
+    pub line: usize,
+    pub range: Range<usize>,
+}
+
+impl DiffFind {
+    /// Searches `doc` (diff tab `tab`'s, `doc_key` as `DiffTab::doc_key`) unless the cache is
+    /// for exactly that, query and options too. Lines are searched one at a time: a match never
+    /// spans lines.
+    pub fn refresh(
+        &mut self,
+        tab: u64,
+        doc_key: (usize, u64),
+        doc: &crate::diff_view::Doc,
+        query: &str,
+        options: Options,
+    ) {
+        let key = DiffKey {
+            tab,
+            doc: doc_key,
+            query: query.to_string(),
+            options,
+        };
+        if self.cache.as_ref().is_some_and(|c| c.key == key) {
+            return;
+        }
+        let found = Matcher::new_single_line(query, options).map(|matcher| {
+            let count = |lines: &crate::diff_view::Lines| -> Vec<usize> {
+                (0..lines.len())
+                    .map(|i| {
+                        let mut n = 0;
+                        matcher.each_in_line(lines.line(i).as_bytes(), |_, _| {
+                            n += 1;
+                            true
+                        });
+                        n
+                    })
+                    .collect()
+            };
+            let (left, right) = (count(&doc.left), count(&doc.right));
+            let before = [false, true].map(|inline| {
+                let rows = &doc.aligned(inline).rows;
+                let mut out = Vec::with_capacity(rows.len() + 1);
+                let mut total = 0;
+                out.push(0);
+                for row in rows {
+                    for (r, line) in row_lines(row, inline) {
+                        total += if r { right.get(line) } else { left.get(line) }.copied().unwrap_or(0);
+                    }
+                    out.push(total);
+                }
+                out
+            });
+            DiffFound { matcher, before }
+        });
+        self.cache = Some(DiffCache { key, found });
+    }
+
+    /// Whether the cache is for this tab and doc.
+    pub fn is_current(&self, tab: u64, doc_key: (usize, u64)) -> bool {
+        self.cache
+            .as_ref()
+            .is_some_and(|c| c.key.tab == tab && c.key.doc == doc_key)
+    }
+
+    fn found(&self) -> Option<&DiffFound> {
+        self.cache.as_ref()?.found.as_ref().ok()
+    }
+
+    /// The matcher for the cached query, unless it's empty or invalid.
+    pub fn matcher(&self) -> Option<&Matcher> {
+        self.found().map(|f| &f.matcher).filter(|m| !m.is_empty())
+    }
+
+    pub fn error(&self) -> Option<&SearchError> {
+        self.cache.as_ref()?.found.as_ref().err()
+    }
+
+    fn before(&self, inline: bool) -> &[usize] {
+        self.found().map_or(&[], |f| &f.before[usize::from(inline)])
+    }
+
+    /// Every match in the layout.
+    pub fn total(&self, inline: bool) -> usize {
+        self.before(inline).last().copied().unwrap_or(0)
+    }
+
+    /// The first row after `row` (from the first row: `None`) with a match, without wrapping.
+    pub fn row_after(&self, inline: bool, row: Option<usize>) -> Option<usize> {
+        let b = self.before(inline);
+        let v = match row {
+            Some(r) => *b.get(r + 1)?,
+            None => 0,
+        };
+        let p = b.partition_point(|&x| x <= v);
+        (p < b.len()).then(|| p - 1)
+    }
+
+    /// The last row before `row` (from the last row: `None`) with a match, without wrapping.
+    pub fn row_before(&self, inline: bool, row: Option<usize>) -> Option<usize> {
+        let b = self.before(inline);
+        let v = match row {
+            Some(r) => *b.get(r)?,
+            None => *b.last()?,
+        };
+        (v > 0).then(|| b.partition_point(|&x| x < v) - 1)
+    }
+
+    /// Row `row`'s matches in order (left side first).
+    pub fn row_matches(&self, doc: &crate::diff_view::Doc, inline: bool, row: usize) -> Vec<DiffMatch> {
+        let (Some(matcher), Some(row)) = (self.matcher(), doc.aligned(inline).rows.get(row)) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (right, line) in row_lines(row, inline) {
+            let lines = if right { &doc.right } else { &doc.left };
+            matcher.each_in_line(lines.line(line).as_bytes(), |s, e| {
+                out.push(DiffMatch {
+                    right,
+                    line,
+                    range: s..e,
+                });
+                true
+            });
+        }
+        out
+    }
+
+    /// "3 of 41" when `selected` (the caret's selection, on row `row`) is a match, "? of 41"
+    /// when it isn't, "No results", or nothing without a valid query or for another doc.
+    pub fn count_label(&self, doc: &crate::diff_view::Doc, inline: bool, row: usize, selected: &DiffMatch) -> String {
+        if self.matcher().is_none() {
+            return String::new();
+        }
+        let n = self.total(inline);
+        if n == 0 {
+            return "No results".into();
+        }
+        let index = self
+            .row_matches(doc, inline, row)
+            .iter()
+            .position(|m| m == selected)
+            .map(|i| self.before(inline)[row] + i);
+        match index {
+            Some(i) => format!("{} of {n}", i + 1),
+            None => format!("? of {n}"),
+        }
+    }
+}
+
+/// The lines row `row` counts, as (side, line): a changed row's both sides (left first) side by
+/// side, inline the one drawn; an unchanged row's right line only (its left is the same text).
+fn row_lines(row: &crate::diff_view::Row, inline: bool) -> impl Iterator<Item = (bool, usize)> {
+    let same = row.kind() == crate::diff_view::Kind::Same;
+    [false, true]
+        .into_iter()
+        .filter(move |&right| right || !same)
+        .filter_map(move |right| crate::diff_caret::side_line(row, right, inline).map(|l| (right, l)))
 }
 
 #[derive(Debug)]
@@ -478,5 +677,49 @@ mod tests {
         let m = w.matches()[1];
         assert_eq!(w.replacement_for(&rope, m, true).as_deref(), Some("d=c"));
         assert_eq!(w.replacement_for(&rope, m, false).as_deref(), Some("$2=$1"));
+    }
+
+    /// A diff's matches per row: an unchanged row counted once, a changed row's both sides,
+    /// the rows before / after a row with a match, and the count of a selected match.
+    #[test]
+    fn diff_find_counts_rows_and_steps() {
+        use crate::diff_view::Doc;
+        let doc = Doc::new(b"a x\nold x\nb\nc x\n".to_vec(), b"a x\nnew x x\nb\nc x\n".to_vec()).unwrap();
+        let mut f = DiffFind::default();
+        f.refresh(1, (1, 1), &doc, "x", Options::default());
+        assert!(f.is_current(1, (1, 1)) && !f.is_current(1, (1, 2)));
+        // Side by side: a x | old x / new x x | b | c x.
+        assert_eq!(f.total(false), 5);
+        // Inline: a x | -old x | +new x x | b | c x.
+        assert_eq!(f.total(true), 5);
+        assert_eq!(f.row_after(false, None), Some(0));
+        assert_eq!(f.row_after(false, Some(1)), Some(3));
+        assert_eq!(f.row_after(false, Some(3)), None);
+        assert_eq!(f.row_before(false, Some(3)), Some(1));
+        assert_eq!(f.row_before(false, None), Some(3));
+        assert_eq!(f.row_before(false, Some(0)), None);
+        let row = f.row_matches(&doc, false, 1);
+        let lines: Vec<_> = row.iter().map(|m| (m.right, m.line, m.range.clone())).collect();
+        assert_eq!(lines, vec![(false, 1, 4..5), (true, 1, 4..5), (true, 1, 6..7)]);
+        assert_eq!(f.count_label(&doc, false, 1, &row[2]), "4 of 5");
+        let off = DiffMatch {
+            right: true,
+            line: 1,
+            range: 0..1,
+        };
+        assert_eq!(f.count_label(&doc, false, 1, &off), "? of 5");
+        f.refresh(1, (1, 1), &doc, "zzz", Options::default());
+        assert_eq!(f.count_label(&doc, false, 1, &off), "No results");
+        f.refresh(
+            1,
+            (1, 1),
+            &doc,
+            "(",
+            Options {
+                regex: true,
+                ..Options::default()
+            },
+        );
+        assert!(f.error().is_some() && f.count_label(&doc, false, 1, &off).is_empty());
     }
 }
