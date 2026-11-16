@@ -84,7 +84,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
     let draft = if review.mr.draft { "Draft: " } else { "" };
     let title = format!("!{} {draft}{}{mark}", review.mr.number, review.mr.title);
     hit.summary = Rect { y, height: 1, ..area };
-    text(out, &mut y, end, &truncate(&title, width - 2), header);
+    let shown = truncate(&title, width - 2);
+    if !mark.is_empty() && shown.ends_with(&mark) {
+        let w = mark.chars().count() as u16;
+        hit.switcher = Rect::new(area.x + 1 + (shown.chars().count() as u16 - w), y, w, 1);
+    }
+    text(out, &mut y, end, &shown, header);
+    if state.view.summary {
+        out.set_style(hit.summary, base.patch(selected_style));
+    }
     let branches = format!("{} → {}", review.mr.head.name, review.mr.base.name);
     text(out, &mut y, end, &truncate(&branches, width - 2), dim);
     let viewed = state.viewed_count();
@@ -168,8 +176,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
     let pending_h = height_of(Pane::Pending);
     let files_end = y + files_h;
     hit.files_header = Rect { y, height: 1, ..area };
-    let header_selected =
-        (files_collapsed || state.view.files_header) && !state.view.conv.focused && !state.view.pending.focused;
+    let header_selected = (files_collapsed || state.view.files_header)
+        && !state.view.summary
+        && !state.view.conv.focused
+        && !state.view.pending.focused;
     let files_label = format!(" {} FILES", if files_collapsed { '▸' } else { '▾' });
     let files_head = if header_selected {
         base.patch(selected_style)

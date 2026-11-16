@@ -346,16 +346,30 @@ async fn mr_review_several_merge_requests_show_the_newest_and_switch() {
             .await
     );
     assert!(screen(&mut app).contains("!7 Old one ‹2/2›"));
-    // A refresh keeps the choice; clicking the summary switches back.
+    // A refresh keeps the choice; clicking the mark switches back.
     app.test_execute(Command::ReviewRefresh);
     idle(&mut app).await;
     assert_eq!(app.review.review().unwrap().mr.number, 7);
     screen(&mut app);
+    // Only the `‹n/of›` mark switches (elsewhere the summary opens the conversation).
+    let mark = app.hits.review.clone().unwrap().switcher;
+    assert!(mark.width > 0);
+    // A click on the title does not switch: it opens the conversation tab.
     let summary = app.hits.review.clone().unwrap().summary;
+    assert!(summary.x < mark.x);
     app.mouse(
         crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
-        summary.x + 3,
+        summary.x + 1,
         summary.y,
+    );
+    assert!(app.settle(|a| a.diffs_settled()).await);
+    idle(&mut app).await;
+    assert_eq!(app.review.review().unwrap().mr.number, 7);
+    assert!(screen(&mut app).contains("!7 Old one ‹2/2›"));
+    app.mouse(
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        mark.x + 1,
+        mark.y,
     );
     assert!(
         app.settle(|a| a.review.review().is_some_and(|r| r.mr.number == 9) && !a.review.loading)
@@ -2199,13 +2213,11 @@ mod drafts {
         app.mouse(MouseEventKind::Down(MouseButton::Left), menu.x + 2, menu.y + 3);
         assert!(app.review.draft_rows().is_empty(), "{}", message(&app));
         assert!(message(&app).contains("Draft deleted"), "{}", message(&app));
-        // A merge request comment under CONVERSATIONS: thread items, none available.
+        // A merge request comment under CONVERSATIONS: only its conversation opens.
         lines(&mut app, 120, 30);
         let hit = app.hits.review.clone().unwrap();
         app.mouse(right, hit.conv_list.x + 4, hit.conv_list.y);
-        let labels = super::menu_labels(&app);
-        assert!(labels.iter().all(|l| l.ends_with(": off")), "{labels:?}");
-        assert!(labels.contains(&"Reply: off".to_string()), "{labels:?}");
+        assert_eq!(super::menu_labels(&app), ["Open Conversation: on"]);
         assert!(app.review.view.conv.focused);
     }
 

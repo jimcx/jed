@@ -704,6 +704,19 @@ pub struct ThreadTab {
     pub has_code: bool,
 }
 
+/// What a merge request's conversation tab (`DiffTab::conversation`, a `Pair::THREAD` tab) is about:
+/// one row per block (the description's, then each comment's), the blocks hanging under their
+/// rows. The rows are blank (the tab draws a marker on the caret's); copy takes the blocks' text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConvTab {
+    /// The merge request's number (one tab per merge request).
+    pub number: u64,
+    /// The tab's title (`!42 Conversation`).
+    pub title: String,
+    /// Rows the tab's code has now (its blocks' count).
+    pub rows: usize,
+}
+
 /// Blocking: reads both sides of `job` and diffs them.
 pub fn load(job: Job) -> Result<Doc, String> {
     let left = read(&job, job.pair.left, job.left_path.as_deref()).map_err(|e| e.to_string())?;
@@ -852,6 +865,8 @@ pub struct DiffTab {
     pub left_path: Option<PathBuf>,
     /// A thread tab's thread (`Pair::THREAD`; its code is `conflict`'s first block).
     pub thread: Option<ThreadTab>,
+    /// A merge request's conversation tab (`Pair::THREAD` too; its rows are `conflict`'s first block).
+    pub conv: Option<ConvTab>,
     /// A compare tab's sides (`Pair::COMPARE`).
     pub compare: Option<Compare>,
     /// The caret and selection in one side's text (`diff_caret`); its row is `cursor`.
@@ -910,6 +925,7 @@ impl DiffTab {
             conflict: None,
             left_path: None,
             thread: None,
+            conv: None,
             compare: None,
             caret: Default::default(),
             edited: None,
@@ -984,6 +1000,51 @@ impl DiffTab {
         }
     }
 
+    /// A merge request's conversation tab with `conv.rows` blank rows (at least one).
+    pub fn conversation(id: u64, path: PathBuf, conv: ConvTab) -> DiffTab {
+        let rows = "\n".repeat(conv.rows.max(1));
+        DiffTab {
+            conflict: Some((rows.into_bytes(), Vec::new())),
+            conv: Some(conv),
+            ..DiffTab::new(id, path, Pair::THREAD)
+        }
+    }
+
+    /// Gives a conversation tab a title, a merge request and `rows` rows (reloading when the rows changed).
+    pub fn set_conversation(&mut self, title: String, number: u64, rows: usize) {
+        let Some(c) = &mut self.conv else { return };
+        c.title = title;
+        c.number = number;
+        if c.rows != rows {
+            c.rows = rows;
+            self.conflict = Some(("\n".repeat(rows.max(1)).into_bytes(), Vec::new()));
+            self.stale = true;
+        }
+    }
+
+    /// A conversation tab's text for copy: the blocks of the caret's rows (the selection's), each
+    /// as `author:` and its text.
+    pub fn conv_text(&mut self) -> Option<String> {
+        self.conv.as_ref()?;
+        self.sync_caret();
+        let (lo, hi) = if self.caret.is_empty() {
+            (self.cursor, self.cursor)
+        } else {
+            let (lo, hi) = self.caret.ordered();
+            (lo.0, hi.0)
+        };
+        let list = self.threads.list();
+        let mut out = Vec::new();
+        for b in self.threads.blocks().list() {
+            if (lo..=hi).contains(&b.after_row) {
+                for (who, body) in &list[b.thread].comments {
+                    out.push(format!("{who}:\n{body}"));
+                }
+            }
+        }
+        (!out.is_empty()).then(|| out.join("\n\n"))
+    }
+
     /// A copy for a split (same diff, same place), with its own `id`.
     pub fn copy(&self, id: u64) -> DiffTab {
         DiffTab {
@@ -1011,6 +1072,7 @@ impl DiffTab {
             conflict: self.conflict.clone(),
             left_path: self.left_path.clone(),
             thread: self.thread.clone(),
+            conv: self.conv.clone(),
             compare: self.compare.clone(),
             caret: self.caret,
             edited: self.edited,
@@ -1048,6 +1110,9 @@ impl DiffTab {
     pub fn title(&self) -> String {
         if let Some(t) = &self.thread {
             return t.title.clone();
+        }
+        if let Some(c) = &self.conv {
+            return c.title.clone();
         }
         if let Some(c) = &self.compare {
             return format!("{} ↔ {}", c.sides[0].title(), c.sides[1].title());
@@ -1282,8 +1347,16 @@ impl DiffTab {
             if v < self.top || v >= self.top + height {
                 self.top = v.saturating_sub(height / 2);
             }
-            // A thread's block under the cursor's row is brought in too, when it fits.
-            let end = v + self.reveal_rows;
+            // A thread's block under the cursor's row is brought in too, when it fits (a
+            // conversation tab's always: it is what the tab shows).
+            let rows = match &self.conv {
+                Some(_) => (self.threads.blocks().list().iter())
+                    .filter(|b| b.after_row == self.cursor)
+                    .map(|b| b.height)
+                    .sum::<usize>(),
+                None => self.reveal_rows,
+            };
+            let end = v + rows;
             if end >= self.top + height {
                 self.top = (end + 1 - height).min(v);
             }

@@ -2,7 +2,7 @@
 id: review_conversation
 name: Code review conversation
 summary: read a merge request's description and comments in full in a conversation tab, with times on every comment, write a merge request comment, and give Submit Review an overall body
-status: open
+status: in-progress
 priority: 0
 dependencies: [mr_review, review_fixes]
 ---
@@ -19,7 +19,8 @@ The merge request's own conversation is fetched but can't be read: Enter on a CO
     - Claude's review tool returns the description
     - `scripts/check` is green
   - Subtasks (one agent and one commit each):
-    - review_conversation-a: the conversation tab (read-only)
+    - ✅ review_conversation-a: the conversation tab (read-only)
+        - Done: a `Pair::THREAD` diff tab with `DiffTab::conv: Option<ConvTab>` (`diff_view.rs`: number, title, rows), one blank row per block so the caret steps block to block; blocks are `review_blocks::Role::Comment` (no buttons; header `┌ author`, the description's `author · title`, built in `review_blocks::lines` — subtask b adds the time there). Built in `sync_review_threads`' conversation branch (`app/review.rs` `conversation_blocks`; subtask c appends its composer there and buttons to `Role::Comment`). `review_open_conversation(reveal)`; another MR's lookup retitles the tab. `scroll_to_cursor` reveals the caret's whole block; copy takes the caret's blocks (`conv_text`). Summary: `ReviewView::summary` selection (Up from FILES' header), click opens, `ReviewHit::switcher` (the `‹n/of›` mark) alone switches. The comment row's context menu is just "Open Conversation". Claude's MR answer has `body` / `body_truncated`. Tests: `review_conversation_tests.rs`, `mr_review_tests/claude.rs`.
         - A tab titled `!42 Conversation`, one per merge request, reused. Model it on the thread tab: a read-only diff tab with no code lines whose content is blocks (the description as the first block, headed by the author and the title; then `Review::conversation` in order), or a new `Tab` kind if blocks without code rows fight the diff view — decide after reading `review_blocks.rs` and `ui/diff.rs`, and say why in the report. Comments wrap to the width and scroll; the caret steps block to block; copy works.
         - Opens from the summary rows' Enter / click (the summary's click switches merge request today when there are several: keep that on the `‹n/of›` mark only), from a merge request comment's CONVERSATIONS row (replacing the status-bar line), and from "Code Review: Open Conversation" (`review.openConversation`).
         - It follows the review: a lookup's new comments appear (`ReviewState::generation`), another merge request's lookup closes or retitles it.

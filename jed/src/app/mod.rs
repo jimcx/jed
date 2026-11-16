@@ -1589,6 +1589,7 @@ impl App {
             Command::ReviewApplySuggestion => self.review_apply_suggestion(),
             Command::ReviewInsertSuggestion => self.review_insert_suggestion(),
             Command::ReviewOpenThread => self.review_open_thread(),
+            Command::ReviewOpenConversation => self.review_open_conversation(None),
             Command::Review(c) => self.review_command(c),
             Command::ToggleToolTrace => self.toggle_tool_trace(),
             Command::RestartServer => self.restart_server(),

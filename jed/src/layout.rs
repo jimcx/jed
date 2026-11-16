@@ -376,6 +376,9 @@ pub struct ReviewHit {
     pub list: Rect,
     pub rows: Vec<String>,
     pub summary: Rect,
+    /// The `‹n/of›` mark at the summary's end (a click switches merge request; elsewhere on the
+    /// summary it opens the conversation).
+    pub switcher: Rect,
     /// The files and conversations' share of the panel (what a divider drag measures against).
     pub body: Rect,
     /// Each shown section's divider row (a drag resizes it), top to bottom.

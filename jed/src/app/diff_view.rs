@@ -607,7 +607,7 @@ impl App {
         let Some(d) = self.group_mut().active_diff_mut() else {
             return false;
         };
-        if let Some(text) = d.selection_text() {
+        if let Some(text) = d.conv_text().or_else(|| d.selection_text()) {
             self.clipboard.write(crate::clipboard::Copied {
                 text,
                 whole_line: false,

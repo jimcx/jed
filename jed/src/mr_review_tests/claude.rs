@@ -197,6 +197,26 @@ async fn claude_ide_review_reads_back_the_merge_request_and_its_threads() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn review_conversation_claude_gets_the_description_clipped() {
+    let mut w = boot(false, false).await;
+    let Content::Loaded(r) = &mut w.app.review.content else {
+        panic!("loaded");
+    };
+    r.mr.body = "Short description".into();
+    let a = w.data(Query::Review).await;
+    assert_eq!(a["review"]["body"], "Short description");
+    assert_eq!(a["review"]["body_truncated"], false);
+    let Content::Loaded(r) = &mut w.app.review.content else {
+        panic!("loaded");
+    };
+    r.mr.body = "x".repeat(20_000);
+    let a = w.data(Query::Review).await;
+    let body = a["review"]["body"].as_str().unwrap();
+    assert!(body.len() < 20_000 && body.starts_with("xxx"), "{}", body.len());
+    assert_eq!(a["review"]["body_truncated"], true);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn claude_ide_apply_changes_and_saves_the_file_in_one_undo_step() {
     let mut w = boot(false, false).await;
     let a = w.data(Query::ReviewApply { thread: "11".into() }).await;

@@ -62,6 +62,7 @@ impl Mode {
                     | Command::ReviewApplySuggestion
                     | Command::ReviewInsertSuggestion
                     | Command::ReviewOpenThread
+                    | Command::ReviewOpenConversation
                     | Command::Review(_)
                     | Command::TogglePanel
                     | Command::ToggleProblems

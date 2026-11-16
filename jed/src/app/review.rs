@@ -257,6 +257,9 @@ impl App {
         }
         let page = self.review.view.height.max(1) as isize;
         let pending = self.review.draft_rows().len();
+        if self.review.view.summary {
+            return self.review_summary_command(cmd);
+        }
         let (view, files) = self.review.split();
         if view.files_collapsed || view.files_header {
             return self.review_files_header_command(cmd, len, pending);
@@ -310,6 +313,22 @@ impl App {
                 let (view, files) = self.review.split();
                 view.select(files, 0);
             }
+            C::Up => view.summary = true,
+            C::FocusEditor if !self.group().tabs.is_empty() => self.ui.focus = Focus::Editor,
+            _ => {}
+        }
+    }
+
+    /// The keys while the summary row has the selection: Enter opens the conversation, Down
+    /// goes on to the FILES header.
+    fn review_summary_command(&mut self, cmd: C) {
+        match cmd {
+            C::Open => self.review_open_conversation(None),
+            C::Down => {
+                let view = &mut self.review.view;
+                view.summary = false;
+                view.files_header = true;
+            }
             C::FocusEditor if !self.group().tabs.is_empty() => self.ui.focus = Focus::Editor,
             _ => {}
         }
@@ -362,10 +381,7 @@ impl App {
             return;
         };
         let Some(t) = review.threads.get(i) else {
-            let c = &review.conversation[i - review.threads.len()];
-            let line = c.body.lines().next().unwrap_or("");
-            let text = format!("{}: {line}", c.author);
-            return self.notify(Level::Info, text);
+            return self.review_open_conversation(Some(i - review.threads.len()));
         };
         let a = &t.thread.anchor;
         let (right, line) = match &t.place {
@@ -386,6 +402,44 @@ impl App {
             d.go_to_side_line(right, line);
             self.needs_redraw = true;
         }
+    }
+
+    /// Opens (or shows) the merge request's conversation tab, one per merge request in the
+    /// active group: the description, then every comment. `reveal` is the comment (an index into
+    /// `Review::conversation`) the caret goes to.
+    pub(super) fn review_open_conversation(&mut self, reveal: Option<usize>) {
+        let Some(workdir) = self.git.status.as_ref().map(|s| s.repo.workdir.clone()) else {
+            return;
+        };
+        let Some(review) = self.review.review() else {
+            return self.notify(Level::Info, "No merge request to show".into());
+        };
+        let (number, rows) = (review.mr.number, review.conversation.len() + 1);
+        let title = format!("!{number} Conversation");
+        if let Some((buf, _)) = self.active_mut() {
+            buf.seal_undo();
+        }
+        let existing = self
+            .group()
+            .tabs
+            .iter()
+            .position(|t| t.diff().and_then(|d| d.conv.as_ref()).is_some());
+        match existing {
+            Some(i) => self.group_mut().active = i,
+            None => {
+                let id = self.next_diff_id();
+                let conv = crate::diff_view::ConvTab { number, title, rows };
+                let tab = DiffTab::conversation(id, workdir.join(format!("!{number} Conversation")), conv);
+                self.group_mut().open_tab(Tab::Diff(Box::new(tab)));
+            }
+        }
+        if let Some(d) = self.group_mut().active_diff_mut() {
+            d.go_to_side_line(true, reveal.map_or(0, |i| i + 1));
+        }
+        self.ui.focus = Focus::Editor;
+        self.needs_redraw = true;
+        self.sync_diffs();
+        self.sync_review_threads();
     }
 
     /// "Code Review: Open Thread": the selected thread's tab, whatever its placement.
@@ -477,6 +531,16 @@ impl App {
                 continue;
             }
             d.threads.synced = Some(stamp);
+            if d.conv.is_some() {
+                // The merge request's conversation: one block under each of the tab's rows.
+                if let Some(r) = review {
+                    let blocks = conversation_blocks(r);
+                    d.set_conversation(format!("!{} Conversation", r.mr.number), r.mr.number, blocks.len());
+                    d.threads.set(blocks);
+                    self.needs_redraw = true;
+                }
+                continue;
+            }
             let mut blocks: Vec<crate::review_blocks::ThreadBlock> = review
                 .map(|r| {
                     r.threads
@@ -672,8 +736,15 @@ impl App {
         self.ui.focus = Focus::SidePanel;
         let Some(hit) = self.hits.review.clone() else { return };
         let at = Position { x: m.column, y: m.row };
-        if hit.summary.contains(at) {
+        self.review.view.summary = false;
+        if hit.switcher.contains(at) {
             self.review_switch();
+        } else if hit.summary.contains(at) {
+            let view = &mut self.review.view;
+            (view.summary, view.files_header) = (true, true);
+            view.conv.focused = false;
+            view.pending.focused = false;
+            self.review_open_conversation(None);
         } else if let Some((_, pane)) = hit.dividers.iter().find(|d| d.0.contains(at)) {
             self.drag = Some(super::mouse::Drag::ReviewDivider(*pane));
         } else if let Some((_, command)) = hit.pending_buttons.iter().find(|b| b.0.contains(at)) {
@@ -849,6 +920,43 @@ impl App {
 
 /// A forge thread's block under `line` of a diff's text, covering `span` lines above it too
 /// (`apply`: it may offer Apply Suggestion).
+/// The blocks of a merge request's conversation tab: the description (headed by its author and the
+/// title), then each comment and review summary, block `i` under row `i`.
+fn conversation_blocks(r: &crate::review::Review) -> Vec<crate::review_blocks::ThreadBlock> {
+    let text = |body: &str, empty: &str| {
+        if body.trim().is_empty() {
+            empty.to_string()
+        } else {
+            body.to_string()
+        }
+    };
+    let mut items = vec![(
+        "description".to_string(),
+        format!("{} · {}", r.mr.author, r.mr.title),
+        text(&r.mr.body, "(no description)"),
+    )];
+    items.extend(
+        r.conversation
+            .iter()
+            .map(|c| (c.id.clone(), c.author.clone(), text(&c.body, "(no text)"))),
+    );
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(i, (id, head, body))| crate::review_blocks::ThreadBlock {
+            role: crate::review_blocks::Role::Comment,
+            id,
+            right: true,
+            line: i,
+            span: 0,
+            resolved: false,
+            mine: false,
+            apply: false,
+            comments: vec![(head, body)],
+        })
+        .collect()
+}
+
 fn forge_block(
     t: &crate::review::ThreadRow,
     user: Option<&str>,

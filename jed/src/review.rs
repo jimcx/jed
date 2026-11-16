@@ -645,6 +645,8 @@ pub struct ReviewView {
     pub files_collapsed: bool,
     /// The FILES header has the selection (always while collapsed): Enter / Space toggle it.
     pub files_header: bool,
+    /// The summary row (the merge request's title) has the selection: Enter opens the conversation.
+    pub summary: bool,
     selected: Option<(String, usize)>,
     /// Rows drawn in the last frame (0 until the first draw).
     pub height: usize,

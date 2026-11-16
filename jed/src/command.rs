@@ -439,6 +439,8 @@ pub enum Command {
     ReviewInsertSuggestion,
     /// "Code Review: Open Thread" (unbound): the selected thread's tab (its code and comments), whatever its placement.
     ReviewOpenThread,
+    /// "Code Review: Open Conversation" (unbound): the merge request's conversation tab (its description and comments).
+    ReviewOpenConversation,
     /// The Code Review panel's list (`Context::Review`).
     Review(ReviewCommand),
     /// "Tools: Toggle Protocol Trace": the selected (or the active file's) language server's
@@ -1335,6 +1337,7 @@ impl Command {
             Command::ReviewApplySuggestion,
             Command::ReviewInsertSuggestion,
             Command::ReviewOpenThread,
+            Command::ReviewOpenConversation,
         ]);
         all.extend(ReviewCommand::ALL.map(Command::Review));
         all
@@ -1752,6 +1755,7 @@ impl Command {
             Command::ReviewApplySuggestion => "review.applySuggestion".into(),
             Command::ReviewInsertSuggestion => "review.insertSuggestion".into(),
             Command::ReviewOpenThread => "review.openThread".into(),
+            Command::ReviewOpenConversation => "review.openConversation".into(),
             Command::Review(c) => format!(
                 "reviewView.{}",
                 match c {
@@ -2190,6 +2194,7 @@ impl Command {
             Command::ReviewApplySuggestion => "Code Review: Apply Suggestion",
             Command::ReviewInsertSuggestion => "Code Review: Insert Suggestion",
             Command::ReviewOpenThread => "Code Review: Open Thread",
+            Command::ReviewOpenConversation => "Code Review: Open Conversation",
             Command::Review(c) => match c {
                 ReviewCommand::Up => "Code Review: Select Previous File",
                 ReviewCommand::Down => "Code Review: Select Next File",
@@ -2419,6 +2424,7 @@ mod tests {
             Command::ReviewApplySuggestion => 169,
             Command::ReviewInsertSuggestion => 170,
             Command::ReviewOpenThread => 181,
+            Command::ReviewOpenConversation => 182,
             Command::Review(_) => 154,
             Command::ToggleToolTrace => 92,
             Command::RestartServer => 93,

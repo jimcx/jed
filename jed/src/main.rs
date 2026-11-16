@@ -145,6 +145,8 @@ mod replace_tests;
 mod review;
 mod review_anchor;
 mod review_blocks;
+#[cfg(test)]
+mod review_conversation_tests;
 mod review_drafts;
 #[cfg(test)]
 mod review_fixes_tests;

@@ -75,7 +75,7 @@ impl LineMarks {
             .map(|t| {
                 let (rank, key) = match t.role {
                     Role::Thread if t.resolved => (3, "review.lineMarker.resolved"),
-                    Role::Thread => (0, "review.lineMarker"),
+                    Role::Thread | Role::Comment => (0, "review.lineMarker"),
                     Role::Composer { .. } => (1, "review.composer.lineMarker"),
                     Role::Draft => (2, "review.draft.lineMarker"),
                 };
@@ -198,7 +198,9 @@ pub fn render(
     out.set_style(Rect { height: 1, ..area }, header);
     let changes = d.doc.as_ref().map(|doc| doc.hunks.len());
     // The last load's failure (the old diff stays shown), else the number of changes.
+    let conversation = d.conv.is_some();
     let summary = match (changes, &d.error) {
+        _ if conversation => String::new(),
         (Some(_), Some(e)) => format!(" ⚠ {e} "),
         (Some(1), None) => " 1 change ".to_string(),
         (Some(n), None) => format!(" {n} changes "),
@@ -206,7 +208,9 @@ pub fn render(
     };
     let (left_title, right_title) = d.titles();
     let half = (area.width - 1) / 2;
-    if inline {
+    if conversation {
+        out.set_stringn(area.x, area.y, format!(" {}", d.title()), area.width as usize, header);
+    } else if inline {
         let title = format!(" {left_title} ↔ {right_title}");
         out.set_stringn(area.x, area.y, &title, area.width as usize, header);
     } else {
@@ -226,7 +230,7 @@ pub fn render(
     // Open File left of the summary (VS Code's diff editor toolbar), over the right title's end.
     let ow = OPEN_FILE.width() as u16;
     let right_end = area.x + area.width - if sw + 20 < area.width { sw } else { 0 };
-    if d.compare.is_none() && right_end >= area.x + ow + 20 {
+    if d.compare.is_none() && !conversation && right_end >= area.x + ow + 20 {
         let rect = Rect::new(right_end - ow, area.y, ow, 1);
         out.set_stringn(
             rect.x,
@@ -375,6 +379,14 @@ pub fn render(
         };
         let row = &aligned.rows[index];
         let current = index == d.cursor;
+        if conversation {
+            // A conversation's rows are blank spacers; the caret's is marked.
+            if current {
+                out.set_style(Rect::new(body.x, y, body.width, 1), st.current);
+                out.set_stringn(body.x, y, " ▸", body.width as usize, st.gutter_active);
+            }
+            continue;
+        }
         let at_caret;
         let parts = (row.kind() == Kind::Changed)
             .then(|| diff_view::changed_parts(doc.left.line(row.left.unwrap()), doc.right.line(row.right.unwrap())));
@@ -579,7 +591,7 @@ fn draw_block_line(
         .min(width as u16) as usize;
     let text = theme.get("review.thread.text");
     let (border, head) = match block.role {
-        Role::Thread => (
+        Role::Thread | Role::Comment => (
             theme.get("review.thread.border"),
             theme.get(if block.resolved {
                 "review.thread.resolved"

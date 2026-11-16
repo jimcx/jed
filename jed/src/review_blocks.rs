@@ -33,6 +33,8 @@ const MARGIN: usize = 1;
 pub enum Role {
     #[default]
     Thread,
+    /// A merge request comment in the conversation tab (no buttons).
+    Comment,
     Draft,
     /// `caret`: the byte of the text the caret is at.
     Composer {

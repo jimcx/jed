@@ -182,6 +182,8 @@ impl App {
         json!({"review": {
             "number": mr.number,
             "title": crate::forge::http::clean_line(&mr.title),
+            "body": clip_head(&mr.body, MAX_BODY).0,
+            "body_truncated": clip_head(&mr.body, MAX_BODY).1,
             "url": mr.url,
             "source_branch": mr.head.name,
             "target_branch": mr.base.name,
