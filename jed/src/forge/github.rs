@@ -504,7 +504,7 @@ impl Forge for GitHub {
                 v
             })
             .collect();
-        // GitHub requires a body for COMMENT and REQUEST_CHANGES; jed has no overall-body input.
+        // GitHub requires a body for COMMENT and REQUEST_CHANGES: the user's summary, else a default.
         let overall = review_body(review.event, &review.body, true);
         let body = json!({
             "commit_id": head_sha,

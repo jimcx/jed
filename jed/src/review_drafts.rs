@@ -216,6 +216,20 @@ pub struct DraftRow<'a> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DraftStore {
     map: BTreeMap<String, Vec<Draft>>,
+    /// The overall body of the review to submit, per merge request (never empty).
+    summaries: BTreeMap<String, String>,
+}
+
+/// The file: the bare drafts map older versions wrote, or (when a summary is kept) both.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum FileForm {
+    Both {
+        drafts: BTreeMap<String, Vec<Draft>>,
+        #[serde(default)]
+        summaries: BTreeMap<String, String>,
+    },
+    Bare(BTreeMap<String, Vec<Draft>>),
 }
 
 static SEQ: AtomicU64 = AtomicU64::new(1);
@@ -233,7 +247,21 @@ impl DraftStore {
 
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
+        self.map.is_empty() && self.summaries.is_empty()
+    }
+
+    /// The review summary kept for merge request `key` (empty when none).
+    pub fn summary(&self, key: &str) -> &str {
+        self.summaries.get(key).map_or("", |s| s.as_str())
+    }
+
+    /// Keeps `text` as the summary of `key`; empty text removes it.
+    pub fn set_summary(&mut self, key: &str, text: &str) {
+        if text.is_empty() {
+            self.summaries.remove(key);
+        } else {
+            self.summaries.insert(key.to_string(), text.to_string());
+        }
     }
 
     pub fn add(&mut self, key: &str, draft: Draft) {
@@ -284,6 +312,9 @@ impl DraftStore {
     /// Adds `other`'s drafts that this store doesn't have (a read that finished after a draft was
     /// added).
     pub fn merge(&mut self, other: DraftStore) {
+        for (key, text) in other.summaries {
+            self.summaries.entry(key).or_insert(text);
+        }
         for (key, list) in other.map {
             for d in list {
                 if !self.get(&key).iter().any(|e| e.id == d.id) {
@@ -306,7 +337,11 @@ impl DraftStore {
             }
         };
         match serde_json::from_str(&text) {
-            Ok(map) => DraftStore { map },
+            Ok(FileForm::Both { drafts, summaries }) => DraftStore { map: drafts, summaries },
+            Ok(FileForm::Bare(map)) => DraftStore {
+                map,
+                ..DraftStore::default()
+            },
             Err(e) => {
                 log.error(&format!("the saved drafts are unreadable and ignored: {e}"));
                 DraftStore::default()
@@ -328,7 +363,13 @@ impl DraftStore {
         }
         std::fs::create_dir_all(dir)?;
         let tmp = dir.join(format!("{FILE}.tmp"));
-        std::fs::write(&tmp, serde_json::to_string_pretty(&self.map)?)?;
+        // The bare map while there is no summary: an older jed still reads the file.
+        let text = if self.summaries.is_empty() {
+            serde_json::to_string_pretty(&self.map)?
+        } else {
+            serde_json::to_string_pretty(&serde_json::json!({"drafts": self.map, "summaries": self.summaries}))?
+        };
+        std::fs::write(&tmp, text)?;
         std::fs::rename(tmp, dir.join(FILE))?;
         written.insert(dir.to_path_buf(), seq);
         Ok(())
@@ -498,6 +539,42 @@ mod tests {
         store.save(dir.path(), DraftStore::next_seq()).unwrap();
         let log = Logs::default().tool(Tool::Review);
         assert_eq!(DraftStore::load(dir.path(), &log), store);
+    }
+
+    #[test]
+    fn a_summary_round_trips_and_an_old_file_has_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = Logs::default().tool(Tool::Review);
+        let mut store = DraftStore::default();
+        store.add("k", draft("a.txt", 2, 3, &["x"], "Why?"));
+        store.save(dir.path(), DraftStore::next_seq()).unwrap();
+        // Without a summary the file is still the bare map an older jed reads.
+        let text = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
+        assert!(serde_json::from_str::<BTreeMap<String, Vec<Draft>>>(&text).is_ok());
+        assert_eq!(DraftStore::load(dir.path(), &log).summary("k"), "");
+        store.set_summary("k", "Looks good overall");
+        store.save(dir.path(), DraftStore::next_seq()).unwrap();
+        let back = DraftStore::load(dir.path(), &log);
+        assert_eq!((back.summary("k"), back.get("k").len()), ("Looks good overall", 1));
+        assert_eq!(back, store);
+        let mut gone = back;
+        gone.set_summary("k", "");
+        assert_eq!(gone.summary("k"), "");
+        // Removed again: the file is the bare map once more; a summary of another request is apart.
+        gone.set_summary("other", "x");
+        assert_eq!(gone.summary("k"), "");
+        gone.set_summary("other", "");
+        gone.save(dir.path(), DraftStore::next_seq()).unwrap();
+        let text = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
+        assert!(serde_json::from_str::<BTreeMap<String, Vec<Draft>>>(&text).is_ok());
+        // merge keeps a summary the other store has and this one lacks, never overwriting.
+        let mut a = DraftStore::default();
+        a.set_summary("k", "mine");
+        let mut b = DraftStore::default();
+        b.set_summary("k", "theirs");
+        b.set_summary("j", "j's");
+        a.merge(b);
+        assert_eq!((a.summary("k"), a.summary("j")), ("mine", "j's"));
     }
 
     #[test]

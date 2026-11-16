@@ -140,7 +140,7 @@ mod verdicts {
         let (root, head, main) = repo(dir.path());
         let server = server(&main, &head, &head, Reply::json("{}"));
         let mut app = boot(&root, &server, None).await;
-        app.test_execute(Command::ReviewSubmitRequestChanges);
+        app.test_submit(Command::ReviewSubmitRequestChanges);
         assert!(app.settle(|a| !a.review.writing).await);
         let post = server
             .requests()
@@ -384,7 +384,7 @@ mod placement {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].held, Some("not in the merge request's diff"));
         assert_eq!(rows[1].held, None);
-        app.test_execute(Command::ReviewSubmitComment);
+        app.test_submit(Command::ReviewSubmitComment);
         assert!(
             app.settle(|a| a.review.draft_rows().len() == 1 && !a.review.writing)
                 .await
@@ -438,7 +438,7 @@ mod placement {
         app.type_text("outside");
         app.press(KeyCode::Enter, KeyModifiers::CONTROL);
         assert_eq!(app.review.draft_rows()[0].held, None);
-        app.test_execute(Command::ReviewSubmitComment);
+        app.test_submit(Command::ReviewSubmitComment);
         assert!(
             app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
                 .await

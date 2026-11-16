@@ -2406,7 +2406,7 @@ pub(crate) mod write {
         app.message.as_ref().map(|m| m.text.clone()).unwrap_or_default()
     }
 
-    fn store_text(state: &Path) -> String {
+    pub(crate) fn store_text(state: &Path) -> String {
         fs::read_to_string(state.join(FILE)).unwrap_or_default()
     }
 
@@ -2491,22 +2491,22 @@ pub(crate) mod write {
         };
     }
 
-    fn comment(app: &mut App, first: usize, last: usize, text: &str) {
+    pub(crate) fn comment(app: &mut App, first: usize, last: usize, text: &str) {
         select(app, true, first, last);
         app.test_execute(Command::ReviewComment);
         app.type_text(text);
         app.press(KeyCode::Enter, KeyModifiers::CONTROL);
     }
 
-    fn requests(server: &FakeServer, method: &str) -> Vec<crate::forge::fake::Request> {
+    pub(crate) fn requests(server: &FakeServer, method: &str) -> Vec<crate::forge::fake::Request> {
         server.requests().into_iter().filter(|r| r.method == method).collect()
     }
 
-    fn review_post(server: &FakeServer) -> Option<crate::forge::fake::Request> {
+    pub(crate) fn review_post(server: &FakeServer) -> Option<crate::forge::fake::Request> {
         requests(server, "POST").into_iter().find(|r| r.target == REVIEWS)
     }
 
-    fn json(r: &crate::forge::fake::Request) -> serde_json::Value {
+    pub(crate) fn json(r: &crate::forge::fake::Request) -> serde_json::Value {
         serde_json::from_str(&r.body).unwrap()
     }
 
@@ -2520,7 +2520,7 @@ pub(crate) mod write {
         comment(&mut app, 1, 2, "Fix this range");
         assert!(app.settle(|_| store_text(&state).contains("Fix this range")).await);
         let before = lookups(&server);
-        app.test_execute(Command::ReviewSubmitApprove);
+        app.test_submit(Command::ReviewSubmitApprove);
         assert!(
             app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
                 .await
@@ -2555,7 +2555,7 @@ pub(crate) mod write {
         let mut app = boot(&root, &server1, Some(state.clone())).await;
         comment(&mut app, 1, 2, "Keep me");
         assert!(app.settle(|_| store_text(&state).contains("Keep me")).await);
-        app.test_execute(Command::ReviewSubmitComment);
+        app.test_submit(Command::ReviewSubmitComment);
         assert!(
             app.settle(|a| !a.review.writing && !a.review.drafts.errors.is_empty())
                 .await
@@ -2578,7 +2578,7 @@ pub(crate) mod write {
         let server2 = server(&main, &head, &head, Reply::json("{}"));
         let mut app = boot(&root, &server2, Some(state.clone())).await;
         assert!(app.settle(|a| !a.review.draft_rows().is_empty()).await);
-        app.test_execute(Command::ReviewSubmitComment);
+        app.test_submit(Command::ReviewSubmitComment);
         assert!(app.settle(|a| a.review.draft_rows().is_empty()).await);
         let v = json(&review_post(&server2).unwrap());
         assert_eq!(v["event"], "COMMENT");
@@ -2602,8 +2602,9 @@ pub(crate) mod write {
             .draft
             .id
             .clone();
-        app.review.drafts.live.insert(held, Some("the lines changed".into()));
         app.test_execute(Command::ReviewSubmitRequestChanges);
+        app.review.drafts.live.insert(held, Some("the lines changed".into()));
+        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
         assert!(
             app.settle(|a| !a.review.writing && a.review.draft_rows().len() == 1)
                 .await
@@ -2616,8 +2617,9 @@ pub(crate) mod write {
         // Only a held back draft is left: Comment has nothing to send.
         idle(&mut app).await;
         let left = app.review.draft_rows()[0].draft.id.clone();
-        app.review.drafts.live.insert(left, Some("the lines changed".into()));
         app.test_execute(Command::ReviewSubmitComment);
+        app.review.drafts.live.insert(left, Some("the lines changed".into()));
+        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
         assert!(message(&app).contains("held back"), "{}", message(&app));
         assert_eq!(
             requests(&server, "POST").iter().filter(|r| r.target == REVIEWS).count(),

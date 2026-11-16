@@ -108,6 +108,20 @@ impl App {
     /// The forge answered a submit: confirmed drafts go, the others stay with their error.
     fn submitted(&mut self, posted: Vec<String>, failed: Vec<(String, String)>, error: Option<String>) {
         let key = self.review.drafts_key();
+        if error.is_none() {
+            // The review is on the forge, so its summary is too.
+            if self
+                .composer
+                .as_ref()
+                .is_some_and(|c| matches!(c.kind, ComposerKind::Summary(_)))
+            {
+                self.composer = None;
+            }
+            if let (Some(store), Some(key)) = (self.review.drafts.store.as_mut(), &key) {
+                store.set_summary(key, "");
+            }
+            self.save_drafts();
+        }
         if let (Some(store), Some(key)) = (self.review.drafts.store.as_mut(), key) {
             for id in &posted {
                 store.remove(&key, id);
@@ -149,8 +163,35 @@ impl App {
         }
     }
 
-    /// "Code Review: Submit Review (...)": every draft that isn't held back, with `event`.
-    pub(super) fn review_submit(&mut self, event: forge::ReviewEvent) {
+    /// Keeps `text` (trimmed; empty removes) as this merge request's review summary.
+    pub(super) fn keep_summary(&mut self, text: &str) {
+        let key = self.review.drafts_key();
+        if let (Some(store), Some(key)) = (self.review.drafts.store.as_mut(), key) {
+            store.set_summary(&key, text.trim());
+            self.save_drafts();
+        }
+    }
+
+    /// "Code Review: Submit Review (...)": the summary box at the end of the conversation tab
+    /// (prefilled with the one kept); Ctrl+Enter, even on an empty box, then submits.
+    pub(super) fn review_submit_open(&mut self, event: forge::ReviewEvent) {
+        let Some(review) = self.review.review() else {
+            return self.notify(Level::Info, "No merge request to submit".into());
+        };
+        let local = self.git.status.as_ref().and_then(|s| s.head_id.as_deref());
+        if let Some(banner) = review.head_banner(local) {
+            return self.notify(Level::Error, format!("Can't submit: {banner}"));
+        }
+        let Some(key) = self.review.drafts_key() else { return };
+        let Some(store) = self.review.drafts.store.as_ref() else {
+            return self.notify(Level::Info, "The saved drafts are still being read".into());
+        };
+        let text = store.summary(&key).to_string();
+        self.conversation_compose(ComposerKind::Summary(event), &text);
+    }
+
+    /// Submits every draft that isn't held back, with `event` and the overall `body`.
+    pub(super) fn review_submit(&mut self, event: forge::ReviewEvent, body: String) {
         let Some(review) = self.review.review() else {
             return self.notify(Level::Info, "No merge request to submit".into());
         };
@@ -164,7 +205,8 @@ impl App {
             .iter()
             .filter(|r| r.held.is_none())
             .partition(|r| r.draft.reply_to.is_some());
-        if sent.is_empty() && replies.is_empty() && event == forge::ReviewEvent::Comment {
+        // A summary alone is a review too.
+        if sent.is_empty() && replies.is_empty() && event == forge::ReviewEvent::Comment && body.is_empty() {
             let why = if held > 0 {
                 format!("{held} draft(s) are held back (see PENDING)")
             } else {
@@ -177,7 +219,7 @@ impl App {
             number: review.mr.number,
             head_sha: review.mr.head.sha.clone(),
             review: DraftReview {
-                body: String::new(),
+                body: body.clone(),
                 event,
                 comments: sent
                     .iter()
@@ -209,6 +251,8 @@ impl App {
             String::new()
         };
         if self.review_write(job) {
+            // Kept until the forge confirms the review: a failed submit loses nothing.
+            self.keep_summary(&body);
             self.review.drafts.errors.clear();
             self.notify(Level::Info, format!("Submitting {n} comment(s){held_note}…"));
         }
@@ -459,13 +503,17 @@ impl App {
     pub(super) fn composer_post(&mut self) {
         let Some(c) = &self.composer else { return };
         let body = c.text().trim().to_string();
-        if body.is_empty() {
+        if body.is_empty() && !matches!(c.kind, ComposerKind::Summary(_)) {
             return self.notify(Level::Info, "The comment is empty: write something, or Esc".into());
         }
         let Some(number) = self.review.review().map(|r| r.mr.number) else {
             return self.notify(Level::Error, "The merge request is not loaded".into());
         };
         let job = match &c.kind {
+            ComposerKind::Summary(event) => {
+                let event = *event;
+                return self.review_submit(event, body);
+            }
             ComposerKind::Reply { thread_id, lines } => Job::Reply {
                 number,
                 thread_id: thread_id.clone(),

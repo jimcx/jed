@@ -153,7 +153,7 @@ async fn claude_ide_github_posts_a_reply_draft_and_resolves_at_submit_without_a_
             .collect::<Vec<_>>()
     };
     assert!(writes(&server).is_empty(), "drafting posts nothing");
-    app.test_execute(Command::ReviewSubmitComment);
+    app.test_submit(Command::ReviewSubmitComment);
     assert!(
         app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
             .await
@@ -174,7 +174,7 @@ async fn claude_ide_github_keeps_a_reply_draft_whose_post_failed() {
     let server = server_with(&main, &head, false, false);
     let mut app = boot_github(&root, &server).await;
     claude_reply(&mut app, "PRRT_1", "Will fail", true);
-    app.test_execute(Command::ReviewSubmitComment);
+    app.test_submit(Command::ReviewSubmitComment);
     assert!(
         app.settle(|a| !a.review.writing && !a.review.drafts.errors.is_empty())
             .await
@@ -232,7 +232,7 @@ async fn mr_review_github_shows_a_multi_line_thread_and_submits_in_github_shape(
     app.test_execute(Command::ReviewComment);
     app.type_text("Please rename");
     app.press(KeyCode::Enter, KeyModifiers::CONTROL);
-    app.test_execute(Command::ReviewSubmitApprove);
+    app.test_submit(Command::ReviewSubmitApprove);
     assert!(
         app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
             .await

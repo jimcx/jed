@@ -1578,9 +1578,9 @@ impl App {
             Command::ReviewCancelComment => self.composer_cancel(),
             Command::ReviewEditDraft => self.review_edit_draft(),
             Command::ReviewDeleteDraft => self.review_delete_draft(),
-            Command::ReviewSubmitComment => self.review_submit(crate::forge::ReviewEvent::Comment),
-            Command::ReviewSubmitApprove => self.review_submit(crate::forge::ReviewEvent::Approve),
-            Command::ReviewSubmitRequestChanges => self.review_submit(crate::forge::ReviewEvent::RequestChanges),
+            Command::ReviewSubmitComment => self.review_submit_open(crate::forge::ReviewEvent::Comment),
+            Command::ReviewSubmitApprove => self.review_submit_open(crate::forge::ReviewEvent::Approve),
+            Command::ReviewSubmitRequestChanges => self.review_submit_open(crate::forge::ReviewEvent::RequestChanges),
             Command::ReviewReply => self.review_reply(),
             Command::ReviewResolve => self.review_resolve(),
             Command::ReviewToggleFiles => self.review_toggle_files(),
@@ -1872,6 +1872,12 @@ impl App {
     /// Activates the active group's tab `index`.
     pub fn test_activate_tab(&mut self, index: usize) {
         self.activate_tab(index);
+    }
+
+    /// Runs a Submit Review command and sends the review with no summary (Ctrl+Enter in its box).
+    pub fn test_submit(&mut self, cmd: Command) {
+        self.test_execute(cmd);
+        self.press(KeyCode::Enter, KeyModifiers::CONTROL);
     }
 
     /// Runs a command as a key bound to it would.

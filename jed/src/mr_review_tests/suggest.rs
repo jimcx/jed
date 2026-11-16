@@ -270,7 +270,7 @@ async fn mr_review_insert_suggestion_fills_the_selected_lines_and_the_draft_is_s
     let l = lines(&mut app, 120, 30).join("\n");
     assert!(l.contains("[Insert Suggestion]"), "{l}");
     app.press(KeyCode::Enter, KeyModifiers::CONTROL);
-    app.test_execute(Command::ReviewSubmitComment);
+    app.test_submit(Command::ReviewSubmitComment);
     assert!(
         app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
             .await
@@ -285,7 +285,8 @@ async fn mr_review_insert_suggestion_fills_the_selected_lines_and_the_draft_is_s
         v["comments"][0]["body"],
         "```suggestion\nXm2 changed\nm3\n```\n\n<!-- jed:range=2-3 -->"
     );
-    // A left-side box refuses.
+    // A left-side box refuses (the submit's box left us on the conversation tab).
+    app.test_execute(Command::PrevTab);
     select(&mut app, false, 1, 1);
     app.test_execute(Command::ReviewComment);
     app.test_execute(Command::ReviewInsertSuggestion);

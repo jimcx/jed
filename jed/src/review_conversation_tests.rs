@@ -572,3 +572,157 @@ async fn review_conversation_github_edit_and_delete_go_to_the_issue_comment_endp
     assert!(app.settle(|_a| !sent(&server, "DELETE").is_empty()).await);
     assert!(sent(&server, "DELETE")[0].target.ends_with("/issues/comments/300"));
 }
+
+/// review_conversation-d: Submit Review's overall body.
+mod summary {
+    use std::fs;
+
+    use super::*;
+    use crate::forge::fake::Reply;
+    use crate::mr_review_tests::idle;
+    use crate::mr_review_tests::write::{
+        REVIEWS, boot, comment as draft, json, repo, requests, review_post, server, store_text,
+    };
+
+    fn send(app: &mut App) {
+        app.press(KeyCode::Enter, KeyModifiers::CONTROL);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_conversation_submit_asks_for_a_summary_and_posts_it_with_the_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let (root, head, main) = repo(dir.path());
+        let server = server(&main, &head, &head, Reply::json("{}"));
+        let mut app = boot(&root, &server, Some(state.clone())).await;
+        draft(&mut app, 1, 2, "Fix this range");
+        assert!(app.settle(|_| store_text(&state).contains("Fix this range")).await);
+        app.test_execute(Command::ReviewSubmitApprove);
+        assert_eq!(app.test_composer_text().as_deref(), Some(""));
+        assert!(
+            requests(&server, "POST").iter().all(|r| r.target != REVIEWS),
+            "nothing sent yet"
+        );
+        assert!(app.settle(|a| a.diffs_settled()).await);
+        let l = draw(&mut app, 100, 30).join("\n");
+        assert!(l.contains("Review summary (optional)"), "{l}");
+        app.type_text("Nice work overall");
+        send(&mut app);
+        assert!(
+            app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
+                .await
+        );
+        idle(&mut app).await;
+        let v = json(&review_post(&server).unwrap());
+        assert_eq!(
+            (v["event"].as_str(), v["body"].as_str()),
+            (Some("APPROVED"), Some("Nice work overall"))
+        );
+        assert_eq!(v["comments"].as_array().unwrap().len(), 1);
+        assert!(
+            app.test_composer_text().is_none(),
+            "the box closes once the forge agrees"
+        );
+        assert!(app.settle(|_| !store_text(&state).contains("Nice work")).await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_conversation_an_empty_box_submits_as_before_and_a_summary_alone_is_a_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, head, main) = repo(dir.path());
+        let server = server(&main, &head, &head, Reply::json("{}"));
+        let mut app = boot(&root, &server, None).await;
+        draft(&mut app, 1, 2, "x");
+        app.test_execute(Command::ReviewSubmitRequestChanges);
+        send(&mut app);
+        assert!(
+            app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
+                .await
+        );
+        let v = json(&review_post(&server).unwrap());
+        assert_eq!(v["body"].as_str(), Some("Changes requested"), "the forge's fallback");
+        idle(&mut app).await;
+        // No drafts: an empty Comment review is refused (the box stays), a summary is not.
+        app.test_execute(Command::ReviewSubmitComment);
+        send(&mut app);
+        assert!(app.message.as_ref().unwrap().text.contains("No drafts"));
+        assert_eq!(app.test_composer_text().as_deref(), Some(""));
+        app.type_text("Just a note");
+        send(&mut app);
+        assert!(
+            app.settle(|a| !a.review.writing && a.test_composer_text().is_none())
+                .await
+        );
+        let posts: Vec<_> = requests(&server, "POST")
+            .into_iter()
+            .filter(|r| r.target == REVIEWS)
+            .collect();
+        assert_eq!(posts.len(), 2);
+        let v = json(&posts[1]);
+        assert_eq!(
+            (v["event"].as_str(), v["body"].as_str()),
+            (Some("COMMENT"), Some("Just a note"))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_conversation_esc_sends_nothing_and_keeps_the_typed_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let (root, head, main) = repo(dir.path());
+        let server = server(&main, &head, &head, Reply::json("{}"));
+        let mut app = boot(&root, &server, Some(state.clone())).await;
+        draft(&mut app, 1, 2, "x");
+        app.test_execute(Command::ReviewSubmitComment);
+        app.type_text("half a thought");
+        app.press(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.test_composer_text().is_none());
+        assert!(review_post(&server).is_none());
+        assert!(app.settle(|_| store_text(&state).contains("half a thought")).await);
+        app.test_execute(Command::ReviewSubmitApprove);
+        assert_eq!(app.test_composer_text().as_deref(), Some("half a thought"));
+        // Emptying it and Esc forgets it.
+        app.press(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        app.press(KeyCode::Backspace, KeyModifiers::NONE);
+        app.press(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.settle(|_| !store_text(&state).contains("half a thought")).await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_conversation_a_failed_submit_keeps_the_box_and_the_summary_over_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let (root, head, main) = repo(dir.path());
+        let failing = Reply::status(500).with_body(r#"{"message":"boom"}"#);
+        let server1 = server(&main, &head, &head, failing);
+        let mut app = boot(&root, &server1, Some(state.clone())).await;
+        draft(&mut app, 1, 2, "Keep me");
+        app.test_execute(Command::ReviewSubmitComment);
+        app.type_text("Please read");
+        send(&mut app);
+        assert!(
+            app.settle(|a| !a.review.writing && !a.review.drafts.errors.is_empty())
+                .await
+        );
+        assert_eq!(app.test_composer_text().as_deref(), Some("Please read"));
+        assert!(app.settle(|_| store_text(&state).contains("Please read")).await);
+        assert!(
+            fs::read_to_string(state.join("review-drafts.json"))
+                .unwrap()
+                .contains("Keep me")
+        );
+        drop(app);
+        let server2 = server(&main, &head, &head, Reply::json("{}"));
+        let mut app = boot(&root, &server2, Some(state.clone())).await;
+        app.test_execute(Command::ReviewSubmitComment);
+        assert_eq!(app.test_composer_text().as_deref(), Some("Please read"));
+        send(&mut app);
+        assert!(
+            app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
+                .await
+        );
+        let v = json(&review_post(&server2).unwrap());
+        assert_eq!(v["body"].as_str(), Some("Please read"));
+        assert!(app.settle(|_| !store_text(&state).contains("Please read")).await);
+    }
+}

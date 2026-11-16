@@ -1,8 +1,8 @@
 ---
 id: review_conversation
 name: Code review conversation
-summary: read a merge request's description and comments in full in a conversation tab, with times on every comment, write a merge request comment, and give Submit Review an overall body
-status: in-progress
+summary: a merge request's description and comments in full in a conversation tab, times on every comment, merge request comments posted / edited / deleted, and Submit Review's overall summary
+status: done
 priority: 0
 dependencies: [mr_review, review_fixes]
 ---
@@ -18,6 +18,10 @@ The merge request's own conversation is fetched but can't be read: Enter on a CO
     - Submit Review can carry an overall body, which GitHub, Gitea and GitLab receive; without one the forges' required-body fallbacks still apply
     - Claude's review tool returns the description
     - `scripts/check` is green
+    - What it changed: the conversation is a `Pair::THREAD` diff tab with `DiffTab::conv` (`ConvTab`), one blank row per `Role::Comment` block, built in `sync_review_threads`' conversation branch; `review_open_conversation(reveal)`; the summary row is selectable and only its `‹n/of›` mark switches merge request (`ReviewHit::switcher`). `forge::time` (`parse_iso`, compact `ago`), `ThreadBlock::times` (`Stamp`), `ReviewState::clock`. `Forge::{comment, edit_conversation_comment, delete_conversation_comment}`, `Job::{Comment, EditConversation, DeleteConversation}`, `ComposerKind::{Conversation, EditConversation, Summary(event)}`, `conversation_compose(kind, text)` (a box on an extra last row of the conversation tab). Submit Review opens the summary box first (`review_submit_open`; refusals that don't need the body come before it); `DraftStore` keeps one summary per merge request (the file stays the bare map without one, `{drafts, summaries}` with one; both load), removed when the forge confirms; Esc keeps what was typed. A summary with no drafts is a review of its own. Claude's `get_review` has `body` / `body_truncated`; no Claude tool posts merge request comments.
+    - Also: GitLab dropped a Comment / Approve review's summary when it had no draft notes (now published); `review_write::run` posts a Comment review with only a body. Test helper `App::test_submit(cmd)` (the command, then Ctrl+Enter). An unidentified test failed once in a full `scripts/check` during subtask c and passed on three re-runs (the quiet output didn't name it).
+    - Deferred: full Markdown rendering of comments; reactions; replying to a merge request comment as a thread (GitLab discussions); mentions' completion; the summary box's button still reads `[Comment Ctrl+Enter]` (`SUBMIT_LABEL` fixes the button columns; the header names the action); collapsed thread headers show no time; the description has no time (`MergeRequest` has none).
+    - Still to check by hand (a throwaway MR on each forge): the conversation tab in a real terminal (blank rows with the caret's `▸`, a long conversation scrolled to a comment, button styling); times against the forge's own page; **Gitea / GitHub / GitLab**: post a merge request comment, edit and delete your own, a summary-only Comment review, Approve and Request Changes with a summary and with an empty box (the fallbacks), a failed submit then a restart keeps the summary.
   - Subtasks (one agent and one commit each):
     - ✅ review_conversation-a: the conversation tab (read-only)
         - Done: a `Pair::THREAD` diff tab with `DiffTab::conv: Option<ConvTab>` (`diff_view.rs`: number, title, rows), one blank row per block so the caret steps block to block; blocks are `review_blocks::Role::Comment` (no buttons; header `┌ author`, the description's `author · title`, built in `review_blocks::lines` — subtask b adds the time there). Built in `sync_review_threads`' conversation branch (`app/review.rs` `conversation_blocks`; subtask c appends its composer there and buttons to `Role::Comment`). `review_open_conversation(reveal)`; another MR's lookup retitles the tab. `scroll_to_cursor` reveals the caret's whole block; copy takes the caret's blocks (`conv_text`). Summary: `ReviewView::summary` selection (Up from FILES' header), click opens, `ReviewHit::switcher` (the `‹n/of›` mark) alone switches. The comment row's context menu is just "Open Conversation". Claude's MR answer has `body` / `body_truncated`. Tests: `review_conversation_tests.rs`, `mr_review_tests/claude.rs`.
@@ -37,9 +41,8 @@ The merge request's own conversation is fetched but can't be read: Enter on a CO
         - "Code Review: Comment on Merge Request" (`review.commentOnMergeRequest`) opens the composer at the end of the conversation tab (`ComposerKind::Conversation`), posted at once on Ctrl+Enter like a reply (`Job::Comment`), the box staying open until the forge says yes. Edit and Delete buttons on the user's own comments there (delete confirms, as `Prompt::ConfirmDeleteComment`).
         - Claude's tools get no way to post one (a note in `claude_review.rs`).
         - Tests: post, edit and delete against each fake; a refused post keeps the box and its text.
-    - review_conversation-d: Submit Review's overall body
+    - ✅ review_conversation-d: Submit Review's overall body. Done: see "What it changed" above; the box was chosen over `Prompt::Input` (a summary needs lines).
         - Today `DraftReview::body` is always empty (`app/review_write.rs:175`) and GitHub gets a made-up one. The three Submit Review commands open a one-box prompt in the conversation tab or over the panel: "Review summary (optional)", Ctrl+Enter submits, Esc cancels the submit; an empty body submits as today. Decide between a composer box at the end of the conversation tab (`ComposerKind::Summary(event)`) and a `Prompt::Input` (single line is too small for a summary: prefer the box), and keep "submit with no summary" one keystroke (Ctrl+Enter on the empty box).
         - The body is saved with the drafts (`review_drafts.rs`, one per merge request) so a failed submit or a restart keeps it, and removed when the forge confirms the review.
         - Adapters already send `review.body` (Gitea `body`, GitHub `body` with the fallback, GitLab `bulk_publish`'s `note`): test each receives it.
         - Then run the task's done-when, fill in "What it changed", "Deferred" and "Still to check by hand", and mark the task ✅.
-  - Deferred: full Markdown rendering of comments (headings, lists, links, images); reactions; replying to a merge request comment as a thread (GitLab discussions); mentions' completion.

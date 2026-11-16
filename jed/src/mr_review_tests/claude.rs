@@ -289,7 +289,7 @@ async fn claude_ide_a_reply_draft_is_tagged_claude_replaced_not_posted_and_submi
     assert_eq!(threads["threads"][0]["reply_draft"]["resolve"], true);
     assert!(w.writes().is_empty(), "nothing is posted by the tool: {:?}", w.writes());
     // The user's Submit Review posts the reply, then resolves the thread.
-    w.app.test_execute(Command::ReviewSubmitComment);
+    w.app.test_submit(Command::ReviewSubmitComment);
     assert!(
         w.app
             .settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
@@ -324,7 +324,7 @@ async fn claude_ide_a_reply_draft_is_tagged_claude_replaced_not_posted_and_submi
 async fn claude_ide_a_failed_reply_stays_pending_with_its_error() {
     let mut w = boot(false, false).await;
     w.data(reply("11", "Will not post", false)).await;
-    w.app.test_execute(Command::ReviewSubmitComment);
+    w.app.test_submit(Command::ReviewSubmitComment);
     assert!(
         w.app
             .settle(|a| !a.review.writing && !a.review.drafts.errors.is_empty())

@@ -172,7 +172,7 @@ async fn mr_review_gitlab_shows_a_multi_line_discussion_and_submits_in_gitlab_sh
     app.test_execute(Command::ReviewComment);
     app.type_text("Please rename");
     app.press(KeyCode::Enter, KeyModifiers::CONTROL);
-    app.test_execute(Command::ReviewSubmitApprove);
+    app.test_submit(Command::ReviewSubmitApprove);
     assert!(
         app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
             .await
@@ -233,7 +233,7 @@ async fn claude_ide_gitlab_posts_a_reply_draft_and_resolves_at_submit_without_a_
             .collect::<Vec<_>>()
     };
     assert!(writes(&server).is_empty(), "drafting posts nothing");
-    app.test_execute(Command::ReviewSubmitComment);
+    app.test_submit(Command::ReviewSubmitComment);
     assert!(
         app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
             .await
@@ -261,7 +261,7 @@ async fn review_forge_fixes_a_gitlab_reply_draft_posted_at_submit_spells_the_pla
     let mut app = boot(&root, &server, None).await;
     // The thread aa11 is on lines 2-3: a plain fence means both lines (`-1+0`).
     claude_reply(&mut app, "7:aa11", "Try\n```suggestion\nX\n```", false);
-    app.test_execute(Command::ReviewSubmitComment);
+    app.test_submit(Command::ReviewSubmitComment);
     assert!(
         app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
             .await
@@ -283,7 +283,7 @@ async fn claude_ide_gitlab_keeps_a_reply_draft_whose_post_failed() {
     let mut app = boot(&root, &server, None).await;
     // Thread bb22 has no reply route on the fake: a 404.
     claude_reply(&mut app, "7:bb22", "Will fail", true);
-    app.test_execute(Command::ReviewSubmitComment);
+    app.test_submit(Command::ReviewSubmitComment);
     assert!(
         app.settle(|a| !a.review.writing && !a.review.drafts.errors.is_empty())
             .await

@@ -164,9 +164,9 @@ pub fn run(req: Request, job: Job) -> Done {
                 review.event
             ));
             let id = |i: usize| ids.get(i).cloned().unwrap_or_default();
-            // Replies only (no verdict, no line comments): there is no review to post.
+            // Replies only (no verdict, no line comments, no summary): there is no review to post.
             let (mut posted, mut failed, mut error) = (Vec::new(), Vec::new(), None);
-            if !review.comments.is_empty() || review.event != forge::ReviewEvent::Comment {
+            if !review.comments.is_empty() || review.event != forge::ReviewEvent::Comment || !review.body.is_empty() {
                 let out = api.submit_review(repo, *number, head_sha, review);
                 for (i, e) in &out.failed {
                     log.error(&format!("draft {}: {e}", id(*i)));

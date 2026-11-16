@@ -187,7 +187,7 @@ async fn walk(
     app.type_text("Walk draft");
     app.press(KeyCode::Enter, KeyModifiers::CONTROL);
     assert!(app.settle(|_| store_text(&state).contains("Walk draft")).await);
-    app.test_execute(Command::ReviewSubmitComment);
+    app.test_submit(Command::ReviewSubmitComment);
     assert!(
         app.settle(|a| !a.review.writing && !a.review.drafts.errors.is_empty())
             .await
@@ -200,7 +200,7 @@ async fn walk(
     let working = serve(&main, &head, Reply::json("{}"));
     let mut app = boot(&root, config(&working), &state).await;
     assert!(app.settle(|a| !a.review.draft_rows().is_empty()).await);
-    app.test_execute(Command::ReviewSubmitComment);
+    app.test_submit(Command::ReviewSubmitComment);
     assert!(
         app.settle(|a| a.review.draft_rows().is_empty() && !a.review.writing)
             .await

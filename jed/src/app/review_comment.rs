@@ -76,12 +76,17 @@ pub(super) enum ComposerKind {
     EditConversation {
         comment_id: String,
     },
+    /// The overall body of the review submitted with `event` (Ctrl+Enter submits it).
+    Summary(crate::forge::ReviewEvent),
 }
 
 impl ComposerKind {
     /// The box lives at the end of the conversation tab (not under a line of a diff).
     pub(super) fn in_conversation(&self) -> bool {
-        matches!(self, ComposerKind::Conversation | ComposerKind::EditConversation { .. })
+        matches!(
+            self,
+            ComposerKind::Conversation | ComposerKind::EditConversation { .. } | ComposerKind::Summary(_)
+        )
     }
 }
 
@@ -138,6 +143,11 @@ impl Composer {
             (ComposerKind::Edit { .. }, _) => "Edit your comment (saved at once)",
             (ComposerKind::Conversation, _) => "Comment on the merge request (posted at once)",
             (ComposerKind::EditConversation { .. }, _) => "Edit your comment (saved at once)",
+            (ComposerKind::Summary(e), _) => match e {
+                crate::forge::ReviewEvent::Comment => "Review summary (optional), Ctrl+Enter submits the review",
+                crate::forge::ReviewEvent::Approve => "Review summary (optional), Ctrl+Enter approves",
+                crate::forge::ReviewEvent::RequestChanges => "Review summary (optional), Ctrl+Enter requests changes",
+            },
             (_, true) => "Edit comment",
             _ => "Comment",
         };
@@ -494,7 +504,11 @@ impl App {
 
     /// Esc: the box closes, its text is dropped (an edited draft stays as it was).
     pub(super) fn composer_cancel(&mut self) {
-        if self.composer.take().is_some() {
+        if let Some(c) = self.composer.take() {
+            // A summary typed so far is kept with the drafts (the submit is what is cancelled).
+            if matches!(c.kind, ComposerKind::Summary(_)) {
+                self.keep_summary(&c.text());
+            }
             self.review_blocks_changed();
         }
     }

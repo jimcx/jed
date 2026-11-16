@@ -653,7 +653,7 @@ impl Forge for GitLab {
                 Err(e) => out.failed.push((i, e.to_string())),
             }
         }
-        if !drafts.is_empty() || review.event == ReviewEvent::RequestChanges {
+        if !drafts.is_empty() || review.event == ReviewEvent::RequestChanges || !review.body.trim().is_empty() {
             let mut body = json!({});
             if !review.body.trim().is_empty() {
                 body["note"] = json!(review.body);
@@ -1244,6 +1244,29 @@ mod tests {
             (v["note"].as_str(), v["reviewer_state"].as_str()),
             (Some("please fix"), Some("requested_changes"))
         );
+    }
+
+    #[test]
+    fn a_summary_with_no_comments_is_published_as_the_note() {
+        let (server, gl, repo) = setup(vec![
+            (&route("/merge_requests/7"), Reply::json(MR)),
+            (&route(NO_DRAFTS), Reply::json("[]")),
+            (
+                &format!("POST {}", route("/merge_requests/7/draft_notes/bulk_publish")),
+                Reply::status(204),
+            ),
+        ]);
+        let mut r = review(ReviewEvent::Comment, &[]);
+        r.body = "Looks fine".into();
+        let out = gl.submit_review(&repo, 7, "h0", &r);
+        assert!(out.error.is_none() && out.failed.is_empty());
+        let publish = server
+            .requests()
+            .into_iter()
+            .find(|r| r.target.ends_with("/bulk_publish"))
+            .expect("the note is published");
+        let v: Value = serde_json::from_str(&publish.body).unwrap();
+        assert_eq!(v["note"], "Looks fine");
     }
 
     #[test]
