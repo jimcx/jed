@@ -115,6 +115,7 @@ pub(super) fn draft_block(d: &Draft) -> ThreadBlock {
             mine: false,
             apply: false,
             times: Vec::new(),
+            outdated_on: None,
             comments: vec![(format!("Reply draft{tag}{resolve}"), d.body.clone())],
         };
     }
@@ -128,6 +129,7 @@ pub(super) fn draft_block(d: &Draft) -> ThreadBlock {
         mine: false,
         apply: false,
         times: Vec::new(),
+        outdated_on: None,
         comments: vec![(format!("Draft · {}", range_label(d.start, d.end)), d.body.clone())],
     }
 }
@@ -163,6 +165,7 @@ impl Composer {
             mine: false,
             apply: false,
             times: Vec::new(),
+            outdated_on: None,
             comments: vec![(
                 format!(
                     "{verb}{}{}",

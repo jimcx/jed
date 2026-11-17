@@ -612,6 +612,16 @@ fn draw_block_line(
             // The corner in the frame's colour (the text starts with `┌` / `├`).
             let corner = if line.kind == BlockKind::Header { "┌" } else { "├" };
             out.set_stringn(x, y, corner, 1.min(room), border);
+            if line.kind == BlockKind::Header
+                && let Some(cols) = review_blocks::outdated_cols(block, line)
+            {
+                // The forge's "outdated" tag, dimmed.
+                let w = cols.len().min(room.saturating_sub(cols.start));
+                out.set_style(
+                    Rect::new(x + cols.start as u16, y, w as u16, 1),
+                    theme.get("sideBar.dim"),
+                );
+            }
         }
         BlockKind::Footer => {
             out.set_stringn(x, y, &line.text, room, border);

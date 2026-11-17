@@ -78,6 +78,16 @@ pub struct ThreadRow {
     pub behind: bool,
 }
 
+impl ThreadRow {
+    /// `Some(forge name)` when jed placed the thread but the forge calls it outdated (so it looks
+    /// current here and hidden or marked outdated on the web page). Never on GitLab: its flag is
+    /// jed's own guess (`head_sha` differs from the head), not the forge's.
+    pub fn outdated_on(&self, kind: forge::Kind) -> Option<&'static str> {
+        (self.thread.outdated && matches!(self.place, Placement::Placed { .. }) && kind != forge::Kind::GitLab)
+            .then(|| kind.display_name())
+    }
+}
+
 impl Review {
     /// Threads nobody resolved.
     pub fn unresolved(&self) -> usize {

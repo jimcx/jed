@@ -64,6 +64,23 @@ pub struct ThreadBlock {
     /// When each comment was written (`times[i]` for `comments[i]`); empty or shorter for
     /// blocks without times (drafts, the comment box), whose comments then show none.
     pub times: Vec<Option<Stamp>>,
+    /// The forge that calls this thread outdated although jed placed it ([`outdated_tag`] in
+    /// the header, dimmed).
+    pub outdated_on: Option<&'static str>,
+}
+
+/// The header's tag for a thread the forge calls outdated: ` · outdated on Gitea`.
+pub fn outdated_tag(forge: &str) -> String {
+    format!(" · outdated on {forge}")
+}
+
+/// The columns of the dimmed outdated tag in a header `line` of `t`, when it was drawn.
+pub fn outdated_cols(t: &ThreadBlock, line: &BlockLine) -> Option<std::ops::Range<usize>> {
+    let tag = outdated_tag(t.outdated_on?);
+    // From the right: the tag follows the author's name, which could contain its text.
+    let at = line.text.rfind(&tag)?;
+    let start = line.text[..at].width();
+    Some(start..start + tag.width())
 }
 
 /// When a comment was written and whether it changed since.
@@ -490,8 +507,8 @@ fn header_row(
     corner: &str,
     who: &str,
     done: &str,
-    stamp: Option<Stamp>,
-    now: i64,
+    (stamp, now): (Option<Stamp>, i64),
+    outdated: Option<&str>,
     right: &str,
     width: usize,
 ) -> String {
@@ -506,6 +523,13 @@ fn header_row(
             tail = full;
         } else if short.width() <= room {
             tail = short;
+        }
+    }
+    // The tag goes last: cut first when the row is narrow.
+    if let Some(f) = outdated {
+        let tag = outdated_tag(f);
+        if tail.width() + tag.width() <= room {
+            tail.push_str(&tag);
         }
     }
     rule(&format!("{left}{tail}"), right, width)
@@ -537,7 +561,7 @@ pub fn lines(t: &ThreadBlock, collapsed: bool, width: usize, now: i64) -> Vec<Bl
         text: if collapsed {
             rule(&head, &right, width)
         } else {
-            header_row("┌", author, done, stamp(0), now, &right, width)
+            header_row("┌", author, done, (stamp(0), now), t.outdated_on, &right, width)
         },
     });
     if collapsed {
@@ -547,7 +571,7 @@ pub fn lines(t: &ThreadBlock, collapsed: bool, width: usize, now: i64) -> Vec<Bl
         if i > 0 {
             out.push(BlockLine {
                 kind: Kind::Reply,
-                text: header_row("├", who, "", stamp(i), now, "", width),
+                text: header_row("├", who, "", (stamp(i), now), None, "", width),
             });
         }
         for (code, l) in body_rows(body, width.saturating_sub(2)) {
@@ -786,6 +810,7 @@ mod tests {
             mine: false,
             apply: false,
             times: Vec::new(),
+            outdated_on: None,
             comments: vec![("sam".into(), body.into())],
         }
     }
@@ -972,6 +997,7 @@ mod tests {
             mine: false,
             apply: false,
             times: Vec::new(),
+            outdated_on: None,
             comments: vec![("Comment on lines 3–4".into(), "one\ntwo".into())],
         };
         let ls = lines(&t, false, 40, 0);
@@ -1058,5 +1084,38 @@ mod tests {
         );
         assert!(!Stamp::of(&c("2026-03-12T10:20:30Z", "")).unwrap().edited);
         assert_eq!(Stamp::of(&c("", "2026-03-12T10:20:36Z")), None);
+    }
+
+    #[test]
+    fn an_outdated_thread_header_ends_in_the_dimmed_tag_cut_before_the_time() {
+        let now = 1_000_000;
+        let mut t = thread("1", false, "text");
+        t.times = vec![Some(Stamp {
+            at: now - 7200,
+            edited: false,
+        })];
+        t.outdated_on = Some("Gitea");
+        let l = lines(&t, false, 60, now);
+        assert!(
+            l[0].text.starts_with("┌ sam · 2h ago · outdated on Gitea ─"),
+            "{}",
+            l[0].text
+        );
+        let cols = outdated_cols(&t, &l[0]).unwrap();
+        assert_eq!(cols.start, "┌ sam · 2h ago".width());
+        assert_eq!(cols.len(), " · outdated on Gitea".width());
+        // Narrower: the tag goes first, the time stays.
+        let l = lines(&t, false, 30, now);
+        assert!(l[0].text.starts_with("┌ sam · 2h ago ─"), "{}", l[0].text);
+        assert_eq!(outdated_cols(&t, &l[0]), None);
+        // An author named like the tag doesn't fool the search: the last match is the tag.
+        t.comments[0].0 = "x · outdated on Gitea".into();
+        let l = lines(&t, false, 80, now);
+        let cols = outdated_cols(&t, &l[0]).unwrap();
+        assert_eq!(cols.start, "┌ x · outdated on Gitea · 2h ago".width(), "{}", l[0].text);
+        assert_eq!(cols.len(), " · outdated on Gitea".width());
+        // Collapsed headers and untagged threads show none.
+        t.outdated_on = None;
+        assert_eq!(outdated_cols(&t, &lines(&t, false, 60, now)[0]), None);
     }
 }

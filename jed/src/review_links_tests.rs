@@ -8,6 +8,11 @@
 //! review_links-b, Withdraw My Review (`review_links_b_*`): on the Gitea fake, the command asks first,
 //! then dismisses the user's review and refreshes; Cancel sends nothing; with no verdict of the
 //! user's it says so; a refusal's message is shown; the panel's menu lists the item only then.
+//!
+//! review_links-c (`review_links_c_*`): a placed thread the forge flags outdated is tagged `outdated on
+//! <forge>` (dimmed) in its CONVERSATIONS row and block header on Gitea and GitHub, never on GitLab or
+//! on a current thread; `review_links_github_*` / `_gitlab_*` open and copy the merge request link on
+//! those fakes (done when: the commands on all three forges; withdraw on GitHub is unit-tested).
 
 use crate::app::App;
 use crate::command::Command;
@@ -423,5 +428,191 @@ mod withdraw {
         assert!(!right_click(&mut app));
         app.review.user = Some("sam".into());
         assert!(right_click(&mut app));
+    }
+}
+
+/// review_links-c: the outdated tag on threads jed placed but the forge calls outdated.
+mod outdated {
+    use super::*;
+    use crate::git::test_repo::git;
+    use crate::mr_review_tests::{make_repo, open_file};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn draw(app: &mut App) -> ratatui::buffer::Buffer {
+        let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        term.draw(|f| crate::ui::render(f, app)).unwrap();
+        term.backend().buffer().clone()
+    }
+
+    fn rows(b: &ratatui::buffer::Buffer) -> Vec<String> {
+        (0..b.area.height)
+            .map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect())
+            .collect()
+    }
+
+    /// Marks every thread the forge's flag outdated, opens `mod.txt`'s diff and returns what is
+    /// drawn: the screen's rows. At least one thread must be placed.
+    async fn flagged(app: &mut App) -> ratatui::buffer::Buffer {
+        let r = review(app);
+        assert!(
+            r.threads
+                .iter()
+                .any(|t| matches!(t.place, crate::review_anchor::Placement::Placed { .. }))
+        );
+        for t in &mut r.threads {
+            t.thread.outdated = true;
+        }
+        open_file(app, "mod.txt").await;
+        draw(app);
+        draw(app)
+    }
+
+    fn tagged_rows(b: &ratatui::buffer::Buffer, tag: &str) -> (usize, usize) {
+        let l = rows(b);
+        let header = l.iter().filter(|x| x.contains('┌') && x.contains(tag)).count();
+        let row = l.iter().filter(|x| !x.contains('┌') && x.contains(tag)).count();
+        (row, header)
+    }
+
+    /// A Gitea comment the forge calls outdated (`position` 0) whose original commit is HEAD and
+    /// whose line still matches: jed places it.
+    const GITEA_OUTDATED: &str = r#"[{"id":21,"user":{"login":"sam"},"body":"Old remark","path":"mod.txt",
+        "position":0,"original_position":3,"commit_id":"{HEAD}","original_commit_id":"{HEAD}",
+        "diff_hunk":"@@ -1 +1 @@\n+m3","resolver":null,"created_at":"2026-01-01T10:00:00Z","updated_at":""}]"#;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_links_c_gitea_threads_the_forge_calls_outdated_are_tagged_in_row_and_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server) =
+            crate::mr_review_tests::threads::loaded_app_with(dir.path(), None, None, Some(GITEA_OUTDATED), Vec::new())
+                .await;
+        let r = review(&mut app);
+        assert!(r.threads[0].thread.outdated);
+        assert!(matches!(
+            r.threads[0].place,
+            crate::review_anchor::Placement::Placed { .. }
+        ));
+        open_file(&mut app, "mod.txt").await;
+        draw(&mut app);
+        let b = draw(&mut app);
+        let (row, header) = tagged_rows(&b, "outdated on Gitea");
+        assert!(row >= 1, "a CONVERSATIONS row says it\n{}", rows(&b).join("\n"));
+        assert!(header >= 1, "a block header says it\n{}", rows(&b).join("\n"));
+        // Dimmed: the tag's cells carry the theme's dim colour.
+        let y = rows(&b)
+            .iter()
+            .position(|x| x.contains('┌') && x.contains("outdated on"))
+            .unwrap();
+        let line = rows(&b)[y].clone();
+        let col = line[..line.find("outdated on").unwrap()].chars().count() as u16;
+        assert_eq!(b[(col, y as u16)].fg, app.theme.get("sideBar.dim").fg.unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_links_c_current_threads_have_no_tag() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _server) = loaded_app(dir.path(), None).await;
+        open_file(&mut app, "mod.txt").await;
+        let b = draw(&mut app);
+        assert!(!rows(&b).join("\n").contains("outdated on"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_links_c_github_threads_the_forge_calls_outdated_are_tagged() {
+        use crate::mr_review_tests::github::{boot_github, server_outdated};
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main) = make_repo(dir.path());
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let server = server_outdated(&main, &head);
+        let mut app = boot_github(&root, &server).await;
+        let r = review(&mut app);
+        assert!(r.threads[0].thread.outdated);
+        assert!(matches!(
+            r.threads[0].place,
+            crate::review_anchor::Placement::Placed { .. }
+        ));
+        open_file(&mut app, "mod.txt").await;
+        draw(&mut app);
+        let b = draw(&mut app);
+        let (row, header) = tagged_rows(&b, "outdated on GitHub");
+        assert!(row >= 1 && header >= 1, "{}", rows(&b).join("\n"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_links_c_gitlab_threads_are_never_tagged() {
+        use crate::forge::fake::Reply;
+        use crate::mr_review_tests::gitlab::{boot, server};
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main) = make_repo(dir.path());
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let server = server(&main, &head, Reply::json("{}"));
+        let mut app = boot(&root, &server, None).await;
+        let b = flagged(&mut app).await;
+        assert!(!rows(&b).join("\n").contains("outdated on"), "{}", rows(&b).join("\n"));
+    }
+}
+
+/// Done when, on all three forges: Open on Forge and Copy Link fall back to the merge request's
+/// own link on the GitHub and GitLab fakes too.
+mod other_forges {
+    use super::*;
+    use crate::git::test_repo::git;
+    use crate::mr_review_tests::make_repo;
+
+    async fn links(mut app: App, url: &str) {
+        assert_eq!(review(&mut app).mr.url, url);
+        app.review.view.conv.focused = false;
+        opens(&mut app, url).await;
+        app.test_execute(Command::ReviewCopyLink);
+        assert_eq!(copied(&mut app), url);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_links_github_merge_request_opens_and_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main) = make_repo(dir.path());
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let server = crate::mr_review_tests::github::server(&main, &head);
+        let app = crate::mr_review_tests::github::boot_github(&root, &server).await;
+        links(app, "https://git.example.com/alice/project/pull/7").await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_links_gitlab_merge_request_opens_and_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main) = make_repo(dir.path());
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let server = crate::mr_review_tests::gitlab::server(&main, &head, crate::forge::fake::Reply::json("{}"));
+        let app = crate::mr_review_tests::gitlab::boot(&root, &server, None).await;
+        links(app, "https://git.example.com/alice/project/-/merge_requests/7").await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn review_links_b_github_withdraw_dismisses_the_users_review() {
+        use crate::forge::fake::Reply;
+        use crate::mr_review_tests::github::{boot_github, server_reviews};
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let dismiss = "/api/v3/repos/alice/project/pulls/7/reviews/31/dismissals";
+        let dir = tempfile::tempdir().unwrap();
+        let (root, main) = make_repo(dir.path());
+        let head = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let reviews = r#"[{"databaseId":31,"body":"","state":"APPROVED","submittedAt":"2026-01-06T00:00:00Z",
+            "url":"","author":{"login":"sam"}}]"#;
+        let server = server_reviews(
+            &main,
+            &head,
+            reviews,
+            vec![(format!("PUT {dismiss}"), Reply::json("{}"))],
+        );
+        let mut app = boot_github(&root, &server).await;
+        app.review.user = Some("sam".into());
+        let sent = |s: &crate::forge::fake::FakeServer| s.requests().iter().filter(|r| r.target == dismiss).count();
+        app.test_execute(Command::ReviewWithdraw);
+        assert!(app.prompt.is_some(), "{}", message(&app));
+        app.press(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(sent(&server), 0, "Cancel sends nothing");
+        app.test_execute(Command::ReviewWithdraw);
+        app.press(KeyCode::Char('w'), KeyModifiers::NONE);
+        assert!(app.settle(|_| sent(&server) == 1).await);
     }
 }

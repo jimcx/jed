@@ -60,6 +60,34 @@ pub(crate) fn server_plus(
     long: bool,
     extra: Vec<(String, Reply)>,
 ) -> FakeServer {
+    server_full(main, head, replies, long, false, "[]", extra)
+}
+
+/// As `server`, but GitHub calls the thread outdated (`isOutdated`, no current `line`, its
+/// `originalLine`s on the original commit, as the real API says).
+pub(crate) fn server_outdated(main: &str, head: &str) -> FakeServer {
+    server_full(main, head, true, false, true, "[]", Vec::new())
+}
+
+/// As `server`, with these `reviews` nodes (a JSON array) and `extra` routes.
+pub(crate) fn server_reviews(main: &str, head: &str, reviews: &str, extra: Vec<(String, Reply)>) -> FakeServer {
+    server_full(main, head, true, false, false, reviews, extra)
+}
+
+fn server_full(
+    main: &str,
+    head: &str,
+    replies: bool,
+    long: bool,
+    outdated: bool,
+    reviews: &str,
+    extra: Vec<(String, Reply)>,
+) -> FakeServer {
+    let (is_outdated, line, start) = if outdated {
+        ("true", "null", "null")
+    } else {
+        ("false", "3", "2")
+    };
     let page = if long {
         r#""pageInfo":{"hasNextPage":true},"#
     } else {
@@ -72,7 +100,7 @@ pub(crate) fn server_plus(
         "head":{{"ref":"feature","sha":"{head}","repo":{{"full_name":"alice/project"}}}}}}"#
     );
     let thread = format!(
-        r#"[{{"id":"PRRT_1","isResolved":false,"isOutdated":false,"path":"mod.txt","line":3,"startLine":2,
+        r#"[{{"id":"PRRT_1","isResolved":false,"isOutdated":{is_outdated},"path":"mod.txt","line":{line},"startLine":{start},
         "originalLine":3,"originalStartLine":2,"diffSide":"RIGHT","comments":{{{page}"nodes":[
         {{"id":"PRRC_1","databaseId":501,"body":"Natively ranged remark","createdAt":"2026-01-01T00:00:00Z",
         "updatedAt":"2026-01-01T00:00:00Z","url":"","author":{{"login":"bob"}},
@@ -107,7 +135,7 @@ pub(crate) fn server_plus(
         ),
         (
             "POST /api/graphql ~reviews(".into(),
-            Reply::json(&graphql("reviews", "[]")),
+            Reply::json(&graphql("reviews", reviews)),
         ),
         (
             "POST /api/graphql ~comments(first:100,after".into(),

@@ -558,7 +558,7 @@ impl App {
                             (Some(tab), _) => (tab.id == t.thread.id).then(|| {
                                 let a = &t.thread.anchor;
                                 let span = a.end_line.saturating_sub(a.start_line) as usize;
-                                forge_block(t, user, true, (tab.last, span), false)
+                                forge_block(t, user, true, (tab.last, span), false, r.kind)
                             }),
                             (None, Placement::Placed { side, lines })
                                 if workdir.join(&t.thread.anchor.path) == d.path =>
@@ -571,7 +571,7 @@ impl App {
                                         .any(|c| !crate::suggestion::parse(&c.body, &t.thread.anchor).is_empty());
                                 let line = lines.end.saturating_sub(1).max(lines.start);
                                 let span = line - lines.start;
-                                Some(forge_block(t, user, *side == Side::Right, (line, span), apply))
+                                Some(forge_block(t, user, *side == Side::Right, (line, span), apply, r.kind))
                             }
                             _ => None,
                         })
@@ -975,6 +975,7 @@ fn conversation_blocks(r: &crate::review::Review, user: Option<&str>) -> Vec<cra
             apply: false,
             comments: vec![(head, body)],
             times: vec![stamp],
+            outdated_on: None,
         })
         .collect()
 }
@@ -987,6 +988,7 @@ fn forge_block(
     right: bool,
     (line, span): (usize, usize),
     apply: bool,
+    kind: crate::forge::Kind,
 ) -> crate::review_blocks::ThreadBlock {
     crate::review_blocks::ThreadBlock {
         role: crate::review_blocks::Role::Thread,
@@ -1004,5 +1006,6 @@ fn forge_block(
             .map(|c| (c.author.clone(), c.body.clone()))
             .collect(),
         times: t.thread.comments.iter().map(crate::review_blocks::Stamp::of).collect(),
+        outdated_on: t.outdated_on(kind),
     }
 }

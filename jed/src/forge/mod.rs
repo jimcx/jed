@@ -46,6 +46,15 @@ impl Kind {
         }
     }
 
+    /// The forge's product name, as the UI shows it.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Kind::Gitea => "Gitea",
+            Kind::GitHub => "GitHub",
+            Kind::GitLab => "GitLab",
+        }
+    }
+
     /// The environment variable holding the token when the entry names none.
     pub fn default_token_env(self) -> &'static str {
         match self {

@@ -338,11 +338,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
                         ("●", "review.unresolved")
                     };
                     let a = &t.thread.anchor;
-                    let (tag, faded) = match t.place {
-                        Placement::Placed { .. } if t.behind => ("newer commit", true),
-                        Placement::Placed { .. } => ("", false),
-                        Placement::Outdated => ("outdated", true),
-                        Placement::Missing => ("no commit", true),
+                    // A placed thread says "newer commit" before the forge's own outdated flag.
+                    let (tag, faded): (String, bool) = match t.place {
+                        Placement::Placed { .. } if t.behind => ("newer commit".into(), true),
+                        Placement::Placed { .. } => (
+                            t.outdated_on(review.kind)
+                                .map_or_else(String::new, |f| format!("outdated on {f}")),
+                            false,
+                        ),
+                        Placement::Outdated => ("outdated".into(), true),
+                        Placement::Missing => ("no commit".into(), true),
                     };
                     (
                         glyph,
@@ -359,7 +364,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
                         "○",
                         "review.resolved",
                         format!("{}  (merge request)", c.author),
-                        "",
+                        String::new(),
                         c.body.as_str(),
                         false,
                     )
@@ -372,7 +377,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) -> (Option<ReviewHit>, O
             out.set_stringn(area.x + 3, y1, truncate(&label, room), room, row_style.patch(fade));
             if !tag.is_empty() {
                 let x = area.x + (width - tag.width() - 1) as u16;
-                out.set_stringn(x, y1, tag, tag.width(), row_style.patch(dim_fg));
+                out.set_stringn(x, y1, &tag, tag.width(), row_style.patch(dim_fg));
             }
             let text_room = width.saturating_sub(4);
             let line = first.lines().next().unwrap_or("").trim();
